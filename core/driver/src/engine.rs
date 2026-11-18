@@ -375,11 +375,15 @@ impl Engine {
                         let intent = self.commits.restores().get(id);
                         let noted = noted.get(id);
                         let node = intent.map(RestoreIntent::node);
-                        let remote =
-                            |node| self.trees.remote().path(node)?.to_str().map(str::to_owned);
-                        let path = (node.map(|node| self.path(node)))
-                            .filter(|path| !path.is_empty())
-                            .or_else(|| node.and_then(remote).filter(|path| !path.is_empty()))
+                        let rooted = |path: Option<PathBuf>| {
+                            Some(path?.to_str()?.to_owned()).filter(|path| !path.is_empty())
+                        };
+                        let path = node
+                            .and_then(|node| {
+                                rooted(self.trees.local().path(node))
+                                    .or_else(|| rooted(self.trees.remote().path(node)))
+                                    .or_else(|| rooted(self.trees.synced().path(node)))
+                            })
                             .or_else(|| noted.and_then(|noted| noted.path.clone()))
                             .or_else(|| intent.and_then(RestoreIntent::name).map(str::to_owned))
                             .unwrap_or_else(|| id.clone());
@@ -4447,5 +4451,60 @@ mod tests {
             "ops {ops:?}"
         );
         assert!(engine.trees.synced().get(&x).is_none(), "x downloads again");
+    }
+
+    #[test]
+    fn a_restore_of_a_file_off_disk_is_shown_where_the_server_holds_it_now() {
+        let (_dir, mut store) = store();
+        let file = "0190a0b0-0000-7000-8000-00000000000f";
+        store
+            .transaction(|tx| {
+                let mut engine = Engine::load(tx, ROOT)?;
+                let report = NodeState {
+                    parent_id: "renamed".into(),
+                    kind: NodeKind::File as i32,
+                    current: Some(proto::VersionInfo {
+                        content: Some(proto::Content::default()),
+                        ..Default::default()
+                    }),
+                    ..node(file, "report.txt")
+                };
+                let served = vec![node("old", "old"), node("renamed", "renamed"), report];
+                engine.replace_remote(tx, listed(3, served))?;
+                let shape = |parent: &str, name: &str, kind| Shape {
+                    parent: parent.into(),
+                    name: name.into(),
+                    kind,
+                    content: None,
+                };
+                (engine.trees).set_synced("old".into(), Some(shape(ROOT, "old", Kind::Dir)));
+                (engine.trees)
+                    .set_synced(file.into(), Some(shape("old", "report.txt", Kind::File)));
+                let id = crate::restore::new_id(1);
+                let intent = RestoreIntent::from_trash(file.into(), None, None).unwrap();
+                assert!(engine.commits.restore(id.clone(), intent));
+                let members = BTreeMap::from([(id.clone(), None)]);
+                let asked = engine::Question {
+                    id: "q".into(),
+                    asked_at_ms: 1,
+                    kind: engine::QuestionKind::Recovery {
+                        group: engine::RecoveryGroup::RequestedBeforeReset,
+                        sent_in: None,
+                        cause: None,
+                    },
+                    held: BTreeMap::from([(id, engine::Held { members, files: 0 })]),
+                    shown: BTreeMap::new(),
+                    answer: None,
+                };
+                let shown = engine.shown(tx, "s", &asked, "q".into(), None).unwrap();
+                let paths: Vec<&str> = shown
+                    .items
+                    .iter()
+                    .map(|item| item.path.unquoted())
+                    .collect();
+                assert_eq!(paths, ["renamed/report.txt"]);
+                Ok::<_, Stop>(())
+            })
+            .unwrap();
     }
 }
