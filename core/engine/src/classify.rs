@@ -3016,6 +3016,9 @@ impl Trees {
         {
             return None;
         }
+        if local.is_none() && self.pending_at(id) {
+            return None;
+        }
         let at = |shape: &Shape| {
             Some(Shape {
                 parent: shape.parent.clone(),

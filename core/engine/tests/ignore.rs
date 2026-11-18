@@ -2128,3 +2128,31 @@ fn a_file_waiting_under_a_name_that_differs_only_in_case_keeps_its_place_pending
     assert_eq!(trees.synced().live("x"), None);
     assert_eq!(trees.check(), Ok(()));
 }
+
+#[test]
+fn an_excluded_file_the_server_renames_keeps_its_synced_entry_while_its_old_place_is_pending() {
+    for (to, pending) in [
+        ("y.log", vec!["x.log"]),
+        ("y.txt", vec!["x.log"]),
+        ("y.log", vec![]),
+    ] {
+        let mut trees = trees(&[synced("x", file(ROOT, "x.log", 1))]);
+        trees.set_rules(&AT_ROOT, rules("*.log\n"));
+        assert_eq!(ops(&mut trees), []);
+        trees.remove_local("x");
+        trees.settle(&Default::default());
+        let mut node = trees.remote().get("x").unwrap().clone();
+        node.shape.name = to.into();
+        trees.set_remote("x".into(), node);
+        trees.listed(&[], Pending::new([pending.clone()]));
+        for _ in 0..3 {
+            trees.settle(&Default::default());
+            assert_eq!(trees.check(), Ok(()));
+        }
+        assert!(trees.synced().live("x").is_some(), "{to} {pending:?}");
+        trees.listed(&[], Pending::default());
+        trees.settle(&Default::default());
+        assert_eq!(trees.synced().live("x"), None, "{to} {pending:?}");
+        assert_eq!(trees.check(), Ok(()));
+    }
+}
