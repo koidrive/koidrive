@@ -1059,6 +1059,12 @@ fn members(question: &Question) -> impl Iterator<Item = String> + '_ {
     (question.held.values()).flat_map(|held| held.members.keys().cloned())
 }
 
+fn held_by(questions: &[Question]) -> BTreeSet<String> {
+    (questions.iter())
+        .flat_map(|question| question.shown.keys().cloned().chain(members(question)))
+        .collect()
+}
+
 /// Whether the effects cannot place `id` because of an excluded node: on the way from the node's
 /// R position to the root, a name is held in L by an excluded node, whose local copy stays where
 /// it is, or by a node that waits the same way, or a folder on the way waits itself or is
@@ -1071,8 +1077,10 @@ fn waits_on_excluded(trees: &Trees, id: &str, waiting: &BTreeSet<String>) -> boo
         let Some(remote) = trees.remote().live(current) else {
             let stays = |other: &str| trees.ignored(other) || waiting.contains(other);
             return current == id
-                && (trees.local().iter())
-                    .any(|(other, node)| node.shape.parent == id && stays(other));
+                && ((trees.local().iter())
+                    .any(|(other, node)| node.shape.parent == id && stays(other))
+                    || (trees.synced().iter())
+                        .any(|(other, shape)| shape.parent == id && waiting.contains(other)));
         };
         let placed = |node: &LocalNode| !node.parked && node.shape.same_position(remote);
         let unplaced = !trees.local().get(current).is_some_and(placed);
@@ -1143,7 +1151,6 @@ fn server_copy(
     id: &str,
     shown: &BTreeMap<String, koidrive_engine::tree::Shape>,
     from_server: &BTreeSet<String>,
-    removed_left_out: &BTreeSet<String>,
     kept: &mut BTreeMap<String, koidrive_engine::tree::Shape>,
 ) -> bool {
     let trees = &device.trees;
@@ -1160,15 +1167,16 @@ fn server_copy(
                 !node.trashed
                     && node.shape.parent == id
                     && trees.local().get(child).is_none()
-                    && device.removed_from.contains_key(child)
-                    && !removed_left_out.contains(child)
-                    && !(device.kept_back.contains(child) && acknowledged_shape(trees, child).is_none())
+                    && (device.removed_from.get(child).is_some_and(|from| from == id)
+                        || device.removed_from.contains_key(child)
+                            && acknowledged_shape(trees, child).is_some_and(|agreed| agreed.parent == id))
+                    && acknowledged_shape(trees, child).is_some()
                     && !kept_by_r7(device, child)
             });
             !removed
                 && (trees.local_children(id)).all(|child| {
                     shown.contains_key(child)
-                        || server_copy(device, child, shown, from_server, removed_left_out, &mut below)
+                        || server_copy(device, child, shown, from_server, &mut below)
                 })
         }
         _ => false,
@@ -1184,26 +1192,30 @@ fn revive(
     device: &Device,
     discarded: &BTreeMap<String, koidrive_engine::tree::Shape>,
     kept_with: &BTreeMap<String, koidrive_engine::tree::Shape>,
+    asked: &BTreeSet<String>,
 ) -> BTreeSet<String> {
     // A discarded entry the user changed, or a discarded folder that holds an entry the answer
     // did not discard there, is the user's, and so is every discarded folder above it.
     let trees = &device.trees;
     let reclaimed = |id: &&String| {
         let changed = device.touched.contains(*id)
+            && !trees.excluded(id)
             && (trees.local().get(id))
                 .is_some_and(|local| !discarded.get(*id).is_some_and(|shown| local.shape.same(shown)));
         changed
             || (trees.local_children(id)).any(|child| {
                 !trees.excluded(child)
+                    && !asked.contains(child)
                     && (!kept_with.contains_key(child)
-                        || acted_below(device, child))
+                        || acted_below(device, child, kept_with))
                     && discarded
                         .get(child)
                         .is_none_or(|shown| &shown.parent != *id)
             })
     };
     let mut revived = BTreeSet::new();
-    for id in discarded.keys().filter(reclaimed) {
+    let unsent = |id: &&String| trees.remote().get(id).is_none();
+    for id in discarded.keys().filter(unsent).filter(reclaimed) {
         let mut next = Some(id.clone());
         while let Some(id) = next.take_if(|id| discarded.contains_key(id)) {
             next = (trees.local().get(&id)).map(|node| node.shape.parent.clone());
@@ -1213,14 +1225,22 @@ fn revive(
     revived
 }
 
-fn release_taken_along(kept_with: &mut BTreeMap<String, Shape>, revived: &BTreeSet<String>) {
+fn release_taken_along(
+    trees: &Trees,
+    kept_with: &mut BTreeMap<String, Shape>,
+    revived: &BTreeSet<String>,
+) {
+    let reclaimed = |folder: &String| {
+        revived.contains(folder)
+            && (trees.synced().get(folder).is_none() || trees.remote().get(folder).is_some())
+    };
     let released: Vec<String> = (kept_with.iter())
         .filter(|(_, shape)| {
             let mut folder = &shape.parent;
             for _ in 0..=kept_with.len() {
                 match kept_with.get(folder) {
                     Some(kept) => folder = &kept.parent,
-                    None => return revived.contains(folder),
+                    None => return reclaimed(folder),
                 }
             }
             false
@@ -1300,9 +1320,14 @@ fn placement_check(
         &record.after,
         device.trees.local().get(&record.node),
     ) {
-        let taken_along =
-            kept_with.contains_key(&record.node) && !acted_below(device, &record.node);
-        let reverted = closes_a_cycle(&device.trees, &record.node, &local.shape.parent)
+        let mut chain =
+            std::iter::successors(kept_with.get(&record.node), |kept| kept_with.get(&kept.parent))
+                .take(kept_with.len() + 1);
+        let taken_along = kept_with.contains_key(&record.node)
+            && chain.all(|kept| !revived.contains(&kept.parent))
+            && !acted_below(device, &record.node, kept_with);
+        let parent = (merged_into.get(&local.shape.parent)).unwrap_or(&local.shape.parent);
+        let reverted = closes_a_cycle(&device.trees, &record.node, parent)
             && (device.trees.remote().live(&record.node))
                 .is_some_and(|remote| remote.same_position(after));
         let left_where_put =
@@ -1325,7 +1350,11 @@ fn positions(trees: &Trees) -> BTreeMap<String, Position> {
         .collect()
 }
 
-fn acted_below(device: &Device, id: &str) -> bool {
+fn acted_below(
+    device: &Device,
+    id: &str,
+    kept_with: &BTreeMap<String, koidrive_engine::tree::Shape>,
+) -> bool {
     let trees = &device.trees;
     let reaches = |entry: &str, parent: &dyn Fn(&str) -> Option<String>| {
         let mut current = Some(entry.to_owned());
@@ -1344,7 +1373,14 @@ fn acted_below(device: &Device, id: &str) -> bool {
         let Some(local) = trees.local().get(entry) else {
             return trees.remote().live(entry).is_none();
         };
-        let holds = |shape: &Shape| local.shape.same(shape);
+        let holds = |shape: &Shape| {
+            let taken_along = kept_with.get(entry).map(|kept| Shape {
+                parent: kept.parent.clone(),
+                name: kept.name.clone(),
+                ..shape.clone()
+            });
+            local.shape.same(shape) || taken_along.is_some_and(|kept| local.shape.same(&kept))
+        };
         trees.remote().live(entry).is_some_and(holds)
             || acknowledged_shape(trees, entry).is_some_and(holds)
     };
@@ -1365,6 +1401,13 @@ fn kept_by_r7(device: &Device, entry: &str) -> bool {
     let server_changed = |node: &str| {
         (acknowledged_shape(trees, node))
             .is_some_and(|agreed| (trees.remote().live(node)).is_some_and(|remote| !remote.same(agreed)))
+    };
+    let moved_by_the_user = |node: &str| {
+        (trees.local().get(node)).is_some_and(|local| {
+            !trees.reverted().contains(node)
+                && acknowledged_shape(trees, node)
+                    .is_none_or(|agreed| !local.shape.same_position(agreed))
+        })
     };
     let below_in_r = |node: &str| {
         let mut current = trees.remote().live(node).map(|remote| remote.parent.clone());
@@ -1389,10 +1432,10 @@ fn kept_by_r7(device: &Device, entry: &str) -> bool {
         && (server_changed(entry) && !trees.excluded(entry)
             || (trees.remote().iter()).any(|(node, remote)| {
                 !remote.trashed
-                    && trees.local().get(node).is_none()
-                    && (!device.removed_from.contains_key(node)
-                        || server_changed(node)
-                        || device.kept_back.contains(node))
+                    && (server_changed(node) && !moved_by_the_user(node)
+                        || trees.local().get(node).is_none()
+                            && (!device.removed_from.contains_key(node)
+                                || device.kept_back.contains(node)))
                     && !trees.excluded(node)
                     && below_in_r(node)
             }))
@@ -1544,7 +1587,6 @@ fn run_ignoring_answering_after(
         device.rule(ruling);
     }
     let mut placed_left_out: BTreeSet<String> = BTreeSet::new();
-    let mut removed_left_out: BTreeSet<String> = BTreeSet::new();
     let mut from_server: BTreeSet<String> = BTreeSet::new();
     for action in local {
         match action.kind {
@@ -1556,7 +1598,6 @@ fn run_ignoring_answering_after(
                 &mut device,
                 action,
                 &mut placed_left_out,
-                &mut removed_left_out,
                 &mut from_server,
             ),
         }
@@ -1640,7 +1681,6 @@ fn run_ignoring_answering_after(
                                 &mut device,
                                 action,
                                 &mut placed_left_out,
-                                &mut removed_left_out,
                                 &mut from_server,
                             );
                         }
@@ -1683,7 +1723,7 @@ fn run_ignoring_answering_after(
             reload(&device.trees, &commits, &effects, &device.rules)?;
         note_kept_back(&mut device);
         note_unacknowledged_taken_along_kept_back(&mut device, &kept_with);
-        let revived = revive(&device, &discarded, &kept_with);
+        let revived = revive(&device, &discarded, &kept_with, &held_by(commits.questions()));
         revived_once.extend(revived.iter().cloned());
         let reverted = device.trees.reverted();
         parked_reverted = parked_reverted.max(
@@ -1818,7 +1858,7 @@ fn run_ignoring_answering_after(
                     if !shown.contains_key(child)
                         && (device.trees.excluded(child) || placed_left_out.contains(child))
                     {
-                        server_copy(&device, child, &shown, &from_server, &removed_left_out, &mut taken);
+                        server_copy(&device, child, &shown, &from_server, &mut taken);
                     }
                 }
             }
@@ -1826,8 +1866,8 @@ fn run_ignoring_answering_after(
             kept_with.append(&mut taken);
             discarded.extend(shown);
         }
-        let revived = revive(&device, &discarded, &kept_with);
-        release_taken_along(&mut kept_with, &revived);
+        let revived = revive(&device, &discarded, &kept_with, &held_by(commits.questions()));
+        release_taken_along(&device.trees, &mut kept_with, &revived);
         revived_once.extend(revived);
         let guarded = (commits.questions().iter())
             .find(|question| !matches!(question.kind, QuestionKind::Conflict { .. }))
@@ -2173,7 +2213,6 @@ fn act_tracked(
     device: &mut Device,
     action: &Action,
     placed_left_out: &mut BTreeSet<String>,
-    removed_left_out: &mut BTreeSet<String>,
     from_server: &mut BTreeSet<String>,
 ) {
     let before_action = positions(&device.trees);
@@ -2186,10 +2225,11 @@ fn act_tracked(
         .cloned()
         .collect();
     device.act(action);
-    removed_left_out.extend(
-        (left_out_before.into_iter())
-            .filter(|id| device.trees.local().get(id).is_none()),
-    );
+    for id in left_out_before {
+        if device.trees.local().get(&id).is_none() {
+            device.removed_from.remove(&id);
+        }
+    }
     for (id, now) in device.trees.local().iter() {
         let same = (written_before.get(id)).is_some_and(|was| {
             was.identity == now.identity
