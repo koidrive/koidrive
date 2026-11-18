@@ -291,7 +291,11 @@ issue = "GUN-984"
 tests = ["devices_converge_across_server_restores"]
 message = '''after phase <n>: a commit of device <n> moves node <id> to the name ".*", which the user of device <n> never gave to anything\.'''
 examples = ["after phase 2: a commit of device 1 moves node 01a1c2c0-3a00-7c83-a02a-c15a637732ef to the name \"a (conflict from device-0 2026-11-09)\", which the user of device 1 never gave to anything."]
-cases = ["ce3213c12547"]
+cases = [
+  "0aee263a9932",
+  "0cfc40ed4da7",
+  "ce3213c12547",
+]
 
 [[failure]]
 class = "G"
