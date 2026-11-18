@@ -62,7 +62,7 @@ fn every_file_but_the_unreadable_ones_is_uploaded(unreadable: &[bool]) {
         .map(|(path, unreadable)| version(usize::from(!unreadable), path).len() as u64)
         .collect();
     let mut timers = Vec::new();
-    eventually("every file that can be read reaches the server", || {
+    eventually(|| {
         for _ in 0..50 {
             let Some(work) = a.work.pop_front() else { break };
             match work {
@@ -91,7 +91,7 @@ fn leave_out_until_the_upload_fails(a: &mut Device, remote: &mut Remote, path: &
 
     a.scan_until(|a| (a.work.iter()).any(|work| matches!(work, Work::Upload(_))));
     fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
-    eventually("the file is left out of commits", || {
+    eventually(|| {
         while let Some(work) = a.work.pop_front() {
             if !matches!(work, Work::RetryAfter(_)) {
                 a.perform(work, remote).unwrap();
@@ -205,7 +205,7 @@ fn a_left_out_file_saved_again_is_sent_without_waiting_for_its_retry() {
     leave_out_until_the_upload_fails(&mut a, &mut remote, &secret);
     fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
     fs::write(&secret, b"third, saved after the fix").unwrap();
-    eventually("the saved file reaches the server", || {
+    eventually(|| {
         while let Some(work) = a.work.pop_front() {
             if !matches!(work, Work::RetryAfter(_)) {
                 a.perform(work, &mut remote).unwrap();
@@ -221,7 +221,7 @@ fn a_left_out_file_saved_again_is_sent_without_waiting_for_its_retry() {
 
 
 fn fail_upload_of(a: &mut Device, remote: &mut Remote, size: usize) {
-    eventually("the changed file is uploaded", || {
+    eventually(|| {
         while let Some(work) = a.work.pop_front() {
             match work {
                 Work::Upload(upload) => {
@@ -321,7 +321,7 @@ fn every_file_but_the_unwritable_ones_is_downloaded(unwritable: &[bool]) {
         .map(|(path, unwritable)| version(usize::from(!unwritable), path))
         .collect();
     let mut timers = Vec::new();
-    eventually("every file that can be written reaches the folder", || {
+    eventually(|| {
         for _ in 0..50 {
             let Some(work) = b.work.pop_front() else { break };
             match work {
@@ -361,7 +361,7 @@ fn a_file_let_back_in_without_an_upload_keeps_the_servers_refusal_of_its_next_ch
     leave_out_until_the_upload_fails(&mut a, &mut remote, &secret);
     fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
     fs::write(&secret, b"first").unwrap();
-    eventually("the file is let back in", || {
+    eventually(|| {
         a.scan(Duration::from_millis(100));
         while let Some(work) = a.work.pop_front() {
             if !matches!(work, Work::RetryAfter(_)) {
@@ -373,7 +373,7 @@ fn a_file_let_back_in_without_an_upload_keeps_the_servers_refusal_of_its_next_ch
 
     fs::rename(&secret, site.root.join("renamed.txt")).unwrap();
     let mut sent = None;
-    eventually("the rename is sent", || {
+    eventually(|| {
         a.scan(Duration::from_millis(100));
         while let Some(work) = a.work.pop_front() {
             match work {
@@ -631,7 +631,7 @@ fn a_denial_the_check_did_not_foresee_waits_for_its_own_timer() {
 fn a_folder_made_writable_again_gets_its_download_without_waiting() {
     let (mut remote, _site_a, _a, site_b, mut b, mut timers, _) = denied_download("locked/file.txt");
     writable_again(&site_b, "locked");
-    eventually("the download lands once its folder can be written", || {
+    eventually(|| {
         run_holding_timers(&mut b, &mut remote, &mut timers);
         fs::read_to_string(site_b.root.join("locked/file.txt")).unwrap() == "second version"
     });

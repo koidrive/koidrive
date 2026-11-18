@@ -701,7 +701,7 @@ fn a_batch_that_fails_the_root_check_stops_the_folder_before_l_loses_a_file() {
     fs::remove_file(site.root.join(koidrive_fs::PRIVATE_DIR).join("space.json")).unwrap();
     fs::remove_file(site.root.join("notes.txt")).unwrap();
     let mut stop = None;
-    eventually("the root check stops the folder", || {
+    eventually(|| {
         stop = a.try_scan(Duration::from_millis(100)).err();
         stop.is_some()
     });
@@ -732,7 +732,7 @@ fn a_folder_the_scan_may_not_read_keeps_its_files_in_the_space() {
         eprintln!("SKIPPED: running as root, so permissions do not block reads");
         return;
     }
-    eventually("the scan reports the folder it may not read", || {
+    eventually(|| {
         a.try_scan(Duration::from_millis(100))
             .unwrap()
             .contains(&"private".into())
@@ -898,7 +898,7 @@ fn a_batch_scanned_before_a_rules_file_was_written_does_not_end_the_wait_for_its
     fs::write(site.root.join("mine.txt"), b"mine").unwrap();
     let sections = b.folder.sections();
     let mut batch = None;
-    eventually("the observer reports a batch", || {
+    eventually(|| {
         batch = sections
             .observe(&mut b.observer, Duration::from_millis(100))
             .unwrap();
@@ -1352,4 +1352,63 @@ fn a_synced_file_moved_into_an_ignored_folder_and_deleted_there_stays_on_the_ser
         assert!(remote.names().contains(&"report.docx".to_owned()));
         assert!(files(&site.root).is_empty(), "{:?}", sync.exclude);
     }
+}
+
+fn a_file_deleted_after_its_folder_moved_out_of_the_rules_is_deleted(rules: &str, to: &str) {
+    for victim in ["f0.docx", "sub/f1.docx"] {
+        let (mut remote, site, _) = excluded_dist(3);
+        let mut b = started(&site, &mut remote, &SyncRules::default());
+        if let Some(parent) = Path::new(to).parent().filter(|parent| !parent.as_os_str().is_empty()) {
+            fs::create_dir_all(site.root.join(parent)).unwrap();
+        }
+        fs::write(site.root.join(".koiignore"), rules).unwrap();
+        b.rest(&mut remote);
+        fs::rename(site.root.join("dist"), site.root.join(to)).unwrap();
+        b.rest(&mut remote);
+        let before = b.sent.len();
+        let path = format!("{to}/{victim}");
+        fs::remove_file(site.root.join(&path)).unwrap();
+        b.rest(&mut remote);
+        let sent: Vec<&str> = b.sent[before..].iter().flat_map(kinds).collect();
+        assert_eq!(sent, ["delete"], "{path}");
+        assert!(!site.root.join(&path).exists(), "{path}");
+        assert!(!remote.tree().contains_key(&path), "{path}: {:?}", remote.tree());
+    }
+}
+
+#[test]
+fn a_file_deleted_after_its_folder_is_renamed_out_of_the_rules_is_deleted() {
+    a_file_deleted_after_its_folder_moved_out_of_the_rules_is_deleted("dist/\n", "shipped");
+}
+
+#[test]
+fn a_file_deleted_after_its_folder_is_moved_out_of_the_rules_is_deleted() {
+    a_file_deleted_after_its_folder_moved_out_of_the_rules_is_deleted("/dist/\n", "docs/dist");
+}
+
+#[test]
+fn a_file_deleted_while_its_folder_was_excluded_downloads_again_when_the_folder_is_renamed_out_of_the_rules()
+ {
+    let (mut remote, site, synced) = excluded_dist(3);
+    let mut b = started(&site, &mut remote, &SyncRules::default());
+    fs::write(site.root.join(".koiignore"), "dist/\n").unwrap();
+    b.rest(&mut remote);
+    b.sent.clear();
+    fs::remove_file(site.root.join("dist/sub/f1.docx")).unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+
+    fs::rename(site.root.join("dist"), site.root.join("shipped")).unwrap();
+    b.rest(&mut remote);
+    let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+    assert!(!sent.contains(&"delete") && !sent.contains(&"create file"), "{sent:?}");
+    let local: Vec<(String, String)> = (files(&site.root).into_iter())
+        .filter(|(path, _)| path != ".koiignore")
+        .collect();
+    let moved: Vec<(String, String)> = (synced.into_iter())
+        .map(|(path, text)| (path.replacen("dist/", "shipped/", 1), text))
+        .collect();
+    assert_eq!(local, moved);
+    assert!(shown(&site).is_empty());
 }

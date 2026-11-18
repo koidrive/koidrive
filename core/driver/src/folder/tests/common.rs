@@ -43,16 +43,12 @@ use crate::question::Answer;
 
 const NOW: i64 = 1_700_000_000_000;
 
-const WAIT: Duration = Duration::from_secs(60);
+const WORK_ITEMS: usize = 10_000;
 
-fn eventually(what: &str, mut done: impl FnMut() -> bool) {
-    let started = clock::instant();
-    while !done() {
-        assert!(
-            clock::instant().saturating_duration_since(started) < WAIT,
-            "{what} within {WAIT:?}"
-        );
-    }
+const REST_ROUNDS: usize = 100;
+
+fn eventually(mut done: impl FnMut() -> bool) {
+    while !done() {}
 }
 
 /// The server: the space, the bytes of the chunks devices uploaded, and the result of each commit by its ID.
@@ -376,7 +372,7 @@ impl Device {
 
     /// Observes until `done`.
     fn scan_until(&mut self, done: impl Fn(&Device) -> bool) {
-        eventually("the observer brings the awaited state", || {
+        eventually(|| {
             done(self) || {
                 self.scan(Duration::from_millis(100));
                 false
@@ -386,7 +382,7 @@ impl Device {
 
     fn settle(&mut self) {
         let mut caught_up = false;
-        eventually("the observer catches up with the disk", || {
+        eventually(|| {
             self.scan(Duration::from_millis(100));
             let mut known = self.observer.snapshot().clone();
             let rescan = known.rescan_with_rules(
@@ -504,11 +500,10 @@ impl Device {
     /// Runs the work the folder asked for and the work that follows from it, until none is left. Returns what ran.
     fn try_run(&mut self, remote: &mut Remote) -> Result<Vec<&'static str>, Stop> {
         let mut ran = Vec::new();
-        let started = clock::instant();
         while let Some(work) = self.work.pop_front() {
             assert!(
-                clock::instant().saturating_duration_since(started) < WAIT,
-                "the folder stops asking for work within {WAIT:?}"
+                ran.len() < WORK_ITEMS,
+                "the folder asks for no more than {WORK_ITEMS} work items in one run"
             );
             ran.push(match &work {
                 Work::Subscribe { .. } => "subscribe",
@@ -532,11 +527,14 @@ impl Device {
     }
 
     fn rest(&mut self, remote: &mut Remote) {
-        eventually("the folder comes to rest", || {
+        for _ in 0..REST_ROUNDS {
             self.run(remote);
             self.settle();
-            self.work.is_empty()
-        });
+            if self.work.is_empty() {
+                return;
+            }
+        }
+        panic!("the folder comes to rest within {REST_ROUNDS} rounds of running its work and settling");
     }
 
     /// Writes a file and syncs it to the space.

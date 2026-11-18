@@ -463,7 +463,7 @@ fn a_move_onto_a_name_a_symlink_holds_still_lets_the_new_file_take_the_old_name(
     a.run(&mut remote);
     a.create(&mut remote, &site_a.root.join("d"), b"new remote file");
     b.pull(&remote);
-    eventually("the new remote file lands at d", || {
+    eventually(|| {
         if let Some(work) = b.work.pop_front() {
             b.perform(work, &mut remote).unwrap();
         }

@@ -720,6 +720,10 @@ impl Disk {
             })?;
         }
         engine.read(&observation.read, &observation.unreadable);
+        let relist = engine.relist();
+        if !relist.is_empty() {
+            self.sections.request(engine.resets(relist));
+        }
         if !dropped.is_empty() {
             tracing::debug!(
                 space_id = self.space_id.as_str(),

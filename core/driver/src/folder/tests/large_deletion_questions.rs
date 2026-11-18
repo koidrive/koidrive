@@ -318,7 +318,7 @@ fn a_question_asked_again_under_a_new_id_marks_the_questions_changed() {
     for i in 0..2 {
         fs::remove_file(site.root.join(format!("{i}.txt"))).unwrap();
     }
-    eventually("the guard asks again", || {
+    eventually(|| {
         a.scan(Duration::from_millis(100));
         a.run(&mut remote);
         asked(&site) != before

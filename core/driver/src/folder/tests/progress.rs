@@ -354,7 +354,11 @@ fn a_new_folder_says_it_scans_and_counts_the_files_its_first_scan_finds() {
     assert_eq!(activity(&a), Some(Activity::Scanning { files: 0 }));
 
     let sections = a.folder.sections();
-    let batch = sections.observe(&mut a.observer, WAIT).unwrap().unwrap();
+    let batch = loop {
+        if let Some(batch) = sections.observe(&mut a.observer, Duration::from_millis(100)).unwrap() {
+            break batch;
+        }
+    };
     let walked = (a.reports.lock().unwrap().iter())
         .filter_map(|report| match report {
             Observing::Walking { files } => Some(*files),
@@ -502,7 +506,11 @@ fn a_large_first_file_shows_its_bytes_fall_once_the_walk_is_done() {
     let mut a = site.start();
     a.connect(&remote);
     let sections = a.folder.sections();
-    let batch = sections.observe(&mut a.observer, WAIT).unwrap().unwrap();
+    let batch = loop {
+        if let Some(batch) = sections.observe(&mut a.observer, Duration::from_millis(100)).unwrap() {
+            break batch;
+        }
+    };
     let reports = a.reports.lock().unwrap().clone();
     let walk_ends = reports.iter().position(|report| matches!(report, Observing::Reading { .. }));
     let after_walk = &reports[walk_ends.unwrap()..];

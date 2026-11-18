@@ -405,6 +405,7 @@ pub struct Trees {
     unobserved: TrackedSet<NodeId>,
     rules_changed: bool,
     created_dirs: Vec<NodeId>,
+    relist: Vec<NodeId>,
     cycles_may_end: bool,
     parked_as: TrackedMap<NodeId, NodeId>,
     waiting: ByParent<Waiting>,
@@ -529,6 +530,7 @@ impl Trees {
             unobserved: TrackedSet::default(),
             rules_changed: false,
             created_dirs: Vec::new(),
+            relist: Vec::new(),
             cycles_may_end: false,
             parked_as: TrackedMap::default(),
             waiting: ByParent::default(),
@@ -1875,6 +1877,14 @@ impl Trees {
         if repeated && !self.outside.contains(&id) && !self.lost.contains(&id) {
             return;
         }
+        let relist = node.shape.kind == Kind::Dir
+            && !node.parked
+            && !self.unobserved.is_empty()
+            && (self.l.get(&id))
+                .is_some_and(|old| !old.parked && !old.shape.same_position(&node.shape));
+        if relist {
+            self.relist.push(id.clone());
+        }
         let edit = self.l.get(&id).filter(|old| {
             matches!((&old.shape.content, &node.shape.content),
                 (Some(old), Some(new)) if !same_content(old, new))
@@ -2891,9 +2901,12 @@ impl Trees {
         if self.unobserved.is_empty() {
             return;
         }
-        for folder in folders {
-            let seen: Vec<NodeId> = self.seen_in(folder).cloned().collect();
-            for id in seen {
+        let folders: Vec<NodeId> = (folders.iter())
+            .filter(|folder| !self.awaits_relisting(folder))
+            .cloned()
+            .collect();
+        for folder in &folders {
+            for id in self.seen_in(folder) {
                 self.unobserved.remove(&id);
             }
             let mut gone: Vec<NodeId> = self.lost_in(folder).cloned().collect();
@@ -2918,22 +2931,71 @@ impl Trees {
     /// Whether [`Trees::listed`] would change what the trees hold for one of `folders`.
     pub fn sees_unobserved(&self, folders: impl IntoIterator<Item = NodeId>) -> bool {
         !self.unobserved.is_empty()
-            && (folders.into_iter()).any(|folder| {
-                let mut lost: Vec<&NodeId> = self.lost_in(&folder).collect();
-                while let Some(id) = lost.pop() {
-                    if self.vanished(id) && !self.ignored(id) {
-                        return true;
+            && (folders.into_iter())
+                .filter(|folder| !self.awaits_relisting(folder))
+                .any(|folder| {
+                    let mut lost: Vec<&NodeId> = self.lost_in(&folder).collect();
+                    while let Some(id) = lost.pop() {
+                        if self.vanished(id) && !self.ignored(id) {
+                            return true;
+                        }
+                        lost.extend(self.lost_in(id));
                     }
-                    lost.extend(self.lost_in(id));
-                }
-                self.seen_in(&folder).next().is_some()
-            })
+                    !self.seen_in(&folder).is_empty()
+                })
     }
 
-    fn seen_in<'a>(&'a self, folder: &'a NodeId) -> impl Iterator<Item = &'a NodeId> + 'a {
-        std::iter::once(folder)
-            .chain(self.l_names.children(folder))
-            .filter(|id| self.unobserved.contains(*id) && !self.excluded(id))
+    /// Takes the folders a scan saw moved here while nodes were unobserved. Each waits for a scan
+    /// to list it ([`Trees::listed`]), since it may carry entries the rules left out that L never held.
+    pub fn take_relist(&mut self) -> Vec<NodeId> {
+        std::mem::take(&mut self.relist)
+    }
+
+    fn awaits_relisting(&self, folder: &str) -> bool {
+        let mut at = folder;
+        for _ in 0..=self.l.len() {
+            if self.relist.iter().any(|moved| moved == at) {
+                return true;
+            }
+            match self.l.get(at).filter(|_| at != self.l.root) {
+                Some(node) => at = node.shape.parent.as_str(),
+                None => return false,
+            }
+        }
+        false
+    }
+
+    fn seen_in(&self, folder: &NodeId) -> Vec<NodeId> {
+        let mut scopes = HashMap::new();
+        (std::iter::once(folder).chain(self.l_names.children(folder)))
+            .filter(|id| {
+                self.unobserved.contains(*id)
+                    && !self.recorded_local(id)
+                    && self.placed_included(id, &mut scopes)
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn placed_included<'m>(
+        &'m self,
+        id: &str,
+        scopes: &mut HashMap<NodeId, Option<Scope<'m, Key>>>,
+    ) -> bool {
+        let Some(node) = self.l.get(id).filter(|node| !node.parked) else {
+            return false;
+        };
+        if id == self.l.root {
+            return true;
+        }
+        let kind = match node.shape.kind {
+            Kind::Dir => koidrive_ignore::Kind::Dir,
+            Kind::File => koidrive_ignore::Kind::File,
+        };
+        matches!(
+            self.local_scope(&node.shape.parent, &self.ignore, scopes),
+            Some(Some(scope)) if scope.status(&node.shape.name, kind) == Status::Included
+        )
     }
 
     fn lost_in<'a>(&'a self, folder: &'a str) -> impl Iterator<Item = &'a NodeId> + 'a {
@@ -4983,7 +5045,9 @@ impl Trees {
                 let mut below = vec![id.clone()];
                 while let Some(node) = below.pop() {
                     below.extend(self.l_names.children(&node).cloned());
-                    self.unobserved.insert(node);
+                    if self.left_out(&node, &ignore, &mut scopes) {
+                        self.unobserved.insert(node);
+                    }
                 }
             }
             pending.remove(&id);
@@ -5728,6 +5792,7 @@ impl Trees {
             unobserved,
             rules_changed: _,
             created_dirs: _,
+            relist: _,
             cycles_may_end: _,
             parked_as,
             waiting,

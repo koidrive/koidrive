@@ -1,0 +1,1 @@
+cc e9a518bec07b40374b5f9d27a60ca979ee5f4b3151f7eb90f25cff9c87ceaabd # shrinks to start = [Some((0, 0, 0, false)), Some((0, 0, 0, true)), None], steps = [([(0, 0, None)], 0), ([(45, 2, Some((158, 2, false, 0))), (1, 2, None), (100, 1, Some((4, 0, true, 0)))], 1)]

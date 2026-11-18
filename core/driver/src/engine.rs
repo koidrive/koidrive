@@ -700,6 +700,12 @@ impl Engine {
         self.trees.listed(&listed);
     }
 
+    /// The paths of the folders a scan saw moved here that a scan must list again ([`Trees::take_relist`]).
+    pub fn relist(&mut self) -> Vec<PathBuf> {
+        let folders = self.trees.take_relist();
+        folders.iter().filter_map(|id| self.path_of(id)).collect()
+    }
+
     /// Whether [`Engine::listed`] would change what the trees hold.
     pub fn sees_unobserved(&self, listed: &[PathBuf]) -> bool {
         (self.trees).sees_unobserved(listed.iter().filter_map(|dir| local_at(&self.trees, dir)))
