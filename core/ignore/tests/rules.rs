@@ -320,11 +320,8 @@ fn gitignore_syntax() {
             assert!(!excluded(&m, path), "{rules:?} should not exclude {path:?}");
         }
     }
-    let twice = RuleFile::<Folded>::parse("\u{feff}\u{feff}a\n".as_bytes());
-    assert_eq!(
-        RuleFile::<Folded>::parse(twice.source()).source(),
-        twice.source()
-    );
+    let twice = "\u{feff}\u{feff}a\n".as_bytes();
+    assert_eq!(RuleFile::<Folded>::parse(twice).source(), twice);
 }
 
 #[test]
