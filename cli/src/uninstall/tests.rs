@@ -510,3 +510,20 @@ async fn a_folder_whose_place_is_unknown_gets_no_cleanup() {
 
     assert_eq!(found.folders, [folder]);
 }
+
+#[tokio::test]
+async fn a_recorded_folder_whose_place_is_unknown_gets_no_cleanup() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    koidrive_state_file::create_dir(&paths.state_dir, &paths.state_dir).unwrap();
+    let folder = dir.path().join("Koidrive");
+    fs::write(
+        paths.state_dir.join(RECORD),
+        serde_json::json!({ "folders": [&folder, "", "Elsewhere"], "owner": null }).to_string(),
+    )
+    .unwrap();
+
+    let found = find::find(&paths, dir.path()).await;
+
+    assert_eq!(found.folders, [folder]);
+}

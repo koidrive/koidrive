@@ -628,10 +628,12 @@ fn plan(found: &Found, options: &Options) -> Vec<String> {
 }
 
 fn read_record(paths: &Paths) -> Record {
-    fs::read(paths.state_dir.join(RECORD))
+    let mut record: Record = fs::read(paths.state_dir.join(RECORD))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    record.folders.retain(|folder| folder.is_absolute());
+    record
 }
 
 fn record(paths: &Paths, found: &Found, run: &mut Run) {
