@@ -238,7 +238,11 @@ while True:
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
         for line in workflow.splitlines():
             if "uses:" in line:
-                self.assertIn(line.split("uses:")[1].split(" #")[0].strip(), ci)
+                action = line.split("uses:")[1].split(" #")[0].strip()
+                if action.startswith("./.heavy-harness/"):
+                    self.assertTrue((ROOT / action.removeprefix("./.heavy-harness/") / "action.yml").is_file(), action)
+                else:
+                    self.assertIn(action, ci)
 
 
 if __name__ == "__main__":
