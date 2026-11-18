@@ -19,5 +19,6 @@ include!("commit/own_records_after_loss.rs");
 include!("commit/parked_edits_and_pending_names.rs");
 include!("commit/refusal_and_reconnect.rs");
 include!("commit/refused_creates.rs");
+include!("commit/repeated_scan_reports.rs");
 include!("commit/revived_trash_groups.rs");
 include!("commit/waiting_updates_and_removals.rs");
