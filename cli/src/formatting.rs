@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-/// How long before `now_ms` a time in Unix milliseconds was, or "never" for 0.
 pub(crate) fn ago(ms: i64, now_ms: i64) -> String {
     if ms == 0 {
         return "never".to_owned();
@@ -18,12 +17,10 @@ pub(crate) fn count(n: u64, noun: &str) -> String {
     format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
 }
 
-/// How many decisions wait for the person, as summary lines say it.
 pub(crate) fn need_you(n: u64) -> String {
     format!("{n} {}", if n == 1 { "needs you" } else { "need you" })
 }
 
-/// Bytes in decimal units, such as 999 B, 1.0 kB or 1.5 GB.
 pub(crate) fn size(bytes: u64) -> String {
     if bytes < 1000 {
         return format!("{bytes} B");

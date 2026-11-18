@@ -294,7 +294,6 @@ impl Session {
         Ok(found)
     }
 
-    /// The one server a command acts on: the named one, or the only one.
     pub(super) async fn pick(&mut self, name: Option<&str>) -> Result<Found, CliError> {
         let mut found = self.find_servers().await?;
         if let Some(name) = name {

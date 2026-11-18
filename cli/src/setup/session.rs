@@ -319,7 +319,6 @@ impl Session {
         })
     }
 
-    /// Reads the one account the user picked on the consent page.
     async fn pick_account(&mut self) -> Result<(), CliError> {
         let work = async {
             self.api()

@@ -9,7 +9,6 @@ use koidrive_net::{Auth, Reload};
 use std::io;
 use std::sync::Arc;
 
-/// An answer of the daemon that does not fit the request.
 pub(crate) fn unexpected(response: Response) -> CliError {
     CliError::from(format!("the daemon answered {response:?}"))
         .human("Background sync returned an unexpected response. The command's result is unknown. Run koi status to check sync, and check the affected item before repeating a command that changes it. Run koi diagnose to collect a report.")

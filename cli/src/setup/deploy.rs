@@ -218,13 +218,10 @@ impl Session {
         }
     }
 
-    /// Whether `state` is an unfinished deploy in this session's account, which setup goes on with.
     fn continues(&self, state: &SetupState) -> bool {
         state.account == self.account() && state.step != Step::Uninstalling
     }
 
-    /// `koi server deploy` after the login: finish an interrupted deploy, or deploy a new server into an account
-    /// that has none.
     pub(super) async fn server_deploy(
         &mut self,
         paths: &Paths,
@@ -245,7 +242,6 @@ impl Session {
         self.deploy(paths, device_name).await
     }
 
-    /// `koi server add-device` after the login: add this device to the named server, or to the only one.
     pub(super) async fn server_add_device(
         &mut self,
         paths: &Paths,
@@ -265,7 +261,6 @@ impl Session {
         self.add_device(paths, found, device_name, false).await
     }
 
-    /// `koi setup` after the login: finish an interrupted deploy, deploy a new server, or add this device.
     pub(super) async fn setup(&mut self, paths: &Paths, device_name: &str) -> Result<(), CliError> {
         if let Some(state) = self.resumable(paths)? {
             self.terminal.message("Continuing your server setup.");
@@ -544,7 +539,6 @@ impl Session {
         crate::telemetry::step(SetupStep::Claim, claim).await
     }
 
-    /// Turns on the Worker's workers.dev route and waits until the server answers there.
     async fn serve(&mut self, script: &str, url: &Url) -> Result<ServerInfo, CliError> {
         self.fresh()
             .await?
@@ -646,7 +640,6 @@ pub(super) async fn keep_script_name(
     Ok(())
 }
 
-/// `base`, or the first of `base-2`, `base-3`, ... that is not taken.
 pub(super) fn free_name(base: &str, taken: &[String]) -> String {
     std::iter::once(base.to_owned())
         .chain((2..).map(|n| format!("{base}-{n}")))
