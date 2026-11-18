@@ -8303,14 +8303,14 @@ mod tests {
 
         let failed = driver.sign_out(false).await;
         assert_eq!(served.await.unwrap(), ["/v1/token", "/v1/devices/d1"]);
-        let removing = paths.removing(SPACE, 1);
-        open_dir(&private);
-        open_dir(&removing.join("held"));
-        open_dir(&paths.state_dir);
         if rustix::process::geteuid().is_root() {
             eprintln!("SKIPPED: running as root, so permissions do not block writes");
             return;
         }
+        let removing = paths.removing(SPACE, 1);
+        open_dir(&private);
+        open_dir(&removing.join("held"));
+        open_dir(&paths.state_dir);
         let failed = failed.unwrap().not_removed;
         let mut remaining: Vec<_> = failed.iter().map(|failure| failure.path.clone()).collect();
         remaining.sort();
