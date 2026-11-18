@@ -709,8 +709,10 @@ pub(crate) mod tests {
             std::future::pending::<()>().await
         });
         let started = tokio::time::Instant::now();
+        let wall = std::time::Instant::now();
         let error = run(&paths, Request::Status).await.unwrap_err();
         assert!(started.elapsed() < REPLY + Duration::from_secs(2));
+        assert!(wall.elapsed() < REPLY);
         assert_eq!(error.message, "the daemon did not answer within 5 seconds");
         daemon.abort();
     }

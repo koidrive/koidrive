@@ -127,8 +127,10 @@ async fn a_daemon_that_takes_the_status_request_and_never_answers_is_a_problem_a
     });
     let fake = Fake::default();
     let began = tokio::time::Instant::now();
+    let wall = Instant::now();
     let report = reconcile_with(&fake, Ok(service(&[])), &paths, false).await;
     assert!(began.elapsed() < PROBE + Duration::from_secs(2));
+    assert!(wall.elapsed() < PROBE);
     assert_eq!(
         report.problem.as_deref(),
         Some("the daemon did not answer within 5 seconds")
@@ -151,9 +153,11 @@ async fn a_daemon_that_starts_and_then_never_replies_is_a_problem_after_the_prob
         std::future::pending::<()>().await;
     });
     let started = tokio::time::Instant::now();
+    let wall = Instant::now();
     let result = daemon_status(&paths).await;
     daemon.abort();
     assert!(started.elapsed() < Duration::from_secs(1) + PROBE + Duration::from_secs(2));
+    assert!(wall.elapsed() < PROBE);
     assert_eq!(
         result.unwrap_err(),
         "the daemon did not answer within 5 seconds"
