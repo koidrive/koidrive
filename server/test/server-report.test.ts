@@ -1213,6 +1213,69 @@ describe("hourly server report", () => {
     expect(await noted()).toBe(true);
   });
 
+  it("recounts a Space DO's chunks after reports stop and start again on the same day, and writes nothing for the report while they are off beyond the flag change", async () => {
+    const { stub } = await reportingSpace();
+    let hour = Math.floor(Date.now() / HOUR_MS) - 3;
+    if (hour % 24 === 23) hour -= 1;
+    let nowMs = hour * HOUR_MS;
+    const votes = (telemetry: TokenRequest_Telemetry) =>
+      runInDurableObject(account(), (instance: AccountDO, state) => {
+        state.storage.sql.exec("UPDATE devices SET telemetry = ? WHERE rowid = (SELECT MIN(rowid) FROM devices)", telemetry);
+        countVotes(instance);
+        return instance.reporting();
+      });
+    await runInDurableObject(account(), (instance: AccountDO, state) => {
+      startReporting(instance, state, nowMs);
+      instance.reporting();
+    });
+    await useClock(stub, () => nowMs);
+    const received = (carried: Carried) => runInDurableObject(stub, (instance: object) => (instance as unknown as { received(carried: Carried): void }).received(carried));
+    await received({ reporting: true, startedMs: nowMs });
+    const alarm = async () => {
+      await runInDurableObject(stub, (_instance, state) => state.storage.setAlarm(Date.now()));
+      expect(await runDurableObjectAlarm(stub)).toBe(true);
+    };
+    await alarm();
+    expect((await storedObjects()).find((row) => row.object === stub.id.toString())?.r2_objects).toBe(0);
+    const written: string[] = [];
+    await runInDurableObject(stub, (_instance, state) => {
+      const sql = Object.getPrototypeOf(state.storage.sql) as { exec(this: unknown, query: string, ...bindings: unknown[]): unknown };
+      const exec = sql.exec;
+      const space = state.storage.sql;
+      vi.spyOn(sql, "exec").mockImplementation(function (this: unknown, query: string, ...bindings: unknown[]) {
+        if (this === space && !query.startsWith("SELECT") && (/usage|schedule/.test(query) || bindings.includes("reporting") || bindings.includes("r2_stored") || query.includes("r2_stored"))) written.push(query);
+        return exec.call(this, query, ...bindings);
+      });
+    });
+    nowMs += 5 * 60_000;
+    expect(await votes(TokenRequest_Telemetry.OFF)).toBe(false);
+    await received({ reporting: false });
+    const atFlagChange = written.length;
+    await runInDurableObject(stub, (_instance, state) => state.storage.sql.exec("INSERT INTO chunks (hash, size, state, refcount, hold_until_ms) VALUES (?, 1234, ?, 1, 0)", new Uint8Array(32).fill(7), 2));
+    await alarm();
+    expect({ atFlagChange, whileOff: written.slice(atFlagChange) }).toEqual({ atFlagChange: 2, whileOff: [] });
+    nowMs += 5 * 60_000;
+    await runInDurableObject(account(), (instance: AccountDO) => {
+      instance.clock = () => nowMs;
+    });
+    expect(await votes(TokenRequest_Telemetry.ON)).toBe(true);
+    await received({ reporting: true, startedMs: nowMs });
+    nowMs = (hour + 1) * HOUR_MS + 60_000;
+    await alarm();
+    const sent: { batch: { properties: Record<string, unknown> }[] }[] = [];
+    await runInDurableObject(account(), (instance: AccountDO) => {
+      instance.clock = () => (hour + 3) * HOUR_MS;
+      instance.sendReport = async (report) => {
+        sent.push(report as (typeof sent)[number]);
+        return true;
+      };
+    });
+    await runDurableObjectAlarm(account());
+    const events = sent.flatMap((report) => report.batch);
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) expect({ bytes: event.properties["b.r2_stored_bytes"], objects: event.properties["b.r2_objects"] }).toEqual({ bytes: 1234, objects: 1 });
+  });
+
   it("drops what the Worker counted before reports stopped, even when they start again before its hand-over", async () => {
     UsageTally.quietMs = 1500;
     restorers.push(() => {

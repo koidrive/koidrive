@@ -805,7 +805,11 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       this.traffic.reporting = on;
       const restarted = this.traffic.restart(startedMs);
       if (!changed && !restarted) return;
-      setMeta(this.sql, "reporting", JSON.stringify({ on, startedMs: this.traffic.startedMs }));
+      this.db.transactionSync(() => {
+        setMeta(this.sql, "reporting", JSON.stringify({ on, startedMs: this.traffic.startedMs }));
+        this.sql.exec("DELETE FROM meta WHERE key = 'r2_stored'");
+      });
+      this.storedHour = undefined;
       if (!on && changed) this.dropParked();
       else if (on && restarted) this.dropParked(this.traffic.startedMs);
     }
