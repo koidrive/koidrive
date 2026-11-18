@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 
 use koidrive_engine::commit::{Base, Halt as CommitHalt, Reconnect};
 use koidrive_engine::first_link::PriorSync;
@@ -998,8 +998,7 @@ impl Folder {
         else {
             unreachable!("checked above");
         };
-        let now_ms = (SystemTime::now().duration_since(UNIX_EPOCH))
-            .map_or(0, |since| since.as_millis() as u64);
+        let now_ms = crate::clock::unix_ms();
         let cause = match self.engine.commits.halted() {
             Some(CommitHalt::Recovery(cause)) => cause,
             _ => RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
@@ -1111,8 +1110,7 @@ impl Folder {
         if !may_build {
             return Ok(());
         }
-        let now_ms = (SystemTime::now().duration_since(UNIX_EPOCH))
-            .map_or(0, |since| since.as_millis() as u64);
+        let now_ms = crate::clock::unix_ms();
         let device_id = self.link.device_id.clone();
         let Some(rotated) = self.disk.rotate_before_build(&mut self.store)? else {
             self.flight = Flight::Waiting(Next::Build);

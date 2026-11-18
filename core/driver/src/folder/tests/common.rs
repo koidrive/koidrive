@@ -6,6 +6,7 @@ use std::fs;
 
 use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
+use std::time::UNIX_EPOCH;
 
 use koidrive_engine::commit::Lift;
 use koidrive_engine::effects::BatchLimit;

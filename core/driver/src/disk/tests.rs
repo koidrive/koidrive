@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use koidrive_chunk::{ChunkerConfig, chunks, content};
 use koidrive_engine::classify::Trees;

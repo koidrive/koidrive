@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
+fn let_the_files_age() {
+    let window = std::time::Duration::from_millis(koidrive_engine::guard::WINDOW_MS);
+    crate::clock::advance_to(crate::clock::instant() + window);
+}
+
 #[test]
 fn a_removed_folder_that_holds_most_of_the_space_comes_back_when_the_person_restores_it() {
     let mut remote = Remote::new();
@@ -63,6 +68,7 @@ fn dismissing_the_notice_while_the_folder_is_removed_opens_no_new_one() {
         fs::write(site_a.root.join(format!("d/{i}.txt")), format!("kept {i}")).unwrap();
     }
     sync(&mut remote, (&site_a, &mut a), (&site_b, &mut b));
+    let_the_files_age();
     assert_eq!(files(&site_b.root).len(), 50);
     fs::remove_dir_all(site_a.root.join("d")).unwrap();
     a.scan_until(|a| a.folder.view().questions == 1);
@@ -106,6 +112,7 @@ fn a_dismissed_folder_stays_dismissed_after_a_bootstrap() {
         fs::write(site_a.root.join(format!("d/{i}.txt")), format!("kept {i}")).unwrap();
     }
     sync(&mut remote, (&site_a, &mut a), (&site_b, &mut b));
+    let_the_files_age();
     fs::remove_dir_all(site_a.root.join("d")).unwrap();
     a.scan_until(|a| a.folder.view().questions == 1);
     answer(&site_a, Answer::Delete);
@@ -153,6 +160,7 @@ fn a_dismissed_folder_stays_dismissed_after_a_truncated_log_and_a_rollback() {
         fs::write(site_a.root.join(format!("d/{i}.txt")), format!("kept {i}")).unwrap();
     }
     sync(&mut remote, (&site_a, &mut a), (&site_b, &mut b));
+    let_the_files_age();
     fs::remove_dir_all(site_a.root.join("d")).unwrap();
     a.scan_until(|a| a.folder.view().questions == 1);
     answer(&site_a, Answer::Delete);
@@ -207,6 +215,7 @@ fn a_folder_restored_and_deleted_again_while_the_log_was_truncated_is_noticed() 
         fs::write(site_a.root.join(format!("d/{i}.txt")), format!("kept {i}")).unwrap();
     }
     sync(&mut remote, (&site_a, &mut a), (&site_b, &mut b));
+    let_the_files_age();
     let delete = |a: &mut Device, remote: &mut Remote| {
         fs::remove_dir_all(site_a.root.join("d")).unwrap();
         a.scan_until(|a| a.folder.view().questions == 1);
@@ -276,6 +285,7 @@ fn a_notice_whose_counts_grow_marks_the_questions_changed() {
         .unwrap();
     }
     sync(&mut remote, (&site_a, &mut a), (&site_b, &mut b));
+    let_the_files_age();
     fs::remove_dir_all(site_a.root.join("d")).unwrap();
     a.scan_until(|a| a.folder.view().questions == 1);
     answer(&site_a, Answer::Delete);
@@ -350,6 +360,7 @@ fn another_devices_deletion_of_most_of_the_space_is_noticed_until_it_is_dismisse
         .unwrap();
     }
     sync(&mut remote, (&site_a, &mut a), (&site_b, &mut b));
+    let_the_files_age();
     assert_eq!(files(&site_b.root).len(), 20);
     fs::remove_dir_all(site_a.root.join("d")).unwrap();
     a.scan_until(|a| a.folder.view().questions == 1);
