@@ -262,6 +262,8 @@ fn a_volume_without_a_uuid_is_never_read() {
         assert!(!snapshot.entries.contains_key(Path::new(&path)), "{path}");
     }
     write(&root.join("Disk/later.txt"), "later");
+    let targeted = rescan(&mut snapshot, &root, &["Disk/later.txt"]);
+    assert_eq!((targeted.changes, away(&snapshot)), (vec![], vec!["Disk"]));
     fs::remove_file(root.join("Disk/report.docx")).unwrap();
     let found = rescan(&mut snapshot, &root, &["", "Disk"]);
     assert_eq!(found.changes, []);

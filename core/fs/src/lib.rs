@@ -1700,7 +1700,8 @@ impl Snapshot {
                     return Ok(None);
                 };
                 let found = (stat.dev != dev).then(|| mount_at(dir.as_fd()).0);
-                if (above.mount, above.id) != (found, stat.id) {
+                let unread = above.mount == Some(Mount::Unidentified);
+                if unread || (above.mount, above.id) != (found, stat.id) {
                     return Ok(None);
                 }
             }
