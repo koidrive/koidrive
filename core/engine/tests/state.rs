@@ -89,6 +89,7 @@ fn trees() -> Trees {
 
 fn trees_state() -> TreesState {
     TreesState {
+        journal: Default::default(),
         dirty: ["b".into()].into(),
         unsearched: ["b".into()].into(),
         reverted: ["a".into()].into(),

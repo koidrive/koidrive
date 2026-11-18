@@ -12,6 +12,7 @@ use siphasher::sip::SipHasher13;
 
 use crate::first_link;
 use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file, rules_source};
+use crate::journal::Journal;
 use crate::names::{name_key, nfc, same_name};
 use crate::provenance::Provenances;
 use crate::question::Frozen;
@@ -688,6 +689,7 @@ pub struct Trees {
     unsent_marks: TrackedMap<NodeId, String>,
     pending_finishes: TrackedMap<NodeId, PendingFinish>,
     answered_rules: TrackedMap<NodeId, AnsweredRules>,
+    journal: Journal,
     ignore: Matcher,
     /// Nodes whose local copy the user moved into an ignored folder that is no node. L keeps the
     /// entry each had before the move.
@@ -821,6 +823,7 @@ impl Trees {
             unsent_marks: TrackedMap::default(),
             pending_finishes: TrackedMap::default(),
             answered_rules: TrackedMap::default(),
+            journal: Journal::default(),
             ignore: Matcher::new(LocalRules::default()),
             outside: TrackedSet::default(),
             lost: TrackedSet::default(),
@@ -7973,6 +7976,7 @@ impl Trees {
             unsent_marks: self.unsent_marks.to_map(),
             pending_finishes: self.pending_finishes.to_map(),
             answered_rules: self.answered_rules.to_map(),
+            journal: self.journal.state(),
         }
     }
 
@@ -8036,6 +8040,7 @@ impl Trees {
             unsent_marks,
             pending_finishes,
             answered_rules,
+            journal,
             ignore: _,
             outside,
             lost,
@@ -8121,6 +8126,7 @@ impl Trees {
             unsent_marks: unsent_marks.take_changes(),
             pending_finishes: pending_finishes.take_changes(),
             answered_rules: answered_rules.take_changes(),
+            journal: journal.take_changes(),
         }
     }
 
@@ -8374,6 +8380,7 @@ impl Trees {
             unsent_marks,
             pending_finishes,
             answered_rules,
+            journal,
         } = state;
         self.unsettled = dirty.clone();
         self.same.clear();
@@ -8436,6 +8443,7 @@ impl Trees {
         self.unsent_marks = unsent_marks.into();
         self.pending_finishes = pending_finishes.into();
         self.answered_rules = answered_rules.into();
+        self.journal = Journal::restore(journal);
         self.rules_known = false;
         self.unknown_rules.clear();
         Ok(Some(()))

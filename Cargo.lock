@@ -1600,6 +1600,7 @@ dependencies = [
  "proptest",
  "prost",
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",
