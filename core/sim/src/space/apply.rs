@@ -64,6 +64,21 @@ fn bound_made_over(ids: &[String]) -> Vec<String> {
     bound
 }
 
+struct Chain {
+    made_over: Vec<String>,
+    source: String,
+}
+
+fn chain(source: &str, bases: &[String]) -> Chain {
+    let ids: Vec<String> = std::iter::once(source.to_owned())
+        .chain(bases.iter().cloned())
+        .collect();
+    Chain {
+        made_over: bound_made_over(&ids),
+        source: source.to_owned(),
+    }
+}
+
 struct DeleteView {
     base_seq: u64,
     unseen: BTreeSet<IntentId>,
@@ -643,10 +658,10 @@ impl<'a> Applier<'a> {
         ancestry
     }
 
-    fn set_lineage(&mut self, version_id: &str, made_over: Vec<String>, source: &str) {
+    fn set_lineage(&mut self, version_id: &str, lineage: Chain) {
         let version = self.st.versions.get_mut(version_id).unwrap();
-        version.made_over = made_over;
-        version.source_version_id = source.to_owned();
+        version.made_over = lineage.made_over;
+        version.source_version_id = lineage.source;
     }
 
     fn insert_version(&mut self, node_id: &str, content: &Content, chunks: &[ChunkRef]) -> String {
@@ -696,7 +711,7 @@ impl<'a> Applier<'a> {
         original: &str,
         content: &Content,
         chunks: &[ChunkRef],
-        made_over: Vec<String>,
+        lineage: Chain,
         intent: FieldIntent,
     ) -> OpResult {
         let home = if self.depth(parent) < MAX_DEPTH {
@@ -711,7 +726,7 @@ impl<'a> Applier<'a> {
         let copy_id = self.st.ids.uuid_v7(self.ctx.now_ms as u64);
         let name = self.pick_conflict_copy_name(&home.node_id, original);
         let version_id = self.insert_version(&copy_id, content, chunks);
-        self.st.versions.get_mut(&version_id).unwrap().made_over = made_over;
+        self.set_lineage(&version_id, lineage);
         self.insert_node(
             &copy_id,
             &home.node_id,
@@ -747,7 +762,10 @@ impl<'a> Applier<'a> {
             &node.name,
             &version.content,
             &version.content.chunks,
-            version.made_over,
+            Chain {
+                made_over: version.made_over,
+                source: version.source_version_id,
+            },
             intent,
         );
     }
@@ -799,7 +817,7 @@ impl<'a> Applier<'a> {
         node_id: &str,
         parent_id: &str,
         name: &str,
-        content: Option<(&Content, Vec<String>)>,
+        content: Option<(&Content, Chain)>,
         pending_for: Option<String>,
     ) -> Option<OpResult> {
         let deleted = self.deleted_parent(parent_id)?;
@@ -811,9 +829,9 @@ impl<'a> Applier<'a> {
         {
             let dev = self.dev().to_string();
             let (kind, version_id, fields): (_, _, &[Field]) = match content {
-                Some((content, made_over)) => {
+                Some((content, lineage)) => {
                     let version_id = self.insert_version(node_id, content, &content.chunks);
-                    self.st.versions.get_mut(&version_id).unwrap().made_over = made_over;
+                    self.set_lineage(&version_id, lineage);
                     (NodeKind::File, Some(version_id), &FIELDS)
                 }
                 None => (NodeKind::Dir, None, &[Field::Place, Field::Status]),
@@ -836,11 +854,11 @@ impl<'a> Applier<'a> {
         if seen || !matches!(deleted, Deleted::Trash(_)) {
             self.leave_tombstone(node_id, parent_id, name, &deleted, content.is_some());
         }
-        let Some((content, made_over)) = content.filter(|_| !seen) else {
+        let Some((content, lineage)) = content.filter(|_| !seen) else {
             return Some(superseded());
         };
         let home = self.nearest_live(Some(&self.id(parent_id)));
-        Some(self.conflict_copy(&home, name, content, &content.chunks, made_over, intent))
+        Some(self.conflict_copy(&home, name, content, &content.chunks, lineage, intent))
     }
 
     fn leave_tombstone(
@@ -965,7 +983,8 @@ impl<'a> Applier<'a> {
                 },
             );
         }
-        let made_over = self.made_over(&op.node_id, &op.made_over, &op.source_version_id);
+        let bases = self.made_over(&op.node_id, &op.made_over, "");
+        let lineage = || chain(&op.source_version_id, &bases);
         if let Some(tombstone) = self.purged_replay(&op.node_id, true) {
             let intent = self.incoming(Field::Content).intent.clone();
             if tombstone.knows(intent.id) || self.held_elsewhere(&op.node_id, &[Field::Content]) {
@@ -977,7 +996,7 @@ impl<'a> Applier<'a> {
                 &name,
                 content,
                 &content.chunks,
-                made_over,
+                lineage(),
                 intent,
             ));
         }
@@ -988,7 +1007,7 @@ impl<'a> Applier<'a> {
             &op.node_id,
             &op.parent_id,
             &name,
-            Some((content, made_over.clone())),
+            Some((content, lineage())),
             None,
         ) {
             return Ok(deleted);
@@ -1005,7 +1024,7 @@ impl<'a> Applier<'a> {
             .expect("the parent was found above");
         let (name, renamed) = self.pick_name(&parent.node_id, &name, "");
         let version_id = self.insert_version(&op.node_id, content, &content.chunks);
-        self.set_lineage(&version_id, made_over, &op.source_version_id);
+        self.set_lineage(&version_id, lineage());
         let dev = self.dev().to_string();
         self.insert_node(
             &op.node_id,
@@ -1048,6 +1067,8 @@ impl<'a> Applier<'a> {
         source_version_id: &str,
     ) -> Result<OpResult, Error> {
         let intent = self.incoming(Field::Content).intent.clone();
+        let replay = resend || (self.client() && self.incoming(Field::Content).replay);
+        let source = if replay { source_version_id } else { "" };
         let Some(found) = self.node(node_id) else {
             let id = self.id(node_id);
             let Some(tombstone) = self.purged_replay(&id, false) else {
@@ -1062,7 +1083,7 @@ impl<'a> Applier<'a> {
                 &tombstone.name,
                 content,
                 chunks,
-                bound_made_over(made_over),
+                chain(if self.client() { source } else { "" }, made_over),
                 intent,
             ));
         };
@@ -1078,17 +1099,14 @@ impl<'a> Applier<'a> {
         if self.held_elsewhere(&found.node_id, &[Field::Content]) {
             return Ok(superseded());
         }
-        let replay = resend || (self.client() && self.incoming(Field::Content).replay);
         let yields = resend || (self.client() && intent.carried);
         let current = found.cur_version_id.clone();
-        if replay
-            && !source_version_id.is_empty()
+        if !source.is_empty()
             && current.as_ref().is_some_and(|current| {
                 self.st.versions.values().any(|version| {
                     version.node_id == node_id
-                        && ((version.version_id == source_version_id
-                            && &version.version_id != current)
-                            || version.made_over.iter().any(|id| id == source_version_id))
+                        && ((version.version_id == source && &version.version_id != current)
+                            || version.made_over.iter().any(|id| id == source))
                 })
             })
         {
@@ -1105,7 +1123,7 @@ impl<'a> Applier<'a> {
                     &found.name,
                     content,
                     chunks,
-                    bound_made_over(made_over),
+                    chain(source, made_over),
                     intent,
                 ));
             }
@@ -1114,20 +1132,36 @@ impl<'a> Applier<'a> {
             }
         }
         let bases = self.made_over(node_id, made_over, "");
-        let over_current = current.as_ref().is_some_and(|id| bases.contains(id));
+        let alias = match &current {
+            Some(id) if self.client() => self.st.versions[id].source_version_id.clone(),
+            _ => String::new(),
+        };
+        let via_alias = current
+            .as_ref()
+            .is_some_and(|id| !alias.is_empty() && !bases.contains(id) && bases.contains(&alias));
+        let over_current = via_alias || current.as_ref().is_some_and(|id| bases.contains(id));
         let by_ancestry = self.client() && !bases.is_empty();
+        let known: Vec<String> = (current.iter())
+            .flat_map(|id| {
+                std::iter::once(id.clone()).chain(self.st.versions[id].made_over.iter().cloned())
+            })
+            .collect();
+        let merges = by_ancestry
+            && current.is_some()
+            && !over_current
+            && self.holds(&found, content)
+            && bases.iter().any(|id| !known.contains(id));
         let stale_content = if by_ancestry {
             !over_current
         } else {
             self.unseen_content(&found)
         };
-        if stale_content && self.holds(&found, content) {
-            if replay
-                && !source_version_id.is_empty()
+        if !merges && stale_content && self.holds(&found, content) {
+            if !source.is_empty()
                 && let Some(id) = &current
             {
                 let version = self.st.versions.get_mut(id).unwrap();
-                let mut chain = vec![source_version_id.to_owned()];
+                let mut chain = vec![source.to_owned()];
                 for id in &version.made_over {
                     if !chain.contains(id) && chain.len() < 64 {
                         chain.push(id.clone());
@@ -1156,21 +1190,24 @@ impl<'a> Applier<'a> {
             self.touch(&node.node_id);
             return Ok(applied(renamed, &node.name));
         }
-        let source = if replay { source_version_id } else { "" };
-        let ancestry = self.made_over(node_id, made_over, source);
-        let (node, renamed) = self.revive_target(found);
-        let stale = if by_ancestry {
-            !over_current
-        } else {
-            self.unseen_content(&node) && !over_current
+        let lineage = match merges || via_alias {
+            true => chain(source, &[bases, known].concat()),
+            false => chain(source, &bases),
         };
+        let (node, renamed) = self.revive_target(found);
+        let stale = !merges
+            && if by_ancestry {
+                !over_current
+            } else {
+                self.unseen_content(&node) && !over_current
+            };
         if stale {
             let parent =
                 self.st.nodes[node.parent_id.as_ref().expect("a file has a parent")].clone();
-            return Ok(self.conflict_copy(&parent, &node.name, content, chunks, ancestry, intent));
+            return Ok(self.conflict_copy(&parent, &node.name, content, chunks, lineage, intent));
         }
         let version_id = self.insert_version(&node.node_id, content, chunks);
-        self.set_lineage(&version_id, ancestry, source);
+        self.set_lineage(&version_id, lineage);
         let (seq, dev) = (self.ctx.seq, self.dev().to_string());
         let stored = self
             .st
