@@ -172,7 +172,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: .heavy-harness
-          sparse-checkout: scripts
+          sparse-checkout: |
+            scripts
+            .github/actions
           persist-credentials: false
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
@@ -189,7 +191,7 @@ jobs:
         if: env.MODE == 'worker'
         with:
           node-version: 24
-      - uses: ./.github/actions/pnpm-store
+      - uses: ./.heavy-harness/.github/actions/pnpm-store
         if: env.MODE == 'worker'
       - name: Install the Worker dependencies
         if: env.MODE == 'worker'

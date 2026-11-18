@@ -220,7 +220,7 @@ class Caches(unittest.TestCase):
                     elif action.startswith("actions/setup-"):
                         self.assertNotRegex(body, r"(?m)^ *cache:")
                     else:
-                        self.assertTrue(action == "./.github/actions/pnpm-store" or action.startswith("actions/cache/restore@")
+                        self.assertTrue(action.endswith("/.github/actions/pnpm-store") or action.startswith("actions/cache/restore@")
                                         or "cache" not in action.lower(), "unreviewed cache action")
 
     def test_a_branch_run_restores_the_cache_a_main_run_saves(self):
@@ -232,11 +232,31 @@ class Caches(unittest.TestCase):
         self.assertEqual(inputs["actions/cache"], inputs["actions/cache/restore"])
         self.assertIn("restore-keys:", inputs["actions/cache"])
 
+    def test_local_actions_come_from_the_workflow_commit(self):
+        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            steps = self.steps(path.read_text())
+            checkouts = [body for _, _, a, body in steps if a.startswith("actions/checkout@")]
+            root_moves = any(re.search(r"(?m)^ *ref: ", body) and not re.search(r"(?m)^ *path: ", body)
+                             and "ref: ${{ github.sha }}" not in body for body in checkouts)
+            harness = {}
+            for body in checkouts:
+                where = re.search(r"(?m)^ *path: (\S+)$", body)
+                if where and "ref: ${{ github.sha }}" in body:
+                    sparse = body.split("sparse-checkout:", 1)[1] if "sparse-checkout:" in body else ""
+                    harness[where[1]] = [p.strip() for p in sparse.replace("|", "").split("\n") if p.strip()] or None
+            for _, _, action, _ in steps:
+                if not action.startswith("./") or not root_moves:
+                    continue
+                with self.subTest(workflow=path.name, action=action):
+                    top, _, rest = action[2:].partition("/")
+                    self.assertIn(top, harness, "a local action resolves from the checkout under test, which may predate it")
+                    self.assertTrue(harness[top] is None or any(rest.startswith(p) for p in harness[top]))
+
     def test_workflows_that_restore_on_pull_requests_run_on_main_every_day(self):
         for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
             text = path.read_text()
             triggers = text.split("\non:\n", 1)[1].split("\n\n", 1)[0]
-            cached = any(a.startswith("Swatinem/rust-cache@") or a == "./.github/actions/pnpm-store" for _, _, a, _ in self.steps(text))
+            cached = any(a.startswith("Swatinem/rust-cache@") or a.endswith("/.github/actions/pnpm-store") for _, _, a, _ in self.steps(text))
             if not cached or "  pull_request:" not in triggers:
                 continue
             with self.subTest(workflow=path.name):
