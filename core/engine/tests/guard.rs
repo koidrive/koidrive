@@ -4,7 +4,7 @@ use koidrive_engine::classify::{Class, Trees};
 use koidrive_engine::commit::Commits;
 use koidrive_engine::effects::{BatchLimit, Effects};
 use koidrive_engine::guard::{WINDOW_MS, Window};
-use koidrive_engine::ids::IdGen;
+use koidrive_engine::ids::{IdGen, uuid_v7};
 use koidrive_engine::question::{Answer, Held, Limit, Question, QuestionKind, RecoveryGroup};
 use koidrive_engine::state::CommitsState;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
@@ -36,25 +36,29 @@ fn space(loose: usize, inside: usize) -> Trees {
     for (ino, (id, shape)) in nodes.into_iter().enumerate() {
         put_back(&mut trees, &id, shape.clone(), ino as u128 + 1);
         trees.set_synced(id.clone(), Some(shape.clone()));
-        trees.set_remote(
-            id,
-            RemoteNode {
-                made_over: Vec::new(),
-                shape,
-                trashed: false,
-                content_rev: 1,
-                meta_rev: 1,
-                meta_edit_rev: 1,
-                trash_group: String::new(),
-                version_id: String::new(),
-                edit_rev: 1,
-                pending_for: None,
-                pending_by: None,
-            },
-        );
+        serve(&mut trees, id, shape);
     }
     trees.settle(&Default::default());
     trees
+}
+
+fn serve(trees: &mut Trees, id: String, shape: Shape) {
+    trees.set_remote(
+        id,
+        RemoteNode {
+            made_over: Vec::new(),
+            shape,
+            trashed: false,
+            content_rev: 1,
+            meta_rev: 1,
+            meta_edit_rev: 1,
+            trash_group: String::new(),
+            version_id: String::new(),
+            edit_rev: 1,
+            pending_for: None,
+            pending_by: None,
+        },
+    );
 }
 
 fn put_back(trees: &mut Trees, id: &str, shape: Shape, ino: u128) {
@@ -310,6 +314,123 @@ fn deletions_add_up_within_the_window() {
         asked(&commits).unwrap().id,
         id,
         "a question stays until it is answered"
+    );
+}
+
+fn make(trees: &mut Trees, made_at: u64, in_folder: bool, ino: u128) -> Vec<(String, Shape)> {
+    let id = uuid_v7(made_at, ino);
+    let name = format!("n{}", ino % 3);
+    let made = match in_folder {
+        true => vec![
+            (id.clone(), shape(ROOT, &name, Kind::Dir)),
+            (uuid_v7(made_at, ino + 1), shape(&id, "x", Kind::File)),
+        ],
+        false => vec![(id, shape(ROOT, &name, Kind::File))],
+    };
+    for (at, (id, shape)) in made.iter().enumerate() {
+        put_back(trees, id, shape.clone(), ino + at as u128);
+    }
+    trees.settle(&Default::default());
+    made
+}
+
+fn make_and_delete(
+    (trees, commits, ids): (&mut Trees, &mut Commits, &mut IdGen),
+    cycle: u64,
+    made_at: u64,
+    in_folder: bool,
+) -> (String, Vec<String>) {
+    let (now, seq) = (NOW + cycle, SEQ + 2 * cycle);
+    let made = make(trees, made_at, in_folder, 1000 + 2 * u128::from(cycle));
+    assert!(!build_at(commits, trees, ids, now).is_empty());
+    acknowledge(commits, trees, seq);
+    for (id, shape) in &made {
+        serve(trees, id.clone(), shape.clone());
+    }
+    remove(
+        trees,
+        &made.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+    );
+    let deleted = deleted(&build_at(commits, trees, ids, now));
+    if commits.in_flight().is_some() {
+        acknowledge(commits, trees, seq + 1);
+    }
+    (made[0].0.clone(), deleted)
+}
+
+#[test]
+fn files_made_and_deleted_over_and_over_are_never_held() {
+    for (loose, in_folder) in [(0, false), (0, true), (25, false), (25, true)] {
+        let mut trees = space(loose, 0);
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        for cycle in 0..60 {
+            let state = (&mut trees, &mut commits, &mut ids);
+            let (top, deleted) = make_and_delete(state, cycle, NOW + cycle, in_folder);
+
+            let case = format!("cycle {cycle} of {loose} files, in a folder: {in_folder}");
+            assert_eq!(deleted, [top], "{case}");
+            assert_eq!(asked(&commits), None, "{case}");
+        }
+    }
+}
+
+#[test]
+fn files_whose_id_time_is_after_now_count_as_old() {
+    let mut trees = space(0, 0);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let later = NOW + 2 * WINDOW_MS;
+    for cycle in 0..19 {
+        let (top, deleted) =
+            make_and_delete((&mut trees, &mut commits, &mut ids), cycle, later, false);
+        assert_eq!(deleted, [top]);
+    }
+
+    let (_, deleted) = make_and_delete((&mut trees, &mut commits, &mut ids), 19, later, false);
+
+    assert_eq!(deleted, Vec::<String>::new());
+    assert_eq!(
+        exceeded(asked(&commits).expect("20 of 20 files")),
+        [Limit::Share]
+    );
+}
+
+#[test]
+fn new_files_count_while_their_deletion_waits() {
+    let mut trees = space(0, 0);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let made: Vec<String> = (0..30).map(|i| uuid_v7(NOW, i)).collect();
+    for (ino, id) in made.iter().enumerate() {
+        put_back(
+            &mut trees,
+            id,
+            shape(ROOT, id, Kind::File),
+            1000 + ino as u128,
+        );
+    }
+    trees.settle(commits.aliases());
+    build_at(&mut commits, &mut trees, &mut ids, NOW);
+    acknowledge(&mut commits, &mut trees, SEQ);
+    for id in &made {
+        serve(&mut trees, id.clone(), shape(ROOT, id, Kind::File));
+    }
+    remove(
+        &mut trees,
+        &made.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+
+    assert_eq!(
+        deleted(&build_at(&mut commits, &mut trees, &mut ids, NOW)),
+        Vec::<String>::new()
+    );
+
+    let question = asked(&commits).expect("30 of 30 files");
+    assert_eq!(
+        window(question),
+        Window {
+            deletions: 30,
+            affected_files: 30,
+            space_files: 30,
+        }
     );
 }
 
@@ -879,6 +1000,31 @@ fn notice(commits: &Commits) -> Option<(&Question, Window, &[Limit])> {
             }
             _ => None,
         })
+}
+
+#[test]
+fn another_device_making_and_deleting_files_over_and_over_opens_no_notice() {
+    let mut trees = space(0, 0);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    for cycle in 0..60 {
+        let now = NOW + cycle;
+        let id = uuid_v7(now, u128::from(cycle));
+        let made = shape(ROOT, "a", Kind::File);
+        put_back(&mut trees, &id, made.clone(), 1000 + u128::from(cycle));
+        trees.set_synced(id.clone(), Some(made.clone()));
+        serve(&mut trees, id.clone(), made);
+        trees.settle(commits.aliases());
+        trash_remotely(&mut trees, &[&id]);
+
+        apply_effects(&mut commits, &mut trees, &mut ids, now);
+
+        assert_eq!(trees.local().get(&id), None, "cycle {cycle}");
+        assert_eq!(
+            notice(&commits).map(|(_, window, _)| window),
+            None,
+            "cycle {cycle}"
+        );
+    }
 }
 
 #[test]
