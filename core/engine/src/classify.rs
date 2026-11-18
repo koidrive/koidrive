@@ -1234,6 +1234,7 @@ impl Trees {
     }
 
     fn apply_remote(&mut self, id: NodeId, mut node: RemoteNode, made: Made) {
+        self.write_out_journal(&id);
         self.take_remote_intents(&id, &mut node);
         let made_here = made != Made::Elsewhere;
         let edit = matches!(made, Made::Edit | Made::Answer);
@@ -1505,6 +1506,7 @@ impl Trees {
         self.content_provenance
             .remote_changing(&id, &self.r, Some(&node));
         let old = self.r.insert(id.clone(), node);
+        self.compact_journal(&id, false);
         self.index_remote(&id, old.as_ref());
         self.count_held_trash(&id, true);
         self.count_trashed(&id, true);
@@ -1838,6 +1840,7 @@ impl Trees {
         self.content_provenance.remote_changing(id, &self.r, None);
         self.discard_members.remove(id);
         self.write_out_synced_intents(id);
+        self.write_out_journal(id);
         if let Some(old) = self.r.remove(id) {
             self.index_remote(id, Some(&old));
             self.mark(id);
@@ -6166,6 +6169,7 @@ impl Trees {
         held_through: u64,
         accepted: u64,
     ) {
+        self.journal_lost();
         let older_bases: BTreeSet<NodeId> = (records.iter())
             .filter(|(id, record)| {
                 (self.provenance(id)).is_some_and(|provenance| {
@@ -7984,7 +7988,7 @@ impl Trees {
             unsent_marks: self.unsent_marks.to_map(),
             pending_finishes: self.pending_finishes.to_map(),
             answered_rules: self.answered_rules.to_map(),
-            journal: self.journal.state(),
+            journal: (self.journal).state(|key, held| intents::full_held(&self.r, key, held)),
         }
     }
 
@@ -8135,7 +8139,7 @@ impl Trees {
             unsent_marks: unsent_marks.take_changes(),
             pending_finishes: pending_finishes.take_changes(),
             answered_rules: answered_rules.take_changes(),
-            journal: journal.take_changes(),
+            journal: journal.take_changes(|key, held| intents::full_held(r, key, held)),
         }
     }
 
@@ -8453,6 +8457,12 @@ impl Trees {
         self.pending_finishes = pending_finishes.into();
         self.answered_rules = answered_rules.into();
         self.journal = Journal::restore(journal);
+        let held: BTreeSet<NodeId> = (self.journal.held_rows())
+            .map(|((node, _), _)| node.clone())
+            .collect();
+        for node in held {
+            self.compact_journal(&node, true);
+        }
         self.rules_known = false;
         self.unknown_rules.clear();
         Ok(Some(()))

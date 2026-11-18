@@ -4,15 +4,18 @@
 //! user's changes write. R's history and S's intents follow R's intents implicitly; the journal keeps a history,
 //! and Trees keeps S's intents, only once they differ from what R's intents give.
 
-use koidrive_proto::v1::{self as proto, op};
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
+
+use koidrive_proto::v1::{self as proto, change_record, op, op_result};
 
 use crate::journal::{
-    Author, Field, FieldIntent, HistoryEntry, IntentId, Journal, NodeIntents, Place, RemoteField,
-    Row, RowState, Seen, Value, WireBase, delete_view,
+    Author, Field, FieldIntent, HeldRow, HistoryEntry, IntentId, Journal, NodeIntents, Place,
+    RemoteField, Row, RowKey, RowState, Seen, Value, WireBase, delete_view,
 };
 use crate::names::nfc;
 use crate::state::ContentValue;
-use crate::tree::{Kind, LocalNode, NodeId, RemoteNode, Shape};
+use crate::tree::{Kind, LocalNode, NodeId, RemoteNode, Shape, Tree};
 
 use super::Trees;
 
@@ -46,6 +49,15 @@ fn remote_value(node: &RemoteNode, field: Field) -> Option<Value> {
 
 fn remote_intent_of(node: &RemoteNode, field: Field) -> Option<&FieldIntent> {
     node.intents.as_ref()?.get(field)
+}
+
+pub(super) fn full_held(r: &Tree<RemoteNode>, (node, field): &RowKey, held: &HeldRow) -> Row {
+    let remote = r.get(node).expect("R holds the node of every compact row");
+    let value = remote_value(remote, *field).expect("R holds the value of every compact row");
+    let time_ms = remote_intent_of(remote, *field).map_or(0, |intent| intent.applied_at_ms);
+    let version_id = (*field == Field::Content && !remote.version_id.is_empty())
+        .then(|| remote.version_id.clone());
+    held.full(value, time_ms, version_id)
 }
 
 fn named_place(parent: &str, name: &str, mark: &str) -> Value {
@@ -147,6 +159,78 @@ impl Trees {
 
     pub fn journal_mut(&mut self) -> &mut Journal {
         &mut self.journal
+    }
+
+    /// The field's journal row whole, a compact row with the value, time and version id R gives it.
+    pub fn journal_row(&self, node: &str, field: Field) -> Option<Cow<'_, Row>> {
+        if let Some(row) = self.journal.row(node, field) {
+            return Some(Cow::Borrowed(row));
+        }
+        let held = self.journal.compact_row(node, field)?;
+        Some(Cow::Owned(full_held(
+            &self.r,
+            &(node.to_owned(), field),
+            held,
+        )))
+    }
+
+    /// Every journal row whole, as [`Trees::journal_row`] gives it.
+    pub fn journal_rows(&self) -> impl Iterator<Item = (&RowKey, Cow<'_, Row>)> {
+        let compact = (self.journal.compact_rows())
+            .map(|(key, held)| (key, Cow::Owned(full_held(&self.r, key, held))));
+        (self.journal.rows())
+            .map(|(key, row)| (key, Cow::Borrowed(row)))
+            .chain(compact)
+    }
+
+    /// Keeps each `held` row of the node compact while R gives its value, time and version id, and, unless `quiet`
+    /// for rows the store holds already, leaves out the newest history entry that R's intent gives.
+    pub(super) fn compact_journal(&mut self, node: &str, quiet: bool) {
+        let Some(remote) = self.r.get(node) else {
+            return;
+        };
+        for field in Field::ALL {
+            let Some(intent) = remote_intent_of(remote, field) else {
+                continue;
+            };
+            let implied = HistoryEntry {
+                intent: intent.id,
+                applied_at_ms: intent.applied_at_ms,
+                in_local: self.local_holds_remote(node, remote, field),
+            };
+            if !quiet {
+                self.journal.trim_history(node, field, &implied);
+            }
+            let key = (node.to_owned(), field);
+            let compact = (self.journal.row(node, field))
+                .and_then(|row| Some((row, HeldRow::of(row)?)))
+                .is_some_and(|(row, held)| full_held(&self.r, &key, &held) == *row);
+            if compact {
+                self.journal.compact(key, quiet);
+            }
+        }
+    }
+
+    /// Puts the node's compact rows back in full while R still gives them, before R changes or loses the node.
+    pub(super) fn write_out_journal(&mut self, node: &str) {
+        for field in Field::ALL {
+            let key = (node.to_owned(), field);
+            if let Some(held) = self.journal.compact_row(node, field) {
+                let row = full_held(&self.r, &key, held);
+                self.journal.write_out(key, row);
+            }
+        }
+    }
+
+    /// The server lost a commit of this device: every sent and held row becomes a replay (RFC 0029 §5.4).
+    pub(super) fn journal_lost(&mut self) {
+        let nodes: Vec<NodeId> = (self.journal.compact_rows())
+            .map(|((node, _), _)| node.clone())
+            .collect();
+        for node in nodes {
+            self.write_out_journal(&node);
+        }
+        self.journal.lose();
     }
 
     /// The intents S holds for the node: for each field, the intent of the value S took.
@@ -274,7 +358,7 @@ impl Trees {
     }
 
     fn intent_of(&self, id: &str, field: Field, value: &Value) -> Option<IntentId> {
-        (self.journal.row(id, field))
+        (self.journal_row(id, field))
             .filter(|row| row.value.same(value))
             .map(|row| row.intent)
             .or_else(|| self.remote_intent(id, field, value))
@@ -331,7 +415,7 @@ impl Trees {
             if let Some((old, old_in_local)) = old {
                 self.journal.remote_holds(id, field, &old, old_in_local);
             }
-            if !self.journal.history(id, field).is_empty() || self.journal.row(id, field).is_some()
+            if !self.journal.history(id, field).is_empty() || self.journal_row(id, field).is_some()
             {
                 self.journal.remote_holds(id, field, intent, in_local);
             }
@@ -395,6 +479,7 @@ impl Trees {
             self.journal.user_change(id, value, wire_base, base);
         }
         if old.is_none() {
+            self.write_out_journal(id);
             self.journal.user_revived(id);
             if self.r.live(id).is_none() && self.s.get(id).is_none() {
                 let base = (self.r.get(id))
@@ -486,7 +571,7 @@ impl Trees {
             let remote = (self.r.get(id))
                 .filter(|remote| same(remote_value(remote, field).as_ref(), Some(&value)))
                 .and_then(|remote| remote_intent_of(remote, field).cloned());
-            let row = (self.journal.row(id, field))
+            let row = (self.journal_row(id, field))
                 .filter(|row| row.value.same(&value))
                 .map(|row| FieldIntent {
                     id: match row.state {
@@ -525,11 +610,11 @@ impl Trees {
             let node = node.to_owned();
             let mut rows: Vec<(Field, Row)> = Vec::new();
             for (field, value) in fields {
-                let row = match self.journal.row(&node, field) {
+                let row = match self.journal_row(&node, field) {
                     Some(row) if matches!(row.state, RowState::Local { .. }) => {
                         self.journal.send(&node, field, time_ms).cloned()
                     }
-                    Some(row) => Some(row.clone()),
+                    Some(row) => Some(row.into_owned()),
                     None if carried => None,
                     None => value.map(|value| {
                         let base = (self.r.get(&node))
@@ -584,6 +669,134 @@ impl Trees {
             }
         }
         unrecorded
+    }
+
+    /// Takes the results of a commit into the journal (RFC 0029 §5.2): each row a result proves becomes `held` as
+    /// the result's `NodeState` shows, a superseded row ends or moves to the node that holds its intent, a
+    /// conflict copy or a merge moves rows to the node the result names, and a rejected op's rows wait to be sent
+    /// again.
+    pub fn record_results(&mut self, commit: &proto::Commit, result: &proto::CommitResult) {
+        use op_result::Code;
+        let states: BTreeMap<&str, &proto::NodeState> = (result.changes.iter())
+            .filter_map(|change| match &change.change {
+                Some(change_record::Change::Node(state)) => Some((state.node_id.as_str(), state)),
+                _ => None,
+            })
+            .collect();
+        let reported = |trees: &Trees,
+                        id: &str,
+                        field: Field|
+         -> Option<(FieldIntent, Option<String>, bool)> {
+            let node = match states.get(id) {
+                Some(state) => {
+                    let (_, mut node) = RemoteNode::from_state(state).ok()?;
+                    let intents =
+                        (node.intents.take()).unwrap_or_else(|| trees.legacy_intents(id, &node));
+                    node.intents = Some(intents);
+                    node
+                }
+                None => trees.r.get(id)?.clone(),
+            };
+            let mut intent = remote_intent_of(&node, field)?.clone();
+            if intent.applied_at_ms == 0 {
+                intent.applied_at_ms = result.committed_at_ms;
+            }
+            let version_id = (field == Field::Content && !node.version_id.is_empty())
+                .then(|| node.version_id.clone());
+            Some((intent, version_id, !node.trashed))
+        };
+        for (op, outcome) in commit.ops.iter().zip(&result.results) {
+            let Some(kind) = &op.op else {
+                continue;
+            };
+            let (node, fields, _) = op_fields(kind);
+            let node = node.to_owned();
+            let code = Code::try_from(outcome.code).unwrap_or(Code::Unspecified);
+            if code == Code::MergedInto {
+                self.journal.merged_into(&node, &outcome.node_id);
+                continue;
+            }
+            for (field, value) in fields {
+                let Some(sent) = self.journal.sent_intent(&node, field) else {
+                    continue;
+                };
+                match code {
+                    Code::Applied | Code::AppliedRenamed => {
+                        if let Some((held, version_id, _)) = reported(self, &node, field) {
+                            self.journal.applied(&node, field, sent, &held, version_id);
+                        }
+                    }
+                    Code::ConflictCopy if field == Field::Content => {
+                        let version_id = reported(self, &outcome.node_id, field)
+                            .and_then(|(_, version, _)| version);
+                        let at_ms = result.committed_at_ms;
+                        (self.journal).held_elsewhere(
+                            &node,
+                            field,
+                            sent,
+                            &outcome.node_id,
+                            version_id,
+                            at_ms,
+                        );
+                    }
+                    Code::Superseded => {
+                        let elsewhere = (!outcome.node_id.is_empty() && outcome.node_id != node)
+                            .then(|| reported(self, &outcome.node_id, field))
+                            .flatten()
+                            .filter(|(held, _, _)| held.id == sent);
+                        if let Some((held, version_id, _)) = elsewhere {
+                            let target = outcome.node_id.clone();
+                            (self.journal).held_elsewhere(
+                                &node,
+                                field,
+                                sent,
+                                &target,
+                                version_id,
+                                held.applied_at_ms,
+                            );
+                            continue;
+                        }
+                        let own = reported(self, &node, field);
+                        let first = (self.journal_row(&node, field))
+                            .filter(|row| row.intent == sent)
+                            .zip(own.as_ref())
+                            .is_some_and(|(row, (held, _, live))| {
+                                *live && held.applied_at_ms < row.time_ms
+                            });
+                        match first {
+                            true => self.journal.unsend(&node, field),
+                            false => self.journal.superseded(
+                                &node,
+                                field,
+                                sent,
+                                own.map(|(held, _, _)| held.id),
+                            ),
+                        }
+                    }
+                    Code::Rejected
+                        if outcome.reject_reason == "ID_EXISTS"
+                            && value == Some(Value::Status { live: true }) =>
+                    {
+                        self.journal.end(&node, field);
+                    }
+                    Code::Rejected => self.journal.unsend(&node, field),
+                    _ => {}
+                }
+            }
+        }
+        let touched: BTreeSet<NodeId> = (commit.ops.iter().zip(&result.results))
+            .filter_map(|(op, outcome)| {
+                Some([
+                    op_fields(op.op.as_ref()?).0.to_owned(),
+                    outcome.node_id.clone(),
+                ])
+            })
+            .flatten()
+            .filter(|node| !node.is_empty())
+            .collect();
+        for node in touched {
+            self.compact_journal(&node, false);
+        }
     }
 
     fn remote_fields_below(&self, id: &str) -> Vec<RemoteField> {
