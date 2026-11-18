@@ -701,7 +701,7 @@ fn a_batch_that_fails_the_root_check_stops_the_folder_before_l_loses_a_file() {
     fs::remove_file(site.root.join(koidrive_fs::PRIVATE_DIR).join("space.json")).unwrap();
     fs::remove_file(site.root.join("notes.txt")).unwrap();
     let mut stop = None;
-    eventually(|| {
+    eventually("the root check stops the folder", || {
         stop = a.try_scan(Duration::from_millis(100)).err();
         stop.is_some()
     });
@@ -732,7 +732,7 @@ fn a_folder_the_scan_may_not_read_keeps_its_files_in_the_space() {
         eprintln!("SKIPPED: running as root, so permissions do not block reads");
         return;
     }
-    eventually(|| {
+    eventually("the scan reports the folder it may not read", || {
         a.try_scan(Duration::from_millis(100))
             .unwrap()
             .contains(&"private".into())
@@ -898,7 +898,7 @@ fn a_batch_scanned_before_a_rules_file_was_written_does_not_end_the_wait_for_its
     fs::write(site.root.join("mine.txt"), b"mine").unwrap();
     let sections = b.folder.sections();
     let mut batch = None;
-    eventually(|| {
+    eventually("the observer reports a batch", || {
         batch = sections
             .observe(&mut b.observer, Duration::from_millis(100))
             .unwrap();

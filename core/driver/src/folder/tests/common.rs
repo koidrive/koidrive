@@ -47,8 +47,12 @@ const WORK_ITEMS: usize = 10_000;
 
 const REST_ROUNDS: usize = 100;
 
-fn eventually(mut done: impl FnMut() -> bool) {
-    while !done() {}
+const SCANS: usize = 3_000;
+
+fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+    if !(0..SCANS).any(|_| done()) {
+        panic!("{what} within {SCANS} scans");
+    }
 }
 
 /// The server: the space, the bytes of the chunks devices uploaded, and the result of each commit by its ID.
@@ -372,7 +376,7 @@ impl Device {
 
     /// Observes until `done`.
     fn scan_until(&mut self, done: impl Fn(&Device) -> bool) {
-        eventually(|| {
+        eventually("the observer brings the awaited state", || {
             done(self) || {
                 self.scan(Duration::from_millis(100));
                 false
@@ -382,7 +386,7 @@ impl Device {
 
     fn settle(&mut self) {
         let mut caught_up = false;
-        eventually(|| {
+        eventually("the observer catches up with the disk", || {
             self.scan(Duration::from_millis(100));
             let mut known = self.observer.snapshot().clone();
             let rescan = known.rescan_with_rules(
