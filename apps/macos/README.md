@@ -53,7 +53,7 @@ xcodebuild -project Koidrive.xcodeproj -scheme Koidrive -configuration Debug \
 open build/DerivedData/Build/Products/Debug/Koidrive.app --args -FakeScenario manyQuestions
 ```
 
-The scenarios are `firstRun`, `upToDate`, `syncing`, `paused`, `offline`, `massDelete`, `ambiguousDisappearance`, `recovery`, `recoveredWithoutQuestions`, `remoteMassDelete`, `manyQuestions` and `problems`.
+`launchScenario` in `KoidriveFFI/Sources/KoidriveModel/AppModel.swift` lists the scenario names, such as `firstRun`, `syncing`, `massDelete` and `conflict`.
 
 You can also open `Koidrive.xcodeproj` in Xcode after step 3 and run the Koidrive scheme. The views have SwiftUI previews for these scenarios. Local builds are signed ad hoc, so you don't need an Apple developer account.
 

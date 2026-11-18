@@ -1,16 +1,16 @@
-# Sync driver and Linux daemon
+# Sync driver and daemon
 
-`core/driver` (`koidrive-driver`) is everything a client runs on one device around the sync engine: the profile, one task per linked folder, the session with each space, and the observer of each folder. The Linux daemon `koi _daemon` and the macOS app both run it. Paths, configuration keys, the API and the event handling are in [driver-reference.md](driver-reference.md). Engine sections cited as §N are in [the sync engine reference](sync-engine/README.md).
+`core/driver` (`koidrive-driver`) is everything a client runs on one device around the sync engine: the profile, one task per linked folder, the session with each space, and the observer of each folder. The daemon `koi _daemon` runs it, as a launch agent on macOS and a systemd user service on Linux, and so does a `koi` command that finds no daemon. The macOS app reaches it through `koi`. Paths, configuration keys, the API and the event handling are in [driver-reference.md](driver-reference.md). Engine sections cited as §N are in [the sync engine reference](sync-engine/README.md).
 
-## Both clients share one library
+## The CLI and the app share one daemon
 
-The driver is a library with an async API. It never prints or exits, and it logs through `tracing`. The daemon calls it from its Tokio runtime. The macOS app calls it in-process through `core/ffi`, whose `DriverCore` wraps a `Driver`. `DriverCore` sends the calls the driver does not make, such as listing devices or spaces, through `core/net`'s `Api` with the driver's credential (`Driver::signed_in`). A `koi` command sends its request to the daemon's socket, or opens a driver of its own when no daemon runs.
+The driver is a library with an async API. It never prints or exits, and it logs through `tracing`. The daemon calls it from its Tokio runtime. A `koi` command sends its request to the daemon's socket, or opens a driver of its own when no daemon runs. The macOS app does the same through `core/ffi`: its `DaemonCore` runs each change, and each call the driver doesn't make such as listing devices or spaces, as a `koi --json` command of the `koi` it carries, and follows the daemon over its socket. It checks a server address and asks for a claim code itself, through `core/net`.
 
 ## One credential has one writer
 
 Two processes that share a device credential would overwrite each other's commits or refuse them, because the server does not count a device's own changes as unseen and `device_seq` is strict. The driver enforces the rule in five places:
 
-1. `pair` and `claim` refuse to replace a credential. The app and the CLI on one machine are separate profiles and pair separately.
+1. `pair` and `claim` refuse to replace a credential. The app and the CLI on one machine share one profile, so they are one device.
 2. Opening a driver takes the profile lock, so a second daemon is refused.
 3. Each store records the device and server that linked it. A store of another device halts instead of syncing.
 4. `link` refuses a folder that holds or sits inside the profile's directories or another linked folder, compared by path and by folder identity, so links and mounts cannot hide an overlap.
@@ -32,7 +32,7 @@ A folder with no cursor in its store waits for its first scan before it takes th
 
 ## Bootstrap reads the whole tree, then follows the log
 
-A bootstrap pages through `ListTree`, and once the folder has synced, through `ListTrash` too, then replays the log onto that tree. The tree replaces the store's remote tree in one transaction once the replay reaches the server's head, so the store holds a valid tree at every commit. After `LOG_TRUNCATED` or `AHEAD_OF_SERVER`, the folder bootstraps again. A space rewound on the server (`HISTORY_CHANGED`) halts the folder.
+A bootstrap pages through `ListTree`, and once the folder has synced, through `ListTrash` too, then replays the log onto that tree. The tree replaces the store's remote tree in one transaction once the replay reaches the server's head, so the store holds a valid tree at every commit. After `LOG_TRUNCATED` or `AHEAD_OF_SERVER`, the folder bootstraps again. A space rewound on the server (`HISTORY_CHANGED`) sends the folder into the engine's recovery (§6.4), and the folder reconnects.
 
 ## The observer reports changes with their content
 
@@ -67,6 +67,6 @@ A folder that bootstraps or catches up reports an `activity` beside its transfer
 
 A folder whose only work is its transfers reports no activity. A folder that does not sync reports none. A reader that meets a kind it does not know reads it as `unknown`.
 
-## A rewound space halts its folders
+## A rewound space sends its folders into recovery
 
-A rewound space halts each folder that syncs it, because the driver does not run the engine's recovery (§6.4) for it.
+A rewound space sends each folder that syncs it into the engine's recovery (§6.4) for the restored history. A `HISTORY_CHANGED` resync does this and reconnects. A Welcome whose history differs from the folder's cursor does it on the same connection and lists the tree again. The engine drops the commit in flight once the restored tree replaces R.
