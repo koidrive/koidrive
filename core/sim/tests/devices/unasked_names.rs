@@ -17,7 +17,7 @@ fn a_device_that_missed_the_delete_of_a_folder_owing_its_name_brings_it_back_by_
  {
     let _red = expect_red(
         Check::OwnerFinish,
-        "a commit of device 2 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 2 never gave it",
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
     );
     use Step::*;
     let phases = vec![

@@ -568,6 +568,10 @@ fn a_file_another_device_adds_after_the_delete_leaves_the_deleted_file_checked()
 
 #[test]
 fn a_copy_another_device_sends_after_the_delete_leaves_the_deleted_file_checked() {
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let copy = Step::Copy(Action {
         kind: 1,
         target: 1,

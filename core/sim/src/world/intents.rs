@@ -513,6 +513,21 @@ impl Intents {
         name: &str,
         root: &str,
     ) -> bool {
+        self.gave_place(
+            |intent| author.is_none_or(|author| intent.author == author),
+            (node, parent, name, root),
+        )
+    }
+
+    pub(super) fn lost_place(&self, node: &str, parent: &str, name: &str, root: &str) -> bool {
+        self.gave_place(|intent| intent.lost, (node, parent, name, root))
+    }
+
+    fn gave_place(
+        &self,
+        keep: impl Fn(&Intent) -> bool,
+        (node, parent, name, root): (&str, &str, &str, &str),
+    ) -> bool {
         let stem = pending_stem(name);
         (0..self.list.len()).any(|i| {
             let Value::Place {
@@ -522,7 +537,7 @@ impl Intents {
             else {
                 return false;
             };
-            author.is_none_or(|author| self.list[i].author == author)
+            keep(&self.list[i])
                 && self.on(i, node)
                 && (named(name, given) || stem.is_some_and(|stem| named(stem, given)))
                 && self.parent_is(i, *above, parent, root)

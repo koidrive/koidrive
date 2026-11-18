@@ -1100,6 +1100,7 @@ impl World {
                      the user of device {d} never gave it"
                 );
                 if (self.intents).placed(own.then_some(d), id, parent, name, root)
+                    || own && !finish && (self.intents).lost_place(id, parent, name, root)
                     || finish
                         && (self.intents).placed(None, id, parent, name, root)
                         && intents::expected(Check::OwnerFinish, &finishes)
