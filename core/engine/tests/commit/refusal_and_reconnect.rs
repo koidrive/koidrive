@@ -154,9 +154,9 @@ fn a_policy_halt_takes_a_server_loss_once() {
         .received(result(4, vec![outcome(op_result::Code::Applied)]))
         .unwrap();
     assert!(commits.acknowledge(&mut trees, 4));
-    trees.settle();
+    trees.settle(commits.aliases());
     trees.set_local("b".into(), local(file(ROOT, "y", 2), 98));
-    trees.settle();
+    trees.settle(commits.aliases());
     let refused = build(&mut commits, &mut trees, &mut ids).unwrap();
     commits
         .failed(&mut trees, &refusal(error::Code::Forbidden, 0))
@@ -249,7 +249,7 @@ fn a_server_count_below_the_accepted_one_is_taken_and_drops_the_commit_in_flight
         );
         assert_eq!(commits.accepted(), 1);
         trees.set_local("m".into(), local(file(ROOT, "m", 2), 2));
-        trees.settle();
+        trees.settle(commits.aliases());
         let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
         assert_eq!(commit.device_seq, 2);
         let welcome = Welcome {
@@ -271,9 +271,9 @@ fn a_server_count_above_the_accepted_one_at_a_slot_an_earlier_loss_took_is_a_los
         let applied = vec![outcome(op_result::Code::Applied)];
         commits.received(result(seq, applied)).unwrap();
         assert!(commits.acknowledge(&mut trees, seq));
-        trees.settle();
+        trees.settle(commits.aliases());
         trees.set_local(name.into(), local(file(ROOT, name, 2), seq.into()));
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     assert_eq!((commits.accepted(), commits.held_through()), (2, 7));
     let mut twice = commits.clone();
@@ -435,14 +435,14 @@ fn a_file_the_user_deletes_before_the_server_renames_its_create_is_deleted() {
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     build(&mut commits, &mut trees, &mut ids).unwrap();
     trees.remove_local("a");
-    trees.settle();
+    trees.settle(commits.aliases());
     trees.set_remote("a".into(), remote(file(ROOT, "x (conflict)", 1)));
     let renamed = OpResult {
         name: "x (conflict)".into(),
         ..outcome(op_result::Code::AppliedRenamed)
     };
     acknowledge(&mut commits, &mut trees, vec![renamed]);
-    trees.settle();
+    trees.settle(commits.aliases());
     let mut effects = Effects::default();
     assert!(
         (effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)).is_empty()
@@ -461,7 +461,7 @@ fn a_folder_the_user_empties_and_deletes_before_the_server_renames_its_create_is
     build(&mut commits, &mut trees, &mut ids).unwrap();
     trees.set_local("c".into(), local(dir(ROOT, "y"), 2));
     trees.remove_local("n");
-    trees.settle();
+    trees.settle(commits.aliases());
     trees.set_remote("n".into(), remote(dir(ROOT, "x (conflict)")));
     trees.set_remote("c".into(), remote(dir("n", "y")));
     acknowledge(
@@ -475,7 +475,7 @@ fn a_folder_the_user_empties_and_deletes_before_the_server_renames_its_create_is
             outcome(op_result::Code::Applied),
         ],
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     let mut effects = Effects::default();
     assert!(
         (effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)).is_empty()

@@ -19,7 +19,7 @@ fn served_at_5_then_lost(
     commit_file(&mut trees, &mut commits, &mut ids, "p", 2);
     commit_file(&mut trees, &mut commits, &mut ids, "q", 4);
     change(&mut trees);
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     if let Served::ResultFirst = served {
         let results = vec![outcome(op_result::Code::Applied); commit.ops.len()];
@@ -33,7 +33,7 @@ fn served_at_5_then_lost(
     }
     let acknowledged = commits.acknowledge(&mut trees, 5);
     assert_eq!(acknowledged, matches!(served, Served::ResultFirst));
-    trees.settle();
+    trees.settle(commits.aliases());
     if let Served::RecordOnlyThenRestart = served {
         commits = Commits::from_state(commits.state()).unwrap();
         trees.restore(trees.state()).unwrap();
@@ -80,7 +80,7 @@ fn served_at_5_then_lost(
         commits.accepted(),
     );
     commits.forget_lost_slots();
-    trees.settle();
+    trees.settle(commits.aliases());
     let effects = effects_for(&mut trees, &mut ids, "n");
     let sent = build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit));
     (effects, sent)
@@ -213,7 +213,7 @@ fn a_lost_own_move_the_server_holds_again_as_l_and_s_do_is_no_change() {
     assert_eq!(moved.len(), 1);
     trees.set_remote("n".into(), remote_at(file(ROOT, "a", 1), 6));
     trees.forget_lost(vec![], vec![], vec![], moved, vec![], Default::default(), &Default::default(), 3, 0);
-    trees.settle();
+    trees.settle(&Default::default());
     assert_eq!(trees.class("n"), Class::InSync);
     assert!(trees.state().local_changes.is_empty());
 }

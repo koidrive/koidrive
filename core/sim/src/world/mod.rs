@@ -1488,7 +1488,7 @@ impl World {
                 commits,
                 ..
             } = &mut device.engine;
-            trees.settle();
+            trees.settle(commits.aliases());
             let size = match outcome {
                 Outcome::Run => 1 + self.clock % BATCH,
                 Outcome::Fail | Outcome::Crash(_) => BATCH,
@@ -2196,7 +2196,7 @@ impl World {
         }
         let Some(flight) = engine.commits.in_flight() else {
             let history = engine.history.clone();
-            engine.trees.settle();
+            engine.trees.settle(engine.commits.aliases());
             let Engine {
                 trees,
                 commits,
@@ -3121,7 +3121,7 @@ impl World {
                 ));
             }
             let mut trees = engine.trees.clone();
-            trees.settle();
+            trees.settle(engine.commits.aliases());
             let unsettled = trees.work();
             if !unsettled.is_empty() {
                 return fail(format!("nodes are not in sync: {unsettled:?}"));
@@ -4145,7 +4145,7 @@ mod tests {
             pending_by: None,
         };
         engine.trees.set_remote("d".into(), folder);
-        engine.trees.settle();
+        engine.trees.settle(engine.commits.aliases());
         let planned = engine
             .effects
             .plan(
@@ -4314,7 +4314,7 @@ mod tests {
         assert_eq!(shape.content.as_ref().unwrap().mtime_ns, 2);
         assert!(trees.local().get(&id).is_none());
         trees.set_synced(id, Some(shape));
-        trees.settle();
+        trees.settle(&Default::default());
         world.devices[1].persist().unwrap();
         let removed = send(&mut world, 1);
         assert!(
@@ -4406,7 +4406,7 @@ mod tests {
             2
         );
         trees.set_synced(id, Some(shape));
-        trees.settle();
+        trees.settle(&Default::default());
         world.devices[2].persist().unwrap();
         send(&mut world, 2).unwrap();
         let stale = world.quiesce();
@@ -4455,7 +4455,7 @@ mod tests {
             .map(|(id, node)| (id.clone(), node.shape.clone()))
             .unwrap();
         trees.set_synced(id, Some(shape));
-        trees.settle();
+        trees.settle(&Default::default());
         world.devices[2].persist().unwrap();
         send(&mut world, 2).unwrap();
         let stale = world.quiesce();

@@ -8,7 +8,7 @@ fn a_file_moved_back_into_a_trashed_folder_while_its_update_waits_stays_there() 
     let (mut trees, mut commits, mut ids) =
         a_file_moved_out_of_a_trashed_folder_whose_update_waits();
     trees.set_local("n".into(), local(file("h", "old", 1), 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("n", "h", "old")]);
     effects_for(&mut trees, &mut ids, "n");
@@ -24,7 +24,7 @@ fn a_file_moved_into_a_trashed_folder_while_its_update_waits_and_it_is_edited_re
         a_file_moved_out_of_a_trashed_folder_whose_update_waits();
     trees.set_local("n".into(), local(file("h", "z", 1), 2));
     trees.set_remote("n".into(), remote(file(ROOT, "X", 3)));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(effects_for(&mut trees, &mut ids, "n"), []);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("n", "h", "z")]);
@@ -46,7 +46,7 @@ fn a_waiting_file_put_back_as_s_still_holds_it_is_uploaded_after_a_remote_delete
             },
         );
         trees.set_remote("n".into(), trashed(file(ROOT, "x", 1)));
-        trees.settle();
+        trees.settle(commits.aliases());
         assert_eq!(trees.class("n"), Class::Remote, "L matches S");
         assert!(trees.edited("n"));
         if effects_first {
@@ -84,7 +84,7 @@ fn a_waiting_update_both_sides_moved_past_keeps_its_content_as_the_base_of_a_lat
     let (mut trees, mut commits, mut ids) = a_move_and_edit_whose_s_update_waits();
     trees.set_local("n".into(), local(file(ROOT, "z", 0), 2));
     trees.set_remote("n".into(), remote(file(ROOT, "z", 1)));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(effects_for(&mut trees, &mut ids, "n"), []);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("n", 0)]);
@@ -99,7 +99,7 @@ fn a_waiting_update_whose_place_r_gave_away_does_not_hold_the_node_for_good() {
     trees.set_local("n".into(), local(file(ROOT, "old", 1), 2));
     trees.set_remote("n".into(), remote(file(ROOT, "q", 1)));
     trees.set_remote("m".into(), remote(dir(ROOT, "x")));
-    trees.settle();
+    trees.settle(commits.aliases());
     for _ in 0..3 {
         effects_for(&mut trees, &mut ids, "");
         assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
@@ -126,7 +126,7 @@ fn a_parked_waiting_file_with_the_content_s_still_holds_keeps_it() {
             ..local(file(ROOT, "old", 0), 2)
         },
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::Remote, "L matches S");
     let effects = effects_for(&mut trees, &mut ids, "n");
     assert!(
@@ -162,7 +162,7 @@ fn a_parked_waiting_file_takes_remote_content_while_committing_is_halted() {
     );
     trees.set_remote("n".into(), remote(file(ROOT, "q", 3)));
     trees.set_local("p".into(), local(file(ROOT, "p", 3), 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(
         commits.failed(&mut trees, &refusal(error::Code::ReadOnly, 0)),
@@ -187,7 +187,7 @@ fn a_parked_waiting_file_the_user_edited_keeps_the_edit_when_the_other_device_mo
         },
     );
     trees.set_remote("n".into(), remote(file(ROOT, "q", 3)));
-    trees.settle();
+    trees.settle(commits.aliases());
     let effects = effects_for(&mut trees, &mut ids, "n");
     assert!(
         effects
@@ -213,7 +213,7 @@ fn a_waiting_update_settling_replaced_is_not_made_afterwards() {
     let (mut trees, mut commits, mut ids) = a_move_and_edit_whose_s_update_waits();
     trees.set_local("n".into(), local(file(ROOT, "z", 2), 2));
     trees.set_remote("n".into(), remote(file(ROOT, "z", 2)));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.waiting(), &Default::default());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "z", 2)));
@@ -246,7 +246,7 @@ fn a_renamed_waiting_file_put_back_as_s_still_holds_it_keeps_its_content() {
             ..local(file(ROOT, "x (2)", 9), 1)
         },
     );
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("n", ROOT, "x"), update("n", 1)]);
@@ -265,7 +265,7 @@ fn a_renamed_waiting_file_put_back_as_s_still_holds_it_keeps_its_content() {
     );
     assert!(trees.waiting().contains_key("n") && trees.reverted().contains("n"));
     trees.set_local("n".into(), local(file(ROOT, "old", 0), 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::Remote, "L matches S");
     assert!(!trees.reverted().contains("n"));
     assert_eq!(effects_for(&mut trees, &mut ids, "n"), []);
@@ -300,7 +300,7 @@ fn a_new_folder_takes_the_name_a_waiting_node_moves_to_in_the_same_commit() {
             ..local(file(ROOT, "x (2)", 9), 1)
         },
     );
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     build(&mut commits, &mut trees, &mut ids).unwrap();
     trees.set_remote("n".into(), remote(file(ROOT, "x (2)", 1)));
@@ -318,7 +318,7 @@ fn a_new_folder_takes_the_name_a_waiting_node_moves_to_in_the_same_commit() {
     );
     trees.set_local("n".into(), local(file(ROOT, "old", 0), 2));
     trees.set_local("p".into(), local(dir(ROOT, "OLD"), 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(trees.waiting().contains_key("n"));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(
@@ -335,7 +335,7 @@ fn a_waiting_blocker_whose_parking_failed_is_not_parked_again_unchanged() {
     let (mut trees, _, mut ids) = a_move_and_edit_whose_s_update_waits();
     trees.set_local("n".into(), local(file(ROOT, "old", 0), 2));
     trees.set_remote("h".into(), remote(file(ROOT, "old", 9)));
-    trees.settle();
+    trees.settle(&Default::default());
     let mut effects = Effects::default();
     let first = effects
         .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
@@ -366,7 +366,7 @@ fn a_waiting_blocker_whose_parking_failed_is_not_parked_again_unchanged() {
 fn a_waiting_update_is_made_while_committing_is_halted() {
     let (mut trees, mut commits, mut ids) = a_move_and_edit_whose_s_update_waits();
     trees.set_local("p".into(), local(file(ROOT, "p", 3), 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(matches!(&ops(&commit)[..], [op::Op::CreateFile(c)] if c.node_id == "p"));
     assert_eq!(
@@ -390,7 +390,7 @@ fn a_waiting_update_is_made_while_committing_is_halted_under_a_local_edit() {
     let (mut trees, mut commits, mut ids) = a_move_and_edit_whose_s_update_waits();
     trees.set_local("n".into(), local(file(ROOT, "x", 2), 2));
     trees.set_local("p".into(), local(file(ROOT, "p", 3), 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(
         matches!(&ops(&commit)[..], [op::Op::UpdateContent(u), op::Op::CreateFile(c)] if u.node_id == "n" && c.node_id == "p"),
@@ -416,7 +416,7 @@ fn a_waiting_update_is_made_while_committing_is_halted_under_a_local_edit() {
 fn a_remote_move_of_a_node_whose_update_waits_reaches_the_disk() {
     let (mut trees, mut commits, mut ids) = a_move_and_edit_whose_s_update_waits();
     trees.set_remote("n".into(), remote(file(ROOT, "q", 1)));
-    trees.settle();
+    trees.settle(commits.aliases());
     let planned = effects_for(&mut trees, &mut ids, "n");
     assert!(matches!(&planned[..], [Effect::Move { .. }]), "{planned:?}");
     assert_eq!(
@@ -450,7 +450,7 @@ fn a_waiting_folder_the_user_deleted_is_brought_back_for_a_remote_move_into_it()
             ..local(file(ROOT, "x", 9), 2)
         },
     );
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(commit.ops.len(), 2);
@@ -465,7 +465,7 @@ fn a_waiting_folder_the_user_deleted_is_brought_back_for_a_remote_move_into_it()
     trees.set_remote("h".into(), remote(file("d", "h", 9)));
     trees.remove_local("m");
     trees.remove_local("d");
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     effects_for(&mut trees, &mut ids, "");
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -504,7 +504,7 @@ fn a_removal_r_undid_whose_s_update_does_not_fit_yet_waits() {
     effects
         .done(&mut trees, None, &record.effect_id, None)
         .unwrap();
-    trees.settle();
+    trees.settle(&Default::default());
 
     assert_eq!(effects_for(&mut trees, &mut ids, "d"), []);
 
@@ -555,7 +555,7 @@ fn a_needed_folder_whose_move_waits_is_brought_back() {
             ..local(file(ROOT, "x", 9), 2)
         },
     );
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("d", ROOT, "X")]);
@@ -578,7 +578,7 @@ fn a_needed_folder_whose_move_waits_is_brought_back() {
     );
     trees.remove_local("d");
     trees.set_remote("h".into(), remote(file("d", "h", 9)));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     let effects = effects_for(&mut trees, &mut ids, "d");
     assert!(
@@ -613,7 +613,7 @@ fn a_removal_that_waits_after_both_sides_dropped_the_node_is_kept_until_it_fits(
     effects
         .done(&mut trees, commits.in_flight(), &record.effect_id, None)
         .unwrap();
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(
         trees.waiting().get("d").map(|waiting| &waiting.shape),
         Some(&None)
@@ -621,7 +621,7 @@ fn a_removal_that_waits_after_both_sides_dropped_the_node_is_kept_until_it_fits(
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     trees.set_remote("d".into(), remote(dir(ROOT, "d")));
     trees.set_remote("f".into(), remote(file("d", "f", 1)));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(commits.connected(&welcome(0)), Reconnect::Idle);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("f", ROOT, "f")]);
@@ -650,7 +650,7 @@ fn a_kept_removal_is_made_once_s_no_longer_holds_anything_under_it() {
     effects
         .done(&mut trees, commits.in_flight(), &record.effect_id, None)
         .unwrap();
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     assert_eq!(commits.connected(&welcome(0)), Reconnect::Idle);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -711,7 +711,7 @@ fn a_superseded_folder_delete_behind(h: LocalNode, moved_to: &str) {
         ),
     ]);
     trees.set_local("h".into(), h);
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     let mut sent = ops(&commit);
@@ -788,7 +788,7 @@ fn a_removed_folder_r_restored_behind_a_name_that_differs_only_in_case_is_brough
     effects
         .done(&mut trees, None, &record.effect_id, None)
         .unwrap();
-    trees.settle();
+    trees.settle(&Default::default());
     let mut commits = Commits::default();
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("c", ROOT, "c.txt")]);

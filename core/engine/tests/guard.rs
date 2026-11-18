@@ -53,7 +53,7 @@ fn space(loose: usize, inside: usize) -> Trees {
             },
         );
     }
-    trees.settle();
+    trees.settle(&Default::default());
     trees
 }
 
@@ -85,7 +85,7 @@ fn remove(trees: &mut Trees, ids: &[&str]) {
         }
         trees.remove_local(id);
     }
-    trees.settle();
+    trees.settle(&Default::default());
 }
 
 fn root_files(range: std::ops::Range<usize>) -> Vec<String> {
@@ -94,7 +94,7 @@ fn root_files(range: std::ops::Range<usize>) -> Vec<String> {
 
 fn build_at(commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen, now: u64) -> Vec<op::Op> {
     let commit = commits.build(trees, ids, now, "history", "me", 7).cloned();
-    trees.settle();
+    trees.settle(commits.aliases());
     commit.map_or_else(Vec::new, |commit| {
         commit.ops.into_iter().map(|op| op.op.unwrap()).collect()
     })
@@ -126,7 +126,7 @@ fn acknowledge(commits: &mut Commits, trees: &mut Trees, seq: u64) {
         })
         .unwrap();
     assert!(commits.acknowledge(trees, seq));
-    trees.settle();
+    trees.settle(commits.aliases());
 }
 
 fn asked(commits: &Commits) -> Option<&Question> {
@@ -173,7 +173,7 @@ fn a_removed_folder_holding_most_of_the_space_is_held_while_the_rest_syncs() {
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     remove(&mut trees, &["d"]);
     put_back(&mut trees, "new", shape(ROOT, "new", Kind::File), 99);
-    trees.settle();
+    trees.settle(commits.aliases());
 
     let ops = build_at(&mut commits, &mut trees, &mut ids, NOW);
 
@@ -458,7 +458,7 @@ fn putting_the_files_back_ends_the_question() {
             100 + i,
         );
     }
-    trees.settle();
+    trees.settle(commits.aliases());
     build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
 
     assert_eq!(asked(&commits), None);
@@ -496,7 +496,7 @@ fn a_held_file_changed_on_the_server_leaves_the_question_and_is_downloaded() {
             pending_by: None,
         },
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
 
     let question = asked(&commits).expect("12 of 25 files are still held");
@@ -621,7 +621,7 @@ fn an_unanswered_question_keeps_holding_what_is_left_when_it_shrinks() {
             100 + i as u128,
         );
     }
-    trees.settle();
+    trees.settle(commits.aliases());
     let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
 
     assert_eq!(
@@ -686,7 +686,7 @@ fn a_confirmed_folder_deleted_over_several_commits_takes_one_answer() {
         remote.trashed = true;
         trees.set_remote(node, remote);
     }
-    trees.settle();
+    trees.settle(commits.aliases());
     acknowledge(&mut commits, &mut trees, 8);
     let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 2);
 
@@ -726,7 +726,7 @@ fn a_restore_answer_brings_back_held_children_whose_folder_was_put_back() {
     let id = asked(&commits).unwrap().id.clone();
 
     put_back(&mut trees, "d", shape(ROOT, "d", Kind::Dir), 100);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(commits.decide(&id, Answer::Restore));
     let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
 
@@ -763,7 +763,7 @@ fn a_restore_answer_holds_a_node_deleted_under_its_folder_since() {
             pending_by: None,
         },
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(commits.decide(&id, Answer::Restore));
     let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
 
@@ -792,7 +792,7 @@ fn a_confirmed_folder_whose_rest_changed_after_some_commits_is_asked_about_again
             remote.trashed = true;
             trees.set_remote(node, remote);
         }
-        trees.settle();
+        trees.settle(commits.aliases());
         acknowledge(&mut commits, &mut trees, 8 + step);
     }
     let left: Vec<String> = (trees.synced().iter())
@@ -804,7 +804,7 @@ fn a_confirmed_folder_whose_rest_changed_after_some_commits_is_asked_about_again
     let mut remote = trees.remote().get(&left[0]).unwrap().clone();
     remote.meta_rev += 1;
     trees.set_remote(left[0].clone(), remote);
-    trees.settle();
+    trees.settle(commits.aliases());
     let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 5);
 
     assert_eq!(deleted(&ops), Vec::<String>::new());
@@ -839,7 +839,7 @@ fn trash_remotely(trees: &mut Trees, ids: &[&str]) {
         };
         trees.set_remote(id, node);
     }
-    trees.settle();
+    trees.settle(&Default::default());
 }
 
 fn apply_effects(commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen, now: u64) {
@@ -855,7 +855,7 @@ fn apply_effects(commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen, now:
         {
             commits.count_remote(removal, trees, SEQ, ids, now);
         }
-        trees.settle();
+        trees.settle(commits.aliases());
     }
 }
 
@@ -970,7 +970,7 @@ fn the_rest_of_a_folder_removed_after_its_notice_was_dismissed_is_not_noticed_ag
         {
             commits.count_remote(removal, &mut trees, SEQ, &mut ids, NOW);
         }
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     let (question, window, _) = notice(&commits).unwrap();
     assert!(
@@ -1027,7 +1027,7 @@ fn a_folder_restored_after_its_notice_was_dismissed_is_noticed_when_deleted_agai
             };
             trees.set_remote(id.clone(), node);
         }
-        trees.settle();
+        trees.settle(&Default::default());
     };
     let (mut commits, mut ids, mut effects) =
         (Commits::default(), IdGen::new(1), Effects::default());
@@ -1044,7 +1044,7 @@ fn a_folder_restored_after_its_notice_was_dismissed_is_noticed_when_deleted_agai
         {
             commits.count_remote(removal, &mut trees, SEQ, &mut ids, NOW);
         }
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     let first = notice(&commits).unwrap().0.id.clone();
     assert!(commits.decide(&first, Answer::Dismiss));
@@ -1077,7 +1077,7 @@ fn a_folder_restored_after_its_notice_was_dismissed_is_noticed_when_deleted_agai
         {
             commits.count_remote(removal, &mut trees, SEQ, &mut ids, NOW + 1);
         }
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     let files = (trees.local().iter()).filter(|(_, node)| node.shape.kind == Kind::File);
     assert_eq!(files.count(), 50, "the restored folder is downloaded again");
@@ -1100,7 +1100,7 @@ fn an_open_notice_holds_back_neither_uploads_nor_local_deletions() {
     let id = notice(&commits).unwrap().0.id.clone();
     put_back(&mut trees, "new", shape(ROOT, "new", Kind::File), 999);
     trees.remove_local("f0");
-    trees.settle();
+    trees.settle(commits.aliases());
 
     let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
 
@@ -1131,7 +1131,7 @@ fn a_dismissed_folder_stays_dismissed_when_r_forgets_its_trashed_nodes() {
         {
             commits.count_remote(removal, &mut trees, SEQ, &mut ids, NOW);
         }
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     let id = notice(&commits).unwrap().0.id.clone();
     assert!(commits.decide(&id, Answer::Dismiss));
@@ -1142,7 +1142,7 @@ fn a_dismissed_folder_stays_dismissed_when_r_forgets_its_trashed_nodes() {
     for id in &trashed {
         trees.remove_remote(id);
     }
-    trees.settle();
+    trees.settle(commits.aliases());
 
     build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
     apply_effects(&mut commits, &mut trees, &mut ids, NOW + 1);
@@ -1163,7 +1163,7 @@ fn forget_trashed(trees: &mut Trees) -> Vec<(String, RemoteNode)> {
     for (id, _) in &trashed {
         trees.remove_remote(id);
     }
-    trees.settle();
+    trees.settle(&Default::default());
     trashed
 }
 
@@ -1181,7 +1181,7 @@ fn dismiss_while_removing(commits: &mut Commits, trees: &mut Trees, ids: &mut Id
         {
             commits.count_remote(removal, trees, SEQ, ids, NOW);
         }
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     let (question, window, _) = notice(commits).unwrap();
     assert!(
@@ -1202,7 +1202,7 @@ fn a_dismissed_folder_stays_dismissed_when_r_learns_its_trashed_nodes() {
     for (id, node) in trashed {
         trees.set_remote(id, node);
     }
-    trees.settle();
+    trees.settle(commits.aliases());
 
     build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
     apply_effects(&mut commits, &mut trees, &mut ids, NOW + 1);
@@ -1233,7 +1233,7 @@ fn a_folder_trashed_again_after_a_dismissal_without_its_record_is_noticed() {
         };
         trees.set_remote(id, node);
     }
-    trees.settle();
+    trees.settle(commits.aliases());
 
     apply_effects(&mut commits, &mut trees, &mut ids, NOW + 1);
 
@@ -1268,7 +1268,7 @@ fn a_folder_restored_after_a_dismissal_without_its_record_is_noticed_when_delete
             };
             trees.set_remote(id.clone(), node);
         }
-        trees.settle();
+        trees.settle(&Default::default());
     };
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     trash_remotely(&mut trees, &["d"]);
@@ -1304,7 +1304,7 @@ fn a_folder_restored_after_a_dismissal_without_its_record_is_noticed_when_delete
         {
             commits.count_remote(removal, &mut trees, 3, &mut ids, NOW + 1);
         }
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     let files = (trees.local().iter()).filter(|(_, node)| node.shape.kind == Kind::File);
     assert_eq!(files.count(), 50, "the restored folder is downloaded again");
@@ -1350,7 +1350,7 @@ fn nested() -> Trees {
         };
         trees.set_remote(id, node);
     }
-    trees.settle();
+    trees.settle(&Default::default());
     trees
 }
 
@@ -1386,7 +1386,7 @@ fn a_folder_removal_that_stops_past_the_window_is_noticed() {
         {
             commits.count_remote(removal, &mut trees, SEQ, &mut ids, NOW);
         }
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     assert_eq!(notice(&commits), None, "30 of 100 files cross no limit");
 

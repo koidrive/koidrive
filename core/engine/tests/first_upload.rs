@@ -181,7 +181,7 @@ fn first_upload(upload: Upload) -> u64 {
         }
         trees.ignore_local("!d");
     }
-    trees.settle();
+    trees.settle(&Default::default());
     let state = CommitsState {
         cap,
         ..Default::default()
@@ -224,7 +224,7 @@ fn first_upload(upload: Upload) -> u64 {
         };
         commits.received(result).unwrap();
         assert!(commits.acknowledge(&mut trees, seq));
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     let work = allocated() - before;
     assert!(
@@ -306,7 +306,7 @@ fn first_download(files: usize, per_dir: usize) -> u64 {
         );
         trees.set_remote(format!("f{f:06}"), node);
     }
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut effects, mut ids) = (Effects::default(), IdGen::new(1));
     let limit = BatchLimit {
         effects: 64,
@@ -328,7 +328,7 @@ fn first_download(files: usize, per_dir: usize) -> u64 {
                 birth_ns: Some(0),
             };
             (effects.done(&mut trees, None, &effect_id, Some(identity))).unwrap();
-            trees.settle();
+            trees.settle(&Default::default());
         }
     }
     let work = allocated() - before;
@@ -363,7 +363,7 @@ fn first_link_of_nested_folders(levels: usize, depth: usize) -> u64 {
         parent = folder;
     }
     let before = allocated();
-    trees.settle();
+    trees.settle(&Default::default());
     let work = allocated() - before;
     assert!(trees.dirty().is_empty(), "{:?}", trees.work());
     assert_eq!(trees.synced().len(), 2 * levels);
@@ -389,13 +389,13 @@ fn links_waiting_on_their_folders(folders: usize, settles: usize) -> (u64, u64) 
         trees.set_local(format!("l{f:06}"), file);
         trees.set_remote(format!("r{f:06}"), node);
     }
-    trees.settle();
+    trees.settle(&Default::default());
     let before = allocated();
     for s in 0..settles {
         let ino = (2 * folders + s) as u128 + 1;
         let other = local(ROOT.into(), format!("other {s}"), Kind::File, ino);
         trees.set_local(format!("o{s:06}"), other);
-        trees.settle();
+        trees.settle(&Default::default());
     }
     let waiting = allocated() - before;
     let before = allocated();
@@ -408,7 +408,7 @@ fn links_waiting_on_their_folders(folders: usize, settles: usize) -> (u64, u64) 
         );
         trees.set_local_changed(format!("d{f:06}"), placed);
     }
-    trees.settle();
+    trees.settle(&Default::default());
     let placing = allocated() - before;
     assert_eq!(trees.synced().len(), 2 * folders);
     (waiting, placing)

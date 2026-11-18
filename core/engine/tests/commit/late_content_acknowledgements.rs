@@ -45,7 +45,7 @@ fn a_late_acknowledgement_takes_what_was_sent_when_the_other_device_reverts_it()
     assert_eq!(ops(&commit), [update("n", 1)]);
     trees.set_remote("n".into(), remote(file(ROOT, "a", 1)));
     trees.set_remote("n".into(), remote(file(ROOT, "a", 0)));
-    trees.settle();
+    trees.settle(commits.aliases());
     acknowledge(
         &mut commits,
         &mut trees,
@@ -99,7 +99,7 @@ fn an_edit_undone_while_its_upload_is_out_is_sent_after_an_acknowledgement_that_
         },
     );
     trees.set_local_changed("n".into(), local(file(ROOT, "x", 1), 2));
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("n", ROOT, "x"), update("n", 1)]);
@@ -136,7 +136,7 @@ fn a_rename_returned_to_its_waiting_shape_stays_a_change_when_its_commit_is_lost
         },
     );
     trees.set_local_changed("n".into(), local(file(ROOT, "x", 1), 2));
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     build(&mut commits, &mut trees, &mut ids).unwrap();
     trees.set_remote("n".into(), remote(file(ROOT, "x", 1)));
@@ -190,7 +190,7 @@ fn a_rename_back_to_s_while_its_acknowledgement_waits_stays_a_change() {
         Some(&Some(file(ROOT, "x", 0)))
     );
     trees.set_local_changed("n".into(), local(file(ROOT, "old", 0), 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(trees.state().local_changes.contains("n"));
 }
 

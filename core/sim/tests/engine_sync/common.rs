@@ -1562,7 +1562,7 @@ fn run_ignoring_answering_after(
         }
     }
     if let Some(prior) = first_link {
-        device.trees.settle();
+        device.trees.settle(commits.aliases());
         commits.first_link(&mut device.trees, &mut device.ids, NOW as u64, prior);
     }
     let mut local_writes = written(
@@ -1616,7 +1616,7 @@ fn run_ignoring_answering_after(
     while !quiet {
         steps += 1;
         prop_assert!(steps <= STEPS, "no convergence within {} steps", STEPS);
-        device.trees.settle();
+        device.trees.settle(commits.aliases());
         note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
         if (due || steps % 2 == 0)
             && let Some((on_device, actions)) = during.next()
@@ -1677,7 +1677,7 @@ fn run_ignoring_answering_after(
                 }
             }
         }
-        device.trees.settle();
+        device.trees.settle(commits.aliases());
         prop_assert_eq!(device.trees.check(), Ok(()));
         (device.trees, commits, effects) =
             reload(&device.trees, &commits, &effects, &device.rules)?;
@@ -2008,7 +2008,7 @@ fn run_ignoring_answering_after(
         "every restore asked for ends, and its op is sent once"
     );
 
-    device.trees.settle();
+    device.trees.settle(commits.aliases());
     let kept_for_excluded = device.trees.kept_for_excluded();
     let outside = |id: &str| device.trees.ignored(id) || kept_for_excluded(id);
     let unsettled: Vec<String> = (device.trees.work().into_iter())

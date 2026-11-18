@@ -30,7 +30,7 @@ fn a_create_refused_because_another_device_created_and_deleted_the_node_again_is
     };
     acknowledge(&mut commits, &mut trees, vec![exists]);
     assert!(commits.problems().is_empty());
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::Remote);
     assert!(build(&mut commits, &mut trees, &mut ids).is_none());
 }
@@ -47,7 +47,7 @@ fn a_create_refused_for_a_node_another_device_deleted_sends_an_edit_made_since()
         ..outcome(op_result::Code::Rejected)
     };
     acknowledge(&mut commits, &mut trees, vec![exists]);
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("n", 2)]);
 }
@@ -63,7 +63,7 @@ fn a_create_refused_for_a_node_another_device_renamed_and_deleted_follows_the_de
         ..outcome(op_result::Code::Rejected)
     };
     acknowledge(&mut commits, &mut trees, vec![exists]);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::Remote);
     assert!(build(&mut commits, &mut trees, &mut ids).is_none());
 }
@@ -74,14 +74,14 @@ fn a_create_refused_for_a_node_another_device_created_edited_and_deleted_follows
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     build(&mut commits, &mut trees, &mut ids).unwrap();
     trees.set_remote("n".into(), remote(file(ROOT, "a", 1)));
-    trees.settle();
+    trees.settle(commits.aliases());
     trees.set_remote("n".into(), trashed(file(ROOT, "a", 2)));
     let exists = OpResult {
         reject_reason: "ID_EXISTS".into(),
         ..outcome(op_result::Code::Rejected)
     };
     acknowledge(&mut commits, &mut trees, vec![exists]);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::Remote);
     assert!(build(&mut commits, &mut trees, &mut ids).is_none());
 }
@@ -98,7 +98,7 @@ fn a_create_refused_for_a_node_another_device_deleted_sends_an_edit_made_since_t
         ..outcome(op_result::Code::Rejected)
     };
     acknowledge(&mut commits, &mut trees, vec![exists]);
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("n", 2)]);
 }
@@ -114,7 +114,7 @@ fn resent_where_another_device_renamed_it(edit: Option<u8>) -> (Trees, Commits, 
     let records = trees.remote_records(|_| false);
     trees.remove_remote("f");
     trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), untaken, records, &Default::default(), 0, 0);
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(created_at(&commit), [("b".to_owned(), edit.unwrap_or(1))]);
@@ -138,7 +138,7 @@ fn a_resend_refused_for_a_node_another_device_renamed_and_deleted_revives_the_ed
     trees.set_remote_made_here("f".into(), remote_at(file(ROOT, "b", 2), 4));
     commits.received(result(4, vec![outcome(op_result::Code::Applied)])).unwrap();
     assert!(commits.acknowledge(&mut trees, 4));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     effects_for(&mut trees, &mut ids, "f");
     assert_eq!(trees.local().live("f"), Some(&file(ROOT, "b", 2)));

@@ -724,7 +724,7 @@ impl Commits {
         ids: &mut IdGen,
         now_ms: u64,
     ) {
-        trees.settle();
+        trees.settle(&self.aliases);
         let open = (self.questions.iter())
             .position(|question| matches!(question.kind, QuestionKind::RemoteMassDelete { .. }));
         let noticed = open.is_some();
@@ -1167,8 +1167,7 @@ impl Commits {
         self.hold(trees);
         self.split.retain(|id| trees.synced().live(id).is_some());
         self.published.retain(|id| trees.local().get(id).is_some());
-        self.aliases
-            .retain(|id, _| trees.local().get(id).is_some() && trees.reverted().contains(id));
+        self.aliases.retain(|id, _| trees.holds_merge(id));
         let intents = RecoveryGroup::RequestedBeforeReset;
         let held_restores: BTreeSet<&RestoreId> = (self.questions.iter())
             .filter(|question| matches!(question.kind, QuestionKind::Recovery { group, .. } if group == intents))
@@ -4776,7 +4775,7 @@ mod ancestry_size_tests {
             local.shape.content.as_mut().unwrap().manifest_digest = vec![2; 32];
             trees.set_local_changed(id, local);
         }
-        trees.settle();
+        trees.settle(&Default::default());
         let mut commits = Commits::default();
         let commit = commits
             .build(

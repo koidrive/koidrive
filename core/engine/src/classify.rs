@@ -1744,6 +1744,7 @@ impl Trees {
             let moved = !old.parked && !node.parked && !old.shape.same_position(&node.shape);
             if moved {
                 self.unsent_marks.remove(&id);
+                self.cycles_may_end = true;
             }
             let to_remote =
                 (self.r.live(&id)).is_some_and(|remote| node.shape.same_position(remote));
@@ -2079,6 +2080,7 @@ impl Trees {
         self.edited_here.clear();
         let r = &self.r;
         self.reverted.retain(|id| r.get(id).is_some());
+        self.cycles_may_end = true;
         let waiting: Vec<NodeId> = self.waiting.keys().cloned().collect();
         for id in waiting {
             if let Some(mut waiting) = self.waiting.get(&id).cloned() {
@@ -4102,10 +4104,10 @@ impl Trees {
     /// [`Trees::unsearched`] lists them. A [`Class::Same`] node whose update is left still takes R's
     /// content into S, unless an acknowledged update of the node waits, since content never breaks S, so a later change on either side is compared
     /// with the content both sides already hold. [`Trees::work`] gives the dirty nodes that are left.
-    pub fn settle(&mut self) {
+    pub fn settle(&mut self, merged: &BTreeMap<NodeId, NodeId>) {
         self.check_finishes();
         if std::mem::take(&mut self.cycles_may_end) {
-            self.release_cycle_reverts();
+            self.release_cycle_reverts(merged);
         }
         if self.rules_known {
             let unwatched = std::mem::take(&mut self.unwatched);
@@ -4382,12 +4384,20 @@ impl Trees {
         self.cycle_reverted.insert(id);
     }
 
-    fn release_cycle_reverts(&mut self) {
+    pub(crate) fn holds_merge(&self, id: &str) -> bool {
+        self.l.get(id).is_some() && self.reverted.contains(id)
+    }
+
+    fn release_cycle_reverts(&mut self, merged: &BTreeMap<NodeId, NodeId>) {
         let released: Vec<NodeId> = (self.cycle_reverted.iter())
             .filter(|&id| {
                 !self.reverted.contains(id)
-                    || (self.l.get(id))
-                        .is_some_and(|local| !self.closes_a_cycle(id, &local.shape.parent))
+                    || (self.l.get(id)).is_some_and(|local| {
+                        let parent = (merged.get(&local.shape.parent))
+                            .filter(|_| self.holds_merge(&local.shape.parent))
+                            .unwrap_or(&local.shape.parent);
+                        !self.closes_a_cycle(id, parent)
+                    })
             })
             .cloned()
             .collect();

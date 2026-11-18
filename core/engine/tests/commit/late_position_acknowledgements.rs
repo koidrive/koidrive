@@ -42,13 +42,13 @@ fn an_edit_of_a_node_waiting_behind_a_problem_node_is_uploaded() {
     trees.set_remote("m".into(), remote_at(file(ROOT, "e", 2), 3));
     trees.set_local("n".into(), local(file(ROOT, "c", 1), 1));
     trees.set_remote("n".into(), remote_at(file(ROOT, "c", 1), 4));
-    trees.settle();
+    trees.settle(commits.aliases());
     let results = vec![rejected, outcome(op_result::Code::Applied)];
     commits.received(result(2, results)).unwrap();
     assert!(commits.acknowledge(&mut trees, 4));
-    trees.settle();
+    trees.settle(commits.aliases());
     trees.set_local("n".into(), local(file(ROOT, "c", 9), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids);
     assert_eq!(commit.as_ref().map(ops), Some(vec![update("n", 9)]));
 }
@@ -79,15 +79,15 @@ fn an_edit_of_a_waiting_node_r_moved_on_from_is_uploaded() {
     trees.set_remote("m".into(), remote_at(file(ROOT, "e", 2), 3));
     trees.set_local("n".into(), local(file(ROOT, "c", 1), 1));
     trees.set_remote("n".into(), remote_at(file(ROOT, "c", 1), 4));
-    trees.settle();
+    trees.settle(commits.aliases());
     trees.set_remote("n".into(), remote_at(file(ROOT, "x", 1), 5));
-    trees.settle();
+    trees.settle(commits.aliases());
     let results = vec![rejected, outcome(op_result::Code::Applied)];
     commits.received(result(2, results)).unwrap();
     assert!(commits.acknowledge(&mut trees, 5));
-    trees.settle();
+    trees.settle(commits.aliases());
     trees.set_local("n".into(), local(file(ROOT, "c", 9), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     let mut sent = Vec::new();
     for seq in 10..14 {
         if let Some(commit) = build(&mut commits, &mut trees, &mut ids) {
@@ -95,7 +95,7 @@ fn an_edit_of_a_waiting_node_r_moved_on_from_is_uploaded() {
             let applied = vec![outcome(op_result::Code::Applied); commit.ops.len()];
             commits.received(result(seq, applied)).unwrap();
             assert!(commits.acknowledge(&mut trees, seq));
-            trees.settle();
+            trees.settle(commits.aliases());
         }
         effects_for(&mut trees, &mut ids, "n");
     }
@@ -120,15 +120,15 @@ fn an_agreed_position_another_nodes_stale_s_entry_holds_waits_for_it() {
     trees.set_remote("m".into(), remote_at(file(ROOT, "d", 4), 3));
     trees.set_local("n".into(), local(file(ROOT, "c", 1), 1));
     trees.set_remote("n".into(), remote_at(file(ROOT, "c", 1), 4));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.synced().live("m"), Some(&file(ROOT, "c", 2)));
     trees.set_remote("n".into(), remote_at(file(ROOT, "x", 1), 5));
-    trees.settle();
+    trees.settle(commits.aliases());
     commits
         .received(result(2, vec![outcome(op_result::Code::Applied)]))
         .unwrap();
     assert!(commits.acknowledge(&mut trees, 5));
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids);
     let sent: Vec<op::Op> = commit.iter().flat_map(ops).collect();
     assert!(
@@ -179,16 +179,16 @@ fn agreed_positions_that_fit_together_are_taken_when_another_agreement_is_refuse
     trees.set_remote("n".into(), remote_at(file(ROOT, "q", 1), 4));
     trees.set_remote("m".into(), remote_at(file(ROOT, "p", 2), 4));
     trees.set_remote("k".into(), remote_at(file(ROOT, "g", 3), 4));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.synced().live("h"), Some(&file(ROOT, "g", 4)));
     trees.set_remote("n".into(), remote_at(file(ROOT, "x", 1), 5));
-    trees.settle();
+    trees.settle(commits.aliases());
     let applied = vec![outcome(op_result::Code::Applied); 3];
     commits.received(result(2, applied)).unwrap();
     assert!(commits.acknowledge(&mut trees, 5));
     assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "q", 1)));
     assert_eq!(trees.synced().live("m"), Some(&file(ROOT, "p", 2)));
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids);
     let sent: Vec<op::Op> = commit.iter().flat_map(ops).collect();
     assert!(
@@ -214,21 +214,21 @@ fn a_late_acknowledgement_keeps_a_position_r_took_again_after_the_commit() {
     assert_eq!(ops(&commit), [mv("n", ROOT, "b")]);
     trees.set_local("n".into(), local(file(ROOT, "c", 1), 1));
     trees.set_remote("n".into(), remote_at(file(ROOT, "c", 1), 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     trees.set_remote("n".into(), remote_at(file(ROOT, "b", 1), 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     trees.set_remote("n".into(), remote_at(file(ROOT, "c", 1), 4));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "c", 1)));
     trees.set_local("n".into(), local(file(ROOT, "b", 1), 1));
     commits
         .received(result(3, vec![outcome(op_result::Code::Applied)]))
         .unwrap();
     assert!(commits.acknowledge(&mut trees, 4));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "c", 1)));
     trees.set_remote("n".into(), remote_at(file(ROOT, "d", 1), 5));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(effects_for(&mut trees, &mut ids, "n"), []);
     assert_eq!(trees.local().live("n"), Some(&file(ROOT, "b", 1)));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -248,14 +248,14 @@ fn a_late_acknowledgement_takes_the_sent_position_over_one_s_took_from_before_th
     assert_eq!(ops(&commit), [mv("n", ROOT, "b")]);
     trees.set_local("n".into(), local(file(ROOT, "c", 1), 1));
     trees.set_remote("n".into(), remote_at(file(ROOT, "c", 1), 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "c", 1)));
     trees.set_remote("n".into(), remote_at(file(ROOT, "b", 1), 3));
     commits
         .received(result(3, vec![outcome(op_result::Code::Applied)]))
         .unwrap();
     assert!(commits.acknowledge(&mut trees, 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "b", 1)));
     assert_eq!(effects_for(&mut trees, &mut ids, "n"), []);
     assert_eq!(trees.local().live("n"), Some(&file(ROOT, "c", 1)));

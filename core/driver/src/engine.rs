@@ -128,7 +128,7 @@ impl Engine {
     /// changed in the engine state, and the ID generator. A row of a node the tree no longer holds is removed. A
     /// transaction that fails ends the task, which loads the engine again from the store.
     pub fn checkpoint(&mut self, tx: &Tx<'_>) -> Result<(), Error> {
-        self.trees.settle();
+        self.trees.settle(self.commits.aliases());
         for id in &self.trees.take_changed() {
             match self.trees.local().get(id) {
                 Some(node) => tx.put_local_node(&stored(id, node))?,
@@ -2062,7 +2062,7 @@ mod tests {
         }
         let (mut effects, mut ids) = (Effects::default(), IdGen::new(1));
         let mut plan = |trees: &mut Trees, effects: &mut Effects| {
-            trees.settle();
+            trees.settle(&Default::default());
             (effects
                 .plan(trees, None, &mut ids, 0, BatchLimit::ONE)
                 .first()
@@ -2531,7 +2531,7 @@ mod tests {
                 ..case.engine.effects.state()
             };
             case.engine.effects = Effects::from_state(state).unwrap();
-            case.engine.trees.settle();
+            case.engine.trees.settle(case.engine.commits.aliases());
             let Engine {
                 trees,
                 effects,

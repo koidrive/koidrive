@@ -87,7 +87,7 @@ fn trees(local: &[(&str, Shape)], synced: &[(&str, Shape)], remote: &[Remote]) -
         trees.set_remote((*id).into(), node);
     }
     trees.rules_scanned();
-    trees.settle();
+    trees.settle(&Default::default());
     trees
 }
 
@@ -99,7 +99,7 @@ fn mark(trees: &mut Trees, id: &str, stem: &str) {
     let mut node = trees.remote().get(id).expect("a node of R").clone();
     node.pending_for = Some(stem.into());
     trees.set_remote(id.into(), node);
-    trees.settle();
+    trees.settle(&Default::default());
 }
 
 fn rewind() -> RecoveryCause {
@@ -124,7 +124,7 @@ fn recovered_after(trees: &mut Trees, device_seq: u64, cause: RecoveryCause) -> 
         &mut ids,
         NOW,
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     (commits, ids)
 }
 
@@ -149,7 +149,7 @@ fn effects(trees: &mut Trees, ids: &mut IdGen) -> Vec<(String, Effect)> {
     let mut effects = Effects::default();
     let mut done = Vec::new();
     for ino in 100.. {
-        trees.settle();
+        trees.settle(&Default::default());
         let Some(record) = (effects.plan(trees, None, ids, NOW, BatchLimit::ONE).first()).cloned()
         else {
             break;
@@ -163,7 +163,7 @@ fn effects(trees: &mut Trees, ids: &mut IdGen) -> Vec<(String, Effect)> {
             .unwrap();
         done.push((record.node, record.effect));
     }
-    trees.settle();
+    trees.settle(&Default::default());
     done
 }
 
@@ -279,9 +279,9 @@ fn restored_under(made_over: &[&str]) -> Trees {
     };
     trees.set_remote("n".into(), version(2, "v2", made_over));
     trees.set_synced("n".into(), Some(file(ROOT, "a", 2)));
-    trees.settle();
+    trees.settle(&Default::default());
     trees.set_remote("n".into(), version(1, "v1", &[]));
-    trees.settle();
+    trees.settle(&Default::default());
     trees
 }
 
@@ -361,7 +361,7 @@ fn an_answer_whose_commit_finds_the_head_moved_is_asked_again() {
             pending_by: None,
         },
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let again = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
     assert_ne!(again.id, question.id);
@@ -413,7 +413,7 @@ fn a_question_asked_again_names_the_cause_of_its_recovery() {
             pending_by: None,
         },
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let again = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
     assert_ne!(again.id, question.id);
@@ -473,7 +473,7 @@ fn a_folder_the_rewind_removed(
     let mut renamed = trees.local().get("f").unwrap().clone();
     renamed.shape = child_on_disk;
     trees.set_local("f".into(), renamed);
-    trees.settle();
+    trees.settle(commits.aliases());
     (trees, commits, ids)
 }
 
@@ -770,7 +770,7 @@ fn an_entry_new_on_this_device_stays_held_when_another_device_sends_the_same_nod
             pending_by: None,
         },
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     assert_eq!(effects(&mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
@@ -870,7 +870,7 @@ fn a_held_node_another_device_publishes_stays_held_unless_it_ends_equal() {
                 pending_by: None,
             },
         );
-        trees.settle();
+        trees.settle(commits.aliases());
         let sent = ops(&mut commits, &mut trees, &mut ids);
         if held {
             assert_eq!(sent, [], "{published:?}");
@@ -932,7 +932,7 @@ fn the_commit_in_flight_before_the_reset_is_never_sent_again() {
         &mut ids,
         NOW,
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(commits.in_flight(), None);
     assert_eq!(commits.accepted(), 4);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
@@ -978,7 +978,7 @@ fn a_result_that_arrives_after_the_recovery_starts_leaves_the_change_held() {
         &mut ids,
         NOW,
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
 }
 
@@ -1006,7 +1006,7 @@ fn a_restore_asked_for_before_the_reset_is_held_until_it_is_answered() {
             &mut ids,
             NOW,
         );
-        trees.settle();
+        trees.settle(commits.aliases());
         let question = asked(&commits, RecoveryGroup::RequestedBeforeReset, &["request"]);
         assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
         assert_eq!(
@@ -1050,7 +1050,7 @@ fn a_restore_asked_for_again_after_the_reset_waits_for_the_answer_about_the_firs
         &mut ids,
         NOW,
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     let question = asked(&commits, RecoveryGroup::RequestedBeforeReset, &["before"]);
     assert!(commits.restore("later".into(), intent));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
@@ -1158,7 +1158,7 @@ fn an_open_recovery_question_keeps_s_for_what_it_holds() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.synced().live("d"), Some(&dir(ROOT, "a")));
     assert_eq!(trees.synced().live("f"), Some(&file(ROOT, "f", 1)));
     asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["d"]);
@@ -1209,7 +1209,7 @@ fn a_discarded_file_in_a_kept_folder_the_server_merged_stays_discarded() {
             pending_by: None,
         },
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(!trees.reclaimed("f"));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
@@ -1259,7 +1259,7 @@ fn a_discarded_file_in_a_kept_folder_the_server_merged_is_not_moved_back_over_an
             pending_by: None,
         },
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(!trees.reclaimed("f"));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
@@ -1328,7 +1328,7 @@ fn a_discarded_file_the_user_moves_before_it_leaves_the_disk_is_asked_about_agai
     let mut moved = trees.local().get("f").unwrap().clone();
     moved.shape = file("d", "a", 1);
     trees.set_local("f".into(), moved);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let again = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["d", "f"]);
     assert_eq!(again.answer, None);
@@ -1398,7 +1398,7 @@ fn a_name_the_disk_and_the_server_agree_on_at_recovery_is_not_sent_after_the_ser
         pending_by: None,
     };
     trees.set_remote("n".into(), renamed);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
 
@@ -1418,13 +1418,13 @@ fn a_discard_answer_does_not_send_another_discarded_file_the_user_changed() {
     let mut moved = trees.local().get("f").unwrap().clone();
     moved.shape.name = "f-new".into();
     trees.set_local("f".into(), moved);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let next = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["f"]);
     let mut moved = trees.local().get("g").unwrap().clone();
     moved.shape.name = "g-new".into();
     trees.set_local("g".into(), moved);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(commits.decide(&next.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["g"]);
@@ -1447,7 +1447,7 @@ fn an_answer_to_a_later_first_link_question_is_taken_while_an_earlier_one_waits(
         let mut moved = trees.local().get(id).unwrap().clone();
         moved.shape.name = name.into();
         trees.set_local(id.into(), moved);
-        trees.settle();
+        trees.settle(commits.aliases());
         assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     }
     assert_eq!(commits.questions().len(), 2, "{:?}", commits.questions());
@@ -1621,7 +1621,7 @@ fn a_child_an_answer_trashes_again_leaves_the_disk_and_is_not_sent_again() {
     };
     commits.received(result).unwrap();
     assert!(commits.acknowledge(&mut trees, 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let done = effects(&mut trees, &mut ids);
     assert!(
@@ -1647,7 +1647,7 @@ fn an_edit_sent_before_its_folder_is_published_is_not_trashed_again() {
     let mut edited = trees.local().get("c").unwrap().clone();
     edited.shape = file("d", "child", 2);
     trees.set_local("c".into(), edited);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("update", "c".into()), ("move", "d".into())]
@@ -1673,7 +1673,7 @@ fn a_restore_of_a_child_an_answer_trashes_again_waits_while_the_child_is_unsettl
     state.waiting.insert(NODE.into(), waiting);
     trees.restore(state).unwrap();
     trees.rules_scanned();
-    trees.settle();
+    trees.settle(commits.aliases());
     let intent = RestoreIntent::version(NODE.into(), NODE.into()).unwrap();
     assert!(commits.restore("request".into(), intent));
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
@@ -1697,7 +1697,7 @@ fn a_folder_whose_removal_from_s_waits_is_held_with_its_new_children_after_a_rew
     state.waiting.insert("d".into(), waiting);
     trees.restore(state).unwrap();
     trees.rules_scanned();
-    trees.settle();
+    trees.settle(&Default::default());
     assert!(trees.waiting().contains_key("d"));
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
     commits.enter_recovery(rewind());
@@ -1710,7 +1710,7 @@ fn a_folder_whose_removal_from_s_waits_is_held_with_its_new_children_after_a_rew
         &mut ids,
         NOW,
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     asked(&commits, RecoveryGroup::CreatedOnThisDevice, &[NODE, "d"]);
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
@@ -1820,10 +1820,10 @@ fn a_held_node_excluded_and_included_again_keeps_its_question() {
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["a"]);
     trees.set_rules::<&str>(&[], Some(RuleFile::parse(b"a\n")));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     trees.set_rules::<&str>(&[], None);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["a"]);
     assert_eq!(effects(&mut trees, &mut ids), []);
@@ -1838,11 +1838,11 @@ fn a_node_excluded_when_recovery_starts_is_asked_about_once_included() {
         &[],
     );
     trees.set_rules::<&str>(&[], Some(RuleFile::parse(b"a\n")));
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     trees.set_rules::<&str>(&[], None);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["a"]);
     assert_eq!(effects(&mut trees, &mut ids), []);
@@ -1948,13 +1948,13 @@ fn an_answer_split_across_commits_keeps_its_approval_only_for_what_it_showed() {
     };
     commits.received(result).unwrap();
     assert!(commits.acknowledge(&mut trees, 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     let kept = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &[rest]);
     assert_eq!(kept.answer, Some(Answer::Publish));
     let mut changed = trees.local().get(rest).unwrap().clone();
     changed.shape.content = Some(content(9));
     trees.set_local(rest.into(), changed);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let again = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &[rest]);
     assert_eq!(again.answer, None);
@@ -2009,14 +2009,14 @@ fn rewound_folder(stem: Option<&str>) -> Trees {
     }
     trees.set_synced("p".into(), Some(shape));
     trees.remove_remote("p");
-    trees.settle();
+    trees.settle(&Default::default());
     trees
 }
 
 fn dropped_from_s() -> Trees {
     let mut trees = rewound_folder(Some("A"));
     trees.set_synced("p".into(), None);
-    trees.settle();
+    trees.settle(&Default::default());
     assert_eq!(
         trees.state().unsent_marks,
         [("p".into(), "A".into())].into()
@@ -2075,7 +2075,7 @@ fn a_mark_s_dropped_is_sent_with_the_create_after_a_restart() {
     }
     trees.restore(before.state()).unwrap();
     trees.rules_scanned();
-    trees.settle();
+    trees.settle(&Default::default());
     assert_eq!(
         created_dirs(&mut Commits::default(), &mut trees, &mut IdGen::new(7)),
         [("A (pending)".into(), "A".into())]
@@ -2108,7 +2108,7 @@ fn a_removal_planned_before_a_rewind() -> Stale {
         "{record:?}"
     );
     trees.remove_remote("x");
-    trees.settle();
+    trees.settle(&Default::default());
     let mut commits = Commits::default();
     commits.enter_recovery(rewind());
     commits.recover(
@@ -2120,7 +2120,7 @@ fn a_removal_planned_before_a_rewind() -> Stale {
         &mut ids,
         NOW,
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     Stale {
         trees,
         ids,
@@ -2141,7 +2141,7 @@ fn refused(stale: &mut Stale) {
     assert!(!record.applies(trees, commits.in_flight()));
     let done = effects.done(trees, commits.in_flight(), &record.effect_id, None);
     assert!(done.is_err(), "{done:?}");
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(
         trees.local().get("x").map(|node| &node.shape),
         Some(&file(ROOT, "x", 1))
@@ -2228,7 +2228,7 @@ fn a_removal_planned_before_a_rewind_leaves_a_kept_file_once_the_server_has_it()
     };
     commits.received(result).unwrap();
     assert!(commits.acknowledge(trees, 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     refused(&mut stale);
 }
 
@@ -2241,7 +2241,7 @@ fn a_removal_planned_before_a_rewind_stays_refused_after_a_second_rewind() {
         &["x"],
     );
     stale.commits.enter_recovery(rewind());
-    stale.trees.settle();
+    stale.trees.settle(stale.commits.aliases());
     refused(&mut stale);
     let Stale {
         trees,
@@ -2258,7 +2258,7 @@ fn a_removal_planned_before_a_rewind_stays_refused_after_a_second_rewind() {
         ids,
         NOW,
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     refused(&mut stale);
 }
 
@@ -2278,7 +2278,7 @@ fn a_download_planned_after_a_rewind_is_still_taken_after_a_reload() {
         &mut ids,
         NOW,
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     let record = (effects
         .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
         .first())
@@ -2299,7 +2299,7 @@ fn a_download_planned_after_a_rewind_is_still_taken_after_a_reload() {
     effects
         .done(&mut reloaded, None, &record.effect_id, Some(identity))
         .unwrap();
-    reloaded.settle();
+    reloaded.settle(commits.aliases());
     assert_eq!(reloaded.synced().get("y"), Some(&file(ROOT, "y", 1)));
 }
 
@@ -2320,7 +2320,7 @@ fn a_mark_s_dropped_goes_once_r_holds_the_folder() {
         edit_rev: 5,
     };
     trees.set_remote("p".into(), node);
-    trees.settle();
+    trees.settle(&Default::default());
     assert!(trees.state().unsent_marks.is_empty());
 }
 
@@ -2330,7 +2330,7 @@ fn a_mark_s_dropped_goes_when_the_user_renames_the_folder() {
     let mut node = trees.local().get("p").unwrap().clone();
     node.shape.name = "B".into();
     trees.set_local("p".into(), node);
-    trees.settle();
+    trees.settle(&Default::default());
     assert!(trees.state().unsent_marks.is_empty());
     assert_eq!(
         created_dirs(&mut Commits::default(), &mut trees, &mut IdGen::new(7)),
@@ -2342,7 +2342,7 @@ fn a_mark_s_dropped_goes_when_the_user_renames_the_folder() {
 fn a_mark_s_dropped_goes_when_the_user_deletes_the_folder() {
     let mut trees = dropped_from_s();
     trees.remove_local("p");
-    trees.settle();
+    trees.settle(&Default::default());
     assert!(trees.state().unsent_marks.is_empty());
     assert_eq!(
         created_dirs(&mut Commits::default(), &mut trees, &mut IdGen::new(7)),
@@ -2619,7 +2619,7 @@ fn recovered_by_marks(
     let mut ids = IdGen::new(7);
     commits.enter_recovery(rewind());
     commits.recover(&mut trees, 0, &rewind(), &logged, &marks, &mut ids, NOW);
-    trees.settle();
+    trees.settle(commits.aliases());
     (trees, commits, ids)
 }
 
@@ -3063,7 +3063,7 @@ fn a_marked_file_moved_into_a_new_folder_named_like_a_files_pending_name_follows
     let mut ids = IdGen::new(7);
     commits.enter_recovery(rewind());
     commits.recover(&mut trees, 0, &rewind(), &logged, &marks, &mut ids, NOW);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "f", 1)));
     assert_eq!(local_shape(&trees, "n"), Some(&file("new", "f", 1)));
 }
@@ -3158,7 +3158,7 @@ fn a_marked_folder_the_server_holds_under_its_pending_name_is_adopted_and_moved_
     let mut ids = IdGen::new(7);
     commits.enter_recovery(rewind());
     commits.recover(&mut trees, 0, &rewind(), &logged, &marks, &mut ids, NOW);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(groups(&commits), []);
     assert_eq!(local_shape(&trees, "p"), Some(&dir(ROOT, "x")));
     assert_eq!(trees.synced().live("p"), Some(&dir(ROOT, "x (pending)")));
@@ -3186,7 +3186,7 @@ fn a_marked_folder_named_like_its_pending_name_in_another_normal_form_is_adopted
     let mut ids = IdGen::new(7);
     commits.enter_recovery(rewind());
     commits.recover(&mut trees, 0, &rewind(), &logged, &marks, &mut ids, NOW);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(groups(&commits), []);
     assert_eq!(local_shape(&trees, "p"), Some(&dir(ROOT, "cafe\u{301}")));
     assert_eq!(
@@ -3751,10 +3751,10 @@ fn a_recovery_discard_takes_along_a_server_file_the_rules_let_in_while_the_folde
     moved.shape.parent = "f".into();
     moved.shape.name = "ignored".into();
     trees.set_local_changed("x".into(), moved);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     trees.set_rules(&[] as &[&str], None);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["f"]);
     assert!(commits.decide(&question.id, Answer::Discard));
@@ -3782,21 +3782,21 @@ fn a_file_recovered_by_its_mark_and_moved_in_while_left_out_is_taken_along_with_
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "server", 9)));
     let question = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["e", "new"]);
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
-    trees.settle();
+    trees.settle(commits.aliases());
     let mut moved = trees.local().get("n").unwrap().clone();
     moved.shape.parent = "new".into();
     moved.shape.name = "ignored".into();
     trees.set_local_changed("n".into(), moved);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let mut edited = trees.remote().get("n").unwrap().clone();
     edited.shape = file(ROOT, "server", 10);
     edited.content_rev = 2;
     edited.edit_rev = 2;
     trees.set_remote("n".into(), edited);
-    trees.settle();
+    trees.settle(commits.aliases());
     trees.set_rules(&[] as &[&str], None);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = (commits.questions().iter())
         .find(|asked| asked.holds().any(|id| id == "new"))
@@ -3805,7 +3805,7 @@ fn a_file_recovered_by_its_mark_and_moved_in_while_left_out_is_taken_along_with_
     assert!(commits.decide(&question.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     effects(&mut trees, &mut ids);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     assert!(trees.local().get("new").is_none());
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "server", 10)));
@@ -3829,21 +3829,21 @@ fn a_file_a_rewind_finds_with_the_server_s_bytes_and_moved_in_while_left_out_is_
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "server", 9)));
     let question = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["e", "new"]);
     trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
-    trees.settle();
+    trees.settle(commits.aliases());
     let mut moved = trees.local().get("n").unwrap().clone();
     moved.shape.parent = "new".into();
     moved.shape.name = "ignored".into();
     trees.set_local_changed("n".into(), moved);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let mut edited = trees.remote().get("n").unwrap().clone();
     edited.shape = file(ROOT, "server", 10);
     edited.content_rev = 2;
     edited.edit_rev = 2;
     trees.set_remote("n".into(), edited);
-    trees.settle();
+    trees.settle(commits.aliases());
     trees.set_rules(&[] as &[&str], None);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = (commits.questions().iter())
         .find(|asked| asked.holds().any(|id| id == "new"))
@@ -3852,7 +3852,7 @@ fn a_file_a_rewind_finds_with_the_server_s_bytes_and_moved_in_while_left_out_is_
     assert!(commits.decide(&question.id, Answer::Discard));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     effects(&mut trees, &mut ids);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     assert!(trees.local().get("new").is_none());
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "server", 10)));
@@ -3932,7 +3932,7 @@ fn recovered_with_history(trees: &mut Trees, history: &[(&str, Shape)]) -> (Comm
     commits.enter_recovery(rewind());
     assert_eq!(commits.build(trees, &mut ids, NOW, OLD, "me", 9), None);
     commits.recover(trees, 0, &rewind(), &log, &Marks::new(), &mut ids, NOW);
-    trees.settle();
+    trees.settle(commits.aliases());
     for question in commits.questions().to_vec() {
         assert!(
             commits.decide(&question.id, Answer::Publish),

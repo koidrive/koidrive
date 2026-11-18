@@ -6,7 +6,7 @@
 fn a_node_whose_update_waits_is_moved_and_edited_again_under_its_id() {
     let (mut trees, mut commits, mut ids) = a_move_and_edit_whose_s_update_waits();
     trees.set_local("n".into(), local(file(ROOT, "z", 2), 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("n", ROOT, "z"), update("n", 2)]);
     assert!(trees.local().get("n").is_some());
@@ -18,7 +18,7 @@ fn a_node_whose_update_waits_is_moved_and_edited_again_under_its_id() {
 fn a_node_whose_update_waits_taken_back_to_its_s_shape_is_sent() {
     let (mut trees, mut commits, mut ids) = a_move_and_edit_whose_s_update_waits();
     trees.set_local("n".into(), local(file(ROOT, "old", 0), 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("n", ROOT, "old"), update("n", 0)]);
 }
@@ -30,7 +30,7 @@ fn a_remote_edit_of_a_node_whose_update_waits_does_not_hold_back_its_local_move(
     let (mut trees, mut commits, mut ids) = a_move_and_edit_whose_s_update_waits();
     trees.set_local("n".into(), local(file(ROOT, "z", 1), 2));
     trees.set_remote("n".into(), remote(file(ROOT, "x", 3)));
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("n", ROOT, "z")]);
 }
@@ -42,7 +42,7 @@ fn a_remote_edit_of_a_node_whose_update_waits_does_not_hold_back_its_local_move(
 fn a_move_and_edit_the_server_lost_while_its_s_update_waits_is_sent_again() {
     let (mut trees, mut commits, mut ids) = a_move_and_edit_whose_s_update_waits_lost_at_5();
     trees.set_local("h".into(), local(file(ROOT, "y", 9), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::Local);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("n", ROOT, "x"), update("n", 1)]);
@@ -69,9 +69,9 @@ fn a_move_and_edit_whose_s_update_waits_is_not_overwritten_by_a_change_after_the
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     trees.set_local("h".into(), local(file(ROOT, "y", 9), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::Local);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("n", ROOT, "x"), update("n", 1)]);
@@ -98,7 +98,7 @@ fn a_create_the_server_lost_while_its_s_update_waits_is_sent_again() {
         },
     );
     trees.set_local("n".into(), local(file(ROOT, "x", 1), 2));
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(matches!(&ops(&commit)[..], [op::Op::CreateFile(c)] if c.node_id == "n"));
@@ -123,9 +123,9 @@ fn a_create_the_server_lost_while_its_s_update_waits_is_sent_again() {
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     trees.set_local("h".into(), local(file(ROOT, "y", 9), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::Local);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(matches!(&ops(&commit)[..], [op::Op::CreateFile(c)] if c.node_id == "n"));
@@ -146,7 +146,7 @@ fn an_edit_to_the_content_a_lost_commit_replaced_is_sent_after_the_loss() {
     let applied = vec![outcome(op_result::Code::Applied)];
     commits.received(result(3, applied)).unwrap();
     assert!(commits.acknowledge(&mut trees, 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::InSync);
     assert!(trees.unsent_edits().is_empty());
 }
@@ -161,7 +161,7 @@ fn a_remote_edit_before_an_edit_to_the_content_a_lost_commit_replaced_is_sent_ke
         ..remote(file(ROOT, "n", 3))
     };
     trees.set_remote("n".into(), resent);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::Concurrent);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(
@@ -187,7 +187,7 @@ fn an_edit_of_a_file_the_server_went_back_to_holding_in_the_trash_is_kept_from_a
     )]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     trees.set_local("n".into(), local(file(ROOT, "n", 2), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     let (trashed_here, edited) = (trees.trashed_here(), trees.edited_here());
     trees.set_remote("n".into(), trashed(file(ROOT, "n", 2)));
     trees.forget_lost(
@@ -201,10 +201,10 @@ fn an_edit_of_a_file_the_server_went_back_to_holding_in_the_trash_is_kept_from_a
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.unsent_edits().iter().collect::<Vec<_>>(), ["n"]);
     trees.set_remote("n".into(), remote_at(file(ROOT, "n", 2), 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::Local);
     let resent = RemoteNode {
         content_rev: 4,
@@ -212,7 +212,7 @@ fn an_edit_of_a_file_the_server_went_back_to_holding_in_the_trash_is_kept_from_a
         ..remote_at(file(ROOT, "n", 3), 3)
     };
     trees.set_remote("n".into(), resent);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::Concurrent);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(
@@ -240,7 +240,7 @@ fn a_file_in_the_trash_after_a_loss_that_l_did_not_edit_is_not_recorded() {
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(trees.unsent_edits().is_empty());
     assert_eq!(trees.class("n"), Class::Remote);
 }
@@ -260,7 +260,7 @@ fn an_edit_this_device_committed_to_the_content_a_lost_commit_replaced_is_sent_a
     )]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     trees.set_local("n".into(), local(file(ROOT, "n", 2), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("n", 2)]);
     let applied = RemoteNode {
@@ -272,7 +272,7 @@ fn an_edit_this_device_committed_to_the_content_a_lost_commit_replaced_is_sent_a
     let results = vec![outcome(op_result::Code::Applied)];
     commits.received(result(3, results)).unwrap();
     assert!(commits.acknowledge(&mut trees, 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::InSync);
     assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
     let (trashed, edited) = (trees.trashed_here(), trees.edited_here());
@@ -288,7 +288,7 @@ fn an_edit_this_device_committed_to_the_content_a_lost_commit_replaced_is_sent_a
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::Local);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("n", 2)]);
@@ -321,9 +321,9 @@ fn a_write_to_the_content_the_server_went_back_to_seen_after_the_bootstrap_is_se
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     trees.set_local("n".into(), local(file(ROOT, "n", 2), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::Local);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("n", 2)]);
@@ -343,7 +343,7 @@ fn an_edit_sent_after_a_loss_and_lost_in_a_second_one_is_sent_again() {
     let results = vec![outcome(op_result::Code::Applied)];
     commits.received(result(3, results)).unwrap();
     assert!(commits.acknowledge(&mut trees, 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::InSync);
     assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
     let (trashed, edited) = (trees.trashed_here(), trees.edited_here());
@@ -359,7 +359,7 @@ fn an_edit_sent_after_a_loss_and_lost_in_a_second_one_is_sent_again() {
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::Local);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("n", 2)]);
@@ -370,7 +370,7 @@ fn an_edit_the_server_kept_is_not_sent_again_after_a_loss() {
     let mut trees = trees(&[synced("n", file(ROOT, "n", 3))]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     trees.set_local("n".into(), local(file(ROOT, "n", 2), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     build(&mut commits, &mut trees, &mut ids).unwrap();
     let applied = RemoteNode {
         content_rev: 2,
@@ -381,7 +381,7 @@ fn an_edit_the_server_kept_is_not_sent_again_after_a_loss() {
     let results = vec![outcome(op_result::Code::Applied)];
     commits.received(result(2, results)).unwrap();
     assert!(commits.acknowledge(&mut trees, 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     commit_file(&mut trees, &mut commits, &mut ids, "p", 3);
     assert_eq!(commits.connected(&welcome(1)), Reconnect::AheadOfServer);
     assert_eq!(commits.held_through(), 2);
@@ -398,7 +398,7 @@ fn an_edit_the_server_kept_is_not_sent_again_after_a_loss() {
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(trees.unsent_edits().is_empty());
     assert_eq!(trees.class("n"), Class::InSync);
 }
@@ -407,10 +407,10 @@ fn an_edit_the_server_kept_is_not_sent_again_after_a_loss() {
 fn an_edit_back_to_the_recorded_content_after_another_content_is_still_sent() {
     let (mut trees, mut commits, mut ids) = an_edit_to_the_content_a_lost_commit_replaced();
     trees.set_local("n".into(), local(file(ROOT, "n", 4), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::Local);
     trees.set_local("n".into(), local(file(ROOT, "n", 2), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("n"), Class::Local);
     assert!(trees.edited("n"));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -422,7 +422,7 @@ fn a_recorded_file_that_l_no_longer_holds_is_no_longer_recorded() {
     let (mut trees, _, _) = an_edit_to_the_content_a_lost_commit_replaced();
     assert_eq!(trees.unsent_edits().iter().collect::<Vec<_>>(), ["n"]);
     trees.remove_local("n");
-    trees.settle();
+    trees.settle(&Default::default());
     assert!(trees.unsent_edits().is_empty());
 }
 
@@ -430,7 +430,7 @@ fn a_recorded_file_that_l_no_longer_holds_is_no_longer_recorded() {
 fn a_recorded_file_another_device_purges_is_created_again() {
     let (mut trees, mut commits, mut ids) = an_edit_to_the_content_a_lost_commit_replaced();
     trees.remove_remote("n");
-    trees.settle();
+    trees.settle(commits.aliases());
     let (mut effects, mut effect_ids) = (Effects::default(), IdGen::new(50));
     assert!(
         effects
@@ -453,7 +453,7 @@ fn a_recorded_file_another_device_purges_is_created_again() {
     let results = vec![outcome(op_result::Code::Applied)];
     commits.received(result(3, results)).unwrap();
     assert!(commits.acknowledge(&mut trees, 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(trees.unsent_edits().is_empty());
     assert_eq!(trees.class("n"), Class::InSync);
 }
@@ -489,7 +489,7 @@ fn a_recorded_file_whose_s_update_waits_gets_no_download() {
         };
         trees.restore(state).unwrap();
         trees.rules_scanned();
-        trees.settle();
+        trees.settle(&Default::default());
         trees
     };
     let (mut effects, mut ids) = (Effects::default(), IdGen::new(1));
@@ -521,7 +521,7 @@ fn a_kept_move_that_another_device_reverses_before_a_loss_is_not_sent_again() {
         ..remote(file(ROOT, "old", 0))
     };
     trees.set_remote("n".into(), reversed);
-    trees.settle();
+    trees.settle(commits.aliases());
     commit_file(&mut trees, &mut commits, &mut ids, "p", 3);
     commit_file(&mut trees, &mut commits, &mut ids, "q", 4);
     assert_eq!(commits.connected(&welcome(2)), Reconnect::AheadOfServer);
@@ -539,10 +539,10 @@ fn a_kept_move_that_another_device_reverses_before_a_loss_is_not_sent_again() {
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(trees.waiting().contains_key("n"));
     trees.set_local("h".into(), local(file(ROOT, "y", 9), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     let sent =
         build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit));
     assert!(
@@ -572,7 +572,7 @@ fn a_kept_create_that_another_device_deletes_after_a_loss_stays_deleted() {
         },
     );
     trees.set_local("n".into(), local(file(ROOT, "x", 1), 2));
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     build(&mut commits, &mut trees, &mut ids).unwrap();
     trees.set_remote("n".into(), remote(file(ROOT, "x", 1)));
@@ -598,10 +598,10 @@ fn a_kept_create_that_another_device_deletes_after_a_loss_stays_deleted() {
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(trees.waiting().contains_key("n"));
     trees.set_local("h".into(), local(file(ROOT, "y", 9), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     let sent =
         build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit));
     assert!(
@@ -647,11 +647,11 @@ fn an_effect_on_a_node_whose_update_waits_keeps_its_slot_for_a_loss() {
             ..local(file(ROOT, "x", 9), 1)
         },
     );
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     commit_file(&mut trees, &mut commits, &mut ids, "p", 2);
     trees.set_local("n".into(), local(file(ROOT, "x", 1), 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("n", ROOT, "x"), update("n", 1)]);
     let moved = RemoteNode {
@@ -665,7 +665,7 @@ fn an_effect_on_a_node_whose_update_waits_keeps_its_slot_for_a_loss() {
     let applied = vec![outcome(op_result::Code::Applied); 2];
     commits.received(result(5, applied)).unwrap();
     assert!(commits.acknowledge(&mut trees, 5));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.waiting()["n"].origin, Origin::Commit(2));
     trees.set_local("k".into(), local(file(ROOT, "z2", 8), 3));
     let k_moved = RemoteNode {
@@ -682,9 +682,9 @@ fn an_effect_on_a_node_whose_update_waits_keeps_its_slot_for_a_loss() {
         ..remote(file(ROOT, "z", 1))
     };
     trees.set_remote("n".into(), moved_again);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(!effects_for(&mut trees, &mut ids, "n").is_empty());
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(
         trees
             .waiting()
@@ -707,7 +707,7 @@ fn an_effect_on_a_node_whose_update_waits_keeps_its_slot_for_a_loss() {
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     let sent =
         build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit));
     assert!(
@@ -722,7 +722,7 @@ fn a_waiting_update_keeps_its_slot_through_a_rebase() {
     let (mut trees, mut commits, mut ids) = a_move_and_edit_whose_s_update_waits();
     assert_eq!(trees.waiting()["n"].origin, Origin::Commit(1));
     trees.set_local("p".into(), local(file(ROOT, "p", 7), 50));
-    trees.settle();
+    trees.settle(commits.aliases());
     build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(trees.waiting()["n"].origin, Origin::Commit(1));
 }
@@ -742,7 +742,7 @@ fn a_lost_update_is_not_made_when_another_device_restores_the_node() {
     };
     trees.set_remote("n".into(), restored);
     trees.set_local("h".into(), local(file(ROOT, "y", 9), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     let sent =
         build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit));
     assert!(!trees.waiting().contains_key("n"));
@@ -771,7 +771,7 @@ fn a_lost_update_is_not_the_effects_base_while_it_cannot_fit() {
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     let mut state = commits.state();
     state.halted = Some(Halt::ReadOnly);
     let mut commits = Commits::from_state(state).unwrap();
@@ -783,7 +783,7 @@ fn a_lost_update_is_not_the_effects_base_while_it_cannot_fit() {
         ..remote(file(ROOT, "old", 7))
     };
     trees.set_remote("n".into(), restored);
-    trees.settle();
+    trees.settle(commits.aliases());
     let mut effects = Effects::default();
     let identity = FileIdentity {
         ino: 100,
@@ -810,7 +810,7 @@ fn a_lost_update_is_not_the_effects_base_while_it_cannot_fit() {
                 Some(identity),
             )
             .unwrap();
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     assert_eq!(
         trees.local().get("n").map(|node| &node.shape.content),
@@ -852,7 +852,7 @@ fn a_removal_the_server_lost_while_it_waits_is_sent_again() {
             ..local(file(ROOT, "x", 9), 1)
         },
     );
-    trees.settle();
+    trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     let applied = vec![outcome(op_result::Code::Applied); ops(&commit).len()];
@@ -878,10 +878,10 @@ fn a_removal_the_server_lost_while_it_waits_is_sent_again() {
         commits.held_through(),
         commits.accepted(),
     );
-    trees.settle();
+    trees.settle(commits.aliases());
     assert!(trees.waiting().is_empty());
     trees.set_local("h".into(), local(file(ROOT, "y", 9), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     let sent =
         build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit));
     assert!(

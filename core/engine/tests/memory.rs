@@ -145,7 +145,7 @@ fn first_upload() -> (Trees, usize) {
         };
         trees.set_local(entry.id.clone(), local);
     }
-    trees.settle();
+    trees.settle(&Default::default());
     let mut commits = Commits::from_state(CommitsState::default()).unwrap();
     let mut seq = 0;
     while let Some(commit) = commits
@@ -205,7 +205,7 @@ fn first_upload() -> (Trees, usize) {
         };
         commits.received(result).unwrap();
         assert!(commits.acknowledge(&mut trees, seq));
-        trees.settle();
+        trees.settle(commits.aliases());
     }
     assert!(trees.dirty().is_empty(), "{:?}", trees.work());
     assert_eq!(trees.synced().len(), entries.len());

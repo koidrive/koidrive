@@ -179,7 +179,7 @@ fn ancestry_a_reused_sequence_does_not_discard_a_known_later_value() {
         10,
         0,
     );
-    trees.settle();
+    trees.settle(&Default::default());
     let mut commits = crate::commit::Commits::default();
     let commit = commits.build(
         &mut trees,
@@ -377,7 +377,7 @@ fn reclaimable(child_to: &str, own_wait: bool) -> Trees {
     for (id, shape) in moved {
         trees.set_remote(id.into(), remote(shape));
     }
-    trees.settle();
+    trees.settle(&Default::default());
     let mut state = trees.state();
     state.discarded.insert("f".into(), dir("root", "a"));
     state
@@ -567,7 +567,7 @@ fn a_discarded_node_drops_its_unsent_move_and_follows_the_server() {
             ..remote(shape)
         },
     );
-    trees.settle();
+    trees.settle(&Default::default());
     trees.hold_unsent_move("c".into());
     assert_eq!(trees.class("c"), Class::Concurrent);
     trees.discard(["c".to_string()], &BTreeMap::new());
@@ -597,7 +597,7 @@ fn a_resend_that_yields_to_the_server_trash_drops_its_unsent_move() {
             ..remote(shape)
         },
     );
-    trees.settle();
+    trees.settle(&Default::default());
     trees.hold_unsent_move("c".into());
     trees.resends.insert("c".into());
     trees.yield_resends();
@@ -627,7 +627,7 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_a_loss_follows() {
         },
     );
     trees.set_local("c".into(), local(dir("f", "c"), 2));
-    trees.settle();
+    trees.settle(&Default::default());
     trees.resends.insert("c".into());
     trees.yield_resends();
     assert_eq!(trees.class("c"), Class::Remote);
@@ -642,7 +642,7 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_a_loss_follows() {
         0,
         0,
     );
-    trees.settle();
+    trees.settle(&Default::default());
     assert!(!trees.lost_creates.contains("c"));
     assert_eq!(trees.class("c"), Class::Remote);
 }
@@ -670,7 +670,7 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_the_loss_also_takes_th
         },
     );
     trees.set_local("c".into(), local(dir("f", "c"), 2));
-    trees.settle();
+    trees.settle(&Default::default());
     trees.resends.insert("c".into());
     trees.yield_resends();
     assert_eq!(trees.class("c"), Class::Remote);
@@ -686,7 +686,7 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_the_loss_also_takes_th
         0,
         0,
     );
-    trees.settle();
+    trees.settle(&Default::default());
     assert!(trees.resends.contains("c"));
     assert!(!trees.lost_creates.contains("c"));
 }

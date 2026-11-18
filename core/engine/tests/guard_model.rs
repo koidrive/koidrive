@@ -178,7 +178,7 @@ impl World {
             world.trees.set_remote(id.clone(), remote(&node));
             world.server.nodes.insert(id, node);
         }
-        world.trees.settle();
+        world.trees.settle(world.commits.aliases());
         world.trees.take_changes();
         world.commits.take_changes();
         world
@@ -360,7 +360,7 @@ impl World {
             .build(&mut self.trees, &mut self.ids, self.now, "h", "me", 7))
         .is_some();
         assert!(!built, "this device changed nothing");
-        self.trees.settle();
+        self.trees.settle(self.commits.aliases());
     }
 
     fn purge(&self, target: &str) -> Vec<(String, ServerNode)> {
@@ -423,7 +423,7 @@ impl World {
                 None => self.trees.remove_remote(&id),
             }
         }
-        self.trees.settle();
+        self.trees.settle(self.commits.aliases());
         self.last_seq = self.server.seq;
     }
 
@@ -438,7 +438,7 @@ impl World {
         for (id, node) in &self.server.nodes {
             self.trees.set_remote(id.clone(), remote(node));
         }
-        self.trees.settle();
+        self.trees.settle(self.commits.aliases());
         self.last_seq = self.server.seq;
         self.seen = None;
     }
@@ -502,7 +502,7 @@ impl World {
                     self.now,
                 );
             }
-            self.trees.settle();
+            self.trees.settle(self.commits.aliases());
             if !noticed && self.notice().is_some() {
                 break;
             }
@@ -550,7 +550,7 @@ impl World {
                     self.now,
                 );
             }
-            self.trees.settle();
+            self.trees.settle(self.commits.aliases());
         }
     }
 

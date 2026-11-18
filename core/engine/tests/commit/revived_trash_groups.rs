@@ -17,7 +17,7 @@ fn a_move_out_of_the_trash_holds_a_create_onto_a_member_its_user_removed_until_i
     use op_result::Code;
     commits.received(result(2, vec![outcome(Code::Applied)])).unwrap();
     assert!(commits.acknowledge(&mut trees, 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     let create = op::Op::CreateFile(proto::CreateFile { made_over: Vec::new(), source_version_id: String::new(),
         node_id: "h".into(),
@@ -51,7 +51,7 @@ fn a_delete_its_own_move_out_of_the_trash_superseded_is_sent_again() {
     let results = vec![outcome(Code::Applied), outcome(Code::Superseded)];
     commits.received(result(3, results)).unwrap();
     assert!(commits.acknowledge(&mut trees, 3));
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [delete("g")]);
 }
@@ -84,7 +84,7 @@ fn a_member_another_device_edits_after_its_superseded_delete_is_downloaded() {
     let results = vec![outcome(Code::Applied), outcome(Code::Superseded)];
     commits.received(result(9, results)).unwrap();
     assert!(commits.acknowledge(&mut trees, 10));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("g"), Class::Remote);
     let sent = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
     assert!(!sent.unwrap_or_default().contains(&delete("g")));
@@ -106,7 +106,7 @@ fn a_rename_out_of_the_trash_holds_a_create_onto_a_member_its_user_removed_until
     use op_result::Code;
     commits.received(result(2, vec![outcome(Code::Applied)])).unwrap();
     assert!(commits.acknowledge(&mut trees, 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     let create = op::Op::CreateFile(proto::CreateFile { made_over: Vec::new(), source_version_id: String::new(),
         node_id: "x".into(),
@@ -138,7 +138,7 @@ fn listed_while_renaming_out_of_the_trash(listed_rename: &str, results: Vec<OpRe
         commits.received(answer).unwrap();
     }
     commits.acknowledge(&mut trees, result_seq);
-    trees.settle();
+    trees.settle(commits.aliases());
     build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit))
 }
 
@@ -182,7 +182,7 @@ fn a_listing_of_a_member_another_device_edited_after_this_devices_rename_downloa
     trees.set_listed_remote("g".into(), edited);
     trees.listed_removals(removed, |seq| commits.listed_here(seq));
     commits.acknowledge(&mut trees, 3);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("g"), Class::Remote);
     let sent = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
     assert!(!sent.unwrap_or_default().contains(&delete("g")));
@@ -203,7 +203,7 @@ fn an_edit_another_device_made_before_the_revival_survives_the_superseded_delete
         ..remote_at(file("a", "g", 2), 1)
     };
     trees.set_remote("g".into(), edited.clone());
-    trees.settle();
+    trees.settle(commits.aliases());
     let trashed_at_9 = |node: RemoteNode| RemoteNode {
         trashed: true,
         trash_group: "2:0".into(),
@@ -212,14 +212,14 @@ fn an_edit_another_device_made_before_the_revival_survives_the_superseded_delete
     };
     trees.set_remote("a".into(), trashed_at_9(remote(dir(ROOT, "a"))));
     trees.set_remote("g".into(), trashed_at_9(edited.clone()));
-    trees.settle();
+    trees.settle(commits.aliases());
     trees.set_remote_made_here("a".into(), remote_at(dir(ROOT, "A"), 10));
     trees.set_remote_made_here("g".into(), RemoteNode { meta_rev: 10, ..edited });
     use op_result::Code;
     let results = vec![outcome(Code::Applied), outcome(Code::Superseded)];
     commits.received(result(10, results)).unwrap();
     assert!(commits.acknowledge(&mut trees, 10));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("g"), Class::Remote);
     let sent = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
     assert!(!sent.unwrap_or_default().contains(&delete("g")));
@@ -246,7 +246,7 @@ fn a_listing_keeps_an_edit_another_device_made_before_this_devices_rename_out_of
     trees.set_listed_remote("g".into(), edited);
     trees.listed_removals(removed, |seq| commits.listed_here(seq));
     assert!(commits.acknowledge(&mut trees, 10));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(trees.class("g"), Class::Remote);
     let sent = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
     assert!(!sent.unwrap_or_default().contains(&delete("g")));
