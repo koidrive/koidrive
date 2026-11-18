@@ -1790,7 +1790,11 @@ impl Driver {
         .map_err(|error| io_error(&spaces)(error.into()))?;
         match claim::release(&link.root, owner) {
             Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) => {}
             Err(error) => return Err(io_error(&link.root)(error)),
         }
         match fs::remove_dir_all(&store_dir) {
@@ -4345,6 +4349,25 @@ mod tests {
         let (_, set_aside) = driver.unlink(&root).await.unwrap();
 
         assert_eq!(set_aside.kept, std::slice::from_ref(&parked));
+        assert_eq!(fs::read(elsewhere.join("mine")).unwrap(), b"mine");
+    }
+
+    #[tokio::test]
+    async fn an_unlink_finishes_without_touching_a_koidrive_folder_that_is_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        let elsewhere = base.join("elsewhere");
+        fs::rename(root.join(".koidrive"), &elsewhere).unwrap();
+        fs::write(elsewhere.join("mine"), b"mine").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join(".koidrive")).unwrap();
+        let driver = Driver::open(paths).unwrap();
+
+        driver.unlink(&root).await.unwrap();
+
+        assert_eq!(fs::read_link(root.join(".koidrive")).unwrap(), elsewhere);
         assert_eq!(fs::read(elsewhere.join("mine")).unwrap(), b"mine");
     }
 
