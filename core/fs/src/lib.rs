@@ -33,9 +33,13 @@
 //! parent again from a fresh root handle and requires every folder on the way
 //! to keep its identity, and the parent its modification time and listing. A
 //! path that is present, cannot be read, or whose parent changed in between
-//! keeps its old entry and is returned for another rescan. A scan that would
-//! publish one entry, other than a hard link, at two paths of one volume saw
-//! renames happen while it read, so it publishes nothing.
+//! keeps its old entry and is returned for another rescan. So do both ends of
+//! a move the scan read halfway: an entry the scan found at two paths of one
+//! volume of which one no longer holds it, and an entry about to be published
+//! gone that a folder the scan listed holds, at a name that is not another of
+//! its links, after its listing changed. An old entry kept back can put its
+//! identity at a second path, or leave the identity that path held at none,
+//! so those paths keep their old entries too, until neither happens.
 //!
 //! A rescan of part of the tree reports a move whose other end lies outside
 //! the paths it was given as a rescan of both places would. On macOS, for an
@@ -131,9 +135,8 @@ pub enum Error {
     Io(#[from] io::Error),
     #[error("file system watcher: {0}")]
     Watch(Box<dyn std::error::Error + Send + Sync>),
-    /// A directory was replaced or removed while the scan was inside it, or
-    /// the scan found one entry at two paths. The snapshot is unchanged; scan
-    /// again once the tree is quiet.
+    /// A directory was replaced or removed while the scan was inside it. The
+    /// snapshot is unchanged; scan again once the tree is quiet.
     #[error("the tree changed during the scan")]
     Changed,
     /// The root path now names a different directory than the one scanned.
@@ -992,8 +995,7 @@ impl Snapshot {
     /// On any error the snapshot is unchanged. That includes a root that is
     /// missing, unreadable or replaced at any point of the scan, so a lost root
     /// never reads as everything removed, and [`Error::Changed`] when a folder
-    /// is replaced while the scan is inside it or renames during the scan show
-    /// one entry at two paths.
+    /// is replaced while the scan is inside it.
     ///
     /// A path is only reported removed, or as the source of a rename, once a
     /// fresh lookup from the root confirms it is gone, as the crate docs
