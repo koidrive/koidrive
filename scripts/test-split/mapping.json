@@ -662,6 +662,8 @@
     "fn:a_conflict_copy_keeps_s_s_position_when_another_device_wrote_s_s_bytes_back_before_the_result": "commit_results_and_conflicts",
     "fn:a_conflict_copy_another_device_deleted_before_its_result_is_deleted_here": "commit_results_and_conflicts",
     "fn:a_conflict_copy_downloaded_before_its_result_is_kept_once": "commit_results_and_conflicts",
+    "fn:a_file_create_kept_as_a_conflict_copy_settles_as_the_copy": "commit_results_and_conflicts",
+    "fn:a_file_create_whose_conflict_copy_was_downloaded_before_its_result_keeps_both_files": "commit_results_and_conflicts",
     "fn:a_conflict_copy_whose_result_arrives_during_its_download_keeps_the_local_file": "commit_results_and_conflicts",
     "fn:a_conflict_copy_whose_s_update_waits_behind_a_new_folder_is_moved_to_its_name": "commit_results_and_conflicts",
     "fn:a_rejected_op_marks_a_problem_but_a_rejected_cycle_moves_the_node_back": "refusal_and_reconnect",
