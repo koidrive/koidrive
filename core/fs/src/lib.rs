@@ -100,7 +100,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use notify::event::{AccessKind, AccessMode, EventKind};
+use notify::event::{AccessKind, AccessMode, EventKind, MetadataKind, ModifyKind};
 use notify::{RecommendedWatcher, RecursiveMode};
 use rustix::fs::{FileType, Mode, OFlags, RawMode};
 
@@ -740,6 +740,7 @@ impl Snapshot {
         self.rescan_under(
             root.as_ref(),
             paths,
+            &BTreeSet::new(),
             None,
             Some(rules),
             &|| false,
@@ -807,7 +808,16 @@ impl Snapshot {
         expected: Option<FileId>,
         cut: &mut dyn FnMut(Cut<'_>),
     ) -> Result<Rescan> {
-        self.rescan_under(root, paths, expected, None, &|| false, &|_| {}, cut)
+        self.rescan_under(
+            root,
+            paths,
+            &BTreeSet::new(),
+            expected,
+            None,
+            &|| false,
+            &|_| {},
+            cut,
+        )
     }
 
     /// [`Snapshot::rescan_with`], leaving out what `rules` leave out, and
@@ -819,6 +829,7 @@ impl Snapshot {
         &mut self,
         root: &Path,
         paths: impl IntoIterator<Item = PathBuf>,
+        listed: &BTreeSet<PathBuf>,
         expected: Option<FileId>,
         rules: Option<&mut Rules>,
         stopped: &dyn Fn() -> bool,
@@ -844,7 +855,7 @@ impl Snapshot {
             files: 0,
             found,
         };
-        let result = self.rescan_into(root, paths, expected, &mut scan);
+        let result = self.rescan_into(root, paths, listed, expected, &mut scan);
         if result.is_err()
             && let Some(rules) = scan.rules
         {
@@ -860,6 +871,7 @@ impl Snapshot {
         &mut self,
         root: &Path,
         paths: impl IntoIterator<Item = PathBuf>,
+        listed: &BTreeSet<PathBuf>,
         expected: Option<FileId>,
         scan: &mut Scan<'_>,
     ) -> Result<Rescan> {
@@ -891,6 +903,10 @@ impl Snapshot {
             }
             scopes.push(self.anchor(path));
         }
+        let (listed, unknown): (Vec<&PathBuf>, Vec<&PathBuf>) = (listed.iter()).partition(|dir| {
+            (self.entries.get(*dir)).is_some_and(|entry| entry.kind == EntryKind::Dir)
+        });
+        scopes.extend(unknown.into_iter().map(|dir| self.anchor(dir.clone())));
 
         let scopes = outermost(scopes);
         if scopes
@@ -917,13 +933,19 @@ impl Snapshot {
                 }
             }
             let mut groups: BTreeMap<PathBuf, BTreeSet<OsString>> = BTreeMap::new();
-            for scope in outermost(resolved) {
+            let resolved = outermost(resolved);
+            for scope in &resolved {
                 let name = scope
                     .file_name()
                     .expect("scopes are non-empty")
                     .to_os_string();
                 let parent = scope.parent().unwrap_or(Path::new("")).to_path_buf();
                 groups.entry(parent).or_default().insert(name);
+            }
+            for dir in listed {
+                if !resolved.iter().any(|scope| dir.starts_with(scope)) {
+                    groups.entry(dir.clone()).or_default();
+                }
             }
             for (parent, focus) in groups {
                 let result = self.scan_children(scan, &root_dir, root_stat.dev, &parent, &focus);
@@ -2099,6 +2121,7 @@ pub struct NativeWatcher {
     snapshot: Snapshot,
     view: OnceCell<Snapshot>,
     dirty: BTreeSet<PathBuf>,
+    listed: BTreeSet<PathBuf>,
     unreadable: BTreeSet<PathBuf>,
     rules: Option<Rules>,
     /// The rules changes of the scans since the last poll returned.
@@ -2156,6 +2179,7 @@ impl NativeWatcher {
             snapshot: previous,
             view: OnceCell::new(),
             dirty: BTreeSet::from([PathBuf::new()]),
+            listed: BTreeSet::new(),
             unreadable: BTreeSet::new(),
             #[cfg(target_os = "linux")]
             blocked: BTreeSet::from_iter(deferred.then(PathBuf::new)),
@@ -2208,8 +2232,25 @@ impl NativeWatcher {
         {
             return Ok(());
         }
+        let listing_only = match event.kind {
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Extended)) => return Ok(()),
+            // FSEvents gives an event every flag its path collected lately, so a mark on a folder made moments before
+            // also reports the folder's creation:
+            // https://developer.apple.com/documentation/coreservices/1455361-fseventstreameventflags
+            #[cfg(target_vendor = "apple")]
+            EventKind::Create(_) => true,
+            // inotify reports an extended attribute written on a folder as IN_ATTRIB, as it does a chmod:
+            // https://man7.org/linux/man-pages/man7/inotify.7.html
+            #[cfg(target_os = "linux")]
+            EventKind::Modify(ModifyKind::Metadata(_)) => true,
+            _ => false,
+        };
         for path in event.paths {
             let rel = path.strip_prefix(&self.root).unwrap_or(Path::new(""));
+            if listing_only && self.folder_as_scanned(&path, rel) {
+                self.listed.insert(rel.to_path_buf());
+                continue;
+            }
             // An event for a left-out entry of an included folder is kept: the
             // rescan of that folder records the name as left out.
             let below_left_out = self.rules.as_ref().is_some_and(|rules| {
@@ -2221,6 +2262,18 @@ impl NativeWatcher {
             }
         }
         Ok(())
+    }
+
+    fn folder_as_scanned(&self, path: &Path, rel: &Path) -> bool {
+        #[cfg(target_os = "linux")]
+        if self.blocked.contains(rel) {
+            return false;
+        }
+        (self.snapshot.entries.get(rel))
+            .filter(|entry| entry.kind == EntryKind::Dir)
+            .is_some_and(|scanned| {
+                stat_path(path).is_ok_and(|stat| stat.entry().as_ref() == Some(scanned))
+            })
     }
 
     fn receive(&mut self, timeout: Duration) -> Result<bool> {
@@ -2458,7 +2511,7 @@ impl Watcher for NativeWatcher {
             if let Some(err) = self.failed.take() {
                 return Err(err);
             }
-            if self.dirty.is_empty() && self.uncovered.is_none() {
+            if self.dirty.is_empty() && self.listed.is_empty() && self.uncovered.is_none() {
                 let left = deadline.saturating_duration_since(Instant::now());
                 let wait = if self.snapshot.detached.is_empty() {
                     left
@@ -2476,7 +2529,7 @@ impl Watcher for NativeWatcher {
                     .collect();
                 self.dirty.extend(back);
             }
-            if self.dirty.is_empty() && self.uncovered.is_none() {
+            if self.dirty.is_empty() && self.listed.is_empty() && self.uncovered.is_none() {
                 if Instant::now() >= deadline {
                     return Ok(self.report(Vec::new(), root));
                 }
@@ -2499,6 +2552,7 @@ impl Watcher for NativeWatcher {
             let rescan = match self.snapshot.rescan_under(
                 &self.root,
                 scopes.iter().cloned(),
+                &self.listed,
                 expected,
                 self.rules.as_mut(),
                 &*self.stopped,
@@ -2515,6 +2569,7 @@ impl Watcher for NativeWatcher {
                 Err(err) => return Err(err),
             };
             self.uncovered = None;
+            self.listed.clear();
             root = Some(rescan.root);
             self.changed_rules.extend(rescan.rules);
             self.dirty = rescan.unsettled.into_iter().collect();
@@ -2616,6 +2671,7 @@ impl Watcher for RescanWatcher {
             let rescan = self.snapshot.rescan_under(
                 &self.root,
                 [PathBuf::new()],
+                &BTreeSet::new(),
                 None,
                 self.rules.as_mut(),
                 &*self.stopped,

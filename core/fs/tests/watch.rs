@@ -5,7 +5,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use koidrive_fs::{
@@ -1104,4 +1104,122 @@ fn a_file_replaced_by_a_rename_is_modified_in_place() {
     fs::rename(root.join(".doc.tmp"), root.join("doc")).unwrap();
     let changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
     assert_eq!(changes, [Change::Modified { path: "doc".into() }]);
+}
+
+#[test]
+fn a_mark_on_a_folder_rescans_nothing_below_it() {
+    #[cfg(target_vendor = "apple")]
+    const MARK: &str = "com.koidrive.node";
+    #[cfg(not(target_vendor = "apple"))]
+    const MARK: &str = "user.koidrive.node";
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    for folder in 0..10 {
+        let folder = root.join(format!("deps/p{folder}"));
+        fs::create_dir_all(&folder).unwrap();
+        for file in 0..10 {
+            fs::write(folder.join(format!("f{file}")), "x").unwrap();
+        }
+    }
+    let found = Arc::new(AtomicU64::new(0));
+    let counted = found.clone();
+    let mut watcher = NativeWatcher::start(&root, Snapshot::scan(&root).unwrap())
+        .unwrap()
+        .counting(move |files| {
+            counted.fetch_max(files, Ordering::Relaxed);
+        });
+    let deadline = Instant::now() + WAIT;
+    loop {
+        found.store(0, Ordering::Relaxed);
+        watcher.poll(Duration::from_millis(500)).unwrap();
+        if found.load(Ordering::Relaxed) == 0 || Instant::now() > deadline {
+            break;
+        }
+    }
+
+    rustix::fs::setxattr(
+        root.join("deps"),
+        MARK,
+        b"n1",
+        rustix::fs::XattrFlags::empty(),
+    )
+    .unwrap();
+    for _ in 0..4 {
+        assert_eq!(
+            watcher.poll(Duration::from_millis(500)).unwrap().changes,
+            []
+        );
+    }
+    assert_eq!(found.load(Ordering::Relaxed), 0);
+
+    fs::write(root.join("deps/p3/f2"), "changed").unwrap();
+    expect(&mut watcher, &[modified("deps/p3/f2")]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn folder_made_unreadable_while_watched_is_reported() {
+    for mode in [0o000, 0o444] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let locked = root.join("d/locked");
+        fs::create_dir_all(locked.join("inner")).unwrap();
+        fs::write(locked.join("x"), "x").unwrap();
+        let mut watcher = NativeWatcher::start(&root, Snapshot::scan(&root).unwrap()).unwrap();
+        watcher.poll(Duration::from_millis(300)).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(mode)).unwrap();
+        let probe = fs::symlink_metadata(locked.join("x"));
+        if !blocks_reads("folder_made_unreadable_while_watched_is_reported", probe) {
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+        let mut unreadable = vec![];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && unreadable.is_empty() {
+            unreadable = watcher.poll(Duration::from_millis(300)).unwrap().unreadable;
+        }
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(unreadable, vec![PathBuf::from("d/locked")], "mode {mode:o}");
+    }
+}
+
+#[test]
+fn a_folder_whose_mode_changes_is_scanned_once_and_then_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    fs::create_dir_all(root.join("d/inner")).unwrap();
+    fs::write(root.join("d/x"), "x").unwrap();
+    let mut watcher = NativeWatcher::start(&root, Snapshot::scan(&root).unwrap()).unwrap();
+    let deadline = Instant::now() + WAIT;
+    while watcher
+        .poll(Duration::from_millis(500))
+        .unwrap()
+        .root
+        .is_some()
+    {
+        assert!(Instant::now() < deadline, "the first scan never settled");
+    }
+
+    fs::set_permissions(root.join("d"), fs::Permissions::from_mode(0o700)).unwrap();
+    let deadline = Instant::now() + WAIT;
+    while watcher
+        .poll(Duration::from_millis(300))
+        .unwrap()
+        .root
+        .is_none()
+    {
+        assert!(Instant::now() < deadline, "the mode change woke no scan");
+    }
+    let deadline = Instant::now() + WAIT;
+    while watcher
+        .poll(Duration::from_millis(500))
+        .unwrap()
+        .root
+        .is_some()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "every poll still scans after the mode change"
+        );
+    }
 }

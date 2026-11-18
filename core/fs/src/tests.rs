@@ -1257,6 +1257,7 @@ fn a_failed_scan_leaves_the_rules_as_they_were() {
     let result = snapshot.rescan_under(
         &root,
         [PathBuf::new()],
+        &BTreeSet::new(),
         None,
         Some(&mut rules),
         &|| false,
@@ -1363,6 +1364,7 @@ fn a_search_looks_at_a_bounded_number_of_entries_per_rescan_under_deep_and_wide_
             .rescan_under(
                 &root,
                 paths,
+                &BTreeSet::new(),
                 None,
                 Some(&mut rules),
                 &|| false,
@@ -1413,6 +1415,7 @@ fn a_left_out_entry_back_while_its_removal_is_confirmed_stays_left_out_until_inc
         .rescan_under(
             root,
             [PathBuf::new()],
+            &BTreeSet::new(),
             None,
             Some(&mut rules),
             &|| false,
