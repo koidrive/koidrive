@@ -152,12 +152,19 @@ def nextest_config(directory, baseline, period):
 
 
 def stop(process):
-    os.killpg(process.pid, signal.SIGTERM)
+    interrupted = []
+    previous = signal.signal(signal.SIGINT, lambda *_: interrupted.append(True))
     try:
-        return process.communicate(timeout=TERMINATE_GRACE)[0]
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        return process.communicate()[0]
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            return process.communicate(timeout=TERMINATE_GRACE)[0]
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            return process.communicate()[0]
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        if interrupted:
+            raise KeyboardInterrupt
 
 
 def nextest(root, sample, expression, config, status_level, limit, log):
@@ -319,12 +326,13 @@ def scope(mutants):
 
 
 def analyse(runs, properties, slow_seconds, few):
-    durations, timings, flaky, mutants, by_mutant = {}, {}, set(), {}, {}
+    durations, timings, flaky, mutants, by_mutant = {}, {}, {}, {}, {}
     for planned, base, records in runs:
         for test, seconds in base["durations"].items():
             durations[test] = max(seconds, durations.get(test, 0.0))
             timings.setdefault(test, {})[planned["sample"]] = seconds
-        flaky.update(base["flaky"])
+        for test in base["flaky"]:
+            flaky.setdefault(test, set()).add(planned["sample"])
         for mutant in planned["mutants"]:
             mutants[(planned["sample"], mutant["id"])] = mutant
         for record in records:
@@ -360,18 +368,19 @@ def analyse(runs, properties, slow_seconds, few):
         return {key for key in kills[test] if not killers[key] & path}
 
     for test in sorted(slow, key=lambda test: (-durations.get(test, 0.0), test)):
-        losses[test] = len(alone(test, merge_path - {test}))
         if all(len(alone(other, merge_path - {test})) <= few for other in moved | {test}):
             merge_path.discard(test)
             moved.add(test)
+    for test in slow:
+        losses[test] = len(alone(test, merge_path - {test}))
     for test in moved:
         lost[test] = alone(test, merge_path)
-        losses[test] = len(lost[test])
         verdicts[test] = (f"slow, alone catches {len(lost[test])} within {measured}" if lost[test]
                           else f"slow, catches nothing else within {measured}")
     covers = {test: cover(kills, kills[test] - lost[test], merge_path, durations) for test in lost}
     def ran_on(test):
-        tiers = {sample: "mutants the faster tests missed" if seconds >= slow_seconds else "every mutant"
+        tiers = {sample: "no mutant" if sample in flaky.get(test, ()) else
+                 "mutants the faster tests missed" if seconds >= slow_seconds else "every mutant"
                  for sample, seconds in sorted(timings.get(test, {}).items())}
         if len(set(tiers.values())) <= 1:
             return next(iter(tiers.values()), "every mutant")
@@ -380,8 +389,10 @@ def analyse(runs, properties, slow_seconds, few):
     rows = []
     for test in sorted(kills):
         seconds = durations.get(test, 0.0)
-        if test in flaky:
+        if test in flaky and flaky[test] >= set(timings.get(test, {})):
             verdict = "flaky in baseline: not measured"
+        elif test in flaky:
+            verdict = f"flaky in the {', '.join(sorted(flaky[test]))} baseline: not measured there"
         elif kind(test) == "property":
             verdict = "keep: property test"
         elif test in verdicts:

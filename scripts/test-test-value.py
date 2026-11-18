@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+from contextlib import redirect_stderr
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -37,9 +39,15 @@ class Status(unittest.TestCase):
 
 class Shards(unittest.TestCase):
     def test_shards_split_every_mutant_exactly_once(self):
-        with self.assertRaises(SystemExit):
-            test_value.main(["run", "--sample", "guard", "--mutants", "m", "--baseline", "b", "--shard", "8/8",
-                             "--out", "o"])
+        original, test_value.run = test_value.run, lambda args: self.fail("run() started")
+        try:
+            with self.assertRaises(SystemExit) as stopped, redirect_stderr(io.StringIO()) as errors:
+                test_value.main(["run", "--sample", "guard", "--mutants", "m", "--baseline", "b", "--shard", "8/8",
+                                 "--out", "o"])
+        finally:
+            test_value.run = original
+        self.assertEqual(stopped.exception.code, 2)
+        self.assertIn("--shard K/N needs K below N", errors.getvalue())
         mutants = [{"id": number} for number in range(101)]
         seen = [mutant["id"] for index in range(7) for mutant in test_value.shard(mutants, index, 7)]
         self.assertEqual(sorted(seen), list(range(101)))
@@ -118,7 +126,7 @@ class Analysis(unittest.TestCase):
     def test_slow_tests_move_only_while_the_merge_path_loses_at_most_few_mutants(self):
         rows, _ = self.analyse([["b slow"], ["b slow", "b slower"], ["b slower"], ["b slower"], ["b fast"]],
                                {"b slow": 60, "b slower": 90, "b fast": 0.1, "b idle": 60}, few=1)
-        self.assertEqual((rows["b slower"]["verdict"], rows["b slower"]["merge_path_loses"]), ("keep", 2))
+        self.assertEqual((rows["b slower"]["verdict"], rows["b slower"]["merge_path_loses"]), ("keep", 3))
         self.assertEqual((rows["b slow"]["verdict"], rows["b slow"]["merge_path_loses"]),
                          ("slow, alone catches 1 within core/x/src/guard.rs", 1))
         self.assertEqual(rows["b idle"]["verdict"], NOTHING_ELSE)
@@ -183,6 +191,14 @@ class Analysis(unittest.TestCase):
             rows = {row["test"]: row for row in rows}
             self.assertEqual((rows["b y"]["seconds"], rows["b y"]["ran_on"]),
                              (12, "every mutant in commit; mutants the faster tests missed in guard"))
+
+    def test_a_test_flaky_in_one_sample_keeps_its_kills_from_the_others(self):
+        runs = [(planned("guard", 1), {"durations": {"b x": 1, "b y": 1}, "flaky": ["b x"]}, records([["b y"]])),
+                (planned("commit", 1), {"durations": {"b x": 1, "b y": 1}, "flaky": []}, records([["b x"]]))]
+        rows, _, _, _, _ = test_value.analyse(runs, set(), 10, 0)
+        rows = {row["test"]: row for row in rows}
+        self.assertEqual((rows["b x"]["kills"], rows["b x"]["verdict"], rows["b x"]["ran_on"]),
+                         (1, "flaky in the guard baseline: not measured there", "every mutant in commit; no mutant in guard"))
 
     def test_a_mutant_whose_patch_did_not_apply_makes_verdicts_provisional(self):
         base = {"durations": {"b x": 1}, "flaky": []}
