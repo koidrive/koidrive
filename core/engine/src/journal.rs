@@ -774,6 +774,18 @@ impl Journal {
         self.seen.insert(node.to_owned(), seen);
     }
 
+    pub fn end_unsent_carried(&mut self, node: &str) {
+        for field in Field::ALL {
+            let unsent = (self.rows.get(&(node.to_owned(), field))).is_some_and(|row| {
+                matches!(row.author, Author::Carried(_))
+                    && matches!(row.state, RowState::Local { .. })
+            });
+            if unsent {
+                self.end(node, field);
+            }
+        }
+    }
+
     pub fn end(&mut self, node: &str, field: Field) -> Option<Row> {
         if field == Field::Status {
             self.seen.remove(node);
