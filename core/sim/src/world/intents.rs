@@ -204,8 +204,6 @@ impl Intent {
 #[derive(Clone, Debug)]
 pub(super) struct Carried {
     seq: u64,
-    pub(super) revived: BTreeSet<NodeId>,
-    pub(super) reparented: BTreeSet<NodeId>,
 }
 
 pub(super) struct Server {
@@ -338,15 +336,6 @@ impl Intents {
 
     pub(super) fn intent(&self, i: usize) -> &Intent {
         &self.list[i]
-    }
-
-    pub(super) fn replaced(&self, i: usize) -> bool {
-        let intent = &self.list[i];
-        (self.list[i + 1..].iter()).any(|later| {
-            later.author == intent.author
-                && later.ino == intent.ino
-                && later.value.field() == intent.value.field()
-        })
     }
 
     pub(super) fn len(&self) -> usize {
@@ -702,14 +691,7 @@ impl Intents {
         }
     }
 
-    pub(super) fn carried_by(
-        &mut self,
-        author: usize,
-        server: &Server,
-        seq: u64,
-        revived: &BTreeSet<NodeId>,
-        reparented: &BTreeSet<NodeId>,
-    ) {
+    pub(super) fn carried_by(&mut self, author: usize, server: &Server, seq: u64) {
         for i in 0..self.list.len() {
             if self.list[i].author != author
                 || self.list[i].carried.is_some()
@@ -717,11 +699,7 @@ impl Intents {
             {
                 continue;
             }
-            self.list[i].carried = Some(Carried {
-                seq,
-                revived: revived.clone(),
-                reparented: reparented.clone(),
-            });
+            self.list[i].carried = Some(Carried { seq });
         }
     }
 

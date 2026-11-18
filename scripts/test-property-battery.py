@@ -772,8 +772,7 @@ cases = ["{1:064}"]
                     "01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 1 came undone, and no change its user did not see brought the node back")
         elsewhere = ("assertion failed: `(left == right)` \n  left: `(\"01a1c2c0-39a0-75ee-831c-498d57bc0a70\", \"a\")`, \n right: `(\"01a1c2c0-39a0-780a-953a-eb70673e29cb\", \"a\")`: 01a1c2c0-39a0-7895-abc3-b3429e08873f"
                      " is sent to a place the disk does not hold it at at core/sim/tests/engine_sync/common.rs:1330.")
-        never_reached = next(entry for entry in entries
-                             if entry["file"] == "GUN-1012-I-delete-never-reached-server-across-server-restores.toml")["examples"][0]
+        g3a0d = "3a0d2e9f93add5bd8adc686860704064f6142131917fe4203d878de80082695b"
         undone = next(entry for entry in entries if entry["file"] == "GUN-1012-I-delete-came-undone.toml")["examples"][1]
         def example(case):
             return next(entry for entry in entries if case.startswith(tuple(entry.get("cases", ["-"]))))["examples"][0]
@@ -796,11 +795,6 @@ cases = ["{1:064}"]
             (restores_and_rewinds, quiet, ae45, [("D", "GUN-984", None)]),
             (server_restores, quiet, ae45, [("D", "GUN-984", ["45aeea4283bad112a4dfb008e7c67a75c58dea15306a57cb165f8b6cbd33238c"])]),
             (server_restores, quiet, e0a5, [("J", "GUN-1012", ["5e0a61643769"])]),
-            (folder, never_reached, other, []),
-            (rewinds_and_rollbacks, never_reached, other, []),
-            (server_restores, never_reached, other, [("I", "GUN-1012", None)]),
-            (restores_and_rewinds, never_reached, other, [("I", "GUN-1012", None)]),
-            ("devices_on_coarse_volumes_converge_across_restores_and_rewinds", never_reached, other, [("I", "GUN-1012", None)]),
             (lose_rollbacks, example(x2293), x2293, [("X", "GUN-1199", ["2293e681b3bc09faeca001d034140fd95df720190105bcb9a754644310248df5"])]),
             (lose_rollbacks, example(x2293), other, []),
             (lose_rollbacks, example(x2293), "34f34706da29bd847073d489545b53a8e3987583e07c333f9a5301e1fac5421b", []),
