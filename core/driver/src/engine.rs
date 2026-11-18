@@ -105,7 +105,11 @@ impl Engine {
             return Ok(());
         }
         let recovering = matches!(self.commits.halted(), Some(Halt::Recovery { .. }));
-        (self.trees).backfill(self.commits.in_flight().map(|flight| &flight.commit), recovering);
+        self.trees.backfill(
+            self.commits.in_flight().map(|flight| &flight.commit),
+            recovering,
+            crate::driver::now_ms() as u64,
+        );
         tx.write_engine_changes(&EngineChanges {
             trees: self.trees.take_changes(),
             commits: Default::default(),
@@ -1953,7 +1957,7 @@ impl Engine {
 pub(crate) struct Stored {
     trees: Trees,
     state: EngineState,
-    ids: Option<Vec<u8>>,
+    ids: IdGen,
     cursor: Option<Cursor>,
     mounts: BTreeMap<PathBuf, Mount>,
     unread: Option<BTreeMap<PathBuf, i64>>,
@@ -1963,12 +1967,15 @@ pub(crate) struct Stored {
 
 impl Stored {
     pub fn new(root: &str) -> Self {
-        let mut trees = Trees::new(root);
+        let ids = IdGen::new(
+            std::collections::hash_map::RandomState::new().hash_one(std::time::SystemTime::now()),
+        );
+        let mut trees = Trees::new(root, &ids);
         trees.skip_provenance_check();
         Stored {
             trees,
             state: EngineState::default(),
-            ids: None,
+            ids,
             cursor: None,
             mounts: BTreeMap::new(),
             unread: None,
@@ -1983,6 +1990,13 @@ impl Stored {
         root: &str,
         abandoned: &dyn Fn() -> bool,
     ) -> Result<bool, Error> {
+        if let Some(bytes) = tx.id_generator()? {
+            let state = <[u8; 8]>::try_from(bytes.as_slice()).map_err(|_| {
+                invalid(format!("an ID generator state of {} bytes", bytes.len()))
+            })?;
+            self.ids = IdGen::new(u64::from_le_bytes(state));
+            self.trees = Trees::new(root, &self.ids);
+        }
         let trees = &mut self.trees;
         let mut walked = 0;
         let mut abandoned_now = || {
@@ -2075,7 +2089,6 @@ impl Stored {
         if stopped.is_some() || abandoned() {
             return Ok(false);
         }
-        self.ids = tx.id_generator()?;
         self.cursor = tx.cursor()?;
         self.mounts = tx.volume_mounts()?;
         self.unread = tx.unread_folders()?;
@@ -2109,19 +2122,9 @@ impl Stored {
             Commits::from_state(state.commits).map_err(|error| invalid(format!("{error:?}")))?;
         commits.hold(&mut trees);
         let effects = effects_of(state.effects)?;
-        let ids = match ids {
-            Some(bytes) => {
-                let state = <[u8; 8]>::try_from(bytes.as_slice()).map_err(|_| {
-                    invalid(format!("an ID generator state of {} bytes", bytes.len()))
-                })?;
-                IdGen::new(u64::from_le_bytes(state))
-            }
-            None => IdGen::new(
-                std::collections::hash_map::RandomState::new()
-                    .hash_one(std::time::SystemTime::now()),
-            ),
-        };
-        trees.journal_mut().seed(&ids);
+        trees
+            .journal_mut()
+            .set_clock(crate::driver::now_ms() as u64);
         Ok(Some(Engine {
             trees,
             effects,
@@ -3009,7 +3012,7 @@ mod tests {
         batch: impl FnOnce(&mut Trees),
         takes: bool,
     ) -> Case {
-        let mut trees = Trees::new(ROOT);
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
         for (at, (id, synced, remote)) in nodes.iter().enumerate() {
             trees.set_synced((*id).into(), synced.clone());
             if let Some(shape) = synced {
@@ -5219,6 +5222,57 @@ mod tests {
             engine.trees.state().edited_here,
             BTreeMap::from([("e".into(), 6)])
         );
+    }
+
+    #[test]
+    fn upgraded_devices_backfill_and_mint_intents_of_their_own() {
+        let minted = |generator: u64| {
+            let (_dir, mut store) = store();
+            let synced = koidrive_store::Shape {
+                parent_id: ROOT.into(),
+                name: "d".into(),
+                kind: NodeKind::Dir as i32,
+                content: None,
+            };
+            let renamed = koidrive_store::Shape {
+                name: "e".into(),
+                ..synced.clone()
+            };
+            let mut state = EngineState::default();
+            state.trees.dirty.insert("d".into());
+            store
+                .transaction(|tx| {
+                    tx.set_id_generator(&generator.to_le_bytes())?;
+                    tx.put_synced_node(&SyncedNode {
+                        node_id: "d".into(),
+                        shape: synced.clone(),
+                        pending_for: String::new(),
+                    })?;
+                    tx.put_local_node(&koidrive_store::LocalNode {
+                        left_out_when_placed: false,
+                        content_from_server: false,
+                        node_id: "d".into(),
+                        shape: renamed,
+                        identity: ino(1),
+                        parked: false,
+                    })?;
+                    tx.set_engine_state(&state)
+                })
+                .unwrap();
+            let mut engine = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+            let backfilled = engine
+                .trees
+                .journal_row("d", koidrive_engine::journal::Field::Place)
+                .unwrap()
+                .intent;
+            engine.trees.journal_mut().set_clock(1_800_000_000_000);
+            (backfilled, engine.trees.journal_mut().mint())
+        };
+        let (a, a_next) = minted(0x1111_2222_3333_4444);
+        let (b, b_next) = minted(0x9999_8888_7777_6666);
+        assert_ne!(a, b);
+        assert_ne!(a_next, b_next);
+        assert_ne!(a.as_bytes()[..6], [0; 6], "{a} carries no time");
     }
 
     #[test]

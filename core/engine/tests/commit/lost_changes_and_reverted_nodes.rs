@@ -3238,7 +3238,7 @@ mod parked_nodes_and_rules {
             trees.settle(&Default::default());
             if timing & 2 != 0 {
                 let before = trees;
-                trees = Trees::new(ROOT);
+                trees = Trees::new(ROOT, &IdGen::new(0));
                 for (id, node) in before.local().iter() {
                     trees.set_local(id.clone(), node.clone());
                 }

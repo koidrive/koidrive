@@ -91,7 +91,7 @@ fn synced(trees: &mut Trees, node: &str, shape: Shape, rev: u64) {
 
 #[test]
 fn a_node_sent_without_intents_gets_legacy_ids_and_keeps_its_live_id_while_live() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_remote("f".into(), remote(file(ROOT, "Café.txt", 1), 3));
     assert_eq!(
         trees.remote().get("f").unwrap().intents,
@@ -148,7 +148,7 @@ fn a_node_sent_without_intents_gets_legacy_ids_and_keeps_its_live_id_while_live(
 
 #[test]
 fn r_keeps_the_intents_the_server_sent() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let sent = NodeIntents {
         place: Some(FieldIntent {
             id: id(1),
@@ -171,7 +171,7 @@ fn r_keeps_the_intents_the_server_sent() {
 
 #[test]
 fn the_history_follows_r_until_r_changes_and_keeps_a_downloaded_value_marked() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_remote("f".into(), remote(file(ROOT, "a", 1), 1));
     let first = held(&trees, "f", Field::Content);
     assert!(trees.journal().history("f", Field::Content).is_empty());
@@ -203,7 +203,7 @@ fn the_history_follows_r_until_r_changes_and_keeps_a_downloaded_value_marked() {
 
 #[test]
 fn an_edit_writes_a_content_row_over_r_s_intent_and_keeps_r_s_value_in_the_history() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "f", file(ROOT, "a", 1), 1);
     let seen = held(&trees, "f", Field::Content);
     trees.set_local_changed("f".into(), local(file(ROOT, "a", 2)));
@@ -231,7 +231,7 @@ fn an_edit_writes_a_content_row_over_r_s_intent_and_keeps_r_s_value_in_the_histo
 
 #[test]
 fn a_move_writes_a_place_row_that_sends_the_place_it_left() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "d", dir(ROOT, "d"), 1);
     synced(&mut trees, "f", file(ROOT, "a", 1), 1);
     let seen = held(&trees, "f", Field::Place);
@@ -250,7 +250,7 @@ fn a_move_writes_a_place_row_that_sends_the_place_it_left() {
 
 #[test]
 fn a_scan_that_finds_what_s_holds_writes_no_row() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_remote("f".into(), remote(file(ROOT, "a", 1), 1));
     trees.set_synced("f".into(), Some(file(ROOT, "a", 1)));
     trees.set_local_changed("f".into(), local(file(ROOT, "a", 1)));
@@ -259,7 +259,7 @@ fn a_scan_that_finds_what_s_holds_writes_no_row() {
 
 #[test]
 fn a_create_writes_a_row_for_each_of_its_fields_and_a_delete_before_any_send_ends_them() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_local_changed("f".into(), local(file(ROOT, "a", 1)));
     let fields: Vec<Field> = (trees.journal_rows())
         .map(|((_, field), _)| *field)
@@ -273,7 +273,7 @@ fn a_create_writes_a_row_for_each_of_its_fields_and_a_delete_before_any_send_end
 
 #[test]
 fn a_delete_lists_what_l_held_for_the_node_and_below_it() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "d", dir(ROOT, "d"), 1);
     synced(&mut trees, "f", file("d", "a", 1), 1);
     trees.set_remote("f".into(), remote(file("d", "a", 2), 2));
@@ -312,7 +312,7 @@ fn a_delete_lists_what_l_held_for_the_node_and_below_it() {
 
 #[test]
 fn s_keeps_the_intents_of_the_values_it_holds_when_r_moves_on_or_loses_the_node() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "f", file(ROOT, "a", 1), 1);
     let content = |trees: &Trees| {
         trees
@@ -366,7 +366,7 @@ fn intent_of(trees: &Trees, node: &str, field: Field) -> proto::Intent {
 #[test]
 fn a_commit_names_its_intents_only_when_the_server_announces_them() {
     for (features, named) in [(&[][..], false), (&["field_intents"][..], true)] {
-        let mut trees = Trees::new(ROOT);
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
         trees.set_local_changed("f".into(), local(file(ROOT, "a", 1)));
         let commit = build(&mut trees, features, 1_700);
         let [create] = &commit.ops[..] else {
@@ -397,7 +397,7 @@ fn a_commit_names_its_intents_only_when_the_server_announces_them() {
 
 #[test]
 fn an_op_no_row_covers_gets_an_own_sent_row_over_r_s_intent() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "f", file(ROOT, "a", 1), 1);
     let seen = held(&trees, "f", Field::Place);
     trees.set_local("f".into(), local(file(ROOT, "b", 1)));
@@ -417,7 +417,7 @@ fn an_op_no_row_covers_gets_an_own_sent_row_over_r_s_intent() {
 
 #[test]
 fn an_op_that_carries_another_devices_value_without_a_row_goes_without_an_intent() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "f", file(ROOT, "a", 1), 1);
     let mut ops = vec![proto::Op {
         op: Some(op::Op::Move(proto::Move {
@@ -442,7 +442,7 @@ fn an_op_that_carries_another_devices_value_without_a_row_goes_without_an_intent
 
 #[test]
 fn a_finish_names_the_marks_intent_and_leaves_a_later_rename_to_send() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let mark = FieldIntent {
         id: id(5),
         author: "me".into(),
@@ -489,7 +489,7 @@ fn a_finish_names_the_marks_intent_and_leaves_a_later_rename_to_send() {
 
 #[test]
 fn a_delete_sends_what_r_holds_that_l_never_held_as_unseen() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "d", dir(ROOT, "d"), 1);
     synced(&mut trees, "f", file("d", "a", 1), 1);
     trees.remove_local_by_user("f");
@@ -524,7 +524,7 @@ fn a_delete_sends_what_r_holds_that_l_never_held_as_unseen() {
 
 #[test]
 fn a_delete_sees_the_place_r_holds_that_l_held_before_a_move_no_user_made() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "d", dir(ROOT, "d"), 1);
     trees.set_local("d".into(), local(dir(ROOT, "e")));
     trees.remove_local_by_user("d");
@@ -615,7 +615,7 @@ fn held_as(trees: &Trees, node: &str, field: Field) -> Option<(IntentId, i64)> {
 
 #[test]
 fn an_applied_result_holds_each_row_as_the_node_state_reports_it() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let shape = file(ROOT, "a", 1);
     trees.set_local_changed("f".into(), local(shape.clone()));
     let commit = build(&mut trees, &["field_intents"], 1_700);
@@ -647,7 +647,7 @@ fn an_applied_result_holds_each_row_as_the_node_state_reports_it() {
 
 #[test]
 fn a_result_without_intents_holds_rows_as_the_legacy_ids_of_its_node_state() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let shape = file(ROOT, "a", 1);
     trees.set_local_changed("f".into(), local(shape.clone()));
     let commit = build(&mut trees, &[], 1_700);
@@ -669,7 +669,7 @@ fn a_result_without_intents_holds_rows_as_the_legacy_ids_of_its_node_state() {
 #[test]
 fn a_superseded_move_ends_unless_the_server_applied_another_place_before_it() {
     for (applied_at_ms, stays) in [(2_500, false), (1_000, true)] {
-        let mut trees = Trees::new(ROOT);
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
         synced(&mut trees, "f", file(ROOT, "a", 1), 1);
         trees.set_local_changed("f".into(), local(file(ROOT, "b", 1)));
         let commit = build(&mut trees, &["field_intents"], 1_700);
@@ -695,7 +695,7 @@ fn a_superseded_move_ends_unless_the_server_applied_another_place_before_it() {
 
 #[test]
 fn a_superseded_row_finds_the_node_holding_its_intent_among_the_results_node_states() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "f", file(ROOT, "a", 1), 1);
     trees.set_local_changed("f".into(), local(file(ROOT, "b", 1)));
     let commit = build(&mut trees, &["field_intents"], 1_700);
@@ -713,7 +713,7 @@ fn a_superseded_row_finds_the_node_holding_its_intent_among_the_results_node_sta
 
 #[test]
 fn a_conflict_copy_takes_the_content_row_as_held() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "f", file(ROOT, "a", 1), 1);
     trees.set_local_changed("f".into(), local(file(ROOT, "a", 2)));
     let commit = build(&mut trees, &["field_intents"], 1_700);
@@ -735,7 +735,7 @@ fn a_conflict_copy_takes_the_content_row_as_held() {
 
 #[test]
 fn a_fallback_create_merged_into_a_folder_ends_its_place_and_status_and_moves_its_childrens_rows() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_local_changed("d".into(), local(dir(ROOT, "d")));
     trees.set_local_changed("c".into(), local(file("d", "c", 1)));
     let commit = build(&mut trees, &["field_intents"], 1_700);
@@ -759,7 +759,7 @@ fn a_fallback_create_merged_into_a_folder_ends_its_place_and_status_and_moves_it
 #[test]
 fn a_create_answered_id_exists_ends_its_live_status_row_and_keeps_the_rest_to_send_again() {
     for (reason, ended) in [("ID_EXISTS", true), ("NAME_TAKEN", false)] {
-        let mut trees = Trees::new(ROOT);
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
         trees.set_local_changed("f".into(), local(file(ROOT, "a", 1)));
         let commit = build(&mut trees, &["field_intents"], 1_700);
         let rejected = proto::OpResult {
@@ -777,7 +777,7 @@ fn a_create_answered_id_exists_ends_its_live_status_row_and_keeps_the_rest_to_se
 
 #[test]
 fn a_create_names_the_author_of_each_field_it_carries() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_local_changed("f".into(), local(file(ROOT, "a", 1)));
     let mut status = trees.journal_row("f", Field::Status).unwrap().into_owned();
     status.author = Author::Carried(Some("b".into()));
@@ -792,7 +792,7 @@ fn a_create_names_the_author_of_each_field_it_carries() {
 
 #[test]
 fn a_held_row_keeps_its_value_and_time_when_r_takes_an_earlier_intent() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "f", file(ROOT, "a", 1), 1);
     let first = held(&trees, "f", Field::Content);
     trees.set_local_changed("f".into(), local(file(ROOT, "a", 2)));
@@ -831,7 +831,7 @@ fn a_held_row_keeps_its_value_and_time_when_r_takes_an_earlier_intent() {
 
 #[test]
 fn an_acknowledged_commit_holds_the_rows_its_results_prove_as_r_holds_them() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let shape = file(ROOT, "a", 1);
     trees.set_local_changed("f".into(), local(shape.clone()));
     let mut commits = Commits::from_state(CommitsState::default()).unwrap();
@@ -885,7 +885,7 @@ fn compact_edit(trees: &mut Trees) -> (Row, RemoteNode) {
 #[test]
 fn a_compact_row_is_written_out_unchanged_whenever_r_stops_giving_it() {
     for trigger in ["earlier", "listed", "moved", "lost", "loss"] {
-        let mut trees = Trees::new(ROOT);
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
         let (original, mut node) = compact_edit(&mut trees);
         match trigger {
             "earlier" | "listed" => {
@@ -928,7 +928,7 @@ fn a_compact_row_is_written_out_unchanged_whenever_r_stops_giving_it() {
 
 #[test]
 fn the_store_keeps_compact_rows_whole_and_a_reload_compacts_them_again() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let (original, _) = compact_edit(&mut trees);
     let changes = trees.take_changes();
     let written = changes
@@ -943,7 +943,7 @@ fn the_store_keeps_compact_rows_whole_and_a_reload_compacts_them_again() {
         Some(&original)
     );
     let reload = || {
-        let mut reloaded = Trees::new(ROOT);
+        let mut reloaded = Trees::new(ROOT, &IdGen::new(0));
         for (id, node) in trees.remote().iter() {
             reloaded.set_remote(id.clone(), node.clone());
         }
@@ -993,7 +993,7 @@ fn the_store_keeps_compact_rows_whole_and_a_reload_compacts_them_again() {
 
 #[test]
 fn a_history_entry_that_r_s_intent_gives_is_kept_only_once_r_moves_past_it() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let (row, _) = compact_edit(&mut trees);
     let RowState::Held { held_as, .. } = row.state else {
         panic!("{row:?}");
@@ -1012,7 +1012,7 @@ fn a_history_entry_that_r_s_intent_gives_is_kept_only_once_r_moves_past_it() {
     );
     let first = trees.remote_history("f", Field::Content)[0].intent;
     for (moved_to, shape) in [(id(9), file(ROOT, "a", 3)), (first, file(ROOT, "a", 1))] {
-        let mut trees = Trees::new(ROOT);
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
         let (_, mut node) = compact_edit(&mut trees);
         node.shape = shape;
         node.version_id = "v3".into();
@@ -1029,7 +1029,7 @@ fn a_history_entry_that_r_s_intent_gives_is_kept_only_once_r_moves_past_it() {
 #[test]
 fn a_create_into_a_purged_folder_takes_the_place_the_server_reports_and_never_sends_the_folder_again()
  {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "a", dir(ROOT, "a"), 1);
     synced(&mut trees, "x", dir("a", "x"), 1);
     trees.set_local_changed("z".into(), local(file("x", "z", 1)));
@@ -1111,7 +1111,7 @@ fn a_create_into_a_purged_folder_takes_the_place_the_server_reports_and_never_se
 }
 
 fn backfilled(table: &str, waiting: Option<Waiting>) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_synced("d".into(), Some(dir(ROOT, "d")));
     trees.set_local("d".into(), local(dir(ROOT, "d")));
     let mut state = trees.state();
@@ -1123,7 +1123,7 @@ fn backfilled(table: &str, waiting: Option<Waiting>) -> Trees {
         .waiting
         .extend(waiting.map(|waiting| ("d".into(), waiting)));
     trees.restore(state).unwrap();
-    trees.backfill(None, false);
+    trees.backfill(None, false, 1_000);
     trees
 }
 
@@ -1236,7 +1236,7 @@ fn a_backfilled_folder_whose_create_the_server_applies_keeps_its_rows_held() {
 
 #[test]
 fn the_first_listing_that_names_intents_replaces_the_ids_computed_for_the_values_it_lists() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "f", file(ROOT, "a", 1), 1);
     synced(&mut trees, "g", file(ROOT, "b", 2), 1);
     let renamed = RemoteNode {
@@ -1329,7 +1329,7 @@ fn acknowledge_superseded_move(
 
 #[test]
 fn a_superseded_move_whose_node_a_later_op_of_its_commit_brings_back_ends() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "f", file(ROOT, "a", 1), 1);
     trees.set_local_changed("f".into(), local(file(ROOT, "b", 2)));
     let (mut commits, ops) = sent_with_intents(&mut trees);
@@ -1348,7 +1348,7 @@ fn a_superseded_move_whose_node_a_later_op_of_its_commit_brings_back_ends() {
 
 #[test]
 fn a_superseded_move_whose_live_node_holds_an_earlier_place_does_not_end() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "f", file(ROOT, "a", 1), 1);
     trees.set_local_changed("f".into(), local(file(ROOT, "b", 1)));
     let (mut commits, ops) = sent_with_intents(&mut trees);

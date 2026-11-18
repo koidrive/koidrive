@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use koidrive_engine::ids::IdGen;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
@@ -102,7 +103,7 @@ fn settle_cost_while_the_rules_leave_out_a_large_folder() {
     let nodes: usize =
         std::env::var("KOIDRIVE_BENCH_NODES").map_or(110_000, |nodes| nodes.parse().unwrap());
     assert!(nodes >= 102, "KOIDRIVE_BENCH_NODES must be at least 102");
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for file in 0..100 {
         add(
             &mut trees,

@@ -47,6 +47,7 @@ fn an_edit_in_flight_in_a_store_from_before_dropped_edits_were_recorded_is_sent_
         trash_group: String::new(),
         version_id: version_id.into(),
         made_over: Vec::new(),
+        intents: None,
     };
     let local = |shape, ino| EngineLocalNode {
         left_out_when_placed: false,
@@ -60,7 +61,7 @@ fn an_edit_in_flight_in_a_store_from_before_dropped_edits_were_recorded_is_sent_
         },
         parked: false,
     };
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     for (id, ino) in [("n", 1), ("p", 2)] {
         trees.set_remote(id.into(), remote(shape(id, 1), 1, "v1"));
         trees.set_local(id.into(), local(shape(id, 1), ino));

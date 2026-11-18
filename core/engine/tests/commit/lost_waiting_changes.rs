@@ -465,7 +465,7 @@ fn a_recorded_file_whose_s_update_waits_gets_no_download() {
             edit_rev: 2,
             ..remote(file(ROOT, "n", 3))
         };
-        let mut trees = Trees::new(ROOT);
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
         trees.set_remote("n".into(), edited);
         trees.set_local("n".into(), local(file(ROOT, "n", 2), 1));
         trees.set_synced("n".into(), Some(file(ROOT, "n", 3)));

@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_device_s_edit() {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     let shape = engine_shape("root", "f");
     let remote = RemoteNode {
         shape: shape.clone(),
@@ -19,6 +19,7 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
         trash_group: String::new(),
         pending_for: None,
         pending_by: None,
+        intents: None,
     };
     trees.set_remote("f".into(), remote.clone());
     trees.set_local(

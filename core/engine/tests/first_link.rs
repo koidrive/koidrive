@@ -50,7 +50,7 @@ fn dir(parent: &str, name: &str) -> Shape {
 
 /// Trees with `local` in L and `remote` in R, and nothing in S, as on a first link.
 fn trees(local: &[(&str, Shape)], remote: &[(&str, Shape)]) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (ino, (id, shape)) in local.iter().enumerate() {
         let identity = FileIdentity {
             ino: ino as u128 + 1,
@@ -943,7 +943,7 @@ fn settled_below(folders: &[(&str, Shape)]) -> (Trees, IdGen) {
     let mut remote = folders.to_vec();
     remote.push(("r-file", child.clone()));
     let remote = trees(&[], &remote);
-    let mut settled = Trees::new(ROOT);
+    let mut settled = Trees::new(ROOT, &IdGen::new(0));
     settled.rules_scanned();
     let mut local = folders.to_vec();
     local.push(("l-file", child));
@@ -994,7 +994,7 @@ fn restarted_without(trees: &Trees, gone: &[&str]) -> Trees {
 }
 
 fn restarted_from(trees: &Trees, gone: &[&str], state: TreesState) -> Trees {
-    let mut fresh = Trees::new(ROOT);
+    let mut fresh = Trees::new(ROOT, &IdGen::new(0));
     for (id, node) in
         (trees.local().iter()).filter(|(id, _)| !gone.iter().any(|gone| **id == *gone))
     {
@@ -1015,7 +1015,7 @@ fn linked_once_the_folder_is_placed(place: impl FnOnce(&mut Trees)) {
     let remote_parent = dir(ROOT, "remote-folder");
     let mut child = written("notes", WRITTEN_NS);
     child.parent = "p".into();
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.rules_scanned();
     trees.set_local("p".into(), local_node(dir(ROOT, "local-folder"), 1));
     trees.set_local("l-file".into(), local_node(child.clone(), 2));
@@ -2263,7 +2263,7 @@ fn a_discard_whose_s_update_waits_stays_after_a_server_loss() {
 
 #[test]
 fn a_reclaimed_folder_that_cannot_leave_s_yet_keeps_its_childs_waiting_update() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (id, shape, ino) in [("f", dir(ROOT, "a"), 1), ("c", dir("f", "child"), 2)] {
         trees.set_synced(id.into(), Some(shape.clone()));
         trees.set_local(
@@ -2346,7 +2346,7 @@ fn remote_node(shape: Shape) -> RemoteNode {
 }
 
 fn a_reclaimed_folder_that_took_along_a_server_file(server_digest: u8) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let local = [
         ("f", dir(ROOT, "a"), 1),
         ("c", dir("f", "child"), 2),
@@ -2419,7 +2419,7 @@ fn reclaim_with_waiting(
     remote: &[(&str, Shape)],
     waiting: &[(&str, Shape)],
 ) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (ino, (id, shape)) in synced.iter().enumerate() {
         trees.set_synced((*id).into(), Some(shape.clone()));
         let identity = FileIdentity {

@@ -1551,7 +1551,7 @@ fn reload(
     effects: &Effects,
     rules: &Rules,
 ) -> Result<(Trees, Commits, Effects), TestCaseError> {
-    let mut loaded = Trees::new(trees.remote().root.clone());
+    let mut loaded = Trees::new(trees.remote().root.clone(), &IdGen::new(0));
     for (id, node) in trees.remote().iter() {
         loaded.set_remote(id.clone(), node.clone());
     }
@@ -2464,7 +2464,7 @@ fn run_ignoring_answering_after(
     let (mut space, mut other) = seeded(seed);
     let root = space.space_id().to_owned();
     let history = space.history_id().to_owned();
-    let mut device = Device::new(Trees::new(root.clone()));
+    let mut device = Device::new(Trees::new(root.clone(), &IdGen::new(0)));
     device.fresh_dir_names = fresh_dir_names;
     for state in space.nodes().iter().filter(|n| n.node_id != root) {
         let (id, node) = RemoteNode::from_state(state).unwrap();
@@ -3461,7 +3461,7 @@ fn a_merged_folder_is_held_by_its_key_holder_or_its_alias_under_a_merged_parent(
         chunks: Box::default(),
         intents: None,
     };
-    let mut trees = Trees::new(root.clone());
+    let mut trees = Trees::new(root.clone(), &IdGen::new(0));
     let local = LocalNode {
         left_out_when_placed: false,
         content_from_server: false,
@@ -3529,7 +3529,7 @@ fn an_ignored_entry_follows_its_folder_when_another_folder_takes_the_folders_id(
         parked: false,
         chunks: Box::default(),
     };
-    let mut device = Device::new(Trees::new(root.clone()));
+    let mut device = Device::new(Trees::new(root.clone(), &IdGen::new(0)));
     device.trees.set_local("live".into(), folder(1));
     device.ignored.insert(
         ("live".into(), vec!["c.txt".into()]),

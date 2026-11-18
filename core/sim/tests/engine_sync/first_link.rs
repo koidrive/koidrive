@@ -5,7 +5,7 @@ fn placement_check_after_a_move(
     destination: &str,
     trashed_parent: bool,
 ) -> Result<(), TestCaseError> {
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     for (id, local_parent, remote_parent) in [
         ("home", "root", "root"),
         ("elsewhere", "root", "root"),
@@ -928,7 +928,7 @@ fn a_folder_moved_into_the_discarded_folder_merged_into_it_goes_back_to_its_serv
 }
 
 fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
-    let mut device = Device::new(Trees::new("root"));
+    let mut device = Device::new(Trees::new("root", &IdGen::new(0)));
     device.acted = BTreeSet::from(["k".into(), "m".into()]);
     device.removed_from = BTreeMap::from([("k".into(), "root".into())]);
     let state = |id: &str, parent: &str| NodeState {
@@ -968,7 +968,7 @@ fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
 
 #[test]
 fn the_discard_oracle_counts_a_removal_only_in_the_folder_the_user_removed_the_entry_from() {
-    let mut device = Device::new(Trees::new("root"));
+    let mut device = Device::new(Trees::new("root", &IdGen::new(0)));
     let change = |id: &str, parent: &str| ChangeRecord {
         change: Some(change_record::Change::Node(NodeState {
             node_id: id.into(),
@@ -1043,7 +1043,7 @@ fn the_keep_rule_walk_passes_a_folder_whose_move_the_server_took_before_moving_i
 }
 
 fn keep_rule_keeps_a_deleted_folder(server_renames_it: bool) -> bool {
-    let mut device = Device::new(Trees::new("root"));
+    let mut device = Device::new(Trees::new("root", &IdGen::new(0)));
     device.acted = BTreeSet::from(["k".into()]);
     device.removed_from = BTreeMap::from([("k".into(), "root".into())]);
     let change = |name: &str| ChangeRecord {
@@ -1088,7 +1088,7 @@ fn the_keep_rule_lets_a_delete_through_when_the_server_left_the_folder_as_it_was
 
 #[test]
 fn the_keep_rule_keeps_back_a_folder_above_an_entry_it_already_kept_back() {
-    let mut device = Device::new(Trees::new("root"));
+    let mut device = Device::new(Trees::new("root", &IdGen::new(0)));
     let change = |id: &str, parent: &str, name: &str| ChangeRecord {
         change: Some(change_record::Change::Node(NodeState {
             node_id: id.into(),
@@ -1134,7 +1134,7 @@ fn the_keep_rule_keeps_back_a_folder_above_an_entry_it_already_kept_back() {
 
 #[test]
 fn a_move_out_and_back_leaves_no_relocation_to_stop_the_keep_rule_walk() {
-    let mut device = Device::new(Trees::new("root"));
+    let mut device = Device::new(Trees::new("root", &IdGen::new(0)));
     let at = |parent: &str| koidrive_engine::tree::Shape {
         parent: parent.into(),
         name: "m".into(),
@@ -1157,7 +1157,7 @@ fn a_move_out_and_back_leaves_no_relocation_to_stop_the_keep_rule_walk() {
 
 #[test]
 fn a_move_the_server_answers_at_another_place_is_pending_from_there() {
-    let mut device = Device::new(Trees::new("root"));
+    let mut device = Device::new(Trees::new("root", &IdGen::new(0)));
     let at = |parent: &str| koidrive_engine::tree::Shape {
         parent: parent.into(),
         name: "m".into(),
@@ -1624,7 +1624,7 @@ fn a_first_link_keeps_the_new_entries_of_a_folder_another_device_renames_out_and
 
 #[test]
 fn a_blocked_placement_is_excused_only_while_its_node_still_belongs_at_the_held_name() {
-    let mut device = Device::new(Trees::new("root"));
+    let mut device = Device::new(Trees::new("root", &IdGen::new(0)));
     device.ignored.insert(
         ("root".into(), vec!["ss".into()]),
         DiskEntry {
@@ -1704,7 +1704,7 @@ fn a_discard_judges_an_entry_taken_out_by_the_place_the_server_last_took_its_mov
             "below it the user took out an entry it held",
         ),
     ] {
-        let mut trees = Trees::new("root");
+        let mut trees = Trees::new("root", &IdGen::new(0));
         let folder_state = NodeState {
             node_id: "folder".into(),
             parent_id: "root".into(),
@@ -1773,7 +1773,7 @@ fn a_discard_keeps_the_ancestry_an_entry_left_when_that_place_moves_before_the_s
         meta_rev: 2,
         ..Default::default()
     };
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     for (name, ino) in [("folder", 1), ("item", 2), ("parent", 3)] {
         let (id, remote) = RemoteNode::from_state(&state(name, "root", name)).unwrap();
         trees.set_synced(id.clone(), Some(remote.shape.clone()));
@@ -1826,7 +1826,7 @@ fn a_discard_names_no_departure_for_an_entry_the_server_placed_where_the_user_ne
     let root = space.space_id().to_owned();
     let history = space.history_id().to_owned();
     let seq = space.head_seq();
-    let mut device = Device::new(Trees::new(root.clone()));
+    let mut device = Device::new(Trees::new(root.clone(), &IdGen::new(0)));
     for node in space.nodes().into_iter().filter(|n| n.node_id != root) {
         let (id, remote) = RemoteNode::from_state(&node).unwrap();
         let held = LocalNode {

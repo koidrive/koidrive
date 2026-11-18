@@ -7,7 +7,7 @@ fn a_rename_the_server_applies_under_another_name_is_not_a_reason_to_bring_the_n
     let history = space.history_id().to_owned();
     let node = space.nodes().into_iter().find(|n| n.name == "a").unwrap();
     let (id, remote) = RemoteNode::from_state(&node).unwrap();
-    let mut device = Device::new(Trees::new(root));
+    let mut device = Device::new(Trees::new(root, &IdGen::new(0)));
     let held = LocalNode {
         shape: remote.shape.clone(),
         identity: device.identity(),
@@ -126,7 +126,7 @@ fn a_parked_child_of_a_folder_renamed_in_an_earlier_commit_is_not_brought_back_f
     let child = nodes.iter().position(|n| n.name == "ß").unwrap();
     let id = NodeId::from(&nodes[child].node_id);
     let ancestor = NodeId::from(&nodes[parent].node_id);
-    let mut device = Device::new(Trees::new(root));
+    let mut device = Device::new(Trees::new(root, &IdGen::new(0)));
     for state in &nodes {
         let (id, node) = RemoteNode::from_state(state).unwrap();
         device
@@ -640,7 +640,7 @@ fn a_parked_file_forked_from_a_node_the_server_deleted_is_created_after_its_comm
 
 #[test]
 fn a_blocked_unpark_home_onto_a_name_an_ignored_entry_holds_is_excused() {
-    let mut device = Device::new(Trees::new("root"));
+    let mut device = Device::new(Trees::new("root", &IdGen::new(0)));
     device.rule(&Ruling::File(vec!["ss/"]));
     let id = NodeId::from("e");
     let (content, chunks) = split(Some(content(1, 1)));

@@ -516,7 +516,7 @@ fn changes<K: Ord + Clone, V: Clone + PartialEq>(
 }
 
 /// The journal, the history and the seen lists, with the clock and generator that mint this user's intents.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Journal {
     rows: Rows,
     held_changed: BTreeSet<RowKey>,
@@ -524,7 +524,7 @@ pub struct Journal {
     seen: TrackedMap<NodeId, Vec<Seen>>,
     listed: bool,
     listed_before: bool,
-    ids: Option<IdGen>,
+    ids: IdGen,
     ids_before: Option<u64>,
     now_ms: u64,
 }
@@ -537,22 +537,42 @@ impl PartialEq for Journal {
             && *self.history == *other.history
             && *self.seen == *other.seen
             && self.listed == other.listed
-            && self.ids.as_ref().map(|ids| ids.state) == other.ids.as_ref().map(|ids| ids.state)
+            && self.ids.state == other.ids.state
     }
 }
 
 impl Journal {
-    pub fn restore(state: JournalState) -> Self {
+    pub fn new(engine: &IdGen) -> Self {
+        let mut ids = IdGen::new(engine.state ^ JOURNAL_STREAM);
+        ids.next_u64();
         Self {
+            rows: Rows::default(),
+            held_changed: BTreeSet::new(),
+            history: TrackedMap::default(),
+            seen: TrackedMap::default(),
+            listed: false,
+            listed_before: false,
+            ids,
+            ids_before: None,
+            now_ms: 0,
+        }
+    }
+
+    pub fn restore(&mut self, state: JournalState) {
+        *self = Self {
             rows: Rows::restore(state.rows),
+            held_changed: BTreeSet::new(),
             history: state.history.into(),
             seen: state.seen.into(),
             listed: state.listed,
             listed_before: state.listed,
-            ids: state.ids.map(IdGen::new),
+            ids: state
+                .ids
+                .map(IdGen::new)
+                .unwrap_or_else(|| self.ids.clone()),
             ids_before: state.ids,
-            ..Self::default()
-        }
+            now_ms: self.now_ms,
+        };
     }
 
     pub fn state(&self, full: impl Fn(&RowKey, &HeldRow) -> Row) -> JournalState {
@@ -565,7 +585,7 @@ impl Journal {
             history: (*self.history).clone(),
             seen: (*self.seen).clone(),
             listed: self.listed,
-            ids: self.ids.as_ref().map(|ids| ids.state),
+            ids: Some(self.ids.state),
         }
     }
 
@@ -581,7 +601,7 @@ impl Journal {
             .collect();
         let listed = (self.listed != self.listed_before).then_some(self.listed);
         self.listed_before = self.listed;
-        let state = self.ids.as_ref().map(|ids| ids.state);
+        let state = Some(self.ids.state);
         let ids = (state != self.ids_before).then_some(state);
         self.ids_before = state;
         JournalChanges {
@@ -593,24 +613,12 @@ impl Journal {
         }
     }
 
-    pub fn seed(&mut self, engine: &IdGen) {
-        if self.ids.is_none() {
-            let mut ids = IdGen::new(engine.state ^ JOURNAL_STREAM);
-            ids.next_u64();
-            self.ids = Some(ids);
-        }
-    }
-
     pub fn set_clock(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
     }
 
     pub fn mint(&mut self) -> IntentId {
-        let now_ms = self.now_ms;
-        IntentId::mint(
-            self.ids.get_or_insert_with(|| IdGen::new(JOURNAL_STREAM)),
-            now_ms,
-        )
+        IntentId::mint(&mut self.ids, self.now_ms)
     }
 
     pub fn listed(&self) -> bool {

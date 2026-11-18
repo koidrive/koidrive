@@ -11,6 +11,7 @@ use koidrive_ignore::{Scope, Source, Status};
 use siphasher::sip::SipHasher13;
 
 use crate::first_link;
+use crate::ids::IdGen;
 use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file, rules_source};
 use crate::journal::{Journal, NodeIntents};
 use crate::names::{name_key, nfc, same_name};
@@ -766,7 +767,8 @@ impl PartialEq for Trees {
 }
 
 impl Trees {
-    pub fn new(root: impl Into<NodeId>) -> Self {
+    /// Empty trees whose journal mints this user's intents from a stream of the engine's generator `ids`.
+    pub fn new(root: impl Into<NodeId>, ids: &IdGen) -> Self {
         let root = root.into();
         Self {
             r: Tree::new(root.clone()),
@@ -826,7 +828,7 @@ impl Trees {
             unsent_marks: TrackedMap::default(),
             pending_finishes: TrackedMap::default(),
             answered_rules: TrackedMap::default(),
-            journal: Journal::default(),
+            journal: Journal::new(ids),
             ended_carriers: BTreeSet::new(),
             synced_intents: BTreeMap::new(),
             ignore: Matcher::new(LocalRules::default()),
@@ -8464,7 +8466,7 @@ impl Trees {
         self.unsent_marks = unsent_marks.into();
         self.pending_finishes = pending_finishes.into();
         self.answered_rules = answered_rules.into();
-        self.journal = Journal::restore(journal);
+        self.journal.restore(journal);
         let held: BTreeSet<NodeId> = (self.journal.held_rows())
             .map(|((node, _), _)| node.clone())
             .collect();

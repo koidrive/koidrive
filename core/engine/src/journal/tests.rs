@@ -103,7 +103,7 @@ fn field_intents_round_trip_through_the_wire_message() {
 
 #[test]
 fn a_change_of_a_local_row_keeps_its_base() {
-    let mut journal = Journal::default();
+    let mut journal = Journal::new(&IdGen::new(0));
     let first = journal.user_change("n", content(1), WireBase::None, Some(id(9)));
     let second = journal.user_change("n", content(2), WireBase::None, Some(id(8)));
     let row = journal.row("n", Field::Content).unwrap();
@@ -115,7 +115,7 @@ fn a_change_of_a_local_row_keeps_its_base() {
 
 #[test]
 fn a_change_after_a_send_is_made_over_the_sent_intent_and_keeps_the_flight() {
-    let mut journal = Journal::default();
+    let mut journal = Journal::new(&IdGen::new(0));
     let first = journal.user_change("n", content(1), WireBase::None, Some(id(9)));
     journal.send("n", Field::Content, 50);
     let second = journal.user_change("n", content(2), WireBase::None, None);
@@ -136,7 +136,7 @@ fn a_change_after_a_send_is_made_over_the_sent_intent_and_keeps_the_flight() {
 
 #[test]
 fn a_value_returning_to_the_one_in_flight_takes_its_intent_back() {
-    let mut journal = Journal::default();
+    let mut journal = Journal::new(&IdGen::new(0));
     let first = journal.user_change("n", content(1), WireBase::None, Some(id(9)));
     journal.send("n", Field::Content, 50);
     journal.user_change("n", content(2), WireBase::None, None);
@@ -151,7 +151,7 @@ fn a_value_returning_to_the_one_in_flight_takes_its_intent_back() {
 
 #[test]
 fn a_change_after_a_held_row_is_made_over_held_as() {
-    let mut journal = Journal::default();
+    let mut journal = Journal::new(&IdGen::new(0));
     let first = journal.user_change("n", content(1), WireBase::None, None);
     journal.send("n", Field::Content, 0);
     journal.applied("n", Field::Content, first, &held(7, 100), Some("v7".into()));
@@ -161,7 +161,7 @@ fn a_change_after_a_held_row_is_made_over_held_as() {
 
 #[test]
 fn an_applied_result_holds_the_row_rebases_and_records_history() {
-    let mut journal = Journal::default();
+    let mut journal = Journal::new(&IdGen::new(0));
     let first = journal.user_change("n", content(1), WireBase::None, Some(id(9)));
     journal.send("n", Field::Content, 10);
     let second = journal.user_change("n", content(2), WireBase::None, None);
@@ -188,7 +188,7 @@ fn an_applied_result_holds_the_row_rebases_and_records_history() {
 
 #[test]
 fn a_superseded_row_ends_and_rows_made_over_it_take_the_reported_intent() {
-    let mut journal = Journal::default();
+    let mut journal = Journal::new(&IdGen::new(0));
     let first = journal.user_delete("n", vec![seen("n", Field::Place, 3, None)], None);
     journal.send("n", Field::Status, 0);
     journal.superseded("n", Field::Status, first, Some(id(4)));
@@ -208,7 +208,7 @@ fn a_superseded_row_ends_and_rows_made_over_it_take_the_reported_intent() {
 #[test]
 fn results_visit_the_rows_they_answer_however_many_the_journal_holds() {
     let answer = |nodes: usize| {
-        let mut journal = Journal::default();
+        let mut journal = Journal::new(&IdGen::new(0));
         let mut sent = Vec::new();
         for n in 0..nodes {
             let file = format!("f{n}");
@@ -246,7 +246,7 @@ fn results_visit_the_rows_they_answer_however_many_the_journal_holds() {
 
 #[test]
 fn a_held_row_ends_once_r_holds_a_later_intent() {
-    let mut journal = Journal::default();
+    let mut journal = Journal::new(&IdGen::new(0));
     let first = journal.user_change("n", content(1), WireBase::None, None);
     journal.send("n", Field::Content, 0);
     journal.applied("n", Field::Content, first, &held(7, 100), None);
@@ -259,7 +259,7 @@ fn a_held_row_ends_once_r_holds_a_later_intent() {
 
 #[test]
 fn a_record_reaching_r_does_not_end_a_local_or_sent_row() {
-    let mut journal = Journal::default();
+    let mut journal = Journal::new(&IdGen::new(0));
     journal.user_change("n", content(1), WireBase::None, Some(id(1)));
     journal.remote_holds("n", Field::Content, &held(1, 1), true);
     journal.remote_holds("n", Field::Content, &held(2, 2), false);
@@ -271,7 +271,7 @@ fn a_record_reaching_r_does_not_end_a_local_or_sent_row() {
 
 #[test]
 fn the_history_keeps_first_positions_and_the_newest_entries() {
-    let mut journal = Journal::default();
+    let mut journal = Journal::new(&IdGen::new(0));
     journal.remote_holds("n", Field::Place, &held(1, 1), false);
     journal.remote_holds("n", Field::Place, &held(2, 2), false);
     journal.remote_holds("n", Field::Place, &held(1, 1), true);
@@ -291,7 +291,7 @@ fn the_history_keeps_first_positions_and_the_newest_entries() {
 
 #[test]
 fn local_holds_marks_the_history_entry() {
-    let mut journal = Journal::default();
+    let mut journal = Journal::new(&IdGen::new(0));
     journal.remote_holds("n", Field::Content, &held(1, 1), false);
     journal.local_holds("n", Field::Content, id(1));
     assert!(journal.history("n", Field::Content)[0].in_local);
@@ -299,7 +299,7 @@ fn local_holds_marks_the_history_entry() {
 
 #[test]
 fn a_loss_marks_sent_and_held_rows_as_replays() {
-    let mut journal = Journal::default();
+    let mut journal = Journal::new(&IdGen::new(0));
     let a = journal.user_change("a", content(1), WireBase::None, None);
     journal.send("a", Field::Content, 0);
     journal.applied("a", Field::Content, a, &held(1, 1), None);
@@ -338,7 +338,7 @@ fn a_delete_lists_what_r_holds_unseen_and_what_r_lost_held() {
 
 #[test]
 fn a_delete_keeps_the_newest_seen_entries_and_a_revival_ends_its_row() {
-    let mut journal = Journal::default();
+    let mut journal = Journal::new(&IdGen::new(0));
     let list: Vec<Seen> = (0..=HISTORY_KEPT as u8)
         .map(|n| seen("a", Field::Place, n, None))
         .collect();
@@ -353,7 +353,7 @@ fn a_delete_keeps_the_newest_seen_entries_and_a_revival_ends_its_row() {
 
 #[test]
 fn replacing_computed_ids_reaches_rows_history_and_seen_lists() {
-    let mut journal = Journal::default();
+    let mut journal = Journal::new(&IdGen::new(0));
     journal.remote_holds("n", Field::Content, &held(1, 1), true);
     let sent = journal.user_change("n", content(1), WireBase::None, Some(id(1)));
     journal.send("n", Field::Content, 0);
@@ -377,14 +377,13 @@ fn replacing_computed_ids_reaches_rows_history_and_seen_lists() {
 #[test]
 fn the_generator_is_its_own_stream_and_survives_a_restore() {
     let mut engine = IdGen::new(42);
-    let mut journal = Journal::default();
-    journal.seed(&engine);
+    let mut journal = Journal::new(&engine);
     engine.next_u64();
     let mut earlier: Vec<String> = (0..64).map(|_| engine.uuid_v7(0)).collect();
     let minted: Vec<IntentId> = (0..64).map(|_| journal.mint()).collect();
     earlier.extend(minted.iter().map(IntentId::to_string));
-    let mut restored = Journal::restore(journal.state(whole));
-    restored.seed(&IdGen::new(42));
+    let mut restored = Journal::new(&IdGen::new(42));
+    restored.restore(journal.state(whole));
     let next = restored.mint().to_string();
     assert!(!earlier.contains(&next), "{next}");
     assert_eq!(earlier.iter().collect::<BTreeSet<_>>().len(), earlier.len());
@@ -396,7 +395,7 @@ fn the_generator_is_its_own_stream_and_survives_a_restore() {
 
 #[test]
 fn changes_name_only_what_changed_and_a_state_restores() {
-    let mut journal = Journal::default();
+    let mut journal = Journal::new(&IdGen::new(0));
     journal.user_change("n", content(1), WireBase::None, None);
     journal.take_changes(whole);
     let before = journal.state(whole);
@@ -410,13 +409,15 @@ fn changes_name_only_what_changed_and_a_state_restores() {
         JournalChanges::between(&before, &journal.state(whole)),
         changes
     );
-    assert_eq!(Journal::restore(journal.state(whole)), journal);
+    let mut restored = Journal::new(&IdGen::new(1));
+    restored.restore(journal.state(whole));
+    assert_eq!(restored, journal);
 }
 
 #[test]
 fn a_compact_row_that_leaves_and_ends_before_a_take_reaches_the_store_as_ended() {
     for replaced in [false, true] {
-        let mut journal = Journal::default();
+        let mut journal = Journal::new(&IdGen::new(0));
         let first = journal.user_change("n", content(1), WireBase::None, None);
         journal.send("n", Field::Content, 0);
         journal.applied("n", Field::Content, first, &held(7, 100), None);
@@ -441,7 +442,7 @@ fn a_compact_row_that_leaves_and_ends_before_a_take_reaches_the_store_as_ended()
 
 #[test]
 fn a_result_that_keeps_the_intent_it_was_sent_leaves_compact_rows_based_on_it_unchanged() {
-    let mut journal = Journal::default();
+    let mut journal = Journal::new(&IdGen::new(0));
     let sent = journal.user_change("n", content(1), WireBase::None, Some(id(5)));
     journal.send("n", Field::Content, 0);
     let kept = FieldIntent {
