@@ -99,7 +99,7 @@ After `HISTORY_CHANGED` the engine never resyncs by path and content, which woul
 
 ## 6.4 Recovery after a rewind or a rolled-back store
 
-The engine detects every trigger below and stops: the folder halts with a problem, nothing is committed, the commit in flight and the queued restores are kept, and the store stays as evidence (`Halt::Recovery` in `core/engine/src/commit.rs`; `Stop::StoreBehind` in `core/driver/src/disk.rs`). The classification, questions and answers below are the design for leaving recovery. The engine implements them only for a device with no store (`core/engine/src/first_link.rs`).
+The engine detects every trigger below and stops: the folder halts with a problem, nothing is committed, the commit in flight and the queued restores are kept, and the store stays as evidence (`Halt::Recovery` in `core/engine/src/commit.rs`; `Stop::StoreBehind` in `core/driver/src/disk.rs`). The classification, questions and answers below are how the folder leaves recovery (`core/engine/src/recovery.rs`). A device with no store has nothing to classify against, so its first link matches entries by path and content instead (`core/engine/src/first_link.rs`).
 
 ### Triggers
 

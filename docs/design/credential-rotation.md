@@ -24,7 +24,7 @@ Only the process that holds the profile lock writes the files. A CLI command tha
 
 `Credential::load_stored` reads both files as one state. It notes the identity of `credential.next` (device, inode and modification time) and reads it, reads `credential.json` and notes its identity, then checks both identities again. The writer replaces files by renaming new ones into place, so an unchanged identity means an unchanged file. If either changed, the reader starts over, at most 10 times, and then fails with an I/O error instead of reporting a sign-out.
 
-An older build that starts while `credential.next` exists uses `credential.json`. If the server already stored the staged credential, that build is refused and signed out. That refusal happens only on a downgrade while a rotation's outcome is unknown, from the proposal until a current build's next refresh settles it. That can be long after the 60-second deadline when the answer was lost or the process stopped.
+An older build that starts while `credential.next` exists uses `credential.json`. If the server already stored the staged credential, that build is refused and signed out. That refusal happens only on a downgrade while `credential.json` still holds the credential the server replaced, from the proposal until a current build's next refresh settles it. That can be long after the 60-second deadline when the answer was lost or the process stopped.
 
 ## Tests cover each step of the client and the server
 
