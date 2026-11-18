@@ -417,5 +417,8 @@ fn a_result_that_keeps_the_intent_it_was_sent_leaves_compact_rows_based_on_it_un
     journal.applied("m", Field::Place, id(5), &held(5, 200), None);
     let changes = journal.take_changes(full);
     assert!(changes.rows.is_empty(), "{:?}", changes.rows);
-    assert_eq!(JournalChanges::between(&before, &journal.state(full)), changes);
+    assert_eq!(
+        JournalChanges::between(&before, &journal.state(full)),
+        changes
+    );
 }
