@@ -237,3 +237,54 @@ fn a_restore_asked_for_before_a_rewind_is_shown_by_its_file_and_answered_by_its_
             .collect::<Vec<_>>()
     );
 }
+
+/// Device `a` synced `count` files in each folder of `folders`, the user removed `removed` with all it holds and agreed
+/// to the deletion, and then asked for `removed` back from the trash. Returns the site once `a` rested after the
+/// restore, with the remote.
+fn restored_after_a_big_deletion(folders: &[&str], count: usize, removed: &str) -> (Site, Remote) {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    for folder in folders {
+        let dir = site.root.join(folder);
+        fs::create_dir_all(&dir).unwrap();
+        for i in 0..count {
+            fs::write(dir.join(format!("f{i:05}.txt")), format!("{i}")).unwrap();
+        }
+    }
+    a.rescan();
+    a.rest(&mut remote);
+    let node = node_named(&a, removed.rsplit('/').next().unwrap());
+    fs::remove_dir_all(site.root.join(removed)).unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    drop(a);
+    answer(&site, Answer::Delete);
+    restarted(&site, &mut remote).rest(&mut remote);
+    assert_eq!(remote.names(), Vec::<String>::new());
+
+    ask(&site, &RestoreIntent::from_trash(node, None, None).unwrap());
+    restarted(&site, &mut remote).rest(&mut remote);
+    (site, remote)
+}
+
+#[test]
+fn a_restored_folder_brings_back_every_file_its_deletion_trashed_over_several_commits() {
+    let (site, remote) = restored_after_a_big_deletion(&["big"], 2000, "big");
+    assert_eq!(files(&site.root).len(), 2000);
+    assert_eq!(remote.names().len(), 2001);
+}
+
+#[test]
+fn a_restored_folder_brings_back_the_folders_its_deletion_trashed_on_their_own() {
+    let folders = ["big/a", "big/b", "big/c", "big/d"];
+    let (site, remote) = restored_after_a_big_deletion(&folders, 500, "big");
+    assert_eq!(files(&site.root).len(), 2000);
+    assert_eq!(remote.names().len(), 2005);
+}
+
+#[test]
+fn a_restored_folder_brings_back_a_big_folder_inside_it() {
+    let (site, remote) = restored_after_a_big_deletion(&["outer/inner"], 2000, "outer");
+    assert_eq!(files(&site.root).len(), 2000);
+    assert_eq!(remote.names().len(), 2002);
+}

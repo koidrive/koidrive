@@ -241,3 +241,343 @@ fn an_unsent_edit_of_a_file_in_a_restored_folder_stays_current() {
         );
     }
 }
+
+/// A space whose tree another device made, and this device with that tree in L, S and R.
+struct Bench {
+    space: SpaceDo,
+    trees: Trees,
+    commits: Commits,
+    ids: IdGen,
+    other: IdGen,
+    last_seq: u64,
+    /// Where each commit is cut once, as [`run_cut`] cuts a commit that carries a restore.
+    cut: Cut,
+    cut_commits: BTreeSet<String>,
+    /// How many of the next commits the server refuses with `INTERNAL` before it reads them.
+    refused: usize,
+}
+
+impl Bench {
+    /// Folders `path` nested in each other under the root, with `count` files of 4,096 chunks in the last.
+    fn large_files(path: &[&str], count: usize) -> (Self, Vec<String>) {
+        let (space, other) = seeded(&[]);
+        let root = space.space_id().to_owned();
+        let mut bench = Bench {
+            trees: Trees::new(root.clone()),
+            commits: Commits::default(),
+            ids: IdGen::new(7),
+            space,
+            other,
+            last_seq: 0,
+            cut: Cut::None,
+            cut_commits: BTreeSet::new(),
+            refused: 0,
+        };
+        let mut folders = Vec::new();
+        for name in path {
+            let node_id = bench.other.uuid_v7(NOW as u64);
+            let parent_id = folders.last().unwrap_or(&root).clone();
+            bench.commit_by_other(op::Op::CreateDir(CreateDir {
+                node_id: node_id.clone(),
+                parent_id,
+                name: (*name).to_owned(),
+                pending_for: String::new(),
+            }));
+            folders.push(node_id);
+        }
+        let chunk = ChunkRef {
+            hash: Sha256::digest(b"large").to_vec(),
+            size: 3,
+            encoding: 0,
+        };
+        let list: Vec<u8> = (0..4096)
+            .flat_map(|_| chunk.hash.iter().copied().chain(chunk.size.to_le_bytes()))
+            .collect();
+        let content = Content {
+            size: 3 * 4096,
+            chunk_count: 4096,
+            manifest_digest: Sha256::digest(list).to_vec(),
+            chunks: vec![chunk; 4096],
+            ..Default::default()
+        };
+        for i in 0..count {
+            let node_id = bench.other.uuid_v7(NOW as u64);
+            bench.commit_by_other(op::Op::CreateFile(CreateFile {
+                node_id,
+                parent_id: folders.last().unwrap().clone(),
+                name: format!("f{i}.mov"),
+                content: Some(content.clone()),
+                ..Default::default()
+            }));
+        }
+        let nodes = bench
+            .space
+            .nodes()
+            .into_iter()
+            .filter(|node| node.node_id != root);
+        for (ino, state) in nodes.enumerate() {
+            let (id, node) = RemoteNode::from_state(&state).unwrap();
+            let local = LocalNode {
+                left_out_when_placed: false,
+                content_from_server: true,
+                shape: node.shape.clone(),
+                identity: identity(ino as u64),
+                parked: false,
+            };
+            bench.trees.set_local(id.clone(), local);
+            bench.trees.set_synced(id.clone(), Some(node.shape.clone()));
+            bench.trees.set_remote(id, node);
+        }
+        bench.last_seq = bench.space.head_seq();
+        rules().read(&mut bench.trees);
+        bench.trees.settle(bench.commits.aliases());
+        (bench, folders)
+    }
+
+    fn commit_by_other(&mut self, body: op::Op) {
+        let session = session("other");
+        let ops = vec![Op {
+            op: Some(body),
+            ..Default::default()
+        }];
+        let mut unique = ops.clone();
+        if let Some(op::Op::CreateFile(create)) = &mut unique[0].op
+            && let Some(content) = &mut create.content
+        {
+            content.chunks.dedup();
+        }
+        let receipts = upload(&mut self.space, &session, &unique);
+        let commit = Commit {
+            commit_id: self.other.uuid_v7(NOW as u64),
+            base_seq: self.space.head_seq(),
+            ops,
+            receipts,
+            history_id: self.space.history_id().to_owned(),
+            device_seq: self.space.device_seq(&session.device_id) + 1,
+            ..Default::default()
+        };
+        self.space.commit(&session, NOW, &commit).unwrap();
+    }
+
+    fn pull(&mut self) {
+        let resume = Resume {
+            history_id: self.space.history_id().to_owned(),
+            since_seq: self.last_seq,
+            ..Default::default()
+        };
+        for record in self.space.resume(&resume).unwrap() {
+            apply(&mut self.trees, &record.changes);
+            self.last_seq = record.seq;
+        }
+        self.trees.settle(self.commits.aliases());
+    }
+
+    fn restart(&mut self) {
+        let effects = Effects::default();
+        let (trees, commits, _) = reload(&self.trees, &self.commits, &effects, &rules()).unwrap();
+        (self.trees, self.commits) = (trees, commits);
+        self.commits.connected(&self.space.welcome(&session("me")));
+    }
+
+    /// Sends what this device commits until it has nothing left, agreeing to a deletion it asks
+    /// about, and calls `between` after each commit the server applied.
+    fn sync(&mut self, mut between: impl FnMut(&mut Bench)) {
+        let me = session("me");
+        for _ in 0..STEPS {
+            self.pull();
+            let in_flight = self.commits.in_flight().map(|flight| flight.commit.clone());
+            let history = self.space.history_id().to_owned();
+            let built = in_flight.or_else(|| {
+                let base = self.last_seq;
+                (self.commits.build(
+                    &mut self.trees,
+                    &mut self.ids,
+                    NOW as u64,
+                    &history,
+                    "me",
+                    base,
+                ))
+                .cloned()
+            });
+            let Some(commit) = built else {
+                let asked = (self.commits.questions().iter())
+                    .find(|question| matches!(question.kind, QuestionKind::MassDelete { .. }))
+                    .map(|question| question.id.clone());
+                match asked {
+                    Some(id) => assert!(self.commits.decide(&id, Answer::Delete)),
+                    None => return,
+                }
+                continue;
+            };
+            let cut = match self.cut_commits.insert(commit.commit_id.clone()) {
+                true => self.cut,
+                false => Cut::None,
+            };
+            if cut == Cut::Built {
+                self.restart();
+            }
+            if self.refused > 0 {
+                self.refused -= 1;
+                let refusal = Error {
+                    code: error::Code::Internal as i32,
+                    ..Default::default()
+                };
+                assert_eq!(
+                    self.commits.failed(&mut self.trees, &refusal),
+                    Ok(Failure::Resend)
+                );
+                continue;
+            }
+            let receipts = upload(&mut self.space, &me, &commit.ops);
+            let request = Commit { receipts, ..commit };
+            let committed = match self.space.commit(&me, NOW, &request) {
+                Ok(committed) => committed,
+                Err(error) => {
+                    self.commits.failed(&mut self.trees, &error).unwrap();
+                    continue;
+                }
+            };
+            if cut == Cut::Applied {
+                self.restart();
+                continue;
+            }
+            self.commits.received(committed.result).unwrap();
+            self.pull();
+            assert!(self.commits.acknowledge(&mut self.trees, self.last_seq));
+            self.trees.settle(self.commits.aliases());
+            between(self);
+        }
+        panic!("no end within {STEPS} steps");
+    }
+
+    /// Removes `folder` with all it holds from L, and sends the deletion.
+    fn delete(&mut self, folder: &str, between: impl FnMut(&mut Bench)) {
+        let mut below = vec![folder.to_owned()];
+        while let Some(id) = below.pop() {
+            below.extend(self.trees.local_children(&id).cloned());
+            self.trees.remove_local(&id);
+        }
+        self.trees.settle(self.commits.aliases());
+        self.sync(between);
+        let trashed = |node: &NodeState| node.node_id == folder && node.status == 2;
+        assert!(self.space.nodes().iter().any(trashed));
+    }
+
+    /// Asks for `node` back from the trash, and sends the restore.
+    fn restore(&mut self, node: &str, between: impl FnMut(&mut Bench)) {
+        let intent = RestoreIntent::from_trash(node.to_owned(), None, None).unwrap();
+        assert!(self.commits.restore(self.ids.uuid_v7(NOW as u64), intent));
+        self.sync(between);
+    }
+
+    fn live_files(&self) -> usize {
+        nodes_with(&self.space, 1, Some(2)).len()
+    }
+
+    fn outcomes(&self) -> Vec<Outcome> {
+        (self.commits.resolved().iter())
+            .map(|resolved| resolved.outcome.clone())
+            .collect()
+    }
+}
+
+fn rules() -> Rules {
+    Rules {
+        file: Vec::new(),
+        exclude: Vec::new(),
+        include: Vec::new(),
+    }
+}
+
+/// A folder of eight files of 4,096 chunks each is too large to delete in one op, and to restore in
+/// one commit. The person deletes it and asks for it back, and every file comes back.
+#[test]
+fn a_restored_folder_of_large_files_brings_back_every_file() {
+    let (mut bench, folders) = Bench::large_files(&["big"], 8);
+    bench.delete(&folders[0], |_| {});
+    assert_eq!(bench.live_files(), 0);
+    bench.restore(&folders[0], |_| {});
+    assert_eq!(bench.live_files(), 8);
+    assert_eq!(bench.outcomes(), [Outcome::Restored]);
+}
+
+/// The person asks twice for the folder back before the first commit leaves. Both requests end
+/// restored once every file is back.
+#[test]
+fn two_requests_for_a_big_folder_bring_back_every_file() {
+    let (mut bench, folders) = Bench::large_files(&["big"], 8);
+    bench.delete(&folders[0], |_| {});
+    let intent = RestoreIntent::from_trash(folders[0].clone(), None, None).unwrap();
+    let id = bench.ids.uuid_v7(NOW as u64);
+    assert!(bench.commits.restore(id, intent));
+    let ended_with = |bench: &mut Bench| {
+        if !bench.outcomes().is_empty() {
+            assert_eq!(bench.live_files(), 8);
+        }
+    };
+    bench.restore(&folders[0], ended_with);
+    assert_eq!(bench.outcomes(), [Outcome::Restored, Outcome::Restored]);
+}
+
+/// The device stops after each commit of the deletion and of the restore, so each continues from
+/// the store.
+#[test]
+fn a_big_deletion_and_its_restore_continue_after_a_stop_between_commits() {
+    let (mut bench, folders) = Bench::large_files(&["big"], 8);
+    bench.delete(&folders[0], Bench::restart);
+    bench.restore(&folders[0], Bench::restart);
+    assert_eq!(bench.live_files(), 8);
+    assert_eq!(bench.outcomes(), [Outcome::Restored]);
+}
+
+/// Every commit of the deletion and the restore is cut once: after it was saved and before it
+/// left, or after the server applied it and before its response arrived.
+#[test]
+fn a_big_deletion_and_its_restore_cut_in_every_commit_bring_back_every_file() {
+    for cut in [Cut::Built, Cut::Applied] {
+        let (mut bench, folders) = Bench::large_files(&["big"], 8);
+        bench.cut = cut;
+        bench.delete(&folders[0], |_| {});
+        bench.restore(&folders[0], |_| {});
+        assert_eq!(bench.live_files(), 8, "{cut:?}");
+        assert_eq!(bench.outcomes(), [Outcome::Restored], "{cut:?}");
+    }
+}
+
+/// The server fails the first two commits of the deletion and of the restore, and the device sends
+/// them again.
+#[test]
+fn a_big_restore_goes_on_after_the_server_fails_its_commits() {
+    let (mut bench, folders) = Bench::large_files(&["big"], 8);
+    bench.refused = 2;
+    bench.delete(&folders[0], |_| {});
+    bench.refused = 2;
+    bench.restore(&folders[0], |bench| bench.refused = 1);
+    assert_eq!(bench.live_files(), 8);
+    assert_eq!(bench.outcomes(), [Outcome::Restored]);
+}
+
+/// Another device renames the folder above the trashed one between the commits of its deletion
+/// and between those of its restore. Every file comes back, in the renamed folder.
+#[test]
+fn a_big_restore_brings_back_every_file_after_its_parent_is_renamed() {
+    let (mut bench, folders) = Bench::large_files(&["outer", "big"], 8);
+    let mut renames = 0;
+    let mut rename = |bench: &mut Bench| {
+        renames += 1;
+        let root = bench.space.space_id().to_owned();
+        bench.commit_by_other(op::Op::Move(Move {
+            node_id: folders[0].clone(),
+            new_parent_id: root,
+            new_name: format!("outer {renames}"),
+            from: None,
+            pending_for: String::new(),
+        }));
+    };
+    bench.delete(&folders[1], &mut rename);
+    bench.restore(&folders[1], &mut rename);
+    assert_eq!(bench.live_files(), 8);
+    assert_eq!(bench.outcomes(), [Outcome::Restored]);
+    let big = (bench.space.nodes().into_iter()).find(|node| node.node_id == folders[1]);
+    assert_eq!(big.unwrap().parent_id, folders[0]);
+}
