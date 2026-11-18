@@ -70,6 +70,20 @@ fn a_conflict_copy_of_a_file_a_restore_made_its_device_forget_keeps_the_name_the
         vec![
             (0, Restore),
             (0, u(0, 0, 0, 0, 0)),
+            (2, Connect),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, u(2, 1, 0, 0, 5)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
             (1, u(2, 3460126477107675283, 0, 0, 3)),
             (1, Work(0)),
             (1, Connect),
@@ -107,6 +121,20 @@ fn a_rename_made_while_a_conflicting_edit_is_in_flight_keeps_the_users_name_on_t
         vec![
             (0, Restore),
             (0, u(0, 0, 0, 0, 0)),
+            (2, Connect),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, u(2, 1, 0, 0, 5)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
+            (2, Work(0)),
             (1, u(2, 3460126477107675283, 0, 0, 3)),
             (1, Work(0)),
             (1, Connect),
@@ -123,7 +151,7 @@ fn a_rename_made_while_a_conflicting_edit_is_in_flight_keeps_the_users_name_on_t
             paths.contains(&"b".to_owned()),
             "device {device}: {paths:?}"
         );
-        let (original, edited) = (3, 4);
+        let (original, edited) = (4, 5);
         assert_eq!(
             (
                 tag(&content_on(&world, device, "a")),
