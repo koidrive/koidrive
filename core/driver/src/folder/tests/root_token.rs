@@ -644,6 +644,101 @@ fn a_store_restored_from_before_a_start_or_an_upload_recovers_the_newer_folder()
     }
 }
 
+fn marker_file(site: &Site) -> PathBuf {
+    site.root.join(koidrive_fs::PRIVATE_DIR).join("space.json")
+}
+
+fn as_an_older_build_relinked_it(site: &Site) {
+    let json: serde_json::Value =
+        serde_json::from_slice(&fs::read(marker_file(site)).unwrap()).unwrap();
+    let kept: serde_json::Map<String, serde_json::Value> = (json.as_object().unwrap().iter())
+        .filter(|(key, _)| ["space_id", "effects", "token"].contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    fs::write(marker_file(site), serde_json::to_vec(&kept).unwrap()).unwrap();
+    let tokens = tokens_of(site);
+    let fresh = koidrive_fs::RootTokens {
+        current: tokens.current,
+        pending: tokens.pending,
+        ..Default::default()
+    };
+    (Store::open(&site.db).unwrap())
+        .transaction(|tx| tx.set_root_tokens(&fresh))
+        .unwrap();
+}
+
+#[test]
+fn a_copy_from_before_a_downgrade_and_reupgrade_halts_as_a_copy() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("kept.txt"), b"kept");
+    a.create(&mut remote, &site.root.join("edited.txt"), b"old");
+    drop(a);
+    for _ in 0..3 {
+        drop(restarted(&site, &mut remote));
+    }
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    as_an_older_build_relinked_it(&site);
+    let mut a = restarted(&site, &mut remote);
+    a.create(&mut remote, &site.root.join("after.txt"), b"after");
+    a.create(&mut remote, &site.root.join("edited.txt"), b"new");
+    drop(a);
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    assert!(halts_as_a_copy(&site));
+}
+
+#[test]
+fn a_copy_another_link_carried_halts_when_it_comes_back() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("kept.txt"), b"kept");
+    drop(a);
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    let (other, b) = linked(&mut remote, "b");
+    drop(b);
+    for _ in 0..8 {
+        drop(restarted(&other, &mut remote));
+    }
+    fs::copy(
+        marker_file(&other),
+        copy.join(koidrive_fs::PRIVATE_DIR).join("space.json"),
+    )
+    .unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.create(&mut remote, &site.root.join("after.txt"), b"after");
+    drop(a);
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    assert!(halts_as_a_copy(&site));
+}
+
+#[test]
+fn a_marker_two_links_share_halts_whichever_finds_the_others_and_writes_nothing() {
+    let mut remote = Remote::new();
+    let (first, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &first.root.join("one.txt"), b"one");
+    drop(a);
+    let (second, b) = linked(&mut remote, "b");
+    drop(b);
+    for _ in 0..8 {
+        drop(restarted(&second, &mut remote));
+    }
+    for _ in 0..2 {
+        for (from, to) in [(&second, &first), (&first, &second)] {
+            let own = fs::read(marker_file(to)).unwrap();
+            fs::copy(marker_file(from), marker_file(to)).unwrap();
+            let before = (fs::read(marker_file(to)).unwrap(), tokens_of(to));
+            assert!(halts_as_a_copy(to));
+            assert_eq!((fs::read(marker_file(to)).unwrap(), tokens_of(to)), before);
+            fs::write(marker_file(to), own).unwrap();
+            drop(restarted(to, &mut remote));
+        }
+    }
+}
+
 #[test]
 fn two_copies_of_one_disk_halt_when_the_older_one_is_at_the_folder() {
     let Some(mut disks) = koidrive_test_support::Disks::new() else {

@@ -1222,6 +1222,37 @@ fn a_marker_changed_while_an_effect_in_flight_is_recovered_halts_as_older_only_w
 }
 
 #[test]
+fn a_store_restored_while_an_effect_was_in_flight_brings_back_what_the_effect_held() {
+    let (folder, _, effect_id) = three_cleared_and_one_in_flight();
+    let saved = folder.db.with_extension("saved");
+    fs::copy(&folder.db, &saved).unwrap();
+    let crashed = catch_unwind(AssertUnwindSafe(|| {
+        drop(folder.start(crash_at(Cut::Step(Step::Marked))));
+    }));
+    assert!(crashed.is_err());
+    fs::create_dir_all(folder.private(QUARANTINE_DIR)).unwrap();
+    fs::write(folder.private(QUARANTINE_DIR).join(&effect_id), SYNCED).unwrap();
+    fs::copy(&saved, &folder.db).unwrap();
+
+    let running = folder.start(no_hook()).unwrap();
+    assert!(running.engine.commits.halted().is_some());
+    assert!(running.engine.effects.in_flight().is_empty());
+    assert_eq!(running.engine.effects.cleared(), 4);
+    assert_eq!(
+        fs::read_dir(folder.private(QUARANTINE_DIR))
+            .unwrap()
+            .count(),
+        0
+    );
+    let held: Vec<Vec<u8>> = (fs::read_dir(&folder.root).unwrap())
+        .map(|entry| entry.unwrap())
+        .filter(|entry| entry.file_type().unwrap().is_file())
+        .map(|entry| fs::read(entry.path()).unwrap())
+        .collect();
+    assert!(held.contains(&SYNCED.to_vec()), "{held:?}");
+}
+
+#[test]
 fn a_marker_above_what_the_store_accounts_for_continues_from_the_marker_and_recovers() {
     let (folder, _, effect_id) = three_cleared_and_one_in_flight();
     set_marker(&folder.root, 6);
