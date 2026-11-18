@@ -920,8 +920,8 @@ mod tests {
         let workspace = GRAPH.workspace();
         let id = |name: &str| workspace.member_by_name(name).unwrap().id().clone();
         for (job, packages) in [
-            ("rust_engine", suite("engine", "rust-special")),
-            ("rust_driver", suite("driver", "rust-special")),
+            ("rust_engine", suite("engine", "rust-special-linux")),
+            ("rust_driver", suite("driver", "rust-special-linux")),
             ("rust_sim", suite("sim", "rust-sim")),
             (
                 "net_integration",

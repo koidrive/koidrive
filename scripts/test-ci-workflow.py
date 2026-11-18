@@ -279,24 +279,20 @@ class RustShards(unittest.TestCase):
             return dict(line.split("=", 1) for line in output.read_text().splitlines())
 
     def test_a_selected_partition_builds_the_archive_and_shards_it_on_each_system(self):
-        for macos, systems in (("true", {"ubuntu-latest": 5, "macos": 6}), ("false", {"ubuntu-latest": 5}), ("covered", {"ubuntu-latest": 5})):
-            with self.subTest(macos=macos):
-                outputs = self.run_step(RUST="false", RUST_DRIVER="false", RUST_ENGINE="true", RUST_MACOS=macos)
-                self.assertEqual(outputs["rust_archive"], "true")
-                shards = json.loads(outputs["rust_shards"])["include"]
-                for os_name, count in systems.items():
-                    self.assertEqual([s["shard"] for s in shards if s["os"] == os_name], list(range(1, count + 1)))
-                    self.assertEqual({s["of"] for s in shards if s["os"] == os_name}, {count})
-                self.assertEqual({s["os"] for s in shards}, set(systems))
+        outputs = self.run_step(RUST="false", RUST_DRIVER="false", RUST_ENGINE="true")
+        self.assertEqual(outputs["rust_archive"], "true")
+        for system, os_name, count in (("linux", "ubuntu-latest", 5), ("macos", "macos", 6)):
+            shards = json.loads(outputs[f"rust_shards_{system}"])["include"]
+            self.assertEqual(shards, [{"os": os_name, "shard": shard, "of": count} for shard in range(1, count + 1)])
 
     def test_no_archive_without_a_selected_partition(self):
-        outputs = self.run_step(RUST="false", RUST_DRIVER="false", RUST_ENGINE="false", RUST_MACOS="true")
+        outputs = self.run_step(RUST="false", RUST_DRIVER="false", RUST_ENGINE="false")
         self.assertEqual(outputs["rust_archive"], "false")
 
     def test_every_macos_rust_job_is_a_coverage_condition_on_push(self):
         workflow = WORKFLOW.read_text()
-        shards = json.loads(self.run_step(RUST="true", RUST_DRIVER="true", RUST_ENGINE="true", RUST_MACOS="true")["rust_shards"])["include"]
-        names = [f"rust tests (macos, {s['shard']}/{s['of']})" for s in shards if s["os"] == "macos"]
+        shards = json.loads(self.run_step(RUST="true", RUST_DRIVER="true", RUST_ENGINE="true")["rust_shards_macos"])["include"]
+        names = [f"rust tests (macos, {s['shard']}/{s['of']})" for s in shards]
         loop = re.search(r'for job in (.*); do\n +if ! grep -Fxq "\$job"', inline_script("changes"))[1]
         expanded = subprocess.run(["bash", "-c", f"for job in {loop}; do echo \"$job\"; done"], capture_output=True, text=True).stdout.splitlines()
         for name in (*names, "rust lint (macos)", "rust special (macos)", "rust tests (macos, sim)"):

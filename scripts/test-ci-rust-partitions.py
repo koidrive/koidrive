@@ -74,7 +74,7 @@ def check_partitions(workflow, selector=None, archive_args=CI_RUST_TESTS.archive
     missing = [name for name in (*ARCHIVED, "rust_sim", "rust_lint") if f"\n[job.{name}]\n" not in selector]
     if missing:
         raise ValueError(f"ci-select.toml has no job for {missing}")
-    if "ci-rust-tests.py archive-args" not in job(workflow, "rust-build"):
+    if "ci-rust-tests.py archive-args" not in job(workflow, "rust-build-linux"):
         raise ValueError("The archive must be built from ci-rust-tests.py archive-args")
     workspace = members()
     partitions = {}

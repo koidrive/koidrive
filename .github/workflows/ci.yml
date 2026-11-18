@@ -36,7 +36,8 @@ jobs:
       rust_engine: ${{ steps.paths.outputs.rust_engine }}
       rust_sim: ${{ steps.paths.outputs.rust_sim }}
       rust_archive: ${{ steps.shards.outputs.rust_archive }}
-      rust_shards: ${{ steps.shards.outputs.rust_shards }}
+      rust_shards_linux: ${{ steps.shards.outputs.rust_shards_linux }}
+      rust_shards_macos: ${{ steps.shards.outputs.rust_shards_macos }}
       server: ${{ steps.paths.outputs.server }}
       server_deploy: ${{ steps.paths.outputs.server_deploy }}
       net_integration: ${{ steps.paths.outputs.net_integration }}
@@ -193,17 +194,16 @@ jobs:
           RUST: ${{ steps.paths.outputs.rust }}
           RUST_DRIVER: ${{ steps.paths.outputs.rust_driver }}
           RUST_ENGINE: ${{ steps.paths.outputs.rust_engine }}
-          RUST_MACOS: ${{ steps.paths.outputs.rust_macos }}
         run: |
           archive=false
           if [ "$RUST" = true ] || [ "$RUST_DRIVER" = true ] || [ "$RUST_ENGINE" = true ]; then archive=true; fi
-          macos=false
-          if [ "$RUST_MACOS" = true ]; then macos=true; fi
-          shards="$(jq -cn --argjson macos "$macos" '{include: ([range(1; 6) | {os: "ubuntu-latest", shard: ., of: 5}] + (if $macos then [range(1; 7) | {os: "macos", shard: ., of: 6}] else [] end))}')"
-          echo "Rust test archive: $archive. Shards: $shards"
+          linux="$(jq -cn '{include: [range(1; 6) | {os: "ubuntu-latest", shard: ., of: 5}]}')"
+          macos="$(jq -cn '{include: [range(1; 7) | {os: "macos", shard: ., of: 6}]}')"
+          echo "Rust test archive: $archive. Linux shards: $linux. macOS shards, when macOS runs: $macos"
           {
             echo "rust_archive=$archive"
-            echo "rust_shards=$shards"
+            echo "rust_shards_linux=$linux"
+            echo "rust_shards_macos=$macos"
           } >> "$GITHUB_OUTPUT"
       - name: Keep merged store migrations unchanged
         if: github.event_name != 'push'
@@ -301,17 +301,16 @@ jobs:
           nice -n 10 cargo clippy --manifest-path scripts/ci-select/Cargo.toml --all-targets --locked -- -D warnings
           nice -n 10 cargo test --manifest-path scripts/ci-select/Cargo.toml --locked
 
-  rust-build:
-    name: rust build (${{ matrix.os }})
+  rust-build-linux:
+    name: rust build (ubuntu-latest)
     needs: [changes]
     if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ${{ fromJSON(needs.changes.outputs.rust_macos == 'true' && '["ubuntu-latest","macos"]' || '["ubuntu-latest"]') }}
-    runs-on: ${{ matrix.os == 'macos' && 'macos-15' || matrix.os }}
+    runs-on: ubuntu-latest
     timeout-minutes: 45
-    steps:
+    env:
+      OS: ubuntu-latest
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps: &rust-build-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -346,35 +345,47 @@ jobs:
           echo "$(wc -l < "$RUNNER_TEMP/test-inventory/inventory.txt" | tr -d ' ') tests in the archive, $(du -h "$out/archive.tar.zst" | cut -f1) compressed."
       - name: Balance the shards by measured test time
         env:
-          OS: ${{ matrix.os }}
-          SHARDS: ${{ needs.changes.outputs.rust_shards }}
+          SHARDS: ${{ env.OS == 'macos' && needs.changes.outputs.rust_shards_macos || needs.changes.outputs.rust_shards_linux }}
         run: |
           python3 scripts/ci-rust-tests.py plan --os "$OS" --shards "$(jq --arg os "$OS" '[.include[] | select(.os == $os)] | length' <<<"$SHARDS")" \
             --list "$RUNNER_TEMP/test-inventory/list.json" --out "$RUNNER_TEMP/rust-tests/shards.toml" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: rust-test-inventory-${{ matrix.os }}
+          name: rust-test-inventory-${{ env.OS }}
           path: ${{ runner.temp }}/test-inventory
           if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: rust-tests-${{ matrix.os }}
+          name: rust-tests-${{ env.OS }}
           path: ${{ runner.temp }}/rust-tests
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
 
-  rust-tests:
-    name: rust tests (${{ matrix.os }}, ${{ matrix.shard }}/${{ matrix.of }})
-    needs: [changes, rust-build]
+  rust-build-macos:
+    name: rust build (macos)
+    needs: [changes]
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true' && needs.changes.outputs.rust_macos == 'true'
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      OS: macos
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps: *rust-build-steps
+
+  rust-tests-linux:
+    name: rust tests (ubuntu-latest, ${{ matrix.shard }}/${{ matrix.of }})
+    needs: [changes, rust-build-linux]
     if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.changes.outputs.rust_shards) }}
-    runs-on: ${{ matrix.os == 'macos' && 'macos-15' || matrix.os }}
+      matrix: ${{ fromJSON(needs.changes.outputs.rust_shards_linux) }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
-    steps:
+    env:
+      OS: ubuntu-latest
+    steps: &rust-tests-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -385,7 +396,7 @@ jobs:
           tool: cargo-nextest@0.9.152
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: rust-tests-${{ matrix.os }}
+          name: rust-tests-${{ env.OS }}
           path: ${{ runner.temp }}/rust-tests
       - name: Run this shard's tests
         env:
@@ -396,22 +407,33 @@ jobs:
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: rust-junit-${{ matrix.os }}-${{ matrix.shard }}
+          name: rust-junit-${{ env.OS }}-${{ matrix.shard }}
           path: target/nextest/shard-${{ matrix.shard }}/junit.xml
           if-no-files-found: error
           retention-days: 7
 
-  rust-special:
-    name: rust special (${{ matrix.os }})
-    needs: [changes, rust-build]
-    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true'
+  rust-tests-macos:
+    name: rust tests (macos, ${{ matrix.shard }}/${{ matrix.of }})
+    needs: [changes, rust-build-macos]
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true' && needs.changes.outputs.rust_macos == 'true'
     strategy:
       fail-fast: false
-      matrix:
-        os: ${{ fromJSON(needs.changes.outputs.rust_macos == 'true' && '["ubuntu-latest","macos"]' || '["ubuntu-latest"]') }}
-    runs-on: ${{ matrix.os == 'macos' && 'macos-15' || matrix.os }}
+      matrix: ${{ fromJSON(needs.changes.outputs.rust_shards_macos) }}
+    runs-on: macos-15
     timeout-minutes: 30
-    steps:
+    env:
+      OS: macos
+    steps: *rust-tests-steps
+
+  rust-special-linux:
+    name: rust special (ubuntu-latest)
+    needs: [changes, rust-build-linux]
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OS: ubuntu-latest
+    steps: &rust-special-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -426,7 +448,7 @@ jobs:
           tool: cargo-nextest@0.9.152
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: rust-tests-${{ matrix.os }}
+          name: rust-tests-${{ env.OS }}
           path: ${{ runner.temp }}/rust-tests
       - name: Replay saved property regressions without random cases
         env:
@@ -465,7 +487,7 @@ jobs:
           fi
           cargo nextest run --archive-file "$RUNNER_TEMP/rust-tests/archive.tar.zst" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite --profile ci --success-output final -E "$(sed -E 's/[ |]+$//' <<<"$FILTERS")"
       - name: Test that the app installer refuses an app signed by a forged Developer ID
-        if: ${{ !cancelled() && matrix.os == 'macos' && needs.changes.outputs.rust_driver == 'true' }}
+        if: ${{ !cancelled() && env.OS == 'macos' && needs.changes.outputs.rust_driver == 'true' }}
         run: |
           set -o pipefail
           security list-keychains -d user
@@ -480,6 +502,16 @@ jobs:
         run: |
           python3 scripts/stamp-release-version.py v0.1.0-alpha.1
           nice -n 10 cargo test --locked -p koidrive-cli --test update --features koidrive-cli/test-install-inventory
+
+  rust-special-macos:
+    name: rust special (macos)
+    needs: [changes, rust-build-macos]
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true' && needs.changes.outputs.rust_macos == 'true'
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      OS: macos
+    steps: *rust-special-steps
 
   rust-sim:
     name: rust tests (${{ matrix.os }}, sim)
@@ -518,7 +550,7 @@ jobs:
 
   rust-report:
     name: rust test report
-    needs: [changes, rust-build, rust-tests]
+    needs: [changes, rust-build-linux, rust-build-macos, rust-tests-linux, rust-tests-macos]
     if: ${{ !cancelled() && needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -535,11 +567,10 @@ jobs:
           pattern: rust-test-inventory-*
           path: ${{ runner.temp }}/inventory
       - name: Check that the shards ran every test once, and report timings and flaky tests
-        env:
-          SHARDS: ${{ needs.changes.outputs.rust_shards }}
         run: |
           status=0
-          for os in $(jq -r '[.include[].os] | unique[]' <<<"$SHARDS"); do
+          for os in ubuntu-latest macos; do
+            if [ ! -f "$RUNNER_TEMP/inventory/rust-test-inventory-$os/list.json" ]; then continue; fi
             mkdir -p "$RUNNER_TEMP/by-os/$os"
             mv "$RUNNER_TEMP/junit/rust-junit-$os-"* "$RUNNER_TEMP/by-os/$os/" || true
             python3 scripts/ci-rust-tests.py report --os "$os" --list "$RUNNER_TEMP/inventory/rust-test-inventory-$os/list.json" \
@@ -1023,7 +1054,7 @@ jobs:
   ci-report:
     name: ci-report
     if: always()
-    needs: [changes, rust-lint, rust-build, rust-tests, rust-special, rust-sim, rust-report, server, server-deploy, net-integration, driver-integration, cli-integration, ffi-integration, spec, macos-app, installer, comments, store-upgrade, state-io, test-lines]
+    needs: [changes, rust-lint, rust-build-linux, rust-build-macos, rust-tests-linux, rust-tests-macos, rust-special-linux, rust-special-macos, rust-sim, rust-report, server, server-deploy, net-integration, driver-integration, cli-integration, ffi-integration, spec, macos-app, installer, comments, store-upgrade, state-io, test-lines]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any CI job failed or was cancelled
@@ -1031,9 +1062,9 @@ jobs:
           CHANGES: ${{ needs.changes.result }}
           SITE_ONLY: ${{ needs.changes.outputs.site_only }}
           RUST_LINT: ${{ needs.rust-lint.result }}
-          RUST_BUILD: ${{ needs.rust-build.result }}
-          RUST_TESTS: ${{ needs.rust-tests.result }}
-          RUST_SPECIAL: ${{ needs.rust-special.result }}
+          RUST_BUILD: ${{ needs.rust-build-linux.result }}/${{ needs.rust-build-macos.result }}
+          RUST_TESTS: ${{ needs.rust-tests-linux.result }}/${{ needs.rust-tests-macos.result }}
+          RUST_SPECIAL: ${{ needs.rust-special-linux.result }}/${{ needs.rust-special-macos.result }}
           RUST_SIM: ${{ needs.rust-sim.result }}
           RUST_REPORT: ${{ needs.rust-report.result }}
           SERVER: ${{ needs.server.result }}
@@ -1058,7 +1089,7 @@ jobs:
       - name: Fail unless every build and test job the change selects ran
         if: needs.changes.outputs.site_only != 'true'
         env:
-          RESULTS: rust-lint=${{ needs.changes.outputs.rust_lint == 'true' && needs.rust-lint.result || 'not-needed' }} rust-build=${{ needs.changes.outputs.rust_archive == 'true' && needs.rust-build.result || 'not-needed' }} rust-tests=${{ needs.changes.outputs.rust_archive == 'true' && needs.rust-tests.result || 'not-needed' }} rust-special=${{ needs.changes.outputs.rust_archive == 'true' && needs.rust-special.result || 'not-needed' }} rust-report=${{ needs.changes.outputs.rust_archive == 'true' && needs.rust-report.result || 'not-needed' }} rust-sim=${{ needs.changes.outputs.rust_sim == 'true' && needs.rust-sim.result || 'not-needed' }} server=${{ needs.changes.outputs.server == 'true' && needs.server.result || 'not-needed' }} server-deploy=${{ needs.changes.outputs.server_deploy == 'true' && needs.server-deploy.result || 'not-needed' }} net-integration=${{ needs.changes.outputs.net_integration == 'true' && needs.net-integration.result || 'not-needed' }} driver-integration=${{ needs.changes.outputs.driver_integration == 'true' && needs.driver-integration.result || 'not-needed' }} cli-integration=${{ needs.changes.outputs.cli_integration == 'true' && needs.cli-integration.result || 'not-needed' }} ffi-integration=${{ needs.changes.outputs.ffi_integration == 'true' && needs.ffi-integration.result || 'not-needed' }} spec=${{ needs.spec.result }} installer=${{ needs.installer.result }} test-lines=${{ github.event_name != 'push' && needs.test-lines.result || 'not-needed' }}
+          RESULTS: rust-lint=${{ needs.changes.outputs.rust_lint == 'true' && needs.rust-lint.result || 'not-needed' }} rust-build=${{ needs.changes.outputs.rust_archive == 'true' && needs.rust-build-linux.result || 'not-needed' }} rust-tests=${{ needs.changes.outputs.rust_archive == 'true' && needs.rust-tests-linux.result || 'not-needed' }} rust-special=${{ needs.changes.outputs.rust_archive == 'true' && needs.rust-special-linux.result || 'not-needed' }} rust-build-macos=${{ needs.changes.outputs.rust_archive == 'true' && needs.changes.outputs.rust_macos == 'true' && needs.rust-build-macos.result || 'not-needed' }} rust-tests-macos=${{ needs.changes.outputs.rust_archive == 'true' && needs.changes.outputs.rust_macos == 'true' && needs.rust-tests-macos.result || 'not-needed' }} rust-special-macos=${{ needs.changes.outputs.rust_archive == 'true' && needs.changes.outputs.rust_macos == 'true' && needs.rust-special-macos.result || 'not-needed' }} rust-report=${{ needs.changes.outputs.rust_archive == 'true' && needs.rust-report.result || 'not-needed' }} rust-sim=${{ needs.changes.outputs.rust_sim == 'true' && needs.rust-sim.result || 'not-needed' }} server=${{ needs.changes.outputs.server == 'true' && needs.server.result || 'not-needed' }} server-deploy=${{ needs.changes.outputs.server_deploy == 'true' && needs.server-deploy.result || 'not-needed' }} net-integration=${{ needs.changes.outputs.net_integration == 'true' && needs.net-integration.result || 'not-needed' }} driver-integration=${{ needs.changes.outputs.driver_integration == 'true' && needs.driver-integration.result || 'not-needed' }} cli-integration=${{ needs.changes.outputs.cli_integration == 'true' && needs.cli-integration.result || 'not-needed' }} ffi-integration=${{ needs.changes.outputs.ffi_integration == 'true' && needs.ffi-integration.result || 'not-needed' }} spec=${{ needs.spec.result }} installer=${{ needs.installer.result }} test-lines=${{ github.event_name != 'push' && needs.test-lines.result || 'not-needed' }}
         run: |
           echo "Build and test jobs (not-needed: the change does not select it): $RESULTS"
           for r in $RESULTS; do
