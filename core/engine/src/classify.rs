@@ -3641,8 +3641,7 @@ impl Trees {
             if self.held(&id) {
                 continue;
             }
-            let cause = (self.kept_cause(&node.shape.parent, &names, &[kind]))
-                .or_else(|| self.kept_nodes.get(&id).cloned().flatten());
+            let cause = self.kept_cause(&node.shape.parent, &names, &[kind]);
             if self.kept_nodes.get(&id) != Some(&cause) {
                 self.kept_nodes.insert(id, cause);
             }
@@ -3662,8 +3661,7 @@ impl Trees {
                 .filter_map(|name| {
                     let mut entry = above.clone();
                     entry.push(name.as_str());
-                    let cause = (self.kept_cause(&folder, &entry, &[Kind::File, Kind::Dir]))
-                        .or_else(|| kept.causes.get(name).cloned())?;
+                    let cause = self.kept_cause(&folder, &entry, &[Kind::File, Kind::Dir])?;
                     Some((name.clone(), cause))
                 })
                 .collect();

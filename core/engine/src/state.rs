@@ -76,7 +76,7 @@ pub struct KeptEntries {
     pub causes: BTreeMap<String, KeptCause>,
 }
 
-/// The rules that last left a kept entry out at its place, at a settle with every rule known: the path, and the rules in
+/// The rules that left a kept entry out at its place at the last settle with every rule known: the path, and the rules in
 /// force in each folder from the root to the entry's. The entry is released only when the rules let it in with every
 /// change another device made since put back as it was, whether or not Koidrive was running when the person made
 /// theirs (section 5.10).
