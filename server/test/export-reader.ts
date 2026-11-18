@@ -260,10 +260,7 @@ export async function restoreFromR2(spaceId: string): Promise<Restored> {
         }
       }
     }
-    for (const [id, node] of nodes) {
-      if (!liveSince.has(id)) liveSince.set(id, firstHistory ? { seq: 0n, known: true } : { seq: node.state.metaRev, known: false });
-      nodes.set(id, { ...node, state: withLegacyIntents(node.state, liveSince.get(id)!, committedAt) });
-    }
+    const later: CommitRecord[] = [];
     let next = startSeq + 1;
     for (const [i, segment] of segments.filter((segment) => segment.last > startSeq).entries()) {
       if (i === 0 ? segment.first > next : segment.first !== next) throw new Error(`the log does not chain at ${segment.key}`);
@@ -272,12 +269,27 @@ export async function restoreFromR2(spaceId: string): Promise<Restored> {
       for (const frame of await frames(new Uint8Array(await object.arrayBuffer()), "koidrive.log", 1, spaceId, historyId)) {
         const record = fromBinary(CommitRecordSchema, frame);
         if (Number(record.seq) !== seq++) throw new Error(`${segment.key} skips a seq`);
-        if (record.seq <= BigInt(startSeq)) continue;
-        committedAt.set(record.seq, record.committedAtMs);
-        replay(nodes, tombstones, liveSince, committedAt, record);
+        if (record.seq > BigInt(startSeq)) later.push(record);
       }
       if (seq !== segment.last + 1) throw new Error(`${segment.key} ends early`);
       next = seq;
+    }
+    const earliestLive = new Map<string, bigint>();
+    for (const { changes } of later) {
+      for (const { change } of changes) {
+        if (change.case !== "node" || change.value.status !== NodeStatus.LIVE) continue;
+        const found = earliestLive.get(change.value.nodeId);
+        if (found === undefined || change.value.metaRev < found) earliestLive.set(change.value.nodeId, change.value.metaRev);
+      }
+    }
+    for (const [id, node] of nodes) {
+      const found = earliestLive.get(id);
+      if (!liveSince.has(id)) liveSince.set(id, { seq: found !== undefined && found < node.state.metaRev ? found : node.state.metaRev, known: false });
+      nodes.set(id, { ...node, state: withLegacyIntents(node.state, liveSince.get(id)!, committedAt) });
+    }
+    for (const record of later) {
+      committedAt.set(record.seq, record.committedAtMs);
+      replay(nodes, tombstones, liveSince, committedAt, record);
     }
     if (manifest && next - 1 < manifest.end_seq) throw new Error("the log stops before the manifest's end_seq");
     return { descriptor, manifest, headSeq: next - 1, nodes, tombstones };

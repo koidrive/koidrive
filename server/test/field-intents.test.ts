@@ -924,6 +924,40 @@ describe("RFC 0029 section 7.2: legacy intents", () => {
     expect(restored.nodes).toEqual((await serverState(space.stub)).nodes);
   });
 
+  it("rebuilds the status of a node that a fuzzy snapshot page holds from after the snapshot's start with the earliest meta_rev the log gives it", async () => {
+    const { space, a, root } = await setup();
+    const now = Date.now();
+    await setClock(space, now);
+    for (const name of ["one", "two", "three", "four"]) await a.commit([op.mkdir(uuidv7(), root, name)]);
+    const exportAt = now + DAY_MS + 10 * 60_000;
+    const pause = { reached: false, released: false };
+    const until = async (flag: () => boolean) => {
+      while (!flag()) await new Promise((resolve) => setTimeout(resolve, 5));
+    };
+    const running = runSpaceAlarm(space.stub, exportAt, {
+      pageNodes: 2,
+      intercept: async (key, put) => {
+        if (key.endsWith("/pages/0.fbsnap")) {
+          pause.reached = true;
+          await until(() => pause.released);
+        }
+        return put();
+      },
+    });
+    await until(() => pause.reached);
+    const late = uuidv7();
+    const { seq } = await a.commit([op.mkdir(late, root, "late")]);
+    await a.commit([op.move(late, root, "later")]);
+    pause.released = true;
+    await running;
+    for (const minutes of [2, 3, 4, 5]) await runSpaceAlarm(space.stub, exportAt + minutes * 60_000, { pageNodes: 2 });
+    await snapshotWithoutIntents(space.spaceId);
+    const restored = await restoreFromR2(space.spaceId);
+    expect(restored.manifest!.start_seq).toBeLessThan(Number(seq));
+    const { status } = restored.nodes.get(late)!.state.intents!;
+    expect([idOf(status), status!.appliedAtMs]).toEqual([legacyIntentId(late, "status", `live:${seq}`), 0n]);
+  });
+
   it("restarts a snapshot that was being written when the backfill ran, so no page from before the migration is published", async () => {
     const { space, a, root } = await setup();
     const now = Date.now();
