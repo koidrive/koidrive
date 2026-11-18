@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 fn kept_report(site: &Site, b: &Device, remote: &Remote) -> String {
     format!(
         "sent={:?}\nremote={:?}\nnodes={:?}\ndisk={:?}\nkept={:?}\nblocked={:?}\nview={:?}/{:?}",

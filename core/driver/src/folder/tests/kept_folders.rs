@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 fn deleted_with_ignored_entries(
     synced: &[&str],
     ignored: &[&str],
