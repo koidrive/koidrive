@@ -155,7 +155,7 @@ fn a_folder_the_user_moves_into_the_folder_merged_into_it_goes_back_to_its_place
                         base: koidrive_engine::effects::Base::Root,
                         dirs,
                         name,
-                    } => dirs.len() == 1 && name == "e",
+                    } => matches!(&dirs[..], [only] if only.name == "d") && name == "e",
                     Location::At {
                         base: koidrive_engine::effects::Base::Parked { node, .. },
                         dirs,
@@ -182,7 +182,11 @@ fn a_folder_the_user_moves_into_the_folder_merged_into_it_goes_back_to_its_place
     let b = trees.local().get("b").unwrap();
     assert_eq!((&b.shape, &b.identity), (&dir(ROOT, "d"), &identity));
     assert!(
-        matches!(&last_move, Some(Location::At { dirs, name, .. }) if dirs.is_empty() && name == "d"),
+        matches!(
+            &last_move,
+            Some(Location::At { base: koidrive_engine::effects::Base::Root, dirs, name })
+                if dirs.is_empty() && name == "d"
+        ),
         "{last_move:?}"
     );
     assert!(trees.reverted().is_empty());
