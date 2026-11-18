@@ -270,13 +270,13 @@ class SplitTests(unittest.TestCase):
         common = self.root / "tests/common.rs"
         self.assertTrue(split.unformatted_lines("tests/common.rs", common.read_bytes()))
         common.write_bytes(common.read_bytes() + b"\nfn added() {}\n")
-        split.check_format(self.mapping, {"tests/common.rs": {len(common.read_bytes().splitlines())}}, None)
+        split.check_format(self.executable, {"tests/common.rs": {len(common.read_bytes().splitlines())}}, None)
         scenario = self.root / "tests/scenario.rs"
         scenario.write_bytes(scenario.read_bytes() + b"\nfn  spaced(){}\n")
         spaced = len(scenario.read_bytes().splitlines())
-        split.check_format(self.mapping, {"tests.rs": {1}, "tests/scenario.rs": {1}}, None)
+        split.check_format(self.executable, {"tests.rs": {1}, "tests/scenario.rs": {1}}, None)
         with self.assertRaisesRegex(ValueError, rf"tests/scenario\.rs lines \[{spaced}\].*rustfmt --edition 2024 --emit stdout"):
-            split.check_format(self.mapping, {"tests/scenario.rs": {spaced}}, None)
+            split.check_format(self.executable, {"tests/scenario.rs": {spaced}}, None)
 
     def test_changed_lines_reads_file_headers_only_outside_hunks(self):
         diff = ("diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -0,0 +1,2 @@\n+a\n+++ expected\n"
@@ -288,87 +288,50 @@ class SplitTests(unittest.TestCase):
         scenario = self.root / "tests/scenario.rs"
         scenario.write_bytes(scenario.read_bytes() + b"\nfn broken( {\n")
         with self.assertRaisesRegex(ValueError, r"rustfmt cannot format tests/scenario\.rs"):
-            split.check_format(self.mapping, {"tests/scenario.rs": {1}}, None)
+            split.check_format(self.executable, {"tests/scenario.rs": {1}}, None)
 
-    def test_map_refuses_a_proptest_block_moved_to_a_file_not_yet_included(self):
-        self.generate()
-        base = self.layout() | {"tests.rs": self.path.read_bytes() + b"\n" + self.block(b"holds")}
-        (self.root / "tests/props.rs").write_bytes(self.block(b"holds"))
-        with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests.rs"):
-            self.map_against(base)
-        self.assertFalse(split.MAPPING.exists())
-
-    def test_map_refuses_a_proptest_block_moved_with_a_new_key(self):
-        self.generate()
-        base = self.layout() | {"tests.rs": self.path.read_bytes() + b"\n" + self.block(b"holds")}
-        (self.root / "tests/props.rs").write_bytes(self.block(b"holds", b"also_holds"))
-        with self.assertRaisesRegex(ValueError, "proptest:holds,also_holds must stay in tests.rs"):
-            self.map_against(base)
-        self.assertFalse(split.MAPPING.exists())
-
-    def test_map_refuses_a_move_a_same_named_block_hides(self):
-        self.mapping["tests.rs"]["proptest:holds"] = "root"
+    def test_verify_checks_only_sources_still_one_file_at_the_revision(self):
         self.generate()
         scenario = self.root / "tests/scenario.rs"
-        root = self.path.read_bytes() + b"\n" + self.block(b"holds")
-        base = self.layout() | {"tests.rs": root, "tests/scenario.rs": scenario.read_bytes() + b"\n" + self.block(b"holds")}
-        self.path.write_bytes(root)
-        (self.root / "tests/props.rs").write_bytes(self.block(b"holds", b"also_holds"))
-        with self.assertRaisesRegex(ValueError, r"proptest:holds,also_holds must stay in tests/scenario\.rs"):
-            self.map_against(base)
-        self.assertFalse(split.MAPPING.exists())
+        scenario.write_bytes(scenario.read_bytes() + b"\n#[test]\nfn added() {}\n")
+        with patch.object(split, "git_source", return_value=self.path.read_bytes()):
+            self.assertEqual(split.pending(self.executable, self.mapping, "base"), {})
+        with patch.object(split, "git_source", return_value=self.source):
+            pending = split.pending(self.executable, self.mapping, "base")
+            with self.assertRaisesRegex(ValueError, r"assign these items.*fn:added"):
+                split.verify(self.executable, pending, "base")
+        with self.against({}):
+            self.assertEqual(split.pending(self.executable, self.mapping, "base"), self.mapping)
 
-    def test_map_refuses_a_proptest_block_moved_to_another_mapped_source(self):
+    def test_verify_refuses_a_split_this_change_makes_without_a_mapping(self):
+        self.generate()
+        with self.against({"tests.rs": self.source, "other.rs": b'include!("other/scenario.rs");\n'}):
+            with self.assertRaisesRegex(ValueError, r"this change splits \['tests\.rs'\] without a mapping"):
+                split.require_mapped_splits(self.executable, {}, "base", ["tests.rs"])
+            split.require_mapped_splits(self.executable, self.mapping, "base", ["tests.rs"])
+            (self.root / "other.rs").write_bytes(b'include!("other/scenario.rs");\n')
+            split.require_mapped_splits(self.executable, {}, "base", ["other.rs"])
+
+    def test_map_drops_an_entry_whose_source_is_already_split_at_the_base(self):
+        self.generate()
+        (self.root / "other.rs").write_bytes(split.LICENSE + b"#[test]\nfn kept() {}\n")
+        self.mapping["other.rs"] = {}
+        self.map_against(self.layout())
+        self.assertEqual(json.loads(split.MAPPING.read_text()), {"other.rs": {"fn:kept": "root"}})
+
+    def test_check_format_covers_fragments_of_every_split_source_and_nothing_else(self):
         self.generate()
         scenario = self.root / "tests/scenario.rs"
-        other = self.root / "other.rs"
-        other.write_bytes(split.LICENSE + b"fn other() {}\n")
-        self.mapping["other.rs"] = {"fn:other": "root"}
-        base = self.layout() | {"tests/scenario.rs": scenario.read_bytes() + b"\n" + self.block(b"holds")}
-        other.write_bytes(other.read_bytes() + b"\n" + self.block(b"holds"))
-        with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests/scenario.rs"):
-            self.map_against(base)
-
-    def test_map_refuses_an_exact_key_move_next_to_a_block_sharing_its_function(self):
-        self.generate()
-        scenario = self.root / "tests/scenario.rs"
-        shared = scenario.read_bytes() + b"\n" + self.block(b"holds", b"also_holds")
-        base = self.layout() | {"tests.rs": self.path.read_bytes() + b"\n" + self.block(b"holds"), "tests/scenario.rs": shared}
-        scenario.write_bytes(shared + b"\n" + self.block(b"holds"))
-        with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests.rs"):
-            self.map_against(base)
-
-    def test_map_accepts_a_new_block_sharing_a_function_with_one_that_stayed(self):
-        self.generate()
-        root = self.path.read_bytes() + b"\n" + self.block(b"holds")
-        self.path.write_bytes(root)
-        base = self.layout()
-        scenario = self.root / "tests/scenario.rs"
-        scenario.write_bytes(scenario.read_bytes() + b"\n" + self.block(b"holds", b"also_holds"))
-        self.map_against(base)
-        self.assertEqual(json.loads(split.MAPPING.read_text())["tests.rs"]["proptest:holds,also_holds"], "scenario")
-
-    def test_map_accepts_proptest_blocks_edited_in_place_in_two_sources(self):
-        self.generate()
-        other = self.root / "other.rs"
-        self.mapping["other.rs"] = {"fn:other": "root"}
-        other.write_bytes(split.LICENSE + b"fn other() {}\n\n" + self.block(b"holds"))
-        self.path.write_bytes(self.path.read_bytes() + b"\n" + self.block(b"holds"))
-        base = self.layout()
-        other.write_bytes(split.LICENSE + b"fn other() {}\n\n" + self.block(b"holds", b"extra_b"))
-        self.path.write_bytes(base["tests.rs"].replace(self.block(b"holds"), self.block(b"holds", b"extra_a")))
-        self.map_against(base)
-        written = json.loads(split.MAPPING.read_text())
-        self.assertEqual((written["tests.rs"]["proptest:holds,extra_a"], written["other.rs"]["proptest:holds,extra_b"]), ("root", "root"))
-
-    def test_map_refuses_a_proptest_block_moved_out_of_a_retired_source(self):
-        self.generate()
-        retired = split.LICENSE + b"fn other() {}\n\n" + self.block(b"holds")
-        base = self.layout() | {"other.rs": retired, "mapping.json": json.dumps(self.mapping | {"other.rs": {}}).encode()}
-        scenario = self.root / "tests/scenario.rs"
-        scenario.write_bytes(scenario.read_bytes() + b"\n" + self.block(b"holds"))
-        with self.assertRaisesRegex(ValueError, "proptest:holds must stay in other.rs"):
-            self.map_against(base)
+        scenario.write_bytes(scenario.read_bytes() + b"\nfn  spaced(){}\n")
+        spaced = len(scenario.read_bytes().splitlines())
+        module = self.root / "plain/child.rs"
+        module.parent.mkdir()
+        module.write_bytes(b"fn  spaced(){}\n")
+        (self.root / "plain.rs").write_bytes(b'mod child;\ninclude!(concat!(env!("OUT_DIR"), "/generated.rs"));\n')
+        changed = {"tests/scenario.rs": {spaced}, "plain/child.rs": {1}}
+        self.assertEqual(split.fragments(self.executable, changed, None), ["tests/scenario.rs"])
+        with self.assertRaisesRegex(ValueError, r"lines \[%d\]" % spaced):
+            split.check_format(self.executable, changed, None)
 
     def test_map_names_the_fetch_when_origin_main_is_missing(self):
         split.MAPPING.write_text(json.dumps(self.mapping))
@@ -377,26 +340,6 @@ class SplitTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "git fetch origin main"):
                 split.main()
         self.assertEqual(split.MAPPING.read_bytes(), before)
-
-    def test_verify_with_a_base_refuses_a_proptest_block_that_changed_file(self):
-        self.mapping["tests.rs"]["proptest:holds,also_holds"] = "scenario"
-        base = {"tests.rs": self.source + b"\n" + self.block(b"holds")}
-        self.source += b"\n" + self.block(b"holds", b"also_holds")
-        self.generate()
-        split.verify(self.executable, self.mapping, None)
-        with self.against(base):
-            with self.assertRaisesRegex(ValueError, "proptest:holds,also_holds must stay in tests.rs"):
-                split.verify(self.executable, self.mapping, None, "base")
-
-    def test_map_keeps_proptest_blocks_that_share_a_function_in_their_own_files(self):
-        self.generate()
-        scenario = self.root / "tests/scenario.rs"
-        scenario.write_bytes(scenario.read_bytes() + b"\n" + self.block(b"holds", b"also_holds"))
-        (self.root / "tests/props.rs").write_bytes(self.block(b"holds"))
-        self.path.write_bytes(self.path.read_bytes().replace(b'include!("tests/scenario.rs");', b'include!("tests/props.rs");\ninclude!("tests/scenario.rs");'))
-        self.map_against(self.layout())
-        written = json.loads(split.MAPPING.read_text())["tests.rs"]
-        self.assertEqual((written["proptest:holds"], written["proptest:holds,also_holds"]), ("props", "scenario"))
 
     def test_a_module_moved_into_a_scenario_is_refused(self):
         self.generate()
@@ -413,9 +356,10 @@ class SplitTests(unittest.TestCase):
 
     def test_check_format_reads_a_fragment_from_the_revision_even_when_the_tree_lacks_it(self):
         self.generate()
-        with patch.object(split, "read_source", return_value=b"fn  spaced(){}\n"):
+        sources = {"tests.rs": b'include!("tests/deleted.rs");\n', "tests/deleted.rs": b"fn  spaced(){}\n"}
+        with patch.object(split, "read_source", side_effect=lambda revision, path: sources[path]):
             with self.assertRaisesRegex(ValueError, r"tests/deleted\.rs lines \[1\]"):
-                split.check_format(self.mapping, {"tests/deleted.rs": {1}}, "HEAD")
+                split.check_format(self.executable, {"tests/deleted.rs": {1}}, "HEAD")
 
     def test_check_format_flags_a_removed_final_newline(self):
         self.generate()
@@ -423,7 +367,7 @@ class SplitTests(unittest.TestCase):
         scenario.write_bytes(b"fn added() {}\n\nfn last() {}")
         self.assertEqual(split.unformatted_lines("tests/scenario.rs", scenario.read_bytes()), {3})
         with self.assertRaisesRegex(ValueError, r"tests/scenario\.rs lines \[3\]"):
-            split.check_format(self.mapping, {"tests/scenario.rs": {3}}, None)
+            split.check_format(self.executable, {"tests/scenario.rs": {3}}, None)
 
     def test_map_follows_a_test_moved_between_scenarios(self):
         self.generate()

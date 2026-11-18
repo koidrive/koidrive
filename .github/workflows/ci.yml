@@ -1087,8 +1087,8 @@ jobs:
             BASE=$(git rev-parse HEAD^1)
           fi
           echo "BASE=$BASE" >> "$GITHUB_ENV"
-      - name: Fail when mapping.json does not assign every item of a split test source, or a proptest block changed file
-        run: python3 scripts/split-tests.py verify --source-ref HEAD --base-ref "$BASE"
+      - name: Fail when a test split this change makes moves an item unchanged nowhere, or mapping.json misses one
+        run: python3 scripts/split-tests.py verify --source-ref "$BASE"
       - name: Fail when a changed include! fragment is not rustfmt-formatted
         run: python3 scripts/split-tests.py check-format --base-ref "$BASE"
 
