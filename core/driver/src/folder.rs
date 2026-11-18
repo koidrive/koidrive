@@ -1112,7 +1112,7 @@ impl Folder {
         }
         let now_ms = crate::clock::unix_ms();
         let device_id = self.link.device_id.clone();
-        let Some(rotated) = self.disk.rotate_before_build(&mut self.store)? else {
+        let Some(token) = self.disk.rotate_before_build(&mut self.store)? else {
             self.flight = Flight::Waiting(Next::Build);
             work.push(Work::ResendAfter(BUILD_AGAIN));
             return Ok(());
@@ -1128,13 +1128,13 @@ impl Folder {
                 cursor.base(),
             );
             if built.is_some() {
-                tx.set_root_tokens(&rotated)?;
+                tx.commit_root_token(token)?;
             }
             Ok(built.cloned())
         })?;
         match built {
             Some(commit) => {
-                self.disk.built(rotated);
+                self.disk.built(token);
                 self.start(commit, work)
             }
             None => {

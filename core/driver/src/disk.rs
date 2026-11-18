@@ -55,8 +55,8 @@ use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{Content, Kind, LocalNode, NodeId};
 use koidrive_fs::{
     Action, Base, BroughtBack, Contents, Ctime, Dir, Displaced, Effect, Entry, EntryKind, FileId,
-    Location, Marker, Outcome, Reason, Reclaimed, Refusal, RootProblem, RootTokens, Space, Step,
-    Unresolved, check_root_at, open_root_folder, root_at,
+    Location, Marker, Minted, Outcome, Reason, Reclaimed, Refusal, RootProblem, RootTokens,
+    Rotation, Space, Step, Unresolved, check_root_at, open_root_folder, root_at,
 };
 use koidrive_net::{CallError, ChunkError, Session, StopReason, Transfer};
 use koidrive_proto::v1::error::Code;
@@ -318,12 +318,18 @@ pub(crate) struct Disk {
     batch: BatchLimit,
     hook: Hook,
     brought_back: BroughtBack,
-    tokens: RootTokens,
-    fresh: bool,
+    current: Option<String>,
+    next: Option<NextToken>,
     unwritable: Option<String>,
-    flushed: bool,
     #[cfg(test)]
     flush_fails: bool,
+}
+
+struct NextToken {
+    token: Minted,
+    rotation: Rotation,
+    for_build: bool,
+    flushed: bool,
 }
 
 /// A planned batch of effects the store holds, in the order they were planned.
@@ -447,10 +453,9 @@ impl Disk {
             batch: BATCH,
             hook,
             brought_back: BroughtBack::Entries(HashSet::new()),
-            tokens: RootTokens::default(),
-            fresh: false,
+            current: None,
+            next: None,
             unwritable: None,
-            flushed: false,
             #[cfg(test)]
             flush_fails: false,
         };
@@ -461,8 +466,18 @@ impl Disk {
             .admits(&disk.space.root_at()?)
             .map_err(Stop::Root)?;
         let found = disk.marker()?;
-        let tokens = store.transaction(|tx| tx.root_tokens())?;
-        if let Standing::StoreOlder = standing(&found, &tokens, &engine.effects)? {
+        let (tokens, minted) =
+            store.transaction(|tx| Ok::<_, Stop>((tx.root_tokens()?, tx.root_minted()?)))?;
+        let own = [minted.as_deref(), tokens.pending.as_deref()];
+        let recovered = matches!(
+            standing(&found, &tokens, &engine.effects, || descends(
+                &disk.space,
+                &own,
+                &found
+            ))?,
+            Standing::StoreOlder
+        );
+        if recovered {
             tracing::warn!(
                 space_id = link.space_id,
                 marker = found.effects,
@@ -490,7 +505,7 @@ impl Disk {
         if !disk.space.probe_no_replace()? {
             return Err(Stop::NoReplace);
         }
-        disk.tokens = rotate_token(&disk.space, found, store)?;
+        disk.rotate(found, recovered, store)?;
         let records = engine.effects.in_flight().to_vec();
         if let Some(first) = records.first() {
             let mut translated = (records.iter().map(translate)).collect::<Result<Vec<_>, _>>()?;
@@ -515,7 +530,8 @@ impl Disk {
                 hook,
             )?;
             disk.finish_rotation(store)?;
-            if let Standing::StoreOlder = standing(&disk.marker()?, &disk.tokens, &engine.effects)?
+            if let Standing::StoreOlder =
+                standing(&disk.marker()?, &disk.tokens(), &engine.effects, || false)?
             {
                 return Err(Stop::Root(RootProblem::BadMarker(io::Error::other(
                     "it changed while the folder's effects were recovered",
@@ -722,7 +738,9 @@ impl Disk {
         engine: &mut Engine,
         store: &mut Store,
     ) -> Result<(), Stop> {
-        self.fresh = false;
+        if let Some(next) = &mut self.next {
+            next.for_build = false;
+        }
         let Batch {
             stamp,
             answered,
@@ -944,61 +962,81 @@ impl Disk {
         Marker {
             space_id: self.space_id.clone(),
             effects,
-            token: (self.tokens.pending.clone()).or_else(|| self.tokens.current.clone()),
+            token: (self.next.as_ref().map(|next| next.token.to_string()))
+                .or_else(|| self.current.clone()),
         }
     }
 
-    pub fn rotate_before_build(&mut self, store: &mut Store) -> Result<Option<RootTokens>, Stop> {
-        let marker = self.marker()?;
-        if !self.fresh {
-            let next = pend_token(&marker, store)?;
-            (self.hook)(Cut::TokenPended);
-            self.tokens = RootTokens {
-                current: marker.token.clone(),
-                pending: Some(next),
-            };
-            self.fresh = true;
-            self.flushed = false;
+    fn tokens(&self) -> RootTokens {
+        RootTokens {
+            current: self.current.clone(),
+            pending: self.next.as_ref().map(|next| next.token.to_string()),
         }
-        let Some(pending) = self.tokens.pending.clone() else {
-            self.unwritable = None;
-            return Ok(Some(self.tokens.clone()));
+    }
+
+    fn rotate(&mut self, found: Marker, recovered: bool, store: &mut Store) -> Result<(), Stop> {
+        let (token, rotation) = pend_token(&found, recovered, store)?;
+        if let Err(error) = self.space.write_rotation(&found, token, rotation) {
+            tracing::warn!(space_id = found.space_id, %error, "the folder's marker keeps its token until the next marker write");
+            self.current = found.token;
+            self.next = Some(NextToken {
+                token,
+                rotation,
+                for_build: false,
+                flushed: false,
+            });
+            return Ok(());
+        }
+        commit_token(token, store)?;
+        self.current = Some(token.to_string());
+        Ok(())
+    }
+
+    pub fn rotate_before_build(&mut self, store: &mut Store) -> Result<Option<Minted>, Stop> {
+        let marker = self.marker()?;
+        let next = match &mut self.next {
+            Some(next) if next.for_build => next,
+            unbuilt => {
+                let restart = (unbuilt.as_ref())
+                    .is_some_and(|next| next.rotation == Rotation::Restart && !next.flushed);
+                let (token, rotation) = pend_token(&marker, restart, store)?;
+                (self.hook)(Cut::TokenPended);
+                self.current = marker.token.clone();
+                unbuilt.insert(NextToken {
+                    token,
+                    rotation,
+                    for_build: true,
+                    flushed: false,
+                })
+            }
         };
-        if !self.flushed {
-            let rotated = Marker {
-                token: Some(pending.clone()),
-                ..marker
-            };
-            if let Err(error) = self.write_rotated(&rotated) {
+        if !next.flushed {
+            let written = self
+                .space
+                .write_rotation(&marker, next.token, next.rotation);
+            #[cfg(test)]
+            let written = written.and_then(|()| match self.flush_fails {
+                true => Err(io::Error::other("the test failed the marker's flush")),
+                false => Ok(()),
+            });
+            if let Err(error) = written {
                 if self.unwritable.is_none() {
                     tracing::warn!(space_id = self.space_id, %error, "nothing is uploaded until the folder's marker can be written");
                 }
                 self.unwritable = Some(error.to_string());
                 return Ok(None);
             }
-            self.flushed = true;
+            next.flushed = true;
             (self.hook)(Cut::TokenWritten);
         }
         self.unwritable = None;
-        Ok(Some(RootTokens {
-            current: Some(pending),
-            pending: None,
-        }))
+        Ok(Some(next.token))
     }
 
-    pub fn built(&mut self, tokens: RootTokens) {
-        self.fresh = false;
-        self.tokens = tokens;
+    pub fn built(&mut self, token: Minted) {
+        self.next = None;
+        self.current = Some(token.to_string());
         (self.hook)(Cut::TokenCommitted);
-    }
-
-    fn write_rotated(&self, marker: &Marker) -> io::Result<()> {
-        self.space.write_marker(marker)?;
-        #[cfg(test)]
-        if self.flush_fails {
-            return Err(io::Error::other("the test failed the marker's flush"));
-        }
-        Ok(())
     }
 
     #[cfg(test)]
@@ -1016,8 +1054,9 @@ impl Disk {
     }
 
     fn finish_rotation(&mut self, store: &mut Store) -> Result<(), Stop> {
-        if let Some(next) = self.tokens.pending.take() {
-            self.tokens = commit_token(next, store)?;
+        if let Some(next) = self.next.take() {
+            commit_token(next.token, store)?;
+            self.current = Some(next.token.to_string());
         }
         Ok(())
     }
@@ -1033,16 +1072,26 @@ enum Standing {
     StoreOlder,
 }
 
-fn standing(found: &Marker, tokens: &RootTokens, effects: &Effects) -> Result<Standing, Stop> {
+fn standing(
+    found: &Marker,
+    tokens: &RootTokens,
+    effects: &Effects,
+    descends: impl FnOnce() -> bool,
+) -> Result<Standing, Stop> {
     let (marker, cleared) = (found.effects, effects.cleared());
     if marker > cleared + effects.in_flight().len() as u64 {
         return Ok(Standing::StoreOlder);
     }
-    tokens.admits(found).map_err(Stop::Root)?;
-    if marker < cleared {
-        return Err(Stop::DiskBehind { marker, cleared });
+    match tokens.admits(found) {
+        Ok(()) if marker < cleared => Err(Stop::DiskBehind { marker, cleared }),
+        Ok(()) => Ok(Standing::Current),
+        Err(_) if marker >= cleared && descends() => Ok(Standing::StoreOlder),
+        Err(problem) => Err(Stop::Root(problem)),
     }
-    Ok(Standing::Current)
+}
+
+fn descends(space: &Space, own: &[Option<&str>], found: &Marker) -> bool {
+    (space.lineage()).is_ok_and(|lineage| lineage.descends(own, found))
 }
 
 fn bring_back_all(space: &Space, trees: &Trees) -> io::Result<()> {
@@ -1088,22 +1137,28 @@ pub(crate) fn relink_with_hook(
     if !space.held().map_err(Stop::from)? {
         return Err(Stop::Withdrawn(link.root.clone()).into());
     }
-    let (stored, before, tokens) = store.transaction(|tx| -> Result<_, Stop> {
+    let (stored, before, tokens, minted) = store.transaction(|tx| -> Result<_, Stop> {
         Ok((
             tx.link()?,
             Engine::load(tx, &link.space_id)?,
             tx.root_tokens()?,
+            tx.root_minted()?,
         ))
     })?;
     (stored.as_ref().unwrap_or(link).root_at())
         .admits(&space.root_at().map_err(Stop::from)?)
         .map_err(Stop::Root)?;
     let marker = marker_of(&space, &link.space_id)?;
-    if standing(&marker, &tokens, &before.effects).is_ok() {
+    let own = [minted.as_deref(), tokens.pending.as_deref()];
+    if standing(&marker, &tokens, &before.effects, || {
+        descends(&space, &own, &marker)
+    })
+    .is_ok()
+    {
         return Err(RelinkError::NotACopy);
     }
     bring_back_all(&space, &before.trees).map_err(Stop::from)?;
-    let next = koidrive_fs::new_token();
+    let next = Minted::mint();
     let questions = store.transaction(|tx| -> Result<_, Stop> {
         let current = tx.root_tokens()?.current;
         let answered = tx.questions()?;
@@ -1127,7 +1182,7 @@ pub(crate) fn relink_with_hook(
         engine.checkpoint(tx)?;
         tx.set_root_tokens(&RootTokens {
             current,
-            pending: Some(next.clone()),
+            pending: Some(next.to_string()),
         })?;
         let unanswered = tx
             .questions()?
@@ -1136,11 +1191,7 @@ pub(crate) fn relink_with_hook(
         Ok(unanswered.count() as u64)
     })?;
     hook(Cut::TokenPended);
-    let relinked = Marker {
-        token: Some(next.clone()),
-        ..marker
-    };
-    space.write_marker(&relinked).map_err(Stop::from)?;
+    (space.write_rotation(&marker, next, Rotation::Restart)).map_err(Stop::from)?;
     hook(Cut::TokenWritten);
     commit_token(next, store)?;
     hook(Cut::TokenCommitted);
@@ -1162,46 +1213,31 @@ pub(crate) fn held_name(trees: &Trees, held: &OsStr, found: FileId) -> OsString 
         .map_or_else(|| held.to_owned(), OsString::from)
 }
 
-fn rotate_token(space: &Space, marker: Marker, store: &mut Store) -> Result<RootTokens, Stop> {
-    let next = pend_token(&marker, store)?;
-    if !write_token(space, &marker, &next) {
-        return Ok(RootTokens {
-            current: marker.token,
-            pending: Some(next),
-        });
-    }
-    commit_token(next, store)
-}
-
-fn write_token(space: &Space, marker: &Marker, next: &str) -> bool {
-    let rotated = Marker {
-        token: Some(next.to_owned()),
-        ..marker.clone()
-    };
-    let written = space.write_marker(&rotated);
-    if let Err(error) = &written {
-        tracing::warn!(space_id = rotated.space_id, %error, "the folder's marker keeps its token until the next marker write");
-    }
-    written.is_ok()
-}
-
-pub(crate) fn pend_token(marker: &Marker, store: &mut Store) -> Result<String, Stop> {
-    let next = koidrive_fs::new_token();
+pub(crate) fn pend_token(
+    marker: &Marker,
+    restart: bool,
+    store: &mut Store,
+) -> Result<(Minted, Rotation), Stop> {
+    let next = Minted::mint();
     let tokens = RootTokens {
         current: marker.token.clone(),
-        pending: Some(next.clone()),
+        pending: Some(next.to_string()),
     };
-    store.transaction(|tx| tx.set_root_tokens(&tokens))?;
-    Ok(next)
+    let ours = store.transaction(|tx| -> Result<_, Stop> {
+        let own = [tx.root_minted()?, tx.root_tokens()?.pending];
+        tx.set_root_tokens(&tokens)?;
+        Ok(marker.token.is_some() && own.contains(&marker.token))
+    })?;
+    let rotation = match ours && !restart {
+        true => Rotation::Extend,
+        false => Rotation::Restart,
+    };
+    Ok((next, rotation))
 }
 
-pub(crate) fn commit_token(token: String, store: &mut Store) -> Result<RootTokens, Stop> {
-    let tokens = RootTokens {
-        current: Some(token),
-        pending: None,
-    };
-    store.transaction(|tx| tx.set_root_tokens(&tokens))?;
-    Ok(tokens)
+fn commit_token(token: Minted, store: &mut Store) -> Result<(), Stop> {
+    store.transaction(|tx| tx.commit_root_token(token))?;
+    Ok(())
 }
 
 pub(crate) type Sources = BTreeMap<Vec<u8>, (String, Option<PathBuf>)>;

@@ -36,7 +36,7 @@ use std::time::Duration;
 
 pub use engine::{EngineChanges, EngineState};
 use koidrive_engine::commit::Base;
-use koidrive_fs::{FileId, Mount, RootAt, RootTokens, VolumeId};
+use koidrive_fs::{FileId, Minted, Mount, RootAt, RootTokens, VolumeId};
 use koidrive_proto::v1::{Content, NodeState, VersionInfo};
 use migrations::{LEGACY_STEPS, MIGRATIONS, NAMED};
 use prost::Message;
@@ -900,11 +900,32 @@ impl Tx<'_> {
             .unwrap_or_default())
     }
 
-    /// Records the marker tokens of the link.
+    /// Records the marker tokens of the link. The token the link minted last stays as it is.
     pub fn set_root_tokens(&self, tokens: &RootTokens) -> Result<()> {
         self.0.execute(
             "UPDATE link SET root_token = ?1, root_token_pending = ?2 WHERE id = 1",
             params![tokens.current, tokens.pending],
+        )?;
+        Ok(())
+    }
+
+    /// The marker token this link minted and the marker took last; none before the link's first such token.
+    pub fn root_minted(&self) -> Result<Option<String>> {
+        Ok(self
+            .0
+            .query_row("SELECT root_minted FROM link WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .optional()?
+            .flatten())
+    }
+
+    /// Records that the marker took `token`, which this link minted: it is the current token and the one minted last,
+    /// and none is pending.
+    pub fn commit_root_token(&self, token: Minted) -> Result<()> {
+        self.0.execute(
+            "UPDATE link SET root_token = ?1, root_token_pending = NULL, root_minted = ?1 WHERE id = 1",
+            params![token.to_string()],
         )?;
         Ok(())
     }
