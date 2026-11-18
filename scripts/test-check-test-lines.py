@@ -206,6 +206,42 @@ class TestLines(unittest.TestCase):
         after = {"core/a/src/lib.rs": "#[cfg(test)]\nconst fn fixture() -> u8 {\n    1\n}\n" + self.lines(413, "p")}
         self.assertEqual(self.net({}, after), 4)
 
+    def test_a_test_only_field_named_like_a_keyword_ends_at_its_comma(self):
+        counts = self.counts({"core/a/src/lib.rs": "struct S {\n    #[cfg(test)]\n    user_data: usize,\n    kept: u8,\n}\n"})
+        self.assertEqual((counts["test"], counts["implementation"]), (2, 3))
+
+    def test_a_file_production_also_reaches_stays_implementation(self):
+        counts = self.counts({
+            "core/a/src/lib.rs": "mod production;\n#[cfg(test)]\nmod validation;\n",
+            "core/a/src/production.rs": '#[path = "shared.rs"]\nmod shared;\n',
+            "core/a/src/validation.rs": '#[path = "shared.rs"]\nmod shared;\n',
+            "core/a/src/shared.rs": self.lines(10),
+        })
+        self.assertEqual((counts["test"], counts["implementation"]), (4, 13))
+
+    def test_rust_files_under_fixtures_are_fixture_data(self):
+        counts = self.counts({"core/a/tests/fixtures/template.rs": self.lines(5), "core/a/tests/flow.rs": self.lines(2)})
+        self.assertEqual((counts["test"], counts["fixture"]), (2, 5))
+
+    def test_a_path_override_on_an_inline_test_module_moves_its_children(self):
+        after = {
+            "core/a/src/lib.rs": '#[cfg(test)]\n#[path = "thread_files"]\nmod thread {\n    #[path = "tls.rs"]\n    mod local_data;\n}\n',
+            "core/a/src/thread_files/tls.rs": self.lines(413),
+        }
+        self.assertEqual(self.net({}, after), 419)
+
+    def test_a_module_after_a_test_module_on_the_same_line_is_implementation(self):
+        after = {"core/a/src/lib.rs": "#[cfg(test)] mod tests {} mod production;\n", "core/a/src/production.rs": self.lines(413)}
+        self.assertEqual(self.net({}, after), 1)
+
+    def test_a_child_declared_after_a_tab_is_still_found(self):
+        after = {
+            "core/a/src/lib.rs": "#[cfg(test)]\nmod h;\n",
+            "core/a/src/h.rs": "mod\tcases;\n",
+            "core/a/src/h/cases.rs": self.lines(413),
+        }
+        self.assertEqual(self.net({}, after), 416)
+
     def test_the_pull_requests_own_record_covers_the_excess(self):
         record = "# A model of every resend order needs one case per order.\n600\n"
         after = {"core/a/tests/t.rs": self.lines(1000), ".github/test-line-allowances/pr-715.txt": record}

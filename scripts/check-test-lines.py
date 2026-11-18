@@ -17,12 +17,12 @@ TOKEN = re.compile(r"""//[^\n]*|/\*|(?<![A-Za-z0-9_])[bc]?r(#*)"[\s\S]*?"\1|"(?:
 CFG = re.compile(r"#(!?)\s*\[\s*cfg\s*\(")
 ATTRIBUTE = re.compile(r"#\s*\[")
 PATH_ATTRIBUTE = re.compile(r'#\s*\[\s*path\s*=\s*"([^"]*)"\s*\]')
-MOD_DECLARATION = re.compile(r"(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)\s*;")
+MOD_DECLARATION = re.compile(r"\b(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)\s*;")
 INLINE_MODULE = re.compile(r"\bmod\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)\s*\{")
 RECORD_NAME = re.compile(r"pr-([0-9]+)\.txt")
 VISIBILITY = re.compile(r"(?:pub(?:\s*\([^)]*\))?\s+)?")
 UNTIL_SEMICOLON = re.compile(r"(?:const|static|let|type)\b(?!\s+(?:fn|unsafe|async|extern)\b)")
-ITEM = re.compile(r"(?:fn|impl|struct|enum|union|mod|use|trait|extern|unsafe|async|macro_rules!|[A-Za-z_][A-Za-z0-9_]*!)")
+ITEM = re.compile(r"(?:(?:fn|impl|struct|enum|union|mod|use|trait|extern|unsafe|async)\b|[A-Za-z_][A-Za-z0-9_]*!)")
 EXPRESSION_CONTINUES = re.compile(r"\s*[,;.?)\]}]|\s*else\b|\s*as\b")
 FILE_ATTRIBUTES_ONLY = re.compile(r"\s*(?:#!\s*\[[^\]]*\]\s*)*")
 TEST_DIR = re.compile(r"(^|/)(tests|benches)/")
@@ -31,6 +31,8 @@ CRATE_ROOT = re.compile(r"(^|/)((lib|main|mod|build)\.rs|(tests|benches|examples
 REGRESSION = re.compile(r"\.proptest-regressions$|(^|/)proptest-regressions/|\.cases/")
 SNAPSHOT = re.compile(r"\.snap(\.new)?$|(^|/)(goldens|snapshots)/")
 FIXTURE = re.compile(r"(^|/)(tests|fixtures|testdata|test-data)/")
+RUST_FIXTURE = re.compile(r"(^|/)(fixtures|testdata|test-data)/")
+ANY_MODULE = re.compile(r"\bmod\b")
 
 
 def git(*args, input=None):
@@ -149,6 +151,14 @@ def module_file(path, declaration, files):
     return nested if nested in files and flat not in files else flat
 
 
+def path_override(code, src, start):
+    before = code.rfind("]", 0, start)
+    if before < 0 or code[before + 1:start].strip():
+        return None
+    attribute = PATH_ATTRIBUTE.match(src, code.rfind("#", 0, before))
+    return attribute.group(1) if attribute else None
+
+
 def scan_rust(src):
     code = mask(src)
     line_of = lambda offset: code.count("\n", 0, offset)
@@ -162,24 +172,17 @@ def scan_rust(src):
             if FILE_ATTRIBUTES_ONLY.fullmatch(code, 0, m.start()):
                 whole_file = True
             continue
-        end = item_end(code, code.index("]", close) + 1)
-        ranges.append((line_of(m.start()), line_of(end - 1)))
-    blocks = [(m.start(), balanced(code, m.end() - 1, "{", "}"), m.group(1)) for m in INLINE_MODULE.finditer(code)]
+        ranges.append((m.start(), item_end(code, code.index("]", close) + 1)))
+    blocks = [(m.start(), balanced(code, m.end() - 1, "{", "}"), path_override(code, src, m.start()) or m.group(1))
+              for m in INLINE_MODULE.finditer(code)]
     declarations, test_declarations = [], []
     for m in MOD_DECLARATION.finditer(code):
-        explicit = None
-        before = code.rfind("]", 0, m.start())
-        if before >= 0 and not code[before + 1:m.start()].strip():
-            attribute = PATH_ATTRIBUTE.match(src, code.rfind("#", 0, before))
-            if attribute:
-                explicit = attribute.group(1)
         inline = tuple(name for start, end, name in blocks if start < m.start() < end)
-        line = line_of(m.start())
-        in_test = any(first <= line <= last for first, last in ranges)
-        (test_declarations if in_test else declarations).append((inline, m.group(1), explicit))
+        in_test = any(start <= m.start() < end for start, end in ranges)
+        (test_declarations if in_test else declarations).append((inline, m.group(1), path_override(code, src, m.start())))
     covered = set()
-    for first, last in ranges:
-        covered.update(range(first, last + 1))
+    for start, end in ranges:
+        covered.update(range(line_of(start), line_of(end - 1) + 1))
     return {"whole_file": whole_file, "test_lines": len(covered), "modules": declarations, "test_modules": test_declarations}
 
 
@@ -239,7 +242,7 @@ def count(tree):
         blob = tree.blobs[path]
         if blob not in Tree.scans:
             src = data[path].decode("utf-8", "replace")
-            Tree.scans[blob] = scan_rust(src) if "cfg" in src and "test" in src or "mod " in src else EMPTY_SCAN
+            Tree.scans[blob] = scan_rust(src) if "cfg" in src and "test" in src or ANY_MODULE.search(src) else EMPTY_SCAN
         scans[path] = Tree.scans[blob]
         modules[path] = {module_file(path, d, tree.blobs) for d in scans[path]["modules"]}
         test_modules[path] = {module_file(path, d, tree.blobs) for d in scans[path]["test_modules"]}
@@ -251,13 +254,15 @@ def count(tree):
     while pending:
         path = pending.pop()
         for child in modules.get(path, set()) | test_modules.get(path, set()):
-            if child not in test_files:
+            if child not in test_files and child not in shared:
                 test_files.add(child)
                 pending.append(child)
     totals = Counter({category: 0 for category in CATEGORIES})
     for path in paths:
         lines = line_count(data[path])
-        if path.endswith(".rs"):
+        if path.endswith(".rs") and RUST_FIXTURE.search(path):
+            totals["fixture"] += lines
+        elif path.endswith(".rs"):
             test = lines if path in test_files else min(lines, scans[path]["test_lines"])
             totals["test"] += test
             totals["implementation"] += lines - test

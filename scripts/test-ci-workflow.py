@@ -271,7 +271,8 @@ class Caches(unittest.TestCase):
 class CiReport(unittest.TestCase):
     def test_a_job_that_skips_on_push_is_not_needed_on_push(self):
         jobs = re.split(r"(?m)^  (?=[a-z][a-z-]*:\n)", WORKFLOW.read_text().split("\njobs:\n", 1)[1])
-        push_skipped = {job.split(":", 1)[0] for job in jobs if "\n    if: github.event_name != 'push'\n" in job}
+        push_skipped = {job.split(":", 1)[0] for job in jobs if re.search(r"\n    if: [^\n]*github\.event_name\s*!=\s*'push'", job)}
+        self.assertIn("test-lines", push_skipped)
         results = re.search(r"(?m)^          RESULTS: (.*)$", inline_job("ci-report"))[1]
         entries = re.findall(r"([a-z-]+)=(\$\{\{.*?\}\})", results)
         self.assertIn("test-lines", dict(entries))
