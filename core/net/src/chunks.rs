@@ -33,7 +33,6 @@ use crate::transport::Cause;
 pub const MAX_CHUNKS_PER_CALL: usize = 1000;
 /// How many chunks a [`Transfer`] uploads at once unless it is given another [`UploadGate`].
 pub const DEFAULT_UPLOAD_CONCURRENCY: usize = 4;
-/// How many chunks a [`Transfer`] downloads at once unless it is given another number.
 pub const DEFAULT_DOWNLOAD_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(8).unwrap();
 const TARGET_MARGIN: Duration = Duration::from_secs(60);
 const MAX_PREALLOCATION: usize = 4 << 20;
