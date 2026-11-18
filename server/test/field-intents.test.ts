@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { create } from "@bufbuild/protobuf";
-import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { type Op, OpResult_Code, OpSchema } from "../src/gen/koidrive/v1/commit_pb";
 import { type ChangeRecord, type Content, FieldIntentsSchema, type Intent, IntentSchema, type NodeState, NodeStatus } from "../src/gen/koidrive/v1/model_pb";
@@ -10,11 +10,10 @@ import { fromHex, toHex, uuidv7 } from "../src/ids";
 import type { SpaceDO } from "../src/space-do";
 import { commitDigest } from "../src/space/digest";
 import { type Field, legacyIntentId, legacyPlaceKey, type LostChangeRule } from "../src/space/intents";
-import { MIGRATIONS } from "../src/space/schema";
 import { getNode, nodeState } from "../src/space/store";
 import legacyVectors from "../../spec/vectors/legacy-intents.json";
-import { restoreFromR2, serverState } from "./export-reader";
-import { client, content, freezeClock, newSpace, op, runSpaceAlarm, type TestClient } from "./helpers";
+import { restoreFromR2, serverState, snapshotWithoutIntents } from "./export-reader";
+import { client, content, freezeClock, newSpace, op, revertIntentsMigration, runSpaceAlarm, type TestClient } from "./helpers";
 
 type Space = Awaited<ReturnType<typeof newSpace>>;
 type IntentInit = { id?: Uint8Array; author?: string; replay?: boolean; over?: Uint8Array; appliedAtMs?: bigint };
@@ -851,7 +850,7 @@ describe("RFC 0029 section 7.2: legacy intents", () => {
     expect(legacyPlaceKey(12, "0190f5c2-0000-7000-8000-000000000002", "Caf\u00e9.docx")).toBe(folder!.key);
   });
 
-  it("snapshots the backfilled intents, so an R2 restore holds them before the next commit", async () => {
+  it("snapshots the backfilled intents at the next commit, and a rebuild before it reads the server's legacy intents from the log", async () => {
     const { space, a, root } = await setup();
     const now = Date.now();
     await setClock(space, now);
@@ -862,22 +861,28 @@ describe("RFC 0029 section 7.2: legacy intents", () => {
     await runSpaceAlarm(space.stub, exportAt);
     await runSpaceAlarm(space.stub, exportAt + 60_000);
     const headSeq = (await serverState(space.stub)).headSeq;
-    expect((await restoreFromR2(space.spaceId)).manifest!.start_seq).toBe(headSeq);
-    await runInDurableObject(space.stub, (_instance, state) => {
-      const sql = state.storage.sql;
-      for (const table of ["field_intents", "trash_held", "tombstones"]) sql.exec(`DROP TABLE ${table}`);
-      sql.exec("ALTER TABLE nodes DROP COLUMN status_before");
-      sql.exec("ALTER TABLE nodes DROP COLUMN copy_mark");
-      sql.exec("UPDATE meta SET value = ? WHERE key = 'schema_version'", MIGRATIONS.length - 1);
-    });
-    await evictDurableObject(space.stub);
+    await snapshotWithoutIntents(space.spaceId);
+    const published = await restoreFromR2(space.spaceId);
+    expect(published.manifest!.start_seq).toBe(headSeq);
+    await revertIntentsMigration(space.stub);
     const server = await serverState(space.stub);
     expect(idOf((await stateOf(space, dir))!.intents!.status)).toBe(legacyIntentId(dir, "status", `live:${headSeq - 1}`));
     await runSpaceAlarm(space.stub, exportAt + 2 * 60_000);
     await runSpaceAlarm(space.stub, exportAt + 3 * 60_000);
+    const rebuilt = await restoreFromR2(space.spaceId);
+    expect(rebuilt.manifest).toEqual(published.manifest);
+    expect([...rebuilt.nodes.keys()].sort()).toEqual([...server.nodes.keys()].sort());
+    for (const [nodeId, { state }] of server.nodes) {
+      const got = rebuilt.nodes.get(nodeId)!.state.intents!;
+      for (const field of ["place", "content", "status"] as const) {
+        expect([idOf(got[field]), got[field]?.appliedAtMs]).toEqual([idOf(state.intents![field]), state.intents![field]?.appliedAtMs]);
+      }
+    }
+    await a.commit([op.move(dir, root, "Archive")]);
+    for (const minutes of [10, 11, 12]) await runSpaceAlarm(space.stub, exportAt + minutes * 60_000);
     const restored = await restoreFromR2(space.spaceId);
-    expect(restored.headSeq).toBe(headSeq);
-    expect(restored.nodes).toEqual(server.nodes);
+    expect(restored.manifest!.start_seq).toBe(headSeq + 1);
+    expect(restored.nodes).toEqual((await serverState(space.stub)).nodes);
   });
 
   it("gives every field of a store from before the migration its legacy intent, with the time of the commit at its revision", async () => {
@@ -890,19 +895,14 @@ describe("RFC 0029 section 7.2: legacy intents", () => {
     await b.commit([op.delete(gone)]);
     await a.commit([op.delete(live)]);
     await a.commit([op.restore(live)]);
-    const step = MIGRATIONS.length - 1;
     const rows = await runInDurableObject(space.stub, (_instance, state) => {
       const sql = state.storage.sql;
-      for (const table of ["field_intents", "trash_held", "tombstones"]) sql.exec(`DROP TABLE ${table}`);
-      sql.exec("ALTER TABLE nodes DROP COLUMN status_before");
-      sql.exec("ALTER TABLE nodes DROP COLUMN copy_mark");
-      sql.exec("UPDATE meta SET value = ? WHERE key = 'schema_version'", step);
       return {
         nodes: sql.exec("SELECT node_id, parent_id, name, status, content_rev, meta_rev, cur_version_id, trash_group FROM nodes").toArray(),
         commits: new Map(sql.exec("SELECT seq, committed_at_ms FROM commits").toArray().map((row) => [Number(row.seq), BigInt(Number(row.committed_at_ms))])),
       };
     });
-    await evictDurableObject(space.stub);
+    await revertIntentsMigration(space.stub);
     const restoredSeq = Number((await stateOf(space, live))!.metaRev);
     for (const row of rows.nodes) {
       const nodeId = String(row.node_id);

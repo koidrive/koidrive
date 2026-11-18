@@ -25,14 +25,16 @@ import {
   type ServerMessage,
   ServerMessageSchema,
 } from "../src/gen/koidrive/v1/messages_pb";
+import type { NodeState } from "../src/gen/koidrive/v1/model_pb";
 import { ChunkPlan_Action, Error_Cause, Error_Code, ErrorSchema } from "../src/gen/koidrive/v1/rpc_pb";
 import { toHex, uuidv7 } from "../src/ids";
 import { Close, CONNECT_HEADER, type SpaceDO } from "../src/space-do";
+import { intentBytes, legacyIntentId } from "../src/space/intents";
 import { RETIRED_HISTORY } from "../src/space/space";
 import { ChunkState } from "../src/space/schema";
 import { chunkKey } from "../src/space/store";
-import { restoreFromR2, serverState } from "./export-reader";
-import { content, freezeClock, op, runSpaceAlarm, TestClient, targetIncarnation, unknownOutcome } from "./helpers";
+import { restoreFromR2, serverState, snapshotWithoutIntents } from "./export-reader";
+import { content, freezeClock, op, revertIntentsMigration, runSpaceAlarm, TestClient, targetIncarnation, unknownOutcome } from "./helpers";
 import { pitrBackend } from "../src/space/pitr";
 import { simulatedPitr } from "./pitr";
 
@@ -565,6 +567,38 @@ describe("space rewind (RFC 0003)", () => {
     expect(restored.nodes).toEqual(server.nodes);
 
     expect((await rewind(token, spaceId, { restorePointMs: p2, expectedHistoryId: historyId })).status).toBe(200);
+  });
+
+  it("rebuilds a rewound history's snapshot without intents from the live seqs and commit times of the history before it (RFC 0029 §7.2)", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const a = device();
+    const kept = await createFile(a, spaceId, "kept.txt", "kept");
+    const p1 = createdAtMs + MINUTE;
+    await snapshot(spaceId, p1);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "dropped")]);
+    const previous = await a.history();
+    await runSpaceAlarm(space(spaceId), Date.now() + 5 * MINUTE);
+    const completedAtMs = createdAtMs + 5 * MINUTE;
+    await setAccountClock(completedAtMs);
+    const { historyId, restoreSeq } = (await rewind(creds.access!.token, spaceId, { restorePointMs: p1, expectedHistoryId: previous })).message!;
+    await runSpaceAlarm(space(spaceId), completedAtMs);
+    await runSpaceAlarm(space(spaceId), completedAtMs + 2 * MINUTE);
+    await runInDurableObject(space(spaceId), (instance: SpaceDO) => freezeClock(instance, completedAtMs + 3 * MINUTE));
+    const b = device();
+    b.acceptedSeq = restoreSeq;
+    await b.commit([op.move(kept.nodeId, spaceId, "moved.txt")], { baseSeq: restoreSeq });
+    await runSpaceAlarm(space(spaceId), completedAtMs + 10 * MINUTE);
+    await revertIntentsMigration(space(spaceId));
+    await runSpaceAlarm(space(spaceId), completedAtMs + 11 * MINUTE);
+    await runSpaceAlarm(space(spaceId), completedAtMs + 12 * MINUTE);
+    await snapshotWithoutIntents(spaceId);
+    const server = await serverState(space(spaceId));
+    const rebuilt = await restoreFromR2(spaceId);
+    expect([rebuilt.descriptor.history_id, rebuilt.manifest?.start_seq, server.headSeq]).toEqual([historyId, Number(restoreSeq) + 1, Number(restoreSeq) + 1]);
+    const fields = (state: NodeState) => (["place", "content", "status"] as const).map((field) => [state.intents?.[field]?.id, state.intents?.[field]?.appliedAtMs]);
+    expect(fields(server.nodes.get(kept.nodeId)!.state)[2]![0]).toEqual(intentBytes(legacyIntentId(kept.nodeId, "status", `live:${restoreSeq}`)));
+    expect([...rebuilt.nodes.keys()].sort()).toEqual([...server.nodes.keys()].sort());
+    for (const [nodeId, { state }] of server.nodes) expect(fields(rebuilt.nodes.get(nodeId)!.state)).toEqual(fields(state));
   });
 
   it("closes the space to a connection that holds a lease from before the admission, while the marker is not yet written (RFC 0014)", async () => {

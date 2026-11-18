@@ -98,8 +98,10 @@ export function bootstrapExport(sql: Sql, atMs: number): void {
 export function requestSnapshot(sql: Sql, atMs: number): void {
   if (getMeta(sql, "export_state") === undefined) return;
   const state = readState(sql);
-  state.running = undefined;
-  state.dueSeq = Number(getMeta(sql, "head_seq"));
+  const head = Number(getMeta(sql, "head_seq"));
+  if (state.running && state.running.startSeq < head) state.running = undefined;
+  const named = Math.max(-1, state.running?.startSeq ?? -1, ...state.done.map((done) => done.startSeq));
+  state.dueSeq = named < head ? head : head + 1;
   setMeta(sql, "export_state", JSON.stringify(state));
   scheduleExport(sql, atMs, true);
 }
@@ -200,7 +202,7 @@ export class Exporter {
     if (running) return running.endSeq === undefined ? "page" : "manifest";
     if (!state.descriptor && (!state.baseline || state.done.length > 0)) return "descriptor";
     const { since } = state;
-    if (state.dueSeq !== null || (head > since.seq && (nowMs - since.atMs >= DAY_MS || head - since.seq >= SNAPSHOT_COMMITS))) return "start";
+    if ((state.dueSeq !== null && head >= state.dueSeq) || (head > since.seq && (nowMs - since.atMs >= DAY_MS || head - since.seq >= SNAPSHOT_COMMITS))) return "start";
     return undefined;
   }
 
