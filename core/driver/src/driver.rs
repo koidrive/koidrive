@@ -95,8 +95,13 @@ pub struct Unconfirmed {
 impl Unconfirmed {
     /// The unconfirmed sign-out the profile at `paths` recorded, if any.
     pub fn recorded(paths: &Paths) -> Option<Self> {
-        let bytes = fs::read(paths.unconfirmed_revocation()).ok()?;
-        serde_json::from_slice(&bytes).ok()
+        use rustix::fs::{Mode, OFlags};
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+        let file = File::from(
+            rustix::fs::open(paths.unconfirmed_revocation(), flags, Mode::empty()).ok()?,
+        );
+        file.metadata().ok()?.is_file().then_some(())?;
+        serde_json::from_reader(io::BufReader::new(file)).ok()
     }
 }
 
@@ -7697,6 +7702,20 @@ mod tests {
         assert!(!paths.state_dir.join("leaving").exists());
         assert_eq!(fs::read(root.join("keep.txt")).unwrap(), b"keep");
         assert_eq!(fs::read(other.join("keep.txt")).unwrap(), b"keep too");
+    }
+
+    #[test]
+    fn a_record_of_an_unconfirmed_sign_out_that_is_not_a_file_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        fs::create_dir_all(paths.unconfirmed_revocation().parent().unwrap()).unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(paths.unconfirmed_revocation())
+            .status()
+            .unwrap();
+        assert!(made.success());
+
+        assert_eq!(Unconfirmed::recorded(&paths), None);
     }
 
     #[tokio::test]
