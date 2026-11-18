@@ -908,6 +908,12 @@ async fn sign_out(
     if options.keep_signed_in {
         return still_listed(None);
     }
+    if !found.state {
+        return still_listed(Some(format!(
+            "Koidrive has no record of creating {}, so uninstall did not open it",
+            paths.state_dir.display()
+        )));
+    }
     let leave = |confirm_last_device| {
         ipc::run(
             paths,

@@ -420,7 +420,7 @@ fn a_state_folder_koidrive_did_not_make_keeps_everything_in_it() {
         .unwrap();
     let expenses = fs::read(&expenses).unwrap();
     type Files<'a> = &'a [(&'a str, &'a [u8])];
-    let cases: [(&str, &str, Files); 6] = [
+    let cases: [(&str, &str, Files); 7] = [
         (
             "notes",
             "its own folder",
@@ -464,6 +464,11 @@ fn a_state_folder_koidrive_did_not_make_keeps_everything_in_it() {
                 (database, &b"SQLite format 3\0"[..]),
                 (stage, &b"{}"[..]),
             ],
+        ),
+        (
+            "a signed-in older release",
+            "its own folder",
+            &[("credential.json", &b"{}"[..]), ("notes.txt", &b"mine"[..])],
         ),
     ];
     let mut lost = Vec::new();
