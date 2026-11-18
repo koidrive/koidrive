@@ -200,6 +200,11 @@ fn sized_volume_id(plain: VolumeId, kind: u8, size: u64) -> VolumeId {
 #[cfg(target_vendor = "apple")]
 pub(crate) fn plain_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
     use std::os::fd::AsRawFd;
+    if let Ok(volume) = rustix::fs::fstatfs(dir)
+        && fat_kind(&volume) == Some(1)
+    {
+        return disk_arbitration_volume_id(&volume);
+    }
     #[repr(C, packed(4))]
     struct Reply {
         length: u32,
@@ -230,6 +235,50 @@ pub(crate) fn plain_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
     };
     let uuid = reply.uuid;
     (done == 0 && reply.length as usize == size && uuid != [0; 16]).then_some(VolumeId::Uuid(uuid))
+}
+
+/// The volume UUID Disk Arbitration derives from the serial number of the FAT volume `volume`. macOS 15 reports a
+/// new UUID through `getattrlist` each time it mounts a FAT volume again.
+#[cfg(target_vendor = "apple")]
+fn disk_arbitration_volume_id(volume: &rustix::fs::StatFs) -> Option<VolumeId> {
+    use std::ffi::{c_char, c_void};
+    type Object = *const c_void;
+    #[repr(C)]
+    struct UuidBytes([u8; 16]);
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFRelease(object: Object);
+        fn CFGetTypeID(object: Object) -> usize;
+        fn CFUUIDGetTypeID() -> usize;
+        fn CFUUIDGetUUIDBytes(uuid: Object) -> UuidBytes;
+        fn CFDictionaryGetValue(dictionary: Object, key: Object) -> Object;
+    }
+    #[link(name = "DiskArbitration", kind = "framework")]
+    unsafe extern "C" {
+        static kDADiskDescriptionVolumeUUIDKey: Object;
+        fn DASessionCreate(allocator: Object) -> Object;
+        fn DADiskCreateFromBSDName(
+            allocator: Object,
+            session: Object,
+            name: *const c_char,
+        ) -> Object;
+        fn DADiskCopyDescription(disk: Object) -> Object;
+    }
+    let owned = |object: Object| (!object.is_null()).then_some(object);
+    let session = owned(unsafe { DASessionCreate(std::ptr::null()) })?;
+    let disk = owned(unsafe {
+        DADiskCreateFromBSDName(std::ptr::null(), session, volume.f_mntfromname.as_ptr())
+    });
+    let description = disk.and_then(|disk| owned(unsafe { DADiskCopyDescription(disk) }));
+    let uuid = description.and_then(|description| unsafe {
+        let uuid = CFDictionaryGetValue(description, kDADiskDescriptionVolumeUUIDKey);
+        (!uuid.is_null() && CFGetTypeID(uuid) == CFUUIDGetTypeID())
+            .then(|| CFUUIDGetUUIDBytes(uuid).0)
+    });
+    for object in [description, disk, Some(session)].into_iter().flatten() {
+        unsafe { CFRelease(object) };
+    }
+    uuid.filter(|uuid| *uuid != [0; 16]).map(VolumeId::Uuid)
 }
 
 #[cfg(target_os = "linux")]
