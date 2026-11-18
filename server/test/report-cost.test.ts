@@ -84,20 +84,24 @@ describe("monthly cost estimate", () => {
     expect(month({ worker_requests: 10_000_001 }).lines.worker_requests.usd).toBeCloseTo(0.0000003, 12);
   });
 
-  it("keeps the report's own hand-overs, alarms and gauges for one busy isolate and one busy space under 1% of each Free daily limit", () => {
+  it("keeps the report's own hand-overs, alarms, gauges and flag reads for one busy isolate and one busy space under 1% of each Free daily limit", () => {
     const handOvers = { worker: 144, space: 144, alarm: 1 };
     const usageAlarms = 24;
+    const accountAlarms = 24;
+    const wakes = { space: 86_400 / 10, account: 86_400 / 10 };
     const accountCalls = handOvers.worker + handOvers.space + handOvers.alarm;
     const overhead = window(24, {
-      do_account_requests: accountCalls,
+      do_account_requests: accountCalls + accountAlarms,
       do_space_requests: usageAlarms,
-      do_rows_written: accountCalls + 24 * 2 + 24 * 2 + usageAlarms * 4 + 1,
+      do_rows_read: wakes.space * 2 + wakes.account + accountCalls * 2,
+      do_rows_written: accountCalls + 24 * 2 + 24 * 2 + usageAlarms * 4 + 1 + accountAlarms,
       do_account_active_ms: accountCalls * 5,
       do_space_active_ms: handOvers.space * 20 + (usageAlarms + handOvers.alarm) * 10,
     });
     const shares = estimateMonthlyCost(overhead).freeShare;
-    expect(shares.do_requests).toBeCloseTo(0.00313, 10);
-    expect(shares.do_rows_written).toBeCloseTo(0.00482, 10);
+    expect(shares.do_requests).toBeCloseTo(0.00337, 10);
+    expect(shares.do_rows_read).toBeCloseTo(0.0052996, 10);
+    expect(shares.do_rows_written).toBeCloseTo(0.00506, 10);
     expect(shares.do_gb_s).toBeLessThan(0.0001);
   });
 

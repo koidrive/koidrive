@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { ObjectState, Sql, SqlCursor, SqlRow } from "../host";
-import type { Counter, UsageTally } from "./usage";
+import type { Carried, Counter, UsageTally } from "./usage";
 
 type Methods<T> = { [K in keyof T]: T[K] extends (...args: never[]) => unknown ? K : never }[keyof T];
 type R2Op = { counter?: Counter; returns?: Record<string, R2Op> };
@@ -109,7 +109,7 @@ export function countedState(state: ObjectState, tally: UsageTally): ObjectState
 }
 
 export function countedEgress(response: Response, tally: UsageTally): Response {
-  if (response.body === null || tally.reporting !== true) return response;
+  if (response.body === null || tally.reporting === false) return response;
   const length = response.headers.get("Content-Length");
   if (length !== null) {
     tally.add("egress_bytes", Number(length));
@@ -126,36 +126,67 @@ export function countedEgress(response: Response, tally: UsageTally): Response {
 
 export type ObjectKind = "account" | "space";
 
-export function meteredObject<T extends object>(object: T, kind: ObjectKind, tally: UsageTally, ended: () => void = () => {}): T {
-  const requests: Counter = `do_${kind}_requests`;
-  const active: Counter = `do_${kind}_active_ms`;
-  let busy = 0;
-  let sinceMs = 0;
-  const settle = () => {
-    if (--busy > 0) return;
-    const nowMs = Date.now();
-    tally.add(active, nowMs - sinceMs);
-    ended();
-  };
+export interface Reply<T> extends Carried {
+  value: T;
+}
+
+export type Ended = (event: string, args: unknown[], replying: boolean) => Promise<void> | void;
+
+const HANDLERS = new Set(["fetch", "alarm", "webSocketMessage", "webSocketClose", "webSocketError"]);
+
+export async function meteredReply(object: object, kind: ObjectKind, tally: UsageTally, ended: Ended, method: string, args: unknown[]): Promise<Reply<unknown>> {
+  const value: unknown = Reflect.get(object, method);
+  if (typeof value !== "function" || method === "constructor" || method === "metered" || HANDLERS.has(method) || Object.hasOwn(object, method)) throw new Error(`no method ${method}`);
+  tally.enter();
+  tally.add(`do_${kind}_requests`, 1);
+  try {
+    const result: unknown = await value.apply(object, args);
+    tally.lapse();
+    await ended(method, args, true);
+    return { value: result, usage: tally.take(), reporting: tally.reporting };
+  } catch (error) {
+    tally.lapse();
+    await ended(method, args, false);
+    throw error;
+  } finally {
+    tally.leave();
+  }
+}
+
+export function meteredObject<T extends object>(object: T, kind: ObjectKind, tally: UsageTally, ended: Ended): T {
   return new Proxy(object, {
     get(target, name) {
       const value: unknown = Reflect.get(target, name);
-      if (typeof value !== "function" || typeof name !== "string" || name === "constructor" || Object.hasOwn(target, name)) return value;
-      return (...args: unknown[]) => {
-        const nowMs = Date.now();
-        if (busy++ === 0) sinceMs = nowMs;
+      if (typeof value !== "function" || typeof name !== "string" || !HANDLERS.has(name)) return value;
+      return async (...args: unknown[]) => {
+        tally.enter();
         if (name === "webSocketMessage") tally.add("do_ws_messages", 1);
-        else if (!name.startsWith("webSocket")) tally.add(requests, 1);
-        let result: unknown;
+        else if (!name.startsWith("webSocket")) tally.add(`do_${kind}_requests`, 1);
         try {
-          result = value.apply(target, args);
-        } catch (error) {
-          settle();
-          throw error;
+          return await value.apply(target, args);
+        } finally {
+          tally.lapse();
+          await ended(name, args, false);
+          tally.leave();
         }
-        if (result instanceof Promise) return result.finally(settle);
-        settle();
-        return result;
+      };
+    },
+  });
+}
+
+const PASSED = new Set<string | symbol>(["fetch", "then", "id", "name", "connect", "dup"]);
+
+export function meteredStub<T extends object>(stub: T, receive: (carried: Carried) => void): T {
+  return new Proxy(stub, {
+    get(target, name) {
+      if (typeof name !== "string" || PASSED.has(name)) {
+        const value: unknown = Reflect.get(target, name);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return async (...args: unknown[]) => {
+        const { value, ...carried } = await (target as unknown as { metered(method: string, args: unknown[]): Promise<Reply<unknown>> }).metered(name, args);
+        receive(carried);
+        return value;
       };
     },
   });

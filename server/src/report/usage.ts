@@ -44,6 +44,12 @@ export type UsageHours = Record<number, Usage>;
 export interface UsageBatch {
   openedMs: number;
   hours: UsageHours;
+  stored?: ObjectStored[];
+}
+
+export interface Carried {
+  usage?: UsageBatch;
+  reporting?: boolean;
 }
 
 export interface Counted {
@@ -83,6 +89,7 @@ export function mergeBatch(into: UsageBatch | undefined, from: UsageBatch): Usag
   const merged = into ?? { openedMs: from.openedMs, hours: {} };
   merged.openedMs = Math.min(merged.openedMs, from.openedMs);
   for (const [hour, usage] of Object.entries(from.hours)) mergeUsage((merged.hours[Number(hour)] ??= emptyUsage()), usage);
+  if (from.stored) merged.stored = [...(merged.stored ?? []).filter((one) => !from.stored!.some((other) => other.object === one.object)), ...from.stored];
   return merged;
 }
 
@@ -101,8 +108,13 @@ export class UsageTally {
   private lastMs = 0;
   private reportingNow: boolean | undefined;
   private stops = 0;
+  private busy = 0;
+  private sinceMs = 0;
 
-  constructor(private readonly now: () => number = () => Date.now()) {}
+  constructor(
+    private readonly now: () => number = () => Date.now(),
+    private readonly active?: Counter,
+  ) {}
 
   get reporting(): boolean | undefined {
     return this.reportingNow;
@@ -115,8 +127,12 @@ export class UsageTally {
     this.stops++;
   }
 
+  get idle(): boolean {
+    return this.busy === 0;
+  }
+
   private usage(nowMs: number): Usage | undefined {
-    if (this.reporting !== true) return undefined;
+    if (this.reporting === false) return undefined;
     this.batch ??= { openedMs: nowMs, hours: {} };
     return (this.batch.hours[Math.floor(nowMs / HOUR_MS)] ??= emptyUsage());
   }
@@ -136,6 +152,31 @@ export class UsageTally {
     if (usage) usage.billing[counter] = (usage.billing[counter] ?? 0) + amount;
   }
 
+  note(stored: ObjectStored): void {
+    if (this.reporting === false) return;
+    this.put({ openedMs: this.now(), hours: {}, stored: [stored] });
+  }
+
+  enter(): void {
+    if (this.busy++ === 0) this.sinceMs = Date.now();
+  }
+
+  lapse(): void {
+    if (this.busy === 0 || !this.active) return;
+    const nowMs = Date.now();
+    this.add(this.active, nowMs - this.sinceMs);
+    this.sinceMs = nowMs;
+  }
+
+  leave(): void {
+    this.busy--;
+  }
+
+  receive(carried: Carried, authoritative: boolean): void {
+    if (carried.reporting !== undefined && (authoritative || this.reporting === undefined)) this.reporting = carried.reporting;
+    if (carried.usage) this.put(carried.usage);
+  }
+
   async settle(record: (batch: UsageBatch) => Promise<boolean>, now: () => number, wait: (ms: number) => Promise<unknown>): Promise<void> {
     if (this.reporting !== true) return;
     if (!this.due(now())) {
@@ -146,7 +187,7 @@ export class UsageTally {
     await this.handOver(record);
   }
 
-  private due(nowMs: number): boolean {
+  due(nowMs: number): boolean {
     return this.batch !== undefined && batchDue(this.batch, nowMs);
   }
 

@@ -31,7 +31,7 @@ import { isUuidV7, uuidv7 } from "../ids";
 import { knownPrincipal } from "../policy";
 import { FORMAT_VERSION } from "../space/space";
 import { REPORT_URL, reportBatch } from "../report/payload";
-import { mergeUsage, type ObjectStored, type Stored, storedUsage, type UsageBatch, UsageTally } from "../report/usage";
+import { type Carried, mergeBatch, mergeUsage, type ObjectStored, type Stored, storedUsage, type UsageBatch, UsageTally } from "../report/usage";
 import { PROTO_MAX, PROTO_MIN, SERVER_VERSION } from "../version";
 import { MAX_REQUEST_ID_LENGTH, type Outcome, type ResolvedLink, type ShareOutcome, ShareLinks } from "../share/links";
 
@@ -185,7 +185,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
     private readonly creating = new Set<string>();
     private readonly creatingRequests = new Map<string, string>();
     private readonly admitting = new Set<string>();
-    protected readonly tally = new UsageTally(() => this.clock());
+    protected readonly tally = new UsageTally(() => this.clock(), "do_account_active_ms");
     sessionLeaseMs = SESSION_LEASE_MS;
     clock: () => number = () => Date.now();
     sendReport = async (body: unknown): Promise<boolean> => {
@@ -540,7 +540,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       if (requestId) this.creatingRequests.set(request, name);
       try {
         const spaceKey = await deriveSpaceKey((await this.serverKey()).secret, spaceId);
-        await this.spaceStub(spaceId).init({ spaceId, name, ownerUserId: args.userId, spaceKey });
+        await this.spaceStub(spaceId).init({ spaceId, name, ownerUserId: args.userId, spaceKey, reporting: this.reporting() });
         this.sql.exec(
           "INSERT INTO spaces (space_id, name, owner_id, created_at_ms, format_version, list_seq, request_id) VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(list_seq), 0) + 1 FROM spaces), ?)",
           spaceId,
@@ -627,7 +627,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       this.storeVotes({ onUntilMs: onSeenMs === 0 ? 0 : onVoteEndMs(onSeenMs), off: Number(counted.off) === 1 });
     }
 
-    async recordUsage({ openedMs, hours }: UsageBatch, stored: ObjectStored[] = []): Promise<boolean> {
+    async recordUsage({ openedMs, hours, stored }: UsageBatch): Promise<boolean> {
       const votes = this.votes();
       this.tally.reporting = this.reportsWith(votes);
       if (!this.tally.reporting) {
@@ -636,29 +636,8 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
         return false;
       }
       if (openedMs < (votes.startedMs ?? 0)) return true;
-      const nowHour = Math.floor(this.clock() / HOUR_MS);
-      const own = this.tally.take();
-      let added = false;
-      this.db.transactionSync(() => {
-        for (const object of stored) this.noteStored(object);
-        for (const [key, usage] of Object.entries(hours)) {
-          const hour = Number(key);
-          if (!Number.isInteger(hour) || (hour + 1) * HOUR_MS + REPORT_DELAY_MS <= this.clock() || hour > nowHour) continue;
-          const counted = own?.hours[hour];
-          if (counted) {
-            mergeUsage(usage, counted);
-            delete own.hours[hour];
-          }
-          const stored = this.sql.exec("SELECT usage FROM usage_hours WHERE hour = ?", hour).toArray()[0];
-          if (stored) {
-            this.sql.exec("UPDATE usage_hours SET usage = ? WHERE hour = ?", JSON.stringify(mergeUsage(storedUsage(String(stored.usage)), usage)), hour);
-          } else {
-            this.sql.exec("INSERT INTO usage_hours (hour, report_id, usage) VALUES (?, ?, ?)", hour, crypto.randomUUID(), JSON.stringify(usage));
-            added = true;
-          }
-        }
-      });
-      this.keepOwn(own);
+      this.tally.lapse();
+      const added = this.writeUsage(mergeBatch(this.tally.take(), { openedMs, hours, stored }));
       const unarmed = this.sql.exec("SELECT 1 FROM settings WHERE key = 'usage_alarm_unarmed'").toArray().length > 0;
       if (!added && !unarmed) return true;
       try {
@@ -671,12 +650,39 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       return true;
     }
 
-    private keepOwn(own: UsageBatch | undefined): void {
-      if (!own) return;
-      for (const hour of Object.keys(own.hours).map(Number)) {
-        if ((hour + 1) * HOUR_MS + REPORT_DELAY_MS <= this.clock()) delete own.hours[hour];
-      }
-      if (Object.keys(own.hours).length > 0) this.tally.put(own);
+    protected received(carried: Carried): void {
+      if (carried.usage) this.tally.put(carried.usage);
+      if (this.tally.idle) this.tally.take();
+    }
+
+    protected ended(replying: boolean): void {
+      if (!replying) this.tally.take();
+    }
+
+    private storeOwn(): void {
+      this.tally.lapse();
+      const own = this.tally.take();
+      if (own) this.writeUsage(own);
+    }
+
+    private writeUsage(batch: UsageBatch): boolean {
+      const nowHour = Math.floor(this.clock() / HOUR_MS);
+      let added = false;
+      this.db.transactionSync(() => {
+        for (const object of batch.stored ?? []) this.noteStored(object);
+        for (const [key, usage] of Object.entries(batch.hours)) {
+          const hour = Number(key);
+          if (!Number.isInteger(hour) || (hour + 1) * HOUR_MS + REPORT_DELAY_MS <= this.clock() || hour > nowHour) continue;
+          const stored = this.sql.exec("SELECT usage FROM usage_hours WHERE hour = ?", hour).toArray()[0];
+          if (stored) {
+            this.sql.exec("UPDATE usage_hours SET usage = ? WHERE hour = ?", JSON.stringify(mergeUsage(storedUsage(String(stored.usage)), usage)), hour);
+          } else {
+            this.sql.exec("INSERT INTO usage_hours (hour, report_id, usage) VALUES (?, ?, ?)", hour, crypto.randomUUID(), JSON.stringify(usage));
+            added = true;
+          }
+        }
+      });
+      return added;
     }
 
     private noteStored(stored: ObjectStored): void {
@@ -706,18 +712,10 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       if (ended.length === 0) return;
       const stored = this.reporting() ? this.storedTotals() : undefined;
       if (!stored) this.sql.exec("DELETE FROM object_usage");
-      const own = this.tally.take();
-      const usages = ended.map((row) => {
-        const usage = storedUsage(String(row.usage));
-        const counted = own?.hours[Number(row.hour)];
-        if (!counted) return usage;
-        delete own.hours[Number(row.hour)];
-        return mergeUsage(usage, counted);
-      });
       const sent = stored
         ? await this.sendReport(
             reportBatch(
-              ended.map((row, index) => ({ hour: Number(row.hour), id: String(row.report_id), usage: usages[index]!, stored })),
+              ended.map((row) => ({ hour: Number(row.hour), id: String(row.report_id), usage: storedUsage(String(row.usage)), stored })),
               { version: SERVER_VERSION, protoMin: PROTO_MIN, protoMax: PROTO_MAX },
             ),
           ).catch((error: unknown) => {
@@ -725,11 +723,10 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
             return false;
           })
         : true;
-      for (const [index, row] of ended.entries()) {
+      for (const row of ended) {
         if (sent) this.sql.exec("DELETE FROM usage_hours WHERE hour = ?", row.hour);
-        else this.sql.exec("UPDATE usage_hours SET tried_at_ms = ?, usage = ? WHERE hour = ?", nowMs, JSON.stringify(usages[index]), row.hour);
+        else this.sql.exec("UPDATE usage_hours SET tried_at_ms = ? WHERE hour = ?", nowMs, row.hour);
       }
-      this.keepOwn(own);
     }
 
     async isSpaceClosed(spaceId: string, historyId?: string): Promise<boolean> {
@@ -945,6 +942,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       for (const { rewind_id } of due) await this.drive(String(rewind_id));
       await this.deliverNotices();
       await this.sendUsage();
+      this.storeOwn();
       await this.armAlarm();
     }
 

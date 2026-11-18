@@ -894,9 +894,10 @@ describe("RFC 0006 principals, capabilities and device routes", () => {
       const delivered: string[] = [];
       let fail = true;
       const spy = vi.spyOn(namespace, "get").mockImplementation((() => ({
-        closeDevice: async (deviceId: string) => {
+        metered: async (_method: string, [deviceId]: [string]) => {
           if (fail) throw new Error("injected close failure");
           delivered.push(deviceId);
+          return { value: undefined };
         },
       })) as never);
       const pending = (deviceId: string) => state.storage.sql.exec("SELECT COUNT(*) AS n FROM revocation_notices WHERE device_id = ?", deviceId).one().n;
@@ -1699,9 +1700,9 @@ describe("RFC 0007 name limits and space list pages", () => {
       vi.spyOn(spaces, "get").mockImplementationOnce((id) => {
         const stub = get(id);
         return {
-          init: (args: Parameters<typeof stub.init>[0]) => {
-            entered(args.spaceId);
-            return gate.then(() => stub.init(args));
+          metered: (method: string, args: [Parameters<typeof stub.init>[0]]) => {
+            entered(args[0].spaceId);
+            return gate.then(() => stub.metered(method, args));
           },
         } as unknown as typeof stub;
       });
@@ -2339,7 +2340,7 @@ describe("chunk relay", () => {
   });
 
   function accountBinding(serverKey: () => Promise<ServerKey>) {
-    return { idFromName: (name: string) => env.ACCOUNT.idFromName(name), get: () => ({ serverKey }) };
+    return { idFromName: (name: string) => env.ACCOUNT.idFromName(name), get: () => ({ metered: async () => ({ value: await serverKey() }) }) };
   }
 
   it("reads the server key again on the next request after a failed Account DO call", async () => {

@@ -34,7 +34,6 @@ import { errorText } from "./errors";
 import type { ObjectStore } from "./host";
 import { BadRequest, errorReply, readMessage, reply, responseOutcome } from "./http";
 import { countedBucket, countedEgress } from "./report/meter";
-import { type ObjectStored, UsageTally } from "./report/usage";
 import { type ChunkObject, deriveSpaceKey, signChunkGrant, verifyChunkGrant } from "./crypto";
 import { fromHex, isUuidV7 } from "./ids";
 import { type Capability, policy } from "./policy";
@@ -43,20 +42,13 @@ import { shareRoute } from "./share/routes";
 import { CONNECT_HEADER, type Connect, GRANT_MS, MAX_CHUNK_BYTES, MAX_CLIENT_FRAME } from "./space/space";
 import { chunkKey, INCARNATION } from "./space/store";
 import { STORAGE } from "./storage";
+import { account, space, traffic } from "./stubs";
 import { PROTO_MAX, PROTO_MIN, SERVER_COMMIT, SERVER_VERSION } from "./version";
 
 export { AccountDO } from "./account-do";
 export { SpaceDO } from "./space-do";
 
 const serverKeys = new WeakMap<object, Promise<ServerKey>>();
-const traffic = new UsageTally();
-const objectsStored = new Map<string, ObjectStored>();
-
-function handOverStored(): ObjectStored[] {
-  const stored = [...objectsStored.values()];
-  objectsStored.clear();
-  return stored;
-}
 
 const ROUTES: [string, RegExp][] = [
   ["chunk", /^\/v1\/spaces\/[^/]+\/chunks\/[^/]+$/],
@@ -85,10 +77,6 @@ function routeOf(request: Request): string {
   return (METHODS.has(request.method) ? request.method.toLowerCase() : "other") + "_" + name;
 }
 
-function account(env: Env) {
-  return env.ACCOUNT.get(env.ACCOUNT.idFromName("account"));
-}
-
 function key(env: Env): Promise<ServerKey> {
   let cached = serverKeys.get(env.ACCOUNT);
   if (!cached) {
@@ -109,7 +97,6 @@ async function authenticate(request: Request, env: Env, spaceId?: string): Promi
   if (!identity) return errorReply(request, Error_Code.UNAUTHENTICATED, "missing or invalid access token");
   const check = await account(env).checkSession(identity.deviceId, spaceId);
   if (!check.active) return errorReply(request, Error_Code.UNAUTHENTICATED, "this device was revoked");
-  traffic.reporting = check.reporting;
   if (check.closed) return errorReply(request, Error_Code.RETRY_LATER, "the space is being rewound; retry later", 503);
   return { ...identity, kind: check.kind, scope: check.scope };
 }
@@ -291,10 +278,6 @@ async function bundle(request: Request, env: Env, objects: ObjectStore, spaceId:
 
 class LimitExceeded extends Error {}
 
-function space(env: Env, spaceId: string) {
-  return env.SPACE.get(env.SPACE.idFromName(spaceId));
-}
-
 async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -413,10 +396,8 @@ async function route(request: Request, env: Env): Promise<Response> {
       if (Number(request.headers.get("Content-Length") ?? 0) > MAX_CLIENT_FRAME) return tooLarge();
       const body = new Uint8Array(await request.arrayBuffer());
       if (body.length > MAX_CLIENT_FRAME) return tooLarge();
-      const { response, counted, usage, stored } = await stub.httpRpc(connect, body);
+      const { response, counted } = await stub.httpRpc(connect, body);
       traffic.count(counted.route, counted.outcome, counted.latencyMs, Date.now());
-      if (usage) traffic.put(usage);
-      for (const object of stored) objectsStored.set(object.object, object);
       return new Response(response, { headers: { "Content-Type": "application/x-protobuf", "Content-Length": String(response.byteLength) } });
     }
   }
@@ -443,7 +424,7 @@ export default {
     const nowMs = Date.now();
     traffic.count(routeOf(request), responseOutcome(response), nowMs - startedMs, nowMs);
     traffic.add("worker_requests", 1);
-    if (traffic.reporting) ctx.waitUntil(traffic.settle((batch) => account(env).recordUsage(batch, handOverStored()), Date.now, (ms) => scheduler.wait(ms)));
+    if (traffic.reporting === true) ctx.waitUntil(traffic.settle((batch) => account(env).recordUsage(batch), Date.now, (ms) => scheduler.wait(ms)));
     return countedEgress(response, traffic);
   },
 } satisfies ExportedHandler<Env>;

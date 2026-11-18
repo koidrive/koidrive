@@ -19,11 +19,14 @@ import {
 import { ClientMessageSchema, RpcRequestSchema, RpcResponseSchema, type ServerMessage, ServerMessageSchema } from "../src/gen/koidrive/v1/messages_pb";
 import { ChunkBundleResultSchema, ChunkBundleSchema } from "../src/gen/koidrive/v1/rpc_pb";
 import { estimateMonthlyCost } from "../src/report/cost";
-import { countedBucket, countedEgress, countedState, meteredObject } from "../src/report/meter";
+import { countedBucket, countedEgress, countedState, meteredObject, meteredReply, meteredStub } from "../src/report/meter";
 import { reportBatch } from "../src/report/payload";
 import type { SpaceDO } from "../src/space-do";
-import { client, content, newSpace } from "./helpers";
+import { uuidv7 } from "../src/ids";
+import { client, content, newSpace, op } from "./helpers";
+import { CreateShareLinkRequestSchema, ShareLinkSchema } from "../src/gen/koidrive/v1/share_pb";
 import {
+  type Carried,
   COUNTERS,
   emptyUsage,
   GAUGES,
@@ -138,20 +141,22 @@ async function watchUsage() {
   const stored: ObjectStored[] = [];
   const failures = { left: 0 };
   const delay = { ms: 0 };
-  prototype.recordUsage = async function (this: AccountDO, batch: UsageBatch, objects: ObjectStored[] = []) {
+  const hooks = { entered: () => {} };
+  prototype.recordUsage = async function (this: AccountDO, batch: UsageBatch) {
+    hooks.entered();
     calls.push(batch.hours);
-    stored.push(...objects);
+    stored.push(...(batch.stored ?? []));
     if (delay.ms > 0) await scheduler.wait(delay.ms);
     if (failures.left > 0) {
       failures.left--;
       throw new Error("account unreachable");
     }
-    return original.call(this, batch, objects);
+    return original.call(this, batch);
   };
   restorers.push(() => {
     prototype.recordUsage = original;
   });
-  return { calls, failures, stored, delay };
+  return { calls, failures, stored, delay, hooks };
 }
 
 async function useClock(stub: SpaceStub, now: () => number) {
@@ -296,21 +301,23 @@ describe("usage tally", () => {
     expect(handed.length).toBeLessThanOrEqual(7);
   });
 
-  it("counts nothing until it knows the server reports, and nothing once it knows it doesn't", async () => {
+  it("counts while it doesn't know whether the server reports, hands nothing over until it knows, and lets only the Account DO turn a known flag", async () => {
     const tally = new UsageTally();
     const record = vi.fn(async () => true);
     const wait = vi.fn(async () => {});
     tally.count("get_server", "200", 3, 10 * HOUR_MS);
     await tally.settle(record, () => 11 * HOUR_MS, wait);
     expect(wait).not.toHaveBeenCalled();
-    tally.reporting = true;
-    await tally.settle(record, () => 11 * HOUR_MS, wait);
     expect(record).not.toHaveBeenCalled();
+    tally.receive({ reporting: true }, false);
+    await tally.settle(record, () => 11 * HOUR_MS, wait);
+    expect(record.mock.calls).toEqual([[{ openedMs: 10 * HOUR_MS, hours: { 10: { counts: { "get_server.200": 1 }, latency: { get_server: [0, 0, 1, ...new Array(LATENCY_BUCKETS - 3).fill(0)] }, billing: {} } } }]]);
     tally.count("get_server", "503", 3, 11 * HOUR_MS);
-    await tally.settle(record, () => 12 * HOUR_MS, wait);
-    expect(record.mock.calls).toEqual([[{ openedMs: 11 * HOUR_MS, hours: { 11: { counts: { "get_server.503": 1 }, latency: { get_server: [0, 0, 1, ...new Array(LATENCY_BUCKETS - 3).fill(0)] }, billing: {} } } }]]);
-    tally.reporting = false;
-    tally.count("get_server", "200", 3, 12 * HOUR_MS);
+    tally.receive({ reporting: false }, false);
+    expect(tally.reporting).toBe(true);
+    tally.receive({ reporting: false }, true);
+    tally.receive({ reporting: true }, false);
+    expect(tally.reporting).toBe(false);
     tally.reporting = true;
     await tally.settle(record, () => 13 * HOUR_MS, wait);
     expect(record).toHaveBeenCalledTimes(1);
@@ -446,9 +453,8 @@ describe("billing meters", () => {
     expect(billing).toEqual({ do_rows_read: expected.read, do_rows_written: expected.written });
   });
 
-  it("counts each call into an object once, WebSocket messages apart, and its active time with overlapping events counted once", async () => {
+  it("counts each call into an object once, WebSocket messages apart, returns a call's counts and active time in its reply, and gives each other event's counts to the object", async () => {
     class Probe {
-      clock = () => 0;
       async rpc(gate: Promise<void>): Promise<string> {
         await gate;
         return this.helper();
@@ -463,31 +469,62 @@ describe("billing meters", () => {
         throw new Error("refused");
       }
     }
-    const tally = new UsageTally();
+    const tally = new UsageTally(() => 10 * HOUR_MS, "do_space_active_ms");
     tally.reporting = true;
-    let ended = 0;
-    const probe = meteredObject(new Probe(), "space", tally, () => ended++);
+    const ended: [string, boolean, UsageHours][] = [];
+    const settle = (event: string, _args: unknown[], replying: boolean) => {
+      ended.push([event, replying, replying ? {} : (tally.take()?.hours ?? {})]);
+    };
+    const probe = meteredObject(new Probe(), "space", tally, settle);
+    const call = (method: string, args: unknown[] = []) => meteredReply(probe, "space", tally, settle, method, args);
     let nowMs = 10 * HOUR_MS;
     vi.spyOn(Date, "now").mockImplementation(() => nowMs);
     let open!: () => void;
-    const first = probe.rpc(new Promise((resolve) => (open = resolve)));
+    const first = call("rpc", [new Promise<void>((resolve) => (open = resolve))]);
     nowMs += 300;
-    const second = probe.rpc(Promise.resolve());
-    expect(await second).toBe("done");
+    const second = await call("rpc", [Promise.resolve()]);
+    expect({ value: second.value, reporting: second.reporting, billing: billingOf(second.usage!.hours) }).toEqual({ value: "done", reporting: true, billing: { do_space_requests: 2, do_space_active_ms: 300 } });
     nowMs += 700;
     open();
-    expect(await first).toBe("done");
-    expect(ended).toBe(1);
+    expect(billingOf((await first).usage!.hours)).toEqual({ do_space_active_ms: 700 });
     await probe.alarm();
     await probe.webSocketMessage();
-    await probe.webSocketMessage();
     await probe.webSocketClose();
-    expect(() => probe.fail()).toThrow("refused");
+    await expect(call("fail")).rejects.toThrow("refused");
+    expect((await call("helper")).value).toBe("done");
+    await expect(call("alarm")).rejects.toThrow("no method alarm");
+    await expect(call("constructor")).rejects.toThrow("no method constructor");
     expect(probe.helper()).toBe("done");
-    probe.clock();
-    const billing = (await handedOver(tally))[10]!.billing;
-    expect(billing).toEqual({ do_space_requests: 5, do_ws_messages: 2, do_space_active_ms: 1000 });
-    expect(ended).toBe(7);
+    expect(tally.take()).toBeUndefined();
+    expect(ended.map(([event, replying, hours]) => [event, replying, billingOf(hours)])).toEqual([
+      ["rpc", true, {}],
+      ["rpc", true, {}],
+      ["alarm", false, { do_space_requests: 1 }],
+      ["webSocketMessage", false, { do_ws_messages: 1 }],
+      ["webSocketClose", false, {}],
+      ["fail", false, { do_space_requests: 1 }],
+      ["helper", true, {}],
+    ]);
+  });
+
+  it("unwraps each reply at the stub and gives the caller the callee's counts and flag", async () => {
+    const usage = { openedMs: 0, hours: { 10: { counts: {}, latency: {}, billing: { do_space_requests: 1 } } } };
+    const calls: [string, unknown[]][] = [];
+    const received: Carried[] = [];
+    const stub = meteredStub(
+      {
+        metered: async (method: string, args: unknown[]) => {
+          calls.push([method, args]);
+          return { value: method + args.join(","), usage, reporting: true };
+        },
+        id: "probe",
+      } as unknown as { shareInfo(rootId: string, expiresAtMs: number): Promise<string>; id: string },
+      (carried) => received.push(carried),
+    );
+    expect(await stub.shareInfo("root", 5)).toBe("shareInforoot,5");
+    expect(stub.id).toBe("probe");
+    expect(calls).toEqual([["shareInfo", ["root", 5]]]);
+    expect(received).toEqual([{ usage, reporting: true }]);
   });
 
   it("counts response bytes from Content-Length, or as a stream passes when the length is unknown", async () => {
@@ -599,7 +636,9 @@ describe("hourly server report", () => {
     const allowed = new RegExp(`^(?:\\$geoip_disable|\\$process_person_profile|distinct_id|schema|server_version|proto_min|proto_max|c\\.[a-z_]+\\.[a-z0-9_.]+|h\\.[a-z_]+|${billingKey})$`);
     for (const key of events.flatMap((event) => Object.keys(event.properties))) expect(key).toMatch(allowed);
     for (const event of events) expect(event.properties["b.do_stored_bytes"]).toBeGreaterThan(0);
-    expect(await storedHours()).toEqual([]);
+    const kept = await storedHours();
+    expect(kept.map((row) => Number(row.hour))).toEqual([Math.floor((startMs + 3 * HOUR_MS) / HOUR_MS)]);
+    expect((JSON.parse(String(kept[0]!.usage)) as Usage).billing.do_account_requests).toBe(1);
   });
 
   it("parks a Space DO's counts on its socket across a lost memory and hands each count over once, when its batch is due and when the hour alarm runs", async () => {
@@ -748,16 +787,15 @@ describe("hourly server report", () => {
     expect((await storedCounts())["rpc_list_tree.ok"]).toBeUndefined();
   });
 
-  it("drops what a Space DO parked as soon as a session check says reports are off, with no RPC after it", async () => {
+  it("drops what a Space DO parked and stores its flag as soon as an Account DO answer says reports are off, with no RPC after it", async () => {
     const { owner, spaceId, stub } = await reportingSpace();
     const socket = await connect(spaceId, owner, stub);
     await socket.listTree();
     expect(await parkedCounts(stub)).toEqual([1]);
-    await runInDurableObject(stub, (instance: object) => {
-      const space = instance as unknown as { leases: Map<string, { check: object }>; storeLease(deviceId: string, check: object, askedAtMs: number): void };
-      space.storeLease(owner.deviceId, { ...space.leases.get(owner.deviceId)!.check, reporting: false }, Date.now() + 1);
-    });
+    await runInDurableObject(stub, (instance: object) => (instance as unknown as { received(carried: Carried): void }).received({ reporting: false }));
     expect(await parkedCounts(stub)).toEqual([0]);
+    await evictDurableObject(stub);
+    expect(await runInDurableObject(stub, (instance: object) => (instance as unknown as { traffic: UsageTally }).traffic.reporting)).toBe(false);
   });
 
   it("calls nothing, arms nothing and leaves the sockets as they were while reports are off, in the Worker and in a Space DO", async () => {
@@ -777,13 +815,13 @@ describe("hourly server report", () => {
     expect(before[0]).not.toHaveProperty("usage");
   });
 
-  it("hands a Space DO's counts from an HTTP RPC back to the Worker with the stored sizes, counting from the session check on, and calls and arms nothing itself", async () => {
+  it("hands a Space DO's counts from each HTTP RPC back to the Worker in its reply, with the stored sizes, and calls and arms nothing itself", async () => {
     const { owner, spaceId, stub } = await reportingSpace();
     const usage = await watchUsage();
     for (let reqId = 1n; reqId <= 3n; reqId++) {
       expect((await post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId, call: { case: "listTree", value: {} } }), owner.access!.token)).status).toBe(200);
     }
-    await vi.waitFor(async () => expect((await storedTotal()).billing.do_space_requests).toBe(2));
+    await vi.waitFor(async () => expect((await storedTotal()).billing.do_space_requests).toBe(3));
     expect(usage.stored.map((object) => object.object)).toContain(stub.id.toString());
     expect(await usageDueMs(stub)).toBeUndefined();
     expect(usage.calls.filter((hours) => Object.values(hours).every((counted) => Object.keys(counted.counts).length === 0))).toEqual([]);
@@ -897,12 +935,17 @@ describe("hourly server report", () => {
     const hour = Math.floor(Date.now() / HOUR_MS);
     await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("DELETE FROM usage_hours"));
     const counted: Usage = { counts: { "get_server.200": 1 }, latency: {}, billing: {} };
-    expect(await account().recordUsage({ openedMs: Date.now(), hours: { [hour]: counted } })).toBe(true);
+    const replies: Carried[] = [];
+    expect(await meteredStub(account(), (carried) => replies.push(carried)).recordUsage({ openedMs: Date.now(), hours: { [hour]: counted } })).toBe(true);
     const rows = await storedHours();
     expect(rows).toHaveLength(1);
     const billing = (JSON.parse(String(rows[0]!.usage)) as Usage).billing;
-    expect(billing.do_account_requests).toBeGreaterThanOrEqual(1);
+    expect(billing.do_account_requests).toBe(1);
     expect(billing.do_rows_read).toBeGreaterThan(0);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]!.reporting).toBe(true);
+    expect(billingOf(replies[0]!.usage!.hours).do_rows_written).toBeGreaterThanOrEqual(1);
+    expect(billingOf(replies[0]!.usage!.hours).do_account_requests).toBeUndefined();
   });
 
   it("drops the stored hours without sending them once a device turns reports off, even when reports turn on again before the send", async () => {
@@ -924,7 +967,8 @@ describe("hourly server report", () => {
     });
     await runDurableObjectAlarm(account());
     expect(sent).toEqual([]);
-    expect(await storedHours()).toEqual([]);
+    expect((await storedHours()).map((row) => Number(row.hour))).toEqual([hour + 2]);
+    await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("DELETE FROM usage_hours"));
   });
 
   it("drops what the Worker counted before reports stopped, even when they start again before its hand-over", async () => {
@@ -1092,7 +1136,7 @@ describe("hourly server report", () => {
       await instance.alarm();
     });
     expect(sent).toEqual([]);
-    expect(await storedHours()).toEqual([]);
+    expect((await storedHours()).map((row) => Number(row.hour))).not.toContain(hour - 30);
   });
 
   it("keeps a batch it stored once even when arming the report alarm fails, and arms the alarm with the next batch", async () => {
@@ -1118,29 +1162,251 @@ describe("hourly server report", () => {
 
   it("keeps an hour whose send failed for the next hour, and drops it after a day", async () => {
     const hour = Math.floor(Date.now() / HOUR_MS);
-    const tries: number[] = [];
+    const tries: number[][] = [];
+    const triedHour = () => tries.filter((hours) => hours.includes(hour)).length;
     let nowMs = (hour + 2) * HOUR_MS;
     await runInDurableObject(account(), async (instance: AccountDO, state) => {
       startReporting(instance, state, hour * HOUR_MS + 60_000, (hour + 2) * HOUR_MS);
       await instance.recordUsage({ openedMs: instance.clock(), hours: { [hour]: { counts: { "get_server.200": 1 }, latency: {}, billing: {} } } });
       instance.clock = () => nowMs;
-      instance.sendReport = async () => {
-        tries.push(nowMs);
+      instance.sendReport = async (report) => {
+        tries.push((report as { batch: { timestamp: string }[] }).batch.map((event) => Date.parse(event.timestamp) / HOUR_MS));
         throw new Error("network down");
       };
     });
     vi.spyOn(console, "error").mockImplementation(() => {});
     await runDurableObjectAlarm(account());
-    expect(tries).toHaveLength(1);
+    expect(triedHour()).toBe(1);
     nowMs += HOUR_MS / 2;
     await runInDurableObject(account(), (instance: AccountDO) => instance.alarm());
-    expect(tries).toHaveLength(1);
+    expect(triedHour()).toBe(1);
     nowMs = (hour + 3) * HOUR_MS;
     await runInDurableObject(account(), (instance: AccountDO) => instance.alarm());
-    expect(tries).toHaveLength(2);
+    expect(triedHour()).toBe(2);
     nowMs = (hour + 25) * HOUR_MS;
     await runInDurableObject(account(), (instance: AccountDO) => instance.alarm());
-    expect(tries).toHaveLength(2);
+    expect(triedHour()).toBe(2);
+    expect((await storedHours()).map((row) => Number(row.hour))).not.toContain(hour);
+    await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("DELETE FROM usage_hours"));
+  });
+});
+
+describe("billing counts across evictions", () => {
+  const listTree = (owner: DeviceCredentials, spaceId: string, reqId: bigint) =>
+    post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId, call: { case: "listTree", value: {} } }), owner.access!.token);
+  const clearHours = () => runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("DELETE FROM usage_hours"));
+  const sumOf = (calls: UsageHours[]) => calls.flatMap((hours) => Object.values(hours)).reduce((sum, usage) => mergeUsage(sum, usage), emptyUsage());
+  const leftover = (stub: SpaceStub) =>
+    Promise.all([
+      runInDurableObject(stub, (instance: object) => (instance as unknown as { traffic: UsageTally }).traffic.take() ?? null),
+      runInDurableObject(account(), (instance: object) => (instance as unknown as { tally: UsageTally }).tally.take() ?? null),
+    ]);
+
+  async function ledger(stub: SpaceStub) {
+    const seen = { read: 0, written: 0, alarms: 0, classA: 0, classB: 0, open: true, close: () => {} };
+    await runInDurableObject(stub, (instance: object, state) => {
+      const sql = Object.getPrototypeOf(state.storage.sql) as { exec(this: unknown, ...args: unknown[]): { rowsRead: number; rowsWritten: number } };
+      const exec = sql.exec;
+      const cursors: { rowsRead: number; rowsWritten: number }[] = [];
+      vi.spyOn(sql, "exec").mockImplementation(function (this: unknown, ...args: unknown[]) {
+        const cursor = exec.apply(this, args);
+        if (seen.open) cursors.push(cursor);
+        return cursor;
+      });
+      const storage = Object.getPrototypeOf(state.storage) as { setAlarm(this: unknown, ...args: unknown[]): Promise<void> };
+      const setAlarm = storage.setAlarm;
+      vi.spyOn(storage, "setAlarm").mockImplementation(function (this: unknown, ...args: unknown[]) {
+        if (seen.open) seen.alarms++;
+        return setAlarm.apply(this, args);
+      });
+      const bucket = (instance as unknown as { env: Env }).env.BUCKET as unknown as Record<string, (...args: unknown[]) => unknown>;
+      for (const [name, counter] of [["put", "classA"], ["list", "classA"], ["createMultipartUpload", "classA"], ["get", "classB"], ["head", "classB"]] as const) {
+        const original = bucket[name]!.bind(bucket);
+        vi.spyOn(bucket, name).mockImplementation((...args: unknown[]) => {
+          if (seen.open) seen[counter]++;
+          return original(...args);
+        });
+      }
+      seen.close = () => {
+        seen.open = false;
+        seen.read = cursors.reduce((sum, cursor) => sum + cursor.rowsRead, 0);
+        seen.written = cursors.reduce((sum, cursor) => sum + cursor.rowsWritten, 0);
+      };
+    });
+    return seen;
+  }
+
+  it("counts each HTTP RPC that wakes an evicted Space DO, and the time it ran", async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    expect((await listTree(owner, spaceId, 1n)).status).toBe(200);
+    await vi.waitFor(async () => expect((await storedCounts())["rpc_list_tree.ok"]).toBe(1));
+    await clearHours();
+    for (let reqId = 2n; reqId <= 4n; reqId++) {
+      await evictDurableObject(stub);
+      expect((await listTree(owner, spaceId, reqId)).status).toBe(200);
+    }
+    await vi.waitFor(async () => expect((await storedCounts())["rpc_list_tree.ok"]).toBe(3));
+    const billing = (await storedTotal()).billing;
+    expect({ do_space_requests: billing.do_space_requests, worker_requests: billing.worker_requests, ran: (billing.do_space_active_ms ?? 0) > 0 }).toEqual({ do_space_requests: 3, worker_requests: 3, ran: true });
+  });
+
+  it("counts every row, setAlarm and R2 operation of an alarm that wakes an evicted Space DO, and hands them over inside the alarm", async () => {
+    const { spaceId, stub } = await reportingSpace();
+    const laptop = await client({ spaceId, stub }, "Laptop");
+    const file = await content("a file the export writes");
+    await laptop.commit([op.create(uuidv7(), spaceId, "export.txt", file.content)], { receipts: await laptop.uploadParts(file) });
+    await runInDurableObject(stub, async (_instance, state) => {
+      const nowMs = Date.now();
+      state.storage.sql.exec("INSERT INTO schedule (task, due_ms) VALUES ('gc', ?), ('export', ?) ON CONFLICT (task) DO UPDATE SET due_ms = excluded.due_ms", nowMs, nowMs);
+      await state.storage.setAlarm(Date.now() + 1);
+    });
+    const usage = await watchUsage();
+    const seen = await ledger(stub);
+    usage.hooks.entered = () => seen.close();
+    await evictDurableObject(stub);
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    await vi.waitFor(() => expect(usage.calls).toHaveLength(1));
+    const { billing } = sumOf(usage.calls);
+    expect(seen.alarms).toBeGreaterThanOrEqual(1);
+    expect(seen.classA).toBeGreaterThanOrEqual(1);
+    expect({ ...billing, do_space_active_ms: undefined, do_account_active_ms: undefined }).toEqual({
+      do_space_requests: 1,
+      do_account_requests: 1,
+      do_rows_read: seen.read,
+      do_rows_written: seen.written + seen.alarms,
+      r2_class_a: seen.classA,
+      ...(seen.classB > 0 ? { r2_class_b: seen.classB } : {}),
+      do_space_active_ms: undefined,
+      do_account_active_ms: undefined,
+    });
+    expect(usage.stored.map((object) => object.object)).toEqual([stub.id.toString()]);
+    expect(await leftover(stub)).toEqual([null, null]);
+  });
+
+  it("counts WebSocket messages that wake a hibernated Space DO, and hands them over when the last socket closes", async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    const usage = await watchUsage();
+    const socket = await connect(spaceId, owner, stub);
+    for (let n = 0; n < 3; n++) {
+      await evictDurableObject(stub);
+      await socket.listTree();
+    }
+    expect(await parkedCounts(stub)).toEqual([3]);
+    socket.ws.close(1000, "done");
+    await vi.waitFor(() => expect(spaceCalls(usage.calls)).toHaveLength(1));
+    const handed = sumOf(spaceCalls(usage.calls));
+    expect({ listed: handed.counts["rpc_list_tree.ok"], requests: handed.billing.do_space_requests, messages: handed.billing.do_ws_messages }).toEqual({ listed: 3, requests: 1, messages: 4 });
+    expect(await leftover(stub)).toEqual([null, null]);
+  });
+
+  it("counts each session check that wakes an evicted Account DO", async () => {
+    const { owner, stub } = await reportingSpace();
+    await vi.waitFor(async () => expect((await storedCounts())["post_spaces.201"]).toBe(1));
+    await clearHours();
+    const usage = await watchUsage();
+    for (let n = 1; n <= 3; n++) {
+      await evictDurableObject(account());
+      const listed = await exports.default.fetch(BASE + "/v1/devices", { headers: { Authorization: "Bearer " + owner.access!.token } });
+      expect(listed.status).toBe(200);
+      await listed.arrayBuffer();
+      await vi.waitFor(async () => expect((await storedCounts())["get_devices.200"]).toBe(n));
+    }
+    await vi.waitFor(async () => expect((await storedTotal()).billing.do_account_requests).toBe(3 * 2 + usage.calls.length));
+    expect(await leftover(stub)).toEqual([null, null]);
+  });
+
+  it("counts share-link calls and the Account DO's calls into an evicted Space DO", async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    await vi.waitFor(async () => expect((await storedCounts())["post_spaces.201"]).toBe(1));
+    await clearHours();
+    await evictDurableObject(stub);
+    const created = await post(`/v1/spaces/${spaceId}/links`, body(CreateShareLinkRequestSchema, { nodeId: spaceId }), owner.access!.token, ShareLinkSchema);
+    expect(created.status).toBe(201);
+    for (let n = 0; n < 2; n++) {
+      await evictDurableObject(stub);
+      await evictDurableObject(account());
+      expect((await exports.default.fetch(`${BASE}/v1/share/${created.message!.linkId}`)).status).toBe(200);
+    }
+    await vi.waitFor(async () => expect((await storedTotal()).billing.do_space_requests).toBe(3));
+    expect(await leftover(stub)).toEqual([null, null]);
+  });
+
+  it("keeps nothing in a Space DO's or the Account DO's memory once an HTTP RPC, a WebSocket message, an alarm or a socket close ends", async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    const settled = () => vi.waitFor(async () => expect(await leftover(stub)).toEqual([null, null]));
+    expect((await listTree(owner, spaceId, 1n)).status).toBe(200);
+    await settled();
+    const socket = await connect(spaceId, owner, stub);
+    await socket.listTree();
+    await settled();
+    await runInDurableObject(stub, (_instance, state) => state.storage.setAlarm(Date.now() + 1));
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    await settled();
+    socket.ws.close(1000, "done");
+    await vi.waitFor(async () => expect(await parkedCounts(stub)).toEqual([]));
+    await settled();
+    await runInDurableObject(stub, (_instance, state) => state.storage.setAlarm(Date.now() + 1));
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    await settled();
+  });
+
+  it("calls, arms, parks and writes nothing for reports when reports are off and an alarm, an RPC or a session check wakes a fresh instance", async () => {
+    const { owner, spaceId, stub } = await reportingSpace(TokenRequest_Telemetry.OFF);
+    const usage = await watchUsage();
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    const written: unknown[][] = [];
+    await runInDurableObject(stub, (_instance, state) => {
+      const sql = Object.getPrototypeOf(state.storage.sql) as { exec(this: unknown, ...args: unknown[]): unknown };
+      const exec = sql.exec;
+      vi.spyOn(sql, "exec").mockImplementation(function (this: unknown, ...args: unknown[]) {
+        if (/usage_hours|object_usage|task = 'usage'|'usage'/.test(String(args[0])) || args.includes("reporting") || args.includes("r2_stored")) written.push(args);
+        return exec.apply(this, args);
+      });
+    });
+    await runInDurableObject(stub, (_instance, state) => state.storage.setAlarm(Date.now() + 1));
+    await evictDurableObject(stub);
+    await evictDurableObject(account());
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    await evictDurableObject(stub);
+    await evictDurableObject(account());
+    expect((await listTree(owner, spaceId, 1n)).status).toBe(200);
+    await evictDurableObject(account());
+    await refresh(owner, TokenRequest_Telemetry.OFF);
+    await scheduler.wait(100);
+    expect(usage.calls).toEqual([]);
+    expect(timers.mock.calls.filter(([, ms]) => (ms ?? 0) > 0)).toEqual([]);
+    const flagRead = (args: unknown[]) => args[0] === "SELECT value FROM meta WHERE key = ?" && args[1] === "reporting";
+    expect(written.filter(flagRead).length).toBeGreaterThanOrEqual(2);
+    expect(written.filter((args) => !flagRead(args))).toEqual([]);
+    expect(await usageDueMs(stub)).toBeUndefined();
     expect(await storedHours()).toEqual([]);
+    expect(await leftover(stub)).toEqual([null, null]);
+  });
+});
+
+describe("lease renewals", () => {
+  it("holds an HTTP RPC for the lease renewal it started, so the Account DO's answer leaves in the RPC's reply", async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    const listTree = (reqId: bigint) => post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId, call: { case: "listTree", value: {} } }), owner.access!.token);
+    expect((await listTree(1n)).status).toBe(200);
+    const prototype = await runInDurableObject(account(), (instance: AccountDO) => Object.getPrototypeOf(instance) as AccountDO);
+    const original = prototype.checkSessions;
+    const answered: boolean[] = [];
+    prototype.checkSessions = async function (this: AccountDO, ...args: Parameters<AccountDO["checkSessions"]>) {
+      await scheduler.wait(200);
+      const answer = await original.apply(this, args);
+      answered.push(true);
+      return answer;
+    };
+    restorers.push(() => {
+      prototype.checkSessions = original;
+    });
+    await runInDurableObject(stub, (instance: SpaceDO) => {
+      instance.clock = () => Date.now() + 3_000;
+    });
+    expect((await listTree(2n)).status).toBe(200);
+    expect(answered).toEqual([true]);
+    await vi.waitFor(async () => expect((await storedCounts())["rpc_list_tree.ok"]).toBe(2));
+    expect(await runInDurableObject(stub, (instance: object) => (instance as unknown as { traffic: UsageTally }).traffic.take() ?? null)).toBeNull();
   });
 });

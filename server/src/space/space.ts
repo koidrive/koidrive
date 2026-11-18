@@ -65,7 +65,7 @@ import { policy } from "../policy";
 import { causeOf } from "../cause";
 import { platformFailure, quotaRefusal } from "../quota";
 import { refusalOutcome } from "../http";
-import { batchDue, type Counted, mergeBatch, nextHourMs, type ObjectStored, type UsageBatch, UsageTally } from "../report/usage";
+import { batchDue, type Carried, type Counted, mergeBatch, nextHourMs, type UsageBatch, UsageTally } from "../report/usage";
 import { type ApplyContext, CallFailure, CommitApplier } from "./commit";
 import { DIGEST_VERSION, type DigestVersion, type Digests, commitDigests } from "./digest";
 import { descriptorDurable, Exporter, noteCommitted, startExport } from "./export";
@@ -341,7 +341,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     lostChangeRule: LostChangeRule = LOST_CHANGE_RULE;
     snapshotPageNodes = 1000;
-    protected readonly traffic = new UsageTally(() => this.clock());
+    protected readonly traffic = new UsageTally(() => this.clock(), "do_space_active_ms");
     private usageArmed = false;
     private storedHour: number | undefined;
     private exporting: Promise<void> | undefined;
@@ -351,10 +351,11 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     private readonly leases = new Map<string, { check: SessionCheck; askedAtMs: number; untilMs: number }>();
     private leaseGeneration = 0;
     private readonly renewalsDue = new Set<string>();
-    private renewing: { atMs: number; forMs: number } | undefined;
+    private renewing: { atMs: number; forMs: number; answered?: Promise<void> } | undefined;
     private gathering: { deviceIds: Set<string>; answers: Promise<Record<string, SessionCheck> | CheckFailed> } | undefined;
 
-    async init(args: { spaceId: string; name: string; ownerUserId: string; spaceKey: Uint8Array }): Promise<void> {
+    async init(args: { spaceId: string; name: string; ownerUserId: string; spaceKey: Uint8Array; reporting?: boolean }): Promise<void> {
+      if (args.reporting !== undefined) this.learn(args.reporting);
       const existing = getMeta(this.sql, "space_id");
       if (existing !== undefined) {
         if (existing !== args.spaceId) throw new Error("this Space DO already holds another space");
@@ -388,19 +389,17 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
 
     async rpc(session: Session, request: Uint8Array): Promise<Uint8Array> {
       const { response, counted } = await this.call(session, fromBinary(RpcRequestSchema, request));
-      await this.settleUsage(counted);
+      this.traffic.count(counted.route, counted.outcome, counted.latencyMs, this.clock());
       return toBinary(RpcResponseSchema, response);
     }
 
-    async httpRpc(connect: Connect, request: Uint8Array): Promise<{ response: Uint8Array; counted: Counted; usage?: UsageBatch; stored: ObjectStored[] }> {
+    async httpRpc(connect: Connect, request: Uint8Array): Promise<{ response: Uint8Array; counted: Counted }> {
       const startedMs = this.clock();
       const req = fromBinary(RpcRequestSchema, request);
       const role = this.memberRole(connect.identity.userId);
       const refuse = (code: Error_Code, message: string, cause = Error_Cause.UNSPECIFIED) => ({
         response: toBinary(RpcResponseSchema, create(RpcResponseSchema, { reqId: req.reqId, result: { case: "error", value: create(ErrorSchema, { code, message, cause }) } })),
         counted: { route: rpcRoute(req), outcome: refusalOutcome(code, cause), latencyMs: this.clock() - startedMs },
-        usage: this.carried(),
-        stored: this.storedThisHour(),
       });
       if (!role) return refuse(Error_Code.FORBIDDEN, "not a member of this space");
       const check = await this.checkDevice(connect.identity.deviceId);
@@ -412,7 +411,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const session = this.sessionOf(connect, role, device ? Number(device.max_format) : FORMAT_VERSION, check);
       const { response, record, counted } = await this.call(session, req);
       if (record) await this.broadcast(record);
-      return { response: toBinary(RpcResponseSchema, response), counted, usage: this.carried(), stored: this.storedThisHour() };
+      return { response: toBinary(RpcResponseSchema, response), counted };
     }
 
     async webSocketMessage(ws: Socket, message: string | ArrayBuffer): Promise<void> {
@@ -452,12 +451,12 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (msg.case === "rpc") {
         const { response, record, counted } = await this.call(this.sessionOf(attachment, attachment.role, attachment.maxFormat, check), msg.value);
         if (response.result.case === "error" && this.revoked(attachment.identity.deviceId)) {
-          await this.settleUsage(counted);
+          this.traffic.count(counted.route, counted.outcome, counted.latencyMs, this.clock());
           return this.goodbye(ws, Close.DEVICE_REVOKED, "device revoked");
         }
         this.send(ws, { case: "rpc", value: response });
         if (record) await this.broadcast(record, attachment.connId);
-        return this.settleUsage(counted, ws);
+        return this.traffic.count(counted.route, counted.outcome, counted.latencyMs, this.clock());
       }
       return this.goodbye(ws, Close.PROTOCOL, "empty ClientMessage");
     }
@@ -497,9 +496,6 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (check.historyId === undefined) return;
       if ((this.leases.get(deviceId)?.askedAtMs ?? -Infinity) > askedAtMs) return;
       this.leases.set(deviceId, { check, askedAtMs, untilMs: askedAtMs + check.leaseMs });
-      const stopped = check.reporting === false && this.traffic.reporting !== false;
-      this.traffic.reporting = check.reporting;
-      if (stopped) this.dropParked();
     }
 
     private renewLeases(): void {
@@ -514,9 +510,9 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (due.length === 0) return;
       const deviceIds = due.map(({ deviceId }) => deviceId);
       const generation = this.leaseGeneration;
-      const renewal = { atMs: askedAtMs, forMs: Math.max(...due.map(({ leaseMs }) => leaseMs)) };
+      const renewal: { atMs: number; forMs: number; answered?: Promise<void> } = { atMs: askedAtMs, forMs: Math.max(...due.map(({ leaseMs }) => leaseMs)) };
       this.renewing = renewal;
-      this.account()
+      renewal.answered = this.account()
         .checkSessions(deviceIds, String(getMeta(this.sql, "space_id")))
         .then((answers) => {
           if (generation !== this.leaseGeneration) return;
@@ -776,36 +772,53 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         if (code === 1000 || (code >= 3000 && code <= 4999)) ws.close(code, reason);
         else ws.close();
       }
-      await this.releaseUsage(ws);
+      this.releaseUsage(ws);
     }
 
     async webSocketError(ws: Socket): Promise<void> {
-      await this.releaseUsage(ws);
+      this.releaseUsage(ws);
     }
 
-    private async settleUsage(counted: Counted, carrier?: Socket): Promise<void> {
+    private releaseUsage(ws: Socket): void {
+      const usage = this.unpark(ws);
+      if (usage) this.traffic.put(usage);
+    }
+
+    protected received(carried: Carried): void {
+      if (carried.reporting !== undefined) this.learn(carried.reporting);
+      if (carried.usage) this.traffic.put(carried.usage);
+      if (this.traffic.idle) this.rest();
+    }
+
+    private learn(on: boolean): void {
+      if (this.traffic.reporting === on) return;
+      this.traffic.reporting = on;
+      setMeta(this.sql, "reporting", on ? 1 : 0);
+      if (!on) this.dropParked();
+    }
+
+    protected async ended(event: string, args: unknown[], replying: boolean): Promise<void> {
+      if (this.traffic.reporting !== true) return;
+      await this.renewing?.answered;
+      this.traffic.lapse();
+      this.noteStored();
+      if (replying) return;
       const nowMs = this.clock();
-      this.traffic.count(counted.route, counted.outcome, counted.latencyMs, nowMs);
-      if (this.traffic.reporting === false) return this.dropParked();
-      const batch = this.traffic.reporting === true ? this.traffic.take() : undefined;
-      if (!batch) return;
       const open = this.state.getWebSockets().filter((ws) => ws.readyState === WebSocket.OPEN);
+      const carrier = event.startsWith("webSocket") ? (args[0] as Socket) : undefined;
       const target = carrier?.readyState === WebSocket.OPEN ? carrier : open[0];
-      const due = [batch, ...open.flatMap((ws) => (ws.deserializeAttachment() as Attachment).usage ?? [])].some((one) => batchDue(one, nowMs));
-      if (target && !due && this.park(target, batch)) return this.armUsage();
-      this.traffic.put(batch);
+      const due = this.traffic.due(nowMs) || open.some((ws) => batchDue((ws.deserializeAttachment() as Attachment).usage ?? { openedMs: nowMs, hours: {} }, nowMs));
+      if (target && !due && (await this.parkOn(target))) return;
       await this.handOverUsage();
     }
 
-    private carried(): UsageBatch | undefined {
-      return this.traffic.take();
-    }
-
-    protected parkCounted(): void {
-      if (this.traffic.reporting !== true) return;
-      const target = this.state.getWebSockets().find((ws) => ws.readyState === WebSocket.OPEN);
-      const batch = target && this.traffic.take();
-      if (batch && !this.park(target, batch)) this.traffic.put(batch);
+    private async parkOn(target: Socket): Promise<boolean> {
+      await this.armUsage();
+      this.traffic.lapse();
+      const batch = this.traffic.take();
+      if (!batch || this.park(target, batch)) return true;
+      this.traffic.put(batch);
+      return false;
     }
 
     private park(ws: Socket, batch: UsageBatch): boolean {
@@ -836,34 +849,26 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       await this.schedule("usage", nextHourMs(this.clock()) + USAGE_GRACE_MS);
     }
 
-    private async releaseUsage(ws: Socket): Promise<void> {
-      const usage = this.unpark(ws);
-      if (!usage || this.traffic.reporting === false) return;
-      const { connId } = ws.deserializeAttachment() as Attachment;
-      const target = this.state.getWebSockets().find((other) => other.readyState === WebSocket.OPEN && (other.deserializeAttachment() as Attachment).connId !== connId);
-      if (target && this.park(target, usage)) return this.armUsage();
-      this.traffic.put(usage);
-      await this.handOverUsage();
-    }
-
     private async handOverUsage(): Promise<void> {
       for (const ws of this.state.getWebSockets()) {
         const usage = this.unpark(ws);
         if (usage) this.traffic.put(usage);
       }
-      await this.traffic.handOver((batch) => this.account().recordUsage(batch, this.storedThisHour()));
-      if (this.traffic.reporting === false) return this.dropParked();
-      const kept = this.traffic.take();
-      if (!kept) return;
-      const target = this.state.getWebSockets().find((ws) => ws.readyState === WebSocket.OPEN);
-      if (target && this.park(target, kept)) return this.armUsage();
-      this.traffic.put(kept);
+      await this.traffic.handOver((batch) => this.account().recordUsage(batch));
+      this.rest();
     }
 
-    private storedThisHour(): ObjectStored[] {
+    private rest(): void {
+      const target = this.traffic.reporting === true ? this.state.getWebSockets().find((ws) => ws.readyState === WebSocket.OPEN) : undefined;
+      this.traffic.lapse();
+      const batch = this.traffic.take();
+      if (batch && target) this.park(target, batch);
+    }
+
+    private noteStored(): void {
       const nowMs = this.clock();
       const hour = Math.floor(nowMs / HOUR_MS);
-      if (this.traffic.reporting !== true || this.storedHour === hour) return [];
+      if (this.storedHour === hour) return;
       this.storedHour = hour;
       const day = Math.floor(nowMs / DAY_MS);
       const cached = getMeta(this.sql, "r2_stored");
@@ -873,10 +878,10 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         counted = { day, bytes: Number(row.bytes), objects: Number(row.objects) };
         setMeta(this.sql, "r2_stored", JSON.stringify(counted));
       }
-      return [{ object: this.state.id.toString(), sqlBytes: this.sql.databaseSize, r2Bytes: counted.bytes, r2Objects: counted.objects }];
+      this.traffic.note({ object: this.state.id.toString(), sqlBytes: this.sql.databaseSize, r2Bytes: counted.bytes, r2Objects: counted.objects });
     }
 
-    private async answer(session: Session, request: RpcRequest): Promise<{ response: RpcResponse; record?: CommitRecord }> {
+        private async answer(session: Session, request: RpcRequest): Promise<{ response: RpcResponse; record?: CommitRecord }> {
       const reqId = request.reqId;
       try {
         this.checkOpen();
@@ -1704,7 +1709,6 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         if (task === "usage") {
           this.usageArmed = false;
           this.sql.exec("DELETE FROM schedule WHERE task = 'usage'");
-          await this.handOverUsage();
         }
         if (task === "tokens") {
           const next = this.closeExpired(nowMs);
@@ -1713,7 +1717,6 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         }
       }
       await this.armAlarm();
-      if (this.traffic.reporting === true && !this.state.getWebSockets().some((ws) => ws.readyState === WebSocket.OPEN)) await this.handOverUsage();
     }
   }
   return Space;
