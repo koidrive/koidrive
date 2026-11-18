@@ -6132,6 +6132,17 @@ impl Trees {
                 .collect::<BTreeSet<_>>(),
             "the nodes of that index whose folder in S is not in it"
         );
+        debug_assert_eq!(
+            (self.unobserved.iter())
+                .find(|id| {
+                    self.l.get(id).is_none()
+                        && self.s.get(id).is_none()
+                        && !self.watched_positions.contains_key(*id)
+                })
+                .cloned(),
+            None,
+            "an unobserved node that neither L nor S holds and no commit creates"
+        );
         self.r.check(Names::ByKey).map_err(|e| ('R', e))?;
         self.s.check(Names::ByKey).map_err(|e| ('S', e))?;
         self.l.check(Names::Exact).map_err(|e| ('L', e))

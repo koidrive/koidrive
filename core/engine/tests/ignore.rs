@@ -2070,3 +2070,43 @@ fn a_vanished_node_below_a_folder_the_user_moved_waits_while_its_place_on_disk_i
         assert_eq!(trees.check(), Ok(()));
     }
 }
+
+#[test]
+fn a_folder_whose_copy_goes_while_pending_keeps_what_a_release_took_from_it_waiting() {
+    let mut trees = trees(&[
+        synced("p", dir(ROOT, "p.log")),
+        synced("x", file("p", "x.txt", 1)),
+        synced("y", file("p", "y.txt", 2)),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    assert_eq!(ops(&mut trees), []);
+    trees.remove_local("x");
+    trees.set_rules(&AT_ROOT, None);
+    trees.listed(&[], Pending::default());
+    trees.settle(&Default::default());
+    assert_eq!(trees.synced().live("x"), None);
+    trees.remove_local("y");
+    trees.remove_local("p");
+    trees.listed(&[], Pending::new([["p.log"]]));
+    trees.settle(&Default::default());
+    assert!(trees.synced().live("p").is_some());
+    assert_eq!(trees.check(), Ok(()));
+    trees.listed(&[], Pending::default());
+    trees.settle(&Default::default());
+    assert_eq!(trees.synced().live("p"), None);
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_create_removed_while_excluded_leaves_no_mark_once_no_commit_sends_it() {
+    let mut trees = trees(&[]);
+    trees.set_local("n".into(), local(file(ROOT, "n.log", 1), 1));
+    assert!(matches!(ops(&mut trees)[..], [op::Op::CreateFile(_)]));
+    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.remove_local("n");
+    trees.settle(&Default::default());
+    assert_eq!(trees.check(), Ok(()));
+    trees.watch_positions([]);
+    trees.settle(&Default::default());
+    assert_eq!(trees.check(), Ok(()));
+}
