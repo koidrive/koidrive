@@ -96,7 +96,12 @@ import { PROTO_MAX, PROTO_MIN, SERVER_VERSION } from "../version";
 export const FORMAT_VERSION = 1;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
-const COMMIT_BOOKMARK_MAX_AGE_MS = 29 * DAY_MS + 12 * HOUR_MS;
+const PITR_WINDOW_MS = 30 * DAY_MS;
+const BOOKMARK_SAFETY_MS = HOUR_MS;
+
+function oldestUsableBookmarkMs(nowMs: number): number {
+  return nowMs - PITR_WINDOW_MS + BOOKMARK_SAFETY_MS;
+}
 export const HOLD_MS = DAY_MS;
 export const GRANT_MS = HOUR_MS;
 const MAX_OPS = 1000;
@@ -1204,7 +1209,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const settings = this.settings();
       const spaceId = this.spaceId;
       const purge = this.db.transactionSync(() => {
-        this.sql.exec("DELETE FROM commit_bookmarks WHERE from_ms < ?", nowMs - COMMIT_BOOKMARK_MAX_AGE_MS);
+        this.sql.exec("DELETE FROM commit_bookmarks WHERE from_ms < ?", oldestUsableBookmarkMs(nowMs));
         const expired = rows<VersionRow>(
           this.sql.exec(
             "SELECT * FROM versions WHERE superseded_at_ms IS NOT NULL AND superseded_at_ms < ? LIMIT ?",
@@ -1329,7 +1334,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           `SELECT bookmark FROM commit_bookmarks WHERE from_ms <= ? AND from_ms >= ? AND seq =
              (SELECT COALESCE(MAX(seq), 0) FROM commits WHERE seq < (SELECT COALESCE(MIN(seq), ?) FROM commits WHERE committed_at_ms > ?))`,
           restorePointMs,
-          this.clock() - COMMIT_BOOKMARK_MAX_AGE_MS,
+          oldestUsableBookmarkMs(this.clock()),
           Number.MAX_SAFE_INTEGER,
           restorePointMs,
         )

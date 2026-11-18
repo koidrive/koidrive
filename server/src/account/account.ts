@@ -659,7 +659,10 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
           const row = this.rewindRow(rewindId);
           if (!row || row.phase === "completed" || row.phase === "failed") return;
           if (row.phase === "admitted") {
-            const prepared = await this.spaceStub(row.space_id).rewindPrepare({ rewindId, attempt: row.attempt, bookmark: row.bookmark });
+            const { bookmark } = await this.spaceStub(row.space_id).rewindInfo(row.restore_point_ms);
+            if (bookmark === undefined) return await this.failRewind(row, "the restore point left the PITR window before the restore ran");
+            this.sql.exec("UPDATE rewinds SET bookmark = ? WHERE rewind_id = ?", bookmark, rewindId);
+            const prepared = await this.spaceStub(row.space_id).rewindPrepare({ rewindId, attempt: row.attempt, bookmark });
             if (!prepared.earlier) return await this.failRewind(row, "the selected restore point is not earlier than the space's current state");
             this.sql.exec(
               `UPDATE rewinds SET phase = 'prepared', previous_history_id = COALESCE(previous_history_id, ?),
@@ -698,9 +701,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
               if (nowMs > row.restore_point_ms + PITR_WINDOW_MS) {
                 return await this.failRewind(row, "the restore point left the PITR window before the restore ran");
               }
-              const { bookmark } = await this.spaceStub(row.space_id).rewindInfo(row.restore_point_ms);
-              if (bookmark === undefined) return await this.failRewind(row, "the restore point left the PITR window before the restore ran");
-              this.sql.exec("UPDATE rewinds SET phase = 'admitted', attempt = attempt + 1, bookmark = ? WHERE rewind_id = ?", bookmark, rewindId);
+              this.sql.exec("UPDATE rewinds SET phase = 'admitted', attempt = attempt + 1 WHERE rewind_id = ?", rewindId);
               throw new Error("the restore did not run; preparing another attempt");
             }
             const result = create(RewindResultSchema, {
