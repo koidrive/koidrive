@@ -60,7 +60,7 @@ class Analysis(unittest.TestCase):
         base = {"durations": durations, "flaky": list(flaky)}
         records = [{"mutant": number, "status": "killed" if tests else "survived", "killers": tests, "seconds": 1}
                    for number, tests in enumerate(killers)]
-        rows, mutants = test_value.analyse(planned, base, records, set(properties), slow_seconds=10, few=2)
+        rows, mutants = test_value.analyse([(planned, base, records)], set(properties), slow_seconds=10, few=2)
         return {row["test"]: row for row in rows}, mutants
 
     def test_a_test_whose_kills_another_test_covers_is_a_deletion_candidate_naming_the_cheapest_cover(self):
@@ -87,8 +87,22 @@ class Analysis(unittest.TestCase):
 
     def test_survivors_and_tests_without_kills_are_reported(self):
         rows, mutants = self.analyse([[], ["b x"]], {"b x": 1, "b idle": 1})
-        self.assertEqual(rows["b idle"]["verdict"], "no kills: check what it guards")
+        self.assertEqual(rows["b idle"]["verdict"], "no kills in the mutated code")
         self.assertEqual([row["status"] for row in mutants], ["survived", "killed"])
+
+
+    def test_runs_of_several_samples_count_kills_together(self):
+        def run(sample, killers):
+            planned = {"sample": sample, "mutants": [
+                {"id": n, "name": f"m{n}", "file": "f.rs", "line": 1, "function": None, "genre": "FnValue"}
+                for n in range(len(killers))]}
+            records = [{"mutant": n, "status": "killed", "killers": tests, "seconds": 1} for n, tests in enumerate(killers)]
+            return planned, {"durations": {"b x": 1, "b y": 1}, "flaky": []}, records
+        rows, mutants = test_value.analyse([run("guard", [["b x", "b y"]]), run("commit", [["b x"]])], set(), 10, 2)
+        rows = {row["test"]: row for row in rows}
+        self.assertEqual((rows["b x"]["kills"], rows["b x"]["unique_kills"]), (2, 1))
+        self.assertEqual(rows["b y"]["verdict"], "delete or merge")
+        self.assertEqual([(row["sample"], row["id"]) for row in mutants], [("commit", 0), ("guard", 0)])
 
 
 class Sources(unittest.TestCase):

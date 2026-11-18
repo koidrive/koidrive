@@ -51,6 +51,7 @@ SAMPLES = {
 STATUS = re.compile(
     r"^\s*(PASS|FAIL|TIMEOUT|LEAK|LEAK-FAIL|ABORT|SIG[A-Z]+)\s+\[\s*([0-9.]+)s\]\s+(?:\(\s*\d+/\s*\d+\)\s+)?(\S+)\s+(\S+)\s*$")
 BUILD_FAILED = 101
+BASELINE_PERIOD = 600
 CASE_FILES = ("*.proptest-regressions", "*/proptest-regressions/*.txt", "*.cases/*.txt")
 TEST_ENV = {
     "KOIDRIVE_PROPTEST_DETERMINISTIC": "true",
@@ -186,7 +187,7 @@ def baseline(args):
     sample = SAMPLES[args.sample]
     runs = []
     with tempfile.TemporaryDirectory() as directory, open(args.out.with_suffix(".log"), "w") as log:
-        config = nextest_config(directory, {}, args.period)
+        config = nextest_config(directory, {}, BASELINE_PERIOD)
         for run in range(args.runs):
             code, results, _, seconds = nextest(args.root, sample, sample.tests, config, "all", None, log)
             if not results:
@@ -281,41 +282,44 @@ def cover(test, kills, others):
     return chosen
 
 
-def analyse(planned, base, records, properties, slow_seconds, few):
-    durations = base["durations"]
-    flaky = set(base["flaky"])
-    mutants = {mutant["id"]: mutant for mutant in planned["mutants"]}
+def analyse(runs, properties, slow_seconds, few):
+    durations, flaky, mutants, by_mutant = {}, set(), {}, {}
+    for planned, base, records in runs:
+        for test, seconds in base["durations"].items():
+            durations.setdefault(test, seconds)
+        flaky.update(base["flaky"])
+        for mutant in planned["mutants"]:
+            mutants[(planned["sample"], mutant["id"])] = mutant
+        for record in records:
+            by_mutant[(planned["sample"], record["mutant"])] = record
     kills = {test: set() for test in durations}
-    by_mutant = {}
-    for record in records:
-        by_mutant[record["mutant"]] = record
+    for key, record in by_mutant.items():
         for test in record["killers"]:
-            kills.setdefault(test, set()).add(record["mutant"])
-    unique = {test: {m for m in killed if len(by_mutant[m]["killers"]) == 1} for test, killed in kills.items()}
+            kills.setdefault(test, set()).add(key)
+    unique = {test: {key for key in killed if len(by_mutant[key]["killers"]) == 1} for test, killed in kills.items()}
     rows = []
     for test in sorted(kills):
         seconds = durations.get(test, 0.0)
-        kind = "property" if test.rsplit("::", 1)[-1].split(" ")[-1] in properties else "unit"
+        kind = "property" if test.split(" ", 1)[-1].rsplit("::", 1)[-1] in properties else "unit"
         covered = cover(test, kills, durations) if kills[test] and not unique[test] else []
         if test in flaky:
             verdict = "flaky in baseline: not measured"
         elif kind == "property":
             verdict = "keep: property test"
         elif not kills[test]:
-            verdict = "no kills: check what it guards"
+            verdict = "no kills in the mutated code"
         elif not unique[test]:
             verdict = "delete or merge"
         elif seconds >= slow_seconds and len(unique[test]) <= few:
             verdict = "move off the merge path"
         else:
             verdict = "keep"
-        rows.append({"sample": planned["sample"], "test": test, "kind": kind, "seconds": round(seconds, 3),
-                     "kills": len(kills[test]), "unique_kills": len(unique[test]),
-                     "covered_by": "; ".join(covered), "verdict": verdict})
+        rows.append({"test": test, "kind": kind, "seconds": round(seconds, 3), "kills": len(kills[test]),
+                     "unique_kills": len(unique[test]), "covered_by": "; ".join(covered), "verdict": verdict})
     mutant_rows = []
-    for number, mutant in sorted(mutants.items()):
-        record = by_mutant.get(number)
-        mutant_rows.append({"sample": planned["sample"], "id": number, "name": mutant["name"], "file": mutant["file"],
+    for (sample, number), mutant in sorted(mutants.items()):
+        record = by_mutant.get((sample, number))
+        mutant_rows.append({"sample": sample, "id": number, "name": mutant["name"], "file": mutant["file"],
                             "line": mutant["line"], "function": mutant["function"] or "", "genre": mutant["genre"],
                             "status": record["status"] if record else "not run",
                             "slow_tier": bool(record and record.get("slow_tier")),
@@ -331,26 +335,35 @@ def write_csv(path, rows):
         writer.writerows(rows)
 
 
+def load_run(directory):
+    planned = json.loads((directory / "mutants.json").read_text())
+    base = json.loads((directory / "baseline.json").read_text())
+    records = [json.loads(line) for path in sorted(directory.glob("results-*.jsonl"))
+               for line in path.read_text().splitlines() if line]
+    return planned, base, records
+
+
 def report(args):
-    planned = json.loads(args.mutants.read_text())
-    base = json.loads(args.baseline.read_text())
-    records = [json.loads(line) for path in args.results for line in path.read_text().splitlines() if line]
-    rows, mutant_rows = analyse(planned, base, records, property_tests(args.root), args.slow, args.few)
+    runs = [load_run(directory) for directory in args.runs]
+    name = "-".join(planned["sample"] for planned, _, _ in runs)
+    rows, mutant_rows = analyse(runs, property_tests(args.root), args.slow, args.few)
     args.out.mkdir(parents=True, exist_ok=True)
-    write_csv(args.out / f"{args.sample}-tests.csv", rows)
-    write_csv(args.out / f"{args.sample}-mutants.csv", mutant_rows)
-    write_csv(args.out / f"{args.sample}-survivors.csv", [row for row in mutant_rows if row["status"] == "survived"])
-    statuses = {}
+    write_csv(args.out / f"{name}-tests.csv", rows)
+    write_csv(args.out / f"{name}-mutants.csv", mutant_rows)
+    write_csv(args.out / f"{name}-survivors.csv", [row for row in mutant_rows if row["status"] == "survived"])
+    statuses, verdicts = {}, {}
     for row in mutant_rows:
         statuses[row["status"]] = statuses.get(row["status"], 0) + 1
-    verdicts = {}
     for row in rows:
         verdicts[row["verdict"]] = verdicts.get(row["verdict"], 0) + 1
-    summary = [f"### Test value: {args.sample}", "",
+    hours = sum(record["seconds"] for _, _, records in runs for record in records) / 3600
+    summary = [f"### Test value: {name}", "",
                f"{len(mutant_rows)} mutants: " + ", ".join(f"{count} {status}" for status, count in sorted(statuses.items())),
+               "",
                f"{len(rows)} tests: " + ", ".join(f"{count} {verdict}" for verdict, count in sorted(verdicts.items())),
-               f"Mutant runtime: {round(sum(record['seconds'] for record in records) / 3600, 1)} runner-hours"]
-    (args.out / f"{args.sample}-summary.md").write_text("\n".join(summary) + "\n")
+               "",
+               f"Mutant runtime: {hours:.1f} runner-hours"]
+    (args.out / f"{name}-summary.md").write_text("\n".join(summary) + "\n")
     print("\n".join(summary))
 
 
@@ -370,9 +383,8 @@ def main(argv=None):
     commands.choices["run"].add_argument("--baseline", type=Path, required=True)
     commands.choices["run"].add_argument("--shard", default="0/1")
     commands.choices["run"].add_argument("--out", type=Path, required=True)
-    commands.choices["report"].add_argument("--mutants", type=Path, required=True)
-    commands.choices["report"].add_argument("--baseline", type=Path, required=True)
-    commands.choices["report"].add_argument("--results", type=Path, nargs="+", required=True)
+    commands.choices["report"].add_argument("--runs", type=Path, nargs="+", required=True,
+                                            help="directories that each hold one run's mutants.json, baseline.json and results-*.jsonl")
     commands.choices["report"].add_argument("--few", type=int, default=2, help="unique kills at or below which a slow test may move off the merge path")
     commands.choices["report"].add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
