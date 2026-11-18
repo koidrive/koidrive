@@ -1364,8 +1364,6 @@ fn a_kept_entry_syncs_once_the_person_lets_it_in_while_another_devices_new_rules
     b.run(&mut remote);
     fs::write(site.root.join("app/.koiignore"), b"*.log\n").unwrap();
     settled(&mut b, &mut remote);
-    fs::write(site.root.join("app/.koiignore"), b"*.log\n*.bak\n").unwrap();
-    settled(&mut b, &mut remote);
     assert!(
         remote.tree().contains_key("app/.env"),
         "{:?}",

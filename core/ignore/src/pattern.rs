@@ -78,14 +78,14 @@ impl<K: NameKey> RuleFile<K> {
     /// A UTF-8 byte order mark at the start is skipped. Lines end at `\n`, with a `\r` before it
     /// removed. Blank lines and lines starting with `#` are skipped. Trailing spaces are removed
     /// unless escaped with `\`.
-    pub fn parse(bytes: &[u8]) -> Self {
-        let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    pub fn parse(original: &[u8]) -> Self {
+        let bytes = original.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(original);
         let mut lines: Vec<&[u8]> = bytes.split(|&b| b == b'\n').collect();
         if lines.last().is_some_and(|last| last.is_empty()) {
             lines.pop();
         }
         let mut file = Self {
-            source: bytes.to_vec(),
+            source: original.to_vec(),
             ..Self::default()
         };
         for (index, line) in lines.into_iter().enumerate() {
@@ -111,7 +111,7 @@ impl<K: NameKey> RuleFile<K> {
         &self.invalid
     }
 
-    /// The bytes the rules were parsed from, after the byte order mark.
+    /// The bytes the rules were parsed from.
     pub fn source(&self) -> &[u8] {
         &self.source
     }

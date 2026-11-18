@@ -3715,7 +3715,7 @@ impl Trees {
         folders.reverse();
         let folder = *folders.get(depth)?;
         (self.local_holders(folder, koidrive_ignore::RULES_FILE))
-            .next()
+            .find(|id| (self.l.get(id)).is_some_and(|node| node.shape.kind == Kind::File))
             .cloned()
     }
 
