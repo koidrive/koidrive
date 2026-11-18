@@ -1106,7 +1106,7 @@ fn a_folder_an_earlier_discard_gave_back_and_sent_leaves_a_later_discarded_folde
         act(9, 0, 0, 0, 0),
         vec!["*.txt"],
     );
-    run_ignoring_answering_after(
+    let ran = run_ignoring_answering_after(
         &[act(0, 0, 0, 1, 0), act(1, 0, 4664361095268115873, 0, 0), act(1, 0, 5015278945299757376, 0, 0), act(0, 0, 14596149430375813363, 0, 0), act(0, 0, 18179744410189147, 0, 0), act(0, 0, 65437919313017109, 0, 0)],
         &[act(0, 0, 0, 0, 0), act(0, 0, 0, 2, 0), act(0, 0, 6733077998261294296, 0, 0)],
         &[],
@@ -1120,6 +1120,7 @@ fn a_folder_an_earlier_discard_gave_back_and_sent_leaves_a_later_discarded_folde
         0,
     )
     .unwrap();
+    assert_eq!(ran.asked, 2);
 }
 
 #[test]
