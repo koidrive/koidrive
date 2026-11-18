@@ -128,12 +128,13 @@ fn ended(alive: &Path) -> bool {
 }
 
 /// A command that runs `program` with the lifeline of the sandbox `within` lies in, so that any koi it starts, with
-/// whatever environment it is given, stops with that sandbox. The command leaves out this account's XDG directories.
+/// whatever environment it is given, stops with that sandbox. The command keeps koi's install inventory in the sandbox
+/// and leaves out this account's XDG directories and Homebrew prefix.
 pub fn sandboxed(program: impl AsRef<OsStr>, within: &Path) -> Command {
     let found = (OPEN.lock().unwrap().iter())
         .find(|open| open.roots.iter().any(|root| within.starts_with(root)))
-        .map(|open| open.lifeline.clone());
-    let lifeline = found.unwrap_or_else(|| {
+        .map(|open| (open.lifeline.clone(), open.roots[0].clone()));
+    let (lifeline, root) = found.unwrap_or_else(|| {
         panic!(
             "{} is not in a Sandbox, so a koi started there could outlive the test",
             within.display()
@@ -142,6 +143,8 @@ pub fn sandboxed(program: impl AsRef<OsStr>, within: &Path) -> Command {
     let mut command = Command::new(program);
     command
         .env(LIFELINE, lifeline)
+        .env("KOIDRIVE_TEST_INSTALL_INVENTORY", root)
+        .env_remove("HOMEBREW_PREFIX")
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_STATE_HOME")
         .env_remove("XDG_RUNTIME_DIR");

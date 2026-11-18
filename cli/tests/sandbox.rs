@@ -84,18 +84,11 @@ fn a_koi_stops_when_its_sandbox_drops_after_its_test_passes_or_panics() {
     }
 }
 
-struct Left {
-    pid: rustix::process::Pid,
-    lifeline: PathBuf,
-}
+struct Left(rustix::process::Pid);
 
 impl Drop for Left {
     fn drop(&mut self) {
-        let _ = rustix::process::kill_process(self.pid, rustix::process::Signal::KILL);
-        if let Ok(root) = std::fs::read_to_string(self.lifeline.join("root")) {
-            let _ = std::fs::remove_dir_all(root);
-        }
-        let _ = std::fs::remove_dir_all(&self.lifeline);
+        let _ = rustix::process::kill_process(self.0, rustix::process::Signal::KILL);
     }
 }
 
@@ -104,12 +97,7 @@ fn a_koi_stops_when_the_test_process_that_started_it_is_killed() {
     if std::env::var_os(CHILD).is_some() {
         let sandbox = Sandbox::new();
         let (daemon, socket) = daemon(&sandbox);
-        println!(
-            "{CHILD} {} {} {}",
-            daemon.0.id(),
-            sandbox.lifeline().display(),
-            socket.display()
-        );
+        println!("{CHILD} {} {}", daemon.0.id(), socket.display());
         std::io::stdout().flush().unwrap();
         loop {
             std::thread::park();
@@ -132,10 +120,7 @@ fn a_koi_stops_when_the_test_process_that_started_it_is_killed() {
         .unwrap();
     let mut words = line.split(' ');
     let pid: i32 = words.next().unwrap().parse().unwrap();
-    let _left = Left {
-        pid: rustix::process::Pid::from_raw(pid).unwrap(),
-        lifeline: PathBuf::from(words.next().unwrap()),
-    };
+    let _left = Left(rustix::process::Pid::from_raw(pid).unwrap());
     let socket = PathBuf::from(words.next().unwrap());
     let answered = UnixStream::connect(&socket).is_ok();
 
@@ -150,29 +135,52 @@ fn a_koi_stops_when_the_test_process_that_started_it_is_killed() {
 }
 
 #[test]
-fn a_test_cannot_run_koi_against_this_account_s_own_home() {
+fn a_test_cannot_run_koi_against_this_account_s_home_or_installs() {
     let account = std::env::home_dir().unwrap();
     let sandbox = Sandbox::new();
+    let set: Vec<_> = process::koi(sandbox.path())
+        .get_envs()
+        .map(|(name, value)| (name.to_owned(), value.is_some()))
+        .collect();
+    for name in [
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        "HOMEBREW_PREFIX",
+    ] {
+        assert!(
+            set.contains(&(name.into(), false)),
+            "{name} reaches a sandboxed koi"
+        );
+    }
+    let run = |name: &str, value: &Path| {
+        process::koi(sandbox.path())
+            .args(["help", "--json"])
+            .env("HOME", sandbox.path())
+            .env(name, value)
+            .output()
+            .unwrap()
+    };
     for (name, value) in [
         ("HOME", account.clone()),
         ("XDG_STATE_HOME", account.join(".local/state")),
         ("XDG_CONFIG_HOME", account.join(".config")),
+        ("KOIDRIVE_TEST_INSTALL_INVENTORY", PathBuf::from("/")),
+        ("HOMEBREW_PREFIX", PathBuf::from("/opt/homebrew")),
     ] {
-        let output = process::koi(sandbox.path())
-            .args(["help", "--json"])
-            .env("HOME", sandbox.path())
-            .env_remove("XDG_CONFIG_HOME")
-            .env_remove("XDG_STATE_HOME")
-            .env(name, &value)
-            .output()
-            .unwrap();
+        let output = run(name, &value);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(78), "{name}: {stderr}");
         assert!(
-            stderr.contains("in this account's home"),
+            stderr.starts_with("koi: a test must not"),
             "{name}: {stderr}"
         );
     }
+    assert!(
+        run("XDG_STATE_HOME", &sandbox.path().join("state"))
+            .status
+            .success()
+    );
 }
 
 #[test]
@@ -239,51 +247,6 @@ fn every_program_a_test_runs_that_could_start_koi_is_sandboxed() {
     );
 }
 
-fn rerun(test: &str, env: &[(&str, &std::ffi::OsStr)]) -> std::process::Output {
-    let mut command = Command::new(std::env::current_exe().unwrap());
-    command
-        .args(["--exact", test, "--nocapture"])
-        .env(CHILD, "1");
-    for (name, value) in env {
-        command.env(name, value);
-    }
-    command.output().unwrap()
-}
-
-#[test]
-fn a_koi_a_test_starts_ignores_this_account_s_xdg_directories() {
-    let test = "a_koi_a_test_starts_ignores_this_account_s_xdg_directories";
-    if std::env::var_os(CHILD).is_some() {
-        let sandbox = Sandbox::new();
-        let output = process::koi(sandbox.path())
-            .arg("--version")
-            .env("HOME", sandbox.path())
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{:?}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return;
-    }
-    let account = std::env::home_dir().unwrap();
-    let output = rerun(
-        test,
-        &[
-            ("XDG_CONFIG_HOME", account.join(".config").as_os_str()),
-            ("XDG_STATE_HOME", account.join(".local/state").as_os_str()),
-        ],
-    );
-    assert!(
-        output.status.success(),
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 #[test]
 fn another_test_process_leaves_a_sandbox_whole_while_it_ends() {
     let test = "another_test_process_leaves_a_sandbox_whole_while_it_ends";
@@ -304,10 +267,11 @@ fn another_test_process_leaves_a_sandbox_whole_while_it_ends() {
         })
     });
 
-    let swept = rerun(
-        test,
-        &[("KOI_SANDBOX_TEST_PARENT", parent.path().as_os_str())],
-    );
+    let swept = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture"])
+        .env("KOI_SANDBOX_TEST_PARENT", parent.path())
+        .output()
+        .unwrap();
     let whole = root.exists();
     drop(exiting);
     let ended = ending.join();

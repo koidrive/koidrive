@@ -33,7 +33,7 @@ trap cleanup EXIT
 
 # Build first, so the Worker is not kept waiting for the compiler.
 cd "$root"
-cargo build -p koidrive-cli --locked
+cargo build -p koidrive-cli --locked --features test-install-inventory
 cargo test -p koidrive-ffi --locked --lib --no-run
 koi="${CARGO_TARGET_DIR:-$root/target}/debug/koi"
 
