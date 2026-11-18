@@ -2634,6 +2634,35 @@ fn a_copy_of_a_rolled_back_write_after_the_recovery_is_refused() {
     );
 }
 
+fn a_conflict_copy_of_the_write_at_a_beside_it(volumes: &[Precision]) -> Result<(), Failure> {
+    let mut world = converge_on(volumes, &[vec![(0, file("a"))]]).unwrap();
+    let written = content_on(&world, 1, "a");
+    world.devices[1]
+        .disk
+        .create(
+            Place::Root,
+            "a (conflict from device-1 2026-11-09)",
+            Some(written),
+        )
+        .unwrap();
+    world.phase(1, &[])
+}
+
+#[test]
+fn a_conflict_copy_of_a_write_whose_time_tells_it_apart_is_one_write_in_two_files() {
+    let failure = a_conflict_copy_of_the_write_at_a_beside_it(&[Precision::Fine, Precision::Fine])
+        .unwrap_err();
+    assert!(
+        failure.to_string().contains("is in more than one file"),
+        "{failure}"
+    );
+}
+
+#[test]
+fn a_conflict_copy_of_a_write_whose_time_a_coarse_disk_kept_is_the_copy_the_server_keeps() {
+    a_conflict_copy_of_the_write_at_a_beside_it(&[Precision::Seconds, Precision::Seconds]).unwrap();
+}
+
 fn copies_of(world: &World, write: i64) -> usize {
     (files_on(world, 0).into_iter())
         .filter(|(_, content)| content.as_ref().is_some_and(|c| tag(c) == write))

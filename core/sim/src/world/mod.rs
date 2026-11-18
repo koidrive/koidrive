@@ -70,7 +70,7 @@ use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::{self, Base, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, location_of};
 use koidrive_engine::first_link::{self, History, Marks};
-use koidrive_engine::names::{nfc, same_name};
+use koidrive_engine::names::{conflict_name, nfc, same_name};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{Content, FileIdentity, NodeId, RemoteNode, Shape, same, same_content};
 use koidrive_proto::v1::{
@@ -3313,8 +3313,36 @@ impl World {
                 .collect();
             paths.saturating_sub(holders.len() - roots.len())
         };
+        let now_ms = self.server_now();
+        let kept_beside_a_coarse_original = |paths: &Vec<&Vec<String>>| {
+            let conflict_of = |copy: &str, original: &str| {
+                (0..self.devices.len()).any(|d| {
+                    (1..=paths.len() as u32).any(|attempt| {
+                        let name = conflict_name(original, &format!("device-{d}"), now_ms, attempt);
+                        same_name(copy, &name)
+                    })
+                })
+            };
+            (paths.iter())
+                .filter(|copy| {
+                    paths.iter().any(|original| {
+                        let (Some((name, parent)), Some((copy_name, copy_parent))) =
+                            (original.split_last(), copy.split_last())
+                        else {
+                            return false;
+                        };
+                        parent == copy_parent
+                            && (server[*original].as_ref()).is_some_and(|content| {
+                                !first_link::time_tells_writes_apart(content.mtime_ns)
+                            })
+                            && conflict_of(copy_name, name)
+                    })
+                })
+                .count()
+        };
         let twice = |(write, paths): &(&i64, &Vec<_>)| {
-            lineages(**write, paths.len()) > allowed(**write) && !self.copied.contains(*write)
+            let files = paths.len() - kept_beside_a_coarse_original(paths);
+            lineages(**write, files) > allowed(**write) && !self.copied.contains(*write)
         };
         if let Some((write, paths)) = files.iter().find(twice) {
             return Err(Failure::Diverged(format!(
