@@ -901,3 +901,68 @@ fn a_server_count_below_the_accepted_one_starts_recovery_when_its_token_names_an
         }
     }
 }
+
+#[test]
+fn a_restore_that_brings_back_a_commit_this_device_gave_its_slot_to_before_a_loss_starts_no_recovery() {
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 1,
+        slots: [(1, given(0))].into(),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    commits.forget_lost_slots();
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 2,
+        slots: [(1, given(1)), (2, slot(7))].into(),
+        ..commits.state()
+    })
+    .unwrap();
+    assert_eq!(commits.connected(&at_slot_1(0)), Reconnect::AheadOfServer);
+    assert_eq!(commits.accepted(), 1);
+}
+
+#[test]
+fn a_restore_that_brings_back_a_commit_a_slot_gave_up_more_than_the_kept_number_of_losses_ago_starts_recovery() {
+    let mut state = CommitsState::default();
+    for loss in 0..=GIVEN_UP_KEPT {
+        let mut commits = Commits::from_state(CommitsState {
+            accepted: 1,
+            slots: [(1, given(loss))].into(),
+            ..state
+        })
+        .unwrap();
+        assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+        commits.forget_lost_slots();
+        state = commits.state();
+    }
+    for loss in 0..=GIVEN_UP_KEPT {
+        let mut commits = Commits::from_state(CommitsState {
+            accepted: 2,
+            slots: [(1, given(GIVEN_UP_KEPT + 1)), (2, slot(7))].into(),
+            ..state.clone()
+        })
+        .unwrap();
+        let reconnect = match loss {
+            0 => Reconnect::Recovery,
+            _ => Reconnect::AheadOfServer,
+        };
+        assert_eq!(commits.connected(&at_slot_1(loss)), reconnect, "loss {loss}");
+    }
+}
+
+fn given(loss: usize) -> Slot {
+    Slot {
+        seq: 3,
+        commit_id: format!("commit-{loss}"),
+        committed_at_ms: 30 + loss as i64,
+    }
+}
+
+fn at_slot_1(loss: usize) -> Welcome {
+    Welcome {
+        device_commit_id: format!("commit-{loss}"),
+        device_committed_at_ms: 30 + loss as i64,
+        ..welcome(1)
+    }
+}

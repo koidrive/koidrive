@@ -33,6 +33,9 @@ use crate::tree::{Content, Kind, NodeId, Shape, same, same_content};
 pub const MAX_OPS: usize = 1000;
 /// How many of this device's acknowledged commits [`Commits::held_through`] remembers.
 pub const SLOTS_KEPT: usize = 1000;
+/// How many `commit_id`s a slot keeps of the commits this device gave it to before a server loss
+/// took them, newest last ([`Commits::forget_lost_slots`]).
+pub const GIVEN_UP_KEPT: usize = 8;
 
 /// The most bytes of change records a commit is planned to make, as estimated. Its records and
 /// its result must each fit in one 1 MiB `ServerMessage` (spec v0 section 7.2), and the estimate is
@@ -197,6 +200,7 @@ pub struct Commits {
     /// The seq and `commit_id` of each of this device's last [`SLOTS_KEPT`] acknowledged commits,
     /// and of the commit in flight once R holds its record, by slot.
     slots: TrackedMap<u64, Slot>,
+    given_up: TrackedMap<u64, Vec<String>>,
     /// The open questions, in the order they were asked.
     questions: Marked<Vec<Question>>,
     /// The local entries a [`Answer::Publish`] to a first link's question released (section 6.4),
@@ -231,6 +235,7 @@ impl Commits {
             restores: (*self.restores).clone(),
             resolved: (*self.resolved).clone(),
             slots: (*self.slots).clone(),
+            given_up: (*self.given_up).clone(),
             questions: (*self.questions).clone(),
             published: (*self.published).clone(),
             guard: self.guard.state(),
@@ -250,6 +255,7 @@ impl Commits {
             restores,
             resolved,
             slots,
+            given_up,
             questions,
             published,
             guard,
@@ -267,6 +273,7 @@ impl Commits {
             restores: restores.take_changed().cloned(),
             resolved: resolved.take_changed().cloned(),
             slots: slots.take_changes(),
+            given_up: given_up.take_changes(),
             questions: questions.take_changed().cloned(),
             published: published.take_changes(),
             guard: guard.take_changes(),
@@ -332,6 +339,7 @@ impl Commits {
             restores,
             resolved,
             slots,
+            given_up,
             questions,
             published,
             guard,
@@ -347,6 +355,7 @@ impl Commits {
             restores: restores.into(),
             resolved: resolved.into(),
             slots: slots.into(),
+            given_up: given_up.into(),
             questions: questions.into(),
             published: published.into(),
             guard: guard.into(),
@@ -475,6 +484,19 @@ impl Commits {
     /// listed again and [`Trees::forget_lost`] no longer needs them.
     pub fn forget_lost_slots(&mut self) {
         let accepted = *self.accepted;
+        let lost: Vec<(u64, String)> = (self.slots.range(accepted + 1..))
+            .filter(|(_, made)| !made.commit_id.is_empty())
+            .map(|(slot, made)| (*slot, made.commit_id.clone()))
+            .collect();
+        for (slot, commit_id) in lost {
+            let ids = self.given_up.get_or_insert_with(slot, Vec::new);
+            if !ids.contains(&commit_id) {
+                ids.push(commit_id);
+            }
+            if ids.len() > GIVEN_UP_KEPT {
+                ids.remove(0);
+            }
+        }
         self.slots.retain(|slot, _| *slot <= accepted);
     }
 
@@ -2363,6 +2385,9 @@ impl Commits {
         while self.slots.len() > SLOTS_KEPT {
             self.slots.pop_first();
         }
+        if let Some(&oldest) = self.slots.keys().next() {
+            self.given_up.retain(|slot, _| *slot >= oldest);
+        }
         if self.slots.len() == SLOTS_KEPT
             && let Some((_, oldest)) = self.slots.first_key_value()
         {
@@ -2540,7 +2565,8 @@ impl Commits {
     /// server sent that result, and *w* = *a* + 1 while it is held and the `Welcome` carries
     /// another application for that slot, since the server gave the slot to another commit or
     /// applied this one again there. Either way *a* takes *w*, unless the `Welcome` names for slot
-    /// *w* < *a* another `commit_id` than the one this device kept for it: the server holds there
+    /// *w* < *a* another `commit_id` than the one this device kept for it and than those it gave the
+    /// slot to before a loss took them ([`GIVEN_UP_KEPT`]): the server holds there
     /// a commit of this device that the store does not know, so the store is behind the server
     /// and recovery starts, as when it keeps no result of slot *w* at all. Otherwise the commit in flight is dropped, its
     /// restores staying queued, so that its changes are planned again once R is listed again. Any other *w*, or a commit
@@ -2569,7 +2595,10 @@ impl Commits {
         let (a, w) = (*self.accepted, welcome.device_seq);
         let kept = (self.slots.get(&w))
             .filter(|slot| !slot.commit_id.is_empty() && !welcome.device_commit_id.is_empty());
-        let another_commit = kept.is_some_and(|slot| slot.commit_id != welcome.device_commit_id);
+        let given_up =
+            (self.given_up.get(&w)).is_some_and(|ids| ids.contains(&welcome.device_commit_id));
+        let another_commit =
+            kept.is_some_and(|slot| slot.commit_id != welcome.device_commit_id) && !given_up;
         self.confirmed.0 = kept.map(|slot| {
             if same_application(welcome, &slot.commit_id, slot.committed_at_ms) {
                 w

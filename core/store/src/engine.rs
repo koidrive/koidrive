@@ -444,6 +444,15 @@ impl Tx<'_> {
             };
             state.commits.slots.insert(row.get(0)?, made);
         }
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT device_seq, commit_ids FROM commit_slot_given_up")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let ids: String = row.get(1)?;
+            let ids = ids.split_whitespace().map(str::to_owned).collect();
+            state.commits.given_up.insert(row.get(0)?, ids);
+        }
         state.commits.questions = self.open_questions()?;
         state.commits.guard = self.guard()?;
 
@@ -489,6 +498,7 @@ impl Tx<'_> {
             "waiting_updates",
             "commit_state",
             "commit_slots",
+            "commit_slot_given_up",
             "commit_in_flight",
             "commit_in_flight_deletes",
             "commit_in_flight_delete_members",
@@ -608,6 +618,7 @@ impl Tx<'_> {
             restores,
             resolved,
             slots,
+            given_up,
             questions,
             published,
             guard,
@@ -1007,6 +1018,12 @@ impl Tx<'_> {
             |put, slot, made| {
                 put.execute(params![slot, made.seq, made.commit_id, made.committed_at_ms])
             },
+        )?;
+        self.write_map(
+            given_up,
+            "DELETE FROM commit_slot_given_up WHERE device_seq = ?1",
+            "INSERT OR REPLACE INTO commit_slot_given_up (device_seq, commit_ids) VALUES (?1, ?2)",
+            |put, slot, ids| put.execute(params![slot, ids.join(" ")]),
         )?;
         if restores.is_some() {
             self.0

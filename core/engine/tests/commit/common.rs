@@ -6,7 +6,7 @@ use koidrive_engine::classify::{
     Class, Origin, PAST_POSITIONS_KEPT, REPLACED_VERSIONS_KEPT, Trees, Untaken, Waiting,
 };
 
-use koidrive_engine::commit::{
+use koidrive_engine::commit::{GIVEN_UP_KEPT, 
     Commits, Failure, Halt, Lift, LiftError, MAX_COMMIT_BYTES, MAX_OPS, Reconnect, Slot,
 };
 
