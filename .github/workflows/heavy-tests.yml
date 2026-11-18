@@ -114,7 +114,7 @@ jobs:
           [[ "$PARALLEL" =~ ^[1-8]$ ]] || errors+=("parallel must be a whole number from 1 to 8, got '$PARALLEL'.")
           [[ "$MODE" == cargo || "$MODE" == worker || "$MODE" == server || "$MODE" == macos-ui ]] || errors+=("mode must be cargo, worker, server or macos-ui.")
           [[ "$MODE" != server ]] || [[ "$CRATE" == koidrive-server && "$PARALLEL" == 1 && -z "$FEATURES$CASES" && "$IGNORED" != true ]] || errors+=("server mode runs the vitest suite of server/: set crate to koidrive-server, and leave parallel at 1 and features, cases and ignored empty.")
-          [[ "$MODE" != macos-ui || ( -z "$CRATE$TEST$FILTER$CASES$FEATURES$EXTRA_ENV" && "$PARALLEL" == 1 && "$RELEASE" != true && "$IGNORED" != true ) ]] || errors+=("macos-ui runs the whole UI test suite: leave crate, test, filter, cases, features, env, parallel, release and ignored unset.")
+          [[ "$MODE" != macos-ui || ( -z "$CRATE$TEST$FILTER$CASES$FEATURES$EXTRA_ENV$SEED" && "$PARALLEL" == 1 && "$RELEASE" != true && "$IGNORED" != true ) ]] || errors+=("macos-ui runs the whole UI test suite: leave crate, test, filter, cases, features, env, seed, parallel, release and ignored unset.")
           [[ "$MODE" != macos-ui || "$OS" != ubuntu ]] || errors+=("macos-ui runs on macOS runners: set os to macos or both.")
           if [ "$MODE" = worker ]; then
             case "$CRATE" in
@@ -154,7 +154,11 @@ jobs:
             echo "seed=$seed"
             echo "runs=[$(seq -s, 1 "$REPEAT")]"
           } >> "$GITHUB_OUTPUT"
-          echo "Commit $sha, $REPEAT runs on each OS, run k uses PROPTEST_RNG_SEED=$seed + k - 1."
+          if [ "$MODE" = macos-ui ]; then
+            echo "Commit $sha, $REPEAT runs of the macOS UI tests."
+          else
+            echo "Commit $sha, $REPEAT runs on each OS, run k uses PROPTEST_RNG_SEED=$seed + k - 1."
+          fi
 
   test:
     name: test (${{ matrix.os }})
