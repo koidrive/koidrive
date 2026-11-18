@@ -190,3 +190,220 @@ fn deletes_reach_the_server_in_the_saved_gun_864_cases_across_server_restores() 
         Losses::Restores,
     );
 }
+
+#[test]
+fn a_bystanders_store_rollback_leaves_another_devices_delete_checked() {
+    let failure = checked(
+        3,
+        &[
+            vec![(0, file("a")), (2, Step::CopyStore), (0, BACKUP)],
+            vec![(0, BACKUP), (0, overwrite(0)), (0, Step::RestoreEarlier)],
+            vec![(1, rename(0, 0, "c.txt"))],
+            vec![
+                (1, Step::Leave),
+                (0, delete(0)),
+                (2, Step::RollBack),
+                (0, Step::RestoreEarlier),
+                (0, RESTORE),
+            ],
+        ],
+    )
+    .err();
+    assert!(failure.is_some_and(|f| {
+        f.to_string()
+            .contains("the delete never reached the server")
+    }));
+}
+
+#[test]
+fn another_devices_copy_does_not_excuse_the_deleted_file() {
+    let u = |kind, target, name| {
+        Step::User(Action {
+            kind,
+            target,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    let copy = Step::Copy(Action {
+        kind: 0,
+        target: 0,
+        parent: 0,
+        name: 3,
+        text: 0,
+    });
+    let failure = checked(
+        2,
+        &[
+            vec![(0, u(1, 0, 0)), (0, BACKUP)],
+            vec![
+                (0, u(0, 0, 1)),
+                (0, u(0, 0, 2)),
+                (0, BACKUP),
+                (0, u(2, 6307646474509524231, 0)),
+                (0, Step::RestoreEarlier),
+            ],
+            vec![
+                (1, copy),
+                (0, u(4, 3700173026859558585, 0)),
+                (0, Step::RestoreEarlier),
+                (0, RESTORE),
+            ],
+        ],
+    )
+    .err();
+    assert!(failure.is_some_and(|f| {
+        f.to_string()
+            .contains("the delete never reached the server")
+    }));
+}
+
+#[test]
+fn a_restore_the_deleting_user_chooses_after_a_rewind_brings_the_file_back() {
+    checked(
+        2,
+        &[
+            vec![
+                (0, act(1, 0, 0, "A", 3)),
+                (1, act(1, 0, 0, "ss", 1)),
+                (1, BACKUP),
+            ],
+            vec![(1, Step::Rewind)],
+            vec![(1, act(4, 0, 0, "ß", 3)), (1, act(2, 0, 0, "\u{e9}", 1))],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_rename_another_device_owes_on_a_file_moved_into_the_deleted_folder_brings_it_back() {
+    checked(
+        2,
+        &[
+            vec![(0, file("a"))],
+            vec![(0, act(3, 0, 0, "b", 2)), (0, act(0, 0, 0, "a", 1))],
+            vec![(1, act(4, 0, 0, "ß", 1)), (0, act(1, 0, 0, "ss", 3))],
+            vec![
+                (0, rename(1, 0, "A")),
+                (1, rename(1, 1, "\u{e9}")),
+                (1, act(4, 0, 0, "ss", 0)),
+            ],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_folder_another_device_renames_after_the_delete_keeps_its_file_once_moved_out() {
+    checked(
+        2,
+        &[
+            vec![(0, folder("b"))],
+            vec![
+                (0, act(1, 0, 0, "\u{e9}", 1)),
+                (0, act(4, 1, 0, "b", 0)),
+                (1, act(4, 0, 0, "a", 0)),
+                (1, folder("C.TXT")),
+                (1, act(1, 0, 1, "\u{c9}", 0)),
+                (0, act(0, 0, 0, "E\u{301}", 2)),
+                (0, act(3, 0, 2, "C.TXT", 0)),
+                (1, act(1, 0, 1, "ß", 2)),
+                (0, act(1, 0, 1, "C.TXT", 0)),
+            ],
+            vec![
+                (1, act(4, 4, 0, "a", 0)),
+                (0, act(4, 4, 0, "A", 2)),
+                (1, Step::Work(0)),
+                (1, Step::Work(0)),
+                (0, act(3, 0, 0, "b", 2)),
+            ],
+            vec![(1, act(3, 4, 0, "ß", 3))],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_deleted_original_leaves_its_conflict_copy_with_the_same_write() {
+    checked(
+        3,
+        &[
+            vec![
+                (1, Step::CopyStore),
+                (0, BACKUP),
+                (2, Step::CopyStore),
+                (0, file("a")),
+                (1, file("a")),
+            ],
+            vec![(2, Step::RollBack), (0, Step::Rewind)],
+            vec![(2, delete(2))],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_deleted_conflict_copy_leaves_the_original_with_the_same_write() {
+    checked(
+        3,
+        &[
+            vec![
+                (1, act(1, 0, 0, "a", 3)),
+                (1, Step::Work(0)),
+                (1, Step::Work(0)),
+                (1, Step::Work(0)),
+                (0, BACKUP),
+                (1, act(3, 0, 0, "c.txt", 3)),
+                (1, act(2, 0, 0, "\u{e9}", 3)),
+            ],
+            vec![(1, RESTORE)],
+            vec![(1, delete(0))],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_rename_of_the_folder_above_that_its_user_never_saw_leaves_the_delete_checked() {
+    let mut renamed = vec![(1, rename(0, 0, "ss"))];
+    renamed.extend(commit(1));
+    renamed.push((0, delete(1)));
+    renamed.extend(commit(0));
+    checked(
+        2,
+        &[vec![(0, folder("a")), (0, user(1, 0, 1, "b"))], renamed],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_move_another_device_made_to_a_folder_moved_into_the_deleted_folder_keeps_its_file() {
+    checked(
+        2,
+        &[
+            vec![(0, folder("b"))],
+            vec![(1, file("ss"))],
+            vec![(1, delete(1))],
+            vec![
+                (0, rename(0, 0, "ss")),
+                (0, SCAN),
+                (0, COMMIT),
+                (1, delete(0)),
+                (1, folder("c.txt")),
+                (1, user(1, 0, 1, "a")),
+                (0, act(0, 0, 0, "\u{e9}", 3)),
+                (1, act(1, 0, 0, "\u{c9}", 3)),
+                (1, file("\u{e9}")),
+            ],
+            vec![
+                (1, act(3, 0, 3, "ss", 3)),
+                (0, act(3, 2, 1, "C.TXT", 3)),
+                (1, act(4, 5, 0, "ß", 3)),
+                (1, Step::Work(3)),
+                (1, Step::Work(1)),
+            ],
+        ],
+    )
+    .unwrap();
+}

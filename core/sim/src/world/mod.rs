@@ -85,7 +85,7 @@ use koidrive_proto::v1::{
 };
 use sha2::{Digest, Sha256};
 
-use self::deletes::Deletion;
+use self::deletes::{Deletion, live_nodes};
 use self::device::{Device, Engine, Link, Message};
 pub use self::disk::Cut;
 use self::disk::{Applied, Disk, Place, Refused};
@@ -925,7 +925,8 @@ impl World {
                     device.rolled_back = true;
                     device.down = true;
                     device.link = None;
-                    self.deletions.retain(|deletion| deletion.reached);
+                    self.deletions
+                        .retain(|deletion| deletion.reached || deletion.device != d);
                 }
             }
             _ if self.devices[d].down => self.restart(d)?,
@@ -1057,9 +1058,10 @@ impl World {
                 }
             }
             (Act::Delete, Some(ino)) => {
+                let gone = disk.subtree(ino);
                 let deleted = disk.delete(ino);
                 self.removed[d].extend(deleted.iter().map(|content| content.mtime_ns));
-                self.record_delete(d, ino, &deleted);
+                self.record_delete(d, ino, &gone, &deleted);
             }
             (Act::Copy, Some(ino)) => {
                 if let Some(new) = disk.copy(ino, place, name) {
@@ -1280,6 +1282,9 @@ impl World {
         if !down {
             device.persist()?;
         }
+        if matches!(answer, Answer::Restore) {
+            self.forget_restored_deletes(d, question.holds());
+        }
         Ok(true)
     }
 
@@ -1356,9 +1361,9 @@ impl World {
         }
         self.restored_to = Some(backup.space.head_seq());
         self.space.restore(&backup.space);
-        let live = live_writes(&self.space);
+        let live = live_nodes(&self.space);
         for deletion in &mut self.deletions {
-            deletion.gone = deletion.held(&live, |_| false).is_none();
+            deletion.gone = deletion.held(&live, |_, _| false).is_none();
         }
         self.held_commits = backup.held_commits.clone();
         self.in_history = backup.in_history.clone();
@@ -2698,8 +2703,9 @@ impl World {
                                 };
                                 self.unasked.get_or_insert(why);
                             }
+                            let live = live_nodes(&self.space);
                             for deletion in &mut self.deletions {
-                                deletion.reached |= deletion.held(&after, |_| false).is_none();
+                                deletion.reached |= deletion.held(&live, |_, _| false).is_none();
                             }
                             self.published.extend(after.into_keys());
                             for node in self.space.nodes() {
@@ -3280,7 +3286,6 @@ impl World {
             )));
         }
         let live = live_writes(&self.space);
-        self.revived_delete(&nodes, &live)?;
         let same_bytes_on_server = |write: i64, writer: usize| {
             (self.devices[writer].engine.trees.local().iter()).any(|(id, node)| {
                 let Some(local) = (node.shape.content.as_ref()).filter(|c| c.mtime_ns == write)
@@ -3309,13 +3314,13 @@ impl World {
                 && !same_bytes_on_server(**write, **writer)
                 && !kept_by_a_departed_writer(**write, **writer)
         });
-        match lost {
-            Some((write, writer)) => Err(Failure::Diverged(format!(
+        if let Some((write, writer)) = lost {
+            return Err(Failure::Diverged(format!(
                 "write {write} of device {writer} was never in the server's tree, and its user never \
                  overwrote or deleted it"
-            ))),
-            None => Ok(()),
+            )));
         }
+        self.revived_delete()
     }
 }
 fn made_up_name<'a>(
