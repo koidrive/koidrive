@@ -993,8 +993,13 @@ impl Trees {
         OpsWithoutIntent(unrecorded)
     }
 
-    pub fn record_results(&mut self, commit: &proto::Commit, result: &proto::CommitResult) {
+    pub fn record_results(
+        &mut self,
+        commit: &proto::Commit,
+        result: &proto::CommitResult,
+    ) -> BTreeSet<NodeId> {
         use op_result::Code;
+        let mut sent_again = BTreeSet::new();
         let states: BTreeMap<&str, &proto::NodeState> = (result.changes.iter())
             .filter_map(|change| match &change.change {
                 Some(change_record::Change::Node(state)) => Some((state.node_id.as_str(), state)),
@@ -1086,7 +1091,10 @@ impl Trees {
                                 *live && held.applied_at_ms < row.time_ms
                             });
                         match first {
-                            true => self.journal.unsend(&node, field),
+                            true => {
+                                self.journal.unsend(&node, field);
+                                sent_again.insert(node.clone());
+                            }
                             false => self.journal.superseded(
                                 &node,
                                 field,
@@ -1119,6 +1127,7 @@ impl Trees {
         for node in touched {
             self.compact_journal(&node, Compact::AfterChange);
         }
+        sent_again
     }
 
     fn remote_fields_below(&self, id: &str) -> Vec<RemoteField> {

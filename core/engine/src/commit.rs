@@ -2358,7 +2358,7 @@ impl Commits {
         };
         let restored = carried(&self.restores, &flight).expect("a Restore op in flight is queued");
         let result = flight.result.expect("taken with a result");
-        trees.record_results(&flight.commit, &result);
+        let sent_again = trees.record_results(&flight.commit, &result);
         (self.granted.0).extend(
             given_nodes(&flight.commit, &result)
                 .into_iter()
@@ -2432,6 +2432,15 @@ impl Commits {
                 _ => None,
             };
             let sent = sent_at.as_ref().map(|(parent, name)| (parent, *name));
+            let target = match &op.op {
+                Some(op::Op::CreateDir(create)) => Some(&create.node_id),
+                Some(op::Op::CreateFile(create)) => Some(&create.node_id),
+                Some(op::Op::UpdateContent(update)) => Some(&update.node_id),
+                Some(op::Op::Move(moved)) => Some(&moved.node_id),
+                _ => None,
+            };
+            let superseded =
+                code == Code::Superseded && target.is_some_and(|id| !sent_again.contains(&NodeId::from(id)));
             let (node, done) = match &op.op {
                 Some(op::Op::CreateDir(create)) => {
                     let create_id = NodeId::from(&create.node_id);
@@ -2516,6 +2525,8 @@ impl Commits {
                         }
                         agreed.extend(agree(trees, &create_id, result.seq));
                         synced.set(&create_id, Some(shape));
+                    } else if superseded {
+                        synced.set(&create_id, Some(shape));
                     }
                     for (id, position) in moved_in {
                         synced.set(&id, Some(position));
@@ -2524,7 +2535,10 @@ impl Commits {
                         trees.hold_unsent_move(id);
                     }
                     let exists = taken && trees.remote().get(&create_id).is_some();
-                    (create_id, applied || exists || code == Code::MergedInto)
+                    (
+                        create_id,
+                        applied || exists || superseded || code == Code::MergedInto,
+                    )
                 }
                 Some(op::Op::CreateFile(create)) => {
                     let create_id = NodeId::from(&create.node_id);
@@ -2557,6 +2571,9 @@ impl Commits {
                             );
                         }
                         trees.sent_edit(&create_id, create.content.as_ref().map(sent_key).as_ref());
+                    } else if superseded {
+                        synced.set(&create_id, Some(shape));
+                        trees.sent_edit(&create_id, create.content.as_ref().map(sent_key).as_ref());
                     } else if code == Code::ConflictCopy && trees.local().get(&outcome_id).is_some()
                     {
                         trees.revert(create_id.clone());
@@ -2568,7 +2585,10 @@ impl Commits {
                             .sent_edit(&outcome_id, create.content.as_ref().map(sent_key).as_ref());
                     }
                     let exists = taken && trees.remote().get(&create_id).is_some();
-                    (create_id, applied || exists || code == Code::ConflictCopy)
+                    (
+                        create_id,
+                        applied || exists || superseded || code == Code::ConflictCopy,
+                    )
                 }
                 Some(op::Op::UpdateContent(update)) => {
                     let id = &NodeId::from(&update.node_id);
@@ -2580,15 +2600,13 @@ impl Commits {
                     let current = trees.synced().live(id).and_then(|s| s.content);
                     let downloaded =
                         code == Code::ConflictCopy && trees.local().get(&outcome_id).is_some();
-                    let into_trash = code == Code::Superseded
-                        && trees.remote().get(id).is_some_and(|remote| remote.trashed);
                     if applied && trees.took_content(id) {
                         let kept = synced.get(trees, id).map(|shape| Shape {
                             content: current,
                             ..shape
                         });
                         synced.set(id, kept);
-                    } else if ((applied || into_trash) && edited.is_some()) || downloaded {
+                    } else if ((applied || superseded) && edited.is_some()) || downloaded {
                         synced.set(id, edited);
                     } else if code == Code::ConflictCopy {
                         let copied = edited.or_else(|| {
@@ -2624,13 +2642,13 @@ impl Commits {
                     if applied {
                         trees.sent_version(id, sent.as_ref(), result.seq, !update.resend);
                     }
-                    if applied || into_trash || code == Code::ConflictCopy {
+                    if applied || superseded || code == Code::ConflictCopy {
                         trees.sent_edit(id, sent.as_ref());
                     }
                     if code == Code::ConflictCopy {
                         conflicts.push((index, id.clone(), outcome_id.clone()));
                     }
-                    (id.clone(), applied || into_trash || code == Code::ConflictCopy)
+                    (id.clone(), applied || superseded || code == Code::ConflictCopy)
                 }
                 Some(op::Op::Move(moved)) => {
                     let id = &NodeId::from(&moved.node_id);
@@ -2640,9 +2658,8 @@ impl Commits {
                     let finishing = (trees.pending_finishes().get(id))
                         .filter(|finish| finish.sending)
                         .map(|finish| finish.disk_first);
-                    let superseded = code == Code::Superseded
-                        && (moved.from.is_some()
-                            || trees.remote().get(id).is_some_and(|remote| remote.trashed));
+                    let superseded =
+                        superseded || (code == Code::Superseded && moved.from.is_some());
                     let moved_back = finishing == Some(true)
                         && applied
                         && (trees.local().get(id).filter(|local| !local.parked)).is_some_and(

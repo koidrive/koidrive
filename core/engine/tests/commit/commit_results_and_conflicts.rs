@@ -1011,25 +1011,56 @@ fn a_folder_moved_into_the_folder_merged_into_it_is_moved_back_when_a_removal_by
 }
 
 #[test]
-fn a_move_superseded_on_a_trashed_node_ends_and_the_trash_reaches_the_disk() {
-    let mut trees = trees(&[
-        synced("a", dir(ROOT, "a")),
-        (
-            "f",
-            Some(dir("a", "C.TXT")),
-            Some(dir(ROOT, "c.txt")),
-            Some(remote(dir(ROOT, "c.txt"))),
-        ),
-    ]);
+fn an_op_superseded_on_a_trashed_node_ends_and_the_trash_reaches_the_disk() {
+    let created_file = ("f", Some(file(ROOT, "c.txt", 1)), None, None);
+    let created_dir = ("f", Some(dir(ROOT, "c")), None, None);
+    let moved = (
+        "f",
+        Some(dir("a", "C.TXT")),
+        Some(dir(ROOT, "c.txt")),
+        Some(remote(dir(ROOT, "c.txt"))),
+    );
+    let edited = (
+        "f",
+        Some(file(ROOT, "e", 2)),
+        Some(file(ROOT, "e", 1)),
+        Some(remote(file(ROOT, "e", 1))),
+    );
+    let cases = [
+        (created_file, file(ROOT, "c.txt", 1)),
+        (created_dir, dir(ROOT, "c")),
+        (moved, dir(ROOT, "c.txt")),
+        (edited, file(ROOT, "e", 2)),
+    ];
+    for (row, trash) in cases {
+        let mut trees = trees(&[synced("a", dir(ROOT, "a")), row]);
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        trees.set_remote("f".into(), trashed(trash));
+        acknowledge(
+            &mut commits,
+            &mut trees,
+            vec![outcome(op_result::Code::Superseded)],
+        );
+        assert!(commits.problems().is_empty(), "{sent:?}");
+        assert_eq!(trees.class("f"), Class::Remote, "{sent:?}");
+    }
+}
+
+#[test]
+fn a_create_superseded_on_a_trashed_node_keeps_the_edit_made_after_it_was_sent() {
+    let mut trees = trees(&[("f", Some(file(ROOT, "c.txt", 1)), None, None)]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
-    let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&sent), [mv("f", "a", "C.TXT")]);
-    trees.set_remote("f".into(), trashed(dir(ROOT, "c.txt")));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    trees.set_local("f".into(), local(file(ROOT, "c.txt", 2), 1));
+    trees.set_remote("f".into(), trashed(file(ROOT, "c.txt", 1)));
     acknowledge(
         &mut commits,
         &mut trees,
         vec![outcome(op_result::Code::Superseded)],
     );
     assert!(commits.problems().is_empty());
-    assert_eq!(trees.class("f"), Class::Remote);
+    assert_eq!(trees.synced().get("f"), Some(&file(ROOT, "c.txt", 1)));
+    assert_ne!(trees.class("f"), Class::Remote);
 }
