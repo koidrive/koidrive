@@ -460,7 +460,7 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
     if !shared {
         quit_apps(&found.programs, &mut run).await;
     }
-    let (device, set_aside) = sign_out(paths, &found, &options, terminal, &mut run).await;
+    let (device, set_aside) = sign_out(paths, &found, &options, terminal, &mut run).await?;
     let set_aside = match set_aside {
         Some(set_aside) => set_aside,
         None => unlink(paths, &found, &mut run).await,

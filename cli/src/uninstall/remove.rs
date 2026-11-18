@@ -39,14 +39,14 @@ pub(super) async fn sign_out(
     options: &Options,
     terminal: &Terminal,
     run: &mut Run,
-) -> (DeviceOutcome, Option<SetAside>) {
-    let still_listed = |problem| (listed(found, problem), None);
+) -> Result<(DeviceOutcome, Option<SetAside>), CliError> {
+    let still_listed = |problem| Ok((listed(found, problem), None));
     if !found.paired {
         let device = match koidrive_driver::Unconfirmed::recorded(paths) {
             Some(unconfirmed) => signed_out_unconfirmed(unconfirmed),
             None => DeviceOutcome::NotPaired,
         };
-        return (device, None);
+        return Ok((device, None));
     }
     if options.keep_signed_in {
         return still_listed(None);
@@ -57,6 +57,9 @@ pub(super) async fn sign_out(
             shown_folder(&paths.state_dir)
         )));
     }
+    let needs_confirmation = |error: &CliError| {
+        (error.next.iter()).any(|next| next.argv.iter().any(|arg| arg == "--last-device"))
+    };
     let leave = |confirm_last_device| {
         ask(
             paths,
@@ -71,10 +74,7 @@ pub(super) async fn sign_out(
         && !options.last_device
         && !options.yes
         && terminal.guided()
-        && error
-            .next
-            .iter()
-            .any(|next| next.argv.iter().any(|arg| arg == "--last-device"))
+        && needs_confirmation(error)
     {
         terminal.message(&printable(&error.message));
         if terminal
@@ -90,20 +90,28 @@ pub(super) async fn sign_out(
             unconfirmed: Some(unconfirmed),
             set_aside,
             ..
-        }) => (signed_out_unconfirmed(unconfirmed), Some(set_aside)),
+        }) => Ok((signed_out_unconfirmed(unconfirmed), Some(set_aside))),
         Ok(Response::SignedOut { set_aside, .. }) => match &found.owner {
-            Some(owner) => (
+            Some(owner) => Ok((
                 DeviceOutcome::SignedOut {
                     server: owner.server.clone(),
                     unconfirmed: None,
                 },
                 Some(set_aside),
-            ),
-            None => (
+            )),
+            None => Ok((
                 listed(found, Some("the server's address is unknown".into())),
                 Some(set_aside),
-            ),
+            )),
         },
+        Err(error) if needs_confirmation(&error) => Err(CliError::new(
+            error.code,
+            format!(
+                "{}; nothing was removed and this device stays signed in; to remove Koidrive and sign it out anyway, run koi uninstall --last-device",
+                error.message
+            ),
+        )
+        .then(&["koi", "uninstall", "--last-device"])),
         failed => {
             run.sign_out_failed = true;
             still_listed(Some(match (failed, &found.unusable) {

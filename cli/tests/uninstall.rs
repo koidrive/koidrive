@@ -227,7 +227,12 @@ fn a_signed_in_state_folder_koidrive_did_not_make_stays_signed_in_and_says_why()
     fs::create_dir_all(machine.path("state/koidrive")).unwrap();
     fs::write(machine.path("state/koidrive/credential.json"), "{}").unwrap();
 
-    let (code, text) = on_terminal(&machine, &koi, &["uninstall", "--plain"], "n\n");
+    let (code, text) = on_terminal(
+        &machine,
+        &koi,
+        &["uninstall", "--plain"],
+        &[(REMOVE, "n\n")],
+    );
 
     assert_ne!(code, 0, "{text}");
     assert!(!text.contains("this device from"), "{text}");
@@ -296,8 +301,9 @@ fn an_older_release_whose_daemon_runs_signs_out_through_the_daemon() {
         machine.envelope(machine.command(&koi, &["uninstall", "--yes", "--last-device", "--json"]));
     drop(daemon);
 
-    let problem = refused["data"]["device"]["problem"].as_str().unwrap();
+    let problem = refused["error"]["message"].as_str().unwrap();
     assert!(problem.starts_with("the server did not "), "{refused:#}");
+    assert!(problem.contains("; nothing was removed"), "{refused:#}");
     let device = &envelope["data"]["device"];
     assert_eq!(device["state"], "signed_out", "{envelope:#}");
     assert_eq!(device["unconfirmed"]["device_id"], "d1", "{envelope:#}");
@@ -332,7 +338,7 @@ fn a_profile_whose_last_sign_out_was_not_confirmed_names_the_device_to_revoke() 
     );
 }
 
-fn signed_in_to_a_server_that_refuses_connections() -> (Machine, PathBuf, PathBuf) {
+fn signed_in_to(server: &str) -> (Machine, PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
 
     let machine = Machine::new();
@@ -340,44 +346,122 @@ fn signed_in_to_a_server_that_refuses_connections() -> (Machine, PathBuf, PathBu
     let koi = machine.copy_koi(".local/bin/koi");
     let credential = machine.write(
         "state/koidrive/credential.json",
-        r#"{"server":"http://127.0.0.1:1/","user_id":"u1","device_id":"d1","device_name":"Mac","refresh_credential":"x"}"#,
+        &format!(r#"{{"server":"{server}","user_id":"u1","device_id":"d1","device_name":"Mac","refresh_credential":"x"}}"#),
     );
     fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
     (machine, koi, credential)
 }
 
+const REFUSES_CONNECTIONS: &str = "http://127.0.0.1:1/";
+
+fn a_server_that_keeps_its_last_device() -> String {
+    use prost::Message;
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = format!("http://{}/", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut request = [0; 65536];
+            let read = stream.read(&mut request).unwrap_or(0);
+            let line = String::from_utf8_lossy(&request[..read]);
+            let line = line.lines().next().unwrap_or_default();
+            let (status, body) = if line.starts_with("POST /v1/token") {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64;
+                let token = koidrive_proto::v1::AccessToken {
+                    token: "t".into(),
+                    expires_at_ms: now + 3_600_000,
+                    server_time_ms: now,
+                    rotated: false,
+                };
+                (200, token.encode_to_vec())
+            } else if line.contains("confirm=last-device") {
+                (204, Vec::new())
+            } else {
+                let refusal = koidrive_proto::v1::Error {
+                    code: koidrive_proto::v1::error::Code::ConfirmationRequired as i32,
+                    message: "this is the user's last active device; confirm to revoke it".into(),
+                    ..Default::default()
+                };
+                (409, refusal.encode_to_vec())
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} X\r\ncontent-type: application/x-protobuf\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(&body);
+        }
+    });
+    server
+}
+
 #[test]
-fn a_sign_out_the_server_never_took_needs_attention_and_names_how_to_revoke_the_device() {
-    let (machine, koi, credential) = signed_in_to_a_server_that_refuses_connections();
+fn a_sign_out_the_server_refuses_or_never_takes_keeps_this_device_signed_in_and_removes_nothing() {
+    for server in [
+        a_server_that_keeps_its_last_device(),
+        REFUSES_CONNECTIONS.to_owned(),
+    ] {
+        let (machine, koi, credential) = signed_in_to(&server);
 
-    let (output, envelope) = machine.uninstall(&koi);
+        let (output, envelope) = machine.uninstall(&koi);
 
-    assert_eq!(output.status.code(), Some(1), "{envelope:#}");
-    assert_eq!(envelope["outcome"], "error", "{envelope:#}");
-    assert_eq!(
-        envelope["error"]["message"],
-        "the server may still list this device; to remove it, run koi device revoke d1 on another device",
-        "{envelope:#}"
+        assert!(!output.status.success(), "{envelope:#}");
+        assert_eq!(envelope["outcome"], "error", "{envelope:#}");
+        let message = envelope["error"]["message"].as_str().unwrap();
+        assert!(
+            message.ends_with("; nothing was removed and this device stays signed in; to remove Koidrive and sign it out anyway, run koi uninstall --last-device"),
+            "{envelope:#}"
+        );
+        assert!(
+            (envelope["next_commands"].as_array().unwrap().iter())
+                .any(|next| next["argv"] == json!(["koi", "uninstall", "--last-device"])),
+            "{envelope:#}"
+        );
+        assert!(credential.exists(), "{envelope:#}");
+        assert!(koi.exists(), "{envelope:#}");
+
+        let output = (machine.command(&koi, &["uninstall", "--yes", "--plain"]))
+            .output()
+            .unwrap();
+
+        let text = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{text}");
+        assert!(text.contains(message), "{text}");
+        assert!(credential.exists(), "{text}");
+
+        let (output, envelope) = machine
+            .envelope(machine.command(&koi, &["uninstall", "--yes", "--last-device", "--json"]));
+
+        assert!(output.status.success(), "{envelope:#}");
+        assert_eq!(envelope["outcome"], "ok", "{envelope:#}");
+        assert_eq!(
+            envelope["data"]["device"]["state"], "signed_out",
+            "{envelope:#}"
+        );
+        assert!(!credential.exists(), "{envelope:#}");
+    }
+
+    let (machine, koi, credential) = signed_in_to(&a_server_that_keeps_its_last_device());
+
+    let (code, text) = on_terminal(
+        &machine,
+        &koi,
+        &["uninstall"],
+        &[(REMOVE, "y"), ("Sign this device out anyway?", "n\n")],
     );
-    let device = &envelope["data"]["device"];
-    assert_eq!(device["state"], "still_listed", "{envelope:#}");
-    assert_eq!(device["device_id"], "d1", "{envelope:#}");
-    assert!(!credential.exists(), "{envelope:#}");
 
-    let (machine, koi, _) = signed_in_to_a_server_that_refuses_connections();
-
-    let output = (machine.command(&koi, &["uninstall", "--yes", "--plain"]))
-        .output()
-        .unwrap();
-
-    let text = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert_ne!(code, 0, "{text}");
     assert!(
-        text.contains("http://127.0.0.1:1/ may still list this device. To remove it, run this on another device signed in to http://127.0.0.1:1/: koi device revoke d1\nIf you have no other device, add one with koi server add-device --interactive and run the command there.\n"),
+        text.contains("nothing was removed and this device stays signed in"),
         "{text}"
     );
+    assert!(credential.exists(), "{text}");
 
-    let (machine, koi, _) = signed_in_to_a_server_that_refuses_connections();
+    let (machine, koi, _) = signed_in_to(REFUSES_CONNECTIONS);
 
     let (output, envelope) = machine
         .envelope(machine.command(&koi, &["uninstall", "--yes", "--keep-signed-in", "--json"]));
@@ -1378,7 +1462,14 @@ fn versions_syncing_set_aside_come_back_into_the_folder_or_are_named_when_they_c
     );
 }
 
-fn on_terminal(machine: &Machine, koi: &Path, args: &[&str], answer: &str) -> (i32, String) {
+const REMOVE: &str = "Remove Koidrive from this computer?";
+
+fn on_terminal(
+    machine: &Machine,
+    koi: &Path,
+    args: &[&str],
+    answers: &[(&str, &str)],
+) -> (i32, String) {
     let mut terminal = Terminal::open(160, 40);
     let mut child = terminal::spawn(
         machine
@@ -1389,21 +1480,21 @@ fn on_terminal(machine: &Machine, koi: &Path, args: &[&str], answer: &str) -> (i
             .stdout(terminal.slave())
             .stderr(terminal.slave()),
     );
-    let mut answered = false;
+    let mut answered = 0;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while terminal.read(&mut child, deadline) {
-        if !answered
+        if let Some((question, answer)) = answers.get(answered)
             && console::strip_ansi_codes(&String::from_utf8_lossy(terminal.output()))
-                .contains("Remove Koidrive from this computer?")
+                .contains(question)
         {
             terminal.write(answer.as_bytes());
-            answered = true;
+            answered += 1;
         }
     }
     let status = child.wait().unwrap();
     let text = console::strip_ansi_codes(&String::from_utf8_lossy(terminal.output()))
         .replace("\r\n", "\n");
-    assert!(answered, "no question: {text}");
+    assert_eq!(answered, answers.len(), "unanswered question: {text}");
     (status.code().unwrap(), text)
 }
 
@@ -1413,7 +1504,12 @@ fn on_a_terminal_it_shows_what_goes_and_what_stays_and_asks_first() {
     machine.profile();
     let koi = machine.copy_koi(".local/bin/koi");
 
-    let (code, text) = on_terminal(&machine, &koi, &["uninstall", "--plain"], "n\n");
+    let (code, text) = on_terminal(
+        &machine,
+        &koi,
+        &["uninstall", "--plain"],
+        &[(REMOVE, "n\n")],
+    );
 
     assert_ne!(code, 0, "{text}");
     assert!(text.contains("This removes:"), "{text}");
@@ -1423,7 +1519,7 @@ fn on_a_terminal_it_shows_what_goes_and_what_stays_and_asks_first() {
     assert!(koi.exists());
     assert!(machine.path("state/koidrive/update-check.json").exists());
 
-    let (code, text) = on_terminal(&machine, &koi, &["uninstall"], "y");
+    let (code, text) = on_terminal(&machine, &koi, &["uninstall"], &[(REMOVE, "y")]);
 
     assert_eq!(code, 0, "{text}");
     assert!(
@@ -1603,7 +1699,7 @@ fn another_profiles_service_keeps_the_shared_command_and_names_how_to_remove_it(
 fn a_credential_other_users_can_read_still_names_the_device_to_revoke() {
     use std::os::unix::fs::PermissionsExt;
 
-    let (machine, koi, credential) = signed_in_to_a_server_that_refuses_connections();
+    let (machine, koi, credential) = signed_in_to(REFUSES_CONNECTIONS);
     fs::set_permissions(&credential, fs::Permissions::from_mode(0o644)).unwrap();
 
     let (output, envelope) = machine.uninstall(&koi);
@@ -1617,7 +1713,7 @@ fn a_credential_other_users_can_read_still_names_the_device_to_revoke() {
     assert_eq!(output.status.code(), Some(1), "{envelope:#}");
     assert!(!envelope.to_string().contains("chmod"), "{envelope:#}");
 
-    let (machine, koi, credential) = signed_in_to_a_server_that_refuses_connections();
+    let (machine, koi, credential) = signed_in_to(REFUSES_CONNECTIONS);
     fs::write(&credential, "not json").unwrap();
 
     let output = (machine.command(&koi, &["uninstall", "--yes", "--plain"]))
