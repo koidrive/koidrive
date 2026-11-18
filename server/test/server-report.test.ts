@@ -786,7 +786,7 @@ describe("hourly server report", () => {
     expect(await storedHours()).toEqual([]);
   });
 
-  it("keeps a batch it stored once even when arming the report alarm fails", async () => {
+  it("keeps a batch it stored once even when arming the report alarm fails, and arms the alarm with the next batch", async () => {
     const hour = Math.floor(Date.now() / HOUR_MS);
     vi.spyOn(console, "error").mockImplementation(() => {});
     const stored = await runInDurableObject(account(), async (instance: AccountDO, state) => {
@@ -796,6 +796,14 @@ describe("hourly server report", () => {
     });
     expect(stored).toBe(true);
     expect(await storedCounts()).toEqual({ "get_server.200": 1 });
+    const alarm = await runInDurableObject(account(), async (instance: AccountDO, state) => {
+      vi.mocked(state.storage.setAlarm).mockRestore();
+      await state.storage.deleteAlarm();
+      await instance.recordUsage({ openedMs: instance.clock(), hours: { [hour]: { counts: { "get_server.200": 1 }, latency: {} } } });
+      return state.storage.getAlarm();
+    });
+    expect(alarm).not.toBeNull();
+    expect(await storedCounts()).toEqual({ "get_server.200": 2 });
     await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("DELETE FROM usage_hours"));
   });
 

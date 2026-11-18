@@ -641,7 +641,15 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
           }
         }
       });
-      if (added) await this.armAlarm().catch((error: unknown) => console.error("usage alarm not armed", errorText(error)));
+      const unarmed = this.sql.exec("SELECT 1 FROM settings WHERE key = 'usage_alarm_unarmed'").toArray().length > 0;
+      if (!added && !unarmed) return true;
+      try {
+        await this.armAlarm();
+        if (unarmed) this.sql.exec("DELETE FROM settings WHERE key = 'usage_alarm_unarmed'");
+      } catch (error) {
+        console.error("usage alarm not armed", errorText(error));
+        if (!unarmed) this.sql.exec("INSERT INTO settings (key, value) VALUES ('usage_alarm_unarmed', '1')");
+      }
       return true;
     }
 
