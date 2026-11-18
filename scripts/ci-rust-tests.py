@@ -171,6 +171,8 @@ def command_shadow(args):
                     failures.add(f"{binary} {name}")
     misses = sorted(failures & skipped)
     lines = ["## Shadow test selection", ""]
+    if not args.complete:
+        lines += ["The shard results are incomplete (see the shard check above), so this count can miss failures.", ""]
     if record["everything"]:
         lines.append(f"It kept every test, because {record['everything']}.")
     else:
@@ -180,7 +182,7 @@ def command_shadow(args):
         lines += ["", "### Failed tests it would have skipped (misses)", "", "| test |", "|---|"] + [f"| {test} |" for test in misses]
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({"map": record["map"], "everything": record["everything"], "ran": len(ran), "skipped": len(skipped & ran),
+    out.write_text(json.dumps({"map": record["map"], "everything": record["everything"], "complete": args.complete, "ran": len(ran), "skipped": len(skipped & ran),
                                "failed": sorted(failures), "misses": misses}, indent=1) + "\n")
     print("\n".join(lines))
     return 0
@@ -305,6 +307,7 @@ def main(argv):
     shadow.add_argument("--selection", required=True)
     shadow.add_argument("--junit", action="append", required=True)
     shadow.add_argument("--out", required=True)
+    shadow.add_argument("--complete", action="store_true", help="The shard check found every listed test's result.")
     maps = commands.add_parser("coverage-map", help="Write the files each passing test ran, from one coverage profile folder per test.")
     maps.add_argument("--profiles", required=True)
     maps.add_argument("--junit", required=True)

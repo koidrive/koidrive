@@ -638,12 +638,15 @@ jobs:
               --junit "$RUNNER_TEMP/by-os/$os" --out "$RUNNER_TEMP/report/$os" || status=1
             cat "$RUNNER_TEMP/report/$os/summary.md" >> "$GITHUB_STEP_SUMMARY"
           done
+          if [ "$status" = 0 ]; then echo "RUST_RESULTS_COMPLETE=true" >> "$GITHUB_ENV"; fi
           exit "$status"
       - name: Count the failed tests the shadow test selection would have skipped
         if: ${{ !cancelled() }}
         continue-on-error: true
         run: |
-          python3 scripts/ci-rust-tests.py shadow --selection "$RUNNER_TEMP/test-selection/selection.json" \
+          complete=()
+          if [ "$RUST_RESULTS_COMPLETE" = true ]; then complete=(--complete); fi
+          python3 scripts/ci-rust-tests.py shadow --selection "$RUNNER_TEMP/test-selection/selection.json" "${complete[@]}" \
             --junit "$RUNNER_TEMP/junit" --junit "$RUNNER_TEMP/by-os" --out "$RUNNER_TEMP/report/shadow-selection.json" >> "$GITHUB_STEP_SUMMARY"
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

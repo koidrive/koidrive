@@ -864,6 +864,16 @@ mod tests {
     }
 
     #[test]
+    fn a_map_exactly_at_the_age_limit_still_selects() {
+        let selection = tests_for(
+            &["core/engine/src/commit.rs"],
+            Some(&map()),
+            1000000 + 3 * 86_400,
+        );
+        assert_eq!(selection.everything, None);
+    }
+
+    #[test]
     fn a_lockfile_change_keeps_every_test() {
         let selection = tests_for(&["Cargo.lock"], Some(&map()), 1000000);
         assert!(
@@ -928,6 +938,11 @@ mod tests {
             (
                 vec!["core/engine/src/commit.rs"],
                 1000000 + 4 * 86_400,
+                "days old",
+            ),
+            (
+                vec!["core/engine/src/commit.rs"],
+                1000000 + 3 * 86_400 + 1,
                 "days old",
             ),
             (

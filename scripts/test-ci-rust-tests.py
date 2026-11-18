@@ -140,7 +140,7 @@ class Report(unittest.TestCase):
 
 
 class Shadow(unittest.TestCase):
-    def run_shadow(self, selection, rows):
+    def run_shadow(self, selection, rows, complete=True):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
@@ -149,7 +149,7 @@ class Shadow(unittest.TestCase):
         (root / "junit" / "s1").mkdir(parents=True)
         body = "".join(f'<testcase classname="{b}" name="{n}">{extra}</testcase>' for b, n, extra in rows)
         (root / "junit" / "s1" / "junit.xml").write_text(f"<testsuites><testsuite>{body}</testsuite></testsuites>")
-        args = type("Args", (), {"selection": str(root / "selection.json"), "junit": [str(root / "junit")], "out": str(root / "out/shadow.json")})
+        args = type("Args", (), {"selection": str(root / "selection.json"), "junit": [str(root / "junit")], "out": str(root / "out/shadow.json"), "complete": complete})
         with contextlib.redirect_stdout(io.StringIO()) as out:
             status = tool.command_shadow(args)
         return status, out.getvalue(), json.loads((root / "out/shadow.json").read_text())
@@ -167,6 +167,11 @@ class Shadow(unittest.TestCase):
         _, out, record = self.run_shadow({"map": None, "everything": "there is no coverage map", "skipped": []}, [("a", "x", '<failure message="no"/>')])
         self.assertEqual(record["misses"], [])
         self.assertIn("It kept every test, because there is no coverage map.", out)
+
+    def test_missing_shard_results_mark_the_count_incomplete(self):
+        _, out, record = self.run_shadow({"map": "abc", "everything": None, "skipped": ["a x"]}, [("a", "x", "")], complete=False)
+        self.assertFalse(record["complete"])
+        self.assertIn("The shard results are incomplete", out)
 
     def test_a_missing_selection_keeps_every_test(self):
         status, out, _ = self.run_shadow(None, [("a", "x", "")])

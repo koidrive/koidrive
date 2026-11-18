@@ -210,9 +210,13 @@ pub fn select(
     let Some(map) = map else {
         return everything("there is no coverage map".to_string());
     };
-    let age = now.saturating_sub(map.created) / 86_400;
-    if age > tests.max_map_age_days {
-        return everything(format!("the coverage map of {} is {age} days old", map.sha));
+    let age = now.saturating_sub(map.created);
+    if age > tests.max_map_age_days * 86_400 {
+        return everything(format!(
+            "the coverage map of {} is {:.1} days old",
+            map.sha,
+            age as f64 / 86_400.0
+        ));
     }
     let readers: BTreeSet<&str> = analysis
         .reads
