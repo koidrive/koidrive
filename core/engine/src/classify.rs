@@ -1882,7 +1882,11 @@ impl Trees {
         let repeated = (self.l.get(&id)).is_some_and(|old| {
             old.shape == node.shape && old.identity == node.identity && old.parked == node.parked
         });
-        if repeated && !self.outside.contains(&id) && !self.lost.contains(&id) {
+        if repeated
+            && !self.outside.contains(&id)
+            && !self.lost.contains(&id)
+            && !self.unobserved.contains(&id)
+        {
             return;
         }
         let relist = node.shape.kind == Kind::Dir

@@ -1727,6 +1727,27 @@ fn a_file_removed_below_a_folder_renamed_back_into_the_rules_before_a_scan_lists
 }
 
 #[test]
+fn a_file_a_scan_reports_as_l_holds_it_after_the_rules_let_it_in_again_is_deleted_once_removed() {
+    let mut trees = trees(&[synced("f", file(ROOT, "f.docx", 1))]);
+    trees.set_rules(&AT_ROOT, rules("*.docx\n"));
+    assert_eq!(ops(&mut trees), []);
+    trees.set_rules(&AT_ROOT, None);
+    assert_eq!(ops(&mut trees), []);
+    assert!(trees.unobserved("f"));
+    let held = trees.local().get("f").unwrap().clone();
+    trees.set_local_changed("f".into(), held);
+    trees.settle(&Default::default());
+    assert!(!trees.unobserved("f"));
+    trees.remove_local("f");
+    let sent = ops(&mut trees);
+    assert!(
+        matches!(sent.as_slice(), [op::Op::Delete(deleted)] if deleted.node_id == "f"),
+        "{sent:?}"
+    );
+    assert!(nodes(&effects(&mut trees)).is_empty());
+}
+
+#[test]
 fn a_file_the_rules_of_the_folder_it_moves_into_leave_out_downloads_again_after_it_vanishes() {
     let mut trees = trees(&[
         synced("p", dir(ROOT, "p")),
