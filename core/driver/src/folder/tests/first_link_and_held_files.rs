@@ -749,7 +749,11 @@ fn a_file_removed_while_stopped_is_recorded_as_the_users_removal_by_the_scan_at_
         let mut remote = Remote::new();
         let (site, mut b) = linked(&mut remote, "b");
         fs::create_dir(site.root.join("server")).unwrap();
-        b.create(&mut remote, &site.root.join("server/gone.txt"), b"written on b");
+        b.create(
+            &mut remote,
+            &site.root.join("server/gone.txt"),
+            b"written on b",
+        );
         let id = |b: &Device, name: &str| {
             (b.folder.engine.trees.local().iter())
                 .find(|(_, node)| node.shape.name == name)
@@ -757,7 +761,10 @@ fn a_file_removed_while_stopped_is_recorded_as_the_users_removal_by_the_scan_at_
                 .unwrap()
         };
         let (folder, gone) = (id(&b, "server"), id(&b, "gone.txt"));
-        assert!(b.folder.engine.trees.state().removed_from.is_empty(), "{restart}");
+        assert!(
+            b.folder.engine.trees.state().removed_from.is_empty(),
+            "{restart}"
+        );
         fs::remove_file(site.root.join("server/gone.txt")).unwrap();
         if restart {
             drop(b);
@@ -774,7 +781,10 @@ fn a_file_removed_while_stopped_is_recorded_as_the_users_removal_by_the_scan_at_
             "{restart}"
         );
         b.rest(&mut remote);
-        assert!(b.folder.engine.trees.state().removed_from.is_empty(), "{restart}");
+        assert!(
+            b.folder.engine.trees.state().removed_from.is_empty(),
+            "{restart}"
+        );
     }
 }
 
