@@ -2109,3 +2109,90 @@ fn a_file_moved_back_into_an_unreadable_folder_during_a_scan_keeps_its_place_the
         "{changes:?}"
     );
 }
+
+#[test]
+fn a_folder_moved_out_of_an_unreadable_folder_takes_along_a_child_the_rules_leave_out() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    for folder in ["x/d/sub", "e"] {
+        fs::create_dir_all(root.join(folder)).unwrap();
+    }
+    fs::write(root.join("x/d/sub/f"), "f").unwrap();
+    let mut rules = Rules::new(Box::new(Lines::default()));
+    let mut snapshot = Snapshot::scan_with_rules(&root, &mut rules).unwrap();
+    fs::write(root.join("x/d/sub").join(RULES_FILE), "f\n").unwrap();
+    snapshot
+        .rescan_with_rules(&root, [PathBuf::new()], &mut rules)
+        .unwrap();
+    fs::rename(root.join("x/d/sub"), root.join("e/sub")).unwrap();
+    fs::set_permissions(root.join("x/d"), fs::Permissions::from_mode(0o300)).unwrap();
+    let blocked = blocks_reads(
+        "a_folder_moved_out_of_an_unreadable_folder_takes_along_a_child_the_rules_leave_out",
+        fs::read_dir(root.join("x/d")),
+    );
+    let rescan = blocked.then(|| snapshot.rescan_with_rules(&root, [PathBuf::new()], &mut rules));
+    fs::set_permissions(root.join("x/d"), fs::Permissions::from_mode(0o755)).unwrap();
+    let Some(rescan) = rescan else {
+        return;
+    };
+    let changes = rescan.unwrap().changes;
+    assert!(
+        changes.contains(&Change::Renamed {
+            from: "x/d/sub".into(),
+            to: "e/sub".into(),
+            kind: EntryKind::Dir,
+        }) && !snapshot.entries.contains_key(Path::new("x/d/sub")),
+        "{changes:?}"
+    );
+    assert_eq!(
+        snapshot.left_out.keys().collect::<Vec<_>>(),
+        [Path::new("e/sub/f")],
+        "{changes:?}"
+    );
+}
+
+#[test]
+fn a_child_that_moves_back_into_an_unreadable_folder_during_a_scan_keeps_its_folder_there() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    for folder in ["x/d/sub", "e", "z"] {
+        fs::create_dir_all(root.join(folder)).unwrap();
+    }
+    fs::write(root.join("x/d/sub/s.txt"), "s").unwrap();
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    fs::rename(root.join("x/d/sub"), root.join("e/sub")).unwrap();
+    fs::rename(root.join("e/sub/s.txt"), root.join("e/s.txt")).unwrap();
+    fs::set_permissions(root.join("x/d"), fs::Permissions::from_mode(0o300)).unwrap();
+    let blocked = blocks_reads(
+        "a_child_that_moves_back_into_an_unreadable_folder_during_a_scan_keeps_its_folder_there",
+        fs::read_dir(root.join("x/d")),
+    );
+    let during = root.clone();
+    let rescan = blocked.then(|| {
+        snapshot.rescan_with(&root, [PathBuf::new()], None, &mut |cut| {
+            if let Cut::OpeningDir(path) = cut
+                && path == Path::new("z")
+                && during.join("e/s.txt").exists()
+            {
+                fs::rename(during.join("e/s.txt"), during.join("x/d/s.txt")).unwrap();
+            }
+        })
+    });
+    fs::set_permissions(root.join("x/d"), fs::Permissions::from_mode(0o755)).unwrap();
+    let Some(rescan) = rescan else {
+        return;
+    };
+    let changes = rescan.unwrap().changes;
+    assert!(
+        !(changes.iter()).any(|change| matches!(change, Change::Renamed { .. })),
+        "{changes:?}"
+    );
+    assert!(
+        snapshot.entries.contains_key(Path::new("x/d/sub/s.txt")),
+        "{changes:?}"
+    );
+}

@@ -1211,16 +1211,12 @@ impl Snapshot {
                 }
             }
         }
-        let elsewhere = |path: &Path,
-                         entry: &Entry,
-                         volume: Option<PathBuf>,
-                         tree: &BTreeMap<PathBuf, Entry>,
-                         new: &BTreeMap<PathBuf, Entry>| {
-            let Some(to) = (arrivals.get(&(entry.id, entry.kind)))
+        let arrived = |entry: &Entry, volume: &Option<PathBuf>| {
+            (arrivals.get(&(entry.id, entry.kind)))
                 .into_iter()
                 .flatten()
                 .find(|(to, at)| {
-                    *at == volume
+                    at == volume
                         && (stat_rel(again.as_fd(), to).ok())
                             .and_then(|stat| stat.entry())
                             .is_some_and(|now| {
@@ -1228,7 +1224,13 @@ impl Snapshot {
                             })
                 })
                 .map(|(to, _)| to)
-            else {
+        };
+        let elsewhere = |path: &Path,
+                         entry: &Entry,
+                         volume: Option<PathBuf>,
+                         tree: &BTreeMap<PathBuf, Entry>,
+                         new: &BTreeMap<PathBuf, Entry>| {
+            let Some(to) = arrived(entry, &volume) else {
                 return false;
             };
             (tree.range(path.to_path_buf()..))
@@ -1236,10 +1238,11 @@ impl Snapshot {
                 .take_while(|(inside, _)| inside.starts_with(path))
                 .all(|(inside, before)| {
                     let at = to.join(inside.strip_prefix(path).expect("taken below the folder"));
-                    (new.get(&at)).is_some_and(|now| (now.id, now.kind) == (before.id, before.kind))
+                    (new.get(&at).or_else(|| scan.left_out.get(&at)))
+                        .is_some_and(|now| (now.id, now.kind) == (before.id, before.kind))
                         || (unreadable.iter())
                             .any(|blocked| at.starts_with(blocked) && at != *blocked)
-                        || arrivals.contains_key(&(before.id, before.kind))
+                        || arrived(before, &volume).is_some()
                 })
         };
         let mut departed = BTreeSet::new();
