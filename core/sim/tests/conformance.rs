@@ -2067,8 +2067,59 @@ impl Run {
         }
     }
 
+    fn check_lineage(
+        &mut self,
+        space: &str,
+        want: &Value,
+        got: &VersionInfo,
+        always: bool,
+    ) -> Outcome {
+        let made_over = opt_list(want, "made_over")?;
+        if always || made_over.is_some() {
+            let ids = strings(made_over.map_or(&[][..], Vec::as_slice), "made_over")?;
+            if ids.len() != got.made_over.len() {
+                return Err(format!(
+                    "made_over has {} IDs, expected {}",
+                    got.made_over.len(),
+                    ids.len()
+                ));
+            }
+            for (index, (symbol, id)) in ids.iter().zip(&got.made_over).enumerate() {
+                self.expect_id(space, symbol, id)
+                    .map_err(|e| format!("made_over {}: {e}", index + 1))?;
+            }
+        }
+        match opt_str(want, "source_version_id")? {
+            Some(source) if !source.is_empty() => {
+                if got.source_version_id.is_empty() {
+                    return Err(format!("no source_version_id, expected {source}"));
+                }
+                self.expect_id(space, source, &got.source_version_id)
+                    .map_err(|e| format!("source_version_id: {e}"))
+            }
+            source if (always || source.is_some()) && !got.source_version_id.is_empty() => {
+                Err(format!(
+                    "source_version_id {:?}, expected none",
+                    got.source_version_id
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn check_version(&mut self, space: &str, got: &VersionInfo, want: &Value) -> Outcome {
-        keys(want, "a version", &["version", "seq", "content"])?;
+        keys(
+            want,
+            "a version",
+            &[
+                "version",
+                "seq",
+                "content",
+                "made_over",
+                "source_version_id",
+            ],
+        )?;
+        self.check_lineage(space, want, got, false)?;
         if let Some(seq) = opt_u64(want, "seq")?
             && got.seq != seq
         {
@@ -2454,8 +2505,14 @@ impl Run {
     }
 
     fn check_current(&mut self, space: &str, want: &Value, got: &VersionInfo) -> Outcome {
-        keys(want, "a current version", CURRENT_FIELDS)?;
+        let lineage = ["made_over", "source_version_id"];
+        keys(
+            want,
+            "a current version",
+            &[CURRENT_FIELDS, &lineage].concat(),
+        )?;
         every(want, CURRENT_FIELDS)?;
+        self.check_lineage(space, want, got, true)?;
         let VersionInfo {
             made_over: _,
             source_version_id: _,
