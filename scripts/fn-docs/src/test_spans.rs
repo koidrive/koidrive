@@ -39,6 +39,11 @@ fn test_only(attr: &Attribute) -> bool {
         Meta::List(list) if list.path.is_ident("cfg") => list
             .parse_args::<Meta>()
             .is_ok_and(|meta| test_only_predicate(&meta)),
+        Meta::List(list) => list
+            .path
+            .segments
+            .last()
+            .is_some_and(|last| last.ident == "test"),
         _ => false,
     }
 }

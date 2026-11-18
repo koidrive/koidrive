@@ -249,8 +249,8 @@ class TestLines(unittest.TestCase):
         self.assertEqual(self.net({}, after), 417)
 
     def test_standalone_test_functions_are_test_code(self):
-        counts = self.counts({"core/a/src/lib.rs": "pub fn a() {}\n#[test]\nfn checks_a() {}\n#[tokio::test]\nasync fn checks_b() {}\n"})
-        self.assertEqual((counts["test"], counts["implementation"]), (4, 1))
+        counts = self.counts({"core/a/src/lib.rs": "pub fn a() {}\n#[test]\nfn checks_a() {}\n#[tokio::test]\nasync fn checks_b() {}\n#[tokio::test(flavor = \"multi_thread\")]\nasync fn checks_c() {}\n"})
+        self.assertEqual((counts["test"], counts["implementation"]), (6, 1))
 
     def test_workspace_member_globs_cover_their_packages(self):
         before = {"core/a/Cargo.toml": "", "core/a/tests/t.rs": self.lines(3)}
