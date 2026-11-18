@@ -452,6 +452,60 @@ impl Trees {
         }
     }
 
+    pub fn take_listed_intents(&mut self, listed: &Tree<RemoteNode>) {
+        let mut ids = BTreeMap::new();
+        for (id, node) in listed.iter() {
+            let (Some(old), Some(intents)) = (self.r.get(id), node.intents.as_ref()) else {
+                continue;
+            };
+            for field in Field::ALL {
+                let (Some(server), Some(computed)) =
+                    (intents.get(field), remote_intent_of(old, field))
+                else {
+                    continue;
+                };
+                if same(
+                    remote_value(old, field).as_ref(),
+                    remote_value(node, field).as_ref(),
+                ) {
+                    ids.insert(computed.id, server.id);
+                }
+            }
+        }
+        ids.retain(|computed, server| computed != server);
+        let replaced = |intents: &NodeIntents| {
+            let mut intents = intents.clone();
+            for field in Field::ALL {
+                if let Some(intent) = intents.get(field).cloned() {
+                    let id = ids.get(&intent.id).copied().unwrap_or(intent.id);
+                    intents.set(field, Some(FieldIntent { id, ..intent }));
+                }
+            }
+            intents
+        };
+        let remote: Vec<(NodeId, RemoteNode)> = (self.r.iter())
+            .filter_map(|(id, node)| {
+                let intents = replaced(node.intents.as_ref()?);
+                (Some(&intents) != node.intents.as_ref()).then(|| {
+                    let mut node = node.clone();
+                    node.intents = Some(intents);
+                    (id.clone(), node)
+                })
+            })
+            .collect();
+        for (id, node) in remote {
+            self.r.insert(id, node);
+        }
+        let synced: Vec<(NodeId, NodeIntents)> = (self.synced_intents.iter())
+            .map(|(id, intents)| (id.clone(), replaced(intents)))
+            .collect();
+        for (id, intents) in synced {
+            self.put_synced_intents(&id, Some(intents));
+        }
+        self.journal.replace_ids(&ids);
+        self.journal.set_listed(true);
+    }
+
     pub(super) fn end_carrier(&mut self, carrier: Carrier, id: &str) -> bool {
         let ended = match carrier {
             Carrier::LostCreate => self.lost_creates.remove(id),

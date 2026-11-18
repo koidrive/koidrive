@@ -1002,6 +1002,14 @@ impl Folder {
                 self.stream = Stream::Listing { superseded: false };
                 work.push(Work::List);
             }
+            (Stream::Connecting, Some(_)) if self.engine.owes_relist() => {
+                tracing::info!(
+                    space_id = self.link.space_id,
+                    "the server announces field intents; reading the tree again to take them"
+                );
+                self.stream = Stream::Listing { superseded: false };
+                work.push(Work::List);
+            }
             (Stream::Connecting, Some(cursor)) => {
                 work.push(Work::Subscribe(resume(&cursor.history_id, &cursor.base())));
                 self.stream = Stream::Following { head: None };

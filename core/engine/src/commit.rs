@@ -674,6 +674,10 @@ impl Commits {
         &self.aliases
     }
 
+    pub fn field_intents(&self) -> bool {
+        self.field_intents.0
+    }
+
     pub fn in_flight(&self) -> Option<&InFlight> {
         self.in_flight.as_ref()
     }
