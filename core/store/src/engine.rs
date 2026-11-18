@@ -289,6 +289,13 @@ impl Tx<'_> {
         }
         let mut stmt = self
             .0
+            .prepare_cached("SELECT node_id FROM unsent_creates")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            state.trees.unsent_creates.insert(row.get(0)?);
+        }
+        let mut stmt = self
+            .0
             .prepare_cached("SELECT node_id FROM unseen_changes")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
@@ -477,6 +484,7 @@ impl Tx<'_> {
             "dropped_edits",
             "cycle_reverted",
             "unsent_moves",
+            "unsent_creates",
             "unseen_changes",
             "replaced_versions",
             "content_provenance",
@@ -546,6 +554,7 @@ impl Tx<'_> {
             dropped_edits,
             cycle_reverted,
             unsent_moves,
+            unsent_creates,
             unseen_changes,
             replaced_versions,
             content_provenance,
@@ -739,6 +748,11 @@ impl Tx<'_> {
             unsent_moves,
             "DELETE FROM unsent_moves WHERE node_id = ?1",
             "INSERT OR IGNORE INTO unsent_moves (node_id) VALUES (?1)",
+        )?;
+        self.write_set(
+            unsent_creates,
+            "DELETE FROM unsent_creates WHERE node_id = ?1",
+            "INSERT OR IGNORE INTO unsent_creates (node_id) VALUES (?1)",
         )?;
         self.write_set(
             unseen_changes,

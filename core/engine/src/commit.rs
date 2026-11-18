@@ -2046,6 +2046,9 @@ impl Commits {
                 trees.record_moved(node, result.seq);
             }
             let created = matches!(&op.op, Some(op::Op::CreateDir(_) | op::Op::CreateFile(_)));
+            if created && done {
+                trees.sent_create(node);
+            }
             let at_lost_position = trees.lost_position(node).is_some();
             let held_by_l = |content: Option<&Content>| {
                 (trees.local().live(node)).is_some_and(|local| {
@@ -2778,6 +2781,7 @@ pub(crate) fn rekey(trees: &mut Trees, from: &str, to: &str) {
     let (parked, left_out_when_placed) = (node.parked, node.left_out_when_placed);
     trees.rekey_discarded(from, to);
     trees.rekey_lost_shapes(from, to);
+    trees.sent_create(from);
     trees.rekey_local(from, to, node);
     trees.set_left_out_when_placed(to, left_out_when_placed);
     if parked {
