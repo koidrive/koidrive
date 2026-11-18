@@ -458,6 +458,7 @@ export interface Collected {
   duplicates: number;
   saturated: { fromMs: number; toMs: number }[];
   uncoveredFromMs: number | null;
+  failure: string | null;
 }
 
 export async function collectEvents(
@@ -469,7 +470,7 @@ export async function collectEvents(
 ): Promise<Collected> {
   const now = options.now ?? Date.now;
   const seen = new Set<string>();
-  const collected: Collected = { queries: 0, events: 0, duplicates: 0, saturated: [], uncoveredFromMs: null };
+  const collected: Collected = { queries: 0, events: 0, duplicates: 0, saturated: [], uncoveredFromMs: null, failure: null };
   const windows: [number, number][] = [[fromMs, toMs]];
   for (let window = windows.shift(); window; window = windows.shift()) {
     const [from, to] = window;
@@ -477,7 +478,14 @@ export async function collectEvents(
       collected.uncoveredFromMs = from;
       break;
     }
-    const events = await query(from, to);
+    let events: Raw[];
+    try {
+      events = await query(from, to);
+    } catch (error) {
+      collected.uncoveredFromMs = from;
+      if (now() < options.stopAtMs) collected.failure = error instanceof Error ? error.message : String(error);
+      break;
+    }
     collected.queries++;
     if (events.length >= options.limit && to - from > options.minWindowMs) {
       const mid = Math.floor((from + to) / 2);

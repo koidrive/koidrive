@@ -552,7 +552,20 @@ describe("server events", () => {
   it("stops at its deadline and names where the events it did not read begin", async () => {
     let clock = 0;
     const collected = await collectEvents(async () => [{ $metadata: { id: "x" } }, { $metadata: { id: "y" } }], 0, 100, () => {}, { limit: 2, minWindowMs: 10, stopAtMs: 2, now: () => clock++ });
-    expect(collected).toMatchObject({ queries: 2, events: 0, uncoveredFromMs: 0 });
+    expect(collected).toMatchObject({ queries: 2, events: 0, uncoveredFromMs: 0, failure: null });
+  });
+
+  it("keeps the progress of the windows it read when a later query fails, and counts a failure past its deadline as a stop", async () => {
+    const query = (failAt: number) => async (from: number) => {
+      if (from >= failAt) throw new Error("HTTP 500");
+      return [{ $metadata: { id: "e" + from } }];
+    };
+    const halves = async (from: number, to: number) => (to - from > 50 ? [{}, {}] : query(50)(from));
+    const failed = await collectEvents(halves, 0, 100, () => {}, { limit: 2, minWindowMs: 10, stopAtMs: Infinity });
+    expect(failed).toMatchObject({ queries: 2, events: 1, uncoveredFromMs: 50, failure: "HTTP 500" });
+    let clock = 0;
+    const late = await collectEvents(halves, 0, 100, () => {}, { limit: 2, minWindowMs: 10, stopAtMs: 3, now: () => clock++ });
+    expect(late).toMatchObject({ queries: 2, events: 1, uncoveredFromMs: 50, failure: null });
   });
 
   it("writes the test Worker's events without their log messages and stops before the teardown's minutes", async () => {

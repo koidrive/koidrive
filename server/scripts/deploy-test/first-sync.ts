@@ -567,11 +567,11 @@ const phases: Record<string, () => Promise<void>> = {
     const spanNames = new Map<string, number>();
     const fields = new Map<string, number>();
     const count = (counts: Map<string, number>, name: string) => counts.set(name, (counts.get(name) ?? 0) + 1);
-    let collected: Collected | undefined;
-    let failure: string | null = null;
+    const deadline = { atMs: stopAtMs, what: "the telemetry step reached " + new Date(stopAtMs).toISOString() + ", which keeps the teardown's " + TEARDOWN_MINUTES + " minutes" };
+    let collected: Collected;
     try {
       collected = await collectEvents(
-        (from, to) => telemetryEvents(account, key, state.name, from, to),
+        (from, to) => telemetryEvents(account, key, state.name, from, to, deadline),
         fromMs,
         toMs,
         (event) => {
@@ -583,19 +583,17 @@ const phases: Record<string, () => Promise<void>> = {
         },
         { limit: TELEMETRY_LIMIT, minWindowMs: TELEMETRY_WINDOW_MS, stopAtMs },
       );
-    } catch (error) {
-      failure = error instanceof Error ? error.message : String(error);
     } finally {
       gzip.end();
       await written;
     }
     const sorted = (counts: Map<string, number>) => Object.fromEntries([...counts].sort((a, b) => b[1] - a[1]));
-    const meta = { worker: state.name, filter: key, traceSampling: state.traceSampling ?? null, fromMs, toMs, failure, ...collected, types: sorted(types), spanNames: sorted(spanNames), fields: sorted(fields) };
+    const meta = { worker: state.name, filter: key, traceSampling: state.traceSampling ?? null, fromMs, toMs, ...collected, types: sorted(types), spanNames: sorted(spanNames), fields: sorted(fields) };
     writeFileSync(join(dir, "server-events.json"), JSON.stringify(meta, null, 2));
-    console.log("Wrote " + (collected?.events ?? 0) + " events from " + (collected?.queries ?? 0) + " queries between " + new Date(fromMs).toISOString() + " and " + new Date(toMs).toISOString() + ". Event types: " + JSON.stringify(meta.types));
-    if (failure) fail("querying Workers Logs failed: " + failure);
-    if (collected?.uncoveredFromMs != null) console.log("::warning::Stopped at " + new Date(stopAtMs).toISOString() + " before the events after " + new Date(collected.uncoveredFromMs).toISOString() + ", so the teardown keeps its " + TEARDOWN_MINUTES + " minutes");
-    if (collected?.saturated.length) console.log("::warning::" + collected.saturated.length + " windows of " + TELEMETRY_WINDOW_MS + " ms or less held " + TELEMETRY_LIMIT + " events or more, so some of their events are missing");
+    console.log("Wrote " + collected.events + " events from " + collected.queries + " queries between " + new Date(fromMs).toISOString() + " and " + new Date(toMs).toISOString() + ". Event types: " + JSON.stringify(meta.types));
+    if (collected.failure) fail("querying Workers Logs failed: " + collected.failure);
+    if (collected.uncoveredFromMs !== null) console.log("::warning::Stopped at " + new Date(stopAtMs).toISOString() + " before the events after " + new Date(collected.uncoveredFromMs).toISOString() + ", so the teardown keeps its " + TEARDOWN_MINUTES + " minutes");
+    if (collected.saturated.length) console.log("::warning::" + collected.saturated.length + " windows of " + TELEMETRY_WINDOW_MS + " ms or less held " + TELEMETRY_LIMIT + " events or more, so some of their events are missing");
   },
 };
 
