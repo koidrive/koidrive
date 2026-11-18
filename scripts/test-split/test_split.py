@@ -197,6 +197,32 @@ class SplitTests(unittest.TestCase):
         with patch.object(split, "git_source", return_value=branch):
             split.verify(self.executable, self.mapping, "branch")
 
+    def test_proptest_blocks_split_port_and_verify_in_a_scenario(self):
+        original = self.source
+        for path in [b"proptest", b"proptest::proptest"]:
+            with self.subTest(path=path):
+                self.source = original + path + (
+                    b'! {\n    #![proptest_config(koidrive_test_support::battery_config("cases.txt", 4))]\n'
+                    b'    #[test]\n    fn holds(x in 0..4u8) { assert!(x < 4); }\n}\n'
+                )
+                self.mapping["tests.rs"]["proptest:holds"] = "scenario"
+                self.generate()
+                self.assertIn(path + b"! {", (self.root / "tests/scenario.rs").read_bytes())
+                with patch.object(split, "git_source", return_value=self.source):
+                    split.verify(self.executable, self.mapping, "base")
+                branch = self.source.replace(b"x < 4", b"x <= 3")
+                with patch.object(split, "git_source", side_effect=lambda ref, path: self.source if ref == "base" else branch):
+                    split.port(self.executable, self.mapping, "base", "branch")
+                with patch.object(split, "git_source", return_value=branch):
+                    split.verify(self.executable, self.mapping, "branch")
+
+    def test_verify_names_items_the_mapping_lacks(self):
+        self.generate()
+        del self.mapping["tests.rs"]["fn:one"]
+        with patch.object(split, "git_source", return_value=self.source):
+            with self.assertRaisesRegex(ValueError, r"assign these items.*fn:one"):
+                split.verify(self.executable, self.mapping, "base")
+
 
 if __name__ == "__main__":
     unittest.main()

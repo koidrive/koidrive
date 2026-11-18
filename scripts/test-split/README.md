@@ -2,7 +2,7 @@
 
 `../split-tests.py` moves Rust items according to `mapping.json`. Each source file has an explicit assignment for every test, helper, import, constant, type, and implementation. Unmapped items stop the command before it writes files.
 
-Scenario files use `include!` in the original module. This preserves the fully qualified test names and private helper access. `common.rs` holds shared helpers once. Module items stay in the original file to preserve relative paths. The simulation's `proptest!` blocks stay in the original file so their regression-file lookup keeps the same source path.
+Scenario files use `include!` in the original module. This preserves the fully qualified test names and private helper access. `common.rs` holds shared helpers once. Module items stay in the original file to preserve relative paths.
 
 The parser uses `syn` spans to copy source bytes, not pretty-printed syntax. `verify` compares every original item with its destination, including attributes, signatures, and bodies. It reads include statements from the Rust syntax tree, rejects attributed includes, and ignores include text in comments or strings. Scenario fragments cannot contain includes or inner attributes, and their Rust file set must match the mapping exactly. It checks the module header and rejects missing or duplicated items. `compare-lists` compares the full Cargo test-name multiset, not only a count.
 

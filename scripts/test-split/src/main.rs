@@ -58,7 +58,7 @@ fn main() {
                 ),
                 "helper",
             ),
-            syn::Item::Macro(m) if m.mac.path.is_ident("proptest") => {
+            syn::Item::Macro(m) if m.mac.path.segments.last().unwrap().ident == "proptest" => {
                 let tokens: Vec<_> = m.mac.tokens.clone().into_iter().collect();
                 let names: Vec<_> = tokens
                     .windows(2)

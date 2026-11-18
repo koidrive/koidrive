@@ -101,8 +101,6 @@ def render(executable, mapping, sources):
             scenario = assignments[item["name"]]
             if not re.fullmatch(r"[a-z][a-z0-9_]*", scenario):
                 raise ValueError(f"invalid scenario: {scenario}")
-            if item["kind"] == "property" and scenario != "root":
-                raise ValueError("keep proptest macros in root to preserve regression-file lookup")
             if item["kind"] == "module" and scenario != "root":
                 raise ValueError("keep modules in root to preserve relative paths")
             prefix = source[previous:item["start"]].strip(b"\n")
@@ -198,6 +196,9 @@ def verify(executable, mapping, revision):
         root = (ROOT / path).read_bytes()
         root_items = parsed(executable, root)
         original_items = items(executable, original)
+        unknown = [item["name"] for item in original_items if item["name"] not in assignments]
+        if unknown:
+            raise ValueError(f"assign these items in {MAPPING.relative_to(ROOT)} for {path}: {unknown}")
         scenarios = {assignments[item["name"]] for item in original_items} - {"root"}
         expected_includes = Counter(f'{Path(path).stem}/{scenario}.rs' for scenario in scenarios)
         actual_includes = Counter(item["name"].removeprefix("include:")
