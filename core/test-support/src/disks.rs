@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const MOUNTS: &str = "KOIDRIVE_TEST_MOUNTS";
+const EXFAT: &str = "KOIDRIVE_TEST_EXFAT";
 
 const VOLUME_METADATA: [&str; 5] = [
     ".fseventsd",
@@ -121,11 +122,25 @@ impl Disks {
     /// Creates an empty image of 16 MB named `name`.
     pub fn image(&self, name: &str) -> PathBuf {
         if cfg!(target_os = "macos") {
-            return self.formatted(name, "APFS");
+            return self.formatted(name, "APFS", 16, None);
         }
+        self.ext4(name, &["mkfs.ext4"])
+    }
+
+    /// Creates an empty ext4 image of 16 MB named `name` with the UUID `uuid`, formatted while the clock read
+    /// `formatted_at` seconds since the epoch, so its root folder has that birth time.
+    #[cfg(target_os = "linux")]
+    pub fn ext4_with_uuid(&self, name: &str, uuid: &str, formatted_at: u64) -> PathBuf {
+        let clock = format!("E2FSPROGS_FAKE_TIME={formatted_at}");
+        self.ext4(name, &[&clock, "mkfs.ext4", "-U", uuid])
+    }
+
+    fn ext4(&self, name: &str, mkfs: &[&str]) -> PathBuf {
         let image = self.base().join(format!("{name}.img"));
         run("truncate", &["-s".as_ref(), "16M".as_ref(), image.as_ref()]);
-        run("mkfs.ext4", &["-q".as_ref(), "-F".as_ref(), image.as_ref()]);
+        let options = ["-q".as_ref(), "-F".as_ref(), image.as_os_str()];
+        let args: Vec<&OsStr> = mkfs.iter().map(OsStr::new).chain(options).collect();
+        run("env", &args);
         let at = self.base().join(format!("{name}.mkfs"));
         fs::create_dir(&at).unwrap();
         sudo(&[
@@ -141,32 +156,115 @@ impl Disks {
         image
     }
 
-    /// Creates an empty FAT image of 16 MB named `name`, the file system most USB sticks ship with. Linux reports no
-    /// UUID for it; macOS derives one from its serial number.
+    /// Creates an empty FAT image of 16 MB named `name`, the file system most USB sticks ship with, with a serial
+    /// number of its own.
     pub fn fat(&self, name: &str) -> PathBuf {
+        self.fat_with_serial(name, 16, serial(&self.base().join(name)))
+    }
+
+    /// Creates an empty FAT image of `megabytes` MB named `name` with the serial number `serial`, like a stick
+    /// formatted with another stick's serial number.
+    pub fn fat_with_serial(&self, name: &str, megabytes: u32, serial: u32) -> PathBuf {
         if cfg!(target_os = "macos") {
-            return self.formatted(name, "MS-DOS");
+            return self.formatted(name, "MS-DOS", megabytes, Some(serial));
         }
-        let image = self.base().join(format!("{name}.fat"));
-        run("truncate", &["-s".as_ref(), "16M".as_ref(), image.as_ref()]);
-        run("mkfs.vfat", &[image.as_ref()]);
+        self.linux_fat(&self.base().join(format!("{name}.fat")), megabytes, serial)
+    }
+
+    /// Creates an empty FAT image of 16 MB named `name` whose serial number is 0, which no system reports as an ID.
+    #[cfg(target_os = "linux")]
+    pub fn fat_without_serial(&self, name: &str) -> PathBuf {
+        self.linux_fat(&self.base().join(format!("{name}.fat")), 16, 0)
+    }
+
+    fn linux_fat(&self, image: &Path, megabytes: u32, serial: u32) -> PathBuf {
+        let (size, serial) = (format!("{megabytes}M"), format!("{serial:08x}"));
+        run("truncate", &["-s".as_ref(), size.as_ref(), image.as_ref()]);
+        run(
+            "mkfs.vfat",
+            &["-i".as_ref(), serial.as_ref(), image.as_ref()],
+        );
+        image.to_path_buf()
+    }
+
+    /// Whether exFAT volumes have IDs here. On Linux only udev reads an exFAT volume's serial number, so that takes
+    /// udev's device records with their `/dev/disk/by-diskseq` links, an exFAT driver, and `mkfs.exfat` and
+    /// `tune.exfat` from exfatprogs.
+    pub fn exfat_has_ids(&self) -> bool {
+        if cfg!(target_os = "macos") {
+            return true;
+        }
+        let tools = ["mkfs.exfat", "tune.exfat"];
+        let diskseq = std::fs::read_dir("/run/udev/data").is_ok_and(|records| {
+            records.flatten().any(|record| {
+                let text = std::fs::read_to_string(record.path()).unwrap_or_default();
+                text.lines()
+                    .any(|line| line.starts_with("S:disk/by-diskseq/"))
+            })
+        });
+        let driver = std::fs::read_to_string("/proc/filesystems")
+            .is_ok_and(|known| known.split_whitespace().any(|name| name == "exfat"))
+            || (Command::new("modprobe")
+                .args(["-n", "-q", "exfat"])
+                .status())
+            .is_ok_and(|status| status.success());
+        let missing = match tools
+            .iter()
+            .find(|tool| Command::new(tool).arg("-V").output().is_err())
+        {
+            _ if !diskseq => {
+                "udev records no /dev/disk/by-diskseq links here, so exFAT volumes have no ID"
+                    .to_owned()
+            }
+            Some(tool) => format!("{tool} from exfatprogs is not installed"),
+            None if !driver => "this kernel has no exFAT driver".to_owned(),
+            None => return true,
+        };
+        assert!(
+            std::env::var_os(EXFAT).is_none(),
+            "{EXFAT} is set, but {missing}"
+        );
+        eprintln!("SKIPPED: {missing}");
+        false
+    }
+
+    /// Creates an empty exFAT image of 16 MB named `name`. On Linux it takes `mkfs.exfat` from exfatprogs.
+    pub fn exfat(&self, name: &str) -> PathBuf {
+        self.exfat_with_serial(name, 16, serial(&self.base().join(name)))
+    }
+
+    /// Creates an empty exFAT image of `megabytes` MB named `name` with the serial number `serial`. On Linux it
+    /// takes `mkfs.exfat` and `tune.exfat` from exfatprogs.
+    pub fn exfat_with_serial(&self, name: &str, megabytes: u32, serial: u32) -> PathBuf {
+        if cfg!(target_os = "macos") {
+            return self.formatted(name, "ExFAT", megabytes, Some(serial));
+        }
+        let image = self.base().join(format!("{name}.exfat"));
+        let (size, serial) = (format!("{megabytes}M"), format!("{serial:#x}"));
+        run("truncate", &["-s".as_ref(), size.as_ref(), image.as_ref()]);
+        run("mkfs.exfat", &[image.as_ref()]);
+        run(
+            "tune.exfat",
+            &["-I".as_ref(), serial.as_ref(), image.as_ref()],
+        );
         image
     }
 
-    /// Creates an empty exFAT image of 16 MB named `name`.
-    #[cfg(target_os = "macos")]
-    pub fn exfat(&self, name: &str) -> PathBuf {
-        self.formatted(name, "ExFAT")
-    }
-
-    fn formatted(&self, name: &str, file_system: &str) -> PathBuf {
+    fn formatted(
+        &self,
+        name: &str,
+        file_system: &str,
+        megabytes: u32,
+        serial: Option<u32>,
+    ) -> PathBuf {
         let image = self.base().join(format!("{name}.dmg"));
+        let size = format!("{megabytes}m");
         let mut args: Vec<OsString> = [
             "create",
             "-ov",
             "-nospotlight",
             "-size",
-            "16m",
+            &size,
             "-fs",
             file_system,
             "-volname",
@@ -175,14 +273,43 @@ impl Disks {
         .iter()
         .map(OsString::from)
         .collect();
-        if file_system != "APFS" {
-            let mut serial = DefaultHasher::new();
-            image.hash(&mut serial);
+        if let Some(serial) = serial {
             args.push("-fsargs".into());
-            args.push(format!("-I {:#x}", serial.finish() as u32).into());
+            args.push(format!("-I {serial:#x}").into());
         }
         args.push(image.clone().into());
         hdiutil(&args.iter().map(OsString::as_os_str).collect::<Vec<_>>());
+        image
+    }
+
+    /// A disk image next to the file system image `volume` whose one partition holds a copy of it, the way USB sticks
+    /// are laid out. [`Disks::attach`] mounts that partition.
+    #[cfg(target_os = "linux")]
+    pub fn partitioned(&self, volume: &Path) -> PathBuf {
+        let stick = volume
+            .extension()
+            .is_some_and(|kind| kind == "fat" || kind == "exfat");
+        assert!(stick, "{} is not a FAT or exFAT image", volume.display());
+        let image = volume.with_extension("disk");
+        let size = fs::metadata(volume).unwrap().len() + (1 << 20);
+        run(
+            "truncate",
+            &["-s".as_ref(), size.to_string().as_ref(), image.as_ref()],
+        );
+        run(
+            "sh",
+            &[
+                "-c".as_ref(),
+                "echo 'start=2048, type=7' | sfdisk -q \"$0\"".as_ref(),
+                image.as_ref(),
+            ],
+        );
+        let [mut from, mut to] = [OsString::from("if="), OsString::from("of=")];
+        from.push(volume);
+        to.push(&image);
+        let copy = [&from, &to].map(OsString::as_os_str);
+        let options = ["bs=1M", "seek=1", "conv=notrunc", "status=none"].map(OsStr::new);
+        run("dd", &[&copy[..], &options[..]].concat());
         image
     }
 
@@ -226,7 +353,45 @@ impl Disks {
             });
             if image
                 .extension()
-                .is_some_and(|extension| extension == "fat")
+                .is_some_and(|extension| extension == "disk")
+            {
+                let device = run(
+                    "sudo",
+                    &[
+                        "-n".as_ref(),
+                        "losetup".as_ref(),
+                        "--partscan".as_ref(),
+                        "--find".as_ref(),
+                        "--show".as_ref(),
+                        image.as_ref(),
+                    ],
+                );
+                let detach = Detach(device.clone());
+                let partition = format!("{device}p1");
+                let started = std::time::Instant::now();
+                while !Path::new(&partition).exists() {
+                    assert!(
+                        started.elapsed() < std::time::Duration::from_secs(10),
+                        "{partition} never appeared"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                let options = format!(
+                    "uid={},gid={}",
+                    run("id", &["-u".as_ref()]),
+                    run("id", &["-g".as_ref()])
+                );
+                sudo(&[
+                    "mount".as_ref(),
+                    "-o".as_ref(),
+                    options.as_ref(),
+                    partition.as_ref(),
+                    at.as_ref(),
+                ]);
+                drop(detach);
+            } else if image
+                .extension()
+                .is_some_and(|extension| extension == "fat" || extension == "exfat")
             {
                 let options = format!(
                     "loop,uid={},gid={}",
@@ -298,10 +463,34 @@ impl Disks {
     }
 }
 
+fn serial(image: &Path) -> u32 {
+    let mut serial = DefaultHasher::new();
+    image.hash(&mut serial);
+    serial.finish() as u32
+}
+
 fn sudo(args: &[&OsStr]) {
     let mut all: Vec<&OsStr> = vec!["-n".as_ref()];
     all.extend_from_slice(args);
     run("sudo", &all);
+}
+
+#[cfg(target_os = "linux")]
+struct Detach(String);
+
+#[cfg(target_os = "linux")]
+impl Drop for Detach {
+    fn drop(&mut self) {
+        let detached = Command::new("sudo")
+            .args(["-n", "losetup", "-d", &self.0])
+            .status();
+        let detached = detached.is_ok_and(|status| status.success());
+        assert!(
+            detached || std::thread::panicking(),
+            "{} stayed attached",
+            self.0
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -654,7 +843,7 @@ mod tests {
     fn images_detach_after_releasing_a_file_and_moving_the_parent() {
         for format in ["APFS", "MS-DOS", "ExFAT"] {
             let mut disks = Disks::new().unwrap();
-            let image = disks.formatted("Held", format);
+            let image = disks.formatted("Held", format, 16, None);
             let old = disks.base().join("parent");
             let moved = disks.base().join("moved");
             let mount = old.join("mount");

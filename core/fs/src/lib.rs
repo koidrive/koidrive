@@ -198,13 +198,30 @@ pub enum Detached {
     Covered,
 }
 
+fn left(dir: BorrowedFd<'_>, name: &OsStr, mount_root: BorrowedFd<'_>) -> bool {
+    match (stat_at(dir, name), stat_fd(mount_root)) {
+        (Ok(now), Ok(held)) => !now.is_at(held.dev, &held.id),
+        _ => true,
+    }
+}
+
+fn mount_at(dir: BorrowedFd<'_>) -> (Mount, Option<VolumeId>) {
+    match root::volume_ids(dir) {
+        Some((id, plain)) => (Mount::Volume(id), Some(plain)),
+        None => (Mount::Unidentified, None),
+    }
+}
+
 impl Entry {
-    fn is_back(&self, now: &Entry) -> bool {
+    fn is_back(&self, now: &Entry, plain: Option<VolumeId>) -> bool {
         match self.mount {
             Some(Mount::Volume(known)) => {
-                now.mount == Some(Mount::Volume(known)) && self.id == now.id
+                let fat = plain.is_some_and(|plain| now.mount != Some(Mount::Volume(plain)));
+                (now.mount == Some(Mount::Volume(known)) || plain == Some(known))
+                    && self.id.ino == now.id.ino
+                    && (self.id.birth_ns == now.id.birth_ns || fat && now.id.birth_ns.is_none())
             }
-            Some(Mount::Unidentified) => false,
+            Some(Mount::Unidentified) => matches!(now.mount, Some(Mount::Volume(_))),
             None => now.mount.is_none(),
         }
     }
@@ -303,9 +320,12 @@ fn statx(dir: BorrowedFd<'_>, name: &OsStr, flags: rustix::fs::AtFlags) -> io::R
         StatxFlags::BASIC_STATS | StatxFlags::BTIME,
     )?;
     let nanos = |sec: i64, nsec: u32| i128::from(sec) * 1_000_000_000 + i128::from(nsec);
-    let birth_ns = (st.stx_mask & StatxFlags::BTIME.bits() != 0)
-        .then(|| i64::try_from(nanos(st.stx_btime.tv_sec, st.stx_btime.tv_nsec)).ok())
-        .flatten();
+    let mount_root = (st.stx_attributes & st.stx_attributes_mask)
+        .contains(rustix::fs::StatxAttributes::MOUNT_ROOT);
+    let birth_ns = (st.stx_mask & StatxFlags::BTIME.bits() != 0
+        && !(mount_root && root::has_no_root_birth(dir, name, flags)))
+    .then(|| i64::try_from(nanos(st.stx_btime.tv_sec, st.stx_btime.tv_nsec)).ok())
+    .flatten();
     Ok(Stat {
         file_type: FileType::from_raw_mode(RawMode::from(st.stx_mode)),
         id: FileId {
@@ -463,6 +483,7 @@ struct Scan<'c> {
     unreadable: Vec<PathBuf>,
     left_out: BTreeMap<PathBuf, Entry>,
     mounts: BTreeMap<PathBuf, Entry>,
+    plain_ids: BTreeMap<PathBuf, VolumeId>,
     detached: Vec<(PathBuf, Detached)>,
     /// The rules that leave entries out, for a scan that applies any.
     rules: Option<Pending<'c>>,
@@ -488,17 +509,25 @@ impl Scan<'_> {
         let Some(mut entry) = stat.entry() else {
             return Ok(());
         };
+        let mut mount_root = None;
+        let mut locked = false;
         if entry.kind == EntryKind::Dir && stat.dev != dev {
-            let volume = match open_dir_at(dir, name) {
-                Ok(sub) => root::volume_id(sub.as_fd()),
-                Err(err) if is_gone(&err) => return Err(Error::Changed),
-                Err(err) if denied(&err) => {
-                    self.unreadable.push(rel);
-                    return Ok(());
+            match open_dir_at(dir, name) {
+                Ok(sub) => {
+                    if !stat_fd(sub.as_fd())?.is_at(stat.dev, &entry.id) {
+                        return Err(Error::Changed);
+                    }
+                    let (mount, plain) = mount_at(sub.as_fd());
+                    entry.mount = Some(mount);
+                    if let Some(plain) = plain {
+                        self.plain_ids.insert(rel.clone(), plain);
+                    }
+                    mount_root = Some(sub);
                 }
+                Err(err) if is_gone(&err) => return Err(Error::Changed),
+                Err(err) if denied(&err) => locked = true,
                 Err(err) => return Err(err.into()),
-            };
-            entry.mount = Some(volume.map_or(Mount::Unidentified, Mount::Volume));
+            }
         }
         if let Some(rules) = &mut self.rules
             && rules.leaves_out(&rel, entry.kind)
@@ -506,11 +535,23 @@ impl Scan<'_> {
             self.left_out.insert(rel, entry);
             return Ok(());
         }
+        if locked {
+            self.unreadable.push(rel);
+            return Ok(());
+        }
         let held = match self.mounts.get(&rel) {
-            Some(known) => (!known.is_back(&entry)).then_some(*known),
+            Some(known) => {
+                (!known.is_back(&entry, self.plain_ids.get(&rel).copied())).then_some(*known)
+            }
             None => (entry.mount == Some(Mount::Unidentified)).then_some(entry),
         };
         if let Some(held) = held {
+            if mount_root
+                .as_ref()
+                .is_some_and(|sub| left(dir, name, sub.as_fd()))
+            {
+                return Err(Error::Changed);
+            }
             self.new.insert(rel.clone(), held);
             self.detached.push((rel.clone(), held.detached()));
             self.unreadable.push(rel);
@@ -523,7 +564,8 @@ impl Scan<'_> {
             return Ok(());
         }
         (self.cut)(Cut::OpeningDir(&rel));
-        let sub = match open_dir_at(dir, name) {
+        let crossed = mount_root.is_some();
+        let sub = match mount_root.map_or_else(|| open_dir_at(dir, name), Ok) {
             Ok(sub) => sub,
             Err(err) if is_gone(&err) => return Err(Error::Changed),
             Err(err) if denied(&err) => {
@@ -532,12 +574,17 @@ impl Scan<'_> {
             }
             Err(err) => return Err(err.into()),
         };
-        let bound = stat_fd(sub.as_fd())?;
-        if !bound.is_at(stat.dev, &entry.id) {
-            return Err(Error::Changed);
+        let result = stat_fd(sub.as_fd()).map_err(Error::from).and_then(|bound| {
+            if !bound.is_at(stat.dev, &entry.id) {
+                return Err(Error::Changed);
+            }
+            self.bindings.push((rel.clone(), bound.dev, bound.id));
+            self.dir(sub.as_fd(), bound.dev, &rel)
+        });
+        match result {
+            Err(Error::Io(_)) if crossed && left(dir, name, sub.as_fd()) => Err(Error::Changed),
+            other => other,
         }
-        self.bindings.push((rel.clone(), bound.dev, bound.id));
-        self.dir(sub.as_fd(), bound.dev, &rel)
     }
 
     fn dir(&mut self, dir: BorrowedFd<'_>, dev: u64, rel: &Path) -> Result<()> {
@@ -883,6 +930,7 @@ impl Snapshot {
                     })
                     .map(|(path, entry)| (path.clone(), *entry))
                     .collect(),
+                plain_ids: BTreeMap::new(),
                 detached: Vec::new(),
                 rules: rules.as_deref_mut().map(Pending::new),
                 cut: &mut *cut,
@@ -1184,7 +1232,9 @@ impl Snapshot {
             };
             let now = scan.new.get(&at);
             let keep = match known.mount {
-                Some(_) => !now.is_some_and(|now| known.is_back(now)),
+                Some(_) => {
+                    !now.is_some_and(|now| known.is_back(now, scan.plain_ids.get(&at).copied()))
+                }
                 None => now.is_some_and(|now| {
                     now.mount.is_some()
                         && (held || now.id != known.id || now.mount == Some(Mount::Unidentified))
@@ -1649,14 +1699,9 @@ impl Snapshot {
                 let Some(above) = above else {
                     return Ok(None);
                 };
-                let now = Entry {
-                    id: stat.id,
-                    mount: (stat.dev != dev).then(|| {
-                        root::volume_id(dir.as_fd()).map_or(Mount::Unidentified, Mount::Volume)
-                    }),
-                    ..*above
-                };
-                if !above.is_back(&now) {
+                let found = (stat.dev != dev).then(|| mount_at(dir.as_fd()).0);
+                let unread = above.mount == Some(Mount::Unidentified);
+                if unread || (above.mount, above.id) != (found, stat.id) {
                     return Ok(None);
                 }
             }
@@ -2611,8 +2656,8 @@ impl NativeWatcher {
         let deferred = cfg!(target_os = "linux") && rules.is_some();
         let watcher = watch_root(&root, &sender, deferred)?;
         Ok(Self {
-            root,
             snapshot: previous,
+            root,
             view: OnceCell::new(),
             dirty: BTreeSet::from([PathBuf::new()]),
             listed: BTreeSet::new(),
@@ -2817,14 +2862,13 @@ impl NativeWatcher {
             return false;
         };
         stat_fd(dir.as_fd()).is_ok_and(|now| {
+            let mount = (now.dev != above.dev).then(|| mount_at(dir.as_fd()));
             let found = Entry {
                 id: now.id,
-                mount: (now.dev != above.dev).then(|| {
-                    root::volume_id(dir.as_fd()).map_or(Mount::Unidentified, Mount::Volume)
-                }),
+                mount: mount.map(|(mount, _)| mount),
                 ..*known
             };
-            known.is_back(&found)
+            known.is_back(&found, mount.and_then(|(_, plain)| plain))
         })
     }
 
@@ -3061,9 +3105,10 @@ pub struct RescanWatcher {
 
 impl RescanWatcher {
     pub fn new(root: impl AsRef<Path>, previous: Snapshot, interval: Duration) -> Result<Self> {
+        let root = std::fs::canonicalize(root)?;
         Ok(Self {
-            root: std::fs::canonicalize(root)?,
             snapshot: previous,
+            root,
             view: OnceCell::new(),
             interval,
             rules: None,

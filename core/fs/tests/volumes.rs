@@ -248,7 +248,7 @@ fn a_volume_without_a_uuid_is_never_read() {
         return;
     };
     let root = disks.base().join("Sync");
-    let fat = disks.fat("Fat");
+    let fat = disks.fat_without_serial("Fat");
     fs::create_dir_all(root.join("Disk")).unwrap();
     disks.attach(&fat, &root.join("Disk"));
     fill(&root.join("Disk"));
@@ -262,10 +262,353 @@ fn a_volume_without_a_uuid_is_never_read() {
         assert!(!snapshot.entries.contains_key(Path::new(&path)), "{path}");
     }
     write(&root.join("Disk/later.txt"), "later");
+    let targeted = rescan(&mut snapshot, &root, &["Disk/later.txt"]);
+    assert_eq!((targeted.changes, away(&snapshot)), (vec![], vec!["Disk"]));
     fs::remove_file(root.join("Disk/report.docx")).unwrap();
     let found = rescan(&mut snapshot, &root, &["", "Disk"]);
     assert_eq!(found.changes, []);
     assert_eq!(found.unreadable, [PathBuf::from("Disk")]);
+}
+
+fn identified(at: &Path) -> koidrive_fs::RootAt {
+    use std::os::fd::AsFd;
+    let started = Instant::now();
+    loop {
+        let found = koidrive_fs::root_at(fs::File::open(at).unwrap().as_fd()).unwrap();
+        if found.volume.is_some() || started.elapsed() > Duration::from_secs(10) {
+            return found;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sticks_mounted_in_turn_at_one_folder_have_volume_ids_of_their_own() {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    let mut pairs = vec![
+        (disks.fat("One"), disks.fat("Two")),
+        (
+            disks.fat_with_serial("OneOfTwo", 16, 0x0905_0f47),
+            disks.fat_with_serial("TwoOfTwo", 32, 0x0905_0f47),
+        ),
+    ];
+    if disks.exfat_has_ids() {
+        pairs.push((disks.exfat("OneCard"), disks.exfat("TwoCard")));
+        pairs.push((
+            disks.exfat_with_serial("OneOfTwoCard", 16, 0x0905_0e7f),
+            disks.exfat_with_serial("TwoOfTwoCard", 32, 0x0905_0e7f),
+        ));
+    }
+    let (at, elsewhere) = (disks.base().join("Stick"), disks.base().join("Elsewhere"));
+    fs::create_dir_all(&at).unwrap();
+    fs::create_dir_all(&elsewhere).unwrap();
+    for (one, two) in &pairs {
+        disks.attach(one, &at);
+        let first = identified(&at);
+        disks.detach(&at);
+        disks.attach(two, &at);
+        let second = identified(&at);
+        disks.attach(one, &elsewhere);
+        let again = identified(&elsewhere);
+        let still = identified(&at);
+        disks.detach(&elsewhere);
+        disks.detach(&at);
+        let context = format!("{one:?} {first:?} {second:?} {again:?} {still:?}");
+        assert!(
+            first.volume.is_some() && second.volume.is_some(),
+            "{context}"
+        );
+        assert_ne!(second.volume, first.volume, "{context}");
+        assert_eq!(again.volume, first.volume, "{context}");
+        assert_eq!(still.volume, second.volume, "{context}");
+        assert!(first.admits(&again).is_ok(), "{context}");
+        let other = first.admits(&second);
+        assert!(
+            matches!(other, Err(koidrive_fs::RootProblem::OtherDisk)),
+            "{context}"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn sudo(args: &[&std::ffi::OsStr]) {
+    let out = std::process::Command::new("sudo")
+        .arg("-n")
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "sudo {args:?}: {out:?}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_exfat_stick_udev_has_no_record_of_is_held_until_it_has() {
+    use std::os::unix::fs::MetadataExt;
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    if !disks.exfat_has_ids() {
+        return;
+    }
+    let writable = ["test", "-w", "/run/udev/data"].map(std::ffi::OsStr::new);
+    if !std::process::Command::new("sudo")
+        .arg("-n")
+        .args(writable)
+        .status()
+        .unwrap()
+        .success()
+    {
+        let missing = "the test rewrites udev's records, so /run/udev must be mounted read-write";
+        assert!(
+            std::env::var_os("KOIDRIVE_TEST_EXFAT").is_none(),
+            "{missing}"
+        );
+        eprintln!("SKIPPED: {missing}");
+        return;
+    }
+    let root = disks.base().join("Sync");
+    let at = root.join("Disk");
+    fs::create_dir_all(&at).unwrap();
+    let image = disks.exfat("Card");
+    disks.attach(&image, &at);
+    assert!(identified(&at).volume.is_some());
+    fill(&at);
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    let mut expected = snapshot.entries.clone();
+    let mount = expected[Path::new("Disk")].mount;
+    let dev = fs::metadata(&at).unwrap().dev();
+    let (major, minor) = (rustix::fs::major(dev), rustix::fs::minor(dev));
+    let record = PathBuf::from(format!("/run/udev/data/b{major}:{minor}"));
+    let kept = disks.base().join("record");
+    fs::copy(&record, &kept).unwrap();
+    let stale = disks.base().join("stale");
+    let lines = fs::read_to_string(&kept).unwrap();
+    let older = lines
+        .lines()
+        .filter(|line| !line.starts_with("S:disk/by-diskseq/"));
+    fs::write(
+        &stale,
+        older.map(|line| format!("{line}\n")).collect::<String>(),
+    )
+    .unwrap();
+    for case in ["stale", "missing"] {
+        match case {
+            "stale" => sudo(&["cp".as_ref(), stale.as_os_str(), record.as_os_str()]),
+            _ => sudo(&["rm".as_ref(), "-f".as_ref(), record.as_os_str()]),
+        }
+        let found = rescan(&mut snapshot, &root, &["", "Disk"]);
+        let without = (identified(&at).volume, away(&snapshot) == ["Disk"]);
+        sudo(&["cp".as_ref(), kept.as_os_str(), record.as_os_str()]);
+        assert_eq!(without, (None, true), "{case}");
+        assert_eq!(found.changes, [], "{case}");
+        assert_eq!(snapshot.entries, expected, "{case}");
+        assert_eq!(snapshot.entries[Path::new("Disk")].mount, mount, "{case}");
+        assert!(identified(&at).volume.is_some(), "{case}");
+        let back = rescan(&mut snapshot, &root, &[""]).changes;
+        let created = (back.iter()).filter(|change| matches!(change, Change::Created { .. }));
+        assert_eq!(removals(&back), Vec::<&Change>::new(), "{case}");
+        assert_eq!(created.count(), 0, "{case}: {back:?}");
+        assert!(away(&snapshot).is_empty(), "{case}");
+        expected = snapshot.entries.clone();
+    }
+    disks.detach(&at);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stick_taken_back_by_a_rescan_of_one_of_its_files_is_recorded_before_the_next_stick() {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    for legacy in [true, false] {
+        let root = disks.base().join(format!("Sync{legacy}"));
+        let at = root.join("Disk");
+        fs::create_dir_all(&at).unwrap();
+        let first = match legacy {
+            true => disks.fat_with_serial(&format!("Recorded{legacy}"), 16, 0x4b4f_1095),
+            false => disks.fat_without_serial(&format!("Unknown{legacy}")),
+        };
+        let (stick, next) = match legacy {
+            true => (
+                first.clone(),
+                disks.fat_with_serial("Bigger", 32, 0x4b4f_1095),
+            ),
+            false => (
+                disks.fat(&format!("Stick{legacy}")),
+                disks.fat(&format!("Next{legacy}")),
+            ),
+        };
+        disks.attach(&first, &at);
+        fill(&at);
+        let mut snapshot = Snapshot::scan(&root).unwrap();
+        if legacy {
+            let mut plain = [0; 16];
+            plain[..4].copy_from_slice(&0x4b4f_1095_u32.to_le_bytes());
+            plain[15] = 4;
+            let recorded = Some(Mount::Volume(koidrive_fs::VolumeId::Uuid(plain)));
+            snapshot.entries.get_mut(Path::new("Disk")).unwrap().mount = recorded;
+        }
+        disks.detach(&at);
+        rescan(&mut snapshot, &root, &[""]);
+        disks.attach(&stick, &at);
+        identified(&at);
+        write(&at.join("photo.jpg"), "photo");
+        rescan(&mut snapshot, &root, &["Disk/photo.jpg"]);
+        disks.detach(&at);
+        disks.attach(&next, &at);
+        identified(&at);
+        let found = rescan(&mut snapshot, &root, &[""]);
+        disks.detach(&at);
+        assert_eq!(
+            removals(&found.changes),
+            Vec::<&Change>::new(),
+            "legacy={legacy}"
+        );
+        assert_eq!(away(&snapshot), ["Disk"], "legacy={legacy}");
+        assert!(
+            snapshot.entries.contains_key(Path::new("Disk/photo.jpg")),
+            "legacy={legacy}"
+        );
+    }
+}
+
+#[test]
+fn a_stick_plugged_back_in_comes_back_with_an_edit_made_on_another_computer() {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    let mut sticks = vec![
+        ("FAT", disks.fat("Stick"), true, false),
+        ("empty FAT", disks.fat("Empty"), false, false),
+        ("edited FAT", disks.fat("Edited"), false, true),
+        ("edited disk", disks.image("Drive"), false, true),
+    ];
+    if disks.exfat_has_ids() {
+        sticks.push(("exFAT", disks.exfat("Card"), true, false));
+        sticks.push(("edited exFAT", disks.exfat("EditedCard"), false, true));
+    }
+    for (kind, image, filled, edited) in sticks {
+        let root = disks.base().join(kind);
+        let (at, elsewhere) = (
+            root.join("Disk"),
+            disks.base().join(format!("Elsewhere {kind}")),
+        );
+        fs::create_dir_all(&at).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        disks.attach(&image, &at);
+        let first = identified(&at);
+        if filled {
+            fill(&at);
+        }
+        if edited {
+            write(&at.join("report.docx"), "draft");
+        }
+        let mut snapshot = Snapshot::scan(&root).unwrap();
+        let expected = snapshot.entries.clone();
+        disks.detach(&at);
+        rescan(&mut snapshot, &root, &["", "Disk"]);
+        assert_eq!(away(&snapshot), ["Disk"], "{kind}");
+        std::thread::sleep(Duration::from_millis(2100));
+        if edited {
+            disks.attach(&image, &elsewhere);
+            write(
+                &elsewhere.join("report.docx"),
+                "final version, edited at work",
+            );
+            disks.detach(&elsewhere);
+        }
+        disks.attach(&image, &at);
+        assert_eq!(identified(&at).volume, first.volume, "{kind}");
+        let found = rescan(&mut snapshot, &root, &["", "Disk"]);
+        disks.detach(&at);
+        if edited {
+            let edit = Change::Modified {
+                path: "Disk/report.docx".into(),
+            };
+            assert_eq!(found.changes, [edit], "{kind}");
+        }
+        let created =
+            (found.changes.iter()).filter(|change| matches!(change, Change::Created { .. }));
+        assert_eq!(removals(&found.changes), Vec::<&Change>::new(), "{kind}");
+        assert_eq!(created.count(), 0, "{kind}: {:?}", found.changes);
+        assert!(
+            away(&snapshot).is_empty(),
+            "{kind}: the same stick plugged back in stays held"
+        );
+        assert!(snapshot.entries.keys().eq(expected.keys()), "{kind}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stick_with_a_partition_table_has_the_id_of_the_volume_in_its_partition() {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    if !disks.exfat_has_ids() {
+        return;
+    }
+    let volume = disks.exfat("Card");
+    let stick = disks.partitioned(&volume);
+    let (whole, partition) = (disks.base().join("Whole"), disks.base().join("Partition"));
+    fs::create_dir_all(&whole).unwrap();
+    fs::create_dir_all(&partition).unwrap();
+    disks.attach(&volume, &whole);
+    let unpartitioned = identified(&whole);
+    disks.detach(&whole);
+    disks.attach(&stick, &partition);
+    let partitioned = identified(&partition);
+    disks.detach(&partition);
+    assert!(partitioned.volume.is_some(), "{partitioned:?}");
+    assert_eq!(partitioned.volume, unpartitioned.volume);
+}
+
+#[cfg(target_os = "linux")]
+fn swapped_for_a_disk_with_one_uuid(
+    formatted_at: [u64; 2],
+    filled: bool,
+) -> (Snapshot, Vec<Change>) {
+    let mut disks = Disks::new().unwrap();
+    let uuid = "4b6f6964-7269-4576-8500-000000000905";
+    let [one, two] = [("One", formatted_at[0]), ("Two", formatted_at[1])]
+        .map(|(name, at)| disks.ext4_with_uuid(name, uuid, at));
+    let root = disks.base().join("Sync");
+    let at = root.join("Disk");
+    fs::create_dir_all(&at).unwrap();
+    disks.attach(&one, &at);
+    let first = identified(&at).volume;
+    if filled {
+        fill(&at);
+    }
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    assert!(mounted(&snapshot, "Disk"));
+    disks.detach(&at);
+    rescan(&mut snapshot, &root, &["", "Disk"]);
+    disks.attach(&two, &at);
+    assert!(
+        first.is_some() && identified(&at).volume == first,
+        "{first:?}"
+    );
+    write(&at.join("photo.jpg"), "photo");
+    let found = rescan(&mut snapshot, &root, &["", "Disk"]);
+    disks.detach(&at);
+    (snapshot, found.changes)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_empty_disk_formatted_with_another_disks_uuid_at_another_time_is_told_apart_by_its_root() {
+    if Disks::new().is_none() {
+        return;
+    }
+    let (snapshot, changes) =
+        swapped_for_a_disk_with_one_uuid([1_700_000_000, 1_700_000_100], false);
+    assert_eq!(changes, []);
+    assert_eq!(away(&snapshot), ["Disk"]);
+    assert!(!snapshot.entries.contains_key(Path::new("Disk/photo.jpg")));
 }
 
 fn clones(disks: &mut Disks) -> (PathBuf, PathBuf) {
@@ -735,7 +1078,6 @@ fn a_scan_of_paths_inside_a_mount_point_reads_nothing_from_another_disk_there() 
     };
     let pairs = vec![
         (disks.image("First"), disks.image("Second")),
-        #[cfg(target_os = "macos")]
         (disks.fat("FATONE"), disks.fat("FATTWO")),
         #[cfg(target_os = "macos")]
         (disks.exfat("EXONE"), disks.exfat("EXTWO")),

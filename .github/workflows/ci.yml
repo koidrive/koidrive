@@ -501,13 +501,14 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Linux' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.rust_driver == 'true') }}
         env:
           KOIDRIVE_TEST_MOUNTS: '1'
+          KOIDRIVE_TEST_EXFAT: '1'
           TERMS: >-
-            ${{ needs.changes.outputs.rust == 'true' && 'koidrive-fs::volumes koidrive-test-support=disks' || '' }}
-            ${{ needs.changes.outputs.rust_driver == 'true' && 'koidrive-driver=disk_ejected koidrive-driver=another_disk_mounted koidrive-driver=two_copies_of_one_disk koidrive-driver=mounted_over_synced koidrive-driver=disk_without_a_uuid koidrive-driver=before_an_upgrade' || '' }}
+            ${{ needs.changes.outputs.rust == 'true' && 'koidrive-fs::volumes koidrive-fs=disk_swapped_while_a_scan koidrive-fs=mount_point_that_cannot_be_opened koidrive-test-support=disks' || '' }}
+            ${{ needs.changes.outputs.rust_driver == 'true' && 'koidrive-driver=disk_ejected koidrive-driver=another_disk_mounted koidrive-driver=two_copies_of_one_disk koidrive-driver=mounted_over_synced koidrive-driver=disk_without_a_uuid koidrive-driver=before_an_upgrade koidrive-driver=stick' || '' }}
         run: |
-          if ! command -v mkfs.vfat > /dev/null; then
+          if ! command -v mkfs.vfat > /dev/null || ! command -v mkfs.exfat > /dev/null || ! command -v tune.exfat > /dev/null || ! command -v sfdisk > /dev/null; then
             sudo apt-get update -qq
-            sudo apt-get install -y -qq dosfstools
+            sudo apt-get install -y -qq dosfstools exfatprogs fdisk
           fi
           read -ra terms <<<"$TERMS"
           cargo nextest run --archive-file "$RUNNER_TEMP/rust-tests/archive.tar.zst" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite --profile ci --success-output final \

@@ -101,6 +101,14 @@ pub enum RootProblem {
 /// its UUID, on btrfs the UUID of the subvolume, or on ext2, ext3 and ext4 the
 /// file system ID that Linux derives from the UUID. The kinds have different
 /// lengths, so [`as_bytes`](Self::as_bytes) names its kind.
+///
+/// A volume ID shorter than a UUID, such as the 32-bit serial number of a FAT
+/// or exFAT volume, is a `Uuid` that holds the ID's bytes as the volume stores
+/// them, then zeros, and the ID's length in the last byte.
+///
+/// Sticks formatted with one serial number share it, so a FAT or exFAT volume
+/// is a name-based `Uuid` (<https://www.rfc-editor.org/rfc/rfc9562#section-5.5>)
+/// of that ID, the file system and the volume's size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VolumeId {
     Uuid([u8; 16]),
@@ -157,9 +165,50 @@ pub fn root_at(dir: BorrowedFd<'_>) -> io::Result<RootAt> {
     })
 }
 
-#[cfg(target_vendor = "apple")]
 pub(crate) fn volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+    volume_ids(dir).map(|(id, _)| id)
+}
+
+pub(crate) fn volume_ids(dir: BorrowedFd<'_>) -> Option<(VolumeId, VolumeId)> {
+    let plain = plain_volume_id(dir)?;
+    #[cfg(any(target_vendor = "apple", target_os = "linux"))]
+    if let Ok(volume) = rustix::fs::fstatfs(dir)
+        && let Some(kind) = fat_kind(&volume)
+    {
+        let size = volume.f_blocks.saturating_mul(volume.f_bsize as u64);
+        return Some((sized_volume_id(plain, kind, size), plain));
+    }
+    Some((plain, plain))
+}
+
+#[cfg(any(target_vendor = "apple", target_os = "linux"))]
+fn sized_volume_id(plain: VolumeId, kind: u8, size: u64) -> VolumeId {
+    use sha1::{Digest, Sha1};
+    const NAMESPACE: [u8; 16] = [
+        0x6f, 0x8c, 0x2d, 0x4e, 0x1b, 0x7a, 0x5c, 0x3e, 0x9a, 0x0d, 0x4e, 0x2f, 0x7b, 0x6c, 0x1a,
+        0x95,
+    ];
+    let digest = (Sha1::new()
+        .chain_update(NAMESPACE)
+        .chain_update(plain.as_bytes()))
+    .chain_update([kind])
+    .chain_update(size.to_le_bytes())
+    .finalize();
+    let mut uuid = [0; 16];
+    uuid.copy_from_slice(&digest[..16]);
+    uuid[6] = (uuid[6] & 0x0f) | 0x50;
+    uuid[8] = (uuid[8] & 0x3f) | 0x80;
+    VolumeId::Uuid(uuid)
+}
+
+#[cfg(target_vendor = "apple")]
+fn plain_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
     use std::os::fd::AsRawFd;
+    if let Ok(volume) = rustix::fs::fstatfs(dir)
+        && fat_kind(&volume) == Some(1)
+    {
+        return disk_arbitration_volume_id(&volume);
+    }
     #[repr(C, packed(4))]
     struct Reply {
         length: u32,
@@ -192,11 +241,94 @@ pub(crate) fn volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
     (done == 0 && reply.length as usize == size && uuid != [0; 16]).then_some(VolumeId::Uuid(uuid))
 }
 
+/// The volume UUID Disk Arbitration derives from the serial number of the FAT volume `volume`. macOS 15 reports a
+/// new UUID through `getattrlist` each time it mounts a FAT volume again.
+#[cfg(target_vendor = "apple")]
+fn disk_arbitration_volume_id(volume: &rustix::fs::StatFs) -> Option<VolumeId> {
+    use std::ffi::{c_char, c_void};
+    type Object = *const c_void;
+    #[repr(C)]
+    struct UuidBytes([u8; 16]);
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFRelease(object: Object);
+        fn CFGetTypeID(object: Object) -> usize;
+        fn CFUUIDGetTypeID() -> usize;
+        fn CFUUIDGetUUIDBytes(uuid: Object) -> UuidBytes;
+        fn CFDictionaryGetValue(dictionary: Object, key: Object) -> Object;
+    }
+    #[link(name = "DiskArbitration", kind = "framework")]
+    unsafe extern "C" {
+        static kDADiskDescriptionVolumeUUIDKey: Object;
+        fn DASessionCreate(allocator: Object) -> Object;
+        fn DADiskCreateFromBSDName(
+            allocator: Object,
+            session: Object,
+            name: *const c_char,
+        ) -> Object;
+        fn DADiskCopyDescription(disk: Object) -> Object;
+    }
+    let owned = |object: Object| (!object.is_null()).then_some(object);
+    let session = owned(unsafe { DASessionCreate(std::ptr::null()) })?;
+    let disk = owned(unsafe {
+        DADiskCreateFromBSDName(std::ptr::null(), session, volume.f_mntfromname.as_ptr())
+    });
+    let description = disk.and_then(|disk| owned(unsafe { DADiskCopyDescription(disk) }));
+    let uuid = description.and_then(|description| unsafe {
+        let uuid = CFDictionaryGetValue(description, kDADiskDescriptionVolumeUUIDKey);
+        (!uuid.is_null() && CFGetTypeID(uuid) == CFUUIDGetTypeID())
+            .then(|| CFUUIDGetUUIDBytes(uuid).0)
+    });
+    for object in [description, disk, Some(session)].into_iter().flatten() {
+        unsafe { CFRelease(object) };
+    }
+    uuid.filter(|uuid| *uuid != [0; 16]).map(VolumeId::Uuid)
+}
+
 #[cfg(target_os = "linux")]
-pub(crate) fn volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+fn plain_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
     btrfs_subvolume_id(dir)
         .or_else(|| ext_file_system_id(dir))
         .or_else(|| file_system_id(dir))
+        .or_else(|| fat_volume_id(dir))
+        .or_else(|| udev_volume_id(dir))
+}
+
+#[cfg(target_vendor = "apple")]
+fn fat_kind(volume: &rustix::fs::StatFs) -> Option<u8> {
+    let name: Vec<u8> = (volume.f_fstypename.iter())
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as u8)
+        .collect();
+    match name.as_slice() {
+        b"msdos" => Some(1),
+        b"exfat" => Some(2),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn fat_kind(volume: &rustix::fs::StatFs) -> Option<u8> {
+    const MSDOS_SUPER_MAGIC: u64 = 0x4d44;
+    const EXFAT_SUPER_MAGIC: u64 = 0x2011_bab0;
+    match volume.f_type as u64 {
+        MSDOS_SUPER_MAGIC => Some(1),
+        EXFAT_SUPER_MAGIC => Some(2),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn volume_id_of(id: &[u8]) -> Option<VolumeId> {
+    if id.len() > 16 || id.iter().all(|&byte| byte == 0) {
+        return None;
+    }
+    let mut uuid = [0; 16];
+    uuid[..id.len()].copy_from_slice(id);
+    if id.len() < 16 {
+        uuid[15] = id.len() as u8;
+    }
+    Some(VolumeId::Uuid(uuid))
 }
 
 #[cfg(target_os = "linux")]
@@ -248,11 +380,110 @@ fn file_system_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
         uuid: [0; 16],
     };
     let done = unsafe { libc::ioctl(dir.as_raw_fd(), FS_IOC_GETFSUUID as _, &raw mut reply) };
-    (done == 0 && reply.len == 16 && reply.uuid != [0; 16]).then_some(VolumeId::Uuid(reply.uuid))
+    if done != 0 {
+        return None;
+    }
+    volume_id_of(reply.uuid.get(..usize::from(reply.len))?)
+}
+
+#[cfg(target_os = "linux")]
+fn fat_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+    use std::os::fd::AsRawFd;
+    const MSDOS_SUPER_MAGIC: u64 = 0x4d44;
+    const FAT_IOCTL_GET_VOLUME_ID: libc::c_ulong = 0x8004_7213;
+    if rustix::fs::fstatfs(dir).ok()?.f_type as u64 != MSDOS_SUPER_MAGIC {
+        return None;
+    }
+    let mut serial: u32 = 0;
+    let done = unsafe {
+        libc::ioctl(
+            dir.as_raw_fd(),
+            FAT_IOCTL_GET_VOLUME_ID as _,
+            &raw mut serial,
+        )
+    };
+    if done != 0 {
+        return None;
+    }
+    volume_id_of(&serial.to_le_bytes())
+}
+
+/// Whether the volume whose root folder `name` in `dir` names is FAT or
+/// exFAT. Neither keeps a directory entry for its root folder, so the root has
+/// no birth time, and Linux reports the time an exFAT volume was mounted
+/// (<https://github.com/torvalds/linux/blob/v6.8/fs/exfat/super.c#L377>).
+#[cfg(target_os = "linux")]
+pub(crate) fn has_no_root_birth(dir: BorrowedFd<'_>, name: &OsStr, flags: AtFlags) -> bool {
+    let volume = match name.is_empty() {
+        true => rustix::fs::fstatfs(dir),
+        false => {
+            let nofollow = match flags.contains(AtFlags::SYMLINK_NOFOLLOW) {
+                true => OFlags::NOFOLLOW,
+                false => OFlags::empty(),
+            };
+            let opened = OFlags::PATH | OFlags::CLOEXEC | nofollow;
+            rustix::fs::openat(dir, name, opened, Mode::empty())
+                .and_then(|root| rustix::fs::fstatfs(&root))
+        }
+    };
+    volume.is_ok_and(|stat| fat_kind(&stat).is_some())
+}
+
+/// udev keeps one `/dev/disk/by-uuid` link for every disk with that UUID, so
+/// the UUID comes from udev's record of the device number, which lists its
+/// properties and links (<https://github.com/systemd/systemd/blob/v255/src/libsystemd/sd-device/sd-device.c>).
+/// udev keeps a record until it handles the event that removes its device, so
+/// a disk that reuses a device number can find the record of the disk before
+/// it. Linux raises a disk's `diskseq` for each new disk and media change, and
+/// udev records the `/dev/disk/by-diskseq` link only once it has handled the
+/// disk (<https://www.kernel.org/doc/Documentation/ABI/stable/sysfs-block>).
+#[cfg(target_os = "linux")]
+fn udev_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+    let dev = stat_fd(dir).ok()?.dev;
+    let device = format!("{}:{}", rustix::fs::major(dev), rustix::fs::minor(dev));
+    let sys = Path::new("/sys/dev/block").join(&device);
+    let read = |path: &Path| Some(std::fs::read_to_string(path).ok()?.trim().to_owned());
+    let partition = read(&sys.join("partition"));
+    let disk = if partition.is_some() {
+        sys.join("..")
+    } else {
+        sys
+    };
+    let mut seq = read(&disk.join("diskseq"))?;
+    if let Some(number) = partition {
+        seq = format!("{seq}-part{number}");
+    }
+    let record = std::fs::read_to_string(format!("/run/udev/data/b{device}")).ok()?;
+    let handled = format!("S:disk/by-diskseq/{seq}");
+    if !record.lines().any(|line| line == handled) {
+        return None;
+    }
+    record
+        .lines()
+        .find_map(|line| line.strip_prefix("E:ID_FS_UUID="))
+        .and_then(udev_id)
+}
+
+/// libblkid prints a serial shorter than a UUID as the number, so its bytes are the reverse of the little-endian ones on disk.
+#[cfg(target_os = "linux")]
+fn udev_id(name: &str) -> Option<VolumeId> {
+    let digits: String = name.chars().filter(|&c| c != '-').collect();
+    if !digits.len().is_multiple_of(2) || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut id: Vec<u8> = (0..digits.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&digits[at..at + 2], 16))
+        .collect::<Result<_, _>>()
+        .ok()?;
+    if id.len() < 16 {
+        id.reverse();
+    }
+    volume_id_of(&id)
 }
 
 #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
-pub(crate) fn volume_id(_: BorrowedFd<'_>) -> Option<VolumeId> {
+fn plain_volume_id(_: BorrowedFd<'_>) -> Option<VolumeId> {
     None
 }
 
@@ -284,7 +515,9 @@ pub fn check_root_at(
 ) -> Result<Marker, RootProblem> {
     let found = root_at(dir).map_err(RootProblem::Unreadable)?;
     list(dir).map_err(RootProblem::Unreadable)?;
-    linked.admits(&found)?;
+    if linked.volume.is_none() || linked.volume != volume_ids(dir).map(|(_, plain)| plain) {
+        linked.admits(&found)?;
+    }
     let marker = read_marker_at(dir)
         .map_err(RootProblem::BadMarker)?
         .ok_or(RootProblem::NoMarker)?;
@@ -527,5 +760,163 @@ fn barrier(fd: BorrowedFd<'_>) -> io::Result<()> {
     match unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_BARRIERFSYNC) } {
         -1 => Err(io::Error::last_os_error()),
         _ => Ok(()),
+    }
+}
+
+#[cfg(all(test, any(target_vendor = "apple", target_os = "linux")))]
+#[test]
+fn a_fat_volume_is_named_by_its_id_file_system_and_size() {
+    let mut serial = [0; 16];
+    serial[..4].copy_from_slice(&0x4b4f_4944_u32.to_le_bytes());
+    serial[15] = 4;
+    let plain = VolumeId::Uuid(serial);
+    let sized = sized_volume_id(plain, 1, 16 << 20);
+    assert_eq!(
+        sized,
+        VolumeId::Uuid([
+            0xca, 0xfc, 0x64, 0xbb, 0x32, 0x76, 0x54, 0x1d, 0xbd, 0x82, 0x53, 0x2b, 0x92, 0xcd,
+            0xe3, 0x72
+        ])
+    );
+    assert_ne!(sized_volume_id(plain, 2, 16 << 20), sized);
+    assert_ne!(sized_volume_id(plain, 1, 32 << 20), sized);
+    assert_ne!(sized, plain);
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn udev_names_a_volume_by_the_id_the_kernel_reports() {
+        assert_eq!(
+            udev_id("ABCD-1234"),
+            volume_id_of(&0xABCD_1234_u32.to_le_bytes())
+        );
+        assert_eq!(
+            udev_id("0123456789ABCDEF"),
+            volume_id_of(&0x0123_4567_89AB_CDEF_u64.to_le_bytes())
+        );
+        assert_eq!(
+            udev_id("4d5a2860-ff6d-4f32-bf61-5f40c3a1e33a"),
+            Some(VolumeId::Uuid([
+                0x4d, 0x5a, 0x28, 0x60, 0xff, 0x6d, 0x4f, 0x32, 0xbf, 0x61, 0x5f, 0x40, 0xc3, 0xa1,
+                0xe3, 0x3a
+            ]))
+        );
+        for name in [
+            "",
+            "0000-0000",
+            "ABC",
+            "+1+2-3456",
+            "C12A-244G",
+            "0123456789abcdef0123456789abcdef01",
+        ] {
+            assert_eq!(udev_id(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn short_volume_ids_of_other_lengths_differ() {
+        let fat = volume_id_of(&[1, 2, 3, 4]).unwrap();
+        let ntfs = volume_id_of(&[1, 2, 3, 4, 0, 0, 0, 0]).unwrap();
+        assert_ne!(fat, ntfs);
+        assert_eq!(VolumeId::from_bytes(fat.as_bytes()), Some(fat));
+        assert_eq!(volume_id_of(&[0; 4]), None);
+    }
+
+    struct Attached(Vec<String>, std::path::PathBuf);
+
+    impl Drop for Attached {
+        fn drop(&mut self) {
+            let sudo = || std::process::Command::new("sudo");
+            let _ = sudo().args(["-n", "umount", "-l"]).arg(&self.1).status();
+            for device in &self.0 {
+                let _ = sudo().args(["-n", "losetup", "-d", device]).status();
+            }
+        }
+    }
+
+    #[test]
+    fn a_disk_swapped_while_a_scan_reads_it_never_passes_for_the_disk_it_identified() {
+        use std::os::unix::fs::MetadataExt;
+        use std::path::PathBuf;
+        use std::process::Command;
+
+        use crate::{Cut, Snapshot};
+        let Some(disks) = koidrive_test_support::Disks::new() else {
+            return;
+        };
+        let sudo = |args: &[&OsStr]| {
+            let out = Command::new("sudo").arg("-n").args(args).output().unwrap();
+            (
+                out.status.success(),
+                String::from_utf8(out.stdout).unwrap().trim().to_owned(),
+            )
+        };
+        let owner = std::fs::metadata(disks.base()).unwrap();
+        let options = format!("uid={},gid={}", owner.uid(), owner.gid());
+        for stage in ["root opened", "disk opened", "removal confirmed"] {
+            let (first, second) = (
+                disks.fat(&format!("{stage} 1")),
+                disks.fat(&format!("{stage} 2")),
+            );
+            let root = disks.base().join(stage);
+            let mount = root.join("Disk");
+            std::fs::create_dir_all(&mount).unwrap();
+            let attach = |image: &Path| {
+                let losetup = ["losetup", "--find", "--show"].map(OsStr::new);
+                sudo(&[&losetup[..], &[image.as_os_str()]].concat()).1
+            };
+            let mut attached = Attached(vec![attach(&first)], mount.clone());
+            let mount_on = |device: &str| {
+                let args = ["mount", "-o", &options, device].map(OsStr::new);
+                let done = sudo(&[&args[..], &[mount.as_os_str()]].concat()).0;
+                assert!(done, "{stage}: {device}");
+            };
+            mount_on(&attached.0[0]);
+            std::fs::write(mount.join("report.docx"), b"first disk").unwrap();
+            std::fs::write(mount.join("old.txt"), b"old").unwrap();
+            let mut snapshot = Snapshot::scan(&root).unwrap();
+            std::fs::remove_file(mount.join("old.txt")).unwrap();
+            let mut swapped = false;
+            let result = snapshot.rescan_with(&root, [PathBuf::new()], None, &mut |cut| {
+                let now = match cut {
+                    Cut::RootOpened => stage == "root opened",
+                    Cut::OpeningDir(path) => stage == "disk opened" && path == Path::new("Disk"),
+                    Cut::Confirming(path) => {
+                        stage == "removal confirmed" && path == Path::new("Disk")
+                    }
+                    Cut::Searching(_) => false,
+                };
+                if !now || swapped {
+                    return;
+                }
+                let device = attached.0[0].clone();
+                let replacement = match sudo(&["umount".as_ref(), mount.as_os_str()]).0 {
+                    true => {
+                        assert!(sudo(&["losetup", "-d", &device].map(OsStr::new)).0);
+                        attached.0.retain(|held| *held != device);
+                        let rebind = ["losetup", &device].map(OsStr::new);
+                        assert!(sudo(&[&rebind[..], &[second.as_os_str()]].concat()).0);
+                        attached.0.push(device.clone());
+                        device
+                    }
+                    false => {
+                        assert!(sudo(&["umount".as_ref(), "-l".as_ref(), mount.as_os_str()]).0);
+                        attached.0.push(attach(&second));
+                        attached.0[1].clone()
+                    }
+                };
+                mount_on(&replacement);
+                swapped = !mount.join("report.docx").exists();
+            });
+            drop(attached);
+            assert!(swapped, "{stage}");
+            assert!(
+                result.is_err() || snapshot.entries.contains_key(Path::new("Disk/report.docx")),
+                "{stage}: {result:?}"
+            );
+        }
     }
 }

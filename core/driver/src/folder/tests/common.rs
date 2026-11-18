@@ -968,6 +968,15 @@ fn caught_up(site: &Site, b: &Device, remote: &Remote, also: &[&str]) {
 }
 
 /// The size of the content the server holds for the node.
+fn server_bytes(remote: &Remote, id: &str) -> Vec<u8> {
+    let nodes = remote.space.nodes();
+    let node = nodes.iter().find(|node| node.node_id == id).unwrap();
+    let content = node.current.as_ref().unwrap().content.as_ref().unwrap();
+    (content.chunks.iter())
+        .flat_map(|chunk| remote.chunks.chunks[&chunk.hash].clone())
+        .collect()
+}
+
 fn server_size(remote: &Remote, id: &str) -> u64 {
     let nodes = remote.space.nodes();
     let node = nodes.iter().find(|node| node.node_id == id).unwrap();
