@@ -640,15 +640,17 @@ fn service_shims(dir: &std::path::Path, launchctl: &str, systemctl: &str) -> std
     bin
 }
 
-#[test]
-fn a_test_profile_in_the_default_layout_never_takes_the_account_s_service_name() {
-    let home = Sandbox::new();
+fn default_layout_service_name(home: &Sandbox, marked: bool) -> Value {
     let bin = service_shims(
         home.path(),
         "case \"$1:$2\" in\nprint:gui/*/*) exit 1;;\nprint:gui/*) exit 0;;\nprint-disabled:*) echo '{}';;\n*) exit 1;;\nesac\n",
         "case \"$2\" in\nshow-environment) exit 0;;\n*) exit 1;;\nesac\n",
     );
-    let output = process::koi(home.path())
+    let mut command = process::koi(home.path());
+    if !marked {
+        command.env_remove(koidrive_test_support::LIFELINE);
+    }
+    let output = command
         .args(["status", "--json"])
         .env("HOME", home.path())
         .env("PATH", &bin)
@@ -659,6 +661,12 @@ fn a_test_profile_in_the_default_layout_never_takes_the_account_s_service_name()
         .output()
         .unwrap();
     let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    envelope["data"]["service"]["name"].clone()
+}
+
+#[test]
+fn a_test_profile_in_the_default_layout_never_takes_the_account_s_service_name() {
+    let home = Sandbox::new();
     let key = Paths::from_vars(|name| (name == "HOME").then(|| home.path().into()))
         .unwrap()
         .state_key();
@@ -666,7 +674,16 @@ fn a_test_profile_in_the_default_layout_never_takes_the_account_s_service_name()
         true => format!("dev.koidrive.koi.{key}"),
         false => format!("koidrive-{key}.service"),
     };
-    assert_eq!(envelope["data"]["service"]["name"], name, "{envelope:#}");
+    assert_eq!(default_layout_service_name(&home, true), name);
+}
+
+#[test]
+fn a_default_profile_outside_the_account_s_home_takes_the_bare_service_name_outside_a_test() {
+    let name = match cfg!(target_os = "macos") {
+        true => "dev.koidrive.koi",
+        false => "koidrive.service",
+    };
+    assert_eq!(default_layout_service_name(&Sandbox::new(), false), name);
 }
 
 #[test]
