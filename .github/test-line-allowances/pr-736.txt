@@ -1,0 +1,12 @@
+280
+# core/test-support Sandbox (about 180 lines) is the harness these tests pin: every koi a test starts holds the sandbox's lifeline, stops when the test ends or its process dies, and must stay inside the sandbox root.
+# sandbox.rs a_koi_stops_when_its_sandbox_drops_after_its_test_passes_or_panics: a daemon a test starts is gone when its Sandbox drops, after a pass and after a panic.
+# sandbox.rs a_koi_stops_when_the_test_process_that_started_it_is_killed: a daemon outlives no SIGKILLed test process.
+# sandbox.rs a_test_cannot_run_koi_outside_its_sandbox: a koi under the lifeline exits 78 when HOME (the account's, a symlink to it, a .. path to it, or an unrelated directory), its state, config or runtime directory, the install inventory (/ or a .. escape whose uninstall would delete an app) or HOMEBREW_PREFIX (real or symlinked) lies outside the canonical sandbox root.
+# sandbox.rs a_koi_outside_a_sandbox_cannot_start: process::koi refuses a directory that no Sandbox owns.
+# sandbox.rs every_program_a_test_runs_that_could_start_koi_is_sandboxed: a lint over cli/tests and the ffi daemon tests that rejects any koi spawn not routed through sandboxed().
+# sandbox.rs another_test_process_leaves_a_sandbox_whole_while_it_ends: one test process's sweep of abandoned lifelines never removes another live process's sandbox.
+# daemon_status.rs a_test_profile_in_the_default_layout_never_takes_the_account_s_service_name: a koi under the lifeline takes a suffixed launchd label or systemd unit, never the account's own.
+# daemon_status.rs a_default_profile_outside_the_account_s_home_takes_the_bare_service_name_outside_a_test: without the lifeline, a HOME other than the passwd home keeps the bare dev.koidrive.koi or koidrive.service name, as for real users.
+# daemon_status.rs the_service_a_test_installs_stops_with_the_test: the launch agent or unit a test installs carries the lifeline and the install inventory, so the service's koi stops with the test and stays off real installs.
+# No existing test kills a test process, checks what outlives a test, or checks which service name or paths a test koi may use, so none of these duplicates another.
