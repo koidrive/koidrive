@@ -96,7 +96,7 @@ import { PROTO_MAX, PROTO_MIN, SERVER_VERSION } from "../version";
 export const FORMAT_VERSION = 1;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
-const COMMIT_BOOKMARK_MAX_AGE_MS = 29 * DAY_MS;
+const COMMIT_BOOKMARK_MAX_AGE_MS = 29 * DAY_MS + 12 * HOUR_MS;
 export const HOLD_MS = DAY_MS;
 export const GRANT_MS = HOUR_MS;
 const MAX_OPS = 1000;

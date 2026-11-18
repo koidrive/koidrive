@@ -60,14 +60,14 @@ The 29-day bound keeps P inside the 30-day PITR range, with a day for the rewind
 P is the requested point. The restored state is the state just after the last commit at or before P, the commit before the first one whose `committed_at_ms` is later than P. `getBookmarkForTime` gives only a bookmark approximately at P, which can be several commits earlier, so the Space DO stores bookmarks itself:
 - After every commit it appends, a GC purge included, it reads `getCurrentBookmark()` and stores it for that seq, usable for any P at or after the commit's `committed_at_ms`.
 - Rewind completion deletes every stored bookmark, because one taken before the completion restores a state without the completion's changes (§3). It then stores a bookmark for `restore_seq`, usable for any P at or after the completion.
-- A bookmark more than 29 days old is not used, and GC deletes it. PITR keeps 30 days, so a bookmark used at admission stays restorable for at least a day.
+- A bookmark more than 29.5 days old is not used, and GC deletes it. PITR keeps 30 days, so a bookmark used at admission stays restorable for at least 12 hours.
 
 The rewind restores the stored bookmark of the last commit at or before P when it is usable for P. Otherwise it restores the bookmark `getBookmarkForTime` selects for P. That happens when:
 - a server version that stored no bookmarks made the commit;
 - reading the bookmark failed, or the object stopped before the read;
 - another commit landed before the read finished, so the bookmark would include it;
 - P is before an earlier rewind's completion, and the commit is from before that completion;
-- the bookmark is more than 29 days old. P is then at most 29 days old, so no commit lies between that commit and P.
+- the bookmark is more than 29.5 days old. P is at most 29 days old, so it is then at least 12 hours after that commit, with no commit between them. That margin is far wider than the drift of `getBookmarkForTime` seen in deploy tests (under a minute), so PITR's bookmark for P still lands after that commit.
 
 `RewindResult.restore_seq`, `Welcome.restore_seq` and `ResyncRequired.restore_seq` give the exact `head_seq` of the restored state, and `restore_point_ms` is always the requested P.
 

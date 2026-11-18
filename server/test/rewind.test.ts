@@ -355,6 +355,23 @@ describe("space rewind (RFC 0003)", () => {
     expect([...(await device().tree()).values()].map((node) => node.name)).not.toContain("rewound away");
   });
 
+  it("restores the last commit before a restore point 29 days old when that commit is just over 29 days old", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const a = device();
+    await a.commit([op.mkdir(uuidv7(), spaceId, "one")]);
+    const early = await snapshot(spaceId, createdAtMs + MINUTE);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "two")]);
+    const [two] = await spaceRows(spaceId, "SELECT committed_at_ms FROM commits WHERE seq = 2");
+    const committedMs = Number(two!.committed_at_ms);
+    const nowMs = committedMs + 29 * DAY + 2_000;
+    await setSpaceClock(spaceId, nowMs);
+    await setAccountClock(nowMs);
+    simulatedPitr.bookmarkFor = () => early;
+
+    const done = await rewind(creds.access!.token, spaceId, { restorePointMs: committedMs + 5_000, expectedHistoryId: await a.history() });
+    expect(done.message).toMatchObject({ restoreSeq: 2n, previousHeadSeq: 2n });
+  });
+
   it("takes a commit whose bookmark cannot be read, and restores PITR's bookmark for a restore point after it", async () => {
     const { spaceId, createdAtMs, creds, device } = await newSpace();
     const a = device();
