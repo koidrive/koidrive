@@ -81,6 +81,20 @@ Sync applies deletions from your other devices here without asking, and moves th
 
 Sync also asks after the first link of a folder when the comparison holds some of the folder's files. The comparison holds a file at a name the space's trash holds. If the folder synced with the space before, the comparison also holds the folder's other files. [The first link](sync-rules.md#the-first-link-compares-the-folder-with-the-space) describes the comparison. `koi status` and `koi resolve` show that decision as "files on this device that the space does not hold", and it takes `publish` or `discard`.
 
+### A rewind opens decisions
+
+When the space is rewound on the server, the folder reads the server's tree again and follows it. What it can't settle alone waits in one decision per group:
+
+| `koi status` shows | Answers |
+|---|---|
+| files created after the restore point, which the restore removed from the server | `keep` puts these files back on the server. `discard` moves this device's copies to the local trash and follows the server. |
+| files changed on this device since it last synced | `publish` sends this device's version to the server. `discard` moves this device's copies to the local trash and follows the server. |
+| files on this device that the space does not hold | `publish` sends this device's version to the server. `discard` moves this device's copies to the local trash and follows the server. |
+| files deleted on this device that the server still holds | `delete` deletes these files on the server and other devices. `restore` downloads these files to this device again. |
+| restores asked for before recovery began, which the server does not show | `repeat` sends the request again. `cancel` drops the request. |
+
+Following the server downloads the server's version of a file when the space holds the file outside its trash. Otherwise this device's copy goes to the local trash.
+
 ### A conflict opens a decision
 
 When two devices change the same file, the server keeps both changes as two files (see [Conflicts](conflicts.md)). The device whose change got the conflict name also opens a decision. `koi status` and `koi resolve` show both files and the name of the device that wrote each one:
