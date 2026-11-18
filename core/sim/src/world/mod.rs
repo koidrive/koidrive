@@ -46,12 +46,13 @@
 //!   of its device never overwrote or deleted.
 //! - No node keeps a pending name that no user gave.
 //! - With [`World::revived_deletes`] set, a delete a user made while the server held the deleted
-//!   file reaches the server. Once the devices are quiet, the server holds neither the deleted
-//!   write nor one it was made over live, unless the last restore since the delete took them from
-//!   the server, the delete was only in a store that rolled back or on a device that left before
-//!   sending it, or a server commit that the deleting device's R did not hold when its user
-//!   deleted carried another device's change to the file or to a folder above it that the delete
-//!   removed.
+//!   file reaches the server when a restore of the server came before or after it in the same
+//!   history. Once the devices are quiet, the server holds neither the deleted write nor one it
+//!   was made over live, unless the last restore since the delete took them from the server, the
+//!   author resent a write the server lacked at the delete, the delete was only in a store that
+//!   rolled back or on a device that left before sending it, or a server commit carried another
+//!   device's change, unseen by the deleting user, to the file or to a folder above it that the
+//!   delete removed.
 //! - No write is in two files of the server, except one a restore took from the server while a
 //!   disk held it (section 4.4). Until the devices are quiet again, it may be in one file for each
 //!   node that held it, or for each device that held it in a node the restore rolled back to
@@ -438,10 +439,7 @@ fn resent_over_revert(
 
 /// Applies the result of the commit in flight to R when it is the next commit, and acknowledges
 /// the commit once R holds its records (section 2.7).
-fn acknowledge(
-    device: &mut Device,
-    commit_parents: &mut BTreeMap<String, String>,
-) -> Result<(), Failure> {
+fn acknowledge(device: &mut Device) -> Result<(), Failure> {
     let engine = &mut device.engine;
     let next = (engine.commits.in_flight())
         .and_then(|flight| Some((flight.commit.commit_id.clone(), flight.result.clone()?)));
@@ -449,7 +447,6 @@ fn acknowledge(
         next.filter(|(_, result)| result.seq == engine.cursor.seq + 1)
     {
         engine.apply(&result.changes, Some(&commit_id))?;
-        commit_parents.insert(commit_id.clone(), engine.cursor.commit_id.clone());
         engine.cursor = match result.committed_at_ms {
             0 => Base::from(result.seq),
             committed_at_ms => Base {
@@ -628,8 +625,8 @@ pub struct World {
     /// Sends each `Welcome` without the commit token of the device's commit at its count, as a
     /// server from before RFC 0002's `device_commit_id` does.
     pub tokenless_welcome: bool,
-    /// Fails a phase when a file a user deleted is live on the server again with no restore that
-    /// took the delete.
+    /// Fails a phase when a file a user deleted before or after a restore of the server is live on
+    /// the server again with no restore that took the delete.
     pub revived_deletes: bool,
     /// The tag of the last write.
     writes: i64,
@@ -661,8 +658,6 @@ pub struct World {
     /// the files the server may hold it in.
     exposed: BTreeMap<i64, Exposure>,
     held_commits: Vec<BTreeSet<(u64, String)>>,
-    commit_parents: BTreeMap<String, String>,
-    carriers: BTreeMap<(usize, u128, u64), BTreeSet<(u64, String)>>,
     restored_to: Option<u64>,
     planned_copies: Vec<BTreeMap<NodeId, RecoveryCopy>>,
     recovery_copies: BTreeMap<NodeId, RecoveryCopy>,
@@ -811,8 +806,6 @@ impl World {
             retired: BTreeSet::new(),
             exposed: BTreeMap::new(),
             held_commits: vec![BTreeSet::new(); count],
-            commit_parents: BTreeMap::new(),
-            carriers: BTreeMap::new(),
             restored_to: None,
             planned_copies: vec![BTreeMap::new(); count],
             recovery_copies: BTreeMap::new(),
@@ -836,18 +829,6 @@ impl World {
             deletions: Vec::new(),
             answers: 0,
         }
-    }
-
-    fn r_commits<'a>(&'a self, cursor: &'a Base) -> BTreeMap<u64, &'a str> {
-        std::iter::successors(
-            Some((cursor.seq, cursor.commit_id.as_str())),
-            |(seq, commit)| {
-                let below = self.commit_parents.get(*commit)?;
-                (*seq > 1).then(|| (seq - 1, below.as_str()))
-            },
-        )
-        .filter(|(seq, _)| *seq > 0)
-        .collect()
     }
 
     pub fn space_mut(&mut self) -> &mut SpaceDo {
@@ -1474,7 +1455,7 @@ impl World {
         self.space.restore(&backup.space);
         let live = live_nodes(&self.space);
         for deletion in &mut self.deletions {
-            deletion.gone = deletion.held(&live, |_, _| false).is_none();
+            deletion.gone = deletion.held(&live, |_, _, _, _| false).is_none();
             deletion.restored(backup.space.head_seq());
         }
         self.held_commits = backup.held_commits.clone();
@@ -2173,18 +2154,6 @@ impl World {
                     );
                     commits.forget_lost_slots();
                 }
-                if (self.space.token_at(head.seq))
-                    .is_some_and(|(commit, _)| commit == head.commit_id)
-                {
-                    for seq in 1..=head.seq {
-                        let (Some((below, _)), Some((commit, _))) =
-                            (self.space.token_at(seq - 1), self.space.token_at(seq))
-                        else {
-                            continue;
-                        };
-                        self.commit_parents.insert(commit, below);
-                    }
-                }
                 *cursor = head;
                 *behind = false;
                 let link = self.devices[d].link.as_mut().expect("checked above");
@@ -2264,8 +2233,6 @@ impl World {
                         );
                         let made = owned.then_some(record.commit_id.as_str());
                         engine.apply(&record.changes, made)?;
-                        (self.commit_parents)
-                            .insert(record.commit_id.clone(), engine.cursor.commit_id.clone());
                         engine.cursor = Base {
                             seq: record.seq,
                             commit_id: record.commit_id.clone(),
@@ -2275,7 +2242,7 @@ impl World {
                         if flight.is_some_and(|f| f.commit.commit_id == record.commit_id) {
                             note(&mut self.seen, "own commit replayed before its result");
                         }
-                        acknowledge(&mut self.devices[d], &mut self.commit_parents)?;
+                        acknowledge(&mut self.devices[d])?;
                     } else {
                         note(&mut self.seen, "records arrive twice");
                     }
@@ -2366,7 +2333,7 @@ impl World {
                 }
             }
         }
-        acknowledge(&mut self.devices[d], &mut self.commit_parents)?;
+        acknowledge(&mut self.devices[d])?;
         self.devices[d].persist()?;
         Ok(true)
     }
@@ -2742,8 +2709,6 @@ impl World {
                             for (ino, times) in &mut self.touches[d] {
                                 for at in &carried {
                                     if times.remove(at) {
-                                        (self.carriers.entry((d, *ino, *at)).or_default())
-                                            .insert((record.seq, record.commit_id.clone()));
                                         self.spent.push(Spent {
                                             seq: record.seq,
                                             device: d,
@@ -2914,7 +2879,8 @@ impl World {
                                 if deletion.device == d {
                                     deletion.carried(record.seq, &deleted, &parents);
                                 }
-                                deletion.reached |= deletion.held(&live, |_, _| false).is_none();
+                                deletion.reached |=
+                                    deletion.held(&live, |_, _, _, _| false).is_none();
                             }
                             self.published.extend(after.into_keys());
                             for node in self.space.nodes() {
@@ -4201,59 +4167,6 @@ mod tests {
         assert!(world.held_commits[0].is_empty());
         world.restore(false);
         assert_eq!(world.held_commits, held);
-    }
-
-    #[test]
-    fn each_device_r_holds_the_commits_it_took_also_after_a_restore_onto_another_branch() {
-        let chain = |world: &World| -> BTreeMap<u64, String> {
-            (1..=world.space.head_seq())
-                .map(|seq| (seq, world.space.token_at(seq).unwrap().0))
-                .collect()
-        };
-        let r = |world: &World, d: usize| -> BTreeMap<u64, String> {
-            (world.r_commits(&world.devices[d].engine.cursor).into_iter())
-                .map(|(seq, commit)| (seq, commit.to_owned()))
-                .collect()
-        };
-        let listings = |world: &World| world.seen.get("listing replaces R").copied();
-        let mut world = World::new(2);
-        for name in [0, 2] {
-            let made = Step::User(Action {
-                kind: 1,
-                target: 0,
-                parent: 0,
-                name,
-                text: 0,
-            });
-            world.run(0, &[(0, made)]).unwrap();
-            send(&mut world, 0).unwrap();
-            world.step(0, &Step::Backup).unwrap();
-        }
-        let lost = chain(&world);
-        assert_eq!(lost.len(), 2);
-        assert_eq!(r(&world, 0), lost);
-        assert!(r(&world, 1).is_empty());
-        world.commit_parents.clear();
-        world.run(0, &[(1, Step::Deliver(0)); 8]).unwrap();
-        assert_eq!(r(&world, 1), lost);
-        world.step(0, &Step::RestoreEarlier).unwrap();
-        world.phase(1, &[]).unwrap();
-        let taken = chain(&world);
-        assert_eq!(taken.len(), 2);
-        assert_ne!(taken[&2], lost[&2]);
-        assert_eq!((r(&world, 0), r(&world, 1)), (taken.clone(), taken.clone()));
-        world.step(0, &Step::Restore).unwrap();
-        assert_eq!(chain(&world), lost);
-        assert_eq!((r(&world, 0), r(&world, 1)), (taken.clone(), taken.clone()));
-        world.commit_parents.clear();
-        let before = listings(&world);
-        connect(&mut world, 1);
-        assert_ne!(listings(&world), before);
-        assert_eq!(r(&world, 1), lost);
-        let resent = (world.carriers.values())
-            .find(|carriers| carriers.contains(&(2, taken[&2].clone())))
-            .unwrap();
-        assert!(resent.contains(&(2, lost[&2].clone())));
     }
 
     #[test]

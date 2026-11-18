@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use koidrive_engine::commit::Base;
 use koidrive_engine::tree::{Content, NodeId, RemoteNode};
 
 use koidrive_proto::v1::NodeStatus;
@@ -33,8 +32,11 @@ pub(super) struct Deleted {
 
 pub(super) struct Deletion {
     pub(super) device: usize,
-    base: Base,
+    at: u64,
     files: Vec<Deleted>,
+    unsent: BTreeSet<(usize, u128, u64)>,
+    resendable: BTreeSet<i64>,
+    around_restore: bool,
     pub(super) reached: bool,
     pub(super) gone: bool,
 }
@@ -62,6 +64,7 @@ impl Deletion {
     }
 
     pub(super) fn restored(&mut self, head: u64) {
+        self.around_restore = true;
         for file in &mut self.files {
             file.carried_at = file.carried_at.filter(|seq| *seq <= head);
         }
@@ -70,21 +73,21 @@ impl Deletion {
     pub(super) fn held(
         &self,
         live: &BTreeMap<i64, BTreeSet<NodeId>>,
-        skip: impl Fn(&NodeId, &Deleted) -> bool,
+        skip: impl Fn(i64, &NodeId, &Deleted, bool) -> bool,
     ) -> Option<i64> {
         (self.files.iter()).find_map(|file| {
             let nodes = |write: &i64| live.get(write).into_iter().flatten();
             let at_node = std::iter::once(&file.write)
                 .chain(&file.before)
                 .filter(|write| nodes(write).any(|there| *there == file.node))
-                .map(|write| (*write, &file.node));
+                .map(|write| (*write, &file.node, true));
             let elsewhere = nodes(&file.write)
                 .filter(|there| **there != file.node && !file.elsewhere.contains(*there))
-                .map(|there| (file.write, there));
+                .map(|there| (file.write, there, false));
             at_node
                 .chain(elsewhere)
-                .find(|(_, there)| !skip(there, file))
-                .map(|(write, _)| write)
+                .find(|(write, there, at_node)| !skip(*write, there, file, *at_node))
+                .map(|(write, _, _)| write)
         })
     }
 }
@@ -159,24 +162,40 @@ impl World {
         let scope: Vec<_> = (synced.iter())
             .filter(|(id, _)| under_target(id) || (files.iter()).any(|file| file.path.contains(id)))
             .collect();
+        let unsent: BTreeSet<(usize, u128, u64)> = (0..self.devices.len())
+            .filter(|other| *other != d)
+            .flat_map(|other| {
+                (self.touches[other].iter())
+                    .flat_map(move |(ino, times)| times.iter().map(move |at| (other, *ino, *at)))
+            })
+            .collect();
         let seen = target.is_some_and(|target| {
             synced.get(target).is_some()
                 && (scope.iter()).all(|(id, shape)| {
                     (server.get(*id)).is_some_and(|there| !there.trashed && there.shape.same(shape))
                 })
         });
-        if !seen {
-            return;
+        if seen
+            && !device.rolled_back
+            && !device.recovering()
+            && device.engine.history == self.space.history_id()
+        {
+            let mut deletion = Deletion {
+                device: d,
+                at: self.clock,
+                resendable: (files.iter())
+                    .map(|file| file.write)
+                    .filter(|write| self.exposed.contains_key(write) && !live.contains_key(write))
+                    .collect(),
+                files,
+                unsent,
+                around_restore: self.restored_to.is_some(),
+                reached: false,
+                gone: false,
+            };
+            deletion.reached = deletion.held(&live, |_, _, _, _| false).is_none();
+            self.deletions.push(deletion);
         }
-        let mut deletion = Deletion {
-            device: d,
-            base: device.engine.cursor.clone(),
-            files,
-            reached: false,
-            gone: false,
-        };
-        deletion.reached = deletion.held(&live, |_, _| false).is_none();
-        self.deletions.push(deletion);
     }
 
     fn inos_of(&self, d: usize, node: &NodeId) -> impl Iterator<Item = u128> {
@@ -218,8 +237,7 @@ impl World {
         let dropped = (self.deletions.iter())
             .filter(|deletion| !deletion.reached && !deletion.gone)
             .find_map(|deletion| {
-                let r = self.r_commits(&deletion.base);
-                let write = deletion.held(&live, |node, file| {
+                let write = deletion.held(&live, |write, node, file, at_node| {
                     let changed_since = |spent: &Spent| {
                         let is = |id: &NodeId| {
                             self.inos_of(spent.device, id).any(|ino| ino == spent.ino)
@@ -232,13 +250,14 @@ impl World {
                         spent.device != deletion.device
                             && (self.actions[spent.device].get(&spent.at))
                                 .is_some_and(|(own, _)| *own == spent.ino)
-                            && !(self.carriers.get(&(spent.device, spent.ino, spent.at)))
-                                .into_iter()
-                                .flatten()
-                                .any(|(seq, commit)| r.get(seq) == Some(&commit.as_str()))
+                            && ((deletion.unsent).contains(&(spent.device, spent.ino, spent.at))
+                                || spent.at >= deletion.at)
                             && (itself || moved_between || revived)
                     };
-                    self.spent.iter().any(changed_since)
+                    !deletion.around_restore
+                        || deletion.resendable.contains(&write)
+                        || (!at_node && self.copied.contains(&write))
+                        || self.spent.iter().any(changed_since)
                 })?;
                 Some((write, deletion.device))
             });
