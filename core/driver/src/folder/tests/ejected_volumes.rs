@@ -178,9 +178,14 @@ fn another_disk_where_one_was(first: &Path, second: &Path, stopped: bool) {
 
 type Formatted = fn(&koidrive_test_support::Disks, &str, u32, u32) -> PathBuf;
 
-const SERIAL: u32 = 0x4b4f_4944;
+fn serial_of(disks: &koidrive_test_support::Disks) -> u32 {
+    use std::hash::{Hash, Hasher};
+    let mut serial = std::hash::DefaultHasher::new();
+    disks.base().hash(&mut serial);
+    serial.finish() as u32 | 1
+}
 
-fn recorded_before_sizes(at: &Path) -> VolumeId {
+fn recorded_before_sizes(at: &Path, serial: u32) -> VolumeId {
     if cfg!(target_os = "macos") {
         let info = std::process::Command::new("diskutil")
             .args(["info", "-plist"])
@@ -198,7 +203,7 @@ fn recorded_before_sizes(at: &Path) -> VolumeId {
         return VolumeId::Uuid(bytes.try_into().unwrap());
     }
     let mut id = [0; 16];
-    id[..4].copy_from_slice(&SERIAL.to_le_bytes());
+    id[..4].copy_from_slice(&serial.to_le_bytes());
     id[15] = 4;
     VolumeId::Uuid(id)
 }
@@ -218,8 +223,9 @@ fn swapped_for_a_bigger_stick_with_its_serial(
     identical: bool,
 ) {
     let mut disks = koidrive_test_support::Disks::new().unwrap();
-    let first = format(&disks, "First", 16, SERIAL);
-    let second = format(&disks, "Second", 32, SERIAL);
+    let serial = serial_of(&disks);
+    let first = format(&disks, "First", 16, serial);
+    let second = format(&disks, "Second", 32, serial);
     let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_767_225_600);
     let shared = "README.txt";
     let stage = |at: &Path, body: &str| {
@@ -284,10 +290,11 @@ fn a_stick_of_the_same_size_with_a_sticks_serial_puts_the_first_sticks_files_in_
     let Some(mut disks) = koidrive_test_support::Disks::new() else {
         return;
     };
+    let serial = serial_of(&disks);
     for (kind, format) in formats(&disks) {
         let (first, second) = (
-            format(&disks, &format!("First{kind}"), 16, SERIAL),
-            format(&disks, &format!("Second{kind}"), 16, SERIAL),
+            format(&disks, &format!("First{kind}"), 16, serial),
+            format(&disks, &format!("Second{kind}"), 16, serial),
         );
         let mut remote = Remote::new();
         let (site, mut a, _) = with_disk(&mut disks, &mut remote, "Disk", first);
@@ -490,18 +497,19 @@ fn a_stick_recorded_before_its_size_was_comes_back_and_is_told_from_a_bigger_sti
     let Some(mut disks) = koidrive_test_support::Disks::new() else {
         return;
     };
+    let serial = serial_of(&disks);
     let cases = (formats(&disks).into_iter()).flat_map(|format| [(format, false), (format, true)]);
     for ((kind, format), unplugged) in cases {
         let (first, second) = (
-            format(&disks, &format!("Old{kind}{}", u8::from(unplugged)), 16, SERIAL),
-            format(&disks, &format!("Big{kind}{}", u8::from(unplugged)), 32, SERIAL),
+            format(&disks, &format!("Old{kind}{}", u8::from(unplugged)), 16, serial),
+            format(&disks, &format!("Big{kind}{}", u8::from(unplugged)), 32, serial),
         );
         let mut remote = Remote::new();
         let (site, a, _) = with_disk(&mut disks, &mut remote, "Disk", first.clone());
         let tree = user_files(&remote);
         drop(a);
         let at = site.root.join("Disk");
-        let (plain, sized) = (recorded_before_sizes(&at), identified(&at).volume.unwrap());
+        let (plain, sized) = (recorded_before_sizes(&at, serial), identified(&at).volume.unwrap());
         assert_ne!(plain, sized, "{kind}");
         let mounts = |site: &Site| {
             let mut store = Store::open(&site.db).unwrap();
@@ -548,11 +556,12 @@ fn a_folder_whose_root_is_a_stick_syncs_again_once_the_stick_is_plugged_back_in(
     let Some(mut disks) = koidrive_test_support::Disks::new() else {
         return;
     };
+    let serial = serial_of(&disks);
     let roots: Vec<(PathBuf, bool)> = (formats(&disks).into_iter())
         .flat_map(|(kind, format)| {
             [false, true].map(|recorded| {
                 let name = format!("R{kind}{}", u8::from(recorded));
-                (format(&disks, &name, 16, SERIAL), recorded)
+                (format(&disks, &name, 16, serial), recorded)
             })
         })
         .collect();
@@ -570,7 +579,7 @@ fn a_folder_whose_root_is_a_stick_syncs_again_once_the_stick_is_plugged_back_in(
         rewrite_link(&site, |link| {
             link.root_dev = found.dev;
             link.root_volume = match legacy {
-                true => Some(recorded_before_sizes(&site.root)),
+                true => Some(recorded_before_sizes(&site.root, serial)),
                 false => found.volume,
             };
         });
