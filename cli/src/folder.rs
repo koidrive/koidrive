@@ -51,6 +51,16 @@ pub(crate) enum FolderAction {
         #[command(flatten)]
         request: RequestArg,
     },
+    /// Sync a folder halted as an older copy of itself with the files it holds now.
+    ///
+    /// Nothing the copy lacks is deleted on the server, and those files download again. Files only the copy holds,
+    /// or that differ from the server's, wait until you answer for them in koi resolve.
+    Relink {
+        /// The linked folder that halted as an older copy.
+        folder: PathBuf,
+        #[command(flatten)]
+        request: RequestArg,
+    },
 }
 
 /// Runs a folder command in the daemon, or on its own when no daemon runs.
@@ -93,6 +103,11 @@ pub(crate) async fn folder(paths: &Paths, action: FolderAction) -> Result<Done, 
             let folder = absolute(&folder)?;
             let key = Key::retry(&folder, replan);
             Request::Lift { folder, replan }.once(request.request_id, key)
+        }
+        FolderAction::Relink { folder, request } => {
+            let folder = absolute(&folder)?;
+            let key = Key::relink(&folder);
+            Request::Relink { folder }.once(request.request_id, key)
         }
     };
     match ipc::run(paths, request).await? {

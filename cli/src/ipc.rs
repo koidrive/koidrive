@@ -163,6 +163,10 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
             let lift = if replan { Lift::Replan } else { Lift::Resend };
             (driver.lift(&folder, lift).await).map(|folder| Response::Restarted { folder })
         }
+        Request::Relink { folder } => driver
+            .relink(&folder)
+            .await
+            .map(|folder| Response::Restarted { folder }),
         Request::Answer {
             question_id,
             answer,

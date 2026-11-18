@@ -819,6 +819,31 @@ impl Tx<'_> {
         Ok(())
     }
 
+    /// Empties the sync state to what a first link starts from, keeping the link with its root tokens, the volume
+    /// mounts, the chunk cache and the ID generator.
+    pub fn forget_sync_state(&self) -> Result<()> {
+        const KEPT: [&str; 4] = ["migrations", "link", "volume_mounts", "chunk_cache"];
+        let ids = self.id_generator()?;
+        let tables: Vec<String> = self
+            .0
+            .prepare(
+                "SELECT name FROM main.sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            )?
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        self.0.pragma_update(None, "defer_foreign_keys", true)?;
+        for table in tables
+            .iter()
+            .filter(|table| !KEPT.contains(&table.as_str()))
+        {
+            self.0.execute(&format!("DELETE FROM \"{table}\""), [])?;
+        }
+        if let Some(ids) = ids {
+            self.set_id_generator(&ids)?;
+        }
+        Ok(())
+    }
+
     /// The marker tokens the link records; none before the link's first start.
     pub fn root_tokens(&self) -> Result<RootTokens> {
         Ok(self

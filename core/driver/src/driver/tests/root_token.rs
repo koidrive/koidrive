@@ -39,6 +39,11 @@ async fn a_second_profile_neither_rotates_the_token_of_a_folder_another_holds_no
     second.start();
     let problem = halted(&second).await;
     assert!(problem.contains("another Koidrive process"), "{problem}");
+    let refused = second.relink(&root).await;
+    assert!(
+        matches!(refused, Err(DriverError::FolderInUse(_))),
+        "{refused:?}"
+    );
     second.stop().await;
     assert_ne!(first.status().folders[0].state, FolderState::Halted);
     first.stop().await;
@@ -61,4 +66,45 @@ async fn a_second_profile_neither_rotates_the_token_of_a_folder_another_holds_no
     .await;
     assert_ne!(first.status().folders[0].state, FolderState::Halted);
     first.stop().await;
+}
+
+#[tokio::test]
+async fn relink_refuses_a_folder_that_syncs_and_takes_one_halted_as_an_older_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = fs::canonicalize(dir.path()).unwrap();
+    let root = base.join("Koidrive");
+    let paths = Paths::under(&base.join("a"));
+    linked(&paths, &root, "d1");
+    fs::write(root.join("one"), b"1").unwrap();
+    let driver = Driver::open(paths).unwrap();
+    let entries = |driver: &Driver| driver.status().folders[0].local_entries;
+    driver.start();
+    eventually("the folder is observed", || entries(&driver) == Some(1)).await;
+
+    let refused = driver.relink(&root).await;
+    assert!(
+        matches!(refused, Err(DriverError::NotACopy(_))),
+        "{refused:?}"
+    );
+    fs::write(root.join("two"), b"2").unwrap();
+    eventually("the folder is observed again", || {
+        entries(&driver) == Some(2)
+    })
+    .await;
+    assert_ne!(driver.status().folders[0].state, FolderState::Halted);
+    driver.stop().await;
+
+    let mut marker = read_marker(&root).unwrap().unwrap();
+    marker.token = Some("0".repeat(32));
+    write_marker(&root, &marker).unwrap();
+    driver.start();
+    eventually("the copy halts", || driver.status().folders[0].relinkable).await;
+    let relinked = driver.relink(&root).await.unwrap();
+    assert!(!relinked.relinkable, "{relinked:?}");
+    eventually("the relinked folder is observed", || {
+        entries(&driver) == Some(2)
+    })
+    .await;
+    assert_ne!(read_marker(&root).unwrap().unwrap().token, marker.token);
+    driver.stop().await;
 }

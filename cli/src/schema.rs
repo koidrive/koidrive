@@ -42,7 +42,7 @@ fn data(command: &str) -> Option<&'static [Data]> {
         "space list" => &[of::<SpacesData>],
         "space usage" => &[of::<UsagesData>],
         "folder link" => &[of::<WithService<FolderData>>],
-        "folder restart" | "folder retry" => &[of::<FolderData>],
+        "folder restart" | "folder retry" | "folder relink" => &[of::<FolderData>],
         "folder unlink" => &[of::<WithService<UnlinkedData>>],
         "device invite" => &[of::<InvitationData>],
         "device list" => &[of::<DevicesData>],

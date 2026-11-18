@@ -973,6 +973,7 @@ mod tests {
             local_entries: None,
             questions: 0,
             problem: None,
+            relinkable: false,
             progress: None,
             activity: None,
             bytes_moved: 0,

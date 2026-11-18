@@ -22,6 +22,7 @@ const SYNCED_STEP_SECONDS: u64 = 600;
 pub(crate) enum Recovery {
     Restart,
     Root,
+    Relink,
     Unlink,
 }
 
@@ -120,6 +121,7 @@ impl Lifecycle {
         if let Some(halt) = &checkpoint.halt {
             status.state = FolderState::Halted;
             status.problem = Some(halt.problem.clone());
+            status.relinkable = halt.recovery == Recovery::Relink;
         }
         Self {
             path,
@@ -141,7 +143,7 @@ impl Lifecycle {
             .unwrap()
             .halt
             .as_ref()
-            .is_some_and(|halt| halt.recovery != Recovery::Root)
+            .is_some_and(|halt| !matches!(halt.recovery, Recovery::Root | Recovery::Relink))
     }
 
     pub(crate) fn root(&self) -> Option<Identity> {
@@ -167,6 +169,7 @@ impl Lifecycle {
             self.save(&next)?;
             self.cleared(checkpoint.halt.as_ref());
             *checkpoint = next;
+            self.status.lock().unwrap().relinkable = false;
         }
         Ok(())
     }
@@ -191,6 +194,7 @@ impl Lifecycle {
         let mut status = self.status.lock().unwrap();
         status.state = FolderState::Stopped;
         status.problem = None;
+        status.relinkable = false;
         status.wait = None;
         Ok(())
     }
@@ -287,6 +291,7 @@ impl Lifecycle {
         }
         status.state = FolderState::Halted;
         status.problem = Some(problem);
+        status.relinkable = recovery == Recovery::Relink;
         status.wait = None;
     }
 
@@ -334,6 +339,7 @@ impl Lifecycle {
         let mut status = self.status.lock().unwrap();
         status.state = FolderState::Halted;
         status.problem = Some(problem);
+        status.relinkable = false;
     }
 
     pub(crate) fn halted(&self) -> bool {

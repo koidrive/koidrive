@@ -546,3 +546,51 @@ fn a_paused_status_keeps_the_halted_condition_and_its_check_exit() {
         }])
     );
 }
+
+#[test]
+fn relinking_a_folder_that_did_not_halt_as_a_copy_refuses_with_and_without_the_daemon() {
+    use std::os::unix::fs::MetadataExt;
+
+    let profile = Profile::new("[service]\nbackground = false\n");
+    profile.link();
+    let space_id = "0190f0a0-0000-7000-8000-000000000001";
+    let root = profile.home.path().join("Work");
+    std::fs::create_dir(&root).unwrap();
+    let marker = koidrive_fs::Marker {
+        space_id: space_id.into(),
+        effects: 0,
+        token: None,
+    };
+    koidrive_fs::write_marker(&root, &marker).unwrap();
+    let mut store = koidrive_store::Store::open(profile.paths.store(space_id).unwrap()).unwrap();
+    store
+        .transaction(|tx| {
+            let link = tx.link()?.unwrap();
+            tx.set_link(&koidrive_store::Link {
+                root_dev: std::fs::metadata(&root).unwrap().dev(),
+                ..link
+            })
+        })
+        .unwrap();
+    drop(store);
+    let requests = profile.home.path().join("state/koidrive/requests");
+    let folder = root.to_str().unwrap();
+    let refused = |(output, envelope): (Output, Value)| {
+        assert_eq!(output.status.code(), Some(2), "{envelope:#}");
+        assert_eq!(envelope["error"]["code"], "usage", "{envelope:#}");
+        let message = envelope["error"]["message"].as_str().unwrap();
+        assert!(message.contains("not halted as an older copy"), "{message}");
+        let left: Vec<_> = std::fs::read_dir(&requests)
+            .map(|entries| entries.map(|entry| entry.unwrap().file_name()).collect())
+            .unwrap_or_default();
+        assert!(left.is_empty(), "{left:?}");
+        assert_eq!(
+            koidrive_fs::read_marker(&root).unwrap(),
+            Some(marker.clone())
+        );
+    };
+
+    refused(profile.json(&["folder", "relink", folder, "--request-id", "r1", "--json"]));
+    let _daemon = LiveDaemon::start(&profile);
+    refused(profile.json(&["folder", "relink", folder, "--request-id", "r1", "--json"]));
+}

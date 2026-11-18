@@ -97,7 +97,7 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: SpaceAction,
     },
-    /// Link, unlink, restart, or retry a local folder.
+    /// Link, unlink, restart, retry, or relink a local folder.
     #[command(arg_required_else_help = true)]
     Folder {
         #[command(subcommand)]

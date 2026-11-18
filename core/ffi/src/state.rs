@@ -559,6 +559,7 @@ mod tests {
             local_entries: None,
             questions: 0,
             problem: problem.map(str::to_owned),
+            relinkable: false,
             progress: None,
             held_disks: Vec::new(),
             activity: None,
@@ -1028,6 +1029,7 @@ mod unreachable_tests {
                 problem: Some(
                     "no internet connection; trying again at 2026-11-14 12:00 UTC".into(),
                 ),
+                relinkable: false,
                 progress: None,
                 held_disks: Vec::new(),
                 activity: None,
@@ -1074,6 +1076,7 @@ mod unreachable_tests {
                     local_entries: None,
                     questions: 0,
                     problem: Some("the folder is missing".into()),
+                    relinkable: false,
                     progress: None,
                     held_disks: Vec::new(),
                     activity: None,

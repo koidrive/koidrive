@@ -687,6 +687,7 @@ fn argument_errors_are_usage_and_a_change_that_waits_for_the_owner_needs_auth() 
             device_id: "d1".into(),
         },
         DriverError::NothingToLift,
+        DriverError::NotACopy(PathBuf::from("/home/ada/Docs")),
         DriverError::Paths(PathsError::BadSpaceId("../x".into())),
         DriverError::Config(ConfigError::Invalid {
             path: PathBuf::from("/home/ada/.config/koidrive/config.toml"),

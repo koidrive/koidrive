@@ -243,6 +243,12 @@ fn a_copy_made_before_a_change_from_the_server_was_applied_does_not_start() {
     assert!(matches!(opened(&site), Err(Stop::DiskBehind { .. })));
     assert_eq!(names(&site.root), ["before.txt"]);
     assert_eq!(remote.tree(), served);
+
+    relink(&site).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert_eq!(remote.tree(), served);
+    assert_eq!(names(&site.root), ["before.txt", "two.txt"]);
 }
 
 #[test]
@@ -645,3 +651,196 @@ fn two_copies_of_one_disk_halt_when_the_older_one_is_at_the_folder() {
 
 
 
+
+fn relink(site: &Site) -> Result<(), disk::RelinkError> {
+    relink_until(site, Box::new(|_| {}))
+}
+
+fn relink_until(
+    site: &Site,
+    hook: Box<dyn FnMut(disk::Cut) + Send>,
+) -> Result<(), disk::RelinkError> {
+    let lock = claim::lock(&site.root)
+        .unwrap()
+        .expect("the folder is not locked");
+    disk::relink_with_hook(&lock, &site.link, &mut Store::open(&site.db).unwrap(), hook)
+}
+
+fn a_copy_from_before_an_add_an_edit_and_a_delete(remote: &mut Remote) -> Site {
+    let (site, mut a) = linked(remote, "a");
+    a.create(remote, &site.root.join("kept.txt"), b"kept");
+    a.create(remote, &site.root.join("edited.txt"), b"old");
+    a.create(remote, &site.root.join("gone.txt"), b"gone");
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    a.create(remote, &site.root.join("after.txt"), b"after");
+    a.create(remote, &site.root.join("edited.txt"), b"new");
+    fs::remove_file(site.root.join("gone.txt")).unwrap();
+    a.rescan();
+    a.rest(remote);
+    drop(a);
+    assert_eq!(remote.names(), ["after.txt", "edited.txt", "kept.txt"]);
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    assert!(halts_as_a_copy(&site));
+    site
+}
+
+#[test]
+fn a_relinked_copy_loses_nothing_and_its_older_files_give_way_to_the_servers_once_discarded() {
+    let mut remote = Remote::new();
+    let site = a_copy_from_before_an_add_an_edit_and_a_delete(&mut remote);
+    let served = remote.tree();
+    let copied = marker_of(&site).token;
+    let stored = tokens_of(&site).current;
+    let private = site.root.join(koidrive_fs::PRIVATE_DIR);
+    for dir in [
+        koidrive_fs::STAGING_DIR,
+        koidrive_fs::QUARANTINE_DIR,
+        koidrive_fs::TRASH_DIR,
+    ] {
+        fs::create_dir_all(private.join(dir)).unwrap();
+        fs::write(private.join(dir).join("left.txt"), b"left").unwrap();
+    }
+
+    relink(&site).unwrap();
+    assert_rotated_from(&site, &[copied, stored]);
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert_ne!(a.state(), FolderState::Halted);
+    assert_eq!(remote.tree(), served);
+    let file = |name: &str, text: &str| (name.to_owned(), text.to_owned());
+    assert_eq!(
+        files(&site.root),
+        [
+            file("after.txt", "after"),
+            file("edited.txt", "old"),
+            file("gone.txt", "gone"),
+            file("kept.txt", "kept"),
+        ]
+    );
+    let [question] = &shown(&site)[..] else {
+        panic!("one question");
+    };
+    let held: Vec<_> = (question.items.iter())
+        .map(|item| item.path.unquoted())
+        .collect();
+    assert_eq!(held, ["edited.txt", "gone.txt"]);
+    drop(a);
+
+    answer(&site, Answer::Discard);
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(a.folder.view().questions, 0);
+    assert_eq!(remote.tree(), served);
+    assert_eq!(
+        files(&site.root),
+        [
+            file("after.txt", "after"),
+            file("edited.txt", "new"),
+            file("kept.txt", "kept"),
+        ]
+    );
+    let mut trashed: Vec<_> = (files(&private.join(koidrive_fs::TRASH_DIR)).into_iter())
+        .map(|(_, text)| text)
+        .filter(|text| !text.starts_with('{'))
+        .collect();
+    trashed.sort();
+    assert_eq!(trashed, ["gone", "left", "old"]);
+}
+
+#[test]
+fn a_file_the_newer_copy_deleted_reaches_the_server_only_once_the_question_is_answered() {
+    let mut remote = Remote::new();
+    let site = a_copy_from_before_an_add_an_edit_and_a_delete(&mut remote);
+    relink(&site).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    drop(a);
+
+    answer(&site, Answer::Publish);
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert!(remote.names().contains(&"gone.txt".to_owned()));
+    assert_eq!(a.folder.view().questions, 0);
+}
+
+#[test]
+fn relink_refuses_a_folder_that_passes_its_check_and_takes_one_whose_store_was_restored_on_its_own() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("one.txt"), b"one");
+    drop(a);
+    let (marker, tokens) = (marker_of(&site), tokens_of(&site));
+    assert!(matches!(relink(&site), Err(disk::RelinkError::NotACopy)));
+    assert_eq!((marker_of(&site), tokens_of(&site)), (marker, tokens));
+    assert!(site.stored().cursor.is_some());
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    drop(restarted(&site, &mut remote));
+    fs::copy(&saved, &site.db).unwrap();
+    assert!(halts_as_a_copy(&site));
+
+    relink(&site).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert_ne!(a.state(), FolderState::Halted);
+    assert_eq!(a.folder.view().questions, 0);
+    a.create(&mut remote, &site.root.join("two.txt"), b"two");
+    assert_eq!(remote.names(), ["one.txt", "two.txt"]);
+    assert_eq!(names(&site.root), ["one.txt", "two.txt"]);
+}
+
+#[test]
+fn a_crash_at_each_step_of_a_relink_leaves_the_copy_halted_or_relinked() {
+    for cut in [
+        disk::Cut::TokenPended,
+        disk::Cut::TokenWritten,
+        disk::Cut::TokenCommitted,
+    ] {
+        let mut remote = Remote::new();
+        let site = a_copy_from_before_an_add_an_edit_and_a_delete(&mut remote);
+        let served = remote.tree();
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            relink_until(&site, crash_at(cut))
+        }));
+        assert!(crashed.is_err(), "{cut:?}");
+        if cut == disk::Cut::TokenPended {
+            assert!(halts_as_a_copy(&site), "{cut:?}");
+            relink(&site).unwrap();
+        }
+
+        let mut a = restarted(&site, &mut remote);
+        a.rest(&mut remote);
+        assert_ne!(a.state(), FolderState::Halted, "{cut:?}");
+        assert_eq!(remote.tree(), served, "{cut:?}");
+        assert!(
+            files(&site.root).contains(&("after.txt".into(), "after".into())),
+            "{cut:?}"
+        );
+    }
+}
+
+#[test]
+fn a_relink_whose_marker_write_fails_keeps_the_folder_halted() {
+    let mut remote = Remote::new();
+    let site = a_copy_from_before_an_add_an_edit_and_a_delete(&mut remote);
+    let served = remote.tree();
+    let blocker = block_marker(&site);
+
+    assert!(matches!(
+        relink(&site),
+        Err(disk::RelinkError::Stop(Stop::Io(_)))
+    ));
+    assert!(halts_as_a_copy(&site));
+    fs::remove_dir_all(&blocker).unwrap();
+    assert!(halts_as_a_copy(&site));
+
+    relink(&site).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert_ne!(a.state(), FolderState::Halted);
+    assert_eq!(remote.tree(), served);
+}

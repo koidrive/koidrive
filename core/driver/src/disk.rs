@@ -937,16 +937,86 @@ impl Disk {
 
     /// The marker, read through the locked descriptor, for a marker that names this space.
     fn marker(&self) -> Result<Marker, Stop> {
-        let marker = self
-            .space
-            .marker()
-            .map_err(|error| Stop::Root(RootProblem::BadMarker(error)))?
-            .ok_or(Stop::Root(RootProblem::NoMarker))?;
-        if marker.space_id != self.space_id {
-            return Err(Stop::Root(RootProblem::OtherSpace(marker.space_id)));
-        }
-        Ok(marker)
+        marker_of(&self.space, &self.space_id)
     }
+}
+
+fn marker_of(space: &Space, space_id: &str) -> Result<Marker, Stop> {
+    let marker = space
+        .marker()
+        .map_err(|error| Stop::Root(RootProblem::BadMarker(error)))?
+        .ok_or(Stop::Root(RootProblem::NoMarker))?;
+    if marker.space_id != space_id {
+        return Err(Stop::Root(RootProblem::OtherSpace(marker.space_id)));
+    }
+    Ok(marker)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RelinkError {
+    #[error("the folder is not halted as an older copy of the folder this link synced")]
+    NotACopy,
+    #[error(transparent)]
+    Stop(#[from] Stop),
+}
+
+pub(crate) fn relink(lock: &File, link: &Link, store: &mut Store) -> Result<(), RelinkError> {
+    relink_with_hook(lock, link, store, Box::new(|_| {}))
+}
+
+pub(crate) fn relink_with_hook(
+    lock: &File,
+    link: &Link,
+    store: &mut Store,
+    mut hook: Hook,
+) -> Result<(), RelinkError> {
+    let space = Space::bind(
+        OwnedFd::from(lock.try_clone().map_err(Stop::from)?),
+        &link.root,
+    )
+    .map_err(Stop::from)?;
+    link.root_at()
+        .admits(&space.root_at().map_err(Stop::from)?)
+        .map_err(Stop::Root)?;
+    let marker = marker_of(&space, &link.space_id)?;
+    let older = store.transaction(|tx| -> Result<_, Stop> {
+        let effects = Engine::load(tx, &link.space_id)?.effects;
+        let upper = effects.cleared() + effects.in_flight().len() as u64;
+        let copy = tx.root_tokens()?.admits(&marker).is_err();
+        Ok(marker.effects <= upper && (copy || marker.effects < effects.cleared()))
+    })?;
+    if !older {
+        return Err(RelinkError::NotACopy);
+    }
+    let next = koidrive_fs::new_token();
+    store.transaction(|tx| -> Result<_, Stop> {
+        let current = tx.root_tokens()?.current;
+        tx.forget_sync_state()?;
+        if let Some(stored) = tx.link()? {
+            tx.set_link(&Link {
+                found_marker: true,
+                ..stored
+            })?;
+        }
+        let mut engine = Engine::load(tx, &link.space_id)?;
+        engine.effects.catch_up(marker.effects);
+        engine.checkpoint(tx)?;
+        tx.set_root_tokens(&RootTokens {
+            current,
+            pending: Some(next.clone()),
+        })?;
+        Ok(())
+    })?;
+    hook(Cut::TokenPended);
+    let relinked = Marker {
+        token: Some(next.clone()),
+        ..marker
+    };
+    space.write_marker(&relinked).map_err(Stop::from)?;
+    hook(Cut::TokenWritten);
+    commit_token(next, store)?;
+    hook(Cut::TokenCommitted);
+    Ok(())
 }
 
 fn rotate_token(space: &Space, marker: Marker, store: &mut Store) -> Result<RootTokens, Stop> {

@@ -84,6 +84,9 @@ pub enum Request {
         folder: PathBuf,
         replan: bool,
     },
+    Relink {
+        folder: PathBuf,
+    },
     Questions,
     /// `Driver::answered_question`.
     AnsweredQuestion {
@@ -430,6 +433,13 @@ impl Key {
     pub fn restart(folder: &Path) -> Self {
         Key::new(
             "folder restart",
+            json!({ "folder": folder.as_os_str().as_encoded_bytes() }),
+        )
+    }
+
+    pub fn relink(folder: &Path) -> Self {
+        Key::new(
+            "folder relink",
             json!({ "folder": folder.as_os_str().as_encoded_bytes() }),
         )
     }
@@ -946,6 +956,16 @@ mod tests {
                 replan: true,
             },
             r#"{"request":"lift","folder":"/home/ada/Docs","replan":true}"#,
+        );
+        pinned(
+            Request::Relink {
+                folder: "/a".into(),
+            }
+            .once(
+                Some(RequestId::parse("r1").unwrap()),
+                Key::relink(Path::new("/a")),
+            ),
+            r#"{"request":"once","request_id":"r1","key":{"command":"folder relink","arguments":{"folder":[47,97]}},"run":{"request":"relink","folder":"/a"}}"#,
         );
         pinned(
             Request::Restart {

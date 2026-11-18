@@ -393,6 +393,7 @@ impl FolderData {
             local_entries: None,
             questions: 0,
             problem: self.problem,
+            relinkable: false,
             wait: None,
             progress: None,
             held_disks: Vec::new(),
