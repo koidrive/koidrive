@@ -683,14 +683,15 @@ fn a_rename_another_device_makes_after_its_store_rollback_brings_the_file_back()
             vec![(1, Step::CopyStore), (0, file("c.txt"))],
             vec![
                 (1, Step::RollBack),
-                (0, overwrite(0)),
-                (1, SCAN),
-                (1, rename(0, 0, "a")),
-                (0, SCAN),
+                (0, rename(0, 0, "a")),
+                (1, Step::Work(0)),
+                (1, rename(0, 0, "A")),
+                (0, Step::Work(0)),
+                (0, Step::Work(0)),
                 (0, delete(0)),
-                (0, COMMIT),
+                (0, Step::Work(2093181476778376)),
                 (1, Step::Connect),
-                (1, DELIVER),
+                (1, Step::Work(2036517389419676280)),
             ],
         ],
     )
@@ -699,8 +700,37 @@ fn a_rename_another_device_makes_after_its_store_rollback_brings_the_file_back()
         let held: Vec<_> = (files_on(&world, device).into_iter())
             .map(|(name, content)| (name, content.as_ref().map(tag)))
             .collect();
-        assert_eq!(held, [("a".to_owned(), Some(1))], "device {device}");
+        assert_eq!(held, [("A".to_owned(), Some(1))], "device {device}");
     }
+}
+
+#[test]
+fn a_rename_and_back_the_deleting_device_never_saw_keeps_the_file() {
+    let mut deleted = vec![(0, rename(0, 0, "b"))];
+    deleted.extend([(0, Step::Work(0)); 4]);
+    deleted.push((0, rename(0, 0, "E\u{301}")));
+    deleted.extend([(0, Step::Work(0)); 3]);
+    deleted.extend([(1, delete(0)), (1, Step::Work(1)), (1, Step::Work(1))]);
+    checked(2, &[vec![(0, act(1, 0, 0, "E\u{301}", 3))], deleted]).unwrap();
+}
+
+#[test]
+fn a_rename_the_deleting_device_received_but_never_applied_keeps_the_file() {
+    let mut deleted = vec![(0, rename(0, 0, "C.TXT"))];
+    deleted.extend([(0, Step::Work(0)); 3]);
+    deleted.extend([(1, DELIVER), (1, delete(0))]);
+    checked(
+        2,
+        &[
+            vec![
+                (0, act(1, 0, 0, "C.TXT", 0)),
+                (0, act(1, 0, 0, "a", 3)),
+                (0, delete(0)),
+            ],
+            deleted,
+        ],
+    )
+    .unwrap();
 }
 
 #[test]

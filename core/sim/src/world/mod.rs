@@ -48,10 +48,10 @@
 //! - With [`World::revived_deletes`] set, a delete a user made while the server held the deleted
 //!   file reaches the server. Once the devices are quiet, the server holds neither the deleted
 //!   write nor one it was made over live, unless the last restore since the delete took them from
-//!   the server, the author resent a write the server lacked at the delete, the delete was only in
-//!   a store that rolled back or on a device that left before sending it, or a server commit
-//!   carried another device's change, unseen by the deleting user, to the file or to a folder
-//!   above it that the delete removed.
+//!   the server, the delete was only in a store that rolled back or on a device that left before
+//!   sending it, or a server commit that the deleting device's R did not hold when its user
+//!   deleted carried another device's change to the file or to a folder above it that the delete
+//!   removed.
 //! - No write is in two files of the server, except one a restore took from the server while a
 //!   disk held it (section 4.4). Until the devices are quiet again, it may be in one file for each
 //!   node that held it, or for each device that held it in a node the restore rolled back to
@@ -838,7 +838,6 @@ impl World {
         }
     }
 
-    #[cfg(test)]
     fn r_commits<'a>(&'a self, cursor: &'a Base) -> BTreeMap<u64, &'a str> {
         std::iter::successors(
             Some((cursor.seq, cursor.commit_id.as_str())),
@@ -1475,7 +1474,7 @@ impl World {
         self.space.restore(&backup.space);
         let live = live_nodes(&self.space);
         for deletion in &mut self.deletions {
-            deletion.gone = deletion.held(&live, |_, _, _, _| false).is_none();
+            deletion.gone = deletion.held(&live, |_, _| false).is_none();
             deletion.restored(backup.space.head_seq());
         }
         self.held_commits = backup.held_commits.clone();
@@ -2915,8 +2914,7 @@ impl World {
                                 if deletion.device == d {
                                     deletion.carried(record.seq, &deleted, &parents);
                                 }
-                                deletion.reached |=
-                                    deletion.held(&live, |_, _, _, _| false).is_none();
+                                deletion.reached |= deletion.held(&live, |_, _| false).is_none();
                             }
                             self.published.extend(after.into_keys());
                             for node in self.space.nodes() {
