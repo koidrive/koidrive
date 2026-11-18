@@ -504,9 +504,10 @@ impl SpaceDo {
     }
 
     fn commit_time(&self, now_ms: i64) -> i64 {
-        self.log
-            .last()
-            .map_or(now_ms, |head| now_ms.max(head.committed_at_ms + 1))
+        match self.token_at(self.head_seq) {
+            Some((_, head_ms)) if self.head_seq > 0 => now_ms.max(head_ms + 1),
+            _ => now_ms,
+        }
     }
 
     pub fn head_seq(&self) -> u64 {
