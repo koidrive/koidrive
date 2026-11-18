@@ -775,7 +775,8 @@ mod tests {
                     "koidrive-engine::guard a_move_is_guarded": [1],
                     "koidrive-engine::names name_keys_fold_case": [1],
                     "koidrive-driver engine::tests::batches_leave_l_a_tree_that_holds_the_disk": [1],
-                    "koidrive-fs::quoted the_daemon_quotes_every_path": [1]
+                    "koidrive-fs::quoted the_daemon_quotes_every_path": [1],
+                    "koidrive-engine::state nothing_in_the_checkout": []
                 }
             }"#,
         )

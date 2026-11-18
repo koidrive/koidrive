@@ -298,7 +298,8 @@ pub fn select(
             .iter()
             .filter(|(test, files)| {
                 let package = test.split([' ', ':']).next().unwrap_or(test);
-                !files.iter().any(|file| changed.contains(file))
+                !files.is_empty()
+                    && !files.iter().any(|file| changed.contains(file))
                     && !random.holds(test)
                     && !readers.contains(package)
             })

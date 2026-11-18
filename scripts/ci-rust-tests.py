@@ -206,6 +206,14 @@ def function_spans(report, root):
     return spans
 
 
+def without_const_fns(spans, lines):
+    kept = {}
+    for file, functions in spans.items():
+        text = lines(file)
+        kept[file] = {(start, end) for start, end in functions if "const fn" not in text[start - 1]}
+    return kept
+
+
 def blob(path):
     data = path.read_bytes()
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
@@ -259,6 +267,7 @@ def command_coverage_map(args):
             for file, functions in found.items():
                 spans.setdefault(file, set()).update(functions)
     files = set().union(*tests.values())
+    spans = without_const_fns({file: spans.get(file, set()) for file in files}, lambda file: (Path(args.root) / file).read_text().splitlines())
     blobs = {file: blob(Path(args.root) / file) for file in files}
     Path(args.out).write_text(json.dumps(coverage_map(tests, spans, blobs, args.sha, args.created)) + "\n")
     print(f"The coverage map of {args.sha} records the files each of {len(tests)} tests ran. "
