@@ -1181,6 +1181,18 @@ impl Trees {
             && made_over(&source.made_over, &remote.version_id)
     }
 
+    pub(crate) fn remote_made_over(&self, id: &str, version_id: &str) -> bool {
+        self.r.get(id).is_some_and(|remote| {
+            remote.version_id != version_id && made_over(&remote.made_over, version_id)
+        })
+    }
+
+    pub(crate) fn synced_version_id(&self, id: &str) -> Option<&str> {
+        (self.content_provenance.get(id)?.synced.as_ref())
+            .map(|synced| synced.version_id.as_str())
+            .filter(|id| !id.is_empty())
+    }
+
     pub(crate) fn source_version_id(&self, id: &str) -> Option<&str> {
         self.content_provenance
             .get(id)?
