@@ -380,6 +380,18 @@ mod tests {
     }
 
     #[test]
+    fn battery_triage_and_known_failure_changes_run_no_selected_job() {
+        assert_eq!(
+            running(&[
+                ".github/battery-known-failures/GUN-1-A-write-lost.toml",
+                "scripts/triage-battery.py",
+                "scripts/test-property-battery.py",
+            ]),
+            jobs(&[])
+        );
+    }
+
+    #[test]
     fn a_readme_or_license_inside_a_package_selects_that_package() {
         for path in [
             "core/engine/README.md",

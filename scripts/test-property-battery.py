@@ -352,27 +352,38 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; 
 """.replace("§", chr(96))
 
 
-KNOWN = """[[failure]]
-class = "A"
+KNOWN = {
+    "GUN-1-A-write-lost.toml": """class = "A"
 issue = "GUN-1"
 tests = ["devices_converge", "devices_lose_no_write"]
 message = '''write <n> is lost'''
 examples = ["write 1 is lost at core/sim/tests/devices/common.rs:120."]
-
-[[failure]]
-class = "B"
+""",
+    "GUN-2-B-no-convergence.toml": """class = "B"
 issue = "GUN-2"
 tests = ["devices_converge"]
 message = '''no convergence within <n> steps'''
 examples = ["no convergence within 400 steps"]
-
-[[failure]]
-class = "C"
+""",
+    "GUN-3-C-no-convergence.toml": """class = "C"
 issue = "GUN-3"
 tests = ["devices_lose_no_write"]
 message = '''no convergence within <n> steps'''
 examples = ["no convergence within 400 steps"]
-"""
+""",
+}
+
+
+def write_registry(directory, files):
+    directory.mkdir()
+    for name, text in reversed(sorted(files.items())):
+        (directory / name).write_text(text)
+    return directory
+
+
+def known_failures(files):
+    with tempfile.TemporaryDirectory() as directory:
+        return triage.known_failures(write_registry(Path(directory) / "known", files))
 
 
 class KnownFailures(unittest.TestCase):
@@ -388,11 +399,11 @@ class KnownFailures(unittest.TestCase):
                 results = [{"runs": [{"result": row[position][0], "message": row[position][1]}] * 2,
                             "target": "sim --test devices"} for row in rows]
                 (root / f"replay-{side}.json").write_text(json.dumps({"side": side, "results": results}))
-            (root / "known.toml").write_text(known)
+            write_registry(root / "known", known)
             run = subprocess.run([sys.executable, str(ROOT / "scripts/triage-battery.py"), "report",
                                   "--cases", str(root / "cases.json"), "--replays", str(root / "replay-head.json"),
                                   str(root / "replay-base.json"), "--run-url", "https://example.com/runs/7",
-                                  "--known-failures", str(root / "known.toml"), "--out", str(root / "out")],
+                                  "--known-failures", str(root / "known"), "--out", str(root / "out")],
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             return (run, json.loads((root / "out/triage.json").read_text())["cases"],
                     (root / "out/triage.md").read_text())
@@ -407,7 +418,7 @@ class KnownFailures(unittest.TestCase):
             .replace("§", chr(96)))
 
     def test_a_message_matches_whole_and_only_for_the_entry_tests(self):
-        entries = triage.known_failures(KNOWN)
+        entries = known_failures(KNOWN)
         def classes(test, message):
             return [entry["class"] for entry in triage.matches(entries, test, message)]
         self.assertEqual(classes("devices_converge", "write 3 is lost"), ["A"])
@@ -435,7 +446,8 @@ class KnownFailures(unittest.TestCase):
         self.assertIn(f"2 of the 3 such rows match one; 1 {triage.UNCLASSIFIED} match none.", text)
 
     def test_a_row_that_matches_two_entries_fails_the_report(self):
-        overlapping = KNOWN.replace('tests = ["devices_lose_no_write"]', 'tests = ["devices_converge"]')
+        overlapping = {name: text.replace('tests = ["devices_lose_no_write"]', 'tests = ["devices_converge"]')
+                       for name, text in KNOWN.items()}
         run, rows, text = self.report(overlapping, [
             ("devices_converge", ("fail", "no convergence within 9 steps"), ("fail", "no convergence within 9 steps")),
         ])
@@ -445,15 +457,13 @@ class KnownFailures(unittest.TestCase):
         self.assertIn(f"| {triage.SAME} | B, C | GUN-2, GUN-3 |", text)
 
     def test_an_entry_that_lists_cases_labels_only_those_cases_and_comes_first(self):
-        scoped = KNOWN + f"""
-[[failure]]
-class = "D"
+        scoped = KNOWN | {"GUN-4-D-write-lost-in-one-case.toml": f"""class = "D"
 issue = "GUN-4"
 tests = ["devices_converge"]
 message = '''write <n> is lost'''
 examples = ["write 1 is lost"]
 cases = ["{1:064}"]
-"""
+"""}
         run, rows, text = self.report(scoped, [
             ("devices_converge", ("fail", "write 1 is lost"), ("fail", "write 1 is lost")),
             ("devices_converge", ("fail", "write 2 is lost"), ("fail", "write 2 is lost")),
@@ -465,11 +475,12 @@ cases = ["{1:064}"]
         self.assertIn(f"| {triage.SAME} | D | GUN-4 |", text)
 
     def test_every_registry_example_matches_its_own_entry_and_no_other(self):
-        entries = triage.known_failures(triage.KNOWN_FAILURES.read_text())
+        entries = triage.known_failures(triage.KNOWN_FAILURES)
         self.assertTrue(entries)
-        for index, entry in enumerate(entries):
-            with self.subTest(entry=index, failure=entry["class"]):
-                self.assertLessEqual(set(entry) - {"class", "issue", "tests", "message", "examples", "pattern"}, {"cases"})
+        for entry in entries:
+            with self.subTest(file=entry["file"]):
+                self.assertLessEqual(set(entry) - {"class", "issue", "tests", "message", "examples", "pattern", "file"},
+                                     {"cases"})
                 self.assertRegex(entry["class"], r"^[A-Z]$")
                 self.assertRegex(entry["issue"], r"^GUN-[1-9][0-9]*$")
                 self.assertTrue(entry["tests"])
@@ -479,10 +490,10 @@ cases = ["{1:064}"]
                     for test in entry["tests"]:
                         for case in entry.get("cases", [""]):
                             found = triage.matches(entries, test, example, case)
-                            self.assertEqual([entries.index(other) for other in found], [index], (test, example, case))
+                            self.assertEqual([other["file"] for other in found], [entry["file"]], (test, example, case))
 
     def test_registry_entries_that_share_a_message_label_only_their_own_tests_and_cases(self):
-        entries = triage.known_failures(triage.KNOWN_FAILURES.read_text())
+        entries = triage.known_failures(triage.KNOWN_FAILURES)
         left = "after phase 2: write 6 left the disk of device 2: the server never held it, and its user never overwrote or deleted it."
         quiet = ("after phase 2: device 0 is quiet, but it still sends nodes again: "
                  "{\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"}, at {}, lost creates {}.")
@@ -522,63 +533,83 @@ cases = ["{1:064}"]
                 self.assertEqual([(entry["class"], entry["issue"], entry.get("cases")) for entry in found], labels)
 
     def test_no_registry_entry_labels_its_example_with_text_after_it(self):
-        entries = triage.known_failures(triage.KNOWN_FAILURES.read_text())
-        for index, entry in enumerate(entries):
+        entries = triage.known_failures(triage.KNOWN_FAILURES)
+        for entry in entries:
             for example in entry["examples"]:
                 for test in entry["tests"]:
                     for case in entry.get("cases", [""]):
-                        with self.subTest(entry=index, failure=entry["class"], test=test, case=case):
+                        with self.subTest(file=entry["file"], test=test, case=case):
                             self.assertEqual(triage.matches(entries, test, example + " Then write 7 is lost too.", case), [])
 
     def test_every_registry_entry_labels_its_example_after_the_assertion_moves_to_another_file(self):
-        entries = triage.known_failures(triage.KNOWN_FAILURES.read_text())
-        for index, entry in enumerate(entries):
+        entries = triage.known_failures(triage.KNOWN_FAILURES)
+        for entry in entries:
             for example in entry["examples"]:
                 moved = re.sub(r"[\w./-]*\.rs:", "core/sim/tests/moved/elsewhere.rs:", example)
                 for test in entry["tests"]:
                     for case in entry.get("cases", [""]):
-                        with self.subTest(entry=index, failure=entry["class"], test=test, case=case):
+                        with self.subTest(file=entry["file"], test=test, case=case):
                             self.assertIn(entry, triage.matches(entries, test, moved, case))
 
     def test_every_registry_test_name_is_a_test_in_core(self):
         files = subprocess.run(["git", "ls-files", "-z", "core/*.rs"], cwd=ROOT, check=True,
                                stdout=subprocess.PIPE, text=True).stdout.split("\0")
         source = "".join((ROOT / path).read_text(errors="replace") for path in files if path)
-        for entry in triage.known_failures(triage.KNOWN_FAILURES.read_text()):
+        for entry in triage.known_failures(triage.KNOWN_FAILURES):
             for test in entry["tests"]:
-                with self.subTest(failure=entry["class"], test=test):
+                with self.subTest(file=entry["file"], test=test):
                     *modules, name = test.split("::")
                     self.assertRegex(source, rf"\bfn {re.escape(name)}\(")
                     for module in modules:
                         self.assertRegex(source, rf"\bmod {re.escape(module)}\b")
 
-    def test_a_registry_that_cant_be_read_is_named_in_the_error(self):
+    def test_a_known_failure_that_cant_be_read_is_named_in_the_error(self):
+        a, b = KNOWN["GUN-1-A-write-lost.toml"], KNOWN["GUN-2-B-no-convergence.toml"]
         broken = {
-            "not toml": "[[failure]\n",
-            "no entries": "",
-            "a missing field": KNOWN.replace('examples = ["no convergence within 400 steps"]\n', "", 1),
-            "tests as a string": KNOWN.replace('tests = ["devices_converge"]', 'tests = "devices_converge"'),
-            "a regex that doesn't compile": KNOWN.replace("'''write <n> is lost'''", "'''write (<n> is lost'''"),
-            "a message that isn't a string": KNOWN.replace("'''write <n> is lost'''", "1"),
-            "a class that isn't a string": KNOWN.replace('class = "A"', "class = 1"),
-            "an entry that isn't a table": "failure = [1]\n",
-            "cases as a string": KNOWN + 'cases = "0123456789ab"\n',
-            "a case that is too short": KNOWN + 'cases = ["0123"]\n',
-            "a case that isn't hex": KNOWN + 'cases = ["0123456789az"]\n',
-            "no cases": KNOWN + "cases = []\n",
-            "an unknown field": KNOWN + 'shards = ["1"]\n',
+            "not toml": ("GUN-1-A-write-lost.toml", "[[failure]\n"),
+            "an empty file": ("GUN-1-A-write-lost.toml", ""),
+            "a [[failure]] table": ("GUN-1-A-write-lost.toml", "[[failure]]\n" + a),
+            "a missing field": ("GUN-2-B-no-convergence.toml", b.replace('examples = ["no convergence within 400 steps"]\n', "")),
+            "tests as a string": ("GUN-2-B-no-convergence.toml", b.replace('tests = ["devices_converge"]', 'tests = "devices_converge"')),
+            "a regex that doesn't compile": ("GUN-1-A-write-lost.toml", a.replace("'''write <n> is lost'''", "'''write (<n> is lost'''")),
+            "a message that isn't a string": ("GUN-1-A-write-lost.toml", a.replace("'''write <n> is lost'''", "1")),
+            "a class that isn't a string": ("GUN-1-A-write-lost.toml", a.replace('class = "A"', "class = 1")),
+            "cases as a string": ("GUN-1-A-write-lost.toml", a + 'cases = "0123456789ab"\n'),
+            "a case that is too short": ("GUN-1-A-write-lost.toml", a + 'cases = ["0123"]\n'),
+            "a case that isn't hex": ("GUN-1-A-write-lost.toml", a + 'cases = ["0123456789az"]\n'),
+            "no cases": ("GUN-1-A-write-lost.toml", a + "cases = []\n"),
+            "an unknown field": ("GUN-1-A-write-lost.toml", a + 'shards = ["1"]\n'),
+            "a name without its issue": ("GUN-2-A-write-lost.toml", a),
+            "a name without its class": ("GUN-1-write-lost.toml", a),
+            "a name with another class": ("GUN-1-B-write-lost.toml", a),
+            "a name without a slug": ("GUN-1-A.toml", a),
+            "a slug that isn't lowercase and hyphenated": ("GUN-1-A-Write_Lost.toml", a),
+            "a name that isn't .toml": ("GUN-1-A-write-lost.yaml", a),
         }
-        for name, text in broken.items():
-            with self.subTest(name), self.assertRaises(ValueError):
-                triage.known_failures(text)
+        for name, (file, text) in broken.items():
+            with self.subTest(name), self.assertRaisesRegex(ValueError, re.escape(file)):
+                known_failures(KNOWN | {file: text})
+        with self.assertRaisesRegex(ValueError, "no known failures"):
+            known_failures({})
+
+    def test_known_failures_load_in_file_name_order(self):
+        self.assertEqual([entry["file"] for entry in known_failures(KNOWN)], sorted(KNOWN))
+
+    def test_the_registry_is_one_file_per_known_failure(self):
+        single_file = ROOT / ".github/battery-known-failures.toml"
+        self.assertFalse(single_file.exists(),
+                         ".github/battery-known-failures.toml is back, most likely from a rebase. Known failures live "
+                         "one per file: move each [[failure]] table in it to its own "
+                         ".github/battery-known-failures/<issue>-<class>-<slug>.toml without the [[failure]] line, then "
+                         "delete .github/battery-known-failures.toml.")
 
     def test_a_registry_that_cant_be_read_still_writes_the_report(self):
-        run, rows, text = self.report("[[failure]\n", [
+        run, rows, text = self.report({"GUN-1-A-write-lost.toml": "[[failure]\n"}, [
             ("devices_converge", ("fail", "write 1 is lost"), ("fail", "write 1 is lost")),
         ])
         self.assertNotEqual(run.returncode, 0)
         self.assertIn("::error::No row has a class: ", run.stdout)
-        self.assertIn("known.toml can't be read: ", run.stdout)
+        self.assertIn("known can't be read: GUN-1-A-write-lost.toml is not TOML", run.stdout)
         self.assertEqual((rows[0]["verdict"], rows[0]["class"], rows[0]["issue"]), (triage.SAME, None, None))
         self.assertIn("No row has a class: ", text)
         self.assertIn(f"| {triage.SAME} |  |  |", text)

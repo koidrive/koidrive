@@ -1,0 +1,9 @@
+class = "D"
+issue = "GUN-984"
+tests = [
+  "devices_converge_across_restores_and_rewinds",
+  "devices_converge_across_server_restores",
+  "devices_lose_no_write_across_restores_and_rewinds",
+]
+message = '''after phase <n>: write <n> is in the recovery copy ".*" of node <id>, but device <n>'s own commit <n> shows the server kept it at \[(<n>(, <n>)*)?\]\.'''
+examples = ["after phase 1: write 1 is in the recovery copy \"ß\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, but device 1's own commit 1 shows the server kept it at [1]."]

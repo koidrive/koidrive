@@ -1,0 +1,5 @@
+class = "J"
+issue = "GUN-1012"
+tests = ["a_copy_rolled_back_past_its_resend_does_not_send_its_edit_again"]
+message = '''assertion `left == right` failed: the copy sends the edit of n again over the delete left: \[.*\] right: \[\]'''
+examples = ["assertion `left == right` failed: the copy sends the edit of n again over the delete\n  left: [UpdateContent(UpdateContent { node_id: \"n\", content: Some(Content { size: 3, mtime_ns: 0, executable: false, chunks: [], chunk_count: 0, manifest_digest: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2], chunker: \"\" }), resend: false, made_over: [], source_version_id: \"\" })]\n right: []"]

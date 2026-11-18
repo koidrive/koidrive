@@ -1,0 +1,6 @@
+class = "M"
+issue = "GUN-1038"
+tests = ["devices_converge_across_restores_and_rewinds", "devices_lose_no_write_across_restores_and_rewinds"]
+message = '''after phase <n>: after the faults stopped, on device <n>: a commit of device <n> sent write <n> again after a rewind took it from the server, though no user answered to keep it\.'''
+examples = ["after phase 2: after the faults stopped, on device 0: a commit of device 0 sent write 4 again after a rewind took it from the server, though no user answered to keep it."]
+cases = ["b544860808be"]

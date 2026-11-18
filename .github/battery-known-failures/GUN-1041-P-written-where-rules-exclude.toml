@@ -1,0 +1,6 @@
+class = "P"
+issue = "GUN-1041"
+tests = ["a_first_link_sends_nothing_the_rules_leave_out_for_a_while_until_the_person_publishes_it"]
+message = '''<id> is written at \[.*\], which the rules exclude at \S+\.rs:<line>\.'''
+examples = ["01a1c2c0-39a0-7c9f-92dd-37ded7172a70 is written at [\"c.txt\"], which the rules exclude at core/sim/tests/engine_sync/common.rs:1739."]
+cases = ["dd0cf5b25a42"]

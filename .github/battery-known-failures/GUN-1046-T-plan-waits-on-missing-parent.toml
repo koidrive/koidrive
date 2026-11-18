@@ -1,0 +1,6 @@
+class = "T"
+issue = "GUN-1046"
+tests = ["devices_converge_across_rewinds_and_rollbacks", "devices_lose_no_write_across_rewinds_and_rollbacks"]
+message = '''planned creates or moves wait on a parent that neither the server holds, nor the plan places, nor a pending change brings: \[\("<id>", "<id>"\)(, \("<id>", "<id>"\))*\]\.'''
+examples = ["planned creates or moves wait on a parent that neither the server holds, nor the plan places, nor a pending change brings: [(\"01a1c2c0-39a0-7eec-a6b8-626bba7e76e6\", \"01a1c2c0-39a0-76b6-8f17-7744bb83aba9\")]."]
+cases = ["ae7c00c4dc65"]

@@ -1,0 +1,8 @@
+class = "J"
+issue = "GUN-1012"
+tests = ["devices_converge_across_restores_and_rewinds", "devices_lose_no_write_across_restores_and_rewinds"]
+message = '''after phase <n>: after the faults stopped, on device <n>: a commit of device <n> brought back node <id> as ".*", which a user deleted, and the user of device <n> never changed it or put anything in it since: \[Op \{ .* \}\]\.'''
+examples = ["after phase 2: after the faults stopped, on device 1: a commit of device 1 brought back node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 as \"É\", which a user deleted, and the user of device 1 never changed it or put anything in it since: [Op { intent: None, fields: None, op: Some(UpdateContent(UpdateContent { node_id: \"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\", content: Some(Content { size: 3, mtime_ns: 3, executable: false, chunks: [ChunkRef { hash: [251, 80, 220, 7, 23, 255, 38, 108, 249, 186, 248, 43, 28, 231, 161, 194, 239, 109, 146, 71, 133, 150, 128, 177, 26, 25, 251, 112, 119, 245, 242, 34], size: 3, encoding: 0 }], chunk_count: 1, manifest_digest: [130, 159, 23, 85, 83, 23, 83, 113, 44, 197, 41, 127, 22, 251, 222, 68, 205, 158, 130, 240, 26, 147, 67, 244, 158, 15, 114, 185, 107, 73, 2, 59], chunker: \"\" }), resend: false, made_over: [\"01a1c2c0-39ce-7c86-82d7-8c130699ef2b\"], source_version_id: \"01a1c2c0-39d4-77a2-9a7b-14876099d763\" })) }]."]
+cases = [
+  "81ed4a1c5e49",
+]

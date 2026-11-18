@@ -1,0 +1,8 @@
+class = "J"
+issue = "GUN-1012"
+tests = ["devices_converge_across_server_restores"]
+message = '''after phase <n>: device <n> is quiet, but it still sends nodes again: \{.*\}, at \{.*\}, lost creates \{.*\}\.'''
+examples = ["after phase 2: device 1 is quiet, but it still sends nodes again: {\"01a1c2c0-39a0-7ea7-93f8-3d888a182e12\"}, at {}, lost creates {\"01a1c2c0-39a0-7224-a2dd-41264c2feceb\"}."]
+cases = [
+  "5e0a61643769",
+]

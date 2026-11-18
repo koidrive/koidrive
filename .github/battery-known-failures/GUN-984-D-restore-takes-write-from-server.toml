@@ -1,0 +1,9 @@
+class = "D"
+issue = "GUN-984"
+tests = [
+  "devices_converge_across_restores_and_rewinds",
+  "devices_converge_across_server_restores",
+  "devices_lose_no_write_across_restores_and_rewinds",
+]
+message = '''after phase <n>: a restore took write <n> from the server while a disk held it, and the server does not hold it again, though no user overwrote or deleted it\.'''
+examples = ["after phase 1: a restore took write 5 from the server while a disk held it, and the server does not hold it again, though no user overwrote or deleted it."]

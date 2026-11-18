@@ -19,7 +19,7 @@ LOCATION = re.compile(r"[\w./-]*\.rs:\d+(?::\d+)?")
 CHECKED_PROFILE = re.compile(r"(?ms)^\[profile\.checked\]\n.*?(?=^\[|\Z)")
 RUNTIME_CHECKS = Path(__file__).resolve().parent / "require-runtime-checks.sh"
 PROBE_SOURCE = Path(__file__).resolve().parent.parent / "core/test-support/src/lib.rs"
-KNOWN_FAILURES = Path(__file__).resolve().parent.parent / ".github/battery-known-failures.toml"
+KNOWN_FAILURES = Path(__file__).resolve().parent.parent / ".github/battery-known-failures"
 ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 POSITION = re.compile(r"\.rs:\d+(?::\d+)?")
 NUMBER = re.compile(r"\d+")
@@ -70,31 +70,40 @@ def normalized(message):
     return " ".join(NUMBER.sub("<n>", message).split())
 
 
-def known_failures(text):
-    entries = tomllib.loads(text).get("failure")
-    if not isinstance(entries, list) or not entries:
-        raise ValueError("it has no [[failure]] entries")
-    for number, entry in enumerate(entries, 1):
-        if not isinstance(entry, dict):
-            raise ValueError(f"[[failure]] {number} is not a table")
-        if not FIELDS <= set(entry) <= FIELDS | {"cases"}:
-            raise ValueError(f"[[failure]] {number} has the fields {sorted(entry)}, not {sorted(FIELDS)} and optionally cases")
-        for field in ("class", "issue", "message"):
-            if not isinstance(entry[field], str) or not entry[field]:
-                raise ValueError(f"[[failure]] {number} needs {field} as a non-empty string")
-        for field in ("tests", "examples"):
-            values = entry[field]
-            if not isinstance(values, list) or not values or not all(isinstance(value, str) for value in values):
-                raise ValueError(f"[[failure]] {number} needs {field} as a non-empty list of strings")
-        cases = entry.get("cases")
-        if "cases" in entry and not (isinstance(cases, list) and cases and all(
-                isinstance(case, str) and CASE_PREFIX.fullmatch(case) for case in cases)):
-            raise ValueError(f"[[failure]] {number} needs cases as a non-empty list of 12 to 64 lowercase hex digits")
-        try:
-            entry["pattern"] = re.compile(entry["message"])
-        except re.error as error:
-            raise ValueError(f"[[failure]] {number} has a message regex that doesn't compile: {error}") from error
-    return entries
+def known_failure(name, text):
+    try:
+        entry = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise ValueError(f"{name} is not TOML: {error}") from error
+    if not FIELDS <= set(entry) <= FIELDS | {"cases"}:
+        raise ValueError(f"{name} has the fields {sorted(entry)}, not {sorted(FIELDS)} and optionally cases")
+    for field in ("class", "issue", "message"):
+        if not isinstance(entry[field], str) or not entry[field]:
+            raise ValueError(f"{name} needs {field} as a non-empty string")
+    for field in ("tests", "examples"):
+        values = entry[field]
+        if not isinstance(values, list) or not values or not all(isinstance(value, str) for value in values):
+            raise ValueError(f"{name} needs {field} as a non-empty list of strings")
+    cases = entry.get("cases")
+    if "cases" in entry and not (isinstance(cases, list) and cases and all(
+            isinstance(case, str) and CASE_PREFIX.fullmatch(case) for case in cases)):
+        raise ValueError(f"{name} needs cases as a non-empty list of 12 to 64 lowercase hex digits")
+    if not re.fullmatch(re.escape(f"{entry['issue']}-{entry['class']}") + r"-[a-z0-9]+(-[a-z0-9]+)*\.toml", name):
+        raise ValueError(f"{name} must be named {entry['issue']}-{entry['class']}-<slug>.toml, after its issue and "
+                         "class and with a lowercase, hyphenated slug")
+    try:
+        entry["pattern"] = re.compile(entry["message"])
+    except re.error as error:
+        raise ValueError(f"{name} has a message regex that doesn't compile: {error}") from error
+    entry["file"] = name
+    return entry
+
+
+def known_failures(directory):
+    paths = sorted(directory.iterdir())
+    if not paths:
+        raise ValueError("it holds no known failures")
+    return [known_failure(path.name, path.read_text()) for path in paths]
 
 
 def matches(entries, test, message, case=""):
@@ -495,7 +504,7 @@ anything of its own, so the two failures can't be compared. "
         f"This table cuts messages at {DISPLAY_LIMIT} characters; triage.json holds them in full.",
         "",
         f"No row has a class: {problem}" if problem else
-        f"Class and issue name the known failure on main, from `.github/battery-known-failures.toml`, \
+        f"Class and issue name the known failure on main, from `.github/battery-known-failures/`, \
 that a row which {SAME} matches by its test name and its whole message with ids, numbers and `file.rs:line` positions \
 masked, and for an entry that lists cases, only by those cases, which come before the entries that list none. \
 {len(same) - unclassified} of the {len(same)} such rows match one; {unclassified} {UNCLASSIFIED} match none.",
@@ -573,7 +582,7 @@ def main():
         rows = combine(spec, replays)
         others = caseless(spec, rows)
         try:
-            entries, problem = known_failures(arguments.known_failures.read_text()), None
+            entries, problem = known_failures(arguments.known_failures), None
         except (OSError, ValueError) as error:
             entries, problem = None, f"{arguments.known_failures} can't be read: {error}."
         ambiguous = classify(rows, entries)

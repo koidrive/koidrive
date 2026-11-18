@@ -1,0 +1,5 @@
+class = "C"
+issue = "GUN-984"
+tests = ["devices_converge_across_restores_and_rewinds", "devices_lose_no_write_across_restores_and_rewinds"]
+message = '''after phase <n>: after the faults stopped, on device <n>: recovery started with no rewind, no rolled-back store and no restore of commits it lost: the server refused a commit with Ok\(StaleDeviceState\)\.'''
+examples = ["after phase 2: after the faults stopped, on device 2: recovery started with no rewind, no rolled-back store and no restore of commits it lost: the server refused a commit with Ok(StaleDeviceState)."]
