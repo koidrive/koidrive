@@ -1009,3 +1009,27 @@ fn a_folder_moved_into_the_folder_merged_into_it_is_moved_back_when_a_removal_by
     );
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
+
+#[test]
+fn a_move_superseded_on_a_trashed_node_ends_and_the_trash_reaches_the_disk() {
+    let mut trees = trees(&[
+        synced("a", dir(ROOT, "a")),
+        (
+            "f",
+            Some(dir("a", "C.TXT")),
+            Some(dir(ROOT, "c.txt")),
+            Some(remote(dir(ROOT, "c.txt"))),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&sent), [mv("f", "a", "C.TXT")]);
+    trees.set_remote("f".into(), trashed(dir(ROOT, "c.txt")));
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![outcome(op_result::Code::Superseded)],
+    );
+    assert!(commits.problems().is_empty());
+    assert_eq!(trees.class("f"), Class::Remote);
+}
