@@ -215,10 +215,10 @@ pub struct TreesState {
     /// holding the node live or L dropping it.
     pub unsent_moves: BTreeSet<NodeId>,
     /// The nodes S holds and R lacks after a server loss that a change of this device's user in or
-    /// below them needs, and the resends ([`TreesState::resends`]) a loss leaves S holding because
-    /// a node S holds below them survived it. Each is created again while S keeps it and what it
-    /// holds. R taking the node, the server acknowledging its create, or L dropping it ends the
-    /// record.
+    /// below them needs, and the folders a loss leaves S holding because a node S holds below them
+    /// survived it, whether resent ([`TreesState::resends`]) or created by this device and
+    /// acknowledged before the loss. Each is created again while S keeps it and what it holds. R
+    /// taking the node, the server acknowledging its create, or L dropping it ends the record.
     pub unsent_creates: BTreeSet<NodeId>,
     /// The nodes S holds for which R took a record of another device's commit that moved `edit_rev` or
     /// `meta_edit_rev` since S took its shape, a change undone by a later record included. S does not take such a
@@ -272,10 +272,8 @@ pub struct TreesState {
     /// create. Another device that creates such a node again held it, so R taking the node again,
     /// live with the content L holds, is a remote move: S takes L's shape. That includes a device
     /// that held only a position from before an earlier loss, which a later create of this device
-    /// replaced. Unlike a resend, a delete made after the loss does not beat it. S keeps such a
-    /// folder while a node S holds below it survives the loss. The record ends when R holds the
-    /// node again, and when S takes L's shape, other than the one it keeps, or L changes or
-    /// removes the node.
+    /// replaced. Unlike a resend, a delete made after the loss does not beat it. The record ends
+    /// when R holds the node again, and when S takes L's shape or L changes or removes the node.
     pub lost_creates: BTreeSet<NodeId>,
 }
 
