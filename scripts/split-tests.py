@@ -22,7 +22,7 @@ def git_source(revision, path):
 def include_path(path, name):
     path = Path(path)
     included = path.parent / name
-    if included.parent != path.parent / path.stem:
+    if included.parent != path.parent / path.stem or included.stem == "root":
         raise ValueError(f"unexpected include path: {included}")
     return included
 
@@ -78,6 +78,10 @@ def includes(executable, source):
 def output_path(source, scenario):
     path = Path(source)
     return ROOT / path.parent / path.stem / f"{scenario}.rs"
+
+
+def scenario_file(source, scenario):
+    return ROOT / source if scenario == "root" else output_path(source, scenario)
 
 
 def separated(header):
@@ -141,19 +145,20 @@ def write(executable, planned):
 
 def property_files(executable, path, revision=None):
     root = read_source(revision, path)
-    files = {item["name"]: "root" for item in items(executable, root) if item["kind"] == "property"}
+    files = {item["name"]: Path(path) for item in items(executable, root) if item["kind"] == "property"}
     for included in includes(executable, root):
         scenario = include_path(path, included["name"].removeprefix("include:"))
         for item in items(executable, read_source(revision, str(scenario)), fragment=True):
             if item["kind"] == "property":
-                files[item["name"]] = scenario.stem
+                files[item["name"]] = scenario
     return files
 
 
 def require_properties_in_place(path, assignments, files):
-    for name, scenario in files.items():
-        if assignments.get(name, scenario) != scenario:
-            held = path if scenario == "root" else output_path(path, scenario).relative_to(ROOT)
+    for name, held in files.items():
+        if name not in assignments:
+            continue
+        if held != scenario_file(path, assignments[name]).relative_to(ROOT):
             raise ValueError(f"{name} must stay in {held}: a proptest block never changes file")
 
 
@@ -226,7 +231,8 @@ def verify(executable, mapping, revision):
         root_items = parsed(executable, root)
         original_items = items(executable, original)
         require_assigned(path, assignments, original_items)
-        require_properties_in_place(path, assignments, property_files(executable, path, revision))
+        reference_files = property_files(executable, path, revision)
+        require_properties_in_place(path, assignments, reference_files)
         scenarios = {assignments[item["name"]] for item in original_items} - {"root"}
         expected_includes = Counter(f'{Path(path).stem}/{scenario}.rs' for scenario in scenarios)
         actual_includes = Counter(item["name"].removeprefix("include:")
@@ -250,8 +256,9 @@ def verify(executable, mapping, revision):
                 name = item["name"]
                 if name in after:
                     raise ValueError(f"duplicated item in {path}: {name}")
-                expected = ROOT / path if assignments[name] == "root" else output_path(path, assignments[name])
-                if moved != expected:
+                if name in reference_files and moved.relative_to(ROOT) != reference_files[name]:
+                    raise ValueError(f"{name} must stay in {reference_files[name]}: a proptest block never changes file")
+                if moved != scenario_file(path, assignments[name]):
                     raise ValueError(f"wrong scenario for {name}: {moved}")
                 after[name] = source[item["start"]:item["end"]]
         if before != after:

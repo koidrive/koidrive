@@ -278,6 +278,22 @@ class SplitTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests/scenario.rs"):
                 split.verify(self.executable, self.mapping, "base")
 
+    def test_a_scenario_file_named_root_is_refused(self):
+        self.mapping["tests.rs"]["fn:one"] = "root"
+        self.generate()
+        original = self.path.read_bytes()
+        (self.root / "tests/root.rs").write_bytes(self.property_source(split.LICENSE, b"proptest::proptest"))
+        self.path.write_bytes(original.replace(b'include!("tests/common.rs");', b'include!("tests/common.rs");\ninclude!("tests/root.rs");'))
+        layout = {path: path.read_bytes() for path in self.root.rglob("*.rs")}
+        self.mapping["tests.rs"]["proptest:holds"] = "root"
+        with patch.object(split, "git_source", side_effect=lambda ref, path: layout[self.root / path]):
+            with self.assertRaisesRegex(ValueError, "unexpected include path: tests/root.rs"):
+                split.split(self.executable, self.mapping, "base")
+            (self.root / "tests/root.rs").unlink()
+            self.path.write_bytes(original + b"\n" + self.property_source(b"", b"proptest::proptest"))
+            with self.assertRaisesRegex(ValueError, "unexpected include path: tests/root.rs"):
+                split.verify(self.executable, self.mapping, "base")
+
 
 if __name__ == "__main__":
     unittest.main()
