@@ -720,6 +720,7 @@ fn remote(node: &ServerNode) -> RemoteNode {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     }
 }
 

@@ -6862,6 +6862,7 @@ mod ancestry_size_tests {
                     pending_for: None,
                     pending_by: None,
                     chunks: Box::default(),
+                    intents: None,
                 },
             );
             let mut local = LocalNode {
@@ -7007,6 +7008,7 @@ mod compensation_tests {
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             };
             trees.set_remote(id.into(), node);
         }

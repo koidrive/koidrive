@@ -93,6 +93,7 @@ fn trees(local: &[(&str, Shape)], synced: &[(&str, Shape)], remote: &[Remote]) -
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote((*id).into(), node);
     }
@@ -294,6 +295,7 @@ fn restored_under(made_over: &[&str]) -> Trees {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("n".into(), version(2, "v2", made_over));
     trees.set_synced("n".into(), Some(file(ROOT, "a", 2)));
@@ -383,6 +385,7 @@ fn server_version(shape: Shape, version_id: &str, made_over: &[&str], rev: u64) 
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     }
 }
 
@@ -661,6 +664,7 @@ fn an_answer_whose_commit_finds_the_head_moved_is_asked_again() {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     trees.settle(commits.aliases());
@@ -714,6 +718,7 @@ fn a_question_asked_again_names_the_cause_of_its_recovery() {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     trees.settle(commits.aliases());
@@ -863,6 +868,7 @@ fn keeping_a_folder_sends_an_edit_in_it_and_still_moves_the_file_where_the_rewin
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     assert!(commits.acknowledge(&mut trees, 2));
@@ -1314,6 +1320,7 @@ fn an_entry_new_on_this_device_stays_held_when_another_device_sends_the_same_nod
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     trees.settle(commits.aliases());
@@ -1366,6 +1373,7 @@ fn an_entry_like_the_servers_at_a_name_s_gives_another_node_is_held_and_s_stays_
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote(id.into(), node);
     }
@@ -1419,6 +1427,7 @@ fn a_held_node_another_device_publishes_stays_held_unless_it_ends_equal() {
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             },
         );
         trees.settle(commits.aliases());
@@ -1764,6 +1773,7 @@ fn a_discarded_file_in_a_kept_folder_the_server_merged_stays_discarded() {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     trees.settle(commits.aliases());
@@ -1815,6 +1825,7 @@ fn a_discarded_file_in_a_kept_folder_the_server_merged_is_not_moved_back_over_an
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     trees.settle(commits.aliases());
@@ -1955,6 +1966,7 @@ fn a_name_the_disk_and_the_server_agree_on_at_recovery_is_not_sent_after_the_ser
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("n".into(), renamed);
     trees.settle(commits.aliases());
@@ -2119,6 +2131,7 @@ fn applied(commits: &mut Commits, trees: &mut Trees, seq: u64, nodes: &[(&str, S
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote((*id).into(), node);
     }
@@ -2300,6 +2313,7 @@ fn a_child_an_answer_trashes_again_leaves_the_disk_and_is_not_sent_again() {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote(id.into(), node);
     }
@@ -2930,6 +2944,7 @@ fn a_removal_planned_before_a_rewind_leaves_a_kept_file_once_the_server_has_it()
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("x".into(), sent);
     let applied = OpResult {
@@ -3041,6 +3056,7 @@ fn a_mark_s_dropped_goes_once_r_holds_the_folder() {
         pending_by: Some("me".into()),
         edit_rev: 5,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("p".into(), node);
     trees.settle(&Default::default());
@@ -5166,6 +5182,7 @@ fn written_elsewhere(trees: &mut Trees, id: &str, shape: Shape, seq: u64) {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote(id.into(), node);
     trees.settle(&Default::default());
@@ -5265,6 +5282,7 @@ fn a_given_up_file_another_device_edits_before_the_answer_is_acknowledged_is_kep
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("d".into(), revived(dir(ROOT, "new"), 1));
     trees.set_remote("e".into(), revived(dir("d", "e"), 1));
@@ -5666,6 +5684,7 @@ fn files_another_device_changes_after_an_answer_gave_them_up_count_in_the_space_
             version_id: String::new(),
             pending_for: None,
             pending_by: None,
+            intents: None,
         };
         trees.set_remote(NodeId::from(id.as_str()), node);
     }
@@ -6291,6 +6310,7 @@ fn replayed(
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             });
             (node.shape.parent, node.shape.name, node.trashed) = (parent, name, false);
             node.meta_rev = seq;

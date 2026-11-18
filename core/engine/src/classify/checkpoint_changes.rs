@@ -70,6 +70,7 @@ fn remote(i: u8, v: u8, mark: Option<u8>) -> RemoteNode {
         pending_for: mark.map(|m| format!("m{m}")),
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     }
 }
 

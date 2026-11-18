@@ -12734,6 +12734,7 @@ mod planned_against_the_server {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         }
     }
 

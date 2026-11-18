@@ -43,6 +43,7 @@ fn add(trees: &mut Trees, id: String, shape: Shape) {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     trees.set_local(

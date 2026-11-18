@@ -3457,6 +3457,7 @@ fn a_merged_folder_is_held_by_its_key_holder_or_its_alias_under_a_merged_parent(
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     let mut trees = Trees::new(root.clone());
     let local = LocalNode {

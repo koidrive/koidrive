@@ -81,6 +81,7 @@ fn trees(local: &[(&str, Shape)], remote: &[(&str, Shape)]) -> Trees {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote((*id).into(), node);
     }
@@ -251,6 +252,7 @@ fn a_first_link_holds_an_entry_like_one_in_the_servers_trash() {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("r-a".into(), trashed);
     trees.settle(&Default::default());
@@ -535,6 +537,7 @@ fn a_first_link_to_a_space_listed_empty_holds_only_what_the_trash_names() {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("r-slides".into(), trashed);
     let mut commits = Commits::default();
@@ -658,6 +661,7 @@ fn a_fresh_first_link_to_a_live_space_holds_only_what_the_trash_names() {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("r-slides".into(), trashed);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
@@ -698,6 +702,7 @@ fn a_fresh_first_link_holds_a_folder_that_holds_an_entry_at_a_path_the_trash_hol
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote("r-deleted".into(), trashed);
         trees.settle(&Default::default());
@@ -1306,6 +1311,7 @@ fn renamed_create(commits: &mut Commits, trees: &mut Trees, id: &str, name: &str
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote(id.into(), node);
     let renamed = OpResult {
@@ -1384,6 +1390,7 @@ fn a_published_create_that_takes_a_conflict_name_asks_nothing_and_a_later_create
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("r-later".into(), theirs);
     renamed_create(&mut commits, &mut trees, "l-later", "later (conflict)", 3);
@@ -2210,6 +2217,7 @@ fn a_discard_whose_s_update_waits_stays_after_a_server_loss() {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("pad".into(), pad);
     let applied = OpResult {
@@ -2287,6 +2295,7 @@ fn a_reclaimed_folder_that_cannot_leave_s_yet_keeps_its_childs_waiting_update() 
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("p".into(), remote(dir(ROOT, "a")));
     trees.set_remote("c".into(), remote(dir("p", "child")));
@@ -2332,6 +2341,7 @@ fn remote_node(shape: Shape) -> RemoteNode {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     }
 }
 
@@ -2441,6 +2451,7 @@ fn reclaim_with_waiting(
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote((*id).into(), node);
     }
@@ -2894,6 +2905,7 @@ fn a_discarded_entry_stays_discarded_when_the_server_merges_its_folder_into_anot
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     };
     trees.set_remote("r-new".into(), remote(dir(ROOT, "new")));
     trees.set_remote("l-later".into(), remote(file("r-new", "later", 6)));
@@ -2949,6 +2961,7 @@ fn a_file_the_user_took_back_from_a_discard_is_sent_again_once_the_server_loses_
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote("l-b".into(), node);
         let applied = OpResult {
@@ -6048,6 +6061,7 @@ mod a_server_file_moved_into_an_asked_folder {
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             },
         );
         t.settle(&Default::default());
