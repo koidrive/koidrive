@@ -5,12 +5,12 @@ use std::collections::{BTreeMap, HashMap};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::names::conflict_name;
 use koidrive_proto::v1::{
-    ChunkRef, Commit, CommitResult, Content, CreateDir, CreateFile, Delete, Error, Intent,
-    ListTrash, ListTree, ListVersions, Move, NodeState, NodeStatus, Op, PrepareUpload, Restore,
-    Resume, RpcRequest, UpdateContent, UploadReceipt, chunk_plan, error, op, op_result,
-    resync_required, rpc_request, rpc_response,
+    ChunkRef, Commit, CommitResult, Content, CreateDir, CreateFile, Delete, Error, FieldIntents,
+    Intent, ListTrash, ListTree, ListVersions, Move, NodePurged, NodeState, NodeStatus, Op,
+    PrepareUpload, Restore, Resume, RpcRequest, UpdateContent, UploadReceipt, change_record,
+    chunk_plan, error, op, op_result, resync_required, rpc_request, rpc_response,
 };
-use koidrive_sim::space::{Role, Session, SpaceDo, node_states};
+use koidrive_sim::space::{Role, Session, SpaceDo, legacy_intent_id, node_states};
 use sha2::{Digest, Sha256};
 
 const NOW: i64 = 1_794_268_740_000;
@@ -1778,6 +1778,31 @@ fn delete_into(id: &str, group: &str) -> Op {
     }))
 }
 
+const DAY_MS: i64 = 24 * 3_600_000;
+
+fn intent(id: u8, author: &str) -> Intent {
+    Intent {
+        id: vec![id; 16],
+        author_device_id: author.into(),
+        ..Default::default()
+    }
+}
+
+fn with_intent(op: Op, intent: Intent) -> Op {
+    Op {
+        intent: Some(intent),
+        ..op
+    }
+}
+
+fn delete_holding(id: &str, held: &[u8]) -> Op {
+    wrap(op::Op::Delete(Delete {
+        node_id: id.into(),
+        held: held.iter().map(|&h| vec![h; 16]).collect(),
+        ..Default::default()
+    }))
+}
+
 #[test]
 fn rfc0031_a_deletion_over_several_commits_trashes_into_one_group_and_restores_whole() {
     let mut s = Space::new();
@@ -1843,4 +1868,265 @@ fn rfc0031_a_delete_keeps_its_own_group_unless_this_device_opened_the_one_it_nam
         assert_eq!(codes(&result.unwrap()), [op_result::Code::Applied]);
         assert_eq!(s.get(&dir).trash_group, format!("{sent}:0"));
     }
+}
+
+fn field_ids(node: &NodeState) -> FieldIntents {
+    node.intents.clone().expect("every node records intents")
+}
+
+#[test]
+fn legacy_intent_ids_match_the_spec_vectors_and_the_root_holds_them() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../spec/vectors/legacy-intents.json"
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let vectors = doc["vectors"].as_array().unwrap();
+    assert!(!vectors.is_empty());
+    for vector in vectors {
+        let text = |field: &str| vector[field].as_str().unwrap();
+        let id: String = legacy_intent_id(text("node_id"), text("field"), text("key"))
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(id, text("id").replace('-', ""), "{vector}");
+    }
+
+    let s = Space::new();
+    let root = s.root();
+    let intents = field_ids(&s.get(&root));
+    let place = intents.place.unwrap();
+    let status = intents.status.unwrap();
+    assert_eq!(place.id, legacy_intent_id(&root, "place", "0\0\0"));
+    assert_eq!(status.id, legacy_intent_id(&root, "status", "live:0"));
+    assert!(intents.content.is_none());
+    for legacy in [place, status] {
+        assert_eq!(
+            (
+                legacy.author_device_id.as_str(),
+                legacy.replay,
+                legacy.applied_at_ms
+            ),
+            ("", false, 0)
+        );
+    }
+}
+
+#[test]
+fn rejects_a_malformed_intent() {
+    let mut s = Space::new();
+    let root = s.root();
+    let a = s.client("A");
+    let dir = s.id();
+    let malformed = [
+        with_intent(
+            mkdir(&dir, &root, "d"),
+            Intent {
+                id: vec![1; 15],
+                ..intent(1, "")
+            },
+        ),
+        with_intent(
+            mkdir(&dir, &root, "d"),
+            Intent {
+                over: vec![2; 5],
+                ..intent(1, "")
+            },
+        ),
+        Op {
+            fields: Some(FieldIntents::default()),
+            ..with_intent(mv(&dir, &root, "e"), intent(1, ""))
+        },
+        Op {
+            fields: Some(FieldIntents::default()),
+            ..mkdir(&dir, &root, "d")
+        },
+        with_intent(
+            wrap(op::Op::Delete(Delete {
+                node_id: dir.clone(),
+                unseen: vec![vec![3; 4]],
+                ..Default::default()
+            })),
+            intent(1, ""),
+        ),
+    ];
+    for op in malformed {
+        let err = s.commit_raw(&a, vec![op], 0, vec![], None).unwrap_err();
+        assert_eq!(err.code(), error::Code::InvalidArgument);
+        assert_eq!(err.message, "op 0 has a malformed intent");
+    }
+    assert_eq!(s.space.head_seq(), 0);
+}
+
+#[test]
+fn garbage_collection_purges_expired_trash_leaves_first_and_keeps_its_intents() {
+    let mut s = Space::new();
+    let root = s.root();
+    let mut a = s.client("A");
+    let dir = s.id();
+    s.commit(&mut a, vec![mkdir(&dir, &root, "d")], vec![]);
+    let (file, _) = s.create_file(&mut a, &dir, "f.txt", "one");
+    s.commit(
+        &mut a,
+        vec![with_intent(delete_holding(&dir, &[9]), intent(7, "dev-A"))],
+        vec![],
+    );
+    let head = s.space.head_seq();
+    assert_eq!(s.space.collect_garbage(NOW + 29 * DAY_MS), 0);
+    assert_eq!(s.space.head_seq(), head);
+
+    assert_eq!(s.space.collect_garbage(NOW + 31 * DAY_MS), 2);
+    assert_eq!(s.space.head_seq(), head + 1);
+    assert!(s.space.node(&file).is_none() && s.space.node(&dir).is_none());
+    let records = s
+        .space
+        .resume(&Resume {
+            history_id: s.space.history_id().into(),
+            since_seq: head,
+            ..Default::default()
+        })
+        .unwrap();
+    let purged: Vec<NodePurged> = records[0]
+        .changes
+        .iter()
+        .map(|change| match &change.change {
+            Some(change_record::Change::Purged(purged)) => purged.clone(),
+            other => panic!("expected a purge, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        purged
+            .iter()
+            .map(|p| (p.node_id.as_str(), p.last_parent_id.as_str()))
+            .collect::<Vec<_>>(),
+        [(file.as_str(), dir.as_str()), (dir.as_str(), root.as_str())]
+    );
+    for tombstone in &purged {
+        let status = tombstone.intents.as_ref().unwrap().status.as_ref().unwrap();
+        assert_eq!(status.id, vec![7; 16]);
+        assert!(status.over.is_empty());
+        assert_eq!(tombstone.held, vec![vec![9; 16]]);
+    }
+    assert_eq!(s.space.collect_garbage(NOW + 62 * DAY_MS), 0);
+}
+
+#[test]
+fn an_old_clients_ops_on_purged_nodes_land_under_the_nearest_live_ancestor() {
+    let mut s = Space::new();
+    let root = s.root();
+    let mut a = s.client("A");
+    let (outer, inner) = (s.id(), s.id());
+    s.commit(
+        &mut a,
+        vec![
+            mkdir(&outer, &root, "outer"),
+            mkdir(&inner, &outer, "inner"),
+        ],
+        vec![],
+    );
+    let (file, _) = s.create_file(&mut a, &inner, "f.txt", "one");
+    s.commit(&mut a, vec![delete(&inner)], vec![]);
+    s.space.collect_garbage(NOW + 31 * DAY_MS);
+    assert!(s.space.node(&inner).is_none());
+
+    let (created, result) = s.create_file(&mut a, &inner, "new.txt", "two");
+    assert_eq!(codes(&result), [op_result::Code::Applied]);
+    assert_eq!(s.get(&created).parent_id, outer);
+
+    let content = Space::content("three");
+    let receipts = s.upload(&a, &content);
+    let resend = wrap(op::Op::UpdateContent(UpdateContent {
+        node_id: file.clone(),
+        content: Some(content.clone()),
+        resend: true,
+        ..Default::default()
+    }));
+    let result = s.commit(&mut a, vec![update(&file, content), resend], receipts);
+    assert_eq!(
+        codes(&result),
+        [op_result::Code::Rejected, op_result::Code::ConflictCopy]
+    );
+    let copy = s.get(&result.results[1].node_id);
+    assert_eq!(copy.parent_id, outer);
+    let content = copy.intents.unwrap().content.unwrap();
+    assert!(content.author_device_id.is_empty() && content.replay);
+}
+
+#[test]
+fn a_carried_copy_its_user_moved_stays_when_a_later_delete_holds_its_content() {
+    for moved in [false, true] {
+        let mut s = Space::new();
+        let root = s.root();
+        let mut a = s.client("A");
+        let mut b = s.client("B");
+        let file = s.id();
+        let content = Space::content("one");
+        let receipts = s.upload(&a, &content);
+        s.commit(
+            &mut a,
+            vec![with_intent(
+                create_file(&file, &root, "f.txt", content),
+                intent(1, "dev-A"),
+            )],
+            receipts,
+        );
+        s.commit(
+            &mut a,
+            vec![with_intent(delete(&file), intent(2, "dev-A"))],
+            vec![],
+        );
+        let carried = Space::content("carried");
+        let receipts = s.upload(&b, &carried);
+        b.base_seq = s.space.head_seq();
+        let result = s.commit(
+            &mut b,
+            vec![with_intent(update(&file, carried), intent(3, ""))],
+            receipts,
+        );
+        assert_eq!(codes(&result), [op_result::Code::ConflictCopy]);
+        let copy = result.results[0].node_id.clone();
+        let copied = field_ids(&s.get(&copy));
+        assert!(copied.place.unwrap().replay && copied.status.unwrap().replay);
+        if moved {
+            s.commit(
+                &mut a,
+                vec![with_intent(
+                    mv(&copy, &root, "kept.txt"),
+                    intent(4, "dev-A"),
+                )],
+                vec![],
+            );
+        }
+        let result = s.commit(
+            &mut a,
+            vec![with_intent(delete_holding(&file, &[3]), intent(2, "dev-A"))],
+            vec![],
+        );
+        assert_eq!(codes(&result), [op_result::Code::Applied]);
+        assert_eq!(s.get(&file).trash_held, vec![vec![3; 16]]);
+        assert_eq!(s.live(&copy), moved, "moved {moved}");
+        if !moved {
+            assert_eq!(s.get(&copy).trash_group, s.get(&file).trash_group);
+        }
+    }
+}
+
+#[test]
+fn a_storage_restore_mints_new_intents_for_ops_without_one() {
+    let mut s = Space::new();
+    let root = s.root();
+    let mut a = s.client("A");
+    let backup = s.space.clone();
+    let dir = s.id();
+    let device_seq = s.space.device_seq(&a.session.device_id) + 1;
+    s.commit(&mut a, vec![mkdir(&dir, &root, "d")], vec![]);
+    let before = field_ids(&s.get(&dir)).place.unwrap().id;
+    s.space.restore(&backup);
+    s.sent.clear();
+    a.base_seq = 0;
+    assert_eq!(s.space.device_seq(&a.session.device_id) + 1, device_seq);
+    s.commit(&mut a, vec![mkdir(&dir, &root, "d")], vec![]);
+    let after = field_ids(&s.get(&dir)).place.unwrap().id;
+    assert_ne!(before, after);
 }
