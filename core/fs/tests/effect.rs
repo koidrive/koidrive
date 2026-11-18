@@ -447,6 +447,19 @@ fn a_folder_whose_file_to_take_along_changed_in_place_keeping_its_size_and_time_
     assert_settled(root);
 }
 
+fn removal_of(removal: &str, root: &Path) -> (Effect, PathBuf) {
+    match removal {
+        "remove_file" => (
+            prepare(common::scenario(removal), root),
+            root.join("docs/report.txt"),
+        ),
+        _ => {
+            let (effect, folder) = with_rules_file(root);
+            (effect, folder.join(".koiignore"))
+        }
+    }
+}
+
 struct FailingRead;
 
 impl koidrive_fs::Contents for FailingRead {
@@ -472,23 +485,39 @@ fn a_removal_whose_comparison_fails_puts_the_entry_back_before_the_error() {
     for removal in ["remove_file", "remove_dir"] {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let (effect, file) = match removal {
-            "remove_file" => (
-                prepare(common::scenario(removal), root),
-                root.join("docs/report.txt"),
-            ),
-            _ => {
-                let (effect, folder) = with_rules_file(root);
-                (effect, folder.join(".koiignore"))
-            }
-        };
+        let (effect, file) = removal_of(removal, root);
         let space = bind(root);
         let mut hook = |_| {};
         let mut section = space.section(&marker(), &mut hook).unwrap();
-        assert!(
-            section.apply(&effect, &mut FailingRead, now()).is_err(),
-            "{removal}"
-        );
+        let error = section.apply(&effect, &mut FailingRead, now()).unwrap_err();
+        assert_eq!(error.to_string(), "read failed", "{removal}");
+        drop(section);
+        assert!(file.exists(), "{removal}");
+        assert!(private_names(root, "quarantine").is_empty(), "{removal}");
+    }
+}
+
+#[test]
+fn recovery_of_a_removal_whose_comparison_fails_puts_the_entry_back_before_the_error() {
+    for removal in ["remove_file", "remove_dir"] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (effect, file) = removal_of(removal, root);
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            apply(root, &effect, |step| {
+                if step == Step::Quarantined {
+                    panic!("crash");
+                }
+            })
+        }));
+        assert!(crashed.is_err() && !file.exists(), "{removal}");
+        let space = bind(root);
+        let mut hook = |_| {};
+        let mut section = space.section(&marker(), &mut hook).unwrap();
+        let error = section
+            .recover(&effect, &mut FailingRead, now())
+            .unwrap_err();
+        assert_eq!(error.to_string(), "read failed", "{removal}");
         drop(section);
         assert!(file.exists(), "{removal}");
         assert!(private_names(root, "quarantine").is_empty(), "{removal}");
@@ -501,16 +530,7 @@ fn a_removal_whose_file_became_unreadable_is_left_in_place() {
     for removal in ["remove_file", "remove_dir"] {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let (effect, file) = match removal {
-            "remove_file" => (
-                prepare(common::scenario(removal), root),
-                root.join("docs/report.txt"),
-            ),
-            _ => {
-                let (effect, folder) = with_rules_file(root);
-                (effect, folder.join(".koiignore"))
-            }
-        };
+        let (effect, file) = removal_of(removal, root);
         fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
         if fs::read(&file).is_ok() {
             return;

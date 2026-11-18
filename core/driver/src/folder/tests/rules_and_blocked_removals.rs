@@ -42,10 +42,10 @@ fn a_downloaded_rules_file_is_in_force_before_anything_else_is_planned() {
     b.scan_until(|b| b.folder.scanned);
     assert_eq!(b.run(&mut remote), ["list", "subscribe", "stage"]);
     assert_eq!(names(&site.root), [".koiignore"]);
-    assert!(b.folder.disk.awaits_rules());
+    assert!(b.folder.disk.awaits_scan());
     assert_eq!(b.state(), FolderState::CatchingUp);
 
-    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
     assert!(
         b.run(&mut remote).is_empty(),
         "the rules leave cache.tmp out"
@@ -70,7 +70,7 @@ fn a_rules_file_a_restart_cannot_read_holds_everything_below_its_folder() {
     a.create(&mut remote, &site_a.root.join(".koiignore"), b"*.log\n");
     b.pull(&remote);
     assert_eq!(b.run(&mut remote), ["stage"]);
-    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
     assert!(b.run(&mut remote).is_empty());
     drop(b);
     fs::write(site.root.join(".koiignore"), "*.log\n".repeat(200_000)).unwrap();
@@ -109,7 +109,7 @@ fn the_rules_hold_of_a_folder_ends_also_after_it_was_renamed_only_in_case() {
         b"*.log\n",
     );
     let (site, mut b) = linked(&mut remote, "b");
-    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
     b.run(&mut remote);
     drop(b);
     fs::write(site.root.join("proj/.koiignore"), "*.log\n".repeat(200_000)).unwrap();
@@ -155,7 +155,7 @@ fn review_removing_unknown_rules_while_renaming_the_folder_does_not_hold_remote_
         b"*.log\n",
     );
     let (site, mut b) = linked(&mut remote, "b");
-    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
     b.run(&mut remote);
     drop(b);
     fs::write(site.root.join("proj/.koiignore"), "*.log\n".repeat(200_000)).unwrap();
@@ -204,7 +204,7 @@ fn deleting_a_rules_file_a_restart_cannot_read_ends_the_hold_of_its_folder() {
         b"*.log\n",
     );
     let (site, mut b) = linked(&mut remote, "b");
-    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
     b.run(&mut remote);
     drop(b);
     fs::write(site.root.join("proj/.koiignore"), "*.log\n".repeat(200_000)).unwrap();
@@ -792,9 +792,9 @@ fn a_rules_file_named_in_another_case_is_downloaded_and_in_force_first() {
     b.scan_until(|b| b.folder.scanned);
     assert_eq!(b.run(&mut remote), ["list", "subscribe", "stage"]);
     assert_eq!(names(&site.root), [".KOIIGNORE"]);
-    assert!(b.folder.disk.awaits_rules());
+    assert!(b.folder.disk.awaits_scan());
 
-    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
     assert!(b.run(&mut remote).is_empty());
     b.settle();
     assert!(b.work.is_empty() && b.sent.is_empty());
@@ -820,7 +820,7 @@ fn planning_goes_on_after_a_folder_move_once_a_scan_that_found_nothing_is_report
     assert_eq!(b.run(&mut remote), ["stage"]);
     assert_eq!(names(&site.root), ["new"]);
     assert!(
-        b.folder.disk.awaits_rules(),
+        b.folder.disk.awaits_scan(),
         "the trees hold a folder's rules by its path"
     );
     assert_eq!(b.state(), FolderState::CatchingUp);
@@ -859,7 +859,7 @@ fn a_remote_edit_of_an_excluded_file_is_not_applied_while_its_folder_moves() {
     );
     b.pull(&remote);
     assert_eq!(b.run(&mut remote), ["stage"]);
-    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
     assert!(b.run(&mut remote).is_empty());
 
     fs::rename(site_a.root.join("proj"), site_a.root.join("work")).unwrap();
@@ -877,7 +877,7 @@ fn a_remote_edit_of_an_excluded_file_is_not_applied_while_its_folder_moves() {
         ["stage"],
         "only the folder moves until its rules file is read at the new path"
     );
-    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
     assert!(b.run(&mut remote).is_empty());
     b.settle();
     assert!(b.work.is_empty() && b.sent.is_empty());
@@ -906,17 +906,17 @@ fn a_batch_scanned_before_a_rules_file_was_written_does_not_end_the_wait_for_its
     });
     let batch = batch.unwrap();
     assert_eq!(b.run(&mut remote), ["list", "subscribe", "stage"]);
-    assert!(b.folder.disk.awaits_rules());
+    assert!(b.folder.disk.awaits_scan());
 
     let step = b.folder.observed(batch, 1);
     b.take(step).unwrap();
     assert!(
-        b.folder.disk.awaits_rules(),
+        b.folder.disk.awaits_scan(),
         "the batch was scanned before the rules file was there"
     );
     assert!(b.work.is_empty());
 
-    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
     assert_eq!(b.run(&mut remote), ["upload", "send"]);
     assert_eq!(names(&site.root), [".koiignore", "mine.txt"]);
 }
@@ -940,7 +940,7 @@ fn a_batch_that_was_not_asked_to_scan_a_moved_folder_does_not_end_the_wait_for_i
     );
     b.pull(&remote);
     assert_eq!(b.run(&mut remote), ["stage"]);
-    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
     assert!(b.run(&mut remote).is_empty());
     fs::rename(site_a.root.join("proj"), site_a.root.join("work")).unwrap();
     a.scan_until(|a| !a.work.is_empty());
@@ -956,7 +956,7 @@ fn a_batch_that_was_not_asked_to_scan_a_moved_folder_does_not_end_the_wait_for_i
     assert!(resets.is_empty() && b.observer.answered());
     b.pull(&remote);
     assert_eq!(b.run(&mut remote), ["stage"]);
-    assert!(b.folder.disk.awaits_rules());
+    assert!(b.folder.disk.awaits_scan());
     let unrelated = Batch {
         stamp: sections.stamp(),
         unread: (0, 0),
@@ -977,13 +977,13 @@ fn a_batch_that_was_not_asked_to_scan_a_moved_folder_does_not_end_the_wait_for_i
     let step = b.folder.observed(unrelated, 1);
     b.take(step).unwrap();
     assert!(
-        b.folder.disk.awaits_rules(),
+        b.folder.disk.awaits_scan(),
         "no scan has read the rules file at the new path"
     );
     assert!(b.run(&mut remote).is_empty());
     assert_eq!(fs::read(site.root.join("work/build.log")).unwrap(), b"v1");
 
-    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
     assert!(b.run(&mut remote).is_empty());
     assert_eq!(fs::read(site.root.join("work/build.log")).unwrap(), b"v1");
 }

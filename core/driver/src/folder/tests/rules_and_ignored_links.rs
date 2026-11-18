@@ -53,7 +53,7 @@ fn a_held_folder_another_devices_rules_leave_out_stays_held_when_renamed() {
     a.create(&mut remote, &site_a.root.join(".koiignore"), b"held/\n");
     b.pull(&remote);
     b.run(&mut remote);
-    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
     b.run(&mut remote);
     fs::rename(site.root.join("held"), site.root.join("open")).unwrap();
     b.rest(&mut remote);
@@ -131,13 +131,13 @@ fn a_held_folder_renamed_while_another_devices_rule_lets_it_in_stays_held() {
     a.create(&mut remote, &site_a.root.join(".koiignore"), b"held/\n");
     b.pull(&remote);
     b.run(&mut remote);
-    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
     b.run(&mut remote);
     a.create(&mut remote, &site_a.root.join(".koiignore"), b"other.txt\n");
     fs::rename(site.root.join("held"), site.root.join("open")).unwrap();
     b.pull(&remote);
     b.run(&mut remote);
-    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
     b.rest(&mut remote);
     assert_eq!(remote.names(), [".koiignore", "notes.txt"]);
     assert_eq!(b.folder.view().questions, 1);
@@ -160,7 +160,7 @@ fn a_held_folder_another_devices_rules_leave_out_stays_held_when_renamed_while_s
     a.create(&mut remote, &site_a.root.join(".koiignore"), b"held/\n");
     b.pull(&remote);
     b.run(&mut remote);
-    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
     b.run(&mut remote);
     drop(b);
     fs::rename(site.root.join("held"), site.root.join("open")).unwrap();
