@@ -1,4 +1,4 @@
 53
 # The tests pin when a reconnect starts recovery because the server holds a commit of this device that the store does not know, and when it must not because the device gave that slot to the commit before a loss.
 # Each arm of Commits::connected that the token test now decides has its own test that fails when only that arm is left out, and each way an id is given up (a lost slot, a refusal, a resync, a split, an abandon, a replan, a dropped flight on reconnect, a replaced kept result) has one test that fails without it.
-# No earlier test reached these arms with another commit_id at a kept slot, and the sim invariant only covers the paths the battery happens to take.
+# Earlier tests sent another commit_id at a kept slot only where the client stays idle. None covered recovery for a commit_id the store does not know or the exception for a given-up one, and the sim invariant only covers the paths the battery happens to take.
