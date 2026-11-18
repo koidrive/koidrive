@@ -6,7 +6,7 @@ use crate::profile::unexpected;
 use crate::report::{AccountData, Decision, Done, FolderData, StatusData, UpdateNoticeData};
 use crate::resolve::{question_brief, questions};
 use crate::{ipc, output, report, service, update};
-use koidrive_driver::{FolderState, FolderStatus, Paths, Progress, Question, Status};
+use koidrive_driver::{FolderState, FolderStatus, Paths, Progress, Question, Remedy, Status};
 use koidrive_ipc::{Request, Response};
 use std::path::Path;
 
@@ -112,14 +112,14 @@ pub(crate) fn status_summary(
                 .filter(|_| folder.state == FolderState::Halted);
             if let Some(root) = halted {
                 let path = output::command_path(Path::new(root));
-                if folder.relinkable {
-                    text.push_str(&format!(
+                match (folder.remedy).or(folder.relinkable.then_some(Remedy::Relink)) {
+                    Some(Remedy::Relink) => text.push_str(&format!(
                         "  If this copy is the one to keep, run koi folder relink {path}. Nothing it lacks is deleted on the server.\n"
-                    ));
-                } else if !problem.contains("koi ") {
-                    text.push_str(&format!(
+                    )),
+                    Some(Remedy::Restart | Remedy::Root) | None => text.push_str(&format!(
                         "  Fix the problem above, then run koi folder restart {path}\n"
-                    ));
+                    )),
+                    Some(Remedy::Unlink | Remedy::Retry | Remedy::Owner | Remedy::SetUpAgain) => {}
                 }
             }
         }

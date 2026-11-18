@@ -974,6 +974,7 @@ mod tests {
             questions: 0,
             problem: None,
             relinkable: false,
+            remedy: None,
             progress: None,
             activity: None,
             bytes_moved: 0,

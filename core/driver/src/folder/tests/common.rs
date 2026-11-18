@@ -867,7 +867,7 @@ fn local_holds(site: &Site, name: &str) -> bool {
 
 /// A device whose first commit, of `notes.txt`, the server refused with `code`. Returns the folder, the refused
 /// commit and why the task stopped. The device is gone, so its folder and store are free.
-fn refused_first_commit(remote: &mut Remote, code: Code) -> (Site, Commit, String) {
+fn refused_first_commit(remote: &mut Remote, code: Code) -> (Site, Commit, Stop) {
     let (site, mut a) = linked(remote, "a");
     fs::write(site.root.join("notes.txt"), b"written on a").unwrap();
     a.scan_until(|a| !a.work.is_empty());
@@ -883,7 +883,7 @@ fn refused_first_commit(remote: &mut Remote, code: Code) -> (Site, Commit, Strin
     });
     let step = a.folder.sent(Err(CallError::Server(refusal)));
     let stop = a.take(step).unwrap_err();
-    (site, commit, stop.to_string())
+    (site, commit, stop)
 }
 
 /// Starts the folder again and runs what follows its `Welcome` and its first scan.

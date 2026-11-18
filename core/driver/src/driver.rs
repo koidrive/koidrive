@@ -517,7 +517,7 @@ impl Drop for Unlinking<'_> {
             folder.status.halt(
                 Halted::Unlink,
                 crate::lifecycle::UNFINISHED_UNLINK.into(),
-                crate::lifecycle::Recovery::Unlink,
+                crate::status::Remedy::Unlink,
             );
             drop(folders);
             self.driver.changed();
@@ -2666,8 +2666,8 @@ fn halt(folder: &mut Folder, why: Halted, problem: String) {
         "a folder cannot sync"
     );
     let recovery = match why {
-        Halted::Unlink => crate::lifecycle::Recovery::Unlink,
-        _ => crate::lifecycle::Recovery::Restart,
+        Halted::Unlink => crate::status::Remedy::Unlink,
+        _ => crate::status::Remedy::Restart,
     };
     folder.status.halt(why, problem, recovery);
 }
@@ -2704,6 +2704,7 @@ fn stopped_status(space_id: &str) -> FolderStatus {
         questions: 0,
         problem: None,
         relinkable: false,
+        remedy: None,
         wait: None,
         progress: None,
         held_disks: Vec::new(),
@@ -9094,7 +9095,7 @@ mod tests {
             lifecycle.halt(
                 Halted::Io,
                 "a task stopped after unlink was cancelled".into(),
-                crate::lifecycle::Recovery::Restart,
+                crate::status::Remedy::Restart,
             );
             assert!(
                 lifecycle

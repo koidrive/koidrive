@@ -70,6 +70,7 @@ use crate::failures::{self, Failure};
 use crate::observe::{FsObserver, Observation, Observed, Observer, Reset};
 use crate::policy::{self, Disposition};
 use crate::progress::{Credit, Direction, Item};
+use crate::status::Remedy;
 use crate::status::WaitKind;
 
 /// How many effect sections [`Disk`] remembers for batches that span them. A batch older than all of them is dropped
@@ -111,12 +112,31 @@ pub(crate) enum Stop {
     /// The server refused a call for good.
     #[error("{0}")]
     Refused(String),
+    #[error("{problem}")]
+    Policy { problem: String, needs_owner: bool },
     /// The server sent something this build cannot apply.
     #[error("{0}")]
     Protocol(String),
 }
 
 impl Stop {
+    pub(crate) fn remedy(&self) -> Remedy {
+        match self {
+            Stop::Root(RootProblem::Copy) | Stop::DiskBehind { .. } => Remedy::Relink,
+            Stop::Withdrawn(_) | Stop::Root(_) | Stop::OtherRoot => Remedy::Root,
+            Stop::Session(StopReason::CredentialsRefused | StopReason::DeviceRevoked) => {
+                Remedy::SetUpAgain
+            }
+            Stop::Policy {
+                needs_owner: true, ..
+            } => Remedy::Owner,
+            Stop::Policy {
+                needs_owner: false, ..
+            } => Remedy::Retry,
+            _ => Remedy::Restart,
+        }
+    }
+
     pub(crate) fn after_call(error: &CallError, why: String) -> Stop {
         match error {
             CallError::Server(_) => Stop::Refused(why),
