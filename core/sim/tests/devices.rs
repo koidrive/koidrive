@@ -283,7 +283,7 @@ fn reviving_an_owed_rename() -> impl Strategy<Value = Vec<Vec<(usize, Step)>>> {
 
 thread_local! {
     static TOKENLESS_WELCOME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static FIELD_INTENTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FIELD_INTENTS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
 fn expect_red_without_intents(check: Check, why: &str) -> Option<ExpectedRed> {
