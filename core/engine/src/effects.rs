@@ -894,16 +894,17 @@ pub enum Stuck {
 
 /// The nodes section 5.10 reports as problems: each node the planner considers whose place is held
 /// by the local copy of an excluded node, each node whose S update waits behind one of them, and
-/// each node that cannot be put into its folder in R because that folder is one of them.
+/// each node that cannot be put into its folder in R because that folder is one of them. A node in
+/// `renaming` ([`crate::commit::Commits::renaming`]) is not reported.
 pub fn stuck(
     trees: &Trees,
     effects: &Effects,
     in_flight: Option<&InFlight>,
+    renaming: &BTreeSet<NodeId>,
 ) -> BTreeMap<NodeId, Stuck> {
     let view = View::new(trees);
-    let displaced = displaced_by_excluded(trees);
     let planned: Vec<&NodeId> = (trees.dirty_others().iter())
-        .filter(|id| candidate(trees, id) && !trees.held(id) && !displaced.contains_key(*id))
+        .filter(|id| candidate(trees, id) && !trees.held(id) && !renaming.contains(*id))
         .collect();
     let unplaced: Vec<(&NodeId, &str)> = (planned.iter())
         .filter(|id| matches!(view.step(id), Step::Blocked(None)))

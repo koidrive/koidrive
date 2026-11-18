@@ -465,6 +465,18 @@ fn a_server_file_at_an_excluded_folders_name_is_renamed_from_its_place_to_a_conf
 }
 
 #[test]
+fn a_server_file_at_an_excluded_folders_name_the_rules_leave_no_conflict_name_for_is_reported() {
+    let mut trees = holding_an_excluded_folders_name(remote(file(ROOT, "ig", 1)));
+    trees.set_rules(&AT_ROOT, rules("/ig/\n*conflict*\n"));
+    assert_eq!(ops(&mut trees), []);
+    let renaming = Commits::default().renaming(&trees, NOW);
+    assert_eq!(
+        effects::stuck(&trees, &Effects::default(), None, &renaming),
+        BTreeMap::from([("f".into(), Stuck::HeldBy("kept".into()))])
+    );
+}
+
+#[test]
 fn a_server_file_under_a_pending_name_at_an_excluded_folders_name_is_not_renamed() {
     let incoming = RemoteNode {
         pending_for: Some("device".into()),
@@ -766,7 +778,7 @@ fn a_parked_folder_the_rules_now_exclude_frees_its_name_in_s_with_what_it_holds(
     assert_eq!(trees.local().get("old"), Some(&parked));
     assert_eq!(trees.check(), Ok(()));
     assert_eq!(
-        effects::stuck(&trees, &Effects::default(), None),
+        effects::stuck(&trees, &Effects::default(), None, &Default::default()),
         BTreeMap::from([("old".into(), Stuck::Parked)])
     );
 }

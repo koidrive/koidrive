@@ -2252,7 +2252,7 @@ fn a_discarded_folder_that_holds_an_entry_the_rules_leave_out_keeps_its_name_and
     assert!(!kept.parked && kept.shape.same_position(&dir(ROOT, "ss")));
     assert!(trees.local().get("l-a").is_some());
     assert_eq!(
-        stuck(&trees, &effects, commits.in_flight()),
+        stuck(&trees, &effects, commits.in_flight(), &Default::default()),
         [
             ("r-c".to_owned(), Stuck::Behind("r-sharp-s".into())),
             ("r-sharp-s".to_owned(), Stuck::HeldBy("l-ss".into())),

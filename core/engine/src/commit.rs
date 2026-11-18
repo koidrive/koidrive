@@ -231,6 +231,19 @@ impl Commits {
         self.device_name = Unstored(name.to_owned());
     }
 
+    /// The nodes a build renames to a conflict name because a folder this device keeps out of sync
+    /// holds their name (RFC 0001 §5).
+    pub fn renaming(&self, trees: &Trees, now_ms: u64) -> BTreeSet<NodeId> {
+        if self.halted.is_some() || !trees.rules_known() {
+            return BTreeSet::new();
+        }
+        (effects::displaced_by_excluded(trees).into_keys())
+            .filter(|id| !self.problems.contains(id))
+            .filter(|id| !(self.questions.iter()).any(|q| q.holds().any(|held| held == id)))
+            .filter(|id| conflict_rename(trees, id, &self.device_name.0, now_ms).is_some())
+            .collect()
+    }
+
     /// What the store keeps of the commit side.
     pub fn state(&self) -> CommitsState {
         CommitsState {
@@ -3335,18 +3348,7 @@ fn displaced_renames<'a>(
         .filter(|id| !skip.contains(id))
         .filter_map(move |id| {
             let shape = trees.remote().live(&id)?;
-            let (names, kind) = path(trees.remote(), &id)?;
-            let mut names: Vec<String> = names.into_iter().map(str::to_owned).collect();
-            let name = (1..=MAX_CONFLICT_ATTEMPTS)
-                .map(|attempt| conflict_name(&shape.name, device_name, now_ms as i64, attempt))
-                .find(|name| {
-                    let key = name_key(name);
-                    *names.last_mut().expect("a path names the node") = name.clone();
-                    trees.local_holders(&shape.parent, name).next().is_none()
-                        && (trees.remote_holders_of_key(&shape.parent, &key))
-                            .all(|other| trees.remote().live(other).is_none())
-                        && !trees.ignores(&names, kind)
-                })?;
+            let name = conflict_rename(trees, &id, device_name, now_ms)?;
             Some(proto::Op {
                 op: Some(op::Op::Move(proto::Move {
                     from: Some(proto::Place {
@@ -3360,6 +3362,22 @@ fn displaced_renames<'a>(
                 })),
                 ..Default::default()
             })
+        })
+}
+
+fn conflict_rename(trees: &Trees, id: &NodeId, device_name: &str, now_ms: u64) -> Option<String> {
+    let shape = trees.remote().live(id)?;
+    let (names, kind) = path(trees.remote(), id)?;
+    let mut names: Vec<String> = names.into_iter().map(str::to_owned).collect();
+    (1..=MAX_CONFLICT_ATTEMPTS)
+        .map(|attempt| conflict_name(&shape.name, device_name, now_ms as i64, attempt))
+        .find(|name| {
+            let key = name_key(name);
+            *names.last_mut().expect("a path names the node") = name.clone();
+            trees.local_holders(&shape.parent, name).next().is_none()
+                && (trees.remote_holders_of_key(&shape.parent, &key))
+                    .all(|other| trees.remote().live(other).is_none())
+                && !trees.ignores(&names, kind)
         })
 }
 

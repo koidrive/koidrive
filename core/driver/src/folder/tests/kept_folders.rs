@@ -1586,3 +1586,22 @@ fn a_kept_entry_another_devices_negation_let_in_stays_kept_when_the_person_edits
         remote.tree()
     );
 }
+
+#[test]
+fn a_viewer_keeping_a_folder_reports_a_file_made_at_its_name() {
+    let (mut remote, site_a, mut a, _site, mut b, _) =
+        deleted_with_ignored_entries(&["README.md"], &[".env"]);
+    b.caller.role = Role::Viewer;
+    b.connect(&remote);
+    b.pull(&remote);
+    assert_eq!(b.folder.engine.commits.halted(), Some(CommitHalt::ReadOnly));
+
+    a.create(&mut remote, &site_a.root.join("app"), b"a file now");
+    for _ in 0..8 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    let view = b.folder.view();
+    assert_eq!((view.state, view.problem.is_some()), (FolderState::UpToDate, true));
+}
