@@ -206,6 +206,45 @@ fn a_superseded_row_ends_and_rows_made_over_it_take_the_reported_intent() {
 }
 
 #[test]
+fn results_visit_the_rows_they_answer_however_many_the_journal_holds() {
+    let answer = |nodes: usize| {
+        let mut journal = Journal::default();
+        let mut sent = Vec::new();
+        for n in 0..nodes {
+            let file = format!("f{n}");
+            sent.push(journal.user_change(&file, content(1), WireBase::None, None));
+            journal.send(&file, Field::Content, 0);
+            journal.user_change(&file, content(2), WireBase::None, None);
+            let place = Place {
+                parent: format!("d{n}"),
+                name: file.clone(),
+                mark: None,
+            };
+            journal.user_change(&file, Value::Place(place), WireBase::None, None);
+        }
+        rows::VISITED.with(|visited| visited.set(0));
+        for (n, sent) in sent.into_iter().enumerate() {
+            let file = format!("f{n}");
+            match n % 2 {
+                0 => journal.applied(&file, Field::Content, sent, &held(7, 100), None),
+                _ => journal.superseded(&file, Field::Content, sent, Some(id(8))),
+            }
+            journal.merged_into(&format!("d{n}"), "target");
+        }
+        let visited = rows::VISITED.with(std::cell::Cell::get);
+        for n in 0..nodes {
+            let file = format!("f{n}");
+            let base = journal.row(&file, Field::Content).unwrap().base;
+            assert_eq!(base, Some(id(7 + (n % 2) as u8)));
+            let place = &journal.row(&file, Field::Place).unwrap().value;
+            assert!(matches!(place, Value::Place(place) if place.parent == "target"));
+        }
+        visited
+    };
+    assert_eq!(answer(1000), 100 * answer(10));
+}
+
+#[test]
 fn a_held_row_ends_once_r_holds_a_later_intent() {
     let mut journal = Journal::default();
     let first = journal.user_change("n", content(1), WireBase::None, None);
