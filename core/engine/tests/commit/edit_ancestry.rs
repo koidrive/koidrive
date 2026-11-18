@@ -155,3 +155,44 @@ fn a_resend_create_names_the_server_version_of_the_value_it_carries() {
     assert_eq!(create.source_version_id, "v1");
     assert!(uploads(&sent, 1));
 }
+
+#[test]
+fn an_edit_after_one_the_server_kept_as_a_conflict_copy_names_the_copys_version() {
+    let mut trees = trees(&[(
+        "f",
+        Some(file(ROOT, "f", 2)),
+        Some(file(ROOT, "f", 1)),
+        Some(ancestry_node(1, "v1", &[])),
+    )]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    trees.set_remote("f".into(), ancestry_node(3, "v3", &["v1"]));
+    trees.set_remote(
+        "y".into(),
+        RemoteNode {
+            content_rev: 1,
+            edit_rev: 1,
+            version_id: "v2".into(),
+            made_over: vec!["v1".into()],
+            ..remote(file(ROOT, "f (conflict)", 2))
+        },
+    );
+    let copy = OpResult {
+        node_id: "y".into(),
+        ..outcome(op_result::Code::ConflictCopy)
+    };
+    acknowledge(&mut commits, &mut trees, vec![copy]);
+    trees.set_local_changed("y".into(), local(file(ROOT, "f", 4), 1));
+    trees.settle(&Default::default());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let sent = ops(&commit);
+    let update = sent.iter().find_map(|op| match op {
+        op::Op::UpdateContent(update) if update.node_id == "y" => Some(update),
+        _ => None,
+    });
+    assert_eq!(
+        update.map(|update| update.made_over.first().cloned()),
+        Some(Some("v2".into())),
+        "{sent:?}"
+    );
+}
