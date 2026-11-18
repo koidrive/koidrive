@@ -1054,6 +1054,34 @@ async fn gitignore_off_without_a_terminal_needs_yes_and_each_result_fits_its_sch
     assert_eq!(error.code, Code::Usage, "{}", error.message);
 }
 
+#[tokio::test]
+async fn gitignore_off_on_a_daemon_already_off_writes_the_setting_the_configuration_lost() {
+    let (_dir, paths, _root) = ipc::tests::linked_profile();
+    std::fs::create_dir_all(paths.config_file.parent().unwrap()).unwrap();
+    std::fs::write(&paths.config_file, "[sync]\ngitignore = false\n").unwrap();
+    let driver = Driver::open(paths.clone()).unwrap();
+    let server = tokio::spawn(ipc::serve(
+        koidrive_ipc::bind(&paths.socket()).unwrap(),
+        driver,
+    ));
+    std::fs::write(&paths.config_file, "[sync]\ngitignore = true\n").unwrap();
+    let terminal = Arc::new(terminal::Terminal::new(true, false));
+    let off = crate::gitignore::GitignoreAction::Off { yes: false };
+    let done = run(
+        paths.clone(),
+        Command::Gitignore { action: off },
+        true,
+        false,
+        terminal,
+    )
+    .await
+    .unwrap();
+    assert_eq!(done.outcome, report::Outcome::Unchanged);
+    let config = koidrive_driver::Config::load(&paths.config_file).unwrap();
+    assert!(!config.sync.gitignore);
+    server.abort();
+}
+
 #[test]
 fn a_daemon_waits_asynchronously_for_a_stopped_profile_reader() {
     let runtime = tokio::runtime::Builder::new_current_thread()

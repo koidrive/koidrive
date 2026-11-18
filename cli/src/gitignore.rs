@@ -72,10 +72,7 @@ pub(crate) async fn run(
         }
         GitignoreAction::On => set(paths, true).await,
         GitignoreAction::Off { yes } => {
-            if !follows(paths).await? {
-                return Ok(set_done(false, true));
-            }
-            if !yes {
+            if !yes && follows(paths).await? {
                 confirm(paths, terminal).await?;
             }
             set(paths, false).await
