@@ -62,11 +62,16 @@ fn tie(dir: &Path) -> Result<(File, File), Refusal> {
     let profile = Paths::from_env().ok();
     let used = (["HOME", INVENTORY, "HOMEBREW_PREFIX"].into_iter())
         .filter_map(|name| std::env::var_os(name).map(PathBuf::from))
-        .chain(
-            profile
-                .into_iter()
-                .flat_map(|paths| [paths.state_dir, paths.config_file, paths.runtime_dir]),
-        );
+        .chain(profile.into_iter().flat_map(|paths| {
+            let config_dir =
+                (paths.config_file.parent()).map_or_else(PathBuf::new, Path::to_path_buf);
+            [
+                paths.state_dir,
+                config_dir,
+                paths.config_file,
+                paths.runtime_dir,
+            ]
+        }));
     if let Some(path) = used.into_iter().find(|path| !inside(&root, path)) {
         return Err(Refusal::Unsafe(format!(
             "use {}, which is outside its sandbox {}",
@@ -79,17 +84,30 @@ fn tie(dir: &Path) -> Result<(File, File), Refusal> {
 }
 
 pub(crate) fn confine(path: &Path) -> io::Result<()> {
+    refuse_outside("change", path, || {
+        (path.parent().zip(path.file_name()))
+            .and_then(|(parent, name)| Some(resolved(parent)?.join(name)))
+    })
+}
+
+pub(crate) fn confine_program(path: &Path) -> io::Result<()> {
+    refuse_outside("run", path, || resolved(path))
+}
+
+fn refuse_outside(
+    act: &str,
+    path: &Path,
+    real: impl FnOnce() -> Option<PathBuf>,
+) -> io::Result<()> {
     let Some(root) = SANDBOX.get() else {
         return Ok(());
     };
-    let entry = (path.parent().zip(path.file_name()))
-        .and_then(|(parent, name)| Some(resolved(parent)?.join(name)));
-    match path.is_absolute() && entry.is_some_and(|entry| entry.starts_with(root)) {
+    match path.is_absolute() && real().is_some_and(|real| real.starts_with(root)) {
         true => Ok(()),
         false => Err(io::Error::new(
             ErrorKind::PermissionDenied,
             format!(
-                "a test must not change {}, which is outside its sandbox {}",
+                "a test must not {act} {}, which is outside its sandbox {}",
                 path.display(),
                 root.display()
             ),

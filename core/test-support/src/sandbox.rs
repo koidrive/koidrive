@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
-use std::os::unix::ffi::OsStrExt;
+use std::io::{self, ErrorKind};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -96,22 +98,30 @@ impl Drop for Sandbox {
             .unwrap()
             .retain(|open| open.lifeline != self.lifeline);
         drop(self.held.take());
-        let ended = ended(&self.lifeline.join("alive"));
-        let removed = fs::remove_dir_all(&self.root);
-        let _ = fs::remove_dir_all(&self.lifeline);
-        let problems = [
-            (!ended).then(|| {
-                format!("a koi this test started was still running {ENDING:?} after the test ended")
-            }),
-            removed
-                .err()
+        let problem = match ended(&self.lifeline.join("alive")) {
+            false => Some(format!(
+                "a koi this test started was still running {ENDING:?} after the test ended, so {} stays for a later sweep",
+                self.root.display()
+            )),
+            true => (remove(&self.root, &self.lifeline).err())
                 .map(|error| format!("{} was not removed: {error}", self.root.display())),
-        ];
-        for problem in problems.into_iter().flatten() {
-            match std::thread::panicking() {
-                true => eprintln!("{problem}"),
-                false => panic!("{problem}"),
-            }
+        };
+        let Some(problem) = problem else {
+            return;
+        };
+        match std::thread::panicking() {
+            true => eprintln!("{problem}"),
+            false => panic!("{problem}"),
+        }
+    }
+}
+
+fn remove(root: &Path, lifeline: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(root) {
+        Err(error) if error.kind() != ErrorKind::NotFound => Err(error),
+        _ => {
+            let _ = fs::remove_dir_all(lifeline);
+            Ok(())
         }
     }
 }
@@ -163,21 +173,40 @@ fn sweep(parent: &Path) {
         return;
     }
     swept.push(parent.to_path_buf());
+    let Ok(real) = fs::canonicalize(parent) else {
+        return;
+    };
+    let me = rustix::process::getuid().as_raw();
+    let foreign = |path: &Path| {
+        fs::symlink_metadata(path)
+            .is_ok_and(|meta| !meta.is_dir() || meta.uid() != me || meta.mode() & 0o022 != 0)
+    };
     for entry in fs::read_dir(parent).into_iter().flatten().flatten() {
-        if !(entry.file_name().as_bytes()).starts_with(LIFELINE_PREFIX.as_bytes()) {
+        let lifeline = entry.path();
+        if !(entry.file_name().as_bytes()).starts_with(LIFELINE_PREFIX.as_bytes())
+            || foreign(&lifeline)
+        {
             continue;
         }
-        let lifeline = entry.path();
         let Ok(owner) = File::open(lifeline.join("owner")) else {
             continue;
         };
-        if flock(&owner, FlockOperation::NonBlockingLockExclusive).is_err() {
+        if flock(&owner, FlockOperation::NonBlockingLockExclusive).is_err()
+            || File::open(lifeline.join("alive"))
+                .is_ok_and(|alive| flock(&alive, FlockOperation::NonBlockingLockExclusive).is_err())
+        {
             continue;
         }
         let Ok(root) = fs::read(lifeline.join("root")) else {
             continue;
         };
-        let _ = fs::remove_dir_all(Path::new(OsStr::from_bytes(&root)));
-        let _ = fs::remove_dir_all(&lifeline);
+        let root = PathBuf::from(OsString::from_vec(root));
+        let made = root
+            .file_name()
+            .is_some_and(|name| name.as_bytes().starts_with(b"koi-"))
+            && root.parent().and_then(|dir| fs::canonicalize(dir).ok()) == Some(real.clone());
+        if made && !foreign(&root) {
+            let _ = remove(&root, &lifeline);
+        }
     }
 }

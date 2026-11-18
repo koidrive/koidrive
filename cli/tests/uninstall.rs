@@ -1171,10 +1171,7 @@ fn a_service_started_through_a_cask_link_hands_the_app_to_homebrew() {
     );
 }
 
-#[test]
-fn a_failed_homebrew_handoff_names_the_command_that_finishes_it() {
-    let machine = Machine::new();
-    machine.profile();
+fn formula(machine: &Machine) -> (PathBuf, PathBuf) {
     let cellar = machine.copy_koi("brew/Cellar/koidrive/0.1.0/bin/koi");
     let opt = machine.path("brew/opt/koidrive");
     fs::create_dir_all(opt.parent().unwrap()).unwrap();
@@ -1182,6 +1179,34 @@ fn a_failed_homebrew_handoff_names_the_command_that_finishes_it() {
     let link = machine.path("brew/bin/koi");
     fs::create_dir_all(link.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&cellar, &link).unwrap();
+    (cellar, link)
+}
+
+#[test]
+fn a_test_koi_never_runs_a_brew_outside_its_sandbox() {
+    let machine = Machine::new();
+    machine.profile();
+    let (cellar, link) = formula(&machine);
+    let outside = tempfile::tempdir().unwrap();
+    let ran = outside.path().join("ran");
+    let brew = outside.path().join("brew");
+    fixture::executable(
+        &brew,
+        format!("#!/bin/sh\ntouch '{}'\n", ran.display()).as_bytes(),
+    );
+    std::os::unix::fs::symlink(&brew, machine.path("brew/bin/brew")).unwrap();
+
+    let (_, envelope) = machine.uninstall(&link);
+
+    assert!(!ran.exists(), "{envelope:#}");
+    assert!(cellar.exists());
+}
+
+#[test]
+fn a_failed_homebrew_handoff_names_the_command_that_finishes_it() {
+    let machine = Machine::new();
+    machine.profile();
+    let (cellar, link) = formula(&machine);
     let brew = machine.script(
         "brew/bin/brew",
         "echo 'Error: Permission denied' >&2\nexit 1\n",
@@ -1343,7 +1368,7 @@ fn the_launch_agent_of_a_temporary_profile_is_stopped_and_removed() {
     machine.write(
         &format!("Library/LaunchAgents/{label}.plist"),
         &format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array><string>{}</string><string>_daemon</string></array><key>EnvironmentVariables</key><dict>{env}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>\n",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array><string>{}</string><string>_daemon</string></array><key>EnvironmentVariables</key><dict>{env}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict></dict></plist>\n",
             koi.display()
         ),
     );

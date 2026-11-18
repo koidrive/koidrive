@@ -128,6 +128,11 @@ impl Service {
             ));
         }
         let log = xml(&self.log_file().display().to_string());
+        let keep_alive = match (self.env.iter()).any(|(name, _)| *name == crate::lifeline::LIFELINE)
+        {
+            true => "<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>\n\t</dict>",
+            false => "<true/>",
+        };
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -146,7 +151,7 @@ impl Service {
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
-	<true/>
+	{keep_alive}
 	<key>StandardOutPath</key>
 	<string>{log}</string>
 	<key>StandardErrorPath</key>

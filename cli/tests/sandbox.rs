@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -14,9 +16,9 @@ mod process;
 
 const CHILD: &str = "KOI_SANDBOX_TEST_CHILD";
 
-struct Daemon(Child);
+struct Reaped(Child);
 
-impl Drop for Daemon {
+impl Drop for Reaped {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
@@ -33,28 +35,43 @@ fn until(what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
-fn daemon(sandbox: &Sandbox) -> (Daemon, PathBuf) {
+fn first(
+    child: &mut Reaped,
+    mut wanted: impl FnMut(String) -> Option<String> + Send + 'static,
+) -> String {
+    let stdout = child.0.stdout.take().unwrap();
+    let (found, line) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = found.send(
+            BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+                .find_map(&mut wanted),
+        );
+    });
+    (line.recv_timeout(ENDED).ok().flatten())
+        .unwrap_or_else(|| panic!("no startup line within {ENDED:?}"))
+}
+
+fn daemon(sandbox: &Sandbox) -> (Reaped, PathBuf) {
     let home = sandbox.path();
-    let mut child = process::koi(home)
-        .args(["_daemon", "--json"])
-        .env("HOME", home)
-        .env("XDG_CONFIG_HOME", home.join("config"))
-        .env("XDG_STATE_HOME", home.join("state"))
-        .env("XDG_RUNTIME_DIR", home.join("run"))
-        .env("KOIDRIVE_TELEMETRY", "0")
-        .env("KOIDRIVE_UPDATE_CHECK", "0")
-        .env_remove("KOIDRIVE_LOG")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut started = String::new();
-    BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut started)
-        .unwrap();
-    let daemon = Daemon(child);
-    let started: serde_json::Value = serde_json::from_str(&started).unwrap();
+    let mut daemon = Reaped(
+        process::koi(home)
+            .args(["_daemon", "--json"])
+            .env("HOME", home)
+            .env("XDG_CONFIG_HOME", home.join("config"))
+            .env("XDG_STATE_HOME", home.join("state"))
+            .env("XDG_RUNTIME_DIR", home.join("run"))
+            .env("KOIDRIVE_TELEMETRY", "0")
+            .env("KOIDRIVE_UPDATE_CHECK", "0")
+            .env_remove("KOIDRIVE_LOG")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let started: serde_json::Value = serde_json::from_str(&first(&mut daemon, Some)).unwrap();
     let socket = PathBuf::from(started["socket"].as_str().unwrap());
     (daemon, socket)
 }
@@ -103,29 +120,29 @@ fn a_koi_stops_when_the_test_process_that_started_it_is_killed() {
             std::thread::park();
         }
     }
-    let mut test = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "a_koi_stops_when_the_test_process_that_started_it_is_killed",
-            "--nocapture",
-        ])
-        .env(CHILD, "1")
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let line = BufReader::new(test.stdout.take().unwrap())
-        .lines()
-        .map(Result::unwrap)
-        .find_map(|line| line.strip_prefix(&format!("{CHILD} ")).map(str::to_owned))
-        .unwrap();
+    let mut test = Reaped(
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "a_koi_stops_when_the_test_process_that_started_it_is_killed",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let line = first(&mut test, |line| {
+        line.strip_prefix(&format!("{CHILD} ")).map(str::to_owned)
+    });
     let mut words = line.split(' ');
     let pid: i32 = words.next().unwrap().parse().unwrap();
     let _left = Left(rustix::process::Pid::from_raw(pid).unwrap());
     let socket = PathBuf::from(words.next().unwrap());
     let answered = UnixStream::connect(&socket).is_ok();
 
-    test.kill().unwrap();
-    test.wait().unwrap();
+    test.0.kill().unwrap();
+    test.0.wait().unwrap();
 
     assert!(answered, "the daemon was not running");
     until(
@@ -165,6 +182,14 @@ fn a_test_cannot_run_koi_outside_its_sandbox() {
         std::os::unix::fs::symlink(to, &link).unwrap();
         link
     };
+    let config = decoy.path().join("config/koidrive");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(sandbox.path().join("config.toml"), "").unwrap();
+    std::os::unix::fs::symlink(
+        sandbox.path().join("config.toml"),
+        config.join("config.toml"),
+    )
+    .unwrap();
     let real = std::fs::canonicalize(sandbox.path()).unwrap();
     let up = PathBuf::from_iter(real.components().skip(1).map(|_| ".."));
     let run = |args: &[&str], name: &str, value: &Path| {
@@ -193,6 +218,7 @@ fn a_test_cannot_run_koi_outside_its_sandbox() {
         ("HOME", decoy.path().to_path_buf()),
         ("XDG_STATE_HOME", account.join(".local/state")),
         ("XDG_CONFIG_HOME", account.join(".config")),
+        ("XDG_CONFIG_HOME", decoy.path().join("config")),
         ("XDG_RUNTIME_DIR", decoy.path().join("run")),
         ("KOIDRIVE_TEST_INSTALL_INVENTORY", PathBuf::from("/")),
         ("HOMEBREW_PREFIX", PathBuf::from("/opt/homebrew")),
@@ -327,4 +353,40 @@ fn another_test_process_leaves_a_sandbox_whole_while_it_ends() {
     );
     assert!(ended.is_ok());
     assert!(!root.exists());
+}
+
+#[test]
+fn a_sweep_removes_only_an_abandoned_tree_a_sandbox_made() {
+    let parent = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let tree = |name: &str| {
+        let lifeline = parent.path().join(format!("koi-lifeline-{name}"));
+        std::fs::create_dir(&lifeline).unwrap();
+        std::fs::write(lifeline.join("owner"), "").unwrap();
+        let root = parent.path().join(format!("koi-{name}"));
+        std::fs::create_dir(&root).unwrap();
+        (lifeline, root)
+    };
+    let (outside, _) = tree("outside");
+    std::fs::write(
+        outside.join("root"),
+        elsewhere.path().as_os_str().as_bytes(),
+    )
+    .unwrap();
+    let (shared, kept) = tree("shared");
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let (living, running) = tree("living");
+    let alive = std::fs::File::create(living.join("alive")).unwrap();
+    rustix::fs::flock(&alive, rustix::fs::FlockOperation::LockShared).unwrap();
+    let (abandoned, stale) = tree("abandoned");
+    for (lifeline, root) in [(&shared, &kept), (&living, &running), (&abandoned, &stale)] {
+        std::fs::write(lifeline.join("root"), root.as_os_str().as_bytes()).unwrap();
+    }
+
+    drop(Sandbox::in_dir(parent.path()));
+
+    assert!(elsewhere.path().exists());
+    assert!(kept.exists());
+    assert!(running.exists() && living.exists());
+    assert!(!stale.exists() && !abandoned.exists());
 }

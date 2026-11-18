@@ -152,7 +152,10 @@ impl Machine {
             koi: PathBuf::from(process::KOI),
         };
         fs::create_dir_all(machine.home()).unwrap();
-        let manager = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap());
+        let manager = PathBuf::from(
+            std::env::var_os("XDG_RUNTIME_DIR")
+                .expect("a systemd service test needs XDG_RUNTIME_DIR to reach the user manager"),
+        );
         fs::create_dir_all(machine.runtime().join("systemd")).unwrap();
         std::os::unix::fs::symlink(
             manager.join("systemd/private"),

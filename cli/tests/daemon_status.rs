@@ -722,4 +722,9 @@ fn the_service_a_test_installs_stops_with_the_test() {
         };
         assert!(definition.contains(&set), "{set}: {definition}");
     }
+    let restarts = match cfg!(target_os = "macos") {
+        true => "<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>",
+        false => "Restart=on-failure",
+    };
+    assert!(definition.contains(restarts), "{definition}");
 }
