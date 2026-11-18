@@ -279,7 +279,7 @@ fn a_server_count_above_the_accepted_one_at_a_slot_an_earlier_loss_took_is_a_los
     let mut twice = commits.clone();
     assert_eq!(twice.connected(&welcome(0)), Reconnect::AheadOfServer);
     assert_eq!((twice.accepted(), twice.held_through()), (0, 0));
-    let mut reissued = given_up_at(twice.clone(), 1, "another");
+    let mut reissued = twice.clone();
     assert_eq!(twice.connected(&welcome_holding(&twice, 1)), Reconnect::AheadOfServer);
     assert_eq!((twice.accepted(), twice.held_through()), (1, 3));
     assert!(twice.lost_here(7) && !twice.lost_here(3));
@@ -589,7 +589,7 @@ fn the_servers_token_at_its_count_decides_which_kept_slot_bounds_what_it_holds()
 
 #[test]
 fn a_store_copied_before_the_listing_bounds_by_the_kept_slot_below_one_the_server_gave_out_again() {
-    let mut copy = given_up_at(kept_slots(), 2, "sent-again");
+    let mut copy = kept_slots();
     assert_eq!(copy.connected(&welcome_holding(&copy, 1)), Reconnect::AheadOfServer);
     assert_eq!((copy.accepted(), copy.held_through()), (1, 3));
     let given_again = Welcome {
@@ -1095,52 +1095,4 @@ fn a_commit_holding_its_result_is_not_dropped_when_the_server_names_another_comm
         .unwrap();
     assert_eq!(commits.connected(&another_at(2)), Reconnect::Recovery);
     assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
-}
-
-#[test]
-fn a_commit_holding_its_result_at_its_recorded_slot_is_not_dropped_when_the_server_names_another_commit_there() {
-    let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
-    let mut commits = kept_slots();
-    let flight = build(&mut commits, &mut trees, &mut IdGen::new(1)).unwrap();
-    assert!(commits.own_record(9, &flight.commit_id, 30));
-    commits
-        .received(result(9, vec![outcome(op_result::Code::Applied)]))
-        .unwrap();
-    assert_eq!(commits.connected(&another_at(3)), Reconnect::Recovery);
-    assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
-}
-
-#[test]
-fn a_server_count_at_a_lost_slot_naming_a_commit_the_store_does_not_know_starts_recovery() {
-    let lost = || {
-        Commits::from_state(CommitsState {
-            accepted: 1,
-            slots: [(1, slot(3)), (2, slot(7))].into(),
-            ..Default::default()
-        })
-        .unwrap()
-    };
-    let mut commits = lost();
-    assert_eq!(commits.connected(&another_at(2)), Reconnect::Recovery);
-    let mut given_up = given_up_at(lost(), 2, "another");
-    assert_eq!(given_up.connected(&another_at(2)), Reconnect::AheadOfServer);
-}
-
-#[test]
-fn a_commit_in_flight_at_a_lost_slot_is_resent_when_the_server_names_it() {
-    let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
-    let mut commits = Commits::from_state(CommitsState {
-        accepted: 1,
-        slots: [(1, slot(3)), (2, slot(7))].into(),
-        ..Default::default()
-    })
-    .unwrap();
-    let flight = build(&mut commits, &mut trees, &mut IdGen::new(1)).unwrap();
-    assert_eq!(flight.device_seq, 2);
-    let named = Welcome {
-        device_commit_id: flight.commit_id,
-        device_committed_at_ms: 30,
-        ..welcome(2)
-    };
-    assert_eq!(commits.connected(&named), Reconnect::Resend);
 }

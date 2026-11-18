@@ -2587,11 +2587,11 @@ impl Commits {
     }
 
     /// Compares the `Welcome` with the commit in flight and the accepted counter *a* (section
-    /// 2.8). A `Welcome` that names, for a slot this device keeps, another `commit_id` than the
-    /// one it kept, than the commit in flight there and than those it gave the slot to before a
-    /// loss took them ([`GIVEN_UP_KEPT`]) starts recovery whatever its counter: the server holds
-    /// there a commit of this device that the store does not know, so the store is behind the
-    /// server. Otherwise, with *w* the server's counter, *w* = *a* means the commit in flight was not accepted
+    /// 2.8). A `Welcome` whose counter *w* is at most *a* and that names, for slot *w*, which this
+    /// device keeps, another `commit_id` than the one it kept and than those it gave the slot to
+    /// before a loss took them ([`GIVEN_UP_KEPT`]) starts recovery: the server holds there a
+    /// commit of this device that the store does not know, so the store is behind the server. A
+    /// kept slot above *a* is one a loss took, which the store plans again once R is listed again. Otherwise, with *w* the server's counter, *w* = *a* means the commit in flight was not accepted
     /// and *w* = *a* + 1 that it was and its response was lost; both resend it unchanged, and
     /// the server answers an accepted one with its stored result. *w* < *a* means the server lost
     /// commits it had accepted, since its counter only grows and *a* takes a slot only from a
@@ -2625,13 +2625,11 @@ impl Commits {
         let (a, w) = (*self.accepted, welcome.device_seq);
         let kept = (self.slots.get(&w))
             .filter(|slot| !slot.commit_id.is_empty() && !welcome.device_commit_id.is_empty());
-        let sent_here = (self.given_up.get(&w))
-            .is_some_and(|ids| ids.contains(&welcome.device_commit_id))
-            || (self.in_flight.as_ref()).is_some_and(|flight| {
-                flight.commit.device_seq == w && flight.commit.commit_id == welcome.device_commit_id
-            });
-        let another_commit =
-            kept.is_some_and(|slot| slot.commit_id != welcome.device_commit_id) && !sent_here;
+        let given_up =
+            (self.given_up.get(&w)).is_some_and(|ids| ids.contains(&welcome.device_commit_id));
+        let another_commit = w <= a
+            && kept.is_some_and(|slot| slot.commit_id != welcome.device_commit_id)
+            && !given_up;
         self.confirmed.0 = kept.map(|slot| {
             if same_application(welcome, &slot.commit_id, slot.committed_at_ms) {
                 w

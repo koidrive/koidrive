@@ -41,7 +41,7 @@ The server keeps this row when log truncation removes the commit from `commits`.
 
 | *w* | Meaning | Client action |
 |---|---|---|
-| Any *w* at a slot the client keeps, and the `Welcome`'s `device_commit_id` differs from the `commit_id` the client keeps for slot *w*, from the commit in flight at slot *w* and from the last 8 other commits it sent at slot *w* | The server holds at slot *w* a commit of this device that the store does not know, so the store is behind the server, as after a rollback to a copy taken before that commit | Plan nothing from this store and enter recovery (§6) |
+| *w* ≤ *a* at a slot the client keeps, and the `Welcome`'s `device_commit_id` differs from the `commit_id` the client keeps for slot *w* and from the last 8 other commits it sent at slot *w* | The server holds at slot *w* a commit of this device that the store does not know, so the store is behind the server, as after a rollback to a copy taken before that commit | Plan nothing from this store and enter recovery (§6) |
 | *w* = *a* | The commit in flight, if there is one, was not accepted | Resend it unchanged |
 | *w* = *a* + 1, and the commit in flight has slot *a* + 1 | The commit was accepted and its response was lost | Resend it unchanged; the server returns its stored result |
 | *w* = *a* + 1 with no commit in flight, or *w* > *a* + 1, and the client keeps no result of slot *w* | The store is behind the server: it was restored from a backup or cloned | Plan nothing from this store and enter recovery (§6) |

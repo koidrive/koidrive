@@ -266,7 +266,7 @@ The first row that matches decides:
 
 | *w* against the store | Meaning | Action |
 |---|---|---|
-| any *w* at a slot the store keeps, with a `commit_id` other than the one the store keeps there, than the commit in flight at slot *w* and than the last 8 others it sent at slot *w* | the server holds at slot *w* a commit of this device that the store does not know: the store is behind the server | Plan nothing from this store; the space enters recovery (§6.4) with the store as evidence |
+| *w* ≤ *a* at a slot the store keeps, with a `commit_id` other than the one the store keeps there and than the last 8 others it sent at slot *w* | the server holds at slot *w* a commit of this device that the store does not know: the store is behind the server | Plan nothing from this store; the space enters recovery (§6.4) with the store as evidence |
 | *w* = *a* | the commit in flight, if any, was not accepted | Resend it unchanged. If its result has already arrived, the server accepted it and lost it: act as in the last row |
 | *w* = *a* + 1, and the commit in flight has slot *a* + 1 | the commit was accepted and its response lost | Resend it unchanged; the server returns the stored result. Only `STALE_DEVICE_STATE`, meaning the server does not know that `commit_id`, makes this a rollback |
 | *w* = *a* + 1 with no commit in flight, or *w* > *a* + 1, at a slot the store does not keep | the store is behind the server: restored or copied | Plan nothing from this store; the space enters recovery (§6.4) with the store as evidence |
