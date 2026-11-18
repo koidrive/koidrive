@@ -2,7 +2,7 @@
 
 name: Heavy tests
 
-run-name: Heavy tests of ${{ inputs.crate }}${{ inputs.test && format(' --test {0}', inputs.test) || '' }}${{ inputs.filter && format(' {0}', inputs.filter) || '' }} on ${{ inputs.ref || github.ref_name }} (${{ inputs.os }}, ${{ inputs.repeat || '1' }} runs)
+run-name: Heavy tests of ${{ inputs.mode == 'macos-ui' && 'the macOS UI tests' || inputs.crate }}${{ inputs.test && format(' --test {0}', inputs.test) || '' }}${{ inputs.filter && format(' {0}', inputs.filter) || '' }} on ${{ inputs.ref || github.ref_name }} (${{ inputs.os }}, ${{ inputs.repeat || '1' }} runs)
 
 on:
   workflow_dispatch:
@@ -12,9 +12,9 @@ on:
         type: string
         default: ''
       crate:
-        description: Workspace package to test, such as koidrive-sim
+        description: Workspace package to test, such as koidrive-sim (empty with mode macos-ui)
         type: string
-        required: true
+        default: ''
       test:
         description: Integration test target, as for cargo test --test (empty runs every target of the package)
         type: string
@@ -36,9 +36,9 @@ on:
         type: string
         default: '1'
       mode:
-        description: Cargo tests, fresh local Worker integration launchers, or the vitest suite of server/ (crate koidrive-server; test filters test files, filter test names)
+        description: Cargo tests, fresh local Worker integration launchers, the vitest suite of server/ (crate koidrive-server; test filters test files, filter test names), or the macOS app's UI tests on a fresh runner per run
         type: choice
-        options: [cargo, worker, server]
+        options: [cargo, worker, server, macos-ui]
         default: cargo
       seed:
         description: PROPTEST_RNG_SEED of the first run; run k uses seed + k - 1 (empty derives it from the run ID)
@@ -97,21 +97,25 @@ jobs:
     outputs:
       sha: ${{ steps.plan.outputs.sha }}
       seed: ${{ steps.plan.outputs.seed }}
+      runs: ${{ steps.plan.outputs.runs }}
     steps:
       - name: Check the inputs
         env:
           REF: ${{ inputs.ref }}
+          OS: ${{ inputs.os }}
         run: |
           errors=()
           [[ "$REF" != -* ]] || errors+=("ref must be a branch, tag or commit, not an option: '$REF'.")
-          [[ "$CRATE" =~ ^[A-Za-z0-9_-]+$ ]] || errors+=("crate must be a package name such as koidrive-sim, got '$CRATE'.")
+          [[ "$MODE" == macos-ui || "$CRATE" =~ ^[A-Za-z0-9_-]+$ ]] || errors+=("crate must be a package name such as koidrive-sim, got '$CRATE'.")
           [[ "$TEST" =~ ^[A-Za-z0-9_-]*$ ]] || errors+=("test must be an integration test target name such as engine_sync, got '$TEST'.")
           [[ "$FILTER" != -* ]] || errors+=("filter must be a test name, not an option: '$FILTER' starts with '-'.")
           [[ "$CASES" =~ ^[0-9]{0,7}$ ]] || errors+=("cases must be empty or a whole number up to 9999999, got '$CASES'.")
           [[ "$REPEAT" =~ ^([1-9][0-9]?|100)$ ]] || errors+=("repeat must be a whole number from 1 to 100, got '$REPEAT'.")
           [[ "$PARALLEL" =~ ^[1-8]$ ]] || errors+=("parallel must be a whole number from 1 to 8, got '$PARALLEL'.")
-          [[ "$MODE" == cargo || "$MODE" == worker || "$MODE" == server ]] || errors+=("mode must be cargo, worker or server.")
+          [[ "$MODE" == cargo || "$MODE" == worker || "$MODE" == server || "$MODE" == macos-ui ]] || errors+=("mode must be cargo, worker, server or macos-ui.")
           [[ "$MODE" != server ]] || [[ "$CRATE" == koidrive-server && "$PARALLEL" == 1 && -z "$FEATURES$CASES" && "$IGNORED" != true ]] || errors+=("server mode runs the vitest suite of server/: set crate to koidrive-server, and leave parallel at 1 and features, cases and ignored empty.")
+          [[ "$MODE" != macos-ui || ( -z "$CRATE$TEST$FILTER$CASES$FEATURES$EXTRA_ENV$SEED" && "$PARALLEL" == 1 && "$RELEASE" != true && "$IGNORED" != true ) ]] || errors+=("macos-ui runs the whole UI test suite: leave crate, test, filter, cases, features, env, seed, parallel, release and ignored unset.")
+          [[ "$MODE" != macos-ui || "$OS" != ubuntu ]] || errors+=("macos-ui runs on macOS runners: set os to macos or both.")
           if [ "$MODE" = worker ]; then
             case "$CRATE" in
               koidrive-net) worker_test=server ;;
@@ -145,13 +149,21 @@ jobs:
         run: |
           sha=$(git rev-parse HEAD)
           seed=${SEED:-$((GITHUB_RUN_ID * 1000))}
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "seed=$seed" >> "$GITHUB_OUTPUT"
-          echo "Commit $sha, $REPEAT runs on each OS, run k uses PROPTEST_RNG_SEED=$seed + k - 1."
+          {
+            echo "sha=$sha"
+            echo "seed=$seed"
+            echo "runs=[$(seq -s, 1 "$REPEAT")]"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$MODE" = macos-ui ]; then
+            echo "Commit $sha, $REPEAT runs of the macOS UI tests."
+          else
+            echo "Commit $sha, $REPEAT runs on each OS, run k uses PROPTEST_RNG_SEED=$seed + k - 1."
+          fi
 
   test:
     name: test (${{ matrix.os }})
     needs: plan
+    if: inputs.mode != 'macos-ui'
     strategy:
       fail-fast: false
       matrix:
@@ -397,5 +409,50 @@ jobs:
         with:
           name: heavy-tests-${{ runner.os }}
           path: ${{ runner.temp }}/heavy-tests
+          retention-days: 7
+          if-no-files-found: ignore
+
+  macos-ui:
+    name: macos ui (run ${{ matrix.run }})
+    needs: plan
+    if: inputs.mode == 'macos-ui'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        run: ${{ fromJSON(needs.plan.outputs.runs) }}
+    runs-on: xcode-27
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/macos
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: heavy-tests-macos-ui
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the Rust core and the Swift bindings, and generate the project
+        run: scripts/build-ffi.sh && scripts/generate-project.sh
+      - name: Run the UI tests against the fake core
+        timeout-minutes: 15
+        run: scripts/run-ui-tests.sh build/UITests.xcresult
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: heavy-tests-macos-ui-run-${{ matrix.run }}
+          path: |
+            apps/macos/build/UITests.xcresult
+            apps/macos/build/UITests.log
           retention-days: 7
           if-no-files-found: ignore
