@@ -1,2 +1,0 @@
-cc f934ef3b902ed17d044ae4f5f9c2b11ea1f8e5dc9cdd766c23c45dd6cf73b48c # shrinks to devices = 2, phases = [[(0, User(Action { kind: 1, target: 0, parent: 0, name: 0, text: 1 })), (0, User(Action { kind: 1, target: 0, parent: 0, name: 4, text: 1 })), (2, Work(0)), (2, Work(0)), (0, Work(0)), (1, Deliver(0)), (1, Effect(Crash(Placed))), (1, User(Action { kind: 3, target: 29687920466624875, parent: 0, name: 1, text: 0 })), (1, User(Action { kind: 3, target: 953053783945106222, parent: 0, name: 4, text: 0 }))]]
-
