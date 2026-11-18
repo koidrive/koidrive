@@ -264,7 +264,14 @@ fn finish_check_of(to: &str, from: &str, name: &str, mark: &str) -> Result<(), T
         }),
         ..Default::default()
     };
-    sent_move_check(&moved, &held.shape, None, Some(&held), "me", &BTreeMap::new())
+    sent_move_check(
+        &moved,
+        &held.shape,
+        None,
+        Some(&held),
+        "me",
+        &BTreeMap::new(),
+    )
 }
 
 #[test]

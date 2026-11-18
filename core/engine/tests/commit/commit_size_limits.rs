@@ -754,14 +754,21 @@ fn a_folder_the_server_lost_in_a_new_folder_it_merges_is_created_again() {
         }],
     );
     let second = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
-    assert_eq!(second.unwrap_or_default().first(), Some(&create_dir("b", "a", "b")));
+    assert_eq!(
+        second.unwrap_or_default().first(),
+        Some(&create_dir("b", "a", "b"))
+    );
 }
-
 
 #[test]
 fn a_folder_the_server_lost_moved_into_a_new_folder_it_merges_is_created_again() {
     let mut trees = trees(&[
-        ("a", None, Some(dir(ROOT, "a")), Some(remote(dir(ROOT, "a")))),
+        (
+            "a",
+            None,
+            Some(dir(ROOT, "a")),
+            Some(remote(dir(ROOT, "a"))),
+        ),
         ("b", Some(dir("n", "b")), Some(dir("a", "b")), None),
         (
             "c",
@@ -787,6 +794,8 @@ fn a_folder_the_server_lost_moved_into_a_new_folder_it_merges_is_created_again()
         }],
     );
     let second = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
-    assert_eq!(second.unwrap_or_default().first(), Some(&create_dir("b", "a", "b")));
+    assert_eq!(
+        second.unwrap_or_default().first(),
+        Some(&create_dir("b", "a", "b"))
+    );
 }
-

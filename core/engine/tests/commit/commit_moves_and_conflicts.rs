@@ -1344,7 +1344,11 @@ fn a_create_into_a_trashed_folder_waits_for_its_move_out_of_a_live_one() {
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let first = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&first), [mv("t", ROOT, "T2")]);
-    acknowledge(&mut commits, &mut trees, vec![outcome(op_result::Code::Applied)]);
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![outcome(op_result::Code::Applied)],
+    );
     trees.set_remote_made_here("t".into(), remote(dir(ROOT, "T2")));
     trees.set_remote_made_here("g".into(), remote(file("t", "g", 1)));
     let second = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -1595,8 +1599,18 @@ fn an_edit_in_a_folder_the_commit_moves_is_sent_after_the_move() {
 #[test]
 fn a_rename_onto_the_name_of_a_folder_moved_into_a_new_folder_inside_it_keeps_its_name() {
     let mut trees = trees(&[
-        ("p", Some(dir(ROOT, "q")), Some(dir(ROOT, "p")), Some(remote(dir(ROOT, "p")))),
-        ("x", Some(dir("n", "q")), Some(dir(ROOT, "q")), Some(remote(dir(ROOT, "q")))),
+        (
+            "p",
+            Some(dir(ROOT, "q")),
+            Some(dir(ROOT, "p")),
+            Some(remote(dir(ROOT, "p"))),
+        ),
+        (
+            "x",
+            Some(dir("n", "q")),
+            Some(dir(ROOT, "q")),
+            Some(remote(dir(ROOT, "q"))),
+        ),
         ("n", Some(dir("p", "n")), None, None),
     ]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
@@ -1621,25 +1635,59 @@ fn a_rename_onto_the_name_of_a_folder_moved_into_a_new_folder_inside_it_keeps_it
 #[test]
 fn a_cycle_against_r_through_a_new_folder_still_reverts_and_sends_the_rest() {
     let mut trees = trees(&[
-        ("y", Some(dir("x", "y")), Some(dir(ROOT, "y")), Some(remote(dir(ROOT, "y")))),
-        ("x", Some(dir("n", "x")), Some(dir(ROOT, "x")), Some(remote(dir(ROOT, "x")))),
-        ("g", Some(dir(ROOT, "g")), Some(dir(ROOT, "g")), Some(remote(dir("y", "g")))),
+        (
+            "y",
+            Some(dir("x", "y")),
+            Some(dir(ROOT, "y")),
+            Some(remote(dir(ROOT, "y"))),
+        ),
+        (
+            "x",
+            Some(dir("n", "x")),
+            Some(dir(ROOT, "x")),
+            Some(remote(dir(ROOT, "x"))),
+        ),
+        (
+            "g",
+            Some(dir(ROOT, "g")),
+            Some(dir(ROOT, "g")),
+            Some(remote(dir("y", "g"))),
+        ),
         ("n", Some(dir("g", "n")), None, None),
     ]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let first = build(&mut commits, &mut trees, &mut ids);
     let second = build(&mut commits, &mut trees, &mut ids);
     let sent: Vec<op::Op> = first.iter().chain(&second).flat_map(ops).collect();
-    assert!(trees.reverted().contains("y"), "reverted {:?} sent {sent:?}", trees.reverted());
+    assert!(
+        trees.reverted().contains("y"),
+        "reverted {:?} sent {sent:?}",
+        trees.reverted()
+    );
     assert_eq!(sent, [create_dir("n", "g", "n"), mv("x", "n", "x")]);
 }
 
 #[test]
 fn a_folder_moved_out_onto_the_name_of_a_folder_moving_into_it_goes_first() {
     let mut trees = trees(&[
-        ("c", Some(dir(ROOT, "c")), Some(dir(ROOT, "c")), Some(remote(dir(ROOT, "c")))),
-        ("d", Some(dir(ROOT, "a")), Some(dir("c", "d")), Some(remote(dir("c", "d")))),
-        ("x", Some(dir("d", "x")), Some(dir(ROOT, "a")), Some(remote(dir(ROOT, "a")))),
+        (
+            "c",
+            Some(dir(ROOT, "c")),
+            Some(dir(ROOT, "c")),
+            Some(remote(dir(ROOT, "c"))),
+        ),
+        (
+            "d",
+            Some(dir(ROOT, "a")),
+            Some(dir("c", "d")),
+            Some(remote(dir("c", "d"))),
+        ),
+        (
+            "x",
+            Some(dir("d", "x")),
+            Some(dir(ROOT, "a")),
+            Some(remote(dir(ROOT, "a"))),
+        ),
         ("y", Some(file("d", "y", 1)), None, None),
     ]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
@@ -1650,23 +1698,44 @@ fn a_folder_moved_out_onto_the_name_of_a_folder_moving_into_it_goes_first() {
         op::Op::CreateFile(f) => f.parent_id == "d",
         _ => false,
     });
-    let d_out = sent.iter().position(|op| matches!(op, op::Op::Move(m) if m.node_id == "d"));
+    let d_out = sent
+        .iter()
+        .position(|op| matches!(op, op::Op::Move(m) if m.node_id == "d"));
     assert!(d_out.is_some() && d_out < first_into_d, "{sent:?}");
 }
 
 #[test]
 fn a_folder_moved_out_onto_a_name_r_holds_goes_before_what_is_created_in_it() {
     let mut trees = trees(&[
-        ("c", Some(dir(ROOT, "c")), Some(dir(ROOT, "c")), Some(remote(dir(ROOT, "c")))),
-        ("d", Some(dir(ROOT, "a")), Some(dir("c", "d")), Some(remote(dir("c", "d")))),
-        ("z", Some(dir(ROOT, "z")), Some(dir(ROOT, "z")), Some(remote(dir(ROOT, "a")))),
+        (
+            "c",
+            Some(dir(ROOT, "c")),
+            Some(dir(ROOT, "c")),
+            Some(remote(dir(ROOT, "c"))),
+        ),
+        (
+            "d",
+            Some(dir(ROOT, "a")),
+            Some(dir("c", "d")),
+            Some(remote(dir("c", "d"))),
+        ),
+        (
+            "z",
+            Some(dir(ROOT, "z")),
+            Some(dir(ROOT, "z")),
+            Some(remote(dir(ROOT, "a"))),
+        ),
         ("y", Some(file("d", "y", 1)), None, None),
     ]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     let sent = ops(&commit);
-    let created = sent.iter().position(|op| matches!(op, op::Op::CreateFile(f) if f.parent_id == "d"));
-    let d_out = sent.iter().position(|op| matches!(op, op::Op::Move(m) if m.node_id == "d"));
+    let created = sent
+        .iter()
+        .position(|op| matches!(op, op::Op::CreateFile(f) if f.parent_id == "d"));
+    let d_out = sent
+        .iter()
+        .position(|op| matches!(op, op::Op::Move(m) if m.node_id == "d"));
     assert!(d_out.is_some() && d_out < created, "{sent:?}");
 }
 
@@ -1691,7 +1760,6 @@ fn a_create_into_a_folder_moving_into_a_new_folder_past_the_plan_window_waits_fo
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [create_dir("g", ROOT, "g")]);
 }
-
 
 #[test]
 fn creates_inside_a_new_folder_in_a_trashed_folder_wait_for_the_trashed_folders_move() {
