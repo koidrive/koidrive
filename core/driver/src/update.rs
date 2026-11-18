@@ -142,8 +142,10 @@ pub(crate) enum Answer {
 }
 
 impl Checked {
-    pub fn due(&self) -> i64 {
-        let day = (self.checked_at).map_or(i64::MIN, |at| at.saturating_add(DAY_MS));
+    pub fn due(&self, now: i64) -> i64 {
+        let day = (self.checked_at)
+            .filter(|at| *at <= now)
+            .map_or(i64::MIN, |at| at.saturating_add(DAY_MS));
         day.max(self.retry_after.unwrap_or(i64::MIN))
     }
 
@@ -154,7 +156,7 @@ impl Checked {
 
     fn answered_within_a_day(&self, now: i64) -> bool {
         self.answered_at()
-            .is_some_and(|at| at > now.saturating_sub(DAY_MS))
+            .is_some_and(|at| at > now.saturating_sub(DAY_MS) && at <= now)
     }
 
     pub fn after(mut self, answer: Answer, now: i64) -> Checked {
@@ -308,7 +310,7 @@ pub(crate) fn releases_url(base: Option<&str>) -> Option<(Url, bool)> {
         _ => return None,
     };
     let mut url = base.join(RELEASES).ok()?;
-    url.set_query(Some("per_page=20"));
+    url.set_query(Some("per_page=100"));
     Some((url, https))
 }
 
@@ -585,7 +587,8 @@ impl Updates {
     ) {
         loop {
             let checked = self.checked.lock().unwrap().clone().unwrap_or_default();
-            let wait = checked.due().saturating_sub(now_ms());
+            let now = now_ms();
+            let wait = checked.due(now).saturating_sub(now);
             if wait > 0 {
                 tokio::time::sleep(Duration::from_millis(wait.min(HOUR_MS) as u64)).await;
                 continue;

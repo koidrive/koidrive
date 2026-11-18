@@ -177,12 +177,25 @@ fn a_device_is_told_only_about_a_release_above_the_version_it_runs() {
 }
 
 #[test]
+fn a_check_time_ahead_of_the_clock_is_due_at_once() {
+    let now = 10 * DAY_MS;
+    let ahead = Checked::default().after(
+        Answer::Releases {
+            etag: None,
+            release: release("0.1.2"),
+        },
+        now + 30 * DAY_MS,
+    );
+    assert!(ahead.due(now) <= now);
+}
+
+#[test]
 fn a_check_is_due_a_day_after_githubs_last_answer_an_hour_after_no_answer_and_not_before_a_rate_limit_resets()
  {
     let now = 10 * DAY_MS;
     let first = Checked::default();
     assert!(
-        first.due() <= now,
+        first.due(now) <= now,
         "a profile that never checked checks at once"
     );
 
@@ -193,7 +206,7 @@ fn a_check_is_due_a_day_after_githubs_last_answer_an_hour_after_no_answer_and_no
         },
         now,
     );
-    assert_eq!(answered.due(), now + DAY_MS);
+    assert_eq!(answered.due(now), now + DAY_MS);
     assert_eq!(answered.etag.as_deref(), Some("\"e1\""));
 
     let later = now + DAY_MS;
@@ -202,7 +215,7 @@ fn a_check_is_due_a_day_after_githubs_last_answer_an_hour_after_no_answer_and_no
         (same.checked_at, same.release.clone(), same.etag.clone()),
         (Some(later), release("0.1.2"), Some("\"e1\"".into()))
     );
-    assert_eq!(same.due(), later + DAY_MS);
+    assert_eq!(same.due(later), later + DAY_MS);
 
     let offline = answered.clone().after(Answer::Unreachable, later);
     assert_eq!(offline.checked_at, Some(now), "no answer is no day's check");
@@ -211,15 +224,15 @@ fn a_check_is_due_a_day_after_githubs_last_answer_an_hour_after_no_answer_and_no
         release("0.1.2"),
         "the last good answer stays"
     );
-    assert_eq!(offline.due(), later + HOUR_MS);
+    assert_eq!(offline.due(later), later + HOUR_MS);
     let back = offline.after(Answer::NotModified, later + HOUR_MS);
-    assert_eq!(back.due(), later + HOUR_MS + DAY_MS);
+    assert_eq!(back.due(later + HOUR_MS), later + HOUR_MS + DAY_MS);
 
     let refused = answered
         .clone()
         .after(Answer::Refused { until: None }, later);
     assert_eq!(
-        (refused.due(), refused.release.clone()),
+        (refused.due(later), refused.release.clone()),
         (later + DAY_MS, release("0.1.2"))
     );
 
@@ -230,15 +243,15 @@ fn a_check_is_due_a_day_after_githubs_last_answer_an_hour_after_no_answer_and_no
         later,
     );
     assert_eq!(
-        soon.due(),
+        soon.due(later),
         later + DAY_MS,
         "a rate limit waits at least a day"
     );
     let reset = later + DAY_MS + 5 * HOUR_MS;
     let limited = answered.after(Answer::Refused { until: Some(reset) }, later);
-    assert_eq!(limited.due(), reset);
+    assert_eq!(limited.due(later), reset);
     assert_eq!(
-        limited.after(Answer::NotModified, reset).due(),
+        limited.after(Answer::NotModified, reset).due(reset),
         reset + DAY_MS
     );
 }
@@ -266,7 +279,7 @@ fn failed_checks_back_off_without_claiming_a_successful_check() {
         };
         let failed = Checked::default().after(failure(), 100);
         assert_eq!(failed.notice(&runs), Update::Unknown, "{status}");
-        assert_eq!(failed.due(), 100 + DAY_MS);
+        assert_eq!(failed.due(100), 100 + DAY_MS);
         for (version, expected) in [
             (None, Update::UpToDate { checked_at_ms: 200 }),
             (release("0.1.0"), Update::UpToDate { checked_at_ms: 200 }),
@@ -289,7 +302,7 @@ fn failed_checks_back_off_without_claiming_a_successful_check() {
             assert_eq!(success.notice(&runs), expected);
             let failed_again = success.after(failure(), 300);
             assert_eq!(failed_again.notice(&runs), expected);
-            assert_eq!(failed_again.due(), 300 + DAY_MS);
+            assert_eq!(failed_again.due(300), 300 + DAY_MS);
         }
     }
 }
@@ -299,7 +312,7 @@ fn not_modified_without_a_successful_cache_does_not_claim_up_to_date() {
     let runs = Version::parse("0.1.0").unwrap();
     let checked = Checked::default().after(Answer::NotModified, 100);
     assert_eq!(checked.notice(&runs), Update::Unknown);
-    assert_eq!(checked.due(), 100 + DAY_MS);
+    assert_eq!(checked.due(100), 100 + DAY_MS);
 }
 
 #[test]
@@ -424,13 +437,13 @@ fn the_api_base_is_https_or_http_on_a_loopback_address() {
     let (url, https) = releases_url(None).unwrap();
     assert_eq!(
         url.as_str(),
-        "https://api.github.com/repos/koidrive/koidrive/releases?per_page=20"
+        "https://api.github.com/repos/koidrive/koidrive/releases?per_page=100"
     );
     assert!(https);
     let (url, https) = releases_url(Some("http://127.0.0.1:8080/api")).unwrap();
     assert_eq!(
         url.as_str(),
-        "http://127.0.0.1:8080/api/repos/koidrive/koidrive/releases?per_page=20"
+        "http://127.0.0.1:8080/api/repos/koidrive/koidrive/releases?per_page=100"
     );
     assert!(!https);
     assert_eq!(releases_url(Some("http://example.com")), None);
@@ -582,7 +595,7 @@ async fn a_failed_later_page_keeps_the_last_good_notice_and_waits_a_day() {
         let notice = previous.notice(&runs);
         let failed = previous.after(Answer::Refused { until: None }, 200);
         assert_eq!(failed.notice(&runs), notice);
-        assert_eq!(failed.due(), 200 + DAY_MS);
+        assert_eq!(failed.due(200), 200 + DAY_MS);
     }
 }
 
@@ -803,7 +816,7 @@ async fn the_request_carries_only_the_headers_github_needs_and_the_etag_of_the_l
     let (request, answered) =
         tokio::join!(served(&listener, &ok), ask(&http, url.clone(), None, ASSET));
     assert!(
-        request.starts_with("GET /repos/koidrive/koidrive/releases?per_page=20 HTTP/1.1\r\n"),
+        request.starts_with("GET /repos/koidrive/koidrive/releases?per_page=100 HTTP/1.1\r\n"),
         "{request}"
     );
     let host = format!("host: {}", listener.local_addr().unwrap());
@@ -1038,7 +1051,7 @@ fn foreign_or_legacy_caches_are_unknown_and_due_for_a_fresh_check() {
                 "{asset:?}"
             );
             let checked = load(&path).unwrap_or_default();
-            assert!(checked.due() <= now_ms());
+            assert!(checked.due(now_ms()) <= now_ms());
             assert_eq!(checked.etag, None);
             assert_eq!(checked.release, None);
             assert_eq!(checked.successful_at, None);
@@ -1065,7 +1078,7 @@ fn same_target_caches_keep_the_last_answer_and_conditional_validator() {
     };
     assert_eq!(release_updates(true, path.clone()).notice(), expected);
     let checked = load(&path).unwrap();
-    assert!(checked.due() > now_ms());
+    assert!(checked.due(now_ms()) <= now_ms());
     assert_eq!(checked.etag.as_deref(), Some("\"same\""));
     assert_eq!(checked.release, release("99.0.0"));
 }
@@ -1197,7 +1210,11 @@ async fn pagination_follows_githubs_repository_id_links() {
 #[tokio::test]
 async fn a_refused_check_answers_with_githubs_answer_from_the_last_day() {
     let rate_limited = "HTTP/1.1 403 Forbidden\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: 4102444800\r\ncontent-length: 0\r\n\r\n";
-    for (age, answered) in [(HOUR_MS, true), (DAY_MS + HOUR_MS, false)] {
+    for (age, answered) in [
+        (HOUR_MS, true),
+        (DAY_MS + HOUR_MS, false),
+        (-HOUR_MS, false),
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("update-check.json");
         let at = now_ms() - age;
