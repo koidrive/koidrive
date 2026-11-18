@@ -692,6 +692,22 @@ async fn a_not_modified_page_with_a_new_next_link_fetches_the_whole_list() {
 }
 
 #[tokio::test]
+async fn a_retry_that_fails_after_a_not_modified_page_is_refused() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/", listener.local_addr().unwrap());
+    let (url, https) = releases_url(Some(&base)).unwrap();
+    let not_modified = format!(
+        "HTTP/1.1 304 Not Modified\r\nlink: <{url}&page=2>; rel=\"next\"\r\ncontent-length: 0\r\n\r\n"
+    );
+    let server = async move {
+        served(&listener, &not_modified).await;
+    };
+    let http = client(https).unwrap();
+    let (_, answer) = tokio::join!(server, ask(&http, url, Some("\"first\""), ASSET));
+    assert_eq!(answer, Answer::Refused { until: None });
+}
+
+#[tokio::test]
 async fn pagination_refuses_links_outside_the_release_endpoint_and_cycles() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/", listener.local_addr().unwrap());

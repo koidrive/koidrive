@@ -359,7 +359,7 @@ pub(crate) async fn ask(
                     answered = true;
                     response
                 }
-                Err(_) if visited.len() == 1 => return Answer::Unreachable,
+                Err(_) if !answered => return Answer::Unreachable,
                 Err(_) => return Answer::Refused { until: None },
             };
             let (status, headers) = (response.status(), response.headers().clone());
