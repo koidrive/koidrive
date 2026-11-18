@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildEnv } from "./first-sync.ts";
 import {
   countTimeouts,
+  holdDeadline,
+  holdReason,
   median,
   type PlannedEntry,
   planTree,
@@ -121,6 +123,44 @@ describe("run order", () => {
       for (let ref = 0; ref < refs; ref++) {
         for (let order = 0; order < refs; order++) expect(runs.filter((run) => run.ref === ref && run.order === order)).toHaveLength(repetitions / refs);
       }
+    }
+  });
+});
+
+describe("Worker hold deadline", () => {
+  const deployStart = Date.UTC(2026, 10, 18, 9, 0);
+  const minutes = (n: number) => n * 60_000;
+
+  it("ends 345 minutes after the sync job started when both jobs start together", () => {
+    expect(holdDeadline(deployStart, deployStart)).toEqual({ until: deployStart + minutes(345), cap: "sync" });
+  });
+
+  it("moves with a sync job that started before the deploy job", () => {
+    expect(holdDeadline(deployStart - minutes(10), deployStart)).toEqual({ until: deployStart + minutes(335), cap: "sync" });
+  });
+
+  it("stops at the deploy job's 345 minutes when the sync runner queued later, because GitHub ends the deploy job at 360", () => {
+    const hold = holdDeadline(deployStart + minutes(25), deployStart);
+    expect(hold).toEqual({ until: deployStart + minutes(345), cap: "deploy" });
+    expect(holdReason(hold)).toBe("345 minutes after the deploy job started, because GitHub ends a job after 360 minutes and the teardown needs 15");
+  });
+
+  it("names the sync job's limit when that one binds", () => {
+    expect(holdReason(holdDeadline(deployStart, deployStart))).toBe("345 minutes after the sync job started, after which it starts no run");
+  });
+
+  it("hands the sync job's start time to the deploy job with the public key", () => {
+    const dir = mkdtempSync(join(tmpdir(), "koidrive-first-sync-unit-"));
+    try {
+      const flags = Number(process.versions.node.split(".")[0]) < 23 ? ["--experimental-strip-types", "--no-warnings"] : [];
+      const keygen = (start?: string) =>
+        spawnSync(process.execPath, [...flags, join(here, "first-sync.ts"), "keygen"], { env: { PATH: process.env.PATH, FIRST_SYNC_WORK: dir, ...(start ? { FIRST_SYNC_JOB_START: start } : {}) }, encoding: "utf8" });
+      expect(keygen().status).not.toBe(0);
+      expect(keygen("1795000000").status).toBe(0);
+      expect(readFileSync(join(dir, "key", "started-at"), "utf8")).toBe("1795000000000");
+      expect(existsSync(join(dir, "key", "public.pem"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
@@ -423,6 +463,12 @@ describe("deploy-test workflow", () => {
     expect(job).toBeDefined();
     expect(job).not.toMatch(/GH_TOKEN|GITHUB_TOKEN|secrets\.|github\.token|environment:|actions: /);
     expect(job).toContain("    permissions:\n      contents: read\n    strategy:");
+  });
+
+  it("records each first-sync job's start in its first step and uploads the sync job's start with its key", () => {
+    for (const job of ["deploy-test", "first-sync-macos"]) expect(steps(job)[0]).toContain('run: echo "FIRST_SYNC_JOB_START=$(date +%s)" >> "$GITHUB_ENV"\n');
+    const upload = steps("first-sync-macos").find((step) => step.includes("name: first-sync-macos-key-"));
+    expect(upload).toContain("path: ${{ runner.temp }}/koidrive-first-sync/key/\n");
   });
 
   it("hands the token in the macOS sync job only to the step that downloads the pairing codes", () => {

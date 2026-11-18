@@ -7,12 +7,32 @@ export const JOB_MINUTES = 360;
 export const RESET_MINUTES = 5;
 export const SETUP_MINUTES = { disk: 15, tree: 20, pairing: 40, summary: 10, spare: 5 } as const;
 export const RUNS_END_MINUTES = JOB_MINUTES - SETUP_MINUTES.summary - SETUP_MINUTES.spare;
+export const TEARDOWN_MINUTES = 15;
+export const HOLD_MINUTES = JOB_MINUTES - TEARDOWN_MINUTES;
+export const MINUTE_MS = 60_000;
 export const SAMPLE_MS = 2000;
 export const STALL_SECONDS = 5;
 export const TIMEOUT_MESSAGES = { didNotMove: "did not move for", noCompleteAnswer: "no complete answer within", keptFailing: "kept failing" } as const;
 export type TimeoutKind = keyof typeof TIMEOUT_MESSAGES;
 
 const REF = /^(?!.*\.\.)(?!.*\/\/)(?!.*\.lock$)(?!.*[./]$)[A-Za-z0-9_][A-Za-z0-9._/-]*$/;
+
+export interface Hold {
+  until: number;
+  cap: "sync" | "deploy";
+}
+
+export function holdDeadline(syncStart: number, deployStart: number): Hold {
+  const sync = syncStart + RUNS_END_MINUTES * MINUTE_MS;
+  const deploy = deployStart + HOLD_MINUTES * MINUTE_MS;
+  return deploy < sync ? { until: deploy, cap: "deploy" } : { until: sync, cap: "sync" };
+}
+
+export function holdReason(hold: Hold): string {
+  return hold.cap === "sync"
+    ? RUNS_END_MINUTES + " minutes after the sync job started, after which it starts no run"
+    : HOLD_MINUTES + " minutes after the deploy job started, because GitHub ends a job after " + JOB_MINUTES + " minutes and the teardown needs " + TEARDOWN_MINUTES;
+}
 
 export interface Inputs {
   refs: string[];

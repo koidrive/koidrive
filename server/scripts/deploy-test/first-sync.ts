@@ -10,15 +10,17 @@ import { readState } from "./state.ts";
 import {
   type Build,
   countTimeouts,
+  type Hold,
+  holdDeadline,
+  holdReason,
   type Inputs,
-  JOB_MINUTES,
+  MINUTE_MS,
   type PlannedEntry,
   planTree,
   pool,
   progress,
   readInputs,
   RESET_MINUTES,
-  RUNS_END_MINUTES,
   type Run,
   type RunResult,
   runOrder,
@@ -36,10 +38,8 @@ import {
 
 const SEED = 1;
 const DEFAULT_ENTRIES = 1_900_000;
-const MINUTE_MS = 60_000;
 const KEY_WAIT_MS = (SETUP_MINUTES.disk + SETUP_MINUTES.tree + 55) * MINUTE_MS;
 const CODES_WAIT_MS = SETUP_MINUTES.pairing * MINUTE_MS;
-const TEARDOWN_MINUTES = 15;
 const DAEMON_START_MS = 60_000;
 const DAEMON_STOP_MS = 60_000;
 const STATUS_TIMEOUT_MS = 15_000;
@@ -94,7 +94,7 @@ function resolve(ref: string): string {
 
 function startedAt(): number {
   const seconds = Number(process.env.FIRST_SYNC_JOB_START ?? "");
-  return seconds > 0 ? seconds * 1000 : Number.NaN;
+  return seconds > 0 ? seconds * 1000 : fail("FIRST_SYNC_JOB_START names no start time");
 }
 
 function gib(bytes: number): string {
@@ -360,13 +360,12 @@ export async function sealCodes(): Promise<void> {
   mkdirSync(work("join"), { recursive: true });
   for (const index of refs.keys()) writeFileSync(work("join", "join-" + index + ".bin"), seal(publicKey, await invitation()));
   writeFileSync(work("join", "server"), readState().url ?? fail("the deploy-test state names no server"));
-  const holdUntil = startedAt() + (JOB_MINUTES - TEARDOWN_MINUTES) * MINUTE_MS;
-  if (Number.isFinite(holdUntil)) writeFileSync(work("join", "hold-until"), String(holdUntil));
+  const syncStart = Number(readFileSync(work("key", "started-at"), "utf8"));
+  if (!(syncStart > 0)) fail("the sync job's key names no start time");
+  const hold = holdDeadline(syncStart, startedAt());
+  writeFileSync(work("join", "hold.json"), JSON.stringify(hold));
+  console.log("The Worker stays until the sync job ends, at the latest until " + new Date(hold.until).toISOString() + ", " + holdReason(hold));
   console.log("Sealed " + refs.length + " pairing codes, one for each ref's device, to the macOS job's public key");
-}
-
-function holdUntil(file: string): number {
-  return existsSync(file) ? Number(readFileSync(file, "utf8")) : Number.POSITIVE_INFINITY;
 }
 
 function joinProfiles(): void {
@@ -382,7 +381,7 @@ function joinProfiles(): void {
     const args = ["join", "--code-stdin", "--server", server, "--name", on.name];
     koi(on, args, args, code + "\n");
   }
-  if (existsSync(work("join", "hold-until"))) copyFileSync(work("join", "hold-until"), work("hold-until"));
+  copyFileSync(work("join", "hold.json"), work("hold.json"));
   rmSync(work("join"), { recursive: true });
 }
 
@@ -456,6 +455,7 @@ const phases: Record<string, () => Promise<void>> = {
     mkdirSync(work("key"), { recursive: true });
     writeFileSync(work("private.pem"), privateKey, { mode: 0o600 });
     writeFileSync(work("key", "public.pem"), publicKey);
+    writeFileSync(work("key", "started-at"), String(startedAt()));
     console.log("Made the key the deploy job seals the pairing codes to; only its public half is uploaded");
   },
 
@@ -476,8 +476,7 @@ const phases: Record<string, () => Promise<void>> = {
     const { repetitions, rotation, minutes } = inputs();
     const built = builds();
     const shape = treeShape();
-    const start = startedAt();
-    const deadline = Math.min(Number.isNaN(start) ? Number.POSITIVE_INFINITY : start + RUNS_END_MINUTES * MINUTE_MS, holdUntil(work("hold-until")));
+    const deadline = readJson<Hold>(work("hold.json"), "the Worker's hold deadline").until;
     mkdirSync(work("results"), { recursive: true });
     const runs = runOrder(built.length, repetitions, rotation);
     const failures: string[] = [];
@@ -518,10 +517,11 @@ const phases: Record<string, () => Promise<void>> = {
   },
 
   async hold() {
-    const deadline = holdUntil(work("join", "hold-until"));
+    const hold = readJson<Hold>(work("join", "hold.json"), "the Worker's hold deadline");
+    const deadline = hold.until;
     for (;;) {
       if (Date.now() >= deadline) {
-        console.log("::warning::The job " + process.env.E2E_PEER_JOB + " still runs at " + new Date(deadline).toISOString() + ", but this job's own limit leaves only the time to tear down");
+        console.log("::warning::The job " + process.env.E2E_PEER_JOB + " still runs at " + new Date(deadline).toISOString() + ", " + holdReason(hold) + ", so the Worker goes now");
         return;
       }
       try {

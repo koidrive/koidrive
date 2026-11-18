@@ -581,7 +581,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: first-sync-macos-key-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/koidrive-first-sync/key/public.pem
+          path: ${{ runner.temp }}/koidrive-first-sync/key/
           retention-days: 1
           if-no-files-found: error
       - name: Download the sealed pairing codes
