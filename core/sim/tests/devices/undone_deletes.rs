@@ -495,3 +495,63 @@ fn a_rename_another_device_makes_to_a_folder_between_leaves_the_deleted_file_che
     )
     .unwrap();
 }
+
+#[test]
+fn a_rename_another_device_sends_after_the_delete_brings_the_folder_back_with_its_file() {
+    let deleted = vec![
+        (1, rename(2, 0, "c.txt")),
+        (0, delete(0)),
+        (1, SCAN),
+        (1, COMMIT),
+        (1, COMMIT),
+        (1, rename(0, 0, "A")),
+        (0, SCAN),
+        (0, COMMIT),
+        (0, COMMIT),
+        (1, SCAN),
+        (1, COMMIT),
+        (1, COMMIT),
+    ];
+    checked(
+        2,
+        &[
+            vec![
+                (0, folder("b")),
+                (0, user(1, 0, 1, "a")),
+                (0, user(1, 0, 1, "c.txt")),
+            ],
+            deleted,
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_file_another_device_adds_after_the_delete_leaves_the_deleted_file_checked() {
+    let deleted = vec![
+        (1, rename(2, 0, "c.txt")),
+        (0, delete(0)),
+        (1, SCAN),
+        (1, COMMIT),
+        (1, COMMIT),
+        (1, user(1, 0, 1, "A")),
+        (0, SCAN),
+        (0, COMMIT),
+        (0, COMMIT),
+        (1, SCAN),
+        (1, COMMIT),
+        (1, COMMIT),
+    ];
+    checked(
+        2,
+        &[
+            vec![
+                (0, folder("b")),
+                (0, user(1, 0, 1, "a")),
+                (0, user(1, 0, 1, "c.txt")),
+            ],
+            deleted,
+        ],
+    )
+    .unwrap();
+}
