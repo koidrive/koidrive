@@ -1511,3 +1511,98 @@ fn a_token_log_that_cannot_be_written_holds_no_upload() {
     a.create(&mut remote, &site.root.join("after.txt"), b"after");
     assert_eq!(remote.names(), ["after.txt"]);
 }
+
+#[test]
+fn a_retried_marker_flush_does_not_let_a_copy_from_before_a_downgrade_recover() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("kept.txt"), b"kept");
+    a.folder.disk.fail_marker_flush(true);
+    hold(&mut a, &site.root.join("after.txt"));
+    a.folder.disk.fail_marker_flush(false);
+    a.run(&mut remote);
+    drop(a);
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    as_an_older_build_restarted(&site);
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    assert!(halts_as_a_copy(&site));
+}
+
+#[test]
+fn a_marker_write_that_keeps_failing_adds_its_token_to_the_log_once() {
+    for renamed in [false, true] {
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        let log = site.root.join(koidrive_fs::PRIVATE_DIR).join("lineage");
+        let before = fs::read(&log).unwrap().len();
+        match renamed {
+            true => a.folder.disk.fail_marker_flush(true),
+            false => drop(block_marker(&site)),
+        }
+        hold(&mut a, &site.root.join("after.txt"));
+        for _ in 0..5 {
+            let retry = a.work.pop_front().unwrap();
+            a.perform(retry, &mut remote).unwrap();
+            assert_retries_the_build(&a);
+        }
+        assert_eq!(fs::read(&log).unwrap().len(), before + 16, "{renamed}");
+    }
+}
+
+#[test]
+fn a_store_restored_with_a_delete_in_flight_recovers() {
+    for remade in [false, true] {
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site.root.join("kept.txt"), b"one");
+        let (other, mut b) = linked(&mut remote, "b");
+        b.settle();
+        b.run(&mut remote);
+        fs::remove_file(other.root.join("kept.txt")).unwrap();
+        b.rescan();
+        b.scan_until(|b| !b.work.is_empty());
+        b.run(&mut remote);
+        a.folder.disk.set_hook(crash_at(disk::Cut::AfterPlan));
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            a.pull(&remote);
+            a.run(&mut remote);
+        }));
+        assert!(crashed.is_err());
+        drop(a);
+        let saved = site.db.with_extension("saved");
+        fs::copy(&site.db, &saved).unwrap();
+        drop(opened(&site).unwrap());
+        if remade {
+            fs::write(site.root.join("kept.txt"), b"two").unwrap();
+        }
+        fs::copy(&saved, &site.db).unwrap();
+        let (stored, marker) = (site.stored(), marker_of(&site));
+        let cleared = stored.effects.cleared();
+        assert!(marker.effects >= cleared);
+        assert!(marker.effects <= cleared + stored.effects.in_flight().len() as u64);
+        assert_ne!(marker.token, tokens_of(&site).current);
+        assert!(recovers(&site), "{remade}");
+
+        let mut a = site.start();
+        a.connect(&remote);
+        for _ in 0..4 {
+            a.rescan();
+            a.settle();
+            a.run(&mut remote);
+            a.rest(&mut remote);
+        }
+        assert!(remote.names().is_empty(), "{remade}");
+        if remade {
+            assert_eq!(
+                files(&site.root),
+                [("kept.txt".to_owned(), "two".to_owned())]
+            );
+            assert_eq!(a.folder.view().questions, 1);
+        } else {
+            assert!(files(&site.root).is_empty());
+            assert_eq!(a.folder.view().questions, 0);
+        }
+    }
+}

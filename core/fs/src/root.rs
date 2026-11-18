@@ -88,7 +88,7 @@ impl Lineage {
             return false;
         };
         (own.iter().flatten().filter_map(|token| token_bits(token)))
-            .any(|token| self.0[..at].contains(&token))
+            .any(|token| token != found && self.0[..at].contains(&token))
     }
 
     fn read(private: BorrowedFd<'_>) -> io::Result<Lineage> {
@@ -126,7 +126,7 @@ fn write_lineage(
     else {
         return replace_file(private, LINEAGE, LINEAGE_TEMP, &alone, Flush::Barrier);
     };
-    if append_after(private, found, &alone)? {
+    if found == next.0 || append_after(private, found, &alone)? {
         return Ok(());
     }
     let mut tokens = Lineage::read(private)?.0;
@@ -158,6 +158,10 @@ fn append_after(private: BorrowedFd<'_>, last: u128, next: &[u8; 16]) -> io::Res
     }
     let mut tail = [0; 16];
     file.read_exact_at(&mut tail, len - 16)?;
+    if tail == *next && len >= 32 {
+        file.read_exact_at(&mut tail, len - 32)?;
+        return Ok(u128::from_be_bytes(tail) == last);
+    }
     if u128::from_be_bytes(tail) != last {
         return Ok(false);
     }
