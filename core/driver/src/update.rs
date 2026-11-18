@@ -126,6 +126,8 @@ pub(crate) struct Checked {
     pub release: Option<Release>,
     #[serde(default)]
     pub retry_after: Option<i64>,
+    #[serde(default)]
+    pub retry_set_at: Option<i64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -146,7 +148,10 @@ impl Checked {
         let day = (self.checked_at)
             .filter(|at| *at <= now)
             .map_or(i64::MIN, |at| at.saturating_add(DAY_MS));
-        day.max(self.retry_after.unwrap_or(i64::MIN))
+        let retry = (self.retry_after)
+            .filter(|_| self.retry_set_at.is_none_or(|at| at <= now))
+            .unwrap_or(i64::MIN);
+        day.max(retry)
     }
 
     fn answered_at(&self) -> Option<i64> {
@@ -170,22 +175,26 @@ impl Checked {
                 etag,
                 release,
                 retry_after: None,
+                retry_set_at: None,
             },
             Answer::NotModified => Checked {
                 checked_at: Some(now),
                 successful_at: successful_at.map(|_| now),
                 retry_after: None,
+                retry_set_at: None,
                 ..self
             },
             Answer::Refused { until } => Checked {
                 checked_at: Some(now),
                 successful_at,
                 retry_after: until.filter(|until| *until > now.saturating_add(DAY_MS)),
+                retry_set_at: Some(now),
                 ..self
             },
             Answer::Unreachable => Checked {
                 successful_at,
                 retry_after: Some(now.saturating_add(HOUR_MS)),
+                retry_set_at: Some(now),
                 ..self
             },
         }

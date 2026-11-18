@@ -187,6 +187,15 @@ fn a_check_time_ahead_of_the_clock_is_due_at_once() {
         now + 30 * DAY_MS,
     );
     assert!(ahead.due(now) <= now);
+    let offline = Checked::default().after(Answer::Unreachable, now + 30 * DAY_MS);
+    assert!(offline.due(now) <= now);
+    let limited = ahead.after(
+        Answer::Refused {
+            until: Some(now + 40 * DAY_MS),
+        },
+        now + 30 * DAY_MS,
+    );
+    assert!(limited.due(now) <= now);
 }
 
 #[test]
@@ -1078,6 +1087,7 @@ fn same_target_caches_keep_the_last_answer_and_conditional_validator() {
     };
     assert_eq!(release_updates(true, path.clone()).notice(), expected);
     let checked = load(&path).unwrap();
+    assert_eq!(checked.checked_at, Some(i64::MAX - 1000));
     assert!(checked.due(now_ms()) <= now_ms());
     assert_eq!(checked.etag.as_deref(), Some("\"same\""));
     assert_eq!(checked.release, release("99.0.0"));
