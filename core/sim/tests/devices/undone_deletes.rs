@@ -703,6 +703,66 @@ fn a_sibling_edit_leaves_the_deleted_file_checked_after_the_deleting_device_leav
     checked(
         2,
         &[
+#[test]
+fn a_restore_after_the_deleting_device_leaves_brings_back_the_file_it_deleted_beside_a_copy() {
+    let copy = Step::Copy(Action {
+        kind: 0,
+        target: 0,
+        parent: 0,
+        name: 2,
+        text: 0,
+    });
+    let mut deleted = vec![(0, delete(0)), (1, copy)];
+    deleted.extend(commit(1).into_iter().take(3));
+    deleted.push((0, BACKUP));
+    deleted.extend(commit(0).into_iter().take(3));
+    deleted.extend([(0, Step::Leave), (0, RESTORE)]);
+    let world = checked(2, &[vec![(0, file("a"))], deleted]).unwrap();
+    assert_eq!(
+        held_files(&world, 1),
+        [("a".to_owned(), 1), ("b".to_owned(), 1)]
+    );
+}
+
+#[test]
+fn a_rename_another_device_saves_over_before_it_leaves_keeps_the_file() {
+    let mut renamed = vec![(1, rename(0, 0, "c.txt")), (0, delete(0))];
+    renamed.extend(commit(1).into_iter().take(3));
+    renamed.extend([
+        (0, BACKUP),
+        (
+            1,
+            Step::Save {
+                target: 0,
+                keeps_mark: false,
+            },
+        ),
+        (1, SCAN),
+        (1, Step::Leave),
+        (0, RESTORE),
+    ]);
+    let world = checked(2, &[vec![(0, file("a"))], renamed]).unwrap();
+    assert_eq!(held_files(&world, 0), [("c.txt".to_owned(), 1)]);
+}
+
+#[test]
+fn a_copy_the_engine_makes_after_a_store_rollback_keeps_the_deleted_write() {
+    checked(
+        2,
+        &[
+            vec![
+                (0, Step::CopyStore),
+                (0, BACKUP),
+                (1, act(1, 0, 0, "\u{e9}", 1)),
+                (0, act(1, 0, 0, "c.txt", 3)),
+            ],
+            vec![(0, Step::RollBack), (0, BACKUP), (1, Step::RestoreEarlier)],
+            vec![(1, RESTORE), (1, act(4, 1, 0, "\u{c9}", 1))],
+        ],
+    )
+    .unwrap();
+}
+
             vec![
                 (0, folder("b")),
                 (0, user(1, 0, 1, "a")),

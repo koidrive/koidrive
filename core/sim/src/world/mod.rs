@@ -671,7 +671,7 @@ pub struct World {
     held_before_a_loss: Vec<Vec<BTreeMap<NodeId, u128>>>,
     clock: u64,
     touches: Vec<BTreeMap<u128, BTreeSet<u64>>>,
-    touched_nodes: Vec<BTreeMap<NodeId, u128>>,
+    touched_nodes: Vec<BTreeMap<NodeId, Vec<u128>>>,
     merged: Vec<BTreeMap<NodeId, BTreeSet<u128>>>,
     actions: Vec<BTreeMap<u64, (u128, Change)>>,
     scanned: Vec<Observed>,
@@ -1152,11 +1152,14 @@ impl World {
                 .or_else(|| {
                     (self.touched_nodes[d]
                         .iter()
-                        .find(|(_, touched)| **touched == known))
+                        .find(|(_, touched)| touched.last() == Some(&known)))
                     .map(|(node, _)| node.clone())
                 });
             if let Some(node) = node {
-                self.touched_nodes[d].insert(node, ino);
+                let inos = self.touched_nodes[d].entry(node).or_default();
+                if inos.last() != Some(&ino) {
+                    inos.push(ino);
+                }
             }
         }
     }
@@ -2560,7 +2563,7 @@ impl World {
                             let synced = self.devices[d].engine.trees.synced();
                             let ino = |node: &str| {
                                 (local.get(node).map(|node| node.identity.ino))
-                                    .or_else(|| self.touched_nodes[d].get(node).copied())
+                                    .or_else(|| self.touched_nodes[d].get(node)?.last().copied())
                             };
                             let restored: BTreeSet<&str> = (sent.ops.iter())
                                 .filter_map(|op| match &op.op {
@@ -2879,8 +2882,11 @@ impl World {
                                 if deletion.device == d {
                                     deletion.carried(record.seq, &deleted, &parents);
                                 }
-                                deletion.reached |=
-                                    deletion.held(&live, |_, _, _, _| false).is_none();
+                                deletion.reached |= deletion
+                                    .held(&live, |write, _, _, at_node| {
+                                        !at_node && self.copied.contains(&write)
+                                    })
+                                    .is_none();
                             }
                             self.published.extend(after.into_keys());
                             for node in self.space.nodes() {

@@ -200,9 +200,13 @@ impl World {
 
     fn inos_of(&self, d: usize, node: &NodeId) -> impl Iterator<Item = u128> {
         let local = self.devices[d].engine.trees.local().get(node);
-        (local.map(|node| node.identity.ino))
-            .into_iter()
-            .chain(self.touched_nodes[d].get(node).copied())
+        (local.map(|node| node.identity.ino)).into_iter().chain(
+            self.touched_nodes[d]
+                .get(node)
+                .into_iter()
+                .flatten()
+                .copied(),
+        )
     }
 
     pub(super) fn forget_unsent_deletes(&mut self, d: usize) {
