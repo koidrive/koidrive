@@ -265,7 +265,16 @@ impl Session {
             history_id: commit.history_id.clone(),
             device_seq: commit.device_seq,
         };
-        match self.call(Call::Commit(commit), Some(slot)).await? {
+        let began = std::time::Instant::now();
+        let ops = commit.ops.len();
+        let answer = self.call(Call::Commit(commit), Some(slot)).await;
+        tracing::info!(
+            ops,
+            ms = began.elapsed().as_millis() as u64,
+            ok = answer.is_ok(),
+            "measure commit"
+        );
+        match answer? {
             rpc_response::Result::Commit(result) => Ok(result),
             _ => Err(CallError::UnexpectedResult),
         }
@@ -276,10 +285,17 @@ impl Session {
         &self,
         chunks: Vec<ChunkRef>,
     ) -> Result<PrepareUploadResult, CallError> {
-        match self
+        let began = std::time::Instant::now();
+        let count = chunks.len();
+        let answer = self
             .call(Call::PrepareUpload(PrepareUpload { chunks }), None)
-            .await?
-        {
+            .await;
+        tracing::info!(
+            chunks = count,
+            ms = began.elapsed().as_millis() as u64,
+            "measure prepare"
+        );
+        match answer? {
             rpc_response::Result::PrepareUpload(result) => Ok(result),
             _ => Err(CallError::UnexpectedResult),
         }
