@@ -2805,6 +2805,31 @@ fn a_file_created_again_beside_the_servers_file_stays_one_write_through_a_later_
 }
 
 #[test]
+fn a_server_that_keeps_a_conflict_copy_of_a_file_created_after_a_loss_is_caught() {
+    for volumes in [
+        [Precision::Seconds, Precision::Seconds],
+        [Precision::TwoSeconds, Precision::Fine],
+    ] {
+        let mut world = on(&volumes);
+        world.phase(0, &[(0, file("a"))]).unwrap();
+        world
+            .phase(
+                1,
+                &[(0, Step::Backup), (1, file("c.txt")), (0, Step::Restore)],
+            )
+            .unwrap();
+        world.space_mut().copy_each_created_file();
+        let failure = world.phase(2, &[(0, file("b"))]).unwrap_err();
+        assert!(
+            failure
+                .to_string()
+                .contains("write 3 is in more than one file"),
+            "{volumes:?}: {failure}"
+        );
+    }
+}
+
+#[test]
 fn a_file_a_fine_disk_keeps_through_the_same_loss_is_linked_to_the_servers_file() {
     converge_on(
         &[Precision::Fine, Precision::Fine],
