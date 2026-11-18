@@ -1331,7 +1331,9 @@ impl Trees {
     }
 
     pub(crate) fn resend_folders_of_changes(&mut self) {
-        let lacking = |id: &NodeId| self.r.get(id).is_none() && self.acknowledged(id).is_some();
+        let lacking = |id: &NodeId| {
+            self.r.get(id).is_none() && (self.acknowledged(id).is_some() || self.queued_removal(id))
+        };
         if !self.others.iter().any(lacking) {
             self.yield_resends();
             return;
@@ -1350,6 +1352,10 @@ impl Trees {
             .collect();
         folders.sort_by_key(|id| std::cmp::Reverse(self.local_chain(id).count()));
         for id in changed.into_iter().chain(folders.iter().cloned()) {
+            if self.queued_removal(&id) {
+                self.waiting.remove(&id);
+                self.mark(&id);
+            }
             if self.unsent_creates.insert(id.clone()) {
                 self.mark(&id);
             }
@@ -1360,6 +1366,12 @@ impl Trees {
         );
         self.resends.extend(folders);
         self.yield_resends();
+    }
+
+    fn queued_removal(&self, id: &str) -> bool {
+        self.s.get(id).is_some()
+            && (self.waiting.get(id))
+                .is_some_and(|waiting| waiting.shape.is_none() && waiting.origin == Origin::Other)
     }
 
     pub(crate) fn take_forgotten_shape(&mut self, id: &str) -> bool {
