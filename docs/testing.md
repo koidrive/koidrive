@@ -30,7 +30,7 @@ Each job runs on Ubuntu, and the jobs marked macOS run on macOS. The `changes` j
 | `test lines` | Reports the net Rust test lines the change adds against its allowance | `python3 scripts/check-test-lines.py` |
 | `test split mapping` | A test split moves every item unchanged and `mapping.json` lists it, and every changed `include!` fragment is rustfmt-formatted | `python3 scripts/split-tests.py verify --source-ref origin/main` and `python3 scripts/split-tests.py check-format --base-ref origin/main` |
 | `Store upgrade` | Every store migration has upgrade cases, and they pass | `python3 scripts/check-store-upgrades.py origin/main HEAD` |
-| `state file safety` (macOS) | The change adds no raw writes, renames, copies or hard links of state files, and no async lock borrows | `python3 scripts/check-state-io.py origin/main` |
+| `state file safety` (macOS) | The change adds no new calls to the `write`, `rename`, `copy`, `hard_link` or `persist` functions of `std::fs`, `tokio::fs` or `tempfile`, and no async lock borrows | `python3 scripts/check-state-io.py origin/main` |
 
 On a pull request, CI adds macOS jobs only where a change needs them. The macOS Rust jobs and `macos app` run when the change touches a file that builds or behaves differently on macOS, as `scripts/macos-changes.sh` lists them. Every macOS job, `server (macos)` and `spec (macos)` included, runs when it touches `ci.yml`. The merge queue runs the macOS leg of every job it selects, and a push to `main` skips the macOS jobs only when CI finds a merge queue run that passed CI on the same commit. If that lookup fails or finds no such run, the push runs all four macOS groups. The macOS jobs run on GitHub-hosted runners.
 
@@ -47,7 +47,7 @@ Four other workflows run on pull requests. [CLI distribution](../.github/workflo
 `cargo test` skips a test marked `#[ignore]`. `grep -rn '#\[ignore' core cli` lists them. They are of these kinds:
 
 - The integration tests that need a Worker. They run through the scripts in the table above.
-- Benchmarks, timing probes and models that take too long for every run, such as `upload_benchmark` in `core/net/tests/upload_bench.rs`, which runs in the [deploy test's bench mode](deploy-test.md#modes) or against a local Worker. For a local run, start `wrangler dev` in `server/`, then set `KOIDRIVE_TEST_SERVER` to its URL, `KOIDRIVE_TEST_SERVER_LOG` to the file that holds its output, where the test reads the claim code, and `KOIDRIVE_BENCH_MIB=64`. Run one with `cargo test -p <package> <name> -- --ignored`, adding `--release` where the test says so.
+- Benchmarks, timing probes and models that take too long for every run, such as `upload_benchmark` in `core/net/tests/upload_bench.rs`, which runs in the [deploy test's bench mode](deploy-test.md#modes) or against a local Worker. For a local run, start `wrangler dev` in `server/` with a new `--persist-to` directory, because a claimed Worker issues no claim code. Then set `KOIDRIVE_TEST_SERVER` to its URL, `KOIDRIVE_TEST_SERVER_LOG` to the file that holds its output, where the test reads the claim code, and `KOIDRIVE_BENCH_MIB=64`. Run one with `cargo test -p <package> <name> -- --ignored`, adding `--release` where the test says so.
 - Known failures. Their ignore reason names the issue, and the fix removes the `#[ignore]`.
 - Helpers that another test starts as a process or calls, such as the other process in `core/ipc/src/bind.rs` and the fixtures in `core/test-support/tests/budgets.rs`.
 - Tests that CI runs on its own runners, such as the signing test in `cli/src/app_install/macos/tests/verification.rs`, which creates a throwaway keychain.
@@ -143,7 +143,7 @@ gh run list --workflow heavy-tests.yml --limit 1   # the run's ID, for gh run wa
 | `test` | One integration test target, as for `cargo test --test` | Every target of the package |
 | `filter` | A test name filter, as for `cargo test` | Every test |
 | `cases` | `KOIDRIVE_BATTERY_CASES`, for stress properties only | Each property's own count |
-| `mode` | `cargo` for Cargo tests, `worker` for the integration launchers against a fresh local Worker (crate `koidrive-net` or `koidrive-driver`, which run their `server` and `sync` targets), `server` for the Vitest suite of `server/` (crate `koidrive-server`, where `test` filters test files and `filter` test names), or `macos-ui` for the macOS app's UI tests on a fresh runner per run, which takes only `ref`, `repeat` and `os` `macos` or `both` | `cargo` |
+| `mode` | `cargo` for Cargo tests, `worker` for the integration launchers against a fresh local Worker (crate `koidrive-net` or `koidrive-driver`, which run their `server` and `sync` targets), `server` for the Vitest suite of `server/` (crate `koidrive-server`, where `test` filters test files by a name without `/` or `.`, such as `storage-full`, and `filter` filters test names), or `macos-ui` for the macOS app's UI tests on a fresh runner per run, which takes only `ref`, `repeat` and `os` `macos` or `both` | `cargo` |
 | `repeat` | How many times each OS runs the selection, 1 to 100 | 1 |
 | `parallel` | How many repetitions run at once on the same host, 1 to 8. Only 1 with `mode` `server` or `macos-ui` | 1 |
 | `seed` | `PROPTEST_RNG_SEED` of the first run; run k uses seed + k - 1 | Run ID × 1000 |
