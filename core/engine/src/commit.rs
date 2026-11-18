@@ -548,23 +548,27 @@ impl Commits {
     /// kept the restores dropped the commit in flight and the questions: the server may have applied them, so
     /// none is sent again until the person answers. Restores `before` never sent stay queued.
     pub fn ask_unsettled_restores(&mut self, before: &Commits, ids: &mut IdGen, now_ms: u64) {
-        let sent = (before.in_flight.as_ref())
+        let sent: BTreeSet<RestoreId> = (before.in_flight.as_ref())
             .and_then(|flight| carried(&before.restores, &flight.commit.ops).ok())
             .into_iter()
-            .flat_map(BTreeMap::into_values);
+            .flat_map(BTreeMap::into_values)
+            .collect();
         let held = before.asked_again().cloned();
-        let unsettled: BTreeSet<RestoreId> = (sent.chain(held))
+        let unsettled: BTreeSet<RestoreId> = (sent.iter().cloned().chain(held))
             .filter(|id| self.restores.contains_key(id))
             .collect();
         let asked = (before.intents_questions()).find(|question| {
-            matches!(question.kind, QuestionKind::Recovery { sent_in: None, .. })
-                && question.held.keys().eq(&unsettled)
+            question.held.keys().eq(&unsettled) && !question.held.keys().any(|id| sent.contains(id))
         });
-        match asked {
-            Some(question) => self.questions.get_mut().push(question.clone()),
-            None => (self.questions.get_mut())
-                .extend(recovery::ask_intents(&unsettled, None, ids, now_ms)),
+        let Some(question) = asked else {
+            (self.questions.get_mut()).extend(recovery::ask_intents(&unsettled, None, ids, now_ms));
+            return;
+        };
+        let mut question = question.clone();
+        if let QuestionKind::Recovery { sent_in, .. } = &mut question.kind {
+            *sent_in = None;
         }
+        self.questions.get_mut().push(question);
     }
 
     fn intents_questions(&self) -> impl Iterator<Item = &Question> {

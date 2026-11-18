@@ -963,6 +963,58 @@ fn a_second_reset_keeps_the_restore_question_only_while_it_holds_the_same_restor
 }
 
 #[test]
+fn a_second_reset_keeps_a_repeat_whose_commit_carried_none_of_its_restores() {
+    let (n, m) = (id(1), id(3));
+    let row = |node: &str, name: &str, local: u8, synced: u8| {
+        (
+            node.to_owned(),
+            Some(file(&root(), name, local)),
+            Some(file(&root(), name, synced)),
+            Some(remote(file(&root(), name, synced))),
+        )
+    };
+    let intent = version(&n, &id(50));
+    let mut before = trees(&[row(&n, "f", 2, 2), row(&m, "g", 4, 4)]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    commits.restore(id(100), intent.clone());
+    build(&mut commits, &mut before, &mut ids).unwrap();
+    let mut reset = Commits::default();
+    reset.restore(id(100), intent.clone());
+    reset.ask_unsettled_restores(&commits, &mut ids, 0);
+    let mut edited = trees(&[row(&n, "f", 3, 2), row(&m, "g", 4, 4)]);
+    build(&mut reset, &mut edited, &mut ids).unwrap();
+    acknowledge(&mut reset, &mut edited, vec![rejected("LATER_REASON")]);
+    let asked = reset.questions()[0].id.clone();
+    assert!(reset.decide(&asked, Answer::Repeat));
+    let mut unrelated = trees(&[row(&n, "f", 3, 2), row(&m, "g", 5, 4)]);
+    let commit = build(&mut reset, &mut unrelated, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [update(&m, 5)]);
+
+    let mut again = Commits::default();
+    again.restore(id(100), intent.clone());
+    again.ask_unsettled_restores(&reset, &mut ids, 0);
+    let [question] = again.questions() else {
+        panic!("one question: {:?}", again.questions());
+    };
+    assert_eq!(
+        (question.id.as_str(), question.answer),
+        (asked.as_str(), Some(Answer::Repeat))
+    );
+    let mut kept = trees(&[row(&n, "f", 3, 2), row(&m, "g", 4, 4)]);
+    let commit = build(&mut again, &mut kept, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [update(&n, 3), restore_op(&intent)]);
+
+    let mut carried = Commits::default();
+    carried.restore(id(100), intent);
+    carried.ask_unsettled_restores(&again, &mut ids, 0);
+    let [question] = carried.questions() else {
+        panic!("one question: {:?}", carried.questions());
+    };
+    assert_ne!(question.id, asked);
+    assert_eq!(question.answer, None);
+}
+
+#[test]
 fn a_request_repeated_under_its_id_is_queued_once() {
     let (n, request) = (id(1), id(100));
     let mut trees = trees(&[]);

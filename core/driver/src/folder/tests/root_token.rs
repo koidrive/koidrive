@@ -866,13 +866,17 @@ fn a_relink_holds_a_version_restore_whose_result_was_lost_until_the_person_answe
         let first = remote.space.list_versions(&request).unwrap().versions[1]
             .version_id
             .clone();
-        let id = ask(&site, &RestoreIntent::version(node, first).unwrap());
+        let intent = RestoreIntent::version(node, first).unwrap();
+        let id = ask(&site, &intent);
         let step = a.folder.requested();
         a.take(step).unwrap();
         let Some(Work::Send(commit)) = a.work.pop_front() else {
             panic!("the restore is sent");
         };
-        remote.commit(&a.caller, &commit).unwrap();
+        let sent: Vec<Option<op::Op>> = commit.ops.iter().map(|op| op.op.clone()).collect();
+        assert_eq!(sent, [Some(op::Op::Restore(intent.op().clone()))]);
+        let applied = koidrive_proto::v1::op_result::Code::Applied as i32;
+        assert_eq!(remote.commit(&a.caller, &commit).unwrap().results[0].code, applied);
         drop(a);
         let head = remote.space.head_seq();
         let mut marker = marker_of(&site);
@@ -910,7 +914,7 @@ fn a_relink_holds_a_version_restore_whose_result_was_lost_until_the_person_answe
             .unwrap();
         if retried {
             fs::remove_dir(&blocked).unwrap();
-            assert_eq!(relink(&site).unwrap(), 1);
+            assert_eq!(relink(&site).unwrap(), 0);
         }
         let mut a = restarted(&site, &mut remote);
         a.rest(&mut remote);

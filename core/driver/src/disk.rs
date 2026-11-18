@@ -1034,7 +1034,11 @@ pub(crate) fn relink_with_hook(
             current,
             pending: Some(next.clone()),
         })?;
-        Ok(tx.questions()?.len() as u64)
+        let unanswered = tx
+            .questions()?
+            .into_iter()
+            .filter(|question| question.answer.is_none());
+        Ok(unanswered.count() as u64)
     })?;
     hook(Cut::TokenPended);
     let relinked = Marker {
