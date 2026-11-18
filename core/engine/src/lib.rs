@@ -10,6 +10,7 @@ pub mod first_link;
 pub mod guard;
 pub mod ids;
 pub mod ignore;
+pub mod journal;
 pub mod names;
 mod node_id;
 mod provenance;
