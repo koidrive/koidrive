@@ -5,8 +5,8 @@ use koidrive_engine::commit::{Base, Commits};
 use koidrive_engine::effects::{BatchLimit, Effects};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::journal::{
-    Author, Field, FieldIntent, HistoryEntry, IntentId, NodeIntents, Place, Row, RowState, Value,
-    WireBase,
+    Author, Field, FieldIntent, HistoryEntry, IntentId, NodeIntents, OpsWithoutIntent, Place, Row,
+    RowState, Value, Wire, WireBase,
 };
 use koidrive_engine::state::{CommitsState, ContentValue};
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape, Tree};
@@ -153,7 +153,7 @@ fn r_keeps_the_intents_the_server_sent() {
         place: Some(FieldIntent {
             id: id(1),
             author: "d1".into(),
-            carried: true,
+            replay: true,
             applied_at_ms: 40,
         }),
         content: None,
@@ -432,7 +432,10 @@ fn an_op_that_carries_another_devices_value_without_a_row_goes_without_an_intent
         })),
         ..Default::default()
     }];
-    assert_eq!(trees.stamp_intents(&mut ops, "me", 0, true), 1);
+    assert_eq!(
+        trees.stamp_intents(&mut ops, "me", 0, Wire::WithIntents),
+        OpsWithoutIntent(1)
+    );
     assert_eq!(ops[0].intent, None);
     assert_eq!(trees.journal_rows().count(), 0);
 }
@@ -443,7 +446,7 @@ fn a_finish_names_the_marks_intent_and_leaves_a_later_rename_to_send() {
     let mark = FieldIntent {
         id: id(5),
         author: "me".into(),
-        carried: false,
+        replay: false,
         applied_at_ms: 0,
     };
     let marked = RemoteNode {
@@ -472,7 +475,10 @@ fn a_finish_names_the_marks_intent_and_leaves_a_later_rename_to_send() {
         })),
         ..Default::default()
     }];
-    assert_eq!(trees.stamp_intents(&mut ops, "me", 0, true), 0);
+    assert_eq!(
+        trees.stamp_intents(&mut ops, "me", 0, Wire::WithIntents),
+        OpsWithoutIntent(0)
+    );
     assert_eq!(
         ops[0].intent.as_ref().unwrap().id,
         id(5).as_bytes().to_vec()
@@ -496,7 +502,10 @@ fn a_delete_sends_what_r_holds_that_l_never_held_as_unseen() {
         })),
         ..Default::default()
     }];
-    assert_eq!(trees.stamp_intents(&mut ops, "me", 0, true), 0);
+    assert_eq!(
+        trees.stamp_intents(&mut ops, "me", 0, Wire::WithIntents),
+        OpsWithoutIntent(0)
+    );
     let Some(op::Op::Delete(delete)) = &ops[0].op else {
         unreachable!();
     };
@@ -526,7 +535,10 @@ fn a_delete_sees_the_place_r_holds_that_l_held_before_a_move_no_user_made() {
         })),
         ..Default::default()
     }];
-    assert_eq!(trees.stamp_intents(&mut ops, "me", 0, true), 0);
+    assert_eq!(
+        trees.stamp_intents(&mut ops, "me", 0, Wire::WithIntents),
+        OpsWithoutIntent(0)
+    );
     let Some(op::Op::Delete(delete)) = &ops[0].op else {
         unreachable!();
     };
@@ -768,7 +780,7 @@ fn a_create_names_the_author_of_each_field_it_carries() {
     let mut trees = Trees::new(ROOT);
     trees.set_local_changed("f".into(), local(file(ROOT, "a", 1)));
     let mut status = trees.journal_row("f", Field::Status).unwrap().into_owned();
-    status.author = Author::Carried("b".into());
+    status.author = Author::Carried(Some("b".into()));
     trees.journal_mut().replace("f", status);
     let commit = build(&mut trees, &["field_intents"], 1_700);
     let fields = commit.ops[0].fields.clone().unwrap();
@@ -804,7 +816,7 @@ fn a_held_row_keeps_its_value_and_time_when_r_takes_an_earlier_intent() {
     node.intents.as_mut().unwrap().content = Some(FieldIntent {
         id: first,
         author: "me".into(),
-        carried: false,
+        replay: false,
         applied_at_ms: 1_000,
     });
     trees.set_remote("f".into(), node);
@@ -883,7 +895,7 @@ fn a_compact_row_is_written_out_unchanged_whenever_r_stops_giving_it() {
                 node.intents.as_mut().unwrap().content = Some(FieldIntent {
                     id: first,
                     author: "me".into(),
-                    carried: false,
+                    replay: false,
                     applied_at_ms: 1_000,
                 });
                 match trigger {
@@ -1134,7 +1146,7 @@ fn a_backfill_carries_every_field_of_a_folder_owed_a_create_as_a_replay_only_whe
                 field,
                 Row {
                     intent,
-                    author: Author::Carried(String::new()),
+                    author: Author::Carried(None),
                     base: None,
                     value,
                     wire_base: WireBase::None,

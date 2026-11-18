@@ -16,6 +16,7 @@ use crate::effects;
 use crate::first_link::{self, LogRead, Marks, PriorSync};
 use crate::guard::{self, Guard, RemoteRemoval};
 use crate::ids::{IdGen, unix_ms};
+use crate::journal::Wire;
 use crate::names::{MAX_NAME_BYTES, conflict_name, name_key, nfc, same_name};
 use crate::question::{
     Answer, ConflictFile, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
@@ -2093,12 +2094,12 @@ impl Commits {
             })
             .filter(|(_, removed)| !removed.is_empty())
             .collect();
-        self.unrecorded.0 += trees.stamp_intents(
-            &mut ops,
-            device_id,
-            base.committed_at_ms,
-            self.field_intents.0,
-        );
+        let wire = match self.field_intents.0 {
+            true => Wire::WithIntents,
+            false => Wire::WithoutIntents,
+        };
+        self.unrecorded.0 +=
+            (trees.stamp_intents(&mut ops, device_id, base.committed_at_ms, wire)).0;
         let commit_id = ids.uuid_v7(now_ms);
         for (index, op) in ops.iter_mut().enumerate() {
             let Some(op::Op::Delete(delete)) = &mut op.op else {

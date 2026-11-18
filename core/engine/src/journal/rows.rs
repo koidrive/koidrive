@@ -4,8 +4,6 @@ use std::ops::Bound;
 use super::{Field, HeldRow, IntentId, NodeId, Row, RowKey, RowState, Value};
 use crate::tracked::TrackedMap;
 
-/// The journal's rows, full and compact, with the keys of the rows made over each intent and of the place rows
-/// under each parent.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Rows {
     full: TrackedMap<RowKey, Row>,
@@ -88,17 +86,14 @@ impl Rows {
         self.compact.iter().inspect(visit)
     }
 
-    /// The keys of the full rows whose base, or whose flight's base, is `from`.
     pub(super) fn full_over(&self, from: IntentId) -> Vec<RowKey> {
         keys_of(&self.full_over, from)
     }
 
-    /// The keys of the compact rows whose base is `from`.
     pub(super) fn compact_over(&self, from: IntentId) -> Vec<RowKey> {
         keys_of(&self.compact_over, from)
     }
 
-    /// The keys of the full place rows that put a node under `parent`.
     pub(super) fn under(&self, parent: &str) -> Vec<RowKey> {
         keys_of(&self.under, parent.to_owned())
     }
@@ -125,7 +120,6 @@ impl Rows {
         self.full.hand_off(key)
     }
 
-    /// Changes the full row of `key` in place, as [`TrackedMap::get_mut`] does.
     pub(super) fn update<T>(
         &mut self,
         key: &RowKey,

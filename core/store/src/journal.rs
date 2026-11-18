@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The rows of the journal of recorded intents (RFC 0029 §5.1, §7.1): the journal, the seen lists of deletes, the
-//! history of the intents R held, and the intents of R's and S's nodes.
-
 use std::collections::BTreeMap;
 
 use koidrive_engine::journal::{
@@ -67,7 +64,9 @@ impl Tx<'_> {
                 intent: intent(&row.get::<_, Vec<u8>>(2)?)?,
                 author: match row.get::<_, Option<String>>(3)? {
                     None => Author::Own,
-                    Some(author) => Author::Carried(author),
+                    Some(author) => {
+                        Author::Carried(Some(author).filter(|author| !author.is_empty()))
+                    }
                 },
                 base: (row.get::<_, Option<Vec<u8>>>(4)?)
                     .map(|bytes| intent(&bytes))
@@ -192,7 +191,7 @@ impl Tx<'_> {
                 row.intent.as_bytes().to_vec(),
                 match &row.author {
                     Author::Own => None,
-                    Author::Carried(author) => Some(author),
+                    Author::Carried(author) => Some(author.as_deref().unwrap_or_default()),
                 },
                 row.base.map(|base| base.as_bytes().to_vec()),
                 json(&row.value)?,

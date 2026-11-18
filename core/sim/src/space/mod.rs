@@ -760,8 +760,6 @@ impl SpaceDo {
         true
     }
 
-    /// The server's garbage collection of the trash at `now_ms`: every trashed node whose retention
-    /// has ended leaves the space, leaves first, in one record. Returns how many nodes left.
     pub fn collect_garbage(&mut self, now_ms: i64) -> usize {
         let mut purged = Vec::new();
         loop {

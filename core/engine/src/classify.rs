@@ -26,7 +26,7 @@ use crate::tree::{
     ContentKey, CountedMap, CountedSet, FileIdentity, Kind, LocalNode, Names, Node, NodeId,
     RemoteNode, Shape, TrackedTree, Tree, TreeError, counted, read_entries, same, same_content,
 };
-use intents::Carrier;
+use intents::{Carrier, Compact};
 
 use release::Released;
 
@@ -1501,7 +1501,7 @@ impl Trees {
         self.content_provenance
             .remote_changing(&id, &self.r, Some(&node));
         let old = self.r.insert(id.clone(), node);
-        self.compact_journal(&id, false);
+        self.compact_journal(&id, Compact::AfterChange);
         self.index_remote(&id, old.as_ref());
         self.count_held_trash(&id, true);
         self.count_trashed(&id, true);
@@ -8281,7 +8281,7 @@ impl Trees {
             .map(|((node, _), _)| node.clone())
             .collect();
         for node in held {
-            self.compact_journal(&node, true);
+            self.compact_journal(&node, Compact::Loaded);
         }
         self.rules_known = false;
         self.unknown_rules.clear();

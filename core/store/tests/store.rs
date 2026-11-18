@@ -1432,7 +1432,7 @@ fn journal_state() -> JournalState {
         (
             ("a".to_owned(), Field::Place),
             Row {
-                author: Author::Carried("other-device".into()),
+                author: Author::Carried(Some("other-device".into())),
                 wire_base: WireBase::Place(Place {
                     parent: "q".into(),
                     name: "old".into(),
@@ -1444,7 +1444,7 @@ fn journal_state() -> JournalState {
         (
             ("b".to_owned(), Field::Status),
             Row {
-                author: Author::Carried(String::new()),
+                author: Author::Carried(None),
                 base: None,
                 ..row(
                     3,
