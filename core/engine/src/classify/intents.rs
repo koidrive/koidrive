@@ -178,16 +178,18 @@ impl Trees {
         Some(Cow::Owned(full_held(
             &self.r,
             &(node.to_owned(), field),
-            held,
+            &held,
         )))
     }
 
     /// Every journal row whole, as [`Trees::journal_row`] gives it.
-    pub fn journal_rows(&self) -> impl Iterator<Item = (&RowKey, Cow<'_, Row>)> {
-        let compact = (self.journal.compact_rows())
-            .map(|(key, held)| (key, Cow::Owned(full_held(&self.r, key, held))));
+    pub fn journal_rows(&self) -> impl Iterator<Item = (RowKey, Cow<'_, Row>)> {
+        let compact = (self.journal.compact_rows()).map(|(key, held)| {
+            let row = full_held(&self.r, &key, &held);
+            (key, Cow::Owned(row))
+        });
         (self.journal.rows())
-            .map(|(key, row)| (key, Cow::Borrowed(row)))
+            .map(|(key, row)| (key.clone(), Cow::Borrowed(row)))
             .chain(compact)
     }
 
@@ -221,7 +223,7 @@ impl Trees {
         for field in Field::ALL {
             let key = (node.to_owned(), field);
             if let Some(held) = self.journal.compact_row(node, field) {
-                let row = full_held(&self.r, &key, held);
+                let row = full_held(&self.r, &key, &held);
                 self.journal.write_out(key, row);
             }
         }
@@ -229,7 +231,7 @@ impl Trees {
 
     pub(super) fn journal_lost(&mut self) {
         let nodes: Vec<NodeId> = (self.journal.compact_rows())
-            .map(|((node, _), _)| node.clone())
+            .map(|((node, _), _)| node)
             .collect();
         for node in nodes {
             self.write_out_journal(&node);
@@ -691,7 +693,22 @@ impl Trees {
     }
 
     pub(super) fn take_remote_intents(&mut self, id: &str, node: &mut RemoteNode) {
-        let intents = (node.intents.take()).unwrap_or_else(|| self.legacy_intents(id, node));
+        let mut intents = (node.intents.take()).unwrap_or_else(|| self.legacy_intents(id, node));
+        for intent in [
+            &mut intents.place,
+            &mut intents.content,
+            &mut intents.status,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            match self.authors.get(&*intent.author) {
+                Some(author) => intent.author = author.clone(),
+                None => {
+                    self.authors.insert(intent.author.clone());
+                }
+            }
+        }
         self.write_out_synced_intents(id);
         for field in Field::ALL {
             let Some(intent) = intents.get(field) else {
@@ -893,7 +910,7 @@ impl Trees {
                         RowState::Held { held_as, .. } => held_as,
                         _ => row.intent,
                     },
-                    author: String::new(),
+                    author: "".into(),
                     replay: row.replay,
                     applied_at_ms: row.time_ms,
                 });
@@ -927,7 +944,7 @@ impl Trees {
                     {
                         let own = (self.r.get(&node))
                             .and_then(|remote| remote_intent_of(remote, field))
-                            .filter(|intent| intent.author == device_id);
+                            .filter(|intent| *intent.author == *device_id);
                         if let Some(own) = own {
                             intents.push((
                                 field,

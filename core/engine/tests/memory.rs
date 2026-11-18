@@ -6,6 +6,7 @@ use std::cell::Cell;
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::Commits;
 use koidrive_engine::ids::IdGen;
+use koidrive_engine::journal::{Field, FieldIntent, NodeIntents};
 use koidrive_engine::state::CommitsState;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
 use koidrive_proto::v1::{ChunkRef, CommitResult, OpResult, op, op_result};
@@ -185,6 +186,19 @@ fn first_upload() -> (Trees, usize) {
                 kind,
                 content,
             };
+            let mut intents = NodeIntents::default();
+            for field in Field::ALL {
+                let row = trees.journal_row(&id, field);
+                intents.set(
+                    field,
+                    row.map(|row| FieldIntent {
+                        id: row.intent,
+                        author: "me".into(),
+                        replay: false,
+                        applied_at_ms: NOW as i64,
+                    }),
+                );
+            }
             let version_id = match shape.kind {
                 Kind::File => ids.uuid_v7(NOW),
                 Kind::Dir => String::new(),
@@ -202,7 +216,7 @@ fn first_upload() -> (Trees, usize) {
                 pending_for: None,
                 pending_by: None,
                 chunks,
-                intents: None,
+                intents: Some(intents),
             };
             trees.set_remote_made_here(NodeId::from(id), node);
         }

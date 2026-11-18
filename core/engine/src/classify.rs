@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use koidrive_ignore::{Scope, Source, Status};
 use siphasher::sip::SipHasher13;
@@ -684,6 +685,7 @@ pub struct Trees {
     unsent_marks: TrackedMap<NodeId, String>,
     pending_finishes: TrackedMap<NodeId, PendingFinish>,
     journal: Journal,
+    authors: BTreeSet<Arc<str>>,
     ended_carriers: BTreeSet<NodeId>,
     synced_intents: BTreeMap<NodeId, NodeIntents>,
     ignore: Matcher,
@@ -819,6 +821,7 @@ impl Trees {
             unsent_marks: TrackedMap::default(),
             pending_finishes: TrackedMap::default(),
             journal: Journal::new(ids),
+            authors: BTreeSet::new(),
             ended_carriers: BTreeSet::new(),
             synced_intents: BTreeMap::new(),
             ignore: Matcher::new(LocalRules::default()),
@@ -7886,6 +7889,7 @@ impl Trees {
             unsent_marks,
             pending_finishes,
             journal,
+            authors: _,
             ended_carriers: _,
             synced_intents: _,
             ignore: _,
