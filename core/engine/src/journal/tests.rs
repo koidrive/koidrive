@@ -21,6 +21,10 @@ fn place(parent: &str) -> Value {
     })
 }
 
+fn whole(_: &RowKey, _: &HeldRow) -> Row {
+    unreachable!("a journal alone keeps no compact row")
+}
+
 fn id(n: u8) -> IntentId {
     IntentId([n; 16])
 }
@@ -267,7 +271,8 @@ fn a_conflict_copy_moves_the_content_row_to_the_copy() {
     let mut journal = Journal::default();
     let sent = journal.user_change("n", content(1), WireBase::None, Some(id(9)));
     journal.send("n", Field::Content, 0);
-    journal.conflict_copy("n", sent, "copy", Some("v".into()), 50);
+    assert_eq!(journal.sent_intent("n", Field::Content), Some(sent));
+    journal.held_elsewhere("n", Field::Content, sent, "copy", Some("v".into()), 50);
     assert_eq!(journal.row("n", Field::Content), None);
     let row = journal.row("copy", Field::Content).unwrap();
     let state = RowState::Held {
@@ -398,26 +403,58 @@ fn the_generator_is_its_own_stream_and_survives_a_restore() {
     let mut earlier: Vec<String> = (0..64).map(|_| engine.uuid_v7(0)).collect();
     let minted: Vec<IntentId> = (0..64).map(|_| journal.mint()).collect();
     earlier.extend(minted.iter().map(IntentId::to_string));
-    let mut restored = Journal::restore(journal.state());
+    let mut restored = Journal::restore(journal.state(whole));
     restored.seed(IdGen::new(42).state);
     let next = restored.mint().to_string();
     assert!(!earlier.contains(&next), "{next}");
     assert_eq!(earlier.iter().collect::<BTreeSet<_>>().len(), earlier.len());
-    assert_eq!(restored.take_changes().ids, Some(restored.state().ids));
+    assert_eq!(
+        restored.take_changes(whole).ids,
+        Some(restored.state(whole).ids)
+    );
 }
 
 #[test]
 fn changes_name_only_what_changed_and_a_state_restores() {
     let mut journal = Journal::default();
     journal.user_change("n", content(1), WireBase::None, None);
-    journal.take_changes();
-    let before = journal.state();
+    journal.take_changes(whole);
+    let before = journal.state(whole);
     journal.remote_holds("m", Field::Place, &held(1, 1), false);
     journal.set_listed(true);
-    let changes = journal.take_changes();
+    let changes = journal.take_changes(whole);
     assert!(changes.rows.is_empty());
     assert_eq!(changes.history.len(), 1);
     assert_eq!(changes.listed, Some(true));
-    assert_eq!(JournalChanges::between(&before, &journal.state()), changes);
-    assert_eq!(Journal::restore(journal.state()), journal);
+    assert_eq!(
+        JournalChanges::between(&before, &journal.state(whole)),
+        changes
+    );
+    assert_eq!(Journal::restore(journal.state(whole)), journal);
+}
+
+#[test]
+fn a_compact_row_that_leaves_and_ends_before_a_take_reaches_the_store_as_ended() {
+    for replaced in [false, true] {
+        let mut journal = Journal::default();
+        let first = journal.user_change("n", content(1), WireBase::None, None);
+        journal.send("n", Field::Content, 0);
+        journal.applied("n", Field::Content, first, &held(7, 100), None);
+        let key = ("n".to_owned(), Field::Content);
+        let row = journal.row("n", Field::Content).cloned().unwrap();
+        journal.take_changes(whole);
+        assert!(journal.compact(key.clone(), true));
+        match replaced {
+            false => journal.write_out(key.clone(), row),
+            true => {
+                journal.user_change("n", content(2), WireBase::None, None);
+            }
+        }
+        journal.end("n", Field::Content);
+        assert_eq!(
+            journal.take_changes(whole).rows,
+            [(key, None)],
+            "{replaced}"
+        );
+    }
 }

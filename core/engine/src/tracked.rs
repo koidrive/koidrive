@@ -233,6 +233,20 @@ impl<K: Ord + Clone, V: Clone + PartialEq> TrackedMap<K, V> {
         Some(value)
     }
 
+    /// Removes `key` without recording a change, for a value that lives on elsewhere in the same form.
+    pub fn remove_quietly<Q>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.map.remove(key)
+    }
+
+    /// Inserts `value` without recording a change, for a value the store holds already in this form.
+    pub fn insert_quietly(&mut self, key: K, value: V) -> Option<V> {
+        self.map.insert(key, value)
+    }
+
     /// The value of `key` to change in place. It is a change once it differs from the value the
     /// key held at the last take.
     pub fn get_mut<Q>(&mut self, key: &Q) -> Option<&mut V>

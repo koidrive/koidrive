@@ -405,6 +405,67 @@ pub fn delete_view(seen: &[Seen], remote: &[RemoteField]) -> DeleteView {
     }
 }
 
+/// A `held` row while R holds its `held_as` with the row's value and time: R gives the rest of the row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldRow {
+    pub intent: IntentId,
+    pub author: Author,
+    pub base: Option<IntentId>,
+    pub held_as: IntentId,
+    pub wire_base: Option<Box<WireBase>>,
+    pub replay: bool,
+    pub versioned: bool,
+}
+
+impl HeldRow {
+    /// The row with the value, time and version id R gives it.
+    pub fn full(&self, value: Value, time_ms: i64, version_id: Option<String>) -> Row {
+        let value = match value {
+            Value::Content { value, .. } if !self.versioned => Value::Content {
+                version_id: None,
+                value,
+            },
+            value => value,
+        };
+        Row {
+            intent: self.intent,
+            author: self.author.clone(),
+            base: self.base,
+            value,
+            wire_base: (self.wire_base.as_deref())
+                .cloned()
+                .unwrap_or(WireBase::None),
+            state: RowState::Held {
+                held_as: self.held_as,
+                version_id,
+            },
+            time_ms,
+            replay: self.replay,
+        }
+    }
+
+    pub(crate) fn of(row: &Row) -> Option<Self> {
+        let RowState::Held { held_as, .. } = row.state else {
+            return None;
+        };
+        Some(Self {
+            intent: row.intent,
+            author: row.author.clone(),
+            base: row.base,
+            held_as,
+            wire_base: (row.wire_base != WireBase::None).then(|| Box::new(row.wire_base.clone())),
+            replay: row.replay,
+            versioned: matches!(
+                row.value,
+                Value::Content {
+                    version_id: Some(_),
+                    ..
+                }
+            ),
+        })
+    }
+}
+
 pub type RowKey = (NodeId, Field);
 
 /// What the store keeps of the journal.
@@ -455,6 +516,8 @@ fn changes<K: Ord + Clone, V: Clone + PartialEq>(
 #[derive(Clone, Debug, Default)]
 pub struct Journal {
     rows: TrackedMap<RowKey, Row>,
+    held: BTreeMap<RowKey, HeldRow>,
+    held_changed: BTreeSet<RowKey>,
     history: TrackedMap<RowKey, Vec<HistoryEntry>>,
     seen: TrackedMap<NodeId, Vec<Seen>>,
     listed: bool,
@@ -468,7 +531,12 @@ const JOURNAL_STREAM: u64 = 0x6a09_e667_f3bc_c908;
 
 impl PartialEq for Journal {
     fn eq(&self, other: &Self) -> bool {
-        self.state() == other.state()
+        *self.rows == *other.rows
+            && self.held == other.held
+            && *self.history == *other.history
+            && *self.seen == *other.seen
+            && self.listed == other.listed
+            && self.ids.as_ref().map(|ids| ids.state) == other.ids.as_ref().map(|ids| ids.state)
     }
 }
 
@@ -486,9 +554,12 @@ impl Journal {
         }
     }
 
-    pub fn state(&self) -> JournalState {
+    /// What the store keeps, each compact row in full as `full` gives it.
+    pub fn state(&self, full: impl Fn(&RowKey, &HeldRow) -> Row) -> JournalState {
+        let mut rows = (*self.rows).clone();
+        rows.extend((self.held.iter()).map(|(key, held)| (key.clone(), full(key, held))));
         JournalState {
-            rows: (*self.rows).clone(),
+            rows,
             history: (*self.history).clone(),
             seen: (*self.seen).clone(),
             listed: self.listed,
@@ -496,14 +567,24 @@ impl Journal {
         }
     }
 
-    pub fn take_changes(&mut self) -> JournalChanges {
+    /// What changed since the last take, each compact row in full as `full` gives it.
+    pub fn take_changes(&mut self, full: impl Fn(&RowKey, &HeldRow) -> Row) -> JournalChanges {
+        let mut keys: BTreeSet<RowKey> = std::mem::take(&mut self.held_changed);
+        keys.extend(self.rows.take_changes().into_iter().map(|(key, _)| key));
+        let rows = (keys.into_iter())
+            .map(|key| {
+                let row = (self.rows.get(&key).cloned())
+                    .or_else(|| self.held.get(&key).map(|held| full(&key, held)));
+                (key, row)
+            })
+            .collect();
         let listed = (self.listed != self.listed_before).then_some(self.listed);
         self.listed_before = self.listed;
         let state = self.ids.as_ref().map(|ids| ids.state);
         let ids = (state != self.ids_before).then_some(state);
         self.ids_before = state;
         JournalChanges {
-            rows: self.rows.take_changes(),
+            rows,
             history: self.history.take_changes(),
             seen: self.seen.take_changes(),
             listed,
@@ -541,12 +622,45 @@ impl Journal {
         self.listed = listed;
     }
 
-    pub fn row(&self, node: &str, field: Field) -> Option<&Row> {
+    /// The field's row unless it is compact; Trees gives every row whole.
+    pub(crate) fn row(&self, node: &str, field: Field) -> Option<&Row> {
         self.rows.get(&(node.to_owned(), field))
     }
 
-    pub fn rows(&self) -> impl Iterator<Item = (&RowKey, &Row)> {
+    pub(crate) fn rows(&self) -> impl Iterator<Item = (&RowKey, &Row)> {
         self.rows.iter()
+    }
+
+    pub fn compact_row(&self, node: &str, field: Field) -> Option<&HeldRow> {
+        self.held.get(&(node.to_owned(), field))
+    }
+
+    pub(crate) fn compact_rows(&self) -> impl Iterator<Item = (&RowKey, &HeldRow)> {
+        self.held.iter()
+    }
+
+    pub(crate) fn held_rows(&self) -> impl Iterator<Item = (&RowKey, &Row)> {
+        (self.rows.iter()).filter(|(_, row)| matches!(row.state, RowState::Held { .. }))
+    }
+
+    /// Keeps a `held` row compact while R gives it whole. `quiet` leaves it out of the changes the store takes, for
+    /// a row the store holds already.
+    pub(crate) fn compact(&mut self, key: RowKey, quiet: bool) -> bool {
+        let Some(held) = self.rows.get(&key).and_then(HeldRow::of) else {
+            return false;
+        };
+        self.rows.remove_quietly(&key);
+        if !quiet {
+            self.held_changed.insert(key.clone());
+        }
+        self.held.insert(key, held);
+        true
+    }
+
+    /// Puts a compact row back in full, before R stops giving it.
+    pub(crate) fn write_out(&mut self, key: RowKey, row: Row) {
+        self.held.remove(&key);
+        self.rows.insert_quietly(key, row);
     }
 
     pub fn history(&self, node: &str, field: Field) -> &[HistoryEntry] {
@@ -571,7 +685,7 @@ impl Journal {
         let old = self.rows.get(&key);
         let flight = old.and_then(Row::in_flight);
         let base = match old {
-            None => seen,
+            None => (self.held.get(&key)).map_or(seen, |held| Some(held.held_as)),
             Some(old) => match &old.state {
                 RowState::Local { .. } => old.base,
                 RowState::Sent => Some(old.intent),
@@ -601,6 +715,9 @@ impl Journal {
             },
         };
         let intent = row.intent;
+        if self.held.remove(&key).is_some() {
+            self.held_changed.insert(key.clone());
+        }
         self.rows.insert(key, row);
         intent
     }
@@ -638,7 +755,7 @@ impl Journal {
     /// Writes a row a store upgrade finds, unless the field has one.
     pub fn insert_if_absent(&mut self, node: &str, row: Row) -> bool {
         let key = (node.to_owned(), row.value.field());
-        if self.rows.contains_key(&key) {
+        if self.rows.contains_key(&key) || self.held.contains_key(&key) {
             return false;
         }
         self.rows.insert(key, row);
@@ -646,7 +763,11 @@ impl Journal {
     }
 
     pub fn replace(&mut self, node: &str, row: Row) {
-        self.rows.insert((node.to_owned(), row.value.field()), row);
+        let key = (node.to_owned(), row.value.field());
+        if self.held.remove(&key).is_some() {
+            self.held_changed.insert(key.clone());
+        }
+        self.rows.insert(key, row);
     }
 
     pub fn set_seen(&mut self, node: &str, seen: Vec<Seen>) {
@@ -657,7 +778,11 @@ impl Journal {
         if field == Field::Status {
             self.seen.remove(node);
         }
-        self.rows.remove(&(node.to_owned(), field))
+        let key = (node.to_owned(), field);
+        if self.held.remove(&key).is_some() {
+            self.held_changed.insert(key.clone());
+        }
+        self.rows.remove(&key)
     }
 
     /// Puts the field's row in the commit being built: a `local` row becomes `sent` at `time_ms`, R's head time.
@@ -755,16 +880,18 @@ impl Journal {
         }
     }
 
-    /// A result made the copy `copy` of the content `sent` sent: the content row moves to the copy, which holds it.
-    pub fn conflict_copy(
+    /// A result showed `target` holding the intent `sent` the commit sent for the field of `node`, as the copy of a
+    /// `CONFLICT_COPY` does: the row moves to `target`, which holds it.
+    pub fn held_elsewhere(
         &mut self,
         node: &str,
+        field: Field,
         sent: IntentId,
-        copy: &str,
+        target: &str,
         version_id: Option<String>,
         at_ms: i64,
     ) {
-        let key = (node.to_owned(), Field::Content);
+        let key = (node.to_owned(), field);
         let moved = match self.rows.get_mut(&key) {
             Some(row) if row.intent == sent => self.rows.remove(&key),
             Some(Row {
@@ -788,9 +915,16 @@ impl Journal {
                 version_id,
             };
             row.time_ms = at_ms;
-            self.rows.insert((copy.to_owned(), Field::Content), row);
+            self.rows.insert((target.to_owned(), field), row);
         }
-        self.push_history(copy, Field::Content, sent, at_ms, true);
+        self.push_history(target, field, sent, at_ms, true);
+    }
+
+    /// The intent the commit in flight sent for the field.
+    pub fn sent_intent(&self, node: &str, field: Field) -> Option<IntentId> {
+        self.row(node, field)?
+            .in_flight()
+            .map(|flight| flight.intent)
     }
 
     /// A result merged `node` into `target`: its place and status rows end, and its content row and the place rows
@@ -825,6 +959,16 @@ impl Journal {
             })
             .map(|(key, _)| key.clone())
             .collect();
+        let held: Vec<RowKey> = (self.held.iter())
+            .filter(|(_, held)| held.base == Some(from))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in held {
+            if let Some(held) = self.held.get_mut(&key) {
+                held.base = Some(to);
+            }
+            self.held_changed.insert(key);
+        }
         for key in keys {
             let Some(row) = self.rows.get_mut(&key) else {
                 continue;
@@ -846,10 +990,15 @@ impl Journal {
     /// before it ends.
     pub fn remote_holds(&mut self, node: &str, field: Field, intent: &FieldIntent, in_local: bool) {
         self.push_history(node, field, intent.id, intent.applied_at_ms, in_local);
-        let ended = self.row(node, field).is_some_and(|row| match row.state {
-            RowState::Held { held_as, .. } => self.places_after(node, field, intent.id, held_as),
-            _ => false,
-        });
+        let held_as = match (self.row(node, field), self.compact_row(node, field)) {
+            (Some(row), _) => match row.state {
+                RowState::Held { held_as, .. } => Some(held_as),
+                _ => None,
+            },
+            (None, held) => held.map(|held| held.held_as),
+        };
+        let ended =
+            held_as.is_some_and(|held_as| self.places_after(node, field, intent.id, held_as));
         if ended {
             self.end(node, field);
         }
@@ -925,6 +1074,24 @@ impl Journal {
         }
     }
 
+    /// Drops the newest entry of the field's history when it is `implied`, which R's intent gives.
+    pub(crate) fn trim_history(&mut self, node: &str, field: Field, implied: &HistoryEntry) {
+        let key = (node.to_owned(), field);
+        if self.history.get(&key).and_then(|entries| entries.last()) != Some(implied) {
+            return;
+        }
+        match self.history[&key].len() {
+            1 => {
+                self.history.remove(&key);
+            }
+            _ => {
+                if let Some(entries) = self.history.get_mut(&key) {
+                    entries.pop();
+                }
+            }
+        }
+    }
+
     pub fn forget_history(&mut self, node: &str) {
         for field in Field::ALL {
             self.history.remove(&(node.to_owned(), field));
@@ -976,6 +1143,17 @@ impl Journal {
             }
             if row != self.rows[&key] {
                 self.rows.insert(key, row);
+            }
+        }
+        for (key, held) in self.held.iter_mut() {
+            let before = held.clone();
+            swap(&mut held.intent);
+            swap(&mut held.held_as);
+            if let Some(base) = &mut held.base {
+                swap(base);
+            }
+            if *held != before {
+                self.held_changed.insert(key.clone());
             }
         }
         let keys: Vec<RowKey> = self.history.keys().cloned().collect();
