@@ -1260,3 +1260,38 @@ fn the_first_listing_that_names_intents_replaces_the_ids_computed_for_the_values
     );
     assert!(trees.journal().listed());
 }
+
+#[test]
+fn an_edit_superseded_on_a_trashed_file_ends_and_leaves_the_delete_to_reach_l() {
+    let mut trees = Trees::new(ROOT);
+    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    trees.set_local_changed("f".into(), local(file(ROOT, "a", 2)));
+    let mut commits = Commits::from_state(CommitsState::default()).unwrap();
+    commits.connected(&Welcome {
+        features: vec!["field_intents".into()],
+        ..Default::default()
+    });
+    trees.rules_scanned();
+    trees.settle(&Default::default());
+    let base = Base {
+        seq: 1,
+        commit_id: String::new(),
+        committed_at_ms: 1_700,
+    };
+    (commits.build(&mut trees, &mut IdGen::new(1), 0, "history", "me", base)).unwrap();
+    let trashed = RemoteNode {
+        trashed: true,
+        meta_rev: 2,
+        ..remote(file(ROOT, "a", 1), 1)
+    };
+    trees.set_remote("f".into(), trashed);
+    let result = proto::CommitResult {
+        seq: 2,
+        results: vec![outcome(op_result::Code::Superseded)],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(&mut trees, 2));
+    assert!(commits.problems().is_empty(), "{:?}", commits.problems());
+    assert_eq!(trees.synced().get("f"), Some(&file(ROOT, "a", 2)));
+}

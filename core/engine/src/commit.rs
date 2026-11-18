@@ -2579,13 +2579,15 @@ impl Commits {
                     let current = trees.synced().live(id).and_then(|s| s.content);
                     let downloaded =
                         code == Code::ConflictCopy && trees.local().get(&outcome_id).is_some();
+                    let into_trash = code == Code::Superseded
+                        && trees.remote().get(id).is_some_and(|remote| remote.trashed);
                     if applied && trees.took_content(id) {
                         let kept = synced.get(trees, id).map(|shape| Shape {
                             content: current,
                             ..shape
                         });
                         synced.set(id, kept);
-                    } else if (applied && edited.is_some()) || downloaded {
+                    } else if ((applied || into_trash) && edited.is_some()) || downloaded {
                         synced.set(id, edited);
                     } else if code == Code::ConflictCopy {
                         let copied = edited.or_else(|| {
@@ -2620,13 +2622,13 @@ impl Commits {
                     if applied {
                         trees.sent_version(id, sent.as_ref(), result.seq, !update.resend);
                     }
-                    if applied || code == Code::ConflictCopy {
+                    if applied || into_trash || code == Code::ConflictCopy {
                         trees.sent_edit(id, sent.as_ref());
                     }
                     if code == Code::ConflictCopy {
                         conflicts.push((index, id.clone(), outcome_id.clone()));
                     }
-                    (id.clone(), applied || code == Code::ConflictCopy)
+                    (id.clone(), applied || into_trash || code == Code::ConflictCopy)
                 }
                 Some(op::Op::Move(moved)) => {
                     let id = &NodeId::from(&moved.node_id);
