@@ -1190,7 +1190,10 @@ fn removed_by_user_from(device: &Device, id: &str) -> bool {
         !node.trashed
             && node.shape.parent == id
             && trees.local().get(child).is_none()
-            && (device.removed_from.get(child).is_some_and(|from| from == id)
+            && (device
+                .removed_from
+                .get(child)
+                .is_some_and(|from| from == id)
                 || device.removed_from.contains_key(child)
                     && acknowledged_shape(trees, child).is_some_and(|agreed| agreed.parent == id))
             && acknowledged_shape(trees, child).is_some()
