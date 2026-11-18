@@ -5175,6 +5175,50 @@ fn a_discarded_folder_stays_discarded_when_the_excluded_entry_the_user_deleted_i
 }
 
 #[test]
+fn a_server_folder_the_user_removed_an_entry_from_before_the_rules_left_it_out_is_not_taken_along()
+{
+    for restart in [false, true] {
+        let mut trees = trees(
+            &[
+                ("f", dir(ROOT, "new")),
+                ("x", dir(ROOT, "server")),
+                ("e", file("x", "left", 5)),
+            ],
+            &[("x", dir(ROOT, "server")), ("e", file("x", "left", 5))],
+        );
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+        let asked = question(&commits);
+        trees.remove_local("e");
+        if restart {
+            trees = restarted(&trees);
+        }
+        trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\nleft\n")));
+        trees.settle(commits.aliases());
+        let mut moved = trees.local().get("x").unwrap().clone();
+        moved.shape.parent = "f".into();
+        moved.shape.name = "ignored".into();
+        trees.set_local_changed("x".into(), moved);
+        trees.settle(commits.aliases());
+        assert!(commits.decide(&asked.id, Answer::Discard));
+        assert!(
+            ops(&mut commits, &mut trees, &mut ids).is_empty(),
+            "{restart}"
+        );
+        trees.set_rules(&[] as &[&str], None);
+        let sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+        assert_eq!(
+            local(&trees),
+            [
+                ("f".into(), ROOT.into(), "new".into()),
+                ("x".into(), "f".into(), "ignored".into())
+            ],
+            "{restart}: {sent:?}"
+        );
+    }
+}
+
+#[test]
 fn a_discarded_folder_stays_discarded_when_an_entry_moved_into_another_taken_along_folder_is_deleted()
  {
     let mut trees = trees(
