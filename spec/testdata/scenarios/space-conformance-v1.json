@@ -28349,7 +28349,7 @@
           "device": "b",
           "at_ms": 1794268920000,
           "commit": {
-            "base_seq": 1,
+            "base_seq": 0,
             "ops": [
               {
                 "update_content": {
@@ -28918,7 +28918,36 @@
           }
         },
         {
-          "head": 3,
+          "device": "c",
+          "at_ms": 1794269040000,
+          "commit": {
+            "base_seq": 3,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "c2",
+                  "resend": true,
+                  "made_over": [
+                    "v1"
+                  ],
+                  "source_version_id": "v2"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 4,
+            "results": [
+              {
+                "code": "SUPERSEDED"
+              }
+            ],
+            "changed": []
+          }
+        },
+        {
+          "head": 4,
           "nodes": [
             {
               "node": "f",
@@ -28931,7 +28960,7 @@
         },
         {
           "device": "a",
-          "at_ms": 1794269040000,
+          "at_ms": 1794269100000,
           "list_versions": {
             "node": "f"
           },
@@ -29149,7 +29178,7 @@
           "device": "b",
           "at_ms": 1794268980000,
           "commit": {
-            "base_seq": 1,
+            "base_seq": 2,
             "ops": [
               {
                 "update_content": {
