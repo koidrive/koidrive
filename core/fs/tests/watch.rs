@@ -1482,3 +1482,159 @@ fn a_folder_moved_over_an_empty_folder_through_the_native_watcher_keeps_its_iden
     );
     assert_eq!(watcher.snapshot().entries[Path::new("final")].id, drafts);
 }
+
+#[test]
+fn an_entry_moved_out_of_a_folder_that_then_becomes_unreadable_is_a_rename() {
+    for (to, inside) in [
+        ("e", "sub/inner"),
+        ("y", "sub/inner"),
+        ("e", "sub"),
+        ("y", "sub"),
+    ] {
+        for (locked, scope) in [("x/d", ""), ("x/d", to), ("x", ""), ("x", to)] {
+            moved_out_of_a_folder_that_then_becomes_unreadable(to, inside, locked, scope);
+        }
+    }
+}
+
+fn moved_out_of_a_folder_that_then_becomes_unreadable(
+    to: &str,
+    inside: &str,
+    locked: &str,
+    scope: &str,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    fs::create_dir_all(root.join("x/d/sub/inner")).unwrap();
+    fs::create_dir(root.join(to)).unwrap();
+    fs::write(root.join("x/d/f.txt"), "f").unwrap();
+    fs::write(root.join("x/d/other.txt"), "o").unwrap();
+    fs::write(root.join("x/d/sub/inner/s.txt"), "s").unwrap();
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    let (doc, sub) = (format!("{to}/doc.txt"), format!("{to}/sub"));
+    fs::rename(root.join("x/d/f.txt"), root.join(&doc)).unwrap();
+    fs::rename(root.join("x/d/sub"), root.join(&sub)).unwrap();
+    let locked = [root.join(locked), root.join(to).join(inside)];
+    for path in &locked {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    let blocked = blocks_reads(
+        "an_entry_moved_out_of_a_folder_that_then_becomes_unreadable_is_a_rename",
+        fs::read_dir(&locked[0]),
+    );
+    let while_blocked = blocked.then(|| {
+        let moved = snapshot.rescan(&root, [PathBuf::from(scope)]);
+        fs::write(root.join(&doc), "edited").unwrap();
+        (moved, snapshot.rescan(&root, [PathBuf::from(scope)]))
+    });
+    for path in &locked {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let Some((moved, edited)) = while_blocked else {
+        return;
+    };
+    let case = format!("{locked:?} locked, scope {scope:?}");
+    assert_eq!(
+        moved.unwrap().changes,
+        vec![
+            renamed("x/d/f.txt", &doc, File),
+            renamed("x/d/sub", &sub, Dir)
+        ],
+        "{case}"
+    );
+    assert_eq!(edited.unwrap().changes, vec![modified(&doc)], "{case}");
+    assert!(snapshot.entries.contains_key(Path::new("x/d/other.txt")));
+    assert_eq!(
+        snapshot.rescan(&root, [PathBuf::new()]).unwrap(),
+        nothing(&root),
+        "{case}"
+    );
+    assert_eq!(snapshot, Snapshot::scan(&root).unwrap(), "{case}");
+}
+
+#[test]
+fn a_link_made_to_a_file_in_a_folder_that_then_becomes_unreadable_is_created_beside_it() {
+    let (_dir, root) = moved_and_removed();
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    fs::hard_link(root.join("x/d/g.txt"), root.join("e/link.txt")).unwrap();
+    fs::set_permissions(root.join("x/d"), fs::Permissions::from_mode(0o000)).unwrap();
+    let blocked = blocks_reads(
+        "a_link_made_to_a_file_in_a_folder_that_then_becomes_unreadable_is_created_beside_it",
+        fs::read_dir(root.join("x/d")),
+    );
+    let while_blocked = blocked.then(|| snapshot.rescan(&root, [PathBuf::new()]));
+    fs::set_permissions(root.join("x/d"), fs::Permissions::from_mode(0o755)).unwrap();
+    let Some(while_blocked) = while_blocked else {
+        return;
+    };
+    assert_eq!(
+        while_blocked.unwrap().changes,
+        vec![created("e/link.txt", File)]
+    );
+    assert!(snapshot.entries.contains_key(Path::new("x/d/g.txt")));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_file_moved_from_a_renamed_folder_into_a_folder_the_scan_may_not_read_stays_in_the_renamed_folder()
+ {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    fs::create_dir_all(root.join("a")).unwrap();
+    fs::create_dir(root.join("e")).unwrap();
+    fs::write(root.join("a/g.txt"), "g").unwrap();
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    fs::rename(root.join("a"), root.join("b")).unwrap();
+    fs::rename(root.join("b/g.txt"), root.join("e/g.txt")).unwrap();
+    fs::set_permissions(root.join("e"), fs::Permissions::from_mode(0o000)).unwrap();
+    let blocked = blocks_reads(
+        "a_file_moved_from_a_renamed_folder_into_a_folder_the_scan_may_not_read_stays_in_the_renamed_folder",
+        fs::read_dir(root.join("e")),
+    );
+    let while_blocked =
+        blocked.then(|| ["a", "b"].map(|scope| snapshot.rescan(&root, [PathBuf::from(scope)])));
+    fs::set_permissions(root.join("e"), fs::Permissions::from_mode(0o755)).unwrap();
+    let Some([renaming, after]) = while_blocked else {
+        return;
+    };
+    let (renaming, after) = (renaming.unwrap(), after.unwrap());
+    assert_eq!(renaming.changes, vec![renamed("a", "b", Dir)]);
+    assert_eq!(renaming.unsettled, vec![PathBuf::from("b/g.txt")]);
+    assert_eq!(after.changes, vec![]);
+    assert_eq!(after.unsettled, vec![PathBuf::from("b/g.txt")]);
+
+    let rescan = snapshot.rescan(&root, [PathBuf::from("e")]).unwrap();
+    assert_eq!(rescan.changes, vec![renamed("b/g.txt", "e/g.txt", File)]);
+    assert_eq!(snapshot, Snapshot::scan(&root).unwrap());
+}
+
+#[test]
+fn a_file_moved_back_into_the_unreadable_folder_its_folder_left_is_not_removed() {
+    let (_dir, root) = moved_and_removed();
+    fs::create_dir(root.join("x/d/sub")).unwrap();
+    fs::write(root.join("x/d/sub/s.txt"), "s").unwrap();
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    fs::rename(root.join("x/d/sub"), root.join("e/sub")).unwrap();
+    fs::rename(root.join("e/sub/s.txt"), root.join("x/d/s.txt")).unwrap();
+    fs::set_permissions(root.join("x/d"), fs::Permissions::from_mode(0o000)).unwrap();
+    let blocked = blocks_reads(
+        "a_file_moved_back_into_the_unreadable_folder_its_folder_left_is_not_removed",
+        fs::read_dir(root.join("x/d")),
+    );
+    let while_blocked = blocked.then(|| snapshot.rescan(&root, [PathBuf::new()]));
+    fs::set_permissions(root.join("x/d"), fs::Permissions::from_mode(0o755)).unwrap();
+    let Some(while_blocked) = while_blocked else {
+        return;
+    };
+    let changes = while_blocked.unwrap().changes;
+    assert!(
+        !changes
+            .iter()
+            .any(|change| matches!(change, Change::Removed { .. })),
+        "{changes:?}"
+    );
+    assert!(
+        snapshot.entries.contains_key(Path::new("x/d/sub/s.txt")),
+        "{changes:?}"
+    );
+}

@@ -656,8 +656,11 @@ pub struct Rescan {
     /// volume is no longer mounted there. The snapshot keeps what it knew at
     /// a mount point and below these folders, so a folder the user cannot read
     /// or a disk the user ejected never reads as emptied, and nothing a rules
-    /// file may leave out is reported as new. Report them, and rescan them
-    /// once they can be read.
+    /// file may leave out is reported as new. An entry below such a folder
+    /// whose identity the scan found at a readable path as its only link is
+    /// reported as moved there, when everything that was below it is found
+    /// there, below a folder there the scan cannot read, or elsewhere. Report
+    /// them, and rescan them once they can be read.
     pub unreadable: Vec<PathBuf>,
     /// The identity of the root folder the scan opened. A scan that reached
     /// another folder than the caller's root has already applied that folder
@@ -1196,6 +1199,74 @@ impl Snapshot {
             held_from.insert(at, path.clone());
         }
         let unreadable = std::mem::take(&mut scan.unreadable);
+        let mut arrivals: HashMap<_, Vec<_>> = HashMap::new();
+        if !unreadable.is_empty() {
+            for (path, now) in &scan.new {
+                let observed = !(unreadable.iter()).any(|blocked| {
+                    path.starts_with(blocked) && (path != blocked || held_from.contains_key(path))
+                });
+                if observed && (now.kind == EntryKind::Dir || !now.linked) {
+                    let volume = volume_of(path, &scan.new, &self.entries).map(Path::to_path_buf);
+                    (arrivals.entry((now.id, now.kind)).or_default()).push((path.clone(), volume));
+                }
+            }
+        }
+        let arrived = |entry: &Entry, volume: &Option<PathBuf>| {
+            (arrivals.get(&(entry.id, entry.kind)))
+                .into_iter()
+                .flatten()
+                .find(|(to, at)| {
+                    at == volume
+                        && (stat_rel(again.as_fd(), to).ok())
+                            .and_then(|stat| stat.entry())
+                            .is_some_and(|now| {
+                                (now.id, now.kind, now.linked) == (entry.id, entry.kind, false)
+                            })
+                })
+                .map(|(to, _)| to)
+        };
+        let elsewhere = |path: &Path,
+                         entry: &Entry,
+                         volume: Option<PathBuf>,
+                         tree: &BTreeMap<PathBuf, Entry>,
+                         new: &BTreeMap<PathBuf, Entry>| {
+            let Some(to) = arrived(entry, &volume) else {
+                return false;
+            };
+            (tree.range(path.to_path_buf()..))
+                .skip(1)
+                .take_while(|(inside, _)| inside.starts_with(path))
+                .all(|(inside, before)| {
+                    let at = to.join(inside.strip_prefix(path).expect("taken below the folder"));
+                    (new.get(&at).or_else(|| scan.left_out.get(&at)))
+                        .is_some_and(|now| (now.id, now.kind) == (before.id, before.kind))
+                        || (unreadable.iter())
+                            .any(|blocked| at.starts_with(blocked) && at != *blocked)
+                        || arrived(before, &volume).is_some()
+                })
+        };
+        let mut departed = BTreeSet::new();
+        for blocked in &unreadable {
+            let unscanned: Vec<(PathBuf, Entry)> = (self.entries.range(blocked.clone()..))
+                .take_while(|(path, _)| path.starts_with(blocked))
+                .filter(|(path, _)| *path != blocked && !old.contains_key(*path))
+                .map(|(path, entry)| (path.clone(), *entry))
+                .collect();
+            for (path, entry) in unscanned {
+                if path.ancestors().any(|above| departed.contains(above)) {
+                    old.insert(path, entry);
+                } else if elsewhere(
+                    &path,
+                    &entry,
+                    volume_now(&path, &self.entries, &scan.new, &self.entries),
+                    &self.entries,
+                    &scan.new,
+                ) {
+                    old.insert(path.clone(), entry);
+                    departed.insert(path);
+                }
+            }
+        }
         for blocked in &unreadable {
             scan.new
                 .retain(|path, _| path == blocked || !path.starts_with(blocked));
@@ -1224,6 +1295,22 @@ impl Snapshot {
                 .map(|(path, entry)| (path.clone(), *entry))
                 .collect();
             for (path, entry) in below {
+                if (path.ancestors())
+                    .take_while(|above| *above != known && above.starts_with(&known))
+                    .any(|above| departed.contains(above))
+                {
+                    continue;
+                }
+                if elsewhere(
+                    &path,
+                    &entry,
+                    volume_now(&path, &old, &scan.new, &self.entries),
+                    &old,
+                    &scan.new,
+                ) {
+                    departed.insert(path);
+                    continue;
+                }
                 let at = blocked.join(path.strip_prefix(&known).expect("taken below the folder"));
                 if unseen_left_out.remove(&path) {
                     old.remove(&path);
@@ -1240,6 +1327,7 @@ impl Snapshot {
             again.as_fd(),
             &old,
             &mut scan.new,
+            &departed,
             &mut *scan.cut,
         )?;
         let arrived: HashSet<(FileId, EntryKind)> = (scan.new.iter())
@@ -1285,6 +1373,7 @@ impl Snapshot {
                     again.as_fd(),
                     &held,
                     &mut there,
+                    &BTreeSet::new(),
                     &mut *scan.cut,
                 )?;
                 stays.extend(left_out.into_keys().filter(|path| {
@@ -1328,30 +1417,58 @@ impl Snapshot {
         };
         let hidden: BTreeSet<PathBuf> = hidden.into_iter().collect();
         let mut removed = BTreeSet::new();
+        let mut created = BTreeSet::new();
         let mut moved_from = BTreeSet::new();
+        let mut left_from = BTreeSet::new();
+        let mut moves = Vec::new();
         for change in &changes {
             match change {
                 Change::Removed { path, .. } => {
                     removed.insert(path.clone());
                 }
-                Change::Renamed { from, .. } | Change::Ignored { from, .. } => {
+                Change::Created { path, .. } => {
+                    created.insert(path.clone());
+                }
+                Change::Renamed { from, to, .. } => {
                     moved_from.insert(from.clone());
+                    moves.push((from.clone(), to.clone()));
+                }
+                Change::Ignored { from, .. } => {
+                    moved_from.insert(from.clone());
+                    left_from.insert(from.clone());
                 }
                 _ => {}
             }
         }
+        let moves: Vec<(&Path, &Path)> = (moves.iter())
+            .map(|(from, to)| (from.as_path(), to.as_path()))
+            .collect();
         let settling: BTreeSet<PathBuf> = unsettled.iter().cloned().collect();
         let mut unplaced = BTreeSet::new();
         let mut still_hidden = BTreeSet::new();
+        let mut holding = BTreeMap::new();
         for path in doubtful {
             let Some(gone) = path.ancestors().find(|above| removed.contains(*above)) else {
                 continue;
             };
-            if scan.new.contains_key(gone) {
+            if gone.ancestors().any(|above| left_from.contains(above)) {
                 continue;
             }
+            let place = carried(gone, &moves);
+            let occupant: Vec<PathBuf> = (scan.new.range(place.clone()..))
+                .map(|(inside, _)| inside)
+                .take_while(|inside| inside.starts_with(&place))
+                .cloned()
+                .collect();
             let proven = hidden.contains(&path);
-            if gone.ancestors().any(|above| {
+            if (proven && !occupant.is_empty())
+                || moves.iter().any(|(_, to)| to.starts_with(&place))
+                || (occupant.iter())
+                    .any(|inside| !inside.ancestors().any(|above| created.contains(above)))
+            {
+                continue;
+            }
+            if place.ancestors().any(|above| {
                 (!proven && self.unplaced.contains(above))
                     || settling.contains(above)
                     || unplaced.contains(above)
@@ -1363,32 +1480,42 @@ impl Snapshot {
                 .take_while(|(inside, _)| inside.starts_with(gone))
                 .filter(|(inside, entry)| {
                     !arrived.contains(&(entry.id, entry.kind))
-                        && !inside.ancestors().any(|above| moved_from.contains(above))
+                        && !(inside.ancestors())
+                            .take_while(|above| above.starts_with(gone))
+                            .any(|above| moved_from.contains(above))
                 })
-                .map(|(inside, entry)| (inside.clone(), *entry))
+                .map(|(inside, entry)| (carried(inside, &moves), *entry))
                 .collect();
             if kept.is_empty() {
                 continue;
             }
+            for inside in occupant {
+                scan.new.remove(&inside);
+            }
             scan.new.extend(kept);
+            holding.insert(gone.to_path_buf(), place.clone());
             match proven {
-                true => still_hidden.insert(gone.to_path_buf()),
-                false => unplaced.insert(gone.to_path_buf()),
+                true => still_hidden.insert(place),
+                false => unplaced.insert(place),
             };
         }
-        for kept in unplaced.iter().chain(&still_hidden) {
+        for (gone, place) in &holding {
             for path in
-                (unseen_left_out.range(kept.clone()..)).take_while(|path| path.starts_with(kept))
+                (unseen_left_out.range(gone.clone()..)).take_while(|path| path.starts_with(gone))
             {
-                if let Some(entry) = scan.new.remove(path) {
+                let at = place.join(path.strip_prefix(gone).expect("taken below the held path"));
+                if let Some(entry) = scan.new.remove(&at) {
                     old.remove(path);
-                    still_left_out.push((path.clone(), entry));
+                    still_left_out.push((at, entry));
                 }
             }
         }
-        changes.retain(|change| {
-            !matches!(change, Change::Removed { path, .. }
-                if unplaced.contains(path) || still_hidden.contains(path))
+        changes.retain(|change| match change {
+            Change::Removed { path, .. } => !holding.contains_key(path),
+            Change::Created { path, .. } => {
+                !(holding.values()).any(|place| path.starts_with(place))
+            }
+            _ => true,
         });
         unsettled.extend(unplaced.iter().cloned());
         unsettled.extend(still_hidden);
@@ -1400,8 +1527,10 @@ impl Snapshot {
         self.detached
             .retain(|path, _| !scan.replaced.iter().any(|prefix| path.starts_with(prefix)));
         self.detached.extend(scan.detached.drain(..));
-        self.unplaced
-            .retain(|path| !scan.replaced.iter().any(|prefix| path.starts_with(prefix)));
+        self.unplaced.retain(|path| {
+            !scan.replaced.iter().any(|prefix| path.starts_with(prefix))
+                || unreadable.iter().any(|blocked| path.starts_with(blocked))
+        });
         self.unplaced.extend(unplaced);
         for path in &was_left_out {
             self.left_out.remove(path);
@@ -1611,7 +1740,9 @@ fn revalidate(root: BorrowedFd<'_>, mut bindings: Vec<(PathBuf, u64, FileId)>) -
 /// everything below it, unless it is confirmed gone, and returns the paths
 /// kept. A path is confirmed gone when its parent, looked at from the root
 /// through `attached`, does not hold its exact name with the old kind, and a
-/// final look from a freshly opened root sees that parent unchanged.
+/// final look from a freshly opened root sees that parent unchanged, or when
+/// it is below a path in `departed`, whose identity the scan found elsewhere.
+#[allow(clippy::too_many_arguments)]
 fn keep_unconfirmed(
     root: &Path,
     root_dev: u64,
@@ -1619,6 +1750,7 @@ fn keep_unconfirmed(
     attached: BorrowedFd<'_>,
     old: &BTreeMap<PathBuf, Entry>,
     new: &mut BTreeMap<PathBuf, Entry>,
+    departed: &BTreeSet<PathBuf>,
     cut: &mut dyn FnMut(Cut<'_>),
 ) -> Result<Vec<PathBuf>> {
     let gone: Vec<(PathBuf, EntryKind)> = old
@@ -1626,6 +1758,7 @@ fn keep_unconfirmed(
         .filter(|(path, before)| {
             !new.get(*path)
                 .is_some_and(|after| after.kind == before.kind)
+                && !path.ancestors().any(|above| departed.contains(above))
         })
         .map(|(path, before)| (path.clone(), before.kind))
         .collect();
