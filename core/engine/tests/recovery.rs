@@ -4965,3 +4965,51 @@ fn a_move_out_of_an_answers_trash_group_to_the_root_goes_there_directly() {
         "{sent:?}"
     );
 }
+
+#[test]
+fn a_given_up_file_this_device_holds_keeps_the_version_its_user_restores() {
+    const D: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a01";
+    const E: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a02";
+    const F: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a03";
+    let mut trees = trees(
+        &[
+            (D, dir(ROOT, "new")),
+            (E, dir(D, "e")),
+            (F, file(E, "child", 1)),
+        ],
+        &[
+            (D, dir(ROOT, "old")),
+            (E, dir(D, "e")),
+            (F, file(E, "child", 1)),
+        ],
+        &[
+            Remote(D, dir(ROOT, "old"), true, 1),
+            Remote(E, dir(D, "e"), true, 1),
+            Remote(F, file(E, "child", 1), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &[D]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    ops(&mut commits, &mut trees, &mut ids);
+    assert_eq!(
+        commits.failed(&mut trees, &limit_exceeded()),
+        Ok(Failure::Split)
+    );
+    trees.settle(commits.aliases());
+    let version = RestoreIntent::version(F.into(), "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a09".into());
+    assert!(commits.restore("restore".into(), version.unwrap()));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", D.into()), ("restore", F.into())]
+    );
+    written_elsewhere(&mut trees, F, file(E, "child", 2), 2);
+    applied(
+        &mut commits,
+        &mut trees,
+        2,
+        &[(D, dir(ROOT, "new"), false), (E, dir(D, "e"), false)],
+    );
+    assert_eq!(effects(&mut trees, &mut ids).len(), 1);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}

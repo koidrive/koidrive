@@ -2382,6 +2382,11 @@ impl Commits {
                     synced.set(id, None);
                 }
             }
+            brought_back.extend(
+                (given_up.keys())
+                    .filter(|id| **id == restore.node_id || remote_below(trees, id, &restored))
+                    .cloned(),
+            );
         }
         for id in &brought_back {
             self.given_up_nodes.remove(id);
