@@ -131,6 +131,8 @@ globs = [
   "scripts/engine-mutations.sh",
   "scripts/test-engine-mutations.sh",
   "scripts/test-mutations.py",
+  "scripts/test-value.py",
+  "scripts/test-test-value.py",
 ]
 
 [[read]]
