@@ -804,8 +804,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const restarted = this.traffic.restart(startedMs);
       if (!changed && !restarted) return;
       setMeta(this.sql, "reporting", JSON.stringify({ on, startedMs: this.traffic.startedMs }));
-      if (!on) this.dropParked();
-      else if (restarted) this.dropParked(this.traffic.startedMs);
+      if (!on && changed) this.dropParked();
+      else if (on && restarted) this.dropParked(this.traffic.startedMs);
     }
 
     protected async ended(event: string, args: unknown[], waited: boolean): Promise<void> {

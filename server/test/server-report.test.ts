@@ -805,6 +805,24 @@ describe("hourly server report", () => {
     expect(await runInDurableObject(stub, (instance: object) => (instance as unknown as { traffic: UsageTally }).traffic.reporting)).toBe(false);
   });
 
+  it("reads no socket attachment for the report after a Space DO drops its parked counts at a stop, while reports stay off", async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    const socket = await connect(spaceId, owner, stub);
+    await socket.listTree();
+    expect(await parkedCounts(stub)).toEqual([1]);
+    await refresh(owner, TokenRequest_Telemetry.OFF);
+    const learn = (carried: Carried) => runInDurableObject(stub, (instance: object) => (instance as unknown as { received(carried: Carried): void }).received(carried));
+    const startedMs = await runInDurableObject(stub, (instance: object) => (instance as unknown as { traffic: UsageTally }).traffic.startedMs);
+    await learn({ reporting: false, startedMs });
+    expect(await parkedCounts(stub)).toEqual([0]);
+    const reads = await runInDurableObject(stub, (_instance, state) => vi.spyOn(Object.getPrototypeOf(state.getWebSockets()[0]!) as { deserializeAttachment(): unknown }, "deserializeAttachment"));
+    await learn({ reporting: false, startedMs });
+    await learn({ reporting: false, startedMs: startedMs! + 1 });
+    for (const reqId of [1n, 2n, 3n]) expect((await post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId, call: { case: "listTree", value: {} } }), owner.access!.token)).status).toBe(200);
+    expect(reads).not.toHaveBeenCalled();
+    socket.ws.close(1000, "done");
+  });
+
   it("calls nothing, arms nothing and leaves the sockets as they were while reports are off, in the Worker and in a Space DO", async () => {
     const { owner, spaceId, stub } = await reportingSpace(TokenRequest_Telemetry.OFF);
     const usage = await watchUsage();
