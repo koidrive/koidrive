@@ -3,7 +3,7 @@
 import { create, type DescMessage, fromBinary, type MessageInitShape, toBinary } from "@bufbuild/protobuf";
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AccountDO } from "../src/account-do";
 import {
   ClaimRequestSchema,
@@ -209,6 +209,17 @@ async function connect(spaceId: string, device: DeviceCredentials, stub: SpaceSt
     },
   };
 }
+
+beforeEach(() =>
+  runInDurableObject(account(), (instance: AccountDO, state) => {
+    instance.clock = () => Date.now();
+    const row = state.storage.sql.exec("SELECT value FROM settings WHERE key = 'report_votes'").toArray()[0];
+    const votes = row ? (JSON.parse(String(row.value)) as { startedMs?: number }) : {};
+    if ((votes.startedMs ?? 0) <= Date.now()) return;
+    state.storage.sql.exec("UPDATE settings SET value = ? WHERE key = 'report_votes'", JSON.stringify({ ...votes, startedMs: Date.now() }));
+    instance.reporting();
+  }),
+);
 
 afterEach(async () => {
   for (const restore of restorers.splice(0)) await restore();
@@ -653,7 +664,7 @@ describe("hourly server report", () => {
   it("parks a Space DO's counts on its socket across a lost memory and hands each count over once, when its batch is due and when the hour alarm runs", async () => {
     const { owner, spaceId, stub } = await reportingSpace();
     const usage = await watchUsage();
-    let nowMs = Math.floor(Date.now() / HOUR_MS) * HOUR_MS + 60_000;
+    let nowMs = Math.floor(Date.now() / HOUR_MS) * HOUR_MS;
     await runInDurableObject(account(), (instance: AccountDO, state) => startReporting(instance, state, nowMs));
     await useClock(stub, () => nowMs);
     const socket = await connect(spaceId, owner, stub);
@@ -684,7 +695,7 @@ describe("hourly server report", () => {
   it("hands a busy socket's counts over about six times an hour, and every count arrives", async () => {
     const { owner, spaceId, stub } = await reportingSpace();
     const usage = await watchUsage();
-    let nowMs = Math.floor(Date.now() / HOUR_MS) * HOUR_MS + 60_000;
+    let nowMs = Math.floor(Date.now() / HOUR_MS) * HOUR_MS;
     await runInDurableObject(account(), (instance: AccountDO, state) => startReporting(instance, state, nowMs));
     await useClock(stub, () => nowMs);
     const socket = await connect(spaceId, owner, stub);
@@ -721,7 +732,7 @@ describe("hourly server report", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const { owner, spaceId, stub } = await reportingSpace();
     const usage = await watchUsage();
-    let nowMs = Math.floor(Date.now() / HOUR_MS) * HOUR_MS + 60_000;
+    let nowMs = Math.floor(Date.now() / HOUR_MS) * HOUR_MS;
     await runInDurableObject(account(), (instance: AccountDO, state) => startReporting(instance, state, nowMs));
     await useClock(stub, () => nowMs);
     const socket = await connect(spaceId, owner, stub);
@@ -1003,7 +1014,7 @@ describe("hourly server report", () => {
     const hour = Math.floor(Date.now() / HOUR_MS);
     const sent: unknown[] = [];
     await runInDurableObject(account(), async (instance: AccountDO, state) => {
-      startReporting(instance, state, hour * HOUR_MS + 60_000, (hour + 2) * HOUR_MS);
+      startReporting(instance, state, hour * HOUR_MS, (hour + 2) * HOUR_MS);
       await instance.recordUsage({ openedMs: instance.clock(), hours: { [hour]: { counts: { "get_server.200": 1 }, latency: {}, billing: {} } } });
       state.storage.sql.exec("UPDATE devices SET telemetry = ? WHERE rowid = (SELECT MIN(rowid) FROM devices)", TokenRequest_Telemetry.OFF);
       countVotes(instance);
@@ -1194,7 +1205,7 @@ describe("hourly server report", () => {
     const hour = Math.floor(Date.now() / HOUR_MS);
     vi.spyOn(console, "error").mockImplementation(() => {});
     const stored = await runInDurableObject(account(), async (instance: AccountDO, state) => {
-      startReporting(instance, state, hour * HOUR_MS + 60_000, hour * HOUR_MS);
+      startReporting(instance, state, hour * HOUR_MS, hour * HOUR_MS);
       vi.spyOn(state.storage, "setAlarm").mockRejectedValue(new Error("storage busy"));
       return instance.recordUsage({ openedMs: instance.clock(), hours: { [hour]: { counts: { "get_server.200": 1 }, latency: {}, billing: {} } } });
     });
@@ -1217,7 +1228,7 @@ describe("hourly server report", () => {
     const triedHour = () => tries.filter((hours) => hours.includes(hour)).length;
     let nowMs = (hour + 2) * HOUR_MS;
     await runInDurableObject(account(), async (instance: AccountDO, state) => {
-      startReporting(instance, state, hour * HOUR_MS + 60_000, (hour + 2) * HOUR_MS);
+      startReporting(instance, state, hour * HOUR_MS, (hour + 2) * HOUR_MS);
       await instance.recordUsage({ openedMs: instance.clock(), hours: { [hour]: { counts: { "get_server.200": 1 }, latency: {}, billing: {} } } });
       instance.clock = () => nowMs;
       instance.sendReport = async (report) => {
@@ -1287,10 +1298,19 @@ describe("billing counts across evictions", () => {
     return seen;
   }
 
-  it("counts each HTTP RPC that wakes an evicted Space DO, and the time it ran", async () => {
+  it("counts each HTTP RPC that wakes an evicted Space DO, and the time it waited on I/O", async () => {
     const { owner, spaceId, stub } = await reportingSpace();
     expect((await listTree(owner, spaceId, 1n)).status).toBe(200);
     await vi.waitFor(async () => expect((await storedCounts())["rpc_list_tree.ok"]).toBe(1));
+    const prototype = (await runInDurableObject(stub, (instance: SpaceDO) => Object.getPrototypeOf(instance))) as SpaceDO;
+    const httpRpc = prototype.httpRpc;
+    prototype.httpRpc = async function (this: SpaceDO, ...args: Parameters<SpaceDO["httpRpc"]>) {
+      await scheduler.wait(50);
+      return httpRpc.apply(this, args);
+    };
+    restorers.push(() => {
+      prototype.httpRpc = httpRpc;
+    });
     await clearHours();
     for (let reqId = 2n; reqId <= 4n; reqId++) {
       await evictDurableObject(stub);
@@ -1298,7 +1318,7 @@ describe("billing counts across evictions", () => {
     }
     await vi.waitFor(async () => expect((await storedCounts())["rpc_list_tree.ok"]).toBe(3));
     const billing = (await storedTotal()).billing;
-    expect({ do_space_requests: billing.do_space_requests, worker_requests: billing.worker_requests, ran: (billing.do_space_active_ms ?? 0) > 0 }).toEqual({ do_space_requests: 3, worker_requests: 3, ran: true });
+    expect({ do_space_requests: billing.do_space_requests, worker_requests: billing.worker_requests, ran: (billing.do_space_active_ms ?? 0) >= 3 * 25 }).toEqual({ do_space_requests: 3, worker_requests: 3, ran: true });
   });
 
   it("counts every row, setAlarm and R2 operation of an alarm that wakes an evicted Space DO, and hands them over inside the alarm", async () => {

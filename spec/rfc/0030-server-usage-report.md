@@ -65,7 +65,7 @@ These counts can still be lost. The bounds are per day for one busy Worker isola
 | `egress_bytes` | Response body bytes the Worker sent: the `Content-Length` when the response has one, otherwise the bytes as the body streams out. WebSocket messages aren't counted. Cloudflare doesn't bill egress. |
 | `do_account_requests`, `do_space_requests` | Fetches, RPC calls and alarms the Account DO and the Space DOs handled. A call an object makes on itself isn't counted. |
 | `do_ws_messages` | WebSocket messages the Space DOs received. Pings the runtime answers for the object don't reach it. |
-| `do_account_active_ms`, `do_space_active_ms` | Milliseconds in which an object ran at least one event, summed over objects. Events that overlap in one object count once. |
+| `do_account_active_ms`, `do_space_active_ms` | Milliseconds in which an object ran at least one event, summed over objects. Events that overlap in one object count once. The clock advances only across I/O ([Performance and timers](https://developers.cloudflare.com/workers/runtime-apis/performance/)), so time spent computing between two I/O operations counts as 0: the figure is a lower bound of the time Cloudflare bills. |
 | `do_rows_read`, `do_rows_written` | The `rowsRead` and `rowsWritten` of every SQL statement either class ran, and one row written for each `setAlarm` call, which Cloudflare bills as one row written ([Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/)). |
 | `r2_class_a` | R2 `put`, `list`, `createMultipartUpload`, `uploadPart` and `complete` calls. |
 | `r2_class_b` | R2 `get` and `head` calls. Deletes and aborts are free and aren't counted. |
