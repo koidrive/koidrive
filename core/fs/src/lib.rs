@@ -910,10 +910,10 @@ impl Snapshot {
         if arrived.is_empty() {
             return Vec::new();
         }
+        let covered: HashSet<&Path> = (scan.replaced.iter().chain(scopes))
+            .map(PathBuf::as_path)
+            .collect();
         (self.entries.iter())
-            .filter(|(known, _)| {
-                !(scan.replaced.iter().chain(scopes)).any(|scope| known.starts_with(scope))
-            })
             .filter(|(known, entry)| {
                 (arrived.get(&(entry.id, entry.kind))).is_some_and(|at| {
                     at.iter().any(|at| {
@@ -922,6 +922,7 @@ impl Snapshot {
                     })
                 })
             })
+            .filter(|(known, _)| !known.ancestors().any(|above| covered.contains(above)))
             .map(|(known, _)| known.clone())
             .collect()
     }
