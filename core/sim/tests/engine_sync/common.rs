@@ -1896,10 +1896,6 @@ fn run_ignoring_answering_after(
         };
         let mut sending = Vec::new();
         let mut positioned = Vec::new();
-        merged_into.retain(|id, _| {
-            !(commit.ops.iter())
-                .any(|op| matches!(&op.op, Some(op::Op::CreateDir(create)) if create.node_id == *id))
-        });
         for op in &commit.ops {
             let id = match &op.op {
                 Some(op::Op::Delete(delete)) => &delete.node_id,
