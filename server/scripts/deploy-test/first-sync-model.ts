@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { routeName } from "../../src/routes.ts";
+
 export const MAX_REFS = 4;
 export const MAX_REPETITIONS = 4;
 export const MAX_MINUTES = 240;
@@ -432,7 +434,12 @@ export function serverEvent(event: Raw): ServerEvent {
     if (typeof source !== "object" || source === null) return out;
     for (const key of TELEMETRY_KEPT[group]) {
       const value = (source as Raw)[key];
-      if (isScalar(value)) out[key] = typeof value === "string" ? value.split("?")[0]! : value;
+      if (!isScalar(value)) continue;
+      if (typeof value !== "string" || !value.includes("/")) out[key] = value;
+      else if (key === "trigger") {
+        const request = /^([A-Z]+) (\/[^?#\s]*)/.exec(value);
+        if (request) out.route = routeName(request[1]!, request[2]!);
+      }
     }
     return out;
   };

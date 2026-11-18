@@ -571,7 +571,10 @@ const phases: Record<string, () => Promise<void>> = {
     let collected: Collected;
     try {
       collected = await collectEvents(
-        (from, to) => telemetryEvents(account, key, state.name, from, to, deadline),
+        (from, to) =>
+          telemetryEvents(account, key, state.name, from, to, deadline).catch((error: unknown) => {
+            throw new Error((error instanceof Error ? error.message : String(error)).replaceAll(account.id, "<account>"));
+          }),
         fromMs,
         toMs,
         (event) => {

@@ -513,7 +513,7 @@ describe("deploy-test workflow", () => {
 });
 
 describe("server events", () => {
-  it("keeps the timing fields and span attributes of an event and drops messages, URLs, headers and query strings", () => {
+  it("keeps the timing fields and span attributes of an event, names the route instead of the path, and drops messages, URLs, headers and paths", () => {
     const kept = serverEvent({
       timestamp: 1795000000123,
       $metadata: { id: "e1", type: "span", spanName: "r2_put", traceId: "t", spanId: "s", parentSpanId: "p", startTime: 10, endTime: 25, duration: 15, trigger: "PUT /v1/spaces/x/chunks/ab?ticket=secret", message: "claim code secret", error: "secret" },
@@ -523,11 +523,14 @@ describe("server events", () => {
     });
     expect(kept).toEqual({
       timestamp: 1795000000123,
-      $metadata: { id: "e1", type: "span", spanName: "r2_put", traceId: "t", spanId: "s", parentSpanId: "p", startTime: 10, endTime: 25, duration: 15, trigger: "PUT /v1/spaces/x/chunks/ab" },
+      $metadata: { id: "e1", type: "span", spanName: "r2_put", traceId: "t", spanId: "s", parentSpanId: "p", startTime: 10, endTime: 25, duration: 15, route: "put_chunk" },
       $workers: { wallTimeMs: 40, cpuTimeMs: 3, entrypoint: "SpaceDO", eventType: "rpc" },
       attributes: { "cloudflare.r2.operation": "PutObject", "cloudflare.durable_object.id": "do-1" },
     });
     expect(JSON.stringify(kept)).not.toContain("secret");
+    const share = serverEvent({ $metadata: { trigger: "GET /v1/share/AbCdEf/file/board-deck.pptx?x=1", spanName: "fetch https://example.com/board-deck.pptx", origin: "fetch" } });
+    expect(share.$metadata).toEqual({ route: "get_share", origin: "fetch" });
+    expect(serverEvent({ $metadata: { trigger: "SpaceDO.webSocketMessage" } }).$metadata).toEqual({ trigger: "SpaceDO.webSocketMessage" });
   });
 
   it("halves a window that returns the query limit, drops events read twice at a boundary, and reports windows too short to halve", async () => {
@@ -568,8 +571,27 @@ describe("server events", () => {
     expect(late).toMatchObject({ queries: 2, events: 1, uncoveredFromMs: 50, failure: null });
   });
 
+  const name = "koidrive-test-1-1";
+  const accountId = "0123456789abcdef0123456789abcdef";
+
+  async function telemetry(mock: MockCloudflare, dir: string, now: number): Promise<number | null> {
+    const state = { name, owned: {}, deployments: [{ ref: "main", sha: "0".repeat(40), dir, versionId: "v", atMs: now - 60_000 }], stats: { requests: 0, bytesUp: 0, bytesDown: 0 }, traceSampling: 0.05, logKey: "$metadata.service" };
+    writeFileSync(join(dir, "state.json"), JSON.stringify(state));
+    const flags = Number(process.versions.node.split(".")[0]) < 23 ? ["--experimental-strip-types", "--no-warnings"] : [];
+    const env = {
+      PATH: process.env.PATH,
+      FIRST_SYNC_WORK: dir,
+      FIRST_SYNC_JOB_START: String(Math.floor((now - HOLD_MINUTES * MINUTE_MS + 8000) / 1000)),
+      CLOUDFLARE_API_BASE_URL: mock.url + "/client/v4",
+      CLOUDFLARE_API_TOKEN: "dummy-token",
+      CLOUDFLARE_ACCOUNT_ID: accountId,
+      KOIDRIVE_DEPLOY_TEST_STATE: join(dir, "state.json"),
+      KOIDRIVE_TEST_NAME: name,
+    };
+    return new Promise((resolve) => spawn(process.execPath, [...flags, join(here, "first-sync.ts"), "telemetry"], { env, stdio: "ignore" }).on("close", resolve));
+  }
+
   it("writes the test Worker's events without their log messages and stops before the teardown's minutes", async () => {
-    const name = "koidrive-test-1-1";
     const mock = new MockCloudflare();
     await mock.start();
     const dir = mkdtempSync(join(tmpdir(), "koidrive-first-sync-unit-"));
@@ -580,27 +602,30 @@ describe("server events", () => {
         { script: name, timestamp: now - 4000, message: "Koidrive claim code: " + mock.claimCode },
         { script: "another-worker", timestamp: now - 3000 },
       );
-      const state = { name, owned: {}, deployments: [{ ref: "main", sha: "0".repeat(40), dir, versionId: "v", atMs: now - 60_000 }], stats: { requests: 0, bytesUp: 0, bytesDown: 0 }, traceSampling: 0.05, logKey: "$metadata.service" };
-      writeFileSync(join(dir, "state.json"), JSON.stringify(state));
-      const flags = Number(process.versions.node.split(".")[0]) < 23 ? ["--experimental-strip-types", "--no-warnings"] : [];
-      const env = {
-        PATH: process.env.PATH,
-        FIRST_SYNC_WORK: dir,
-        FIRST_SYNC_JOB_START: String(Math.floor((now - HOLD_MINUTES * MINUTE_MS + 8000) / 1000)),
-        CLOUDFLARE_API_BASE_URL: mock.url + "/client/v4",
-        CLOUDFLARE_API_TOKEN: "dummy-token",
-        CLOUDFLARE_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
-        KOIDRIVE_DEPLOY_TEST_STATE: join(dir, "state.json"),
-        KOIDRIVE_TEST_NAME: name,
-      };
-      const status = await new Promise<number | null>((resolve) => spawn(process.execPath, [...flags, join(here, "first-sync.ts"), "telemetry"], { env, stdio: "ignore" }).on("close", resolve));
-      expect(status).toBe(0);
+      expect(await telemetry(mock, dir, now)).toBe(0);
       const lines = gunzipSync(readFileSync(join(dir, "telemetry", "server-events.ndjson.gz"))).toString("utf8").trim().split("\n");
       expect(lines.map((line) => (JSON.parse(line) as { $metadata: { service: string } }).$metadata.service)).toEqual([name, name]);
       expect(lines.join("\n")).not.toMatch(new RegExp(mock.claimCode + "|secret"));
       const meta = JSON.parse(readFileSync(join(dir, "telemetry", "server-events.json"), "utf8")) as Record<string, unknown>;
       expect(meta).toMatchObject({ worker: name, filter: "$metadata.service", traceSampling: 0.05, events: 2, uncoveredFromMs: null, failure: null });
       expect(Object.keys(meta.fields as object)).toContain("$metadata.message");
+    } finally {
+      await mock.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("fails on a query error and keeps the account ID out of the recorded failure", async () => {
+    const mock = new MockCloudflare();
+    await mock.start();
+    mock.observabilityStatus = 403;
+    const dir = mkdtempSync(join(tmpdir(), "koidrive-first-sync-unit-"));
+    try {
+      expect(await telemetry(mock, dir, Date.now())).toBe(1);
+      const meta = JSON.parse(readFileSync(join(dir, "telemetry", "server-events.json"), "utf8")) as { failure: string; uncoveredFromMs: number };
+      expect(meta.failure).toContain("/accounts/<account>/");
+      expect(readFileSync(join(dir, "telemetry", "server-events.json"), "utf8")).not.toContain(accountId);
+      expect(meta.uncoveredFromMs).toBeGreaterThan(0);
     } finally {
       await mock.stop();
       rmSync(dir, { recursive: true, force: true });
