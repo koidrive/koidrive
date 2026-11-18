@@ -2034,3 +2034,33 @@ fn a_held_removal_under_a_folder_unreadable_for_a_poll_is_reported_once_the_fold
         }]
     );
 }
+
+#[test]
+fn a_rename_into_a_folder_made_where_a_file_moved_away_is_reported_with_the_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    for folder in ["x", "e", "z"] {
+        fs::create_dir(root.join(folder)).unwrap();
+    }
+    fs::write(root.join("x/f"), "f").unwrap();
+    fs::write(root.join("z/y.txt"), "y").unwrap();
+    let mut watcher = quiet_watcher(&root, &["x", "z"]);
+    fs::rename(root.join("x/f"), root.join("e/moved")).unwrap();
+    fs::create_dir(root.join("x/f")).unwrap();
+    fs::rename(root.join("z/y.txt"), root.join("x/f/y.txt")).unwrap();
+    let poll = watcher.poll(Duration::ZERO).unwrap();
+    assert!(
+        poll.changes.contains(&Change::Renamed {
+            from: "z/y.txt".into(),
+            to: "x/f/y.txt".into(),
+            kind: EntryKind::File
+        }),
+        "{:?}",
+        poll.changes
+    );
+    assert!(
+        (watcher.snapshot().entries).contains_key(Path::new("x/f/y.txt")),
+        "{:?}",
+        poll.changes
+    );
+}

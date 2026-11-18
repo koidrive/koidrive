@@ -654,12 +654,12 @@ pub struct Rescan {
     /// cannot read when no earlier scan read one for them, so that what they
     /// leave out is not known, and mount points the snapshot knows whose
     /// volume is no longer mounted there. The snapshot keeps what it knew at
-    /// a mount point and below these folders, except an entry whose identity
-    /// the scan found at a readable path as its only link, which it reports as
-    /// moved there. So a folder the user cannot read
+    /// a mount point and below these folders, so a folder the user cannot read
     /// or a disk the user ejected never reads as emptied, and nothing a rules
-    /// file may leave out is reported as new. Report them, and rescan them
-    /// once they can be read.
+    /// file may leave out is reported as new. An entry below such a folder
+    /// whose identity the scan found at a readable path as its only link is
+    /// reported as moved there, with what was below it. Report them, and
+    /// rescan them once they can be read.
     pub unreadable: Vec<PathBuf>,
     /// The identity of the root folder the scan opened. A scan that reached
     /// another folder than the caller's root has already applied that folder
@@ -1215,6 +1215,21 @@ impl Snapshot {
         };
         let mut departed = BTreeSet::new();
         for blocked in &unreadable {
+            let unscanned: Vec<(PathBuf, Entry)> = (self.entries.range(blocked.clone()..))
+                .take_while(|(path, _)| path.starts_with(blocked))
+                .filter(|(path, _)| *path != blocked && !old.contains_key(*path))
+                .map(|(path, entry)| (path.clone(), *entry))
+                .collect();
+            for (path, entry) in unscanned {
+                if path.ancestors().any(|above| departed.contains(above)) {
+                    old.insert(path, entry);
+                } else if elsewhere(&entry, volume_of(&path, &self.entries, &self.entries)) {
+                    old.insert(path.clone(), entry);
+                    departed.insert(path);
+                }
+            }
+        }
+        for blocked in &unreadable {
             scan.new
                 .retain(|path, _| path == blocked || !path.starts_with(blocked));
             let now = scan.new.get(blocked);
@@ -1242,7 +1257,10 @@ impl Snapshot {
                 .map(|(path, entry)| (path.clone(), *entry))
                 .collect();
             for (path, entry) in below {
-                if path.ancestors().any(|above| departed.contains(above)) {
+                if (path.ancestors())
+                    .take_while(|above| above.starts_with(&known))
+                    .any(|above| departed.contains(above))
+                {
                     continue;
                 }
                 if elsewhere(&entry, volume_of(&path, &old, &self.entries)) {
@@ -1255,19 +1273,6 @@ impl Snapshot {
                     still_left_out.push((at, entry));
                 } else {
                     scan.new.insert(at, entry);
-                }
-            }
-            let unscanned: Vec<(PathBuf, Entry)> = (self.entries.range(blocked.clone()..))
-                .take_while(|(path, _)| path.starts_with(blocked))
-                .filter(|(path, _)| *path != blocked && !old.contains_key(*path))
-                .map(|(path, entry)| (path.clone(), *entry))
-                .collect();
-            for (path, entry) in unscanned {
-                if path.ancestors().any(|above| departed.contains(above)) {
-                    old.insert(path, entry);
-                } else if elsewhere(&entry, volume_of(&path, &self.entries, &self.entries)) {
-                    old.insert(path.clone(), entry);
-                    departed.insert(path);
                 }
             }
         }
@@ -1413,6 +1418,7 @@ impl Snapshot {
                 .collect();
             let proven = hidden.contains(&path);
             if (proven && !occupant.is_empty())
+                || moves.iter().any(|(_, to)| to.starts_with(&place))
                 || (occupant.iter())
                     .any(|inside| !inside.ancestors().any(|above| created.contains(above)))
             {
