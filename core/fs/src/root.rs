@@ -27,8 +27,8 @@ const PROBE: [&str; 3] = [
 ];
 
 /// The root marker `.koidrive/space.json`: the space the folder holds, the
-/// effect counter *m* of design §2.8, the token of the folder's latest start,
-/// and the tokens it replaced.
+/// effect counter *m* of design §2.8, and the token of the folder's latest
+/// start.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Marker {
     pub space_id: String,
@@ -38,33 +38,6 @@ pub struct Marker {
     /// `None` in a marker from a build without tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
-    /// The tokens `token` replaced, oldest first, at most [`EARLIER_TOKENS`],
-    /// each one a token the link that replaced it had recorded. Empty after a
-    /// relink and in a marker from a build without them.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub earlier: Vec<String>,
-}
-
-pub const EARLIER_TOKENS: usize = 128;
-
-impl Marker {
-    /// This marker with `next` as its token. It keeps its earlier tokens and
-    /// the one it replaces only when `tokens` recorded that one, and
-    /// otherwise carries none.
-    pub fn rotated(&self, next: &str, tokens: &RootTokens) -> Marker {
-        let earlier = match &self.token {
-            Some(token) if tokens.recorded(token) => {
-                let dropped = (self.earlier.len() + 1).saturating_sub(EARLIER_TOKENS);
-                (self.earlier[dropped..].iter().chain([token]).cloned()).collect()
-            }
-            _ => Vec::new(),
-        };
-        Marker {
-            token: Some(next.to_owned()),
-            earlier,
-            ..self.clone()
-        }
-    }
 }
 
 /// A new marker token: 128 random bits in hex.
@@ -93,19 +66,6 @@ impl RootTokens {
             Some(token) if token == current || Some(token) == self.pending.as_ref() => Ok(()),
             _ => Err(RootProblem::Copy),
         }
-    }
-
-    /// Whether `marker` descends from one that carried a token this link
-    /// recorded: that token is among the ones `marker` replaced.
-    pub fn precede(&self, marker: &Marker) -> bool {
-        marker.earlier.iter().any(|token| self.recorded(token))
-    }
-
-    /// Whether this link recorded `token` as its current or pending one.
-    pub fn recorded(&self, token: &str) -> bool {
-        [&self.current, &self.pending]
-            .into_iter()
-            .any(|recorded| recorded.as_deref() == Some(token))
     }
 }
 

@@ -1,7 +1,0 @@
-100
-# A store restored from a backup must recover the newer folder, and an older copy or another link's marker must still halt as on main.
-# The review follow-up runs a link without a token whose first marker write failed on another link's folder, then the other link at an
-# equal count, alone and with the two links taking turns for three rounds; a failed marker write right after a store-older recovery,
-# which only a start that records the tokens from after the recovery passes; and the start's decision for a marker from before tokens
-# at each effect count. No earlier test fails a marker write on a folder whose token the link did not write, and the pre-token table
-# is the only test that reaches standing() with a tokenless marker and a store that records a token.

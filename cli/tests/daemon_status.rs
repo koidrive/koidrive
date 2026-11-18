@@ -589,7 +589,6 @@ fn relinking_a_folder_that_did_not_halt_as_a_copy_refuses_with_and_without_the_d
         space_id: space_id.into(),
         effects: 0,
         token: None,
-        earlier: Vec::new(),
     };
     koidrive_fs::write_marker(&root, &marker).unwrap();
     let mut store = koidrive_store::Store::open(profile.paths.store(space_id).unwrap()).unwrap();

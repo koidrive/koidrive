@@ -35,7 +35,6 @@ pub fn marker() -> Marker {
         space_id: SPACE.into(),
         effects: COUNTER,
         token: None,
-        earlier: Vec::new(),
     }
 }
 

@@ -6,9 +6,9 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
 use koidrive_fs::{
-    EARLIER_TOKENS, Marker, PRIVATE_DIR, RootAt, RootProblem, RootTokens, Space, Unresolved,
-    VolumeId, check_root, check_root_at, new_token, open_root_folder, probe_no_replace,
-    read_marker, rename_no_replace, root_at, write_marker,
+    Marker, PRIVATE_DIR, RootAt, RootProblem, RootTokens, Space, Unresolved, VolumeId, check_root,
+    check_root_at, new_token, open_root_folder, probe_no_replace, read_marker, rename_no_replace,
+    root_at, write_marker,
 };
 
 fn marker(space_id: &str, effects: u64) -> Marker {
@@ -16,7 +16,6 @@ fn marker(space_id: &str, effects: u64) -> Marker {
         space_id: space_id.into(),
         effects,
         token: None,
-        earlier: Vec::new(),
     }
 }
 
@@ -110,36 +109,6 @@ fn a_link_admits_the_token_it_wrote_or_is_writing_and_any_before_its_first() {
                 "{tokens:?} {token:?}"
             );
         }
-    }
-}
-
-#[test]
-fn a_marker_keeps_the_latest_tokens_it_replaced_only_while_its_link_recorded_its_token() {
-    let recorded = |current: &str| RootTokens {
-        current: Some(current.into()),
-        pending: None,
-    };
-    let mut marker = Marker {
-        token: Some("0".into()),
-        ..marker("space-1", 0)
-    };
-    for n in 1..=EARLIER_TOKENS + 1 {
-        marker = marker.rotated(&n.to_string(), &recorded(marker.token.as_deref().unwrap()));
-    }
-    let latest: Vec<String> = (1..=EARLIER_TOKENS).map(|n| n.to_string()).collect();
-    assert_eq!(marker.earlier, latest);
-    assert!(recorded("1").precede(&marker));
-    assert!(!recorded("0").precede(&marker));
-    let pending = RootTokens {
-        current: None,
-        pending: marker.token.clone(),
-    };
-    assert_eq!(
-        marker.rotated("next", &pending).earlier.last(),
-        marker.token.as_ref()
-    );
-    for stranger in [recorded("5"), recorded("0"), RootTokens::default()] {
-        assert!(marker.rotated("next", &stranger).earlier.is_empty());
     }
 }
 

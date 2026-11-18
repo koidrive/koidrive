@@ -956,7 +956,6 @@ mod tests {
                 space_id: SPACE.into(),
                 effects: 0,
                 token: None,
-                earlier: Vec::new(),
             },
         )
         .unwrap();
