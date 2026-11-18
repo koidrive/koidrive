@@ -666,6 +666,8 @@ jobs:
         run: swift test --package-path KoidriveFFI
       - name: Test the Swift bindings in the release configuration, which has no DEBUG condition
         run: swift test --package-path KoidriveFFI -c release
+      - name: Test run-ui-tests.sh against a stub xcodebuild
+        run: scripts/test-run-ui-tests.sh
       - name: Run the UI tests against the fake core
         timeout-minutes: 15
         run: scripts/run-ui-tests.sh build/UITests.xcresult

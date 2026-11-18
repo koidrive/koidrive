@@ -102,6 +102,7 @@ jobs:
       - name: Check the inputs
         env:
           REF: ${{ inputs.ref }}
+          OS: ${{ inputs.os }}
         run: |
           errors=()
           [[ "$REF" != -* ]] || errors+=("ref must be a branch, tag or commit, not an option: '$REF'.")
@@ -114,6 +115,7 @@ jobs:
           [[ "$MODE" == cargo || "$MODE" == worker || "$MODE" == server || "$MODE" == macos-ui ]] || errors+=("mode must be cargo, worker, server or macos-ui.")
           [[ "$MODE" != server ]] || [[ "$CRATE" == koidrive-server && "$PARALLEL" == 1 && -z "$FEATURES$CASES" && "$IGNORED" != true ]] || errors+=("server mode runs the vitest suite of server/: set crate to koidrive-server, and leave parallel at 1 and features, cases and ignored empty.")
           [[ "$MODE" != macos-ui || ( -z "$CRATE$TEST$FILTER$CASES$FEATURES$EXTRA_ENV" && "$PARALLEL" == 1 && "$RELEASE" != true && "$IGNORED" != true ) ]] || errors+=("macos-ui runs the whole UI test suite: leave crate, test, filter, cases, features, env, parallel, release and ignored unset.")
+          [[ "$MODE" != macos-ui || "$OS" != ubuntu ]] || errors+=("macos-ui runs on macOS runners: set os to macos or both.")
           if [ "$MODE" = worker ]; then
             case "$CRATE" in
               koidrive-net) worker_test=server ;;
