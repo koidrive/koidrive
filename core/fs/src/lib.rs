@@ -198,74 +198,6 @@ pub enum Detached {
     Covered,
 }
 
-const RECOGNIZING_FILES: usize = 32;
-
-fn recorded_under(
-    entries: &BTreeMap<PathBuf, Entry>,
-    mounted: &BTreeMap<PathBuf, u64>,
-    mount: &Path,
-    instance: Option<u64>,
-) -> Vec<(PathBuf, Entry)> {
-    if instance.is_some_and(|now| mounted.get(mount) == Some(&now)) {
-        return Vec::new();
-    }
-    let below = (entries.range(mount.to_path_buf()..))
-        .skip_while(|(path, _)| path.as_path() == mount)
-        .take_while(|(path, _)| path.starts_with(mount))
-        .filter(|(path, _)| !written_by_the_system(path.strip_prefix(mount).unwrap_or(path)));
-    let files: Vec<_> = (below.clone())
-        .filter(|(_, entry)| entry.kind == EntryKind::File)
-        .take(RECOGNIZING_FILES)
-        .collect();
-    let chosen = if files.is_empty() {
-        below
-            .filter(|(path, _)| path.parent() == Some(mount))
-            .collect()
-    } else {
-        files
-    };
-    (chosen.into_iter())
-        .filter_map(|(path, entry)| Some((path.strip_prefix(mount).ok()?.to_path_buf(), *entry)))
-        .collect()
-}
-
-/// Folders and files macOS and Windows write on any volume they mount, and the
-/// `._` files macOS keeps extended attributes in on FAT and exFAT
-/// (<https://en.wikipedia.org/wiki/AppleSingle_and_AppleDouble_formats>).
-fn written_by_the_system(below: &Path) -> bool {
-    const NAMES: [&str; 7] = [
-        ".fseventsd",
-        ".Spotlight-V100",
-        ".Trashes",
-        ".TemporaryItems",
-        ".DocumentRevisions-V100",
-        "System Volume Information",
-        "$RECYCLE.BIN",
-    ];
-    below.components().any(|part| {
-        let name = part.as_os_str();
-        name.as_encoded_bytes().starts_with(b"._") || NAMES.iter().any(|system| name == *system)
-    })
-}
-
-fn back(
-    known: &Entry,
-    now: &Entry,
-    recorded: &[(PathBuf, Entry)],
-    found: impl Fn(&Path) -> Option<Entry>,
-) -> bool {
-    known.is_back(now)
-        && (!matches!(known.mount, Some(Mount::Volume(_)))
-            || recorded.is_empty()
-            || recorded.iter().any(|(below, was)| {
-                found(below).is_some_and(|now| {
-                    now.kind == was.kind
-                        && (was.mtime_ns == UNVERIFIED
-                            || (now.size, now.mtime_ns) == (was.size, was.mtime_ns))
-                })
-            }))
-}
-
 fn left(dir: BorrowedFd<'_>, name: &OsStr, mount_root: BorrowedFd<'_>) -> bool {
     match (stat_at(dir, name), stat_fd(mount_root)) {
         (Ok(now), Ok(held)) => !now.is_at(held.dev, &held.id),
@@ -273,16 +205,19 @@ fn left(dir: BorrowedFd<'_>, name: &OsStr, mount_root: BorrowedFd<'_>) -> bool {
     }
 }
 
-fn entry_at(dir: BorrowedFd<'_>, below: &Path) -> Option<Entry> {
-    let name = below.file_name()?;
-    let mut parent: Option<OwnedFd> = None;
-    for part in below.parent()?.components() {
-        let at = parent.as_ref().map_or(dir, |fd| fd.as_fd());
-        parent = Some(open_dir_at(at, part.as_os_str()).ok()?);
+fn named_by_size(mut previous: Snapshot, root: &Path) -> Snapshot {
+    for (path, entry) in &mut previous.entries {
+        let Some(Mount::Volume(recorded)) = entry.mount else {
+            continue;
+        };
+        let Ok(dir) = open_root(&root.join(path)) else {
+            continue;
+        };
+        if root::plain_volume_id(dir.as_fd()) == Some(recorded) {
+            entry.mount = root::volume_id(dir.as_fd()).map(Mount::Volume);
+        }
     }
-    stat_at(parent.as_ref().map_or(dir, |fd| fd.as_fd()), name)
-        .ok()?
-        .entry()
+    previous
 }
 
 impl Entry {
@@ -546,7 +481,6 @@ enum Cut<'a> {
 /// The entries one rescan observed, and the parts of the snapshot they replace.
 struct Scan<'c> {
     new: BTreeMap<PathBuf, Entry>,
-    instances: BTreeMap<PathBuf, u64>,
     /// Every folder the scan opened, with the identity it had when opened.
     /// Each must still be at its path when the scan is published.
     bindings: Vec<(PathBuf, u64, FileId)>,
@@ -557,8 +491,6 @@ struct Scan<'c> {
     unreadable: Vec<PathBuf>,
     left_out: BTreeMap<PathBuf, Entry>,
     mounts: BTreeMap<PathBuf, Entry>,
-    recorded: BTreeMap<PathBuf, Vec<(PathBuf, Entry)>>,
-    mounted: BTreeMap<PathBuf, u64>,
     detached: Vec<(PathBuf, Detached)>,
     /// The rules that leave entries out, for a scan that applies any.
     rules: Option<Pending<'c>>,
@@ -600,9 +532,6 @@ impl Scan<'_> {
             }
             let volume = root::volume_id(sub.as_fd());
             entry.mount = Some(volume.map_or(Mount::Unidentified, Mount::Volume));
-            if let Some(instance) = root::mount_instance(sub.as_fd()) {
-                self.instances.insert(rel.clone(), instance);
-            }
             mount_root = Some(sub);
         }
         if let Some(rules) = &mut self.rules
@@ -612,18 +541,7 @@ impl Scan<'_> {
             return Ok(());
         }
         let held = match self.mounts.get(&rel) {
-            Some(known) => {
-                let instance = self.instances.get(&rel).copied();
-                let recorded =
-                    match instance.is_some_and(|now| self.mounted.get(&rel) == Some(&now)) {
-                        true => &[][..],
-                        false => self.recorded.get(&rel).map_or(&[][..], Vec::as_slice),
-                    };
-                let found = |below: &Path| {
-                    (mount_root.as_ref()).and_then(|sub| entry_at(sub.as_fd(), below))
-                };
-                (!back(known, &entry, recorded, found)).then_some(*known)
-            }
+            Some(known) => (!known.is_back(&entry)).then_some(*known),
             None => (entry.mount == Some(Mount::Unidentified)).then_some(entry),
         };
         if let Some(held) = held {
@@ -763,10 +681,6 @@ pub struct Snapshot {
     /// the system could not tell where their identity went or a [`NativeWatcher`] waited for the other end of a
     /// move, and the scope of a [`Snapshot::reset`]. A kept path keeps what was known at and below it.
     pub unplaced: BTreeSet<PathBuf>,
-    /// Mount points whose volume this snapshot's scans found there and took, with the mount they found it in
-    /// ([`root::mount_instance`]). A volume found in another mount, or at any other mount point the snapshot knows,
-    /// is taken only once an entry known below it is found there again.
-    pub mounted: BTreeMap<PathBuf, u64>,
 }
 
 /// What one [`Snapshot::rescan`] found.
@@ -1004,8 +918,6 @@ impl Snapshot {
         loop {
             let mut scan = Scan {
                 new: BTreeMap::new(),
-                instances: BTreeMap::new(),
-                mounted: self.mounted.clone(),
                 bindings: Vec::new(),
                 replaced: Vec::new(),
                 unreadable: Vec::new(),
@@ -1016,15 +928,6 @@ impl Snapshot {
                             || self.detached.get(*path) == Some(&Detached::Covered)
                     })
                     .map(|(path, entry)| (path.clone(), *entry))
-                    .collect(),
-                recorded: (self.entries.iter())
-                    .filter(|(_, entry)| matches!(entry.mount, Some(Mount::Volume(_))))
-                    .map(|(path, _)| {
-                        (
-                            path.clone(),
-                            recorded_under(&self.entries, &self.mounted, path, None),
-                        )
-                    })
                     .collect(),
                 detached: Vec::new(),
                 rules: rules.as_deref_mut().map(Pending::new),
@@ -1327,13 +1230,7 @@ impl Snapshot {
             };
             let now = scan.new.get(&at);
             let keep = match known.mount {
-                Some(_) => !now.is_some_and(|now| {
-                    let instance = scan.instances.get(&at).copied();
-                    let recorded = recorded_under(&self.entries, &self.mounted, path, instance);
-                    back(known, now, &recorded, |below| {
-                        scan.new.get(&at.join(below)).copied()
-                    })
-                }),
+                Some(_) => !now.is_some_and(|now| known.is_back(now)),
                 None => now.is_some_and(|now| {
                     now.mount.is_some()
                         && (held || now.id != known.id || now.mount == Some(Mount::Unidentified))
@@ -1672,25 +1569,15 @@ impl Snapshot {
         for path in old.keys().chain(&left_out) {
             self.entries.remove(path);
         }
-        let found: Vec<PathBuf> = (scan.new.iter())
-            .filter(|(_, entry)| matches!(entry.mount, Some(Mount::Volume(_))))
-            .map(|(path, _)| path.clone())
-            .collect();
         self.entries.append(&mut scan.new);
-        let replaced = |path: &Path| scan.replaced.iter().any(|prefix| path.starts_with(prefix));
-        self.detached.retain(|path, _| !replaced(path));
-        self.mounted.retain(|path, _| !replaced(path));
+        self.detached
+            .retain(|path, _| !scan.replaced.iter().any(|prefix| path.starts_with(prefix)));
         self.detached.extend(scan.detached.drain(..));
         self.unplaced.retain(|path| {
             !scan.replaced.iter().any(|prefix| path.starts_with(prefix))
                 || unreadable.iter().any(|blocked| path.starts_with(blocked))
         });
         self.unplaced.extend(unplaced);
-        self.mounted.extend(
-            (found.into_iter())
-                .filter(|path| !self.detached.contains_key(path))
-                .filter_map(|path| Some((path.clone(), *scan.instances.get(&path)?))),
-        );
         for path in &was_left_out {
             self.left_out.remove(path);
         }
@@ -1815,9 +1702,7 @@ impl Snapshot {
                     }),
                     ..*above
                 };
-                let instance = root::mount_instance(dir.as_fd());
-                let recorded = recorded_under(&self.entries, &self.mounted, &path, instance);
-                if !back(above, &now, &recorded, |below| entry_at(dir.as_fd(), below)) {
+                if !above.is_back(&now) {
                     return Ok(None);
                 }
             }
@@ -2731,8 +2616,6 @@ pub struct NativeWatcher {
     /// folder a reset made known, which no scan reports as created.
     #[cfg(target_os = "linux")]
     blocked: BTreeSet<PathBuf>,
-    #[cfg(target_os = "linux")]
-    unmounts: root::Unmounts,
     uncovered: Option<(FileId, BTreeSet<PathBuf>)>,
     rewatch: bool,
     remount_checked: Instant,
@@ -2774,16 +2657,14 @@ impl NativeWatcher {
         let deferred = cfg!(target_os = "linux") && rules.is_some();
         let watcher = watch_root(&root, &sender, deferred)?;
         Ok(Self {
+            snapshot: named_by_size(previous, &root),
             root,
-            snapshot: previous,
             view: OnceCell::new(),
             dirty: BTreeSet::from([PathBuf::new()]),
             listed: BTreeSet::new(),
             unreadable: BTreeSet::new(),
             #[cfg(target_os = "linux")]
             blocked: BTreeSet::from_iter(deferred.then(PathBuf::new)),
-            #[cfg(target_os = "linux")]
-            unmounts: root::Unmounts::default(),
             uncovered: None,
             rules,
             changed_rules: Vec::new(),
@@ -2832,17 +2713,6 @@ impl NativeWatcher {
             && access != AccessKind::Close(AccessMode::Write)
         {
             return Ok(());
-        }
-        #[cfg(target_vendor = "apple")]
-        if matches!(event.kind, EventKind::Create(_) | EventKind::Remove(_))
-            && event.info() == Some("mount")
-        {
-            for path in &event.paths {
-                let rel = path.strip_prefix(&self.root).unwrap_or(Path::new(""));
-                self.snapshot
-                    .mounted
-                    .retain(|mount, _| !mount.starts_with(rel));
-            }
         }
         let listing_only = match event.kind {
             EventKind::Modify(ModifyKind::Metadata(MetadataKind::Extended)) => return Ok(()),
@@ -2982,14 +2852,6 @@ impl NativeWatcher {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    fn forget_unmounted(&mut self) {
-        for path in self.unmounts.unmounted() {
-            (self.snapshot.mounted).retain(|mount, _| !mount.starts_with(&path));
-            self.dirty.insert(path);
-        }
-    }
-
     fn came_back(&self, path: &Path) -> bool {
         let (Some(known), Some(parent)) = (self.snapshot.entries.get(path), path.parent()) else {
             return false;
@@ -3008,16 +2870,7 @@ impl NativeWatcher {
                 }),
                 ..*known
             };
-            let instance = root::mount_instance(dir.as_fd());
-            let recorded = recorded_under(
-                &self.snapshot.entries,
-                &self.snapshot.mounted,
-                path,
-                instance,
-            );
-            back(known, &found, &recorded, |below| {
-                entry_at(dir.as_fd(), below)
-            })
+            known.is_back(&found)
         })
     }
 
@@ -3149,8 +3002,6 @@ impl Watcher for NativeWatcher {
                 };
                 self.receive(wait)?;
             }
-            #[cfg(target_os = "linux")]
-            self.forget_unmounted();
             if !self.snapshot.detached.is_empty() && self.remount_checked.elapsed() >= REMOUNT_CHECK
             {
                 self.remount_checked = Instant::now();
@@ -3175,8 +3026,6 @@ impl Watcher for NativeWatcher {
                 self.blocked.extend(deferred.then(PathBuf::new));
                 self.rewatch = false;
             }
-            #[cfg(target_os = "linux")]
-            self.forget_unmounted();
             let held = self.snapshot.unplaced.clone();
             let (expected, uncovered) = self.uncovered.clone().unzip();
             let scopes: Vec<PathBuf> = (self.dirty.iter())
@@ -3205,8 +3054,6 @@ impl Watcher for NativeWatcher {
             };
             self.uncovered = None;
             self.listed.clear();
-            #[cfg(target_os = "linux")]
-            self.unmounts.watch(&self.root, &mut self.snapshot.mounted);
             root = Some(rescan.root);
             self.changed_rules.extend(rescan.rules);
             self.dirty = rescan.unsettled.into_iter().collect();
@@ -3260,9 +3107,10 @@ pub struct RescanWatcher {
 
 impl RescanWatcher {
     pub fn new(root: impl AsRef<Path>, previous: Snapshot, interval: Duration) -> Result<Self> {
+        let root = std::fs::canonicalize(root)?;
         Ok(Self {
-            root: std::fs::canonicalize(root)?,
-            snapshot: previous,
+            snapshot: named_by_size(previous, &root),
+            root,
             view: OnceCell::new(),
             interval,
             rules: None,

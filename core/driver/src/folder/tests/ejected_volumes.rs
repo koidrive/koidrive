@@ -176,28 +176,172 @@ fn another_disk_where_one_was(first: &Path, second: &Path, stopped: bool) {
     disks.detach(&at);
 }
 
-#[cfg(target_os = "linux")]
-fn fat_with_serial(disks: &koidrive_test_support::Disks, name: &str, serial: &str) -> PathBuf {
-    let image = disks.fat(name);
-    let out = std::process::Command::new("mkfs.vfat")
-        .args(["-i", serial])
-        .arg(&image)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{out:?}");
-    image
+type Formatted = fn(&koidrive_test_support::Disks, &str, u32, u32) -> PathBuf;
+
+const SERIAL: u32 = 0x4b4f_4944;
+
+fn recorded_before_sizes(at: &Path) -> VolumeId {
+    if cfg!(target_os = "macos") {
+        let info = std::process::Command::new("diskutil")
+            .args(["info", "-plist"])
+            .arg(at)
+            .output()
+            .unwrap();
+        let info = String::from_utf8(info.stdout).unwrap();
+        let after = info.split("<key>VolumeUUID</key>").nth(1).unwrap();
+        let uuid = after.split("<string>").nth(1).unwrap();
+        let hex: String = uuid.chars().take(36).filter(|c| *c != '-').collect();
+        let bytes: Vec<u8> = (0..32)
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+            .collect();
+        return VolumeId::Uuid(bytes.try_into().unwrap());
+    }
+    let mut id = [0; 16];
+    id[..4].copy_from_slice(&SERIAL.to_le_bytes());
+    id[15] = 4;
+    VolumeId::Uuid(id)
 }
 
-#[cfg(target_os = "linux")]
+fn formats(disks: &koidrive_test_support::Disks) -> Vec<(&'static str, Formatted)> {
+    let mut formats: Vec<(&str, Formatted)> =
+        vec![("FAT", koidrive_test_support::Disks::fat_with_serial)];
+    if disks.exfat_has_ids() {
+        formats.push(("exFAT", koidrive_test_support::Disks::exfat_with_serial));
+    }
+    formats
+}
+
+fn swapped_for_a_bigger_stick_with_its_serial(
+    format: Formatted,
+    stopped: bool,
+    identical: bool,
+) {
+    let mut disks = koidrive_test_support::Disks::new().unwrap();
+    let first = format(&disks, "First", 16, SERIAL);
+    let second = format(&disks, "Second", 32, SERIAL);
+    let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_767_225_600);
+    let shared = "README.txt";
+    let stage = |at: &Path, body: &str| {
+        fs::write(at.join(shared), body).unwrap();
+        if identical {
+            let file = fs::File::options().write(true).open(at.join(shared)).unwrap();
+            file.set_modified(stamp).unwrap();
+        }
+    };
+    let staging = disks.base().join("Staging");
+    fs::create_dir(&staging).unwrap();
+    disks.attach(&second, &staging);
+    stage(&staging, if identical { shared } else { "another stick" });
+    on_the_disk(&staging, &["other.txt"]);
+    disks.detach(&staging);
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let at = site.root.join("Disk");
+    fs::create_dir_all(&at).unwrap();
+    disks.attach(&first, &at);
+    identified(&at);
+    on_the_disk(&at, &["report.docx", "Slides/deck.key"]);
+    stage(&at, shared);
+    observed(&mut a, &mut remote);
+    let tree = user_files(&remote);
+    assert!(tree.contains_key("Disk/Slides/deck.key"), "{tree:?}");
+    if stopped {
+        drop(a);
+        disks.detach(&at);
+        disks.attach(&second, &at);
+        identified(&at);
+        a = restarted(&site, &mut remote);
+        a.rest(&mut remote);
+    } else {
+        disks.detach(&at);
+        observed(&mut a, &mut remote);
+        disks.attach(&second, &at);
+        identified(&at);
+    }
+    observed(&mut a, &mut remote);
+    let (after, held) = (user_files(&remote), held(&a));
+    drop(a);
+    disks.detach(&at);
+    assert_eq!(after, tree, "stopped={stopped} identical={identical}");
+    assert_eq!(held, [("Disk".to_owned(), HeldDiskKind::NotConnected)]);
+}
+
 #[test]
-fn two_fat_sticks_formatted_with_one_serial_keep_the_first_sticks_files() {
+fn a_bigger_stick_with_a_sticks_serial_and_one_of_its_file_names_keeps_the_first_sticks_files() {
     let Some(disks) = koidrive_test_support::Disks::new() else {
         return;
     };
-    for stopped in [false, true] {
-        let first = fat_with_serial(&disks, &format!("First{stopped}"), "4b4f4944");
-        let second = fat_with_serial(&disks, &format!("Second{stopped}"), "4b4f4944");
-        another_disk_where_one_was(&first, &second, stopped);
+    for (_, format) in formats(&disks) {
+        for stopped in [false, true] {
+            swapped_for_a_bigger_stick_with_its_serial(format, stopped, false);
+        }
+    }
+}
+
+#[test]
+fn a_bigger_stick_with_a_sticks_serial_and_one_identical_file_keeps_the_first_sticks_files() {
+    let Some(disks) = koidrive_test_support::Disks::new() else {
+        return;
+    };
+    for (_, format) in formats(&disks) {
+        for stopped in [false, true] {
+            swapped_for_a_bigger_stick_with_its_serial(format, stopped, true);
+        }
+    }
+}
+
+#[test]
+fn a_stick_of_the_same_size_with_a_sticks_serial_puts_the_first_sticks_files_in_deleted_files() {
+    let Some(mut disks) = koidrive_test_support::Disks::new() else {
+        return;
+    };
+    for (kind, format) in formats(&disks) {
+        let (first, second) = (
+            format(&disks, &format!("First{kind}"), 16, SERIAL),
+            format(&disks, &format!("Second{kind}"), 16, SERIAL),
+        );
+        let mut remote = Remote::new();
+        let (site, mut a, _) = with_disk(&mut disks, &mut remote, "Disk", first);
+        let tree = user_files(&remote);
+        let at = site.root.join("Disk");
+        disks.detach(&at);
+        observed(&mut a, &mut remote);
+        disks.attach(&second, &at);
+        identified(&at);
+        observed(&mut a, &mut remote);
+        let left: Vec<String> = user_files(&remote).into_keys().collect();
+        assert_eq!(left, ["Disk", "notes.txt"], "{kind}");
+        let trashed: Vec<String> = (remote.trash_pages(100).into_iter())
+            .flat_map(|page| page.nodes)
+            .map(|node| node.node_id)
+            .collect();
+        let missing = [&tree["Disk/report.docx"], &tree["Disk/Slides"]];
+        assert!(missing.iter().all(|id| trashed.contains(id)), "{kind}: {trashed:?}");
+        drop(a);
+        disks.detach(&at);
+        let (site_b, mut b) = linked(&mut remote, "b");
+        let asked: Vec<String> = (missing.iter())
+            .map(|id| ask(&site_b, &RestoreIntent::from_trash((*id).clone(), None, None).unwrap()))
+            .collect();
+        let step = b.folder.requested();
+        b.take(step).unwrap();
+        b.run(&mut remote);
+        let written = |tree: BTreeMap<String, String>| {
+            let apple_double = |path: &String| path.rsplit('/').next().unwrap().starts_with("._");
+            (tree.into_iter())
+                .filter(|(path, _)| !apple_double(path))
+                .collect::<BTreeMap<_, _>>()
+        };
+        assert_eq!(written(user_files(&remote)), written(tree), "{kind}");
+        for name in ["report.docx", "Slides/deck.key"] {
+            let on_b = fs::read(site_b.root.join("Disk").join(name)).unwrap();
+            assert_eq!(on_b, name.as_bytes(), "{kind}");
+        }
+        let ended: BTreeMap<String, Outcome> = ended(&site_b).into_iter().collect();
+        let expected: BTreeMap<String, Outcome> =
+            (asked.into_iter()).map(|id| (id, Outcome::Restored)).collect();
+        assert_eq!(ended, expected, "{kind}");
     }
 }
 
@@ -221,36 +365,6 @@ fn a_stick_emptied_while_it_is_mounted_syncs_the_deletes() {
         let left: Vec<String> = user_files(&remote).into_keys().collect();
         assert_eq!(left, ["Disk"], "{image:?}");
         assert_eq!(held(&a), [], "{image:?}");
-        disks.detach(&at);
-    }
-}
-
-#[test]
-fn a_stick_swapped_for_one_with_its_serial_between_two_scans_keeps_the_first_sticks_files() {
-    let Some(mut disks) = koidrive_test_support::Disks::new() else {
-        return;
-    };
-    let mut sticks = vec![disks.fat("First")];
-    if disks.exfat_has_ids() {
-        sticks.push(disks.exfat("FirstCard"));
-    }
-    for first in sticks {
-        let second = disks.copy(&first, "Second");
-        let mut remote = Remote::new();
-        let (site, mut a) = linked(&mut remote, "a");
-        let at = site.root.join("Disk");
-        fs::create_dir_all(&at).unwrap();
-        disks.attach(&first, &at);
-        on_the_disk(&at, &["report.docx", "Slides/deck.key"]);
-        observed(&mut a, &mut remote);
-        let tree = user_files(&remote);
-        assert!(tree.contains_key("Disk/report.docx"), "{tree:?}");
-        disks.detach(&at);
-        disks.attach(&second, &at);
-        on_the_disk(&at, &["other.txt"]);
-        observed(&mut a, &mut remote);
-        assert_eq!(user_files(&remote), tree, "{first:?}");
-        assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)]);
         disks.detach(&at);
     }
 }
@@ -319,39 +433,142 @@ fn an_exfat_stick_swapped_for_another_and_back_deletes_nothing() {
     }
 }
 
+fn changed_on_another_computer(
+    disks: &mut koidrive_test_support::Disks,
+    remote: &mut Remote,
+    image: PathBuf,
+    stopped: bool,
+    change: impl Fn(&Path),
+) -> (Site, Device, BTreeMap<String, String>) {
+    let (site, mut a, image) = with_disk(disks, remote, "Disk", image);
+    let tree = user_files(remote);
+    let at = site.root.join("Disk");
+    disks.detach(&at);
+    observed(&mut a, remote);
+    let elsewhere = disks.base().join(format!("Another computer {stopped}"));
+    fs::create_dir_all(&elsewhere).unwrap();
+    disks.attach(&image, &elsewhere);
+    std::thread::sleep(std::time::Duration::from_millis(2100));
+    change(&elsewhere);
+    disks.detach(&elsewhere);
+    if stopped {
+        drop(a);
+        disks.attach(&image, &at);
+        identified(&at);
+        a = restarted(&site, remote);
+        a.rest(remote);
+    } else {
+        disks.attach(&image, &at);
+        identified(&at);
+    }
+    observed(&mut a, remote);
+    (site, a, tree)
+}
+
+fn sticks(disks: &koidrive_test_support::Disks, name: &str) -> Vec<PathBuf> {
+    let mut sticks = vec![disks.fat(name)];
+    if disks.exfat_has_ids() {
+        sticks.push(disks.exfat(&format!("{name}Card")));
+    }
+    sticks
+}
+
 #[test]
-fn a_stick_whose_files_were_all_deleted_on_another_computer_stays_held_and_deletes_nothing() {
+fn a_stick_whose_files_were_all_deleted_on_another_computer_syncs_the_deletes_once_it_is_back() {
     let Some(mut disks) = koidrive_test_support::Disks::new() else {
         return;
     };
     for stopped in [false, true] {
-        let mut remote = Remote::new();
-        let stick = disks.fat(&format!("Stick{stopped}"));
-        let (site, mut a, stick) = with_disk(&mut disks, &mut remote, "Disk", stick);
-        let tree = user_files(&remote);
-        let at = site.root.join("Disk");
-        disks.detach(&at);
-        observed(&mut a, &mut remote);
-        let elsewhere = disks.base().join(format!("Another computer {stopped}"));
-        fs::create_dir(&elsewhere).unwrap();
-        disks.attach(&stick, &elsewhere);
-        fs::remove_file(elsewhere.join("report.docx")).unwrap();
-        fs::remove_dir_all(elsewhere.join("Slides")).unwrap();
-        disks.detach(&elsewhere);
-        if stopped {
+        for stick in sticks(&disks, &format!("Gone{}", u8::from(stopped))) {
+            let mut remote = Remote::new();
+            let (site, a, _) =
+                changed_on_another_computer(&mut disks, &mut remote, stick.clone(), stopped, |at| {
+                    fs::remove_file(at.join("report.docx")).unwrap();
+                    fs::remove_dir_all(at.join("Slides")).unwrap();
+                });
+            let (left, held) = (user_files(&remote), held(&a));
             drop(a);
-            disks.attach(&stick, &at);
-            identified(&at);
-            a = restarted(&site, &mut remote);
-            a.rest(&mut remote);
-        } else {
-            disks.attach(&stick, &at);
-            identified(&at);
+            disks.detach(&site.root.join("Disk"));
+            let left: Vec<&String> = left.keys().collect();
+            assert_eq!(left, ["Disk", "notes.txt"], "{stick:?} stopped={stopped}");
+            assert_eq!(held, [], "{stick:?} stopped={stopped}");
         }
-        observed(&mut a, &mut remote);
+    }
+}
+
+#[test]
+fn a_stick_whose_files_were_all_edited_on_another_computer_comes_back_with_the_edits() {
+    let Some(mut disks) = koidrive_test_support::Disks::new() else {
+        return;
+    };
+    let edits = [
+        ("report.docx", "the report, edited at work"),
+        ("Slides/deck.key", "the deck, edited on another computer"),
+    ];
+    for stopped in [false, true] {
+        for stick in sticks(&disks, &format!("Edit{}", u8::from(stopped))) {
+            let mut remote = Remote::new();
+            let (site, a, tree) =
+                changed_on_another_computer(&mut disks, &mut remote, stick.clone(), stopped, |at| {
+                    for (name, text) in edits {
+                        fs::write(at.join(name), text).unwrap();
+                    }
+                });
+            let (after, held) = (user_files(&remote), held(&a));
+            drop(a);
+            disks.detach(&site.root.join("Disk"));
+            assert_eq!(after, tree, "{stick:?} stopped={stopped}");
+            assert_eq!(held, [], "{stick:?} stopped={stopped}");
+            for (name, text) in edits {
+                let id = &after[&format!("Disk/{name}")];
+                assert_eq!(server_size(&remote, id), text.len() as u64, "{stick:?} {name}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_stick_recorded_before_its_size_was_comes_back_and_is_told_from_a_bigger_stick_with_its_serial() {
+    let Some(mut disks) = koidrive_test_support::Disks::new() else {
+        return;
+    };
+    for (kind, format) in formats(&disks) {
+        let (first, second) = (
+            format(&disks, &format!("Old{kind}"), 16, SERIAL),
+            format(&disks, &format!("Big{kind}"), 32, SERIAL),
+        );
+        let mut remote = Remote::new();
+        let (site, a, _) = with_disk(&mut disks, &mut remote, "Disk", first);
+        let tree = user_files(&remote);
+        drop(a);
+        let at = site.root.join("Disk");
+        let (plain, sized) = (recorded_before_sizes(&at), identified(&at).volume.unwrap());
+        assert_ne!(plain, sized, "{kind}");
+        let mounts = |site: &Site| {
+            let mut store = Store::open(&site.db).unwrap();
+            store.transaction(|tx| tx.volume_mounts()).unwrap()
+        };
+        assert_eq!(mounts(&site)[Path::new("Disk")], koidrive_fs::Mount::Volume(sized));
+        let mut store = Store::open(&site.db).unwrap();
+        let recorded = BTreeMap::from([("Disk".into(), koidrive_fs::Mount::Volume(plain))]);
+        store.transaction(|tx| tx.set_volume_mounts(&recorded)).unwrap();
+        drop(store);
+        let mut a = restarted(&site, &mut remote);
+        a.rest(&mut remote);
+        assert_eq!(held(&a), [], "{kind}");
+        assert_eq!(user_files(&remote), tree, "{kind}");
+        assert_eq!(mounts(&site)[Path::new("Disk")], koidrive_fs::Mount::Volume(sized));
         disks.detach(&at);
-        assert_eq!(user_files(&remote), tree, "stopped={stopped}");
-        assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)], "stopped={stopped}");
+        observed(&mut a, &mut remote);
+        disks.attach(&second, &at);
+        identified(&at);
+        on_the_disk(&at, &["other.txt"]);
+        observed(&mut a, &mut remote);
+        let (after, held) = (user_files(&remote), held(&a));
+        drop(a);
+        disks.detach(&at);
+        assert_eq!(after, tree, "{kind}");
+        assert_eq!(held, [("Disk".to_owned(), HeldDiskKind::NotConnected)], "{kind}");
     }
 }
 
@@ -361,11 +578,15 @@ fn a_folder_whose_root_is_a_stick_syncs_again_once_the_stick_is_plugged_back_in(
     let Some(mut disks) = koidrive_test_support::Disks::new() else {
         return;
     };
-    let mut sticks = vec![disks.fat("Root")];
-    if disks.exfat_has_ids() {
-        sticks.push(disks.exfat("RootCard"));
-    }
-    for image in sticks {
+    let roots: Vec<(PathBuf, bool)> = (formats(&disks).into_iter())
+        .flat_map(|(kind, format)| {
+            [false, true].map(|recorded| {
+                let name = format!("R{kind}{}", u8::from(recorded));
+                (format(&disks, &name, 16, SERIAL), recorded)
+            })
+        })
+        .collect();
+    for (image, legacy) in roots {
         let mut remote = Remote::new();
         let site = Site::new(&remote, "a");
         disks.attach(&image, &site.root);
@@ -378,7 +599,10 @@ fn a_folder_whose_root_is_a_stick_syncs_again_once_the_stick_is_plugged_back_in(
         let found = identified(&site.root);
         rewrite_link(&site, |link| {
             link.root_dev = found.dev;
-            link.root_volume = found.volume;
+            link.root_volume = match legacy {
+                true => Some(recorded_before_sizes(&site.root)),
+                false => found.volume,
+            };
         });
         let mut a = restarted(&site, &mut remote);
         on_the_disk(&site.root, &["report.docx"]);
@@ -386,6 +610,10 @@ fn a_folder_whose_root_is_a_stick_syncs_again_once_the_stick_is_plugged_back_in(
         let tree = user_files(&remote);
         assert!(tree.contains_key("report.docx"), "{image:?}: {tree:?}");
         drop(a);
+        let mut store = Store::open(&site.db).unwrap();
+        let stored = store.transaction(|tx| tx.link()).unwrap().unwrap();
+        assert_eq!(stored.root_volume, found.volume, "{image:?}");
+        drop(store);
         disks.detach(&site.root);
         std::thread::sleep(std::time::Duration::from_millis(1100));
         disks.attach(&image, &site.root);

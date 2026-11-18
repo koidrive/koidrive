@@ -536,20 +536,49 @@ fn an_empty_disk_formatted_with_another_disks_uuid_at_another_time_is_told_apart
     assert!(!snapshot.entries.contains_key(Path::new("Disk/photo.jpg")));
 }
 
-#[cfg(target_os = "linux")]
 #[test]
-fn a_disk_formatted_with_another_disks_uuid_in_the_same_second_keeps_the_first_disks_files() {
-    if Disks::new().is_none() {
+fn a_disk_edited_on_another_computer_comes_back_with_the_edit() {
+    let Some(mut disks) = Disks::new() else {
         return;
+    };
+    let mut images = vec![("FAT", disks.fat("Stick")), ("disk", disks.image("Drive"))];
+    if disks.exfat_has_ids() {
+        images.push(("exFAT", disks.exfat("Card")));
     }
-    let (snapshot, changes) = swapped_for_a_disk_with_one_uuid([1_700_000_000; 2], true);
-    assert_eq!(removals(&changes), Vec::<&Change>::new());
-    assert_eq!(away(&snapshot), ["Disk"]);
-    holds(
-        &snapshot,
-        &below("Disk").iter().map(String::as_str).collect::<Vec<_>>(),
-    );
-    assert!(!snapshot.entries.contains_key(Path::new("Disk/photo.jpg")));
+    for (kind, image) in images {
+        let root = disks.base().join(kind);
+        let (at, elsewhere) = (
+            root.join("Disk"),
+            disks.base().join(format!("Elsewhere {kind}")),
+        );
+        fs::create_dir_all(&at).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        disks.attach(&image, &at);
+        identified(&at);
+        write(&at.join("report.docx"), "draft");
+        let mut snapshot = Snapshot::scan(&root).unwrap();
+        disks.detach(&at);
+        rescan(&mut snapshot, &root, &["", "Disk"]);
+        disks.attach(&image, &elsewhere);
+        std::thread::sleep(Duration::from_millis(2100));
+        write(
+            &elsewhere.join("report.docx"),
+            "final version, edited at work",
+        );
+        disks.detach(&elsewhere);
+        disks.attach(&image, &at);
+        identified(&at);
+        let found = rescan(&mut snapshot, &root, &["", "Disk"]);
+        disks.detach(&at);
+        assert_eq!(away(&snapshot), Vec::<&str>::new(), "{kind}");
+        assert_eq!(
+            found.changes,
+            [Change::Modified {
+                path: "Disk/report.docx".into()
+            }],
+            "{kind}"
+        );
+    }
 }
 
 fn clones(disks: &mut Disks) -> (PathBuf, PathBuf) {

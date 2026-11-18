@@ -105,6 +105,10 @@ pub enum RootProblem {
 /// A volume ID shorter than a UUID, such as the 32-bit serial number of a FAT
 /// or exFAT volume, is a `Uuid` that holds the ID's bytes as the volume stores
 /// them, then zeros, and the ID's length in the last byte.
+///
+/// Sticks formatted with one serial number share it, so a FAT or exFAT volume
+/// is a name-based `Uuid` (<https://www.rfc-editor.org/rfc/rfc9562#section-5.5>)
+/// of that ID, the file system and the volume's size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VolumeId {
     Uuid([u8; 16]),
@@ -161,8 +165,40 @@ pub fn root_at(dir: BorrowedFd<'_>) -> io::Result<RootAt> {
     })
 }
 
-#[cfg(target_vendor = "apple")]
 pub(crate) fn volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+    let plain = plain_volume_id(dir)?;
+    #[cfg(any(target_vendor = "apple", target_os = "linux"))]
+    if let Ok(volume) = rustix::fs::fstatfs(dir)
+        && let Some(kind) = fat_kind(&volume)
+    {
+        let size = volume.f_blocks.saturating_mul(volume.f_bsize as u64);
+        return Some(sized_volume_id(plain, kind, size));
+    }
+    Some(plain)
+}
+
+#[cfg(any(target_vendor = "apple", target_os = "linux"))]
+fn sized_volume_id(plain: VolumeId, kind: u8, size: u64) -> VolumeId {
+    use sha1::{Digest, Sha1};
+    const NAMESPACE: [u8; 16] = [
+        0x6f, 0x8c, 0x2d, 0x4e, 0x1b, 0x7a, 0x5c, 0x3e, 0x9a, 0x0d, 0x4e, 0x2f, 0x7b, 0x6c, 0x1a,
+        0x95,
+    ];
+    let digest = (Sha1::new()
+        .chain_update(NAMESPACE)
+        .chain_update(plain.as_bytes()))
+    .chain_update([kind])
+    .chain_update(size.to_le_bytes())
+    .finalize();
+    let mut uuid = [0; 16];
+    uuid.copy_from_slice(&digest[..16]);
+    uuid[6] = (uuid[6] & 0x0f) | 0x50;
+    uuid[8] = (uuid[8] & 0x3f) | 0x80;
+    VolumeId::Uuid(uuid)
+}
+
+#[cfg(target_vendor = "apple")]
+pub(crate) fn plain_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
     use std::os::fd::AsRawFd;
     #[repr(C, packed(4))]
     struct Reply {
@@ -197,12 +233,36 @@ pub(crate) fn volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+pub(crate) fn plain_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
     btrfs_subvolume_id(dir)
         .or_else(|| ext_file_system_id(dir))
         .or_else(|| file_system_id(dir))
         .or_else(|| fat_volume_id(dir))
         .or_else(|| udev_volume_id(dir))
+}
+
+#[cfg(target_vendor = "apple")]
+fn fat_kind(volume: &rustix::fs::StatFs) -> Option<u8> {
+    let name: Vec<u8> = (volume.f_fstypename.iter())
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as u8)
+        .collect();
+    match name.as_slice() {
+        b"msdos" => Some(1),
+        b"exfat" => Some(2),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn fat_kind(volume: &rustix::fs::StatFs) -> Option<u8> {
+    const MSDOS_SUPER_MAGIC: u64 = 0x4d44;
+    const EXFAT_SUPER_MAGIC: u64 = 0x2011_bab0;
+    match volume.f_type as u64 {
+        MSDOS_SUPER_MAGIC => Some(1),
+        EXFAT_SUPER_MAGIC => Some(2),
+        _ => None,
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -295,143 +355,12 @@ fn fat_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
     volume_id_of(&serial.to_le_bytes())
 }
 
-#[cfg(all(test, target_os = "linux"))]
-thread_local! {
-    pub(crate) static REUSED_MOUNT_IDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// What tells the mount whose root folder is `dir` from a later mount at the
-/// same place: Linux's unique mount ID where the kernel has one, else its mount
-/// ID, which the kernel gives again once the mount is gone
-/// (<https://man7.org/linux/man-pages/man2/statx.2.html>), so [`Unmounts`]
-/// also forgets the mount.
-#[cfg(target_os = "linux")]
-pub(crate) fn mount_instance(dir: BorrowedFd<'_>) -> Option<u64> {
-    const STATX_MNT_ID: u32 = 0x1000;
-    const STATX_MNT_ID_UNIQUE: u32 = 0x4000;
-    let wanted = STATX_MNT_ID | STATX_MNT_ID_UNIQUE;
-    #[cfg(test)]
-    let wanted = match REUSED_MOUNT_IDS.get() {
-        true => STATX_MNT_ID,
-        false => wanted,
-    };
-    let flags = rustix::fs::StatxFlags::from_bits_retain(wanted);
-    let stat = rustix::fs::statx(dir, "", AtFlags::EMPTY_PATH, flags).ok()?;
-    (stat.stx_mask & wanted != 0).then_some(stat.stx_mnt_id)
-}
-
-/// The mount points a watcher took, each watched for the `IN_UNMOUNT` the
-/// kernel sends when its volume is unmounted
-/// (<https://man7.org/linux/man-pages/man7/inotify.7.html>).
-#[cfg(target_os = "linux")]
-#[derive(Default)]
-pub(crate) struct Unmounts {
-    inotify: Option<OwnedFd>,
-    watched: std::collections::BTreeMap<i32, std::path::PathBuf>,
-}
-
-#[cfg(target_os = "linux")]
-impl Unmounts {
-    pub(crate) fn watch(
-        &mut self,
-        root: &Path,
-        mounted: &mut std::collections::BTreeMap<std::path::PathBuf, u64>,
-    ) {
-        use std::os::fd::AsRawFd;
-        use std::os::unix::ffi::OsStrExt;
-        let Self { inotify, watched } = self;
-        watched.retain(|wd, path| {
-            let keep = mounted.contains_key(path);
-            if !keep && let Some(fd) = inotify {
-                unsafe { libc::inotify_rm_watch(fd.as_raw_fd(), *wd) };
-            }
-            keep
-        });
-        mounted.retain(|path, instance| {
-            if watched.values().any(|known| known == path) {
-                return true;
-            }
-            let at = root.join(path);
-            let (Some(fd), Ok(name)) = (
-                open_inotify(inotify),
-                std::ffi::CString::new(at.as_os_str().as_bytes()),
-            ) else {
-                return false;
-            };
-            let mask = libc::IN_ONLYDIR | libc::IN_DONT_FOLLOW | libc::IN_DELETE_SELF;
-            let wd = unsafe { libc::inotify_add_watch(fd, name.as_ptr(), mask) };
-            if wd < 0 {
-                return false;
-            }
-            watched.insert(wd, path.clone());
-            open_root(&at).is_ok_and(|dir| mount_instance(dir.as_fd()) == Some(*instance))
-        });
-    }
-
-    pub(crate) fn unmounted(&mut self) -> Vec<std::path::PathBuf> {
-        use std::os::fd::AsRawFd;
-        let Some(fd) = &self.inotify else {
-            return Vec::new();
-        };
-        let mut gone = Vec::new();
-        let mut buffer = [0u8; 4096];
-        loop {
-            let read =
-                unsafe { libc::read(fd.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len()) };
-            let Ok(read) = usize::try_from(read) else {
-                return gone;
-            };
-            let mut at = 0;
-            while at + size_of::<libc::inotify_event>() <= read {
-                let event: libc::inotify_event = unsafe {
-                    buffer
-                        .as_ptr()
-                        .add(at)
-                        .cast::<libc::inotify_event>()
-                        .read_unaligned()
-                };
-                at += size_of::<libc::inotify_event>() + event.len as usize;
-                if event.mask & (libc::IN_UNMOUNT | libc::IN_IGNORED) == 0 {
-                    continue;
-                }
-                if let Some(path) = self.watched.remove(&event.wd)
-                    && event.mask & libc::IN_UNMOUNT != 0
-                {
-                    gone.push(path);
-                }
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn open_inotify(inotify: &mut Option<OwnedFd>) -> Option<i32> {
-    use std::os::fd::{AsRawFd, FromRawFd};
-    if inotify.is_none() {
-        let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
-        *inotify = (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) });
-    }
-    inotify.as_ref().map(|fd| fd.as_raw_fd())
-}
-
-/// What tells the mount whose root folder is `dir` from a later mount at the
-/// same place: its device number. macOS gives a later disk the number of one
-/// ejected before it, so the watcher also forgets a mount point once FSEvents
-/// reports it unmounted
-/// (<https://developer.apple.com/documentation/coreservices/1455361-fseventstreameventflags>).
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn mount_instance(dir: BorrowedFd<'_>) -> Option<u64> {
-    stat_fd(dir).ok().map(|stat| stat.dev)
-}
-
 /// Whether the volume whose root folder `name` in `dir` names is FAT or
 /// exFAT. Neither keeps a directory entry for its root folder, so the root has
 /// no birth time, and Linux reports the time an exFAT volume was mounted
 /// (<https://github.com/torvalds/linux/blob/v6.8/fs/exfat/super.c#L377>).
 #[cfg(target_os = "linux")]
 pub(crate) fn has_no_root_birth(dir: BorrowedFd<'_>, name: &OsStr, flags: AtFlags) -> bool {
-    const MSDOS_SUPER_MAGIC: u64 = 0x4d44;
-    const EXFAT_SUPER_MAGIC: u64 = 0x2011_bab0;
     let volume = match name.is_empty() {
         true => rustix::fs::fstatfs(dir),
         false => {
@@ -444,7 +373,7 @@ pub(crate) fn has_no_root_birth(dir: BorrowedFd<'_>, name: &OsStr, flags: AtFlag
                 .and_then(|root| rustix::fs::fstatfs(&root))
         }
     };
-    volume.is_ok_and(|stat| [MSDOS_SUPER_MAGIC, EXFAT_SUPER_MAGIC].contains(&(stat.f_type as u64)))
+    volume.is_ok_and(|stat| fat_kind(&stat).is_some())
 }
 
 /// udev keeps a `/dev/disk/by-uuid` link until it handles the event that
@@ -505,7 +434,7 @@ fn udev_id(name: &str) -> Option<VolumeId> {
 }
 
 #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
-pub(crate) fn volume_id(_: BorrowedFd<'_>) -> Option<VolumeId> {
+pub(crate) fn plain_volume_id(_: BorrowedFd<'_>) -> Option<VolumeId> {
     None
 }
 
@@ -537,7 +466,9 @@ pub fn check_root_at(
 ) -> Result<Marker, RootProblem> {
     let found = root_at(dir).map_err(RootProblem::Unreadable)?;
     list(dir).map_err(RootProblem::Unreadable)?;
-    linked.admits(&found)?;
+    if linked.volume.is_none() || linked.volume != plain_volume_id(dir) {
+        linked.admits(&found)?;
+    }
     let marker = read_marker_at(dir)
         .map_err(RootProblem::BadMarker)?
         .ok_or(RootProblem::NoMarker)?;
@@ -783,6 +714,26 @@ fn barrier(fd: BorrowedFd<'_>) -> io::Result<()> {
     }
 }
 
+#[cfg(all(test, any(target_vendor = "apple", target_os = "linux")))]
+#[test]
+fn a_fat_volume_is_named_by_its_id_file_system_and_size() {
+    let mut serial = [0; 16];
+    serial[..4].copy_from_slice(&0x4b4f_4944_u32.to_le_bytes());
+    serial[15] = 4;
+    let plain = VolumeId::Uuid(serial);
+    let sized = sized_volume_id(plain, 1, 16 << 20);
+    assert_eq!(
+        sized,
+        VolumeId::Uuid([
+            0xca, 0xfc, 0x64, 0xbb, 0x32, 0x76, 0x54, 0x1d, 0xbd, 0x82, 0x53, 0x2b, 0x92, 0xcd,
+            0xe3, 0x72
+        ])
+    );
+    assert_ne!(sized_volume_id(plain, 2, 16 << 20), sized);
+    assert_ne!(sized_volume_id(plain, 1, 32 << 20), sized);
+    assert_ne!(sized, plain);
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
@@ -910,113 +861,5 @@ mod tests {
                 "{stage}: {result:?}"
             );
         }
-    }
-
-    fn settled(watcher: &mut crate::NativeWatcher) -> Vec<crate::Change> {
-        use crate::Watcher;
-        let mut changes = Vec::new();
-        let started = std::time::Instant::now();
-        loop {
-            assert!(started.elapsed() < std::time::Duration::from_secs(30));
-            let poll = watcher.poll(std::time::Duration::from_millis(300)).unwrap();
-            if poll.changes.is_empty() && poll.pending.is_empty() {
-                return changes;
-            }
-            changes.extend(poll.changes);
-        }
-    }
-
-    fn removed(changes: &[crate::Change]) -> Vec<std::path::PathBuf> {
-        (changes.iter())
-            .filter_map(|change| match change {
-                crate::Change::Removed { path, .. } => Some(path.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn a_volume_emptied_while_it_is_mounted_reports_the_removals_and_is_not_held() {
-        use crate::{NativeWatcher, Snapshot, Watcher};
-        let Some(mut disks) = koidrive_test_support::Disks::new() else {
-            return;
-        };
-        for reused in [false, true] {
-            REUSED_MOUNT_IDS.set(reused);
-            for (kind, image) in [
-                ("fat", disks.fat(&format!("Stick {reused}"))),
-                ("ext4", disks.image(&format!("Disk {reused}"))),
-            ] {
-                let root = disks.base().join(format!("emptied {kind} {reused}"));
-                let at = root.join("Disk");
-                std::fs::create_dir_all(&at).unwrap();
-                disks.attach(&image, &at);
-                for file in ["deck.key", "report.docx"] {
-                    std::fs::write(at.join(file), file).unwrap();
-                }
-                let mut watcher = NativeWatcher::start(&root, Snapshot::default()).unwrap();
-                settled(&mut watcher);
-                for file in ["deck.key", "report.docx"] {
-                    std::fs::remove_file(at.join(file)).unwrap();
-                }
-                let changes = settled(&mut watcher);
-                assert_eq!(
-                    removed(&changes),
-                    [
-                        at.strip_prefix(&root).unwrap().join("deck.key"),
-                        at.strip_prefix(&root).unwrap().join("report.docx")
-                    ],
-                    "{kind} reused={reused}: {changes:?}"
-                );
-                assert!(
-                    watcher.snapshot().detached.is_empty(),
-                    "{kind} reused={reused}: {:?}",
-                    watcher.snapshot().detached
-                );
-                drop(watcher);
-                disks.detach(&at);
-            }
-        }
-        REUSED_MOUNT_IDS.set(false);
-    }
-
-    #[test]
-    fn a_stick_swapped_for_one_with_its_serial_where_mount_ids_are_reused_keeps_the_first_sticks_files()
-     {
-        use crate::{Detached, NativeWatcher, Snapshot, Watcher};
-        let Some(mut disks) = koidrive_test_support::Disks::new() else {
-            return;
-        };
-        REUSED_MOUNT_IDS.set(true);
-        let first = disks.fat("Swapped first");
-        let second = disks.copy(&first, "Swapped second");
-        let root = disks.base().join("swapped");
-        let at = root.join("Disk");
-        std::fs::create_dir_all(&at).unwrap();
-        disks.attach(&first, &at);
-        for file in ["deck.key", "report.docx"] {
-            std::fs::write(at.join(file), file).unwrap();
-        }
-        let mut watcher = NativeWatcher::start(&root, Snapshot::default()).unwrap();
-        settled(&mut watcher);
-        disks.detach(&at);
-        disks.attach(&second, &at);
-        std::fs::write(at.join("other.txt"), "other").unwrap();
-        let changes = settled(&mut watcher);
-        REUSED_MOUNT_IDS.set(false);
-        assert_eq!(
-            removed(&changes),
-            Vec::<std::path::PathBuf>::new(),
-            "{changes:?}"
-        );
-        assert_eq!(
-            watcher
-                .snapshot()
-                .detached
-                .get(std::path::Path::new("Disk")),
-            Some(&Detached::Away)
-        );
-        drop(watcher);
-        disks.detach(&at);
     }
 }
