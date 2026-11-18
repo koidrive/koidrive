@@ -2644,7 +2644,7 @@ mod tests {
                 Change::Created { path, kind } => Observed::Created {
                     content: (kind == EntryKind::File).then(|| bytes(entry(&path).size)),
                     id: entry(&path).id,
-                    linked: false,
+                    linked: entry(&path).linked,
                     path,
                     kind,
                     marked_node: None,
@@ -2653,12 +2653,12 @@ mod tests {
                     marked_node: None,
                     content: Some(bytes(entry(&path).size)),
                     id: entry(&path).id,
-                    linked: false,
+                    linked: entry(&path).linked,
                     path,
                 },
                 Change::Renamed { from, to, kind } => Observed::Renamed {
                     id: entry(&to).id,
-                    linked: false,
+                    linked: entry(&to).linked,
                     from,
                     to,
                     kind,
@@ -2703,6 +2703,89 @@ mod tests {
         let device: std::sync::Arc<dyn crate::ignore::Matcher> =
             std::sync::Arc::new(crate::ignore::Unfiltered);
         crate::ignore::scan_rules(&device).with_search_budget(budget)
+    }
+
+    fn synced_everywhere(engine: &mut Engine) {
+        let local: Vec<_> = (engine.trees.local().iter())
+            .map(|(id, node)| (id.clone(), node.shape.clone()))
+            .collect();
+        for (id, shape) in local {
+            engine.trees.set_synced(id.clone(), Some(shape.clone()));
+            let node = RemoteNode {
+                shape,
+                trashed: false,
+                content_rev: 1,
+                meta_rev: 1,
+                meta_edit_rev: 1,
+                trash_group: String::new(),
+                version_id: String::new(),
+                made_over: Vec::new(),
+                edit_rev: 1,
+                pending_for: None,
+                pending_by: None,
+            };
+            engine.trees.set_remote(id, node);
+        }
+    }
+
+    #[test]
+    fn a_file_and_a_folder_moved_out_of_a_folder_removed_in_another_scan_keep_their_nodes() {
+        let orders: &[[&str; 2]] = match cfg!(target_os = "macos") {
+            true => &[["x", "e"], ["e", "x"]],
+            false => &[["e", "x"]],
+        };
+        for linked in [false, true] {
+            for order in orders {
+                let case = format!("linked {linked}, scans {order:?}");
+                let dir = tempfile::tempdir().unwrap();
+                let root = fs::canonicalize(dir.path()).unwrap();
+                fs::create_dir_all(root.join("x/d/sub")).unwrap();
+                fs::create_dir_all(root.join("e")).unwrap();
+                fs::create_dir_all(root.join("ig")).unwrap();
+                fs::write(root.join(koidrive_fs::RULES_FILE), "ig/\n").unwrap();
+                fs::write(root.join("x/d/g.txt"), "g").unwrap();
+                fs::write(root.join("x/d/sub/s.txt"), "s").unwrap();
+                if linked {
+                    fs::hard_link(root.join("x/d/g.txt"), root.join("ig/g.txt")).unwrap();
+                }
+                let mut rules = search_rules(usize::MAX);
+                let mut snapshot = Snapshot::default();
+                let (_dir, mut engine) = mapper();
+                engine.rules(
+                    vec![RulesChange {
+                        dir: PathBuf::new(),
+                        rules: Some(koidrive_engine::ignore::RuleFile::parse(b"ig/\n")),
+                    }],
+                    true,
+                );
+                observe_rescan(&mut engine, &mut snapshot, &root, &mut rules);
+                synced_everywhere(&mut engine);
+                let (file, identity, _) = holding(&engine, "x/d/g.txt").unwrap();
+                let (folder, _, _) = holding(&engine, "x/d/sub").unwrap();
+                fs::rename(root.join("x/d/g.txt"), root.join("e/moved.txt")).unwrap();
+                fs::rename(root.join("x/d/sub"), root.join("e/sub")).unwrap();
+                fs::remove_dir_all(root.join("x/d")).unwrap();
+                for scope in order {
+                    let unsettled =
+                        observe_scoped(&mut engine, &mut snapshot, &root, &mut rules, scope.into());
+                    assert_eq!(unsettled, Vec::<PathBuf>::new(), "{case}: scan of {scope}");
+                }
+                let moved = holding(&engine, "e/moved.txt").map(|(id, _, _)| id);
+                assert_eq!(moved, Some(file.clone()), "{case}");
+                let moved = holding(&engine, "e/sub").map(|(id, _, _)| id);
+                assert_eq!(moved, Some(folder), "{case}");
+                assert!(holding(&engine, "e/sub/s.txt").is_some(), "{case}");
+                assert!(!engine.trees.recorded_local(&file), "{case}");
+                assert!(!engine.trees.excluded(&file), "{case}");
+                assert_eq!(
+                    engine.trees.locals_with_identity(&identity).count(),
+                    1,
+                    "{case}"
+                );
+                assert_eq!(holding(&engine, "x/d"), None, "{case}");
+                assert_eq!(engine.trees.check(), Ok(()), "{case}");
+            }
+        }
     }
 
     #[test]

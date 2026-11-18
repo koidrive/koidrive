@@ -336,30 +336,8 @@ impl<'r> Pending<'r> {
 
     #[cfg(target_os = "macos")]
     pub(crate) fn locate(&self, root: BorrowedFd<'_>, old: &Entry) -> Option<PathBuf> {
-        unsafe extern "C" {
-            fn fsgetpath(
-                buf: *mut std::ffi::c_char,
-                size: usize,
-                fsid: *const rustix::fs::Fsid,
-                obj_id: u64,
-            ) -> isize;
-        }
-        let fsid = rustix::fs::fstatfs(root).ok()?.f_fsid;
-        let base = rustix::fs::getpath(root).ok()?;
-        let mut buf = vec![0u8; 4096];
-        let len = unsafe {
-            fsgetpath(
-                buf.as_mut_ptr().cast(),
-                buf.len(),
-                &fsid,
-                u64::try_from(old.id.ino).ok()?,
-            )
-        };
-        let found =
-            std::ffi::CStr::from_bytes_until_nul(buf.get(..usize::try_from(len).ok()?)?).ok()?;
-        let rel = Path::new(OsStr::from_bytes(found.to_bytes()))
-            .strip_prefix(OsStr::from_bytes(base.as_bytes()))
-            .ok()?;
+        let rel = path_of(root, old.id.ino).ok()??;
+        let rel = rel.as_path();
         let left_out = rel.ancestors().any(|path| {
             (path.parent().zip(path.file_name())).is_some_and(|(folder, name)| {
                 (self.rules.ignored.get(folder)).is_some_and(|names| names.contains(name))
@@ -788,6 +766,41 @@ fn read_rules(dir: BorrowedFd<'_>, name: &OsStr) -> io::Result<Option<Vec<u8>>> 
         return Err(io::ErrorKind::FileTooLarge.into());
     }
     Ok(Some(bytes))
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn path_of(root: BorrowedFd<'_>, ino: u128) -> io::Result<Option<PathBuf>> {
+    unsafe extern "C" {
+        fn fsgetpath(
+            buf: *mut std::ffi::c_char,
+            size: usize,
+            fsid: *const rustix::fs::Fsid,
+            obj_id: u64,
+        ) -> isize;
+    }
+    let Ok(ino) = u64::try_from(ino) else {
+        return Ok(None);
+    };
+    let fsid = rustix::fs::fstatfs(root)?.f_fsid;
+    let base = rustix::fs::getpath(root)?;
+    let mut buf = vec![0u8; 4096];
+    let len = unsafe { fsgetpath(buf.as_mut_ptr().cast(), buf.len(), &fsid, ino) };
+    let Ok(len) = usize::try_from(len) else {
+        let err = io::Error::last_os_error();
+        return match err.kind() {
+            io::ErrorKind::NotFound => Ok(None),
+            _ => Err(err),
+        };
+    };
+    let found = buf
+        .get(..len)
+        .and_then(|bytes| std::ffi::CStr::from_bytes_until_nul(bytes).ok());
+    Ok(found.and_then(|found| {
+        Path::new(OsStr::from_bytes(found.to_bytes()))
+            .strip_prefix(OsStr::from_bytes(base.as_bytes()))
+            .ok()
+            .map(Path::to_path_buf)
+    }))
 }
 
 fn holds(root: BorrowedFd<'_>, path: &Path, key: Key) -> bool {
