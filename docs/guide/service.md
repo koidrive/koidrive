@@ -51,7 +51,7 @@ Koidrive then never installs, starts or removes the service. Unlink every folder
 koi _daemon
 ```
 
-`_daemon` is the service's entry point, so `koi --help` doesn't list it. It runs in the foreground until you press Ctrl-C or send it SIGTERM. Commands that change this device's folders, such as `folder link`, `folder restart`, `folder retry` and `device leave`, talk to the daemon through a socket when it runs, and open the profile themselves when it doesn't. The other `device` commands and the `space` commands talk to the server directly. `history trash` and `history versions` read from the server too, but if the daemon runs, they first ask it which space the folder syncs.
+`_daemon` is the service's entry point, so `koi --help` doesn't list it. It runs in the foreground until you press Ctrl-C or send it SIGTERM. Commands that change this device's folders, such as `folder link`, `folder restart`, `folder retry`, `folder relink` and `device leave`, talk to the daemon through a socket when it runs, and open the profile themselves when it doesn't. The other `device` commands and the `space` commands talk to the server directly. `history trash` and `history versions` read from the server too, but if the daemon runs, they first ask it which space the folder syncs.
 
 The daemon logs at the `info` level. Set `KOIDRIVE_LOG` to change it, for example `KOIDRIVE_LOG=debug`. `--log-format json` writes one JSON object per line.
 

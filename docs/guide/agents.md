@@ -53,7 +53,7 @@ Commands that make a new change each time take `--request-id`. Pick an ID on the
 koi history restore ~/Koidrive/notes/old.txt --request-id restore-notes-1 --json
 ```
 
-The same ID with the same arguments returns the first outcome and changes nothing. `koi history restore`, `koi device invite`, `koi folder restart` and `koi folder retry` take it. [Retries](json-output.md#retries-never-make-a-change-twice) covers the edge cases.
+The same ID with the same arguments returns the first outcome and changes nothing. `koi history restore`, `koi device invite`, `koi folder restart`, `koi folder retry` and `koi folder relink` take it. [Retries](json-output.md#retries-never-make-a-change-twice) covers the edge cases.
 
 ## Leave deletes to a person
 

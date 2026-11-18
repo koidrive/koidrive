@@ -70,7 +70,7 @@ These commands set a state, so running one again when the state already holds re
 - `koi space create <name>` when a space has that name. It prints that space's ID, as for a new space.
 - `koi resolve <id> <answer>` with the answer the decision already took. Another answer, or a decision that was replaced, fails with `stale_decision` (exit 7).
 
-These commands make a new change each time they run: `koi history restore`, `koi device invite`, `koi folder restart` and `koi folder retry`. Give them `--request-id <id>` on the first attempt. The ID is 1 to 128 ASCII letters, digits, `-` and `_`, and you pick it. Running the command again with the same ID and arguments returns the first outcome, with the same `data` and the same stdout, and changes nothing. This holds after the daemon or the machine restarts.
+These commands make a new change each time they run: `koi history restore`, `koi device invite`, `koi folder restart`, `koi folder retry` and `koi folder relink`. Give them `--request-id <id>` on the first attempt. The ID is 1 to 128 ASCII letters, digits, `-` and `_`, and you pick it. Running the command again with the same ID and arguments returns the first outcome, with the same `data` and the same stdout, and changes nothing. This holds after the daemon or the machine restarts.
 
 - The same ID with other arguments fails with `stale_decision` (exit 7) and no next command. Repeat the first call as it was, or pick a new ID. An ID for `koi device invite` also belongs to the device and server that ran it.
 - A pairing code expires after about 10 minutes. After that, `koi device invite` with its ID fails with `stale_decision`. Run it with a new ID.
