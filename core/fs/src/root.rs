@@ -101,7 +101,8 @@ impl RootTokens {
         marker.earlier.iter().any(|token| self.recorded(token))
     }
 
-    fn recorded(&self, token: &str) -> bool {
+    /// Whether this link recorded `token` as its current or pending one.
+    pub fn recorded(&self, token: &str) -> bool {
         [&self.current, &self.pending]
             .into_iter()
             .any(|recorded| recorded.as_deref() == Some(token))

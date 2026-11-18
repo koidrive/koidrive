@@ -533,7 +533,11 @@ fn a_crash_at_each_step_of_a_rotation_starts_again_without_a_halt() {
                 write_marker(&site.root, &marker).unwrap();
             }
             let mut store = Store::open(&site.db).unwrap();
-            let pending = disk::pend_token(&marker, &mut store).unwrap();
+            let started = koidrive_fs::RootTokens {
+                current: marker.token.clone(),
+                pending: None,
+            };
+            let (pending, _) = disk::pend_token(&marker, &started, &mut store).unwrap();
             if written {
                 let rotated = Marker {
                     token: Some(pending.clone()),

@@ -411,6 +411,7 @@ impl Disk {
             .map_err(Stop::Root)?;
         let found = disk.marker()?;
         let tokens = store.transaction(|tx| tx.root_tokens())?;
+        let mut recorded = tokens.clone();
         if let Standing::StoreOlder = standing(&found, &tokens, &engine.effects)? {
             tracing::warn!(
                 space_id = link.space_id,
@@ -419,16 +420,17 @@ impl Disk {
                 "the store is older than the folder; recovering"
             );
             bring_back_all(&disk.space, &engine.trees)?;
+            recorded = RootTokens {
+                current: found.token.clone(),
+                pending: None,
+            };
             store.transaction(|tx| -> Result<_, Stop> {
                 engine.effects.catch_up(found.effects);
                 engine
                     .commits
                     .enter_recovery(RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk));
                 engine.checkpoint(tx)?;
-                tx.set_root_tokens(&RootTokens {
-                    current: found.token.clone(),
-                    pending: None,
-                })?;
+                tx.set_root_tokens(&recorded)?;
                 Ok(())
             })?;
         }
@@ -439,7 +441,7 @@ impl Disk {
         if !disk.space.probe_no_replace()? {
             return Err(Stop::NoReplace);
         }
-        (disk.tokens, disk.earlier) = rotate_token(&disk.space, found, &tokens, store)?;
+        (disk.tokens, disk.earlier) = rotate_token(&disk.space, found, &tokens, &recorded, store)?;
         let records = engine.effects.in_flight().to_vec();
         if let Some(first) = records.first() {
             let mut translated = (records.iter().map(translate)).collect::<Result<Vec<_>, _>>()?;
@@ -848,13 +850,10 @@ impl Disk {
     pub fn rotate_before_build(&mut self, store: &mut Store) -> Result<Option<RootTokens>, Stop> {
         let marker = self.marker()?;
         if !self.fresh {
-            let next = pend_token(&marker, store)?;
+            let (next, pended) = pend_token(&marker, &self.tokens, store)?;
             (self.hook)(Cut::TokenPended);
             self.earlier = marker.rotated(&next, &self.tokens).earlier;
-            self.tokens = RootTokens {
-                current: marker.token.clone(),
-                pending: Some(next),
-            };
+            self.tokens = pended;
             self.fresh = true;
             self.flushed = false;
         }
@@ -1070,30 +1069,36 @@ pub(crate) fn held_name(trees: &Trees, held: &OsStr, found: FileId) -> OsString 
 fn rotate_token(
     space: &Space,
     marker: Marker,
+    checked: &RootTokens,
     recorded: &RootTokens,
     store: &mut Store,
 ) -> Result<(RootTokens, Vec<String>), Stop> {
-    let next = pend_token(&marker, store)?;
-    let rotated = marker.rotated(&next, recorded);
+    let (next, pended) = pend_token(&marker, recorded, store)?;
+    let rotated = marker.rotated(&next, checked);
     if let Err(error) = space.write_marker(&rotated) {
         tracing::warn!(space_id = rotated.space_id, %error, "the folder's marker keeps its token until the next marker write");
-        let pended = RootTokens {
-            current: marker.token,
-            pending: Some(next),
-        };
         return Ok((pended, rotated.earlier));
     }
     Ok((commit_token(next, store)?, rotated.earlier))
 }
 
-pub(crate) fn pend_token(marker: &Marker, store: &mut Store) -> Result<String, Stop> {
+pub(crate) fn pend_token(
+    marker: &Marker,
+    recorded: &RootTokens,
+    store: &mut Store,
+) -> Result<(String, RootTokens), Stop> {
     let next = koidrive_fs::new_token();
+    let own = (marker.token.as_deref()).is_some_and(|token| recorded.recorded(token));
     let tokens = RootTokens {
-        current: marker.token.clone(),
+        current: if own {
+            marker.token.clone()
+        } else {
+            recorded.current.clone()
+        },
         pending: Some(next.clone()),
     };
     store.transaction(|tx| tx.set_root_tokens(&tokens))?;
-    Ok(next)
+    Ok((next, tokens))
 }
 
 pub(crate) fn commit_token(token: String, store: &mut Store) -> Result<RootTokens, Stop> {
