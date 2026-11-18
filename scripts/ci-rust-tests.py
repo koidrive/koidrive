@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 import argparse
+import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import json
 import math
+import re
+import os
 from pathlib import Path
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
@@ -150,6 +155,127 @@ def command_report(args):
     return 0
 
 
+def failed(case):
+    return any(case.find(tag) is not None for tag in ("failure", "error", "flakyFailure", "flakyError"))
+
+
+def command_shadow(args):
+    selection = Path(args.selection)
+    record = json.loads(selection.read_text()) if selection.exists() else {"map": None, "everything": "the changes job recorded no selection", "skipped": []}
+    skipped = set(record["skipped"])
+    ran, failures = set(), set()
+    for folder in args.junit:
+        for junit in sorted(Path(folder).rglob("*.xml")):
+            for binary, name, case in cases(junit):
+                ran.add(f"{binary} {name}")
+                if failed(case):
+                    failures.add(f"{binary} {name}")
+    misses = sorted(failures & skipped)
+    lines = ["## Shadow test selection", ""]
+    if not args.complete:
+        lines += ["The shard results are incomplete (see the shard check above), so this count can miss failures.", ""]
+    if record["everything"]:
+        lines.append(f"It kept every test, because {record['everything']}.")
+    else:
+        lines.append(f"Against the coverage map of {record['map']} it would skip {len(skipped & ran)} of the {len(ran)} tests that ran. "
+                     f"{len(misses)} of the {len(failures)} tests that failed or were flaky are among them. Nothing was skipped.")
+    if misses:
+        lines += ["", "### Failed tests it would have skipped (misses)", "", "| test |", "|---|"] + [f"| {test} |" for test in misses]
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({"map": record["map"], "everything": record["everything"], "complete": args.complete, "ran": len(ran), "skipped": len(skipped & ran),
+                               "failed": sorted(failures), "misses": misses}, indent=1) + "\n")
+    print("\n".join(lines))
+    return 0
+
+
+def covered_files(report, root):
+    prefix = root.rstrip("/") + "/"
+    return {entry["filename"][len(prefix):] for data in report["data"] for entry in data["files"]
+            if entry["filename"].startswith(prefix) and entry["summary"]["lines"]["covered"] > 0}
+
+
+def function_spans(report, root):
+    prefix = root.rstrip("/") + "/"
+    spans = {}
+    for data in report["data"]:
+        for function in data["functions"]:
+            filename = function["filenames"][0]
+            lines = [(region[0], region[2]) for region in function["regions"] if region[5] == 0]
+            if filename.startswith(prefix) and lines:
+                spans.setdefault(filename[len(prefix):], set()).add((min(start for start, _ in lines), max(end for _, end in lines)))
+    return spans
+
+
+def without_const_fns(spans, lines):
+    kept = {}
+    for file, functions in spans.items():
+        text = lines(file)
+        kept[file] = {(start, end) for start, end in functions if not re.search(r"\bconst\b[^{]*\bfn\b", text[start - 1])}
+    return kept
+
+
+def blob(path):
+    data = path.read_bytes()
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def coverage_map(tests, spans, blobs, sha, created):
+    files = sorted(set().union(*tests.values()))
+    index = {file: number for number, file in enumerate(files)}
+    return {"sha": sha, "created": created,
+            "files": [{"path": file, "blob": blobs[file], "functions": sorted(map(list, spans.get(file, ())))} for file in files],
+            "tests": {test: sorted(index[file] for file in covered) for test, covered in sorted(tests.items())}}
+
+
+def command_coverage_map(args):
+    passed, failures = set(), set()
+    for binary, name, case in cases(args.junit):
+        (failures if failed(case) else passed).add(f"{binary} {name}")
+    passed -= failures
+    objects = [line for line in Path(args.objects).read_text().splitlines() if line]
+
+    def measure(folder):
+        binary_id, name, binary = (folder / "test").read_text().splitlines()
+        test = f"{binary_id} {name}"
+        profiles = sorted(folder.rglob("*.profdata"))
+        if test not in passed or not profiles:
+            return None
+        merged = folder / "merged.profdata"
+        subprocess.run([f"{args.llvm}/llvm-profdata", "merge", "-sparse", "-o", str(merged), *map(str, profiles)], check=True)
+        report = subprocess.run([f"{args.llvm}/llvm-cov", "export", "-summary-only", f"-instr-profile={merged}", binary,
+                                 *(f"-object={item}" for item in objects if item != binary)],
+                                check=True, capture_output=True, text=True).stdout
+        return test, binary, merged, covered_files(json.loads(report), args.root)
+
+    folders = sorted(folder for folder in Path(args.profiles).iterdir() if (folder / "test").exists())
+    with ThreadPoolExecutor(os.cpu_count()) as pool:
+        results = [result for result in pool.map(measure, folders) if result]
+    tests = {test: covered for test, _, _, covered in results}
+    total = Path(args.profiles) / "total.profdata"
+    listing = Path(args.profiles) / "profiles.txt"
+    listing.write_text("".join(f"{merged}\n" for _, _, merged, _ in results))
+    subprocess.run([f"{args.llvm}/llvm-profdata", "merge", "-sparse", "-o", str(total), "-f", str(listing)], check=True)
+
+    def spans_of(binary):
+        report = subprocess.run([f"{args.llvm}/llvm-cov", "export", "-skip-expansions", f"-instr-profile={total}", binary],
+                                check=True, capture_output=True, text=True).stdout
+        return function_spans(json.loads(report), args.root)
+
+    spans = {}
+    with ThreadPoolExecutor(os.cpu_count()) as pool:
+        for found in pool.map(spans_of, sorted({binary for _, binary, _, _ in results} | set(objects))):
+            for file, functions in found.items():
+                spans.setdefault(file, set()).update(functions)
+    files = set().union(*tests.values())
+    spans = without_const_fns({file: spans.get(file, set()) for file in files}, lambda file: (Path(args.root) / file).read_text().splitlines())
+    blobs = {file: blob(Path(args.root) / file) for file in files}
+    Path(args.out).write_text(json.dumps(coverage_map(tests, spans, blobs, args.sha, args.created)) + "\n")
+    print(f"The coverage map of {args.sha} records the files each of {len(tests)} tests ran. "
+          f"It leaves out {len(failures)} tests that failed or were flaky and {len(passed - tests.keys())} passing tests with no profile, "
+          f"so pull requests never skip them.")
+    return 0
+
 def term(text):
     binary, _, test = text.partition("=")
     return binary, test
@@ -187,6 +313,20 @@ def main(argv):
     report.add_argument("--list", action="append", required=True)
     report.add_argument("--junit", required=True)
     report.add_argument("--out", required=True)
+    shadow = commands.add_parser("shadow", help="Count the failed tests that the shadow test selection would have skipped.")
+    shadow.add_argument("--selection", required=True)
+    shadow.add_argument("--junit", action="append", required=True)
+    shadow.add_argument("--out", required=True)
+    shadow.add_argument("--complete", action="store_true", help="The shard check found every listed test's result.")
+    maps = commands.add_parser("coverage-map", help="Write the files each passing test ran, from one coverage profile folder per test.")
+    maps.add_argument("--profiles", required=True)
+    maps.add_argument("--junit", required=True)
+    maps.add_argument("--objects", required=True)
+    maps.add_argument("--llvm", required=True)
+    maps.add_argument("--root", required=True)
+    maps.add_argument("--sha", required=True)
+    maps.add_argument("--created", type=int, required=True)
+    maps.add_argument("--out", required=True)
     terms_help = "BINARY_ID, or BINARY_ID=SUBSTRING to select that binary's tests whose names contain SUBSTRING"
     filters = commands.add_parser("filter", help="Print the nextest filter expression that runs every term.")
     filters.add_argument("terms", nargs="+", help=terms_help)
@@ -204,6 +344,10 @@ def main(argv):
     if args.command == "plan":
         command_plan(args)
         return 0
+    if args.command == "shadow":
+        return command_shadow(args)
+    if args.command == "coverage-map":
+        return command_coverage_map(args)
     return command_report(args)
 
 
