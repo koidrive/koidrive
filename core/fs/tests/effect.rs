@@ -394,6 +394,11 @@ fn a_folder_that_holds_only_the_files_it_takes_along_goes_to_the_trash_with_them
     let outcome = apply(root, &effect, |_| {});
     assert_eq!(outcome, Outcome::Done { identity: None });
     assert!(!folder.exists());
+    let [trashed] = &private_names(root, "trash")[..] else {
+        panic!("{:?}", private_names(root, "trash"))
+    };
+    let trash = root.join(PRIVATE_DIR).join("trash").join(trashed);
+    assert_eq!(fs::read(trash.join(".koiignore")).unwrap(), RULES);
     assert!(private_names(root, "quarantine").is_empty());
     assert_settled(root);
 }
@@ -440,6 +445,38 @@ fn a_folder_whose_file_to_take_along_changed_in_place_keeping_its_size_and_time_
     assert_eq!(outcome, failed(Reason::Changed));
     assert_eq!(fs::read(&rules).unwrap(), b".log\n");
     assert_settled(root);
+}
+
+#[test]
+fn a_removal_whose_file_became_unreadable_is_left_in_place() {
+    use std::os::unix::fs::PermissionsExt;
+    for removal in ["remove_file", "remove_dir"] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (effect, file) = match removal {
+            "remove_file" => (
+                prepare(common::scenario(removal), root),
+                root.join("docs/report.txt"),
+            ),
+            _ => {
+                let (effect, folder) = with_rules_file(root);
+                (effect, folder.join(".koiignore"))
+            }
+        };
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&file).is_ok() {
+            return;
+        }
+        let outcome = apply(root, &effect, |_| {});
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(outcome, failed(Reason::Denied), "{removal}");
+        assert!(
+            fs::read(&file).is_ok_and(|read| !read.is_empty()),
+            "{removal}"
+        );
+        assert!(private_names(root, "quarantine").is_empty(), "{removal}");
+        assert_settled(root);
+    }
 }
 
 #[test]

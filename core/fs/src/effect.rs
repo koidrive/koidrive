@@ -1096,6 +1096,19 @@ fn differs(
     along: &[Displaced],
     contents: &mut dyn Contents,
 ) -> io::Result<Option<Reason>> {
+    match compare(quarantine, id, expected, along, contents) {
+        Err(err) if refused(&err) => Ok(Some(Reason::Denied)),
+        compared => compared,
+    }
+}
+
+fn compare(
+    quarantine: BorrowedFd<'_>,
+    id: &OsStr,
+    expected: &Entry,
+    along: &[Displaced],
+    contents: &mut dyn Contents,
+) -> io::Result<Option<Reason>> {
     if lookup(quarantine, id)?.and_then(|stat| stat.entry()) != Some(*expected) {
         return Ok(Some(Reason::Changed));
     }
