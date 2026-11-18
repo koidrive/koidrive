@@ -510,7 +510,13 @@ cases = ["{1:064}"]
         folder = "devices_converge_around_a_folder_another_device_replaces"
         f2319 = "2319ec3c34a16d98368db0142346b37f32e74cc2cdf6b434f7bfd5c5764872cf"
         c0222 = "0222b6cd557b" + "0" * 52
-        restored = next(entry for entry in entries if (entry["class"], entry["issue"]) == ("I", "GUN-864"))["cases"]
+        w31ec = "31eccfcbffa4bad538d0f5111e916d5d878a9aa1a5e700a9001d3b8ffd9cb59f"
+        x1f95 = "f19596adaf6fc6b14d6bdc8753059b87ecb8244feeb93d9adc29eb77c9fd8532"
+        owed = "devices_converge_around_an_owed_rename"
+        def listed(label):
+            return next(entry for entry in entries if (entry["class"], entry["issue"]) == label)["cases"]
+        restored = listed(("I", "GUN-864"))
+        replaced = listed(("R", "GUN-1054"))
         def example(case):
             return next(entry for entry in entries if case.startswith(tuple(entry.get("cases", ["-"]))))["examples"][0]
         update = "}, Op { intent: None, fields: None, op: Some(UpdateContent"
@@ -531,9 +537,15 @@ cases = ["{1:064}"]
             (restores_and_rewinds, quiet, ae45, [("D", "GUN-984", None)]),
             (server_restores, quiet, ae45, [("D", "GUN-984", None)]),
             (server_restores, quiet, e0a5, [("J", "GUN-1012", ["5e0a61643769"])]),
-            (folder, example(c0222), f2319, [("R", "GUN-1054", ["2319ec3c34a1", "ed200e5bfed9"])]),
+            (folder, example(c0222), f2319, [("R", "GUN-1054", replaced)]),
             (folder, example(c0222), c0222, []),
+            (folder, example(f2319), w31ec, [("W", "GUN-1102", ["31eccfcbffa4"])]),
             (folder, example(f2319), other, []),
+            (owed, example(w31ec), w31ec, []),
+            (owed, example(w31ec), "1d06b1e55790" + "0" * 52, [("R", "GUN-1054", replaced)]),
+            (rewinds_and_rollbacks, example(f2319), x1f95, [("X", "GUN-1103", ["f19596adaf6f"])]),
+            (rewinds_and_rollbacks, example(f2319), other, []),
+            (server_restores, example(x1f95), x1f95, []),
             (server_restores, example(f2319), f2319, []),
             (server_restores, example(f2319), c0222, [("I", "GUN-864", restored)]),
         ]:

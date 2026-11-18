@@ -6,7 +6,7 @@ use koidrive_engine::tree::{Content, NodeId, RemoteNode};
 
 use koidrive_proto::v1::NodeStatus;
 
-use super::{Failure, SpaceDo, Spent, World};
+use super::{Failure, SpaceDo, Spent, World, tag};
 
 pub(super) fn live_nodes(space: &SpaceDo) -> BTreeMap<i64, BTreeSet<NodeId>> {
     let mut live: BTreeMap<i64, BTreeSet<NodeId>> = BTreeMap::new();
@@ -15,9 +15,7 @@ pub(super) fn live_nodes(space: &SpaceDo) -> BTreeMap<i64, BTreeSet<NodeId>> {
             continue;
         }
         if let Some(content) = node.current.and_then(|version| version.content) {
-            live.entry(content.mtime_ns)
-                .or_default()
-                .insert(node.node_id);
+            live.entry(tag(&content)).or_default().insert(node.node_id);
         }
     }
     live
@@ -117,7 +115,7 @@ impl World {
         let mut taken = BTreeSet::new();
         let files: Vec<Deleted> = (deleted.iter())
             .filter_map(|content| {
-                let write = content.mtime_ns;
+                let write = tag(content);
                 let before: BTreeSet<i64> =
                     std::iter::successors(self.overwrote.get(&write), |write| {
                         self.overwrote.get(write)
@@ -127,9 +125,8 @@ impl World {
                 let holders: Vec<&NodeId> = (synced.iter())
                     .filter(|(id, shape)| {
                         !taken.contains(*id)
-                            && (shape.content.as_ref()).is_some_and(|c| {
-                                c.mtime_ns == write || before.contains(&c.mtime_ns)
-                            })
+                            && (shape.content.as_ref())
+                                .is_some_and(|c| tag(c) == write || before.contains(&tag(c)))
                     })
                     .map(|(id, _)| id)
                     .collect();
@@ -163,16 +160,11 @@ impl World {
         let scope: Vec<_> = (synced.iter())
             .filter(|(id, _)| under_target(id) || (files.iter()).any(|file| file.path.contains(id)))
             .collect();
-        let (touched, touches) = (&self.touched_nodes, &self.touches);
         let unsent: BTreeSet<(usize, u128, u64)> = (0..self.devices.len())
             .filter(|other| *other != d)
             .flat_map(|other| {
-                (scope.iter())
-                    .filter_map(move |(id, _)| touched[other].get(*id))
-                    .flat_map(move |ino| {
-                        (touches[other].get(ino).into_iter().flatten())
-                            .map(move |at| (other, *ino, *at))
-                    })
+                (self.touches[other].iter())
+                    .flat_map(move |(ino, times)| times.iter().map(move |at| (other, *ino, *at)))
             })
             .collect();
         let seen = target.is_some_and(|target| {
@@ -201,6 +193,13 @@ impl World {
             deletion.reached = deletion.held(&live, |_, _, _, _| false).is_none();
             self.deletions.push(deletion);
         }
+    }
+
+    fn inos_of(&self, d: usize, node: &NodeId) -> impl Iterator<Item = u128> {
+        let local = self.devices[d].engine.trees.local().get(node);
+        (local.map(|node| node.identity.ino))
+            .into_iter()
+            .chain(self.touched_nodes[d].get(node).copied())
     }
 
     pub(super) fn forget_unsent_deletes(&mut self, d: usize) {
@@ -238,11 +237,12 @@ impl World {
                 let write = deletion.held(&live, |write, node, file, at_node| {
                     let changed_since = |spent: &Spent| {
                         let is = |id: &NodeId| {
-                            self.touched_nodes[spent.device].get(id) == Some(&spent.ino)
+                            self.inos_of(spent.device, id).any(|ino| ino == spent.ino)
                         };
                         let itself = is(node) || is(&file.node);
-                        let moved_between = self.moves[spent.device].contains(&spent.at)
-                            && (file.path.iter()).skip(1).any(is);
+                        let moved_between = (file.path.iter())
+                            .skip(1)
+                            .any(|id| spent.reparented.contains(id) && is(id));
                         let revived = spent.revived.contains(node) && (file.path.iter()).any(is);
                         spent.device != deletion.device
                             && (self.actions[spent.device].get(&spent.at))

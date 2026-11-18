@@ -673,7 +673,6 @@ pub struct World {
     touched_nodes: Vec<BTreeMap<NodeId, u128>>,
     merged: Vec<BTreeMap<NodeId, BTreeSet<u128>>>,
     actions: Vec<BTreeMap<u64, (u128, Change)>>,
-    moves: Vec<BTreeSet<u64>>,
     scanned: Vec<Observed>,
     built: Vec<Observed>,
     built_copies: Vec<Observed>,
@@ -742,6 +741,7 @@ struct Spent {
     ino: u128,
     at: u64,
     revived: BTreeSet<NodeId>,
+    reparented: BTreeSet<NodeId>,
 }
 
 impl World {
@@ -816,7 +816,6 @@ impl World {
             held_before_a_loss: vec![Vec::new(); count],
             merged: vec![BTreeMap::new(); count],
             actions: vec![BTreeMap::new(); count],
-            moves: vec![BTreeSet::new(); count],
             scanned: vec![Observed::default(); count],
             built: vec![Observed::default(); count],
             built_copies: vec![Observed::default(); count],
@@ -1103,11 +1102,7 @@ impl World {
                 }
             }
             (Act::Rename, Some(ino)) => {
-                let reparents = disk.entries()[&ino].place != place;
                 if disk.rename(ino, place, name).is_ok() {
-                    if reparents {
-                        self.moves[d].insert(self.clock);
-                    }
                     self.named[d].insert(name);
                     let moved = disk.entries()[&ino].content.as_ref().map(tag);
                     (self.republished).extend(moved.filter(|write| self.discarded.contains(write)));
@@ -2699,6 +2694,17 @@ impl World {
                                 })
                                 .map(|node| node.node_id)
                                 .collect();
+                            let parents_before: BTreeMap<&str, &str> = (held.iter())
+                                .map(|node| (node.node_id.as_str(), node.parent_id.as_str()))
+                                .collect();
+                            let reparented: BTreeSet<NodeId> = (nodes.iter())
+                                .filter(|node| {
+                                    parents_before
+                                        .get(node.node_id.as_str())
+                                        .is_some_and(|parent| *parent != node.parent_id)
+                                })
+                                .map(|node| node.node_id.clone())
+                                .collect();
                             for (ino, times) in &mut self.touches[d] {
                                 for at in &carried {
                                     if times.remove(at) {
@@ -2708,6 +2714,7 @@ impl World {
                                             ino: *ino,
                                             at: *at,
                                             revived: revived.clone(),
+                                            reparented: reparented.clone(),
                                         });
                                     }
                                 }

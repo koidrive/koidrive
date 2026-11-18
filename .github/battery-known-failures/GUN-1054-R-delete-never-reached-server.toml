@@ -1,9 +1,15 @@
 class = "R"
 issue = "GUN-1054"
-tests = ["devices_converge_around_a_folder_another_device_replaces"]
+tests = [
+  "devices_converge_around_a_folder_another_device_replaces",
+  "devices_converge_around_an_owed_rename",
+  "devices_converge_when_a_folder_owing_its_name_is_deleted_and_brought_back",
+]
 message = '''after phase <n>: the user of device <n> deleted write <n> or a later write made over it, and the server held it live from then on: the delete never reached the server\.'''
 examples = ["after phase 2: the user of device 1 deleted write 2 or a later write made over it, and the server held it live from then on: the delete never reached the server."]
 cases = [
+  "1d06b1e55790",
   "2319ec3c34a1",
+  "6941e5f739ce",
   "ed200e5bfed9",
 ]

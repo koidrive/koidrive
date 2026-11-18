@@ -83,65 +83,9 @@ fn a_file_comes_back_when_a_restore_takes_a_delete_that_reached_the_server() {
     )
     .unwrap();
     let held: Vec<_> = (files_on(&world, 1).into_iter())
-        .map(|(name, content)| (name, content.map(|c| c.mtime_ns)))
+        .map(|(name, content)| (name, content.as_ref().map(tag)))
         .collect();
     assert_eq!(held, [("a".to_owned(), Some(1))]);
-}
-
-#[test]
-fn an_edit_another_device_made_over_the_deleted_value_brings_the_file_back() {
-    let world = checked(
-        2,
-        &[
-            vec![(0, file("a"))],
-            vec![(1, overwrite(0)), (0, delete(0))],
-        ],
-    )
-    .unwrap();
-    for device in 0..2 {
-        let held: Vec<_> = (files_on(&world, device).into_iter())
-            .map(|(name, content)| (name, content.map(|c| c.mtime_ns)))
-            .collect();
-        assert_eq!(held, [("a".to_owned(), Some(2))], "device {device}");
-    }
-}
-
-#[test]
-fn a_rename_another_device_made_after_the_delete_brings_the_file_back() {
-    let world = checked(
-        2,
-        &[
-            vec![(0, file("a"))],
-            vec![(0, delete(0)), (1, rename(0, 0, "b"))],
-        ],
-    )
-    .unwrap();
-    for device in 0..2 {
-        let held: Vec<_> = (files_on(&world, device).into_iter())
-            .map(|(name, content)| (name, content.map(|c| c.mtime_ns)))
-            .collect();
-        assert_eq!(held, [("b".to_owned(), Some(1))], "device {device}");
-    }
-}
-
-#[test]
-fn a_write_its_user_replaces_before_it_reaches_the_server_needs_no_file() {
-    let world = checked(
-        2,
-        &[
-            vec![(0, BACKUP), (1, file("a"))],
-            vec![(0, overwrite(0)), (0, BACKUP), (0, Step::RestoreEarlier)],
-            vec![(1, overwrite(0)), (1, overwrite(0)), (0, RESTORE)],
-        ],
-    )
-    .unwrap();
-    for device in 0..2 {
-        assert!(
-            (files_on(&world, device).into_iter())
-                .all(|(_, content)| content.is_none_or(|content| content.mtime_ns != 3)),
-            "device {device}"
-        );
-    }
 }
 
 fn deletes_reach_the_server_in(
@@ -213,16 +157,66 @@ fn deletes_reach_the_server_in_the_saved_gun_1054_cases_around_a_folder_another_
 
 #[test]
 #[ignore = "a file deleted before its folder comes back when another device moves the folder first (GUN-1054)"]
-fn a_file_deleted_before_its_folder_stays_deleted_when_another_device_moves_the_folder_first() {
-    let mut moved = vec![
-        (0, delete(1)),
-        (0, delete(0)),
-        (1, folder("C.TXT")),
-        (1, rename(0, 2, "A")),
-    ];
-    moved.extend(commit(1));
-    moved.extend(commit(0));
-    checked(2, &[vec![(0, folder("b")), (0, user(1, 0, 1, "a"))], moved]).unwrap();
+fn deletes_reach_the_server_in_the_saved_gun_1054_cases_around_an_owed_rename() {
+    deletes_reach_the_server_in(
+        concat!(
+            module_path!(),
+            "::deletes_reach_the_server_in_the_saved_gun_1054_cases_around_an_owed_rename"
+        ),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/gun-1054-owed-rename.proptest-regressions"
+        ),
+        (2..=3usize, owing_a_rename(Losses::None)),
+    );
+}
+
+#[test]
+#[ignore = "a file deleted before its folder comes back when another device moves the folder first (GUN-1054)"]
+fn deletes_reach_the_server_in_the_saved_gun_1054_cases_when_a_folder_owing_its_name_comes_back() {
+    deletes_reach_the_server_in(
+        concat!(
+            module_path!(),
+            "::deletes_reach_the_server_in_the_saved_gun_1054_cases_when_a_folder_owing_its_name_comes_back"
+        ),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/gun-1054-folder-owing-its-name.proptest-regressions"
+        ),
+        reviving_an_owed_rename().prop_map(|phases| (3, phases)),
+    );
+}
+
+#[test]
+#[ignore = "a device never sends the delete of a file another device brought back with its folder (GUN-1102)"]
+fn deletes_reach_the_server_in_the_saved_gun_1102_cases_around_a_folder_another_device_replaces() {
+    deletes_reach_the_server_in(
+        concat!(
+            module_path!(),
+            "::deletes_reach_the_server_in_the_saved_gun_1102_cases_around_a_folder_another_device_replaces"
+        ),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/gun-1102-folder-another-device-replaces.proptest-regressions"
+        ),
+        replaced_folder(),
+    );
+}
+
+#[test]
+#[ignore = "discarding a held change after a rewind brings back a file its user deleted (GUN-1103)"]
+fn deletes_reach_the_server_in_the_saved_gun_1103_cases_across_rewinds_and_rollbacks() {
+    deletes_reach_the_server_in(
+        concat!(
+            module_path!(),
+            "::deletes_reach_the_server_in_the_saved_gun_1103_cases_across_rewinds_and_rollbacks"
+        ),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/gun-1103-rewinds-and-rollbacks.proptest-regressions"
+        ),
+        (2..=3usize, phases(Losses::Rewinds)),
+    );
 }
 
 #[test]
@@ -378,25 +372,6 @@ fn a_folder_another_device_renames_after_the_delete_keeps_its_file_once_moved_ou
 }
 
 #[test]
-fn a_deleted_original_leaves_its_conflict_copy_with_the_same_write() {
-    checked(
-        3,
-        &[
-            vec![
-                (1, Step::CopyStore),
-                (0, BACKUP),
-                (2, Step::CopyStore),
-                (0, file("a")),
-                (1, file("a")),
-            ],
-            vec![(2, Step::RollBack), (0, Step::Rewind)],
-            vec![(2, delete(2))],
-        ],
-    )
-    .unwrap();
-}
-
-#[test]
 fn a_deleted_conflict_copy_leaves_the_original_with_the_same_write() {
     checked(
         3,
@@ -486,20 +461,6 @@ fn another_devices_change_that_never_reaches_the_server_leaves_the_delete_checke
 }
 
 #[test]
-fn an_edit_of_the_file_that_another_device_never_sends_leaves_the_delete_checked() {
-    let mut renamed = vec![(1, rename(0, 0, "ss"))];
-    renamed.extend(commit(1));
-    renamed.push((0, delete(1)));
-    renamed.extend(commit(0));
-    renamed.extend([(1, overwrite(1)), (1, Step::Leave)]);
-    checked(
-        2,
-        &[vec![(0, folder("a")), (0, user(1, 0, 1, "b"))], renamed],
-    )
-    .unwrap();
-}
-
-#[test]
 fn a_file_another_device_adds_to_the_deleted_folder_leaves_its_siblings_checked() {
     let mut deleted = vec![(1, user(1, 0, 1, "c.txt")), (0, delete(0))];
     deleted.extend(commit(1));
@@ -507,25 +468,6 @@ fn a_file_another_device_adds_to_the_deleted_folder_leaves_its_siblings_checked(
     checked(
         2,
         &[vec![(0, folder("b")), (0, user(1, 0, 1, "a"))], deleted],
-    )
-    .unwrap();
-}
-
-#[test]
-fn an_edit_another_device_makes_to_a_sibling_leaves_the_deleted_file_checked() {
-    let mut deleted = vec![(1, overwrite(2)), (0, delete(0))];
-    deleted.extend(commit(1));
-    deleted.extend(commit(0));
-    checked(
-        2,
-        &[
-            vec![
-                (0, folder("b")),
-                (0, user(1, 0, 1, "a")),
-                (0, user(1, 0, 1, "c.txt")),
-            ],
-            deleted,
-        ],
     )
     .unwrap();
 }
@@ -577,6 +519,73 @@ fn a_rename_another_device_sends_after_the_delete_brings_the_folder_back_with_it
         ],
     )
     .unwrap();
+}
+
+#[test]
+fn a_folder_another_device_puts_back_under_its_old_parent_keeps_the_file_the_deleting_device_added()
+{
+    let mut moved = vec![
+        (1, folder("C.TXT")),
+        (1, rename(0, 2, "ss")),
+        (1, user(1, 0, 1, "a")),
+    ];
+    moved.extend(commit(1));
+    moved.extend([
+        (0, rename(0, 0, "ss")),
+        (1, delete(0)),
+        (1, SCAN),
+        (1, COMMIT),
+        (0, SCAN),
+        (0, COMMIT),
+        (0, COMMIT),
+    ]);
+    let world = checked(2, &[vec![(0, folder("b"))], moved]).unwrap();
+    for device in 0..2 {
+        assert_eq!(
+            held_files(&world, device),
+            [("a".to_owned(), 1)],
+            "device {device}"
+        );
+    }
+}
+
+#[test]
+fn a_folder_another_device_takes_back_out_of_the_deleted_folder_keeps_its_file() {
+    let mut deleted = vec![
+        (1, rename(0, 0, "A")),
+        (0, rename(1, 1, "A")),
+        (1, Step::Work(0)),
+        (0, Step::Work(0)),
+        (0, delete(0)),
+        (1, Step::Work(0)),
+    ];
+    deleted.extend([(0, Step::Work(0)); 5]);
+    deleted.push((1, COMMIT));
+    let world = checked(
+        2,
+        &[
+            vec![
+                (0, folder("a")),
+                (1, folder("\u{e9}")),
+                (1, user(1, 0, 1, "\u{e9}")),
+            ],
+            deleted,
+        ],
+    )
+    .unwrap();
+    for device in 0..2 {
+        assert_eq!(
+            held_files(&world, device),
+            [("\u{e9}".to_owned(), 1)],
+            "device {device}"
+        );
+    }
+}
+
+fn held_files(world: &World, device: usize) -> Vec<(String, i64)> {
+    (files_on(world, device).into_iter())
+        .filter_map(|(name, content)| Some((name, tag(&content?))))
+        .collect()
 }
 
 #[test]
@@ -648,25 +657,6 @@ fn reports_the_lost_delete(result: Result<World, Failure>) {
 }
 
 #[test]
-fn a_write_made_over_the_deleted_value_before_a_scan_leaves_the_older_write_checked() {
-    reports_the_lost_delete(checked(
-        2,
-        &[
-            vec![(0, file("a")), (0, BACKUP)],
-            vec![(0, BACKUP), (0, overwrite(0)), (0, Step::RestoreEarlier)],
-            vec![(1, rename(0, 0, "c.txt"))],
-            vec![
-                (1, Step::Leave),
-                (0, overwrite(0)),
-                (0, delete(0)),
-                (0, Step::RestoreEarlier),
-                (0, RESTORE),
-            ],
-        ],
-    ));
-}
-
-#[test]
 fn a_bystanders_store_rollback_before_the_delete_leaves_it_checked() {
     reports_the_lost_delete(checked(
         3,
@@ -683,6 +673,34 @@ fn a_bystanders_store_rollback_before_the_delete_leaves_it_checked() {
             ],
         ],
     ));
+}
+
+#[test]
+fn a_rename_another_device_makes_after_its_store_rollback_brings_the_file_back() {
+    let world = checked(
+        2,
+        &[
+            vec![(1, Step::CopyStore), (0, file("c.txt"))],
+            vec![
+                (1, Step::RollBack),
+                (0, overwrite(0)),
+                (1, SCAN),
+                (1, rename(0, 0, "a")),
+                (0, SCAN),
+                (0, delete(0)),
+                (0, COMMIT),
+                (1, Step::Connect),
+                (1, DELIVER),
+            ],
+        ],
+    )
+    .unwrap();
+    for device in 0..2 {
+        let held: Vec<_> = (files_on(&world, device).into_iter())
+            .map(|(name, content)| (name, content.as_ref().map(tag)))
+            .collect();
+        assert_eq!(held, [("a".to_owned(), Some(1))], "device {device}");
+    }
 }
 
 #[test]

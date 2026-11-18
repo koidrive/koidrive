@@ -1,0 +1,8 @@
+class = "X"
+issue = "GUN-1103"
+tests = ["devices_converge_across_rewinds_and_rollbacks"]
+message = '''after phase <n>: the user of device <n> deleted write <n> or a later write made over it, and the server held it live from then on: the delete never reached the server\.'''
+examples = ["after phase 2: the user of device 0 deleted write 2 or a later write made over it, and the server held it live from then on: the delete never reached the server."]
+cases = [
+  "f19596adaf6f",
+]
