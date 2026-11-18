@@ -6,7 +6,7 @@ import { fromJson, toJson } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
 import { CommitRecordSchema } from "../../src/gen/koidrive/v1/model_pb";
 import { Device, Server, SpaceClient, stats } from "./client";
-import { filePaths, removedByRewind, rewindMismatch } from "./rewind";
+import { filePaths, lastCommitAtOrBefore, removedByRewind, rewindMismatch } from "./rewind";
 import { addStats, readState } from "./state";
 
 const env = (name: string) => process.env[name] ?? "";
@@ -28,6 +28,7 @@ describe.skipIf(!env("REWIND_CHECK"))("the space around the e2e rewind", () => {
       const tree = await space.tree();
       const restoreSeq = BigInt(env("RESTORE_SEQ"));
       expect(rewindMismatch(before, await space.log(env("HISTORY_ID")), tree, restoreSeq)).toBeUndefined();
+      expect(restoreSeq, "restore_seq is the last commit at or before the restore point").toBe(lastCommitAtOrBefore(before, BigInt(env("RESTORE_POINT_MS"))));
       writeFileSync(join(env("E2E_TEMP"), "removed-by-rewind.json"), JSON.stringify(removedByRewind(before, restoreSeq)));
       let listing = "";
       for (const [path, node] of filePaths(tree)) {

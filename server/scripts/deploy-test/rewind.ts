@@ -49,6 +49,11 @@ export function filePaths(tree: Map<string, NodeState>): [string, NodeState][] {
     .sort(([a], [b]) => byPath(a, b));
 }
 
+export function lastCommitAtOrBefore(log: CommitRecord[], pointMs: bigint): bigint {
+  const after = log.findIndex((commit) => commit.committedAtMs > pointMs);
+  return (after < 0 ? log.at(-1) : log[after - 1])?.seq ?? 0n;
+}
+
 export function removedByRewind(log: CommitRecord[], restoreSeq: bigint): { items: string[]; files: string[] } {
   const head = replay(log, log.at(-1)?.seq ?? 0n);
   const restored = replay(log, restoreSeq);

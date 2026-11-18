@@ -642,7 +642,7 @@ const phases: Record<string, (step: string) => Promise<void>> = {
       API_POLL_MS,
     );
     console.log("Rewound the space to " + new Date(point).toISOString() + ": " + JSON.stringify(result));
-    checkRewind({ REWIND_CHECK: "after", SPACE_ID: space_id, HISTORY_ID: String(result.historyId), RESTORE_SEQ: String(result.restoreSeq) });
+    checkRewind({ REWIND_CHECK: "after", SPACE_ID: space_id, HISTORY_ID: String(result.historyId), RESTORE_SEQ: String(result.restoreSeq), RESTORE_POINT_MS: String(point) });
     const expected = readFileSync(temp("rewound-server-listing.txt"), "utf8");
     const removed = JSON.parse(readFileSync(temp("removed-by-rewind.json"), "utf8")) as { items: string[]; files: string[] };
     console.log("The rewind removed from the server: " + JSON.stringify(removed));

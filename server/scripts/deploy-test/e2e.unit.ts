@@ -7,7 +7,7 @@ import { create } from "@bufbuild/protobuf";
 import { afterEach, describe, expect, it } from "vitest";
 import { CommitRecordSchema, NodeKind, type NodeState, NodeStateSchema, NodeStatus } from "../../src/gen/koidrive/v1/model_pb";
 import { type Content, contents, format, holdsAsExpected, keypair, listing, matches, parseListing, seal, startDaemon, trees, unseal } from "./e2e.ts";
-import { removedByRewind, replay, rewindMismatch } from "./rewind.ts";
+import { lastCommitAtOrBefore, removedByRewind, replay, rewindMismatch } from "./rewind.ts";
 
 const roots: string[] = [];
 
@@ -123,6 +123,15 @@ describe("what a rewind removed from the space", () => {
       commit(5n, node("b2", "root", "b.txt", NodeKind.FILE, "b2"), node("t", "root", "t.txt", NodeKind.FILE, "t1")),
     ];
     expect(removedByRewind(log, 2n)).toEqual({ items: ["b.txt"], files: ["b.txt"] });
+  });
+});
+
+describe("the commit a rewind restores", () => {
+  const at = (seq: bigint, committedAtMs: bigint) => create(CommitRecordSchema, { seq, commitId: "c" + seq, committedAtMs });
+  const log = [at(1n, 100n), at(2n, 200n), at(3n, 200n), at(4n, 300n), at(5n, 250n)];
+
+  it("is the last commit before the first one committed after the restore point", () => {
+    expect([99n, 100n, 199n, 200n, 299n, 300n, 1000n].map((point) => lastCommitAtOrBefore(log, point))).toEqual([0n, 1n, 1n, 3n, 3n, 5n, 5n]);
   });
 });
 
