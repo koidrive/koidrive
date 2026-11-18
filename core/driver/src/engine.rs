@@ -646,6 +646,10 @@ impl Engine {
         Ok(())
     }
 
+    pub fn owes_relist(&self) -> bool {
+        self.commits.field_intents() && !self.trees.journal().listed()
+    }
+
     /// Replaces R, in the store and in the trees, with a bootstrap's tree that the log has caught up, and sets the
     /// cursor. S and L stay, so the planner then moves what differs (design §4.4). When the server reported that it
     /// is behind the cursor ([`Engine::server_behind`]), it lost commits this device applied, and S forgets the
@@ -673,6 +677,9 @@ impl Engine {
                 "the tree the server listed is not a valid tree: {error:?}"
             ))
         })?;
+        if self.owes_relist() {
+            self.trees.take_listed_intents(&tree);
+        }
         let gone: Vec<NodeId> = (self.trees.remote().iter())
             .map(|(id, _)| id)
             .filter(|id| tree.get(id).is_none())

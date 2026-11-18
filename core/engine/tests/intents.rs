@@ -9,7 +9,7 @@ use koidrive_engine::journal::{
     WireBase,
 };
 use koidrive_engine::state::{CommitsState, ContentValue};
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape, Tree};
 use koidrive_proto::v1::{self as proto, Welcome, op, op_result};
 
 const ROOT: &str = "root";
@@ -1197,4 +1197,58 @@ fn a_backfilled_folder_whose_create_the_server_applies_keeps_its_rows_held() {
     assert!(trees.state().unsent_creates.is_empty());
     assert_eq!(held_as(&trees, "d", Field::Place), Some((place, 1_800)));
     assert_eq!(rows_of(&trees, "d").len(), 2);
+}
+
+#[test]
+fn the_first_listing_that_names_intents_replaces_the_ids_computed_for_the_values_it_lists() {
+    let mut trees = Trees::new(ROOT);
+    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    synced(&mut trees, "g", file(ROOT, "b", 2), 1);
+    let renamed = RemoteNode {
+        meta_rev: 2,
+        meta_edit_rev: 2,
+        ..remote(file(ROOT, "c", 2), 1)
+    };
+    trees.set_remote("g".into(), renamed);
+    let place_of_g = held(&trees, "g", Field::Place);
+    let synced_place_of_g = trees
+        .synced_intents_apart_from_remote("g")
+        .unwrap()
+        .place
+        .clone();
+    trees.set_local_changed("f".into(), local(file(ROOT, "a", 3)));
+    let server = |n| NodeIntents {
+        place: Some(FieldIntent::legacy(id(n))),
+        content: Some(FieldIntent::legacy(id(n + 1))),
+        status: Some(FieldIntent::legacy(id(n + 2))),
+    };
+    let mut listed: Tree<RemoteNode> = Tree::new(ROOT);
+    for (node, shape, n) in [("f", file(ROOT, "a", 1), 1), ("g", file(ROOT, "d", 2), 4)] {
+        let listing = RemoteNode {
+            intents: Some(server(n)),
+            ..remote(shape, 1)
+        };
+        listed.insert(node.into(), listing);
+    }
+    assert!(!trees.journal().listed());
+    trees.take_listed_intents(&listed);
+    assert_eq!(trees.remote().get("f").unwrap().intents, Some(server(1)));
+    assert_eq!(trees.synced_intents("f"), Some(server(1)));
+    assert_eq!(
+        trees.journal_row("f", Field::Content).unwrap().base,
+        Some(id(2))
+    );
+    let history: Vec<IntentId> = (trees.journal().history("f", Field::Content).iter())
+        .map(|entry| entry.intent)
+        .collect();
+    assert_eq!(history, [id(2)]);
+    assert_eq!(held(&trees, "g", Field::Place), place_of_g);
+    assert_eq!(held(&trees, "g", Field::Content), id(5));
+    let synced_g = trees.synced_intents_apart_from_remote("g").unwrap();
+    assert_eq!(synced_g.place, synced_place_of_g);
+    assert_eq!(
+        synced_g.content.as_ref().map(|intent| intent.id),
+        Some(id(5))
+    );
+    assert!(trees.journal().listed());
 }
