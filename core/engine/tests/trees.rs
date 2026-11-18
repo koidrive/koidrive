@@ -194,6 +194,7 @@ fn reads_node_states_and_refuses_kinds_this_version_does_not_sync() {
         edit_rev: 0,
         pending_for: String::new(),
         pending_by: String::new(),
+        ..Default::default()
     };
     let (id, node) = RemoteNode::from_state(&state).unwrap();
     assert_eq!(id, "n");

@@ -37,3 +37,4 @@ Spec v0 was drafted outside this repository, and the schema here is its current 
 | [0025](rfc/0025-server-build-and-storage.md) | The server reports its storage versions and the commit it was built from | Spec v0 §15 (`GET /v1/server`); RFC 0022 |
 | [0027](rfc/0027-chunk-bundles.md) | Several chunk uploads in one request | Spec v0 §15 chunk relay; RFC 0022 |
 | [0028](rfc/0028-error-causes.md) | A failure names what failed inside the server | Spec v0 §13 (`Error`) |
+| [0029](rfc/0029-recorded-intents.md) | Every user change gets an intent id that the server records per field, so a device recovers from a server loss by comparing ids | Spec v0 §6.2 R3, R7 and R8; RFC 0004 §3 to §5, RFC 0006 §8, RFC 0017, RFC 0018, RFC 0019, RFC 0022 and RFC 0026 (not folded into them); sync-engine design §2.8, §4.4 and §6.4 |

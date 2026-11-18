@@ -1046,6 +1046,7 @@ fn three_trees_round_trip() {
         edit_rev: 0,
         pending_for: "a.txt".into(),
         pending_by: "d1".into(),
+        ..Default::default()
     };
     let synced = [
         SyncedNode {
@@ -1228,16 +1229,21 @@ fn engine_state() -> EngineState {
                     content: Some(content(3)),
                     made_over: Vec::new(),
                     source_version_id: String::new(),
+                    ..Default::default()
                 })),
+                ..Default::default()
             },
             Op {
                 op: Some(op::Op::Delete(Delete {
                     node_id: "old".into(),
                     requires: None,
+                    ..Default::default()
                 })),
+                ..Default::default()
             },
             Op {
                 op: Some(op::Op::Restore(from_trash(1).op().clone())),
+                ..Default::default()
             },
         ],
         history_id: "h1".into(),
@@ -3352,7 +3358,7 @@ fn a_rename_a_store_recorded_before_pending_marks_is_finished_after_the_upgrade_
     assert!(
         matches!(
             sent.ops.as_slice(),
-            [Op { op: Some(op::Op::Move(moved)) }] if moved.node_id == "d" && moved.new_name == "A"
+            [Op { op: Some(op::Op::Move(moved)), .. }] if moved.node_id == "d" && moved.new_name == "A"
         ),
         "{:?}",
         sent.ops
@@ -3370,6 +3376,7 @@ fn a_store_that_recorded_a_pending_name_its_commit_in_flight_sends_opens_owing_t
             name: "A (pending)".into(),
             ..Default::default()
         })),
+        ..Default::default()
     };
     let mut state = EngineState::default();
     state.commits.in_flight = Some(InFlight {

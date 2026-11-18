@@ -857,8 +857,9 @@ class Run {
   private checkNodeState(space: string, wanted: Json, got: NodeState, complete: boolean): void {
     const want = keys(wanted, "a node", complete ? [...NODE_FIELDS, "edit_rev", "meta_edit_rev"] : [...NODE_FIELDS, "absent", "content", "edit_rev", "meta_edit_rev"]);
     if (complete) every(want, NODE_FIELDS);
-    covered(NodeStateSchema, ["nodeId", "parentId", "name", "kind", "status", "contentRev", "metaRev", "trashGroup", "current", "pendingFor", "pendingBy", "editRev", "metaEditRev"]);
+    covered(NodeStateSchema, ["nodeId", "parentId", "name", "kind", "status", "contentRev", "metaRev", "trashGroup", "current", "pendingFor", "pendingBy", "editRev", "metaEditRev", "intents", "trashHeld"]);
     const symbol = req(optStr(want, "node"), "node");
+    if (got.intents !== undefined || got.trashHeld.length > 0) fail(`${symbol} reports field intents, which no scenario expects yet`);
     within("node", () => this.expectId(space, symbol, got.nodeId));
     const differs = (field: string, value: unknown) => fail(`${symbol}.${field} is ${String(value)}, expected ${show(want[field])}`);
     const parent = optStr(want, "parent");

@@ -1321,6 +1321,7 @@ impl Commits {
                         new_name: name,
                         pending_for: String::new(),
                     })),
+                    ..Default::default()
                 });
             }
         }
@@ -1445,6 +1446,7 @@ impl Commits {
                     content_rev: held.content_rev,
                     meta_rev: held.meta_rev,
                 }),
+                ..Default::default()
             });
             let op = match question.answer {
                 Some(Answer::KeepOriginal) => Some(delete_copy),
@@ -1477,7 +1479,13 @@ impl Commits {
             {
                 taken.insert(original.node_id.clone());
                 taken.insert(copy.node_id.clone());
-                ops.push((question.id.clone(), proto::Op { op: Some(op) }));
+                ops.push((
+                    question.id.clone(),
+                    proto::Op {
+                        op: Some(op),
+                        ..Default::default()
+                    },
+                ));
             }
             kept.push(question);
         }
@@ -3662,6 +3670,7 @@ fn plan(
                         parent_id: shape.parent,
                         name: shape.name,
                         content: shape.content,
+                        ..Default::default()
                     }),
                 }
             }
@@ -3723,6 +3732,7 @@ fn plan(
                 op::Op::Delete(proto::Delete {
                     node_id: id,
                     requires,
+                    ..Default::default()
                 })
             }
             Want::Retrash { id, members } => {
@@ -3735,13 +3745,17 @@ fn plan(
                         from: None,
                         pending_for: String::new(),
                     });
-                    ops.push(proto::Op { op: Some(placed) });
+                    ops.push(proto::Op {
+                        op: Some(placed),
+                        ..Default::default()
+                    });
                 }
                 scratch.trash(&id);
                 deletes.insert(id.clone(), members.into_iter().collect());
                 op::Op::Delete(proto::Delete {
                     node_id: id,
                     requires: None,
+                    ..Default::default()
                 })
             }
             Want::Restore { op, .. } => {
@@ -3766,7 +3780,10 @@ fn plan(
                 op::Op::Restore(op)
             }
         };
-        ops.push(proto::Op { op: Some(op) });
+        ops.push(proto::Op {
+            op: Some(op),
+            ..Default::default()
+        });
     };
     let mut emitted = answered.len();
     let mut bytes = (answered.iter().filter_map(|op| op.op.as_ref()))

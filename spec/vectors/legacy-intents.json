@@ -1,0 +1,48 @@
+{
+  "namespace": "701471d0-f5ea-47eb-936a-485a91d0891e",
+  "name": "utf8(node_id) || 0x00 || utf8(field) || 0x00 || utf8(key)",
+  "vectors": [
+    {
+      "node_id": "0190f5c2-0000-7000-8000-000000000001",
+      "field": "content",
+      "key": "0190f5c2-0000-7000-8000-0000000000aa",
+      "id": "0617f58f-c845-5692-8316-de6f361ad5a0",
+      "note": "content: the version id"
+    },
+    {
+      "node_id": "0190f5c2-0000-7000-8000-000000000001",
+      "field": "place",
+      "key": "7\u00000190f5c2-0000-7000-8000-0000000000ff\u0000a.txt",
+      "id": "13f050d4-d16a-5d76-ab59-f51db416fb90",
+      "note": "child of the root: meta_rev 7, parent is the space id 0190f5c2-0000-7000-8000-0000000000ff, name a.txt"
+    },
+    {
+      "node_id": "0190f5c2-0000-7000-8000-0000000000ff",
+      "field": "place",
+      "key": "1\u0000\u0000",
+      "id": "eac73bee-779b-5928-86bb-539516caee66",
+      "note": "the root itself, whose node id is the space id: meta_rev 1, parent \"\", name \"\""
+    },
+    {
+      "node_id": "0190f5c2-0000-7000-8000-000000000001",
+      "field": "place",
+      "key": "12\u00000190f5c2-0000-7000-8000-000000000002\u0000Caf\u00e9.docx",
+      "id": "2b180756-a1a0-5a20-a3c3-841ca61e6c56",
+      "note": "place in a folder, with the stored NFC name"
+    },
+    {
+      "node_id": "0190f5c2-0000-7000-8000-000000000001",
+      "field": "status",
+      "key": "live:3",
+      "id": "3b989859-249b-57bf-99ef-8a2f8a5cccb9",
+      "note": "live since the commit at seq 3"
+    },
+    {
+      "node_id": "0190f5c2-0000-7000-8000-000000000001",
+      "field": "status",
+      "key": "trashed:0190f5c2-0000-7000-8000-0000000000c1:0",
+      "id": "4dcc8899-2162-52a4-8c32-1c26c79da8c6",
+      "note": "trashed in trash group <commit_id>:0"
+    }
+  ]
+}

@@ -3369,6 +3369,7 @@ mod tests {
         let [
             koidrive_proto::v1::Op {
                 op: Some(op::Op::UpdateContent(edit)),
+                ..
             },
         ] = flight.commit.ops.as_mut_slice()
         else {
@@ -3465,6 +3466,7 @@ mod tests {
         let [
             koidrive_proto::v1::Op {
                 op: Some(op::Op::UpdateContent(edit)),
+                ..
             },
         ] = flight.commit.ops.as_slice()
         else {
@@ -3509,7 +3511,10 @@ mod tests {
             let commit = Commit {
                 commit_id: ids.uuid_v7(1),
                 base_seq: space.head_seq(),
-                ops: vec![koidrive_proto::v1::Op { op: Some(op) }],
+                ops: vec![koidrive_proto::v1::Op {
+                    op: Some(op),
+                    ..Default::default()
+                }],
                 history_id: space.history_id().into(),
                 device_seq: space.device_seq(&session.device_id) + 1,
                 ..Default::default()

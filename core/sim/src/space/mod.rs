@@ -166,6 +166,7 @@ impl State {
                 .cur_version_id
                 .as_ref()
                 .map(|id| self.version_info(&self.versions[id])),
+            ..Default::default()
         }
     }
 }
@@ -647,6 +648,7 @@ impl SpaceDo {
             .retain(|_, version| version.node_id != node_id);
         let purged = NodePurged {
             node_id: node_id.to_owned(),
+            ..Default::default()
         };
         let seq = self.head_seq + 1;
         self.log.push(CommitRecord {
@@ -1230,7 +1232,10 @@ mod tests {
             let commit = Commit {
                 commit_id: ids.uuid_v7(1),
                 base_seq: space.head_seq(),
-                ops: vec![Op { op: Some(op) }],
+                ops: vec![Op {
+                    op: Some(op),
+                    ..Default::default()
+                }],
                 history_id: space.history_id().into(),
                 device_seq: space.device_seq(&session.device_id) + 1,
                 ..Default::default()
@@ -1251,6 +1256,7 @@ mod tests {
             op::Op::Delete(Delete {
                 node_id: dir.clone(),
                 requires: None,
+                ..Default::default()
             }),
         );
         let stored = space.state.nodes.get_mut(&dir).unwrap();

@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file koidrive/v1/model.proto.
  */
 export const file_koidrive_v1_model: GenFile = /*@__PURE__*/
-  fileDesc("Chdrb2lkcml2ZS92MS9tb2RlbC5wcm90bxILa29pZHJpdmUudjEiOAoIQ2h1bmtSZWYSDAoEaGFzaBgBIAEoDBIMCgRzaXplGAIgASgNEhAKCGVuY29kaW5nGAMgASgNIqMBCgdDb250ZW50EgwKBHNpemUYASABKAQSEAoIbXRpbWVfbnMYAiABKAMSEgoKZXhlY3V0YWJsZRgDIAEoCBIlCgZjaHVua3MYBCADKAsyFS5rb2lkcml2ZS52MS5DaHVua1JlZhITCgtjaHVua19jb3VudBgFIAEoDRIXCg9tYW5pZmVzdF9kaWdlc3QYBiABKAwSDwoHY2h1bmtlchgHIAEoCSKjAQoLVmVyc2lvbkluZm8SEgoKdmVyc2lvbl9pZBgBIAEoCRILCgNzZXEYAiABKAQSJQoHY29udGVudBgDIAEoCzIULmtvaWRyaXZlLnYxLkNvbnRlbnQSEQoJZGV2aWNlX2lkGAQgASgJEg8KB3VzZXJfaWQYBSABKAkSFQoNY3JlYXRlZF9hdF9tcxgGIAEoAxIRCgltYWRlX292ZXIYByADKAkixAIKCU5vZGVTdGF0ZRIPCgdub2RlX2lkGAEgASgJEhEKCXBhcmVudF9pZBgCIAEoCRIMCgRuYW1lGAMgASgJEiMKBGtpbmQYBCABKA4yFS5rb2lkcml2ZS52MS5Ob2RlS2luZBInCgZzdGF0dXMYBSABKA4yFy5rb2lkcml2ZS52MS5Ob2RlU3RhdHVzEhMKC2NvbnRlbnRfcmV2GAYgASgEEhAKCG1ldGFfcmV2GAcgASgEEhMKC3RyYXNoX2dyb3VwGAggASgJEikKB2N1cnJlbnQYCSABKAsyGC5rb2lkcml2ZS52MS5WZXJzaW9uSW5mbxITCgtwZW5kaW5nX2ZvchgKIAEoCRISCgpwZW5kaW5nX2J5GAsgASgJEhAKCGVkaXRfcmV2GAwgASgEEhUKDW1ldGFfZWRpdF9yZXYYDSABKAQixQEKDENoYW5nZVJlY29yZBImCgRub2RlGAEgASgLMhYua29pZHJpdmUudjEuTm9kZVN0YXRlSAASKQoGcHVyZ2VkGAIgASgLMhcua29pZHJpdmUudjEuTm9kZVB1cmdlZEgAEioKBXNwYWNlGAMgASgLMhkua29pZHJpdmUudjEuU3BhY2VVcGRhdGVkSAASLAoGbWVtYmVyGAQgASgLMhoua29pZHJpdmUudjEuTWVtYmVyVXBkYXRlZEgAQggKBmNoYW5nZSIdCgpOb2RlUHVyZ2VkEg8KB25vZGVfaWQYASABKAkiDgoMU3BhY2VVcGRhdGVkIg8KDU1lbWJlclVwZGF0ZWQipwEKDENvbW1pdFJlY29yZBILCgNzZXEYASABKAQSEQoJY29tbWl0X2lkGAIgASgJEhEKCWRldmljZV9pZBgDIAEoCRIPCgd1c2VyX2lkGAQgASgJEhcKD2NvbW1pdHRlZF9hdF9tcxgFIAEoAxIqCgdjaGFuZ2VzGAYgAygLMhkua29pZHJpdmUudjEuQ2hhbmdlUmVjb3JkEg4KBnJ1bl9pZBgHIAEoCSpjCghOb2RlS2luZBIZChVOT0RFX0tJTkRfVU5TUEVDSUZJRUQQABIRCg1OT0RFX0tJTkRfRElSEAESEgoOTk9ERV9LSU5EX0ZJTEUQAhIVChFOT0RFX0tJTkRfU1lNTElOSxADKlgKCk5vZGVTdGF0dXMSGwoXTk9ERV9TVEFUVVNfVU5TUEVDSUZJRUQQABIUChBOT0RFX1NUQVRVU19MSVZFEAESFwoTTk9ERV9TVEFUVVNfVFJBU0hFRBACYgZwcm90bzM");
+  fileDesc("Chdrb2lkcml2ZS92MS9tb2RlbC5wcm90bxILa29pZHJpdmUudjEiOAoIQ2h1bmtSZWYSDAoEaGFzaBgBIAEoDBIMCgRzaXplGAIgASgNEhAKCGVuY29kaW5nGAMgASgNIqMBCgdDb250ZW50EgwKBHNpemUYASABKAQSEAoIbXRpbWVfbnMYAiABKAMSEgoKZXhlY3V0YWJsZRgDIAEoCBIlCgZjaHVua3MYBCADKAsyFS5rb2lkcml2ZS52MS5DaHVua1JlZhITCgtjaHVua19jb3VudBgFIAEoDRIXCg9tYW5pZmVzdF9kaWdlc3QYBiABKAwSDwoHY2h1bmtlchgHIAEoCSKjAQoLVmVyc2lvbkluZm8SEgoKdmVyc2lvbl9pZBgBIAEoCRILCgNzZXEYAiABKAQSJQoHY29udGVudBgDIAEoCzIULmtvaWRyaXZlLnYxLkNvbnRlbnQSEQoJZGV2aWNlX2lkGAQgASgJEg8KB3VzZXJfaWQYBSABKAkSFQoNY3JlYXRlZF9hdF9tcxgGIAEoAxIRCgltYWRlX292ZXIYByADKAkihAMKCU5vZGVTdGF0ZRIPCgdub2RlX2lkGAEgASgJEhEKCXBhcmVudF9pZBgCIAEoCRIMCgRuYW1lGAMgASgJEiMKBGtpbmQYBCABKA4yFS5rb2lkcml2ZS52MS5Ob2RlS2luZBInCgZzdGF0dXMYBSABKA4yFy5rb2lkcml2ZS52MS5Ob2RlU3RhdHVzEhMKC2NvbnRlbnRfcmV2GAYgASgEEhAKCG1ldGFfcmV2GAcgASgEEhMKC3RyYXNoX2dyb3VwGAggASgJEikKB2N1cnJlbnQYCSABKAsyGC5rb2lkcml2ZS52MS5WZXJzaW9uSW5mbxITCgtwZW5kaW5nX2ZvchgKIAEoCRISCgpwZW5kaW5nX2J5GAsgASgJEhAKCGVkaXRfcmV2GAwgASgEEhUKDW1ldGFfZWRpdF9yZXYYDSABKAQSKgoHaW50ZW50cxgOIAEoCzIZLmtvaWRyaXZlLnYxLkZpZWxkSW50ZW50cxISCgp0cmFzaF9oZWxkGA8gAygMImMKBkludGVudBIKCgJpZBgBIAEoDBIYChBhdXRob3JfZGV2aWNlX2lkGAIgASgJEg4KBnJlcGxheRgDIAEoCBIMCgRvdmVyGAQgASgMEhUKDWFwcGxpZWRfYXRfbXMYBSABKAMifQoMRmllbGRJbnRlbnRzEiIKBXBsYWNlGAEgASgLMhMua29pZHJpdmUudjEuSW50ZW50EiQKB2NvbnRlbnQYAiABKAsyEy5rb2lkcml2ZS52MS5JbnRlbnQSIwoGc3RhdHVzGAMgASgLMhMua29pZHJpdmUudjEuSW50ZW50IsUBCgxDaGFuZ2VSZWNvcmQSJgoEbm9kZRgBIAEoCzIWLmtvaWRyaXZlLnYxLk5vZGVTdGF0ZUgAEikKBnB1cmdlZBgCIAEoCzIXLmtvaWRyaXZlLnYxLk5vZGVQdXJnZWRIABIqCgVzcGFjZRgDIAEoCzIZLmtvaWRyaXZlLnYxLlNwYWNlVXBkYXRlZEgAEiwKBm1lbWJlchgEIAEoCzIaLmtvaWRyaXZlLnYxLk1lbWJlclVwZGF0ZWRIAEIICgZjaGFuZ2UibwoKTm9kZVB1cmdlZBIPCgdub2RlX2lkGAEgASgJEhYKDmxhc3RfcGFyZW50X2lkGAIgASgJEioKB2ludGVudHMYAyABKAsyGS5rb2lkcml2ZS52MS5GaWVsZEludGVudHMSDAoEaGVsZBgEIAMoDCIOCgxTcGFjZVVwZGF0ZWQiDwoNTWVtYmVyVXBkYXRlZCKnAQoMQ29tbWl0UmVjb3JkEgsKA3NlcRgBIAEoBBIRCgljb21taXRfaWQYAiABKAkSEQoJZGV2aWNlX2lkGAMgASgJEg8KB3VzZXJfaWQYBCABKAkSFwoPY29tbWl0dGVkX2F0X21zGAUgASgDEioKB2NoYW5nZXMYBiADKAsyGS5rb2lkcml2ZS52MS5DaGFuZ2VSZWNvcmQSDgoGcnVuX2lkGAcgASgJKmMKCE5vZGVLaW5kEhkKFU5PREVfS0lORF9VTlNQRUNJRklFRBAAEhEKDU5PREVfS0lORF9ESVIQARISCg5OT0RFX0tJTkRfRklMRRACEhUKEU5PREVfS0lORF9TWU1MSU5LEAMqWAoKTm9kZVN0YXR1cxIbChdOT0RFX1NUQVRVU19VTlNQRUNJRklFRBAAEhQKEE5PREVfU1RBVFVTX0xJVkUQARIXChNOT0RFX1NUQVRVU19UUkFTSEVEEAJiBnByb3RvMw");
 
 /**
  * A content-addressed piece of a file.
@@ -231,6 +231,20 @@ export type NodeState = Message<"koidrive.v1.NodeState"> & {
    * @generated from field: uint64 meta_edit_rev = 13;
    */
   metaEditRev: bigint;
+
+  /**
+   * The intent that set each field (RFC 0029). Empty from a server without field_intents.
+   *
+   * @generated from field: koidrive.v1.FieldIntents intents = 14;
+   */
+  intents?: FieldIntents | undefined;
+
+  /**
+   * On a trashed node: the held lists of the delete that trashed it and of each later delete while it stays trashed (RFC 0029).
+   *
+   * @generated from field: repeated bytes trash_held = 15;
+   */
+  trashHeld: Uint8Array[];
 };
 
 /**
@@ -239,6 +253,82 @@ export type NodeState = Message<"koidrive.v1.NodeState"> & {
  */
 export const NodeStateSchema: GenMessage<NodeState> = /*@__PURE__*/
   messageDesc(file_koidrive_v1_model, 3);
+
+/**
+ * One user change to one node (RFC 0029).
+ *
+ * @generated from message koidrive.v1.Intent
+ */
+export type Intent = Message<"koidrive.v1.Intent"> & {
+  /**
+   * UUIDv7 minted by the author's device, 16 bytes.
+   *
+   * @generated from field: bytes id = 1;
+   */
+  id: Uint8Array;
+
+  /**
+   * @generated from field: string author_device_id = 2;
+   */
+  authorDeviceId: string;
+
+  /**
+   * On an op: a send of an intent whose commit the server lost. On a NodeState: the value is carried.
+   *
+   * @generated from field: bool replay = 3;
+   */
+  replay: boolean;
+
+  /**
+   * On an op: the intent a Move expects the node's place to hold, or a Delete its status; otherwise it is answered
+   * CODE_SUPERSEDED. On a trashed NodeState's status: the status intent the trash replaced.
+   *
+   * @generated from field: bytes over = 4;
+   */
+  over: Uint8Array;
+
+  /**
+   * The committed_at_ms of the commit that first applied this intent (RFC 0013). Set by the server on a NodeState;
+   * a replay repeats the time its earlier result reported.
+   *
+   * @generated from field: int64 applied_at_ms = 5;
+   */
+  appliedAtMs: bigint;
+};
+
+/**
+ * Describes the message koidrive.v1.Intent.
+ * Use `create(IntentSchema)` to create a new message.
+ */
+export const IntentSchema: GenMessage<Intent> = /*@__PURE__*/
+  messageDesc(file_koidrive_v1_model, 4);
+
+/**
+ * @generated from message koidrive.v1.FieldIntents
+ */
+export type FieldIntents = Message<"koidrive.v1.FieldIntents"> & {
+  /**
+   * @generated from field: koidrive.v1.Intent place = 1;
+   */
+  place?: Intent | undefined;
+
+  /**
+   * @generated from field: koidrive.v1.Intent content = 2;
+   */
+  content?: Intent | undefined;
+
+  /**
+   * @generated from field: koidrive.v1.Intent status = 3;
+   */
+  status?: Intent | undefined;
+};
+
+/**
+ * Describes the message koidrive.v1.FieldIntents.
+ * Use `create(FieldIntentsSchema)` to create a new message.
+ */
+export const FieldIntentsSchema: GenMessage<FieldIntents> = /*@__PURE__*/
+  messageDesc(file_koidrive_v1_model, 5);
 
 /**
  * @generated from message koidrive.v1.ChangeRecord
@@ -279,7 +369,7 @@ export type ChangeRecord = Message<"koidrive.v1.ChangeRecord"> & {
  * Use `create(ChangeRecordSchema)` to create a new message.
  */
 export const ChangeRecordSchema: GenMessage<ChangeRecord> = /*@__PURE__*/
-  messageDesc(file_koidrive_v1_model, 4);
+  messageDesc(file_koidrive_v1_model, 6);
 
 /**
  * @generated from message koidrive.v1.NodePurged
@@ -289,6 +379,23 @@ export type NodePurged = Message<"koidrive.v1.NodePurged"> & {
    * @generated from field: string node_id = 1;
    */
   nodeId: string;
+
+  /**
+   * The tombstone a purge keeps (RFC 0029): the parent the node last had, its field intents and the trash's held list.
+   *
+   * @generated from field: string last_parent_id = 2;
+   */
+  lastParentId: string;
+
+  /**
+   * @generated from field: koidrive.v1.FieldIntents intents = 3;
+   */
+  intents?: FieldIntents | undefined;
+
+  /**
+   * @generated from field: repeated bytes held = 4;
+   */
+  held: Uint8Array[];
 };
 
 /**
@@ -296,7 +403,7 @@ export type NodePurged = Message<"koidrive.v1.NodePurged"> & {
  * Use `create(NodePurgedSchema)` to create a new message.
  */
 export const NodePurgedSchema: GenMessage<NodePurged> = /*@__PURE__*/
-  messageDesc(file_koidrive_v1_model, 5);
+  messageDesc(file_koidrive_v1_model, 7);
 
 /**
  * Fields to be defined in a later spec revision.
@@ -311,7 +418,7 @@ export type SpaceUpdated = Message<"koidrive.v1.SpaceUpdated"> & {
  * Use `create(SpaceUpdatedSchema)` to create a new message.
  */
 export const SpaceUpdatedSchema: GenMessage<SpaceUpdated> = /*@__PURE__*/
-  messageDesc(file_koidrive_v1_model, 6);
+  messageDesc(file_koidrive_v1_model, 8);
 
 /**
  * Fields to be defined in a later spec revision.
@@ -326,7 +433,7 @@ export type MemberUpdated = Message<"koidrive.v1.MemberUpdated"> & {
  * Use `create(MemberUpdatedSchema)` to create a new message.
  */
 export const MemberUpdatedSchema: GenMessage<MemberUpdated> = /*@__PURE__*/
-  messageDesc(file_koidrive_v1_model, 7);
+  messageDesc(file_koidrive_v1_model, 9);
 
 /**
  * @generated from message koidrive.v1.CommitRecord
@@ -375,7 +482,7 @@ export type CommitRecord = Message<"koidrive.v1.CommitRecord"> & {
  * Use `create(CommitRecordSchema)` to create a new message.
  */
 export const CommitRecordSchema: GenMessage<CommitRecord> = /*@__PURE__*/
-  messageDesc(file_koidrive_v1_model, 8);
+  messageDesc(file_koidrive_v1_model, 10);
 
 /**
  * @generated from enum koidrive.v1.NodeKind

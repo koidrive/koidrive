@@ -721,6 +721,7 @@ mod tests {
                     content: Some(Content::default()),
                     ..Default::default()
                 })),
+                ..Default::default()
             }],
             ..Default::default()
         }
@@ -1018,6 +1019,7 @@ mod tests {
         });
         upload.ops.push(Op {
             op: Some(op::Op::UpdateContent(update)),
+            ..Default::default()
         });
         timing.uploading(&upload, at);
         let accepted = CommitResult {

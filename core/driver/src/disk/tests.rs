@@ -573,6 +573,7 @@ fn remote(id: &str, name: &str, content: Option<Content>) -> NodeState {
         }),
         pending_for: String::new(),
         pending_by: String::new(),
+        ..Default::default()
     }
 }
 

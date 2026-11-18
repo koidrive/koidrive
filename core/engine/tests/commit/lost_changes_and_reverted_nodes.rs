@@ -329,7 +329,8 @@ fn a_renamed_file_the_user_deletes_before_it_moves_is_deleted() {
         ops(&commit),
         [op::Op::Delete(proto::Delete {
             node_id: "a".into(),
-            requires: None
+            requires: None,
+            ..Default::default()
         })]
     );
 }

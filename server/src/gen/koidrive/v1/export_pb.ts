@@ -6,7 +6,7 @@
 
 import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { NodeState, VersionInfo } from "./model_pb";
+import type { NodePurged, NodeState, VersionInfo } from "./model_pb";
 import { file_koidrive_v1_model } from "./model_pb";
 import type { Message } from "@bufbuild/protobuf";
 
@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file koidrive/v1/export.proto.
  */
 export const file_koidrive_v1_export: GenFile = /*@__PURE__*/
-  fileDesc("Chhrb2lkcml2ZS92MS9leHBvcnQucHJvdG8SC2tvaWRyaXZlLnYxIlwKDEV4cG9ydEhlYWRlchIOCgZmb3JtYXQYASABKAkSFgoOZm9ybWF0X3ZlcnNpb24YAiABKA0SEAoIc3BhY2VfaWQYAyABKAkSEgoKaGlzdG9yeV9pZBgEIAEoCSJ7CgxOb2RlU25hcHNob3QSJAoEbm9kZRgBIAEoCzIWLmtvaWRyaXZlLnYxLk5vZGVTdGF0ZRIuCghwcmV2aW91cxgCIAMoCzIcLmtvaWRyaXZlLnYxLlJldGFpbmVkVmVyc2lvbhIVCg10cmFzaGVkX2F0X21zGAMgASgDIlYKD1JldGFpbmVkVmVyc2lvbhIpCgd2ZXJzaW9uGAEgASgLMhgua29pZHJpdmUudjEuVmVyc2lvbkluZm8SGAoQc3VwZXJzZWRlZF9hdF9tcxgCIAEoA2IGcHJvdG8z", [file_koidrive_v1_model]);
+  fileDesc("Chhrb2lkcml2ZS92MS9leHBvcnQucHJvdG8SC2tvaWRyaXZlLnYxIlwKDEV4cG9ydEhlYWRlchIOCgZmb3JtYXQYASABKAkSFgoOZm9ybWF0X3ZlcnNpb24YAiABKA0SEAoIc3BhY2VfaWQYAyABKAkSEgoKaGlzdG9yeV9pZBgEIAEoCSKnAQoMTm9kZVNuYXBzaG90EiQKBG5vZGUYASABKAsyFi5rb2lkcml2ZS52MS5Ob2RlU3RhdGUSLgoIcHJldmlvdXMYAiADKAsyHC5rb2lkcml2ZS52MS5SZXRhaW5lZFZlcnNpb24SFQoNdHJhc2hlZF9hdF9tcxgDIAEoAxIqCgl0b21ic3RvbmUYBCABKAsyFy5rb2lkcml2ZS52MS5Ob2RlUHVyZ2VkIlYKD1JldGFpbmVkVmVyc2lvbhIpCgd2ZXJzaW9uGAEgASgLMhgua29pZHJpdmUudjEuVmVyc2lvbkluZm8SGAoQc3VwZXJzZWRlZF9hdF9tcxgCIAEoA2IGcHJvdG8z", [file_koidrive_v1_model]);
 
 /**
  * The first record of every R2 export file (spec v0 section 11, RFC 0004).
@@ -76,6 +76,14 @@ export type NodeSnapshot = Message<"koidrive.v1.NodeSnapshot"> & {
    * @generated from field: int64 trashed_at_ms = 3;
    */
   trashedAtMs: bigint;
+
+  /**
+   * A purged node's tombstone (RFC 0029). Set on a record with no node, in node id order with the node records, only in
+   * a snapshot at format_version 2.
+   *
+   * @generated from field: koidrive.v1.NodePurged tombstone = 4;
+   */
+  tombstone?: NodePurged | undefined;
 };
 
 /**

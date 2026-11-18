@@ -50,9 +50,11 @@ fn create_file(parent_id: &str, name: &str, content: Content) -> Op {
         parent_id: parent_id.into(),
         name: name.into(),
         content: Some(content),
+        ..Default::default()
     };
     Op {
         op: Some(op::Op::CreateFile(file)),
+        ..Default::default()
     }
 }
 

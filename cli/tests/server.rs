@@ -456,6 +456,7 @@ async fn a_headless_device_pairs_links_and_follows_the_change_stream() {
             name: "From the owner".into(),
             pending_for: String::new(),
         })),
+        ..Default::default()
     };
     let committed = session
         .commit(Commit {
@@ -996,7 +997,13 @@ async fn commit_as_owner(
         .commit(Commit {
             commit_id: uuidv7(),
             base_seq: welcome.head_seq,
-            ops: ops.into_iter().map(|op| Op { op: Some(op) }).collect(),
+            ops: ops
+                .into_iter()
+                .map(|op| Op {
+                    op: Some(op),
+                    ..Default::default()
+                })
+                .collect(),
             receipts,
             history_id: welcome.history_id.clone(),
             device_seq: welcome.device_seq + 1,
@@ -1081,6 +1088,7 @@ async fn trash_and_versions_list_what_the_space_keeps() {
                 parent_id: docs.clone(),
                 name: "note.txt".into(),
                 content: Some(file_content(b"first")),
+                ..Default::default()
             }),
             op::Op::CreateFile(CreateFile {
                 made_over: Vec::new(),
@@ -1089,6 +1097,7 @@ async fn trash_and_versions_list_what_the_space_keeps() {
                 parent_id: docs.clone(),
                 name: "gone.txt".into(),
                 content: Some(file_content(b"deleted later")),
+                ..Default::default()
             }),
             op::Op::CreateFile(CreateFile {
                 made_over: Vec::new(),
@@ -1097,6 +1106,7 @@ async fn trash_and_versions_list_what_the_space_keeps() {
                 parent_id: docs.clone(),
                 name: "link.txt".into(),
                 content: Some(file_content(b"link")),
+                ..Default::default()
             }),
             op::Op::CreateFile(CreateFile {
                 made_over: Vec::new(),
@@ -1105,6 +1115,7 @@ async fn trash_and_versions_list_what_the_space_keeps() {
                 parent_id: docs.clone(),
                 name: "target.txt".into(),
                 content: Some(file_content(b"target text")),
+                ..Default::default()
             }),
         ],
     )
@@ -1127,6 +1138,7 @@ async fn trash_and_versions_list_what_the_space_keeps() {
             op::Op::Delete(Delete {
                 node_id: gone,
                 requires: None,
+                ..Default::default()
             }),
         ],
     )
@@ -1274,6 +1286,7 @@ async fn restore_brings_back_a_deleted_file_and_an_earlier_version() {
                 parent_id: docs.clone(),
                 name: "note.txt".into(),
                 content: Some(file_content(b"first")),
+                ..Default::default()
             }),
             op::Op::CreateFile(CreateFile {
                 made_over: Vec::new(),
@@ -1282,6 +1295,7 @@ async fn restore_brings_back_a_deleted_file_and_an_earlier_version() {
                 parent_id: docs,
                 name: "gone.txt".into(),
                 content: Some(file_content(b"deleted later")),
+                ..Default::default()
             }),
         ],
     )
@@ -1307,6 +1321,7 @@ async fn restore_brings_back_a_deleted_file_and_an_earlier_version() {
             op::Op::Delete(Delete {
                 node_id: gone,
                 requires: None,
+                ..Default::default()
             }),
         ],
     )
@@ -1974,6 +1989,7 @@ async fn uninstall_signs_out_removes_the_service_and_keeps_every_synced_file() {
             parent_id: space.space_id.clone(),
             name: "Slides.pptx".into(),
             content: Some(file_content(b"written on another device")),
+            ..Default::default()
         })],
     )
     .await;
@@ -2139,6 +2155,7 @@ async fn a_share_link_opens_what_it_shares_until_it_is_revoked() {
                 parent_id: docs.clone(),
                 name: "plan.txt".into(),
                 content: Some(file_content(b"the plan")),
+                ..Default::default()
             }),
         ],
     )
@@ -2155,6 +2172,7 @@ async fn a_share_link_opens_what_it_shares_until_it_is_revoked() {
             parent_id: elsewhere.space_id.clone(),
             name: "away.txt".into(),
             content: Some(file_content(b"away")),
+            ..Default::default()
         })],
     )
     .await;
@@ -2436,6 +2454,7 @@ async fn refuses_local_replacements_and_edits_that_have_not_synced() {
                 parent_id: docs,
                 name: "contract.txt".into(),
                 content: Some(file_content(b"private original")),
+                ..Default::default()
             }),
         ],
     )
@@ -2549,6 +2568,7 @@ async fn a_restore_of_an_item_deleted_before_the_first_sync_lists_its_path() {
                 parent_id: docs.clone(),
                 name: "early.txt".into(),
                 content: Some(file_content(b"early")),
+                ..Default::default()
             }),
         ],
     )
@@ -2556,6 +2576,7 @@ async fn a_restore_of_an_item_deleted_before_the_first_sync_lists_its_path() {
     let delete = op::Op::Delete(Delete {
         node_id: early.clone(),
         requires: None,
+        ..Default::default()
     });
     commit_as_owner(&owner, &root, &[], vec![delete]).await;
 

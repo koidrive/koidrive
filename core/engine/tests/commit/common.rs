@@ -159,6 +159,7 @@ fn delete(node: &str) -> op::Op {
     op::Op::Delete(proto::Delete {
         node_id: node.into(),
         requires: None,
+        ..Default::default()
     })
 }
 
@@ -1118,6 +1119,7 @@ fn delete_copy_requiring(content_rev: u64, meta_rev: u64) -> op::Op {
             content_rev,
             meta_rev,
         }),
+        ..Default::default()
     })
 }
 

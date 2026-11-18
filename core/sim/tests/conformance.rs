@@ -1202,6 +1202,7 @@ impl Run {
                             name: symbol,
                             pending_for: String::new(),
                         })),
+                        ..Default::default()
                     });
                     parent = node_id;
                 }
@@ -1219,7 +1220,10 @@ impl Run {
             };
             keys(body, kind, allowed)?;
             if kind == "empty" {
-                ops.push(Op { op: None });
+                ops.push(Op {
+                    op: None,
+                    ..Default::default()
+                });
                 continue;
             }
             let node = self.id(space, req(opt_str(body, "node"), "node")?)?;
@@ -1250,6 +1254,7 @@ impl Run {
                     parent_id: parent,
                     name,
                     content: Some(req(content(), "content")?),
+                    ..Default::default()
                 }),
                 "update_content" => op::Op::UpdateContent(UpdateContent {
                     made_over: Vec::new(),
@@ -1288,6 +1293,7 @@ impl Run {
                             })
                         }
                     },
+                    ..Default::default()
                 }),
                 _ => op::Op::Restore(Restore {
                     node_id: node,
@@ -1299,7 +1305,10 @@ impl Run {
                     name,
                 }),
             };
-            ops.push(Op { op: Some(op) });
+            ops.push(Op {
+                op: Some(op),
+                ..Default::default()
+            });
         }
         Ok((ops, contents))
     }
@@ -1509,6 +1518,8 @@ impl Run {
             edit_rev: _,
             pending_for,
             pending_by,
+            intents: _,
+            trash_held: _,
         } = node;
         let trash_group = if trash_group.is_empty() {
             Value::Null
@@ -1999,6 +2010,8 @@ impl Run {
             edit_rev,
             pending_for,
             pending_by,
+            intents: _,
+            trash_held: _,
         } = got;
         let symbol = req(opt_str(want, "node"), "node")?;
         self.expect_id(space, symbol, node_id)

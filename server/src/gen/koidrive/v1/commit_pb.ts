@@ -6,7 +6,7 @@
 
 import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { ChangeRecord, Content } from "./model_pb";
+import type { ChangeRecord, Content, FieldIntents, Intent } from "./model_pb";
 import { file_koidrive_v1_model } from "./model_pb";
 import type { Message } from "@bufbuild/protobuf";
 
@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file koidrive/v1/commit.proto.
  */
 export const file_koidrive_v1_commit: GenFile = /*@__PURE__*/
-  fileDesc("Chhrb2lkcml2ZS92MS9jb21taXQucHJvdG8SC2tvaWRyaXZlLnYxIpECCgJPcBIsCgpjcmVhdGVfZGlyGAEgASgLMhYua29pZHJpdmUudjEuQ3JlYXRlRGlySAASLgoLY3JlYXRlX2ZpbGUYAiABKAsyFy5rb2lkcml2ZS52MS5DcmVhdGVGaWxlSAASNAoOdXBkYXRlX2NvbnRlbnQYAyABKAsyGi5rb2lkcml2ZS52MS5VcGRhdGVDb250ZW50SAASIQoEbW92ZRgEIAEoCzIRLmtvaWRyaXZlLnYxLk1vdmVIABIlCgZkZWxldGUYBSABKAsyEy5rb2lkcml2ZS52MS5EZWxldGVIABInCgdyZXN0b3JlGAYgASgLMhQua29pZHJpdmUudjEuUmVzdG9yZUgAQgQKAm9wIlIKCUNyZWF0ZURpchIPCgdub2RlX2lkGAEgASgJEhEKCXBhcmVudF9pZBgCIAEoCRIMCgRuYW1lGAMgASgJEhMKC3BlbmRpbmdfZm9yGAQgASgJIpMBCgpDcmVhdGVGaWxlEg8KB25vZGVfaWQYASABKAkSEQoJcGFyZW50X2lkGAIgASgJEgwKBG5hbWUYAyABKAkSJQoHY29udGVudBgEIAEoCzIULmtvaWRyaXZlLnYxLkNvbnRlbnQSEQoJbWFkZV9vdmVyGAUgAygJEhkKEXNvdXJjZV92ZXJzaW9uX2lkGAYgASgJIoUBCg1VcGRhdGVDb250ZW50Eg8KB25vZGVfaWQYASABKAkSJQoHY29udGVudBgCIAEoCzIULmtvaWRyaXZlLnYxLkNvbnRlbnQSDgoGcmVzZW5kGAMgASgIEhEKCW1hZGVfb3ZlchgEIAMoCRIZChFzb3VyY2VfdmVyc2lvbl9pZBgFIAEoCSJ3CgRNb3ZlEg8KB25vZGVfaWQYASABKAkSFQoNbmV3X3BhcmVudF9pZBgCIAEoCRIQCghuZXdfbmFtZRgDIAEoCRITCgtwZW5kaW5nX2ZvchgEIAEoCRIgCgRmcm9tGAUgASgLMhIua29pZHJpdmUudjEuUGxhY2UiKAoFUGxhY2USEQoJcGFyZW50X2lkGAEgASgJEgwKBG5hbWUYAiABKAkiRwoGRGVsZXRlEg8KB25vZGVfaWQYASABKAkSLAoIcmVxdWlyZXMYAiABKAsyGi5rb2lkcml2ZS52MS5Ob2RlUmV2aXNpb25zIkcKDU5vZGVSZXZpc2lvbnMSDwoHbm9kZV9pZBgBIAEoCRITCgtjb250ZW50X3JldhgCIAEoBBIQCghtZXRhX3JldhgDIAEoBCJWCgdSZXN0b3JlEg8KB25vZGVfaWQYASABKAkSEgoKdmVyc2lvbl9pZBgCIAEoCRIYChB0YXJnZXRfcGFyZW50X2lkGAMgASgJEgwKBG5hbWUYBCABKAkiOgoNVXBsb2FkUmVjZWlwdBIMCgRoYXNoGAEgASgMEgwKBHNpemUYAiABKA0SDQoFdG9rZW4YAyABKAki/QEKBkNvbW1pdBIRCgljb21taXRfaWQYASABKAkSEAoIYmFzZV9zZXEYAiABKAQSHAoDb3BzGAMgAygLMg8ua29pZHJpdmUudjEuT3ASLAoIcmVjZWlwdHMYBCADKAsyGi5rb2lkcml2ZS52MS5VcGxvYWRSZWNlaXB0EhIKCmhpc3RvcnlfaWQYBSABKAkSEgoKZGV2aWNlX3NlcRgGIAEoBBIUCgxyZXF1aXJlX2hlYWQYByABKAgSDgoGcnVuX2lkGAggASgJEhYKDmJhc2VfY29tbWl0X2lkGAkgASgJEhwKFGJhc2VfY29tbWl0dGVkX2F0X21zGAogASgDIosCCghPcFJlc3VsdBIoCgRjb2RlGAEgASgOMhoua29pZHJpdmUudjEuT3BSZXN1bHQuQ29kZRIPCgdub2RlX2lkGAIgASgJEgwKBG5hbWUYAyABKAkSFQoNcmVqZWN0X3JlYXNvbhgEIAEoCSKeAQoEQ29kZRIUChBDT0RFX1VOU1BFQ0lGSUVEEAASEAoMQ09ERV9BUFBMSUVEEAESGAoUQ09ERV9BUFBMSUVEX1JFTkFNRUQQAhIWChJDT0RFX0NPTkZMSUNUX0NPUFkQAxIUChBDT0RFX01FUkdFRF9JTlRPEAQSEwoPQ09ERV9TVVBFUlNFREVEEAUSEQoNQ09ERV9SRUpFQ1RFRBAGIogBCgxDb21taXRSZXN1bHQSCwoDc2VxGAEgASgEEiYKB3Jlc3VsdHMYAiADKAsyFS5rb2lkcml2ZS52MS5PcFJlc3VsdBIqCgdjaGFuZ2VzGAMgAygLMhkua29pZHJpdmUudjEuQ2hhbmdlUmVjb3JkEhcKD2NvbW1pdHRlZF9hdF9tcxgEIAEoA2IGcHJvdG8z", [file_koidrive_v1_model]);
+  fileDesc("Chhrb2lkcml2ZS92MS9jb21taXQucHJvdG8SC2tvaWRyaXZlLnYxIuECCgJPcBIsCgpjcmVhdGVfZGlyGAEgASgLMhYua29pZHJpdmUudjEuQ3JlYXRlRGlySAASLgoLY3JlYXRlX2ZpbGUYAiABKAsyFy5rb2lkcml2ZS52MS5DcmVhdGVGaWxlSAASNAoOdXBkYXRlX2NvbnRlbnQYAyABKAsyGi5rb2lkcml2ZS52MS5VcGRhdGVDb250ZW50SAASIQoEbW92ZRgEIAEoCzIRLmtvaWRyaXZlLnYxLk1vdmVIABIlCgZkZWxldGUYBSABKAsyEy5rb2lkcml2ZS52MS5EZWxldGVIABInCgdyZXN0b3JlGAYgASgLMhQua29pZHJpdmUudjEuUmVzdG9yZUgAEiMKBmludGVudBgHIAEoCzITLmtvaWRyaXZlLnYxLkludGVudBIpCgZmaWVsZHMYCCABKAsyGS5rb2lkcml2ZS52MS5GaWVsZEludGVudHNCBAoCb3AiUgoJQ3JlYXRlRGlyEg8KB25vZGVfaWQYASABKAkSEQoJcGFyZW50X2lkGAIgASgJEgwKBG5hbWUYAyABKAkSEwoLcGVuZGluZ19mb3IYBCABKAkiqAEKCkNyZWF0ZUZpbGUSDwoHbm9kZV9pZBgBIAEoCRIRCglwYXJlbnRfaWQYAiABKAkSDAoEbmFtZRgDIAEoCRIlCgdjb250ZW50GAQgASgLMhQua29pZHJpdmUudjEuQ29udGVudBIRCgltYWRlX292ZXIYBSADKAkSGQoRc291cmNlX3ZlcnNpb25faWQYBiABKAkSEwoLcGVuZGluZ19mb3IYByABKAkihQEKDVVwZGF0ZUNvbnRlbnQSDwoHbm9kZV9pZBgBIAEoCRIlCgdjb250ZW50GAIgASgLMhQua29pZHJpdmUudjEuQ29udGVudBIOCgZyZXNlbmQYAyABKAgSEQoJbWFkZV9vdmVyGAQgAygJEhkKEXNvdXJjZV92ZXJzaW9uX2lkGAUgASgJIncKBE1vdmUSDwoHbm9kZV9pZBgBIAEoCRIVCg1uZXdfcGFyZW50X2lkGAIgASgJEhAKCG5ld19uYW1lGAMgASgJEhMKC3BlbmRpbmdfZm9yGAQgASgJEiAKBGZyb20YBSABKAsyEi5rb2lkcml2ZS52MS5QbGFjZSIoCgVQbGFjZRIRCglwYXJlbnRfaWQYASABKAkSDAoEbmFtZRgCIAEoCSJlCgZEZWxldGUSDwoHbm9kZV9pZBgBIAEoCRIsCghyZXF1aXJlcxgCIAEoCzIaLmtvaWRyaXZlLnYxLk5vZGVSZXZpc2lvbnMSDgoGdW5zZWVuGAMgAygMEgwKBGhlbGQYBCADKAwiRwoNTm9kZVJldmlzaW9ucxIPCgdub2RlX2lkGAEgASgJEhMKC2NvbnRlbnRfcmV2GAIgASgEEhAKCG1ldGFfcmV2GAMgASgEIlYKB1Jlc3RvcmUSDwoHbm9kZV9pZBgBIAEoCRISCgp2ZXJzaW9uX2lkGAIgASgJEhgKEHRhcmdldF9wYXJlbnRfaWQYAyABKAkSDAoEbmFtZRgEIAEoCSI6Cg1VcGxvYWRSZWNlaXB0EgwKBGhhc2gYASABKAwSDAoEc2l6ZRgCIAEoDRINCgV0b2tlbhgDIAEoCSL9AQoGQ29tbWl0EhEKCWNvbW1pdF9pZBgBIAEoCRIQCghiYXNlX3NlcRgCIAEoBBIcCgNvcHMYAyADKAsyDy5rb2lkcml2ZS52MS5PcBIsCghyZWNlaXB0cxgEIAMoCzIaLmtvaWRyaXZlLnYxLlVwbG9hZFJlY2VpcHQSEgoKaGlzdG9yeV9pZBgFIAEoCRISCgpkZXZpY2Vfc2VxGAYgASgEEhQKDHJlcXVpcmVfaGVhZBgHIAEoCBIOCgZydW5faWQYCCABKAkSFgoOYmFzZV9jb21taXRfaWQYCSABKAkSHAoUYmFzZV9jb21taXR0ZWRfYXRfbXMYCiABKAMiiwIKCE9wUmVzdWx0EigKBGNvZGUYASABKA4yGi5rb2lkcml2ZS52MS5PcFJlc3VsdC5Db2RlEg8KB25vZGVfaWQYAiABKAkSDAoEbmFtZRgDIAEoCRIVCg1yZWplY3RfcmVhc29uGAQgASgJIp4BCgRDb2RlEhQKEENPREVfVU5TUEVDSUZJRUQQABIQCgxDT0RFX0FQUExJRUQQARIYChRDT0RFX0FQUExJRURfUkVOQU1FRBACEhYKEkNPREVfQ09ORkxJQ1RfQ09QWRADEhQKEENPREVfTUVSR0VEX0lOVE8QBBITCg9DT0RFX1NVUEVSU0VERUQQBRIRCg1DT0RFX1JFSkVDVEVEEAYiiAEKDENvbW1pdFJlc3VsdBILCgNzZXEYASABKAQSJgoHcmVzdWx0cxgCIAMoCzIVLmtvaWRyaXZlLnYxLk9wUmVzdWx0EioKB2NoYW5nZXMYAyADKAsyGS5rb2lkcml2ZS52MS5DaGFuZ2VSZWNvcmQSFwoPY29tbWl0dGVkX2F0X21zGAQgASgDYgZwcm90bzM", [file_koidrive_v1_model]);
 
 /**
  * An intended change sent by a client.
@@ -62,6 +62,20 @@ export type Op = Message<"koidrive.v1.Op"> & {
     value: Restore;
     case: "restore";
   } | { case: undefined; value?: undefined };
+
+  /**
+   * The user change this op sends (RFC 0029). Empty from a client before RFC 0029; the server mints one.
+   *
+   * @generated from field: koidrive.v1.Intent intent = 7;
+   */
+  intent?: Intent | undefined;
+
+  /**
+   * Set only on CreateDir and CreateFile: a separate intent for each field. A field left empty takes `intent`.
+   *
+   * @generated from field: koidrive.v1.FieldIntents fields = 8;
+   */
+  fields?: FieldIntents | undefined;
 };
 
 /**
@@ -138,6 +152,13 @@ export type CreateFile = Message<"koidrive.v1.CreateFile"> & {
    * @generated from field: string source_version_id = 6;
    */
   sourceVersionId: string;
+
+  /**
+   * The name this file waits to take while `name` stands in for it (RFC 0017, RFC 0029).
+   *
+   * @generated from field: string pending_for = 7;
+   */
+  pendingFor: string;
 };
 
 /**
@@ -271,6 +292,20 @@ export type Delete = Message<"koidrive.v1.Delete"> & {
    * @generated from field: koidrive.v1.NodeRevisions requires = 2;
    */
   requires?: NodeRevisions | undefined;
+
+  /**
+   * Intents the deleting device's R held on this node and below whose values its L never held (RFC 0029).
+   *
+   * @generated from field: repeated bytes unseen = 3;
+   */
+  unseen: Uint8Array[];
+
+  /**
+   * Intents the deleting device's L held there whose values its R lacked when the delete was built (RFC 0029).
+   *
+   * @generated from field: repeated bytes held = 4;
+   */
+  held: Uint8Array[];
 };
 
 /**

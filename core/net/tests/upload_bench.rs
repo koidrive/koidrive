@@ -425,7 +425,9 @@ async fn upload_benchmark() {
                     parent_id: space.space_id,
                     name: "payload.bin".into(),
                     content: Some(content(&chunks)),
+                    ..Default::default()
                 })),
+                ..Default::default()
             }],
         );
         request.receipts = receipts;

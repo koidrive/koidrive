@@ -395,6 +395,7 @@ mod tests {
                     content: Some(content),
                     ..Default::default()
                 })),
+                ..Default::default()
             }],
             ..Default::default()
         };
