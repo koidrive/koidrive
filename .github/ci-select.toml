@@ -64,6 +64,10 @@ globs = [
 jobs = ["rust_engine"]
 
 [[path]]
+globs = ["scripts/check-test-lines.py", "scripts/test-check-test-lines.py"]
+jobs = ["test_lines"]
+
+[[path]]
 globs = ["scripts/stamp-release-version.py"]
 jobs = ["rust_driver"]
 
@@ -91,6 +95,7 @@ globs = [
   ".github/workflows/*",
   "scripts/check-new-comments.py",
   "scripts/test-check-new-comments.py",
+  ".github/test-line-allowances/**",
   "scripts/split-sync-design.py",
   "scripts/test-split-sync-design.py",
   "scripts/check-store-upgrades.py",
@@ -160,6 +165,8 @@ packages = ["koidrive-cli"]
 
 [job.ffi_integration]
 packages = ["koidrive-ffi", "koidrive-cli"]
+
+[job.test_lines]
 
 [job.macos_app]
 packages = ["koidrive-ffi", "koidrive-cli", "uniffi-bindgen-swift"]
