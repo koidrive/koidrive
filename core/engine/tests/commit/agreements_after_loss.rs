@@ -19,7 +19,7 @@ fn an_edit_the_server_took_first_from_another_device_is_sent_again_as_an_edit_af
     commits.received(result(3, results)).unwrap();
     assert!(commits.acknowledge(&mut trees, 3));
     trees.settle(commits.aliases());
-    assert_eq!(commits.connected(&welcome(1)), Reconnect::AheadOfServer);
+    assert_eq!(commits.connected(&welcome_holding(&commits, 1)), Reconnect::AheadOfServer);
     let (trashed, edited) = (trees.trashed_here(), trees.edited_here());
     let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
     trees.set_remote("n".into(), remote_at(file(ROOT, "n", 7), 1));
@@ -1088,7 +1088,7 @@ fn a_move_this_device_undid_before_a_loss_is_not_sent_again() {
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("f", ROOT, "y")]);
     trees.set_remote_made_here("f".into(), remote_at(file(ROOT, "y", 1), 2));
-    assert!(commits.own_record(2, &commit.commit_id));
+    assert!(commits.own_record(2, &commit.commit_id, 0));
     commits.received(result(2, vec![outcome(op_result::Code::Applied)])).unwrap();
     trees.set_local("f".into(), local(file(ROOT, "x", 1), 1));
     trees.settle(commits.aliases());
@@ -1138,7 +1138,7 @@ fn undone_move_then_edit_then_loss(peer: Option<&str>) -> Vec<(String, u8)> {
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("f", ROOT, "y")]);
     trees.set_remote_made_here("f".into(), remote_at(file(ROOT, "y", 1), 2));
-    assert!(commits.own_record(2, &commit.commit_id));
+    assert!(commits.own_record(2, &commit.commit_id, 0));
     commits.received(result(2, vec![outcome(op_result::Code::Applied)])).unwrap();
     if let Some(name) = peer {
         trees.set_remote("f".into(), remote_at(file(ROOT, name, 1), 3));

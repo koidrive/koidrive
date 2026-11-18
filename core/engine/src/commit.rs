@@ -31,8 +31,7 @@ use crate::tree::{Content, Kind, NodeId, Shape, same, same_content};
 
 /// The most ops one commit holds (spec v0 section 13).
 pub const MAX_OPS: usize = 1000;
-/// How many of this device's acknowledged commits [`Commits::held_through`] remembers. A server
-/// restored from a backup older than all of them gives 0, so no lost delete is sent again.
+/// How many of this device's acknowledged commits [`Commits::held_through`] remembers.
 pub const SLOTS_KEPT: usize = 1000;
 
 /// The most bytes of change records a commit is planned to make, as estimated. Its records and
@@ -46,11 +45,21 @@ const RECORD_BYTES: usize = 256;
 
 const MAX_ANCESTRY_BYTES: usize = CONTENT_ANCESTRY_LIMIT * (1 + 1 + 36);
 
-/// The seq a commit builds on and the commit token there (RFC 0013): the `commit_id` and
-/// `committed_at_ms` of the commit R applied at that seq. An empty token claims nothing, so a
-/// server checks only the seq.
+/// A seq and the commit token there (RFC 0013): the `commit_id` and `committed_at_ms` of the commit
+/// applied at that seq. It is the seq a commit builds on, where an empty token claims nothing, so a
+/// server checks only the seq, or the seq of one of this device's commits, by slot.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Base {
+    pub seq: u64,
+    pub commit_id: String,
+    pub committed_at_ms: i64,
+}
+
+/// The seq of one of this device's commits and its commit token (RFC 0013), by slot. An empty
+/// `commit_id`, as for a slot kept before commit tokens, names no commit, and a `committed_at_ms`
+/// of 0, as from a server before RFC 0013, leaves the application unknown.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Slot {
     pub seq: u64,
     pub commit_id: String,
     pub committed_at_ms: i64,
@@ -185,9 +194,9 @@ pub struct Commits {
     restores: Marked<BTreeMap<RestoreId, RestoreIntent>>,
     /// The last [`RESOLVED_KEPT`] restores that ended, oldest first.
     resolved: Marked<Vec<Resolved>>,
-    /// The seq of each of this device's last [`SLOTS_KEPT`] acknowledged commits, and of the commit
-    /// in flight once R holds its record, by slot.
-    slots: TrackedMap<u64, u64>,
+    /// The seq and `commit_id` of each of this device's last [`SLOTS_KEPT`] acknowledged commits,
+    /// and of the commit in flight once R holds its record, by slot.
+    slots: TrackedMap<u64, Slot>,
     /// The open questions, in the order they were asked.
     questions: Marked<Vec<Question>>,
     /// The local entries a [`Answer::Publish`] to a first link's question released (section 6.4),
@@ -196,6 +205,7 @@ pub struct Commits {
     published: TrackedSet<NodeId>,
     guard: Guard,
     granted: Unstored<Vec<NodeId>>,
+    confirmed: Unstored<Option<u64>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -244,6 +254,7 @@ impl Commits {
             published,
             guard,
             granted: _,
+            confirmed: _,
         } = self;
         CommitsChanges {
             accepted: accepted.take_changed().copied(),
@@ -340,37 +351,64 @@ impl Commits {
             published: published.into(),
             guard: guard.into(),
             granted: Unstored::default(),
+            confirmed: Unstored::default(),
         })
     }
 
-    /// The seq of the newest commit of this device that the server counts, or 0 when none is
-    /// known. A server that lost commits keeps every seq up to the backup it was restored from, and
-    /// this commit is among them, so a node state of a seq at or below it is from before the loss
-    /// (section 4.4).
+    /// The seq of the newest commit of this device that the server's current history is taken to
+    /// hold, or 0 when none is. Every seq up to it is taken as one the server holds as this device
+    /// saw it, so a node state of a seq at or below it is from before a loss (section 4.4). A wrong
+    /// bound breaks that either way: one too high takes changes the server lost for held ones, and
+    /// one too low sends held changes again over deletes made since. A restored server gives slots
+    /// out again, so a slot number alone names no commit, and the last `Welcome` decides which
+    /// slot counts ([`Commits::connected`]): the slot at its count when it names the application
+    /// kept for it (RFC 0013), the newest kept slot below its count when it names another, and
+    /// the newest kept slot at or below *a* when either `commit_id` is empty. A result applied since
+    /// counts its own slot. A server that gave out again the kept slots below its count too holds
+    /// none of them, which a `Welcome` cannot show (RFC 0029).
     pub fn held_through(&self) -> u64 {
-        (self.slots.range(..=*self.accepted).next_back()).map_or(0, |(_, &seq)| seq)
+        let slot = match self.confirmed.0 {
+            Some(confirmed) => self.slots.get(&confirmed),
+            None => (self.slots.range(..=*self.accepted).next_back()).map(|(_, slot)| slot),
+        };
+        slot.map_or(0, |slot| slot.seq)
     }
 
     /// Whether one of this device's commits has seq `seq`: one of the last [`SLOTS_KEPT`]
     /// acknowledged, or one whose record R held while it was in flight ([`Commits::own_record`]). A
     /// commit the server lost is included until R is listed again ([`Commits::forget_lost_slots`]).
     pub fn made_here(&self, seq: u64) -> bool {
-        self.slots.values().any(|&made| made == seq)
+        self.slots.values().any(|made| made.seq == seq)
     }
 
     /// Whether the record of the commit of `seq` and `commit_id` is this device's: one of an
     /// acknowledged commit, or one of the commit in flight, which can arrive before its result. The
     /// record of the commit in flight gives it slot `seq`, so a loss that drops the commit before its
     /// result still finds the commit made here.
-    pub fn own_record(&mut self, seq: u64, commit_id: &str) -> bool {
+    pub fn own_record(&mut self, seq: u64, commit_id: &str, committed_at_ms: i64) -> bool {
         let Some(slot) = (self.in_flight.as_ref())
             .filter(|flight| flight.commit.commit_id == commit_id)
             .map(|flight| flight.commit.device_seq)
         else {
             return self.made_here(seq);
         };
-        self.slots.insert(slot, seq);
+        let made = Slot {
+            seq,
+            commit_id: commit_id.to_owned(),
+            committed_at_ms,
+        };
+        self.keep_slot(slot, made);
         true
+    }
+
+    fn keep_slot(&mut self, slot: u64, mut made: Slot) {
+        if let Some(kept) = self.slots.get(&slot)
+            && made.committed_at_ms == 0
+            && kept.commit_id == made.commit_id
+        {
+            made.committed_at_ms = kept.committed_at_ms;
+        }
+        self.slots.insert(slot, made);
     }
 
     /// Whether the commit in flight is `commit_id` and its last op that sets the content of `id` is
@@ -1676,9 +1714,11 @@ impl Commits {
         else {
             return;
         };
-        let Some(&seq) =
-            (self.slots.get(&flight.commit.device_seq)).filter(|&&seq| seq <= last_seq)
-        else {
+        let Some(&seq) = (self
+            .slots
+            .get(&flight.commit.device_seq)
+            .map(|slot| &slot.seq))
+        .filter(|&&seq| seq <= last_seq) else {
             return;
         };
         for op in flight.commit.ops.iter().filter_map(|op| op.op.as_ref()) {
@@ -2242,14 +2282,20 @@ impl Commits {
         self.retry_waiting(trees, BTreeSet::new(), Vec::new());
         self.keep_unsent(trees, sent);
         self.accepted.set(flight.commit.device_seq);
-        self.slots.insert(flight.commit.device_seq, result.seq);
+        let made = Slot {
+            seq: result.seq,
+            commit_id: flight.commit.commit_id.clone(),
+            committed_at_ms: result.committed_at_ms,
+        };
+        self.keep_slot(flight.commit.device_seq, made);
+        self.confirmed.0 = Some(flight.commit.device_seq);
         while self.slots.len() > SLOTS_KEPT {
             self.slots.pop_first();
         }
         if self.slots.len() == SLOTS_KEPT
-            && let Some((_, &oldest)) = self.slots.first_key_value()
+            && let Some((_, oldest)) = self.slots.first_key_value()
         {
-            trees.forget_past_positions_below(oldest);
+            trees.forget_past_positions_below(oldest.seq);
         }
         if cfg!(debug_assertions) {
             let away: Vec<&NodeId> = (lost.iter())
@@ -2420,7 +2466,9 @@ impl Commits {
     /// the server answers an accepted one with its stored result. *w* < *a* means the server lost
     /// commits it had accepted, since its counter only grows and *a* takes a slot only from a
     /// result. So does *w* = *a* while the result of the commit in flight is held, since the
-    /// server sent that result. Either way *a* takes *w*, and the commit in flight is dropped, its
+    /// server sent that result, and *w* = *a* + 1 while it is held and the `Welcome` carries
+    /// another application for that slot, since the server gave the slot to another commit or
+    /// applied this one again there. Either way *a* takes *w*, and the commit in flight is dropped, its
     /// restores staying queued, so that its changes are planned again once R is listed again. Any other *w*, or a commit
     /// built in another history, starts recovery. A read-only device resends nothing. A device
     /// under a policy halt resends nothing whatever the `Welcome` says, but *w* < *a* is a loss
@@ -2432,7 +2480,12 @@ impl Commits {
     /// loss is handled once. A later `Welcome` whose *w* is above *a* but one of those slots, as
     /// from a second restore of the server before R is listed again, is handled as a loss too: *a*
     /// takes *w* and R is listed again. Whether R
-    /// itself belongs to the `Welcome`'s history is checked where R is kept.
+    /// itself belongs to the `Welcome`'s history is checked where R is kept. Every `Welcome` also
+    /// decides what [`Commits::held_through`] counts: the kept slot *w* when the `Welcome` names
+    /// the application this device kept for it, the newest kept slot below *w* when it names
+    /// another, and the newest kept slot at or below *a* when either `commit_id` is empty. The
+    /// bound is a server seq, so only the same application holds the commit at the kept seq: the
+    /// same `commit_id`, and the same `committed_at_ms` when both are known.
     ///
     /// Recovery keeps the queued restores with the commit in flight: nothing is built under that
     /// halt, so none is sent again or planned again, and each stays as the request it was
@@ -2440,6 +2493,21 @@ impl Commits {
     /// rejected.
     pub fn connected(&mut self, welcome: &proto::Welcome) -> Reconnect {
         let (a, w) = (*self.accepted, welcome.device_seq);
+        let kept = (self.slots.get(&w))
+            .filter(|slot| !slot.commit_id.is_empty() && !welcome.device_commit_id.is_empty());
+        self.confirmed.0 = kept.map(|slot| {
+            if same_application(welcome, &slot.commit_id, slot.committed_at_ms) {
+                w
+            } else {
+                (self.slots.range(..w).next_back()).map_or(0, |(below, _)| *below)
+            }
+        });
+        let held_elsewhere = |flight: &InFlight| {
+            (flight.result.as_ref()).is_some_and(|result| {
+                !welcome.device_commit_id.is_empty()
+                    && !same_application(welcome, &flight.commit.commit_id, result.committed_at_ms)
+            })
+        };
         let policy = matches!(*self.halted, Some(Halt::Policy { .. }));
         let reconnect = match &*self.in_flight {
             _ if policy && w >= a => return Reconnect::Idle,
@@ -2448,6 +2516,7 @@ impl Commits {
             Some(flight) if flight.commit.history_id != welcome.history_id => Reconnect::Recovery,
             None if w == a => Reconnect::Idle,
             Some(flight) if flight.result.is_none() && (w == a || w == a + 1) => Reconnect::Resend,
+            Some(flight) if w == a + 1 && held_elsewhere(flight) => Reconnect::AheadOfServer,
             Some(_) if w == a + 1 => Reconnect::Idle,
             Some(_) if w == a => Reconnect::AheadOfServer,
             _ if w < a || self.slots.contains_key(&w) => Reconnect::AheadOfServer,
@@ -2492,6 +2561,11 @@ impl Commits {
         }
         reconnect
     }
+}
+
+fn same_application(welcome: &proto::Welcome, commit_id: &str, committed_at_ms: i64) -> bool {
+    let (named, at) = (&welcome.device_commit_id, welcome.device_committed_at_ms);
+    *named == commit_id && (at == 0 || committed_at_ms == 0 || at == committed_at_ms)
 }
 
 /// The queued restore each `Restore` op of a commit carries, by the op's index: the first in

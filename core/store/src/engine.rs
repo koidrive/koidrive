@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_engine::classify::{Origin, Waiting};
-use koidrive_engine::commit::{Halt, InFlight};
+use koidrive_engine::commit::{Halt, InFlight, Slot};
 use koidrive_engine::effects::{Base, Dir, Displaced, Effect, EffectRecord, Location};
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use koidrive_engine::state::{
@@ -405,12 +405,17 @@ impl Tx<'_> {
         }
         state.commits.in_flight = self.in_flight()?;
         (state.commits.restores, state.commits.resolved) = self.restores()?;
-        let mut stmt = self
-            .0
-            .prepare_cached("SELECT device_seq, seq FROM commit_slots")?;
+        let mut stmt = self.0.prepare_cached(
+            "SELECT device_seq, seq, commit_id, committed_at_ms FROM commit_slots",
+        )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.commits.slots.insert(row.get(0)?, row.get(1)?);
+            let made = Slot {
+                seq: row.get(1)?,
+                commit_id: row.get(2)?,
+                committed_at_ms: row.get(3)?,
+            };
+            state.commits.slots.insert(row.get(0)?, made);
         }
         state.commits.questions = self.open_questions()?;
         state.commits.guard = self.guard()?;
@@ -930,8 +935,10 @@ impl Tx<'_> {
         self.write_map(
             slots,
             "DELETE FROM commit_slots WHERE device_seq = ?1",
-            "INSERT OR REPLACE INTO commit_slots (device_seq, seq) VALUES (?1, ?2)",
-            |put, slot, seq| put.execute(params![slot, seq]),
+            "INSERT OR REPLACE INTO commit_slots (device_seq, seq, commit_id, committed_at_ms) VALUES (?1, ?2, ?3, ?4)",
+            |put, slot, made| {
+                put.execute(params![slot, made.seq, made.commit_id, made.committed_at_ms])
+            },
         )?;
         if restores.is_some() {
             self.0

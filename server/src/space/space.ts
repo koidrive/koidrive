@@ -684,7 +684,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         historyId: String(getMeta(this.sql, "history_id")),
         headSeq: BigInt(this.headSeq),
         logFloorSeq: BigInt(Number(getMeta(this.sql, "log_floor_seq"))),
-        deviceSeq: this.acceptedDeviceSeq(identity.deviceId),
+        ...this.acceptedDeviceCommit(identity.deviceId),
         restoreSeq: BigInt(Number(getMeta(this.sql, "restore_seq") ?? 0)),
         restorePointMs: BigInt(Number(getMeta(this.sql, "restore_point_ms") ?? 0)),
         readOnly: attachment.role === "viewer" || hello.maxFormat < formatVersion,
@@ -983,6 +983,15 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (commitId === "" || seq === 0n || seq < BigInt(Number(getMeta(this.sql, "log_floor_seq")))) return false;
       const held = this.tokenAt(Number(seq));
       return held.commitId !== commitId || held.committedAtMs !== committedAtMs;
+    }
+
+    private acceptedDeviceCommit(deviceId: string): { deviceSeq: bigint; deviceCommitId: string; deviceCommittedAtMs: bigint } {
+      const row = this.sql.exec("SELECT device_seq, commit_id FROM device_commits WHERE device_id = ?", deviceId).toArray()[0];
+      const deviceSeq = BigInt(Number(row?.device_seq ?? 0));
+      const commitId = String(row?.commit_id ?? "");
+      const committedAtMs = commitId === "" ? 0n : (this.storedResult(commitId)?.result.committedAtMs ?? 0n);
+      if (committedAtMs === 0n) return { deviceSeq, deviceCommitId: "", deviceCommittedAtMs: 0n };
+      return { deviceSeq, deviceCommitId: commitId, deviceCommittedAtMs: committedAtMs };
     }
 
     private acceptedDeviceSeq(deviceId: string): bigint {

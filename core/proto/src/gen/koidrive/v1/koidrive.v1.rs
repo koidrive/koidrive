@@ -1361,6 +1361,12 @@ pub struct Welcome {
     pub restore_seq: u64,
     #[prost(int64, tag="12")]
     pub restore_point_ms: i64,
+    /// The commit token (RFC 0013) of this device's commit at device_seq in the current history: its commit_id and
+    /// committed_at_ms. Both empty when device_seq is 0 or the server does not know the token.
+    #[prost(string, tag="13")]
+    pub device_commit_id: ::prost::alloc::string::String,
+    #[prost(int64, tag="14")]
+    pub device_committed_at_ms: i64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Resume {

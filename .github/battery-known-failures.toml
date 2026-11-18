@@ -170,6 +170,7 @@ message = '''(after phase <n>: after the faults stopped, on device <n>|phase <n>
 examples = [
   "after phase 2: after the faults stopped, on device 1: a commit of device 1 brought back node 01a1c2c0-39a0-7224-a2dd-41264c2feceb as \"a (pending)\", which a user deleted, and the user of device 1 never changed it or put anything in it since: [Op { op: Some(Move(Move { node_id: \"01a1c2c0-39a0-7224-a2dd-41264c2feceb\" })) }].",
   "phase 2, step 31 (Work(2768391254195023849) on device 1): a commit of device 1 brought back node 01a1c2c0-39a0-7224-a2dd-41264c2feceb as \"a\", which a user deleted, and the user of device 1 never changed it or put anything in it since: [Op { op: Some(Move(Move { node_id: \"01a1c2c0-39a0-7224-a2dd-41264c2feceb\" })) }].",
+  "after phase 2: after the faults stopped, on device 1: a commit of device 1 brought back node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 as \"É\", which a user deleted, and the user of device 1 never changed it or put anything in it since: [Op { intent: None, fields: None, op: Some(UpdateContent(UpdateContent { node_id: \"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\", content: Some(Content { size: 3, mtime_ns: 3, executable: false, chunks: [ChunkRef { hash: [251, 80, 220, 7, 23, 255, 38, 108, 249, 186, 248, 43, 28, 231, 161, 194, 239, 109, 146, 71, 133, 150, 128, 177, 26, 25, 251, 112, 119, 245, 242, 34], size: 3, encoding: 0 }], chunk_count: 1, manifest_digest: [130, 159, 23, 85, 83, 23, 83, 113, 44, 197, 41, 127, 22, 251, 222, 68, 205, 158, 130, 240, 26, 147, 67, 244, 158, 15, 114, 185, 107, 73, 2, 59], chunker: \"\" }), resend: false, made_over: [\"01a1c2c0-39ce-7c86-82d7-8c130699ef2b\"], source_version_id: \"01a1c2c0-39d4-77a2-9a7b-14876099d763\" })) }].",
 ]
 
 [[failure]]
@@ -379,3 +380,34 @@ tests = ["a_first_link_discard_takes_along_only_the_server_entries_the_user_leav
 message = '''a parked node is neither on its way out nor reported at \S+\.rs:<line>\.'''
 examples = ["a parked node is neither on its way out nor reported at core/sim/tests/engine_sync/common.rs:2074."]
 cases = ["73cfd110a184"]
+
+[[failure]]
+class = "J"
+issue = "GUN-1012"
+tests = ["devices_converge_across_restores_and_rewinds", "devices_lose_no_write_across_restores_and_rewinds"]
+message = '''after phase <n>: after the faults stopped, on device <n>: a commit of device <n> brought back node <id> as ".*", which a user deleted, and the user of device <n> never changed it or put anything in it since: \[Op \{ .* \}\]\.'''
+examples = ["after phase 2: after the faults stopped, on device 1: a commit of device 1 brought back node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 as \"É\", which a user deleted, and the user of device 1 never changed it or put anything in it since: [Op { intent: None, fields: None, op: Some(UpdateContent(UpdateContent { node_id: \"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\", content: Some(Content { size: 3, mtime_ns: 3, executable: false, chunks: [ChunkRef { hash: [251, 80, 220, 7, 23, 255, 38, 108, 249, 186, 248, 43, 28, 231, 161, 194, 239, 109, 146, 71, 133, 150, 128, 177, 26, 25, 251, 112, 119, 245, 242, 34], size: 3, encoding: 0 }], chunk_count: 1, manifest_digest: [130, 159, 23, 85, 83, 23, 83, 113, 44, 197, 41, 127, 22, 251, 222, 68, 205, 158, 130, 240, 26, 147, 67, 244, 158, 15, 114, 185, 107, 73, 2, 59], chunker: \"\" }), resend: false, made_over: [\"01a1c2c0-39ce-7c86-82d7-8c130699ef2b\"], source_version_id: \"01a1c2c0-39d4-77a2-9a7b-14876099d763\" })) }]."]
+cases = [
+  "81ed4a1c5e49",
+]
+
+[[failure]]
+class = "J"
+issue = "GUN-1012"
+tests = ["reissued_slots::a_rolled_back_copy_sends_no_edit_again_that_the_server_holds_through_its_resend"]
+message = '''called `Result::unwrap\(\)` on an `Err` value: Broken\("after phase <n>: after the faults stopped, on device <n>: a commit of device <n> brought back node <id> as \\".*\\", which a user deleted, and the user of device <n> never changed it or put anything in it since: \[Op \{ .* \}\]\\?"\)'''
+examples = ["called `Result::unwrap()` on an `Err` value: Broken(\"after phase 2: after the faults stopped, on device 1: a commit of device 1 brought back node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 as \\\"a\\\", which a user deleted, and the user of device 1 never changed it or put anything in it since: [Op { intent: None, fields: None, op: Some(UpdateContent(UpdateContent { node_id: \\\"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\\\", content: Some(Content { size: 3, mtime_ns: 2, executable: false, chunks: [ChunkRef { hash: [251, 80, 220, 7, 23, 255, 38, 108, 249, 186, 248, 43, 28, 231, 161, 194, 239, 109, 146, 71, 133, 150, 128, 177, 26, 25, 251, 112, 119, 245, 242, 34], size: 3, encoding: 0 }], chunk_count: 1, manifest_digest: [130, 159, 23, 85, 83, 23, 83, 113, 44, 197, 41, 127, 22, 251, 222, 68, 205, 158, 130, 240, 26, 147, 67, 244, 158, 15, 114, 185, 107, 73, 2, 59], chunker: \\\"\\\" }), resend: false, made_over: [\\\"01a1c2c0-39a2-7715-a16f-9630b0074044\\\"], source_version_id: \\\"01a1c2c0-39a3-7c86-82d7-8c130699ef2b\\\" })) }]\")"]
+
+[[failure]]
+class = "J"
+issue = "GUN-1012"
+tests = ["a_copy_rolled_back_past_its_resend_does_not_send_its_edit_again"]
+message = '''assertion `left == right` failed: the copy sends the edit of n again over the delete left: \[.*\] right: \[\]'''
+examples = ["assertion `left == right` failed: the copy sends the edit of n again over the delete\n  left: [UpdateContent(UpdateContent { node_id: \"n\", content: Some(Content { size: 3, mtime_ns: 0, executable: false, chunks: [], chunk_count: 0, manifest_digest: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2], chunker: \"\" }), resend: false, made_over: [], source_version_id: \"\" })]\n right: []"]
+
+[[failure]]
+class = "I"
+issue = "GUN-1012"
+tests = ["a_server_that_gave_every_kept_slot_out_again_holds_none_of_them"]
+message = '''assertion `left == right` failed: held_through counts slot <n>, which the server gave out again too left: <n> right: <n>'''
+examples = ["assertion `left == right` failed: held_through counts slot 1, which the server gave out again too\n  left: 4\n right: 0"]

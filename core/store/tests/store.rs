@@ -661,7 +661,21 @@ fn legacy_state() -> EngineState {
     state.commits.aliases = full.commits.aliases;
     state.commits.restores = full.commits.restores;
     state.commits.resolved = full.commits.resolved;
-    state.commits.slots = full.commits.slots;
+    state.commits.slots = full
+        .commits
+        .slots
+        .into_iter()
+        .map(|(slot, made)| {
+            let seq = made.seq;
+            (
+                slot,
+                koidrive_engine::commit::Slot {
+                    seq,
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
     state.commits.questions = full.commits.questions;
     state.commits.published = full.commits.published;
     state.commits.guard = full.commits.guard;
@@ -1409,7 +1423,23 @@ fn engine_state() -> EngineState {
                 (id(102), version.clone()),
             ]),
             resolved: resolved.collect(),
-            slots: BTreeMap::from([(3, 7), (4, 9)]),
+            slots: BTreeMap::from([
+                (
+                    3,
+                    koidrive_engine::commit::Slot {
+                        seq: 7,
+                        ..Default::default()
+                    },
+                ),
+                (
+                    4,
+                    koidrive_engine::commit::Slot {
+                        seq: 9,
+                        commit_id: "commit-4".into(),
+                        committed_at_ms: 1_700_000_000_004,
+                    },
+                ),
+            ]),
             questions: vec![
                 Question {
                     id: "q1".into(),

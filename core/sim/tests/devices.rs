@@ -23,6 +23,8 @@ use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::{RngSeed, TestRunner};
 
+#[path = "devices/reissued_slots.rs"]
+mod reissued_slots;
 #[path = "devices/restore_adopted_writes.rs"]
 mod restore_adopted_writes;
 #[path = "devices/restore_back_to_back.rs"]
@@ -220,10 +222,15 @@ fn reviving_an_owed_rename() -> impl Strategy<Value = Vec<Vec<(usize, Step)>>> {
     )
 }
 
+thread_local! {
+    static TOKENLESS_WELCOME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Devices that print every step with the state it leaves when `KOIDRIVE_SIM_TRACE` is set.
 fn world(devices: usize) -> World {
     let mut world = World::new(devices);
     world.trace = std::env::var_os("KOIDRIVE_SIM_TRACE").is_some();
+    world.tokenless_welcome = TOKENLESS_WELCOME.get();
     world
 }
 

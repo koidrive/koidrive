@@ -431,7 +431,9 @@ impl Engine {
                 "a commit arrived before the space's tree was read".into(),
             ));
         };
-        let made_here = self.commits.own_record(at.seq, &at.commit_id);
+        let made_here = self
+            .commits
+            .own_record(at.seq, &at.commit_id, at.committed_at_ms);
         for change in changes {
             match &change.change {
                 Some(change_record::Change::Node(state)) => {

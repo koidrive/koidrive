@@ -539,6 +539,14 @@ impl SpaceDo {
     }
 
     pub fn welcome(&self, session: &Session) -> Welcome {
+        let device_seq = self.device_seq(&session.device_id);
+        let (device_commit_id, device_committed_at_ms) = (self.results.iter())
+            .find(|(_, stored)| {
+                stored.device_id == session.device_id && stored.request.device_seq == device_seq
+            })
+            .map(|(commit_id, stored)| (commit_id.clone(), stored.result.committed_at_ms))
+            .filter(|(_, committed_at_ms)| *committed_at_ms != 0)
+            .unwrap_or_default();
         Welcome {
             proto: 0,
             server_version: "koidrive-sim".into(),
@@ -547,7 +555,9 @@ impl SpaceDo {
             head_seq: self.head_seq,
             log_floor_seq: self.log_floor_seq,
             read_only: session.role == Role::Viewer || session.max_format < self.format_version,
-            device_seq: self.device_seq(&session.device_id),
+            device_seq,
+            device_commit_id,
+            device_committed_at_ms,
             ..Default::default()
         }
     }

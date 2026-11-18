@@ -25,7 +25,7 @@ fn served_at_5_then_lost(
         let results = vec![outcome(op_result::Code::Applied); commit.ops.len()];
         commits.received(result(5, results)).unwrap();
     }
-    assert!(commits.own_record(5, &commit.commit_id));
+    assert!(commits.own_record(5, &commit.commit_id, 0));
     if commits.edits_in_flight(&commit.commit_id, "n") {
         trees.set_remote_edited_here("n".into(), applied);
     } else {
@@ -39,7 +39,7 @@ fn served_at_5_then_lost(
         trees.restore(trees.state()).unwrap();
         trees.rules_scanned();
     }
-    assert_eq!(commits.connected(&welcome(1)), Reconnect::AheadOfServer);
+    assert_eq!(commits.connected(&welcome_holding(&commits, 1)), Reconnect::AheadOfServer);
     let (trashed, edited, moved) = (
         trees.trashed_here(),
         trees.edited_here(),

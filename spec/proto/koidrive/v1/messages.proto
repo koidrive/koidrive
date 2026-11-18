@@ -63,6 +63,10 @@ message Welcome {
   // restored, in Unix milliseconds, as in ResyncRequired. Both 0 otherwise.
   uint64 restore_seq = 11;
   int64 restore_point_ms = 12;
+  // The commit token (RFC 0013) of this device's commit at device_seq in the current history: its commit_id and
+  // committed_at_ms. Both empty when device_seq is 0 or the server does not know the token.
+  string device_commit_id = 13;
+  int64 device_committed_at_ms = 14;
 }
 
 message Resume {
