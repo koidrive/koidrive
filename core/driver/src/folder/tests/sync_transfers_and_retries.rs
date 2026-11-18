@@ -559,8 +559,6 @@ fn an_edit_after_a_restart_is_an_edit_of_the_synced_file() {
 
 #[test]
 fn an_in_place_edit_made_while_stopped_that_keeps_the_size_and_mtime_is_sent_after_a_restart() {
-    use std::io::Write;
-
     for outside_link in [false, true] {
         let mut remote = Remote::new();
         let (site, mut a) = linked(&mut remote, "a");
@@ -578,11 +576,7 @@ fn an_in_place_edit_made_while_stopped_that_keeps_the_size_and_mtime_is_sent_aft
         if outside_link {
             fs::remove_file(&outside).unwrap();
         }
-        let written = fs::metadata(&path).unwrap().modified().unwrap();
-        let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
-        file.write_all(b"edited on a!").unwrap();
-        file.set_modified(written).unwrap();
-        drop(file);
+        edit_keeping_the_size_and_mtime(&path);
 
         let mut a = site.start();
         a.connect(&remote);
@@ -598,9 +592,59 @@ fn an_in_place_edit_made_while_stopped_that_keeps_the_size_and_mtime_is_sent_aft
 }
 
 #[test]
-fn an_upgraded_store_reports_only_files_changed_after_its_last_write_before_the_upgrade() {
+fn an_edit_made_while_a_new_file_with_an_outside_link_is_read_is_sent_after_a_restart() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("notes.txt"), b"written on a");
+    let path = site.root.join("copy.txt");
+    let outside = site.root.with_file_name("outside.txt");
+    fs::write(&path, b"written on a").unwrap();
+    fs::hard_link(&path, &outside).unwrap();
+    a.rescan();
+    take_one_observation(&mut a, || {
+        fs::remove_file(&outside).unwrap();
+        edit_keeping_the_size_and_mtime(&path);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+    });
+    drop(a);
+
+    let mut a = site.start();
+    a.connect(&remote);
+    a.rest(&mut remote);
+    assert_eq!(kinds(a.sent.last().unwrap()), ["update content"]);
+}
+
+fn take_one_observation(a: &mut Device, meanwhile: impl FnOnce()) {
+    let stamp = a.folder.sections().stamp();
+    let observed = Observer::observe(&mut a.observer, Duration::from_millis(500)).unwrap();
+    meanwhile();
+    if let Some(observation) = observed {
+        let unread = a.observer.unread();
+        let batch = crate::disk::Batch {
+            stamp,
+            answered: None,
+            observation,
+            unread,
+        };
+        let entries = a.observer.snapshot().entries.len() as u64;
+        let step = a.folder.observed(batch, entries);
+        a.take(step).unwrap();
+    }
+}
+
+fn edit_keeping_the_size_and_mtime(path: &Path) {
     use std::io::Write;
 
+    let written = fs::metadata(path).unwrap().modified().unwrap();
+    let mut file = fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.write_all(b"edited on a!").unwrap();
+    file.set_modified(written).unwrap();
+}
+
+#[test]
+fn an_upgraded_store_reports_only_files_changed_after_its_last_write_before_the_upgrade() {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site.root.join("kept.txt"), b"kept on a");
@@ -616,11 +660,7 @@ fn an_upgraded_store_reports_only_files_changed_after_its_last_write_before_the_
     std::thread::sleep(std::time::Duration::from_millis(50));
 
     let path = site.root.join("notes.txt");
-    let written = fs::metadata(&path).unwrap().modified().unwrap();
-    let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
-    file.write_all(b"edited on a!").unwrap();
-    file.set_modified(written).unwrap();
-    drop(file);
+    edit_keeping_the_size_and_mtime(&path);
 
     let mut a = site.start();
     let mut snapshot = a.folder.snapshot();
@@ -1030,7 +1070,7 @@ fn a_restart_reads_nothing_after_any_change_the_observer_accepted() {
 
     let reads = || crate::observe::READS.take();
     type Change = fn(&Site, &mut Device, &mut Remote);
-    let rows: [(&str, &[&str], &[&str], Change); 6] = [
+    let rows: [(&str, &[&str], &[&str], Change); 7] = [
         ("an edit", &["notes.txt"], &[], |site, a, remote| {
             fs::write(site.root.join("notes.txt"), b"edited on a!").unwrap();
             a.rest(remote);
@@ -1043,21 +1083,7 @@ fn a_restart_reads_nothing_after_any_change_the_observer_accepted() {
                 fs::write(site.root.join("marked.txt"), b"marked on a").unwrap();
                 a.scan_until(|a| !a.work.is_empty());
                 assert_eq!(a.run(remote), ["upload", "send"]);
-                let stamp = a.folder.sections().stamp();
-                let observed =
-                    Observer::observe(&mut a.observer, Duration::from_millis(500)).unwrap();
-                if let Some(observation) = observed {
-                    let unread = a.observer.unread();
-                    let batch = crate::disk::Batch {
-                        stamp,
-                        answered: None,
-                        observation,
-                        unread,
-                    };
-                    let entries = a.observer.snapshot().entries.len() as u64;
-                    let step = a.folder.observed(batch, entries);
-                    a.take(step).unwrap();
-                }
+                take_one_observation(a, || {});
             },
         ),
         ("a rename", &[], &[], |site, _, _| {
@@ -1076,9 +1102,22 @@ fn a_restart_reads_nothing_after_any_change_the_observer_accepted() {
             .unwrap();
         }),
         (
+            "edited once unlinked",
+            &["notes.txt", "notes.txt"],
+            &[],
+            |site, a, _| {
+                let outside = site.root.with_file_name("outside.txt");
+                fs::hard_link(site.root.join("notes.txt"), &outside).unwrap();
+                a.rescan();
+                a.settle();
+                fs::remove_file(&outside).unwrap();
+                edit_keeping_the_size_and_mtime(&site.root.join("notes.txt"));
+            },
+        ),
+        (
             "a link removed",
-            &["link.txt"],
-            &["notes.txt"],
+            &["link.txt", "notes.txt"],
+            &[],
             |site, a, remote| {
                 fs::hard_link(site.root.join("notes.txt"), site.root.join("link.txt")).unwrap();
                 a.rest(remote);
