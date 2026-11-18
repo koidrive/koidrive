@@ -273,6 +273,7 @@ pub(crate) struct Disk {
     brought_back: BroughtBack,
     tokens: RootTokens,
     fresh: bool,
+    unwritable: Option<String>,
 }
 
 /// A planned batch of effects the store holds, in the order they were planned.
@@ -392,6 +393,7 @@ impl Disk {
             brought_back: BroughtBack::Entries(HashSet::new()),
             tokens: RootTokens::default(),
             fresh: false,
+            unwritable: None,
         };
         if !disk.space.held()? {
             return Err(Stop::Withdrawn(disk.path));
@@ -853,35 +855,49 @@ impl Disk {
     }
 
     pub fn rotate_before_build(&mut self, store: &mut Store) -> Result<Option<RootTokens>, Stop> {
+        let marker = self.marker()?;
         if !self.fresh {
-            let marker = self.marker()?;
             let next = pend_token(&marker, store)?;
             (self.hook)(Cut::TokenPended);
-            if write_token(&self.space, &marker, &next) {
-                (self.hook)(Cut::TokenWritten);
-            }
             self.tokens = RootTokens {
-                current: marker.token,
+                current: marker.token.clone(),
                 pending: Some(next),
             };
             self.fresh = true;
         }
-        let Some(pending) = &self.tokens.pending else {
-            return Ok(None);
+        let Some(pending) = self.tokens.pending.clone() else {
+            self.unwritable = None;
+            return Ok(Some(self.tokens.clone()));
         };
-        let written = self.marker()?.token.as_ref() == Some(pending);
-        Ok(written.then(|| RootTokens {
-            current: Some(pending.clone()),
+        if marker.token.as_ref() != Some(&pending) {
+            let rotated = Marker {
+                token: Some(pending.clone()),
+                ..marker
+            };
+            if let Err(error) = self.space.write_marker(&rotated) {
+                if self.unwritable.is_none() {
+                    tracing::warn!(space_id = self.space_id, %error, "nothing is uploaded until the folder's marker can be written");
+                }
+                self.unwritable = Some(error.to_string());
+                return Ok(None);
+            }
+            (self.hook)(Cut::TokenWritten);
+        }
+        self.unwritable = None;
+        Ok(Some(RootTokens {
+            current: Some(pending),
             pending: None,
         }))
     }
 
-    pub fn built(&mut self, tokens: Option<RootTokens>) {
+    pub fn built(&mut self, tokens: RootTokens) {
         self.fresh = false;
-        if let Some(tokens) = tokens {
-            self.tokens = tokens;
-            (self.hook)(Cut::TokenCommitted);
-        }
+        self.tokens = tokens;
+        (self.hook)(Cut::TokenCommitted);
+    }
+
+    pub fn unwritable(&self) -> Option<&str> {
+        self.unwritable.as_deref()
     }
 
     #[cfg(test)]

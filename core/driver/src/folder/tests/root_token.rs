@@ -51,6 +51,32 @@ fn crash_at(cut: disk::Cut) -> Box<dyn FnMut(disk::Cut) + Send> {
     })
 }
 
+fn block_marker(site: &Site) -> PathBuf {
+    let blocker = site
+        .root
+        .join(koidrive_fs::PRIVATE_DIR)
+        .join("space.json.tmp");
+    fs::create_dir(&blocker).unwrap();
+    fs::write(blocker.join("held"), b"").unwrap();
+    blocker
+}
+
+fn hold(a: &mut Device, path: &Path) {
+    fs::write(path, b"held").unwrap();
+    a.rescan();
+    a.scan_until(|a| !a.work.is_empty());
+    assert_retries_the_build(a);
+}
+
+fn assert_retries_the_build(a: &Device) {
+    let work: Vec<_> = a.work.iter().collect();
+    assert!(
+        matches!(work[..], [Work::ResendAfter(wait)] if *wait == Duration::from_secs(1)),
+        "{} pieces of work",
+        work.len()
+    );
+}
+
 fn copy_folder(from: &Path, to: &Path) {
     let status = std::process::Command::new("cp")
         .arg("-a")
@@ -294,36 +320,106 @@ fn a_crash_between_a_rotation_and_the_send_starts_again_and_sends_the_commit() {
 }
 
 #[test]
-fn a_marker_write_that_fails_before_a_build_still_sends_the_commit_and_takes_the_new_token_at_the_next_build() {
+fn a_marker_write_that_fails_before_a_build_holds_the_upload_and_says_why() {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
     let before = marker_of(&site).token;
-    let copy = site.root.with_file_name("copy");
-    copy_folder(&site.root, &copy);
-    let blocker = site
-        .root
-        .join(koidrive_fs::PRIVATE_DIR)
-        .join("space.json.tmp");
-    fs::create_dir(&blocker).unwrap();
-    fs::write(blocker.join("held"), b"").unwrap();
+    block_marker(&site);
 
-    a.create(&mut remote, &site.root.join("after.txt"), b"after");
-    assert_ne!(a.state(), FolderState::Halted);
-    assert_eq!(remote.names(), ["after.txt"]);
-    assert_eq!(marker_of(&site).token, before);
+    hold(&mut a, &site.root.join("after.txt"));
     let tokens = tokens_of(&site);
     assert_eq!(tokens.current, before);
     assert!(tokens.pending.is_some());
+    assert_eq!(marker_of(&site).token, before);
+    for _ in 0..3 {
+        assert_retries_the_build(&a);
+        let retry = a.work.pop_front().unwrap();
+        a.perform(retry, &mut remote).unwrap();
+    }
+    assert_retries_the_build(&a);
+    assert_eq!(remote.names(), Vec::<String>::new());
+    assert_eq!(marker_of(&site).token, before);
+    assert_ne!(a.state(), FolderState::Halted);
+    let problem = a.folder.view().problem.unwrap_or_default();
+    assert!(problem.contains("wait to be uploaded"), "{problem}");
+}
+
+#[test]
+fn no_commit_goes_out_while_every_marker_write_of_the_session_fails() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("before.txt"), b"before");
+    drop(a);
+    let before = marker_of(&site).token;
+    block_marker(&site);
+
+    let mut a = restarted(&site, &mut remote);
+    assert_ne!(a.state(), FolderState::Halted);
+    hold(&mut a, &site.root.join("one.txt"));
+    let retry = a.work.pop_front().unwrap();
+    a.perform(retry, &mut remote).unwrap();
+    hold(&mut a, &site.root.join("two.txt"));
+    let retry = a.work.pop_front().unwrap();
+    a.perform(retry, &mut remote).unwrap();
+    assert_retries_the_build(&a);
+
+    assert!(a.sent.is_empty());
+    assert_eq!(remote.names(), ["before.txt"]);
+    assert_eq!(marker_of(&site).token, before);
+    assert_eq!(tokens_of(&site).current, before);
+    assert!(a.folder.engine.commits.in_flight().is_none());
+    assert_eq!(names(&site.root), ["before.txt", "one.txt", "two.txt"]);
+}
+
+#[test]
+fn an_upload_held_by_a_failed_rotation_is_sent_once_a_later_rotation_succeeds() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("before.txt"), b"before");
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    let before = marker_of(&site).token;
+    let blocker = block_marker(&site);
+    hold(&mut a, &site.root.join("after.txt"));
+    assert_eq!(remote.names(), ["before.txt"]);
 
     fs::remove_dir_all(&blocker).unwrap();
-    a.create(&mut remote, &site.root.join("second.txt"), b"second");
-    assert_rotated_from(&site, &[before, tokens.pending]);
+    a.run(&mut remote);
+    assert_eq!(remote.names(), ["after.txt", "before.txt"]);
+    assert_eq!(a.folder.view().problem, None);
+    assert_rotated_from(&site, &[before]);
     drop(a);
 
     fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
     fs::rename(&copy, &site.root).unwrap();
     assert!(halts_as_a_copy(&site));
-    assert_eq!(remote.names(), ["after.txt", "second.txt"]);
+    assert_eq!(remote.names(), ["after.txt", "before.txt"]);
+}
+
+#[test]
+fn a_copy_restored_after_a_failed_rotation_loses_nothing_and_the_server_keeps_its_files() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("before.txt"), b"before");
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    let before = marker_of(&site);
+    block_marker(&site);
+    hold(&mut a, &site.root.join("after.txt"));
+    assert_eq!(marker_of(&site), before);
+    assert_eq!(remote.names(), ["before.txt"]);
+    drop(a);
+
+    let original = site.root.with_file_name("original");
+    fs::rename(&site.root, &original).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    if !halts_as_a_copy(&site) {
+        let mut a = restarted(&site, &mut remote);
+        a.rest(&mut remote);
+        assert_eq!(names(&site.root), ["before.txt"]);
+    }
+    assert_eq!(remote.names(), ["before.txt"]);
+    assert_eq!(names(&original), ["after.txt", "before.txt"]);
 }
 
 #[test]
