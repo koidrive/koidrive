@@ -153,6 +153,7 @@ pub(crate) enum Settled {
     /// holds entries L does not know. The node stays blocked with no wait to end it.
     Stuck(String),
     Denied(String),
+    AwaitsScan(String),
 }
 
 /// What the effect sections share with the observer's thread.
@@ -262,10 +263,11 @@ pub(crate) struct Disk {
     spans: VecDeque<(u64, Vec<PathBuf>)>,
     /// The end epoch of the latest section that `spans` no longer holds.
     forgotten: u64,
-    /// The reset request of the latest effect section that can have changed which rules apply where: it wrote, moved
-    /// or removed a rules file, or it moved a folder, whose rules files the trees hold by path. Set until a batch
-    /// answers that request, and so has passed the rules of a scan of the section's paths.
-    rules_after: Option<Requests>,
+    /// The reset request of the latest effect section whose outcome L follows only after a scan of the section's
+    /// paths: it wrote, moved or removed a rules file, or it moved a folder, whose rules files the trees hold by path,
+    /// or it removed a folder that an entry L places in it had left. Set until a batch answers that request, and so
+    /// has passed a scan of the section's paths and the rules it read.
+    scan_after: Option<Requests>,
     rescan_after: Option<Requests>,
     /// The most each batch of effects holds: [`BATCH`] outside tests.
     batch: BatchLimit,
@@ -389,7 +391,7 @@ impl Disk {
             sections: Arc::default(),
             spans: VecDeque::new(),
             forgotten: 0,
-            rules_after: None,
+            scan_after: None,
             rescan_after: None,
             batch: BATCH,
             hook,
@@ -613,8 +615,10 @@ impl Disk {
             scopes_of_batch.extend(scopes);
         }
         let requested = (self.sections).request(engine.resets(scopes_of_batch.iter().cloned()));
-        if rules_changed {
-            self.rules_after = Some(requested);
+        if rules_changed
+            || (settled.iter()).any(|settled| matches!(settled, Settled::AwaitsScan(_)))
+        {
+            self.scan_after = Some(requested);
         }
         self.spans.push_back((end, scopes_of_batch));
         while self.spans.len() > SPANS {
@@ -662,8 +666,8 @@ impl Disk {
         }
         observation.root.map_err(Stop::Root)?;
         engine.rules(observation.rules, observation.all_rules);
-        if (self.rules_after).is_some_and(|requested| answered >= Some(requested)) {
-            self.rules_after = None;
+        if (self.scan_after).is_some_and(|requested| answered >= Some(requested)) {
+            self.scan_after = None;
         }
         if (self.rescan_after).is_some_and(|requested| answered >= Some(requested)) {
             self.rescan_after = None;
@@ -734,12 +738,14 @@ impl Disk {
     /// of that effect's paths: an effect that wrote, moved or removed a rules file, or that moved a folder. The caller
     /// plans nothing meanwhile (design §5.10). Otherwise what a rules file that was just downloaded excludes would be
     /// downloaded first, and a remote change would be written into a file that the rules file of a moved folder
-    /// excludes, because the trees hold each rules file by the path of its folder. The wait ends with the batch that
-    /// answers the reset the effect requested ([`Batch::answered`]), never with a batch that only began later: the
-    /// observer may have taken its resets before the effect ended, or may have scanned other paths. The observer
-    /// answers a reset with a batch also when the scan found nothing, so the wait ends without a change on disk.
-    pub fn awaits_rules(&self) -> bool {
-        self.rules_after.is_some()
+    /// excludes, because the trees hold each rules file by the path of its folder. A removal of a folder that an entry
+    /// L places in it had left waits the same way ([`Settled::AwaitsScan`]): the scan tells L where the entry went,
+    /// and until then the same removal would be planned again. The wait ends with the batch that answers the reset the
+    /// effect requested ([`Batch::answered`]), never with a batch that only began later: the observer may have taken
+    /// its resets before the effect ended, or may have scanned other paths. The observer answers a reset with a batch
+    /// also when the scan found nothing, so the wait ends without a change on disk.
+    pub fn awaits_scan(&self) -> bool {
+        self.scan_after.is_some()
     }
 
     #[cfg(test)]
@@ -1574,7 +1580,21 @@ fn settle(
                     .effects
                     .failed(&mut engine.trees, &record.effect_id)
                     .map_err(refused)?;
-                Settled::Stuck("an entry left the folder before it was removed".into())
+                let why = "an entry left the folder before it was removed".to_owned();
+                match &record.effect {
+                    EngineEffect::RemoveDir {
+                        at:
+                            EngineLocation::At {
+                                base: EngineBase::Root,
+                                ..
+                            },
+                        ..
+                    } => {
+                        engine.effects.unblock(&record.node);
+                        Settled::AwaitsScan(why)
+                    }
+                    _ => Settled::Stuck(why),
+                }
             }
             Outcome::Done { identity } => {
                 let removal = (engine.effects)

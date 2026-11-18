@@ -167,6 +167,43 @@ fn a_question_the_engine_holds_without_its_row_is_shown_and_answered_once_the_fo
     assert_eq!(b.folder.view().questions, 0);
 }
 
+fn discarded_held_folder_with(unknown: &str) -> (Remote, Site, Device, PathBuf) {
+    let mut remote = Remote::new();
+    let site = synced_before(&mut remote, "b");
+    let (site_a, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site_a.root.join("notes.txt"), b"written on a");
+    fs::create_dir(site.root.join("held")).unwrap();
+    fs::write(site.root.join("held/a.txt"), b"listed").unwrap();
+    let entry = site.root.join("held").join(unknown);
+    match unknown {
+        "link" => std::os::unix::fs::symlink("/etc/hosts", &entry).unwrap(),
+        _ => fs::write(&entry, b"left out").unwrap(),
+    }
+    let sync = SyncRules {
+        include: Vec::new(),
+        exclude: vec!["*.log".into()],
+    };
+    let mut b = site.start_with(&sync);
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    b.run(&mut remote);
+    answer(&site, Answer::Discard);
+    let step = b.folder.requested();
+    b.take(step).unwrap();
+    let mut steps = 0;
+    while let Some(work) = b.work.pop_front() {
+        steps += 1;
+        assert!(
+            steps < 20,
+            "{unknown}: the removal is planned again and again"
+        );
+        b.perform(work, &mut remote).unwrap();
+    }
+    (remote, site, b, entry)
+}
+
 /// Discard on a first link whose held folder also holds an entry L does not know: a file the device's rules exclude,
 /// or a symlink. Discard moves the listed file to the local trash and keeps the folder with that entry. The folder's
 /// removal is not planned again on a timer, and the status names the entry.
@@ -174,40 +211,7 @@ fn a_question_the_engine_holds_without_its_row_is_shown_and_answered_once_the_fo
 fn discarding_a_held_folder_that_holds_an_entry_l_does_not_know_keeps_the_folder_and_names_the_entry()
  {
     for unknown in ["build.log", "link"] {
-        let mut remote = Remote::new();
-        let site = synced_before(&mut remote, "b");
-        let (site_a, mut a) = linked(&mut remote, "a");
-        a.create(&mut remote, &site_a.root.join("notes.txt"), b"written on a");
-        fs::create_dir(site.root.join("held")).unwrap();
-        fs::write(site.root.join("held/a.txt"), b"listed").unwrap();
-        let entry = site.root.join("held").join(unknown);
-        match unknown {
-            "link" => std::os::unix::fs::symlink("/etc/hosts", &entry).unwrap(),
-            _ => fs::write(&entry, b"left out").unwrap(),
-        }
-        let sync = SyncRules {
-            include: Vec::new(),
-            exclude: vec!["*.log".into()],
-        };
-        let mut b = site.start_with(&sync);
-        b.connect(&remote);
-        b.scan_until(|b| b.folder.scanned);
-        b.run(&mut remote);
-        b.settle();
-        b.run(&mut remote);
-        answer(&site, Answer::Discard);
-        let step = b.folder.requested();
-        b.take(step).unwrap();
-        let mut steps = 0;
-        while let Some(work) = b.work.pop_front() {
-            steps += 1;
-            assert!(
-                steps < 20,
-                "{unknown}: the removal is planned again and again"
-            );
-            b.perform(work, &mut remote).unwrap();
-        }
-
+        let (_, site, b, entry) = discarded_held_folder_with(unknown);
         assert!(
             b.sent.is_empty(),
             "{unknown}: nothing is sent for a discarded entry"
@@ -227,6 +231,25 @@ fn discarding_a_held_folder_that_holds_an_entry_l_does_not_know_keeps_the_folder
             "{problem}"
         );
     }
+}
+
+#[test]
+fn a_stuck_folder_the_person_deletes_drops_its_failure_entries() {
+    let (mut remote, site, mut b, _) = discarded_held_folder_with("build.log");
+    assert!(!b.folder.stuck_effects.is_empty() && !b.folder.effect_failures.is_empty());
+    fs::remove_dir_all(site.root.join("held")).unwrap();
+    b.settle();
+    b.run(&mut remote);
+    assert!(
+        b.folder.stuck_effects.is_empty(),
+        "{:?}",
+        b.folder.stuck_effects
+    );
+    assert!(
+        b.folder.effect_failures.is_empty(),
+        "{:?}",
+        b.folder.effect_failures
+    );
 }
 
 #[test]
@@ -251,7 +274,7 @@ fn a_first_link_holds_what_another_devices_rules_leave_out_for_a_while_until_the
         a.create(&mut remote, &rules, written);
         b.pull(&remote);
         b.run(&mut remote);
-        b.scan_until(|b| !b.folder.disk.awaits_rules());
+        b.scan_until(|b| !b.folder.disk.awaits_scan());
         b.run(&mut remote);
         b.settle();
         b.run(&mut remote);
@@ -694,7 +717,7 @@ fn a_discard_takes_along_a_server_file_moved_into_the_held_folder_while_the_rule
         a.create(&mut remote, &site_a.root.join(".koiignore"), b"other.txt\n");
         b.pull(&remote);
         b.run(&mut remote);
-        b.scan_until(|b| !b.folder.disk.awaits_rules());
+        b.scan_until(|b| !b.folder.disk.awaits_scan());
         b.run(&mut remote);
         b.settle();
         b.run(&mut remote);
@@ -764,7 +787,7 @@ fn a_discard_takes_along_a_server_file_the_server_edits_after_the_link_across_a_
         a.create(&mut remote, &site_a.root.join(".koiignore"), b"other.txt\n");
         b.pull(&remote);
         b.run(&mut remote);
-        b.scan_until(|b| !b.folder.disk.awaits_rules());
+        b.scan_until(|b| !b.folder.disk.awaits_scan());
         b.run(&mut remote);
         b.settle();
         b.run(&mut remote);
@@ -818,7 +841,7 @@ fn a_discard_takes_along_an_adopted_server_file_the_server_edits_while_the_folde
     a.create(&mut remote, &site_a.root.join(".koiignore"), b"other.txt\n");
     b.pull(&remote);
     b.run(&mut remote);
-    b.scan_until(|b| !b.folder.disk.awaits_rules());
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
     b.run(&mut remote);
     b.settle();
     b.run(&mut remote);
@@ -869,7 +892,7 @@ fn a_discard_takes_along_a_server_file_moved_into_an_excluded_folder_inside_the_
         a.create(&mut remote, &site_a.root.join(".koiignore"), b"other.txt\n");
         b.pull(&remote);
         b.run(&mut remote);
-        b.scan_until(|b| !b.folder.disk.awaits_rules());
+        b.scan_until(|b| !b.folder.disk.awaits_scan());
         b.run(&mut remote);
         b.settle();
         b.run(&mut remote);

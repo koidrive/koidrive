@@ -579,8 +579,9 @@ impl Folder {
         self.local_entries = Some(entries);
         self.unread = batch.unread;
         let detached = batch.observation.detached.clone();
-        self.disk
-            .observed(batch, &mut self.engine, &mut self.store)?;
+        self.forgetting_dropped(|folder| {
+            (folder.disk).observed(batch, &mut folder.engine, &mut folder.store)
+        })?;
         self.detached = detached;
         let allowed: Vec<String> = (self.denied.iter())
             .filter(|(node, denied)| {
@@ -671,7 +672,9 @@ impl Folder {
             .filter(|_| self.timing.is_on())
             .map(|record| record.effect_id.clone())
             .collect();
-        let settled = self.disk.apply(staged, &mut self.engine, &mut self.store)?;
+        let settled = self.forgetting_dropped(|folder| {
+            (folder.disk).apply(staged, &mut folder.engine, &mut folder.store)
+        })?;
         let at = Time::now();
         for (effect_id, (_, settled)) in effect_ids.iter().zip(&settled) {
             self.timing
@@ -728,7 +731,7 @@ impl Folder {
                         work.push(Work::RetryAfter(wait));
                     }
                 }
-                Settled::Failed(why) | Settled::Denied(why) => {
+                Settled::Failed(why) | Settled::Denied(why) | Settled::AwaitsScan(why) => {
                     self.stuck_effects.remove(&node);
                     tracing::info!(
                         space_id = self.link.space_id,
@@ -762,6 +765,28 @@ impl Folder {
 
     fn in_flight(&self) -> Option<Commit> {
         (self.engine.commits.in_flight()).map(|flight| flight.commit.clone())
+    }
+
+    fn forgetting_dropped<T>(
+        &mut self,
+        change: impl FnOnce(&mut Folder) -> Result<T, Stop>,
+    ) -> Result<T, Stop> {
+        let local = self.engine.trees.local();
+        let failing: Vec<String> = (self.effect_failures.keys())
+            .chain(&self.stuck_effects)
+            .chain(self.denied.keys())
+            .filter(|node| local.get(node.as_str()).is_some())
+            .cloned()
+            .collect();
+        let out = change(self)?;
+        for node in failing {
+            if self.engine.trees.local().get(&node).is_none() {
+                self.effect_failures.remove(&node);
+                self.stuck_effects.remove(&node);
+                self.denied.remove(&node);
+            }
+        }
+        Ok(out)
     }
 
     /// Runs one change of the engine and its checkpoint in one store transaction.
@@ -1063,7 +1088,7 @@ impl Folder {
     fn drive(&mut self, work: &mut Vec<Work>) -> Result<(), Stop> {
         self.publish_remote()?;
         let staging = !self.engine.effects.in_flight().is_empty();
-        let held = !self.scanned || staging || self.disk.awaits_rules();
+        let held = !self.scanned || staging || self.disk.awaits_scan();
         if held || !matches!(self.stream, Stream::Following { .. }) {
             return Ok(());
         }

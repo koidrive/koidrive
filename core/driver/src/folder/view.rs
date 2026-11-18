@@ -446,7 +446,7 @@ impl Folder {
         let commits = &self.engine.commits;
         self.caught_up()
             && self.scanned
-            && !self.disk.awaits_rules()
+            && !self.disk.awaits_scan()
             && self.engine.effects.in_flight().is_empty()
             && matches!(self.flight, Flight::Idle)
             && self.engine.commits.in_flight().is_none()
