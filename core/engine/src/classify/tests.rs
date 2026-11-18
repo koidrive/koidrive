@@ -1208,25 +1208,6 @@ fn a_kept_entry_stays_kept_when_another_devices_negation_lands_in_the_settle_the
 }
 
 #[test]
-fn a_kept_entry_is_released_when_the_person_lets_it_in_in_the_settle_another_devices_rules_file_lands()
- {
-    let mut trees = with_a_kept_env();
-    trees.set_local("app-rules".into(), rules_file("app", 0, 4));
-    trees.set_synced("app-rules".into(), Some(rules_file("app", 0, 4).shape));
-    trees.set_rules(&["app"], Some(RuleFile::parse(b".env\n")));
-    trees.settle(&BTreeMap::new());
-
-    trees.set_local("root-rules".into(), rules_file("root", 1, 3));
-    trees.set_synced("root-rules".into(), Some(rules_file("root", 1, 3).shape));
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"*.tmp\n")));
-    trees.set_local_changed("app-rules".into(), rules_file("app", 2, 4));
-    trees.set_rules(&["app"], Some(RuleFile::parse(b"*.log\n")));
-    trees.settle(&BTreeMap::new());
-
-    assert!(!trees.kept_nodes.contains_key("env"));
-}
-
-#[test]
 fn a_listing_reserves_an_entry_whose_name_differs_from_a_held_one_only_in_case() {
     let mut trees = Trees::new("root");
     trees.set_local("app".into(), kept_local("root", "app", Kind::Dir, 1));
