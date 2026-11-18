@@ -891,7 +891,7 @@ mod tests {
                     Cut::Confirming(path) => {
                         stage == "removal confirmed" && path == Path::new("Disk")
                     }
-                    Cut::Searching(_) => false,
+                    Cut::Searching(_) | Cut::Stating(_) => false,
                 };
                 if !now || swapped {
                     return;

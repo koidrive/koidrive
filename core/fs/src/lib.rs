@@ -33,7 +33,9 @@
 //! parent again from a fresh root handle and requires every folder on the way
 //! to keep its identity, and the parent its modification time and listing. A
 //! path that is present, cannot be read, or whose parent changed in between
-//! keeps its old entry and is returned for another rescan.
+//! keeps its old entry and is returned for another rescan. A scan that would
+//! publish one entry, other than a hard link, at two paths of one volume saw
+//! renames happen while it read, so it publishes nothing.
 //!
 //! A rescan of part of the tree reports a move whose other end lies outside
 //! the paths it was given as a rescan of both places would. On macOS, for an
@@ -129,8 +131,9 @@ pub enum Error {
     Io(#[from] io::Error),
     #[error("file system watcher: {0}")]
     Watch(Box<dyn std::error::Error + Send + Sync>),
-    /// A directory was replaced or removed while the scan was inside it. The
-    /// snapshot is unchanged; scan again once the tree is quiet.
+    /// A directory was replaced or removed while the scan was inside it, or
+    /// the scan found one entry at two paths. The snapshot is unchanged; scan
+    /// again once the tree is quiet.
     #[error("the tree changed during the scan")]
     Changed,
     /// The root path now names a different directory than the one scanned.
@@ -584,6 +587,7 @@ enum Cut<'a> {
     /// A removal's confirmation just opened this folder.
     Confirming(&'a Path),
     Searching(&'a Path),
+    Stating(&'a Path),
 }
 
 /// The entries one rescan observed, and the parts of the snapshot they replace.
@@ -647,6 +651,7 @@ impl Scan<'_> {
         if (self.stopped)() {
             return Err(Error::Stopped);
         }
+        (self.cut)(Cut::Stating(&rel));
         let seen = now_ns();
         let stat = match stat_at(dir, name) {
             Ok(stat) => stat,
@@ -904,7 +909,8 @@ impl Snapshot {
     /// On any error the snapshot is unchanged. That includes a root that is
     /// missing, unreadable or replaced at any point of the scan, so a lost root
     /// never reads as everything removed, and [`Error::Changed`] when a folder
-    /// is replaced while the scan is inside it.
+    /// is replaced while the scan is inside it or renames during the scan show
+    /// one entry at two paths.
     ///
     /// A path is only reported removed, or as the source of a rename, once a
     /// fresh lookup from the root confirms it is gone, as the crate docs
@@ -1547,6 +1553,23 @@ impl Snapshot {
             &departed,
             &mut *scan.cut,
         )?;
+        let mut placed = HashMap::with_capacity(scan.new.len());
+        let mut shared = HashSet::new();
+        if (scan.new.iter())
+            .filter(|(path, entry)| {
+                !entry.linked && !(unreadable.iter()).any(|blocked| path.starts_with(blocked))
+            })
+            .any(|(path, entry)| {
+                let Some(other) = placed.insert(entry.id, path) else {
+                    return false;
+                };
+                let on_volume = |at| (volume_of(at, &scan.new, &self.entries), entry.id);
+                shared.insert(on_volume(other));
+                !shared.insert(on_volume(path))
+            })
+        {
+            return Err(Error::Changed);
+        }
         let arrived: HashSet<(FileId, EntryKind)> = (scan.new.iter())
             .filter(|(path, now)| {
                 !(old.get(*path))
