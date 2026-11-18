@@ -96,8 +96,8 @@ pub fn identity(ino: u128) -> FileIdentity {
     }
 }
 
-/// How finely a volume keeps file modification times. A FAT or exFAT volume and a zip extraction
-/// keep 2 s, HFS+ keeps 1 s, and exFAT with its extra field keeps 10 ms.
+/// How finely a volume keeps file modification times. A FAT volume and a zip extraction keep 2 s,
+/// HFS+ keeps 1 s, and exFAT keeps 10 ms.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Precision {
     #[default]
