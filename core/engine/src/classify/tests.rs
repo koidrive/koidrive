@@ -1156,6 +1156,46 @@ fn a_kept_entry_stays_kept_when_another_device_lets_it_in_while_the_person_edits
 }
 
 #[test]
+fn a_kept_entry_is_released_when_the_person_deletes_a_rules_file_only_this_device_held_and_lets_it_in()
+ {
+    let mut trees = with_a_kept_env();
+    let none: [&str; 0] = [];
+    trees.set_local_rules(LocalRules::new(&none, &[".env"]).unwrap());
+    trees.settle(&BTreeMap::new());
+    trees.set_local_changed("root-rules".into(), rules_file("root", 0, 3));
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"*.tmp\n")));
+    trees.settle(&BTreeMap::new());
+
+    trees.remove_local("root-rules");
+    trees.set_rules(&[] as &[&str], None);
+    trees.set_local_rules(LocalRules::new(&none, &none).unwrap());
+    trees.settle(&BTreeMap::new());
+
+    assert!(!trees.kept_nodes.contains_key("env"));
+}
+
+#[test]
+fn a_kept_entry_stays_kept_when_the_server_drops_a_rules_file_it_held_and_the_person_lifts_a_local_list()
+ {
+    let mut trees = with_a_kept_env();
+    let none: [&str; 0] = [];
+    trees.set_local_rules(LocalRules::new(&none, &[".env"]).unwrap());
+    trees.set_local("root-rules".into(), rules_file("root", 0, 3));
+    trees.set_synced("root-rules".into(), Some(rules_file("root", 0, 3).shape));
+    trees.set_remote("root-rules".into(), remote(rules_file("root", 0, 3).shape));
+    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"*.tmp\n")));
+    trees.settle(&BTreeMap::new());
+
+    trees.remove_remote("root-rules");
+    trees.remove_local("root-rules");
+    trees.set_rules(&[] as &[&str], None);
+    trees.set_local_rules(LocalRules::new(&none, &none).unwrap());
+    trees.settle(&BTreeMap::new());
+
+    assert!(trees.kept_nodes.contains_key("env"));
+}
+
+#[test]
 fn a_listing_reserves_an_entry_whose_name_differs_from_a_held_one_only_in_case() {
     let mut trees = Trees::new("root");
     trees.set_local("app".into(), kept_local("root", "app", Kind::Dir, 1));

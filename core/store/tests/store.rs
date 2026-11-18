@@ -15,8 +15,8 @@ use koidrive_engine::question::{
 };
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 use koidrive_engine::state::{
-    Agreed, CommitsState, EffectsState, ExcludedBy, FinishOrigin, GivenUp, KeptCause,
-    KeptEntries, KeptRules, LostPosition, MovedHere, PendingFinish, TreesState,
+    Agreed, CommitsState, EffectsState, ExcludedBy, FinishOrigin, GivenUp, KeptCause, KeptEntries,
+    KeptRules, KeptRulesFile, LostPosition, MovedHere, PendingFinish, TreesState,
 };
 use koidrive_engine::tree::{
     FileIdentity, Kind, LocalNode as EngineLocalNode, RemoteNode, Shape as EngineShape,
@@ -1205,7 +1205,10 @@ fn kept_cause(excluded_by: ExcludedBy) -> KeptCause {
         excluded_by,
         rules: vec![
             KeptRules {
-                file: Some("r".into()),
+                file: Some(KeptRulesFile {
+                    id: "r".into(),
+                    on_server: true,
+                }),
                 fingerprint: Some(7),
             },
             KeptRules {

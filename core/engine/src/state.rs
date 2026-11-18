@@ -103,8 +103,16 @@ pub enum ExcludedBy {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct KeptRules {
-    pub file: Option<NodeId>,
+    pub file: Option<KeptRulesFile>,
     pub fingerprint: Option<u64>,
+}
+
+/// A rules file L held on a kept entry's path, and whether R held it when the cause was recorded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct KeptRulesFile {
+    pub id: NodeId,
+    pub on_server: bool,
 }
 
 /// The held versions and unsent edit bases of a file, independent of R's current version.

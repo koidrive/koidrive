@@ -12,8 +12,8 @@ use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
 use crate::names::{name_key, nfc, same_name};
 use crate::state::{
     Agreed, ContentProvenance, ContentValue, ContentVersion, ExcludedBy, FinishOrigin, KeptCause,
-    KeptEntries, KeptRules, LostPosition, MovedHere, PendingFinish, StateError, TreesChanges,
-    TreesState, made_over,
+    KeptEntries, KeptRules, KeptRulesFile, LostPosition, MovedHere, PendingFinish, StateError,
+    TreesChanges, TreesState, made_over,
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
@@ -3696,7 +3696,10 @@ impl Trees {
     fn kept_rules(&self, parent: &str, path: &[&str]) -> Vec<KeptRules> {
         (0..path.len())
             .map(|depth| KeptRules {
-                file: self.rules_file_above(parent, depth),
+                file: (self.rules_file_above(parent, depth)).map(|id| KeptRulesFile {
+                    on_server: self.r.get(&id).is_some(),
+                    id,
+                }),
                 fingerprint: (self.ignore.rules_file(&path[..depth]))
                     .map(|rules| rules.fingerprint()),
             })
@@ -3739,8 +3742,16 @@ impl Trees {
         cause_changed
             && changed.iter().all(
                 |depth| match (&now[*depth].file, &cause.rules[*depth].file) {
-                    (Some(file), _) => self.edited(file) || self.local_changes.contains(file),
-                    (None, Some(file)) => self.l.get(file).is_none() && self.r.live(file).is_some(),
+                    (Some(file), _) => {
+                        self.edited(&file.id) || self.local_changes.contains(&file.id)
+                    }
+                    (None, Some(file)) => {
+                        self.l.get(&file.id).is_none()
+                            && match self.r.get(&file.id) {
+                                Some(_) => self.r.live(&file.id).is_some(),
+                                None => !file.on_server,
+                            }
+                    }
                     (None, None) => false,
                 },
             )
