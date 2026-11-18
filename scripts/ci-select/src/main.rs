@@ -669,14 +669,14 @@ mod tests {
             (
                 "#682",
                 ".github/workflows/property-battery.yml",
-                "rust_engine",
+                "rust_lint",
             ),
             ("#664", "server/src/account/claim.ts", "net_integration"),
             ("#664", "server/src/account/claim.ts", "server"),
             ("#400", "spec/rfc/0018-resends-and-deletes.md", "rust_sim"),
             ("#367", "docs/json-schema/v1/koi-status.json", "rust_driver"),
             ("#367", "docs/json-schema/v1/koi-status.json", "rust"),
-            ("#347", "scripts/test-split/mapping.json", "rust_engine"),
+            ("#347", "scripts/test-split/mapping.json", "rust_lint"),
             ("#674", "server/scripts/deploy-test/e2e.ts", "server"),
         ] {
             let running = running(&[path]);
