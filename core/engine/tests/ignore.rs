@@ -2162,3 +2162,37 @@ fn an_excluded_node_the_server_renames_keeps_its_synced_entries_while_their_old_
         assert_eq!(trees.check(), Ok(()));
     }
 }
+
+#[test]
+fn an_excluded_file_the_server_moves_keeps_its_synced_entry_while_its_place_in_r_is_pending() {
+    for folder_in_s in [false, true] {
+        let folder = match folder_in_s {
+            true => synced("p", dir(ROOT, "a")),
+            false => incoming("p", dir(ROOT, "dest")),
+        };
+        let mut trees = trees(&[synced("x", file(ROOT, "x.log", 1)), folder]);
+        trees.set_rules(&AT_ROOT, rules("*.log\n"));
+        ops(&mut trees);
+        trees.remove_local("x");
+        if folder_in_s {
+            trees.remove_local("p");
+        }
+        trees.settle(&Default::default());
+        for (id, parent, name) in [("p", ROOT, "dest"), ("x", "p", "y.log")] {
+            let mut node = trees.remote().get(id).unwrap().clone();
+            node.shape.parent = parent.into();
+            node.shape.name = name.into();
+            trees.set_remote(id.into(), node);
+        }
+        trees.listed(&[], Pending::new([["dest"]]));
+        for _ in 0..3 {
+            trees.settle(&Default::default());
+            assert_eq!(trees.check(), Ok(()));
+        }
+        assert_ne!(trees.synced().live("x"), None, "{folder_in_s}");
+        trees.listed(&[], Pending::default());
+        trees.settle(&Default::default());
+        assert_eq!(trees.synced().live("x"), None, "{folder_in_s}");
+        assert_eq!(trees.check(), Ok(()));
+    }
+}

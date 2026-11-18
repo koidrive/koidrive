@@ -456,9 +456,11 @@ impl Unsettled {
     }
 
     fn holds(&self, path: Option<(Vec<&str>, Kind)>) -> bool {
-        let Some((names, _)) = path.filter(|_| !self.scopes.is_empty() || !self.files.is_empty())
-        else {
+        if self.scopes.is_empty() && self.files.is_empty() {
             return false;
+        }
+        let Some((names, _)) = path else {
+            return true;
         };
         let mut keys = Vec::with_capacity(names.len());
         let held = |keys: &Vec<String>| self.scopes.contains(keys) || self.files.contains_key(keys);
@@ -3160,16 +3162,20 @@ impl Trees {
     }
 
     fn pending_at(&self, id: &str) -> bool {
-        [self.s.live(id), self.r.live(id)]
-            .into_iter()
-            .flatten()
-            .any(|shape| self.pending.holds(self.on_disk(shape)))
+        let s = |id: &str| self.s.live(id);
+        let r = |id: &str| self.r.live(id);
+        (self.s.live(id)).is_some_and(|shape| self.pending.holds(self.on_disk(shape, &s)))
+            || (self.r.live(id)).is_some_and(|shape| self.pending.holds(self.on_disk(shape, &r)))
     }
 
-    fn on_disk<'a>(&'a self, shape: &'a Shape) -> Option<(Vec<&'a str>, Kind)> {
+    fn on_disk<'a>(
+        &'a self,
+        shape: &'a Shape,
+        tree: &dyn Fn(&str) -> Option<&'a Shape>,
+    ) -> Option<(Vec<&'a str>, Kind)> {
         let mut names = vec![shape.name.as_str()];
         let mut current = shape.parent.as_str();
-        for _ in 0..=self.s.len() {
+        for _ in 0..=self.s.len().max(self.r.len()) {
             let above = match current == self.l.root {
                 true => Some(Vec::new()),
                 false => path(&self.l, current).map(|(above, _)| above),
@@ -3178,9 +3184,9 @@ impl Trees {
                 above.extend(names.into_iter().rev());
                 return Some((above, shape.kind));
             }
-            let synced = self.s.live(current)?;
-            names.push(&synced.name);
-            current = &synced.parent;
+            let parent = tree(current)?;
+            names.push(&parent.name);
+            current = &parent.parent;
         }
         None
     }
