@@ -201,11 +201,16 @@ def merge(base, branch, current, name):
 def port(executable, mapping, base_ref, branch_ref):
     sources = {}
     for path in mapping:
-        files = property_files(executable, path, branch_ref) | property_files(executable, path)
-        require_properties_in_place(path, mapping[path], files)
         base_header, base = records(executable, load_source(executable, path, base_ref))
         branch_header, branch = records(executable, load_source(executable, path, branch_ref))
         current_header, current = records(executable, load_source(executable, path))
+        blocks = [{name for name in side if name.startswith("proptest:")} for side in (base, branch, current)]
+        changed = sorted(set.union(*blocks) - set.intersection(*blocks))
+        if changed:
+            raise ValueError(f"{path}: proptest blocks {changed} differ between base, branch and current; "
+                             "apply that change by hand")
+        files = property_files(executable, path, branch_ref) | property_files(executable, path)
+        require_properties_in_place(path, mapping[path], files)
         order = list(current) + [name for name in branch if name not in current]
         merged = []
         for name in order:

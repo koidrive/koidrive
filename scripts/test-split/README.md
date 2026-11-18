@@ -37,4 +37,4 @@ python3 scripts/split-tests.py port --base-ref <old-merge-base> --branch-ref <ol
   --assign 'core/engine/tests/commit.rs::fn:new_test=commit_moves_and_conflicts'
 ```
 
-Supply one `--assign PATH::ITEM=SCENARIO` for each added test or helper. Helpers belong in `common`. The error lists unassigned items. `port` applies a three-way merge to each changed item, preserves main's unrelated items, and refuses overlapping edits before writing files. It does not switch branches, commit, or push. Run the crate tests after porting.
+Supply one `--assign PATH::ITEM=SCENARIO` for each added test or helper. Helpers belong in `common`. The error lists unassigned items. `port` applies a three-way merge to each changed item, preserves main's unrelated items, and refuses overlapping edits before writing files. It also refuses a change to which functions a `proptest!` block holds, including an added or removed block; apply that change by hand. It does not switch branches, commit, or push. Run the crate tests after porting.

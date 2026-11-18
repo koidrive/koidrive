@@ -246,7 +246,7 @@ class SplitTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests.rs"):
                         split.split(self.executable, self.mapping, "base")
                 with patch.object(split, "git_source", side_effect=lambda ref, path: original if ref == "base" else source):
-                    with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests.rs"):
+                    with self.assertRaisesRegex(ValueError, r"\['proptest:holds'\] differ between base, branch and current"):
                         split.port(self.executable, self.mapping, "base", "branch")
                 scenario = self.root / "tests/scenario.rs"
                 before = scenario.read_bytes()
@@ -293,6 +293,33 @@ class SplitTests(unittest.TestCase):
             self.path.write_bytes(original + b"\n" + self.property_source(b"", b"proptest::proptest"))
             with self.assertRaisesRegex(ValueError, "unexpected include path: tests/root.rs"):
                 split.verify(self.executable, self.mapping, "base")
+
+
+    def test_port_refuses_a_function_added_to_a_proptest_block(self):
+        self.mapping["tests.rs"]["proptest:holds"] = "scenario"
+        self.generate()
+        scenario = self.root / "tests/scenario.rs"
+        scenario.write_bytes(self.property_source(scenario.read_bytes() + b"\n", b"proptest::proptest"))
+        layout = {path: path.read_bytes() for path in self.root.rglob("*.rs")}
+        base = split.load_source(self.executable, "tests.rs")
+        branch = base.replace(b"x < 4); }\n}", b"x < 4); }\n    #[test]\n    fn also_holds(x in 0..4u8) { assert!(x < 4); }\n}")
+        self.mapping["tests.rs"]["proptest:holds,also_holds"] = "root"
+        with patch.object(split, "git_source", side_effect=lambda ref, path: base if ref == "base" else branch):
+            with self.assertRaisesRegex(ValueError, r"proptest blocks \['proptest:holds', 'proptest:holds,also_holds'\] differ.*by hand"):
+                split.port(self.executable, self.mapping, "base", "branch")
+        self.assertEqual(layout, {path: path.read_bytes() for path in self.root.rglob("*.rs")})
+
+    def test_port_with_unchanged_proptest_blocks_goes_through(self):
+        self.mapping["tests.rs"]["proptest:holds"] = "scenario"
+        self.generate()
+        scenario = self.root / "tests/scenario.rs"
+        scenario.write_bytes(self.property_source(scenario.read_bytes() + b"\n", b"proptest::proptest"))
+        base = split.load_source(self.executable, "tests.rs")
+        branch = base.replace(b"helper(), 1", b"helper(), 2")
+        with patch.object(split, "git_source", side_effect=lambda ref, path: base if ref == "base" else branch):
+            split.port(self.executable, self.mapping, "base", "branch")
+        self.assertIn(b"helper(), 2", scenario.read_bytes())
+        self.assertIn(b"fn holds(x in 0..4u8)", scenario.read_bytes())
 
 
 if __name__ == "__main__":
