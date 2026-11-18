@@ -312,8 +312,7 @@ fn a_conflict_copy_another_device_deleted_before_its_result_is_deleted_here() {
 }
 
 #[test]
-fn a_conflict_copy_of_a_file_whose_synced_shape_a_restore_dropped_in_flight_sends_a_rejected_move_again()
- {
+fn a_conflict_copy_of_a_file_whose_synced_shape_a_restore_dropped_in_flight_sends_a_rejected_move_again() {
     let mut trees = trees(&[(
         "f",
         Some(file(ROOT, "g", 2)),
@@ -699,8 +698,7 @@ fn a_resent_answer_delete_drops_its_precondition_once_a_delete_of_this_device_tr
 }
 
 #[test]
-fn an_edit_sends_no_content_over_s_s_bytes_another_device_wrote_back_and_renamed_before_the_build()
-{
+fn an_edit_sends_no_content_over_s_s_bytes_another_device_wrote_back_and_renamed_before_the_build() {
     let mut trees = trees(&[(
         "f",
         Some(file(ROOT, "f", 2)),
@@ -762,8 +760,7 @@ fn moved_into_the_folder_merged_into_it(renamed: bool) -> (Trees, Commits, IdGen
 }
 
 #[test]
-fn a_folder_moved_into_the_folder_merged_into_it_stays_reverted_when_the_server_changes_elsewhere()
-{
+fn a_folder_moved_into_the_folder_merged_into_it_stays_reverted_when_the_server_changes_elsewhere() {
     let (mut trees, commits, _) = moved_into_the_folder_merged_into_it(false);
     trees.set_remote("z".into(), remote(file(ROOT, "z", 1)));
     trees.settle(commits.aliases());
@@ -775,32 +772,22 @@ fn a_folder_moved_into_a_merged_folder_is_sent_there_once_the_user_renames_it() 
     let (mut trees, mut commits, mut ids) = moved_into_the_folder_merged_into_it(true);
     trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert!(
-        ops(&commit).contains(&mv("b", "a", "e")),
-        "{:?}",
-        ops(&commit)
-    );
+    assert!(ops(&commit).contains(&mv("b", "a", "e")), "{:?}", ops(&commit));
     assert!(!trees.reverted().contains("b"));
 }
 
 #[test]
-fn a_folder_moved_into_a_merged_folder_is_sent_there_once_the_user_renames_it_while_the_server_changes_elsewhere()
- {
+fn a_folder_moved_into_a_merged_folder_is_sent_there_once_the_user_renames_it_while_the_server_changes_elsewhere() {
     let (mut trees, mut commits, mut ids) = moved_into_the_folder_merged_into_it(true);
     trees.set_remote("z".into(), remote(file(ROOT, "z", 1)));
     trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert!(
-        ops(&commit).contains(&mv("b", "a", "e")),
-        "{:?}",
-        ops(&commit)
-    );
+    assert!(ops(&commit).contains(&mv("b", "a", "e")), "{:?}", ops(&commit));
     assert!(!trees.reverted().contains("b"));
 }
 
 #[test]
-fn a_folder_moved_into_a_folder_merged_into_one_under_it_stays_reverted_when_the_server_changes_elsewhere()
- {
+fn a_folder_moved_into_a_folder_merged_into_one_under_it_stays_reverted_when_the_server_changes_elsewhere() {
     let mut trees = trees(&[
         ("a", Some(dir(ROOT, "d")), None, None),
         ("c", Some(dir("a", "g")), None, None),
@@ -840,23 +827,14 @@ fn a_folder_moved_into_a_merged_folder_is_no_longer_reverted_once_a_rewind_forge
     let (mut trees, mut commits, mut ids) = moved_into_the_folder_merged_into_it(false);
     let cause = RecoveryCause::of(RecoveryTrigger::SpaceRewound);
     commits.enter_recovery(cause);
-    commits.recover(
-        &mut trees,
-        0,
-        &cause,
-        &History::new(),
-        &Marks::new(),
-        &mut ids,
-        NOW,
-    );
+    commits.recover(&mut trees, 0, &cause, &History::new(), &Marks::new(), &mut ids, NOW);
     trees.settle(commits.aliases());
     assert!(commits.aliases().is_empty());
     assert!(!trees.reverted().contains("b"));
 }
 
 #[test]
-fn a_folder_moved_into_the_folder_merged_into_it_is_moved_back_when_a_removal_by_another_device_is_counted()
- {
+fn a_folder_moved_into_the_folder_merged_into_it_is_moved_back_when_a_removal_by_another_device_is_counted() {
     let (mut trees, mut commits, mut ids) = moved_into_the_folder_merged_into_it(false);
     trees.set_remote("z".into(), trashed(file(ROOT, "z", 1)));
     let removal = koidrive_engine::guard::RemoteRemoval {
@@ -871,9 +849,7 @@ fn a_folder_moved_into_the_folder_merged_into_it_is_moved_back_when_a_removal_by
         .cloned()
     {
         planned.push((record.node.clone(), record.effect.clone()));
-        effects
-            .done(&mut trees, None, &record.effect_id, None)
-            .unwrap();
+        effects.done(&mut trees, None, &record.effect_id, None).unwrap();
         trees.settle(commits.aliases());
         assert!(planned.len() < 8, "{planned:?}");
     }
@@ -884,3 +860,4 @@ fn a_folder_moved_into_the_folder_merged_into_it_is_moved_back_when_a_removal_by
     );
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
+
