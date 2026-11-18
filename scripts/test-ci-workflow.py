@@ -71,10 +71,9 @@ class ChangesJob(unittest.TestCase):
         )
         return result, dict(line.split("=", 1) for line in output.read_text().splitlines())
 
-    def test_push_skips_every_macos_job_a_green_merge_queue_run_ran_or_did_not_need(self):
+    def push_with_runs(self, runs):
         (self.dir / "fixtures").write_text(json.dumps({
-            "workflows/ci.yml/runs?event=merge_group&head_sha=fixture-sha&status=success&per_page=1": {
-                "workflow_runs": [{"id": 1, "html_url": "https://fixture.invalid/run"}]},
+            "workflows/ci.yml/runs?event=merge_group&head_sha=fixture-sha&status=success&per_page=1": {"workflow_runs": runs},
         }))
         (self.dir / "requests").write_text("")
         result, outputs = self.run_script(inline_script("changes"), {
@@ -82,10 +81,23 @@ class ChangesJob(unittest.TestCase):
             "REQUESTS": str(self.dir / "requests"), "FIXTURES": str(self.dir / "fixtures"),
         })
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return outputs
+
+    def test_push_skips_every_macos_job_a_green_merge_queue_run_ran_or_did_not_need(self):
+        outputs = self.push_with_runs([{"id": 1, "html_url": "https://fixture.invalid/run", "head_sha": "fixture-sha",
+                                        "event": "merge_group", "conclusion": "success"}])
         for job in SELECTED:
             self.assertEqual(outputs[job], "true", job)
         for job in ("rust_macos", "server_macos", "spec_macos", "macos_app"):
             self.assertEqual(outputs[job], "covered", job)
+
+    def test_push_runs_every_macos_job_when_the_returned_run_is_not_a_green_queue_run_of_this_commit(self):
+        green = {"id": 1, "html_url": "https://fixture.invalid/run", "head_sha": "fixture-sha", "event": "merge_group", "conclusion": "success"}
+        for field, value in (("head_sha", "other-sha"), ("event", "push"), ("conclusion", "failure")):
+            with self.subTest(field=field):
+                outputs = self.push_with_runs([{**green, field: value}])
+                for job in ("rust_macos", "server_macos", "spec_macos", "macos_app"):
+                    self.assertEqual(outputs[job], "true", job)
 
     def test_push_runs_every_macos_job_when_the_merge_queue_lookup_fails(self):
         (self.dir / "fixtures").write_text(json.dumps({
