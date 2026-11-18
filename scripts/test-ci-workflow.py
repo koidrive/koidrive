@@ -13,7 +13,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
-SELECTED = ("rust", "rust_driver", "rust_engine", "rust_sim", "server", "server_deploy", "net_integration",
+SELECTED = ("rust", "rust_lint", "rust_driver", "rust_engine", "rust_sim", "server", "server_deploy", "net_integration",
             "driver_integration", "cli_integration", "ffi_integration", "test_lines")
 
 
@@ -72,7 +72,8 @@ class ChangesJob(unittest.TestCase):
         return result, dict(line.split("=", 1) for line in output.read_text().splitlines())
 
     def test_push_reuses_rust_only_when_all_macos_shards_pass(self):
-        names = ("rust (macos)", "rust tests (macos, driver)", "rust tests (macos, engine)", "rust tests (macos, sim)")
+        names = ("rust build (macos)", "rust lint (macos)", "rust special (macos)", "rust tests (macos, sim)",
+                 *(f"rust tests (macos, {shard}/5)" for shard in range(1, 6)))
         for missing in (None, *names):
             with self.subTest(missing=missing):
                 fixtures = {
@@ -102,7 +103,6 @@ class ChangesJob(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for job in SELECTED:
             self.assertEqual(outputs[job], "true", job)
-        self.assertEqual(json.loads(outputs["rust_suites"]), ["driver", "engine", "sim"])
         for job in ("rust_macos", "server_macos", "spec_macos", "macos_app"):
             self.assertEqual(outputs[job], "true", job)
 
@@ -113,7 +113,6 @@ class ChangesJob(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 for job in (*SELECTED, "rust_macos", "server_macos", "spec_macos", "macos_app"):
                     self.assertEqual(outputs[job], "true", job)
-                self.assertEqual(json.loads(outputs["rust_suites"]), ["driver", "engine", "sim"])
                 self.assertEqual(outputs["site_only"], "false")
 
     def run_changes(self, changed, selected=(), event="pull_request", selector_fails=False, selector_build="success"):
@@ -164,10 +163,10 @@ class ChangesJob(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 for job in SELECTED:
                     self.assertEqual(outputs[job], "true" if job in ("rust_engine", "rust_sim", "server") else "false", job)
-                self.assertEqual(json.loads(outputs["rust_suites"]), ["engine", "sim"])
                 self.assertEqual(outputs["macos_app"], "false")
         result, outputs = self.run_changes("docs/deploy.md")
-        self.assertEqual(json.loads(outputs["rust_suites"]), [])
+        for job in SELECTED:
+            self.assertEqual(outputs[job], "false", job)
 
     def test_the_merge_queue_runs_the_app_only_when_selected(self):
         for selected, expected in (((), "false"), (("macos_app",), "true")):
@@ -187,7 +186,6 @@ class ChangesJob(unittest.TestCase):
                 self.assertIn("The job selector failed", result.stdout)
                 for job in SELECTED:
                     self.assertEqual(outputs[job], "true", job)
-                self.assertEqual(json.loads(outputs["rust_suites"]), ["driver", "engine", "sim"])
                 if event == "merge_group":
                     self.assertEqual(outputs["macos_app"], "true")
 
@@ -266,6 +264,44 @@ class Caches(unittest.TestCase):
                 continue
             with self.subTest(workflow=path.name):
                 self.assertRegex(triggers, r"\n  schedule:\n    - cron: '\d+ \d+ \* \* \*'")
+
+
+class RustShards(unittest.TestCase):
+    def run_step(self, **env):
+        body = WORKFLOW.read_text().split("\n      - name: Plan the Rust test archive and its shards\n", 1)[1]
+        script = textwrap.dedent(re.search(r"(?m)^        run: \|\n((?:          .*\n|\n)+)", body)[1])
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "output"
+            output.write_text("")
+            result = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
+                                    env={**os.environ, "GITHUB_OUTPUT": str(output), **env}, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+    def test_a_selected_partition_builds_the_archive_and_shards_it_on_each_system(self):
+        for macos, systems in (("true", {"ubuntu-latest": 3, "macos": 5}), ("false", {"ubuntu-latest": 3}), ("covered", {"ubuntu-latest": 3})):
+            with self.subTest(macos=macos):
+                outputs = self.run_step(RUST="false", RUST_DRIVER="false", RUST_ENGINE="true", RUST_MACOS=macos)
+                self.assertEqual(outputs["rust_archive"], "true")
+                shards = json.loads(outputs["rust_shards"])["include"]
+                for os_name, count in systems.items():
+                    self.assertEqual([s["shard"] for s in shards if s["os"] == os_name], list(range(1, count + 1)))
+                    self.assertEqual({s["of"] for s in shards if s["os"] == os_name}, {count})
+                self.assertEqual({s["os"] for s in shards}, set(systems))
+
+    def test_no_archive_without_a_selected_partition(self):
+        outputs = self.run_step(RUST="false", RUST_DRIVER="false", RUST_ENGINE="false", RUST_MACOS="true")
+        self.assertEqual(outputs["rust_archive"], "false")
+
+    def test_every_macos_rust_job_is_a_coverage_condition_on_push(self):
+        workflow = WORKFLOW.read_text()
+        shards = json.loads(self.run_step(RUST="true", RUST_DRIVER="true", RUST_ENGINE="true", RUST_MACOS="true")["rust_shards"])["include"]
+        names = [f"rust tests (macos, {s['shard']}/{s['of']})" for s in shards if s["os"] == "macos"]
+        loop = re.search(r'for job in (.*); do\n +if ! grep -Fxq "\$job"', inline_script("changes"))[1]
+        expanded = subprocess.run(["bash", "-c", f"for job in {loop}; do echo \"$job\"; done"], capture_output=True, text=True).stdout.splitlines()
+        for name in (*names, "rust lint (macos)", "rust special (macos)", "rust tests (macos, sim)"):
+            self.assertIn(name, expanded)
+        self.assertIn('"rust_macos:rust build (macos)"', workflow)
 
 
 class CiReport(unittest.TestCase):

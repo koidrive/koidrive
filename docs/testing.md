@@ -14,7 +14,12 @@ Each job runs on Ubuntu, and the jobs marked macOS run on macOS. The `changes` j
 
 | Job | What it checks | Run it locally |
 |---|---|---|
-| `rust` | Workspace fmt, clippy and tests, and the property-persistence check | The commands above and the [property-persistence check](#property-tests) below |
+| `rust lint` (macOS) | Workspace fmt and clippy, and on Ubuntu the property-persistence check and the tests of the CI tools | The commands above and the [property-persistence check](#property-tests) below |
+| `rust build` (macOS) | Builds every selected test binary once into a [nextest archive](https://nexte.st/docs/ci-features/archiving/) | `cargo nextest archive --workspace --exclude koidrive-sim --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup --archive-file tests.tar.zst` |
+| `rust tests` (macOS) | Runs the archive's tests in shards, [balanced by measured test time](#shards-follow-measured-test-times) | `cargo nextest run --workspace --exclude koidrive-sim --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup` |
+| `rust special` (macOS) | The tests that need mounted disks, saved-case replays without random cases, or a release version stamped into the CLI | The commands in the job's steps |
+| `rust tests (…, sim)` (macOS) | `koidrive-sim` in the `checked` profile | `cargo test -p koidrive-sim --profile checked --features koidrive-engine/serde` |
+| `rust test report` | Every listed test ran in exactly one shard; per-test timings and flaky tests | `python3 scripts/ci-rust-tests.py report --help` |
 | `server` | Type checks, the Worker's Vitest suite, and the unit tests of the deploy-test scripts | In `server/`: `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm test`, then `pnpm exec vitest run --config scripts/deploy-test/vitest.config.ts run.unit e2e.unit load.unit bench.unit` |
 | `server deploy check` | A copy of `server/` deploys on its own (a dry run, then `wrangler dev` and a claim), and the server bundle that the CLI embeds packs cleanly | `node server/scripts/check-deploy.mjs` |
 | `net integration`, `driver integration`, `cli integration`, `ffi integration` | The tests whose `#[ignore]` reason says they need the Worker, against the Worker under `wrangler dev` | After `pnpm install` in `server/`: `core/net/scripts/integration-test.sh`, `core/driver/scripts/integration-test.sh`, `cli/scripts/integration-test.sh` or `core/ffi/scripts/integration-test.sh` |
@@ -22,11 +27,15 @@ Each job runs on Ubuntu, and the jobs marked macOS run on macOS. The `changes` j
 | `comments` | The change adds no code comments outside the allowed kinds | `python3 scripts/check-new-comments.py origin/main HEAD` |
 | `macos app` (macOS) | The app builds, the Swift bindings' tests pass, and an unsigned disk image packages and verifies | In `apps/macos/`: `scripts/build-ffi.sh`, then `swift test --package-path KoidriveFFI` |
 
-On a pull request, CI adds macOS jobs only where a change needs them. `rust (macos)` and `macos app` run when the change touches a file that builds or behaves differently on macOS, as `scripts/macos-changes.sh` lists them. Every macOS job, `server (macos)` and `spec (macos)` included, runs when it touches `ci.yml`. The merge queue runs the macOS leg of every job it selects, and a push to `main` runs each macOS job the merge queue did not pass on the same commit. The macOS jobs run on GitHub-hosted runners.
+On a pull request, CI adds macOS jobs only where a change needs them. The macOS Rust jobs and `macos app` run when the change touches a file that builds or behaves differently on macOS, as `scripts/macos-changes.sh` lists them. Every macOS job, `server (macos)` and `spec (macos)` included, runs when it touches `ci.yml`. The merge queue runs the macOS leg of every job it selects, and a push to `main` runs each macOS job the merge queue did not pass on the same commit. The macOS jobs run on GitHub-hosted runners.
 
 One test in `cli/tests/server.rs` also needs a systemd user instance. The `cli integration` job starts one, and locally the test skips itself unless `KOIDRIVE_TEST_SYSTEMD` is set.
 
 Two other workflows run on pull requests. [CLI distribution](../.github/workflows/release-cli.yml) builds the CLI tarballs, tests the installer and installs the CLI from a local Homebrew tap. [DCO](../.github/workflows/dco.yml) checks the `Signed-off-by` line of every commit.
+
+### Shards follow measured test times
+
+`rust build` lists the archive's tests and writes one nextest profile per shard with `scripts/ci-rust-tests.py plan`. The plan reads per-test times from [`.github/rust-test-times.json`](../.github/rust-test-times.json), splits large binaries by test, and gives each shard the same share of measured time. A binary missing from that file counts half a second per test. Each shard retries a failed test once to tell flaky tests from failing ones, and a test that passes only on the retry still fails the run. The `rust-test-report` artifact holds each system's flaky tests, a `test-times.tsv` and a fresh `rust-test-times.json`. Copy that file's entries into `.github/rust-test-times.json` when the shards drift apart.
 
 ## Some tests run only on request
 
