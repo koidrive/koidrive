@@ -33,6 +33,7 @@ pub fn marker() -> Marker {
     Marker {
         space_id: SPACE.into(),
         effects: COUNTER,
+        token: None,
     }
 }
 

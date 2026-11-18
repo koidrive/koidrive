@@ -6,15 +6,16 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
 use koidrive_fs::{
-    Marker, PRIVATE_DIR, RootAt, RootProblem, Space, Unresolved, VolumeId, check_root,
-    check_root_at, open_root_folder, probe_no_replace, read_marker, rename_no_replace, root_at,
-    write_marker,
+    Marker, PRIVATE_DIR, RootAt, RootProblem, RootTokens, Space, Unresolved, VolumeId, check_root,
+    check_root_at, new_token, open_root_folder, probe_no_replace, read_marker, rename_no_replace,
+    root_at, write_marker,
 };
 
 fn marker(space_id: &str, effects: u64) -> Marker {
     Marker {
         space_id: space_id.into(),
         effects,
+        token: None,
     }
 }
 
@@ -44,6 +45,71 @@ fn marker_round_trips_and_replaces_a_stale_temporary_file() {
     write_marker(root, &marker("space-1", 7)).unwrap();
     assert_eq!(read_marker(root).unwrap(), Some(marker("space-1", 7)));
     assert_eq!(private_names(root), ["space.json"]);
+}
+
+#[test]
+fn a_marker_without_a_token_reads_and_writes_back_as_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let file = root.join(PRIVATE_DIR).join("space.json");
+    let unversioned = serde_json::json!({ "space_id": "space-1", "effects": 4 });
+    fs::create_dir(root.join(PRIVATE_DIR)).unwrap();
+    fs::write(&file, unversioned.to_string()).unwrap();
+    let read = read_marker(root).unwrap().unwrap();
+    assert_eq!(read, marker("space-1", 4));
+    write_marker(root, &read).unwrap();
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    assert_eq!(written, unversioned);
+
+    let token = new_token();
+    assert!(token.len() == 32 && token.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_ne!(new_token(), token);
+    let tokened = Marker {
+        token: Some(token),
+        ..read
+    };
+    write_marker(root, &tokened).unwrap();
+    assert_eq!(read_marker(root).unwrap(), Some(tokened));
+}
+
+#[test]
+fn a_link_admits_the_token_it_wrote_or_is_writing_and_any_before_its_first() {
+    let carrying = |token: Option<&str>| Marker {
+        token: token.map(str::to_owned),
+        ..marker("space-1", 0)
+    };
+    let tokens = |current: Option<&str>, pending: Option<&str>| RootTokens {
+        current: current.map(str::to_owned),
+        pending: pending.map(str::to_owned),
+    };
+    let cases = [
+        (
+            tokens(None, None),
+            [None, Some("a")].as_slice(),
+            [].as_slice(),
+        ),
+        (tokens(None, Some("b")), &[None, Some("a"), Some("b")], &[]),
+        (tokens(Some("a"), None), &[Some("a")], &[None, Some("b")]),
+        (
+            tokens(Some("a"), Some("b")),
+            &[Some("a"), Some("b")],
+            &[None, Some("c")],
+        ),
+    ];
+    for (tokens, admitted, copies) in cases {
+        for token in admitted {
+            assert!(
+                tokens.admits(&carrying(*token)).is_ok(),
+                "{tokens:?} {token:?}"
+            );
+        }
+        for token in copies {
+            assert!(
+                matches!(tokens.admits(&carrying(*token)), Err(RootProblem::Copy)),
+                "{tokens:?} {token:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -391,6 +457,16 @@ fn a_btrfs_snapshot_rolled_back_into_the_path_is_another_root() {
     let at = |path: &Path| root_at(fs::File::open(path).unwrap().as_fd()).unwrap();
     btrfs(&["subvolume".as_ref(), "create".as_ref(), subvolume.as_ref()]);
     fs::create_dir(subvolume.join("folder")).unwrap();
+    let token = new_token();
+    let tokened = Marker {
+        token: Some(token.clone()),
+        ..marker("space-1", 0)
+    };
+    write_marker(&subvolume.join("folder"), &tokened).unwrap();
+    let tokens = RootTokens {
+        current: Some(token),
+        pending: None,
+    };
     let linked_subvolume = at(&subvolume);
     let linked = at(&subvolume.join("folder"));
     assert!(linked.volume.is_some());
@@ -405,6 +481,13 @@ fn a_btrfs_snapshot_rolled_back_into_the_path_is_another_root() {
     fs::rename(&subvolume, base.path().join("replaced")).unwrap();
     fs::rename(&snapshot, &subvolume).unwrap();
 
+    let rolled_back = read_marker(&subvolume.join("folder")).unwrap().unwrap();
+    assert_eq!(rolled_back, tokened);
+    assert!(tokens.admits(&rolled_back).is_ok());
+    assert!(matches!(
+        check_root(&subvolume.join("folder"), "space-1", &linked),
+        Err(RootProblem::OtherDisk)
+    ));
     assert!(matches!(
         linked.admits(&at(&subvolume.join("folder"))),
         Err(RootProblem::OtherDisk)

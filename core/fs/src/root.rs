@@ -26,12 +26,47 @@ const PROBE: [&str; 3] = [
     "no-replace-probe-c",
 ];
 
-/// The root marker `.koidrive/space.json`: the space the folder holds, and the
-/// effect counter *m* of design §2.8.
+/// The root marker `.koidrive/space.json`: the space the folder holds, the
+/// effect counter *m* of design §2.8, and the token of the folder's latest
+/// start.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Marker {
     pub space_id: String,
     pub effects: u64,
+    /// A random token each start of the folder's sync replaces, so a byte
+    /// copy of the folder made before that start carries an older one.
+    /// `None` in a marker from a build without tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+/// A new marker token: 128 random bits in hex.
+pub fn new_token() -> String {
+    let mut bytes = [0; 16];
+    getrandom::fill(&mut bytes).expect("the operating system provides random bytes");
+    format!("{:032x}", u128::from_be_bytes(bytes))
+}
+
+/// The marker tokens a link records: the one the marker carries since the
+/// latest start, and the one a start is writing to it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RootTokens {
+    pub current: Option<String>,
+    pub pending: Option<String>,
+}
+
+impl RootTokens {
+    /// Whether `marker` carries a token this link wrote at its latest start
+    /// or is writing now. A link that records no token yet admits any marker.
+    pub fn admits(&self, marker: &Marker) -> Result<(), RootProblem> {
+        let Some(current) = &self.current else {
+            return Ok(());
+        };
+        match &marker.token {
+            Some(token) if token == current || Some(token) == self.pending.as_ref() => Ok(()),
+            _ => Err(RootProblem::Copy),
+        }
+    }
 }
 
 /// Why a root fails the check of design §6.2. No operation may be built from a
@@ -56,6 +91,10 @@ pub enum RootProblem {
     BadMarker(io::Error),
     #[error("the root folder belongs to space {0}")]
     OtherSpace(String),
+    #[error(
+        "the folder at this path is an older copy of the linked folder, so sync stopped before files missing from the copy were taken as deleted"
+    )]
+    Copy,
 }
 
 /// What names a volume under any device number, such as after an OS update:
@@ -362,6 +401,13 @@ impl Space {
     /// holds. Fails, creating nothing, unless the root is held.
     pub fn probe_no_replace(&self) -> io::Result<bool> {
         probe_in(self.private(&[])?.fd())
+    }
+
+    /// [`write_marker`] through the root the space holds. Fails, writing
+    /// nothing, unless the root is held.
+    pub fn write_marker(&self, marker: &Marker) -> io::Result<()> {
+        self.check_held()?;
+        write_marker_at(self.root(), marker, Flush::Full)
     }
 }
 

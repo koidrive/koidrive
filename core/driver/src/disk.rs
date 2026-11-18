@@ -55,8 +55,8 @@ use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{Content, Kind, LocalNode, NodeId};
 use koidrive_fs::{
     Action, Base, BroughtBack, Contents, Dir, Displaced, Effect, Entry, EntryKind, FileId,
-    Location, Marker, Outcome, Reason, Reclaimed, Refusal, RootProblem, Space, Step, check_root_at,
-    open_root_folder, root_at,
+    Location, Marker, Outcome, Reason, Reclaimed, Refusal, RootProblem, RootTokens, Space, Step,
+    check_root_at, open_root_folder, root_at,
 };
 use koidrive_net::{CallError, ChunkError, Session, StopReason, Transfer};
 use koidrive_proto::v1::error::Code;
@@ -268,6 +268,7 @@ pub(crate) struct Disk {
     batch: BatchLimit,
     hook: Hook,
     brought_back: BroughtBack,
+    token: Option<String>,
 }
 
 /// A planned batch of effects the store holds, in the order they were planned.
@@ -338,17 +339,20 @@ impl Disk {
     /// Startup for the folder `link` names, through `lock`, the descriptor the task locked. In order:
     ///
     /// 1. The root check of design §6.2 through that descriptor: the linked path still names it, it is on the linked
-    ///    device, and its marker names the space. Nothing is written when it fails.
+    ///    device, and its marker names the space and, unless it counts more effects than the store (step 2), carries a
+    ///    token the store recorded ([`RootProblem::Copy`] otherwise). Nothing is written when it fails.
     /// 2. The counters: with *e* the store's effect counter and *upper* that plus the number of effects in flight, a
     ///    marker above *upper* means the store is older than the folder. The disk carried out every effect the
     ///    marker counts, so the store continues from it, and the folder recovers (§6.4). A marker below *e* is
     ///    [`Stop::DiskBehind`], which leaves the marker, staging and quarantine as they are.
     /// 3. The no-replace probe.
-    /// 4. The effects in flight are recovered in one section without staging anything again, and acknowledged in one
+    /// 4. The marker gets a new token: the store records it as pending, the marker takes it, and the store makes it
+    ///    current. A marker that cannot be written keeps its token.
+    /// 5. The effects in flight are recovered in one section without staging anything again, and acknowledged in one
     ///    transaction. An interrupted one is planned again; one that met another state on disk stays blocked, and so
     ///    does one that recovery found done where L shows another entry
     ///    ([`koidrive_engine::effects::Effects::confirms`]). The marker must then equal *e*.
-    /// 5. Staged files without an effect are deleted.
+    /// 6. Staged files without an effect are deleted.
     ///
     /// The observer then resets the paths of the recovered effects to L, so it reads a file an effect placed before
     /// the crash once, whatever the snapshot it starts from says about that file.
@@ -381,6 +385,7 @@ impl Disk {
             batch: BATCH,
             hook,
             brought_back: BroughtBack::Entries(HashSet::new()),
+            token: None,
         };
         if !disk.space.held()? {
             return Err(Stop::Withdrawn(disk.path));
@@ -388,9 +393,15 @@ impl Disk {
         link.root_at()
             .admits(&disk.space.root_at()?)
             .map_err(Stop::Root)?;
-        let marker = disk.marker()?;
+        let found = disk.marker()?;
+        let marker = found.effects;
         let cleared = engine.effects.cleared();
         let upper = cleared + engine.effects.in_flight().len() as u64;
+        if marker <= upper {
+            (store.transaction(|tx| tx.root_tokens())?)
+                .admits(&found)
+                .map_err(Stop::Root)?;
+        }
         if marker > upper {
             tracing::warn!(
                 space_id = link.space_id,
@@ -433,6 +444,7 @@ impl Disk {
         if !disk.space.probe_no_replace()? {
             return Err(Stop::NoReplace);
         }
+        disk.token = rotate_token(&disk.space, found, store)?;
         let records = engine.effects.in_flight().to_vec();
         if let Some(first) = records.first() {
             let mut translated = (records.iter().map(translate)).collect::<Result<Vec<_>, _>>()?;
@@ -448,7 +460,7 @@ impl Disk {
                 .map(|(record, outcome)| (record, confirmed(outcome, record, engine)))
                 .collect();
             acknowledge(&outcomes, true, &link.space_id, engine, store, hook)?;
-            let (marker, cleared) = (disk.marker()?, engine.effects.cleared());
+            let (marker, cleared) = (disk.marker()?.effects, engine.effects.cleared());
             if marker != cleared {
                 return Err(Stop::DiskBehind { marker, cleared });
             }
@@ -823,11 +835,12 @@ impl Disk {
         Marker {
             space_id: self.space_id.clone(),
             effects,
+            token: self.token.clone(),
         }
     }
 
-    /// The marker's counter, read through the locked descriptor, for a marker that names this space.
-    fn marker(&self) -> Result<u64, Stop> {
+    /// The marker, read through the locked descriptor, for a marker that names this space.
+    fn marker(&self) -> Result<Marker, Stop> {
         let marker = self
             .space
             .marker()
@@ -836,8 +849,41 @@ impl Disk {
         if marker.space_id != self.space_id {
             return Err(Stop::Root(RootProblem::OtherSpace(marker.space_id)));
         }
-        Ok(marker.effects)
+        Ok(marker)
     }
+}
+
+fn rotate_token(space: &Space, marker: Marker, store: &mut Store) -> Result<Option<String>, Stop> {
+    let next = pend_token(&marker, store)?;
+    let kept = marker.token.clone();
+    let rotated = Marker {
+        token: Some(next.clone()),
+        ..marker
+    };
+    if let Err(error) = space.write_marker(&rotated) {
+        tracing::warn!(space_id = rotated.space_id, %error, "the folder's marker keeps its token until the next start");
+        return Ok(kept);
+    }
+    commit_token(next, store)
+}
+
+pub(crate) fn pend_token(marker: &Marker, store: &mut Store) -> Result<String, Stop> {
+    let next = koidrive_fs::new_token();
+    let tokens = RootTokens {
+        current: marker.token.clone(),
+        pending: Some(next.clone()),
+    };
+    store.transaction(|tx| tx.set_root_tokens(&tokens))?;
+    Ok(next)
+}
+
+pub(crate) fn commit_token(token: String, store: &mut Store) -> Result<Option<String>, Stop> {
+    let tokens = RootTokens {
+        current: Some(token),
+        pending: None,
+    };
+    store.transaction(|tx| tx.set_root_tokens(&tokens))?;
+    Ok(tokens.current)
 }
 
 pub(crate) type Sources = BTreeMap<Vec<u8>, (String, Option<PathBuf>)>;

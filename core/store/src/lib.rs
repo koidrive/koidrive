@@ -36,7 +36,7 @@ use std::time::Duration;
 
 pub use engine::{EngineChanges, EngineState};
 use koidrive_engine::commit::Base;
-use koidrive_fs::{FileId, Mount, RootAt, VolumeId};
+use koidrive_fs::{FileId, Mount, RootAt, RootTokens, VolumeId};
 use koidrive_proto::v1::{Content, NodeState, VersionInfo};
 use migrations::{LEGACY_STEPS, MIGRATIONS, NAMED};
 use prost::Message;
@@ -795,10 +795,15 @@ impl Tx<'_> {
 
     pub fn set_link(&self, link: &Link) -> Result<()> {
         self.0.execute(
-            "INSERT OR REPLACE INTO link
+            "INSERT INTO link
              (id, space_id, space_name, root, root_dev, server_url, device_id, linked_at_ms,
               found_marker, root_volume)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT (id) DO UPDATE SET
+              space_id = excluded.space_id, space_name = excluded.space_name, root = excluded.root,
+              root_dev = excluded.root_dev, server_url = excluded.server_url,
+              device_id = excluded.device_id, linked_at_ms = excluded.linked_at_ms,
+              found_marker = excluded.found_marker, root_volume = excluded.root_volume",
             params![
                 link.space_id,
                 link.space_name,
@@ -810,6 +815,33 @@ impl Tx<'_> {
                 link.found_marker,
                 link.root_volume.as_ref().map(VolumeId::as_bytes),
             ],
+        )?;
+        Ok(())
+    }
+
+    /// The marker tokens the link records; none before the link's first start.
+    pub fn root_tokens(&self) -> Result<RootTokens> {
+        Ok(self
+            .0
+            .query_row(
+                "SELECT root_token, root_token_pending FROM link WHERE id = 1",
+                [],
+                |row| {
+                    Ok(RootTokens {
+                        current: row.get(0)?,
+                        pending: row.get(1)?,
+                    })
+                },
+            )
+            .optional()?
+            .unwrap_or_default())
+    }
+
+    /// Records the marker tokens of the link.
+    pub fn set_root_tokens(&self, tokens: &RootTokens) -> Result<()> {
+        self.0.execute(
+            "UPDATE link SET root_token = ?1, root_token_pending = ?2 WHERE id = 1",
+            params![tokens.current, tokens.pending],
         )?;
         Ok(())
     }

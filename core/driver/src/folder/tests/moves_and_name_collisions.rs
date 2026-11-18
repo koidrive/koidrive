@@ -528,8 +528,8 @@ fn a_file_placed_at_a_name_l_gave_away_is_not_recorded_by_the_next_start() {
     };
     let record = b.folder.engine.effects.in_flight().first().unwrap().clone();
     let marker = Marker {
-        space_id: site.link.space_id.clone(),
         effects: record.counter,
+        ..koidrive_fs::read_marker(&site.root).unwrap().unwrap()
     };
     write_marker(&site.root, &marker).unwrap();
     fs::rename(site.root.join(record.staging()), site.root.join("a")).unwrap();

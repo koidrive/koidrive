@@ -16,6 +16,7 @@ include!("tests/progress.rs");
 include!("tests/reconnect_and_commit_refusal.rs");
 include!("tests/renumbered_disk.rs");
 include!("tests/restore.rs");
+include!("tests/root_token.rs");
 include!("tests/rules_and_blocked_removals.rs");
 include!("tests/rules_and_ignored_links.rs");
 include!("tests/server_loss_recovery.rs");

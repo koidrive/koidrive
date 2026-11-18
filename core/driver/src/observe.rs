@@ -955,6 +955,7 @@ mod tests {
             &Marker {
                 space_id: SPACE.into(),
                 effects: 0,
+                token: None,
             },
         )
         .unwrap();

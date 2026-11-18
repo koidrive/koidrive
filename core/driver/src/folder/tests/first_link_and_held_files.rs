@@ -392,6 +392,7 @@ fn a_first_link_of_a_folder_whose_marker_counts_effects_holds_what_the_space_lac
     let marker = Marker {
         space_id: remote.space.space_id().to_owned(),
         effects: 3,
+        token: None,
     };
     write_marker(&site.root, &marker).unwrap();
     fs::write(site.root.join("old.txt"), b"an old copy").unwrap();
