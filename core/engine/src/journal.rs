@@ -14,6 +14,7 @@ use crate::names::same_name;
 use crate::state::{ContentValue, MapChanges};
 use crate::tracked::TrackedMap;
 use crate::tree::NodeId;
+use rows::Rows;
 
 /// The most intents the history keeps per node and field, and a seen list per node and field (RFC 0029 §5.1).
 pub const HISTORY_KEPT: usize = 64;
@@ -517,8 +518,7 @@ fn changes<K: Ord + Clone, V: Clone + PartialEq>(
 /// The journal, the history and the seen lists, with the clock and generator that mint this user's intents.
 #[derive(Clone, Debug, Default)]
 pub struct Journal {
-    rows: TrackedMap<RowKey, Row>,
-    held: BTreeMap<RowKey, HeldRow>,
+    rows: Rows,
     held_changed: BTreeSet<RowKey>,
     history: TrackedMap<RowKey, Vec<HistoryEntry>>,
     seen: TrackedMap<NodeId, Vec<Seen>>,
@@ -533,8 +533,7 @@ const JOURNAL_STREAM: u64 = 0x6a09_e667_f3bc_c908;
 
 impl PartialEq for Journal {
     fn eq(&self, other: &Self) -> bool {
-        *self.rows == *other.rows
-            && self.held == other.held
+        self.rows == other.rows
             && *self.history == *other.history
             && *self.seen == *other.seen
             && self.listed == other.listed
@@ -545,7 +544,7 @@ impl PartialEq for Journal {
 impl Journal {
     pub fn restore(state: JournalState) -> Self {
         Self {
-            rows: state.rows.into(),
+            rows: Rows::restore(state.rows),
             history: state.history.into(),
             seen: state.seen.into(),
             listed: state.listed,
@@ -558,8 +557,10 @@ impl Journal {
 
     /// What the store keeps, each compact row in full as `full` gives it.
     pub fn state(&self, full: impl Fn(&RowKey, &HeldRow) -> Row) -> JournalState {
-        let mut rows = (*self.rows).clone();
-        rows.extend((self.held.iter()).map(|(key, held)| (key.clone(), full(key, held))));
+        let mut rows: BTreeMap<RowKey, Row> = (self.rows.iter())
+            .map(|(key, row)| (key.clone(), row.clone()))
+            .collect();
+        rows.extend((self.rows.iter_compact()).map(|(key, held)| (key.clone(), full(key, held))));
         JournalState {
             rows,
             history: (*self.history).clone(),
@@ -576,7 +577,7 @@ impl Journal {
         let rows = (keys.into_iter())
             .map(|key| {
                 let row = (self.rows.get(&key).cloned())
-                    .or_else(|| self.held.get(&key).map(|held| full(&key, held)));
+                    .or_else(|| self.rows.get_compact(&key).map(|held| full(&key, held)));
                 (key, row)
             })
             .collect();
@@ -634,11 +635,11 @@ impl Journal {
     }
 
     pub fn compact_row(&self, node: &str, field: Field) -> Option<&HeldRow> {
-        self.held.get(&(node.to_owned(), field))
+        self.rows.get_compact(&(node.to_owned(), field))
     }
 
     pub(crate) fn compact_rows(&self) -> impl Iterator<Item = (&RowKey, &HeldRow)> {
-        self.held.iter()
+        self.rows.iter_compact()
     }
 
     pub(crate) fn held_rows(&self) -> impl Iterator<Item = (&RowKey, &Row)> {
@@ -652,13 +653,13 @@ impl Journal {
         if let Some((_, true)) = self.rows.hand_off(&key) {
             self.held_changed.insert(key.clone());
         }
-        self.held.insert(key, held);
+        self.rows.insert_compact(key, held);
         true
     }
 
     /// Puts a compact row back in full, before R stops giving it.
     pub(crate) fn write_out(&mut self, key: RowKey, row: Row) {
-        self.held.remove(&key);
+        self.rows.remove_compact(&key);
         self.rows.insert_quietly(key, row);
     }
 
@@ -684,7 +685,7 @@ impl Journal {
         let old = self.rows.get(&key);
         let flight = old.and_then(Row::in_flight);
         let base = match old {
-            None => (self.held.get(&key)).map_or(seen, |held| Some(held.held_as)),
+            None => (self.rows.get_compact(&key)).map_or(seen, |held| Some(held.held_as)),
             Some(old) => match &old.state {
                 RowState::Local { .. } => old.base,
                 RowState::Sent => Some(old.intent),
@@ -714,7 +715,7 @@ impl Journal {
             },
         };
         let intent = row.intent;
-        if self.held.remove(&key).is_some() {
+        if self.rows.remove_compact(&key).is_some() {
             self.held_changed.insert(key.clone());
         }
         self.rows.insert(key, row);
@@ -754,7 +755,7 @@ impl Journal {
     /// Writes a row a store upgrade finds, unless the field has one.
     pub fn insert_if_absent(&mut self, node: &str, row: Row) -> bool {
         let key = (node.to_owned(), row.value.field());
-        if self.rows.contains_key(&key) || self.held.contains_key(&key) {
+        if self.rows.get(&key).is_some() || self.rows.get_compact(&key).is_some() {
             return false;
         }
         self.rows.insert(key, row);
@@ -763,7 +764,7 @@ impl Journal {
 
     pub fn replace(&mut self, node: &str, row: Row) {
         let key = (node.to_owned(), row.value.field());
-        if self.held.remove(&key).is_some() {
+        if self.rows.remove_compact(&key).is_some() {
             self.held_changed.insert(key.clone());
         }
         self.rows.insert(key, row);
@@ -790,7 +791,7 @@ impl Journal {
             self.seen.remove(node);
         }
         let key = (node.to_owned(), field);
-        if self.held.remove(&key).is_some() {
+        if self.rows.remove_compact(&key).is_some() {
             self.held_changed.insert(key.clone());
         }
         self.rows.remove(&key)
@@ -798,12 +799,14 @@ impl Journal {
 
     /// Puts the field's row in the commit being built: a `local` row becomes `sent` at `time_ms`, R's head time.
     pub fn send(&mut self, node: &str, field: Field, time_ms: i64) -> Option<&Row> {
-        let row = self.rows.get_mut(&(node.to_owned(), field))?;
-        if matches!(row.state, RowState::Local { .. }) {
-            row.state = RowState::Sent;
-            row.time_ms = time_ms;
-        }
-        Some(row)
+        let key = (node.to_owned(), field);
+        self.rows.update(&key, |row| {
+            if matches!(row.state, RowState::Local { .. }) {
+                row.state = RowState::Sent;
+                row.time_ms = time_ms;
+            }
+        })?;
+        self.rows.get(&key)
     }
 
     /// Writes an own `sent` row for a change the commit being built sends that no row recorded.
@@ -827,16 +830,16 @@ impl Journal {
             replay: false,
         };
         self.rows.insert(key.clone(), row);
-        &self.rows[&key]
+        self.rows.get(&key).expect("the row was just written")
     }
 
     /// Takes a `sent` row back to `local`, so the next commit sends it again.
     pub fn unsend(&mut self, node: &str, field: Field) {
-        if let Some(row) = self.rows.get_mut(&(node.to_owned(), field))
-            && row.state == RowState::Sent
-        {
-            row.state = RowState::Local { flight: None };
-        }
+        self.rows.update(&(node.to_owned(), field), |row| {
+            if row.state == RowState::Sent {
+                row.state = RowState::Local { flight: None };
+            }
+        });
     }
 
     /// A result applied the op that sent `sent` for the field, and the server holds `held` (RFC 0029 §5.2).
@@ -848,8 +851,8 @@ impl Journal {
         held: &FieldIntent,
         version_id: Option<String>,
     ) {
-        if let Some(row) = self.rows.get_mut(&(node.to_owned(), field)) {
-            match &mut row.state {
+        self.rows
+            .update(&(node.to_owned(), field), |row| match &mut row.state {
                 RowState::Sent if row.intent == sent => {
                     row.state = RowState::Held {
                         held_as: held.id,
@@ -857,12 +860,11 @@ impl Journal {
                     };
                     row.time_ms = held.applied_at_ms;
                 }
-                RowState::Local { flight } if flight.as_ref().is_some_and(|f| f.intent == sent) => {
-                    *flight = None;
+                RowState::Local { flight } => {
+                    flight.take_if(|f| f.intent == sent);
                 }
                 _ => {}
-            }
-        }
+            });
         self.rebase(sent, held.id);
         self.push_history(node, field, held.id, held.applied_at_ms, true);
     }
@@ -876,15 +878,14 @@ impl Journal {
         sent: IntentId,
         reported: Option<IntentId>,
     ) {
-        match self.rows.get_mut(&(node.to_owned(), field)) {
-            Some(row) if row.intent == sent => {
-                self.end(node, field);
+        let sent_row = self.rows.update(&(node.to_owned(), field), |row| {
+            if let RowState::Local { flight } = &mut row.state {
+                flight.take_if(|f| f.intent == sent);
             }
-            Some(Row {
-                state: RowState::Local { flight },
-                ..
-            }) if flight.as_ref().is_some_and(|f| f.intent == sent) => *flight = None,
-            _ => {}
+            row.intent == sent
+        });
+        if sent_row == Some(true) {
+            self.end(node, field);
         }
         if let Some(reported) = reported {
             self.rebase(sent, reported);
@@ -903,12 +904,14 @@ impl Journal {
         at_ms: i64,
     ) {
         let key = (node.to_owned(), field);
-        let moved = match self.rows.get_mut(&key) {
+        let moved = match self.rows.get(&key) {
             Some(row) if row.intent == sent => self.rows.remove(&key),
-            Some(Row {
-                state: RowState::Local { flight },
-                ..
-            }) => flight.take_if(|f| f.intent == sent).map(|flight| Row {
+            Some(_) => (self.rows.update(&key, |row| match &mut row.state {
+                RowState::Local { flight } => flight.take_if(|f| f.intent == sent),
+                _ => None,
+            }))
+            .flatten()
+            .map(|flight| Row {
                 intent: flight.intent,
                 author: Author::Own,
                 base: flight.base,
@@ -946,18 +949,12 @@ impl Journal {
         if let Some(row) = self.rows.remove(&(node.to_owned(), Field::Content)) {
             self.rows.insert((target.to_owned(), Field::Content), row);
         }
-        let children: Vec<RowKey> = (self.rows.iter())
-            .filter(|(_, row)| matches!(&row.value, Value::Place(place) if place.parent == node))
-            .map(|(key, _)| key.clone())
-            .collect();
-        for key in children {
-            if let Some(Row {
-                value: Value::Place(place),
-                ..
-            }) = self.rows.get_mut(&key)
-            {
-                place.parent = target.to_owned();
-            }
+        for key in self.rows.under(node) {
+            self.rows.update(&key, |row| {
+                if let Value::Place(place) = &mut row.value {
+                    place.parent = target.to_owned();
+                }
+            });
         }
     }
 
@@ -966,37 +963,23 @@ impl Journal {
         if from == to {
             return;
         }
-        let keys: Vec<RowKey> = (self.rows.iter())
-            .filter(|(_, row)| {
-                row.base == Some(from)
-                    || matches!(&row.state, RowState::Local { flight: Some(f) } if f.base == Some(from))
-            })
-            .map(|(key, _)| key.clone())
-            .collect();
-        let held: Vec<RowKey> = (self.held.iter())
-            .filter(|(_, held)| held.base == Some(from))
-            .map(|(key, _)| key.clone())
-            .collect();
-        for key in held {
-            if let Some(held) = self.held.get_mut(&key) {
-                held.base = Some(to);
-            }
+        for key in self.rows.compact_over(from) {
+            self.rows.update_compact(&key, |held| held.base = Some(to));
             self.held_changed.insert(key);
         }
-        for key in keys {
-            let Some(row) = self.rows.get_mut(&key) else {
-                continue;
-            };
-            if row.base == Some(from) {
-                row.base = Some(to);
-            }
-            if let RowState::Local {
-                flight: Some(flight),
-            } = &mut row.state
-                && flight.base == Some(from)
-            {
-                flight.base = Some(to);
-            }
+        for key in self.rows.full_over(from) {
+            self.rows.update(&key, |row| {
+                if row.base == Some(from) {
+                    row.base = Some(to);
+                }
+                if let RowState::Local {
+                    flight: Some(flight),
+                } = &mut row.state
+                    && flight.base == Some(from)
+                {
+                    flight.base = Some(to);
+                }
+            });
         }
     }
 
@@ -1119,9 +1102,7 @@ impl Journal {
             .map(|(key, _)| key.clone())
             .collect();
         for key in keys {
-            if let Some(row) = self.rows.get_mut(&key) {
-                row.replay = true;
-            }
+            self.rows.update(&key, |row| row.replay = true);
         }
     }
 
@@ -1136,9 +1117,11 @@ impl Journal {
                 *id = *new;
             }
         };
-        let keys: Vec<RowKey> = self.rows.keys().cloned().collect();
-        for key in keys {
-            let mut row = self.rows[&key].clone();
+        let rows: Vec<(RowKey, Row)> = (self.rows.iter())
+            .map(|(key, row)| (key.clone(), row.clone()))
+            .collect();
+        for (key, before) in rows {
+            let mut row = before.clone();
             swap(&mut row.intent);
             if let Some(base) = &mut row.base {
                 swap(base);
@@ -1155,19 +1138,25 @@ impl Journal {
                 }
                 RowState::Local { flight: None } | RowState::Sent => {}
             }
-            if row != self.rows[&key] {
+            if row != before {
                 self.rows.insert(key, row);
             }
         }
-        for (key, held) in self.held.iter_mut() {
-            let before = held.clone();
-            swap(&mut held.intent);
-            swap(&mut held.held_as);
-            if let Some(base) = &mut held.base {
-                swap(base);
-            }
-            if *held != before {
-                self.held_changed.insert(key.clone());
+        let keys: Vec<RowKey> = (self.rows.iter_compact())
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in keys {
+            let changed = self.rows.update_compact(&key, |held| {
+                let before = held.clone();
+                swap(&mut held.intent);
+                swap(&mut held.held_as);
+                if let Some(base) = &mut held.base {
+                    swap(base);
+                }
+                *held != before
+            });
+            if changed == Some(true) {
+                self.held_changed.insert(key);
             }
         }
         let keys: Vec<RowKey> = self.history.keys().cloned().collect();
@@ -1197,5 +1186,6 @@ impl Journal {
     }
 }
 
+mod rows;
 #[cfg(test)]
 mod tests;
