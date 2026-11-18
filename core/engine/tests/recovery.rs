@@ -375,17 +375,17 @@ fn held_under(
     if synced.is_some() {
         trees.set_synced("n".into(), synced);
     }
-    trees.settle();
+    trees.settle(&Default::default());
     let mut state = trees.state();
     stored(&mut state);
     trees.restore(state).unwrap();
     trees.rules_scanned();
-    trees.settle();
+    trees.settle(&Default::default());
     let cause = RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk);
     let (mut commits, mut ids) = recovered_after(&mut trees, 0, cause);
     let before = asked(&commits, group, &["n"]);
     trees.set_remote("n".into(), later);
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let after = asked(&commits, group, &["n"]);
     assert_ne!(after.id, before.id);
