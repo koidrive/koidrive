@@ -27,7 +27,7 @@ const ARGUMENTS_THAT_NAME_NO_PATH: [(&str, &str); 14] = [
     ("driver/src/credential.rs", "name"),
     ("driver/src/driver.rs", "folder.link.device_id"),
     ("driver/src/driver.rs", "folder.link.server_url"),
-    ("driver/src/folder.rs", "code.as_str_name()"),
+    ("driver/src/folder/commit.rs", "code.as_str_name()"),
     ("driver/src/ignore.rs", "dir"),
     ("driver/src/ignore.rs", "path.trim_matches('/')"),
     ("engine/src/question.rs", "names.join(\", \")"),
