@@ -604,6 +604,264 @@ fn a_store_older_than_the_folder_recovers_whatever_token_the_folder_carries() {
 }
 
 #[test]
+fn a_store_restored_from_before_130_starts_recovers_a_folder_with_more_effects() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    drop(a);
+    for _ in 0..130 {
+        drop(site.start());
+    }
+    fs::copy(&saved, &site.db).unwrap();
+
+    let mut a = site.start();
+    assert!(matches!(
+        a.folder.engine.commits.halted(),
+        Some(CommitHalt::Recovery(_))
+    ));
+    a.connect(&remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(names(&site.root), ["two.txt"]);
+    assert_eq!(remote.names(), ["two.txt"]);
+    assert!(a.folder.engine.commits.halted().is_none());
+}
+
+fn recovers(site: &Site) -> bool {
+    opened(site).is_ok_and(|folder| folder.engine.commits.halted().is_some())
+}
+
+fn store_clone(site: &Site) -> Site {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("store.sqlite");
+    fs::copy(&site.db, &db).unwrap();
+    Site {
+        _dir: dir,
+        root: site.root.clone(),
+        db,
+        link: site.link.clone(),
+        caller: site.caller.clone(),
+    }
+}
+
+fn recoveries_while_taking_turns(sites: [&Site; 2], remote: &mut Remote) -> usize {
+    let mut recovered = 0;
+    for _ in 0..3 {
+        for site in sites {
+            recovered += usize::from(recovers(site));
+            if !halts_as_a_copy(site) {
+                drop(restarted(site, remote));
+            }
+        }
+    }
+    recovered
+}
+
+#[test]
+fn two_clones_of_one_store_taking_turns_on_one_folder_never_recover() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let clone = store_clone(&site);
+    let recovered = recoveries_while_taking_turns([&site, &clone], &mut remote);
+    assert_eq!(recovered, 0);
+}
+
+fn rotated_by_a_link_without_a_token_after_its_first_marker_write_failed(
+    remote: &mut Remote,
+) -> (Site, Site) {
+    let (site, mut a) = linked(remote, "a");
+    a.create(remote, &site.root.join("kept.txt"), b"kept");
+    drop(a);
+    for _ in 0..2 {
+        drop(restarted(&site, remote));
+    }
+    let other = store_clone(&site);
+    let mut store = Store::open(&other.db).unwrap();
+    let none = koidrive_fs::RootTokens::default();
+    store.transaction(|tx| tx.set_root_tokens(&none)).unwrap();
+    drop(store);
+    let blocker = block_marker(&other);
+    drop(opened(&other).unwrap());
+    fs::remove_dir_all(&blocker).unwrap();
+    drop(opened(&other).unwrap());
+    assert_eq!(marker_of(&site).effects, site.stored().effects.cleared());
+    (site, other)
+}
+
+#[test]
+fn a_link_finds_its_folder_rotated_by_a_link_without_a_token_after_a_failed_write_and_halts() {
+    let mut remote = Remote::new();
+    let (site, _) =
+        rotated_by_a_link_without_a_token_after_its_first_marker_write_failed(&mut remote);
+    assert!(halts_as_a_copy(&site));
+}
+
+#[test]
+fn two_links_taking_turns_after_a_failed_first_marker_write_never_recover_and_keep_files() {
+    let mut remote = Remote::new();
+    let (site, other) =
+        rotated_by_a_link_without_a_token_after_its_first_marker_write_failed(&mut remote);
+    let recovered = recoveries_while_taking_turns([&site, &other], &mut remote);
+    assert_eq!(recovered, 0);
+    assert_eq!(names(&site.root), ["kept.txt"]);
+    assert_eq!(remote.names(), ["kept.txt"]);
+}
+
+fn restored_from_before_a_download(remote: &mut Remote) -> Site {
+    let (site, a) = linked(remote, "a");
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    let (other, mut b) = linked(remote, "b");
+    b.create(remote, &other.root.join("two.txt"), b"two");
+    let mut a = restarted(&site, remote);
+    a.settle();
+    a.run(remote);
+    assert_eq!(names(&site.root), ["two.txt"]);
+    drop(a);
+    fs::copy(&saved, &site.db).unwrap();
+    site
+}
+
+#[test]
+fn a_marker_write_that_fails_after_a_store_older_recovery_leaves_the_next_start_current() {
+    let mut remote = Remote::new();
+    let site = restored_from_before_a_download(&mut remote);
+    let blocker = block_marker(&site);
+    let mut a = site.start();
+    assert!(a.folder.engine.commits.halted().is_some());
+    a.connect(&remote);
+    a.settle();
+    a.run(&mut remote);
+    assert!(a.folder.engine.commits.halted().is_none());
+    drop(a);
+    fs::remove_dir_all(&blocker).unwrap();
+    assert!(opened(&site).is_ok_and(|folder| folder.engine.commits.halted().is_none()));
+    assert_eq!(names(&site.root), ["two.txt"]);
+}
+
+#[test]
+fn a_store_from_before_tokens_restored_from_before_a_download_recovers_at_its_first_start() {
+    let mut remote = Remote::new();
+    let site = restored_from_before_a_download(&mut remote);
+    let marker = marker_of(&site);
+    fs::write(
+        marker_file(&site),
+        format!(
+            r#"{{"space_id":"{}","effects":{}}}"#,
+            marker.space_id, marker.effects
+        ),
+    )
+    .unwrap();
+    rusqlite::Connection::open(&site.db)
+        .unwrap()
+        .execute_batch(
+            "ALTER TABLE link DROP COLUMN root_token;
+             ALTER TABLE link DROP COLUMN root_token_pending;
+             DELETE FROM migrations WHERE name = 'root_token';",
+        )
+        .unwrap();
+
+    let mut a = site.start();
+    assert!(matches!(
+        a.folder.engine.commits.halted(),
+        Some(CommitHalt::Recovery(_))
+    ));
+    assert_rotated_from(&site, &[None]);
+    a.connect(&remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(names(&site.root), ["two.txt"]);
+    assert_eq!(remote.names(), ["two.txt"]);
+    assert!(a.folder.engine.commits.halted().is_none());
+}
+
+fn marker_file(site: &Site) -> PathBuf {
+    site.root.join(koidrive_fs::PRIVATE_DIR).join("space.json")
+}
+
+#[test]
+fn a_copy_another_link_carried_recovers_above_the_store_count_and_halts_at_it() {
+    for equal in [false, true] {
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site.root.join("kept.txt"), b"kept");
+        drop(a);
+        let (other, mut b) = linked(&mut remote, "b");
+        if equal {
+            b.create(&mut remote, &other.root.join("theirs.txt"), b"theirs");
+            let mut a = restarted(&site, &mut remote);
+            a.settle();
+            a.run(&mut remote);
+        }
+        drop(b);
+        let copy = site.root.with_file_name("copy");
+        copy_folder(&site.root, &copy);
+        for _ in 0..8 {
+            drop(restarted(&other, &mut remote));
+        }
+        fs::copy(
+            marker_file(&other),
+            copy.join(koidrive_fs::PRIVATE_DIR).join("space.json"),
+        )
+        .unwrap();
+        let mut a = restarted(&site, &mut remote);
+        a.create(&mut remote, &site.root.join("after.txt"), b"after");
+        drop(a);
+        let counted = marker_of(&other).effects;
+        assert_eq!(counted == site.stored().effects.cleared(), equal);
+        fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+        fs::rename(&copy, &site.root).unwrap();
+        if equal {
+            assert!(halts_as_a_copy(&site));
+        } else {
+            assert!(recovers(&site));
+        }
+    }
+}
+
+#[test]
+fn a_marker_two_links_share_halts_whichever_finds_the_others_and_writes_nothing() {
+    let mut remote = Remote::new();
+    let (first, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &first.root.join("one.txt"), b"one");
+    drop(a);
+    let (second, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &second.root.join("two.txt"), b"two");
+    drop(b);
+    let mut a = restarted(&first, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    drop(a);
+    for _ in 0..8 {
+        drop(restarted(&second, &mut remote));
+    }
+    assert_eq!(
+        first.stored().effects.cleared(),
+        second.stored().effects.cleared()
+    );
+    for _ in 0..2 {
+        for (from, to) in [(&second, &first), (&first, &second)] {
+            let own = fs::read(marker_file(to)).unwrap();
+            fs::copy(marker_file(from), marker_file(to)).unwrap();
+            let before = (fs::read(marker_file(to)).unwrap(), tokens_of(to));
+            assert!(halts_as_a_copy(to));
+            assert_eq!((fs::read(marker_file(to)).unwrap(), tokens_of(to)), before);
+            fs::write(marker_file(to), own).unwrap();
+            drop(restarted(to, &mut remote));
+        }
+    }
+}
+
+#[test]
 fn two_copies_of_one_disk_halt_when_the_older_one_is_at_the_folder() {
     let Some(mut disks) = koidrive_test_support::Disks::new() else {
         return;
@@ -1002,4 +1260,39 @@ fn a_relink_of_a_moved_folder_or_one_whose_marker_write_fails_keeps_the_folder_h
     a.rest(&mut remote);
     assert_ne!(a.state(), FolderState::Halted);
     assert_eq!(remote.tree(), served);
+}
+
+#[test]
+fn a_link_that_adopted_a_token_and_failed_its_write_does_not_hand_it_back() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    a.pull(&remote);
+    a.rest(&mut remote);
+    drop(a);
+    drop(b);
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("store.sqlite");
+    let mut link = site.link.clone();
+    link.device_id = "c".into();
+    Store::open(&db)
+        .unwrap()
+        .transaction(|tx| tx.set_link(&link))
+        .unwrap();
+    let mut caller = site.caller.clone();
+    caller.device_id = "c".into();
+    caller.device_name = "c".into();
+    let second = Site {
+        _dir: dir,
+        root: site.root.clone(),
+        db,
+        link,
+        caller,
+    };
+    let blocker = block_marker(&second);
+    drop(opened(&second).unwrap());
+    fs::remove_dir_all(&blocker).unwrap();
+    drop(opened(&second).unwrap());
+    assert!(halts_as_a_copy(&site));
 }

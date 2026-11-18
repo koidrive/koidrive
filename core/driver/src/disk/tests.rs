@@ -1221,6 +1221,69 @@ fn a_marker_changed_while_an_effect_in_flight_is_recovered_halts_as_older_only_w
 }
 
 #[test]
+fn a_store_and_marker_from_before_tokens_recover_through_a_crash_at_each_step_of_the_first_rotation()
+ {
+    for step in ["none", "recovered", "pended", "written"] {
+        let folder = Folder::new();
+        folder.seed(&[], &[], 3);
+        set_marker(&folder.root, 4);
+        rusqlite::Connection::open(&folder.db)
+            .unwrap()
+            .execute_batch(
+                "ALTER TABLE link DROP COLUMN root_token;
+                 ALTER TABLE link DROP COLUMN root_token_pending;
+                 DELETE FROM migrations WHERE name = 'root_token';",
+            )
+            .unwrap();
+        if step != "none" {
+            drop(folder.start(no_hook()).unwrap());
+            let marker = read_marker(&folder.root).unwrap().unwrap();
+            let pended = koidrive_fs::RootTokens {
+                current: None,
+                pending: marker.token.clone().filter(|_| step != "recovered"),
+            };
+            let mut store = Store::open(&folder.db).unwrap();
+            store.transaction(|tx| tx.set_root_tokens(&pended)).unwrap();
+            let left = Marker {
+                token: marker.token.clone().filter(|_| step == "written"),
+                ..marker
+            };
+            write_marker(&folder.root, &left).unwrap();
+        }
+        let mut running = folder.start(no_hook()).unwrap();
+        assert_eq!(running.engine.effects.cleared(), 4, "{step}");
+        let halted = running.engine.commits.halted();
+        assert!(matches!(halted, Some(CommitHalt::Recovery(_))), "{step}");
+        let tokens = running.store.transaction(|tx| tx.root_tokens()).unwrap();
+        let marker = read_marker(&folder.root).unwrap().unwrap();
+        assert!(marker.token.is_some(), "{step}");
+        assert_eq!(tokens.current, marker.token, "{step}");
+    }
+}
+
+#[test]
+fn a_marker_from_before_tokens_halts_as_a_copy_unless_it_counts_more_than_the_store_accounts_for() {
+    let (folder, _, _) = three_cleared_and_one_in_flight();
+    let (_, engine) = folder.open();
+    let tokens = RootTokens {
+        current: Some("recorded".into()),
+        pending: None,
+    };
+    for (effects, newer) in [(2, false), (3, false), (4, false), (5, true)] {
+        let marker = Marker {
+            space_id: SPACE.into(),
+            effects,
+            token: None,
+        };
+        match standing(&marker, &tokens, &engine.effects) {
+            Ok(Standing::StoreOlder) => assert!(newer, "{effects}"),
+            Err(Stop::Root(RootProblem::Copy)) => assert!(!newer, "{effects}"),
+            _ => panic!("marker at {effects}"),
+        }
+    }
+}
+
+#[test]
 fn a_marker_above_what_the_store_accounts_for_continues_from_the_marker_and_recovers() {
     let (folder, _, effect_id) = three_cleared_and_one_in_flight();
     set_marker(&folder.root, 6);
