@@ -1,0 +1,17 @@
+1385
+# A copy removed while the rules left its node out downloads again instead of being deleted on the server. The trees and effects properties only check that incremental settling matches a full settle and that effects reach the remote tree, so none of them asserts download versus delete.
+# Engine: a file, a folder, a folder kept for an excluded file, and a folder another device renamed each come back whole once a scan lists them, and a group of excluded removals alone stays held.
+# Engine: removals made after the rules let a node in again, or before they left it out, are still sent as deletions. These are the cases a download-again rule could wrongly swallow.
+# Engine: a stopped device, the same batch of events, unread folder rules and a server-side move or trash each change which came first, and each needs its own order of events.
+# Engine: moves and renames into and out of the rules, including a release judged before the local rename reaches S, keep a moved file's place and download what vanished.
+# Engine: the mark goes with its node when the server purges or trashes it, so no stale mark holds a later node.
+# Engine: a copy that leaves L once its synced place is back in the rules downloads again at the next settle, both for a file renamed out of the rules inside a folder the user then deletes and for a file below a folder renamed back into the rules before a scan lists it.
+# Engine: a folder the user deletes around a file waiting to download again sends the deletion of everything else and stays for the file, whether the folder is moved, renamed or nested in another deleted folder, renamed by another device, or the engine restarts while the deletion waits for the server.
+# Engine: a file that vanished in a deleted folder the server keeps for an excluded file downloads into that folder, which stays in S for the excluded file.
+# Engine: an ignored benchmark times an idle settle and a one-file settle while the rules leave out a large folder, kept or removed, so the cost of looking for vanished copies at every settle can be measured in a release build.
+# Driver: the same outcomes through real scans, the store and restarts: a 2000-file folder, an edit uploaded after the rules let it in, a rules file written while stopped, and a folder the first scan after a restart cannot read, which keeps the server file until a later scan reads it.
+# Driver: build folders cleaned or rebuilt while excluded (same files, new files, another case or normalization) upload what changed and download the rest.
+# Driver: a relinked folder keeps no old mark, and a rescan that finds nothing new writes nothing to the store.
+# Driver: files moved into ignored folders, folders renamed or moved out of the rules on this device or by another device, and a name sharing a key each reach the disk only through the folder task.
+# Store and sim: the unobserved table survives an upgrade, and the sim checks after every settle that no release leaves part of a folder behind.
+# Driver and engine: a folder renamed and then removed while stopped with a rule that leaves it out downloads again, and the trees check accepts a released file moved into a folder whose release waits on unknown rules.
