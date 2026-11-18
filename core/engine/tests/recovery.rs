@@ -4841,3 +4841,39 @@ fn a_given_up_file_another_device_edits_before_the_answer_is_acknowledged_is_kep
     trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
+
+#[test]
+fn a_move_out_of_an_answers_trash_group_to_the_root_goes_there_directly() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "new")),
+            ("p", dir("a", "p")),
+            ("b", dir("p", "b")),
+        ],
+        &[
+            ("a", dir(ROOT, "old")),
+            ("p", dir("a", "p")),
+            ("b", dir("p", "b")),
+        ],
+        &[
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("p", dir("a", "p"), true, 1),
+            Remote("b", dir("p", "b"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    moved_here(&mut trees, "b", dir(ROOT, "b"));
+    trees.remove_local("p");
+    trees.settle(commits.aliases());
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [
+            ("move", "a".into()),
+            ("move", "b".into()),
+            ("move", "p".into()),
+            ("delete", "p".into())
+        ]
+    );
+}

@@ -4841,6 +4841,7 @@ impl<'a> Scratch<'a> {
     fn kind(&self, id: &str) -> Option<Kind> {
         match self.nodes.get(id) {
             Some(entry) => Some(entry.kind),
+            None if id == self.root() => Some(Kind::Dir),
             None => (self.trees.remote().get(id)).map(|node| node.shape.kind),
         }
     }
@@ -5186,7 +5187,7 @@ impl<'a> Scratch<'a> {
         if self.inside(parent, id) {
             return Fit::Cycle;
         }
-        if parent != self.root() && self.kind(parent) != Some(Kind::Dir) {
+        if self.kind(parent) != Some(Kind::Dir) {
             return Fit::Wait;
         }
         let taken = self.holders(parent, name).any(|other| other != id);
