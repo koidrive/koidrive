@@ -40,7 +40,7 @@ build/
 
 ## Files that .gitignore files exclude
 
-Koidrive follows `.gitignore` files too, so `node_modules/`, build output and everything else a project's `.gitignore` excludes stay on this device. Each `.gitignore` file applies to its folder and everything below it, including nested repositories and submodules. Git in a nested repository doesn't read the `.gitignore` files outside it, so Koidrive can leave out a file there that git doesn't ignore.
+Koidrive follows `.gitignore` files too, so `node_modules/`, build output and everything else a project's `.gitignore` excludes stay on this device, while the `.gitignore` and `.koiignore` files in a synced folder always sync, even when a pattern such as `*` matches them. Each `.gitignore` file applies to its folder and everything below it, including nested repositories and submodules. Git in a nested repository doesn't read the `.gitignore` files outside it, so Koidrive can leave out a file there that git doesn't ignore.
 
 `.koiignore` files decide first. Koidrive reads the `.gitignore` files only for a path that no `.koiignore` pattern matches. To sync the `.env` files that a `.gitignore` file excludes, add this line to a `.koiignore` file:
 
@@ -48,7 +48,7 @@ Koidrive follows `.gitignore` files too, so `node_modules/`, build output and ev
 !.env
 ```
 
-This line doesn't reach into a folder that a `.gitignore` file excludes. If `.gitignore` excludes `secrets/`, add `!secrets/` to sync `secrets/.env`. That line also syncs the other files in `secrets/` that no pattern excludes.
+This line doesn't reach into a folder that a `.gitignore` file excludes. If `.gitignore` excludes `secrets/`, add `!secrets/` to sync `secrets/.env`. That line also syncs the other files in `secrets/` that no pattern excludes. It matches a folder named `secrets` at any depth, and `!/secrets/` matches only the one in the `.koiignore` file's own folder.
 
 Koidrive doesn't read `.git/info/exclude` or git's global excludes file. They hold one person's choices for one clone.
 
