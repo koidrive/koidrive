@@ -1878,7 +1878,7 @@ impl Commits {
                                 shape,
                                 Origin::Commit(flight.commit.device_seq),
                             );
-                        } else {
+                        } else if trees.local().get(into).is_some() {
                             synced.set(into, Some(shape));
                         }
                         merged.insert(create.node_id.clone(), into.clone());
@@ -1959,7 +1959,28 @@ impl Commits {
                     } else if (applied && edited.is_some()) || downloaded {
                         synced.set(id, edited);
                     } else if code == Code::ConflictCopy {
-                        synced.set(&outcome.node_id, edited);
+                        let copied = edited.or_else(|| {
+                            let (moved, outcome) =
+                                (flight.commit.ops.iter().zip(&result.results).rev()).find_map(
+                                    |(op, outcome)| match &op.op {
+                                        Some(op::Op::Move(moved)) if moved.node_id == *id => {
+                                            Some((moved, outcome))
+                                        }
+                                        _ => None,
+                                    },
+                                )?;
+                            let applied = matches!(
+                                Code::try_from(outcome.code),
+                                Ok(Code::Applied | Code::AppliedRenamed)
+                            );
+                            applied.then(|| Shape {
+                                parent: parent(&moved.new_parent_id),
+                                name: moved.new_name.clone(),
+                                kind: Kind::File,
+                                content: update.content.clone(),
+                            })
+                        });
+                        synced.set(&outcome.node_id, copied);
                         synced.set(id, None);
                         rekey(trees, id, &outcome.node_id);
                         trees.sent_edit(&outcome.node_id, update.content.as_ref());

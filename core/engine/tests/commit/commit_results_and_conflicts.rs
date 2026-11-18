@@ -228,6 +228,39 @@ fn a_conflict_copy_another_device_deleted_before_its_result_is_deleted_here() {
     assert!(build(&mut commits, &mut trees, &mut ids).is_none());
 }
 
+#[test]
+fn a_conflict_copy_of_a_file_whose_synced_shape_a_restore_dropped_in_flight_sends_a_rejected_move_again() {
+    let mut trees = trees(&[(
+        "f",
+        Some(file(ROOT, "g", 2)),
+        Some(file(ROOT, "f", 1)),
+        Some(remote(file(ROOT, "f", 1))),
+    )]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(
+        (ops(&sent).iter()).any(|op| matches!(op, op::Op::Move(_))),
+        "{:?}",
+        ops(&sent)
+    );
+    trees.set_synced("f".into(), None);
+    trees.set_remote("f".into(), remote(file(ROOT, "f", 3)));
+    trees.set_remote("y".into(), remote(file(ROOT, "f (conflict)", 2)));
+    let results = (ops(&sent).iter())
+        .map(|op| match op {
+            op::Op::Move(_) => outcome(op_result::Code::Rejected),
+            _ => OpResult {
+                node_id: "y".into(),
+                ..outcome(op_result::Code::ConflictCopy)
+            },
+        })
+        .collect();
+    acknowledge(&mut commits, &mut trees, results);
+    assert_eq!(trees.synced().live("y"), None);
+    let next = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&next), vec![mv("y", ROOT, "g")]);
+}
+
 /// The device's own commit makes the conflict copy y, and its answer is lost. A log replay after
 /// the reconnect brings y into R before the stored result arrives, and the effects download y.
 /// The result then finds y on disk already: that entry stays y's, f takes the server's content,

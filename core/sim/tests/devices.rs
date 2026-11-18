@@ -23,6 +23,8 @@ use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::{RngSeed, TestRunner};
 
+#[path = "devices/merged_and_copied_results.rs"]
+mod merged_and_copied_results;
 #[path = "devices/reissued_slots.rs"]
 mod reissued_slots;
 #[path = "devices/resends_and_deletes.rs"]
