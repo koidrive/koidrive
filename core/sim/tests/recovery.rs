@@ -1591,10 +1591,6 @@ fn a_folder_a_store_rollback_forgot_under_its_pending_name_follows_the_servers_r
 
 #[test]
 fn a_downloaded_rename_a_store_rollback_forgot_follows_the_servers_next_name() {
-    let _red = expect_red(
-        Check::WriteKept,
-        "write 5 of the write of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 1 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it",
-    );
     let phases: Vec<Vec<(usize, Step)>> = vec![
         vec![
             (

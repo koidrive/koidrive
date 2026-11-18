@@ -163,6 +163,14 @@ pub(super) struct Intent {
     pub(super) dropped: bool,
     pub(super) forgotten: bool,
     pub(super) answer: bool,
+    pub(super) carried: Option<Carried>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct Carried {
+    seq: u64,
+    pub(super) revived: BTreeSet<NodeId>,
+    pub(super) reparented: BTreeSet<NodeId>,
 }
 
 pub(super) struct Server {
@@ -256,6 +264,7 @@ impl Intents {
             dropped: false,
             forgotten: false,
             answer: false,
+            carried: None,
         });
         self.list.len() - 1
     }
@@ -442,6 +451,35 @@ impl Intents {
             }
             intent.lost |= lost && intent.held;
             intent.held = holds;
+        }
+    }
+
+    pub(super) fn carried_by(
+        &mut self,
+        author: usize,
+        server: &Server,
+        seq: u64,
+        revived: &BTreeSet<NodeId>,
+        reparented: &BTreeSet<NodeId>,
+    ) {
+        for i in 0..self.list.len() {
+            if self.list[i].author != author
+                || self.list[i].carried.is_some()
+                || !self.holds(i, server, true)
+            {
+                continue;
+            }
+            self.list[i].carried = Some(Carried {
+                seq,
+                revived: revived.clone(),
+                reparented: reparented.clone(),
+            });
+        }
+    }
+
+    pub(super) fn carried_until(&mut self, head: u64) {
+        for intent in &mut self.list {
+            intent.carried = intent.carried.take().filter(|carried| carried.seq <= head);
         }
     }
 

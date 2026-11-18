@@ -28,13 +28,16 @@ pub(super) struct Deleted {
     before: BTreeSet<i64>,
     path: Vec<NodeId>,
     elsewhere: BTreeSet<NodeId>,
+    carried_at: Option<u64>,
 }
 
 pub(super) struct Deletion {
     intent: usize,
     pub(super) device: usize,
     files: Vec<Deleted>,
+    pub(super) unsent: BTreeSet<usize>,
     resendable: BTreeSet<i64>,
+    around_restore: bool,
     pub(super) watched: bool,
     pub(super) reached: bool,
     pub(super) gone: bool,
@@ -46,31 +49,61 @@ impl Deletion {
             intent,
             device,
             files: Vec::new(),
+            unsent: BTreeSet::new(),
             resendable: BTreeSet::new(),
+            around_restore: false,
             watched: false,
             reached: false,
             gone: false,
         }
     }
 
+    pub(super) fn carried(
+        &mut self,
+        seq: u64,
+        deleted: &BTreeSet<&str>,
+        parents: &BTreeMap<&str, &str>,
+    ) {
+        for file in &mut self.files {
+            let above = (file.path.last()).into_iter().flat_map(|root| {
+                std::iter::successors(Some(root.as_str()), |id| {
+                    parents.get(id).copied().filter(|parent| parent != id)
+                })
+            });
+            if (file.path.iter().map(|id| id.as_str()))
+                .chain(above)
+                .any(|id| deleted.contains(id))
+            {
+                file.carried_at.get_or_insert(seq);
+            }
+        }
+    }
+
+    pub(super) fn restored(&mut self, head: u64) {
+        self.around_restore = true;
+        for file in &mut self.files {
+            file.carried_at = file.carried_at.filter(|seq| *seq <= head);
+        }
+    }
+
     pub(super) fn held(
         &self,
         live: &BTreeMap<i64, BTreeSet<NodeId>>,
-        skip: impl Fn(i64, bool) -> bool,
-    ) -> Option<(i64, NodeId, &Deleted)> {
+        skip: impl Fn(i64, &NodeId, &Deleted, bool) -> bool,
+    ) -> Option<i64> {
         (self.files.iter()).find_map(|file| {
             let nodes = |write: &i64| live.get(write).into_iter().flatten();
             let at_node = std::iter::once(&file.write)
                 .chain(&file.before)
                 .filter(|write| nodes(write).any(|there| *there == file.node))
-                .map(|write| (*write, file.node.clone(), true));
+                .map(|write| (*write, &file.node, true));
             let elsewhere = nodes(&file.write)
                 .filter(|there| **there != file.node && !file.elsewhere.contains(*there))
-                .map(|there| (file.write, there.clone(), false));
+                .map(|there| (file.write, there, false));
             at_node
                 .chain(elsewhere)
-                .find(|(write, _, at_node)| !skip(*write, *at_node))
-                .map(|(write, there, _)| (write, there, file))
+                .find(|(write, there, at_node)| !skip(*write, there, file, *at_node))
+                .map(|(write, _, _)| write)
         })
     }
 
@@ -148,28 +181,35 @@ impl World {
             })
             .collect::<Vec<_>>()
         };
+        let under_target = |id: &NodeId| target.is_some_and(|target| above(id).contains(target));
         let live = live_nodes(&self.space);
+        let mut taken = BTreeSet::new();
         let files: Vec<Deleted> = (deleted.iter())
             .filter_map(|content| {
                 let write = tag(content);
+                let before: BTreeSet<i64> =
+                    std::iter::successors(self.overwrote.get(&write), |write| {
+                        self.overwrote.get(write)
+                    })
+                    .copied()
+                    .collect();
                 let holders: Vec<&NodeId> = (synced.iter())
-                    .filter(|(_, shape)| {
-                        (shape.content.as_ref()).is_some_and(|c| tag(c) == write)
+                    .filter(|(id, shape)| {
+                        !taken.contains(*id)
+                            && (shape.content.as_ref())
+                                .is_some_and(|c| tag(c) == write || before.contains(&tag(c)))
                     })
                     .map(|(id, _)| id)
                     .collect();
                 let node = (holders.iter())
-                    .find(|id| target.is_some_and(|target| above(id).contains(target)))
+                    .find(|id| under_target(id))
                     .or(holders.last())
                     .copied()?;
+                taken.insert(node.clone());
                 Some(Deleted {
                     node: node.clone(),
                     write,
-                    before: std::iter::successors(self.overwrote.get(&write), |write| {
-                        self.overwrote.get(write)
-                    })
-                    .copied()
-                    .collect(),
+                    before,
                     path: std::iter::successors(Some(node.clone()), |id| {
                         let parent = &trees.local().get(id)?.shape.parent;
                         (trees.local().get(parent))
@@ -178,42 +218,40 @@ impl World {
                     })
                     .collect(),
                     elsewhere: (live.get(&write).into_iter().flatten())
-                        .filter(|there| *there != node)
+                        .filter(|there| *there != node && !under_target(there))
                         .cloned()
                         .collect(),
+                    carried_at: None,
                 })
             })
             .collect();
         let server: BTreeMap<NodeId, RemoteNode> = (self.space.nodes().iter())
             .filter_map(|state| RemoteNode::from_state(state).ok())
             .collect();
-        let pending = |id: &NodeId| {
-            (0..self.intents.len()).any(|j| {
-                let other = self.intents.intent(j);
+        let unsent = (0..self.intents.len())
+            .filter(|j| {
+                let other = self.intents.intent(*j);
                 other.author != d
-                    && other.applied == 0
+                    && other.carried.is_none()
                     && !other.dropped
-                    && !self.intents.replaced(j)
-                    && self.intents.nodes(j).any(|node| node == id)
+                    && !self.intents.replaced(*j)
             })
-        };
+            .collect();
         let seen = target.is_some_and(|target| {
             synced.get(target).is_some()
                 && (synced.iter())
                     .filter(|(id, _)| {
-                        above(id).contains(target)
-                            || (files.iter()).any(|file| file.path.contains(id))
+                        under_target(id) || (files.iter()).any(|file| file.path.contains(id))
                     })
                     .all(|(id, shape)| {
-                        !pending(id)
-                            && server
-                                .get(id)
-                                .is_some_and(|there| !there.trashed && there.shape.same(shape))
+                        (server.get(id))
+                            .is_some_and(|there| !there.trashed && there.shape.same(shape))
                     })
         });
-        let settled =
-            (self.devices.iter()).all(|device| !device.rolled_back && !device.recovering());
-        let watched = seen && settled && device.engine.history == self.space.history_id();
+        let watched = seen
+            && !device.rolled_back
+            && !device.recovering()
+            && device.engine.history == self.space.history_id();
         let resendable = (files.iter())
             .map(|file| file.write)
             .filter(|write| self.exposed.contains_key(write) && !live.contains_key(write))
@@ -226,12 +264,14 @@ impl World {
             intent: self.intents.record(d, self.moment, ino, "delete", value),
             device: d,
             files,
+            unsent,
             resendable,
+            around_restore: self.restored_to.is_some(),
             watched,
             reached: false,
             gone: false,
         };
-        deletion.reached = deletion.held(&live, |_, _| false).is_none();
+        deletion.reached = deletion.held(&live, |_, _, _, _| false).is_none();
         self.deletions.push(deletion);
     }
 
@@ -241,9 +281,19 @@ impl World {
         restored: impl IntoIterator<Item = &'a NodeId>,
     ) {
         let restored: BTreeSet<&NodeId> = restored.into_iter().collect();
+        for deletion in (self.deletions.iter_mut()).filter(|deletion| deletion.device == d) {
+            (deletion.files).retain(|file| !restored.contains(&file.node));
+            deletion.watched &= !deletion.files.is_empty();
+        }
+    }
+
+    pub(super) fn forget_unsent_deletes(&mut self, d: usize) {
         for deletion in &mut self.deletions {
-            deletion.watched &= deletion.device != d
-                || !(deletion.files.iter()).any(|file| restored.contains(&file.node));
+            if deletion.reached || deletion.device != d {
+                continue;
+            }
+            (deletion.files).retain(|file| file.carried_at.is_some());
+            deletion.watched &= !deletion.files.is_empty();
         }
     }
 
@@ -255,20 +305,31 @@ impl World {
         let dropped = (self.deletions.iter())
             .filter(|deletion| deletion.watched && !deletion.reached && !deletion.gone)
             .find_map(|deletion| {
-                let (write, node, file) = deletion.held(&live, |write, at_node| {
-                    deletion.resendable.contains(&write)
-                        || (!at_node && self.copied.contains(&write))
-                })?;
-                let path: Vec<&NodeId> = std::iter::once(&node).chain(&file.path).collect();
                 let at = self.intents.intent(deletion.intent).made;
-                let changed_since = (0..self.intents.len()).any(|j| {
-                    let other = self.intents.intent(j);
-                    other.author != deletion.device
-                        && !other.answer
-                        && other.made >= at
-                        && self.intents.nodes(j).any(|id| path.contains(&id))
-                });
-                (!changed_since).then_some((write, deletion.device))
+                let write = deletion.held(&live, |write, node, file, at_node| {
+                    let changed_since = |j: usize| {
+                        let other = self.intents.intent(j);
+                        let Some(carried) = (other.carried.as_ref()).filter(|_| {
+                            other.author != deletion.device
+                                && !other.answer
+                                && (deletion.unsent.contains(&j) || other.made >= at)
+                        }) else {
+                            return false;
+                        };
+                        let is = |id: &NodeId| self.intents.nodes(j).any(|there| there == id);
+                        let itself = is(node) || is(&file.node);
+                        let moved_between = (file.path.iter())
+                            .skip(1)
+                            .any(|id| carried.reparented.contains(id) && is(id));
+                        let revived = carried.revived.contains(node) && (file.path.iter()).any(is);
+                        itself || moved_between || revived
+                    };
+                    !deletion.around_restore
+                        || deletion.resendable.contains(&write)
+                        || (!at_node && self.copied.contains(&write))
+                        || (0..self.intents.len()).any(changed_since)
+                })?;
+                Some((write, deletion.device))
             });
         match dropped {
             None => Ok(()),
