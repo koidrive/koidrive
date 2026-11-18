@@ -1313,7 +1313,8 @@ fn a_folder_linked_again_keeps_no_mark_from_its_old_link() {
         assert!(!site.stored().trees.state().unobserved.is_empty());
         drop(b);
 
-        let mut other = Remote::new();
+        let mut other = Remote::new_at(NOW + 1);
+        assert_ne!(other.space.space_id(), remote.space.space_id());
         let target = if same_space { &mut remote } else { &mut other };
         let again = relinked(&site, target);
         let c = started(&again, target, &SyncRules::default());
@@ -1398,17 +1399,19 @@ fn a_file_deleted_after_its_folder_moved_out_of_the_rules_is_deleted(rules: &str
         }
         fs::write(site.root.join(".koiignore"), rules).unwrap();
         b.rest(&mut remote);
+        let id = remote.tree()[&format!("dist/{victim}")].clone();
         fs::rename(site.root.join("dist"), site.root.join(to)).unwrap();
         b.rest(&mut remote);
         let before = b.sent.len();
         let path = format!("{to}/{victim}");
+        assert_eq!(remote.tree().get(&path), Some(&id), "{path}");
         fs::remove_file(site.root.join(&path)).unwrap();
         b.rest(&mut remote);
         let sent: Vec<&str> = b.sent[before..].iter().flat_map(kinds).collect();
         assert_eq!(sent, ["delete"], "{path}");
         assert!(!site.root.join(&path).exists(), "{path}");
         assert!(
-            !remote.tree().contains_key(&path),
+            !remote.tree().values().any(|live| *live == id),
             "{path}: {:?}",
             remote.tree()
         );
@@ -1481,11 +1484,28 @@ fn a_file_removed_while_stopped_with_a_rules_file_written_to_exclude_it_download
     assert_eq!(b.state(), FolderState::UpToDate);
 }
 
+struct Unreadable<'a>(&'a Path);
+
+impl Unreadable<'_> {
+    fn new(folder: &Path) -> Unreadable<'_> {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(folder, fs::Permissions::from_mode(0o000)).unwrap();
+        Unreadable(folder)
+    }
+}
+
+impl Drop for Unreadable<'_> {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _ = fs::set_permissions(self.0, fs::Permissions::from_mode(0o755));
+    }
+}
+
 #[test]
 fn a_file_removed_while_left_out_below_a_folder_the_first_scan_after_a_restart_cannot_read_stays_the_server_file()
  {
-    use std::os::unix::fs::PermissionsExt;
-
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
     let folder = site.root.join("private");
@@ -1499,7 +1519,7 @@ fn a_file_removed_while_left_out_below_a_folder_the_first_scan_after_a_restart_c
     let id = node_named(&a, "report.docx");
     drop(a);
 
-    fs::set_permissions(&folder, fs::Permissions::from_mode(0o000)).unwrap();
+    let unreadable = Unreadable::new(&folder);
     if fs::read_dir(&folder).is_ok() {
         assert!(rustix::process::geteuid().is_root());
         eprintln!("SKIPPED: running as root, so permissions do not block reads");
@@ -1508,7 +1528,7 @@ fn a_file_removed_while_left_out_below_a_folder_the_first_scan_after_a_restart_c
     fs::write(site.root.join("notes.txt"), b"notes").unwrap();
     let mut a = restarted(&site, &mut remote);
     a.rest(&mut remote);
-    fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+    drop(unreadable);
     a.rescan();
     a.rest(&mut remote);
     let before = a.sent.len();
@@ -1539,8 +1559,6 @@ fn a_file_removed_while_left_out_below_a_folder_the_first_scan_after_a_restart_c
 #[test]
 fn a_file_removed_while_left_out_below_a_folder_a_restart_cannot_read_downloads_once_a_scan_reads_the_folder()
  {
-    use std::os::unix::fs::PermissionsExt;
-
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
     let folder = site.root.join("private");
@@ -1553,7 +1571,7 @@ fn a_file_removed_while_left_out_below_a_folder_a_restart_cannot_read_downloads_
     a.rest(&mut remote);
     drop(a);
 
-    fs::set_permissions(&folder, fs::Permissions::from_mode(0o000)).unwrap();
+    let unreadable = Unreadable::new(&folder);
     if fs::read_dir(&folder).is_ok() {
         assert!(rustix::process::geteuid().is_root());
         eprintln!("SKIPPED: running as root, so permissions do not block reads");
@@ -1562,7 +1580,7 @@ fn a_file_removed_while_left_out_below_a_folder_a_restart_cannot_read_downloads_
     fs::write(site.root.join(".koiignore"), b"other.txt\n").unwrap();
     let mut a = restarted(&site, &mut remote);
     a.rest(&mut remote);
-    fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+    drop(unreadable);
     assert!(!folder.join("a.log").exists());
     a.rescan();
     a.rest(&mut remote);

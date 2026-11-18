@@ -1,4 +1,4 @@
-1385
+1403
 # A copy removed while the rules left its node out downloads again instead of being deleted on the server. The trees and effects properties only check that incremental settling matches a full settle and that effects reach the remote tree, so none of them asserts download versus delete.
 # Engine: a file, a folder, a folder kept for an excluded file, and a folder another device renamed each come back whole once a scan lists them, and a group of excluded removals alone stays held.
 # Engine: removals made after the rules let a node in again, or before they left it out, are still sent as deletions. These are the cases a download-again rule could wrongly swallow.
