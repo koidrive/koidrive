@@ -372,6 +372,27 @@ describe("space rewind (RFC 0003)", () => {
     expect(done.message).toMatchObject({ restoreSeq: 2n, previousHeadSeq: 2n });
   });
 
+  it("restores the empty space, not the abandoned timeline, for a restore point just after a rewind to before the first commit", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const token = creds.access!.token;
+    const a = device();
+    const p1 = createdAtMs + MINUTE;
+    await snapshot(spaceId, p1);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "rewound away")]);
+    const completedAtMs = p1 + 5 * MINUTE;
+    const abandoned = await snapshot(spaceId, completedAtMs - 30_000);
+    await setAccountClock(completedAtMs);
+    const first = await rewind(token, spaceId, { restorePointMs: p1, expectedHistoryId: await a.history() });
+    expect(first.message).toMatchObject({ restoreSeq: 0n, previousHeadSeq: 1n });
+    await runSpaceAlarm(space(spaceId), completedAtMs + MINUTE);
+
+    simulatedPitr.bookmarkFor = () => abandoned;
+    await setAccountClock(completedAtMs + 3 * MINUTE);
+    const second = await rewind(token, spaceId, { restorePointMs: completedAtMs + 10_000, expectedHistoryId: first.message!.historyId });
+    expect(second.message).toMatchObject({ restoreSeq: 0n });
+    expect([...(await device().tree()).values()].map((node) => node.name)).not.toContain("rewound away");
+  });
+
   it("takes a commit whose bookmark cannot be read, and restores PITR's bookmark for a restore point after it", async () => {
     const { spaceId, createdAtMs, creds, device } = await newSpace();
     const a = device();

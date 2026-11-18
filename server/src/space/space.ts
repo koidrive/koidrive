@@ -1326,10 +1326,11 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const approximate = await this.pitr.bookmarkForTime(restorePointMs);
       const exact = this.sql
         .exec(
-          `SELECT b.bookmark FROM commits c LEFT JOIN commit_bookmarks b ON b.seq = c.seq AND b.from_ms <= ? AND b.from_ms >= ?
-           WHERE c.seq < COALESCE((SELECT MIN(seq) FROM commits WHERE committed_at_ms > ?), c.seq + 1) ORDER BY c.seq DESC LIMIT 1`,
+          `SELECT bookmark FROM commit_bookmarks WHERE from_ms <= ? AND from_ms >= ? AND seq =
+             (SELECT COALESCE(MAX(seq), 0) FROM commits WHERE seq < (SELECT COALESCE(MIN(seq), ?) FROM commits WHERE committed_at_ms > ?))`,
           restorePointMs,
           this.clock() - COMMIT_BOOKMARK_MAX_AGE_MS,
+          Number.MAX_SAFE_INTEGER,
           restorePointMs,
         )
         .toArray()[0]?.bookmark;
@@ -1388,11 +1389,11 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         this.sql.exec("UPDATE chunks SET state = ?, hold_until_ms = ? WHERE refcount = 0", ChunkState.PENDING, holdUntil);
         this.sql.exec("DELETE FROM rewind_markers");
         this.sql.exec("DELETE FROM commit_bookmarks");
-        this.bookmarkHead(completed.restoreSeq, args.completedAtMs);
         startExport(this.sql, completed.restoreSeq, args.completedAtMs, true);
         setMeta(this.sql, "rewind_receipt", JSON.stringify(completed));
         return completed;
       });
+      this.bookmarkHead(receipt.restoreSeq, receipt.completedAtMs);
       await this.armAlarm();
       await this.bookmarking;
       return { state: "completed", receipt };
