@@ -32,9 +32,14 @@ publish = false
 [workspace.dependencies]
 prost = "0.14"
 
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.checked]
 inherits = "dev"
 opt-level = 1
-debug = "line-tables-only"
 debug-assertions = true
 overflow-checks = true

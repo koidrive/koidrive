@@ -133,6 +133,16 @@ jobs:
         with:
           node-version: 24
       - uses: ./.github/actions/pnpm-store
+      - name: Install the pinned Rust toolchain and target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add "$TARGET"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: cli-${{ matrix.target }}-${{ hashFiles('Cargo.toml') }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Set the validation version
         if: github.event_name != 'push'
         run: python3 scripts/stamp-release-version.py v0.0.0-rc.0
@@ -143,16 +153,6 @@ jobs:
           pnpm --dir server install --frozen-lockfile
           node server/scripts/pack-bundle.mjs "$RUNNER_TEMP/server-bundle"
           echo "KOIDRIVE_SERVER_BUNDLE=$RUNNER_TEMP/server-bundle" >> "$GITHUB_ENV"
-      - name: Install the pinned Rust toolchain and target
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          rustup show active-toolchain || rustup toolchain install
-          rustup target add "$TARGET"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: cli-${{ matrix.target }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Linux cross-build tools and ShellCheck
         if: runner.os == 'Linux'
         run: |

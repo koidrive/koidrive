@@ -195,7 +195,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: env.MODE != 'server'
         with:
-          shared-key: heavy-tests
+          shared-key: heavy-tests-${{ hashFiles('Cargo.toml') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
         if: env.MODE == 'worker' || env.MODE == 'server'
@@ -440,7 +440,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: heavy-tests-macos-ui
+          shared-key: heavy-tests-macos-ui-${{ hashFiles('Cargo.toml') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build the Rust core and the Swift bindings, and generate the project
         run: scripts/build-ffi.sh && scripts/generate-project.sh

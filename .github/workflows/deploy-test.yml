@@ -245,7 +245,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: inputs.mode == 'e2e'
         with:
-          key: e2e
+          key: e2e-${{ hashFiles('Cargo.toml') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build koi
         if: inputs.mode == 'e2e'
@@ -459,7 +459,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: e2e
+          key: e2e-${{ hashFiles('Cargo.toml') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build koi
         working-directory: .
