@@ -697,6 +697,7 @@ struct Scan<'c> {
     ticks: HashMap<u64, i128>,
     racy: BTreeMap<PathBuf, Ctime>,
     marks: &'c MarkLog,
+    listed: Vec<(PathBuf, i128, i128)>,
 }
 
 impl Scan<'_> {
@@ -815,6 +816,7 @@ impl Scan<'_> {
                 return Err(Error::Changed);
             }
             self.bindings.push((rel.clone(), bound.dev, bound.id));
+            self.listed.push((rel.clone(), bound.mtime_ns, seen));
             self.dir(sub.as_fd(), bound.dev, &rel)
         });
         match result {
@@ -1162,6 +1164,7 @@ impl Snapshot {
             let mut scan = Scan {
                 new: BTreeMap::new(),
                 bindings: Vec::new(),
+                listed: Vec::new(),
                 replaced: Vec::new(),
                 unreadable: Vec::new(),
                 left_out: BTreeMap::new(),
@@ -1372,6 +1375,7 @@ impl Snapshot {
         scan: &mut Scan<'_>,
     ) -> Result<Stat> {
         let root_dir = open_root(root)?;
+        let root_seen = now_ns();
         let root_stat = stat_fd(root_dir.as_fd())?;
         if expected.is_some_and(|expected| !root_stat.id.same(&expected)) {
             return Err(Error::RootReplaced);
@@ -1410,6 +1414,7 @@ impl Snapshot {
             .is_some_and(|scope| scope.as_os_str().is_empty())
         {
             scan.replaced.push(PathBuf::new());
+            (scan.listed).push((PathBuf::new(), root_stat.mtime_ns, root_seen));
             scan.dir(root_dir.as_fd(), root_stat.dev, Path::new(""))?;
         } else {
             let mut resolved = Vec::new();
@@ -1667,23 +1672,84 @@ impl Snapshot {
             &departed,
             &mut *scan.cut,
         )?;
-        let mut placed = HashMap::with_capacity(scan.new.len());
-        let mut shared = HashSet::new();
-        if (scan.new.iter())
-            .filter(|(path, entry)| {
-                !entry.linked && !(unreadable.iter()).any(|blocked| path.starts_with(blocked))
-            })
-            .any(|(path, entry)| {
-                let Some(other) = placed.insert(entry.id, path) else {
-                    return false;
-                };
-                let on_volume = |at| (volume_of(at, &scan.new, &self.entries), entry.id);
-                shared.insert(on_volume(other));
-                !shared.insert(on_volume(path))
-            })
-        {
-            return Err(Error::Changed);
+        let halfway = |twice: Vec<(PathBuf, PathBuf)>, new: &BTreeMap<PathBuf, Entry>| {
+            (twice.into_iter())
+                .filter(|(first, second)| {
+                    let id = new[first].id;
+                    ![first, second].iter().all(|at| {
+                        (stat_rel(again.as_fd(), at).ok())
+                            .and_then(|stat| stat.entry())
+                            .is_some_and(|now| now.id.same(&id))
+                    })
+                })
+                .flat_map(|(first, second)| [first, second])
+                .collect::<Vec<PathBuf>>()
+        };
+        let left_out_ids: HashSet<FileId> = (scan.left_out.values())
+            .map(|entry| entry.id.without_handle())
+            .collect();
+        let place = |new: &BTreeMap<PathBuf, Entry>| {
+            placements(new, &old, &left_out_ids, &unreadable, &self.entries)
+        };
+        let (twice, vanished) = place(&scan.new);
+        let mut fresh = halfway(twice, &scan.new);
+        if !vanished.is_empty() {
+            let found = missed_moves(
+                again.as_fd(),
+                std::mem::take(&mut scan.listed),
+                &vanished,
+                &|path, entry| {
+                    (scan.new.get(path))
+                        .or_else(|| scan.left_out.get(path))
+                        .or_else(|| self.entries.get(path))
+                        .is_some_and(|known| known.id.same(&entry.id))
+                },
+                &mut scan.ticks,
+            );
+            if found.iter().any(|(_, key)| key.is_none()) {
+                fresh.extend(vanished.values().flatten().map(|(path, _)| path.clone()));
+            }
+            for (at, key) in found {
+                fresh.extend(
+                    (key.iter())
+                        .flat_map(|key| &vanished[key])
+                        .map(|(path, _)| path.clone()),
+                );
+                fresh.push(at);
+            }
         }
+        let gone: HashSet<PathBuf> = (vanished.values().flatten())
+            .map(|(path, _)| path.clone())
+            .collect();
+        let mut straddled = BTreeSet::new();
+        while !fresh.is_empty() {
+            fresh.sort();
+            fresh.dedup_by(|inner, outer| inner.starts_with(&*outer));
+            for path in &fresh {
+                let below: Vec<PathBuf> = (scan.new.range(path.clone()..))
+                    .take_while(|(inside, _)| inside.starts_with(path))
+                    .map(|(inside, _)| inside.clone())
+                    .collect();
+                for inside in below {
+                    scan.new.remove(&inside);
+                }
+                scan.new.extend(
+                    old.range(path.clone()..)
+                        .take_while(|(inside, _)| inside.starts_with(path))
+                        .map(|(inside, entry)| (inside.clone(), *entry)),
+                );
+            }
+            straddled.extend(fresh);
+            let (twice, now_vanished) = place(&scan.new);
+            fresh = halfway(twice, &scan.new);
+            fresh.extend(
+                (now_vanished.into_values().flatten())
+                    .map(|(path, _)| path)
+                    .filter(|path| !gone.contains(path)),
+            );
+            fresh.retain(|path| !path.ancestors().any(|above| straddled.contains(above)));
+        }
+        unsettled.extend(straddled);
         let arrived: HashSet<(FileId, EntryKind)> = (scan.new.iter())
             .filter(|(path, now)| {
                 !(old.get(*path))
@@ -1894,6 +1960,7 @@ impl Snapshot {
         unsettled.extend(unplaced.iter().cloned());
         unsettled.extend(still_hidden);
         unsettled.sort();
+        unsettled.dedup();
         for path in old.keys().chain(&left_out) {
             self.entries.remove(path);
         }
@@ -1966,6 +2033,8 @@ impl Snapshot {
             (dir, dev)
         };
         let dir = dir.as_fd();
+        let seen = now_ns();
+        (scan.listed).push((parent.to_path_buf(), stat_fd(dir)?.mtime_ns, seen));
         let mut names = list(dir)?;
         let widen = match scan.read_rules(dir, parent, &names) {
             RulesRead::Unknown => {
@@ -2083,6 +2152,120 @@ fn moved_to(
             .is_some_and(|now| now.kind == EntryKind::Dir)
             .then(|| path.to_path_buf()),
     }
+}
+
+type Vanished = HashMap<(FileId, EntryKind), Vec<(PathBuf, FileId)>>;
+
+fn placements<'n>(
+    new: &'n BTreeMap<PathBuf, Entry>,
+    old: &BTreeMap<PathBuf, Entry>,
+    left_out: &HashSet<FileId>,
+    unreadable: &[PathBuf],
+    entries: &BTreeMap<PathBuf, Entry>,
+) -> (Vec<(PathBuf, PathBuf)>, Vanished) {
+    let (mut moved, mut kept, mut gone) = (Vec::new(), Vec::new(), Vec::new());
+    let mut before = old.iter().peekable();
+    for (path, entry) in new {
+        gone.extend(std::iter::from_fn(|| {
+            before.next_if(|(was, _)| *was < path)
+        }));
+        match before.next_if(|(was, _)| *was == path) {
+            Some((_, was)) if was.id.same(&entry.id) => kept.push((path, entry)),
+            other => {
+                gone.extend(other);
+                moved.push((path, entry));
+            }
+        }
+    }
+    gone.extend(before);
+    let mut shared = HashMap::new();
+    let mut twice = Vec::new();
+    let readable = |path: &Path| !(unreadable.iter()).any(|blocked| path.starts_with(blocked));
+    let mut meet = |path: &'n PathBuf, entry: &Entry, other: &'n PathBuf, was: &Entry| {
+        if !readable(path) || !readable(other) || !entry.id.same(&was.id) {
+            return;
+        }
+        let on_volume = |at| (volume_of(at, new, entries), entry.id.without_handle());
+        shared.entry(on_volume(other)).or_insert(other);
+        match shared.get(&on_volume(path)) {
+            Some(&first) if first != path => twice.push((first.clone(), path.clone())),
+            _ => {
+                shared.insert(on_volume(path), path);
+            }
+        }
+    };
+    let mut placed: HashMap<FileId, (&PathBuf, &Entry)> = HashMap::with_capacity(moved.len());
+    for (path, entry) in moved {
+        if let Some((other, was)) = placed.insert(entry.id.without_handle(), (path, entry)) {
+            meet(path, entry, other, was);
+        }
+    }
+    if !placed.is_empty() {
+        for (path, entry) in kept {
+            if let Some(&(other, was)) = placed.get(&entry.id.without_handle()) {
+                meet(path, entry, other, was);
+            }
+        }
+    }
+    let mut vanished = Vanished::new();
+    for (path, entry) in gone.into_iter().filter(|(_, entry)| {
+        !(placed.get(&entry.id.without_handle())).is_some_and(|(_, now)| now.id.same(&entry.id))
+            && !left_out.contains(&entry.id.without_handle())
+    }) {
+        (vanished
+            .entry((entry.id.without_handle(), entry.kind))
+            .or_default())
+        .push((path.clone(), entry.id));
+    }
+    (twice, vanished)
+}
+
+fn missed_moves(
+    root: BorrowedFd<'_>,
+    listed: Vec<(PathBuf, i128, i128)>,
+    vanished: &Vanished,
+    known: &dyn Fn(&Path, &Entry) -> bool,
+    ticks: &mut HashMap<u64, i128>,
+) -> Vec<(PathBuf, Option<(FileId, EntryKind)>)> {
+    let mut found = Vec::new();
+    for (rel, mtime, seen) in listed {
+        let Ok(Some((dir, _))) = open_attached(root, &rel, &mut |_| {}) else {
+            continue;
+        };
+        let Ok(now) = stat_fd(dir.as_fd()) else {
+            continue;
+        };
+        let tick = *ticks
+            .entry(now.dev)
+            .or_insert_with(|| timestamp_tick(dir.as_fd()));
+        if now.mtime_ns == mtime && seen >= mtime + tick_of(mtime, Some(tick)) {
+            continue;
+        }
+        let Ok(names) = list(dir.as_fd()) else {
+            continue;
+        };
+        for name in names.iter().filter(|name| !private(&rel, name)) {
+            let Some(entry) = stat_at(dir.as_fd(), name)
+                .ok()
+                .and_then(|stat| stat.entry())
+            else {
+                continue;
+            };
+            let at = rel.join(name);
+            let key = (entry.id.without_handle(), entry.kind);
+            if known(&at, &entry) {
+                continue;
+            }
+            if (vanished.get(&key))
+                .is_some_and(|gone| gone.iter().any(|(_, id)| id.same(&entry.id)))
+            {
+                found.push((at, Some(key)));
+            } else if entry.kind == EntryKind::Dir {
+                found.push((at, None));
+            }
+        }
+    }
+    found
 }
 
 /// Checks that every folder the scan opened is still the folder at its path,
