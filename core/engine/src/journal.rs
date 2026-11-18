@@ -18,6 +18,7 @@ use crate::tree::NodeId;
 /// The most intents the history keeps per node and field, and a seen list per node and field (RFC 0029 §5.1).
 pub const HISTORY_KEPT: usize = 64;
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Field {
     Place,
@@ -119,6 +120,22 @@ impl fmt::Display for IntentId {
     }
 }
 
+#[cfg(feature = "serde")]
+impl serde::Serialize for IntentId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for IntentId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        IntentId::parse(&text)
+            .ok_or_else(|| serde::de::Error::custom(format!("intent id {text:?}")))
+    }
+}
+
 impl fmt::Debug for IntentId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
@@ -207,6 +224,7 @@ impl NodeIntents {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Place {
     pub parent: NodeId,
@@ -215,6 +233,7 @@ pub struct Place {
 }
 
 /// A field's value. Places compare names by their NFC form, contents by [`ContentValue`] and never by version id.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Value {
     Place(Place),
@@ -250,6 +269,7 @@ impl Value {
 
 /// What an op sends as its base: RFC 0026's `made_over` and `source_version_id` for content, the place a move
 /// leaves for a place.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum WireBase {
     #[default]
@@ -269,6 +289,7 @@ pub enum Author {
 }
 
 /// An intent the commit in flight sends for a field whose row a later change of the user replaced.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Flight {
     pub intent: IntentId,
@@ -331,6 +352,7 @@ pub struct HistoryEntry {
 
 /// One entry of a delete's seen list: an intent L held for the deleted node or a node below it. The value is known
 /// for what L held when the user deleted, and unknown for an older intent the history kept.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Seen {
     pub node: NodeId,
@@ -341,7 +363,7 @@ pub struct Seen {
 
 /// One field of R that a delete's lists compare against.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Held {
+pub struct RemoteField {
     pub node: NodeId,
     pub field: Field,
     pub intent: IntentId,
@@ -357,7 +379,7 @@ pub struct DeleteView {
 
 /// The view a delete sends: R's intents the seen list neither holds nor matches by value are unseen, and the seen
 /// intents R's fields do not hold are held.
-pub fn delete_view(seen: &[Seen], remote: &[Held]) -> DeleteView {
+pub fn delete_view(seen: &[Seen], remote: &[RemoteField]) -> DeleteView {
     let seen_ids: BTreeSet<IntentId> = seen.iter().map(|entry| entry.intent).collect();
     let unseen = (remote.iter())
         .filter(|field| {
@@ -393,6 +415,8 @@ pub struct JournalState {
     pub seen: BTreeMap<NodeId, Vec<Seen>>,
     /// R's intents came from a listing of a server that announced `field_intents`, so no id R holds was computed.
     pub listed: bool,
+    /// The state of the generator that mints this user's intents, once seeded.
+    pub ids: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -401,6 +425,7 @@ pub struct JournalChanges {
     pub history: MapChanges<RowKey, Vec<HistoryEntry>>,
     pub seen: MapChanges<NodeId, Vec<Seen>>,
     pub listed: Option<bool>,
+    pub ids: Option<Option<u64>>,
 }
 
 impl JournalChanges {
@@ -410,6 +435,7 @@ impl JournalChanges {
             history: changes(&before.history, &after.history),
             seen: changes(&before.seen, &after.seen),
             listed: (before.listed != after.listed).then_some(after.listed),
+            ids: (before.ids != after.ids).then_some(after.ids),
         }
     }
 }
@@ -433,9 +459,12 @@ pub struct Journal {
     seen: TrackedMap<NodeId, Vec<Seen>>,
     listed: bool,
     listed_before: bool,
-    ids: IdGen,
+    ids: Option<IdGen>,
+    ids_before: Option<u64>,
     now_ms: u64,
 }
+
+const JOURNAL_STREAM: u64 = 0x6a09_e667_f3bc_c908;
 
 impl PartialEq for Journal {
     fn eq(&self, other: &Self) -> bool {
@@ -451,6 +480,8 @@ impl Journal {
             seen: state.seen.into(),
             listed: state.listed,
             listed_before: state.listed,
+            ids: state.ids.map(IdGen::new),
+            ids_before: state.ids,
             ..Self::default()
         }
     }
@@ -461,23 +492,33 @@ impl Journal {
             history: (*self.history).clone(),
             seen: (*self.seen).clone(),
             listed: self.listed,
+            ids: self.ids.as_ref().map(|ids| ids.state),
         }
     }
 
     pub fn take_changes(&mut self) -> JournalChanges {
         let listed = (self.listed != self.listed_before).then_some(self.listed);
         self.listed_before = self.listed;
+        let state = self.ids.as_ref().map(|ids| ids.state);
+        let ids = (state != self.ids_before).then_some(state);
+        self.ids_before = state;
         JournalChanges {
             rows: self.rows.take_changes(),
             history: self.history.take_changes(),
             seen: self.seen.take_changes(),
             listed,
+            ids,
         }
     }
 
-    /// Seeds the generator that mints intents. A seed must not repeat one an earlier run used.
-    pub fn seed(&mut self, seed: u64) {
-        self.ids = IdGen::new(seed);
+    /// Gives a journal that has no generator yet one of its own, derived from the state of another generator
+    /// (the engine's) so that the two streams differ.
+    pub fn seed(&mut self, from: u64) {
+        if self.ids.is_none() {
+            let mut ids = IdGen::new(from ^ JOURNAL_STREAM);
+            ids.next_u64();
+            self.ids = Some(ids);
+        }
     }
 
     pub fn set_clock(&mut self, now_ms: u64) {
@@ -485,7 +526,11 @@ impl Journal {
     }
 
     pub fn mint(&mut self) -> IntentId {
-        IntentId::mint(&mut self.ids, self.now_ms)
+        let now_ms = self.now_ms;
+        IntentId::mint(
+            self.ids.get_or_insert_with(|| IdGen::new(JOURNAL_STREAM)),
+            now_ms,
+        )
     }
 
     pub fn listed(&self) -> bool {
@@ -524,7 +569,16 @@ impl Journal {
     ) -> IntentId {
         let key = (node.to_owned(), value.field());
         let old = self.rows.get(&key);
-        let row = match old.and_then(Row::in_flight) {
+        let flight = old.and_then(Row::in_flight);
+        let base = match old {
+            None => seen,
+            Some(old) => match &old.state {
+                RowState::Local { .. } => old.base,
+                RowState::Sent => Some(old.intent),
+                RowState::Held { held_as, .. } => Some(*held_as),
+            },
+        };
+        let row = match flight {
             Some(flight) if flight.value.same(&value) => Row {
                 intent: flight.intent,
                 author: Author::Own,
@@ -536,16 +590,9 @@ impl Journal {
                 replay: false,
             },
             flight => Row {
-                intent: IntentId::mint(&mut self.ids, self.now_ms),
+                intent: self.mint(),
                 author: Author::Own,
-                base: match old {
-                    None => seen,
-                    Some(old) => match &old.state {
-                        RowState::Local { .. } => old.base,
-                        RowState::Sent => Some(old.intent),
-                        RowState::Held { held_as, .. } => Some(*held_as),
-                    },
-                },
+                base,
                 value,
                 wire_base,
                 state: RowState::Local { flight },
@@ -634,7 +681,7 @@ impl Journal {
     ) -> &Row {
         let key = (node.to_owned(), value.field());
         let row = Row {
-            intent: IntentId::mint(&mut self.ids, self.now_ms),
+            intent: self.mint(),
             author: Author::Own,
             base,
             value,
