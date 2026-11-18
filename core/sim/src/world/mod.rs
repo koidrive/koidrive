@@ -658,6 +658,7 @@ pub struct World {
     touched_nodes: Vec<BTreeMap<NodeId, u128>>,
     merged: Vec<BTreeMap<NodeId, BTreeSet<u128>>>,
     actions: Vec<BTreeMap<u64, (u128, Change)>>,
+    moves: Vec<BTreeSet<u64>>,
     scanned: Vec<u64>,
     built: Vec<u64>,
     built_copies: Vec<u64>,
@@ -773,6 +774,7 @@ impl World {
             touched_nodes: vec![BTreeMap::new(); count],
             merged: vec![BTreeMap::new(); count],
             actions: vec![BTreeMap::new(); count],
+            moves: vec![BTreeSet::new(); count],
             scanned: vec![0; count],
             built: vec![0; count],
             built_copies: vec![0; count],
@@ -1048,7 +1050,11 @@ impl World {
                 }
             }
             (Act::Rename, Some(ino)) => {
+                let reparents = disk.entries()[&ino].place != place;
                 if disk.rename(ino, place, name).is_ok() {
+                    if reparents {
+                        self.moves[d].insert(self.clock);
+                    }
                     self.named[d].insert(name);
                     let moved = disk.entries()[&ino].content.as_ref().map(|c| c.mtime_ns);
                     (self.republished).extend(moved.filter(|write| self.discarded.contains(write)));

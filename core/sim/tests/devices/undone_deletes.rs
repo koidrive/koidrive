@@ -445,3 +445,53 @@ fn an_edit_of_the_file_that_another_device_never_sends_leaves_the_delete_checked
     )
     .unwrap();
 }
+
+#[test]
+fn a_file_another_device_adds_to_the_deleted_folder_leaves_its_siblings_checked() {
+    let mut deleted = vec![(1, user(1, 0, 1, "c.txt")), (0, delete(0))];
+    deleted.extend(commit(1));
+    deleted.extend(commit(0));
+    checked(
+        2,
+        &[vec![(0, folder("b")), (0, user(1, 0, 1, "a"))], deleted],
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_edit_another_device_makes_to_a_sibling_leaves_the_deleted_file_checked() {
+    let mut deleted = vec![(1, overwrite(2)), (0, delete(0))];
+    deleted.extend(commit(1));
+    deleted.extend(commit(0));
+    checked(
+        2,
+        &[
+            vec![
+                (0, folder("b")),
+                (0, user(1, 0, 1, "a")),
+                (0, user(1, 0, 1, "c.txt")),
+            ],
+            deleted,
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_rename_another_device_makes_to_a_folder_between_leaves_the_deleted_file_checked() {
+    let mut deleted = vec![(1, rename(1, 1, "A")), (0, delete(0))];
+    deleted.extend(commit(1));
+    deleted.extend(commit(0));
+    checked(
+        2,
+        &[
+            vec![
+                (0, folder("b")),
+                (0, user(0, 0, 1, "c.txt")),
+                (0, user(1, 0, 2, "a")),
+            ],
+            deleted,
+        ],
+    )
+    .unwrap();
+}

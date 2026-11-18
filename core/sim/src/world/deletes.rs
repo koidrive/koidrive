@@ -191,19 +191,18 @@ impl World {
                     deletion.resendable.contains(&write)
                         || (!at_node && self.copied.contains(&write))
                 })?;
-                let path: Vec<&NodeId> = std::iter::once(&node).chain(&file.path).collect();
                 let changed_since = (self.spent.iter()).any(|spent| {
-                    let owned = || {
-                        (self.actions[spent.device].get(&spent.at))
-                            .is_some_and(|(own, _)| *own == spent.ino)
-                    };
-                    let on_path = || {
-                        (path.iter())
-                            .any(|id| self.touched_nodes[spent.device].get(*id) == Some(&spent.ino))
-                    };
+                    let is =
+                        |id: &NodeId| self.touched_nodes[spent.device].get(id) == Some(&spent.ino);
+                    let itself = is(&node) || is(&file.node);
+                    let moved_between = self.moves[spent.device].contains(&spent.at)
+                        && (file.path.iter()).skip(1).any(is);
                     spent.device != deletion.device
+                        && (self.actions[spent.device].get(&spent.at))
+                            .is_some_and(|(own, _)| *own == spent.ino)
                         && ((deletion.unsent).contains(&(spent.device, spent.ino, spent.at))
-                            || (spent.at >= deletion.at && owned() && on_path()))
+                            || spent.at >= deletion.at)
+                        && (itself || moved_between)
                 });
                 (!changed_since).then_some((write, deletion.device))
             });
