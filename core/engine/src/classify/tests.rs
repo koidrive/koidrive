@@ -1046,6 +1046,18 @@ fn a_node_at_a_reserved_name_stays_kept_under_a_new_id_and_keeps_the_name_reserv
 }
 
 #[test]
+fn a_kept_node_moved_off_its_reserved_name_stays_kept_under_a_new_id() {
+    let mut trees = with_a_kept_env();
+    trees.set_local("other".into(), kept_local("root", "other", Kind::Dir, 3));
+    trees.set_local("env".into(), kept_local("other", "env", Kind::File, 2));
+
+    trees.rekey_local("env", "env-2", kept_local("other", "env", Kind::File, 2));
+
+    assert!(trees.ignored("env-2"));
+    assert_eq!(*trees.kept_nodes, BTreeSet::from(["env-2".to_owned()]));
+}
+
+#[test]
 fn a_kept_node_stays_kept_wherever_it_moves_until_l_drops_it() {
     let mut trees = with_a_kept_env();
     trees.set_local("other".into(), kept_local("root", "other", Kind::Dir, 3));
