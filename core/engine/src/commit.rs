@@ -1937,6 +1937,10 @@ impl Commits {
                             );
                         }
                         trees.sent_edit(&create.node_id, create.content.as_ref());
+                    } else if code == Code::ConflictCopy
+                        && trees.local().get(&outcome.node_id).is_some()
+                    {
+                        trees.revert(create.node_id.clone());
                     } else if code == Code::ConflictCopy {
                         synced.set(&outcome.node_id, Some(shape));
                         synced.set(&create.node_id, None);
