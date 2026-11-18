@@ -675,21 +675,25 @@ fn recovers(site: &Site) -> bool {
     opened(site).is_ok_and(|folder| folder.engine.commits.halted().is_some())
 }
 
-#[test]
-fn two_clones_of_one_store_taking_turns_on_one_folder_recover_at_most_once() {
-    let mut remote = Remote::new();
-    let (site, a) = linked(&mut remote, "a");
-    drop(a);
+fn store_clone(site: &Site) -> Site {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("store.sqlite");
     fs::copy(&site.db, &db).unwrap();
-    let clone = Site {
+    Site {
         _dir: dir,
         root: site.root.clone(),
         db,
         link: site.link.clone(),
         caller: site.caller.clone(),
-    };
+    }
+}
+
+#[test]
+fn two_clones_of_one_store_taking_turns_on_one_folder_recover_at_most_once() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let clone = store_clone(&site);
     let mut recovered = 0;
     for _ in 0..3 {
         for s in [&site, &clone] {
@@ -700,6 +704,76 @@ fn two_clones_of_one_store_taking_turns_on_one_folder_recover_at_most_once() {
         }
     }
     assert!(recovered <= 1, "{recovered} store-older recoveries");
+}
+
+fn rotated_by_a_link_without_a_token_after_its_first_marker_write_failed(
+    remote: &mut Remote,
+) -> (Site, Site) {
+    let (site, mut a) = linked(remote, "a");
+    a.create(remote, &site.root.join("kept.txt"), b"kept");
+    drop(a);
+    for _ in 0..2 {
+        drop(restarted(&site, remote));
+    }
+    let other = store_clone(&site);
+    let mut store = Store::open(&other.db).unwrap();
+    let none = koidrive_fs::RootTokens::default();
+    store.transaction(|tx| tx.set_root_tokens(&none)).unwrap();
+    drop(store);
+    let blocker = block_marker(&other);
+    drop(opened(&other).unwrap());
+    fs::remove_dir_all(&blocker).unwrap();
+    drop(opened(&other).unwrap());
+    assert_eq!(marker_of(&site).effects, site.stored().effects.cleared());
+    (site, other)
+}
+
+#[test]
+fn a_link_finds_its_folder_rotated_by_a_link_without_a_token_after_a_failed_write_and_halts() {
+    let mut remote = Remote::new();
+    let (site, _) =
+        rotated_by_a_link_without_a_token_after_its_first_marker_write_failed(&mut remote);
+    assert!(halts_as_a_copy(&site));
+}
+
+#[test]
+fn two_links_taking_turns_after_a_failed_first_marker_write_recover_at_most_once_and_keep_files() {
+    let mut remote = Remote::new();
+    let (site, other) =
+        rotated_by_a_link_without_a_token_after_its_first_marker_write_failed(&mut remote);
+    let mut recovered = 0;
+    for _ in 0..3 {
+        for s in [&site, &other] {
+            recovered += usize::from(recovers(s));
+            if !halts_as_a_copy(s) {
+                drop(restarted(s, &mut remote));
+            }
+        }
+    }
+    assert!(recovered <= 1, "{recovered} store-older recoveries");
+    assert_eq!(names(&site.root), ["kept.txt"]);
+    assert_eq!(remote.names(), ["kept.txt"]);
+}
+
+#[test]
+fn a_marker_write_that_fails_after_a_store_older_recovery_leaves_the_next_start_current() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    drop(restarted(&site, &mut remote));
+    fs::copy(&saved, &site.db).unwrap();
+    let blocker = block_marker(&site);
+    let mut a = site.start();
+    assert!(a.folder.engine.commits.halted().is_some());
+    a.connect(&remote);
+    a.settle();
+    a.run(&mut remote);
+    assert!(a.folder.engine.commits.halted().is_none());
+    drop(a);
+    fs::remove_dir_all(&blocker).unwrap();
+    assert!(!recovers(&site));
 }
 
 #[test]

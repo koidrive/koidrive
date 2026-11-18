@@ -1295,6 +1295,29 @@ fn a_store_and_marker_from_before_tokens_recover_through_a_crash_at_each_step_of
 }
 
 #[test]
+fn a_marker_from_before_tokens_halts_as_a_copy_unless_it_counts_more_than_the_store_accounts_for() {
+    let (folder, _, _) = three_cleared_and_one_in_flight();
+    let (_, engine) = folder.open();
+    let tokens = RootTokens {
+        current: Some("recorded".into()),
+        pending: None,
+    };
+    for (effects, newer) in [(2, false), (3, false), (4, false), (5, true)] {
+        let marker = Marker {
+            space_id: SPACE.into(),
+            effects,
+            token: None,
+            earlier: Vec::new(),
+        };
+        match standing(&marker, &tokens, &engine.effects) {
+            Ok(Standing::StoreOlder) => assert!(newer, "{effects}"),
+            Err(Stop::Root(RootProblem::Copy)) => assert!(!newer, "{effects}"),
+            _ => panic!("marker at {effects}"),
+        }
+    }
+}
+
+#[test]
 fn a_marker_above_what_the_store_accounts_for_continues_from_the_marker_and_recovers() {
     let (folder, _, effect_id) = three_cleared_and_one_in_flight();
     set_marker(&folder.root, 6);
