@@ -49,8 +49,8 @@ fn koi_update_upgrades_a_formula_with_the_brew_that_owns_it() {
         assert_eq!(
             std::fs::read_to_string(prefix.join("bin/git.calls")).unwrap(),
             format!(
-                "-C {tap} --git-dir {tap}/.git --work-tree {tap} -c core.hooksPath=/dev/null pull --ff-only --quiet\n",
-                tap = prefix.join("Library/Taps/koidrive/homebrew-tap").display()
+                "-C {} pull --ff-only --quiet\n",
+                prefix.join("Library/Taps/koidrive/homebrew-tap").display()
             )
         );
         assert!(
@@ -399,10 +399,7 @@ fn koi_update_through_homebrew_is_incomplete_when_the_tap_lags_or_cannot_refresh
             );
             assert_eq!(
                 std::fs::read_to_string(prefix.join("bin/git.calls")).unwrap(),
-                format!(
-                    "-C {tap} --git-dir {tap}/.git --work-tree {tap} -c core.hooksPath=/dev/null pull --ff-only --quiet|0|\n",
-                    tap = tap.display()
-                )
+                format!("-C {} pull --ff-only --quiet|0|\n", tap.display())
             );
         }
     }
@@ -924,92 +921,92 @@ fn koi_update_never_runs_a_homebrew_koi_outside_its_sandbox() {
 
 #[test]
 fn koi_update_never_pulls_a_homebrew_tap_outside_its_sandbox() {
-    for layout in ["outside", "linked", "configured"] {
-        let home = Sandbox::new();
-        let github = github("v99.0.0");
-        let link = homebrew_binary(home.path(), false);
-        let koi = std::fs::canonicalize(&link).unwrap();
-        let prefix = std::fs::canonicalize(home.path().join("brew")).unwrap();
-        upgrading_brew(&prefix, &koi, "99.0.0", 0);
-        std::fs::remove_file(prefix.join("bin/git")).unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        let ran = outside.path().join("ran");
-        let tree = outside.path().join("tree");
-        let (tap, hooks, clone) = match layout {
-            "outside" => {
-                let tap = outside.path().join("tap");
-                (tap.clone(), tap.join(".git/hooks"), String::new())
-            }
-            "linked" => (
-                home.path().join("tap"),
-                outside.path().join("hooks"),
-                format!(
-                    "--separate-git-dir '{}'",
-                    outside.path().join("meta").display()
-                ),
-            ),
-            _ => (
-                home.path().join("tap"),
-                outside.path().join("hooks"),
-                String::new(),
-            ),
-        };
-        let sh = |script: &str| {
-            let output = sandboxed("/bin/sh", home.path())
-                .args(["-c", script])
-                .env("HOME", outside.path())
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{script}");
-            String::from_utf8(output.stdout).unwrap()
-        };
-        let commit = "git -c user.name=a -c user.email=a@a commit -q --allow-empty";
-        sh(&format!(
-            "set -e; git init -q '{u}'; cd '{u}'; {commit} -m one; git clone -q {clone} '{u}' '{t}'; echo b > b; git add b; {commit} -m two; mkdir -p '{h}' '{w}'; printf '#!/bin/sh\\ntouch \"%s\"\\n' '{r}' > '{h}/post-merge'; chmod +x '{h}/post-merge'",
-            u = outside.path().join("upstream").display(),
-            t = tap.display(),
-            h = hooks.display(),
-            w = tree.display(),
-            r = ran.display(),
-        ));
-        if layout == "configured" {
-            sh(&format!(
-                "git -C '{t}' config core.hooksPath '{h}' && git -C '{t}' config core.worktree '{w}'",
-                t = tap.display(),
-                h = hooks.display(),
-                w = tree.display(),
-            ));
-        }
-        let head = || sh(&format!("git -C '{}' rev-parse HEAD", tap.display()));
-        let before = head();
-        let brew = prefix.join("bin/brew");
-        let script = std::fs::read_to_string(&brew).unwrap().replace(
-            &prefix
-                .join("Library/Taps/koidrive/homebrew-tap")
-                .display()
-                .to_string(),
-            &tap.display().to_string(),
-        );
-        std::fs::write(&brew, script).unwrap();
-        let output = koi_at(&link, home.path(), &github, &["update", "--json"])
-            .output()
-            .unwrap();
-        if development_update(&output, home.path(), &github) {
-            return;
-        }
-        let log = std::fs::read_to_string(update_log(home.path())).unwrap();
-        let refused = match layout {
-            "outside" => format!(
-                "a test must not pass {}, which is outside its sandbox",
-                tap.display()
-            ),
-            "linked" => "Homebrew did not name a git checkout of the koidrive/tap tap".to_owned(),
-            _ => String::new(),
-        };
-        assert!(log.contains(&refused), "{layout}: {log}");
-        assert_eq!(head() != before, layout == "configured", "{layout}: {log}");
-        assert_eq!(tap.join("b").exists(), layout == "configured", "{layout}");
-        assert!(!tree.join("b").exists(), "{layout}");
-        assert!(!ran.exists(), "{layout}: {log}");
+    let home = Sandbox::new();
+    let github = github("v99.0.0");
+    let link = homebrew_binary(home.path(), false);
+    let koi = std::fs::canonicalize(&link).unwrap();
+    let prefix = std::fs::canonicalize(home.path().join("brew")).unwrap();
+    upgrading_brew(&prefix, &koi, "99.0.0", 0);
+    let outside = tempfile::tempdir().unwrap();
+    let tap = outside.path().join("tap");
+    std::fs::create_dir_all(tap.join(".git")).unwrap();
+    let brew = prefix.join("bin/brew");
+    let script = std::fs::read_to_string(&brew).unwrap().replace(
+        &prefix
+            .join("Library/Taps/koidrive/homebrew-tap")
+            .display()
+            .to_string(),
+        &tap.display().to_string(),
+    );
+    std::fs::write(&brew, script).unwrap();
+    let output = koi_at(&link, home.path(), &github, &["update", "--json"])
+        .output()
+        .unwrap();
+    if development_update(&output, home.path(), &github) {
+        return;
     }
+    let log = std::fs::read_to_string(update_log(home.path())).unwrap();
+    assert!(
+        log.contains(&format!(
+            "a test must not pass {}, which is outside its sandbox",
+            tap.display()
+        )),
+        "{log}"
+    );
+    assert!(!prefix.join("bin/git.calls").exists(), "{log}");
+}
+
+#[test]
+fn koi_update_never_refreshes_a_tap_with_a_git_outside_its_sandbox() {
+    let home = Sandbox::new();
+    let github = github("v99.0.0");
+    let link = homebrew_binary(home.path(), false);
+    let koi = std::fs::canonicalize(&link).unwrap();
+    let prefix = std::fs::canonicalize(home.path().join("brew")).unwrap();
+    upgrading_brew(&prefix, &koi, "99.0.0", 0);
+    std::fs::remove_file(prefix.join("bin/git")).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let ran = outside.path().join("ran");
+    let program = outside.path().join("program");
+    executable(
+        &program,
+        &format!("#!/bin/sh\ntouch '{}'\nexit 1\n", ran.display()),
+    );
+    let tap = home.path().join("tap");
+    let commit = "git -c user.name=a -c user.email=a@a commit -q --allow-empty";
+    let output = sandboxed("/bin/sh", home.path())
+        .args([
+            "-c",
+            &format!(
+                "set -e; git init -q '{u}'; cd '{u}'; {commit} -m one; git clone -q '{u}' '{t}'; {commit} -m two; git -C '{t}' config core.fsmonitor '{p}'; git -C '{t}' config remote.origin.uploadpack '{p}'",
+                u = outside.path().join("upstream").display(),
+                t = tap.display(),
+                p = program.display(),
+            ),
+        ])
+        .env("HOME", outside.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let brew = prefix.join("bin/brew");
+    let script = std::fs::read_to_string(&brew).unwrap().replace(
+        &prefix
+            .join("Library/Taps/koidrive/homebrew-tap")
+            .display()
+            .to_string(),
+        &tap.display().to_string(),
+    );
+    std::fs::write(&brew, script).unwrap();
+    let output = koi_at(&link, home.path(), &github, &["update", "--json"])
+        .output()
+        .unwrap();
+    if development_update(&output, home.path(), &github) {
+        return;
+    }
+    let log = std::fs::read_to_string(update_log(home.path())).unwrap();
+    assert!(!ran.exists(), "{log}");
+    assert!(
+        log.contains("a test must not run /usr/bin/git, which is outside its sandbox"),
+        "{log}"
+    );
 }

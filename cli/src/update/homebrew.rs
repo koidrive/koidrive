@@ -162,34 +162,20 @@ async fn refresh_tap(brew: &Path, echo: &mut Echo) -> Result<(), String> {
         }
         _ => PathBuf::new(),
     };
-    let repository = tap.join(".git");
-    let sandboxed = crate::lifeline::sandbox().is_some();
-    let checked_out = match sandboxed {
-        true => repository.is_dir(),
-        false => repository.exists(),
-    };
-    if !tap.is_absolute() || !checked_out {
+    if !tap.is_absolute() || !tap.join(".git").exists() {
         return Err(format!(
             "Homebrew did not name a git checkout of the {TAP} tap"
         ));
     }
     let homebrew_git = brew.with_file_name("git");
-    let mut pull = match homebrew_git.is_file() {
-        true => crate::program::found_async(&homebrew_git).map_err(|error| error.to_string())?,
-        false => crate::program::system_async("/usr/bin/git"),
+    let git = match homebrew_git.is_file() {
+        true => homebrew_git,
+        false => PathBuf::from("/usr/bin/git"),
     };
-    let confined =
-        |path: &Path| crate::program::Confined::new(path).map_err(|error| error.to_string());
-    let checkout = confined(&tap)?;
-    pull.arg("-C").arg(&checkout);
-    if sandboxed {
-        pull.arg("--git-dir")
-            .arg(confined(&repository)?)
-            .arg("--work-tree")
-            .arg(&checkout)
-            .args(["-c", "core.hooksPath=/dev/null"]);
-    }
-    pull.args(["pull", "--ff-only", "--quiet"])
+    let mut pull = crate::program::found_async(&git).map_err(|error| error.to_string())?;
+    pull.arg("-C")
+        .arg(crate::program::Confined::new(&tap).map_err(|error| error.to_string())?)
+        .args(["pull", "--ff-only", "--quiet"])
         .env("GIT_TERMINAL_PROMPT", "0");
     for variable in [
         "GIT_DIR",
