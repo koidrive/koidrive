@@ -439,7 +439,12 @@ impl Disks {
     /// Unmounts the folder `at` and keeps its image attached, so no image attached later takes its device number.
     #[cfg(target_os = "macos")]
     pub fn unmount(&mut self, at: &Path) {
-        run("/sbin/umount", &["-f".as_ref(), at.as_os_str()]);
+        let mounted = self
+            .mounted
+            .iter()
+            .rfind(|mounted| mounted.at == at)
+            .unwrap_or_else(|| panic!("no image owned at {}", at.display()));
+        run("/sbin/umount", &["-f".as_ref(), mounted.at.as_os_str()]);
     }
 
     /// Records that the image mounted at `from` is at `to` now, after a folder above it moved.
@@ -755,6 +760,19 @@ mod tests {
             .collect();
         files.sort();
         assert_eq!(files, ["copy.dmg", "source.dmg"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unmount_leaves_a_folder_it_does_not_own_mounted() {
+        let mut theirs = Disks::new().unwrap();
+        let at = theirs.base().join("theirs");
+        fs::create_dir(&at).unwrap();
+        let image = theirs.image("theirs");
+        theirs.attach(&image, &at);
+        let ours = std::panic::catch_unwind(|| Disks::new().unwrap().unmount(&at));
+        assert!(ours.is_err());
+        assert_eq!(is_mount_point(&at), Ok(true));
     }
 
     #[cfg(target_os = "macos")]
