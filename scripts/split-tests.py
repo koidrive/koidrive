@@ -79,6 +79,11 @@ def output_path(source, scenario):
     return ROOT / path.parent / path.stem / f"{scenario}.rs"
 
 
+def separated(header):
+    header = header.rstrip()
+    return header + b"\n\n" if header else b""
+
+
 def render(executable, mapping, sources):
     planned = {}
     for path, assignments in mapping.items():
@@ -90,8 +95,7 @@ def render(executable, mapping, sources):
         if unknown:
             raise ValueError(f"assign these items in {MAPPING.relative_to(ROOT)} for {path}: {unknown}")
         scenarios = {}
-        header = source[:found[0]["start"]]
-        root = header.rstrip() + b"\n\n"
+        root = separated(source[:found[0]["start"]])
         previous = found[0]["start"]
         for item in found:
             scenario = assignments[item["name"]]
@@ -183,7 +187,7 @@ def port(executable, mapping, base_ref, branch_ref):
             if text is not None:
                 merged.append(text)
         header = merge(base_header, branch_header, current_header, f"{path} header")
-        sources[path] = header.rstrip() + b"\n\n" + b"\n\n".join(merged) + b"\n"
+        sources[path] = separated(header) + b"\n\n".join(merged) + b"\n"
     write(executable, render(executable, mapping, sources))
 
 
@@ -200,7 +204,7 @@ def verify(executable, mapping, revision):
                                   for item in root_items if item["kind"] == "include")
         if actual_includes != expected_includes:
             raise ValueError(f"{path}: include list differs from the mapping")
-        header = original[:original_items[0]["start"]].rstrip() + b"\n\n"
+        header = separated(original[:original_items[0]["start"]])
         if not root_items or root[:root_items[0]["start"]] != header:
             raise ValueError(f"{path}: module header changed")
         before = {item["name"]: original[item["start"]:item["end"]]
