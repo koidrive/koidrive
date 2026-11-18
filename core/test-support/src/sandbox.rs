@@ -32,6 +32,7 @@ pub struct Sandbox {
     root: PathBuf,
     lifeline: PathBuf,
     held: Option<File>,
+    _owner: File,
 }
 
 impl Sandbox {
@@ -49,12 +50,11 @@ impl Sandbox {
                 .keep()
         };
         let lifeline = made(LIFELINE_PREFIX);
+        let owner = locked(&lifeline, "owner");
         let root = made("koi-");
         fs::write(lifeline.join("root"), root.as_os_str().as_bytes()).unwrap();
         File::create(lifeline.join("alive")).unwrap();
-        let held = File::create(lifeline.join("held.new")).unwrap();
-        flock(&held, FlockOperation::LockExclusive).unwrap();
-        fs::rename(lifeline.join("held.new"), lifeline.join("held")).unwrap();
+        let held = locked(&lifeline, "held");
         OPEN.lock().unwrap().push(Open {
             roots: [root.clone(), fs::canonicalize(&root).unwrap()],
             lifeline: lifeline.clone(),
@@ -63,6 +63,7 @@ impl Sandbox {
             root,
             lifeline,
             held: Some(held),
+            _owner: owner,
         }
     }
 
@@ -107,6 +108,14 @@ impl Drop for Sandbox {
     }
 }
 
+fn locked(lifeline: &Path, name: &str) -> File {
+    let new = lifeline.join(format!("{name}.new"));
+    let file = File::create(&new).unwrap();
+    flock(&file, FlockOperation::LockExclusive).unwrap();
+    fs::rename(new, lifeline.join(name)).unwrap();
+    file
+}
+
 fn ended(alive: &Path) -> bool {
     let Ok(alive) = File::open(alive) else {
         return false;
@@ -119,7 +128,7 @@ fn ended(alive: &Path) -> bool {
 }
 
 /// A command that runs `program` with the lifeline of the sandbox `within` lies in, so that any koi it starts, with
-/// whatever environment it is given, stops with that sandbox.
+/// whatever environment it is given, stops with that sandbox. The command leaves out this account's XDG directories.
 pub fn sandboxed(program: impl AsRef<OsStr>, within: &Path) -> Command {
     let found = (OPEN.lock().unwrap().iter())
         .find(|open| open.roots.iter().any(|root| within.starts_with(root)))
@@ -131,7 +140,11 @@ pub fn sandboxed(program: impl AsRef<OsStr>, within: &Path) -> Command {
         )
     });
     let mut command = Command::new(program);
-    command.env(LIFELINE, lifeline);
+    command
+        .env(LIFELINE, lifeline)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("XDG_RUNTIME_DIR");
     command
 }
 
@@ -146,10 +159,10 @@ fn sweep(parent: &Path) {
             continue;
         }
         let lifeline = entry.path();
-        let Ok(held) = File::open(lifeline.join("held")) else {
+        let Ok(owner) = File::open(lifeline.join("owner")) else {
             continue;
         };
-        if flock(&held, FlockOperation::NonBlockingLockExclusive).is_err() {
+        if flock(&owner, FlockOperation::NonBlockingLockExclusive).is_err() {
             continue;
         }
         if let Ok(root) = fs::read(lifeline.join("root")) {

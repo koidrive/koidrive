@@ -238,3 +238,89 @@ fn every_program_a_test_runs_that_could_start_koi_is_sandboxed() {
         unsandboxed.join("\n")
     );
 }
+
+fn rerun(test: &str, env: &[(&str, &std::ffi::OsStr)]) -> std::process::Output {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", test, "--nocapture"])
+        .env(CHILD, "1");
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    command.output().unwrap()
+}
+
+#[test]
+fn a_koi_a_test_starts_ignores_this_account_s_xdg_directories() {
+    let test = "a_koi_a_test_starts_ignores_this_account_s_xdg_directories";
+    if std::env::var_os(CHILD).is_some() {
+        let sandbox = Sandbox::new();
+        let output = process::koi(sandbox.path())
+            .arg("--version")
+            .env("HOME", sandbox.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{:?}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let account = std::env::home_dir().unwrap();
+    let output = rerun(
+        test,
+        &[
+            ("XDG_CONFIG_HOME", account.join(".config").as_os_str()),
+            ("XDG_STATE_HOME", account.join(".local/state").as_os_str()),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn another_test_process_leaves_a_sandbox_whole_while_it_ends() {
+    let test = "another_test_process_leaves_a_sandbox_whole_while_it_ends";
+    if let Some(parent) = std::env::var_os("KOI_SANDBOX_TEST_PARENT") {
+        drop(Sandbox::in_dir(Path::new(&parent)));
+        return;
+    }
+    let parent = tempfile::tempdir().unwrap();
+    let sandbox = Sandbox::in_dir(parent.path());
+    let root = sandbox.path().to_path_buf();
+    let lifeline = sandbox.lifeline().to_path_buf();
+    let exiting = std::fs::File::open(lifeline.join("alive")).unwrap();
+    rustix::fs::flock(&exiting, rustix::fs::FlockOperation::LockShared).unwrap();
+    let ending = std::thread::spawn(move || drop(sandbox));
+    until("the sandbox never let its koi go", || {
+        std::fs::File::open(lifeline.join("held")).is_ok_and(|held| {
+            rustix::fs::flock(&held, rustix::fs::FlockOperation::NonBlockingLockShared).is_ok()
+        })
+    });
+
+    let swept = rerun(
+        test,
+        &[("KOI_SANDBOX_TEST_PARENT", parent.path().as_os_str())],
+    );
+    let whole = root.exists();
+    drop(exiting);
+    let ended = ending.join();
+
+    assert!(
+        swept.status.success(),
+        "{}",
+        String::from_utf8_lossy(&swept.stdout)
+    );
+    assert!(
+        whole,
+        "another test process removed a sandbox that was still ending"
+    );
+    assert!(ended.is_ok());
+    assert!(!root.exists());
+}
