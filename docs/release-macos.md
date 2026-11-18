@@ -20,7 +20,7 @@ If the app does not build, sign, notarize or verify, the run fails and publishes
 
 ## Build a DMG without releasing
 
-Open **Actions**, **macOS release**, **Run workflow**, keep `main` under "Use workflow from", and enter a version such as `0.1.0-alpha.2`, or leave it empty for `0.0.0-dev`. The workflow stamps the app and its bundled CLI with the version you enter. Approve the deployment when the run page asks. The signed DMG is a workflow artifact under **Artifacts** on the run's page, and the run publishes nothing. A run from any other branch fails in the "commit on main" job.
+Open **Actions**, **macOS release**, **Run workflow**, keep `main` under "Use workflow from", and enter a version such as `0.1.0-alpha.2`, or leave it empty for `0.0.0-dev`. The workflow stamps the app and its bundled CLI with the version you enter. Approve the deployment when the run page asks. The DMG is a workflow artifact under **Artifacts** on the run's page. It is signed and notarized when the five signing secrets are set ([What a signed run does](#what-a-signed-run-does)), and the run publishes nothing. A run from any other branch fails in the "commit on main" job.
 
 To check a DMG on your Mac:
 
