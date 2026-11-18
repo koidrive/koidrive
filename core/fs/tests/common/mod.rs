@@ -20,6 +20,7 @@ pub const COUNTER: u64 = 5;
 pub const ID: &str = "e1";
 pub const SYNCED: &[u8] = b"synced";
 pub const REMOTE: &[u8] = b"remote";
+pub const RULES: &[u8] = b".env\n";
 pub const EDITED: &[u8] = b"edited";
 pub const OTHER: &[u8] = b"someone else";
 pub const RECOVERED: &str = "docs/report (recovered 2023-11-14).txt";
@@ -52,6 +53,10 @@ impl Contents for Bytes {
 
     fn written(&mut self, file: &File) -> std::io::Result<bool> {
         Ok(read(file) == REMOTE)
+    }
+
+    fn along(&mut self, _: usize, file: &File) -> std::io::Result<bool> {
+        Ok(read(file) == RULES)
     }
 
     fn displaced_content(&self) -> Option<Vec<u8>> {

@@ -8,9 +8,9 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 use common::{
-    EDITED, ID, REMOTE, SCENARIOS, SYNCED, apply_one, assert_settled, at, bind, contents, dir,
-    entries, marker, now, prepare, private_names, recover_one, rewrite_keeping_mtime, same, stage,
-    trashed,
+    EDITED, ID, REMOTE, RULES, SCENARIOS, SYNCED, apply_one, assert_settled, at, bind, contents,
+    dir, entries, marker, now, prepare, private_names, recover_one, rewrite_keeping_mtime, same,
+    stage, trashed,
 };
 use koidrive_fs::{
     Action, Base, Displaced, Effect, EntryKind, Location, Outcome, PARKED_DIR, PRIVATE_DIR,
@@ -371,7 +371,7 @@ fn a_folder_that_holds_an_entry_is_left_in_place() {
 fn with_rules_file(root: &Path) -> (Effect, PathBuf) {
     let mut effect = prepare(&SCENARIOS[5], root);
     let folder = root.join("docs/empty");
-    fs::write(folder.join(".koiignore"), b".env\n").unwrap();
+    fs::write(folder.join(".koiignore"), RULES).unwrap();
     let [docs, empty, rules] = entries(root, &["docs", "docs/empty", "docs/empty/.koiignore"])[..]
     else {
         unreachable!()
@@ -409,7 +409,7 @@ fn a_folder_that_holds_an_entry_beside_the_files_it_takes_along_is_left_in_place
         outcome,
         failed(Reason::Holds(vec![(".env".into(), Some(EntryKind::File))]))
     );
-    assert_eq!(fs::read(folder.join(".koiignore")).unwrap(), b".env\n");
+    assert_eq!(fs::read(folder.join(".koiignore")).unwrap(), RULES);
     assert!(private_names(root, "quarantine").is_empty());
     assert_settled(root);
 }
@@ -426,6 +426,19 @@ fn a_folder_whose_file_to_take_along_changed_is_left_in_place() {
         fs::read(folder.join(".koiignore")).unwrap(),
         b".env\nbuild/\n"
     );
+    assert_settled(root);
+}
+
+#[test]
+fn a_folder_whose_file_to_take_along_changed_in_place_keeping_its_size_and_time_is_left_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let (effect, folder) = with_rules_file(root);
+    let rules = folder.join(".koiignore");
+    rewrite_keeping_mtime(&rules, b".log\n");
+    let outcome = apply(root, &effect, |_| {});
+    assert_eq!(outcome, failed(Reason::Changed));
+    assert_eq!(fs::read(&rules).unwrap(), b".log\n");
     assert_settled(root);
 }
 

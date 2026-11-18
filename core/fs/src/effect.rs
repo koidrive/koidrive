@@ -105,6 +105,8 @@ pub trait Contents {
     fn displaced(&mut self, file: &File) -> io::Result<bool>;
     /// Whether `file` holds the content the effect writes.
     fn written(&mut self, file: &File) -> io::Result<bool>;
+    /// Whether `file` holds the content of the file at `index` among the files a folder removal takes along.
+    fn along(&mut self, index: usize, file: &File) -> io::Result<bool>;
     /// What the local trash records as the displaced file's content, for
     /// [`Space::reclaim_trash`] to compare the trashed file with later.
     fn displaced_content(&self) -> Option<Vec<u8>>;
@@ -1102,7 +1104,21 @@ fn differs(
             let same = contents.displaced(&open_file(quarantine, id)?)?;
             Ok((!same).then_some(Reason::Changed))
         }
-        EntryKind::Dir => held(quarantine, id, along),
+        EntryKind::Dir => {
+            if let Some(reason) = held(quarantine, id, along)? {
+                return Ok(Some(reason));
+            }
+            let dir = rustix::fs::openat(quarantine, id, crate::DIR_FLAGS, Mode::empty())?;
+            for (index, file) in along.iter().enumerate() {
+                let name = location_name(&file.at);
+                if lookup(dir.as_fd(), name)?.is_some()
+                    && !contents.along(index, &open_file(dir.as_fd(), name)?)?
+                {
+                    return Ok(Some(Reason::Changed));
+                }
+            }
+            Ok(None)
+        }
     }
 }
 

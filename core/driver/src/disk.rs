@@ -1750,6 +1750,7 @@ fn action(effect: &EngineEffect) -> Result<(Action, Expected), String> {
             Expected {
                 displaced: replaces.as_ref().map(|d| d.content.clone()),
                 written: Some(content.clone()),
+                along: Vec::new(),
             },
         ),
         EngineEffect::Move { from, identity, to } => (
@@ -1767,6 +1768,7 @@ fn action(effect: &EngineEffect) -> Result<(Action, Expected), String> {
             Expected {
                 displaced: Some(removed.content.clone()),
                 written: None,
+                along: Vec::new(),
             },
         ),
         EngineEffect::RemoveDir {
@@ -1779,7 +1781,10 @@ fn action(effect: &EngineEffect) -> Result<(Action, Expected), String> {
                 id: file_id(*identity),
                 along: along.iter().map(displaced).collect::<Result<_, _>>()?,
             },
-            Expected::default(),
+            Expected {
+                along: along.iter().map(|file| file.content.clone()).collect(),
+                ..Expected::default()
+            },
         ),
     })
 }
@@ -1900,6 +1905,7 @@ impl Manifest {
 struct Expected {
     displaced: Option<Content>,
     written: Option<Content>,
+    along: Vec<Content>,
 }
 
 impl Contents for Expected {
@@ -1909,6 +1915,10 @@ impl Contents for Expected {
 
     fn written(&mut self, file: &File) -> io::Result<bool> {
         holds(file, self.written.as_ref(), true)
+    }
+
+    fn along(&mut self, index: usize, file: &File) -> io::Result<bool> {
+        holds(file, self.along.get(index), false)
     }
 
     fn displaced_content(&self) -> Option<Vec<u8>> {
