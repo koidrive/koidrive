@@ -121,7 +121,9 @@ class Analysis(unittest.TestCase):
 
     def test_a_pool_whose_every_test_moves_has_no_cover(self):
         rows, _ = self.analyse([["b s1", "b s2"]], {"b s1": 60, "b s2": 50})
-        self.assertEqual((rows["b s1"]["covered_by"], rows["b s2"]["covered_by"]), ("b s2", ""))
+        self.assertEqual([rows[test]["verdict"].split(" within")[0] for test in ("b s1", "b s2")],
+                         ["slow, catches nothing else", "slow, alone catches 1"])
+        self.assertEqual((rows["b s1"]["covered_by"], rows["b s2"]["covered_by"]), ("", ""))
 
     def test_two_slow_tests_that_only_cover_each_other_do_not_both_move(self):
         rows, _ = self.analyse([["b s1", "b s2"], ["b s1", "b s2"], ["b s1", "b s2"]], {"b s1": 60, "b s2": 70}, few=0)
