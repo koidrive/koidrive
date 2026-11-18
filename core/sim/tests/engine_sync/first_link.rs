@@ -767,6 +767,41 @@ fn a_first_link_discard_takes_along_a_server_folder_the_server_moves_with_a_disc
     .unwrap();
 }
 
+#[test]
+fn a_folder_moved_into_the_discarded_folder_merged_into_it_goes_back_to_its_server_place() {
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![
+            (
+                true,
+                vec![act(3, 10406614448969481288, 11837142801734187338, 0, 0)],
+            ),
+            (
+                false,
+                vec![act(3, 5691994241940100925, 8896309929354532527, 5, 0)],
+            ),
+        ],
+        act(8, 607031059909244507, 0, 2, 0),
+        vec![],
+        act(7, 0, 0, 0, 0),
+        act(9, 0, 0, 0, 0),
+        vec!["/b"],
+    );
+    run_ignoring_answering_after(
+        &[act(0, 0, 0, 2, 0), act(0, 0, 4656005339018545136, 0, 0)],
+        &[act(0, 0, 0, 5, 0)],
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        0,
+    )
+    .unwrap();
+}
+
 fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
     let mut device = Device {
         trees: Trees::new("root"),

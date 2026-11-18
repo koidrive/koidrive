@@ -114,6 +114,58 @@ fn a_folder_merged_into_one_l_holds_elsewhere_is_removed_once_its_files_follow_i
 }
 
 #[test]
+fn a_folder_the_user_moves_into_the_folder_merged_into_it_goes_back_to_its_place() {
+    let mut trees = trees(&[
+        ("a", Some(dir(ROOT, "d")), None, None),
+        (
+            "b",
+            Some(dir(ROOT, "e")),
+            Some(dir(ROOT, "e")),
+            Some(remote(dir(ROOT, "d"))),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    let merged = OpResult {
+        node_id: "b".into(),
+        ..outcome(op_result::Code::MergedInto)
+    };
+    acknowledge(&mut commits, &mut trees, vec![merged]);
+    let mut moved = trees.local().get("b").unwrap().clone();
+    moved.shape = dir("a", "e");
+    trees.set_local_changed("b".into(), moved);
+    trees.settle(commits.aliases());
+    let (mut effects, mut ino) = (Effects::default(), 10);
+    for added in ["x", "y", "z"] {
+        assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+        trees.set_remote(added.into(), remote(file(ROOT, added, 1)));
+        trees.settle(commits.aliases());
+        while let Some(record) = effects
+            .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
+            .first()
+            .cloned()
+        {
+            ino += 1;
+            let identity = local(dir(ROOT, added), ino).identity;
+            effects
+                .done(
+                    &mut trees,
+                    commits.in_flight(),
+                    &record.effect_id,
+                    Some(identity),
+                )
+                .unwrap();
+            trees.settle(commits.aliases());
+        }
+    }
+    assert_eq!(trees.local().get("a"), None);
+    let b = trees.local().get("b").unwrap();
+    assert_eq!((&b.shape, b.identity.ino), (&dir(ROOT, "d"), 2));
+    assert!(trees.reverted().is_empty());
+    assert!(trees.work().is_empty());
+}
+
+#[test]
 fn a_new_folder_takes_the_name_of_a_left_out_file_placed_by_a_merged_folder() {
     let mut trees = trees(&[
         ("a", Some(dir(ROOT, "d")), None, None),
