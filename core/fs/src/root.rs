@@ -895,18 +895,11 @@ mod tests {
                 let device = attached.0[0].clone();
                 let replacement = match sudo(&["umount".as_ref(), mount.as_os_str()]).0 {
                     true => {
-                        let mut from = std::ffi::OsString::from("if=");
-                        from.push(&second);
-                        let to = format!("of={device}");
-                        let copy = [
-                            "dd".as_ref(),
-                            from.as_os_str(),
-                            to.as_ref(),
-                            "bs=1M".as_ref(),
-                            "conv=fsync".as_ref(),
-                            "status=none".as_ref(),
-                        ];
-                        assert!(sudo(&copy).0);
+                        assert!(sudo(&["losetup", "-d", &device].map(OsStr::new)).0);
+                        attached.0.retain(|held| *held != device);
+                        let rebind = ["losetup", &device].map(OsStr::new);
+                        assert!(sudo(&[&rebind[..], &[second.as_os_str()]].concat()).0);
+                        attached.0.push(device.clone());
                         device
                     }
                     false => {
