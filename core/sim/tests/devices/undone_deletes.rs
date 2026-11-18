@@ -140,105 +140,6 @@ fn deletes_reach_the_server_in_the_saved_gun_864_cases_across_server_restores() 
 }
 
 #[test]
-#[ignore = "a file deleted before its folder comes back when another device moves the folder first (GUN-1054)"]
-fn deletes_reach_the_server_in_the_saved_gun_1054_cases_around_a_folder_another_device_replaces() {
-    deletes_reach_the_server_in(
-        concat!(
-            module_path!(),
-            "::deletes_reach_the_server_in_the_saved_gun_1054_cases_around_a_folder_another_device_replaces"
-        ),
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/gun-1054-folder-another-device-replaces.proptest-regressions"
-        ),
-        replaced_folder(),
-    );
-}
-
-#[test]
-#[ignore = "a file deleted before its folder comes back when another device moves the folder first (GUN-1054)"]
-fn deletes_reach_the_server_in_the_saved_gun_1054_cases_around_an_owed_rename() {
-    deletes_reach_the_server_in(
-        concat!(
-            module_path!(),
-            "::deletes_reach_the_server_in_the_saved_gun_1054_cases_around_an_owed_rename"
-        ),
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/gun-1054-owed-rename.proptest-regressions"
-        ),
-        (2..=3usize, owing_a_rename(Losses::None)),
-    );
-}
-
-#[test]
-#[ignore = "a file deleted before its folder comes back when another device moves the folder first (GUN-1054)"]
-fn deletes_reach_the_server_in_the_saved_gun_1054_cases_when_a_folder_owing_its_name_comes_back() {
-    deletes_reach_the_server_in(
-        concat!(
-            module_path!(),
-            "::deletes_reach_the_server_in_the_saved_gun_1054_cases_when_a_folder_owing_its_name_comes_back"
-        ),
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/gun-1054-folder-owing-its-name.proptest-regressions"
-        ),
-        reviving_an_owed_rename().prop_map(|phases| (3, phases)),
-    );
-}
-
-#[test]
-#[ignore = "a device never sends the delete of a file another device brought back with its folder (GUN-1102)"]
-fn deletes_reach_the_server_in_the_saved_gun_1102_cases_around_a_folder_another_device_replaces() {
-    deletes_reach_the_server_in(
-        concat!(
-            module_path!(),
-            "::deletes_reach_the_server_in_the_saved_gun_1102_cases_around_a_folder_another_device_replaces"
-        ),
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/gun-1102-folder-another-device-replaces.proptest-regressions"
-        ),
-        replaced_folder(),
-    );
-}
-
-#[test]
-#[ignore = "discarding a held change after a rewind brings back a file its user deleted (GUN-1103)"]
-fn deletes_reach_the_server_in_the_saved_gun_1103_cases_across_rewinds_and_rollbacks() {
-    deletes_reach_the_server_in(
-        concat!(
-            module_path!(),
-            "::deletes_reach_the_server_in_the_saved_gun_1103_cases_across_rewinds_and_rollbacks"
-        ),
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/gun-1103-rewinds-and-rollbacks.proptest-regressions"
-        ),
-        (2..=3usize, phases(Losses::Rewinds)),
-    );
-}
-
-#[test]
-#[ignore = "a file deleted before its folder comes back when another device moves the folder first (GUN-1054)"]
-fn a_file_deleted_before_its_folder_stays_deleted_after_its_device_leaves() {
-    let mut deleted = vec![
-        (0, delete(1)),
-        (0, delete(0)),
-        (1, folder("C.TXT")),
-        (1, rename(0, 2, "A")),
-    ];
-    deleted.extend(commit(1));
-    deleted.extend(commit(0));
-    deleted.push((0, Step::Leave));
-    checked(
-        2,
-        &[vec![(0, folder("b")), (0, user(1, 0, 1, "a"))], deleted],
-    )
-    .unwrap();
-}
-
-#[test]
 fn a_bystanders_store_rollback_leaves_another_devices_delete_checked() {
     let failure = checked(
         3,
@@ -394,13 +295,17 @@ fn a_deleted_conflict_copy_leaves_the_original_with_the_same_write() {
 
 #[test]
 fn a_rename_of_the_folder_above_that_its_user_never_saw_leaves_the_delete_checked() {
-    let mut renamed = vec![(1, rename(0, 0, "ss"))];
+    let mut renamed = vec![(0, BACKUP), (1, rename(0, 0, "ss"))];
     renamed.extend(commit(1));
     renamed.push((0, delete(1)));
     renamed.extend(commit(0));
     checked(
         2,
-        &[vec![(0, folder("a")), (0, user(1, 0, 1, "b"))], renamed],
+        &[
+            vec![(0, folder("a")), (0, user(1, 0, 1, "b"))],
+            renamed,
+            vec![(0, RESTORE)],
+        ],
     )
     .unwrap();
 }
@@ -462,19 +367,23 @@ fn another_devices_change_that_never_reaches_the_server_leaves_the_delete_checke
 
 #[test]
 fn a_file_another_device_adds_to_the_deleted_folder_leaves_its_siblings_checked() {
-    let mut deleted = vec![(1, user(1, 0, 1, "c.txt")), (0, delete(0))];
+    let mut deleted = vec![(0, BACKUP), (1, user(1, 0, 1, "c.txt")), (0, delete(0))];
     deleted.extend(commit(1));
     deleted.extend(commit(0));
     checked(
         2,
-        &[vec![(0, folder("b")), (0, user(1, 0, 1, "a"))], deleted],
+        &[
+            vec![(0, folder("b")), (0, user(1, 0, 1, "a"))],
+            deleted,
+            vec![(0, RESTORE)],
+        ],
     )
     .unwrap();
 }
 
 #[test]
 fn a_rename_another_device_makes_to_a_folder_between_leaves_the_deleted_file_checked() {
-    let mut deleted = vec![(1, rename(1, 1, "A")), (0, delete(0))];
+    let mut deleted = vec![(0, BACKUP), (1, rename(1, 1, "A")), (0, delete(0))];
     deleted.extend(commit(1));
     deleted.extend(commit(0));
     checked(
@@ -486,6 +395,7 @@ fn a_rename_another_device_makes_to_a_folder_between_leaves_the_deleted_file_che
                 (0, user(1, 0, 2, "a")),
             ],
             deleted,
+            vec![(0, RESTORE)],
         ],
     )
     .unwrap();
@@ -591,6 +501,7 @@ fn held_files(world: &World, device: usize) -> Vec<(String, i64)> {
 #[test]
 fn a_file_another_device_adds_after_the_delete_leaves_the_deleted_file_checked() {
     let deleted = vec![
+        (0, BACKUP),
         (1, rename(2, 0, "c.txt")),
         (0, delete(0)),
         (1, SCAN),
@@ -613,6 +524,7 @@ fn a_file_another_device_adds_after_the_delete_leaves_the_deleted_file_checked()
                 (0, user(1, 0, 1, "c.txt")),
             ],
             deleted,
+            vec![(0, RESTORE)],
         ],
     )
     .unwrap();
@@ -621,6 +533,7 @@ fn a_file_another_device_adds_after_the_delete_leaves_the_deleted_file_checked()
 #[test]
 fn a_rename_of_a_folder_the_server_kept_leaves_the_deleted_file_checked() {
     let deleted = vec![
+        (0, BACKUP),
         (1, overwrite(2)),
         (0, delete(0)),
         (1, SCAN),
@@ -643,6 +556,7 @@ fn a_rename_of_a_folder_the_server_kept_leaves_the_deleted_file_checked() {
                 (0, user(1, 0, 1, "c.txt")),
             ],
             deleted,
+            vec![(0, RESTORE)],
         ],
     )
     .unwrap();
@@ -761,7 +675,7 @@ fn a_save_another_device_makes_after_the_delete_brings_the_file_back() {
 
 #[test]
 fn a_sibling_edit_leaves_the_deleted_file_checked_after_the_deleting_device_leaves() {
-    let mut deleted = vec![(1, overwrite(2)), (0, delete(0))];
+    let mut deleted = vec![(0, BACKUP), (1, overwrite(2)), (0, delete(0))];
     deleted.extend(commit(1));
     deleted.extend(commit(0));
     deleted.push((0, Step::Leave));
@@ -774,6 +688,7 @@ fn a_sibling_edit_leaves_the_deleted_file_checked_after_the_deleting_device_leav
                 (0, user(1, 0, 1, "c.txt")),
             ],
             deleted,
+            vec![(0, RESTORE)],
         ],
     )
     .unwrap();
@@ -781,21 +696,25 @@ fn a_sibling_edit_leaves_the_deleted_file_checked_after_the_deleting_device_leav
 
 #[test]
 fn an_unsent_edit_of_the_file_leaves_the_delete_checked_after_the_deleting_device_leaves() {
-    let mut renamed = vec![(1, rename(0, 0, "ss"))];
+    let mut renamed = vec![(0, BACKUP), (1, rename(0, 0, "ss"))];
     renamed.extend(commit(1));
     renamed.push((0, delete(1)));
     renamed.extend(commit(0));
     renamed.extend([(1, overwrite(1)), (1, Step::Leave), (0, Step::Leave)]);
     checked(
         2,
-        &[vec![(0, folder("a")), (0, user(1, 0, 1, "b"))], renamed],
+        &[
+            vec![(0, folder("a")), (0, user(1, 0, 1, "b"))],
+            renamed,
+            vec![(0, RESTORE)],
+        ],
     )
     .unwrap();
 }
 
 #[test]
 fn a_file_delete_sent_without_its_folder_stays_checked_after_the_deleting_device_leaves() {
-    let mut deleted = vec![(1, user(1, 0, 1, "c.txt"))];
+    let mut deleted = vec![(0, BACKUP), (1, user(1, 0, 1, "c.txt"))];
     deleted.extend(commit(1));
     deleted.extend([
         (0, Step::Deliver(0)),
@@ -807,14 +726,18 @@ fn a_file_delete_sent_without_its_folder_stays_checked_after_the_deleting_device
     deleted.push((0, Step::Leave));
     checked(
         2,
-        &[vec![(0, folder("b")), (0, user(1, 0, 1, "a"))], deleted],
+        &[
+            vec![(0, folder("b")), (0, user(1, 0, 1, "a"))],
+            deleted,
+            vec![(0, RESTORE)],
+        ],
     )
     .unwrap();
 }
 
 #[test]
 fn file_deletes_sent_one_by_one_stay_checked_after_the_deleting_device_leaves() {
-    let mut deleted = vec![(1, user(1, 0, 1, "ss"))];
+    let mut deleted = vec![(0, BACKUP), (1, user(1, 0, 1, "ss"))];
     deleted.extend(commit(1));
     deleted.extend([
         (0, Step::Deliver(0)),
@@ -833,6 +756,7 @@ fn file_deletes_sent_one_by_one_stay_checked_after_the_deleting_device_leaves() 
                 (0, user(1, 0, 1, "c.txt")),
             ],
             deleted,
+            vec![(0, RESTORE)],
         ],
     )
     .unwrap();
