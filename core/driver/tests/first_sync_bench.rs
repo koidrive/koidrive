@@ -139,3 +139,178 @@ async fn first_sync_of_a_large_folder() {
     );
     driver.stop().await;
 }
+
+fn resident_bytes() -> u64 {
+    let out = Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<u64>()
+        .unwrap()
+        * 1024
+}
+
+fn scale_tree(root: &Path, projects: usize, packages: usize, distinct_projects: usize) -> u64 {
+    let body = "module.exports = function () { return Object.freeze({ ok: true, value: 42 }); };\n"
+        .repeat(4);
+    let threads: Vec<_> = (0..projects)
+        .map(|project| {
+            let root = root.join(format!("project{project:02}/node_modules"));
+            let body = body.clone();
+            std::thread::spawn(move || {
+                let mut entries = 2u64;
+                for package in 0..packages {
+                    let version = if project < distinct_projects {
+                        project
+                    } else {
+                        distinct_projects
+                    };
+                    let dir = root.join(format!("pkg-{package:04}"));
+                    let content =
+                        |name: &str| format!("// pkg-{package:04}@{version} {name}\n{body}");
+                    let mut files = vec![
+                        "package.json".to_owned(),
+                        "README.md".to_owned(),
+                        "LICENSE".to_owned(),
+                        "index.js".to_owned(),
+                    ];
+                    for a in 0..3 {
+                        for b in 0..3 {
+                            for file in 0..4 {
+                                files.push(format!("lib/m{a}/s{b}/f{file}.js"));
+                            }
+                        }
+                    }
+                    for name in &files {
+                        let path = dir.join(name);
+                        fs::create_dir_all(path.parent().unwrap()).unwrap();
+                        fs::write(&path, content(name)).unwrap();
+                    }
+                    entries += 1 + 1 + 3 + 9 + files.len() as u64;
+                }
+                entries
+            })
+        })
+        .collect();
+    threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .sum()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the Worker under wrangler dev and a few GB of disk"]
+async fn a_first_sync_of_two_million_entries_keeps_moving() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .try_init();
+    let seconds = |name, default| {
+        Duration::from_secs(std::env::var(name).map_or(default, |s: String| s.parse().unwrap()))
+    };
+    let window = seconds("KOIDRIVE_SCALE_SECONDS", 600);
+    let longest_allowed = seconds("KOIDRIVE_SCALE_MAX_STALL", 5);
+    let base =
+        std::env::var("KOIDRIVE_SCALE_DIR").map_or_else(|_| std::env::temp_dir(), Into::into);
+    let home = tempfile::tempdir_in(base).unwrap();
+    let folder = home.path().join("folder");
+    let made = Instant::now();
+    let entries = scale_tree(&folder, 40, 925, 4);
+    println!(
+        "{}",
+        serde_json::json!({ "tree": true, "entries": entries, "seconds": made.elapsed().as_secs() })
+    );
+    let owner = Arc::new(Auth::new(api(), claim().await));
+    let space = (owner.api())
+        .create_space(
+            &owner,
+            &CreateSpaceRequest {
+                name: "scale".into(),
+                request_id: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let driver = Driver::open(Paths::under(&home.path().join("profile"))).unwrap();
+    let pairing = owner.api().pair_start(&owner).await.unwrap();
+    driver
+        .pair(server_url().as_str(), &pairing.code, "scale")
+        .await
+        .unwrap();
+    let started = Instant::now();
+    driver.link(&folder, &space.space_id).await.unwrap();
+    driver.start();
+    let mut moved = None;
+    let mut seen = (0, 0);
+    let mut longest = Duration::ZERO;
+    let mut problems = Vec::new();
+    let mut peak = resident_bytes();
+    let mut measured = Instant::now();
+    while started.elapsed() < window {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        if measured.elapsed() >= Duration::from_secs(5) {
+            peak = peak.max(resident_bytes());
+            measured = Instant::now();
+        }
+        let status = driver.status().folders.remove(0);
+        if let Some(problem) = &status.problem {
+            problems.push(problem.clone());
+        }
+        let now = (
+            status.remote_nodes,
+            status
+                .progress
+                .as_ref()
+                .map_or(0, |progress| progress.bytes_done),
+        );
+        if status.state == FolderState::UpToDate {
+            break;
+        }
+        if now != seen {
+            if moved.is_none() {
+                println!(
+                    "{}",
+                    serde_json::json!({ "first_move": started.elapsed().as_secs() })
+                );
+            }
+            seen = now;
+            moved = Some(Instant::now());
+        } else if let Some(at) = moved {
+            longest = longest.max(at.elapsed());
+        }
+    }
+    let status = driver.status().folders.remove(0);
+    let resident = resident_bytes();
+    peak = peak.max(resident);
+    println!(
+        "{}",
+        serde_json::json!({
+            "summary": true,
+            "peak_resident_bytes": peak,
+            "resident_bytes": resident,
+            "resident_bytes_per_synced_entry": resident.checked_div(status.remote_nodes),
+            "seconds": started.elapsed().as_secs(),
+            "state": format!("{:?}", status.state),
+            "remote_nodes": status.remote_nodes,
+            "bytes_done": status.progress.as_ref().map(|progress| progress.bytes_done),
+            "longest_stall_ms": longest.as_millis() as u64,
+            "problems": problems.len(),
+        })
+    );
+    driver.stop().await;
+    assert!(
+        moved.is_some(),
+        "the first sync never moved within {window:?}"
+    );
+    assert!(
+        problems.is_empty(),
+        "the folder showed problems: {:?}",
+        &problems[..problems.len().min(5)]
+    );
+    assert!(
+        longest <= longest_allowed,
+        "the first sync stood still for {longest:?}, longer than {longest_allowed:?}"
+    );
+}
