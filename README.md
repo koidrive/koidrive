@@ -24,7 +24,7 @@
 
 **The same files on every machine.** An edit on your Mac reaches your Linux machine as soon as both are online, and the other way round. New files, edits, renames, moves and deletes all sync.
 
-**Mistakes you can undo.** When two machines edit the same file, Koidrive keeps both versions. When one machine deletes a file that another just edited, the edit stays. A large delete waits for your answer before it reaches your other machines. Deleted files and old versions stay in the trash for 30 days, and one command brings them back. On every pull request, CI runs a simulation that loses, repeats and reorders messages and crashes devices. The simulation fails if any device loses a write.
+**Mistakes you can undo.** When two machines edit the same file, Koidrive keeps both versions. When one machine deletes a file that another just edited, the edit stays. A large delete waits for your answer before it reaches your other machines. Deleted files and old versions stay in the trash for 30 days, and one command brings them back. Whenever a pull request changes the sync engine, CI runs a simulation that loses, repeats and reorders messages and crashes devices. The simulation fails if any device loses a write.
 
 **Agents work in the same folder.** A linked folder holds plain files, so an agent that edits files can work in it, and Koidrive syncs its changes like yours. Every `koi` command prints JSON with `--json`, `koi status --check` reports problems through its exit status, and an agent can run `koi resolve` to answer a large delete that waits for approval. See [Agents and scripts](docs/guide/agents.md).
 

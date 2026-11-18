@@ -12,7 +12,7 @@ curl -fsSL https://koidrive.com/install.sh | sh
 
 On a Mac, the installer continues into guided setup in your terminal. Setup installs and verifies the macOS app and helps you connect this machine. On Linux, run `~/.local/bin/koi setup` after installation.
 
-The installer downloads the latest [GitHub release](https://github.com/koidrive/koidrive/releases) for your system and checks it against the release's `SHA256SUMS` file. It checks that the Koidrive release key signed `SHA256SUMS`, then installs `koi` in `~/.local/bin`. It prints one line for each step. Add `--verbose`, or set `KOIDRIVE_VERBOSE=1`, to print each check as well. It downloads only over HTTPS and never needs root. The release includes the server, so you can deploy a server without Node.js or Rust. On macOS, the release's `koi` is signed with a Developer ID and notarized, and the installer refuses a `koi` without Koidrive's Developer ID signature.
+The installer downloads the latest [GitHub release](https://github.com/koidrive/koidrive/releases) for your system and checks it against the release's `SHA256SUMS` file. With `ssh-keygen` from OpenSSH 8.1 or later, it checks that the Koidrive release key signed `SHA256SUMS`. Then it installs `koi` in `~/.local/bin`. It prints one line for each step. Add `--verbose`, or set `KOIDRIVE_VERBOSE=1`, to print each check as well. It downloads only over HTTPS and never needs root. The release includes the server, so you can deploy a server without Node.js or Rust. On macOS, the release's `koi` is signed with a Developer ID and notarized, and the installer refuses a `koi` without Koidrive's Developer ID signature.
 
 ## Use koi in your shell
 
@@ -81,7 +81,7 @@ To install a given version or into another directory, set `KOIDRIVE_VERSION` or 
 curl -fsSL https://koidrive.com/install.sh | KOIDRIVE_VERSION=v0.1.0 KOIDRIVE_INSTALL_DIR="$HOME/bin" sh
 ```
 
-The installer needs `curl`, `tar`, `awk`, `grep`, `sed`, `mktemp`, and `sha256sum` or `shasum`, plus `codesign` on macOS. It checks the release signature with `ssh-keygen` from OpenSSH 8.1 or later. Without that `ssh-keygen`, the installer warns and installs without the signature check. `KOIDRIVE_RELEASE_BASE_URL` replaces `https://github.com/koidrive/koidrive/releases` with an `https://` mirror that serves the same files. The installer refuses files the release key did not sign, but a mirror can serve an older signed release unless `KOIDRIVE_VERSION` names the version.
+The installer needs `curl`, `tar`, `awk`, `grep`, `sed`, `mktemp`, and `sha256sum` or `shasum`, plus `codesign` on macOS. It checks the release signature with `ssh-keygen` from OpenSSH 8.1 or later. Without that `ssh-keygen`, the installer warns and installs without the signature check. `KOIDRIVE_RELEASE_BASE_URL` replaces `https://github.com/koidrive/koidrive/releases` with an `https://` mirror that serves the same files. When it can check the signature, the installer refuses files the release key did not sign. A mirror can still serve an older signed release unless `KOIDRIVE_VERSION` names the version.
 
 ## Build from source
 
