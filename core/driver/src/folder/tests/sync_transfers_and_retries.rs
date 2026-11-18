@@ -582,6 +582,49 @@ fn an_in_place_edit_made_while_stopped_that_keeps_the_size_and_mtime_is_sent_aft
     assert_eq!(a.state(), FolderState::UpToDate);
 }
 
+#[test]
+fn a_store_without_change_times_reports_only_files_changed_after_its_last_write() {
+    use std::io::Write;
+
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("kept.txt"), b"kept on a");
+    a.create(&mut remote, &site.root.join("notes.txt"), b"written on a");
+    a.settle();
+    drop(a);
+    Store::open(&site.db)
+        .unwrap()
+        .transaction(|tx| {
+            for node in tx.local_nodes()? {
+                tx.set_local_ctime(&node.node_id, None)?;
+            }
+            Ok::<_, koidrive_store::Error>(())
+        })
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let path = site.root.join("notes.txt");
+    let written = fs::metadata(&path).unwrap().modified().unwrap();
+    let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.write_all(b"edited on a!").unwrap();
+    file.set_modified(written).unwrap();
+    drop(file);
+
+    let mut a = site.start();
+    let mut snapshot = a.folder.snapshot();
+    let found = snapshot.rescan(&site.root, [PathBuf::new()]).unwrap();
+    assert_eq!(
+        found.changes,
+        [koidrive_fs::Change::Modified {
+            path: "notes.txt".into()
+        }]
+    );
+    a.connect(&remote);
+    a.scan_until(|a| a.folder.scanned);
+    assert_eq!(a.run(&mut remote), ["subscribe", "upload", "send"]);
+    assert_eq!(kinds(&a.sent[0]), ["update content"]);
+}
+
 /// Design §2.7 leaves a node the server refused an op for out of commits until the next rescan. The first whole scan
 /// of a start is that rescan (GUN-345). Nothing cleared the node before, so it never synced again.
 #[test]

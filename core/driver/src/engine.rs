@@ -22,7 +22,7 @@ use koidrive_engine::tree::{
     Content, FileIdentity, Kind, LocalNode, Names, Node, NodeId, RemoteNode, Shape, Tree,
     same_content,
 };
-use koidrive_fs::{Entry, EntryKind, FileId, Known, Mount, Snapshot};
+use koidrive_fs::{Ctime, Entry, EntryKind, FileId, Known, Mount, Snapshot};
 use koidrive_proto::v1::{
     CaughtUp, ChangeRecord, CommitRecord, NodeKind, NodeState, TrashPage, TreePage, change_record,
 };
@@ -47,6 +47,8 @@ pub(crate) struct Engine {
     pub recovery_cause: Option<RecoveryCause>,
     unscanned: Option<BTreeSet<NodeId>>,
     pub mounts: BTreeMap<PathBuf, Mount>,
+    stored_ctimes: BTreeMap<NodeId, i64>,
+    unstored_ctimes: BTreeMap<NodeId, i64>,
 }
 
 /// What applying a batch of the log did.
@@ -120,6 +122,8 @@ impl Engine {
             recovery_cause: None,
             unscanned: None,
             mounts: tx.volume_mounts()?,
+            stored_ctimes: tx.local_ctimes()?,
+            unstored_ctimes: BTreeMap::new(),
         })
     }
 
@@ -137,6 +141,17 @@ impl Engine {
                 None => {
                     tx.remove_local_node(id)?;
                 }
+            }
+        }
+        for id in &changed.local {
+            if !self.unstored_ctimes.contains_key(id) && self.stored_ctimes.remove(id).is_some() {
+                tx.set_local_ctime(id, None)?;
+            }
+        }
+        for (id, ctime) in std::mem::take(&mut self.unstored_ctimes) {
+            if self.trees.local().get(&id).is_some() {
+                tx.set_local_ctime(&id, Some(ctime))?;
+                self.stored_ctimes.insert(id, ctime);
             }
         }
         for id in &changed.synced {
@@ -587,7 +602,7 @@ impl Engine {
     /// changed while nothing observed the folder, removals included, and reads only the files that differ. A node
     /// [`Trees::ignore_local`] recorded is left out with what is under it, since the disk does not hold it there: an
     /// entry the scan finds at its path is reported as created.
-    pub fn snapshot(&self) -> Snapshot {
+    pub fn snapshot(&self, unrecorded: Ctime) -> Snapshot {
         let local = self.trees.local();
         let mut entries = BTreeMap::new();
         let mut pending = vec![(PathBuf::new(), local.root.clone())];
@@ -599,13 +614,18 @@ impl Engine {
                 if self.trees.ignored_local().contains(child) {
                     continue;
                 }
-                let (kind, size, mtime_ns, executable) =
+                let ctime = self
+                    .stored_ctimes
+                    .get(child)
+                    .map_or(unrecorded, |&at| Ctime::Settled(i128::from(at)));
+                let (kind, size, mtime_ns, ctime, executable) =
                     match (&node.shape.kind, &node.shape.content) {
-                        (Kind::Dir, _) => (EntryKind::Dir, 0, 0, false),
+                        (Kind::Dir, _) => (EntryKind::Dir, 0, 0, Ctime::Settled(0), false),
                         (Kind::File, Some(content)) => (
                             EntryKind::File,
                             content.size,
                             i128::from(content.mtime_ns),
+                            ctime,
                             content.executable,
                         ),
                         (Kind::File, None) => continue,
@@ -618,6 +638,7 @@ impl Engine {
                         id: file_id(node.identity),
                         size,
                         mtime_ns,
+                        ctime,
                         executable,
                         linked: kind == EntryKind::File,
                         mount: self.mounts.get(&at).copied(),
@@ -663,6 +684,14 @@ impl Engine {
             }
         }
         self.trees.rules_scanned();
+    }
+
+    pub fn read_ctimes(&mut self, ctimes: BTreeMap<PathBuf, i64>) {
+        for (path, ctime) in ctimes {
+            if let Some(id) = local_at(&self.trees, &path) {
+                self.unstored_ctimes.insert(id, ctime);
+            }
+        }
     }
 
     /// Gives the trees, after the changes of a batch, the folders whose rules the batch's scans established (`read`)
@@ -2155,6 +2184,8 @@ mod tests {
             recovery_cause: None,
             unscanned: None,
             mounts: BTreeMap::new(),
+            stored_ctimes: BTreeMap::new(),
+            unstored_ctimes: BTreeMap::new(),
         };
         Case {
             name,
@@ -3935,7 +3966,7 @@ mod tests {
         }
         let x = local_at(&engine.trees, Path::new("d/x"));
         let seen = snapshot;
-        let mut snapshot = engine.snapshot();
+        let mut snapshot = engine.snapshot(Ctime::NotAfter(i128::MAX));
         for (path, entry) in snapshot.entries.iter_mut() {
             if let Some(before) = seen
                 .entries

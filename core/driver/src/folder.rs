@@ -23,7 +23,7 @@ use koidrive_engine::commit::{Base, Halt as CommitHalt, Reconnect};
 use koidrive_engine::first_link::PriorSync;
 use koidrive_engine::ignore::LocalRules;
 use koidrive_engine::tree::{FileIdentity, LocalNode, NodeId};
-use koidrive_fs::{Detached, Refusal, Snapshot};
+use koidrive_fs::{Ctime, Detached, Refusal, Snapshot};
 use koidrive_net::{Backoff, Cause, DisconnectReason, Event, ServerError};
 use koidrive_proto::v1::resync_required::Reason;
 use koidrive_proto::v1::{Commit, CommitRecord, Resume, TrashPage, TreePage, Welcome};
@@ -406,7 +406,9 @@ impl Folder {
 
     /// The snapshot the observer starts from: the disk as L describes it.
     pub fn snapshot(&self) -> Snapshot {
-        self.engine.snapshot()
+        self.engine.snapshot(Ctime::NotAfter(
+            self.store.written_ns().unwrap_or(i128::MIN),
+        ))
     }
 
     /// Reclaims the local trash, evicting the oldest entries while it holds more than `cap` bytes. An entry written

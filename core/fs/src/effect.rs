@@ -20,7 +20,7 @@ use crate::root::{
     write_marker_at,
 };
 use crate::trash::TRASH_DIR;
-use crate::{Entry, EntryKind, FileId, Stat, list, stat_at, stat_fd};
+use crate::{Ctime, Entry, EntryKind, FileId, Stat, list, stat_at, stat_fd};
 
 /// The folder inside the private folder that holds staged downloads.
 pub const STAGING_DIR: &str = "staging";
@@ -1270,6 +1270,7 @@ fn folder_entry(id: FileId) -> Entry {
         id,
         size: 0,
         mtime_ns: 0,
+        ctime: Ctime::Settled(0),
         executable: false,
         linked: false,
         mount: None,

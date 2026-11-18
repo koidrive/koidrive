@@ -26,8 +26,8 @@ use std::time::{Duration, Instant};
 use koidrive_chunk::ChunkerConfig;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_fs::{
-    Change, Detached, Entry, EntryKind, Error as FsError, FileId, Known, Mount, NativeWatcher,
-    RescanWatcher, RootAt, RootProblem, Snapshot, Watcher, check_root,
+    Change, Ctime, Detached, Entry, EntryKind, Error as FsError, FileId, Known, Mount,
+    NativeWatcher, RescanWatcher, RootAt, RootProblem, Snapshot, Watcher, check_root,
 };
 use koidrive_proto::v1::{ChunkRef, Content};
 use rustix::fs::{Mode, OFlags};
@@ -77,6 +77,7 @@ pub struct Observation {
     pub all_rules: bool,
     pub mounts: BTreeMap<PathBuf, Mount>,
     pub detached: BTreeMap<PathBuf, Detached>,
+    pub ctimes: BTreeMap<PathBuf, i64>,
 }
 
 /// The rules of the `.koiignore` file in `dir`, a folder relative to the root and empty for the root, or `None` when
@@ -757,6 +758,25 @@ impl Observer for FsObserver {
         self.first &= !first;
         self.reset &= !answers;
         let root = check_root(&self.root, &self.space_id, &self.linked).map(|_| ());
+        let entries = &self.watcher.snapshot().entries;
+        let ctimes = (changes.iter())
+            .filter_map(|change| match change {
+                Observed::Created {
+                    path,
+                    content: Some(_),
+                    ..
+                }
+                | Observed::Modified {
+                    path,
+                    content: Some(_),
+                    ..
+                } => match entries.get(path)?.ctime {
+                    Ctime::Settled(at) => Some((path.clone(), at as i64)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
         Ok(Some(Observation {
             changes,
             root,
@@ -770,6 +790,7 @@ impl Observer for FsObserver {
                 .filter_map(|(path, entry)| Some((path.clone(), entry.mount?)))
                 .collect(),
             detached: self.watcher.snapshot().detached.clone(),
+            ctimes,
         }))
     }
 
@@ -832,7 +853,8 @@ fn mtime_ns(meta: &std::fs::Metadata) -> i128 {
 }
 
 fn same_version(meta: &std::fs::Metadata, entry: &Entry) -> bool {
-    meta.size() == entry.size && mtime_ns(meta) == entry.mtime_ns
+    let ctime_ns = i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec());
+    meta.size() == entry.size && mtime_ns(meta) == entry.mtime_ns && ctime_ns == entry.ctime.at()
 }
 
 /// Opens the file at the relative `path` under `root` for reading, one folder at a time, following no symbolic link.

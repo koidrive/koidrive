@@ -249,6 +249,7 @@ pub struct CachedChunk {
 
 pub struct Store {
     conn: Connection,
+    written_ns: Option<i128>,
 }
 
 impl Store {
@@ -273,13 +274,14 @@ impl Store {
     }
 
     fn open_with(path: &Path, flags: OpenFlags) -> Result<Self> {
+        let written_ns = written_ns(path);
         let conn = Connection::open_with_flags(path, flags)?;
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
         #[cfg(target_os = "macos")]
         conn.pragma_update(None, "fullfsync", true)?;
-        let mut store = Self { conn };
+        let mut store = Self { conn, written_ns };
         let durability = store.durability()?;
         if durability != Durability::required() {
             return Err(Error::NotDurable(durability));
@@ -325,7 +327,16 @@ impl Store {
                 missing: missing.name.to_owned(),
             });
         }
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            written_ns: written_ns(path),
+        })
+    }
+
+    /// When the database or its write-ahead log was last written before this store opened it, in nanoseconds since the
+    /// Unix epoch. `None` for a database that did not exist.
+    pub fn written_ns(&self) -> Option<i128> {
+        self.written_ns
     }
 
     /// The durability settings in effect on this connection.
@@ -681,6 +692,23 @@ impl Tx<'_> {
 
     pub fn remove_local_node(&self, node_id: &str) -> Result<bool> {
         self.remove("local_nodes", node_id)
+    }
+
+    /// The change time each local node's file had when its content was last read, for the nodes that have one.
+    pub fn local_ctimes(&self) -> Result<BTreeMap<String, i64>> {
+        let mut stmt = self.0.prepare_cached(
+            "SELECT node_id, ctime_ns FROM local_nodes WHERE ctime_ns IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Records the change time of the local node's file, or forgets it.
+    pub fn set_local_ctime(&self, node_id: &str, ctime_ns: Option<i64>) -> Result<()> {
+        self.0
+            .prepare_cached("UPDATE local_nodes SET ctime_ns = ?2 WHERE node_id = ?1")?
+            .execute(params![node_id, ctime_ns])?;
+        Ok(())
     }
 
     /// The engine's ID generator state, opaque to the store.
@@ -1067,6 +1095,21 @@ fn read_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<CachedChunk> {
         size: row.get(1)?,
         last_used_ms: row.get(2)?,
     })
+}
+
+fn written_ns(path: &Path) -> Option<i128> {
+    let mut log = path.as_os_str().to_owned();
+    log.push("-wal");
+    [path, Path::new(&log)]
+        .into_iter()
+        .filter_map(|file| {
+            std::fs::metadata(file)
+                .and_then(|meta| meta.modified())
+                .ok()
+        })
+        .filter_map(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|since| since.as_nanos() as i128)
+        .max()
 }
 
 fn ino_columns(ino: u128) -> (i64, i64) {

@@ -1175,6 +1175,13 @@ fn an_in_place_edit_that_keeps_the_size_and_restores_the_mtime_is_modified() {
     fs::write(root.join("doc"), "first").unwrap();
     let written = fs::metadata(root.join("doc")).unwrap().modified().unwrap();
     let mut snapshot = Snapshot::scan(root).unwrap();
+    assert!(
+        snapshot
+            .rescan(root, [PathBuf::new()])
+            .unwrap()
+            .changes
+            .is_empty()
+    );
 
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -1186,36 +1193,37 @@ fn an_in_place_edit_that_keeps_the_size_and_restores_the_mtime_is_modified() {
     assert_eq!(changes, [modified("doc")]);
 }
 
-/// Linux before 6.13 stamps a write with a clock that ticks every few
-/// milliseconds, so a write right after a scan can keep the mtime the scan
-/// saw. APFS stamps every write with a new time, and there the test skips.
 #[test]
-fn an_in_place_edit_in_the_mtime_tick_of_the_last_scan_is_modified() {
+fn an_in_place_edit_right_after_a_scan_is_modified() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(edited_right_after_a_scan(dir.path()), [modified("doc")]);
+}
+
+#[test]
+fn an_in_place_edit_on_fat_right_after_a_scan_is_modified() {
+    let Some(mut disks) = koidrive_test_support::Disks::new() else {
+        return;
+    };
+    let stick = disks.base().join("Stick");
+    fs::create_dir(&stick).unwrap();
+    let image = disks.fat("Stick");
+    disks.attach(&image, &stick);
+    let changes = edited_right_after_a_scan(&stick);
+    assert!(changes.contains(&modified("doc")), "{changes:?}");
+}
+
+fn edited_right_after_a_scan(root: &Path) -> Vec<Change> {
     use std::io::Write;
 
-    for _ in 0..100 {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        fs::write(root.join("doc"), "first").unwrap();
-        let written = fs::metadata(root.join("doc")).unwrap().modified().unwrap();
-        let mut snapshot = Snapshot::scan(root).unwrap();
-
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .open(root.join("doc"))
-            .unwrap();
-        file.write_all(b"other").unwrap();
-        if file.metadata().unwrap().modified().unwrap() != written {
-            continue;
-        }
-        let changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
-        assert_eq!(changes, [modified("doc")]);
-        return;
-    }
-    let _ = writeln!(
-        std::io::stderr(),
-        "SKIPPED an_in_place_edit_in_the_mtime_tick_of_the_last_scan_is_modified: every write got a new mtime"
-    );
+    fs::write(root.join("doc"), "first").unwrap();
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(root.join("doc"))
+        .unwrap()
+        .write_all(b"other")
+        .unwrap();
+    snapshot.rescan(root, [PathBuf::new()]).unwrap().changes
 }
 
 #[test]

@@ -168,6 +168,7 @@ pub struct Entry {
     pub id: FileId,
     pub size: u64,
     pub mtime_ns: i128,
+    pub ctime: Ctime,
     pub executable: bool,
     /// Whether the file may have another link: it had one when it was
     /// scanned, or it was not scanned. Two entries that differ only here are
@@ -177,6 +178,29 @@ pub struct Entry {
     /// The volume mounted at the folder, when it is the root of a volume mounted inside the tree: on another device
     /// than the folder that holds it when it was scanned.
     pub mount: Option<Mount>,
+}
+
+/// When a file's metadata last changed. A write always moves it, and no process can set it back, but a write within
+/// the same tick of the file system's clock keeps it. Folders have `Settled(0)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ctime {
+    /// Read once its tick had passed, so any later write moves it.
+    Settled(i128),
+    /// Read while its tick lasted, so a later write can keep it. The next scan reports the file modified, whatever
+    /// it finds.
+    Racy(i128),
+    /// Not known, but no later than this: a file whose change time is not later counts as unchanged. A file with
+    /// several links has `NotAfter(i128::MAX)`, since a link made, moved or removed elsewhere moves its change time.
+    NotAfter(i128),
+}
+
+impl Ctime {
+    /// The change time, or the latest it can be.
+    pub fn at(self) -> i128 {
+        match self {
+            Ctime::Settled(at) | Ctime::Racy(at) | Ctime::NotAfter(at) => at,
+        }
+    }
 }
 
 /// The volume mounted at a folder inside the tree.
@@ -231,6 +255,15 @@ impl Entry {
             Some(_) => Detached::Away,
             None => Detached::Covered,
         }
+    }
+
+    fn same_version(&self, now: &Entry) -> bool {
+        self == now
+            && match self.ctime {
+                Ctime::Settled(at) => now.ctime.at() == at,
+                Ctime::Racy(_) => false,
+                Ctime::NotAfter(at) => now.ctime.at() <= at,
+            }
     }
 }
 
@@ -288,6 +321,7 @@ impl Stat {
                 id: self.id,
                 size: 0,
                 mtime_ns: 0,
+                ctime: Ctime::Settled(0),
                 executable: false,
                 linked: false,
                 mount: None,
@@ -297,6 +331,10 @@ impl Stat {
                 id: self.id,
                 size: self.size,
                 mtime_ns: self.mtime_ns,
+                ctime: match self.nlink {
+                    0 | 1 => Ctime::Settled(self.ctime_ns),
+                    _ => Ctime::NotAfter(i128::MAX),
+                },
                 executable: self.mode & 0o111 != 0,
                 linked: self.nlink > 1,
                 mount: None,
@@ -307,6 +345,57 @@ impl Stat {
 
     fn is_at(&self, dev: u64, id: &FileId) -> bool {
         self.dev == dev && self.id.ino == id.ino
+    }
+}
+
+fn now_ns() -> i128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos() as i128)
+}
+
+const APFS_TICK: i128 = 1_000_000;
+const KERNEL_TICK: i128 = 20_000_000;
+const COARSE_TICK: i128 = 2_000_000_000;
+
+/// How far apart two writes to a file on the volume of `dir` must be for the second to get a later change time.
+/// APFS stamps writes to the microsecond or finer. Linux stamps them with a clock that ticks every few milliseconds,
+/// and exFAT keeps 10 ms. FAT keeps 2 s, HFS+ whole seconds, and a network file system takes the time from another
+/// machine.
+#[cfg(target_os = "linux")]
+fn timestamp_tick(dir: BorrowedFd<'_>) -> i128 {
+    const EXT: u64 = 0xEF53;
+    const XFS: u64 = 0x5846_5342;
+    const BTRFS: u64 = 0x9123_683E;
+    const TMPFS: u64 = 0x0102_1994;
+    const OVERLAYFS: u64 = 0x794C_7630;
+    const F2FS: u64 = 0xF2F5_2010;
+    const ZFS: u64 = 0x2FC1_2FC1;
+    const EXFAT: u64 = 0x2011_BAB0;
+    match rustix::fs::fstatfs(dir) {
+        Ok(volume)
+            if [EXT, XFS, BTRFS, TMPFS, OVERLAYFS, F2FS, ZFS, EXFAT]
+                .contains(&(volume.f_type as u64)) =>
+        {
+            KERNEL_TICK
+        }
+        _ => COARSE_TICK,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn timestamp_tick(dir: BorrowedFd<'_>) -> i128 {
+    let Ok(volume) = rustix::fs::fstatfs(dir) else {
+        return COARSE_TICK;
+    };
+    let name: Vec<u8> = (volume.f_fstypename.iter())
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as u8)
+        .collect();
+    match name.as_slice() {
+        b"apfs" => APFS_TICK,
+        b"exfat" => KERNEL_TICK,
+        _ => COARSE_TICK,
     }
 }
 
@@ -493,15 +582,45 @@ struct Scan<'c> {
     stopped: &'c dyn Fn() -> bool,
     files: u64,
     found: &'c dyn Fn(u64),
+    ticks: HashMap<u64, i128>,
 }
 
 impl Scan<'_> {
+    fn settled_stat(&mut self, dir: BorrowedFd<'_>, name: &OsStr) -> io::Result<(Stat, Ctime)> {
+        let at_ns = now_ns();
+        let stat = stat_at(dir, name)?;
+        if stat.file_type != FileType::RegularFile {
+            return Ok((stat, Ctime::Settled(0)));
+        }
+        let tick = *self
+            .ticks
+            .entry(stat.dev)
+            .or_insert_with(|| timestamp_tick(dir));
+        let wait = stat.ctime_ns + tick - at_ns;
+        if wait <= 0 {
+            let ctime = Ctime::Settled(stat.ctime_ns);
+            return Ok((stat, ctime));
+        }
+        if wait > tick {
+            let ctime = Ctime::Racy(stat.ctime_ns);
+            return Ok((stat, ctime));
+        }
+        std::thread::sleep(Duration::from_nanos(wait as u64));
+        let at_ns = now_ns();
+        let stat = stat_at(dir, name)?;
+        let ctime = match stat.ctime_ns + tick <= at_ns {
+            true => Ctime::Settled(stat.ctime_ns),
+            false => Ctime::Racy(stat.ctime_ns),
+        };
+        Ok((stat, ctime))
+    }
+
     /// Records the entry `name` of `dir` at `rel`, and everything below it.
     fn entry(&mut self, dir: BorrowedFd<'_>, dev: u64, name: &OsStr, rel: PathBuf) -> Result<()> {
         if (self.stopped)() {
             return Err(Error::Stopped);
         }
-        let stat = match stat_at(dir, name) {
+        let (stat, ctime) = match self.settled_stat(dir, name) {
             Ok(stat) => stat,
             Err(err) if is_gone(&err) => return Ok(()),
             Err(err) => return Err(err.into()),
@@ -511,6 +630,9 @@ impl Scan<'_> {
         };
         let mut mount_root = None;
         let mut locked = false;
+        if let Ctime::Settled(_) = entry.ctime {
+            entry.ctime = ctime;
+        }
         if entry.kind == EntryKind::Dir && stat.dev != dev {
             match open_dir_at(dir, name) {
                 Ok(sub) => {
@@ -863,6 +985,7 @@ impl Snapshot {
                         id,
                         size: 0,
                         mtime_ns,
+                        ctime: Ctime::Settled(0),
                         executable: false,
                         linked: kind == EntryKind::File,
                         mount: (mounts.get(&path))
@@ -937,6 +1060,7 @@ impl Snapshot {
                 stopped,
                 files: 0,
                 found,
+                ticks: HashMap::new(),
             };
             let scanned =
                 (self.scan_scopes(root, &paths, listed, expected, &mut scan)).and_then(|stat| {
@@ -2438,7 +2562,14 @@ fn diff<'t>(
     for (path, before) in old {
         match new.get(path) {
             Some(after) if !changed.contains(path.as_path()) => {
-                if after.kind == EntryKind::File && after != before {
+                let moved = (path.parent()).is_some_and(|parent| {
+                    old.get(parent).map(|entry| entry.id) != new.get(parent).map(|entry| entry.id)
+                });
+                let differs = match moved {
+                    true => after != before,
+                    false => !before.same_version(after),
+                };
+                if after.kind == EntryKind::File && differs {
                     modified.push(path);
                 } else if after.kind == EntryKind::Dir && after.id != before.id {
                     reidentified.push(path);

@@ -54,7 +54,7 @@ use koidrive_engine::ignore::is_rules_file;
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{Content, Kind, LocalNode, NodeId};
 use koidrive_fs::{
-    Action, Base, BroughtBack, Contents, Dir, Displaced, Effect, Entry, EntryKind, FileId,
+    Action, Base, BroughtBack, Contents, Ctime, Dir, Displaced, Effect, Entry, EntryKind, FileId,
     Location, Marker, Outcome, Reason, Reclaimed, Refusal, RootProblem, RootTokens, Space, Step,
     Unresolved, check_root_at, open_root_folder, root_at,
 };
@@ -720,6 +720,8 @@ impl Disk {
             .cloned()
             .collect();
         let mounts = (observation.mounts != engine.mounts).then_some(observation.mounts);
+        let mut ctimes = observation.ctimes;
+        ctimes.retain(|path, _| !dropped.contains(path));
         if !changes.is_empty() || mounts.is_some() || engine.sees_unobserved(&listed) {
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -732,6 +734,7 @@ impl Disk {
                 engine.observe(&changes, now_ms);
                 engine.read(&read, &observation.unreadable);
                 engine.listed(&listed);
+                engine.read_ctimes(ctimes);
                 Ok(engine.checkpoint(tx)?)
             })?;
         } else {
@@ -1978,6 +1981,7 @@ fn displaced(displaced: &EngineDisplaced) -> Result<Displaced, String> {
             id: file_id(displaced.identity),
             size: displaced.content.size,
             mtime_ns: i128::from(displaced.content.mtime_ns),
+            ctime: Ctime::Settled(0),
             executable: displaced.content.executable,
             linked: false,
             mount: None,
