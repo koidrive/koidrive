@@ -20,8 +20,8 @@ use koidrive_proto::v1::{NodeStatus, error};
 use koidrive_sim::world::device::Ruling;
 use koidrive_sim::world::disk::{Place, Precision};
 use koidrive_sim::world::{
-    Action, Check, Cut, Failure, NAMES, Outcome, PENDING_NAME, Reply, Step, TEXTS, World,
-    allow_red, expect_red, tag,
+    Action, Check, Cut, ExpectedRed, Failure, NAMES, Outcome, PENDING_NAME, Reply, Step, TEXTS,
+    World, allow_red, expect_red, tag,
 };
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
@@ -283,6 +283,11 @@ fn reviving_an_owed_rename() -> impl Strategy<Value = Vec<Vec<(usize, Step)>>> {
 
 thread_local! {
     static TOKENLESS_WELCOME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FIELD_INTENTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn expect_red_without_intents(check: Check, why: &str) -> Option<ExpectedRed> {
+    (!FIELD_INTENTS.get()).then(|| expect_red(check, why))
 }
 
 fn world(devices: usize) -> World {
@@ -295,6 +300,9 @@ fn on(volumes: &[Precision]) -> World {
 
 /// Devices that print every step with the state it leaves when `KOIDRIVE_SIM_TRACE` is set.
 fn configured(mut world: World) -> World {
+    world
+        .space_mut()
+        .announce_field_intents(FIELD_INTENTS.get());
     world.trace = std::env::var_os("KOIDRIVE_SIM_TRACE").is_some();
     world.tokenless_welcome = TOKENLESS_WELCOME.get();
     world.revived_deletes = std::env::var_os("KOIDRIVE_SIM_REVIVED_DELETES").is_some();
@@ -3177,20 +3185,47 @@ fn an_edit_of_a_trashed_conflict_named_file() -> (World, koidrive_proto::v1::Nod
 
 #[test]
 fn an_edit_revives_a_file_at_the_conflict_name_the_server_already_holds() {
-    let (mut world, conflict) = an_edit_of_a_trashed_conflict_named_file();
-    world.phase(2, &[]).unwrap();
-    let revived = world
-        .space()
-        .nodes()
-        .into_iter()
-        .find(|node| node.node_id == conflict.node_id)
-        .unwrap();
-    assert_eq!(revived.status, koidrive_proto::v1::NodeStatus::Live as i32);
-    assert_eq!(
-        (revived.parent_id, revived.name),
-        (conflict.parent_id, conflict.name)
-    );
-    assert_eq!(tag(&revived.current.unwrap().content.unwrap()), 4);
+    for intents in [false, true] {
+        FIELD_INTENTS.set(intents);
+        let (mut world, conflict) = an_edit_of_a_trashed_conflict_named_file();
+        world.phase(2, &[]).unwrap();
+        let live = |id: &str| {
+            let node = (world.space().nodes().into_iter())
+                .find(|node| node.node_id == id)
+                .unwrap();
+            assert_eq!(node.status, koidrive_proto::v1::NodeStatus::Live as i32);
+            let content = tag(&node.current.unwrap().content.unwrap());
+            (node.parent_id, node.name, content)
+        };
+        let revived = live(&conflict.node_id);
+        let copies: Vec<_> = (world.space().nodes().into_iter())
+            .filter(|node| {
+                node.name
+                    .starts_with(&format!("{} (conflict from ", conflict.name))
+            })
+            .map(|node| live(&node.node_id))
+            .collect();
+        let (revived_content, expected_copies) = match intents {
+            false => (4, vec![]),
+            true => (
+                3,
+                vec![(
+                    conflict.parent_id.clone(),
+                    format!("{} (conflict from device-0 2026-11-09)", conflict.name),
+                    4,
+                )],
+            ),
+        };
+        assert_eq!(
+            revived,
+            (
+                conflict.parent_id.clone(),
+                conflict.name.clone(),
+                revived_content
+            )
+        );
+        assert_eq!(copies, expected_copies);
+    }
 }
 
 #[test]
@@ -5658,15 +5693,53 @@ fn a_file_trashed_by_a_user_who_held_the_lost_edit_stays_trashed_when_the_author
 
 #[test]
 fn a_file_deleted_at_the_restored_version_by_a_user_who_held_the_lost_edit_stays_deleted() {
-    let _red = expect_red(
-        Check::DeleteUndone,
-        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
-    );
-    let mut world = a_lost_edit_three_devices_held(overwrite(0));
-    let mut steps = connect(&[1, 0, 2]);
-    steps.extend([(2, delete(0)), (2, SCAN), (2, COMMIT), (2, COMMIT)]);
-    steps.extend([(0, SCAN), (0, COMMIT), (0, COMMIT)]);
-    world.phase(2, &steps).unwrap();
+    for intents in [false, true] {
+        FIELD_INTENTS.set(intents);
+        let _red = expect_red_without_intents(
+            Check::DeleteUndone,
+            "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+        );
+        let mut world = a_lost_edit_three_devices_held(overwrite(0));
+        let original = world
+            .space()
+            .nodes()
+            .into_iter()
+            .find(|node| node.kind == koidrive_proto::v1::NodeKind::File as i32)
+            .unwrap()
+            .node_id;
+        let mut steps = connect(&[1, 0, 2]);
+        steps.extend([(2, delete(0)), (2, SCAN), (2, COMMIT), (2, COMMIT)]);
+        steps.extend([(0, SCAN), (0, COMMIT), (0, COMMIT)]);
+        world.phase(2, &steps).unwrap();
+        let kept: &[i64] = match intents {
+            false => &[2],
+            true => &[],
+        };
+        for device in &world.devices {
+            let contents: Vec<_> = device
+                .disk
+                .entries()
+                .values()
+                .filter_map(|entry| entry.content.as_ref().map(tag))
+                .collect();
+            assert_eq!(contents, kept);
+        }
+        let live: Vec<_> = world
+            .space()
+            .nodes()
+            .into_iter()
+            .filter(|node| {
+                node.kind == koidrive_proto::v1::NodeKind::File as i32
+                    && node.status == koidrive_proto::v1::NodeStatus::Live as i32
+            })
+            .map(|node| node.node_id)
+            .collect();
+        let expected = match intents {
+            false => vec![original],
+            true => vec![],
+        };
+        assert_eq!(live, expected);
+    }
 }
 
 #[test]
@@ -12172,10 +12245,42 @@ fn a_file_a_restore_took_after_a_rollback_and_created_again_stays_one_file() {
 
 #[test]
 fn a_rename_a_restore_lost_gives_way_to_the_delete_of_its_file() {
-    let _red = expect_red(
-        Check::DeleteUndone,
-        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
-    );
+    for intents in [false, true] {
+        FIELD_INTENTS.set(intents);
+        let _red = expect_red_without_intents(
+            Check::DeleteUndone,
+            "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
+        );
+        let world = a_rename_a_restore_lost_and_a_resend_the_server_refuses();
+        let kept = match intents {
+            false => "A",
+            true => "A (conflict from device-1 2026-11-09)",
+        };
+        for device in &world.devices {
+            let entries: Vec<(&str, Option<i64>)> = (device.disk.entries().values())
+                .map(|entry| (entry.name.as_str(), entry.content.as_ref().map(tag)))
+                .collect();
+            assert_eq!(entries, [(kept, Some(2))]);
+        }
+        let mut files: Vec<(String, bool)> = (world.space().nodes().into_iter())
+            .filter(|node| node.kind == koidrive_proto::v1::NodeKind::File as i32)
+            .map(|node| {
+                (
+                    node.name,
+                    node.status == koidrive_proto::v1::NodeStatus::Live as i32,
+                )
+            })
+            .collect();
+        files.sort();
+        let server = match intents {
+            false => vec![("A".to_owned(), true)],
+            true => vec![("A".to_owned(), false), (kept.to_owned(), true)],
+        };
+        assert_eq!(files, server);
+    }
+}
+
+fn a_rename_a_restore_lost_and_a_resend_the_server_refuses() -> World {
     let mut world = world(2);
     world.phase(0, &[(0, BACKUP), (0, file("a"))]).unwrap();
     let mut lost = vec![(0, rename(0, 0, "A"))];
@@ -12216,6 +12321,7 @@ fn a_rename_a_restore_lost_gives_way_to_the_delete_of_its_file() {
     ]);
     world.run(1, &lost).unwrap();
     world.phase(2, &[]).unwrap();
+    world
 }
 
 #[test]
