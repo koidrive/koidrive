@@ -133,16 +133,6 @@ jobs:
         with:
           node-version: 24
       - uses: ./.github/actions/pnpm-store
-      - name: Set the validation version
-        if: github.event_name != 'push'
-        run: python3 scripts/stamp-release-version.py v0.0.0-rc.0
-      - name: Test release version stamping
-        run: python3 scripts/test-release-version.py
-      - name: Pack the server bundle
-        run: |
-          pnpm --dir server install --frozen-lockfile
-          node server/scripts/pack-bundle.mjs "$RUNNER_TEMP/server-bundle"
-          echo "KOIDRIVE_SERVER_BUNDLE=$RUNNER_TEMP/server-bundle" >> "$GITHUB_ENV"
       - name: Install the pinned Rust toolchain and target
         env:
           TARGET: ${{ matrix.target }}
@@ -153,6 +143,16 @@ jobs:
         with:
           key: cli-${{ matrix.target }}-${{ hashFiles('Cargo.toml') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Set the validation version
+        if: github.event_name != 'push'
+        run: python3 scripts/stamp-release-version.py v0.0.0-rc.0
+      - name: Test release version stamping
+        run: python3 scripts/test-release-version.py
+      - name: Pack the server bundle
+        run: |
+          pnpm --dir server install --frozen-lockfile
+          node server/scripts/pack-bundle.mjs "$RUNNER_TEMP/server-bundle"
+          echo "KOIDRIVE_SERVER_BUNDLE=$RUNNER_TEMP/server-bundle" >> "$GITHUB_ENV"
       - name: Install Linux cross-build tools and ShellCheck
         if: runner.os == 'Linux'
         run: |

@@ -260,7 +260,7 @@ class Caches(unittest.TestCase):
                     field = "shared-key" if re.search(r"(?m)^ *shared-key: ", body) else "key"
                     key = re.search(rf"(?m)^ *{field}: (.*)$", body)
                     self.assertIsNotNone(key, "rust-cache ignores profile changes, so its key must hash the manifest")
-                    self.assertIn(f"hashFiles('{manifest}')", key[1])
+                    self.assertIn(f"${{{{ hashFiles('{manifest}') }}}}", key[1])
 
     def test_a_branch_run_restores_the_cache_a_main_run_saves(self):
         text = (ROOT / ".github/actions/pnpm-store/action.yml").read_text()
