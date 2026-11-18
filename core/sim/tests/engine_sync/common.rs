@@ -1865,6 +1865,9 @@ fn run_ignoring_answering_after(
                 Some(op::Op::UpdateContent(update)) => &update.node_id,
                 _ => continue,
             };
+            if let Some(op::Op::CreateDir(_)) = &op.op {
+                merged_into.remove(id);
+            }
             if let Some(op::Op::Move(moved)) = &op.op
                 && let Some(local) = device.trees.local().get(id).filter(|node| !node.parked)
             {
