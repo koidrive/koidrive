@@ -1360,3 +1360,38 @@ fn a_relink_of_a_moved_folder_or_one_whose_marker_write_fails_keeps_the_folder_h
     assert_ne!(a.state(), FolderState::Halted);
     assert_eq!(remote.tree(), served);
 }
+
+#[test]
+fn a_link_that_adopted_a_token_and_failed_its_write_does_not_hand_it_back() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    a.pull(&remote);
+    a.rest(&mut remote);
+    drop(a);
+    drop(b);
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("store.sqlite");
+    let mut link = site.link.clone();
+    link.device_id = "c".into();
+    Store::open(&db)
+        .unwrap()
+        .transaction(|tx| tx.set_link(&link))
+        .unwrap();
+    let mut caller = site.caller.clone();
+    caller.device_id = "c".into();
+    caller.device_name = "c".into();
+    let second = Site {
+        _dir: dir,
+        root: site.root.clone(),
+        db,
+        link,
+        caller,
+    };
+    let blocker = block_marker(&second);
+    drop(opened(&second).unwrap());
+    fs::remove_dir_all(&blocker).unwrap();
+    drop(opened(&second).unwrap());
+    assert!(halts_as_a_copy(&site));
+}
