@@ -14472,6 +14472,370 @@
       ]
     },
     {
+      "name": "rfc0029-an-edit-that-lands-as-a-conflict-copy-in-a-folder-its-own-commit-deletes-keeps-the-copy",
+      "covers": [
+        "RFC0029",
+        "RFC0029-3.3"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        },
+        "b": {
+          "name": "Desk"
+        }
+      },
+      "contents": {
+        "w1": {
+          "chunks": [
+            {
+              "text": "report written"
+            }
+          ]
+        },
+        "w2": {
+          "chunks": [
+            {
+              "text": "report edited on the desk"
+            }
+          ]
+        },
+        "w3": {
+          "chunks": [
+            {
+              "text": "report edited on the laptop"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "at_ms": 1794268800000,
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "d",
+                  "parent": "root",
+                  "name": "A",
+                  "intent": {
+                    "id": "id",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "root",
+                  "name": "b.txt",
+                  "content": "w1",
+                  "intent": {
+                    "id": "if",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "d",
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794268860000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794268920000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "move": {
+                  "node": "f",
+                  "parent": "d",
+                  "name": "c.txt",
+                  "intent": {
+                    "id": "im",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w3",
+                  "made_over": [
+                    "v0"
+                  ],
+                  "intent": {
+                    "id": "i3",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794268980000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w2",
+                  "made_over": [
+                    "v0"
+                  ],
+                  "intent": {
+                    "id": "i2",
+                    "author": "b"
+                  }
+                }
+              },
+              {
+                "delete": {
+                  "node": "d",
+                  "intent": {
+                    "id": "idel",
+                    "author": "b"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 3,
+            "results": [
+              {
+                "code": "CONFLICT_COPY",
+                "node": "y"
+              },
+              {
+                "code": "SUPERSEDED"
+              }
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "d",
+              "status": "LIVE"
+            },
+            {
+              "node": "f",
+              "status": "LIVE",
+              "parent": "d",
+              "content": "w3"
+            },
+            {
+              "node": "y",
+              "status": "LIVE",
+              "parent": "d",
+              "content": "w2",
+              "intents": {
+                "content": {
+                  "id": "i2",
+                  "author": "b",
+                  "replay": false
+                }
+              }
+            }
+          ],
+          "live": [
+            "d",
+            "f",
+            "y"
+          ]
+        },
+        {
+          "rebuild": {
+            "at_ms": 1794269520000
+          }
+        }
+      ]
+    },
+    {
+      "name": "rfc0029-a-delete-after-its-own-commit-moves-a-file-into-the-folder-trashes-the-file",
+      "covers": [
+        "RFC0029",
+        "RFC0029-3.3"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        },
+        "b": {
+          "name": "Desk"
+        }
+      },
+      "contents": {
+        "w1": {
+          "chunks": [
+            {
+              "text": "report written"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "at_ms": 1794268800000,
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "d",
+                  "parent": "root",
+                  "name": "A",
+                  "intent": {
+                    "id": "id",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "root",
+                  "name": "b.txt",
+                  "content": "w1",
+                  "intent": {
+                    "id": "if",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "d",
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794268860000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "move": {
+                  "node": "f",
+                  "parent": "d",
+                  "name": "b.txt",
+                  "intent": {
+                    "id": "imv",
+                    "author": "b"
+                  }
+                }
+              },
+              {
+                "delete": {
+                  "node": "d",
+                  "intent": {
+                    "id": "idel",
+                    "author": "b"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "d",
+              "f"
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "d",
+              "status": "TRASHED"
+            },
+            {
+              "node": "f",
+              "status": "TRASHED",
+              "parent": "d"
+            }
+          ],
+          "live": []
+        },
+        {
+          "rebuild": {
+            "at_ms": 1794269400000
+          }
+        }
+      ]
+    },
+    {
       "name": "rfc0029-a-delete-listing-unseen-carried-content-trashes-the-file-and-copies-the-content",
       "covers": [
         "RFC0029",
