@@ -655,9 +655,6 @@ fn two_copies_of_one_disk_halt_when_the_older_one_is_at_the_folder() {
     disks.detach(&site.root);
 }
 
-
-
-
 fn relink(site: &Site) -> Result<u64, disk::RelinkError> {
     relink_until(site, Box::new(|_| {}))
 }
@@ -779,7 +776,8 @@ fn a_file_the_newer_copy_deleted_reaches_the_server_only_once_the_question_is_an
 }
 
 #[test]
-fn relink_refuses_a_folder_that_passes_its_check_and_takes_one_whose_store_was_restored_on_its_own() {
+fn relink_refuses_a_folder_that_passes_its_check_and_takes_one_whose_store_was_restored_on_its_own()
+{
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site.root.join("one.txt"), b"one");
@@ -876,7 +874,10 @@ fn a_relink_holds_a_version_restore_whose_result_was_lost_until_the_person_answe
         let sent: Vec<Option<op::Op>> = commit.ops.iter().map(|op| op.op.clone()).collect();
         assert_eq!(sent, [Some(op::Op::Restore(intent.op().clone()))]);
         let applied = koidrive_proto::v1::op_result::Code::Applied as i32;
-        assert_eq!(remote.commit(&a.caller, &commit).unwrap().results[0].code, applied);
+        assert_eq!(
+            remote.commit(&a.caller, &commit).unwrap().results[0].code,
+            applied
+        );
         drop(a);
         let head = remote.space.head_seq();
         let mut marker = marker_of(&site);
@@ -920,12 +921,20 @@ fn a_relink_holds_a_version_restore_whose_result_was_lost_until_the_person_answe
         a.rest(&mut remote);
         assert_eq!(remote.space.head_seq(), head);
         let cancelled = Outcome::Rejected(koidrive_engine::restore::Rejection::Cancelled);
-        assert_eq!(ended(&site), [(id.clone(), cancelled)], "retried: {retried}");
+        assert_eq!(
+            ended(&site),
+            [(id.clone(), cancelled)],
+            "retried: {retried}"
+        );
         let taken = (Store::open(&site.db).unwrap())
             .transaction(|tx| tx.taken_question(&held.id))
             .unwrap();
         assert_eq!(taken.and_then(|taken| taken.answer), Some(given));
-        assert!(shown(&site).iter().all(|question| question.items.iter().all(|item| item.node_id != id)));
+        assert!(
+            shown(&site)
+                .iter()
+                .all(|question| question.items.iter().all(|item| item.node_id != id))
+        );
     }
 }
 
@@ -973,7 +982,10 @@ fn a_relink_of_a_moved_folder_or_one_whose_marker_write_fails_keeps_the_folder_h
     let refused = disk::relink(&lock, &site.link, &mut store);
     drop((store, lock));
     fs::rename(&moved, parent).unwrap();
-    assert!(matches!(refused, Err(disk::RelinkError::Stop(Stop::Withdrawn(_)))));
+    assert!(matches!(
+        refused,
+        Err(disk::RelinkError::Stop(Stop::Withdrawn(_)))
+    ));
     assert_eq!((marker_of(&site), tokens_of(&site)), (marker, tokens));
     let blocker = block_marker(&site);
 
