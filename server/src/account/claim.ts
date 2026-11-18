@@ -10,6 +10,7 @@ export const MAX_FAILURE_ROWS = 10_000;
 export const NO_ADDRESS = "(no address)";
 export const MIN_RECOVERY_KEY_LENGTH = 32;
 export const MAX_SETUP_ATTEMPT_LENGTH = 64;
+export const REDEEMED_CODE_REPLAY_MS = 25 * 3_600_000;
 const UNUSED_OF_ATTEMPT = "setup_attempt = ? AND user_id = ? AND last_seen_ms IS NULL AND revoked_at_ms IS NULL";
 
 export type ClaimOutcome = { ok: true; revoke: string[] } | { ok: true; earlierDevice: string } | { ok: false; code: Error_Code; message: string };
@@ -103,7 +104,13 @@ export function redeemClaim(sql: Sql, attempt: ClaimAttempt): ClaimOutcome {
     const redeemed = live.find((row) => sameDigest(row.code_hash as ArrayBuffer, attempt.codeHash))?.code_hash;
     if (!redeemed) return wrongCode(sql, "claim", attempt.client, attempt.nowMs, "wrong claim code");
     sql.exec("DELETE FROM claim_codes WHERE code_hash != ?", redeemed);
-    sql.exec("UPDATE claim_codes SET request_id = ?, claimed_device_id = ? WHERE code_hash = ?", attempt.requestId || null, attempt.deviceId, redeemed);
+    sql.exec(
+      "UPDATE claim_codes SET request_id = ?, claimed_device_id = ?, expires_at_ms = ? WHERE code_hash = ?",
+      attempt.requestId || null,
+      attempt.deviceId,
+      attempt.nowMs + REDEEMED_CODE_REPLAY_MS,
+      redeemed,
+    );
   }
   sql.exec("DELETE FROM claim_failures WHERE scope = 'claim'");
   sql.exec("INSERT INTO users (user_id, name, created_at_ms) VALUES (?, ?, ?)", attempt.userId, attempt.userName || "Owner", attempt.nowMs);

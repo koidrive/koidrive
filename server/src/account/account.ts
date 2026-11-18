@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { type ClaimAttempt, MAX_SETUP_ATTEMPT_LENGTH, MIN_RECOVERY_KEY_LENGTH, ownerOf, redeemClaim, stillUnused, storeClaimCode, wrongCode } from "./claim";
+import { type ClaimAttempt, MAX_SETUP_ATTEMPT_LENGTH, MIN_RECOVERY_KEY_LENGTH, ownerOf, REDEEMED_CODE_REPLAY_MS, redeemClaim, stillUnused, storeClaimCode, wrongCode } from "./claim";
 import { ACCESS_TOKEN_MS, type ServerKey, signAccessToken } from "../auth";
 import { base64url, deriveSpaceKey, sha256 } from "../crypto";
 import { causeOf } from "../cause";
@@ -324,7 +324,13 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       const device = await this.prepareDevice(inviter.user_id, args.deviceName, args.platform, nowMs, inviter.device_id);
       const paired = this.db.transactionSync(() => {
         const taken = this.sql
-          .exec("UPDATE pairing_codes SET request_id = ?, paired_device_id = ? WHERE code_hash = ? AND paired_device_id IS NULL RETURNING 1", requestId || null, device.credentials.deviceId, hash)
+          .exec(
+            "UPDATE pairing_codes SET request_id = ?, paired_device_id = ?, expires_at_ms = ? WHERE code_hash = ? AND paired_device_id IS NULL RETURNING 1",
+            requestId || null,
+            device.credentials.deviceId,
+            nowMs + REDEEMED_CODE_REPLAY_MS,
+            hash,
+          )
           .toArray().length > 0;
         if (taken) device.store();
         return taken;

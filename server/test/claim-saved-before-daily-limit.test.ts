@@ -26,7 +26,9 @@ async function claim(code: string, requestId: string) {
   return { status: response.status, code: error.code, cause: error.cause };
 }
 
-it("answers a claim the server saved before a daily limit when the client sends it again with the same request id", async () => {
+const HOUR_MS = 3_600_000;
+
+it("answers a claim the server saved before a daily limit when the client sends it again with the same request id, for 25 hours after the claim", async () => {
   const code = await claimCode();
   const account = env.ACCOUNT.get(env.ACCOUNT.idFromName("account"));
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -39,6 +41,10 @@ it("answers a claim the server saved before a daily limit when the client sends 
   await runInDurableObject(account, (instance: object) => {
     (instance as { userName: { mockRestore: () => void } }).userName.mockRestore();
   });
+  const passed = (ms: number) => runInDurableObject(account, (_instance, state) => state.storage.sql.exec("UPDATE claim_codes SET expires_at_ms = expires_at_ms - ?", ms));
+  await passed(24 * HOUR_MS);
   expect(await claim(code, "first-id")).toMatchObject({ status: 200 });
   expect(await claim(code, "second-id")).toMatchObject({ status: 403 });
+  await passed(2 * HOUR_MS);
+  expect(await claim(code, "first-id")).toMatchObject({ status: 403 });
 });
