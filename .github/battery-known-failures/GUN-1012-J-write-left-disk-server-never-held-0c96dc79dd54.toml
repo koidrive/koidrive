@@ -1,7 +1,7 @@
 class = "J"
 issue = "GUN-1012"
 tests = ["devices_converge_across_restores_and_rewinds", "devices_lose_no_write_across_restores_and_rewinds"]
-message = '''after phase <n>: write <n> left the disk of device <n>: the server never held it, and its user never overwrote or deleted it\.'''
+message = '''(after phase <n>: write <n> left the disk of device <n>: the server never held it, and its user never overwrote or deleted it\.|devices::\S+ case cc-\S+ fails: after phase <n>: write <n> left the disk of device <n>: the server never held it, and its user never overwrote or deleted it not recorded: devices::\S+ cc-\S+ WriteKept write <n> of the write of node <id> on device <n> is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it( not recorded: devices::\S+ cc-\S+ WriteKept (?:(?! not recorded: ).)+?settles it)*( devices::\S+ never ran case cc-\S+)*)'''
 examples = ["after phase 2: write 11 left the disk of device 0: the server never held it, and its user never overwrote or deleted it."]
 cases = [
   "0c96dc79dd54",
