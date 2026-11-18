@@ -47,9 +47,11 @@
 //! - No node keeps a pending name that no user gave.
 //! - With [`World::revived_deletes`] set, a delete a user made while the server held the deleted
 //!   file reaches the server. Once the devices are quiet, the server holds neither the deleted
-//!   write nor one it was made over live, unless a restore took them from the server since, the
-//!   author resent a write the server lacked at the delete, the delete was only in a store that
-//!   rolled back, or another device changed the file or a folder above it after the delete.
+//!   write nor one it was made over live, unless the last restore since the delete took them from
+//!   the server, the author resent a write the server lacked at the delete, the delete was only in
+//!   a store that rolled back or on a device that left before sending it, or a server commit
+//!   carried another device's change, unseen by the deleting user, to the file or to a folder
+//!   above it that the delete removed.
 //! - No write is in two files of the server, except one a restore took from the server while a
 //!   disk held it (section 4.4). Until the devices are quiet again, it may be in one file for each
 //!   node that held it, or for each device that held it in a node the restore rolled back to
@@ -933,6 +935,8 @@ impl World {
                 let device = &mut self.devices[d];
                 device.left = true;
                 device.link = None;
+                self.deletions
+                    .retain(|deletion| deletion.reached || deletion.device != d);
             }
             Step::User(action) => self.act(d, action, Act::of(action.kind)),
             Step::Copy(action) => self.act(d, action, Act::Copy),
@@ -1068,6 +1072,7 @@ impl World {
             .collect();
         let write = self.writes + 1;
         let mut touched: Vec<u128> = Vec::new();
+        let mut saved = None;
         match (act, target) {
             (Act::MakeDir, _) => {
                 if let Some(new) = disk.create(place, name, None) {
@@ -1128,6 +1133,7 @@ impl World {
             }
             (Act::Save { keeps_mark }, Some(ino)) => {
                 if let Some(new) = disk.save(ino, keeps_mark) {
+                    saved = Some((new, ino));
                     touched = std::iter::once(new)
                         .chain(itself.into_iter().skip(1))
                         .collect();
@@ -1146,8 +1152,17 @@ impl World {
         }
         for ino in touched {
             self.touches[d].entry(ino).or_default().insert(self.clock);
-            if let Some((node, _)) = local.iter().find(|(_, node)| node.identity.ino == ino) {
-                self.touched_nodes[d].insert(node.clone(), ino);
+            let known = (saved.filter(|(new, _)| *new == ino)).map_or(ino, |(_, old)| old);
+            let node = (local.iter().find(|(_, node)| node.identity.ino == known))
+                .map(|(node, _)| node.clone())
+                .or_else(|| {
+                    (self.touched_nodes[d]
+                        .iter()
+                        .find(|(_, touched)| **touched == known))
+                    .map(|(node, _)| node.clone())
+                });
+            if let Some(node) = node {
+                self.touched_nodes[d].insert(node, ino);
             }
         }
     }
@@ -1446,7 +1461,7 @@ impl World {
         self.space.restore(&backup.space);
         let live = live_nodes(&self.space);
         for deletion in &mut self.deletions {
-            deletion.gone = deletion.held(&live, |_, _| false).is_none();
+            deletion.gone = deletion.held(&live, |_, _, _, _| false).is_none();
         }
         self.held_commits = backup.held_commits.clone();
         self.in_history = backup.in_history.clone();
@@ -2841,7 +2856,8 @@ impl World {
                             }
                             let live = live_nodes(&self.space);
                             for deletion in &mut self.deletions {
-                                deletion.reached |= deletion.held(&live, |_, _| false).is_none();
+                                deletion.reached |=
+                                    deletion.held(&live, |_, _, _, _| false).is_none();
                             }
                             self.published.extend(after.into_keys());
                             for node in self.space.nodes() {

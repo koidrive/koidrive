@@ -126,7 +126,7 @@ fn a_rename_another_device_made_after_the_delete_brings_the_file_back() {
 
 #[test]
 fn a_write_its_user_replaces_before_it_reaches_the_server_needs_no_file() {
-    let world = converge(
+    let world = checked(
         2,
         &[
             vec![(0, BACKUP), (1, file("a"))],
@@ -618,4 +618,76 @@ fn a_rename_of_a_folder_the_server_kept_leaves_the_deleted_file_checked() {
         ],
     )
     .unwrap();
+}
+
+fn reports_the_lost_delete(result: Result<World, Failure>) {
+    assert!(result.err().is_some_and(|failure| {
+        failure
+            .to_string()
+            .contains("the delete never reached the server")
+    }));
+}
+
+#[test]
+fn a_write_made_over_the_deleted_value_before_a_scan_leaves_the_older_write_checked() {
+    reports_the_lost_delete(checked(
+        2,
+        &[
+            vec![(0, file("a")), (0, BACKUP)],
+            vec![(0, BACKUP), (0, overwrite(0)), (0, Step::RestoreEarlier)],
+            vec![(1, rename(0, 0, "c.txt"))],
+            vec![
+                (1, Step::Leave),
+                (0, overwrite(0)),
+                (0, delete(0)),
+                (0, Step::RestoreEarlier),
+                (0, RESTORE),
+            ],
+        ],
+    ));
+}
+
+#[test]
+fn a_bystanders_store_rollback_before_the_delete_leaves_it_checked() {
+    reports_the_lost_delete(checked(
+        3,
+        &[
+            vec![(0, file("a")), (2, Step::CopyStore), (0, BACKUP)],
+            vec![(0, BACKUP), (0, overwrite(0)), (0, Step::RestoreEarlier)],
+            vec![(1, rename(0, 0, "c.txt"))],
+            vec![
+                (1, Step::Leave),
+                (2, Step::RollBack),
+                (0, delete(0)),
+                (0, Step::RestoreEarlier),
+                (0, RESTORE),
+            ],
+        ],
+    ));
+}
+
+#[test]
+fn a_delete_whose_device_leaves_before_sending_it_owes_nothing() {
+    checked(
+        2,
+        &[vec![(0, file("a"))], vec![(1, delete(0)), (1, Step::Leave)]],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_save_another_device_makes_after_the_delete_brings_the_file_back() {
+    let mut saved = vec![
+        (0, delete(0)),
+        (
+            1,
+            Step::Save {
+                target: 0,
+                keeps_mark: false,
+            },
+        ),
+    ];
+    saved.extend(commit(1));
+    saved.extend(commit(0));
+    checked(2, &[vec![(0, file("a"))], saved]).unwrap();
 }
