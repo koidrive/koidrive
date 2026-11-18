@@ -758,6 +758,31 @@ jobs:
           fi
           python3 scripts/check-new-comments.py "$BASE" HEAD
 
+  test-lines:
+    name: test lines
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Test the test-line counter
+        run: python3 scripts/test-check-test-lines.py -v
+      - name: Report the test lines this change adds
+        continue-on-error: true
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+        run: |
+          if [ "$EVENT" = merge_group ]; then
+            git fetch --no-tags --depth=1 origin "$BASE"
+          else
+            BASE=$(git rev-parse HEAD^1)
+          fi
+          python3 scripts/check-test-lines.py "$BASE" HEAD
+
   store-upgrade:
     if: github.event_name != 'push'
     name: Store upgrade
