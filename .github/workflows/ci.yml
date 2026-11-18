@@ -31,7 +31,13 @@ jobs:
       contents: read
     outputs:
       rust: ${{ steps.paths.outputs.rust }}
-      rust_suites: ${{ steps.paths.outputs.rust_suites }}
+      rust_lint: ${{ steps.paths.outputs.rust_lint }}
+      rust_driver: ${{ steps.paths.outputs.rust_driver }}
+      rust_engine: ${{ steps.paths.outputs.rust_engine }}
+      rust_sim: ${{ steps.paths.outputs.rust_sim }}
+      rust_archive: ${{ steps.shards.outputs.rust_archive }}
+      rust_shards_linux: ${{ steps.shards.outputs.rust_shards_linux }}
+      rust_shards_macos: ${{ steps.shards.outputs.rust_shards_macos }}
       server: ${{ steps.paths.outputs.server }}
       server_deploy: ${{ steps.paths.outputs.server_deploy }}
       net_integration: ${{ steps.paths.outputs.net_integration }}
@@ -75,8 +81,7 @@ jobs:
             echo "$EVENT run: every Linux and macOS job runs, so a run on main saves every Rust cache that pull requests and the merge queue restore."
             {
               echo "site_only=false"
-              printf '%s=true\n' rust rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration test_lines rust_macos server_macos spec_macos macos_app
-              echo 'rust_suites=["driver","engine","sim"]'
+              printf '%s=true\n' rust rust_lint rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration test_lines rust_macos server_macos spec_macos macos_app
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -84,8 +89,7 @@ jobs:
             echo "Push to main: every Linux job runs."
             {
               echo "site_only=false"
-              printf '%s=true\n' rust rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration test_lines
-              echo 'rust_suites=["driver","engine","sim"]'
+              printf '%s=true\n' rust rust_lint rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration test_lines
             } >> "$GITHUB_OUTPUT"
             api() {
               curl -fsS --max-time 15 -H "Authorization: Bearer $GITHUB_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/$1"
@@ -102,11 +106,11 @@ jobs:
               echo "Merge queue run $(jq -r .html_url <<<"$run") passed CI on $GITHUB_SHA."
               echo "Merge queue run $(jq -r .html_url <<<"$run") tested this commit. macOS jobs it passed are skipped here." >> "$GITHUB_STEP_SUMMARY"
             fi
-            for pair in "rust_macos:rust (macos)" "server_macos:server (macos)" "spec_macos:spec (macos)" "macos_app:macos app"; do
+            for pair in "rust_macos:rust build (macos)" "server_macos:server (macos)" "spec_macos:spec (macos)" "macos_app:macos app"; do
               covered=true
               if [ "${pair%%:*}" = rust_macos ]; then
-                for suite in driver engine sim; do
-                  if ! grep -Fxq "rust tests (macos, $suite)" <<<"$passed"; then covered=false; fi
+                for job in "rust lint (macos)" "rust special (macos)" "rust tests (macos, sim)" "rust tests (macos, "{1,2,3,4,5,6}/6")"; do
+                  if ! grep -Fxq "$job" <<<"$passed"; then covered=false; fi
                 done
               fi
               if [ "$covered" = true ] && grep -Fxq "${pair#*:}" <<<"$passed"; then
@@ -134,8 +138,7 @@ jobs:
           if [ -n "$changed" ] && ! grep -qv '^site/' <<<"$changed"; then
             echo "site_only: true, because every changed file is under site/, so the build and test jobs skip."
             {
-              printf '%s=false\n' rust_macos server_macos spec_macos macos_app rust rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration test_lines
-              echo "rust_suites=[]"
+              printf '%s=false\n' rust_macos server_macos spec_macos macos_app rust rust_lint rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration test_lines
               echo "site_only=true"
             } >> "$GITHUB_OUTPUT"
             exit 0
@@ -145,14 +148,9 @@ jobs:
           echo "Jobs this change selects against $BASE (.github/ci-select.toml):"
           if [ "$SELECTOR_BUILD" != success ] || ! git worktree add --detach "$RUNNER_TEMP/base" "$BASE" || ! selection="$(scripts/ci-select/target/debug/ci-select .github/ci-select.toml "$RUNNER_TEMP/base" . "$RUNNER_TEMP/changed")"; then
             echo "::warning::The job selector failed to build or run (see the error above), so every job runs."
-            selection="$(printf '%s=true\n' rust rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration test_lines macos_app)"
+            selection="$(printf '%s=true\n' rust rust_lint rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration test_lines macos_app)"
           fi
-          suites="$(jq -Rcn '[inputs | capture("^rust_(?<suite>driver|engine|sim)=true$") | .suite]' <<<"$selection")"
-          echo "rust tests suites: $suites"
-          {
-            grep -v '^macos_app=' <<<"$selection"
-            echo "rust_suites=$suites"
-          } >> "$GITHUB_OUTPUT"
+          grep -v '^macos_app=' <<<"$selection" >> "$GITHUB_OUTPUT"
           app_selected=false
           if grep -Fxq macos_app=true <<<"$selection"; then app_selected=true; fi
           if [ "$EVENT" = merge_group ]; then
@@ -190,6 +188,23 @@ jobs:
           for job in server_macos spec_macos; do
             decide "$job" "ci.yml did not change" "$(grep -Fx '.github/workflows/ci.yml' <<<"$changed" || true)"
           done
+      - name: Plan the Rust test archive and its shards
+        id: shards
+        env:
+          RUST: ${{ steps.paths.outputs.rust }}
+          RUST_DRIVER: ${{ steps.paths.outputs.rust_driver }}
+          RUST_ENGINE: ${{ steps.paths.outputs.rust_engine }}
+        run: |
+          archive=false
+          if [ "$RUST" = true ] || [ "$RUST_DRIVER" = true ] || [ "$RUST_ENGINE" = true ]; then archive=true; fi
+          linux="$(jq -cn '{include: [range(1; 6) | {os: "ubuntu-latest", shard: ., of: 5}]}')"
+          macos="$(jq -cn '{include: [range(1; 7) | {os: "macos", shard: ., of: 6}]}')"
+          echo "Rust test archive: $archive. Linux shards: $linux. macOS shards, when macOS runs: $macos"
+          {
+            echo "rust_archive=$archive"
+            echo "rust_shards_linux=$linux"
+            echo "rust_shards_macos=$macos"
+          } >> "$GITHUB_OUTPUT"
       - name: Keep merged store migrations unchanged
         if: github.event_name != 'push'
         env:
@@ -225,16 +240,16 @@ jobs:
           fi
           echo "No merged store migration changed."
 
-  rust:
-    name: rust (${{ matrix.os }})
+  rust-lint:
+    name: rust lint (${{ matrix.os }})
     needs: [changes]
-    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_lint == 'true'
     strategy:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(needs.changes.outputs.rust_macos == 'true' && '["ubuntu-latest","macos"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os == 'macos' && 'macos-15' || matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -243,23 +258,219 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          key: lint
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+      - if: ${{ !cancelled() }}
+        run: cargo clippy --workspace --all-targets --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup -- -D warnings
+      - name: Run the doctests, which nextest does not run
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: cargo test --doc --workspace --exclude koidrive-sim --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup
       - name: Verify Rust workspace feature parity
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
         run: python3 scripts/test-ci-rust-partitions.py FeatureParity -v
-      - name: List the remaining test inventory
+      - name: Test the Rust test archive arguments, shard plans and report
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: python3 scripts/test-ci-rust-tests.py -v
+      - name: Test the regression-case splitter
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
         run: |
-          out="$RUNNER_TEMP/test-inventory"
-          mkdir -p "$out"
-          cargo test --workspace --exclude koidrive-driver --exclude koidrive-engine --exclude koidrive-sim --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup -- --list --format terse > "$out/remainder.txt"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+          python3 scripts/test-split-proptest-regressions.py -v
+          LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 python3 scripts/test-split-proptest-regressions.py -v
+      - name: Require per-seed persistence for every property test
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/check-proptest-persistence-target
+        run: |
+          nice -n 10 cargo fmt --manifest-path scripts/check-proptest-persistence/Cargo.toml --check
+          nice -n 10 cargo clippy --manifest-path scripts/check-proptest-persistence/Cargo.toml --all-targets --locked -- -D warnings
+          nice -n 10 cargo test --manifest-path scripts/check-proptest-persistence/Cargo.toml --locked
+          nice -n 10 cargo run --manifest-path scripts/check-proptest-persistence/Cargo.toml --locked --
+      - name: Test the scenario splitter
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/test-split-target
+        run: |
+          nice -n 10 cargo fmt --manifest-path scripts/test-split/Cargo.toml --check
+          nice -n 10 cargo clippy --manifest-path scripts/test-split/Cargo.toml --all-targets --locked -- -D warnings
+          python3 scripts/test-split/test_split.py -v
+      - name: Test the job selector
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/ci-select-target
+        run: |
+          nice -n 10 cargo fmt --manifest-path scripts/ci-select/Cargo.toml --check
+          nice -n 10 cargo clippy --manifest-path scripts/ci-select/Cargo.toml --all-targets --locked -- -D warnings
+          nice -n 10 cargo test --manifest-path scripts/ci-select/Cargo.toml --locked
+
+  rust-build-linux:
+    name: rust build (ubuntu-latest)
+    needs: [changes]
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      OS: ubuntu-latest
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps: &rust-build-steps
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: rust-test-inventory-${{ matrix.os }}
+          persist-credentials: false
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-nextest@0.9.152
+      - name: Build every selected test binary into one archive
+        env:
+          SELECTED: rust=${{ needs.changes.outputs.rust }} rust_driver=${{ needs.changes.outputs.rust_driver }} rust_engine=${{ needs.changes.outputs.rust_engine }}
+        run: |
+          out="$RUNNER_TEMP/rust-tests"
+          mkdir -p "$out" "$RUNNER_TEMP/test-inventory"
+          selected=()
+          for pair in $SELECTED; do
+            if [ "${pair#*=}" = true ]; then selected+=("${pair%%=*}"); fi
+          done
+          args=()
+          lines="$(python3 scripts/ci-rust-tests.py archive-args "${selected[@]}")"
+          while IFS= read -r arg; do args+=("$arg"); done <<<"$lines"
+          set -- "${args[@]}"
+          echo "Partitions: ${selected[*]}. Archive arguments: $*"
+          cargo nextest archive --locked "$@" --archive-file "$out/archive.tar.zst" --cargo-message-format json-render-diagnostics > "$RUNNER_TEMP/build.json"
+          cargo test --locked -p koidrive-test-support --lib --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/probe.json"
+          scripts/require-runtime-checks.sh "$RUNNER_TEMP/build.json" "$RUNNER_TEMP/probe.json"
+          cargo nextest list --locked "$@" --message-format json > "$RUNNER_TEMP/test-inventory/list.json"
+          jq -r '."rust-suites"[] | .["binary-id"] as $b | .testcases | to_entries[] | "\($b) \(.key)"' "$RUNNER_TEMP/test-inventory/list.json" > "$RUNNER_TEMP/test-inventory/inventory.txt"
+          echo "$(wc -l < "$RUNNER_TEMP/test-inventory/inventory.txt" | tr -d ' ') tests in the archive, $(du -h "$out/archive.tar.zst" | cut -f1) compressed."
+      - name: Balance the shards by measured test time
+        env:
+          SHARDS: ${{ env.OS == 'macos' && needs.changes.outputs.rust_shards_macos || needs.changes.outputs.rust_shards_linux }}
+        run: |
+          set -o pipefail
+          python3 scripts/ci-rust-tests.py plan --os "$OS" --shards "$(jq --arg os "$OS" '[.include[] | select(.os == $os)] | length' <<<"$SHARDS")" \
+            --list "$RUNNER_TEMP/test-inventory/list.json" --out "$RUNNER_TEMP/rust-tests/shards.toml" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-test-inventory-${{ env.OS }}
           path: ${{ runner.temp }}/test-inventory
           if-no-files-found: error
           retention-days: 7
-      - run: cargo test --workspace --exclude koidrive-driver --exclude koidrive-engine --exclude koidrive-sim --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-tests-${{ env.OS }}
+          path: ${{ runner.temp }}/rust-tests
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  rust-build-macos:
+    name: rust build (macos)
+    needs: [changes]
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true' && needs.changes.outputs.rust_macos == 'true'
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      OS: macos
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps: *rust-build-steps
+
+  rust-tests-linux:
+    name: rust tests (ubuntu-latest, ${{ matrix.shard }}/${{ matrix.of }})
+    needs: [changes, rust-build-linux]
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.rust_shards_linux) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OS: ubuntu-latest
+    steps: &rust-tests-steps
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-nextest@0.9.152
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rust-tests-${{ env.OS }}
+          path: ${{ runner.temp }}/rust-tests
+      - name: Run this shard's tests
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          cargo nextest run --archive-file "$RUNNER_TEMP/rust-tests/archive.tar.zst" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite \
+            --config-file "$RUNNER_TEMP/rust-tests/shards.toml" --profile "shard-$SHARD" --no-tests=pass
+      - name: Put this shard's results in a folder named after it
+        if: ${{ !cancelled() }}
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/junit/rust-junit-$OS-$SHARD"
+          cp "target/nextest/shard-$SHARD/junit.xml" "$RUNNER_TEMP/junit/rust-junit-$OS-$SHARD/"
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-junit-${{ env.OS }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/junit
+          if-no-files-found: error
+          retention-days: 7
+
+  rust-tests-macos:
+    name: rust tests (macos, ${{ matrix.shard }}/${{ matrix.of }})
+    needs: [changes, rust-build-macos]
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true' && needs.changes.outputs.rust_macos == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.rust_shards_macos) }}
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      OS: macos
+    steps: *rust-tests-steps
+
+  rust-special-linux:
+    name: rust special (ubuntu-latest)
+    needs: [changes, rust-build-linux]
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OS: ubuntu-latest
+    steps: &rust-special-steps
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: special
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-nextest@0.9.152
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rust-tests-${{ env.OS }}
+          path: ${{ runner.temp }}/rust-tests
+      - name: Replay saved property regressions without random cases
+        env:
+          PROPTEST_CASES: '0'
+          FILTERS: >-
+            ${{ needs.changes.outputs.rust == 'true' && 'binary_id(=koidrive-chunk::chunking) | binary_id(=koidrive-ignore::properties) | binary_id(=koidrive-ignore::git_oracle) | binary_id(=koidrive-net) |' || '' }}
+            ${{ needs.changes.outputs.rust_engine == 'true' && 'binary_id(=koidrive-engine::names) | binary_id(=koidrive-engine::trees) | binary_id(=koidrive-engine::effects) |' || '' }}
+            ${{ needs.changes.outputs.rust_driver == 'true' && '(binary_id(=koidrive-driver) & test(batches_leave_l_a_tree_that_holds_the_disk)) |' || '' }}
+        run: cargo nextest run --archive-file "$RUNNER_TEMP/rust-tests/archive.tar.zst" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite --profile ci --success-output final -E "$(sed -E 's/[ |]+$//' <<<"$FILTERS")"
       - name: Test root identities on btrfs and ext4
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && runner.os == 'Linux' && needs.changes.outputs.rust == 'true' }}
         run: |
           if ! command -v mkfs.btrfs > /dev/null; then
             sudo apt-get update -qq
@@ -271,128 +482,23 @@ jobs:
           sudo mkdir -p /mnt/koidrive-btrfs
           sudo mount -o loop,user_subvol_rm_allowed "$image" /mnt/koidrive-btrfs
           sudo chown "$USER" /mnt/koidrive-btrfs
-          KOIDRIVE_TEST_BTRFS_DIR=/mnt/koidrive-btrfs cargo test --locked -p koidrive-fs --test root a_btrfs_snapshot -- --show-output
-          KOIDRIVE_TEST_LOOP_MOUNTS=1 cargo test --locked -p koidrive-fs --test root an_ext4_disk -- --show-output
-      - name: Test volumes mounted inside a folder
-        if: runner.os == 'Linux'
+          KOIDRIVE_TEST_BTRFS_DIR=/mnt/koidrive-btrfs cargo nextest run --archive-file "$RUNNER_TEMP/rust-tests/archive.tar.zst" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite --profile ci --success-output final -E 'binary_id(=koidrive-fs::root) & test(a_btrfs_snapshot)'
+          KOIDRIVE_TEST_LOOP_MOUNTS=1 cargo nextest run --archive-file "$RUNNER_TEMP/rust-tests/archive.tar.zst" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite --profile ci --success-output final -E 'binary_id(=koidrive-fs::root) & test(an_ext4_disk)'
+      - name: Test volumes and disks mounted inside a folder
+        if: ${{ !cancelled() && runner.os == 'Linux' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.rust_driver == 'true') }}
         env:
           KOIDRIVE_TEST_MOUNTS: '1'
+          FILTERS: >-
+            ${{ needs.changes.outputs.rust == 'true' && 'binary_id(=koidrive-fs::volumes) | (binary_id(=koidrive-test-support) & test(disks)) |' || '' }}
+            ${{ needs.changes.outputs.rust_driver == 'true' && '(binary_id(=koidrive-driver) & (test(disk_ejected) | test(another_disk_mounted) | test(two_copies_of_one_disk) | test(mounted_over_synced) | test(disk_without_a_uuid) | test(before_an_upgrade))) |' || '' }}
         run: |
           if ! command -v mkfs.vfat > /dev/null; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq dosfstools
           fi
-          cargo test --locked -p koidrive-fs --test volumes -- --show-output
-          cargo test --locked -p koidrive-test-support --lib disks -- --show-output
-      - name: Test the regression-case splitter
-        run: |
-          python3 scripts/test-split-proptest-regressions.py -v
-          LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 python3 scripts/test-split-proptest-regressions.py -v
-      - name: Replay saved property regressions without random cases
-        env:
-          PROPTEST_CASES: '0'
-        run: |
-          cargo test --locked -p koidrive-chunk --test chunking -- --show-output
-          cargo test --locked -p koidrive-ignore --test properties --test git_oracle -- --show-output
-          cargo test --locked -p koidrive-net --lib -- --show-output
-
-  rust-tests:
-    name: rust tests (${{ matrix.os }}, ${{ matrix.suite }})
-    needs: [changes]
-    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_suites != '[]'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ${{ fromJSON(needs.changes.outputs.rust_macos == 'true' && '["ubuntu-latest","macos"]' || '["ubuntu-latest"]') }}
-        suite: ${{ fromJSON(needs.changes.outputs.rust_suites) }}
-    runs-on: ${{ matrix.os == 'macos' && 'macos-15' || matrix.os }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - name: Install toolchain from rust-toolchain.toml
-        run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
-        with:
-          key: ${{ matrix.suite }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - if: ${{ !cancelled() && matrix.suite == 'engine' }}
-        run: cargo fmt --all --check
-      - if: ${{ !cancelled() && matrix.suite == 'engine' }}
-        run: cargo clippy --workspace --all-targets --locked --features koidrive-cli/test-install-inventory,koidrive-cli/test-setup -- -D warnings
-      - name: Require per-seed persistence for every property test
-        if: ${{ !cancelled() && matrix.suite == 'engine' }}
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/check-proptest-persistence-target
-        run: |
-          nice -n 10 cargo fmt --manifest-path scripts/check-proptest-persistence/Cargo.toml --check
-          nice -n 10 cargo clippy --manifest-path scripts/check-proptest-persistence/Cargo.toml --all-targets --locked -- -D warnings
-          nice -n 10 cargo test --manifest-path scripts/check-proptest-persistence/Cargo.toml --locked
-          nice -n 10 cargo run --manifest-path scripts/check-proptest-persistence/Cargo.toml --locked --
-      - name: Test the scenario splitter
-        if: ${{ !cancelled() && matrix.suite == 'engine' }}
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/test-split-target
-        run: |
-          nice -n 10 cargo fmt --manifest-path scripts/test-split/Cargo.toml --check
-          nice -n 10 cargo clippy --manifest-path scripts/test-split/Cargo.toml --all-targets --locked -- -D warnings
-          python3 scripts/test-split/test_split.py -v
-      - name: Test the job selector
-        if: ${{ !cancelled() && matrix.suite == 'engine' }}
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/ci-select-target
-        run: |
-          nice -n 10 cargo fmt --manifest-path scripts/ci-select/Cargo.toml --check
-          nice -n 10 cargo clippy --manifest-path scripts/ci-select/Cargo.toml --all-targets --locked -- -D warnings
-          nice -n 10 cargo test --manifest-path scripts/ci-select/Cargo.toml --locked
-      - name: List the package test inventory
-        if: ${{ !cancelled() }}
-        env:
-          SUITE: ${{ matrix.suite }}
-          FEATURES: ${{ matrix.suite == 'engine' && 'serde' || matrix.suite == 'sim' && 'koidrive-engine/serde' || '' }}
-          PROFILE: ${{ matrix.suite == 'sim' && 'checked' || 'dev' }}
-        run: |
-          cargo test --locked --profile "$PROFILE" --no-fail-fast -p "koidrive-$SUITE" --features "$FEATURES" --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/build.json"
-          cargo test --locked --profile "$PROFILE" -p koidrive-test-support --lib --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/probe.json"
-          scripts/require-runtime-checks.sh "$RUNNER_TEMP/build.json" "$RUNNER_TEMP/probe.json"
-          cargo test --locked --profile "$PROFILE" --no-fail-fast -p "koidrive-$SUITE" --features "$FEATURES" -- --list --format terse > "$RUNNER_TEMP/inventory.txt"
-      - if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          name: rust-test-inventory-${{ matrix.os }}-${{ matrix.suite }}
-          path: ${{ runner.temp }}/inventory.txt
-          if-no-files-found: error
-          retention-days: 7
-      - name: Run the package tests and doctests
-        if: ${{ !cancelled() }}
-        env:
-          SUITE: ${{ matrix.suite }}
-          FEATURES: ${{ matrix.suite == 'engine' && 'serde' || matrix.suite == 'sim' && 'koidrive-engine/serde' || '' }}
-          PROFILE: ${{ matrix.suite == 'sim' && 'checked' || 'dev' }}
-        run: cargo test --locked --profile "$PROFILE" --no-fail-fast -p "koidrive-$SUITE" --features "$FEATURES"
-      - name: Replay saved engine property regressions without random cases
-        if: ${{ !cancelled() && matrix.suite == 'engine' }}
-        env:
-          PROPTEST_CASES: '0'
-        run: cargo test --locked -p koidrive-engine --test names --test trees --test effects -- --show-output
-      - name: Replay saved driver property regressions without random cases
-        if: ${{ !cancelled() && matrix.suite == 'driver' }}
-        env:
-          PROPTEST_CASES: '0'
-        run: cargo test --locked -p koidrive-driver --lib batches_leave_l_a_tree_that_holds_the_disk -- --show-output
-      - name: Test disks ejected from inside a folder
-        if: ${{ !cancelled() && runner.os == 'Linux' && matrix.suite == 'driver' }}
-        env:
-          KOIDRIVE_TEST_MOUNTS: '1'
-        run: |
-          if ! command -v mkfs.vfat > /dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq dosfstools
-          fi
-          cargo test --locked -p koidrive-driver --lib -- disk_ejected another_disk_mounted two_copies_of_one_disk mounted_over_synced disk_without_a_uuid before_an_upgrade --show-output
+          cargo nextest run --archive-file "$RUNNER_TEMP/rust-tests/archive.tar.zst" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite --profile ci --success-output final -E "$(sed -E 's/[ |]+$//' <<<"$FILTERS")"
       - name: Test that the app installer refuses an app signed by a forged Developer ID
-        if: ${{ !cancelled() && matrix.os == 'macos' && matrix.suite == 'driver' }}
+        if: ${{ !cancelled() && env.OS == 'macos' && needs.changes.outputs.rust_driver == 'true' }}
         run: |
           set -o pipefail
           security list-keychains -d user
@@ -403,10 +509,122 @@ jobs:
             exit 1
           fi
       - name: Test release updates with a tag-derived version
-        if: ${{ !cancelled() && matrix.suite == 'driver' }}
+        if: ${{ !cancelled() && needs.changes.outputs.rust_driver == 'true' }}
         run: |
           python3 scripts/stamp-release-version.py v0.1.0-alpha.1
           nice -n 10 cargo test --locked -p koidrive-cli --test update --features koidrive-cli/test-install-inventory
+
+  rust-special-macos:
+    name: rust special (macos)
+    needs: [changes, rust-build-macos]
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true' && needs.changes.outputs.rust_macos == 'true'
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      OS: macos
+    steps: *rust-special-steps
+
+  rust-sim:
+    name: rust tests (${{ matrix.os }}, sim)
+    needs: [changes]
+    if: needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_sim == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.changes.outputs.rust_macos == 'true' && '["ubuntu-latest","macos"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os == 'macos' && 'macos-15' || matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: sim
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: List the package test inventory
+        run: |
+          cargo test --locked --profile checked --no-fail-fast -p koidrive-sim --features koidrive-engine/serde --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/build.json"
+          cargo test --locked --profile checked -p koidrive-test-support --lib --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/probe.json"
+          scripts/require-runtime-checks.sh "$RUNNER_TEMP/build.json" "$RUNNER_TEMP/probe.json"
+          cargo test --locked --profile checked --no-fail-fast -p koidrive-sim --features koidrive-engine/serde -- --list --format terse > "$RUNNER_TEMP/inventory.txt"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-test-inventory-${{ matrix.os }}-sim
+          path: ${{ runner.temp }}/inventory.txt
+          if-no-files-found: error
+          retention-days: 7
+      - name: Run the package tests and doctests
+        run: cargo test --locked --profile checked --no-fail-fast -p koidrive-sim --features koidrive-engine/serde
+
+  rust-report:
+    name: rust test report
+    needs: [changes, rust-build-linux, rust-build-macos, rust-tests-linux, rust-tests-macos]
+    if: ${{ !cancelled() && needs.changes.outputs.site_only != 'true' && needs.changes.outputs.rust_archive == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: junit
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          pattern: rust-junit-*
+          path: ${{ runner.temp }}/junit
+          merge-multiple: true
+      - id: inventory_linux
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: rust-test-inventory-ubuntu-latest
+          path: ${{ runner.temp }}/inventory/rust-test-inventory-ubuntu-latest
+      - id: inventory_macos
+        if: needs.changes.outputs.rust_macos == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: rust-test-inventory-macos
+          path: ${{ runner.temp }}/inventory/rust-test-inventory-macos
+      - name: Check that the shards ran every test once, and report timings and flaky tests
+        env:
+          RUST_MACOS: ${{ needs.changes.outputs.rust_macos }}
+          JUNIT_DOWNLOAD: ${{ steps.junit.outcome }}
+          INVENTORY_LINUX: ${{ steps.inventory_linux.outcome }}
+          INVENTORY_MACOS: ${{ steps.inventory_macos.outcome }}
+        run: |
+          status=0
+          if [ "$JUNIT_DOWNLOAD" != success ]; then
+            echo "::error::Downloading the shard results failed (see that step), so tests in the results it missed count as not run."
+            status=1
+          fi
+          oses=ubuntu-latest
+          if [ "$RUST_MACOS" = true ]; then oses="$oses macos"; fi
+          for os in $oses; do
+            downloaded=$INVENTORY_LINUX
+            if [ "$os" = macos ]; then downloaded=$INVENTORY_MACOS; fi
+            if [ "$downloaded" != success ]; then
+              echo "::error::The test inventory of rust build ($os) did not download ($downloaded), so its shards cannot be checked."
+              status=1
+              continue
+            fi
+            mkdir -p "$RUNNER_TEMP/by-os/$os"
+            mv "$RUNNER_TEMP/junit/rust-junit-$os-"* "$RUNNER_TEMP/by-os/$os/" || true
+            python3 scripts/ci-rust-tests.py report --os "$os" --list "$RUNNER_TEMP/inventory/rust-test-inventory-$os/list.json" \
+              --junit "$RUNNER_TEMP/by-os/$os" --out "$RUNNER_TEMP/report/$os" || status=1
+            cat "$RUNNER_TEMP/report/$os/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          done
+          exit "$status"
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-test-report
+          path: ${{ runner.temp }}/report
+          if-no-files-found: error
+          retention-days: 30
 
   server:
     name: server (${{ matrix.os }})
@@ -876,15 +1094,19 @@ jobs:
   ci-report:
     name: ci-report
     if: always()
-    needs: [changes, rust, rust-tests, server, server-deploy, net-integration, driver-integration, cli-integration, ffi-integration, spec, macos-app, installer, comments, store-upgrade, state-io, test-lines]
+    needs: [changes, rust-lint, rust-build-linux, rust-build-macos, rust-tests-linux, rust-tests-macos, rust-special-linux, rust-special-macos, rust-sim, rust-report, server, server-deploy, net-integration, driver-integration, cli-integration, ffi-integration, spec, macos-app, installer, comments, store-upgrade, state-io, test-lines]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any CI job failed or was cancelled
         env:
           CHANGES: ${{ needs.changes.result }}
           SITE_ONLY: ${{ needs.changes.outputs.site_only }}
-          RUST: ${{ needs.rust.result }}
-          RUST_TESTS: ${{ needs.rust-tests.result }}
+          RUST_LINT: ${{ needs.rust-lint.result }}
+          RUST_BUILD: ${{ needs.rust-build-linux.result }}/${{ needs.rust-build-macos.result }}
+          RUST_TESTS: ${{ needs.rust-tests-linux.result }}/${{ needs.rust-tests-macos.result }}
+          RUST_SPECIAL: ${{ needs.rust-special-linux.result }}/${{ needs.rust-special-macos.result }}
+          RUST_SIM: ${{ needs.rust-sim.result }}
+          RUST_REPORT: ${{ needs.rust-report.result }}
           SERVER: ${{ needs.server.result }}
           SERVER_DEPLOY: ${{ needs.server-deploy.result }}
           NET_INTEGRATION: ${{ needs.net-integration.result }}
@@ -899,15 +1121,15 @@ jobs:
           FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
         run: |
           echo "site-only change: ${SITE_ONLY:-unknown}. Build and test jobs that skip for a site-only change report skipped."
-          echo "changes: $CHANGES, rust: $RUST, rust-tests: $RUST_TESTS, server: $SERVER, server-deploy: $SERVER_DEPLOY, net-integration: $NET_INTEGRATION, driver-integration: $DRIVER_INTEGRATION, cli-integration: $CLI_INTEGRATION, ffi-integration: $FFI_INTEGRATION, spec: $SPEC, macos-app: $MACOS_APP, installer: $INSTALLER, comments: $COMMENTS, test-lines: $TEST_LINES"
+          echo "changes: $CHANGES, rust-lint: $RUST_LINT, rust-build: $RUST_BUILD, rust-tests: $RUST_TESTS, rust-special: $RUST_SPECIAL, rust-sim: $RUST_SIM, rust-report: $RUST_REPORT, server: $SERVER, server-deploy: $SERVER_DEPLOY, net-integration: $NET_INTEGRATION, driver-integration: $DRIVER_INTEGRATION, cli-integration: $CLI_INTEGRATION, ffi-integration: $FFI_INTEGRATION, spec: $SPEC, macos-app: $MACOS_APP, installer: $INSTALLER, comments: $COMMENTS, test-lines: $TEST_LINES"
           if [ "$FAILED" = "true" ]; then
-            echo "::error::At least one CI job failed or was cancelled (changes: $CHANGES, rust: $RUST, rust-tests: $RUST_TESTS, server: $SERVER, server-deploy: $SERVER_DEPLOY, net-integration: $NET_INTEGRATION, driver-integration: $DRIVER_INTEGRATION, cli-integration: $CLI_INTEGRATION, ffi-integration: $FFI_INTEGRATION, spec: $SPEC, macos-app: $MACOS_APP, installer: $INSTALLER, comments: $COMMENTS, test-lines: $TEST_LINES). Open that job's log for the cause."
+            echo "::error::At least one CI job failed or was cancelled (changes: $CHANGES, rust-lint: $RUST_LINT, rust-build: $RUST_BUILD, rust-tests: $RUST_TESTS, rust-special: $RUST_SPECIAL, rust-sim: $RUST_SIM, rust-report: $RUST_REPORT, server: $SERVER, server-deploy: $SERVER_DEPLOY, net-integration: $NET_INTEGRATION, driver-integration: $DRIVER_INTEGRATION, cli-integration: $CLI_INTEGRATION, ffi-integration: $FFI_INTEGRATION, spec: $SPEC, macos-app: $MACOS_APP, installer: $INSTALLER, comments: $COMMENTS, test-lines: $TEST_LINES). Open that job's log for the cause."
             exit 1
           fi
       - name: Fail unless every build and test job the change selects ran
         if: needs.changes.outputs.site_only != 'true'
         env:
-          RESULTS: rust=${{ needs.changes.outputs.rust == 'true' && needs.rust.result || 'not-needed' }} rust-tests=${{ needs.changes.outputs.rust_suites != '[]' && needs.rust-tests.result || 'not-needed' }} server=${{ needs.changes.outputs.server == 'true' && needs.server.result || 'not-needed' }} server-deploy=${{ needs.changes.outputs.server_deploy == 'true' && needs.server-deploy.result || 'not-needed' }} net-integration=${{ needs.changes.outputs.net_integration == 'true' && needs.net-integration.result || 'not-needed' }} driver-integration=${{ needs.changes.outputs.driver_integration == 'true' && needs.driver-integration.result || 'not-needed' }} cli-integration=${{ needs.changes.outputs.cli_integration == 'true' && needs.cli-integration.result || 'not-needed' }} ffi-integration=${{ needs.changes.outputs.ffi_integration == 'true' && needs.ffi-integration.result || 'not-needed' }} spec=${{ needs.spec.result }} installer=${{ needs.installer.result }} test-lines=${{ github.event_name != 'push' && needs.test-lines.result || 'not-needed' }}
+          RESULTS: rust-lint=${{ needs.changes.outputs.rust_lint == 'true' && needs.rust-lint.result || 'not-needed' }} rust-build=${{ needs.changes.outputs.rust_archive == 'true' && needs.rust-build-linux.result || 'not-needed' }} rust-tests=${{ needs.changes.outputs.rust_archive == 'true' && needs.rust-tests-linux.result || 'not-needed' }} rust-special=${{ needs.changes.outputs.rust_archive == 'true' && needs.rust-special-linux.result || 'not-needed' }} rust-build-macos=${{ needs.changes.outputs.rust_archive == 'true' && needs.changes.outputs.rust_macos == 'true' && needs.rust-build-macos.result || 'not-needed' }} rust-tests-macos=${{ needs.changes.outputs.rust_archive == 'true' && needs.changes.outputs.rust_macos == 'true' && needs.rust-tests-macos.result || 'not-needed' }} rust-special-macos=${{ needs.changes.outputs.rust_archive == 'true' && needs.changes.outputs.rust_macos == 'true' && needs.rust-special-macos.result || 'not-needed' }} rust-report=${{ needs.changes.outputs.rust_archive == 'true' && needs.rust-report.result || 'not-needed' }} rust-sim=${{ needs.changes.outputs.rust_sim == 'true' && needs.rust-sim.result || 'not-needed' }} server=${{ needs.changes.outputs.server == 'true' && needs.server.result || 'not-needed' }} server-deploy=${{ needs.changes.outputs.server_deploy == 'true' && needs.server-deploy.result || 'not-needed' }} net-integration=${{ needs.changes.outputs.net_integration == 'true' && needs.net-integration.result || 'not-needed' }} driver-integration=${{ needs.changes.outputs.driver_integration == 'true' && needs.driver-integration.result || 'not-needed' }} cli-integration=${{ needs.changes.outputs.cli_integration == 'true' && needs.cli-integration.result || 'not-needed' }} ffi-integration=${{ needs.changes.outputs.ffi_integration == 'true' && needs.ffi-integration.result || 'not-needed' }} spec=${{ needs.spec.result }} installer=${{ needs.installer.result }} test-lines=${{ github.event_name != 'push' && needs.test-lines.result || 'not-needed' }}
         run: |
           echo "Build and test jobs (not-needed: the change does not select it): $RESULTS"
           for r in $RESULTS; do

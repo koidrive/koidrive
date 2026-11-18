@@ -613,12 +613,7 @@ mod tests {
     fn a_sim_test_change_runs_the_suites_that_build_the_sim() {
         assert_eq!(
             running(&["core/sim/tests/devices.rs"]),
-            jobs(&[
-                "driver_integration",
-                "rust_driver",
-                "rust_engine",
-                "rust_sim"
-            ])
+            jobs(&["driver_integration", "rust_driver", "rust_lint", "rust_sim"])
         );
     }
 
@@ -659,7 +654,7 @@ mod tests {
             running(&["cli/src/main.rs"]),
             jobs(&[
                 "rust",
-                "rust_engine",
+                "rust_lint",
                 "rust_driver",
                 "cli_integration",
                 "ffi_integration",
@@ -674,14 +669,14 @@ mod tests {
             (
                 "#682",
                 ".github/workflows/property-battery.yml",
-                "rust_engine",
+                "rust_lint",
             ),
             ("#664", "server/src/account/claim.ts", "net_integration"),
             ("#664", "server/src/account/claim.ts", "server"),
             ("#400", "spec/rfc/0018-resends-and-deletes.md", "rust_sim"),
             ("#367", "docs/json-schema/v1/koi-status.json", "rust_driver"),
             ("#367", "docs/json-schema/v1/koi-status.json", "rust"),
-            ("#347", "scripts/test-split/mapping.json", "rust_engine"),
+            ("#347", "scripts/test-split/mapping.json", "rust_lint"),
             ("#674", "server/scripts/deploy-test/e2e.ts", "server"),
         ] {
             let running = running(&[path]);
@@ -890,25 +885,31 @@ mod tests {
     #[test]
     fn every_package_a_job_builds_selects_that_job() {
         let workflow = fs::read_to_string(format!("{ROOT}/.github/workflows/ci.yml")).unwrap();
-        let shards: String = workflow
-            .split("\n  rust-tests:\n")
-            .nth(1)
-            .unwrap()
-            .lines()
-            .take_while(|line| !line.starts_with("  ") || line.starts_with("   "))
-            .map(|line| format!("{line}\n"))
-            .collect();
-        let steps: Vec<_> = shards.split("\n      - ").skip(1).collect();
-        let suite = |name: &str| {
-            steps
+        let steps = |job: &str| -> Vec<String> {
+            let body: String = workflow
+                .split(&format!("\n  {job}:\n"))
+                .nth(1)
+                .unwrap()
+                .lines()
+                .take_while(|line| !line.starts_with("  ") || line.starts_with("   "))
+                .map(|line| format!("{line}\n"))
+                .collect();
+            body.split("\n      - ")
+                .skip(1)
+                .map(str::to_string)
+                .collect()
+        };
+        let suite = |name: &str, job: &str| {
+            steps(job)
                 .iter()
                 .filter(|step| {
                     let condition = step
                         .lines()
                         .find(|line| line.trim_start().starts_with("if:"))
                         .unwrap_or("");
-                    !condition.contains("matrix.suite ==")
-                        || condition.contains(&format!("matrix.suite == '{name}'"))
+                    !condition.contains("needs.changes.outputs.rust")
+                        || condition
+                            .contains(&format!("needs.changes.outputs.rust_{name} == 'true'"))
                 })
                 .map(|step| built(step))
                 .fold(BTreeSet::from([format!("koidrive-{name}")]), |all, more| {
@@ -919,9 +920,9 @@ mod tests {
         let workspace = GRAPH.workspace();
         let id = |name: &str| workspace.member_by_name(name).unwrap().id().clone();
         for (job, packages) in [
-            ("rust_engine", suite("engine")),
-            ("rust_driver", suite("driver")),
-            ("rust_sim", suite("sim")),
+            ("rust_engine", suite("engine", "rust-special-linux")),
+            ("rust_driver", suite("driver", "rust-special-linux")),
+            ("rust_sim", suite("sim", "rust-sim")),
             (
                 "net_integration",
                 script("core/net/scripts/integration-test.sh"),
@@ -961,19 +962,9 @@ mod tests {
     #[test]
     fn every_job_is_an_output_ci_yml_reads() {
         let workflow = fs::read_to_string(format!("{ROOT}/.github/workflows/ci.yml")).unwrap();
-        let suites: Vec<_> = workflow
-            .split_once("(?<suite>")
-            .and_then(|(_, rest)| rest.split_once(')'))
-            .map(|(names, _)| {
-                names
-                    .split('|')
-                    .map(|name| format!("rust_{name}"))
-                    .collect()
-            })
-            .unwrap_or_default();
         for job in CONFIG.job.keys() {
             assert!(
-                suites.contains(job) || workflow.contains(&format!("needs.changes.outputs.{job} ")),
+                workflow.contains(&format!("needs.changes.outputs.{job} ")),
                 "ci.yml never reads needs.changes.outputs.{job}"
             );
         }

@@ -21,6 +21,10 @@ CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 RUNTIME_CHECKS = ROOT / "scripts/require-runtime-checks.sh"
 
 
+def ci_job(workflow, name):
+    return re.split(r"\n  \S", workflow.split(f"\n  {name}:\n", 1)[1], maxsplit=1)[0]
+
+
 def commands(workflow):
     if "PROPTEST_CASES" in re.sub(r"env -u PROPTEST_CASES\b", "", workflow):
         raise ValueError("Battery must only mention PROPTEST_CASES to unset it")
@@ -259,8 +263,20 @@ class RuntimeChecks(unittest.TestCase):
         battery = WORKFLOW.read_text()
         self.assertIn('scripts/require-runtime-checks.sh "$RUNNER_TEMP/build.json"', battery)
         ci = CI_WORKFLOW.read_text()
-        self.assertIn('scripts/require-runtime-checks.sh "$RUNNER_TEMP/build.json" "$RUNNER_TEMP/probe.json"', ci)
-        self.assertIn('cargo test --locked --profile "$PROFILE" -p koidrive-test-support --lib --no-run', ci)
+        check = 'scripts/require-runtime-checks.sh "$RUNNER_TEMP/build.json" "$RUNNER_TEMP/probe.json"'
+        jobs = {
+            "rust-build-linux": ('cargo nextest archive --locked "$@" --archive-file "$out/archive.tar.zst" --cargo-message-format json-render-diagnostics > "$RUNNER_TEMP/build.json"',
+                                 'cargo test --locked -p koidrive-test-support --lib --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/probe.json"'),
+            "rust-sim": ('cargo test --locked --profile checked --no-fail-fast -p koidrive-sim --features koidrive-engine/serde --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/build.json"',
+                         'cargo test --locked --profile checked -p koidrive-test-support --lib --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/probe.json"'),
+        }
+        for name, (build, probe) in jobs.items():
+            body = ci_job(ci, name)
+            with self.subTest(job=name):
+                self.assertLess(body.index(build), body.index(check))
+                self.assertLess(body.index(probe), body.index(check))
+        self.assertIn("    steps: *rust-build-steps\n", ci_job(ci, "rust-build-macos"))
+        self.assertIn("    steps: &rust-build-steps\n", ci_job(ci, "rust-build-linux"))
 
     def test_battery_builds_and_reproduces_with_the_checked_profile(self):
         workflow = WORKFLOW.read_text()
@@ -271,12 +287,15 @@ class RuntimeChecks(unittest.TestCase):
 
     def test_ci_selects_only_dev_or_checked(self):
         for workflow in (WORKFLOW.read_text(), CI_WORKFLOW.read_text()):
-            for profile in re.findall(r"--profile (\S+)", workflow):
-                self.assertIn(profile, ("checked", '"$PROFILE"'))
-        expressions = re.findall(r"(?m)^ +PROFILE: (.+)$", CI_WORKFLOW.read_text())
-        self.assertTrue(expressions)
-        for expression in expressions:
-            self.assertEqual(set(re.findall(r"'([^']*)'", expression)) - {"sim"}, {"checked", "dev"})
+            commands = re.findall(r"cargo (?:test|build|run|nextest (?:archive|run|list))\b[^\n]*", workflow)
+            for command in commands:
+                with self.subTest(command=command):
+                    if command.startswith(("cargo test", "cargo nextest")):
+                        self.assertNotRegex(command, r"(?:^|\s)(?:-r|--release)(?:\s|$)")
+                    option = "--cargo-profile" if command.startswith("cargo nextest") else "--profile"
+                    for profile in re.findall(rf"(?:^|\s){option}[= ](\S+)", command):
+                        self.assertIn(profile, ("checked", '"$PROFILE"'))
+        self.assertIn("cargo nextest archive", CI_WORKFLOW.read_text())
 
 
 class HeavyTests(unittest.TestCase):

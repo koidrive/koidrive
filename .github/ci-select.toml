@@ -48,7 +48,16 @@ globs = [
   "scripts/test-split-proptest-regressions.py",
   "scripts/split-proptest-regressions.py",
 ]
-jobs = ["rust"]
+jobs = ["rust_lint"]
+
+[[path]]
+globs = [
+  ".config/nextest.toml",
+  ".github/rust-test-times.json",
+  "scripts/ci-rust-tests.py",
+  "scripts/test-ci-rust-tests.py",
+]
+jobs = ["rust", "rust_lint", "rust_driver", "rust_engine"]
 
 [[path]]
 globs = [
@@ -61,7 +70,7 @@ globs = [
   "scripts/test-split/**",
   "scripts/split-tests.py",
 ]
-jobs = ["rust_engine"]
+jobs = ["rust_lint"]
 
 [[path]]
 globs = ["scripts/check-test-lines.py", "scripts/test-check-test-lines.py", "scripts/fn-docs/**"]
@@ -73,7 +82,7 @@ jobs = ["rust_driver"]
 
 [[path]]
 globs = ["scripts/require-runtime-checks.sh"]
-jobs = ["rust_engine", "rust_driver", "rust_sim"]
+jobs = ["rust", "rust_engine", "rust_driver", "rust_sim"]
 
 [[path]]
 globs = [
@@ -139,8 +148,11 @@ by = ["koidrive-engine"]
 packages = "any"
 except = ["koidrive-driver", "koidrive-engine", "koidrive-sim"]
 
-[job.rust_engine]
+[job.rust_lint]
 packages = "any"
+
+[job.rust_engine]
+packages = ["koidrive-engine"]
 
 [job.rust_driver]
 packages = ["koidrive-driver", "koidrive-cli"]
