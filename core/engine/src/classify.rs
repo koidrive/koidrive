@@ -377,6 +377,44 @@ struct Keeping {
     cut: bool,
 }
 
+/// The paths, from the root, where the disk may hold what no scan has reported yet: removals a scan has not
+/// settled, files whose content is not read yet, and folders an effect moved that no scan has listed since. A node
+/// at or below one stays unobserved and is not released until a scan settles it (section 5.10).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Pending(BTreeSet<Vec<String>>);
+
+impl Pending {
+    pub fn new<P, S>(paths: impl IntoIterator<Item = P>) -> Self
+    where
+        P: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Pending(
+            (paths.into_iter())
+                .map(|path| {
+                    path.into_iter()
+                        .map(|name| name_key(name.as_ref()))
+                        .collect()
+                })
+                .collect(),
+        )
+    }
+
+    fn holds(&self, path: Option<(Vec<&str>, Kind)>) -> bool {
+        let Some((names, _)) = path.filter(|_| !self.0.is_empty()) else {
+            return false;
+        };
+        let mut keys = Vec::with_capacity(names.len());
+        if self.0.contains(&keys) {
+            return true;
+        }
+        names.into_iter().any(|name| {
+            keys.push(name_key(name));
+            self.0.contains(&keys)
+        })
+    }
+}
+
 /// R, L and S of one space, and the nodes whose entries changed since they were last found in sync.
 /// Every mutation goes through these methods, so a change in any tree marks its node dirty, and
 /// [`Trees::settle`] and the planner look only at what changed.
@@ -498,6 +536,8 @@ pub struct Trees {
     gone_tops: BTreeSet<NodeId>,
     /// Whether anything changed since the last settle looked for vanished copies.
     release_due: bool,
+    pending: Pending,
+    held_for_scan: BTreeSet<NodeId>,
 }
 
 /// Equal when R, L, S and the state the store keeps are equal. What the trees track only until the
@@ -598,6 +638,8 @@ impl Trees {
             copies_gone: BTreeSet::new(),
             gone_tops: BTreeSet::new(),
             release_due: true,
+            pending: Pending::default(),
+            held_for_scan: BTreeSet::new(),
         }
     }
 
@@ -2032,7 +2074,7 @@ impl Trees {
             self.forget_identity(id, &old.identity);
             self.mark(id);
         }
-        if self.s.get(id).is_none() {
+        if self.s.get(id).is_none() && !self.watched_positions.contains_key(id) {
             self.clear_unobserved(id);
         }
     }
@@ -2196,7 +2238,7 @@ impl Trees {
         self.adopted.clear();
         self.unwatched.extend(self.watched.keys().cloned());
         self.watched.clear();
-        self.watched_positions.clear();
+        self.unwatch_positions();
         self.trashed_here.clear();
         self.edited_here.clear();
         let r = &self.r;
@@ -2956,9 +2998,14 @@ impl Trees {
         false
     }
 
-    /// Records that a scan listed each of `folders`, the root or folders L holds: what L holds in them at an
-    /// included position is observed (section 5.10).
-    pub fn listed(&mut self, folders: &[NodeId]) {
+    /// Records that a scan listed each of `folders`, the root or folders L holds, and what the scans have not
+    /// settled yet: what L holds in them at an included position is observed, except at or below a path of
+    /// `pending` (section 5.10).
+    pub fn listed(&mut self, folders: &[NodeId], pending: Pending) {
+        if self.pending != pending {
+            self.pending = pending;
+            self.release_due = true;
+        }
         if self.unobserved.is_empty() {
             return;
         }
@@ -2966,7 +3013,7 @@ impl Trees {
             if self.awaits_relisting(folder) {
                 continue;
             }
-            for id in self.seen_in(folder) {
+            for id in self.seen_in(folder, &self.pending) {
                 self.clear_unobserved(&id);
             }
         }
@@ -2977,14 +3024,16 @@ impl Trees {
     /// folders below it the server keeps only for an excluded file, so the group downloads again and no deletion
     /// is sent (section 5.10). A group leaves whole or stays, and one that stays is tried again at the next
     /// settle that changes anything: while the rules are not scanned since a restore, while the rules leave out its
-    /// top where S or R holds it, while the rules of a folder above one of its nodes are unknown, or while S cannot
-    /// drop it. Only the topmost nodes whose copies went are looked at, so a settle costs nothing per node below
-    /// them, nor per node that is unobserved with its copy in place.
+    /// top where S or R holds it, while the rules of a folder above one of its nodes are unknown, while the place
+    /// S or R holds for one of its nodes is at or below a [`Pending`] path, or while S cannot drop it. Only the
+    /// topmost nodes whose copies went are looked at, so a settle costs nothing per node below them, nor per node
+    /// that is unobserved with its copy in place.
     fn release_vanished(&mut self) -> bool {
         self.released.retain(|id| {
             self.l.get(id).is_none() && self.s.get(id).is_none() && self.r.live(id).is_some()
         });
         let before = self.released.len();
+        self.held_for_scan.clear();
         if !self.rules_known || self.gone_tops.is_empty() {
             return false;
         }
@@ -3015,6 +3064,7 @@ impl Trees {
                 None
             })
             .collect();
+        let mut held_for_scan = BTreeSet::new();
         let groups: Vec<Vec<NodeId>> = (tops.into_iter())
             .filter(|top| !self.ignored(top))
             .map(|top| {
@@ -3031,6 +3081,10 @@ impl Trees {
                 group
             })
             .filter(|group| {
+                if group.iter().any(|id| self.pending_at(id)) {
+                    held_for_scan.extend(group.iter().cloned());
+                    return false;
+                }
                 !group.iter().any(|id| self.below_unknown_rules(id))
                     && self.fits_synced_together(
                         &(group.iter())
@@ -3040,6 +3094,7 @@ impl Trees {
             })
             .collect();
         drop(kept);
+        self.held_for_scan = held_for_scan;
         for id in groups.iter().flat_map(|group| group.iter().rev()) {
             self.set_synced(id.clone(), None);
             self.released.push(id.clone());
@@ -3047,11 +3102,43 @@ impl Trees {
         self.released.len() > before
     }
 
-    /// Whether [`Trees::listed`] would observe a node in one of `folders`.
-    pub fn sees_unobserved(&self, folders: impl IntoIterator<Item = NodeId>) -> bool {
-        !self.unobserved.is_empty()
-            && (folders.into_iter())
-                .any(|folder| !self.awaits_relisting(&folder) && !self.seen_in(&folder).is_empty())
+    fn pending_at(&self, id: &str) -> bool {
+        [self.s.live(id), self.r.live(id)]
+            .into_iter()
+            .flatten()
+            .any(|shape| self.pending.holds(self.on_disk(shape)))
+    }
+
+    fn on_disk<'a>(&'a self, shape: &'a Shape) -> Option<(Vec<&'a str>, Kind)> {
+        let mut names = vec![shape.name.as_str()];
+        let mut current = shape.parent.as_str();
+        for _ in 0..=self.s.len() {
+            let above = match current == self.l.root {
+                true => Some(Vec::new()),
+                false => path(&self.l, current).map(|(above, _)| above),
+            };
+            if let Some(mut above) = above {
+                above.extend(names.into_iter().rev());
+                return Some((above, shape.kind));
+            }
+            let synced = self.s.live(current)?;
+            names.push(&synced.name);
+            current = &synced.parent;
+        }
+        None
+    }
+
+    /// Whether [`Trees::listed`] would change what the trees hold.
+    pub fn sees_unobserved(
+        &self,
+        folders: impl IntoIterator<Item = NodeId>,
+        pending: &Pending,
+    ) -> bool {
+        self.pending != *pending
+            || !self.unobserved.is_empty()
+                && (folders.into_iter()).any(|folder| {
+                    !self.awaits_relisting(&folder) && !self.seen_in(&folder, pending).is_empty()
+                })
     }
 
     /// Takes the folders a scan saw moved here while nodes were unobserved. Each waits for a scan
@@ -3074,13 +3161,14 @@ impl Trees {
         false
     }
 
-    fn seen_in(&self, folder: &NodeId) -> Vec<NodeId> {
+    fn seen_in(&self, folder: &NodeId, pending: &Pending) -> Vec<NodeId> {
         let mut scopes = HashMap::new();
         (std::iter::once(folder).chain(self.l_names.children(folder)))
             .filter(|id| {
                 self.unobserved.contains(*id)
                     && !self.recorded_local(id)
                     && self.placed_included(id, &mut scopes)
+                    && !pending.holds(path(&self.l, id))
             })
             .cloned()
             .collect()
@@ -3995,8 +4083,23 @@ impl Trees {
     /// Watches the position L and R agree on for `ids`, the nodes the commit just built creates or
     /// moves, and stops watching any other node.
     pub fn watch_positions(&mut self, ids: impl IntoIterator<Item = NodeId>) {
-        self.watched_positions.clear();
+        self.unwatch_positions();
         (self.watched_positions).extend(ids.into_iter().map(|id| (id, None)));
+    }
+
+    fn unwatch_positions(&mut self) {
+        let abandoned: Vec<NodeId> = (self.watched_positions.keys())
+            .filter(|id| {
+                self.unobserved.contains(*id)
+                    && self.l.get(id).is_none()
+                    && self.s.get(id).is_none()
+            })
+            .cloned()
+            .collect();
+        for id in abandoned {
+            self.clear_unobserved(&id);
+        }
+        self.watched_positions.clear();
     }
 
     /// The latest position of `id` that L and R agreed on since [`Trees::watch_positions`] started
@@ -5964,6 +6067,7 @@ impl Trees {
                             self.vanished(&remote.parent)
                                 && !self.ignored(&remote.parent)
                                 && !self.below_unknown_rules(&remote.parent)
+                                && !self.held_for_scan.contains(&remote.parent)
                         })
                 })
                 .cloned(),
@@ -6105,6 +6209,8 @@ impl Trees {
             copies_gone: _,
             gone_tops: _,
             release_due: _,
+            pending: _,
+            held_for_scan: _,
             r_names: _,
             r_trashed: _,
             creates: _,

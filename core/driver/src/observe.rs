@@ -67,6 +67,10 @@ pub struct Observation {
     /// reports a `Modified` with the content once a read succeeds, unless a later change to the path replaces it
     /// (design §5.8).
     pub busy: Vec<PathBuf>,
+    /// Paths where the disk may hold what no observation has reported yet: scopes the scans could not settle, as a
+    /// removal they could not confirm or the search below left-out entries has not decided, and files whose content
+    /// is still to be read. Every batch lists all of them, and a batch is returned when they change.
+    pub pending: Vec<PathBuf>,
     /// The folders whose `.koiignore` file the scans of this batch found changed, each with the rules it holds now.
     /// The engine takes them before the changes of the batch. The first batch of an observer follows its scan of the
     /// whole tree and lists every rules file there is, also when nothing else changed.
@@ -162,6 +166,7 @@ pub struct FsObserver {
     settling: bool,
     /// Whether a reset still waits for the batch of a scan made after it.
     reset: bool,
+    pending: Vec<PathBuf>,
     /// Files whose content could not be read, or that an observation left to a later one, with when to read them.
     unread: Unread,
     /// Whether the caller has stopped waiting for observations.
@@ -367,6 +372,7 @@ impl FsObserver {
             first: true,
             settling: true,
             reset: false,
+            pending: Vec::new(),
             unread: Unread::default(),
             stopped,
             progress,
@@ -766,6 +772,11 @@ impl Observer for FsObserver {
             );
             self.settling = !poll.pending.is_empty();
         }
+        let pending: Vec<PathBuf> = (poll.pending.into_iter())
+            .chain(self.unread.files.keys().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
         if !first
             && !answers
             && !observed
@@ -774,11 +785,13 @@ impl Observer for FsObserver {
             && poll.read.is_empty()
             && poll.settled.is_empty()
             && rules.is_empty()
+            && pending == self.pending
         {
             return Ok(None);
         }
         self.first &= !first;
         self.reset &= !answers;
+        self.pending.clone_from(&pending);
         let root = check_root(&self.root, &self.space_id, &self.linked).map(|_| ());
         let entries = &self.watcher.snapshot().entries;
         let read = (changes.iter()).filter_map(|change| match change {
@@ -810,6 +823,7 @@ impl Observer for FsObserver {
             read: poll.read,
             scanned: self.scanned,
             busy: reads.busy,
+            pending,
             rules,
             all_rules: first,
             mounts: (self.watcher.snapshot().entries.iter())
