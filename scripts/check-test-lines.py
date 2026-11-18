@@ -18,8 +18,10 @@ CFG = re.compile(r"#(!?)\s*\[\s*cfg\s*\(")
 ATTRIBUTE = re.compile(r"#\s*\[")
 PATH_ATTRIBUTE = re.compile(r'#\s*\[\s*path\s*=\s*"([^"]*)"\s*\]')
 MOD_DECLARATION = re.compile(r"(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)\s*;")
+INLINE_MODULE = re.compile(r"\bmod\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)\s*\{")
+RECORD_NAME = re.compile(r"pr-([0-9]+)\.txt")
 VISIBILITY = re.compile(r"(?:pub(?:\s*\([^)]*\))?\s+)?")
-UNTIL_SEMICOLON = re.compile(r"(?:const|static|let|type)\b")
+UNTIL_SEMICOLON = re.compile(r"(?:const|static|let|type)\b(?!\s+(?:fn|unsafe|async|extern)\b)")
 ITEM = re.compile(r"(?:fn|impl|struct|enum|union|mod|use|trait|extern|unsafe|async|macro_rules!|[A-Za-z_][A-Za-z0-9_]*!)")
 EXPRESSION_CONTINUES = re.compile(r"\s*[,;.?)\]}]|\s*else\b|\s*as\b")
 FILE_ATTRIBUTES_ONLY = re.compile(r"\s*(?:#!\s*\[[^\]]*\]\s*)*")
@@ -132,22 +134,25 @@ def item_end(code, start):
     return pos
 
 
-def module_file(path, name, explicit, files):
+def module_file(path, declaration, files):
+    inline, name, explicit = declaration
     directory = posixpath.dirname(path)
-    if explicit is not None:
+    if explicit is not None and not inline:
         return posixpath.normpath(posixpath.join(directory, explicit))
     if not CRATE_ROOT.search(path):
         directory = posixpath.join(directory, posixpath.basename(path)[:-3])
+    directory = posixpath.join(directory, *inline)
+    if explicit is not None:
+        return posixpath.normpath(posixpath.join(directory, explicit))
     flat = posixpath.join(directory, name + ".rs")
     nested = posixpath.join(directory, name, "mod.rs")
     return nested if nested in files and flat not in files else flat
 
 
-def scan_rust(path, src, files):
+def scan_rust(src):
     code = mask(src)
-    starts = [0] + [m.end() for m in re.finditer("\n", code)]
-    line_of = lambda offset: len(re.findall("\n", code[:offset]))
-    ranges, test_modules, modules = [], set(), set()
+    line_of = lambda offset: code.count("\n", 0, offset)
+    ranges = []
     whole_file = False
     for m in CFG.finditer(code):
         close = balanced(code, m.end() - 1, "(", ")")
@@ -159,23 +164,26 @@ def scan_rust(path, src, files):
             continue
         end = item_end(code, code.index("]", close) + 1)
         ranges.append((line_of(m.start()), line_of(end - 1)))
+    blocks = [(m.start(), balanced(code, m.end() - 1, "{", "}"), m.group(1)) for m in INLINE_MODULE.finditer(code)]
+    declarations, test_declarations = [], []
     for m in MOD_DECLARATION.finditer(code):
         explicit = None
         before = code.rfind("]", 0, m.start())
         if before >= 0 and not code[before + 1:m.start()].strip():
-            opening = code.rfind("#", 0, before)
-            attribute = PATH_ATTRIBUTE.match(src, opening)
+            attribute = PATH_ATTRIBUTE.match(src, code.rfind("#", 0, before))
             if attribute:
                 explicit = attribute.group(1)
-        target = module_file(path, m.group(1), explicit, files)
-        modules.add(target)
+        inline = tuple(name for start, end, name in blocks if start < m.start() < end)
         line = line_of(m.start())
-        if any(first <= line <= last for first, last in ranges):
-            test_modules.add(target)
+        in_test = any(first <= line <= last for first, last in ranges)
+        (test_declarations if in_test else declarations).append((inline, m.group(1), explicit))
     covered = set()
     for first, last in ranges:
         covered.update(range(first, last + 1))
-    return {"whole_file": whole_file, "test_lines": len(covered), "test_modules": test_modules, "modules": modules}
+    return {"whole_file": whole_file, "test_lines": len(covered), "modules": declarations, "test_modules": test_declarations}
+
+
+EMPTY_SCAN = {"whole_file": False, "test_lines": 0, "modules": [], "test_modules": []}
 
 
 def line_count(data):
@@ -191,6 +199,7 @@ def workspace_members(cargo_toml):
 
 class Tree:
     cache = {}
+    scans = {}
 
     def __init__(self, rev):
         listing = git("ls-tree", "-r", "-z", rev).split(b"\0")
@@ -225,24 +234,23 @@ def count(tree):
     paths = [p for p in tree.blobs if p.startswith(tree.scope)]
     data = tree.contents(paths)
     rust = [p for p in paths if p.endswith(".rs")]
-    scans = {}
+    scans, modules, test_modules = {}, {}, {}
     for path in rust:
-        key = (path, tree.blobs[path])
-        if key not in Tree.cache:
+        blob = tree.blobs[path]
+        if blob not in Tree.scans:
             src = data[path].decode("utf-8", "replace")
-            if "cfg" in src and "test" in src or "mod " in src:
-                Tree.cache[key] = scan_rust(path, src, tree.blobs)
-            else:
-                Tree.cache[key] = {"whole_file": False, "test_lines": 0, "test_modules": set(), "modules": set()}
-        scans[path] = Tree.cache[key]
+            Tree.scans[blob] = scan_rust(src) if "cfg" in src and "test" in src or "mod " in src else EMPTY_SCAN
+        scans[path] = Tree.scans[blob]
+        modules[path] = {module_file(path, d, tree.blobs) for d in scans[path]["modules"]}
+        test_modules[path] = {module_file(path, d, tree.blobs) for d in scans[path]["test_modules"]}
     test_files = {p for p in rust if TEST_DIR.search(p) or TEST_CRATE.search(p) or scans[p]["whole_file"]}
-    declared_for_tests = {m for s in scans.values() for m in s["test_modules"]}
-    shared = {m for p, s in scans.items() if p not in test_files | declared_for_tests for m in s["modules"] - s["test_modules"]}
+    declared_for_tests = set().union(*test_modules.values())
+    shared = {m for p in rust if p not in test_files | declared_for_tests for m in modules[p]}
     test_files.update(declared_for_tests - shared)
     pending = list(test_files)
     while pending:
         path = pending.pop()
-        for child in scans.get(path, {}).get("modules", ()):
+        for child in modules.get(path, set()) | test_modules.get(path, set()):
             if child not in test_files:
                 test_files.add(child)
                 pending.append(child)
@@ -265,21 +273,32 @@ def count(tree):
 def records(tree):
     found = {}
     for path in tree.blobs:
-        if not path.startswith(RECORDS) or not path.endswith(".txt"):
+        if not path.startswith(RECORDS):
             continue
-        text = tree.read(path).decode("utf-8", "replace")
+        data = tree.read(path)
+        text = data.decode("utf-8", "replace")
         values = [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
         reason = " ".join(line.strip().lstrip("#").strip() for line in text.splitlines() if line.strip().startswith("#")).strip()
-        lines = int(values[0]) if len(values) == 1 and values[0].isdigit() else None
-        found[path] = (lines, reason)
+        lines = int(values[0]) if len(values) == 1 and re.fullmatch(r"[0-9]+", values[0]) else None
+        found[path] = (lines, reason, data)
     return found
 
 
-def credit(base, head):
+def credit(base, head, pr):
     granted, problems = 0, []
     before = records(base)
-    for path, (lines, reason) in sorted(records(head).items()):
-        if (lines, reason) == before.get(path):
+    moved = {data for _, _, data in before.values()}
+    for path, (lines, reason, data) in sorted(records(head).items()):
+        if path in before and before[path][2] == data:
+            continue
+        name = RECORD_NAME.fullmatch(path[len(RECORDS):])
+        if not name:
+            problems.append(f"{path} gives no credit. Name a record after its pull request: {RECORDS}pr-<number>.txt.")
+            continue
+        if pr is not None and int(name.group(1)) != pr:
+            continue
+        if path not in before and data in moved:
+            problems.append(f"{path} repeats a record already on the base, so it gives no credit.")
             continue
         if lines is None:
             problems.append(f"{path} must hold exactly one non-negative integer line, plus # lines that give the reason.")
@@ -287,14 +306,15 @@ def credit(base, head):
         if not reason:
             problems.append(f"{path} grants {lines} lines but gives no reason. Add # lines that say why this change needs the tests.")
             continue
-        granted += max(0, lines - (before.get(path, (None, ""))[0] or 0))
+        granted += max(0, lines - (before.get(path, (None,))[0] or 0))
     return granted, problems
 
 
-def report(base, head, allowance):
-    before, after = count(Tree(base)), count(Tree(head))
+def report(base, head, allowance, pr=None):
+    base_tree, head_tree = Tree(base), Tree(head)
+    before, after = count(base_tree), count(head_tree)
     delta = {category: after[category] - before[category] for category in CATEGORIES}
-    granted, problems = credit(Tree(base), Tree(head))
+    granted, problems = credit(base_tree, head_tree, pr)
     over = delta["test"] - allowance - granted
     rows = "\n".join(f"| {category} | {delta[category]:+d} | {after[category]} |" for category in CATEGORIES)
     total = after["test"] + after["implementation"]
@@ -311,7 +331,7 @@ def report(base, head, allowance):
         messages.append(
             f"This change adds {delta['test']} net test lines; the allowance is {allowance}"
             + (f" plus {granted} from records" if granted else "")
-            + f". Remove or consolidate {over} test lines, or add {RECORDS}<name>.txt holding the line count and # lines that say why these tests are needed."
+            + f". Remove or consolidate {over} test lines, or add {RECORDS}pr-{pr if pr is not None else '<number>'}.txt holding the line count and # lines that say why these tests are needed."
         )
     for message in messages:
         print(f"::warning title=Test-line budget::{message}")
@@ -327,9 +347,10 @@ def main():
     parser = argparse.ArgumentParser(description="Report the net Rust test lines a change adds. Warns above the allowance and never fails.")
     parser.add_argument("base", nargs="?", help="defaults to the merge base of HEAD and origin/main")
     parser.add_argument("head", nargs="?", default="HEAD")
+    parser.add_argument("--pr", type=int, help="credit only the pull request's own record, pr-<number>.txt")
     args = parser.parse_args()
     base = args.base or git("merge-base", args.head, "origin/main").decode().strip()
-    report(base, args.head, ALLOWANCE)
+    report(base, args.head, ALLOWANCE, args.pr)
 
 
 if __name__ == "__main__":

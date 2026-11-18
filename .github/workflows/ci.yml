@@ -42,6 +42,7 @@ jobs:
       server_macos: ${{ steps.paths.outputs.server_macos }}
       spec_macos: ${{ steps.paths.outputs.spec_macos }}
       macos_app: ${{ steps.paths.outputs.macos_app }}
+      test_lines: ${{ steps.paths.outputs.test_lines }}
       site_only: ${{ steps.paths.outputs.site_only }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -83,7 +84,7 @@ jobs:
             echo "Push to main: every Linux job runs."
             {
               echo "site_only=false"
-              printf '%s=true\n' rust rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration
+              printf '%s=true\n' rust rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration test_lines
               echo 'rust_suites=["driver","engine","sim"]'
             } >> "$GITHUB_OUTPUT"
             api() {
@@ -133,7 +134,7 @@ jobs:
           if [ -n "$changed" ] && ! grep -qv '^site/' <<<"$changed"; then
             echo "site_only: true, because every changed file is under site/, so the build and test jobs skip."
             {
-              printf '%s=false\n' rust_macos server_macos spec_macos macos_app rust rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration
+              printf '%s=false\n' rust_macos server_macos spec_macos macos_app rust rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration test_lines
               echo "rust_suites=[]"
               echo "site_only=true"
             } >> "$GITHUB_OUTPUT"
@@ -144,7 +145,7 @@ jobs:
           echo "Jobs this change selects against $BASE (.github/ci-select.toml):"
           if [ "$SELECTOR_BUILD" != success ] || ! git worktree add --detach "$RUNNER_TEMP/base" "$BASE" || ! selection="$(scripts/ci-select/target/debug/ci-select .github/ci-select.toml "$RUNNER_TEMP/base" . "$RUNNER_TEMP/changed")"; then
             echo "::warning::The job selector failed to build or run (see the error above), so every job runs."
-            selection="$(printf '%s=true\n' rust rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration macos_app)"
+            selection="$(printf '%s=true\n' rust rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration test_lines macos_app)"
           fi
           suites="$(jq -Rcn '[inputs | capture("^rust_(?<suite>driver|engine|sim)=true$") | .suite]' <<<"$selection")"
           echo "rust tests suites: $suites"
@@ -760,6 +761,7 @@ jobs:
 
   test-lines:
     name: test lines
+    needs: changes
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -769,19 +771,18 @@ jobs:
           persist-credentials: false
           fetch-depth: 2
       - name: Test the test-line counter
+        if: needs.changes.outputs.test_lines == 'true'
         run: python3 scripts/test-check-test-lines.py -v
       - name: Report the test lines this change adds
         continue-on-error: true
         env:
-          EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.merge_group.base_sha }}
+          PR: ${{ github.event.pull_request.number }}
+          QUEUE_REF: ${{ github.event.merge_group.head_ref }}
         run: |
-          if [ "$EVENT" = merge_group ]; then
-            git fetch --no-tags --depth=1 origin "$BASE"
-          else
-            BASE=$(git rev-parse HEAD^1)
+          if [ -n "$QUEUE_REF" ]; then
+            PR="$(sed -nE 's#^.*/pr-([0-9]+)-[0-9a-f]+$#\1#p' <<<"$QUEUE_REF")"
           fi
-          python3 scripts/check-test-lines.py "$BASE" HEAD
+          python3 scripts/check-test-lines.py ${PR:+--pr "$PR"} HEAD^1 HEAD
 
   store-upgrade:
     if: github.event_name != 'push'
@@ -850,7 +851,7 @@ jobs:
   ci-report:
     name: ci-report
     if: always()
-    needs: [changes, rust, rust-tests, server, server-deploy, net-integration, driver-integration, cli-integration, ffi-integration, spec, macos-app, installer, comments, store-upgrade, state-io]
+    needs: [changes, rust, rust-tests, server, server-deploy, net-integration, driver-integration, cli-integration, ffi-integration, spec, macos-app, installer, comments, store-upgrade, state-io, test-lines]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any CI job failed or was cancelled
@@ -869,18 +870,19 @@ jobs:
           MACOS_APP: ${{ needs.macos-app.result }}
           INSTALLER: ${{ needs.installer.result }}
           COMMENTS: ${{ needs.comments.result }}
+          TEST_LINES: ${{ needs.test-lines.result }}
           FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
         run: |
           echo "site-only change: ${SITE_ONLY:-unknown}. Build and test jobs that skip for a site-only change report skipped."
-          echo "changes: $CHANGES, rust: $RUST, rust-tests: $RUST_TESTS, server: $SERVER, server-deploy: $SERVER_DEPLOY, net-integration: $NET_INTEGRATION, driver-integration: $DRIVER_INTEGRATION, cli-integration: $CLI_INTEGRATION, ffi-integration: $FFI_INTEGRATION, spec: $SPEC, macos-app: $MACOS_APP, installer: $INSTALLER, comments: $COMMENTS"
+          echo "changes: $CHANGES, rust: $RUST, rust-tests: $RUST_TESTS, server: $SERVER, server-deploy: $SERVER_DEPLOY, net-integration: $NET_INTEGRATION, driver-integration: $DRIVER_INTEGRATION, cli-integration: $CLI_INTEGRATION, ffi-integration: $FFI_INTEGRATION, spec: $SPEC, macos-app: $MACOS_APP, installer: $INSTALLER, comments: $COMMENTS, test-lines: $TEST_LINES"
           if [ "$FAILED" = "true" ]; then
-            echo "::error::At least one CI job failed or was cancelled (changes: $CHANGES, rust: $RUST, rust-tests: $RUST_TESTS, server: $SERVER, server-deploy: $SERVER_DEPLOY, net-integration: $NET_INTEGRATION, driver-integration: $DRIVER_INTEGRATION, cli-integration: $CLI_INTEGRATION, ffi-integration: $FFI_INTEGRATION, spec: $SPEC, macos-app: $MACOS_APP, installer: $INSTALLER, comments: $COMMENTS). Open that job's log for the cause."
+            echo "::error::At least one CI job failed or was cancelled (changes: $CHANGES, rust: $RUST, rust-tests: $RUST_TESTS, server: $SERVER, server-deploy: $SERVER_DEPLOY, net-integration: $NET_INTEGRATION, driver-integration: $DRIVER_INTEGRATION, cli-integration: $CLI_INTEGRATION, ffi-integration: $FFI_INTEGRATION, spec: $SPEC, macos-app: $MACOS_APP, installer: $INSTALLER, comments: $COMMENTS, test-lines: $TEST_LINES). Open that job's log for the cause."
             exit 1
           fi
       - name: Fail unless every build and test job the change selects ran
         if: needs.changes.outputs.site_only != 'true'
         env:
-          RESULTS: rust=${{ needs.changes.outputs.rust == 'true' && needs.rust.result || 'not-needed' }} rust-tests=${{ needs.changes.outputs.rust_suites != '[]' && needs.rust-tests.result || 'not-needed' }} server=${{ needs.changes.outputs.server == 'true' && needs.server.result || 'not-needed' }} server-deploy=${{ needs.changes.outputs.server_deploy == 'true' && needs.server-deploy.result || 'not-needed' }} net-integration=${{ needs.changes.outputs.net_integration == 'true' && needs.net-integration.result || 'not-needed' }} driver-integration=${{ needs.changes.outputs.driver_integration == 'true' && needs.driver-integration.result || 'not-needed' }} cli-integration=${{ needs.changes.outputs.cli_integration == 'true' && needs.cli-integration.result || 'not-needed' }} ffi-integration=${{ needs.changes.outputs.ffi_integration == 'true' && needs.ffi-integration.result || 'not-needed' }} spec=${{ needs.spec.result }} installer=${{ needs.installer.result }}
+          RESULTS: rust=${{ needs.changes.outputs.rust == 'true' && needs.rust.result || 'not-needed' }} rust-tests=${{ needs.changes.outputs.rust_suites != '[]' && needs.rust-tests.result || 'not-needed' }} server=${{ needs.changes.outputs.server == 'true' && needs.server.result || 'not-needed' }} server-deploy=${{ needs.changes.outputs.server_deploy == 'true' && needs.server-deploy.result || 'not-needed' }} net-integration=${{ needs.changes.outputs.net_integration == 'true' && needs.net-integration.result || 'not-needed' }} driver-integration=${{ needs.changes.outputs.driver_integration == 'true' && needs.driver-integration.result || 'not-needed' }} cli-integration=${{ needs.changes.outputs.cli_integration == 'true' && needs.cli-integration.result || 'not-needed' }} ffi-integration=${{ needs.changes.outputs.ffi_integration == 'true' && needs.ffi-integration.result || 'not-needed' }} spec=${{ needs.spec.result }} installer=${{ needs.installer.result }} test-lines=${{ needs.test-lines.result }}
         run: |
           echo "Build and test jobs (not-needed: the change does not select it): $RESULTS"
           for r in $RESULTS; do

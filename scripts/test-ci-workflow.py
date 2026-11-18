@@ -14,7 +14,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 SELECTED = ("rust", "rust_driver", "rust_engine", "rust_sim", "server", "server_deploy", "net_integration",
-            "driver_integration", "cli_integration", "ffi_integration")
+            "driver_integration", "cli_integration", "ffi_integration", "test_lines")
 
 
 def inline_script(job):

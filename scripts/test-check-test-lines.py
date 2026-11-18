@@ -49,11 +49,22 @@ class TestLines(unittest.TestCase):
         finally:
             os.chdir(cwd)
 
-    def run_check(self, before, after):
+    def net(self, before, after):
+        base = self.tree({"Cargo.toml": CARGO, **before})
+        head = self.tree(after)
+        cwd = os.getcwd()
+        os.chdir(self.repo)
+        try:
+            return self.check.count(self.check.Tree(head))["test"] - self.check.count(self.check.Tree(base))["test"]
+        finally:
+            os.chdir(cwd)
+
+    def run_check(self, before, after, pr=715):
         base = self.tree({"Cargo.toml": CARGO, **before})
         head = self.tree(after)
         summary = os.path.join(self.repo, ".summary")
-        result = subprocess.run([sys.executable, CHECK, base, head], cwd=self.repo, capture_output=True, text=True,
+        args = [] if pr is None else ["--pr", str(pr)]
+        result = subprocess.run([sys.executable, CHECK, base, head, *args], cwd=self.repo, capture_output=True, text=True,
                                 env={**os.environ, "GITHUB_STEP_SUMMARY": summary})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         with open(summary) as f:
@@ -180,37 +191,77 @@ class TestLines(unittest.TestCase):
     def test_fixtures_do_not_use_the_allowance(self):
         self.assertEqual(self.run_check({}, {"core/a/tests/fixtures/big.json": "1\n" * 5000}), [])
 
-    def test_a_record_this_change_adds_covers_the_excess(self):
+    def test_moving_a_module_file_changes_nothing(self):
+        before = {"core/a/src/lib.rs": "#[cfg(test)]\nmod h;\n", "core/a/src/h/mod.rs": self.lines(413)}
+        self.assertEqual(self.net(before, {"core/a/src/h/mod.rs": None, "core/a/src/h.rs": self.lines(413)}), 0)
+
+    def test_a_module_declared_inside_an_inline_test_module_is_test_code(self):
+        after = {
+            "core/a/src/lib.rs": "#[cfg(all(unix, all(test, any(unix, windows))))]\nmod inline {\n    mod h;\n}\n",
+            "core/a/src/inline/h.rs": self.lines(413),
+        }
+        self.assertEqual(self.net({}, after), 417)
+
+    def test_a_test_only_const_fn_ends_at_its_body(self):
+        after = {"core/a/src/lib.rs": "#[cfg(test)]\nconst fn fixture() -> u8 {\n    1\n}\n" + self.lines(413, "p")}
+        self.assertEqual(self.net({}, after), 4)
+
+    def test_the_pull_requests_own_record_covers_the_excess(self):
         record = "# A model of every resend order needs one case per order.\n600\n"
-        after = {"core/a/tests/t.rs": self.lines(1000), ".github/test-line-allowances/resend-model.txt": record}
+        after = {"core/a/tests/t.rs": self.lines(1000), ".github/test-line-allowances/pr-715.txt": record}
         self.assertEqual(self.run_check({}, after), [])
 
+    def test_another_pull_requests_record_gives_no_credit(self):
+        after = {"core/a/tests/t.rs": self.lines(450), ".github/test-line-allowances/pr-716.txt": "# Other.\n600\n"}
+        warnings = self.run_check({}, after)
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("Remove or consolidate 50 test lines, or add .github/test-line-allowances/pr-715.txt", warnings[0])
+
+    def test_without_a_pull_request_number_any_new_record_counts(self):
+        after = {"core/a/tests/t.rs": self.lines(450), ".github/test-line-allowances/pr-716.txt": "# Other.\n600\n"}
+        self.assertEqual(self.run_check({}, after, pr=None), [])
+
     def test_a_record_already_on_the_base_gives_no_credit(self):
-        before = {".github/test-line-allowances/old.txt": "# Old reason.\n600\n", ".github/test-line-allowances/bare.txt": "200\n"}
-        warnings = self.run_check(before, {"core/a/tests/t.rs": self.lines(1000)})
-        self.assertEqual(len(warnings), 1)
+        before = {".github/test-line-allowances/pr-715.txt": "# Old reason.\n600\n", ".github/test-line-allowances/pr-1.txt": "200\n"}
+        warnings = self.run_check(before, {"core/a/tests/t.rs": self.lines(1000)}, pr=None)
+        self.assertEqual(len(warnings), 1, warnings)
         self.assertIn("Remove or consolidate 600 test lines", warnings[0])
 
-    def test_raising_a_record_credits_only_the_raise(self):
-        before = {".github/test-line-allowances/model.txt": "# Model cases.\n100\n"}
-        after = {"core/a/tests/t.rs": self.lines(600), ".github/test-line-allowances/model.txt": "# Model cases.\n250\n"}
+    def test_a_moved_record_gives_no_credit(self):
+        record = "# Earlier reason.\n13\n"
+        before = {".github/test-line-allowances/pr-1.txt": record}
+        after = {".github/test-line-allowances/pr-1.txt": None, ".github/test-line-allowances/pr-715.txt": record,
+                 "core/a/tests/t.rs": self.lines(413)}
         warnings = self.run_check(before, after)
-        self.assertEqual(len(warnings), 1)
+        self.assertEqual(len(warnings), 2, warnings)
+        self.assertIn("pr-715.txt repeats a record already on the base", warnings[0])
+        self.assertIn("Remove or consolidate 13 test lines", warnings[1])
+
+    def test_raising_a_record_credits_only_the_raise(self):
+        before = {".github/test-line-allowances/pr-715.txt": "# Model cases.\n100\n"}
+        after = {"core/a/tests/t.rs": self.lines(600), ".github/test-line-allowances/pr-715.txt": "# Model cases.\n250\n"}
+        warnings = self.run_check(before, after)
+        self.assertEqual(len(warnings), 1, warnings)
         self.assertIn("plus 150 from records", warnings[0])
         self.assertIn("Remove or consolidate 50 test lines", warnings[0])
 
-    def test_a_record_without_a_reason_or_a_count_warns_and_gives_no_credit(self):
+    def test_a_record_without_a_reason_a_count_or_a_pull_request_name_warns_and_gives_no_credit(self):
         after = {
             "core/a/tests/t.rs": self.lines(500),
-            ".github/test-line-allowances/bare.txt": "200\n",
-            ".github/test-line-allowances/wordy.txt": "# Reason.\nlots\n",
+            ".github/test-line-allowances/pr-715.txt": "200\n",
+            ".github/test-line-allowances/resend-model.txt": "# Reason.\n200\n",
         }
         warnings = self.run_check({}, after)
         self.assertEqual(len(warnings), 3, warnings)
-        self.assertIn("bare.txt grants 200 lines but gives no reason", warnings[0])
-        self.assertIn("wordy.txt must hold exactly one non-negative integer", warnings[1])
+        self.assertIn("pr-715.txt grants 200 lines but gives no reason", warnings[0])
+        self.assertIn("resend-model.txt gives no credit. Name a record after its pull request", warnings[1])
         self.assertIn("Remove or consolidate 100 test lines", warnings[2])
 
+    def test_a_count_that_is_not_ascii_digits_warns(self):
+        after = {"core/a/tests/t.rs": self.lines(500), ".github/test-line-allowances/pr-715.txt": "# Reason.\n\u00b2\n"}
+        warnings = self.run_check({}, after)
+        self.assertEqual(len(warnings), 2, warnings)
+        self.assertIn("must hold exactly one non-negative integer", warnings[0])
 
 if __name__ == "__main__":
     unittest.main()
