@@ -798,7 +798,7 @@ impl Observer for FsObserver {
         let ctimes = (read.chain(accepted))
             .filter_map(|path| match entries.get(path)?.ctime {
                 Ctime::Settled { at, .. } | Ctime::NotAfter(at) => {
-                    Some((path.clone(), i64::try_from(at).ok()?))
+                    Some((path.clone(), i64::try_from(at).unwrap_or(i64::MAX)))
                 }
                 Ctime::Racy { .. } => None,
             })

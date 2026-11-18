@@ -1410,7 +1410,10 @@ fn a_new_link_a_scan_finds_beside_the_file_it_links_is_created() {
     assert!(snapshot.entries.contains_key(Path::new("x/g.txt")));
     fs::remove_file(root.join("e/link.txt")).unwrap();
     let rescan = snapshot.rescan(&root, [PathBuf::new()]).unwrap();
-    assert_eq!(rescan.changes, vec![removed("e/link.txt", File)]);
+    assert_eq!(
+        rescan.changes,
+        vec![removed("e/link.txt", File), modified("x/g.txt")]
+    );
     fs::set_permissions(root.join("x/g.txt"), fs::Permissions::from_mode(0o600)).unwrap();
     assert_eq!(
         snapshot.rescan(&root, [PathBuf::new()]).unwrap().changes,
@@ -1501,7 +1504,10 @@ fn a_file_removed_beside_a_link_is_removed_by_the_first_scan() {
     let mut snapshot = Snapshot::scan(&root).unwrap();
     fs::remove_dir_all(root.join("x/d")).unwrap();
     let rescan = snapshot.rescan(&root, [PathBuf::from("x")]).unwrap();
-    assert_eq!(rescan.changes, vec![removed("x/d", Dir)]);
+    assert_eq!(
+        rescan.changes,
+        vec![removed("x/d", Dir), modified("x/alias.txt")]
+    );
     assert_eq!(snapshot, Snapshot::scan(&root).unwrap());
 }
 

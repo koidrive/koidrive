@@ -207,7 +207,12 @@ fn a_link_removed_while_another_link_stays_included_is_removed() {
             }
             paths = rescan.unsettled;
         }
-        assert_eq!(changes, [removed("f.txt", File)], "{budget}");
+        let modified = Change::Modified {
+            path: "also.txt".into(),
+        };
+        assert_eq!(changes.len(), 2, "{budget}: {changes:?}");
+        assert!(changes.contains(&removed("f.txt", File)), "{budget}");
+        assert!(changes.contains(&modified), "{budget}");
         assert!(snapshot.entries.contains_key(Path::new("also.txt")));
     }
 }

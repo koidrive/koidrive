@@ -191,7 +191,8 @@ pub enum Ctime {
     /// scan that finds it unchanged at `until` or later, by this machine's clock, settles it.
     Racy { at: i128, mode: u32, until: i128 },
     /// Not known, but no later than this: a file whose change time is not later counts as unchanged. A file with
-    /// several links has `NotAfter(i128::MAX)`, since a link made, moved or removed elsewhere moves its change time.
+    /// several links has `NotAfter(i128::MAX)`, since a link made, moved or removed elsewhere moves its change time,
+    /// and no change time it has once it is left with one link matches that.
     NotAfter(i128),
 }
 
@@ -262,6 +263,7 @@ impl Entry {
         self == now
             && match (self.ctime, now.ctime) {
                 (_, Ctime::NotAfter(_)) => true,
+                (Ctime::NotAfter(i128::MAX), _) => false,
                 (Ctime::NotAfter(at), now) => now.at() <= at,
                 (
                     Ctime::Settled { at, mode } | Ctime::Racy { at, mode, .. },
@@ -1231,7 +1233,13 @@ impl Snapshot {
                     unsure.push(path.clone());
                     moved = Some(path);
                 }
-                Whereabouts::Nowhere => {}
+                Whereabouts::Nowhere => {
+                    ends.extend(
+                        (links.iter())
+                            .filter(|link| !covered(link))
+                            .map(|link| link.to_path_buf()),
+                    );
+                }
             }
         }
         (ends, hidden, unsure)

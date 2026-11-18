@@ -623,9 +623,11 @@ impl Engine {
                 if self.trees.ignored_local().contains(child) {
                     continue;
                 }
-                let ctime = Ctime::NotAfter(
-                    (self.stored_ctimes.get(child)).map_or(i128::MIN, |&at| i128::from(at)),
-                );
+                let ctime = Ctime::NotAfter(match self.stored_ctimes.get(child) {
+                    None => i128::MIN,
+                    Some(&i64::MAX) => i128::MAX,
+                    Some(&at) => i128::from(at),
+                });
                 let (kind, size, mtime_ns, ctime, executable) =
                     match (&node.shape.kind, &node.shape.content) {
                         (Kind::Dir, _) => (
