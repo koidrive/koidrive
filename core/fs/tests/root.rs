@@ -468,6 +468,7 @@ fn a_btrfs_snapshot_rolled_back_into_the_path_is_another_root() {
     let tokens = RootTokens {
         current: Some(token),
         pending: None,
+        generation: 0,
     };
     let linked_subvolume = at(&subvolume);
     let linked = at(&subvolume.join("folder"));
