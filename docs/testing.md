@@ -30,7 +30,7 @@ Each job runs on Ubuntu, and the jobs marked macOS run on macOS. The `changes` j
 | `test lines` | Reports the net Rust test lines the change adds against its allowance | `python3 scripts/check-test-lines.py` |
 | `test split mapping` | A test split moves every item unchanged and `mapping.json` lists it, and every changed `include!` fragment is rustfmt-formatted | `python3 scripts/split-tests.py verify --source-ref origin/main` and `python3 scripts/split-tests.py check-format --base-ref origin/main` |
 | `Store upgrade` | Every store migration has upgrade cases, and they pass | `python3 scripts/check-store-upgrades.py origin/main HEAD` |
-| `state file safety` (macOS) | The change adds no direct reads or writes of state files and no async lock borrows | `python3 scripts/check-state-io.py origin/main` |
+| `state file safety` (macOS) | The change adds no raw writes, renames, copies or hard links of state files, and no async lock borrows | `python3 scripts/check-state-io.py origin/main` |
 
 On a pull request, CI adds macOS jobs only where a change needs them. The macOS Rust jobs and `macos app` run when the change touches a file that builds or behaves differently on macOS, as `scripts/macos-changes.sh` lists them. Every macOS job, `server (macos)` and `spec (macos)` included, runs when it touches `ci.yml`. The merge queue runs the macOS leg of every job it selects, and a push to `main` skips the macOS jobs only when CI finds a merge queue run that passed CI on the same commit. If that lookup fails or finds no such run, the push runs all four macOS groups. The macOS jobs run on GitHub-hosted runners.
 
