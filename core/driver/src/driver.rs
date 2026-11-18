@@ -1399,10 +1399,10 @@ impl Driver {
             .is_some()
         {
             let left = self.signing_out(false).await?;
+            add(left.set_aside);
             if let Some(failure) = left.not_removed.into_iter().next() {
                 return Err(io_error(&failure.path)(io::Error::other(failure.error)));
             }
-            add(left.set_aside);
         }
         let roots = roots(&self.inner.folders.lock().unwrap());
         for root in roots {
@@ -4892,6 +4892,59 @@ mod tests {
             }
         );
         assert_eq!(fs::read(back).unwrap(), b"parked");
+    }
+
+    #[tokio::test]
+    async fn saving_a_credential_reports_what_a_pending_sign_out_brought_back_before_a_cleanup_failed()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        let other_id = "0190f0a0-0000-7000-8000-000000000002";
+        linked(&paths, &root, "d1");
+        linked_to(&paths, &base.join("Other"), "d1", other_id);
+        parked_report(&paths, &root);
+        let driver = Driver::open(paths.clone()).unwrap();
+        let links = (driver.inner.folders.lock().unwrap().values())
+            .map(|folder| (&folder.link).into())
+            .collect();
+        let mut leaving = Leaving::begin(
+            &paths.state_dir,
+            Intent {
+                links,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        leaving.set_phase(Phase::Committed).unwrap();
+        drop(driver);
+        fs::remove_file(paths.credential()).unwrap();
+        let other_store = paths
+            .store(other_id)
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let date = koidrive_fs::utc_date(SystemTime::now());
+        let driver = Driver::open(paths).unwrap();
+        if !close_dir(&other_store) {
+            return;
+        }
+
+        let failed = driver.save_credential(credential("d2")).await;
+        open_dir(&other_store);
+        let (_, set_aside) = driver.save_credential(credential("d2")).await.unwrap();
+        if koidrive_fs::utc_date(SystemTime::now()) != date {
+            eprintln!("SKIPPED: the UTC date changed during the test");
+            return;
+        }
+
+        assert!(failed.is_err(), "{failed:?}");
+        assert_eq!(
+            set_aside.brought_back,
+            [root.join(format!("report (recovered {date}).docx"))]
+        );
     }
 
     #[tokio::test]
