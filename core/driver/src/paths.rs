@@ -65,7 +65,7 @@ impl Paths {
             ["spaces" | "requests" | "creates" | "telemetry" | "systemd"]
             | ["telemetry", "held"] => Folder,
             ["creates", name] if is_create(name) => File,
-            ["spaces", id] if is_space_id(id) => Folder,
+            ["spaces", id] if is_store_dir(id) => Folder,
             [
                 "spaces",
                 id,
@@ -78,7 +78,7 @@ impl Paths {
                 | "unlinking"
                 | "unlink-brought-back.json"
                 | "first-sync",
-            ] if is_space_id(id) => File,
+            ] if is_store_dir(id) => File,
             ["requests", name] if hex_named(name, ".json", 64) => File,
             [
                 "telemetry",
@@ -218,6 +218,14 @@ impl Paths {
         Ok(self.spaces().join(space_id).join("store.sqlite"))
     }
 
+    pub(crate) fn removing(&self, space_id: &str, attempt: u32) -> PathBuf {
+        self.spaces().join(format!("{space_id}{REMOVING}{attempt}"))
+    }
+
+    pub(crate) fn is_removing(name: &OsStr) -> bool {
+        name.to_str().is_some_and(is_removing)
+    }
+
     /// Creates `dir`, the state folder or a folder inside it. When this call creates the state folder itself, it records
     /// that Koidrive made it; see [`koidrive_state_file::made`].
     pub fn create_state_dir(&self, dir: &Path) -> std::io::Result<()> {
@@ -233,6 +241,18 @@ impl Paths {
 
 fn is_space_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
+const REMOVING: &str = ".removing-";
+
+fn is_removing(name: &str) -> bool {
+    name.rsplit_once(REMOVING).is_some_and(|(id, attempt)| {
+        is_space_id(id) && !attempt.is_empty() && attempt.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+fn is_store_dir(name: &str) -> bool {
+    is_space_id(name) || is_removing(name)
 }
 
 fn hex_named(name: &str, end: &str, len: usize) -> bool {
@@ -386,6 +406,14 @@ mod tests {
             (&format!("spaces/{space}/link.json"), Some(File)),
             (&format!("spaces/{space}/unlinking"), Some(File)),
             (&format!("spaces/{space}/first-sync"), Some(File)),
+            (&format!("spaces/{space}.removing-2"), Some(Folder)),
+            (&format!("spaces/{space}.removing-2/link.json"), Some(File)),
+            (
+                &format!("spaces/{space}.removing-2/.store.sqlite.12.tmp"),
+                Some(File),
+            ),
+            (&format!("spaces/{space}.removing-"), None),
+            ("spaces/notes.removing-1", None),
             ("creates", Some(Folder)),
             (
                 &format!("creates/space-{}.json", "ef".repeat(32)),

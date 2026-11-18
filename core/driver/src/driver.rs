@@ -672,6 +672,7 @@ impl Driver {
         let Some(lock) = Flock::take(lock).map_err(io_error(&lock_path))? else {
             return Err(DriverError::Busy(lock_path));
         };
+        finish_removals(&paths);
         let config = Config::load(&paths.config_file)?;
         let invalid = |error: LocalRulesError| ConfigError::Invalid {
             path: paths.config_file.clone(),
@@ -1211,17 +1212,10 @@ impl Driver {
                 path: self.inner.paths.spaces(),
                 error: error.to_string(),
             })?;
-        let dir = store.parent().expect("a store has a parent");
-        fs::remove_dir_all(dir)
-            .or_else(|error| match error.kind() {
-                io::ErrorKind::NotFound => Ok(()),
-                _ => Err(error),
-            })
-            .and_then(|()| crate::leave::sync_parent(dir))
-            .map_err(|error| CleanupFailure {
-                path: dir.to_path_buf(),
-                error: error.to_string(),
-            })
+        remove_store_dir(&self.inner.paths, space_id).map_err(|error| CleanupFailure {
+            path: store.parent().expect("a store has a parent").to_path_buf(),
+            error: error.to_string(),
+        })
     }
 
     async fn revocation_auth(
@@ -1797,11 +1791,7 @@ impl Driver {
                 ) => {}
             Err(error) => return Err(io_error(&link.root)(error)),
         }
-        match fs::remove_dir_all(&store_dir) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(io_error(&store_dir)(error)),
-        }
+        remove_store_dir(&self.inner.paths, &link.space_id).map_err(io_error(&store_dir))
     }
 
     fn bring_back(
@@ -2758,6 +2748,42 @@ fn load_folders(
         );
     }
     Ok(loaded)
+}
+
+fn remove_store_dir(paths: &Paths, space_id: &str) -> io::Result<()> {
+    let dir = paths.spaces().join(space_id);
+    let mut attempt = 1;
+    let removing = loop {
+        let removing = paths.removing(space_id, attempt);
+        match rustix::fs::renameat(rustix::fs::CWD, &dir, rustix::fs::CWD, &removing) {
+            Ok(()) => break Some(removing),
+            Err(rustix::io::Errno::NOENT) => break None,
+            Err(rustix::io::Errno::EXIST | rustix::io::Errno::NOTEMPTY) => attempt += 1,
+            Err(error) => return Err(error.into()),
+        }
+    };
+    crate::leave::sync_parent(&dir)?;
+    if let Some(removing) = removing {
+        finish_removing(&removing);
+    }
+    Ok(())
+}
+
+fn finish_removals(paths: &Paths) {
+    let Ok(entries) = fs::read_dir(paths.spaces()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if Paths::is_removing(&entry.file_name()) {
+            finish_removing(&entry.path());
+        }
+    }
+}
+
+fn finish_removing(dir: &Path) {
+    if let Err(error) = fs::remove_dir_all(dir) {
+        tracing::warn!(path = %koidrive_fs::quoted(dir), %error, "the sync state of a removed folder could not be deleted; the next start tries again");
+    }
 }
 
 enum Place {
@@ -4255,6 +4281,50 @@ mod tests {
                 "{failed:?}"
             );
             assert_eq!(fs::read_dir(&spaces).unwrap().count(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_store_left_partly_removed_is_gone_from_the_folders_and_finished_by_a_later_open() {
+        use std::os::unix::fs::PermissionsExt;
+        if rustix::process::geteuid().is_root() {
+            eprintln!("SKIPPED: running as root, so permissions do not block removal");
+            return;
+        }
+        for sign_out in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let base = fs::canonicalize(dir.path()).unwrap();
+            let paths = Paths::under(&base.join("profile"));
+            let root = base.join("Koidrive");
+            for _ in 0..2 {
+                if !paths.credential().exists() {
+                    paired(&paths, "d1");
+                }
+                linked_to(&paths, &root, "d1", SPACE);
+                let held = paths.store(SPACE).unwrap().with_file_name("held");
+                fs::create_dir(&held).unwrap();
+                fs::write(held.join("f"), b"x").unwrap();
+                fs::set_permissions(&held, fs::Permissions::from_mode(0o555)).unwrap();
+                let driver = Driver::open(paths.clone()).unwrap();
+                assert_eq!(driver.status().folders.len(), 1);
+
+                match sign_out {
+                    true => assert_eq!(driver.sign_out(true).await.unwrap().not_removed, []),
+                    false => drop(driver.unlink(&root).await.unwrap()),
+                }
+                assert!(driver.status().folders.is_empty());
+            }
+            let reopened = Driver::open(paths.clone()).unwrap();
+            assert!(reopened.status().folders.is_empty());
+            assert_eq!(fs::read_dir(paths.spaces()).unwrap().count(), 2);
+            drop(reopened);
+            for left in fs::read_dir(paths.spaces()).unwrap() {
+                let held = left.unwrap().path().join("held");
+                fs::set_permissions(held, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            drop(Driver::open(paths.clone()).unwrap());
+
+            assert_eq!(fs::read_dir(paths.spaces()).unwrap().count(), 0);
         }
     }
 
