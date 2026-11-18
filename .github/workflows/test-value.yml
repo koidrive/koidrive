@@ -31,7 +31,7 @@ env:
   CARGO_TERM_COLOR: never
   SAMPLE: ${{ inputs.sample }}
   SLOW: ${{ inputs.slow || '10' }}
-  OUT: ${{ github.workspace }}/.test-value
+  OUT: ${{ github.workspace }}/test-value-out
 
 defaults:
   run:
@@ -91,7 +91,7 @@ jobs:
           name: test-value-plan
           path: ${{ env.OUT }}
           retention-days: 30
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   mutants:
     name: mutants (${{ matrix.shard }})
