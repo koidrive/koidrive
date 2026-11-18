@@ -597,6 +597,8 @@ cases = ["{1:064}"]
         local_changes = "a_device_with_local_changes_converges_with_the_server_and_keeps_every_write"
         e6d4a = "6d4a438ebc80d7846a131222b430d05dfda5334f90e1617453dd14ef4466ff4a"
         e84d3 = "84d38f0bff21b60af7a74965e61163a0dee51349a80fe507b3fbc587567b2ae2"
+        j6ef9 = "6ef9f2b252a2d4d6ea433fb6b88fbc4499ed4e38fbee89c841fb95b3aa12b50e"
+        j0bde = "0bdef727276492b5d06bd49ad69f35bfdd49de0c5657b41e000153fa77440c27"
         elsewhere = ("assertion failed: `(left == right)` \n  left: `(\"01a1c2c0-39a0-75ee-831c-498d57bc0a70\", \"a\")`, \n right: `(\"01a1c2c0-39a0-780a-953a-eb70673e29cb\", \"a\")`: 01a1c2c0-39a0-7895-abc3-b3429e08873f"
                      " is sent to a place the disk does not hold it at at core/sim/tests/engine_sync/common.rs:1330.")
         never_reached = next(entry for entry in entries
@@ -604,6 +606,9 @@ cases = ["{1:064}"]
         undone = next(entry for entry in entries if entry["file"] == "GUN-864-I-delete-came-undone.toml")["examples"][1]
         def example(case):
             return next(entry for entry in entries if case.startswith(tuple(entry.get("cases", ["-"]))))["examples"][0]
+        def after_670(case, test):
+            return next(text for entry in entries if case.startswith(tuple(entry.get("cases", ["-"])))
+                        for text in entry["examples"] if text.startswith(f"devices::{test} case "))
         update = "}, Op { intent: None, fields: None, op: Some(UpdateContent"
         three_ops = example(d1f7).replace(
             update, "}, Op { intent: None, fields: None, op: Some(Delete(Delete { node_id: \"x\" })) " + update, 1)
@@ -636,8 +641,14 @@ cases = ["{1:064}"]
             ("devices_on_coarse_volumes_converge_once_the_faults_stop", undone + "\n" + example(w74e3), other, []),
             (lose_restores, example(g3a0d), g3a0d, [("G", "GUN-1203", ["3a0d2e9f93ad"])]),
             (lose_restores, example(g3a0d), other, []),
-            (local_changes, elsewhere, e6d4a, [("E", "GUN-984", ["4af1a1aa9520", "6d4a438ebc80", "c31339c2e813"])]),
-            (local_changes, elsewhere, e84d3, []),
+            (local_changes, elsewhere, e6d4a, [("E", "GUN-984", ["4af1a1aa9520", "6d4a438ebc80", "84d38f0bff21"])]),
+            (local_changes, elsewhere, e84d3, [("E", "GUN-984", ["4af1a1aa9520", "6d4a438ebc80", "84d38f0bff21"])]),
+            (local_changes, elsewhere, other, []),
+            (restores_and_rewinds, after_670(j6ef9, restores_and_rewinds), j6ef9, [("J", "GUN-1012", ["6ef9f2b252a2"])]),
+            (lose_restores, after_670(j6ef9, lose_restores), j6ef9, [("J", "GUN-1012", ["6ef9f2b252a2"])]),
+            (lose_restores, after_670(j6ef9, lose_restores), other, []),
+            (lose_coarse, after_670(j0bde, lose_coarse), j0bde, [("J", "GUN-1012", ["0bdef7272764"])]),
+            (lose_coarse, after_670(j0bde, lose_coarse), other, []),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):
                 found = triage.matches(entries, test, message, case)

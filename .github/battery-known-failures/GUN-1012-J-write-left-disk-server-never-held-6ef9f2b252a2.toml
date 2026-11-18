@@ -1,8 +1,12 @@
 class = "J"
 issue = "GUN-1012"
 tests = ["devices_converge_across_restores_and_rewinds", "devices_lose_no_write_across_restores_and_rewinds"]
-message = '''after phase <n>: write <n> left the disk of device <n>: the server never held it, and its user never overwrote or deleted it\.'''
-examples = ["after phase 2: write 8 left the disk of device 1: the server never held it, and its user never overwrote or deleted it."]
+message = '''(after phase <n>: write <n> left the disk of device <n>: the server never held it, and its user never overwrote or deleted it\.|devices::\S+ case cc-\S+ fails: after phase <n>: write <n> left the disk of device <n>: the server never held it, and its user never overwrote or deleted it not recorded: devices::\S+ cc-\S+ WriteKept write <n> of the write of node <id> on device <n> is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it( not recorded: devices::\S+ cc-\S+ WriteKept (?:(?! not recorded: ).)+?settles it)*( devices::\S+ never ran case cc-\S+)*)'''
+examples = [
+  "after phase 2: write 8 left the disk of device 1: the server never held it, and its user never overwrote or deleted it.",
+  "devices::devices_converge_across_restores_and_rewinds case cc-6ef9f2b252a2d4d6ea433fb6b88fbc4499ed4e38fbee89c841fb95b3aa12b50e fails: after phase 2: write 8 left the disk of device 1: the server never held it, and its user never overwrote or deleted it\nnot recorded: devices::devices_converge_across_restores_and_rewinds\tcc-6ef9f2b252a2d4d6ea433fb6b88fbc4499ed4e38fbee89c841fb95b3aa12b50e\tWriteKept\twrite 8 of the write of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 1 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it\ndevices::devices_converge_across_restores_and_rewinds never ran case cc-1cc97e001edf41a424a2764d26cbbb32894c769662a63d0a71c8b844aea4096b",
+  "devices::devices_lose_no_write_across_restores_and_rewinds case cc-6ef9f2b252a2d4d6ea433fb6b88fbc4499ed4e38fbee89c841fb95b3aa12b50e fails: after phase 2: write 8 left the disk of device 1: the server never held it, and its user never overwrote or deleted it\nnot recorded: devices::devices_lose_no_write_across_restores_and_rewinds\tcc-6ef9f2b252a2d4d6ea433fb6b88fbc4499ed4e38fbee89c841fb95b3aa12b50e\tWriteKept\twrite 8 of the write of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 1 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it\ndevices::devices_lose_no_write_across_restores_and_rewinds never ran case cc-1cc97e001edf41a424a2764d26cbbb32894c769662a63d0a71c8b844aea4096b",
+]
 cases = [
   "6ef9f2b252a2",
 ]
