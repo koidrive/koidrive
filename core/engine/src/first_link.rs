@@ -63,7 +63,8 @@ pub enum PriorSync {
 /// With `history`, as in a recovery, the disk may hold what the server sent before the store lost
 /// track of it: an entry at a place no live node of R holds also matches the one node R holds in the
 /// trash there that it matches, and then the one node of R that `history` shows at that place
-/// with the entry's content, when R still gives the node that content. S then holds it there. An entry whose match S cannot hold there, as when it would make S a
+/// with the entry's content and, cut to the precision the entry's time shows, the entry's time, when
+/// R still gives the node that content. S then holds it there. An entry whose match S cannot hold there, as when it would make S a
 /// cycle, is returned.
 pub fn adopt(trees: &mut Trees, history: Option<&History>) -> Vec<NodeId> {
     adopt_around(
@@ -197,8 +198,9 @@ pub(crate) fn adopt_around(
                     (remote_id.clone(), shape.clone())
                 });
             let earlier = || {
-                let mut matching =
-                    (left.get(&key)?.iter()).filter(|(remote_id, shape)| matches(remote_id, shape));
+                let mut matching = (left.get(&key)?.iter()).filter(|(remote_id, shape)| {
+                    matches(remote_id, shape) && placed_here(&shape.content, &local.content)
+                });
                 let first = matching.next()?;
                 let unique = matching.all(|(other, _)| *other == first.0);
                 let held_now = (trees.remote().get(&first.0))
@@ -599,11 +601,30 @@ fn at_place(shape: &Shape, remote: &Shape) -> bool {
 }
 
 fn same_write(remote: &Option<Content>, local: &Option<Content>) -> bool {
+    remote
+        .as_ref()
+        .is_some_and(|remote| remote.mtime_ns % 10_000_000 != 0)
+        && placed_here(remote, local)
+}
+
+fn placed_here(remote: &Option<Content>, local: &Option<Content>) -> bool {
     match (remote, local) {
         (Some(remote), Some(local)) => {
-            remote.mtime_ns % 10_000_000 != 0 && remote.mtime_ns == local.mtime_ns
+            let unit = [
+                2_000_000_000,
+                1_000_000_000,
+                10_000_000,
+                1_000_000,
+                1_000,
+                100,
+                1,
+            ]
+            .into_iter()
+            .find(|unit| local.mtime_ns % unit == 0)
+            .expect("every time is a whole nanosecond");
+            remote.mtime_ns - remote.mtime_ns.rem_euclid(unit) == local.mtime_ns
         }
-        _ => false,
+        (remote, local) => remote.is_none() && local.is_none(),
     }
 }
 
