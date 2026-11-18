@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import math
+import os
 from pathlib import Path
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
@@ -171,6 +174,81 @@ def command_matched(args):
         print(f"::error::The filter term {text} matched no test, so a test it should run was renamed or moved. Update the term.")
     return 1 if unmatched else 0
 
+def failed(case):
+    return any(case.find(tag) is not None for tag in ("failure", "error", "flakyFailure", "flakyError"))
+
+
+def command_shadow(args):
+    selection = Path(args.selection)
+    record = json.loads(selection.read_text()) if selection.exists() else {"map": None, "everything": "the changes job recorded no selection", "skipped": []}
+    skipped = set(record["skipped"])
+    ran, failures = set(), set()
+    for folder in args.junit:
+        for junit in sorted(Path(folder).rglob("*.xml")):
+            for binary, name, case in cases(junit):
+                ran.add(f"{binary} {name}")
+                if failed(case):
+                    failures.add(f"{binary} {name}")
+    misses = sorted(failures & skipped)
+    lines = ["## Shadow test selection", ""]
+    if record["everything"]:
+        lines.append(f"It kept every test, because {record['everything']}.")
+    else:
+        lines.append(f"Against the coverage map of {record['map']} it would skip {len(skipped & ran)} of the {len(ran)} tests that ran. "
+                     f"{len(misses)} of the {len(failures)} tests that failed or were flaky are among them. Nothing was skipped.")
+    if misses:
+        lines += ["", "### Failed tests it would have skipped (misses)", "", "| test |", "|---|"] + [f"| {test} |" for test in misses]
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({"map": record["map"], "everything": record["everything"], "ran": len(ran), "skipped": len(skipped & ran),
+                               "failed": sorted(failures), "misses": misses}, indent=1) + "\n")
+    print("\n".join(lines))
+    return 0
+
+
+def covered_files(report, root):
+    prefix = root.rstrip("/") + "/"
+    return {entry["filename"][len(prefix):] for data in report["data"] for entry in data["files"]
+            if entry["filename"].startswith(prefix) and entry["summary"]["lines"]["covered"] > 0}
+
+
+def coverage_map(tests, sha, created):
+    files = sorted(set().union(*tests.values()))
+    index = {file: number for number, file in enumerate(files)}
+    return {"sha": sha, "created": created, "files": files,
+            "tests": {test: sorted(index[file] for file in covered) for test, covered in sorted(tests.items())}}
+
+
+def command_coverage_map(args):
+    passed, failures = set(), set()
+    for binary, name, case in cases(args.junit):
+        (failures if failed(case) else passed).add(f"{binary} {name}")
+    passed -= failures
+    objects = [line for line in Path(args.objects).read_text().splitlines() if line]
+
+    def measure(folder):
+        binary_id, name, binary = (folder / "test").read_text().splitlines()
+        test = f"{binary_id} {name}"
+        profiles = sorted(folder.rglob("*.profdata"))
+        if test not in passed or not profiles:
+            return None
+        merged = folder / "merged.profdata"
+        subprocess.run([f"{args.llvm}/llvm-profdata", "merge", "-sparse", "-o", str(merged), *map(str, profiles)], check=True)
+        report = subprocess.run([f"{args.llvm}/llvm-cov", "export", "-summary-only", f"-instr-profile={merged}", binary,
+                                 *(f"-object={item}" for item in objects if item != binary)],
+                                check=True, capture_output=True, text=True).stdout
+        merged.unlink()
+        return test, covered_files(json.loads(report), args.root)
+
+    folders = sorted(folder for folder in Path(args.profiles).iterdir() if (folder / "test").exists())
+    with ThreadPoolExecutor(os.cpu_count()) as pool:
+        tests = dict(result for result in pool.map(measure, folders) if result)
+    Path(args.out).write_text(json.dumps(coverage_map(tests, args.sha, args.created)) + "\n")
+    print(f"The coverage map of {args.sha} records the files each of {len(tests)} tests ran. "
+          f"It leaves out {len(failures)} tests that failed or were flaky and {len(passed - tests.keys())} passing tests with no profile, "
+          f"so pull requests never skip them.")
+    return 0
+
 
 def main(argv):
     parser = argparse.ArgumentParser(description="Build arguments, shard plans and reports for the Rust test jobs in ci.yml.")
@@ -193,6 +271,19 @@ def main(argv):
     matched = commands.add_parser("matched", help="Fail unless every term matched at least one test in a nextest JUnit file.")
     matched.add_argument("--junit", required=True)
     matched.add_argument("terms", nargs="+", help=terms_help)
+    shadow = commands.add_parser("shadow", help="Count the failed tests that the shadow test selection would have skipped.")
+    shadow.add_argument("--selection", required=True)
+    shadow.add_argument("--junit", action="append", required=True)
+    shadow.add_argument("--out", required=True)
+    maps = commands.add_parser("coverage-map", help="Write the files each passing test ran, from one coverage profile folder per test.")
+    maps.add_argument("--profiles", required=True)
+    maps.add_argument("--junit", required=True)
+    maps.add_argument("--objects", required=True)
+    maps.add_argument("--llvm", required=True)
+    maps.add_argument("--root", required=True)
+    maps.add_argument("--sha", required=True)
+    maps.add_argument("--created", type=int, required=True)
+    maps.add_argument("--out", required=True)
     args = parser.parse_args(argv)
     if args.command == "filter":
         return command_filter(args)
@@ -204,6 +295,10 @@ def main(argv):
     if args.command == "plan":
         command_plan(args)
         return 0
+    if args.command == "shadow":
+        return command_shadow(args)
+    if args.command == "coverage-map":
+        return command_coverage_map(args)
     return command_report(args)
 
 

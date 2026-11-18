@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+mod shadow;
+
 use camino::Utf8Path;
 use determinator::Determinator;
 use determinator::rules::{
@@ -25,6 +27,8 @@ struct Config {
     #[serde(default)]
     read: Vec<Read>,
     job: BTreeMap<String, Job>,
+    #[serde(default)]
+    tests: Option<shadow::Tests>,
 }
 
 #[derive(Deserialize)]
@@ -396,9 +400,24 @@ fn load(path: &str) -> Result<Config, String> {
     toml::from_str(&text).map_err(|error| format!("{path}: {error}"))
 }
 
+struct Analysis {
+    jobs: BTreeMap<String, Option<String>>,
+    paths: Vec<(String, PathOutcome)>,
+    reads: Vec<ReadMatch>,
+}
+
 fn run(args: &[String]) -> Result<BTreeMap<String, Option<String>>, String> {
-    let [config_path, base_dir, head_dir, changed_path] = args else {
-        return Err("usage: ci-select CONFIG BASE_CHECKOUT HEAD_CHECKOUT CHANGED_PATHS_NUL".into());
+    let (config_path, base_dir, head_dir, changed_path, tests) = match args {
+        [config, base, head, changed] => (config, base, head, changed, None),
+        [config, base, head, changed, flag, map, out] if flag == "--tests" => {
+            (config, base, head, changed, Some((map, out)))
+        }
+        _ => {
+            return Err(
+                "usage: ci-select CONFIG BASE_CHECKOUT HEAD_CHECKOUT CHANGED_PATHS_NUL [--tests COVERAGE_MAP SELECTION_OUT]"
+                    .into(),
+            );
+        }
     };
     let config = load(config_path)?;
     let changed = fs::read(changed_path).map_err(|error| format!("{changed_path}: {error}"))?;
@@ -421,7 +440,38 @@ fn run(args: &[String]) -> Result<BTreeMap<String, Option<String>>, String> {
             "{changed_path} lists {path:?}, which is no file in either checkout. Pass the NUL-separated output of git diff -z --name-only --no-renames BASE HEAD."
         ));
     }
-    compute(&config, &graph(base_dir)?, &graph(head_dir)?, &changed)
+    let head = graph(head_dir)?;
+    let analysis = compute(&config, &graph(base_dir)?, &head, &changed)?;
+    if let Some((map_path, out)) = tests {
+        let settings = config
+            .tests
+            .as_ref()
+            .ok_or("--tests needs a [tests] table in the ci-select config")?;
+        let map = match fs::read_to_string(map_path) {
+            Ok(text) => Some(
+                serde_json::from_str::<shadow::CoverageMap>(&text)
+                    .map_err(|error| format!("{map_path}: {error}"))?,
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("{map_path}: {error}")),
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_secs();
+        let selection = shadow::select(
+            &config,
+            settings,
+            &analysis.paths,
+            &analysis.reads,
+            &shadow::random(Utf8Path::new(head_dir), &head)?,
+            map.as_ref(),
+            now,
+        );
+        let json = serde_json::to_string_pretty(&selection).map_err(|error| error.to_string())?;
+        fs::write(out, json + "\n").map_err(|error| format!("{out}: {error}"))?;
+    }
+    Ok(analysis.jobs)
 }
 
 fn compute(
@@ -429,7 +479,7 @@ fn compute(
     base: &PackageGraph,
     head: &PackageGraph,
     changed: &[&str],
-) -> Result<BTreeMap<String, Option<String>>, String> {
+) -> Result<Analysis, String> {
     check(config, head)?;
     let readers = reads(config, changed)?;
     let rules = rules(config);
@@ -465,7 +515,11 @@ fn compute(
         })
         .collect();
     let owners = owners(config, base, head, &paths);
-    select(config, &affected, &paths, &readers, &owners)
+    Ok(Analysis {
+        jobs: select(config, &affected, &paths, &readers, &owners)?,
+        paths,
+        reads: readers,
+    })
 }
 
 const SKIPPED: &str = "the change reaches none of its packages or paths";
@@ -522,6 +576,7 @@ mod tests {
     fn running(changed: &[&str]) -> BTreeSet<String> {
         compute(&CONFIG, &GRAPH, &GRAPH, changed)
             .unwrap()
+            .jobs
             .into_iter()
             .filter_map(|(job, reason)| reason.map(|_| job))
             .collect()
@@ -702,6 +757,135 @@ mod tests {
         );
     }
 
+    fn map() -> shadow::CoverageMap {
+        serde_json::from_str(
+            r#"{
+                "sha": "main",
+                "created": 1000000,
+                "files": ["core/engine/src/commit.rs", "core/engine/src/effects.rs"],
+                "tests": {
+                    "koidrive-engine::commit edits_are_sent": [0, 1],
+                    "koidrive-engine::guard a_move_is_guarded": [1],
+                    "koidrive-engine::names name_keys_fold_case": [1],
+                    "koidrive-driver engine::tests::batches_leave_l_a_tree_that_holds_the_disk": [1],
+                    "koidrive-fs::quoted the_daemon_quotes_every_path": [1]
+                }
+            }"#,
+        )
+        .unwrap()
+    }
+
+    fn tests_for(
+        changed: &[&str],
+        map: Option<&shadow::CoverageMap>,
+        now: u64,
+    ) -> shadow::TestSelection {
+        let analysis = compute(&CONFIG, &GRAPH, &GRAPH, changed).unwrap();
+        shadow::select(
+            &CONFIG,
+            CONFIG.tests.as_ref().unwrap(),
+            &analysis.paths,
+            &analysis.reads,
+            &shadow::random(Utf8Path::new(ROOT), &GRAPH).unwrap(),
+            map,
+            now,
+        )
+    }
+
+    #[test]
+    fn a_change_to_covered_code_skips_only_the_tests_that_never_ran_it() {
+        let selection = tests_for(
+            &[
+                "core/engine/src/commit.rs",
+                "docs/deploy.md",
+                "server/src/worker.ts",
+            ],
+            Some(&map()),
+            1000000,
+        );
+        assert_eq!(selection.everything, None);
+        assert_eq!(selection.changed, ["core/engine/src/commit.rs"]);
+        assert_eq!(
+            selection.skipped,
+            ["koidrive-engine::guard a_move_is_guarded"]
+        );
+    }
+
+    #[test]
+    fn a_test_that_reads_a_changed_file_as_data_is_never_skipped() {
+        let selection = tests_for(&["core/engine/src/commit.rs"], Some(&map()), 1000000);
+        assert!(
+            !selection
+                .skipped
+                .iter()
+                .any(|test| test.starts_with("koidrive-fs")),
+            "{:?}",
+            selection.skipped
+        );
+    }
+
+    #[test]
+    fn property_tests_with_random_cases_are_never_skipped() {
+        let selection = tests_for(&["core/engine/src/commit.rs"], Some(&map()), 1000000);
+        for test in [
+            "koidrive-engine::names name_keys_fold_case",
+            "koidrive-driver engine::tests::batches_leave_l_a_tree_that_holds_the_disk",
+        ] {
+            assert!(
+                !selection.skipped.iter().any(|skipped| skipped == test),
+                "{test} was skipped"
+            );
+        }
+    }
+
+    #[test]
+    fn an_uncertain_input_keeps_every_test() {
+        let map = map();
+        for (changed, now, because) in [
+            (
+                vec!["core/engine/src/commit.rs"],
+                1000000 + 4 * 86_400,
+                "days old",
+            ),
+            (
+                vec!["core/engine/src/types_only.rs"],
+                1000000,
+                "no record of",
+            ),
+            (
+                vec!["core/engine/tests/fixtures/tree.json"],
+                1000000,
+                "no record of",
+            ),
+            (
+                vec!["spec/rfc/0018-resends-and-deletes.md"],
+                1000000,
+                "path rule",
+            ),
+            (
+                vec!["docs/json-schema/v1/koi-status.json"],
+                1000000,
+                "path rule",
+            ),
+            (vec!["notes/new-tool.sh"], 1000000, "runs every job"),
+            (vec![".github/workflows/ci.yml"], 1000000, "runs every job"),
+        ] {
+            let selection = tests_for(&changed, Some(&map), now);
+            let reason = selection.everything.unwrap_or_default();
+            assert!(reason.contains(because), "{changed:?}: {reason:?}");
+            assert!(
+                selection.skipped.is_empty(),
+                "{changed:?}: {:?}",
+                selection.skipped
+            );
+        }
+        let selection = tests_for(&["core/engine/src/commit.rs"], None, 1000000);
+        assert_eq!(
+            selection.everything.as_deref(),
+            Some("there is no coverage map")
+        );
+    }
+
     fn select_from_list(
         name: &str,
         list: &str,
@@ -811,7 +995,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let select = |path: &str| compute(&config, &GRAPH, &GRAPH, &[path]).unwrap();
+        let select = |path: &str| compute(&config, &GRAPH, &GRAPH, &[path]).unwrap().jobs;
         assert_eq!(
             select("notes/read-by-fs.txt"),
             BTreeMap::from([

@@ -116,6 +116,7 @@ globs = [
   "scripts/test-install.sh",
   "scripts/test-install-journey.py",
   "scripts/test-ci-workflow.py",
+  "scripts/coverage-runner.sh",
   "scripts/homebrew-*.sh",
   "scripts/test-homebrew-*.sh",
   "scripts/publish-release.sh",
@@ -182,3 +183,7 @@ packages = ["koidrive-ffi", "koidrive-cli"]
 
 [job.macos_app]
 packages = ["koidrive-ffi", "koidrive-cli", "uniffi-bindgen-swift"]
+
+[tests]
+jobs = ["rust", "rust_engine", "rust_driver"]
+max_map_age_days = 3

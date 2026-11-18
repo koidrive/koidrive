@@ -1,0 +1,65 @@
+name: coverage map
+
+on:
+  schedule:
+    - cron: '23 17 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-map
+  cancel-in-progress: false
+
+jobs:
+  map:
+    name: coverage map
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      RUSTFLAGS: -C instrument-coverage
+      LLVM_PROFILE_FILE: /tmp/stray-profiles/%p-%m.profraw
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain from rust-toolchain.toml
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add llvm-tools
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: coverage-map
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-nextest@0.9.152
+      - name: Run the Linux test selection with one coverage profile per test
+        run: |
+          llvm="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
+          echo "COVERAGE_LLVM=$llvm" >> "$GITHUB_ENV"
+          export COVERAGE_LLVM="$llvm" COVERAGE_PROFILES="$RUNNER_TEMP/profiles"
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$GITHUB_WORKSPACE/scripts/coverage-runner.sh"
+          args=()
+          lines="$(python3 scripts/ci-rust-tests.py archive-args rust rust_engine rust_driver)"
+          while IFS= read -r arg; do args+=("$arg"); done <<<"$lines"
+          if ! cargo nextest run --locked "${args[@]}" --profile ci; then
+            echo "::warning::Some tests failed. The map leaves them out, so pull requests never skip them."
+          fi
+      - name: Turn the profiles into the files each test ran
+        run: |
+          set -o pipefail
+          find target/debug -maxdepth 1 -type f -perm -u+x > "$RUNNER_TEMP/objects"
+          mkdir -p "$RUNNER_TEMP/coverage-map"
+          python3 scripts/ci-rust-tests.py coverage-map --profiles "$RUNNER_TEMP/profiles" --junit target/nextest/ci/junit.xml \
+            --objects "$RUNNER_TEMP/objects" --llvm "$COVERAGE_LLVM" --root "$GITHUB_WORKSPACE" --sha "$GITHUB_SHA" --created "$(date +%s)" \
+            --out "$RUNNER_TEMP/coverage-map/coverage-map.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "$(du -h "$RUNNER_TEMP/coverage-map/coverage-map.json" | cut -f1) map, $(du -sh "$RUNNER_TEMP/profiles" | cut -f1) of profiles." | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-map-${{ github.sha }}
+          path: ${{ runner.temp }}/coverage-map
+          if-no-files-found: error
+          retention-days: 7

@@ -170,6 +170,53 @@ class FilterTerms(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("The filter term koidrive-driver=disk_ejected matched no test", out)
         self.assertNotIn("koidrive-fs::volumes matched", out)
+class Shadow(unittest.TestCase):
+    def run_shadow(self, selection, rows):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        if selection is not None:
+            (root / "selection.json").write_text(json.dumps(selection))
+        (root / "junit" / "s1").mkdir(parents=True)
+        body = "".join(f'<testcase classname="{b}" name="{n}">{extra}</testcase>' for b, n, extra in rows)
+        (root / "junit" / "s1" / "junit.xml").write_text(f"<testsuites><testsuite>{body}</testsuite></testsuites>")
+        args = type("Args", (), {"selection": str(root / "selection.json"), "junit": [str(root / "junit")], "out": str(root / "out/shadow.json")})
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            status = tool.command_shadow(args)
+        return status, out.getvalue(), json.loads((root / "out/shadow.json").read_text())
+
+    def test_a_failed_test_the_selection_skips_is_a_miss(self):
+        status, out, record = self.run_shadow({"map": "abc", "everything": None, "skipped": ["a x", "a y", "a gone"]},
+                                              [("a", "x", '<failure message="no"/>'), ("a", "y", ""), ("a", "z", '<failure message="no"/>')])
+        self.assertEqual(status, 0)
+        self.assertEqual(record["misses"], ["a x"])
+        self.assertEqual((record["ran"], record["skipped"], record["failed"]), (3, 2, ["a x", "a z"]))
+        self.assertIn("would skip 2 of the 3 tests that ran. 1 of the 2 tests", out)
+        self.assertIn("| a x |", out)
+
+    def test_a_kept_selection_reports_why_and_never_misses(self):
+        _, out, record = self.run_shadow({"map": None, "everything": "there is no coverage map", "skipped": []}, [("a", "x", '<failure message="no"/>')])
+        self.assertEqual(record["misses"], [])
+        self.assertIn("It kept every test, because there is no coverage map.", out)
+
+    def test_a_missing_selection_keeps_every_test(self):
+        status, out, _ = self.run_shadow(None, [("a", "x", "")])
+        self.assertEqual(status, 0)
+        self.assertIn("the changes job recorded no selection", out)
+
+
+class CoverageMap(unittest.TestCase):
+    def test_only_files_inside_the_checkout_with_covered_lines_count(self):
+        report = {"data": [{"files": [
+            {"filename": "/w/core/a.rs", "summary": {"lines": {"covered": 3}}},
+            {"filename": "/w/core/b.rs", "summary": {"lines": {"covered": 0}}},
+            {"filename": "/home/.cargo/registry/x.rs", "summary": {"lines": {"covered": 9}}},
+        ]}]}
+        self.assertEqual(tool.covered_files(report, "/w/"), {"core/a.rs"})
+
+    def test_the_map_indexes_each_file_once(self):
+        self.assertEqual(tool.coverage_map({"a y": {"c.rs", "b.rs"}, "a x": {"b.rs"}}, "sha", 7), {
+            "sha": "sha", "created": 7, "files": ["b.rs", "c.rs"], "tests": {"a x": [0], "a y": [0, 1]}})
 
 
 if __name__ == "__main__":

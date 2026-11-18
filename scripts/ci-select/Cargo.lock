@@ -92,6 +92,7 @@ dependencies = [
  "globset",
  "guppy",
  "serde",
+ "serde_json",
  "toml",
 ]
 

@@ -172,6 +172,31 @@ jobs:
           for job in server_macos spec_macos; do
             decide "$job" "ci.yml did not change" "$(grep -Fx '.github/workflows/ci.yml' <<<"$changed" || true)"
           done
+      - name: Record the tests a coverage map would skip (shadow mode, every test still runs)
+        if: steps.selector.outcome == 'success' && steps.paths.outputs.site_only != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/coverage-map" "$RUNNER_TEMP/test-selection"
+          if ! run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow coverage-map.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')"; then
+            run=
+          fi
+          if [ -n "$run" ]; then
+            gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern 'coverage-map-*' --dir "$RUNNER_TEMP/coverage-map"
+          fi
+          map="$(find "$RUNNER_TEMP/coverage-map" -name coverage-map.json | head -n 1)"
+          scripts/ci-select/target/debug/ci-select .github/ci-select.toml "$RUNNER_TEMP/base" . "$RUNNER_TEMP/changed" \
+            --tests "${map:-$RUNNER_TEMP/coverage-map/none.json}" "$RUNNER_TEMP/test-selection/selection.json" > /dev/null
+          jq -r '"Shadow test selection: " + (if .everything then "every test kept, because " + .everything else "\(.skipped | length) tests would be skipped against the coverage map of \(.map)" end) + "."' \
+            "$RUNNER_TEMP/test-selection/selection.json"
+      - if: steps.selector.outcome == 'success' && steps.paths.outputs.site_only != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-test-selection
+          path: ${{ runner.temp }}/test-selection
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Plan the Rust test archive and its shards
         id: shards
         env:
@@ -569,6 +594,12 @@ jobs:
         with:
           name: rust-test-inventory-ubuntu-latest
           path: ${{ runner.temp }}/inventory/rust-test-inventory-ubuntu-latest
+      - id: selection
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: rust-test-selection
+          path: ${{ runner.temp }}/test-selection
       - id: inventory_macos
         if: needs.changes.outputs.rust_macos == 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -605,6 +636,12 @@ jobs:
             cat "$RUNNER_TEMP/report/$os/summary.md" >> "$GITHUB_STEP_SUMMARY"
           done
           exit "$status"
+      - name: Count the failed tests the shadow test selection would have skipped
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          python3 scripts/ci-rust-tests.py shadow --selection "$RUNNER_TEMP/test-selection/selection.json" \
+            --junit "$RUNNER_TEMP/junit" --junit "$RUNNER_TEMP/by-os" --out "$RUNNER_TEMP/report/shadow-selection.json" >> "$GITHUB_STEP_SUMMARY"
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
