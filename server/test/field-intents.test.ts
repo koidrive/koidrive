@@ -889,7 +889,7 @@ describe("RFC 0029 section 7.2: legacy intents", () => {
     expect(legacyPlaceKey(12, "0190f5c2-0000-7000-8000-000000000002", "Caf\u00e9.docx")).toBe(folder!.key);
   });
 
-  it("snapshots the backfilled intents at the next commit, and a rebuild before it reads the server's legacy intents from the log", async () => {
+  it("snapshots the backfilled intents at the next commit, and a rebuild before it derives the legacy intents from the first history's log", async () => {
     const { space, a, root } = await setup();
     const now = Date.now();
     await setClock(space, now);

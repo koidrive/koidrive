@@ -25,11 +25,12 @@ import {
   type ServerMessage,
   ServerMessageSchema,
 } from "../src/gen/koidrive/v1/messages_pb";
-import type { NodeState } from "../src/gen/koidrive/v1/model_pb";
+import { IntentSchema, type NodeState, NodeStatus } from "../src/gen/koidrive/v1/model_pb";
+import { type Op, OpResult_Code, OpSchema } from "../src/gen/koidrive/v1/commit_pb";
 import { ChunkPlan_Action, Error_Cause, Error_Code, ErrorSchema } from "../src/gen/koidrive/v1/rpc_pb";
-import { toHex, uuidv7 } from "../src/ids";
+import { fromHex, toHex, uuidv7 } from "../src/ids";
 import { Close, CONNECT_HEADER, type SpaceDO } from "../src/space-do";
-import { intentBytes, legacyIntentId } from "../src/space/intents";
+import { intentBytes, legacyIntentId, writeIntent } from "../src/space/intents";
 import { RETIRED_HISTORY } from "../src/space/space";
 import { ChunkState } from "../src/space/schema";
 import { chunkKey } from "../src/space/store";
@@ -803,10 +804,13 @@ describe("space rewind (RFC 0003)", () => {
     expect((await rewind(token, spaceId, { restorePointMs: p2, expectedHistoryId: historyId })).status).toBe(200);
   });
 
-  it("rebuilds a rewound history's snapshot without intents from the live seqs and commit times of the history before it (RFC 0029 §7.2)", async () => {
+  it("rebuilds a rewound history's snapshot without intents from its own log, and a status id that differs from the lost server's leaves deletes answering the same (RFC 0029 §7.2)", async () => {
     const { spaceId, createdAtMs, creds, device } = await newSpace();
     const a = device();
-    const kept = await createFile(a, spaceId, "kept.txt", "kept");
+    const dirs = Array.from({ length: 6 }, () => uuidv7());
+    const [trashedRebuilt, trashedKept] = [dirs[4]!, dirs[5]!];
+    await a.commit(dirs.map((id, i) => op.mkdir(id, spaceId, `d${i}`)));
+    await a.commit([op.delete(trashedRebuilt), op.delete(trashedKept)]);
     const p1 = createdAtMs + MINUTE;
     await snapshot(spaceId, p1);
     await a.commit([op.mkdir(uuidv7(), spaceId, "dropped")]);
@@ -815,24 +819,68 @@ describe("space rewind (RFC 0003)", () => {
     const completedAtMs = createdAtMs + 5 * MINUTE;
     await setAccountClock(completedAtMs);
     const { historyId, restoreSeq } = (await rewind(creds.access!.token, spaceId, { restorePointMs: p1, expectedHistoryId: previous })).message!;
+    expect(restoreSeq).toBe(2n);
     await runSpaceAlarm(space(spaceId), completedAtMs);
     await runSpaceAlarm(space(spaceId), completedAtMs + 2 * MINUTE);
     await runInDurableObject(space(spaceId), (instance: SpaceDO) => freezeClock(instance, completedAtMs + 3 * MINUTE));
     const b = device();
     b.acceptedSeq = restoreSeq;
-    await b.commit([op.move(kept.nodeId, spaceId, "moved.txt")], { baseSeq: restoreSeq });
+    await b.commit(dirs.slice(0, 4).map((id, i) => op.move(id, spaceId, `moved ${i}`)), { baseSeq: restoreSeq });
     await runSpaceAlarm(space(spaceId), completedAtMs + 10 * MINUTE);
     await revertIntentsMigration(space(spaceId));
     await runSpaceAlarm(space(spaceId), completedAtMs + 11 * MINUTE);
     await runSpaceAlarm(space(spaceId), completedAtMs + 12 * MINUTE);
     await snapshotWithoutIntents(spaceId);
-    const server = await serverState(space(spaceId));
+    const lost = await serverState(space(spaceId));
     const rebuilt = await restoreFromR2(spaceId);
-    expect([rebuilt.descriptor.history_id, rebuilt.manifest?.start_seq, server.headSeq]).toEqual([historyId, Number(restoreSeq) + 1, Number(restoreSeq) + 1]);
-    const fields = (state: NodeState) => (["place", "content", "status"] as const).map((field) => [state.intents?.[field]?.id, state.intents?.[field]?.appliedAtMs]);
-    expect(fields(server.nodes.get(kept.nodeId)!.state)[2]![0]).toEqual(intentBytes(legacyIntentId(kept.nodeId, "status", `live:${restoreSeq}`)));
-    expect([...rebuilt.nodes.keys()].sort()).toEqual([...server.nodes.keys()].sort());
-    for (const [nodeId, { state }] of server.nodes) expect(fields(rebuilt.nodes.get(nodeId)!.state)).toEqual(fields(state));
+    expect([rebuilt.descriptor.history_id, rebuilt.manifest?.start_seq, lost.headSeq]).toEqual([historyId, 3, 3]);
+    const status = (nodes: Map<string, { state: NodeState }>, id: string) => nodes.get(id)!.state.intents!.status!;
+    const lostId = (id: string) => intentBytes(legacyIntentId(id, "status", "live:1"));
+    const rebuiltId = (id: string) => intentBytes(legacyIntentId(id, "status", "live:3"));
+    for (const id of dirs.slice(0, 4)) {
+      expect(status(lost.nodes, id).id).toEqual(lostId(id));
+      expect([status(rebuilt.nodes, id).id, status(rebuilt.nodes, id).appliedAtMs]).toEqual([rebuiltId(id), 0n]);
+    }
+    for (const id of [trashedRebuilt, trashedKept]) expect(status(rebuilt.nodes, id).id).toEqual(status(lost.nodes, id).id);
+    for (const [nodeId, { state }] of lost.nodes) {
+      const got = rebuilt.nodes.get(nodeId)!.state.intents!;
+      for (const [name, rev] of [["place", state.metaRev], ["content", state.contentRev]] as const) {
+        const inLog = rev > restoreSeq;
+        expect([got[name]?.id, got[name]?.appliedAtMs]).toEqual([state.intents![name]?.id, state.intents![name] && (inLog ? state.intents![name]!.appliedAtMs : 0n)]);
+      }
+    }
+
+    await runInDurableObject(space(spaceId), (_instance, state) => {
+      for (const id of [dirs[0]!, dirs[2]!, dirs[3]!, trashedRebuilt]) {
+        const intent = status(rebuilt.nodes, id);
+        writeIntent(state.storage.sql, id, "status", { id: toHex(intent.id), author: "", carried: false, appliedAtMs: Number(intent.appliedAtMs), seq: Number(rebuilt.nodes.get(id)!.state.metaRev) });
+      }
+    });
+    const fresh = () => fromHex(uuidv7().replaceAll("-", ""))!;
+    const deleteOp = (nodeId: string, init: { id?: Uint8Array; replay?: boolean; over?: Uint8Array; unseen?: Uint8Array[]; held?: Uint8Array[] }): Op =>
+      create(OpSchema, {
+        op: { case: "delete", value: { nodeId, unseen: init.unseen ?? [], held: init.held ?? [] } },
+        intent: create(IntentSchema, { id: init.id ?? fresh(), authorDeviceId: b.session.deviceId, replay: init.replay ?? false, over: init.over ?? new Uint8Array() }),
+      });
+    const code = async (deleted: Op) => (await b.commit([deleted])).results[0]!.code;
+    const isTrashed = async (id: string) => (await serverState(space(spaceId))).nodes.get(id)!.state.status === NodeStatus.TRASHED;
+
+    const pending = async (id: string) => code(deleteOp(id, { unseen: [lostId(id)], held: [lostId(id)] }));
+    expect([await pending(dirs[0]!), await pending(dirs[1]!)]).toEqual([OpResult_Code.APPLIED, OpResult_Code.APPLIED]);
+    expect([await isTrashed(dirs[0]!), await isTrashed(dirs[1]!)]).toEqual([true, true]);
+
+    expect(await code(deleteOp(dirs[2]!, { replay: true, over: rebuiltId(dirs[2]!) }))).toBe(OpResult_Code.APPLIED);
+    const replayed = fresh();
+    expect(await code(deleteOp(dirs[3]!, { id: replayed, replay: true, over: lostId(dirs[3]!) }))).toBe(OpResult_Code.SUPERSEDED);
+    expect(await isTrashed(dirs[3]!)).toBe(false);
+    expect(await code(deleteOp(dirs[3]!, { id: replayed, replay: true, over: rebuiltId(dirs[3]!) }))).toBe(OpResult_Code.APPLIED);
+    expect([await isTrashed(dirs[2]!), await isTrashed(dirs[3]!)]).toEqual([true, true]);
+
+    const seenList = [fresh()];
+    const resend = async (id: string) => code(deleteOp(id, { over: lostId(id), held: seenList }));
+    expect([await resend(trashedRebuilt), await resend(trashedKept)]).toEqual([OpResult_Code.SUPERSEDED, OpResult_Code.SUPERSEDED]);
+    const after = await serverState(space(spaceId));
+    expect([after.nodes.get(trashedRebuilt)!.state.trashHeld, after.nodes.get(trashedKept)!.state.trashHeld]).toEqual([[], []]);
   });
 
   it("closes the space to a connection that holds a lease from before the admission, while the marker is not yet written (RFC 0014)", async () => {
