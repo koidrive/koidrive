@@ -392,3 +392,36 @@ fn a_change_another_device_made_after_a_loss_to_content_from_before_it_is_taken(
         assert!(trees.unsent_edits().is_empty(), "at {name}");
     }
 }
+
+#[test]
+fn an_edit_over_a_download_the_server_lost_names_the_versions_that_download_was_made_over() {
+    let mut trees = trees(&[synced("a", file(ROOT, "a", 1))]);
+    trees.set_remote("a".into(), version(remote(file(ROOT, "a", 1)), "v1"));
+    let edited = RemoteNode {
+        content_rev: 5,
+        edit_rev: 5,
+        made_over: vec!["v1".into()],
+        ..version(remote(file(ROOT, "a", 2)), "v2")
+    };
+    trees.set_remote("a".into(), edited);
+    trees.set_local("a".into(), local(file(ROOT, "a", 2), 1));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    list_after_a_loss(
+        &mut trees,
+        &commits,
+        version(remote(file(ROOT, "a", 1)), "v1"),
+    );
+    trees.set_local_changed("a".into(), local(file(ROOT, "a", 3), 1));
+    trees.settle(commits.aliases());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(
+        ops(&commit),
+        [op::Op::UpdateContent(proto::UpdateContent {
+            node_id: "a".into(),
+            content: Some(content(3)),
+            made_over: vec!["v2".into(), "v1".into()],
+            ..Default::default()
+        })]
+    );
+}

@@ -117,8 +117,7 @@ impl ContentVersion {
 
     pub(crate) fn bases(&self) -> Vec<String> {
         content_chain(
-            std::iter::once(self.version_id.clone())
-                .chain(self.made_over.iter().filter(|_| self.own).cloned()),
+            std::iter::once(self.version_id.clone()).chain(self.made_over.iter().cloned()),
         )
     }
 }
