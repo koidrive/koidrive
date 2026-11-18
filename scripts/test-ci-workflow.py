@@ -24,6 +24,11 @@ def inline_script(job):
     return textwrap.dedent(block[1])
 
 
+def inline_job(job):
+    body = WORKFLOW.read_text().split(f"\n  {job}:\n", 1)[1]
+    return re.split(r"\n  \S", body, maxsplit=1)[0]
+
+
 class ChangesJob(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix=".test-ci-workflow-", dir=ROOT)
@@ -261,6 +266,20 @@ class Caches(unittest.TestCase):
                 continue
             with self.subTest(workflow=path.name):
                 self.assertRegex(triggers, r"\n  schedule:\n    - cron: '\d+ \d+ \* \* \*'")
+
+
+class CiReport(unittest.TestCase):
+    def test_a_job_that_skips_on_push_is_not_needed_on_push(self):
+        jobs = re.split(r"(?m)^  (?=[a-z][a-z-]*:\n)", WORKFLOW.read_text().split("\njobs:\n", 1)[1])
+        push_skipped = {job.split(":", 1)[0] for job in jobs if "\n    if: github.event_name != 'push'\n" in job}
+        results = re.search(r"(?m)^          RESULTS: (.*)$", inline_job("ci-report"))[1]
+        entries = re.findall(r"([a-z-]+)=(\$\{\{.*?\}\})", results)
+        self.assertIn("test-lines", dict(entries))
+        for name, expression in entries:
+            if name in push_skipped:
+                with self.subTest(job=name):
+                    self.assertIn("github.event_name != 'push' &&", expression)
+                    self.assertIn("|| 'not-needed'", expression)
 
 
 class Runners(unittest.TestCase):
