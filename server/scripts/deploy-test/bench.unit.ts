@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { MockCloudflare } from "./mock-cloudflare.ts";
 import type { State } from "./state.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -30,15 +31,16 @@ function fakeCargo(status = 0): void {
 const { writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 writeFileSync(join(process.env.HOME, "cargo.json"), JSON.stringify({ args: process.argv.slice(2), env: process.env, cwd: process.cwd() }));
+if (process.env.KOIDRIVE_BENCH_WINDOWS) writeFileSync(process.env.KOIDRIVE_BENCH_WINDOWS, JSON.stringify([{ side: "bundles", startMs: 1700000000000, endMs: 1700000060000, requests: 626, chunks: 20000 }, { side: "puts", startMs: 1700000100000, endMs: 1700000400000, requests: 20000, chunks: 20000 }]));
 console.log("| Benchmark | MiB/s | tailed by Rust |");
 process.exit(${status});
 `, { mode: 0o755 });
 }
 
-function run({ command, env = {} }: { command?: string; env?: NodeJS.ProcessEnv } = {}): Promise<{ status: number | null; output: string }> {
+function run({ command, env = {} }: { command?: string | string[]; env?: NodeJS.ProcessEnv } = {}): Promise<{ status: number | null; output: string }> {
   const flags = Number(process.versions.node.split(".")[0]) < 23 ? ["--experimental-strip-types", "--no-warnings"] : [];
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [...flags, join(here, "bench.ts"), ...(command ? [command] : [])], {
+    const child = spawn(process.execPath, [...flags, join(here, "bench.ts"), ...(command === undefined ? [] : [command].flat())], {
       cwd: join(here, "..", ".."),
       env: {
         PATH: join(work, "bin") + delimiter + process.env.PATH,
@@ -149,3 +151,113 @@ describe("Rust benchmark child", () => {
     expect(JSON.parse(readFileSync(join(work, "cargo.json"), "utf8")).env.KOIDRIVE_BENCH_MIB).toBe(actions ? undefined : "8");
   });
 });
+
+
+describe("small-file benchmark", () => {
+  let cloudflare: MockCloudflare;
+  let api: string;
+
+  beforeEach(async () => {
+    cloudflare = new MockCloudflare();
+    api = (await cloudflare.start()) + "/client/v4";
+  });
+
+  afterEach(() => cloudflare.stop());
+
+  const invocations = (requests: number, p50 = 1234, p99 = 5678) => ({
+    status: 200,
+    body: { data: { viewer: { accounts: [{ workersInvocationsAdaptive: [{ sum: { requests, errors: 0 }, quantiles: { cpuTimeP50: p50, cpuTimeP99: p99 } }] }] } }, errors: null },
+  });
+
+  it.each([
+    ["KOIDRIVE_BENCH_SMALL_FILES", "31"],
+    ["KOIDRIVE_BENCH_SMALL_FILES", "50001"],
+    ["KOIDRIVE_BENCH_SMALL_FILES", "2e4"],
+    ["KOIDRIVE_BENCH_SMALL_KIB", "0"],
+    ["KOIDRIVE_BENCH_SMALL_KIB", "256"],
+    ["KOIDRIVE_BENCH_SMALL_KIB", "16;echo injected"],
+    ["KOIDRIVE_BENCH_SMALL_RUNS", "0"],
+    ["KOIDRIVE_BENCH_SMALL_RUNS", "6"],
+  ])("rejects %s=%s before cargo", async (key, value) => {
+    fakeCargo();
+    const result = await run({ command: ["small", "validate"], env: { [key]: value } });
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(key);
+    expect(existsSync(join(work, "cargo.json"))).toBe(false);
+  });
+
+  it("runs the exact small-file test without Cloudflare credentials and reports Worker CPU per request", async () => {
+    fakeCargo();
+    cloudflare.graphqlAnswers = [invocations(627), invocations(20001, 900, 2100)];
+    const result = await run({ command: "small", env: { CLOUDFLARE_API_BASE_URL: api, GITHUB_STEP_SUMMARY: join(work, "summary.md") } });
+    expect(result.status).toBe(0);
+    const child = JSON.parse(readFileSync(join(work, "cargo.json"), "utf8"));
+    expect(child.args).toEqual(["test", "-p", "koidrive-net", "--release", "--locked", "--test", "upload_bench", "small_file_benchmark", "--", "--ignored", "--exact", "--nocapture"]);
+    expect(child.env).toMatchObject({ KOIDRIVE_BENCH_SMALL_FILES: "20000", KOIDRIVE_BENCH_SMALL_KIB: "16", KOIDRIVE_BENCH_SMALL_RUNS: "3" });
+    expect(child.env).not.toHaveProperty("CLOUDFLARE_API_TOKEN");
+    expect(child.env).not.toHaveProperty("KOIDRIVE_BENCH_NS");
+    expect(cloudflare.graphqlVariables[0]).toMatchObject({ accountTag: "private-cloudflare-account", scriptName: "koidrive-test-1-1", start: "2023-11-14T22:13:20.000Z", end: "2023-11-14T22:14:20.000Z" });
+    const summary = readFileSync(join(work, "summary.md"), "utf8");
+    expect(summary).toContain("| bundles | 626 | 627 | 1.23 | 5.68 | 0 |");
+    expect(summary).toContain("| puts | 20000 | 20001 | 0.90 | 2.10 | 0 |");
+  });
+
+  it.each([
+    { name: "HTTP 403", answer: { status: 403, body: { success: false, errors: [{ code: 10000, message: "Authentication error" }] } } },
+    { name: "a GraphQL authorization error", answer: { status: 200, body: { data: null, errors: [{ message: "not authorized for that account" }] } } },
+  ])("still passes with sync numbers when the token lacks Account Analytics Read ($name)", async ({ answer }) => {
+    fakeCargo();
+    cloudflare.graphqlAnswers = [answer];
+    const result = await run({ command: "small", env: { CLOUDFLARE_API_BASE_URL: api } });
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("Worker CPU unavailable: the deploy-test token lacks Account Analytics Read");
+    expect(result.output).not.toContain("private-cloudflare-token");
+  });
+
+  it("keeps the first side's Worker CPU when the query for the second side fails", async () => {
+    fakeCargo();
+    cloudflare.graphqlAnswers = [invocations(627), { status: 500, body: { success: false, errors: [{ code: 10000, message: "internal" }] } }];
+    const result = await run({ command: "small", env: { CLOUDFLARE_API_BASE_URL: api } });
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("| bundles | 626 | 627 | 1.23 | 5.68 | 0 |");
+    expect(result.output).toContain("Worker CPU unavailable from the puts side on:");
+    expect(result.output).not.toContain("| puts |");
+  });
+
+  it("keeps a side's partial Worker CPU when a later query for that side fails", async () => {
+    fakeCargo();
+    cloudflare.graphqlAnswers = [invocations(300), { status: 500, body: { success: false, errors: [{ code: 10000, message: "internal" }] } }];
+    const result = await run({ command: "small", env: { CLOUDFLARE_API_BASE_URL: api } });
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("| bundles | 626 | 300 (partial) | 1.23 | 5.68 | 0 |");
+    expect(result.output).toContain("Worker CPU unavailable from the puts side on:");
+  });
+
+  it("says why the last side's Worker CPU is partial when its later query fails", async () => {
+    fakeCargo();
+    cloudflare.graphqlAnswers = [invocations(627), invocations(300, 900, 2100), { status: 500, body: { success: false, errors: [{ code: 10000, message: "internal" }] } }];
+    const result = await run({ command: "small", env: { CLOUDFLARE_API_BASE_URL: api } });
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("| bundles | 626 | 627 | 1.23 | 5.68 | 0 |");
+    expect(result.output).toContain("| puts | 20000 | 300 (partial) | 0.90 | 2.10 | 0 |");
+    expect(result.output).toContain("Worker CPU for the puts side is partial:");
+  });
+
+  it("still queries every side after a short side uses up the Analytics budget", async () => {
+    fakeCargo();
+    cloudflare.graphqlAnswer = (variables) => (variables.start === "2023-11-14T22:13:20.000Z" ? invocations(625, 1111, 2000) : invocations(20000, 2222, 3000));
+    const result = await run({ command: "small", env: { CLOUDFLARE_API_BASE_URL: api, KOIDRIVE_BENCH_ANALYTICS_MS: "2000", KOIDRIVE_BENCH_ANALYTICS_EVERY_MS: "200" } });
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("| bundles | 626 | 625 (partial) | 1.11 | 2.00 | 0 |");
+    expect(result.output).toContain("| puts | 20000 | 20000 | 2.22 | 3.00 | 0 |");
+    expect(result.output).not.toContain("Worker CPU unavailable");
+  });
+
+  it("still passes when no Cloudflare credentials are set", async () => {
+    fakeCargo();
+    const result = await run({ command: "small", env: { CLOUDFLARE_API_TOKEN: "", CLOUDFLARE_ACCOUNT_ID: "" } });
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("Worker CPU unavailable: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not set");
+  });
+});
+

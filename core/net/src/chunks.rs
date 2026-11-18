@@ -151,6 +151,8 @@ pub struct Transfer {
     pub attempts: u32,
     pub attempt_timeout: Duration,
     pub stall_timeout: Duration,
+    /// Sends small chunks in bundles (RFC 0027) when the server offers them. Off, every chunk goes as its own PUT.
+    pub bundles: bool,
 }
 
 impl Transfer {
@@ -164,6 +166,7 @@ impl Transfer {
             attempts: 5,
             attempt_timeout: Duration::from_secs(120),
             stall_timeout: Duration::from_secs(60),
+            bundles: true,
         }
     }
 
@@ -232,7 +235,7 @@ impl Transfer {
                         Action::Unspecified => return Err(no_target()),
                     }
                 }
-                let units = units(uploads, session.bundles_offered());
+                let units = units(uploads, self.bundles && session.bundles_offered());
                 let mut started = 0;
                 let mut probing = false;
                 let mut running = FuturesUnordered::new();
@@ -462,6 +465,7 @@ impl Transfer {
         bytes: Bytes,
     ) -> Attempt<Option<UploadReceipt>> {
         let request = self.request(&self.uploads, target, "PUT");
+        tracing::trace!(chunks = 1, "koidrive chunk upload request");
         let answer = match self.send(chunk, request, bytes).await {
             Ok(answer) => answer,
             Err(error) => return Attempt::Retry(error),
@@ -588,6 +592,7 @@ impl Transfer {
             .uploads
             .post(url)
             .header(CONTENT_TYPE, "application/x-protobuf");
+        tracing::trace!(chunks = members.len(), "koidrive chunk upload request");
         let answer = match self
             .send(first, request, Bytes::from(bundle.encode_to_vec()))
             .await

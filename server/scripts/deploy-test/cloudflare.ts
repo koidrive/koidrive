@@ -295,8 +295,8 @@ export async function subscriptions(account: Account): Promise<Subscription[]> {
   return (await call<Subscription[]>(account, "GET", `/accounts/${account.id}/subscriptions`)).result ?? [];
 }
 
-export async function graphql<T>(account: Account, query: string, variables: Record<string, unknown>): Promise<T> {
-  const response = await call<never>(account, "POST", "/graphql", { query, variables });
+export async function graphql<T>(account: Account, query: string, variables: Record<string, unknown>, deadline?: Deadline): Promise<T> {
+  const response = await call<never>(account, "POST", "/graphql", { query, variables }, deadline);
   const body = response as unknown as { data?: T; errors?: { message: string }[] | null };
   if (body.errors?.length) throw new ApiError("GraphQL: " + body.errors.map((error) => error.message).join("; "), 200);
   return body.data as T;

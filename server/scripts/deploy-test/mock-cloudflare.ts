@@ -32,9 +32,15 @@ export class MockCloudflare {
   filterKeys = ["$metadata.service", "$workers.scriptName"];
   rejectedKeys: string[] = [];
   codeLagQueries = 0;
+  probeLagQueries = 0;
+  droppedProbes = 0;
+  probeRequests = 0;
   observabilityStatus = 200;
   logQueries = 0;
   setupRequests = 0;
+  graphqlAnswers: { status: number; body: unknown }[] = [];
+  graphqlAnswer?: (variables: Record<string, unknown>) => { status: number; body: unknown };
+  readonly graphqlVariables: Record<string, unknown>[] = [];
   url = "";
   private server: Server | undefined;
 
@@ -102,7 +108,8 @@ export class MockCloudflare {
         return send(200, worker);
       }
       if (path.startsWith("/deploy-test-probe-")) {
-        this.logs.push({ script: this.workerName, path, timestamp: Date.now() });
+        if (this.probeRequests++ < this.droppedProbes) return send(404, { code: "NOT_FOUND", message: "not found" });
+        this.logs.push({ script: this.workerName, path, timestamp: Date.now(), visibleFrom: this.logQueries + this.probeLagQueries });
         return send(404, { code: "NOT_FOUND", message: "not found" });
       }
       if (path === "/v1/claim") {
@@ -112,6 +119,13 @@ export class MockCloudflare {
       }
 
       this.requests.push(method + " " + path);
+      if (path === "/client/v4/graphql" && method === "POST") {
+        const variables = (JSON.parse(body) as { variables: Record<string, unknown> }).variables;
+        this.graphqlVariables.push(variables);
+        if (this.graphqlAnswer) return (({ status, body }) => send(status, body))(this.graphqlAnswer(variables));
+        const answer = this.graphqlAnswers.length > 1 ? this.graphqlAnswers.shift()! : this.graphqlAnswers[0];
+        return answer ? send(answer.status, answer.body) : missing();
+      }
       const api = /^\/client\/v4\/accounts\/[^/]+(\/.*)$/.exec(path)?.[1];
       if (!api) return missing();
       if ((match = /^\/workers\/workers\/([^/]+)$/.exec(api)) && method === "GET") {
