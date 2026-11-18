@@ -49,14 +49,17 @@ struct GitignoreSettingTests {
         let gitignore = GitignoreSettingModel(app: app, countWait: .milliseconds(50))
 
         session.holdNext(.gitignoreOnly)
+        let asking = Task { await gitignore.set(follow: false) }
         defer { session.release.signal() }
-        let asked = ContinuousClock.now
-        await gitignore.set(follow: false)
-        #expect(ContinuousClock.now - asked < .seconds(2))
+        for _ in 0..<2500 where !gitignore.confirmingOff {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        #expect(session.isHolding)
         #expect(gitignore.confirmingOff)
         #expect(gitignore.count == nil)
 
         session.release.signal()
+        await asking.value
         await gitignore.recount()
         #expect(gitignore.confirmingOff)
         #expect(gitignore.count?.files == files)
@@ -179,6 +182,21 @@ struct GitignoreSettingTests {
         await gitignore.set(follow: true)
         #expect(app.followsGitignore)
         #expect(gitignore.noLongerSyncing == nil)
+    }
+
+    @Test func aCountThatLeavesOutAnUnreadableFolderShowsNoNumbers() async throws {
+        let (app, session) = scripted()
+        try session.setGitignore(follow: false)
+        let gitignore = GitignoreSettingModel(app: app)
+        session.countLeavesOut(["/Users/ada/Documents/pgdata"])
+
+        await gitignore.set(follow: true)
+        #expect(app.followsGitignore)
+        #expect(gitignore.noLongerSyncing == nil)
+
+        await gitignore.set(follow: false)
+        #expect(gitignore.confirmingOff)
+        #expect(gitignore.count == nil)
     }
 
     @Test func aChangeThatIsNotSavedKeepsTheSettingAndSaysWhy() async throws {

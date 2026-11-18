@@ -29,6 +29,7 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
     private var held = false
     private var onMainThread: [Read] = []
     private var made: [Read: Int] = [:]
+    private var unreadable: [String] = []
 
     init(base: SyncSession) {
         self.base = base
@@ -43,6 +44,7 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
     var isHolding: Bool { lock.withLock { held } }
     var callsOnMainThread: [Read] { lock.withLock { onMainThread } }
     func calls(_ read: Read) -> Int { lock.withLock { made[read, default: 0] } }
+    func countLeavesOut(_ paths: [String]) { lock.withLock { unreadable = paths } }
 
     override func state() -> SessionState { base.state() }
     override func start() { base.start() }
@@ -100,7 +102,9 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
     }
 
     override func gitignoreOnly(spaceId: String) throws -> GitignoreOnly {
-        try run(.gitignoreOnly) { try base.gitignoreOnly(spaceId: spaceId) }
+        var only = try run(.gitignoreOnly) { try base.gitignoreOnly(spaceId: spaceId) }
+        only.unreadable += lock.withLock { unreadable }
+        return only
     }
 
     private func run<T>(_ read: Read, _ call: () throws -> T) throws -> T {
