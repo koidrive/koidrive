@@ -31,7 +31,7 @@ import { ChunkPlan_Action, Error_Cause, Error_Code, ErrorSchema } from "../src/g
 import { fromHex, toHex, uuidv7 } from "../src/ids";
 import { Close, CONNECT_HEADER, type SpaceDO } from "../src/space-do";
 import { intentBytes, legacyIntentId, writeIntent } from "../src/space/intents";
-import { RETIRED_HISTORY } from "../src/space/space";
+import { RETIRED_HISTORY } from "../src/space/session";
 import { ChunkState } from "../src/space/schema";
 import { chunkKey } from "../src/space/store";
 import { restoreFromR2, serverState, snapshotWithoutIntents } from "./export-reader";

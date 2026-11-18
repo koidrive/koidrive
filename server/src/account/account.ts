@@ -29,7 +29,7 @@ import type { Database, ObjectState, Sql } from "../host";
 import type { SpaceDO } from "../space-do";
 import { isUuidV7, uuidv7 } from "../ids";
 import { knownPrincipal } from "../policy";
-import { FORMAT_VERSION } from "../space/space";
+import { FORMAT_VERSION } from "../space/limits";
 import { REPORT_URL, reportBatch } from "../report/payload";
 import { type Carried, mergeBatch, mergeUsage, type ObjectStored, type Stored, storedUsage, type UsageBatch, UsageTally } from "../report/usage";
 import { PROTO_MAX, PROTO_MIN, SERVER_VERSION } from "../version";
