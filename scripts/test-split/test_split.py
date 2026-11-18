@@ -197,6 +197,130 @@ class SplitTests(unittest.TestCase):
         with patch.object(split, "git_source", return_value=branch):
             split.verify(self.executable, self.mapping, "branch")
 
+    def property_source(self, base, path=b"proptest", config=b""):
+        return base + path + b"! {\n" + config + b"    #[test]\n    fn holds(x in 0..4u8) { assert!(x < 4); }\n}\n"
+
+    def test_proptest_blocks_split_port_and_verify_in_root(self):
+        original = self.source
+        for path in [b"proptest", b"proptest::proptest"]:
+            with self.subTest(path=path):
+                self.source = self.property_source(original, path)
+                self.mapping["tests.rs"]["proptest:holds"] = "root"
+                self.generate()
+                self.assertIn(path + b"! {", self.path.read_bytes())
+                with patch.object(split, "git_source", return_value=self.source):
+                    split.verify(self.executable, self.mapping, "base")
+                branch = self.source.replace(b"x < 4", b"x <= 3")
+                with patch.object(split, "git_source", side_effect=lambda ref, path: self.source if ref == "base" else branch):
+                    split.port(self.executable, self.mapping, "base", "branch")
+                with patch.object(split, "git_source", return_value=branch):
+                    split.verify(self.executable, self.mapping, "branch")
+
+    def test_verify_names_items_the_mapping_lacks(self):
+        self.generate()
+        del self.mapping["tests.rs"]["fn:one"]
+        with patch.object(split, "git_source", return_value=self.source):
+            with self.assertRaisesRegex(ValueError, r"assign these items.*fn:one"):
+                split.verify(self.executable, self.mapping, "base")
+
+    def test_verify_names_items_a_scenario_adds_without_a_mapping(self):
+        self.generate()
+        scenario = self.root / "tests/scenario.rs"
+        scenario.write_bytes(scenario.read_bytes() + b"\n#[test]\nfn added() {}\n")
+        with patch.object(split, "git_source", return_value=self.source):
+            with self.assertRaisesRegex(ValueError, r"assign these items.*fn:added"):
+                split.verify(self.executable, self.mapping, "base")
+
+    def test_a_proptest_block_never_leaves_its_file(self):
+        original = self.source
+        self.generate()
+        for config in [
+            b'    #![proptest_config(koidrive_test_support::battery_config(concat!(file!(), ".regressions.txt"), 1))]\n',
+            b'    #![proptest_config(koidrive_test_support::regression_config(concat!(env!("CARGO_MANIFEST_DIR"), "/cases.txt"), 8))]\n',
+            b'    #![proptest_config(koidrive_test_support::battery_config(concat!(env!("CARGO_MANIFEST_DIR"), "/cases.txt"), 1))]\n',
+        ]:
+            with self.subTest(config=config):
+                source = self.property_source(original, b"proptest::proptest", config)
+                self.mapping["tests.rs"]["proptest:holds"] = "scenario"
+                with patch.object(split, "git_source", return_value=source):
+                    with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests.rs"):
+                        split.split(self.executable, self.mapping, "base")
+                with patch.object(split, "git_source", side_effect=lambda ref, path: original if ref == "base" else source):
+                    with self.assertRaisesRegex(ValueError, r"\['proptest:holds'\] differ between base, branch and current"):
+                        split.port(self.executable, self.mapping, "base", "branch")
+                scenario = self.root / "tests/scenario.rs"
+                before = scenario.read_bytes()
+                scenario.write_bytes(before + b"\n" + source[len(original):])
+                with patch.object(split, "git_source", return_value=source):
+                    with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests.rs"):
+                        split.verify(self.executable, self.mapping, "base")
+                scenario.write_bytes(before)
+
+    def test_a_proptest_block_in_a_scenario_keeps_its_file(self):
+        self.mapping["tests.rs"]["proptest:holds"] = "scenario"
+        self.generate()
+        scenario = self.root / "tests/scenario.rs"
+        scenario.write_bytes(self.property_source(scenario.read_bytes() + b"\n", b"proptest::proptest"))
+        layout = {path: path.read_bytes() for path in self.root.rglob("*.rs")}
+        reference = lambda ref, path: layout[self.root / path]
+        with patch.object(split, "git_source", side_effect=reference):
+            split.verify(self.executable, self.mapping, "base")
+            split.split(self.executable, self.mapping, "base")
+            self.assertEqual(scenario.read_bytes(), layout[scenario])
+            branch = split.load_source(self.executable, "tests.rs", "base").replace(b"x < 4", b"x <= 3")
+        with patch.object(split, "git_source", side_effect=lambda ref, path: branch if ref == "branch" else reference(ref, path)):
+            split.port(self.executable, self.mapping, "base", "branch")
+        self.assertIn(b"x <= 3", scenario.read_bytes())
+        self.mapping["tests.rs"]["proptest:holds"] = "root"
+        with patch.object(split, "git_source", side_effect=reference):
+            with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests/scenario.rs"):
+                split.split(self.executable, self.mapping, "base")
+            with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests/scenario.rs"):
+                split.verify(self.executable, self.mapping, "base")
+
+    def test_a_scenario_file_named_root_is_refused(self):
+        self.mapping["tests.rs"]["fn:one"] = "root"
+        self.generate()
+        original = self.path.read_bytes()
+        (self.root / "tests/root.rs").write_bytes(self.property_source(split.LICENSE, b"proptest::proptest"))
+        self.path.write_bytes(original.replace(b'include!("tests/common.rs");', b'include!("tests/common.rs");\ninclude!("tests/root.rs");'))
+        layout = {path: path.read_bytes() for path in self.root.rglob("*.rs")}
+        self.mapping["tests.rs"]["proptest:holds"] = "root"
+        with patch.object(split, "git_source", side_effect=lambda ref, path: layout[self.root / path]):
+            with self.assertRaisesRegex(ValueError, "unexpected include path: tests/root.rs"):
+                split.split(self.executable, self.mapping, "base")
+            (self.root / "tests/root.rs").unlink()
+            self.path.write_bytes(original + b"\n" + self.property_source(b"", b"proptest::proptest"))
+            with self.assertRaisesRegex(ValueError, "unexpected include path: tests/root.rs"):
+                split.verify(self.executable, self.mapping, "base")
+
+
+    def test_port_refuses_a_function_added_to_a_proptest_block(self):
+        self.mapping["tests.rs"]["proptest:holds"] = "scenario"
+        self.generate()
+        scenario = self.root / "tests/scenario.rs"
+        scenario.write_bytes(self.property_source(scenario.read_bytes() + b"\n", b"proptest::proptest"))
+        layout = {path: path.read_bytes() for path in self.root.rglob("*.rs")}
+        base = split.load_source(self.executable, "tests.rs")
+        branch = base.replace(b"x < 4); }\n}", b"x < 4); }\n    #[test]\n    fn also_holds(x in 0..4u8) { assert!(x < 4); }\n}")
+        self.mapping["tests.rs"]["proptest:holds,also_holds"] = "root"
+        with patch.object(split, "git_source", side_effect=lambda ref, path: base if ref == "base" else branch):
+            with self.assertRaisesRegex(ValueError, r"proptest blocks \['proptest:holds', 'proptest:holds,also_holds'\] differ.*by hand"):
+                split.port(self.executable, self.mapping, "base", "branch")
+        self.assertEqual(layout, {path: path.read_bytes() for path in self.root.rglob("*.rs")})
+
+    def test_port_with_unchanged_proptest_blocks_goes_through(self):
+        self.mapping["tests.rs"]["proptest:holds"] = "scenario"
+        self.generate()
+        scenario = self.root / "tests/scenario.rs"
+        scenario.write_bytes(self.property_source(scenario.read_bytes() + b"\n", b"proptest::proptest"))
+        base = split.load_source(self.executable, "tests.rs")
+        branch = base.replace(b"helper(), 1", b"helper(), 2")
+        with patch.object(split, "git_source", side_effect=lambda ref, path: base if ref == "base" else branch):
+            split.port(self.executable, self.mapping, "base", "branch")
+        self.assertIn(b"helper(), 2", scenario.read_bytes())
+        self.assertIn(b"fn holds(x in 0..4u8)", scenario.read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()

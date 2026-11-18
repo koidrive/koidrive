@@ -22,20 +22,21 @@ def git_source(revision, path):
 def include_path(path, name):
     path = Path(path)
     included = path.parent / name
-    if included.parent != path.parent / path.stem:
+    if included.parent != path.parent / path.stem or included.stem == "root":
         raise ValueError(f"unexpected include path: {included}")
     return included
 
 
-def load_source(executable, path, revision=None):
-    def read(name):
-        return git_source(revision, name) if revision else (ROOT / name).read_bytes()
+def read_source(revision, path):
+    return git_source(revision, path) if revision else (ROOT / path).read_bytes()
 
-    source = read(path)
+
+def load_source(executable, path, revision=None):
+    source = read_source(revision, path)
 
     for item in reversed(includes(executable, source)):
         included = include_path(path, item["name"].removeprefix("include:"))
-        text = read(str(included)).removeprefix(LICENSE).rstrip()
+        text = read_source(revision, str(included)).removeprefix(LICENSE).rstrip()
         source = source[:item["start"]] + text + source[item["end"]:]
     return source
 
@@ -79,6 +80,10 @@ def output_path(source, scenario):
     return ROOT / path.parent / path.stem / f"{scenario}.rs"
 
 
+def scenario_file(source, scenario):
+    return ROOT / source if scenario == "root" else output_path(source, scenario)
+
+
 def separated(header):
     header = header.rstrip()
     return header + b"\n\n" if header else b""
@@ -101,8 +106,6 @@ def render(executable, mapping, sources):
             scenario = assignments[item["name"]]
             if not re.fullmatch(r"[a-z][a-z0-9_]*", scenario):
                 raise ValueError(f"invalid scenario: {scenario}")
-            if item["kind"] == "property" and scenario != "root":
-                raise ValueError("keep proptest macros in root to preserve regression-file lookup")
             if item["kind"] == "module" and scenario != "root":
                 raise ValueError("keep modules in root to preserve relative paths")
             prefix = source[previous:item["start"]].strip(b"\n")
@@ -140,7 +143,28 @@ def write(executable, planned):
         path.unlink()
 
 
+def property_files(executable, path, revision=None):
+    root = read_source(revision, path)
+    files = {item["name"]: Path(path) for item in items(executable, root) if item["kind"] == "property"}
+    for included in includes(executable, root):
+        scenario = include_path(path, included["name"].removeprefix("include:"))
+        for item in items(executable, read_source(revision, str(scenario)), fragment=True):
+            if item["kind"] == "property":
+                files[item["name"]] = scenario
+    return files
+
+
+def require_properties_in_place(path, assignments, files):
+    for name, held in files.items():
+        if name not in assignments:
+            continue
+        if held != scenario_file(path, assignments[name]).relative_to(ROOT):
+            raise ValueError(f"{name} must stay in {held}: a proptest block never changes file")
+
+
 def split(executable, mapping, revision):
+    for path, assignments in mapping.items():
+        require_properties_in_place(path, assignments, property_files(executable, path, revision))
     sources = {path: load_source(executable, path, revision) for path in mapping}
     write(executable, render(executable, mapping, sources))
 
@@ -180,6 +204,13 @@ def port(executable, mapping, base_ref, branch_ref):
         base_header, base = records(executable, load_source(executable, path, base_ref))
         branch_header, branch = records(executable, load_source(executable, path, branch_ref))
         current_header, current = records(executable, load_source(executable, path))
+        blocks = [{name for name in side if name.startswith("proptest:")} for side in (base, branch, current)]
+        changed = sorted(set.union(*blocks) - set.intersection(*blocks))
+        if changed:
+            raise ValueError(f"{path}: proptest blocks {changed} differ between base, branch and current; "
+                             "apply that change by hand")
+        files = property_files(executable, path, branch_ref) | property_files(executable, path)
+        require_properties_in_place(path, mapping[path], files)
         order = list(current) + [name for name in branch if name not in current]
         merged = []
         for name in order:
@@ -191,6 +222,12 @@ def port(executable, mapping, base_ref, branch_ref):
     write(executable, render(executable, mapping, sources))
 
 
+def require_assigned(path, assignments, found):
+    unknown = [item["name"] for item in found if item["name"] not in assignments]
+    if unknown:
+        raise ValueError(f"assign these items in {MAPPING.relative_to(ROOT)} for {path}: {unknown}")
+
+
 def verify(executable, mapping, revision):
     total = 0
     for path, assignments in mapping.items():
@@ -198,6 +235,9 @@ def verify(executable, mapping, revision):
         root = (ROOT / path).read_bytes()
         root_items = parsed(executable, root)
         original_items = items(executable, original)
+        require_assigned(path, assignments, original_items)
+        reference_files = property_files(executable, path, revision)
+        require_properties_in_place(path, assignments, reference_files)
         scenarios = {assignments[item["name"]] for item in original_items} - {"root"}
         expected_includes = Counter(f'{Path(path).stem}/{scenario}.rs' for scenario in scenarios)
         actual_includes = Counter(item["name"].removeprefix("include:")
@@ -213,14 +253,17 @@ def verify(executable, mapping, revision):
         paths = [ROOT / path] + sorted(output_path(path, "common").parent.rglob("*.rs"))
         if set(paths[1:]) != {output_path(path, scenario) for scenario in scenarios}:
             raise ValueError(f"{path}: scenario file set differs from the mapping")
-        for moved in paths:
+        found = {moved: items(executable, moved.read_bytes(), fragment=moved != ROOT / path) for moved in paths}
+        require_assigned(path, assignments, [item for moved_items in found.values() for item in moved_items])
+        for moved, moved_items in found.items():
             source = moved.read_bytes()
-            for item in items(executable, source, fragment=moved != ROOT / path):
+            for item in moved_items:
                 name = item["name"]
                 if name in after:
                     raise ValueError(f"duplicated item in {path}: {name}")
-                expected = ROOT / path if assignments[name] == "root" else output_path(path, assignments[name])
-                if moved != expected:
+                if name in reference_files and moved.relative_to(ROOT) != reference_files[name]:
+                    raise ValueError(f"{name} must stay in {reference_files[name]}: a proptest block never changes file")
+                if moved != scenario_file(path, assignments[name]):
                     raise ValueError(f"wrong scenario for {name}: {moved}")
                 after[name] = source[item["start"]:item["end"]]
         if before != after:
