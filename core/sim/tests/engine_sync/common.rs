@@ -2063,7 +2063,10 @@ fn run_ignoring_answering_after(
                 if let Some(shape) = discarded.remove(&create.node_id) {
                     discarded.insert(outcome.node_id.clone(), shape);
                 }
-                for shape in discarded.values_mut().filter(|shape| shape.parent == create.node_id) {
+                for shape in discarded
+                    .values_mut()
+                    .filter(|shape| shape.parent == create.node_id)
+                {
                     shape.parent = outcome.node_id.clone();
                 }
             }
