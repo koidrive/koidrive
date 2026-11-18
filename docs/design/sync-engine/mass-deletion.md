@@ -9,19 +9,20 @@ The guard (`core/engine/src/guard.rs`) holds local deletions that would remove t
 - A local deletion is planned as one `Delete` per topmost deleted node: a node of S that is absent from L while its parent is present in L (§2.6). Each topmost deleted node is one deletion, a file or a whole folder. Emptying a folder but keeping it makes each removed child a deletion.
 - Separately, the guard counts the affected files of each deletion: the live files of S in its subtree, leaving out nodes the server will keep (§2.4) and nodes moved elsewhere first.
 - A delete of a folder that holds excluded nodes is split (§5.10) and still counts as one deletion.
+- A file whose `node_id` is a UUIDv7 with a time in the last 10 minutes is new. A deletion waiting to be sent counts all its files; once sent, it counts only the files that are not new. A file whose ID time is later than `now_ms` is not new. So making and deleting files over and over, on one device or across devices, never adds up to a mass delete.
 
 ### Thresholds
 
 The guard holds deletions when either limit is crossed:
 
 - the deletions in the rolling 10-minute window, the new ones included, number more than 1,000;
-- the affected files in the window, the new ones included, are more than 50% of the space, for a space of at least 20 files. The denominator is the live files of S plus the files already deleted in the window.
+- the affected files in the window, the new ones included, are more than 50% of the space, for a space of at least 20 files. The denominator is the live files of S plus the files the window's sent deletions count.
 
 ### Durable state
 
 The engine persists, in the store transaction of the commit or hold that changes them:
 
-- the ledger: for each topmost deleted node in the window, its `node_id`, the time it was planned, and its affected-file count. Keying by `node_id` makes a resent or re-planned commit, a restart, or a node planned twice count once. Each plan rewrites the affected-file count from the current S. An entry is removed when its node is present in L again, so a later deletion of the same node is new, and otherwise 10 minutes after its time. Time comes from the `now_ms` of inputs. An entry whose time is later than `now_ms` is treated as made at `now_ms`, which keeps it in the window longer, never shorter;
+- the ledger: for each topmost deleted node in the window, its `node_id`, the time it was planned, and its affected-file count. Keying by `node_id` makes a resent or re-planned commit, a restart, or a node planned twice count once. Each plan rewrites the affected-file count from the current S, leaving out new files. An entry is removed when its node is present in L again, so a later deletion of the same node is new, and otherwise 10 minutes after its time. Time comes from the `now_ms` of inputs. An entry whose time is later than `now_ms` is treated as made at `now_ms`, which keeps it in the window longer, never shorter;
 - the held set: the topmost deleted nodes being held, each with its affected-file count and the revisions in R (`content_rev`, `meta_rev`) of every node in its subtree when it was held;
 - the question: an ID, the held set it asks about, the counts the person was shown, the thresholds crossed, also those of the questions it replaced, and its answer until the engine applies it;
 - the confirmed set: the deletions answered with Delete, planned without counting until the commit that makes them is acknowledged. A deletion split over several commits stays confirmed while each of its pending nodes keeps the revisions it was confirmed with. When one changes, what is left is held under a new question, also below the thresholds.
@@ -57,7 +58,7 @@ Remote deletions are applied locally, since the server is authoritative, and go 
 - When R holds no record of the node, as after a purge, the removal belongs to the deletion the guard counted or dismissed under a folder above it that R no longer holds. When there is none, it starts a deletion whose topmost node is the outermost of those folders, trashed at or before the seq up to which R holds every change. A record R learns later matches it when its seq is at or before that one and the removed node is under the topmost node.
 - Without a record, deletions count by folder with the same files: those of one folder as one, and one the server applied in part as one for each node it trashed under a folder it kept.
 - Every bootstrap after the first lists the trash, so R holds the group of each node the server still holds trashed.
-- These counts go into a second ledger, persisted like the first, with the same thresholds. Its denominator is the live files of S plus the files it counts.
+- These counts go into a second ledger, persisted like the first, with the same thresholds. A removal counts only the files that are not new (§6.1, What is counted). Its denominator is the live files of S plus the files it counts.
 - A deletion stays in that ledger for the window after its last removal, and as long as L still holds a node R holds in its trash group, or its topmost node while that node is still the deletion's (R holds it trashed in the deletion's group, or in any group for a deletion without one, or holds no record of it). A restore below the topmost node brings that node back live on its own, and a later delete trashes it in another group, so neither keeps the deletion. A removal that pauses longer than the window and continues later counts whole.
 - A deletion ends when R holds its topmost node and no node trashed in its group, because the server restored them or lost the commit that trashed them. Restoring some of its nodes does not end it. Without a group, it ends when R holds its topmost node live or trashed by another deletion. An ended deletion leaves the ledger at once, so a folder restored and deleted again is a new deletion. A purge does not end it.
 - When the removals cross a threshold, the engine opens a notice: an open question of kind `RemoteMassDelete` that holds nothing and takes only Dismiss. While it is open, each later removal updates its counts and thresholds, and no entry leaves the ledger by age.

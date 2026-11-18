@@ -40,7 +40,7 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
 use koidrive_chunk::ChunkerConfig;
@@ -526,9 +526,7 @@ impl Disk {
         engine: &mut Engine,
         store: &mut Store,
     ) -> Result<Option<Pending>, Stop> {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_millis() as u64);
+        let now_ms = crate::clock::unix_ms();
         let (space, batch) = (&self.space, self.batch);
         let hook = &mut self.hook;
         let pending = store.transaction(|tx| -> Result<_, Stop> {
@@ -757,9 +755,7 @@ impl Disk {
             || !ctimes.is_empty()
             || engine.sees_unobserved(&listed)
         {
-            let now_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |since| since.as_millis() as u64);
+            let now_ms = crate::clock::unix_ms();
             store.transaction(|tx| -> Result<(), Stop> {
                 if let Some(mounts) = mounts {
                     tx.set_volume_mounts(&mounts)?;
@@ -1067,9 +1063,7 @@ pub(crate) fn relink_with_hook(
         }
         let mut engine = Engine::load(tx, &link.space_id)?;
         engine.effects.catch_up(marker.effects);
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_millis() as u64);
+        let now_ms = crate::clock::unix_ms();
         (engine.commits).ask_unsettled_restores(&before.commits, &mut engine.ids, now_ms);
         engine.ask(tx, &link.space_id)?;
         for row in &answered {
@@ -1663,9 +1657,7 @@ fn settle(
                     )
                     .map_err(refused)?;
                 if let Some(removal) = removal {
-                    let now_ms = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map_or(0, |since| since.as_millis() as u64);
+                    let now_ms = crate::clock::unix_ms();
                     let Engine {
                         trees,
                         commits,

@@ -1321,6 +1321,45 @@ fn a_file_deleted_before_the_disk_took_the_servers_name_stays_deleted() {
     converge(2, &[schedule]).unwrap();
 }
 
+#[test]
+fn a_device_that_makes_and_deletes_entries_over_and_over_keeps_syncing() {
+    let a = vec![file("a")];
+    let named = ["a", "b", "c.txt"].map(|name| vec![file(name)]).to_vec();
+    let folder_with_file = vec![folder("a"), user(1, 0, 1, "b")];
+    for (makes, purge) in [
+        (vec![a], true),
+        (named, false),
+        (vec![folder_with_file], true),
+    ] {
+        let mut world = world(1);
+        for cycle in 0..25 {
+            let make: Vec<(usize, Step)> = (makes[cycle % makes.len()].iter())
+                .map(|step| (0, *step))
+                .collect();
+            world.phase(3 * cycle, &make).unwrap();
+            world.phase(3 * cycle + 1, &[(0, delete(0))]).unwrap();
+            let trashed = |world: &World| -> Vec<String> {
+                (world.space().nodes().into_iter())
+                    .filter(|node| node.status == NodeStatus::Trashed as i32)
+                    .map(|node| node.node_id)
+                    .collect()
+            };
+            while purge && (trashed(&world).iter()).any(|id| world.space_mut().purge(id, 0)) {}
+            world.phase(3 * cycle + 2, &[]).unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_device_that_deletes_each_file_another_device_makes_keeps_syncing() {
+    let mut world = world(2);
+    for cycle in 0..25 {
+        world.phase(3 * cycle, &[(1, file("a"))]).unwrap();
+        world.phase(3 * cycle + 1, &[(0, delete(0))]).unwrap();
+        world.phase(3 * cycle + 2, &[]).unwrap();
+    }
+}
+
 /// Device 1 edits a file and deletes an empty folder. Meanwhile device 0 has moved the file into
 /// that folder and edited it, so device 1's edit becomes a conflict copy inside the folder that the
 /// same commit deletes.

@@ -475,7 +475,13 @@ impl World {
                 let node = &removal.within[0];
                 let (kind, deletion) = self.truth(node).expect("a removed node is trashed");
                 let files = u64::from(kind == Kind::File);
-                assert_eq!(removal.files, files);
+                assert_eq!(
+                    removal.files,
+                    (kind == Kind::File)
+                        .then(|| node.clone())
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                );
                 assert!(
                     (self.trees.remote().get(node)).is_some_and(|node| node.trashed),
                     "R holds the trash group of every removed node"
