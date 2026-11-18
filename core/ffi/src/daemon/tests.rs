@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
@@ -15,28 +15,6 @@ use crate::types::{
     ConflictSide, DeletedItem, FolderPath, NodeKind, QuestionKind, RestoreRefusal, RestoreState,
     RestoreTarget, ShareState, SyncProgress, UpdateResult, UpdateStatus,
 };
-
-const KOI: &str = r#"#!/bin/sh
-dir="$(dirname "$0")"
-shift
-printf '%s\n' "$*" >> "$dir/calls"
-printf '%s %s %s\n' "$HOME" "$XDG_STATE_HOME" "${XDG_RUNTIME_DIR-unset}" > "$dir/env"
-case "$1-$2" in
-  join-*|server-claim|share-create) cat > "$dir/stdin-$1" ;;
-esac
-if [ "$1" = status ] && [ -e "$dir/snapshot-next-status" ] && mv "$dir/snapshot-next-status" "$dir/snapshot-status-taken" 2>/dev/null; then
-  cat "$dir/status.json" > "$dir/status-snapshot.json"
-  touch "$dir/status-snapshot-ready"
-  while [ -e "$dir/hold-status-snapshot" ]; do sleep 0.01; done
-  cat "$dir/status-snapshot.json"
-  exit 0
-fi
-while [ -e "$dir/hold-$1" ]; do sleep 0.01; done
-for name in "$1-$2" "$1"; do
-  if [ -f "$dir/$name.json" ]; then exec cat "$dir/$name.json"; fi
-done
-exit 3
-"#;
 
 const THIS: &str = "0190b6a5-0000-7000-8000-00000000000a";
 
@@ -66,8 +44,11 @@ impl Koi {
     fn with_listener(status: Value, listener: Box<dyn SessionListener>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let koi = dir.path().join("koi");
-        fs::write(&koi, KOI).unwrap();
-        fs::set_permissions(&koi, fs::Permissions::from_mode(0o755)).unwrap();
+        symlink(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/fake-koi.sh"),
+            &koi,
+        )
+        .unwrap();
         write(dir.path(), "status", ok(status));
         write(dir.path(), "_reconcile", ok(json!({})));
         let (home, state) = (dir.path().join("home"), dir.path().join("state"));
@@ -442,7 +423,7 @@ fn koi_runs_in_the_environment_of_the_profile() {
 #[test]
 fn opening_a_session_does_not_wait_forever_for_status() {
     let koi = Koi::new(signed_in(false));
-    fs::write(&koi.core.helper.path, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    koi.hold("status");
     let (opened, took) = timed(|| {
         DaemonCore::open(
             koi.core.helper.path.clone(),
