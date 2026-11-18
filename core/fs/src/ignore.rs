@@ -123,6 +123,24 @@ struct Folder {
     dir: PathBuf,
     id: FileId,
     entries: Dir,
+    names: Vec<OsString>,
+}
+
+impl Folder {
+    fn open(dir: PathBuf, id: FileId, fd: OwnedFd) -> Option<Self> {
+        let mut entries = Dir::new(fd).ok()?;
+        let mut names: Vec<OsString> = std::iter::from_fn(|| entries.read()?.ok())
+            .map(|item| OsStr::from_bytes(item.file_name().to_bytes()).to_os_string())
+            .filter(|name| *name != "." && *name != "..")
+            .collect();
+        names.sort_unstable_by(|a, b| b.cmp(a));
+        Some(Self {
+            dir,
+            id,
+            entries,
+            names,
+        })
+    }
 }
 
 const OPEN_FOLDERS: usize = 16;
@@ -433,15 +451,11 @@ impl<'r> Pending<'r> {
             }
             while !moved && (left > 0 || !looked) && !pending.is_empty() {
                 let (dir, name) = match walk.folders.last_mut() {
-                    Some(Folder { dir, entries, .. }) => {
-                        let Some(Ok(item)) = entries.read() else {
+                    Some(Folder { dir, names, .. }) => {
+                        let Some(name) = names.pop() else {
                             walk.folders.pop();
                             continue;
                         };
-                        let name = OsStr::from_bytes(item.file_name().to_bytes()).to_os_string();
-                        if name == "." || name == ".." {
-                            continue;
-                        }
                         (dir.clone(), name)
                     }
                     None => {
@@ -504,17 +518,17 @@ impl<'r> Pending<'r> {
                             if confirm {
                                 continue;
                             }
-                            let Ok(entries) = Dir::new(fd) else {
+                            let Some(folder) = Folder::open(dir, id, fd) else {
                                 continue;
                             };
                             seen.pop();
-                            if let Some(parent) = dir.parent()
+                            if let Some(parent) = folder.dir.parent()
                                 && !walk.bases.iter().any(|(at, _)| at == parent)
                             {
                                 walk.bases.push((parent.to_path_buf(), seen));
                             }
                             walk.above = Some(before);
-                            walk.folders.push(Folder { dir, id, entries });
+                            walk.folders.push(folder);
                             continue;
                         }
                         let Some(listing) = walk.listings.last_mut() else {
@@ -594,17 +608,13 @@ impl<'r> Pending<'r> {
                 let Ok(sub) = open_dir_at(parent, &name) else {
                     continue;
                 };
-                let Ok(entries) = Dir::new(sub) else {
+                let Some(folder) = Folder::open(path, entry.id, sub) else {
                     continue;
                 };
                 if walk.folders.is_empty() {
                     walk.above = opened.take().map(|(_, fd)| fd);
                 }
-                walk.folders.push(Folder {
-                    dir: path,
-                    id: entry.id,
-                    entries,
-                });
+                walk.folders.push(folder);
             }
             if moved {
                 *walking = None;
