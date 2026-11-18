@@ -5305,4 +5305,6 @@ enum Made {
 }
 
 #[cfg(test)]
+mod checkpoint_changes;
+#[cfg(test)]
 mod tests;
