@@ -2639,7 +2639,9 @@ impl Commits {
                     let finishing = (trees.pending_finishes().get(id))
                         .filter(|finish| finish.sending)
                         .map(|finish| finish.disk_first);
-                    let superseded = code == Code::Superseded && moved.from.is_some();
+                    let superseded = code == Code::Superseded
+                        && (moved.from.is_some()
+                            || trees.remote().get(id).is_some_and(|remote| remote.trashed));
                     let moved_back = finishing == Some(true)
                         && applied
                         && (trees.local().get(id).filter(|local| !local.parked)).is_some_and(
