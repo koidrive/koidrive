@@ -6,7 +6,7 @@ use determinator::rules::{
     DeterminatorMarkChanged, DeterminatorPostRule, DeterminatorRules, PathMatch, PathRule,
     RuleIndex,
 };
-use globset::{Glob, GlobSetBuilder};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use guppy::MetadataCommand;
 use guppy::graph::cargo::CargoOptions;
 use guppy::graph::feature::StandardFeatures;
@@ -14,6 +14,7 @@ use guppy::graph::{DependencyDirection, PackageGraph};
 use guppy::platform::PlatformSpec;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::process::ExitCode;
 use std::{env, fs};
 
@@ -84,7 +85,8 @@ enum Any {
 
 #[derive(Debug, PartialEq)]
 enum PathOutcome {
-    Everything,
+    EveryJob,
+    Unknown,
     Entry(usize),
     Package,
     Ignored,
@@ -110,7 +112,8 @@ fn rules(config: &Config) -> DeterminatorRules {
 
 fn outcome(matched: PathMatch) -> PathOutcome {
     match matched {
-        PathMatch::RuleMatchedAll | PathMatch::NoMatches => PathOutcome::Everything,
+        PathMatch::RuleMatchedAll => PathOutcome::EveryJob,
+        PathMatch::NoMatches => PathOutcome::Unknown,
         PathMatch::RuleMatched(RuleIndex::CustomPath(index)) => PathOutcome::Entry(index),
         PathMatch::RuleMatched(_) => PathOutcome::Ignored,
         PathMatch::AncestorMatched => PathOutcome::Package,
@@ -125,47 +128,153 @@ fn tests(job: &Job, package: &str) -> bool {
     }
 }
 
-fn reads(config: &Config, changed: &[&str]) -> Result<Vec<(String, String)>, String> {
+fn glob_set(globs: &[String]) -> Result<GlobSet, String> {
+    let mut set = GlobSetBuilder::new();
+    for glob in globs {
+        set.add(Glob::new(glob).map_err(|error| format!("ci-select config: {error}"))?);
+    }
+    set.build()
+        .map_err(|error| format!("ci-select config: {error}"))
+}
+
+struct ReadMatch {
+    path: String,
+    package: String,
+    rule: usize,
+}
+
+fn reads(config: &Config, changed: &[&str]) -> Result<Vec<ReadMatch>, String> {
     let mut found = Vec::new();
-    for read in &config.read {
-        let mut globs = GlobSetBuilder::new();
-        for glob in &read.globs {
-            globs.add(Glob::new(glob).map_err(|error| format!("ci-select config: {error}"))?);
-        }
-        let globs = globs
-            .build()
-            .map_err(|error| format!("ci-select config: {error}"))?;
+    for (rule, read) in config.read.iter().enumerate() {
+        let globs = glob_set(&read.globs)?;
         for path in changed.iter().filter(|path| globs.is_match(path)) {
-            found.extend(
-                read.by
-                    .iter()
-                    .map(|package| (path.to_string(), package.clone())),
-            );
+            found.extend(read.by.iter().map(|package| ReadMatch {
+                path: path.to_string(),
+                package: package.clone(),
+                rule,
+            }));
         }
     }
     Ok(found)
+}
+
+struct Owner {
+    path: String,
+    packages: Vec<String>,
+    rule: Option<usize>,
+    dependents: BTreeSet<String>,
+}
+
+fn dependents<'g>(
+    graph: &'g PackageGraph,
+    packages: impl IntoIterator<Item = guppy::graph::PackageMetadata<'g>>,
+) -> Option<BTreeSet<String>> {
+    let ids: Vec<_> = packages.into_iter().map(|package| package.id()).collect();
+    Some(
+        graph
+            .query_reverse(ids)
+            .ok()?
+            .resolve()
+            .packages(DependencyDirection::Forward)
+            .map(|dependent| dependent.name().to_string())
+            .collect(),
+    )
+}
+
+fn owners(
+    config: &Config,
+    base: &PackageGraph,
+    head: &PackageGraph,
+    paths: &[(String, PathOutcome)],
+) -> Vec<Owner> {
+    paths
+        .iter()
+        .filter_map(|(path, outcome)| match outcome {
+            PathOutcome::Package => [head, base].into_iter().find_map(|graph| {
+                let workspace = graph.workspace();
+                let package = Utf8Path::new(path)
+                    .ancestors()
+                    .skip(1)
+                    .find_map(|dir| workspace.member_by_path(dir).ok())?;
+                Some(Owner {
+                    path: path.clone(),
+                    packages: vec![package.name().to_string()],
+                    rule: None,
+                    dependents: dependents(graph, [package])?,
+                })
+            }),
+            PathOutcome::Entry(index) if !config.path[*index].packages.is_empty() => {
+                let packages = &config.path[*index].packages;
+                let workspace = head.workspace();
+                Some(Owner {
+                    path: path.clone(),
+                    packages: packages.clone(),
+                    rule: Some(*index),
+                    dependents: dependents(
+                        head,
+                        packages
+                            .iter()
+                            .filter_map(|name| workspace.member_by_name(name.as_str()).ok()),
+                    )?,
+                })
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 fn select(
     config: &Config,
     affected: &BTreeSet<String>,
     paths: &[(String, PathOutcome)],
-    reads: &[(String, String)],
-) -> BTreeMap<String, Option<String>> {
-    config
+    reads: &[ReadMatch],
+    owners: &[Owner],
+) -> Result<BTreeMap<String, Option<String>>, String> {
+    let mut every_job = None;
+    for (path, outcome) in paths {
+        match outcome {
+            PathOutcome::Unknown => {
+                every_job = Some(format!(
+                    "no rule in ci-select.toml and no package covers `{path}`, so every job runs"
+                ));
+                break;
+            }
+            PathOutcome::EveryJob => {
+                let mut globs = None;
+                for entry in config
+                    .path
+                    .iter()
+                    .filter(|entry| matches!(entry.jobs, Jobs::All(_)))
+                {
+                    if glob_set(&entry.globs)?.is_match(path) {
+                        globs = Some(&entry.globs);
+                        break;
+                    }
+                }
+                let globs = globs.ok_or_else(|| {
+                    format!(
+                        "{path} runs every job, but no path rule with jobs = \"all\" matches it"
+                    )
+                })?;
+                every_job = Some(format!(
+                    "`{path}` matches the path rule {globs:?}, which runs every job"
+                ));
+                break;
+            }
+            _ => {}
+        }
+    }
+    Ok(config
         .job
         .iter()
         .map(|(name, job)| {
-            let everything = paths
-                .iter()
-                .find(|(_, outcome)| *outcome == PathOutcome::Everything)
-                .map(|(path, _)| format!("{path} changes what every job depends on"));
             let by_path = || {
                 paths.iter().find_map(|(path, outcome)| match outcome {
                     PathOutcome::Entry(index) => match &config.path[*index].jobs {
-                        Jobs::Named(jobs) if jobs.contains(name) => {
-                            Some(format!("{path} is an input of this job"))
-                        }
+                        Jobs::Named(jobs) if jobs.contains(name) => Some(format!(
+                            "`{path}` matches the path rule {:?}",
+                            config.path[*index].globs
+                        )),
                         _ => None,
                     },
                     _ => None,
@@ -174,24 +283,61 @@ fn select(
             let by_read = || {
                 reads
                     .iter()
-                    .find(|(_, package)| tests(job, package))
-                    .map(|(path, package)| format!("the tests of {package} read {path}"))
+                    .find(|read| tests(job, &read.package))
+                    .map(|read| {
+                        format!(
+                            "the tests of {} read `{}` (read rule {:?})",
+                            read.package, read.path, config.read[read.rule].globs
+                        )
+                    })
+            };
+            let by_owner = || {
+                owners.iter().find_map(|owner| {
+                    let tested = owner
+                        .packages
+                        .iter()
+                        .chain(&owner.dependents)
+                        .find(|package| affected.contains(*package) && tests(job, package))?;
+                    let source = match owner.rule {
+                        Some(index) => format!(
+                            "`{}` matches the path rule {:?}, which marks {:?} changed",
+                            owner.path, config.path[index].globs, owner.packages
+                        ),
+                        None => format!("`{}` is in {}", owner.path, owner.packages[0]),
+                    };
+                    Some(if owner.packages.contains(tested) {
+                        format!("{source}, which this job tests")
+                    } else {
+                        format!(
+                            "{source}, and {tested}, which this job tests, depends on {}",
+                            if owner.packages.len() == 1 {
+                                "it"
+                            } else {
+                                "them"
+                            }
+                        )
+                    })
+                })
             };
             let by_package = || {
                 affected
                     .iter()
                     .find(|package| tests(job, package))
-                    .map(|package| format!("the change affects {package}"))
+                    .map(|package| {
+                        format!("the dependencies of {package}, which this job tests, changed")
+                    })
             };
             (
                 name.clone(),
-                everything
+                every_job
+                    .clone()
                     .or_else(by_path)
+                    .or_else(by_owner)
                     .or_else(by_read)
                     .or_else(by_package),
             )
         })
-        .collect()
+        .collect())
 }
 
 fn check(config: &Config, graph: &PackageGraph) -> Result<(), String> {
@@ -318,21 +464,39 @@ fn compute(
             )
         })
         .collect();
-    Ok(select(config, &affected, &paths, &readers))
+    let owners = owners(config, base, head, &paths);
+    select(config, &affected, &paths, &readers, &owners)
 }
+
+const SKIPPED: &str = "the change reaches none of its packages or paths";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     match run(&args) {
         Ok(selection) => {
+            let mut summary =
+                String::from("### Jobs ci-select chose\n\n| Job | Runs | Why |\n|---|---|---|\n");
             for (job, reason) in &selection {
                 println!("{job}={}", reason.is_some());
-                match reason {
-                    Some(reason) => eprintln!("{job}: runs, because {reason}"),
-                    None => eprintln!(
-                        "{job}: skipped, because the change reaches none of its packages or paths"
-                    ),
-                }
+                let why = reason.as_deref().unwrap_or(SKIPPED);
+                eprintln!(
+                    "{job}: {}, because {why}",
+                    if reason.is_some() { "runs" } else { "skipped" }
+                );
+                summary.push_str(&format!(
+                    "| {job} | {} | {} |\n",
+                    if reason.is_some() { "yes" } else { "no" },
+                    why.replace('|', "\\|")
+                ));
+            }
+            if let Ok(path) = env::var("GITHUB_STEP_SUMMARY")
+                && let Err(error) = fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(&path)
+                    .and_then(|mut file| file.write_all(summary.as_bytes()))
+            {
+                eprintln!("::warning::Writing the job summary to {path} failed: {error}");
             }
             ExitCode::SUCCESS
         }
@@ -492,6 +656,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_change_that_introduced_a_past_regression_runs_the_job_whose_test_caught_it() {
+        for (fixed_by, path, job) in [
+            (
+                "#682",
+                ".github/workflows/property-battery.yml",
+                "rust_engine",
+            ),
+            ("#664", "server/src/account/claim.ts", "net_integration"),
+            ("#664", "server/src/account/claim.ts", "server"),
+            ("#400", "spec/rfc/0018-resends-and-deletes.md", "rust_sim"),
+            ("#367", "docs/json-schema/v1/koi-status.json", "rust_driver"),
+            ("#367", "docs/json-schema/v1/koi-status.json", "rust"),
+            ("#347", "scripts/test-split/mapping.json", "rust_engine"),
+            ("#674", "server/scripts/deploy-test/e2e.ts", "server"),
+        ] {
+            let running = running(&[path]);
+            assert!(
+                running.contains(job),
+                "{path} introduced the bug {fixed_by} fixed, which {job} caught, but it runs only {running:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_deleted_or_moved_file_selects_what_it_was_part_of() {
+        let deleted = running(&["core/engine/src/deleted_module.rs"]);
+        for job in ["rust_engine", "rust_driver", "rust_sim"] {
+            assert!(deleted.contains(job), "{job} must run: {deleted:?}");
+        }
+        assert_eq!(
+            running(&[
+                "core/removed-package/src/lib.rs",
+                "core/engine/src/moved.rs"
+            ]),
+            every_job()
+        );
+    }
+
     fn select_from_list(
         name: &str,
         list: &str,
@@ -608,7 +811,10 @@ mod tests {
                 ("tests_cli".to_string(), None),
                 (
                     "tests_fs".to_string(),
-                    Some("the tests of koidrive-fs read notes/read-by-fs.txt".to_string())
+                    Some(
+                        "the tests of koidrive-fs read `notes/read-by-fs.txt` (read rule [\"notes/read-by-fs.txt\"])"
+                            .to_string()
+                    )
                 ),
             ])
         );
@@ -646,7 +852,8 @@ mod tests {
             assert!(
                 reads(&CONFIG, &[path.as_str()])
                     .unwrap()
-                    .contains(&(path.clone(), "koidrive-fs".to_string())),
+                    .iter()
+                    .any(|read| read.path == path && read.package == "koidrive-fs"),
                 "core/fs/tests/quoted.rs reads {path}, but no read rule in ci-select.toml says so"
             );
             let running = running(&[path.as_str()]);
