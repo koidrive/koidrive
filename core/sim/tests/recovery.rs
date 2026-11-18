@@ -4368,3 +4368,53 @@ fn a_device_that_synced_another_devices_keep_follows_a_later_rewind_of_its_own_e
     assert_eq!(live_writes(&world), [1]);
     assert!(world.devices[1].disk.binned(2));
 }
+
+#[test]
+fn resends_without_a_journal_row_go_out_without_an_intent() {
+    let delivered = [
+        (1, SCAN),
+        (1, COMMIT),
+        (1, COMMIT),
+        (1, DELIVER),
+        (0, DELIVER),
+        (0, DELIVER),
+        (0, EFFECT),
+        (0, EFFECT),
+    ];
+    let mut counts = Vec::new();
+    let changes = [
+        (None, false),
+        (Some(overwrite(0)), false),
+        (Some(rename(0, "b")), false),
+        (Some(delete(0)), false),
+        (Some(overwrite(0)), true),
+        (Some(rename(0, "b")), true),
+    ];
+    for (change, leaves) in changes {
+        let mut world = World::new(2);
+        world.space_mut().announce_field_intents(true);
+        let mut first = vec![(0, file("a"))];
+        let mut lost = Vec::new();
+        match change {
+            None => first.insert(0, (0, Step::Backup)),
+            Some(change) => {
+                first.push((0, Step::Backup));
+                lost.push((1, change));
+                lost.extend(delivered);
+                if leaves {
+                    lost.push((1, Step::Leave));
+                }
+            }
+        }
+        lost.push((0, Step::Restore));
+        world.phase(0, &first).unwrap();
+        world.run(1, &lost).unwrap();
+        world.phase(2, &[]).unwrap();
+        let seen = |what| world.seen.get(what).copied().unwrap_or(0);
+        counts.push((
+            seen("an op built as a replay"),
+            seen("an op built without an intent"),
+        ));
+    }
+    assert_eq!(counts, [(1, 0), (1, 0), (1, 0), (0, 0), (1, 0), (1, 0)]);
+}
