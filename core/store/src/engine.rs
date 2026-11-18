@@ -10,11 +10,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use koidrive_engine::classify::{Origin, Waiting};
 use koidrive_engine::commit::{Halt, InFlight, Slot};
 use koidrive_engine::effects::{Base, Dir, Displaced, Effect, EffectRecord, Location};
-use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
+use koidrive_engine::question::{RecoveryCause, RecoveryTrigger, Revisions};
 use koidrive_engine::state::{
     Agreed, CommitsChanges, CommitsState, ContentProvenance, EffectsChanges, EffectsState,
-    FinishOrigin, LostPosition, MapChanges, MovedHere, PendingFinish, SetChanges, TreesChanges,
-    TreesState,
+    FinishOrigin, GivenUp, LostPosition, MapChanges, MovedHere, PendingFinish, SetChanges,
+    TreesChanges, TreesState,
 };
 use koidrive_engine::tree::{FileIdentity, Kind, NodeId, Shape};
 use koidrive_proto::v1::{Commit, CommitResult, Content, NodeKind};
@@ -206,6 +206,24 @@ impl Tx<'_> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             state.commits.published.insert(row.get(0)?);
+        }
+        let mut stmt = (self.0)
+            .prepare_cached("SELECT node_id, content_rev, meta_rev, held_here FROM given_up")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let given = GivenUp {
+                revisions: Revisions {
+                    content_rev: row.get(1)?,
+                    meta_rev: row.get(2)?,
+                },
+                held_here: row.get(3)?,
+            };
+            state.commits.given_up_nodes.insert(row.get(0)?, given);
+        }
+        let mut stmt = (self.0).prepare_cached("SELECT node_id FROM answer_moves")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            state.commits.answer_moves.insert(row.get(0)?);
         }
         let mut stmt = self
             .0
@@ -516,6 +534,8 @@ impl Tx<'_> {
             "forgotten_shapes",
             "lost_shapes",
             "published_nodes",
+            "given_up",
+            "answer_moves",
             "recorded_nodes",
             "edited_here",
             "moved_here",
@@ -628,6 +648,8 @@ impl Tx<'_> {
             given_up,
             questions,
             published,
+            given_up_nodes,
+            answer_moves,
             guard,
         } = commits;
         let EffectsChanges {
@@ -1056,6 +1078,20 @@ impl Tx<'_> {
             published,
             "DELETE FROM published_nodes WHERE node_id = ?1",
             "INSERT OR IGNORE INTO published_nodes (node_id) VALUES (?1)",
+        )?;
+        self.write_map(
+            given_up_nodes,
+            "DELETE FROM given_up WHERE node_id = ?1",
+            "INSERT OR REPLACE INTO given_up (node_id, content_rev, meta_rev, held_here) VALUES (?1, ?2, ?3, ?4)",
+            |insert, node, given| {
+                let revisions = given.revisions;
+                insert.execute(params![node, revisions.content_rev, revisions.meta_rev, given.held_here])
+            },
+        )?;
+        self.write_set(
+            answer_moves,
+            "DELETE FROM answer_moves WHERE node_id = ?1",
+            "INSERT OR IGNORE INTO answer_moves (node_id) VALUES (?1)",
         )?;
         self.write_guard(guard)?;
 

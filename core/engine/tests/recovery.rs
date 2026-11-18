@@ -1804,10 +1804,49 @@ fn publishing_a_folder_keeps_the_child_the_rewind_trashed_with_it_trashed() {
     assert!(commits.in_flight().unwrap().commit.require_head);
 }
 
+fn limit_exceeded() -> Error {
+    Error {
+        code: error::Code::LimitExceeded as i32,
+        ..Default::default()
+    }
+}
+
+fn applied(commits: &mut Commits, trees: &mut Trees, seq: u64, nodes: &[(&str, Shape, bool)]) {
+    for (id, shape, trashed) in nodes {
+        let node = RemoteNode {
+            made_over: Vec::new(),
+            shape: shape.clone(),
+            trashed: *trashed,
+            content_rev: 1,
+            edit_rev: 1,
+            meta_rev: seq,
+            meta_edit_rev: seq,
+            trash_group: String::new(),
+            version_id: String::new(),
+            pending_for: None,
+            pending_by: None,
+        };
+        trees.set_remote((*id).into(), node);
+    }
+    let sent = commits.in_flight().unwrap().commit.ops.len();
+    let applied = OpResult {
+        code: op_result::Code::Applied as i32,
+        ..Default::default()
+    };
+    let result = CommitResult {
+        seq,
+        results: vec![applied; sent],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(trees, seq));
+    trees.settle(commits.aliases());
+}
+
 #[test]
-fn an_answer_and_what_trashes_again_its_revival_are_never_split() {
+fn an_answer_whose_trash_again_does_not_fit_goes_first_and_the_trash_again_follows() {
     let mut trees = trees(
-        &[("d", dir(ROOT, "new"))],
+        &[("d", dir(ROOT, "new")), ("f", file("d", "child", 1))],
         &[("d", dir(ROOT, "old")), ("f", file("d", "child", 1))],
         &[
             Remote("d", dir(ROOT, "old"), true, 1),
@@ -1815,15 +1854,6 @@ fn an_answer_and_what_trashes_again_its_revival_are_never_split() {
         ],
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
-    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
-    assert_eq!(ops(&mut commits, &mut trees, &mut ids).len(), 3);
-    let limit = Error {
-        code: error::Code::LimitExceeded as i32,
-        ..Default::default()
-    };
-    assert_eq!(commits.failed(&mut trees, &limit), Ok(Failure::Split));
-    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
     assert!(commits.decide(&question.id, Answer::Publish));
     assert_eq!(
@@ -1834,6 +1864,107 @@ fn an_answer_and_what_trashes_again_its_revival_are_never_split() {
             ("delete", "f".into())
         ]
     );
+    assert_eq!(
+        commits.failed(&mut trees, &limit_exceeded()),
+        Ok(Failure::Split)
+    );
+    trees.settle(commits.aliases());
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "d".into())]
+    );
+    applied(
+        &mut commits,
+        &mut trees,
+        2,
+        &[
+            ("d", dir(ROOT, "new"), false),
+            ("f", file("d", "child", 1), false),
+        ],
+    );
+    assert!(commits.questions().is_empty(), "{:?}", commits.questions());
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("delete", "f".into())]
+    );
+    applied(
+        &mut commits,
+        &mut trees,
+        3,
+        &[("f", file("d", "child", 1), true)],
+    );
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(node, Effect::RemoveFile { .. })] if node == "f"),
+        "{done:?}"
+    );
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn an_answer_split_by_the_op_limit_sends_the_rest_after_its_own_revival_without_asking_again() {
+    let mut trees = trees(
+        &[("d", dir(ROOT, "new")), ("f", file("d", "renamed", 1))],
+        &[("d", dir(ROOT, "old")), ("f", file("d", "child", 1))],
+        &[
+            Remote("d", dir(ROOT, "old"), true, 1),
+            Remote("f", file("d", "child", 1), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d", "f"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "d".into()), ("move", "f".into())]
+    );
+    assert_eq!(
+        commits.failed(&mut trees, &limit_exceeded()),
+        Ok(Failure::Split)
+    );
+    trees.settle(commits.aliases());
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "d".into())]
+    );
+    applied(
+        &mut commits,
+        &mut trees,
+        2,
+        &[
+            ("d", dir(ROOT, "new"), false),
+            ("f", file("d", "child", 1), false),
+        ],
+    );
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "f".into())]
+    );
+}
+
+#[test]
+fn discarding_a_folder_moved_into_a_new_folder_at_its_old_name_does_not_create_the_new_folder() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "a")),
+            ("b", dir("n", "b")),
+            ("n", dir("a", "b")),
+        ],
+        &[("a", dir(ROOT, "a")), ("b", dir("a", "b"))],
+        &[
+            Remote("a", dir(ROOT, "a"), true, 1),
+            Remote("b", dir("a", "b"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let created = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["n"]);
+    let changed = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["b"]);
+    assert!(commits.decide(&created.id, Answer::Discard));
+    assert!(commits.decide(&changed.id, Answer::Discard));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    effects(&mut trees, &mut ids);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
 
 #[test]
@@ -2186,14 +2317,10 @@ fn an_answer_split_across_commits_keeps_its_approval_only_for_what_it_showed() {
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "b"]);
     assert!(commits.decide(&question.id, Answer::Publish));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids).len(), 2);
-    let limit = Error {
-        code: error::Code::LimitExceeded as i32,
-        ..Default::default()
-    };
-    assert_eq!(commits.failed(&mut trees, &limit), Ok(Failure::Split));
-    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
-    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "b"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        commits.failed(&mut trees, &limit_exceeded()),
+        Ok(Failure::Split)
+    );
     let sent = ops(&mut commits, &mut trees, &mut ids);
     let [(_, first)] = &sent[..] else {
         panic!("{sent:?}");
@@ -4447,9 +4574,442 @@ fn publishing_a_folder_whose_subfolder_a_move_leaves_for_a_new_folder_inside_it_
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [
-            ("create dir", "n".into()),
             ("move", "a".into()),
+            ("move", "c".into()),
+            ("move", "b".into()),
+            ("delete", "b".into()),
+            ("create dir", "n".into()),
             ("move", "c".into())
         ]
     );
+}
+
+fn moved_here(trees: &mut Trees, id: &str, shape: Shape) {
+    let mut node = trees.local().get(id).expect("a node of L").clone();
+    node.shape = shape;
+    trees.set_local(id.into(), node);
+    trees.settle(&Default::default());
+}
+
+#[test]
+fn a_folder_moved_out_after_a_publish_answer_trashes_again_what_this_device_deleted() {
+    let mut trees = trees(
+        &[("a", dir(ROOT, "new")), ("b", dir("a", "b"))],
+        &[
+            ("a", dir(ROOT, "old")),
+            ("b", dir("a", "b")),
+            ("c", dir("b", "c")),
+        ],
+        &[
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("b", dir("a", "b"), true, 1),
+            Remote("c", dir("b", "c"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    moved_here(&mut trees, "b", dir(ROOT, "b"));
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    assert!(sent.contains(&("delete", "c".into())), "{sent:?}");
+    applied(
+        &mut commits,
+        &mut trees,
+        2,
+        &[
+            ("a", dir(ROOT, "new"), false),
+            ("b", dir(ROOT, "b"), false),
+            ("c", dir("b", "c"), true),
+        ],
+    );
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_folder_renamed_after_a_publish_answer_trashes_again_the_folder_whose_name_a_kept_one_takes() {
+    let mut trees = trees(
+        &[("a", dir(ROOT, "old")), ("c", dir("a", "b"))],
+        &[
+            ("a", dir(ROOT, "old")),
+            ("b", dir("a", "b")),
+            ("c", dir("b", "c")),
+        ],
+        &[
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("b", dir("a", "b"), true, 1),
+            Remote("c", dir("b", "c"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    for question in commits.questions().to_vec() {
+        assert!(
+            commits.decide(&question.id, Answer::Publish),
+            "{question:?}"
+        );
+    }
+    moved_here(&mut trees, "a", dir(ROOT, "new"));
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    let move_c = sent.iter().position(|op| *op == ("move", "c".into()));
+    let delete_b = sent.iter().position(|op| *op == ("delete", "b".into()));
+    assert!(
+        matches!((move_c, delete_b), (Some(moved), Some(deleted)) if moved < deleted),
+        "{sent:?}"
+    );
+    applied(
+        &mut commits,
+        &mut trees,
+        2,
+        &[
+            ("a", dir(ROOT, "new"), false),
+            ("b", dir("a", "b"), true),
+            ("c", dir("a", "b"), false),
+        ],
+    );
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+fn answered_with_a_given_up_folder_left_live(local: &[(&str, Shape)]) -> (Trees, Commits, IdGen) {
+    let (mut trees, mut commits, ids) = answer_sent_alone(local);
+    applied(
+        &mut commits,
+        &mut trees,
+        2,
+        &[
+            ("d", dir(ROOT, "new"), false),
+            ("e", dir("d", "e"), false),
+            ("f", file("e", "child", 1), false),
+        ],
+    );
+    (trees, commits, ids)
+}
+
+fn answer_sent_alone(local: &[(&str, Shape)]) -> (Trees, Commits, IdGen) {
+    let mut trees = trees(
+        local,
+        &[
+            ("d", dir(ROOT, "old")),
+            ("e", dir("d", "e")),
+            ("f", file("e", "child", 1)),
+        ],
+        &[
+            Remote("d", dir(ROOT, "old"), true, 1),
+            Remote("e", dir("d", "e"), true, 1),
+            Remote("f", file("e", "child", 1), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    ops(&mut commits, &mut trees, &mut ids);
+    assert_eq!(
+        commits.failed(&mut trees, &limit_exceeded()),
+        Ok(Failure::Split)
+    );
+    trees.settle(commits.aliases());
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "d".into())]
+    );
+    (trees, commits, ids)
+}
+
+fn kept_here() -> Vec<(&'static str, Shape)> {
+    vec![
+        ("d", dir(ROOT, "new")),
+        ("e", dir("d", "e")),
+        ("f", file("e", "child", 1)),
+    ]
+}
+
+fn written_elsewhere(trees: &mut Trees, id: &str, shape: Shape, seq: u64) {
+    let node = RemoteNode {
+        made_over: Vec::new(),
+        shape,
+        trashed: false,
+        content_rev: seq,
+        edit_rev: seq,
+        meta_rev: seq,
+        meta_edit_rev: seq,
+        trash_group: String::new(),
+        version_id: String::new(),
+        pending_for: None,
+        pending_by: None,
+    };
+    trees.set_remote(id.into(), node);
+    trees.settle(&Default::default());
+}
+
+#[test]
+fn a_given_up_file_another_device_edits_before_its_trash_again_is_kept() {
+    let (mut trees, mut commits, mut ids) =
+        answered_with_a_given_up_folder_left_live(&[("d", dir(ROOT, "new")), ("e", dir("d", "e"))]);
+    written_elsewhere(&mut trees, "f", file("e", "child", 2), 3);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_given_up_folder_another_device_puts_a_file_in_stays_and_its_other_given_up_nodes_are_trashed()
+{
+    let (mut trees, mut commits, mut ids) = answered_with_a_given_up_folder_left_live(&kept_here());
+    written_elsewhere(&mut trees, "x", file("e", "theirs", 7), 3);
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("delete", "f".into())]
+    );
+}
+
+#[test]
+fn a_given_up_folder_this_device_writes_a_file_in_stays_and_its_other_given_up_nodes_are_trashed() {
+    let (mut trees, mut commits, mut ids) = answered_with_a_given_up_folder_left_live(&kept_here());
+    let node = LocalNode {
+        left_out_when_placed: false,
+        content_from_server: false,
+        shape: file("e", "mine", 9),
+        identity: FileIdentity {
+            ino: 99,
+            birth_ns: Some(0),
+        },
+        parked: false,
+    };
+    trees.set_local("y".into(), node);
+    trees.settle(commits.aliases());
+    let mut sent = ops(&mut commits, &mut trees, &mut ids);
+    sent.sort();
+    assert_eq!(sent, [("create file", "y".into()), ("delete", "f".into())]);
+}
+
+#[test]
+fn a_given_up_folder_this_device_puts_back_before_its_trash_again_is_kept() {
+    let (mut trees, mut commits, mut ids) =
+        answered_with_a_given_up_folder_left_live(&[("d", dir(ROOT, "new"))]);
+    for (ino, (id, shape)) in [("e", dir("d", "e")), ("f", file("e", "child", 1))]
+        .into_iter()
+        .enumerate()
+    {
+        let node = LocalNode {
+            left_out_when_placed: false,
+            content_from_server: false,
+            shape,
+            identity: FileIdentity {
+                ino: 50 + ino as u128,
+                birth_ns: Some(0),
+            },
+            parked: false,
+        };
+        trees.set_local(id.into(), node);
+    }
+    trees.settle(commits.aliases());
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_given_up_folder_this_device_deleted_is_not_downloaded_before_its_trash_again() {
+    let (mut trees, mut commits, mut ids) =
+        answered_with_a_given_up_folder_left_live(&[("d", dir(ROOT, "new"))]);
+    assert_eq!(effects(&mut trees, &mut ids), []);
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("delete", "e".into())]
+    );
+}
+
+#[test]
+fn a_given_up_file_another_device_edits_before_the_answer_is_acknowledged_is_kept() {
+    let (mut trees, mut commits, mut ids) = answer_sent_alone(&[("d", dir(ROOT, "new"))]);
+    let revived = |shape: Shape, content_rev: u64| RemoteNode {
+        made_over: Vec::new(),
+        shape,
+        trashed: false,
+        content_rev,
+        edit_rev: content_rev,
+        meta_rev: 2,
+        meta_edit_rev: 2,
+        trash_group: String::new(),
+        version_id: String::new(),
+        pending_for: None,
+        pending_by: None,
+    };
+    trees.set_remote("d".into(), revived(dir(ROOT, "new"), 1));
+    trees.set_remote("e".into(), revived(dir("d", "e"), 1));
+    trees.set_remote("f".into(), revived(file("e", "child", 2), 3));
+    let applied = OpResult {
+        code: op_result::Code::Applied as i32,
+        ..Default::default()
+    };
+    let result = CommitResult {
+        seq: 2,
+        results: vec![applied],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(&mut trees, 3));
+    trees.settle(commits.aliases());
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+fn given_up_with_a_restore(queued_before_the_answer: bool) -> (Trees, Commits, IdGen) {
+    const D: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a01";
+    const E: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a02";
+    const F: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a03";
+    let mut trees = trees(
+        &[(D, dir(ROOT, "new"))],
+        &[
+            (D, dir(ROOT, "old")),
+            (E, dir(D, "e")),
+            (F, file(E, "child", 1)),
+        ],
+        &[
+            Remote(D, dir(ROOT, "old"), true, 1),
+            Remote(E, dir(D, "e"), true, 1),
+            Remote(F, file(E, "child", 1), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &[D]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    ops(&mut commits, &mut trees, &mut ids);
+    assert_eq!(
+        commits.failed(&mut trees, &limit_exceeded()),
+        Ok(Failure::Split)
+    );
+    trees.settle(commits.aliases());
+    let intent = RestoreIntent::from_trash(E.into(), None, None).unwrap();
+    if queued_before_the_answer {
+        assert!(commits.restore("restore".into(), intent.clone()));
+    }
+    let answer = ops(&mut commits, &mut trees, &mut ids);
+    assert_eq!(
+        answer.contains(&("restore", E.into())),
+        queued_before_the_answer
+    );
+    applied(
+        &mut commits,
+        &mut trees,
+        2,
+        &[
+            (D, dir(ROOT, "new"), false),
+            (E, dir(D, "e"), false),
+            (F, file(E, "child", 1), false),
+        ],
+    );
+    if !queued_before_the_answer {
+        assert!(commits.restore("restore".into(), intent));
+        assert_eq!(
+            ops(&mut commits, &mut trees, &mut ids),
+            [("delete", E.into()), ("restore", E.into())]
+        );
+        applied(
+            &mut commits,
+            &mut trees,
+            3,
+            &[(E, dir(D, "e"), false), (F, file(E, "child", 1), false)],
+        );
+    }
+    (trees, commits, ids)
+}
+
+#[test]
+fn a_given_up_folder_the_user_restores_after_the_answer_is_not_trashed_again() {
+    let (mut trees, mut commits, mut ids) = given_up_with_a_restore(false);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert!(commits.state().given_up_nodes.is_empty());
+}
+
+#[test]
+fn a_given_up_folder_the_user_restores_in_the_answers_commit_is_not_trashed_again() {
+    let (mut trees, mut commits, mut ids) = given_up_with_a_restore(true);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    assert!(commits.state().given_up_nodes.is_empty());
+}
+
+#[test]
+fn a_move_out_of_an_answers_trash_group_to_the_root_goes_there_directly() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "new")),
+            ("p", dir("a", "p")),
+            ("b", dir("p", "b")),
+        ],
+        &[
+            ("a", dir(ROOT, "old")),
+            ("p", dir("a", "p")),
+            ("b", dir("p", "b")),
+        ],
+        &[
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("p", dir("a", "p"), true, 1),
+            Remote("b", dir("p", "b"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    moved_here(&mut trees, "b", dir(ROOT, "b"));
+    trees.remove_local("p");
+    trees.settle(commits.aliases());
+    let commit = commits
+        .build(&mut trees, &mut ids, NOW, NEW, "me", 1)
+        .unwrap();
+    let sent: Vec<&op::Op> = (commit.ops.iter())
+        .filter_map(|op| op.op.as_ref())
+        .collect();
+    assert!(
+        matches!(&sent[..], [op::Op::Move(a), op::Op::Move(b), op::Op::Move(p), op::Op::Delete(deleted)]
+            if a.node_id == "a"
+                && b.node_id == "b"
+                && b.new_parent_id == ROOT
+                && b.new_name == "b"
+                && b.pending_for.is_empty()
+                && p.node_id == "p"
+                && deleted.node_id == "p"),
+        "{sent:?}"
+    );
+}
+
+#[test]
+fn a_given_up_file_this_device_holds_keeps_the_version_its_user_restores() {
+    const D: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a01";
+    const E: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a02";
+    const F: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a03";
+    let mut trees = trees(
+        &[
+            (D, dir(ROOT, "new")),
+            (E, dir(D, "e")),
+            (F, file(E, "child", 1)),
+        ],
+        &[
+            (D, dir(ROOT, "old")),
+            (E, dir(D, "e")),
+            (F, file(E, "child", 1)),
+        ],
+        &[
+            Remote(D, dir(ROOT, "old"), true, 1),
+            Remote(E, dir(D, "e"), true, 1),
+            Remote(F, file(E, "child", 1), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &[D]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    ops(&mut commits, &mut trees, &mut ids);
+    assert_eq!(
+        commits.failed(&mut trees, &limit_exceeded()),
+        Ok(Failure::Split)
+    );
+    trees.settle(commits.aliases());
+    let version = RestoreIntent::version(F.into(), "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a09".into());
+    assert!(commits.restore("restore".into(), version.unwrap()));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", D.into()), ("restore", F.into())]
+    );
+    written_elsewhere(&mut trees, F, file(E, "child", 2), 2);
+    applied(
+        &mut commits,
+        &mut trees,
+        2,
+        &[(D, dir(ROOT, "new"), false), (E, dir(D, "e"), false)],
+    );
+    assert_eq!(effects(&mut trees, &mut ids).len(), 1);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }

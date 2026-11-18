@@ -17,7 +17,7 @@ use crate::classify::Waiting;
 use crate::commit::{Halt, InFlight, Slot};
 use crate::effects::{Effect, EffectRecord};
 use crate::guard::{Counted, GuardState, RemoteDeletion};
-use crate::question::{Held, Limit, Question};
+use crate::question::{Held, Limit, Question, Revisions};
 use crate::restore::{Resolved, RestoreId, RestoreIntent};
 use crate::tree::{FileIdentity, NodeId, Shape, TreeError};
 
@@ -329,6 +329,14 @@ pub enum FinishOrigin {
     Legacy,
 }
 
+/// A node an answer gave up: the revisions R holds for it after the answer's commit, and whether L
+/// held it when the answer was planned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GivenUp {
+    pub revisions: Revisions,
+    pub held_here: bool,
+}
+
 /// What [`Commits`](crate::commit::Commits) holds.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CommitsState {
@@ -366,6 +374,12 @@ pub struct CommitsState {
     /// The local entries a Publish answer to a first link's question released, until the server
     /// applies their create.
     pub published: BTreeSet<NodeId>,
+    /// The nodes of a trash group an answer gave up (section 6.4) that a commit brought back from
+    /// the trash without trashing them again, until a later commit trashes them.
+    pub given_up_nodes: BTreeMap<NodeId, GivenUp>,
+    /// The nodes the commits of an answer in progress moved (section 6.4), so that a node L keeps
+    /// below one of them still rides that move after the commit that sent it.
+    pub answer_moves: BTreeSet<NodeId>,
     /// The mass-delete guard's window and confirmed deletions.
     pub guard: GuardState,
 }
@@ -534,6 +548,8 @@ pub struct CommitsChanges {
     pub given_up: MapChanges<u64, Vec<String>>,
     pub questions: Option<Vec<Question>>,
     pub published: SetChanges<NodeId>,
+    pub given_up_nodes: MapChanges<NodeId, GivenUp>,
+    pub answer_moves: SetChanges<NodeId>,
     pub guard: GuardChanges,
 }
 
@@ -554,6 +570,8 @@ impl CommitsChanges {
             given_up,
             questions,
             published,
+            given_up_nodes,
+            answer_moves,
             guard,
         } = after;
         Self {
@@ -570,6 +588,8 @@ impl CommitsChanges {
             given_up: map_changes(&before.given_up, given_up),
             questions: value_change(&before.questions, questions),
             published: set_changes(&before.published, published),
+            given_up_nodes: map_changes(&before.given_up_nodes, given_up_nodes),
+            answer_moves: set_changes(&before.answer_moves, answer_moves),
             guard: GuardChanges::between(&before.guard, guard),
         }
     }

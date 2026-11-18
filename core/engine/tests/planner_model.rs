@@ -1700,6 +1700,7 @@ struct Report {
     classes: Vec<String>,
     size: usize,
     text: String,
+    sent: String,
 }
 
 fn show_runs(world: &World, runs: &[Run]) -> String {
@@ -2079,6 +2080,7 @@ fn check(world: &World, space: &SpaceDo) -> Report {
         classes.push("clean".into());
     }
     let size = world.len() * 100 + world.changes() * 10 + planned;
+    let sent = show_runs(world, &runs);
     let text = if classes == ["clean"] {
         String::new()
     } else {
@@ -2086,7 +2088,7 @@ fn check(world: &World, space: &SpaceDo) -> Report {
             "{}{}{}{}",
             world.describe(),
             world.show_ranks(),
-            show_runs(world, &runs),
+            sent,
             notes
         )
     };
@@ -2096,6 +2098,7 @@ fn check(world: &World, space: &SpaceDo) -> Report {
         classes,
         size,
         text,
+        sent,
     }
 }
 
@@ -2347,7 +2350,18 @@ fn faults(
     let mut hard = Vec::new();
     let mut soft = Vec::new();
     let verdicts: Vec<&Verdict> = run.sent.iter().map(|sent| &sent.verdict).collect();
+    let trashed_before: BTreeSet<String> = (0..told.len())
+        .map(|i| told.id(i))
+        .filter(|id| (run.before.node(id)).is_some_and(|node| node.status() != NodeStatus::Live))
+        .map(|id| told.label_of(root, &id))
+        .collect();
+    let lost_kept = (verdicts.iter())
+        .flat_map(|verdict| &verdict.lost)
+        .any(|label| !trashed_before.contains(label));
     for kind in kinds(&verdicts) {
+        if kind == "lost" && !lost_kept {
+            continue;
+        }
         if kind == "made-up name" {
             soft.push(kind.to_string());
         } else {
@@ -2384,6 +2398,9 @@ fn faults(
     if kept.count() > 0 {
         hard.push("a commit deletes a node L keeps".into());
     }
+    if trashes_kept(told, intent, run) {
+        hard.push("a delete takes a node L keeps into the trash".into());
+    }
     for &(i, want) in &intent.sure {
         if met(told, root, &run.before, &run.end, i, want) {
             continue;
@@ -2400,6 +2417,50 @@ fn faults(
         }
     }
     (hard, soft)
+}
+
+fn trashes_kept(told: &World, intent: &Intent, run: &Run) -> bool {
+    let wants = || intent.sure.iter().chain(&intent.open);
+    let gone: BTreeSet<usize> = (wants())
+        .filter(|(_, want)| *want == Want::Gone)
+        .map(|(i, _)| *i)
+        .collect();
+    let kept: BTreeSet<String> = (wants())
+        .filter(|(i, _)| !gone.contains(i) && told.local_place(*i).is_some())
+        .map(|(i, _)| told.id(*i))
+        .collect();
+    run.sent.iter().any(|sent| {
+        (sent.commit.ops.iter().enumerate()).any(|(at, op)| {
+            let Some(op::Op::Delete(delete)) = &op.op else {
+                return false;
+            };
+            let mut space = sent.before.clone();
+            if at > 0 {
+                let before = proto::Commit {
+                    ops: sent.commit.ops[..at].to_vec(),
+                    ..sent.commit.clone()
+                };
+                if apply(&mut space, &before).is_none() {
+                    return false;
+                }
+            }
+            kept.iter().any(|id| {
+                let mut current = space
+                    .node(id)
+                    .filter(|node| node.status() == NodeStatus::Live);
+                for _ in 0..=told.len() {
+                    let Some(node) = current else {
+                        return false;
+                    };
+                    if node.node_id == delete.node_id {
+                        return true;
+                    }
+                    current = space.node(&node.parent_id);
+                }
+                false
+            })
+        })
+    })
 }
 
 fn torn(told: &World, intent: &Intent, run: &Run) -> bool {
@@ -2571,18 +2632,6 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
     }
     let baseline = |fault: &str| match story {
         _ if main_baseline(fault).is_some() => main_baseline(fault),
-        Story::Answer(..)
-            if fault.starts_with("under a cap of")
-                && (fault.ends_with(": ends while a node is not where L holds it")
-                    || fault.ends_with(": ends while an edit is not kept in place")) =>
-        {
-            Some("a split bundle never finishes")
-        }
-        Story::Answer(_, Answer::Discard, _)
-            if fault.contains("a folder the answer gives up is live") =>
-        {
-            Some("Discard brings back a folder it gave up")
-        }
         Story::Answer(_, Answer::Publish, _)
             if fault.contains("a folder the answer gives up is live")
                 || fault.contains("ends while a node is not where L holds it") =>
@@ -2613,6 +2662,7 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
     if classes.is_empty() {
         classes.push(format!("{prefix}: clean"));
     }
+    let sent = show_runs(&told, std::slice::from_ref(&full));
     let text = if hard.is_empty() && soft.is_empty() {
         String::new()
     } else {
@@ -2621,7 +2671,7 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
             told.describe(),
             told.show_ranks(),
             show_story(&told, story),
-            show_runs(&told, std::slice::from_ref(&full)),
+            sent,
             notes
         )
     };
@@ -2631,6 +2681,7 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
         classes,
         size: told.len() * 100 + told.changes() * 10 + planned,
         text,
+        sent,
     })
 }
 
@@ -3593,8 +3644,8 @@ fn a_publish_answer_trashes_again_a_folder_it_gives_up_below_a_moved_folder() {
         .filter(|class| class.contains("gives up is live"))
         .collect();
     assert!(live.is_empty(), "{live:?}\n{}", report.text);
-    let sent = report.text.lines().nth(1).unwrap_or_default();
-    assert!(sent.contains("Delete d"), "{}", report.text);
+    let first = report.sent.lines().nth(1).unwrap_or_default();
+    assert!(first.contains("Delete d"), "{}", report.sent);
 }
 
 #[test]
