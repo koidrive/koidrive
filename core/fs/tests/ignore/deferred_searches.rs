@@ -751,6 +751,35 @@ fn an_entry_a_rule_left_out_moved_to_an_included_name_is_renamed() {
     assert!(snapshot.left_out.is_empty());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn an_entry_a_rule_left_out_before_its_handle_was_read_moved_to_an_included_name_is_renamed() {
+    let (dir, mut snapshot, mut rules) = tree_without_rules();
+    let root = dir.path();
+    write(root, RULES_FILE, "cache/\n");
+    snapshot
+        .rescan_with_rules(root, whole(), &mut rules)
+        .unwrap();
+    let left_out = snapshot.left_out.get_mut(Path::new("sub/cache")).unwrap();
+    if left_out.id.handle.take().is_none() {
+        return;
+    }
+    fs::rename(root.join("sub/cache"), root.join("sub/kept")).unwrap();
+
+    let rescan = snapshot
+        .rescan_with_rules(root, whole(), &mut rules)
+        .unwrap();
+    assert_eq!(
+        rescan.changes[0],
+        Change::Renamed {
+            from: "sub/cache".into(),
+            to: "sub/kept".into(),
+            kind: Dir,
+        }
+    );
+    assert!(snapshot.left_out.is_empty());
+}
+
 #[test]
 fn a_reset_to_an_entry_the_rules_leave_out_that_is_gone_reports_it_removed() {
     let (dir, mut snapshot, mut rules) = tree_with_an_ignored_folder();
