@@ -7,7 +7,6 @@ use std::time::{Duration, SystemTime};
 use koidrive_driver::Paths;
 use koidrive_driver::update;
 use semver::Version;
-use tokio::process::Command;
 
 use crate::service;
 
@@ -44,13 +43,15 @@ pub(super) fn scan(
 }
 
 fn take_service(koi: &Path) {
-    let mut command = Command::new(koi);
-    command
-        .arg("_reconcile")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .process_group(0);
-    let mut child = match command.spawn() {
+    let spawned = crate::program::found_async(koi).and_then(|mut command| {
+        command
+            .arg("_reconcile")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .process_group(0)
+            .spawn()
+    });
+    let mut child = match spawned {
         Ok(child) => child,
         Err(error) => {
             tracing::warn!(koi = %koi.display(), %error, "a newer koi is installed, but it did not run");

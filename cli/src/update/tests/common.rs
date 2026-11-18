@@ -20,7 +20,6 @@ use koidrive_ipc::Code;
 
 use semver::Version;
 
-use tokio::process::Command;
 
 use url::Url;
 

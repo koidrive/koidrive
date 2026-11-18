@@ -140,11 +140,11 @@ async fn native_codesign_accepts_inline_pins_in_bundle_and_updater_modes() {
     let codesign = Path::new("/usr/bin/codesign");
     let display = process(
         codesign,
-        &args(&[
-            OsStr::new("--display"),
-            OsStr::new("--verbose=4"),
-            executable.as_os_str(),
-        ]),
+        &[
+            Arg::from("--display"),
+            Arg::from("--verbose=4"),
+            passed(&executable).unwrap(),
+        ],
         &control,
     )
     .await
@@ -159,7 +159,7 @@ async fn native_codesign_accepts_inline_pins_in_bundle_and_updater_modes() {
     for deep in [true, false] {
         process(
             codesign,
-            &signature_args(&executable, &requirement, deep),
+            &signature_args(&executable, &requirement, deep).unwrap(),
             &control,
         )
         .await
@@ -178,7 +178,7 @@ async fn native_codesign_parses_production_requirements_and_rejects_the_wrong_si
     for (requirement, deep) in [(REQUIREMENT, true), (SIGNER, false)] {
         let error = process(
             Path::new("/usr/bin/codesign"),
-            &signature_args(&executable, requirement, deep),
+            &signature_args(&executable, requirement, deep).unwrap(),
             &control,
         )
         .await
@@ -206,7 +206,7 @@ async fn native_codesign_refuses_an_app_and_updater_signed_by_a_forged_developer
     for (path, deep) in [(&app, true), (&helper, false)] {
         process(
             &config.codesign,
-            &signature_args(path, claimed, deep),
+            &signature_args(path, claimed, deep).unwrap(),
             &control,
         )
         .await
@@ -219,7 +219,7 @@ async fn native_codesign_refuses_an_app_and_updater_signed_by_a_forged_developer
     assert!(error.message.contains("failed to satisfy"), "{error:?}");
     let error = process(
         &config.codesign,
-        &signature_args(&helper, SIGNER, false),
+        &signature_args(&helper, SIGNER, false).unwrap(),
         &control,
     )
     .await
@@ -240,7 +240,7 @@ async fn native_codesign_refuses_an_app_and_updater_signed_by_another_identity()
     for (path, deep) in [(app, true), (helper, false)] {
         process(
             &config.codesign,
-            &signature_args(path, "anchor apple", deep),
+            &signature_args(path, "anchor apple", deep).unwrap(),
             &control,
         )
         .await
@@ -253,7 +253,7 @@ async fn native_codesign_refuses_an_app_and_updater_signed_by_another_identity()
     assert!(error.message.contains("failed to satisfy"), "{error:?}");
     let error = process(
         &config.codesign,
-        &signature_args(helper, SIGNER, false),
+        &signature_args(helper, SIGNER, false).unwrap(),
         &control,
     )
     .await

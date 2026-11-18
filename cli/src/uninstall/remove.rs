@@ -1,4 +1,5 @@
 use super::*;
+use crate::program::Arg;
 
 async fn ask(paths: &Paths, found: &Found, request: Request) -> Result<Response, CliError> {
     match found.state {
@@ -310,6 +311,7 @@ fn prune_empty(path: &Path) -> io::Result<bool> {
 }
 
 pub(super) fn remove_path(path: &Path) -> io::Result<bool> {
+    crate::lifeline::confine(path)?;
     let removed = match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error),
@@ -329,6 +331,7 @@ pub(super) fn prune_runtime(paths: &Paths) {
 }
 
 pub(super) fn strip_path_line(profile: &Path) -> io::Result<bool> {
+    crate::lifeline::confine(profile)?;
     let text = match fs::read_to_string(profile) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         other => other?,
@@ -346,6 +349,7 @@ pub(super) fn strip_path_line(profile: &Path) -> io::Result<bool> {
         return Ok(true);
     }
     let target = fs::canonicalize(profile)?;
+    crate::lifeline::confine(&target)?;
     let staged = koidrive_state_file::AtomicFile::prepare(&target)?;
     staged.as_file().write_all(rest.as_bytes())?;
     if !rest.is_empty() && text.ends_with('\n') {
@@ -358,8 +362,15 @@ pub(super) fn strip_path_line(profile: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
-async fn helper(program: &Path, args: &[&str], within: Duration) -> Result<(), String> {
-    let output = tokio::process::Command::new(program)
+async fn helper(
+    program: &Path,
+    command: io::Result<crate::program::Tokio>,
+    args: &[Arg],
+    within: Duration,
+) -> Result<(), String> {
+    let mut command =
+        command.map_err(|error| format!("cannot run {}: {error}", program.display()))?;
+    let output = command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -377,7 +388,10 @@ async fn helper(program: &Path, args: &[&str], within: Duration) -> Result<(), S
         Ok(Ok(output)) => Err(format!(
             "{} {} failed ({}): {}",
             program.display(),
-            args.join(" "),
+            args.iter()
+                .map(Arg::to_string)
+                .collect::<Vec<_>>()
+                .join(" "),
             output.status,
             String::from_utf8_lossy(&output.stderr).trim()
         )),
@@ -404,13 +418,28 @@ pub(super) async fn quit_apps(programs: &[Program], run: &mut Run) {
     }
     #[cfg(target_os = "macos")]
     {
-        let paths: Vec<String> = bundles
-            .iter()
-            .map(|bundle| bundle.display().to_string())
+        let mut args: Vec<Arg> = ["-l", "JavaScript", "-e", crate::app_install::QUIESCE]
+            .into_iter()
+            .map(Arg::from)
             .collect();
-        let mut args = vec!["-l", "JavaScript", "-e", crate::app_install::QUIESCE];
-        args.extend(paths.iter().map(String::as_str));
-        if let Err(problem) = helper(Path::new("/usr/bin/osascript"), &args, HELPER).await {
+        for bundle in bundles {
+            match crate::program::Confined::new(bundle) {
+                Ok(bundle) => args.push(bundle.into()),
+                Err(error) => {
+                    run.problems
+                        .push(format!("cannot quit the Koidrive app: {error}"));
+                    return;
+                }
+            }
+        }
+        if let Err(problem) = helper(
+            Path::new("/usr/bin/osascript"),
+            Ok(crate::program::system_async("/usr/bin/osascript")),
+            &args,
+            HELPER,
+        )
+        .await
+        {
             run.problems
                 .push(format!("cannot quit the Koidrive app: {problem}"));
         }
@@ -424,7 +453,14 @@ async fn unregister_login_item(bundle: &Path, run: &mut Run) {
     if !app.is_file() {
         return;
     }
-    if let Err(problem) = helper(&app, &["--unregister-login-item"], HELPER).await {
+    if let Err(problem) = helper(
+        &app,
+        crate::program::found_async(&app),
+        &["--unregister-login-item".into()],
+        HELPER,
+    )
+    .await
+    {
         run.kept.push(Kept::LoginItem {
             path: bundle.display().to_string(),
             problem,
@@ -500,8 +536,8 @@ async fn remove_program(program: &Program, programs: &[Program], run: &mut Run) 
                 if *cask { "--cask" } else { "--formula" }.to_owned(),
                 "koidrive".to_owned(),
             ];
-            let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
-            match helper(brew, &args, HOMEBREW).await {
+            let args: Vec<Arg> = argv[1..].iter().map(Arg::from).collect();
+            match helper(brew, crate::program::found_async(brew), &args, HOMEBREW).await {
                 Ok(()) => run.removed.push(Removed::Homebrew { argv }),
                 Err(problem) => {
                     run.problems.push(problem);

@@ -4,12 +4,16 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
-use std::process::Command;
 use std::time::{Duration, Instant};
+
+use koidrive_test_support::Sandbox;
+
+#[path = "support/process.rs"]
+mod process;
 
 #[test]
 fn a_slow_share_request_reports_its_wait_on_stderr_without_changing_json_stdout() {
-    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let home = Sandbox::in_dir(std::path::Path::new("/tmp"));
     let state = home.path().join("state/koidrive");
     fs::create_dir_all(&state).unwrap();
     fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
@@ -56,7 +60,7 @@ fn a_slow_share_request_reports_its_wait_on_stderr_without_changing_json_stdout(
             writeln!(stream, "{response}").unwrap();
         }
     });
-    let output = Command::new(env!("CARGO_BIN_EXE_koi"))
+    let output = process::koi(home.path())
         .args(["share", "create", "notes.txt", "--json"])
         .current_dir(home.path())
         .env("HOME", home.path())

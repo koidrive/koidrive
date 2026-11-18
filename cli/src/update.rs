@@ -66,6 +66,13 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
         Method::AppDownload => return download(paths, &install).await,
         _ => {}
     }
+    let brew = match &install.method {
+        Method::Formula { brew } | Method::CaskElsewhere { brew } => Some(brew.as_path()),
+        _ => None,
+    };
+    crate::lifeline::confine(&install.binary)
+        .and_then(|()| brew.map_or(Ok(()), crate::lifeline::confine_program))
+        .map_err(|error| failed(error.to_string()))?;
     let mut echo = open_log(paths, &update::log_path(paths), json, verbose);
     let steps = Steps::new(json, verbose);
     let updated = match &install.method {
@@ -259,6 +266,10 @@ async fn release(
             let step = steps.start(&format!("Downloading Koidrive {to}"));
             let installed = installer(source, dir, &to, echo)
                 .await
+                .and_then(|()| {
+                    crate::lifeline::confine_program(&install.binary)
+                        .map_err(|error| failed(error.to_string()))
+                })
                 .and_then(|()| reached(&install.binary, service::version_of(&install.binary), &to));
             if let Err(error) = installed {
                 echo.fail(step);

@@ -4,7 +4,7 @@
 async fn the_daemon_checks_for_a_release_and_koi_status_names_it() {
     use tokio::io::AsyncBufReadExt;
 
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let binary = copy_koi(&home.path().join(".local/bin/koi"));
     let mut daemon = tokio::process::Command::from(koi_at(
@@ -106,7 +106,7 @@ async fn the_daemon_checks_for_a_release_and_koi_status_names_it() {
 
 #[test]
 fn without_a_daemon_status_reads_the_last_check_and_the_switch_turns_it_off() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let binary = copy_koi(&home.path().join(".local/bin/koi"));
     let state = home.path().join("state/koidrive");
@@ -154,7 +154,7 @@ fn without_a_daemon_status_reads_the_last_check_and_the_switch_turns_it_off() {
 #[test]
 fn cached_status_names_brew_upgrade_for_a_formula_and_koi_update_for_a_cask() {
     for cask in [false, true] {
-        let home = tempfile::tempdir().unwrap();
+        let home = Sandbox::new();
         let github = github("v99.0.0");
         let binary = homebrew_binary(home.path(), cask);
         let script = home.path().join(".local/bin/koi");
@@ -231,7 +231,7 @@ fn cached_status_names_brew_upgrade_for_a_formula_and_koi_update_for_a_cask() {
 
 #[test]
 fn an_installer_notice_names_its_real_binary_despite_another_koi_on_path() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let binary = copy_koi(&home.path().join("standalone copy's/bin/koi"));
     let alias = home.path().join("installer-alias");
@@ -297,4 +297,81 @@ fn an_installer_notice_names_its_real_binary_despite_another_koi_on_path() {
     );
     assert!(!other.with_extension("calls").exists());
     assert_eq!(std::fs::read_link(alias).unwrap(), binary);
+}
+
+#[tokio::test]
+async fn the_daemon_never_hands_its_service_to_a_koi_outside_its_sandbox() {
+    if development_version() {
+        return;
+    }
+    let home = Sandbox::new();
+    let github = github("v99.0.0");
+    let outside = tempfile::tempdir().unwrap();
+    let ran = outside.path().join("ran");
+    let newer = outside.path().join("koi");
+    let logging = |log: &Path, version: &str| {
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\necho 'koi {version}'\n",
+            log.display()
+        )
+    };
+    executable(&newer, &logging(&ran, "99.0.0"));
+    let opt = home.path().join("brew/opt/koidrive/bin/koi");
+    std::fs::create_dir_all(opt.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&newer, &opt).unwrap();
+    let took = home.path().join("took");
+    let installed = home
+        .path()
+        .join("Applications/Koidrive.app/Contents/Helpers/koi");
+    executable(&installed, &logging(&took, "98.0.0"));
+    let paths = koidrive_driver::Paths::from_vars(|name| match name {
+        "HOME" => Some(home.path().into()),
+        "XDG_CONFIG_HOME" => Some(home.path().join("config").into()),
+        "XDG_STATE_HOME" => Some(home.path().join("state").into()),
+        "XDG_RUNTIME_DIR" => Some(home.path().join("run").into()),
+        _ => None,
+    })
+    .unwrap();
+    let key = paths.state_key();
+    for (file, definition) in [
+        (
+            home.path()
+                .join(format!("Library/LaunchAgents/dev.koidrive.koi.{key}.plist")),
+            format!(
+                "<key>ProgramArguments</key><array><string>{}</string></array>",
+                installed.display()
+            ),
+        ),
+        (
+            paths
+                .state_dir
+                .join(format!("systemd/koidrive-{key}.service")),
+            format!("ExecStart=\"{}\" _daemon\n", installed.display()),
+        ),
+    ] {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, definition).unwrap();
+    }
+    let mut daemon =
+        tokio::process::Command::from(koi(home.path(), &github, &["_daemon", "--json"]))
+            .env("KOIDRIVE_UPDATE_CHECK", "0")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while !std::fs::read_to_string(&took).is_ok_and(|calls| calls.contains("_reconcile")) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the daemon hands its service to the newest koi inside its sandbox");
+    daemon.kill().await.unwrap();
+    daemon.wait().await.unwrap();
+    assert!(
+        !ran.exists(),
+        "outside koi ran: {:?}",
+        std::fs::read_to_string(&ran).unwrap_or_default()
+    );
 }

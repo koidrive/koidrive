@@ -4,7 +4,7 @@ use crate::app_install::macos::attempt::Attempt;
 use crate::app_install::macos::config::Config;
 use crate::app_install::macos::constants::{BUNDLE, CLEANUP, SIGNER};
 use crate::app_install::macos::control::{
-    CancelOnDrop, Control, Registry, args, io_error, process,
+    CancelOnDrop, Control, Registry, io_error, passed, process,
 };
 use crate::app_install::macos::download::download;
 use crate::app_install::macos::filesystem::{
@@ -112,7 +112,7 @@ pub(super) async fn stage_copy(
     receipt.save(&data)?;
     process(
         &config.ditto,
-        &args(&[source.as_os_str(), staged_path.as_os_str()]),
+        &[passed(source)?, passed(&staged_path)?],
         control,
     )
     .await?;
@@ -151,7 +151,7 @@ pub(super) async fn exchange(
     if previous.is_some() {
         process(
             &config.codesign,
-            &signature_args(&config.updater, SIGNER, false),
+            &signature_args(&config.updater, SIGNER, false)?,
             control,
         )
         .await

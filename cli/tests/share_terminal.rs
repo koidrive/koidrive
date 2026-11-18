@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use koidrive_test_support::Sandbox;
 use rustix::process::{Pid, Signal, kill_process};
 use rustix::termios::LocalModes;
 
@@ -12,14 +13,17 @@ mod terminal;
 
 use terminal::Terminal;
 
+#[path = "support/process.rs"]
+mod process;
+
 #[test]
 fn ctrl_c_at_either_password_prompt_exits_and_restores_terminal_echo() {
     for confirm in [false, true] {
-        let home = tempfile::tempdir().unwrap();
+        let home = Sandbox::new();
         let terminal = Terminal::open(80, 24);
         let before = terminal.attributes();
         assert!(before.local_modes.contains(LocalModes::ECHO));
-        let mut child = Command::new(env!("CARGO_BIN_EXE_koi"))
+        let mut child = process::koi(home.path())
             .args(["share", "create", ".", "--password", "--json"])
             .env("HOME", home.path())
             .env("XDG_CONFIG_HOME", home.path().join("config"))

@@ -175,6 +175,13 @@ impl Install {
                     Err(_) => continue,
                 },
             };
+            if !matches!(install.method, Method::Development)
+                && (crate::lifeline::confine(&install.binary).is_err()
+                    || (install.method.brew())
+                        .is_some_and(|brew| crate::lifeline::confine_program(brew).is_err()))
+            {
+                continue;
+            }
             let homebrew = |method: &Method| method.brew().is_some();
             match found
                 .iter()

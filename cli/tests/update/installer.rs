@@ -5,7 +5,7 @@ fn development_update_never_contacts_github_or_runs_an_installer() {
     if !development_version() {
         return;
     }
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     homebrew(home.path(), "0.0.1");
     let script = home.path().join(".local/bin/koi");
@@ -40,8 +40,40 @@ fn development_update_never_contacts_github_or_runs_an_installer() {
 }
 
 #[test]
+fn koi_update_never_runs_an_installed_koi_outside_its_sandbox() {
+    let home = Sandbox::new();
+    let github = github("v99.0.0");
+    let (binary, _) = script_install(home.path(), "99.0.0", REPORT);
+    let outside = tempfile::tempdir().unwrap();
+    let ran = outside.path().join("ran");
+    let koi = outside.path().join("koi");
+    executable(
+        &koi,
+        &format!("#!/bin/sh\ntouch '{}'\necho 'koi 99.0.0'\n", ran.display()),
+    );
+    let installer = http(format!(
+        "ln -sf '{}' \"$KOIDRIVE_INSTALL_DIR/koi\"\n",
+        koi.display()
+    ));
+    let output = koi_at(&binary, home.path(), &github, &["update", "--json"])
+        .env("KOIDRIVE_INSTALL_SCRIPT_URL", &installer.base)
+        .output()
+        .unwrap();
+    if development_update(&output, home.path(), &github) {
+        return;
+    }
+    let envelope = envelope(&output);
+    assert!(!ran.exists(), "{envelope:#}");
+    assert!(
+        (envelope["error"]["message"].as_str())
+            .is_some_and(|message| message.contains("outside its sandbox")),
+        "{envelope:#}"
+    );
+}
+
+#[test]
 fn koi_update_installs_a_release_and_hands_the_service_to_the_new_koi() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let (binary, installer) = script_install(home.path(), "99.0.0", REPORT);
     let calls = homebrew(home.path(), "100.0.0");
@@ -67,10 +99,11 @@ fn koi_update_installs_a_release_and_hands_the_service_to_the_new_koi() {
     assert_eq!(
         std::fs::read_to_string(binary.parent().unwrap().join("installer.calls")).unwrap(),
         format!(
-            "{}|v99.0.0\n",
+            "{}|v99.0.0|{}\n",
             std::fs::canonicalize(binary.parent().unwrap())
                 .unwrap()
-                .display()
+                .display(),
+            std::fs::canonicalize(home.path()).unwrap().display()
         )
     );
     assert!(!calls.exists());
@@ -89,7 +122,7 @@ fn koi_update_installs_a_release_and_hands_the_service_to_the_new_koi() {
 
 #[test]
 fn koi_update_reconciles_a_concurrently_installed_newest_release_without_an_installer() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let (binary, installer) = script_install(home.path(), "99.0.0", REPORT);
     let replacement = binary.clone();
     let releases = serde_json::json!([{
@@ -139,7 +172,7 @@ fn koi_update_rechecks_foreign_and_legacy_caches_but_keeps_same_target_condition
         None,
         Some(asset()),
     ] {
-        let home = tempfile::tempdir().unwrap();
+        let home = Sandbox::new();
         let (binary, installer) = script_install(home.path(), "99.0.0", REPORT);
         let state = home.path().join("state/koidrive");
         std::fs::create_dir_all(&state).unwrap();
@@ -232,7 +265,7 @@ fn koi_update_rechecks_foreign_and_legacy_caches_but_keeps_same_target_condition
 fn koi_update_uses_githubs_answer_from_the_last_day_when_github_refuses_the_list() {
     let hour = 3_600_000_i64;
     for (age, updates) in [(hour, true), (25 * hour, false), (-hour, false)] {
-        let home = tempfile::tempdir().unwrap();
+        let home = Sandbox::new();
         let (binary, installer) = script_install(home.path(), "99.0.0", REPORT);
         let state = home.path().join("state/koidrive");
         std::fs::create_dir_all(&state).unwrap();
@@ -281,7 +314,7 @@ fn koi_update_uses_githubs_answer_from_the_last_day_when_github_refuses_the_list
 #[test]
 fn koi_update_preserves_disabled_login_items_and_only_fails_for_a_real_problem() {
     for problem in [None, Some("the service could not be registered")] {
-        let home = tempfile::tempdir().unwrap();
+        let home = Sandbox::new();
         let github = github("v99.0.0");
         let mut report: Value = serde_json::from_str(REPORT).unwrap();
         report["data"]["service"]["state"] = Value::from("switched_off");
@@ -316,7 +349,7 @@ fn koi_update_preserves_disabled_login_items_and_only_fails_for_a_real_problem()
 
 #[test]
 fn schema_one_status_without_an_update_notice_is_still_valid() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let output = koi(home.path(), &github, &["status", "--json"])
         .output()
@@ -334,7 +367,7 @@ fn schema_one_status_without_an_update_notice_is_still_valid() {
 
 #[test]
 fn koi_update_text_hides_the_reconcile_envelope_but_keeps_it_in_the_log() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let (binary, installer) = script_install(home.path(), "99.0.0", REPORT);
     let output = koi_at(&binary, home.path(), &github, &["update"])
@@ -427,7 +460,7 @@ fn a_failed_install_shows_what_the_installer_said() {
 
 #[test]
 fn koi_update_on_a_terminal_shows_setup_style_steps_without_the_checks() {
-    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let home = Sandbox::in_dir(Path::new("/tmp"));
     let github = github("v99.0.0");
     let (binary, installer) = script_install_saying(home.path(), "99.0.0", REPORT, CHECKS);
     let mut command = koi_at(&binary, home.path(), &github, &["update"]);
@@ -489,7 +522,7 @@ fn a_failed_app_report_fails_the_service_check() {
 
 #[test]
 fn an_installer_that_leaves_the_old_koi_fails_its_step() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let binary = copy_koi(&home.path().join(".local/bin/koi"));
     let installer = http("echo 'Installed koi'\nexit 0\n".to_owned());
@@ -520,7 +553,7 @@ fn a_homebrew_password_prompt_stays_on_screen_until_it_is_answered() {
     if development_version() {
         return;
     }
-    let home = tempfile::tempdir_in("/tmp").unwrap();
+    let home = Sandbox::in_dir(Path::new("/tmp"));
     let github = github("v99.0.0");
     let link = homebrew_binary(home.path(), false);
     let koi = std::fs::canonicalize(&link).unwrap();
@@ -555,7 +588,7 @@ fn a_homebrew_password_prompt_stays_on_screen_until_it_is_answered() {
 
 #[test]
 fn koi_update_rejects_a_successful_installer_that_leaves_the_old_binary_installed() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let binary = copy_koi(&home.path().join(".local/bin/koi"));
     let installer = http("exit 0\n".to_owned());
@@ -584,7 +617,7 @@ fn koi_update_rejects_a_successful_installer_that_leaves_the_old_binary_installe
 
 #[test]
 fn koi_update_reports_the_version_actually_installed_when_it_is_above_the_target() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let (binary, installer) = script_install(home.path(), "100.0.0", REPORT);
     let output = koi_at(&binary, home.path(), &github, &["update", "--json"])
@@ -602,7 +635,7 @@ fn koi_update_reports_the_version_actually_installed_when_it_is_above_the_target
 
 #[test]
 fn koi_update_through_a_script_alias_installs_into_the_canonical_directory() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let (original, installer) = script_install(home.path(), "99.0.0", REPORT);
     let directory = home.path().join("standalone install/bin");
@@ -629,8 +662,9 @@ fn koi_update_through_a_script_alias_installs_into_the_canonical_directory() {
     assert_eq!(
         std::fs::read_to_string(directory.join("installer.calls")).unwrap(),
         format!(
-            "{}|v99.0.0\n",
-            std::fs::canonicalize(&directory).unwrap().display()
+            "{}|v99.0.0|{}\n",
+            std::fs::canonicalize(&directory).unwrap().display(),
+            std::fs::canonicalize(home.path()).unwrap().display()
         )
     );
     assert!(

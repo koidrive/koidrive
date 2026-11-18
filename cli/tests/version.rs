@@ -2,11 +2,19 @@
 
 use std::process::Command;
 
+use koidrive_test_support::Sandbox;
+
+#[path = "support/process.rs"]
+mod process;
+
+fn koi(sandbox: &Sandbox) -> Command {
+    let mut command = process::koi(sandbox.path());
+    command.env("HOME", sandbox.path());
+    command
+}
+
 fn koidrive(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_koi"))
-        .args(args)
-        .output()
-        .expect("run koi")
+    koi(&Sandbox::new()).args(args).output().expect("run koi")
 }
 
 #[test]
@@ -27,7 +35,8 @@ fn plain_help_and_no_color_override_forced_styles() {
         (vec!["--help"], vec![("KOI_PLAIN", "1")]),
         (vec!["--help"], vec![("TERM", "dumb")]),
     ] {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_koi"));
+        let sandbox = Sandbox::new();
+        let mut command = koi(&sandbox);
         command
             .args(args)
             .env_remove("NO_COLOR")
@@ -47,7 +56,7 @@ fn plain_help_and_no_color_override_forced_styles() {
 
 #[test]
 fn an_empty_no_color_does_not_override_explicit_forced_color() {
-    let output = Command::new(env!("CARGO_BIN_EXE_koi"))
+    let output = koi(&Sandbox::new())
         .args(["--help"])
         .env("NO_COLOR", "")
         .env_remove("KOI_PLAIN")

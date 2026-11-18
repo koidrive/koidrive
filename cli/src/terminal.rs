@@ -712,7 +712,7 @@ impl Terminal {
                     .apply_to("│")
             );
         }
-        let child = tokio::process::Command::new(std::env::current_exe()?)
+        let child = crate::program::found_async(&std::env::current_exe()?)?
             .arg("_prompt")
             .arg(if self.interaction == Interaction::Rich {
                 if self.setup { "setup-rich" } else { "rich" }

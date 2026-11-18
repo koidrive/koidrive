@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
+use koidrive_test_support::Sandbox;
 
 use koidrive_chunk::{ChunkerConfig, chunk_hash};
 
@@ -130,19 +131,15 @@ fn uuidv7() -> String {
 /// A machine's home for the device under test, with its XDG directories. Its config.toml turns the background service
 /// off, so that the tests run the daemon themselves and never touch the service manager of the machine running them.
 struct Machine {
-    home: tempfile::TempDir,
-    /// The background service is on, and the device uses the machine's own runtime directory, where its service
-    /// manager listens.
-    service: bool,
+    sandbox: Sandbox,
     koi: PathBuf,
 }
 
 impl Machine {
     fn new() -> Self {
         let machine = Machine {
-            home: tempfile::tempdir().unwrap(),
-            service: false,
-            koi: PathBuf::from(env!("CARGO_BIN_EXE_koi")),
+            sandbox: Sandbox::new(),
+            koi: PathBuf::from(process::KOI),
         };
         machine.configure("");
         machine
@@ -150,11 +147,22 @@ impl Machine {
 
     #[cfg(target_os = "linux")]
     fn with_service() -> Self {
-        Machine {
-            home: tempfile::tempdir().unwrap(),
-            service: true,
-            koi: PathBuf::from(env!("CARGO_BIN_EXE_koi")),
-        }
+        let machine = Machine {
+            sandbox: Sandbox::new(),
+            koi: PathBuf::from(process::KOI),
+        };
+        fs::create_dir_all(machine.home()).unwrap();
+        let manager = PathBuf::from(
+            std::env::var_os("XDG_RUNTIME_DIR")
+                .expect("a systemd service test needs XDG_RUNTIME_DIR to reach the user manager"),
+        );
+        fs::create_dir_all(machine.runtime().join("systemd")).unwrap();
+        std::os::unix::fs::symlink(
+            manager.join("systemd/private"),
+            machine.runtime().join("systemd/private"),
+        )
+        .unwrap();
+        machine
     }
 
     /// Writes config.toml: `rules`, and the switch that keeps the background service off.
@@ -167,15 +175,23 @@ impl Machine {
         .unwrap();
     }
 
+    fn home(&self) -> PathBuf {
+        self.sandbox.path().join("home")
+    }
+
+    fn runtime(&self) -> PathBuf {
+        self.sandbox.path().join("run")
+    }
+
     fn path(&self, rel: &str) -> PathBuf {
-        self.home.path().join(rel)
+        self.home().join(rel)
     }
 
     fn socket(&self) -> PathBuf {
         let vars = [
             ("XDG_CONFIG_HOME", self.path("config")),
             ("XDG_STATE_HOME", self.path("state")),
-            ("XDG_RUNTIME_DIR", self.path("run")),
+            ("XDG_RUNTIME_DIR", self.runtime()),
         ];
         koidrive_driver::Paths::from_vars(|name| {
             (vars.iter())
@@ -194,18 +210,16 @@ impl Machine {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(&self.koi);
+        let mut command = koidrive_test_support::sandboxed(&self.koi, self.sandbox.path());
         command
             .args(args)
-            .current_dir(self.home.path())
-            .env("HOME", self.home.path())
+            .current_dir(self.home())
+            .env("HOME", self.home())
             .env("XDG_CONFIG_HOME", self.path("config"))
             .env("XDG_STATE_HOME", self.path("state"))
             .env_remove("KOIDRIVE_LOG")
+            .env("XDG_RUNTIME_DIR", self.runtime())
             .env("KOIDRIVE_UPDATE_CHECK", "0");
-        if !self.service {
-            command.env("XDG_RUNTIME_DIR", self.path("run"));
-        }
         command
     }
 

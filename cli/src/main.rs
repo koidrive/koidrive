@@ -21,6 +21,7 @@ mod formatting;
 mod history;
 mod ipc;
 mod lifecycle;
+mod lifeline;
 mod logfile;
 mod logging;
 mod manifest;
@@ -29,6 +30,7 @@ mod options;
 mod output;
 mod pairing;
 mod profile;
+mod program;
 mod report;
 mod request;
 mod resolve;
@@ -78,6 +80,9 @@ use tokio::signal::unix::{SignalKind, signal};
 pub use options::{DeviceArgs, RequestArg};
 
 fn main() -> ExitCode {
+    if let Some(exit) = lifeline::hold() {
+        return exit;
+    }
     let args: Vec<OsString> = std::env::args_os().collect();
     if let Some(exit) = terminal::helper(&args) {
         return exit;

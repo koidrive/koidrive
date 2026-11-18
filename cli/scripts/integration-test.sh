@@ -34,7 +34,7 @@ trap cleanup EXIT
 
 # Build first, so the Worker is not kept waiting for the compiler.
 cd "$root"
-cargo test -p koidrive-cli --locked --test server --no-run
+cargo test -p koidrive-cli --locked --features test-install-inventory --test server --no-run
 
 # set -m puts the server in its own process group, so cleanup stops workerd with it.
 (cd "$root/server" && WRANGLER_SEND_METRICS=false exec "$wrangler" dev --ip 127.0.0.1 --port "$port" \
@@ -62,4 +62,4 @@ if [ -z "${server_url:-}" ]; then
 fi
 
 KOIDRIVE_TEST_SERVER="$server_url" KOIDRIVE_TEST_SERVER_LOG="$log" \
-  cargo test -p koidrive-cli --locked --test server -- --ignored --nocapture "$@"
+  cargo test -p koidrive-cli --locked --features test-install-inventory --test server -- --ignored --nocapture "$@"

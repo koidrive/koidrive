@@ -1,12 +1,12 @@
 use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
 use crate::app_install::macos::config::Config;
 use crate::app_install::macos::constants::{BUNDLE, IDENTIFIER, REQUIREMENT};
-use crate::app_install::macos::control::{Control, args, io_error, process};
+use crate::app_install::macos::control::{Control, io_error, passed, process};
 use crate::app_install::macos::filesystem::{directory, identity, unchanged_directory};
 use crate::app_install::macos::state::{PinnedDirectory, VerifiedBundle};
+use crate::program::Arg;
 use rustix::fs::{Mode, OFlags};
 use semver::Version;
-use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -65,18 +65,22 @@ impl VerifiedHelper {
         Ok(())
     }
 }
-pub(super) fn signature_args(path: &Path, requirement: &str, deep: bool) -> Vec<OsString> {
-    let mut arguments = args(&[OsStr::new("--verify")]);
+pub(super) fn signature_args(
+    path: &Path,
+    requirement: &str,
+    deep: bool,
+) -> Result<Vec<Arg>, AppInstallError> {
+    let mut arguments = vec![Arg::from("--verify")];
     if deep {
         arguments.push("--deep".into());
     }
-    arguments.extend(args(&[
-        OsStr::new("--strict"),
-        OsStr::new("-R"),
-        OsStr::new(&format!("={requirement}")),
-        path.as_os_str(),
-    ]));
-    arguments
+    arguments.extend([
+        Arg::from("--strict"),
+        Arg::from("-R"),
+        Arg::from(format!("={requirement}")),
+        passed(path)?,
+    ]);
+    Ok(arguments)
 }
 pub(super) fn safe_tree(bundle: &Path, control: &Control) -> Result<(), AppInstallError> {
     let metadata = fs::symlink_metadata(bundle).map_err(io_error)?;
@@ -182,7 +186,7 @@ pub(super) async fn verify(
     let id = identity(&fs::symlink_metadata(path).map_err(io_error)?);
     process(
         &config.codesign,
-        &signature_args(path, REQUIREMENT, true),
+        &signature_args(path, REQUIREMENT, true)?,
         control,
     )
     .await
@@ -190,13 +194,13 @@ pub(super) async fn verify(
     if target.is_some() {
         let assessment = process(
             &config.spctl,
-            &args(&[
-                OsStr::new("--assess"),
-                OsStr::new("--type"),
-                OsStr::new("execute"),
-                OsStr::new("--verbose=2"),
-                path.as_os_str(),
-            ]),
+            &[
+                Arg::from("--assess"),
+                Arg::from("--type"),
+                Arg::from("execute"),
+                Arg::from("--verbose=2"),
+                passed(path)?,
+            ],
             control,
         )
         .await

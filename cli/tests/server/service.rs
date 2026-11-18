@@ -198,7 +198,7 @@ async fn uninstall_signs_out_removes_the_service_and_keeps_every_synced_file() {
     );
     assert!(!systemctl(&["is-active", "--quiet", &unit]).status.success());
     assert!(!systemctl(&["cat", &unit]).status.success());
-    let mut left: Vec<String> = fs::read_dir(machine.home.path())
+    let mut left: Vec<String> = fs::read_dir(machine.home())
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
@@ -230,7 +230,7 @@ async fn uninstall_signs_out_removes_the_service_and_keeps_every_synced_file() {
         .unwrap();
     assert!(listed.revoked_at_ms > 0, "{listed:?}");
 
-    machine.koi = PathBuf::from(env!("CARGO_BIN_EXE_koi"));
+    machine.koi = PathBuf::from(process::KOI);
     let again = machine.envelope(&["uninstall", "--yes"]);
     assert_eq!(again["outcome"], "unchanged", "{again:#}");
 }

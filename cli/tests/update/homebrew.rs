@@ -3,7 +3,7 @@
 #[test]
 fn koi_update_upgrades_a_formula_with_the_brew_that_owns_it() {
     for alias in [false, true] {
-        let home = tempfile::tempdir().unwrap();
+        let home = Sandbox::new();
         let github = github("v99.0.0");
         let link = homebrew_binary(home.path(), false);
         let koi = std::fs::canonicalize(&link).unwrap();
@@ -66,7 +66,7 @@ fn koi_update_upgrades_a_formula_with_the_brew_that_owns_it() {
 
 #[test]
 fn koi_update_updates_a_cask_with_the_app_updater_and_names_brew_only_as_the_fallback() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let link = homebrew_binary(home.path(), true);
     let koi = std::fs::canonicalize(&link).unwrap();
@@ -105,7 +105,7 @@ fn koi_update_updates_a_cask_with_the_app_updater_and_names_brew_only_as_the_fal
 #[test]
 fn koi_update_leaves_a_cask_in_a_folder_this_user_cannot_write_to_homebrew() {
     use std::os::unix::fs::PermissionsExt;
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let link = homebrew_binary(home.path(), true);
     let koi = std::fs::canonicalize(&link).unwrap();
@@ -150,7 +150,7 @@ fn koi_update_leaves_a_cask_in_a_folder_this_user_cannot_write_to_homebrew() {
 #[test]
 fn koi_update_through_homebrew_says_when_koidrive_is_already_the_newest() {
     for json in [true, false] {
-        let home = tempfile::tempdir().unwrap();
+        let home = Sandbox::new();
         let link = homebrew_binary(home.path(), false);
         let koi = std::fs::canonicalize(&link).unwrap();
         let prefix = std::fs::canonicalize(home.path().join("brew")).unwrap();
@@ -214,7 +214,7 @@ fn koi_update_through_homebrew_says_when_koidrive_is_already_the_newest() {
 #[test]
 fn koi_update_through_homebrew_shows_steps_and_brew_output_only_on_failure() {
     for status in [0, 1] {
-        let home = tempfile::tempdir().unwrap();
+        let home = Sandbox::new();
         let github = github("v99.0.0");
         let link = homebrew_binary(home.path(), false);
         let koi = std::fs::canonicalize(&link).unwrap();
@@ -259,7 +259,7 @@ fn koi_update_through_homebrew_shows_steps_and_brew_output_only_on_failure() {
 
 #[test]
 fn an_incomplete_homebrew_update_shows_why_the_tap_did_not_refresh() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let link = homebrew_binary(home.path(), false);
     let prefix = std::fs::canonicalize(home.path().join("brew")).unwrap();
@@ -287,7 +287,7 @@ fn an_incomplete_homebrew_update_shows_why_the_tap_did_not_refresh() {
 
 #[test]
 fn koi_update_names_the_brew_command_when_homebrew_fails_or_is_missing() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let link = homebrew_binary(home.path(), false);
     let koi = std::fs::canonicalize(&link).unwrap();
@@ -336,7 +336,7 @@ fn koi_update_names_the_brew_command_when_homebrew_fails_or_is_missing() {
 fn koi_update_through_homebrew_is_incomplete_when_the_tap_lags_or_cannot_refresh() {
     for git_status in [0, 1] {
         for json in [true, false] {
-            let home = tempfile::tempdir().unwrap();
+            let home = Sandbox::new();
             let github = github("v99.0.0");
             let link = homebrew_binary(home.path(), false);
             let koi = std::fs::canonicalize(&link).unwrap();
@@ -407,7 +407,7 @@ fn koi_update_through_homebrew_is_incomplete_when_the_tap_lags_or_cannot_refresh
 
 #[test]
 fn koi_update_through_homebrew_is_incomplete_when_the_tap_lags_and_the_service_stopped() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let link = homebrew_binary(home.path(), false);
     let koi = std::fs::canonicalize(&link).unwrap();
@@ -448,7 +448,7 @@ fn koi_update_through_homebrew_is_incomplete_when_the_tap_lags_and_the_service_s
 
 #[test]
 fn koi_update_names_the_brew_failure_when_brew_removed_koi_before_it_failed() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let link = homebrew_binary(home.path(), false);
     let koi = std::fs::canonicalize(&link).unwrap();
@@ -478,7 +478,7 @@ fn koi_update_names_the_brew_failure_when_brew_removed_koi_before_it_failed() {
 
 #[test]
 fn koi_update_hands_the_service_to_a_koi_brew_upgraded_before_it_failed() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let link = homebrew_binary(home.path(), false);
     let koi = std::fs::canonicalize(&link).unwrap();
@@ -518,7 +518,7 @@ fn koi_update_hands_the_service_to_a_koi_brew_upgraded_before_it_failed() {
 
 #[test]
 fn koi_update_uses_the_custom_homebrew_of_the_running_koi_without_a_prefix_variable() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let prefix = home.path().join("custombrew");
     let keg = prefix.join("Cellar/koidrive/0.1.0/bin/koi");
@@ -555,7 +555,7 @@ fn koi_update_uses_the_custom_homebrew_of_the_running_koi_without_a_prefix_varia
 
 #[test]
 fn homebrew_guidance_targets_its_owner_when_path_selects_another_brew() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let root = home.path().join("owning copy's home");
     let github = github("v99.0.0");
     let binary = homebrew_binary(&root, false);
@@ -618,13 +618,13 @@ fn homebrew_guidance_targets_its_owner_when_path_selects_another_brew() {
     std::os::unix::fs::symlink(&owner, &other).unwrap();
     let status = run(&["status", "--json"]).output().unwrap();
     assert_eq!(envelope(&status)["data"]["update"]["command"], command);
-    let status = Command::new(argv[0])
+    let status = sandboxed(argv[0], home.path())
         .args(&argv[1..])
         .env("PATH", &other_bin)
         .status()
         .unwrap();
     assert!(status.success());
-    let output = Command::new("/bin/sh")
+    let output = sandboxed("/bin/sh", home.path())
         .args(["-c", &command])
         .env("PATH", &other_bin)
         .output()
@@ -642,7 +642,7 @@ fn homebrew_guidance_targets_its_owner_when_path_selects_another_brew() {
 
 #[test]
 fn a_relocated_formula_is_found_from_the_process_invocation() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let link = homebrew_binary(home.path(), false);
     let prefix = home.path().join("brew");
@@ -712,7 +712,7 @@ fn a_relocated_formula_is_found_from_the_process_invocation() {
 
 #[test]
 fn a_formula_receipt_with_no_discoverable_prefix_never_self_replaces() {
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let keg = home.path().join("external/package/0.1.0");
     let binary = copy_koi(&keg.join("bin/koi"));
@@ -752,7 +752,7 @@ fn an_unverified_invocation_never_enters_installer_replacement() {
         "Applications/Koidrive.app/Contents/Helpers/koi",
         "Custom Apps/Koidrive.app/Contents/Helpers/koi",
     ] {
-        let home = tempfile::tempdir().unwrap();
+        let home = Sandbox::new();
         let github = github("v99.0.0");
         let binary = copy_koi(&home.path().join(relative));
         let before = std::fs::read(&binary).unwrap();
@@ -786,7 +786,7 @@ fn adversarial_a_failed_tap_refresh_is_never_reported_as_the_newest_release() {
     }
     let mut claims = Vec::new();
     for json in [false, true] {
-        let home = tempfile::tempdir().unwrap();
+        let home = Sandbox::new();
         let github = github("v99.0.0");
         let link = homebrew_binary(home.path(), false);
         let koi = std::fs::canonicalize(&link).unwrap();
@@ -838,7 +838,7 @@ fn adversarial_b_brew_failing_after_it_upgraded_koi_still_moves_the_service() {
     if development_version() {
         return;
     }
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let github = github("v99.0.0");
     let link = homebrew_binary(home.path(), false);
     let koi = std::fs::canonicalize(&link).unwrap();
@@ -865,7 +865,9 @@ fn adversarial_b_brew_failing_after_it_upgraded_koi_still_moves_the_service() {
         "exit: {:?}\n--- stdout\n{stdout}--- stderr\n{stderr}",
         output.status.code()
     );
-    let version = Command::new(&koi).arg("--version").output().unwrap();
+    let version = koi_at(&koi, home.path(), &github, &["--version"])
+        .output()
+        .unwrap();
     eprintln!(
         "installed koi now: {}",
         String::from_utf8_lossy(&version.stdout)
@@ -874,5 +876,137 @@ fn adversarial_b_brew_failing_after_it_upgraded_koi_still_moves_the_service() {
     assert!(
         calls.contains("_reconcile"),
         "koi 99.0.0 is installed but the service was never handed to it; koi calls: {calls:?}"
+    );
+}
+
+#[test]
+fn koi_update_never_runs_a_homebrew_koi_outside_its_sandbox() {
+    let home = Sandbox::new();
+    let github = github("v99.0.0");
+    let link = homebrew_binary(home.path(), false);
+    let outside = tempfile::tempdir().unwrap();
+    let ran = outside.path().join("ran");
+    let real = outside.path().join("koi");
+    executable(
+        &real,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in\n--version) echo 'koi 99.0.0' ;;\n_reconcile) echo '{REPORT}' ;;\nesac\n",
+            ran.display()
+        ),
+    );
+    let opt = home.path().join("brew/opt/koidrive");
+    std::fs::remove_file(&opt).unwrap();
+    std::fs::create_dir_all(opt.join("bin")).unwrap();
+    std::os::unix::fs::symlink(&real, opt.join("bin/koi")).unwrap();
+    let output = koi_at(&link, home.path(), &github, &["update", "--json"])
+        .output()
+        .unwrap();
+    if development_update(&output, home.path(), &github) {
+        return;
+    }
+    let brew = std::fs::canonicalize(home.path().join("brew/bin/brew")).unwrap();
+    assert_eq!(
+        envelope(&output)["error"]["message"],
+        format!(
+            "brew upgrade failed (exit status 97). To update, run: {} upgrade koidrive",
+            brew.display()
+        )
+    );
+    assert!(
+        !ran.exists(),
+        "outside koi ran: {:?}",
+        std::fs::read_to_string(&ran)
+    );
+}
+
+#[test]
+fn koi_update_never_pulls_a_homebrew_tap_outside_its_sandbox() {
+    let home = Sandbox::new();
+    let github = github("v99.0.0");
+    let link = homebrew_binary(home.path(), false);
+    let koi = std::fs::canonicalize(&link).unwrap();
+    let prefix = std::fs::canonicalize(home.path().join("brew")).unwrap();
+    upgrading_brew(&prefix, &koi, "99.0.0", 0);
+    let outside = tempfile::tempdir().unwrap();
+    let tap = outside.path().join("tap");
+    std::fs::create_dir_all(tap.join(".git")).unwrap();
+    let brew = prefix.join("bin/brew");
+    let script = std::fs::read_to_string(&brew).unwrap().replace(
+        &prefix
+            .join("Library/Taps/koidrive/homebrew-tap")
+            .display()
+            .to_string(),
+        &tap.display().to_string(),
+    );
+    std::fs::write(&brew, script).unwrap();
+    let output = koi_at(&link, home.path(), &github, &["update", "--json"])
+        .output()
+        .unwrap();
+    if development_update(&output, home.path(), &github) {
+        return;
+    }
+    let log = std::fs::read_to_string(update_log(home.path())).unwrap();
+    assert!(
+        log.contains(&format!(
+            "a test must not pass {}, which is outside its sandbox",
+            tap.display()
+        )),
+        "{log}"
+    );
+    assert!(!prefix.join("bin/git.calls").exists(), "{log}");
+}
+
+#[test]
+fn koi_update_never_refreshes_a_tap_with_a_git_outside_its_sandbox() {
+    let home = Sandbox::new();
+    let github = github("v99.0.0");
+    let link = homebrew_binary(home.path(), false);
+    let koi = std::fs::canonicalize(&link).unwrap();
+    let prefix = std::fs::canonicalize(home.path().join("brew")).unwrap();
+    upgrading_brew(&prefix, &koi, "99.0.0", 0);
+    std::fs::remove_file(prefix.join("bin/git")).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let ran = outside.path().join("ran");
+    let program = outside.path().join("program");
+    executable(
+        &program,
+        &format!("#!/bin/sh\ntouch '{}'\nexit 1\n", ran.display()),
+    );
+    let tap = home.path().join("tap");
+    let commit = "git -c user.name=a -c user.email=a@a commit -q --allow-empty";
+    let output = sandboxed("/bin/sh", home.path())
+        .args([
+            "-c",
+            &format!(
+                "set -e; git init -q '{u}'; cd '{u}'; {commit} -m one; git clone -q '{u}' '{t}'; {commit} -m two; git -C '{t}' config core.fsmonitor '{p}'; git -C '{t}' config remote.origin.uploadpack '{p}'",
+                u = outside.path().join("upstream").display(),
+                t = tap.display(),
+                p = program.display(),
+            ),
+        ])
+        .env("HOME", outside.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let brew = prefix.join("bin/brew");
+    let script = std::fs::read_to_string(&brew).unwrap().replace(
+        &prefix
+            .join("Library/Taps/koidrive/homebrew-tap")
+            .display()
+            .to_string(),
+        &tap.display().to_string(),
+    );
+    std::fs::write(&brew, script).unwrap();
+    let output = koi_at(&link, home.path(), &github, &["update", "--json"])
+        .output()
+        .unwrap();
+    if development_update(&output, home.path(), &github) {
+        return;
+    }
+    let log = std::fs::read_to_string(update_log(home.path())).unwrap();
+    assert!(!ran.exists(), "{log}");
+    assert!(
+        log.contains("a test must not run /usr/bin/git, which is outside its sandbox"),
+        "{log}"
     );
 }

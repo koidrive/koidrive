@@ -9,3 +9,6 @@ include!("output_terminal/status.rs");
 mod terminal;
 
 use terminal::Terminal;
+
+#[path = "support/process.rs"]
+mod process;

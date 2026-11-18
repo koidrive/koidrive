@@ -128,6 +128,11 @@ impl Service {
             ));
         }
         let log = xml(&self.log_file().display().to_string());
+        let keep_alive = match (self.env.iter()).any(|(name, _)| *name == crate::lifeline::LIFELINE)
+        {
+            true => "<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>\n\t</dict>",
+            false => "<true/>",
+        };
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -146,7 +151,7 @@ impl Service {
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
-	<true/>
+	{keep_alive}
 	<key>StandardOutPath</key>
 	<string>{log}</string>
 	<key>StandardErrorPath</key>
@@ -260,7 +265,11 @@ pub fn installed_services(manager: ServiceManager, home: &Path) -> Result<Vec<In
             }
         }
         ServiceManager::Systemd => {
-            match systemctl(&["list-unit-files", "--no-legend", "koidrive*.service"]) {
+            match systemctl(&[
+                "list-unit-files".into(),
+                "--no-legend".into(),
+                "koidrive*.service".into(),
+            ]) {
                 Ok(units) => {
                     for name in units
                         .lines()
@@ -269,7 +278,7 @@ pub fn installed_services(manager: ServiceManager, home: &Path) -> Result<Vec<In
                         if !suffixed(name, "koidrive", ".service") {
                             continue;
                         }
-                        let text = systemctl(&["cat", name])?;
+                        let text = systemctl(&["cat".into(), name.into()])?;
                         found.push(Installed {
                             name: name.to_owned(),
                             binary: unit_binary(&text),

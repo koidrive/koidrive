@@ -648,16 +648,16 @@ async fn native_dmg_attach_copy_detach_and_receipt_replay() {
     };
     process(
         Path::new("/usr/bin/hdiutil"),
-        &args(&[
-            OsStr::new("create"),
-            OsStr::new("-srcfolder"),
-            payload.as_os_str(),
-            OsStr::new("-volname"),
-            OsStr::new("Koidrive installer test"),
-            OsStr::new("-format"),
-            OsStr::new("UDZO"),
-            image.as_os_str(),
-        ]),
+        &[
+            Arg::from("create"),
+            Arg::from("-srcfolder"),
+            passed(&payload).unwrap(),
+            Arg::from("-volname"),
+            Arg::from("Koidrive installer test"),
+            Arg::from("-format"),
+            Arg::from("UDZO"),
+            passed(&image).unwrap(),
+        ],
         &control,
     )
     .await
@@ -706,7 +706,7 @@ async fn native_dmg_attach_copy_detach_and_receipt_replay() {
     retired[0].discard().unwrap();
     let inventory = process(
         Path::new("/usr/bin/hdiutil"),
-        &args(&[OsStr::new("info"), OsStr::new("-plist")]),
+        &[Arg::from("info"), Arg::from("-plist")],
         &control,
     )
     .await

@@ -6,18 +6,22 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use koidrive_driver::Paths;
+use koidrive_test_support::Sandbox;
 use serde_json::{Value, json};
 
 mod schema;
 
+#[path = "support/process.rs"]
+mod process;
+
 struct Profile {
-    home: tempfile::TempDir,
+    home: Sandbox,
     paths: Paths,
 }
 
 impl Profile {
     fn new(config: &str) -> Self {
-        let home = tempfile::tempdir().unwrap();
+        let home = Sandbox::new();
         let paths = Paths::from_vars(|name| match name {
             "HOME" => Some(home.path().into()),
             "XDG_CONFIG_HOME" => Some(home.path().join("config").into()),
@@ -32,7 +36,7 @@ impl Profile {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_koi"));
+        let mut command = process::koi(self.home.path());
         command
             .args(args)
             .env("HOME", self.home.path())
@@ -622,4 +626,105 @@ fn relinking_a_folder_that_did_not_halt_as_a_copy_refuses_with_and_without_the_d
     refused(profile.json(&["folder", "relink", folder, "--request-id", "r1", "--json"]));
     let _daemon = LiveDaemon::start(&profile);
     refused(profile.json(&["folder", "relink", folder, "--request-id", "r1", "--json"]));
+}
+
+fn service_shims(dir: &std::path::Path, launchctl: &str, systemctl: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for (name, script) in [("launchctl", launchctl), ("systemctl", systemctl)] {
+        std::fs::write(bin.join(name), format!("#!/bin/sh\n{script}")).unwrap();
+        std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    bin
+}
+
+fn default_layout_service_name(home: &Sandbox, marked: bool) -> Value {
+    let bin = service_shims(
+        home.path(),
+        "case \"$1:$2\" in\nprint:gui/*/*) exit 1;;\nprint:gui/*) exit 0;;\nprint-disabled:*) echo '{}';;\n*) exit 1;;\nesac\n",
+        "case \"$2\" in\nshow-environment) exit 0;;\n*) exit 1;;\nesac\n",
+    );
+    let mut command = process::koi(home.path());
+    if !marked {
+        command.env_remove(koidrive_test_support::LIFELINE);
+    }
+    let output = command
+        .args(["status", "--json"])
+        .env("HOME", home.path())
+        .env("PATH", &bin)
+        .env("DO_NOT_TRACK", "1")
+        .env("KOIDRIVE_TELEMETRY", "0")
+        .env("KOIDRIVE_UPDATE_CHECK", "0")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    envelope["data"]["service"]["name"].clone()
+}
+
+#[test]
+fn a_test_profile_in_the_default_layout_never_takes_the_account_s_service_name() {
+    let home = Sandbox::new();
+    let key = Paths::from_vars(|name| (name == "HOME").then(|| home.path().into()))
+        .unwrap()
+        .state_key();
+    let name = match cfg!(target_os = "macos") {
+        true => format!("dev.koidrive.koi.{key}"),
+        false => format!("koidrive-{key}.service"),
+    };
+    assert_eq!(default_layout_service_name(&home, true), name);
+}
+
+#[test]
+fn a_default_profile_outside_the_account_s_home_takes_the_bare_service_name_outside_a_test() {
+    let name = match cfg!(target_os = "macos") {
+        true => "dev.koidrive.koi",
+        false => "koidrive.service",
+    };
+    assert_eq!(default_layout_service_name(&Sandbox::new(), false), name);
+}
+
+#[test]
+fn the_service_a_test_installs_stops_with_the_test() {
+    let profile = Profile::new("");
+    profile.link();
+    let bin = service_shims(
+        profile.home.path(),
+        "case \"$1:$2\" in\nprint:gui/*/*) echo 'state = running';;\nesac\n",
+        "exit 0\n",
+    );
+    let output = profile
+        .command(&["_reconcile", "--json"])
+        .env("PATH", &bin)
+        .output()
+        .unwrap();
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let name = envelope["data"]["service"]["name"].as_str().unwrap();
+    let definition = match cfg!(target_os = "macos") {
+        true => (profile.home.path().join("Library/LaunchAgents")).join(format!("{name}.plist")),
+        false => profile.paths.state_dir.join("systemd").join(name),
+    };
+    let definition = std::fs::read_to_string(&definition)
+        .unwrap_or_else(|error| panic!("{}: {error}: {envelope:#}", definition.display()));
+    let vars = profile
+        .home
+        .vars()
+        .map(|(name, value)| (name, value.to_str().unwrap()));
+    for (name, value) in [("HOME", profile.home.path().to_str().unwrap())]
+        .into_iter()
+        .chain(vars)
+    {
+        let set = match cfg!(target_os = "macos") {
+            true => format!("<key>{name}</key>\n\t\t<string>{value}</string>"),
+            false => format!("Environment=\"{name}={value}\""),
+        };
+        assert!(definition.contains(&set), "{set}: {definition}");
+    }
+    let restarts = match cfg!(target_os = "macos") {
+        true => "<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>",
+        false => "Restart=on-failure",
+    };
+    assert!(definition.contains(restarts), "{definition}");
 }

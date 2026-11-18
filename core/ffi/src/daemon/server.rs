@@ -135,7 +135,7 @@ impl Mirror {
 }
 
 struct Device {
-    home: tempfile::TempDir,
+    home: koidrive_test_support::Sandbox,
     daemon: Option<Child>,
     core: Option<Arc<DaemonCore>>,
     seen: Arc<Seen>,
@@ -145,7 +145,7 @@ struct Device {
 
 impl Device {
     fn new() -> Self {
-        let home = tempfile::tempdir().unwrap();
+        let home = koidrive_test_support::Sandbox::new();
         let config = home.path().join("config/koidrive");
         fs::create_dir_all(&config).unwrap();
         fs::write(config.join("config.toml"), PROFILE_CONFIG).unwrap();
@@ -165,12 +165,18 @@ impl Device {
 
     fn env(&self) -> Vec<(&'static str, Option<OsString>)> {
         let dir = |name: &str| Some(self.path(name).into_os_string());
-        vec![
+        let mut env = vec![
             ("HOME", dir("home")),
             ("XDG_CONFIG_HOME", dir("config")),
             ("XDG_STATE_HOME", dir("state")),
             ("XDG_RUNTIME_DIR", None),
-        ]
+        ];
+        env.extend(
+            self.home
+                .vars()
+                .map(|(name, path)| (name, Some(path.into()))),
+        );
+        env
     }
 
     fn paths(&self) -> driver::Paths {
@@ -188,7 +194,7 @@ impl Device {
 
     fn start_daemon(&mut self) {
         let log = fs::File::create(self.path("daemon.log")).unwrap();
-        let mut command = Command::new(koi());
+        let mut command = koidrive_test_support::sandboxed(koi(), self.home.path());
         command
             .arg("_daemon")
             .stdin(Stdio::null())

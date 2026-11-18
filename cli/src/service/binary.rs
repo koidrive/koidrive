@@ -3,7 +3,7 @@
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use semver::Version;
@@ -41,7 +41,7 @@ pub(super) fn target(installed: Option<&Version>, caller: &Version, daemon: &Dae
 }
 
 fn output_within(
-    command: &mut Command,
+    command: &mut crate::program::Blocking,
     within: Duration,
 ) -> io::Result<Option<(ExitStatus, Vec<u8>)>> {
     let mut child = command
@@ -72,7 +72,7 @@ fn output_within(
 }
 
 pub fn version_of(binary: &Path) -> Option<Version> {
-    let mut command = Command::new(binary);
+    let mut command = crate::program::found(binary).ok()?;
     command.arg("--version").stderr(Stdio::null());
     let (status, printed) = output_within(&mut command, PROBE).ok()??;
     if !status.success() {
@@ -118,14 +118,18 @@ pub(super) async fn delegated(
         true => &["service", "start", "--json"],
         false => &["_reconcile", "--no-app", "--json"],
     };
-    let mut command = tokio::process::Command::new(binary);
-    command.args(args).stderr(Stdio::inherit());
-    let output = delegated_output(&mut command, within).await;
+    let output = match crate::program::found_async(binary) {
+        Ok(mut command) => {
+            command.args(args).stderr(Stdio::inherit());
+            delegated_output(&mut command, within).await
+        }
+        Err(error) => Err(error),
+    };
     delegated_report(manager, service, binary, args, within, output)
 }
 
 async fn delegated_output(
-    command: &mut tokio::process::Command,
+    command: &mut crate::program::Tokio,
     within: Duration,
 ) -> io::Result<Option<(ExitStatus, Vec<u8>)>> {
     use tokio::io::AsyncReadExt;

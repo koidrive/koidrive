@@ -12,6 +12,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::ipc;
+use crate::lifeline::{INVENTORY, LIFELINE};
 
 mod binary;
 mod command;
@@ -180,7 +181,15 @@ pub fn this_service(paths: &Paths) -> Result<Service, String> {
         .ok_or("HOME is not set to an absolute path")?;
     let binary =
         std::env::current_exe().map_err(|error| format!("cannot find the koi binary: {error}"))?;
-    Service::new(paths, &home, &binary)
+    let mut service = Service::new(paths, &home, &binary)?;
+    if std::env::var_os(LIFELINE).is_some() {
+        service.suffix = Some(paths.state_key());
+        for name in ["HOME", LIFELINE, INVENTORY] {
+            let value = std::env::var_os(name).and_then(|value| value.into_string().ok());
+            service.env.push((name, value));
+        }
+    }
+    Ok(service)
 }
 
 fn background_off(paths: &Paths) -> Result<bool, String> {

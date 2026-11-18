@@ -5,11 +5,16 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use koidrive_test_support::Sandbox;
+
+#[path = "support/process.rs"]
+mod process;
+
 const SERVER: &str = "https://koi-ada-7f3k.workers.dev";
 const TOKEN: &str = "kdr_9f8e7d6c5b4a39281706f5e4d3c2b1a0";
 
 fn koi(home: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_koi"));
+    let mut command = process::koi(home);
     command
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
@@ -20,8 +25,8 @@ fn koi(home: &Path) -> Command {
     command
 }
 
-fn paired_home() -> tempfile::TempDir {
-    let home = tempfile::tempdir().unwrap();
+fn paired_home() -> Sandbox {
+    let home = Sandbox::new();
     let state = home.path().join(".local/state/koidrive");
     fs::create_dir_all(&state).unwrap();
     let credential = state.join("credential.json");
@@ -39,7 +44,9 @@ fn paired_home() -> tempfile::TempDir {
 }
 
 fn agent_log(home: &Path) -> PathBuf {
-    home.join("Library/Logs/Koidrive/dev.koidrive.koi.log")
+    let paths = koidrive_driver::Paths::from_vars(|name| (name == "HOME").then(|| home.into()));
+    let label = format!("dev.koidrive.koi.{}", paths.unwrap().state_key());
+    home.join(format!("Library/Logs/Koidrive/{label}.log"))
 }
 
 #[test]
@@ -136,7 +143,7 @@ fn the_daemon_moves_a_full_launch_agent_log_aside() {
     use std::process::Stdio;
     use std::time::{Duration, Instant};
 
-    let home = tempfile::tempdir().unwrap();
+    let home = Sandbox::new();
     let log = agent_log(home.path());
     fs::create_dir_all(log.parent().unwrap()).unwrap();
     let full = fs::File::create(&log).unwrap();
