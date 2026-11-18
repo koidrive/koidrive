@@ -926,7 +926,7 @@ fn a_linked_state_folder_goes_with_its_link() {
     let koi = machine.copy_koi(".local/bin/koi");
     let elsewhere = machine.path("disk/koidrive-state");
     koidrive_state_file::create_dir(&elsewhere, &elsewhere).unwrap();
-    machine.write("disk/koidrive-state/credential.json", "{}");
+    machine.write("disk/koidrive-state/update-check.json", "{}");
     machine.write(
         "disk/koidrive-state/spaces/0190f0a0-0000-7000-8000-00000000000a/store.sqlite",
         "x",
@@ -1534,7 +1534,7 @@ fn another_profiles_service_keeps_the_shared_command_and_names_how_to_remove_it(
     })
     .unwrap();
     let label = format!("dev.koidrive.koi.{}", other.state_key());
-    machine.write("other/state/koidrive/credential.json", "");
+    machine.write("other/state/koidrive/update-check.json", "{}");
     fs::create_dir_all(machine.path("other/state/koidrive/spaces")).unwrap();
     machine.write(
         &format!("Library/LaunchAgents/{label}.plist"),
@@ -1597,4 +1597,38 @@ fn another_profiles_service_keeps_the_shared_command_and_names_how_to_remove_it(
         assert!(!gone.exists(), "{} remains: {last:#}", gone.display());
     }
     assert!(!fs::read_to_string(&zprofile).is_ok_and(|text| text.contains(PATH_LINE)));
+}
+
+#[test]
+fn a_credential_other_users_can_read_still_names_the_device_to_revoke() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (machine, koi, credential) = signed_in_to_a_server_that_refuses_connections();
+    fs::set_permissions(&credential, fs::Permissions::from_mode(0o644)).unwrap();
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    assert!(!credential.exists(), "{envelope:#}");
+    assert_eq!(
+        envelope["data"]["device"]["device_id"], "d1",
+        "{envelope:#}"
+    );
+    assert_eq!(envelope["outcome"], "error", "{envelope:#}");
+    assert_eq!(output.status.code(), Some(1), "{envelope:#}");
+    assert!(!envelope.to_string().contains("chmod"), "{envelope:#}");
+
+    let (machine, koi, credential) = signed_in_to_a_server_that_refuses_connections();
+    fs::write(&credential, "not json").unwrap();
+
+    let output = (machine.command(&koi, &["uninstall", "--yes", "--plain"]))
+        .output()
+        .unwrap();
+
+    let text = String::from_utf8_lossy(&output.stdout) + String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(!credential.exists(), "{text}");
+    assert!(
+        text.contains("Its server may still list this device. To remove it, revoke it from another device signed in to that server with koi device revoke.\nIf you have no other device, add one with koi server add-device --interactive and run the command there.\n"),
+        "{text}"
+    );
 }

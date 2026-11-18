@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use koidrive_driver::{Credential, Flock, Paths, SetAside, StateEntry};
+use koidrive_driver::{Credential, CredentialError, Flock, Paths, SetAside, StateEntry};
 use koidrive_ipc::{Request, Response};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -203,6 +203,7 @@ enum Program {
 
 struct Found {
     paired: bool,
+    unusable: Option<String>,
     signs_out: bool,
     state: bool,
     owner: Option<Owner>,
@@ -241,7 +242,7 @@ struct Run {
     problems: Vec<String>,
     next: Vec<Vec<String>>,
     folders: Vec<PathBuf>,
-    unrevoked: Option<String>,
+    sign_out_failed: bool,
 }
 
 impl Run {

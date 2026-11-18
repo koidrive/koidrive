@@ -105,10 +105,15 @@ pub(super) async fn sign_out(
             ),
         },
         failed => {
-            run.unrevoked = (found.owner.as_ref()).map(|owner| owner.device_id.clone());
-            still_listed(Some(match failed {
-                Ok(other) => format!("the daemon answered {other:?}"),
-                Err(error) => error.message,
+            run.sign_out_failed = true;
+            still_listed(Some(match (failed, &found.unusable) {
+                (Err(_), Some(unusable)) => {
+                    format!(
+                        "Koidrive could not use this device's saved sign-in, because {unusable}"
+                    )
+                }
+                (Err(error), None) => error.message,
+                (Ok(other), _) => format!("the daemon answered {other:?}"),
             }))
         }
     }

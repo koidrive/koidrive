@@ -17,14 +17,26 @@ pub(super) async fn find(paths: &Paths, home: &Path) -> Found {
                 tokio::time::timeout(STATUS, ipc::ask(paths, &Request::Status)).await,
                 Ok(Ok(Some(_)))
             ));
-    let owner = Credential::load(&credential)
-        .ok()
-        .flatten()
-        .map(|credential| Owner {
-            server: credential.server,
-            device_id: credential.device_id,
-        })
-        .or(recorded.owner);
+    let loaded = Credential::load(&credential);
+    let unusable = match &loaded {
+        Err(CredentialError::Exposed { .. }) => Some("other users could read it".to_owned()),
+        Err(CredentialError::NotOwned { .. }) => Some("it belongs to another user".to_owned()),
+        Err(CredentialError::Invalid { reason, .. }) => Some(format!("it is not valid: {reason}")),
+        Err(CredentialError::Io { path, source }) if *path == credential => {
+            Some(format!("it could not be read: {source}"))
+        }
+        _ => None,
+    };
+    let owner = match loaded {
+        Ok(saved) => saved.map(|saved| Owner {
+            server: saved.server,
+            device_id: saved.device_id,
+        }),
+        Err(_) => {
+            (fs::read(&credential).ok()).and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        }
+    }
+    .or(recorded.owner);
     let mut folders = recorded.folders;
     if state
         && let Ok(Ok(Response::Status { status })) =
@@ -121,6 +133,7 @@ pub(super) async fn find(paths: &Paths, home: &Path) -> Found {
     app_files.retain(|path| fs::symlink_metadata(path).is_ok());
     Found {
         paired,
+        unusable,
         signs_out,
         state,
         owner,

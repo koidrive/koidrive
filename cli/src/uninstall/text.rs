@@ -7,9 +7,19 @@ pub(super) fn finish(device: DeviceOutcome, run: Run) -> Result<Done, CliError> 
         kept,
         problems,
         next,
-        unrevoked,
+        sign_out_failed,
         ..
     } = run;
+    let still_listed = match &device {
+        DeviceOutcome::StillListed {
+            device_id: Some(id),
+            ..
+        } => format!(
+            "the server may still list this device; to remove it, run koi device revoke {} on another device",
+            crate::output::command_word(id)
+        ),
+        _ => "the server may still list this device; to remove it, revoke it from another device with koi device revoke".to_owned(),
+    };
     let data = UninstalledData {
         device,
         removed,
@@ -42,14 +52,11 @@ pub(super) fn finish(device: DeviceOutcome, run: Run) -> Result<Done, CliError> 
         (false, false) => problems.join("; "),
         (true, _) => {
             done.text.insert_str(0, header);
-            let Some(device_id) = unrevoked else {
+            if !sign_out_failed {
                 done.tone = Tone::Completed;
                 return Ok(done);
-            };
-            format!(
-                "the server may still list this device; to remove it, run koi device revoke {} on another device",
-                crate::output::command_word(&device_id)
-            )
+            }
+            still_listed
         }
     };
     Err(CliError {
