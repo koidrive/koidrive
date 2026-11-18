@@ -23,8 +23,6 @@
     "app_install::macos::tests::recovery::native_dmg_attach_copy_detach_and_receipt_replay": 10.9,
     "app_install::macos::tests::recovery::recovery_refuses_substituted_receipts_roots_and_retired_bundles": 3.0,
     "app_install::macos::tests::retirement::retired_completion_refuses_changed_or_symlinked_ownership": 3.8,
-    "app_install::macos::tests::verification::native_codesign_accepts_inline_pins_in_bundle_and_updater_modes": 5.0,
-    "app_install::macos::tests::verification::native_codesign_parses_production_requirements_and_rejects_the_wrong_signer": 4.6,
     "ipc::tests::a_status_request_to_a_daemon_that_never_replies_fails_after_the_reply_limit": 5.1,
     "ipc::tests::questions_read_without_a_daemon_free_the_profile_while_the_device_list_hangs": 3.1,
     "service::tests::a_daemon_that_keeps_exiting_is_a_stopped_service_that_names_its_exit_and_log": 15.3,
