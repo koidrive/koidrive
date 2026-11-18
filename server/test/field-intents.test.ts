@@ -651,12 +651,13 @@ describe("RFC 0029 section 3.3: deletes with a view", () => {
       await a.commit([op.mkdir(dir, root, `Big ${n}`), ...Array.from({ length: 20 }, (_, i) => op.mkdir(uuidv7(), dir, `d${i}`))]);
       await a.commit([sent(del(dir, { held: Array.from({ length: 2000 }, () => intent(b.session.deviceId).id) }), intent(a.session.deviceId))]);
     }
-    const purged: number[] = [];
-    while ((await Promise.all(dirs.map((dir) => stateOf(space, dir)))).some(Boolean) && purged.length < 5) {
-      purged.push((await runInDurableObject(space.stub, (instance: SpaceDO) => instance.collectGarbage(Date.now() + 31 * DAY_MS))).purgedNodes);
+    const reports: { purgedNodes: number; more: boolean }[] = [];
+    while ((await Promise.all(dirs.map((dir) => stateOf(space, dir)))).some(Boolean) && reports.length < 5) {
+      reports.push(await runInDurableObject(space.stub, (instance: SpaceDO) => instance.collectGarbage(Date.now() + 31 * DAY_MS)));
     }
-    expect(purged.length).toBeGreaterThan(1);
-    expect(purged.reduce((x, y) => x + y)).toBe(42);
+    expect(reports.length).toBeGreaterThan(1);
+    expect(reports.map((report) => report.more)).toEqual([...reports.slice(1).map(() => true), false]);
+    expect(reports.reduce((sum, report) => sum + report.purgedNodes, 0)).toBe(42);
   });
 
   it("places a create or move into a purged folder under the nearest live ancestor of its last parent, and reports that place", async () => {

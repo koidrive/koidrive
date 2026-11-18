@@ -1376,6 +1376,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
 
         const changes: ChangeRecord[] = [];
         let bytes = 0;
+        let full = false;
         batch: for (let budget = GC_BATCH; budget > 0; ) {
           const due = rows<NodeRow>(
             this.sql.exec(
@@ -1391,7 +1392,10 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
             const held = trashHeld(this.sql, node.trash_group);
             const change = create(ChangeRecordSchema, { change: { case: "purged", value: purgedRecord(node.node_id, node.parent_id, intents, held) } });
             bytes += toBinary(ChangeRecordSchema, change).length;
-            if (changes.length > 0 && bytes > PURGE_BYTES) break batch;
+            if (changes.length > 0 && bytes > PURGE_BYTES) {
+              full = true;
+              break batch;
+            }
             budget--;
             for (const version of rows<VersionRow>(this.sql.exec("SELECT * FROM versions WHERE node_id = ?", node.node_id))) {
               this.dropVersion(version, nowMs);
@@ -1418,7 +1422,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           this.appendCommit(record, create(CommitResultSchema, { seq, changes, committedAtMs: BigInt(committedAtMs) }), null);
           noteCommitted(this.sql, record);
         }
-        return { expiredVersions: expired.length, purgedNodes: changes.length, record };
+        return { expiredVersions: expired.length, purgedNodes: changes.length, full, record };
       }));
       if (purge.record) await this.broadcast(purge.record);
 
@@ -1487,13 +1491,13 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         });
         deletedChunks += rows.length + orphans.length;
       }
-      const { expiredVersions, purgedNodes } = purge;
+      const { expiredVersions, purgedNodes, full } = purge;
       return {
         expiredVersions,
         purgedNodes,
         deletedChunks,
         sweptChunks,
-        more: expiredVersions === GC_BATCH || purgedNodes === GC_BATCH || marked === GC_BATCH || sweeping,
+        more: expiredVersions === GC_BATCH || purgedNodes === GC_BATCH || full || marked === GC_BATCH || sweeping,
       };
     }
 
