@@ -1198,20 +1198,30 @@ impl Snapshot {
             held_from.insert(at, path.clone());
         }
         let unreadable = std::mem::take(&mut scan.unreadable);
-        let mut arrivals: HashMap<(FileId, EntryKind), Vec<Option<PathBuf>>> = HashMap::new();
+        let mut arrivals: HashMap<_, Vec<_>> = HashMap::new();
         if !unreadable.is_empty() {
             for (path, now) in &scan.new {
-                if (now.kind == EntryKind::Dir || !now.linked)
-                    && !(unreadable.iter()).any(|blocked| path.starts_with(blocked))
-                {
+                let observed = !(unreadable.iter()).any(|blocked| {
+                    path.starts_with(blocked) && (path != blocked || held_from.contains_key(path))
+                });
+                if observed && (now.kind == EntryKind::Dir || !now.linked) {
                     let volume = volume_of(path, &scan.new, &self.entries).map(Path::to_path_buf);
-                    arrivals.entry((now.id, now.kind)).or_default().push(volume);
+                    (arrivals.entry((now.id, now.kind)).or_default()).push((path.clone(), volume));
                 }
             }
         }
-        let elsewhere = |entry: &Entry, volume: Option<&Path>| {
-            (arrivals.get(&(entry.id, entry.kind)))
-                .is_some_and(|now| now.iter().any(|now| now.as_deref() == volume))
+        let elsewhere = |entry: &Entry, volume: Option<PathBuf>| {
+            (arrivals.get(&(entry.id, entry.kind))).is_some_and(|now| {
+                now.iter().any(|(to, at)| {
+                    *at == volume
+                        && (stat_rel(again.as_fd(), to)
+                            .ok()
+                            .and_then(|stat| stat.entry()))
+                        .is_some_and(|now| {
+                            (now.id, now.kind, now.linked) == (entry.id, entry.kind, false)
+                        })
+                })
+            })
         };
         let mut departed = BTreeSet::new();
         for blocked in &unreadable {
@@ -1223,7 +1233,10 @@ impl Snapshot {
             for (path, entry) in unscanned {
                 if path.ancestors().any(|above| departed.contains(above)) {
                     old.insert(path, entry);
-                } else if elsewhere(&entry, volume_of(&path, &self.entries, &self.entries)) {
+                } else if elsewhere(
+                    &entry,
+                    volume_now(&path, &self.entries, &scan.new, &self.entries),
+                ) {
                     old.insert(path.clone(), entry);
                     departed.insert(path);
                 }
@@ -1258,12 +1271,12 @@ impl Snapshot {
                 .collect();
             for (path, entry) in below {
                 if (path.ancestors())
-                    .take_while(|above| above.starts_with(&known))
+                    .take_while(|above| *above != known && above.starts_with(&known))
                     .any(|above| departed.contains(above))
                 {
                     continue;
                 }
-                if elsewhere(&entry, volume_of(&path, &old, &self.entries)) {
+                if elsewhere(&entry, volume_now(&path, &old, &scan.new, &self.entries)) {
                     departed.insert(path);
                     continue;
                 }

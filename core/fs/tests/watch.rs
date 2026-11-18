@@ -1485,14 +1485,24 @@ fn a_folder_moved_over_an_empty_folder_through_the_native_watcher_keeps_its_iden
 
 #[test]
 fn an_entry_moved_out_of_a_folder_that_then_becomes_unreadable_is_a_rename() {
-    for to in ["e", "y"] {
+    for (to, inside) in [
+        ("e", "sub/inner"),
+        ("y", "sub/inner"),
+        ("e", "sub"),
+        ("y", "sub"),
+    ] {
         for (locked, scope) in [("x/d", ""), ("x/d", to), ("x", ""), ("x", to)] {
-            moved_out_of_a_folder_that_then_becomes_unreadable(to, locked, scope);
+            moved_out_of_a_folder_that_then_becomes_unreadable(to, inside, locked, scope);
         }
     }
 }
 
-fn moved_out_of_a_folder_that_then_becomes_unreadable(to: &str, locked: &str, scope: &str) {
+fn moved_out_of_a_folder_that_then_becomes_unreadable(
+    to: &str,
+    inside: &str,
+    locked: &str,
+    scope: &str,
+) {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
     fs::create_dir_all(root.join("x/d/sub/inner")).unwrap();
@@ -1504,7 +1514,7 @@ fn moved_out_of_a_folder_that_then_becomes_unreadable(to: &str, locked: &str, sc
     let (doc, sub) = (format!("{to}/doc.txt"), format!("{to}/sub"));
     fs::rename(root.join("x/d/f.txt"), root.join(&doc)).unwrap();
     fs::rename(root.join("x/d/sub"), root.join(&sub)).unwrap();
-    let locked = [root.join(locked), root.join(&sub).join("inner")];
+    let locked = [root.join(locked), root.join(to).join(inside)];
     for path in &locked {
         fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
     }
