@@ -781,7 +781,7 @@ fn a_result_without_a_time_keeps_the_time_the_commits_record_gave_its_slot() {
 }
 
 #[test]
-#[ignore = "GUN-1012: a Welcome names only the slot at its count, so a token that differs there cannot tell a shared slot below it from one the server gave out again (RFC 0028)"]
+#[ignore = "GUN-1012: a Welcome names only the slot at its count, so a token that differs there cannot tell a shared slot below it from one the server gave out again (RFC 0029)"]
 fn a_server_that_gave_every_kept_slot_out_again_holds_none_of_them() {
     let mut commits = Commits::from_state(CommitsState {
         accepted: 2,

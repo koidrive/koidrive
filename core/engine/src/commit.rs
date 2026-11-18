@@ -365,7 +365,7 @@ impl Commits {
     /// kept for it (RFC 0013), the newest kept slot below its count when it names another, and
     /// the newest kept slot at or below *a* when either `commit_id` is empty. A result applied since
     /// counts its own slot. A server that gave out again the kept slots below its count too holds
-    /// none of them, which a `Welcome` cannot show (RFC 0028).
+    /// none of them, which a `Welcome` cannot show (RFC 0029).
     pub fn held_through(&self) -> u64 {
         let slot = match self.confirmed.0 {
             Some(confirmed) => self.slots.get(&confirmed),

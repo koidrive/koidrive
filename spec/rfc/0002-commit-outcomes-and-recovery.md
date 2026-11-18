@@ -57,7 +57,7 @@ A restored server gives seqs and slots out again, so a slot number does not name
 
 A result the client applies on the connection makes its own slot the bound. The bound applies whichever way the loss showed: a `Welcome` with *w* < *a*, or `AHEAD_OF_SERVER` after a `Welcome` with *w* = *a*.
 
-Two cases stay open, and RFC 0028 and RFC 0029 (GUN-1012) remove this bound:
+Two cases stay open, and RFC 0029 (GUN-1012) removes this bound:
 
 - A server that also gave out again the kept slots below *w*, as after a restore to before them followed by a restore to a backup that holds the originals, shares none of them, but the `Welcome` names only slot *w*, so the bound is too high there.
 - A store copied before the listing can come back after the live store sent its edit again and another device deleted the file. The `Welcome` then names the resend at slot *w*, which the copy never saw, so the bound falls to the slot below and the copy takes the held edit for a lost one. Recovery must not send an edit the server holds again over a later delete.
