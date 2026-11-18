@@ -2353,6 +2353,7 @@ impl Commits {
         };
         let restored = carried(&self.restores, &flight).expect("a Restore op in flight is queued");
         let result = flight.result.expect("taken with a result");
+        trees.record_results(&flight.commit, &result);
         (self.granted.0).extend(
             given_nodes(&flight.commit, &result)
                 .into_iter()
