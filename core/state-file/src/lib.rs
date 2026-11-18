@@ -2,7 +2,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{DirBuilder, File};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::Path;
@@ -235,8 +235,14 @@ pub fn create_dir(root: &Path, dir: &Path) -> io::Result<()> {
 pub fn made(root: &Path) -> bool {
     let record = root.join(MADE);
     std::fs::symlink_metadata(&record).is_ok_and(|meta| meta.is_file())
-        && match (std::fs::metadata(root), std::fs::read_to_string(&record)) {
-            (Ok(folder), Ok(text)) => text == made_record(&folder),
+        && match (std::fs::metadata(root), File::open(&record)) {
+            (Ok(folder), Ok(file)) => {
+                let expected = made_record(&folder);
+                let mut text = String::new();
+                file.take(expected.len() as u64 + 1)
+                    .read_to_string(&mut text)
+                    .is_ok_and(|_| text == expected)
+            }
             _ => false,
         }
 }

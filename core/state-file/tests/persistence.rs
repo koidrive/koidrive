@@ -1119,4 +1119,11 @@ fn only_the_folder_create_dir_made_holds_the_record_of_it() {
     fs::remove_file(theirs.join(MADE)).unwrap();
     symlink(root.join(MADE), theirs.join(MADE)).unwrap();
     assert!(!made(&theirs));
+
+    let padded = dir.path().join("padded");
+    create_dir(&padded, &padded).unwrap();
+    let mut record = fs::read(padded.join(MADE)).unwrap();
+    record.extend(vec![b' '; 1 << 20]);
+    fs::write(padded.join(MADE), record).unwrap();
+    assert!(!made(&padded));
 }
