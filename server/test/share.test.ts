@@ -23,7 +23,7 @@ import { DEFAULT_EXPIRY_MS, LINK_ID, MAX_ACTIVE_LINKS, SESSION_MS, SHARE_LOCK_MS
 import type { SpaceDO } from "../src/space-do";
 import { chunkKey } from "../src/space/store";
 import worker from "../src/worker";
-import { content, op, TestClient } from "./helpers";
+import { content, freezeClock, op, TestClient } from "./helpers";
 import { simulatedPitr } from "./pitr";
 
 simulatedPitr.install();
@@ -733,7 +733,7 @@ describe("share links: rewinds (RFC 0005 sections 7 and 10)", () => {
     const parts = await addFile(device, ids.docs, "parts.bin", "1111", "2222", "3333", "4444", "5555", "6666");
     const restorePointMs = createdAtMs + MINUTE;
     await runInDurableObject(space(spaceId), (instance: SpaceDO, state) => {
-      instance.clock = () => restorePointMs + 1;
+      freezeClock(instance, restorePointMs + 1);
       return simulatedPitr.snapshot(state, restorePointMs);
     });
 
