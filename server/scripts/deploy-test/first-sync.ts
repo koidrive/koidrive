@@ -1,18 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import { createGzip } from "node:zlib";
+import { requireAccount, TELEMETRY_LIMIT, telemetryEvents, WORKER_KEYS } from "./cloudflare.ts";
 import { download, invitation, keypair, peer, seal, unseal } from "./e2e.ts";
 import { readState } from "./state.ts";
 import {
   type Build,
+  collectEvents,
+  type Collected,
+  countFields,
   countTimeouts,
   type Hold,
   holdDeadline,
   holdReason,
+  HOLD_MINUTES,
   type Inputs,
   MINUTE_MS,
   type PlannedEntry,
@@ -26,6 +33,7 @@ import {
   runOrder,
   runTable,
   SAMPLE_MS,
+  serverEvent,
   type Sample,
   SETUP_MINUTES,
   type Shape,
@@ -33,6 +41,7 @@ import {
   type Status,
   summary,
   synced,
+  TEARDOWN_MINUTES,
   uploadedEntries,
 } from "./first-sync-model.ts";
 
@@ -47,6 +56,9 @@ const NODE_XATTR = "com.koidrive.node";
 const BLOCK_BYTES = 4096;
 const STORE_DISK_BYTES = 4 * 2 ** 30;
 const GIB = 2 ** 30;
+const TELEMETRY_LAG_MS = 3 * MINUTE_MS;
+const TELEMETRY_MINUTES = 30;
+const TELEMETRY_WINDOW_MS = 1000;
 const BUILD_ENV = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "CARGO_HOME", "RUSTUP_HOME", "DEVELOPER_DIR", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET", "SSL_CERT_FILE", "SSL_CERT_DIR", "RUSTC_WRAPPER", "CARGO_INCREMENTAL"];
 
 class Failed extends Error {}
@@ -535,6 +547,56 @@ const phases: Record<string, () => Promise<void>> = {
       }
       await sleep(Math.min(60_000, Math.max(0, deadline - Date.now())));
     }
+  },
+
+  async telemetry() {
+    const account = requireAccount();
+    const state = readState();
+    const fromMs = state.deployments[0]?.atMs ?? fail("the state file records no deployment");
+    const key = WORKER_KEYS.find((candidate) => candidate === state.logKey) ?? fail("the state file records no Workers Logs filter; run.ts claim records it");
+    const stopAtMs = Math.min(startedAt() + HOLD_MINUTES * MINUTE_MS, Date.now() + TELEMETRY_MINUTES * MINUTE_MS);
+    const lagMs = Math.max(0, Math.min(TELEMETRY_LAG_MS, (stopAtMs - Date.now()) / 2));
+    console.log("Waiting " + Math.round(lagMs / 1000) + " s for Workers Logs to take in the last requests");
+    await sleep(lagMs);
+    const toMs = Date.now();
+    const dir = work("telemetry");
+    mkdirSync(dir, { recursive: true });
+    const gzip = createGzip();
+    const written = pipeline(gzip, createWriteStream(join(dir, "server-events.ndjson.gz")));
+    const types = new Map<string, number>();
+    const spanNames = new Map<string, number>();
+    const fields = new Map<string, number>();
+    const count = (counts: Map<string, number>, name: string) => counts.set(name, (counts.get(name) ?? 0) + 1);
+    const deadline = { atMs: stopAtMs, what: "the telemetry step reached " + new Date(stopAtMs).toISOString() + ", which keeps the teardown's " + TEARDOWN_MINUTES + " minutes" };
+    let collected: Collected;
+    try {
+      collected = await collectEvents(
+        (from, to) =>
+          telemetryEvents(account, key, state.name, from, to, deadline).catch((error: unknown) => {
+            throw new Error((error instanceof Error ? error.message : String(error)).replaceAll(account.id, "<account>"));
+          }),
+        fromMs,
+        toMs,
+        (event) => {
+          const kept = serverEvent(event);
+          gzip.write(JSON.stringify(kept) + "\n");
+          count(types, String(kept.$metadata.type ?? "none"));
+          if (kept.$metadata.spanName !== undefined) count(spanNames, String(kept.$metadata.spanName));
+          countFields(event, fields);
+        },
+        { limit: TELEMETRY_LIMIT, minWindowMs: TELEMETRY_WINDOW_MS, stopAtMs },
+      );
+    } finally {
+      gzip.end();
+      await written;
+    }
+    const sorted = (counts: Map<string, number>) => Object.fromEntries([...counts].sort((a, b) => b[1] - a[1]));
+    const meta = { worker: state.name, filter: key, traceSampling: state.traceSampling ?? null, fromMs, toMs, ...collected, types: sorted(types), spanNames: sorted(spanNames), fields: sorted(fields) };
+    writeFileSync(join(dir, "server-events.json"), JSON.stringify(meta, null, 2));
+    console.log("Wrote " + collected.events + " events from " + collected.queries + " queries between " + new Date(fromMs).toISOString() + " and " + new Date(toMs).toISOString() + ". Event types: " + JSON.stringify(meta.types));
+    if (collected.failure) fail("querying Workers Logs failed: " + collected.failure);
+    if (collected.uncoveredFromMs !== null) console.log("::warning::Stopped at " + new Date(stopAtMs).toISOString() + " before the events after " + new Date(collected.uncoveredFromMs).toISOString() + ", so the teardown keeps its " + TEARDOWN_MINUTES + " minutes");
+    if (collected.saturated.length) console.log("::warning::" + collected.saturated.length + " windows of " + TELEMETRY_WINDOW_MS + " ms or less held " + TELEMETRY_LIMIT + " events or more, so some of their events are missing");
   },
 };
 

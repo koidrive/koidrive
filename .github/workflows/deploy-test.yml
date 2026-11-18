@@ -269,6 +269,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           REF: ${{ inputs.mode == 'upgrade' && steps.from.outputs.sha || github.sha }}
+          KOIDRIVE_TRACE_SAMPLING: ${{ inputs.mode == 'first-sync' && '0.05' || '' }}
         run: node scripts/deploy-test/run.ts deploy "$REF"
 
       - name: Claim it with the code from its own log
@@ -422,6 +423,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/deploy-test/first-sync.ts hold
+      - name: "first sync: record the Worker's invocations and trace spans"
+        if: inputs.mode == 'first-sync'
+        timeout-minutes: 35
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/deploy-test/first-sync.ts telemetry
 
       - name: Tear down the Worker, its Durable Objects and the R2 bucket
         if: always() && steps.secrets.outcome == 'success'
@@ -430,6 +438,15 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/deploy-test/run.ts teardown
+      - name: "first sync: upload the Worker's invocations and trace spans"
+        if: ${{ !cancelled() && inputs.mode == 'first-sync' }}
+        timeout-minutes: 10
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: first-sync-telemetry-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/koidrive-first-sync/telemetry/
+          retention-days: 30
+          if-no-files-found: warn
 
   e2e-macos:
     name: e2e (macOS)

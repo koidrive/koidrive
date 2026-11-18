@@ -55,8 +55,13 @@ function exec(command: string, args: string[], cwd: string, env: NodeJS.ProcessE
 }
 
 function runTs(...args: string[]): Promise<{ status: number | null; output: string }> {
+  return runTsWith({}, ...args);
+}
+
+function runTsWith(env: NodeJS.ProcessEnv, ...args: string[]): Promise<{ status: number | null; output: string }> {
   const flags = Number(process.versions.node.split(".")[0]) < 23 ? ["--experimental-strip-types", "--no-warnings"] : [];
   return exec(process.execPath, [...flags, join(here, "run.ts"), ...args], server, {
+      ...env,
       PATH: join(work, "bin") + delimiter + process.env.PATH,
       HOME: join(work, "home"),
       TMPDIR: join(work, "tmp"),
@@ -452,6 +457,36 @@ describe("deploy", () => {
   });
 });
 
+describe("traces", () => {
+  it("turns on traces at the given rate in the deploy copy only", async () => {
+    fakePnpm({ install: { createsWorker: false, status: 1 }, deploy: { createsWorker: false, status: 0 } });
+    const deployed = await runTsWith({ KOIDRIVE_TRACE_SAMPLING: "0.05" }, "deploy", "HEAD");
+    expect(deployed.status).toBe(1);
+    expect(deployed.output).toContain("tracing 5% of requests");
+    const copies = readdirSync(join(work, "tmp")).filter((name) => name.startsWith("koidrive-deploy-test-"));
+    expect(copies).toHaveLength(1);
+    const config = JSON.parse(readFileSync(join(work, "tmp", copies[0]!, "wrangler.jsonc"), "utf8")) as { name: string; observability: unknown };
+    expect(config.name).toBe(NAME);
+    expect(config.observability).toEqual({ enabled: true, redact_query_string: true, traces: { enabled: true, head_sampling_rate: 0.05 } });
+    expect(readFileSync(join(server, "wrangler.jsonc"), "utf8")).not.toContain("traces");
+  });
+
+  it("deploys without traces when no rate is given", async () => {
+    fakePnpm({ install: { createsWorker: false, status: 1 }, deploy: { createsWorker: false, status: 0 } });
+    await runTs("deploy", "HEAD");
+    const copies = readdirSync(join(work, "tmp")).filter((name) => name.startsWith("koidrive-deploy-test-"));
+    const config = JSON.parse(readFileSync(join(work, "tmp", copies[0]!, "wrangler.jsonc"), "utf8")) as { observability: unknown };
+    expect(config.observability).toEqual({ enabled: true, redact_query_string: true });
+  });
+
+  it("refuses a rate outside 0 to 1 before creating anything", async () => {
+    const deployed = await runTsWith({ KOIDRIVE_TRACE_SAMPLING: "5" }, "deploy", "HEAD");
+    expect(deployed.status).toBe(1);
+    expect(deployed.output).toContain("KOIDRIVE_TRACE_SAMPLING must be a number above 0 and at most 1");
+    expect(mock.requests.filter((request) => request.startsWith("POST "))).toEqual([]);
+  });
+});
+
 describe("a deploy whose upload the API does not list yet", () => {
   it("deploys again with the same tag after a backoff when Wrangler's read after the upload finds no Worker", async () => {
     fakePnpm({ install: { createsWorker: false, status: 0 }, deploy: { createsWorker: true, status: 0, unlistedFirst: 1 } });
@@ -534,6 +569,7 @@ describe("claim", () => {
     expect(status).toBe(0);
     expect(readState().owner?.userId).toBe("user-1");
     expect(output).toContain("filtered on $metadata.service");
+    expect(readState().logKey).toBe("$metadata.service");
     const [, eventMs, nowMs] = /with event timestamp (\d+) \(Date\.now\(\) (\d+)\)/.exec(output) ?? [];
     expect(Math.abs(Number(nowMs) - Number(eventMs))).toBeLessThan(60_000);
     expect(mock.queryDryFlags.length).toBeGreaterThan(0);
@@ -549,6 +585,7 @@ describe("claim", () => {
     expect(output).toContain("filtered on $workers.scriptName");
     expect(output).toContain("Claimed " + mock.url);
     expect(status).toBe(0);
+    expect(readState().logKey).toBe("$workers.scriptName");
   });
 
   it("tries $workers.scriptName when the API rejects a filter on $metadata.service", async () => {

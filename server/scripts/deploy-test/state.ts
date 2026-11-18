@@ -43,6 +43,8 @@ export interface State {
   name: string;
   url?: string;
   owned: Owned;
+  traceSampling?: number;
+  logKey?: string;
   deployments: Deployment[];
   owner?: Credentials;
   stats: Stats;

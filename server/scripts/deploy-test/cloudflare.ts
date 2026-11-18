@@ -251,18 +251,26 @@ export async function namespacesOf(account: Account, script: string): Promise<Na
 export const WORKER_KEYS = ["$metadata.service", "$workers.scriptName"] as const;
 export type WorkerKey = (typeof WORKER_KEYS)[number];
 
-export async function workerEvents(account: Account, key: WorkerKey, name: string, fromMs: number, deadline: Deadline): Promise<{ timestamp: unknown; text: string }[]> {
+export type TelemetryEvent = Record<string, Record<string, unknown> | undefined>;
+
+export const TELEMETRY_LIMIT = 2000;
+
+export async function telemetryEvents(account: Account, key: WorkerKey, name: string, fromMs: number, toMs: number, deadline?: Deadline): Promise<TelemetryEvent[]> {
   const query = {
     queryId: "deploy-test-" + name,
     view: "events",
     dry: true,
-    limit: 2000,
+    limit: TELEMETRY_LIMIT,
     parameters: { filters: [{ key, operation: "eq", type: "string", value: name }] },
-    timeframe: { from: fromMs, to: Date.now() },
+    timeframe: { from: fromMs, to: toMs },
   };
-  const response = await call<{ events?: { events?: Record<string, Record<string, unknown> | undefined>[] } }>(account, "POST", `/accounts/${account.id}/workers/observability/telemetry/query`, query, deadline);
+  const response = await call<{ events?: { events?: TelemetryEvent[] } }>(account, "POST", `/accounts/${account.id}/workers/observability/telemetry/query`, query, deadline);
+  return response.result?.events?.events ?? [];
+}
+
+export async function workerEvents(account: Account, key: WorkerKey, name: string, fromMs: number, deadline: Deadline): Promise<{ timestamp: unknown; text: string }[]> {
   const [group, field] = key.split(".") as [string, string];
-  return (response.result?.events?.events ?? []).filter((event) => event[group]?.[field] === name).map((event) => ({ timestamp: event.timestamp, text: JSON.stringify(event) }));
+  return (await telemetryEvents(account, key, name, fromMs, Date.now(), deadline)).filter((event) => event[group]?.[field] === name).map((event) => ({ timestamp: event.timestamp, text: JSON.stringify(event) }));
 }
 
 export interface Deployment {

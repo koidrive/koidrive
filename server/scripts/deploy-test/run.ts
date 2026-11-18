@@ -147,9 +147,17 @@ function upgradeFrom(input: string): void {
   output("sha", sha);
 }
 
-function rename(dir: string, name: string): void {
+function traceSampling(): number | undefined {
+  const raw = process.env.KOIDRIVE_TRACE_SAMPLING ?? "";
+  if (raw === "") return undefined;
+  const rate = Number(raw);
+  if (!(rate > 0 && rate <= 1)) fail("KOIDRIVE_TRACE_SAMPLING must be a number above 0 and at most 1, or empty for no traces, not " + JSON.stringify(raw));
+  return rate;
+}
+
+function configure(dir: string, name: string, traces: number | undefined): void {
   const path = join(dir, "wrangler.jsonc");
-  let config: { name?: string; r2_buckets?: { binding: string; bucket_name?: string }[] };
+  let config: { name?: string; r2_buckets?: { binding: string; bucket_name?: string }[]; observability?: Record<string, unknown> };
   try {
     config = JSON.parse(readFileSync(path, "utf8").replace(/^\s*\/\/.*$/gm, ""));
   } catch (error) {
@@ -158,6 +166,7 @@ function rename(dir: string, name: string): void {
   const bucket = config.r2_buckets?.find((entry) => entry.binding === "BUCKET") ?? fail("wrangler.jsonc has no R2 binding named BUCKET");
   config.name = name;
   bucket.bucket_name = name;
+  if (traces !== undefined) config.observability = { ...config.observability, traces: { enabled: true, head_sampling_rate: traces } };
   writeFileSync(path, JSON.stringify(config, null, 2) + "\n");
 }
 
@@ -185,6 +194,7 @@ async function serving(url: string): Promise<{ serverVersion: string; claimed: b
 async function deploy(account: Account, ref: string): Promise<void> {
   const state = readState();
   const sha = tryGit(["rev-parse", "--verify", "--quiet", ref + "^{commit}"]) ?? fail(JSON.stringify(ref) + " is not a commit in this repository");
+  const traces = traceSampling();
   const first = state.deployments.length === 0;
   if (first) {
     if (state.owned.workerTag || state.owned.bucketCreationDate) fail("the state file already records resources but no deployment; start a new run");
@@ -207,8 +217,8 @@ async function deploy(account: Account, ref: string): Promise<void> {
 
   const dir = mkdtempSync(join(tmpdir(), "koidrive-deploy-test-"));
   execFileSync("sh", ["-c", 'git archive --format=tar "$1:server" | tar -x -C "$2"', "sh", sha, dir], { cwd: repo, stdio: "inherit" });
-  rename(dir, state.name);
-  console.log("Copied server/ at " + sha + " to " + dir + " as Worker and R2 bucket " + state.name);
+  configure(dir, state.name, traces);
+  console.log("Copied server/ at " + sha + " to " + dir + " as Worker and R2 bucket " + state.name + (traces === undefined ? "" : ", tracing " + traces * 100 + "% of requests"));
 
   await run("pnpm", ["install", "--frozen-lockfile"], dir, INSTALL_MS, withoutSecrets());
   if (first) {
@@ -240,6 +250,7 @@ async function deploy(account: Account, ref: string): Promise<void> {
   }
   console.log("Deployment of " + state.name + " sends all traffic to version " + versionId);
   state.url = url;
+  state.traceSampling = traces;
   state.deployments.push({ ref, sha, dir, versionId, atMs: Date.now() });
   writeState(state);
 
@@ -328,6 +339,7 @@ async function claim(account: Account): Promise<void> {
     fail("the claim failed with HTTP " + response.status + ": " + (body.message ?? "no message").replaceAll(code, "<claim code>"));
   }
   state.owner = { userId: body.userId, deviceId: body.deviceId, refreshCredential: body.refreshCredential };
+  state.logKey = key;
   writeState(state);
   console.log("Claimed " + url + ": owner " + body.userId + ", first device " + body.deviceId);
 }

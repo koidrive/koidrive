@@ -38,6 +38,7 @@ import { type ChunkObject, deriveSpaceKey, signChunkGrant, verifyChunkGrant } fr
 import { fromHex, isUuidV7 } from "./ids";
 import { type Capability, policy } from "./policy";
 import { platformFailure } from "./quota";
+import { routeName } from "./routes";
 import { shareRoute } from "./share/routes";
 import { GRANT_MS, MAX_CHUNK_BYTES, MAX_CLIENT_FRAME } from "./space/limits";
 import { CONNECT_HEADER, type Connect } from "./space/session";
@@ -50,33 +51,6 @@ export { AccountDO } from "./account-do";
 export { SpaceDO } from "./space-do";
 
 const serverKeys = new WeakMap<object, Promise<ServerKey>>();
-
-const ROUTES: [string, RegExp][] = [
-  ["chunk", /^\/v1\/spaces\/[^/]+\/chunks\/[^/]+$/],
-  ["chunk_bundle", /^\/v1\/spaces\/[^/]+\/chunks$/],
-  ["rpc", /^\/v1\/spaces\/[^/]+\/rpc$/],
-  ["ws", /^\/v1\/spaces\/[^/]+\/ws$/],
-  ["links", /^\/v1\/spaces\/[^/]+\/links(?:\/[^/]+)?$/],
-  ["rewind", /^\/v1\/spaces\/[^/]+\/rewind$/],
-  ["usage", /^\/v1\/spaces\/[^/]+\/usage$/],
-  ["spaces", /^\/v1\/spaces$/],
-  ["devices", /^\/v1\/devices(?:\/[^/]+)?$/],
-  ["token", /^\/v1\/token$/],
-  ["claim", /^\/v1\/claim$/],
-  ["pair_start", /^\/v1\/pair\/start$/],
-  ["pair_complete", /^\/v1\/pair\/complete$/],
-  ["server", /^\/v1\/server$/],
-  ["setup", /^\/setup$/],
-  ["share", /^\/v1\/share\//],
-  ["share_page", /^\/s\//],
-];
-const METHODS = new Set(["GET", "HEAD", "POST", "PUT", "DELETE"]);
-
-function routeOf(request: Request): string {
-  const path = new URL(request.url).pathname;
-  const name = ROUTES.find(([, pattern]) => pattern.test(path))?.[0] ?? "other";
-  return (METHODS.has(request.method) ? request.method.toLowerCase() : "other") + "_" + name;
-}
 
 function key(env: Env): Promise<ServerKey> {
   let cached = serverKeys.get(env.ACCOUNT);
@@ -423,7 +397,7 @@ export default {
     const startedMs = Date.now();
     const response = await answer(request, { ...env, BUCKET: countedBucket(env.BUCKET, traffic) });
     const nowMs = Date.now();
-    traffic.count(routeOf(request), responseOutcome(response), nowMs - startedMs, nowMs);
+    traffic.count(routeName(request.method, new URL(request.url).pathname), responseOutcome(response), nowMs - startedMs, nowMs);
     traffic.add("worker_requests", 1);
     const counted = countedEgress(response, traffic);
     if (traffic.reporting === true) ctx.waitUntil(traffic.settle((batch) => account(env).recordUsage(batch), Date.now, (ms) => scheduler.wait(ms)));
