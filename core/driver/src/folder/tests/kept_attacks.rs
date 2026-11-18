@@ -1437,3 +1437,132 @@ fn attack_r8_atomic_save_of_the_rules_with_the_same_content() {
     r8_round(&mut b, &mut remote);
     r8_env_stays_out(&site, &mut b, &mut remote, "app/.env", "atomic-rules");
 }
+
+
+
+fn r9_round(b: &mut Device, remote: &mut Remote) {
+    for _ in 0..3 {
+        b.pull(remote);
+        b.run(remote);
+        b.settle();
+    }
+}
+
+fn r9_report(site: &Site, b: &Device, remote: &Remote) -> String {
+    format!(
+        "remote={:?}\ndisk={:?}\nkept={:?}\nview={:?}/{:?}",
+        remote.tree().keys().collect::<Vec<_>>(),
+        files(&site.root),
+        b.folder.engine.trees.kept_entry_paths(),
+        b.folder.view().state,
+        b.folder.view().problem,
+    )
+}
+
+fn r9_taken_over_without_rules() -> (Remote, Site, Device, Site, Device) {
+    let (mut remote, site_a, mut a, site, mut b, _) =
+        deleted_with_rules_files(&[(".koiignore", ".env\n")], &["README.md"], &[".env"]);
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    r9_round(&mut b, &mut remote);
+    for _ in 0..2 { a.pull(&remote); a.run(&mut remote); a.settle(); }
+    assert!(!remote.tree().keys().any(|k| k.ends_with(".env")));
+    (remote, site_a, a, site, b)
+}
+
+#[test]
+fn attack_r9_kept_entry_in_a_synced_subfolder_deleted_again_and_taken_over() {
+    let (mut remote, site_a, mut a, site, mut b) = r9_taken_over_without_rules();
+    fs::create_dir(site.root.join("app/sub")).unwrap();
+    fs::write(site.root.join("app/sub/lib.rs"), b"synced").unwrap();
+    fs::rename(site.root.join("app/.env"), site.root.join("app/sub/.env")).unwrap();
+    r9_round(&mut b, &mut remote);
+    for _ in 0..2 { a.pull(&remote); a.run(&mut remote); a.settle(); }
+    assert!(site_a.root.join("app/sub/lib.rs").exists());
+    fs::remove_dir_all(site_a.root.join("app")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    r9_round(&mut b, &mut remote);
+    let report = r9_report(&site, &b, &remote);
+    assert!(site.root.join("app/sub/.env").exists(), "{report}");
+    fs::create_dir_all(site_a.root.join("app/sub")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/sub/lib.rs"), b"third");
+    r9_round(&mut b, &mut remote);
+    fs::write(site.root.join("app/sub/.env"), b"SECRET=edited").unwrap();
+    r9_round(&mut b, &mut remote);
+    let report = r9_report(&site, &b, &remote);
+    assert!(!remote.tree().keys().any(|k| k.ends_with(".env")), "{report}");
+    assert_eq!(fs::read(site.root.join("app/sub/lib.rs")).unwrap(), b"third", "{report}");
+    assert_eq!(fs::read(site.root.join("app/sub/.env")).unwrap(), b"SECRET=edited", "{report}");
+    assert!(nothing_parked(&site), "{report}");
+    assert_eq!(b.folder.view().problem, None, "{report}");
+}
+
+#[test]
+fn attack_r9_kept_entry_beside_a_file_the_person_just_excluded_when_the_folder_is_deleted_again() {
+    let (mut remote, site_a, mut a, site, mut b) = r9_taken_over_without_rules();
+    fs::write(site.root.join("app/draft.txt"), b"my draft").unwrap();
+    r9_round(&mut b, &mut remote);
+    assert!(remote.tree().contains_key("app/draft.txt"));
+    fs::write(site.root.join("app/draft.txt"), b"my draft, edited").unwrap();
+    fs::write(site.root.join("app/.koiignore"), b"draft.txt\n").unwrap();
+    b.settle();
+    fs::remove_dir_all(site_a.root.join("app")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    r9_round(&mut b, &mut remote);
+    let report = r9_report(&site, &b, &remote);
+    let kept_draft = files(&site.root).into_iter().any(|(_, content)| content == "my draft, edited");
+    assert!(kept_draft, "the person's write is gone\n{report}");
+    assert!(site.root.join("app/.env").exists(), "{report}");
+    assert!(!remote.tree().keys().any(|k| k.ends_with(".env")), "{report}");
+}
+
+#[test]
+fn attack_r9_kept_node_modules_holding_a_new_file_when_the_folder_is_deleted_again() {
+    let (mut remote, site_a, mut a, site, mut b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env\nnode_modules/\n")],
+        &["README.md"],
+        &[".env", "node_modules/pkg/index.js"],
+    );
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    r9_round(&mut b, &mut remote);
+    for _ in 0..2 { a.pull(&remote); a.run(&mut remote); a.settle(); }
+    fs::write(site.root.join("app/node_modules/pkg/new.js"), b"built after the takeover").unwrap();
+    r9_round(&mut b, &mut remote);
+    fs::remove_dir_all(site_a.root.join("app")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    r9_round(&mut b, &mut remote);
+    let report = r9_report(&site, &b, &remote);
+    assert_eq!(fs::read(site.root.join("app/node_modules/pkg/new.js")).unwrap(), b"built after the takeover", "{report}");
+    assert!(site.root.join("app/.env").exists(), "{report}");
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"third");
+    r9_round(&mut b, &mut remote);
+    let report = r9_report(&site, &b, &remote);
+    assert!(!remote.tree().keys().any(|k| k.ends_with(".env") || k.contains("node_modules")), "{report}");
+    assert!(site.root.join("app/node_modules/pkg/new.js").exists(), "{report}");
+    assert!(nothing_parked(&site), "{report}");
+}
+
+
+#[test]
+fn attack_r9_v1_first_delete_with_a_nested_ignored_entry_then_the_subfolder_made_again() {
+    let (mut remote, site_a, mut a, site, mut b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env\n")],
+        &["README.md", "sub/lib.rs"],
+        &["sub/.env"],
+    );
+    let report = r9_report(&site, &b, &remote);
+    assert!(site.root.join("app/sub/.env").exists(), "{report}");
+    fs::create_dir_all(site_a.root.join("app/sub")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/sub/lib.rs"), b"third");
+    r9_round(&mut b, &mut remote);
+    let report = r9_report(&site, &b, &remote);
+    assert!(!remote.tree().keys().any(|k| k.contains("conflict") || k.ends_with(".env")), "{report}");
+    assert!(site.root.join("app/sub/.env").exists(), "{report}");
+    assert_eq!(fs::read(site.root.join("app/sub/lib.rs")).unwrap(), b"third", "{report}");
+}
+
