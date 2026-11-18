@@ -180,6 +180,30 @@ fn a_conflict_copy_takes_the_local_file_and_the_original_is_downloaded_again() {
 }
 
 #[test]
+fn a_file_create_kept_as_a_conflict_copy_settles_as_the_copy() {
+    let mut trees = trees(&[("f", Some(file(ROOT, "f", 2)), None, None)]);
+    let ino = trees.local().get("f").unwrap().identity.ino;
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(
+        (ops(&sent).iter()).any(|op| matches!(op, op::Op::CreateFile(_))),
+        "{:?}",
+        ops(&sent)
+    );
+    trees.set_remote("y".into(), remote(file(ROOT, "f (conflict)", 2)));
+    let copy = OpResult {
+        node_id: "y".into(),
+        ..outcome(op_result::Code::ConflictCopy)
+    };
+    acknowledge(&mut commits, &mut trees, vec![copy]);
+    assert_eq!(trees.local().get("y").unwrap().identity.ino, ino);
+    assert_eq!(trees.synced().live("y"), Some(&file(ROOT, "f", 2)));
+    assert_eq!(trees.class("y"), Class::Remote);
+    assert_eq!(trees.local().get("f"), None);
+    assert!(build(&mut commits, &mut trees, &mut ids).is_none());
+}
+
+#[test]
 fn a_conflict_copy_keeps_s_s_position_when_another_device_wrote_s_s_bytes_back_before_the_result() {
     let mut trees = trees(&[(
         "f",
