@@ -2587,18 +2587,18 @@ impl Commits {
     }
 
     /// Compares the `Welcome` with the commit in flight and the accepted counter *a* (section
-    /// 2.8). With *w* the server's counter, *w* = *a* means the commit in flight was not accepted
+    /// 2.8). A `Welcome` that names, for a slot this device keeps, another `commit_id` than the
+    /// one it kept, than the commit in flight there and than those it gave the slot to before a
+    /// loss took them ([`GIVEN_UP_KEPT`]) starts recovery whatever its counter: the server holds
+    /// there a commit of this device that the store does not know, so the store is behind the
+    /// server. Otherwise, with *w* the server's counter, *w* = *a* means the commit in flight was not accepted
     /// and *w* = *a* + 1 that it was and its response was lost; both resend it unchanged, and
     /// the server answers an accepted one with its stored result. *w* < *a* means the server lost
     /// commits it had accepted, since its counter only grows and *a* takes a slot only from a
     /// result. So does *w* = *a* while the result of the commit in flight is held, since the
     /// server sent that result, and *w* = *a* + 1 while it is held and the `Welcome` carries
     /// another application for that slot, since the server gave the slot to another commit or
-    /// applied this one again there. Either way *a* takes *w*, unless the `Welcome` names for slot
-    /// *w* < *a* another `commit_id` than the one this device kept for it and than those it gave the
-    /// slot to before a loss took them ([`GIVEN_UP_KEPT`]): the server holds there
-    /// a commit of this device that the store does not know, so the store is behind the server
-    /// and recovery starts, as when it keeps no result of slot *w* at all. Otherwise the commit in flight is dropped, its
+    /// applied this one again there. Either way *a* takes *w* and the commit in flight is dropped, its
     /// restores staying queued, so that its changes are planned again once R is listed again. Any other *w*, or a commit
     /// built in another history, starts recovery. A read-only device resends nothing. A device
     /// under a policy halt resends nothing whatever the `Welcome` says, but *w* < *a* is a loss
@@ -2625,10 +2625,13 @@ impl Commits {
         let (a, w) = (*self.accepted, welcome.device_seq);
         let kept = (self.slots.get(&w))
             .filter(|slot| !slot.commit_id.is_empty() && !welcome.device_commit_id.is_empty());
-        let given_up =
-            (self.given_up.get(&w)).is_some_and(|ids| ids.contains(&welcome.device_commit_id));
+        let sent_here = (self.given_up.get(&w))
+            .is_some_and(|ids| ids.contains(&welcome.device_commit_id))
+            || (self.in_flight.as_ref()).is_some_and(|flight| {
+                flight.commit.device_seq == w && flight.commit.commit_id == welcome.device_commit_id
+            });
         let another_commit =
-            kept.is_some_and(|slot| slot.commit_id != welcome.device_commit_id) && !given_up;
+            kept.is_some_and(|slot| slot.commit_id != welcome.device_commit_id) && !sent_here;
         self.confirmed.0 = kept.map(|slot| {
             if same_application(welcome, &slot.commit_id, slot.committed_at_ms) {
                 w
@@ -2648,12 +2651,12 @@ impl Commits {
             _ if policy => Reconnect::AheadOfServer,
             _ if matches!(*self.halted, Some(Halt::Recovery(_))) => Reconnect::Recovery,
             Some(flight) if flight.commit.history_id != welcome.history_id => Reconnect::Recovery,
+            _ if another_commit => Reconnect::Recovery,
             None if w == a => Reconnect::Idle,
             Some(flight) if flight.result.is_none() && (w == a || w == a + 1) => Reconnect::Resend,
             Some(flight) if w == a + 1 && held_elsewhere(flight) => Reconnect::AheadOfServer,
             Some(_) if w == a + 1 => Reconnect::Idle,
             Some(_) if w == a => Reconnect::AheadOfServer,
-            _ if w < a && another_commit => Reconnect::Recovery,
             _ if w < a || self.slots.contains_key(&w) => Reconnect::AheadOfServer,
             _ => Reconnect::Recovery,
         };
