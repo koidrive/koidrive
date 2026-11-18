@@ -85,6 +85,17 @@ async function file(owner: TestClient, parentId: string, name: string, value: Co
   return nodeId;
 }
 
+async function folderChain(owner: TestClient, root: string, length: number): Promise<string[]> {
+  const chain = Array.from({ length }, () => uuidv7());
+  const tops = chain.flatMap((_, i) => (i % 16 === 0 && i > 0 ? [i] : []));
+  const built = await owner.commit([
+    ...chain.map((id, i) => op.mkdir(id, i % 16 === 0 ? root : chain[i - 1]!, `d${i}`)),
+    ...tops.reverse().map((i) => op.move(chain[i]!, chain[i - 1]!, `d${i}`)),
+  ]);
+  expect(built.results.filter(({ code }) => code !== OpResult_Code.APPLIED)).toEqual([]);
+  return chain;
+}
+
 function sync(...devices: TestClient[]): void {
   const top = devices.reduce((max, device) => (device.baseSeq > max ? device.baseSeq : max), 0n);
   for (const device of devices) device.baseSeq = top;
@@ -618,8 +629,7 @@ describe("RFC 0029 section 3.3: deletes with a view", () => {
 
   it("lands the conflict copy of a purged file one folder up when its last folder sits at the depth limit", async () => {
     const { space, a, b, values, root } = await setup();
-    const chain = Array.from({ length: MAX_DEPTH - 1 }, () => uuidv7());
-    await a.commit(chain.map((id, i) => op.mkdir(id, i === 0 ? root : chain[i - 1]!, `d${i}`)));
+    const chain = await folderChain(a, root, MAX_DEPTH - 1);
     const dir = uuidv7();
     await a.commit([op.mkdir(dir, root, "Last")]);
     const nodeId = await file(a, dir, "deep.txt", values[0]!);
@@ -771,8 +781,7 @@ describe("RFC 0029 section 3.4 and 3.5: replays reaching the trash", () => {
 
   it("leaves a tombstone, reported as NodePurged, for a carried file whose content a trashed folder at the depth limit lists, and a restore does not bring it back", async () => {
     const { space, a, b, values, root } = await setup();
-    const chain = Array.from({ length: MAX_DEPTH }, () => uuidv7());
-    await a.commit(chain.map((id, i) => op.mkdir(id, i === 0 ? root : chain[i - 1]!, `d${i}`)));
+    const chain = await folderChain(a, root, MAX_DEPTH);
     const deepest = chain.at(-1)!;
     const lost = intent(b.session.deviceId, { replay: true });
     await a.commit([sent(del(deepest, { held: [lost.id] }), intent(a.session.deviceId))]);
@@ -790,8 +799,7 @@ describe("RFC 0029 section 3.4 and 3.5: replays reaching the trash", () => {
 
   it("stores a carried file in a trashed folder one level above the depth limit and brings it back on restore", async () => {
     const { space, a, b, values, root } = await setup();
-    const chain = Array.from({ length: MAX_DEPTH - 1 }, () => uuidv7());
-    await a.commit(chain.map((id, i) => op.mkdir(id, i === 0 ? root : chain[i - 1]!, `d${i}`)));
+    const chain = await folderChain(a, root, MAX_DEPTH - 1);
     const deepest = chain.at(-1)!;
     const lost = intent(b.session.deviceId, { replay: true });
     await a.commit([sent(del(deepest, { held: [lost.id] }), intent(a.session.deviceId))]);
@@ -806,8 +814,7 @@ describe("RFC 0029 section 3.4 and 3.5: replays reaching the trash", () => {
 
   it("leaves a tombstone, reported as NodePurged, for a carried folder that a trashed folder at the depth limit supersedes, and answers ops into it from that tombstone's held alone", async () => {
     const { space, a, b, root } = await setup();
-    const chain = Array.from({ length: MAX_DEPTH }, () => uuidv7());
-    await a.commit(chain.map((id, i) => op.mkdir(id, i === 0 ? root : chain[i - 1]!, `d${i}`)));
+    const chain = await folderChain(a, root, MAX_DEPTH);
     const deepest = chain.at(-1)!;
     const lost = intent(b.session.deviceId, { replay: true });
     const removal = intent(a.session.deviceId);
