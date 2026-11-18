@@ -57,7 +57,7 @@ on:
         type: boolean
         default: false
       env:
-        description: Extra environment for the tests, as space-separated NAME=value pairs, such as MODEL_TABLE_SLOTS=1500000000
+        description: Extra environment for the tests, as space-separated NAME=value pairs, such as MODEL_TABLE_SLOTS=1500000000; PROPTEST_VERBOSE also turns off output capture
         type: string
         default: ''
       os:
@@ -126,7 +126,7 @@ jobs:
           fi
           [[ "$SEED" =~ ^(0|[1-9][0-9]{0,14})?$ ]] || errors+=("seed must be empty or a whole number of at most 15 digits without leading zeros, got '$SEED'.")
           [[ "$FEATURES" =~ ^[A-Za-z0-9_/,-]*$ ]] || errors+=("features must be comma-separated feature names, got '$FEATURES'.")
-          allowed='^((MODEL|GUARD_MODEL|KOIDRIVE|KOI)_[A-Z0-9_]+|RUST_BACKTRACE|RUST_LOG|RUST_TEST_THREADS|RUST_MIN_STACK)$'
+          allowed='^((MODEL|GUARD_MODEL|KOIDRIVE|KOI)_[A-Z0-9_]+|RUST_BACKTRACE|RUST_LOG|RUST_TEST_THREADS|RUST_MIN_STACK|PROPTEST_VERBOSE)$'
           reserved='^(KOIDRIVE_BATTERY_CASES|KOIDRIVE_PROPTEST_DETERMINISTIC)$'
           [[ "$EXTRA_ENV" != *$'\n'* ]] || errors+=("env must be one line of NAME=value pairs.")
           [[ "$MODE" == cargo && "$PARALLEL" == 1 ]] || [[ "$RELEASE" != true && -z "$EXTRA_ENV" ]] || errors+=("release and env apply only with mode cargo and parallel 1.")
@@ -135,7 +135,7 @@ jobs:
             if [[ ! "$pair" =~ ^([A-Z_][A-Z0-9_]*)=[^[:space:]]*$ ]]; then
               errors+=("env takes NAME=value pairs, not '$pair'.")
             elif [[ ! "${BASH_REMATCH[1]}" =~ $allowed || "${BASH_REMATCH[1]}" =~ $reserved ]]; then
-              errors+=("env can't set ${BASH_REMATCH[1]}: it takes MODEL_*, GUARD_MODEL_*, KOIDRIVE_*, KOI_* and RUST_BACKTRACE, RUST_LOG, RUST_TEST_THREADS or RUST_MIN_STACK, and the cases input sets the case budget.")
+              errors+=("env can't set ${BASH_REMATCH[1]}: it takes MODEL_*, GUARD_MODEL_*, KOIDRIVE_*, KOI_* and RUST_BACKTRACE, RUST_LOG, RUST_TEST_THREADS, RUST_MIN_STACK or PROPTEST_VERBOSE, and the cases input sets the case budget.")
             fi
           done
           for error in "${errors[@]}"; do echo "::error::$error"; done
@@ -252,6 +252,7 @@ jobs:
           test_args=()
           [ -z "$FILTER" ] || test_args+=("$FILTER")
           [ "$IGNORED" != "true" ] || test_args+=(--include-ignored)
+          [ -z "${PROPTEST_VERBOSE:-}" ] || test_args+=(--nocapture)
           unset PROPTEST_CASES KOIDRIVE_BATTERY_CASES
           [ -z "$CASES" ] || export KOIDRIVE_BATTERY_CASES="$CASES"
           repro_args=$(printf ' %q' "${cargo_args[@]}")

@@ -336,6 +336,18 @@ class HeavyTests(unittest.TestCase):
                     self.assertIn("arg=a filter", output)
                     self.assertIn("arg=koidrive-sim", output)
 
+    def test_output_is_shown_only_when_proptest_verbose_is_set(self):
+        lines = [line.strip() for line in self.workflow.splitlines()]
+        allowed = next(line for line in lines if line.startswith("allowed='"))
+        selection = [line for line in lines if line.startswith(("test_args=", '[ -z "$FILTER" ]', '[ "$IGNORED"'))
+                     or "PROPTEST_VERBOSE:-" in line]
+        script = "\n".join([allowed, "[[ PROPTEST_VERBOSE =~ $allowed ]]", *selection, 'printf "arg=%s\\n" "${test_args[@]}"'])
+        for verbose, expected in (("", ["arg=a"]), ("2", ["arg=a", "arg=--nocapture"])):
+            with self.subTest(verbose=verbose):
+                prefix = f"FILTER=a; IGNORED=false; {'PROPTEST_VERBOSE=' + verbose + '; ' if verbose else ''}"
+                output = subprocess.check_output(["bash", "-eu", "-c", prefix + script], text=True)
+                self.assertEqual(output.splitlines(), expected)
+
 
 TRIAGE_SPEC = importlib.util.spec_from_file_location("triage", ROOT / "scripts/triage-battery.py")
 triage = importlib.util.module_from_spec(TRIAGE_SPEC)
