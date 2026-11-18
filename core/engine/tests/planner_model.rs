@@ -3305,6 +3305,56 @@ fn the_known_restores_bring_back_only_what_they_restore() {
 }
 
 #[test]
+fn the_known_restores_move_the_folder_out_and_keep_its_old_ancestor_trashed() {
+    for (name, world, story) in known_restores() {
+        let Story::Restore(i, target) = story else {
+            panic!("{name}: a known restore is a restore story");
+        };
+        let space = server(&world);
+        let root = space.space_id().to_string();
+        let mut planner = Planner::new(&world, &space);
+        let parent = target.map(|spot| world.spot_id(&root, spot));
+        let intent = RestoreIntent::from_trash(world.id(i), parent, None).unwrap();
+        assert!(planner.commits.restore(IdGen::new(16).uuid_v7(NOW), intent));
+        let first = planner.build();
+        let end = run(
+            &world,
+            &space,
+            &planner,
+            first.as_ref(),
+            Unseen::Nothing,
+            usize::MAX,
+        )
+        .end;
+        let at = |j: usize| {
+            (end.node(&world.id(j)))
+                .map(|node| (node.status(), node.parent_id.clone(), node.name.clone()))
+        };
+        let (_, renamed) = world.local_place(2).expect("L holds the restore target");
+        assert_eq!(
+            at(1),
+            Some((NodeStatus::Live, root.clone(), world.label(1))),
+            "{name}"
+        );
+        assert_eq!(
+            at(2),
+            Some((NodeStatus::Live, world.id(1), renamed)),
+            "{name}"
+        );
+        assert_eq!(
+            at(3),
+            Some((NodeStatus::Live, world.id(2), world.label(3))),
+            "{name}"
+        );
+        assert_eq!(
+            at(0).map(|(status, ..)| status),
+            Some(NodeStatus::Trashed),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn a_restore_the_move_of_its_trashed_folder_would_bring_back_in_place_goes_first() {
     use Local::{Into as To, Kept};
     use Spot::{In, Root};
