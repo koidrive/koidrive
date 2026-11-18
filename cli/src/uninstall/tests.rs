@@ -2,6 +2,8 @@
 
 use std::os::unix::fs::PermissionsExt;
 
+use super::remove::{Cleaned, folder_data, strip_path_line};
+use super::text::text;
 use super::*;
 
 const LINE: &str = "case \":$PATH:\" in *:'/home/ada/.local/bin':*) ;; *) export PATH='/home/ada/.local/bin':\"$PATH\" ;; esac; : 'koidrive PATH'";
