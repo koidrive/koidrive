@@ -735,6 +735,24 @@ fn a_superseded_row_whose_intent_another_node_holds_moves_there_as_held() {
 }
 
 #[test]
+fn a_superseded_row_finds_the_node_holding_its_intent_among_the_results_node_states() {
+    let mut trees = Trees::new(ROOT);
+    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    trees.set_local_changed("f".into(), local(file(ROOT, "b", 1)));
+    let commit = build(&mut trees, &["field_intents"], 1_700);
+    let place = sent(&trees, "f", Field::Place);
+    let reported = proto::FieldIntents {
+        place: Some(wire(place, 1_900)),
+        ..Default::default()
+    };
+    let state = node_state("g", &file(ROOT, "b", 1), 2, Some(reported));
+    let superseded = outcome(op_result::Code::Superseded);
+    trees.record_results(&commit, &answered(vec![superseded], vec![state]));
+    assert_eq!(trees.journal_row("f", Field::Place), None);
+    assert_eq!(held_as(&trees, "g", Field::Place), Some((place, 1_900)));
+}
+
+#[test]
 fn a_conflict_copy_takes_the_content_row_as_held() {
     let mut trees = Trees::new(ROOT);
     synced(&mut trees, "f", file(ROOT, "a", 1), 1);
