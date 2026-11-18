@@ -532,13 +532,14 @@ fn a_stick_recorded_before_its_size_was_comes_back_and_is_told_from_a_bigger_sti
     let Some(mut disks) = koidrive_test_support::Disks::new() else {
         return;
     };
-    for (kind, format) in formats(&disks) {
+    let cases = (formats(&disks).into_iter()).flat_map(|format| [(format, false), (format, true)]);
+    for ((kind, format), unplugged) in cases {
         let (first, second) = (
-            format(&disks, &format!("Old{kind}"), 16, SERIAL),
-            format(&disks, &format!("Big{kind}"), 32, SERIAL),
+            format(&disks, &format!("Old{kind}{}", u8::from(unplugged)), 16, SERIAL),
+            format(&disks, &format!("Big{kind}{}", u8::from(unplugged)), 32, SERIAL),
         );
         let mut remote = Remote::new();
-        let (site, a, _) = with_disk(&mut disks, &mut remote, "Disk", first);
+        let (site, a, _) = with_disk(&mut disks, &mut remote, "Disk", first.clone());
         let tree = user_files(&remote);
         drop(a);
         let at = site.root.join("Disk");
@@ -553,10 +554,21 @@ fn a_stick_recorded_before_its_size_was_comes_back_and_is_told_from_a_bigger_sti
         let recorded = BTreeMap::from([("Disk".into(), koidrive_fs::Mount::Volume(plain))]);
         store.transaction(|tx| tx.set_volume_mounts(&recorded)).unwrap();
         drop(store);
+        if unplugged {
+            disks.detach(&at);
+        }
         let mut a = restarted(&site, &mut remote);
         a.rest(&mut remote);
-        assert_eq!(held(&a), [], "{kind}");
-        assert_eq!(user_files(&remote), tree, "{kind}");
+        if unplugged {
+            disks.attach(&first, &at);
+            identified(&at);
+            on_the_disk(&at, &["new.txt"]);
+            observed(&mut a, &mut remote);
+        }
+        assert_eq!(held(&a), [], "{kind} {unplugged}");
+        let back = user_files(&remote);
+        assert!(tree.iter().all(|(path, id)| back.get(path) == Some(id)), "{kind}: {back:?}");
+        assert_eq!(back.contains_key("Disk/new.txt"), unplugged, "{kind}");
         assert_eq!(mounts(&site)[Path::new("Disk")], koidrive_fs::Mount::Volume(sized));
         disks.detach(&at);
         observed(&mut a, &mut remote);
@@ -567,7 +579,7 @@ fn a_stick_recorded_before_its_size_was_comes_back_and_is_told_from_a_bigger_sti
         let (after, held) = (user_files(&remote), held(&a));
         drop(a);
         disks.detach(&at);
-        assert_eq!(after, tree, "{kind}");
+        assert_eq!(after, back, "{kind} {unplugged}");
         assert_eq!(held, [("Disk".to_owned(), HeldDiskKind::NotConnected)], "{kind}");
     }
 }

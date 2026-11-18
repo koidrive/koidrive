@@ -166,15 +166,19 @@ pub fn root_at(dir: BorrowedFd<'_>) -> io::Result<RootAt> {
 }
 
 pub(crate) fn volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+    volume_ids(dir).map(|(id, _)| id)
+}
+
+pub(crate) fn volume_ids(dir: BorrowedFd<'_>) -> Option<(VolumeId, VolumeId)> {
     let plain = plain_volume_id(dir)?;
     #[cfg(any(target_vendor = "apple", target_os = "linux"))]
     if let Ok(volume) = rustix::fs::fstatfs(dir)
         && let Some(kind) = fat_kind(&volume)
     {
         let size = volume.f_blocks.saturating_mul(volume.f_bsize as u64);
-        return Some(sized_volume_id(plain, kind, size));
+        return Some((sized_volume_id(plain, kind, size), plain));
     }
-    Some(plain)
+    Some((plain, plain))
 }
 
 #[cfg(any(target_vendor = "apple", target_os = "linux"))]
@@ -198,7 +202,7 @@ fn sized_volume_id(plain: VolumeId, kind: u8, size: u64) -> VolumeId {
 }
 
 #[cfg(target_vendor = "apple")]
-pub(crate) fn plain_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+fn plain_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
     use std::os::fd::AsRawFd;
     if let Ok(volume) = rustix::fs::fstatfs(dir)
         && fat_kind(&volume) == Some(1)
@@ -282,7 +286,7 @@ fn disk_arbitration_volume_id(volume: &rustix::fs::StatFs) -> Option<VolumeId> {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn plain_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+fn plain_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
     btrfs_subvolume_id(dir)
         .or_else(|| ext_file_system_id(dir))
         .or_else(|| file_system_id(dir))
@@ -483,7 +487,7 @@ fn udev_id(name: &str) -> Option<VolumeId> {
 }
 
 #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
-pub(crate) fn plain_volume_id(_: BorrowedFd<'_>) -> Option<VolumeId> {
+fn plain_volume_id(_: BorrowedFd<'_>) -> Option<VolumeId> {
     None
 }
 
@@ -515,7 +519,7 @@ pub fn check_root_at(
 ) -> Result<Marker, RootProblem> {
     let found = root_at(dir).map_err(RootProblem::Unreadable)?;
     list(dir).map_err(RootProblem::Unreadable)?;
-    if linked.volume.is_none() || linked.volume != plain_volume_id(dir) {
+    if linked.volume.is_none() || linked.volume != volume_ids(dir).map(|(_, plain)| plain) {
         linked.admits(&found)?;
     }
     let marker = read_marker_at(dir)
