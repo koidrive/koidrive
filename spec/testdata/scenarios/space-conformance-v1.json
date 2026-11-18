@@ -16661,7 +16661,9 @@
                 "code": "SUPERSEDED"
               }
             ],
-            "changed": []
+            "changed": [
+              "g"
+            ]
           }
         },
         {
@@ -16672,7 +16674,10 @@
             },
             {
               "node": "g",
-              "absent": true
+              "status": "TRASHED",
+              "parent": "d",
+              "name": "b.txt",
+              "content": "c2"
             },
             {
               "node": "d",
@@ -21118,7 +21123,9 @@
                 "code": "SUPERSEDED"
               }
             ],
-            "changed": []
+            "changed": [
+              "q"
+            ]
           }
         },
         {
@@ -21202,7 +21209,10 @@
             },
             {
               "node": "q",
-              "absent": true
+              "status": "TRASHED",
+              "parent": "u",
+              "name": "q.txt",
+              "content": "c2"
             },
             {
               "node": "vc",
@@ -21245,7 +21255,8 @@
             ],
             "changed": [
               "t",
-              "u"
+              "u",
+              "q"
             ]
           }
         },
@@ -21262,6 +21273,13 @@
               "parent": "t",
               "name": "Lost",
               "pending_for": "Owed"
+            },
+            {
+              "node": "q",
+              "status": "LIVE",
+              "parent": "u",
+              "name": "q.txt",
+              "content": "c2"
             }
           ],
           "live": [
@@ -21269,7 +21287,369 @@
             "z",
             "s2c",
             "t",
-            "u"
+            "u",
+            "q"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc0029-a-carried-file-that-a-trashed-folder-supersedes-stays-in-that-delete-only-when-the-delete-saw-its-content",
+      "covers": [
+        "RFC0029",
+        "RFC0029-3.3",
+        "RFC0029-3.4"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        },
+        "b": {
+          "name": "Desk"
+        },
+        "c": {
+          "name": "Phone"
+        }
+      },
+      "contents": {
+        "c1": {
+          "chunks": [
+            {
+              "text": "version 1"
+            }
+          ]
+        },
+        "c2": {
+          "chunks": [
+            {
+              "text": "version 2"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "at_ms": 1794268800000,
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "w",
+                  "parent": "root",
+                  "name": "Work",
+                  "intent": {
+                    "id": "iw",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "create_dir": {
+                  "node": "t",
+                  "parent": "w",
+                  "name": "Trashed",
+                  "intent": {
+                    "id": "it",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "w",
+              "t"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794268860000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "delete": {
+                  "node": "t",
+                  "held": [
+                    "hu",
+                    "hf",
+                    "cf",
+                    "hg"
+                  ],
+                  "intent": {
+                    "id": "dt",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "t"
+            ]
+          }
+        },
+        {
+          "device": "c",
+          "at_ms": 1794268920000,
+          "commit": {
+            "base_seq": 2,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "u",
+                  "parent": "t",
+                  "name": "Lost folder",
+                  "intent": {
+                    "id": "hu",
+                    "author": "b",
+                    "replay": true,
+                    "applied_at_ms": 1794268830000
+                  }
+                }
+              },
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "t",
+                  "name": "seen.txt",
+                  "content": "c1",
+                  "fields": {
+                    "content": {
+                      "id": "cf",
+                      "author": "b",
+                      "replay": true,
+                      "applied_at_ms": 1794268830000
+                    }
+                  },
+                  "intent": {
+                    "id": "hf",
+                    "author": "b",
+                    "replay": true,
+                    "applied_at_ms": 1794268830000
+                  }
+                }
+              },
+              {
+                "create_file": {
+                  "node": "g",
+                  "parent": "t",
+                  "name": "unseen.txt",
+                  "content": "c2",
+                  "fields": {
+                    "content": {
+                      "id": "cg",
+                      "author": "b",
+                      "replay": true,
+                      "applied_at_ms": 1794268830000
+                    }
+                  },
+                  "intent": {
+                    "id": "hg",
+                    "author": "b",
+                    "replay": true,
+                    "applied_at_ms": 1794268830000
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 3,
+            "results": [
+              {
+                "code": "SUPERSEDED"
+              },
+              {
+                "code": "SUPERSEDED"
+              },
+              {
+                "code": "CONFLICT_COPY",
+                "node": "gc"
+              }
+            ],
+            "changed": [
+              "u",
+              "f",
+              "gc"
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "u",
+              "status": "TRASHED",
+              "parent": "t",
+              "name": "Lost folder"
+            },
+            {
+              "node": "f",
+              "status": "TRASHED",
+              "parent": "t",
+              "name": "seen.txt",
+              "content": "c1",
+              "intents": {
+                "content": {
+                  "id": "cf",
+                  "author": "b",
+                  "replay": true
+                }
+              }
+            },
+            {
+              "node": "g",
+              "absent": true
+            },
+            {
+              "node": "gc",
+              "status": "LIVE",
+              "parent": "w",
+              "content": "c2",
+              "intents": {
+                "content": {
+                  "id": "cg",
+                  "author": "b",
+                  "replay": true
+                }
+              }
+            }
+          ],
+          "live": [
+            "w",
+            "gc"
+          ]
+        },
+        {
+          "rebuild": {
+            "at_ms": 1794269820000
+          }
+        },
+        {
+          "device": "c",
+          "at_ms": 1794269880000,
+          "commit": {
+            "base_seq": 3,
+            "ops": [
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "t",
+                  "name": "seen.txt",
+                  "content": "c1",
+                  "fields": {
+                    "content": {
+                      "id": "cf",
+                      "author": "b",
+                      "replay": true,
+                      "applied_at_ms": 1794268830000
+                    }
+                  },
+                  "intent": {
+                    "id": "hf",
+                    "author": "b",
+                    "replay": true,
+                    "applied_at_ms": 1794268830000
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 4,
+            "results": [
+              {
+                "code": "REJECTED",
+                "reason": "ID_EXISTS"
+              }
+            ],
+            "changed": []
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794269940000,
+          "commit": {
+            "base_seq": 4,
+            "ops": [
+              {
+                "restore": {
+                  "node": "t"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 5,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "t",
+              "u",
+              "f"
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "t",
+              "status": "LIVE",
+              "parent": "w"
+            },
+            {
+              "node": "u",
+              "status": "LIVE",
+              "parent": "t",
+              "name": "Lost folder"
+            },
+            {
+              "node": "f",
+              "status": "LIVE",
+              "parent": "t",
+              "name": "seen.txt",
+              "content": "c1"
+            },
+            {
+              "node": "g",
+              "absent": true
+            },
+            {
+              "node": "gc",
+              "status": "LIVE",
+              "parent": "w",
+              "content": "c2"
+            }
+          ],
+          "live": [
+            "w",
+            "gc",
+            "t",
+            "u",
+            "f"
           ]
         }
       ]
