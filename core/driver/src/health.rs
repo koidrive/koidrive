@@ -81,8 +81,8 @@ pub(crate) mod tests {
                 .collect(),
         };
         let environment = Environment::detect(Client::CliDaemon, "0.1.0");
-        let body =
-            koidrive_telemetry::batch("token", &InstallId::generate(), &environment, &batch, &[]);
+        let install = InstallId::try_from("0".repeat(32)).unwrap();
+        let body = koidrive_telemetry::batch("token", &install, &environment, &batch, &[]);
         body["batch"].as_array().unwrap().clone()
     }
 
