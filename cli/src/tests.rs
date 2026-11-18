@@ -42,7 +42,7 @@ fn concise_halted_status_offers_a_restart_only_when_a_restart_lifts_the_halt() {
         (
             "the server refused this device's changes: refused; the space's owner must confirm them, which Koidrive cannot ask for yet",
             "owner",
-            false,
+            true,
         ),
         (
             "unlinking the folder did not finish; unlink it again to finish",

@@ -122,7 +122,10 @@ pub(crate) fn status_summary(
                     RemedyData::Membership => text.push_str(&format!(
                         "  Ask the space's owner to add this device again. If the space is gone, run koi folder unlink {path}; its files stay where they are.\n"
                     )),
-                    RemedyData::Retry | RemedyData::Owner | RemedyData::SetUpAgain => {}
+                    RemedyData::Owner => text.push_str(&format!(
+                        "  To keep receiving other devices' changes while this device's changes wait for the owner, run koi folder restart {path}\n"
+                    )),
+                    RemedyData::Retry | RemedyData::SetUpAgain => {}
                 }
             }
         }

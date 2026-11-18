@@ -265,13 +265,10 @@ impl RemedyData {
 
     pub fn command(self) -> Option<&'static str> {
         match self {
-            RemedyData::Restart | RemedyData::Root => Some("restart"),
+            RemedyData::Restart | RemedyData::Root | RemedyData::Owner => Some("restart"),
             RemedyData::Relink => Some("relink"),
             RemedyData::Unlink => Some("unlink"),
-            RemedyData::Retry
-            | RemedyData::Owner
-            | RemedyData::SetUpAgain
-            | RemedyData::Membership => None,
+            RemedyData::Retry | RemedyData::SetUpAgain | RemedyData::Membership => None,
         }
     }
 }

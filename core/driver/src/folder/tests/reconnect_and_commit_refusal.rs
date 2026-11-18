@@ -187,7 +187,23 @@ fn a_commit_that_waits_for_the_owners_confirmation_is_not_lifted() {
             "{lifted:?}"
         );
     }
-    let a = restarted(&site, &mut remote);
+    let mut a = restarted(&site, &mut remote);
+    assert!(a.sent.is_empty());
+
+    let (site_b, mut b) = linked(&mut remote, "b");
+    b.create(
+        &mut remote,
+        &site_b.root.join("theirs.txt"),
+        b"written on b",
+    );
+    a.pull(&remote);
+    a.run(&mut remote);
+    a.settle();
+    assert!(
+        files(&site.root).contains(&("theirs.txt".to_owned(), "written on b".to_owned())),
+        "{:?}",
+        files(&site.root)
+    );
     assert!(a.sent.is_empty());
     let flight = a.folder.engine.commits.in_flight().unwrap();
     assert_eq!(flight.commit.commit_id, refused.commit_id);
