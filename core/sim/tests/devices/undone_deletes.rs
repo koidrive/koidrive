@@ -589,3 +589,33 @@ fn a_file_another_device_adds_after_the_delete_leaves_the_deleted_file_checked()
     )
     .unwrap();
 }
+
+#[test]
+fn a_rename_of_a_folder_the_server_kept_leaves_the_deleted_file_checked() {
+    let deleted = vec![
+        (1, overwrite(2)),
+        (0, delete(0)),
+        (1, SCAN),
+        (1, COMMIT),
+        (1, COMMIT),
+        (1, rename(0, 0, "A")),
+        (0, SCAN),
+        (0, COMMIT),
+        (0, COMMIT),
+        (1, SCAN),
+        (1, COMMIT),
+        (1, COMMIT),
+    ];
+    checked(
+        2,
+        &[
+            vec![
+                (0, folder("b")),
+                (0, user(1, 0, 1, "a")),
+                (0, user(1, 0, 1, "c.txt")),
+            ],
+            deleted,
+        ],
+    )
+    .unwrap();
+}

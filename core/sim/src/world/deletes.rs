@@ -39,18 +39,9 @@ pub(super) struct Deletion {
     resendable: BTreeSet<i64>,
     pub(super) reached: bool,
     pub(super) gone: bool,
-    pub(super) applied_at: Option<u64>,
 }
 
 impl Deletion {
-    pub(super) fn applied(&mut self, seq: u64, deleted: &BTreeSet<&str>) {
-        if (self.files.iter())
-            .any(|file| (file.path.last()).is_some_and(|root| deleted.contains(root.as_str())))
-        {
-            self.applied_at = Some(seq);
-        }
-    }
-
     pub(super) fn held(
         &self,
         live: &BTreeMap<i64, BTreeSet<NodeId>>,
@@ -170,7 +161,6 @@ impl World {
                 unsent,
                 reached: false,
                 gone: false,
-                applied_at: None,
             };
             deletion.reached = deletion.held(&live, |_, _| false).is_none();
             self.deletions.push(deletion);
@@ -207,8 +197,7 @@ impl World {
                     let itself = is(&node) || is(&file.node);
                     let moved_between = self.moves[spent.device].contains(&spent.at)
                         && (file.path.iter()).skip(1).any(is);
-                    let revived = (deletion.applied_at).is_some_and(|seq| spent.seq > seq)
-                        && (file.path.iter()).any(is);
+                    let revived = spent.revived.contains(&node) && (file.path.iter()).any(is);
                     spent.device != deletion.device
                         && (self.actions[spent.device].get(&spent.at))
                             .is_some_and(|(own, _)| *own == spent.ino)

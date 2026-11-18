@@ -739,6 +739,7 @@ struct Spent {
     device: usize,
     ino: u128,
     at: u64,
+    revived: BTreeSet<NodeId>,
 }
 
 impl World {
@@ -1446,9 +1447,6 @@ impl World {
         let live = live_nodes(&self.space);
         for deletion in &mut self.deletions {
             deletion.gone = deletion.held(&live, |_, _| false).is_none();
-            deletion.applied_at = deletion
-                .applied_at
-                .filter(|seq| *seq <= backup.space.head_seq());
         }
         self.held_commits = backup.held_commits.clone();
         self.in_history = backup.in_history.clone();
@@ -2680,6 +2678,13 @@ impl World {
                                 })
                                 .map(|(at, _)| *at)
                                 .collect();
+                            let revived: BTreeSet<NodeId> = (self.space.nodes().into_iter())
+                                .filter(|node| {
+                                    node.status == NodeStatus::Live as i32
+                                        && trashed.contains(&node.node_id)
+                                })
+                                .map(|node| node.node_id)
+                                .collect();
                             for (ino, times) in &mut self.touches[d] {
                                 for at in &carried {
                                     if times.remove(at) {
@@ -2688,6 +2693,7 @@ impl World {
                                             device: d,
                                             ino: *ino,
                                             at: *at,
+                                            revived: revived.clone(),
                                         });
                                     }
                                 }
@@ -2834,20 +2840,7 @@ impl World {
                                 self.unasked.get_or_insert(why);
                             }
                             let live = live_nodes(&self.space);
-                            let deleted: BTreeSet<&str> = (sent.ops.iter())
-                                .zip(&committed.result.results)
-                                .filter(|(_, outcome)| {
-                                    outcome.code != op_result::Code::Rejected as i32
-                                })
-                                .filter_map(|(op, _)| match &op.op {
-                                    Some(op::Op::Delete(op)) => Some(op.node_id.as_str()),
-                                    _ => None,
-                                })
-                                .collect();
                             for deletion in &mut self.deletions {
-                                if deletion.device == d {
-                                    deletion.applied(record.seq, &deleted);
-                                }
                                 deletion.reached |= deletion.held(&live, |_, _| false).is_none();
                             }
                             self.published.extend(after.into_keys());
