@@ -51,11 +51,15 @@ impl Engine {
     }
 
     pub fn new(root: &str, history: &str, seed: u64) -> Self {
+        let ids = IdGen::new(seed);
+        let mut trees = Trees::new(root);
+        trees.journal_mut().seed(ids.state);
+        trees.take_changes();
         Self {
-            trees: Trees::new(root),
+            trees,
             commits: Commits::default(),
             effects: Effects::default(),
-            ids: IdGen::new(seed),
+            ids,
             cursor: Base::default(),
             behind: false,
             history: history.to_owned(),

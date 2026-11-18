@@ -4463,6 +4463,17 @@ mod tests {
     }
 
     #[test]
+    fn devices_mint_intents_from_streams_of_their_own() {
+        let mut minted = BTreeSet::new();
+        for seed in [100, 101] {
+            let mut engine = Engine::new("root", "history", seed);
+            for _ in 0..8 {
+                assert!(minted.insert(engine.trees.journal_mut().mint()));
+            }
+        }
+    }
+
+    #[test]
     fn a_reload_keeps_an_effect_planned_after_a_recovery_applicable() {
         let mut engine = Engine::new("root", "history", 1);
         let cause = RecoveryCause::rewind(4, NOW);
