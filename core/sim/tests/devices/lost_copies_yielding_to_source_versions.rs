@@ -10,76 +10,22 @@ fn a_lost_copy_yields_to_its_source_version_after_store_rollbacks_and_a_rewind()
         &[
             vec![
                 (0, Step::Backup),
-                (
-                    2,
-                    Step::User(Action {
-                        kind: 1,
-                        target: 0,
-                        parent: 0,
-                        name: 0,
-                        text: 0,
-                    }),
-                ),
+                (2, u(1, 0, 0, 0, 0)),
                 (2, Step::Work(0)),
                 (2, Step::CopyStore),
-                (
-                    2,
-                    Step::User(Action {
-                        kind: 0,
-                        target: 0,
-                        parent: 0,
-                        name: 2,
-                        text: 0,
-                    }),
-                ),
+                (2, u(0, 0, 0, 2, 0)),
             ],
             vec![
                 (0, Step::Backup),
                 (0, Step::RollBack),
-                (
-                    0,
-                    Step::User(Action {
-                        kind: 2,
-                        target: 1945515385904847284,
-                        parent: 0,
-                        name: 0,
-                        text: 0,
-                    }),
-                ),
+                (0, u(2, 1945515385904847284, 0, 0, 0)),
                 (0, Step::RestoreEarlier),
             ],
             vec![
-                (
-                    2,
-                    Step::User(Action {
-                        kind: 0,
-                        target: 0,
-                        parent: 0,
-                        name: 3,
-                        text: 0,
-                    }),
-                ),
+                (2, u(0, 0, 0, 3, 0)),
                 (2, Step::RollBack),
-                (
-                    2,
-                    Step::User(Action {
-                        kind: 0,
-                        target: 0,
-                        parent: 0,
-                        name: 4,
-                        text: 0,
-                    }),
-                ),
-                (
-                    2,
-                    Step::User(Action {
-                        kind: 4,
-                        target: 9100156339362910142,
-                        parent: 0,
-                        name: 0,
-                        text: 0,
-                    }),
-                ),
+                (2, u(0, 0, 0, 4, 0)),
+                (2, u(4, 9100156339362910142, 0, 0, 0)),
                 (0, Step::Rewind),
             ],
         ],
@@ -93,42 +39,12 @@ fn a_lost_copy_is_not_sent_again_once_the_server_holds_its_source_version_with_t
     converge(
         3,
         &[
+            vec![(0, Step::Backup), (0, u(1, 0, 0, 0, 0))],
             vec![
-                (0, Step::Backup),
-                (
-                    0,
-                    Step::User(Action {
-                        kind: 1,
-                        target: 0,
-                        parent: 0,
-                        name: 0,
-                        text: 0,
-                    }),
-                ),
-            ],
-            vec![
-                (
-                    0,
-                    Step::User(Action {
-                        kind: 2,
-                        target: 0,
-                        parent: 0,
-                        name: 0,
-                        text: 0,
-                    }),
-                ),
+                (0, u(2, 0, 0, 0, 0)),
                 (0, Step::Backup),
                 (0, Step::RestoreEarlier),
-                (
-                    1,
-                    Step::User(Action {
-                        kind: 3,
-                        target: 0,
-                        parent: 0,
-                        name: 1,
-                        text: 0,
-                    }),
-                ),
+                (1, u(3, 0, 0, 1, 0)),
             ],
             vec![(0, Step::Rewind)],
         ],
@@ -144,53 +60,17 @@ fn a_lost_copy_yields_to_its_source_version_after_a_rolled_back_edit_and_an_earl
         &[
             vec![
                 (2, Step::CopyStore),
-                (
-                    0,
-                    Step::User(Action {
-                        kind: 1,
-                        target: 0,
-                        parent: 0,
-                        name: 0,
-                        text: 0,
-                    }),
-                ),
+                (0, u(1, 0, 0, 0, 0)),
                 (0, Step::CopyStore),
                 (0, Step::Backup),
             ],
             vec![
-                (
-                    2,
-                    Step::User(Action {
-                        kind: 2,
-                        target: 0,
-                        parent: 0,
-                        name: 0,
-                        text: 0,
-                    }),
-                ),
-                (
-                    0,
-                    Step::User(Action {
-                        kind: 0,
-                        target: 0,
-                        parent: 0,
-                        name: 0,
-                        text: 0,
-                    }),
-                ),
+                (2, u(2, 0, 0, 0, 0)),
+                (0, u(0, 0, 0, 0, 0)),
                 (0, Step::Backup),
                 (0, Step::RollBack),
                 (0, Step::RestoreEarlier),
-                (
-                    0,
-                    Step::User(Action {
-                        kind: 2,
-                        target: 0,
-                        parent: 0,
-                        name: 0,
-                        text: 0,
-                    }),
-                ),
+                (0, u(2, 0, 0, 0, 0)),
                 (2, Step::RollBack),
             ],
             vec![(0, Step::Backup), (0, Step::RestoreEarlier)],
@@ -209,51 +89,15 @@ fn a_lost_copy_yields_to_its_source_version_after_a_rolled_back_edit_and_a_secon
                 (0, Step::Work(0)),
                 (2, Step::CopyStore),
                 (0, Step::Backup),
-                (
-                    2,
-                    Step::User(Action {
-                        kind: 1,
-                        target: 0,
-                        parent: 0,
-                        name: 0,
-                        text: 0,
-                    }),
-                ),
-                (
-                    0,
-                    Step::User(Action {
-                        kind: 0,
-                        target: 0,
-                        parent: 0,
-                        name: 2,
-                        text: 0,
-                    }),
-                ),
+                (2, u(1, 0, 0, 0, 0)),
+                (0, u(0, 0, 0, 2, 0)),
             ],
             vec![
                 (0, Step::Backup),
-                (
-                    2,
-                    Step::User(Action {
-                        kind: 2,
-                        target: 83057763675715484,
-                        parent: 0,
-                        name: 0,
-                        text: 0,
-                    }),
-                ),
+                (2, u(2, 83057763675715484, 0, 0, 0)),
                 (0, Step::RestoreEarlier),
                 (2, Step::RollBack),
-                (
-                    0,
-                    Step::User(Action {
-                        kind: 0,
-                        target: 0,
-                        parent: 0,
-                        name: 0,
-                        text: 0,
-                    }),
-                ),
+                (0, u(0, 0, 0, 0, 0)),
             ],
             vec![(0, Step::Restore)],
         ],

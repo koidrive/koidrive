@@ -1224,6 +1224,16 @@ fn act(kind: u8, target: usize, parent: usize, name: &str, text: u8) -> Step {
 }
 
 /// Creates a folder in the root.
+fn u(kind: u8, target: usize, parent: usize, name: usize, text: u8) -> Step {
+    Step::User(Action {
+        kind,
+        target,
+        parent,
+        name,
+        text,
+    })
+}
+
 fn folder(name: &str) -> Step {
     user(0, 0, 0, name)
 }

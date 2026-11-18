@@ -233,164 +233,38 @@ fn a_bystanders_create_that_resent_another_devices_file_stays_a_resend_after_a_s
     use Step::*;
     let phases: Vec<Vec<(usize, Step)>> = vec![
         vec![
-            (
-                2,
-                User(Action {
-                    kind: 0,
-                    target: 0,
-                    parent: 0,
-                    name: 5,
-                    text: 0,
-                }),
-            ),
+            (2, u(0, 0, 0, 5, 0)),
             (2, Work(0)),
-            (
-                1,
-                User(Action {
-                    kind: 1,
-                    target: 0,
-                    parent: 0,
-                    name: 0,
-                    text: 0,
-                }),
-            ),
-            (
-                0,
-                User(Action {
-                    kind: 0,
-                    target: 0,
-                    parent: 0,
-                    name: 2,
-                    text: 0,
-                }),
-            ),
-            (
-                0,
-                User(Action {
-                    kind: 1,
-                    target: 0,
-                    parent: 4995830252304420462,
-                    name: 1,
-                    text: 0,
-                }),
-            ),
+            (1, u(1, 0, 0, 0, 0)),
+            (0, u(0, 0, 0, 2, 0)),
+            (0, u(1, 0, 4995830252304420462, 1, 0)),
             (2, Commit(Reply::Served)),
             (2, Commit(Reply::Served)),
             (0, Backup),
-            (
-                0,
-                User(Action {
-                    kind: 0,
-                    target: 0,
-                    parent: 2280524893592302938,
-                    name: 1,
-                    text: 0,
-                }),
-            ),
-            (
-                1,
-                User(Action {
-                    kind: 1,
-                    target: 0,
-                    parent: 0,
-                    name: 3,
-                    text: 0,
-                }),
-            ),
+            (0, u(0, 0, 2280524893592302938, 1, 0)),
+            (1, u(1, 0, 0, 3, 0)),
         ],
         vec![
-            (
-                2,
-                User(Action {
-                    kind: 0,
-                    target: 0,
-                    parent: 2324108908231934117,
-                    name: 0,
-                    text: 0,
-                }),
-            ),
+            (2, u(0, 0, 2324108908231934117, 0, 0)),
             (2, Work(0)),
             (0, Restore),
             (2, Connect),
-            (
-                0,
-                User(Action {
-                    kind: 4,
-                    target: 5630648104909550835,
-                    parent: 0,
-                    name: 0,
-                    text: 0,
-                }),
-            ),
+            (0, u(4, 5630648104909550835, 0, 0, 0)),
             (2, Work(0)),
             (2, Work(0)),
             (0, Connect),
-            (
-                0,
-                User(Action {
-                    kind: 2,
-                    target: 1088424535393301162,
-                    parent: 0,
-                    name: 0,
-                    text: 0,
-                }),
-            ),
+            (0, u(2, 1088424535393301162, 0, 0, 0)),
             (0, Work(9509308981100096768)),
-            (
-                1,
-                User(Action {
-                    kind: 0,
-                    target: 0,
-                    parent: 293270352897540747,
-                    name: 7,
-                    text: 0,
-                }),
-            ),
+            (1, u(0, 0, 293270352897540747, 7, 0)),
             (2, Work(0)),
-            (
-                0,
-                User(Action {
-                    kind: 0,
-                    target: 0,
-                    parent: 11802185550846683935,
-                    name: 1,
-                    text: 0,
-                }),
-            ),
-            (
-                1,
-                User(Action {
-                    kind: 3,
-                    target: 1940465844613316820,
-                    parent: 13649535398099238466,
-                    name: 0,
-                    text: 0,
-                }),
-            ),
+            (0, u(0, 0, 11802185550846683935, 1, 0)),
+            (1, u(3, 1940465844613316820, 13649535398099238466, 0, 0)),
             (2, Commit(Reply::Served)),
         ],
         vec![
-            (
-                0,
-                User(Action {
-                    kind: 0,
-                    target: 0,
-                    parent: 1355549907959955166,
-                    name: 0,
-                    text: 0,
-                }),
-            ),
+            (0, u(0, 0, 1355549907959955166, 0, 0)),
             (0, Restore),
-            (
-                0,
-                User(Action {
-                    kind: 4,
-                    target: 16436166219119933091,
-                    parent: 0,
-                    name: 0,
-                    text: 0,
-                }),
-            ),
+            (0, u(4, 16436166219119933091, 0, 0, 0)),
         ],
     ];
     let world = converge(3, &phases).unwrap();
