@@ -49,7 +49,7 @@ SAMPLES = {
 }
 
 STATUS = re.compile(
-    r"^\s*(PASS|FAIL|TIMEOUT|LEAK|LEAK-FAIL|ABORT|SIG[A-Z]+)\s+\[\s*([0-9.]+)s\]\s+(?:\(\s*\d+/\s*\d+\)\s+)?(\S+)\s+(\S+)\s*$")
+    r"^\s*(PASS|FAIL(?:\s+\+\s+LEAK)?|TIMEOUT|LEAK|LEAK-FAIL|ABORT|SIG[A-Z]+)\s+\[\s*([0-9.]+)s\]\s+(?:\(\s*\d+/\s*\d+\)\s+)?(\S+)\s+(\S+)\s*$")
 BUILD_FAILED = 101
 TESTS_FAILED = 100
 PASSING = ("PASS", "LEAK")
@@ -151,6 +151,15 @@ def nextest_config(directory, baseline, period):
     return path
 
 
+def stop(process):
+    os.killpg(process.pid, signal.SIGTERM)
+    try:
+        return process.communicate(timeout=TERMINATE_GRACE)[0]
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        return process.communicate()[0]
+
+
 def nextest(root, sample, expression, config, status_level, limit, log):
     command = ["cargo", "nextest", "run", "--locked", "--no-fail-fast", "--no-tests", "pass", "--color", "never",
                "--hide-progress-bar", "--config-file", str(config), "--profile", "test-value",
@@ -162,24 +171,25 @@ def nextest(root, sample, expression, config, status_level, limit, log):
         output, _ = process.communicate(timeout=limit)
         incomplete = False
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGTERM)
-        try:
-            output, _ = process.communicate(timeout=TERMINATE_GRACE)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            output, _ = process.communicate()
-        incomplete = True
+        output, incomplete = stop(process), True
+    except BaseException:
+        stop(process)
+        raise
     if log:
         log.write(output)
     return process.returncode, parse_status(output), incomplete, time.monotonic() - started
 
 
-def restore(root, file):
+def clean(root):
     subprocess.run(["git", "checkout", "-q", "--", "."], cwd=root, check=True)
     untracked = subprocess.run(["git", "ls-files", "-z", "--others", "--exclude-standard", "--", *CASE_FILES],
                                cwd=root, capture_output=True, text=True, check=True).stdout.split("\0")
     for path in filter(None, untracked):
         (root / path).unlink()
+
+
+def restore(root, file):
+    clean(root)
     (root / file).touch()
 
 
@@ -200,7 +210,10 @@ def baseline(args):
     with tempfile.TemporaryDirectory() as directory, open(args.out.with_suffix(".log"), "w") as log:
         config = nextest_config(directory, {}, BASELINE_PERIOD)
         for run in range(args.runs):
-            code, results, _, seconds = nextest(args.root, sample, sample.tests, config, "all", None, log)
+            try:
+                code, results, _, seconds = nextest(args.root, sample, sample.tests, config, "all", None, log)
+            finally:
+                clean(args.root)
             if not results:
                 sys.exit(f"Baseline run {run + 1} reported no tests (exit {code}); see {log.name}.")
             runs.append((results, seconds))
@@ -238,6 +251,8 @@ def run(args):
     if planned["sample"] != args.sample or base["sample"] != args.sample:
         sys.exit("The mutant list and baseline belong to another sample.")
     durations = {test: seconds for test, seconds in base["durations"].items() if test not in base["flaky"]}
+    if not durations:
+        sys.exit("The baseline has no eligible tests: every test failed in at least one baseline run.")
     slow = {test for test, seconds in durations.items() if seconds >= args.slow}
     fast_expression = selection(sample, set(base["flaky"]) | slow, include=False)
     slow_expression = selection(sample, slow, include=True)
@@ -274,7 +289,9 @@ def property_tests(root):
     for path in root.glob("core/**/*.rs"):
         if "/target/" in str(path):
             continue
-        text = path.read_text(errors="replace")
+        text = re.sub(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])\'',
+                      lambda literal: re.sub(r"[^\n]", " ", literal.group()), path.read_text(errors="replace"),
+                      flags=re.DOTALL)
         for block in re.finditer(r"proptest!\s*\{", text):
             depth, end = 0, block.end() - 1
             for end in range(block.end() - 1, len(text)):
@@ -302,10 +319,11 @@ def scope(mutants):
 
 
 def analyse(runs, properties, slow_seconds, few):
-    durations, flaky, mutants, by_mutant = {}, set(), {}, {}
+    durations, timings, flaky, mutants, by_mutant = {}, {}, set(), {}, {}
     for planned, base, records in runs:
         for test, seconds in base["durations"].items():
-            durations.setdefault(test, seconds)
+            durations[test] = max(seconds, durations.get(test, 0.0))
+            timings.setdefault(test, {})[planned["sample"]] = seconds
         flaky.update(base["flaky"])
         for mutant in planned["mutants"]:
             mutants[(planned["sample"], mutant["id"])] = mutant
@@ -313,7 +331,7 @@ def analyse(runs, properties, slow_seconds, few):
             by_mutant[(planned["sample"], record["mutant"])] = record
     measured = scope(mutants.values())
     attributed = {key: record for key, record in by_mutant.items() if record["status"] in ATTRIBUTED}
-    provisional = len(attributed) + sum(record["status"] in ("unviable", "stale") for record in by_mutant.values()) < len(mutants)
+    provisional = len(attributed) + sum(record["status"] == "unviable" for record in by_mutant.values()) < len(mutants)
     kills = {test: set() for test in durations}
     for key, record in attributed.items():
         for test in record["killers"]:
@@ -336,15 +354,29 @@ def analyse(runs, properties, slow_seconds, few):
             lost[test] = set()
             verdicts[test] = f"redundant within {measured}"
     slow = [test for test in kills if durations.get(test, 0.0) >= slow_seconds and not protected(test)]
+    moved = set()
+
+    def alone(test, path):
+        return {key for key in kills[test] if not killers[key] & path}
+
     for test in sorted(slow, key=lambda test: (-durations.get(test, 0.0), test)):
-        alone = {key for key in kills[test] if not killers[key] & merge_path - {test}}
-        losses[test] = len(alone)
-        if len(alone) <= few:
+        losses[test] = len(alone(test, merge_path - {test}))
+        if all(len(alone(other, merge_path - {test})) <= few for other in moved | {test}):
             merge_path.discard(test)
-            lost[test] = alone
-            verdicts[test] = (f"slow, alone catches {len(alone)} within {measured}" if alone
-                              else f"slow, catches nothing else within {measured}")
+            moved.add(test)
+    for test in moved:
+        lost[test] = alone(test, merge_path)
+        losses[test] = len(lost[test])
+        verdicts[test] = (f"slow, alone catches {len(lost[test])} within {measured}" if lost[test]
+                          else f"slow, catches nothing else within {measured}")
     covers = {test: cover(kills, kills[test] - lost[test], merge_path, durations) for test in lost}
+    def ran_on(test):
+        tiers = {sample: "mutants the faster tests missed" if seconds >= slow_seconds else "every mutant"
+                 for sample, seconds in sorted(timings.get(test, {}).items())}
+        if len(set(tiers.values())) <= 1:
+            return next(iter(tiers.values()), "every mutant")
+        return "; ".join(f"{tier} in {sample}" for sample, tier in tiers.items())
+
     rows = []
     for test in sorted(kills):
         seconds = durations.get(test, 0.0)
@@ -361,7 +393,7 @@ def analyse(runs, properties, slow_seconds, few):
         if provisional:
             verdict += " (provisional)"
         rows.append({"test": test, "kind": kind(test), "seconds": round(seconds, 3),
-                     "ran_on": "mutants the faster tests missed" if seconds >= slow_seconds else "every mutant",
+                     "ran_on": ran_on(test),
                      "kills": len(kills[test]), "unique_kills": len(unique[test]),
                      "merge_path_loses": losses.get(test, ""), "covered_by": "; ".join(covers.get(test, [])),
                      "verdict": verdict, "mutated": measured})
@@ -374,7 +406,7 @@ def analyse(runs, properties, slow_seconds, few):
                             "slow_tier": bool(record and record.get("slow_tier")),
                             "killers": len(record["killers"]) if record else 0,
                             "killed_by": "; ".join(record["killers"][:5]) if record else ""})
-    return rows, mutant_rows, measured, provisional, sum(len(alone) for alone in lost.values())
+    return rows, mutant_rows, measured, provisional, len(set().union(*lost.values()))
 
 
 TEST_FIELDS = ["test", "kind", "seconds", "ran_on", "kills", "unique_kills", "merge_path_loses", "covered_by", "verdict",
@@ -454,6 +486,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == "run" and not re.fullmatch(r"(\d+)/([1-9]\d*)", args.shard):
         parser.error("--shard takes K/N, for example 0/8")
+    if args.command == "run" and int(args.shard.split("/")[0]) >= int(args.shard.split("/")[1]):
+        parser.error("--shard K/N needs K below N")
     {"plan": plan, "baseline": baseline, "run": run, "report": report}[args.command](args)
 
 

@@ -22,6 +22,7 @@ class Status(unittest.TestCase):
              TIMEOUT [  60.004s] (  3/783) koidrive-driver tests::watch::a_slow_watch
                 SLOW [> 30.000s] koidrive-driver tests::watch::a_slow_watch
              SIGSEGV [   0.200s] koidrive-sim::devices crash
+         FAIL + LEAK [   0.300s] koidrive-sim::devices leaky
             ────────────
                  Summary [   1.372s] 40 tests run: 40 passed, 0 skipped
         """)
@@ -30,11 +31,15 @@ class Status(unittest.TestCase):
             "koidrive-driver tests::health::a_halt": ("FAIL", 1.35),
             "koidrive-driver tests::watch::a_slow_watch": ("TIMEOUT", 60.004),
             "koidrive-sim::devices crash": ("SIGSEGV", 0.2),
+            "koidrive-sim::devices leaky": ("FAIL + LEAK", 0.3),
         })
 
 
 class Shards(unittest.TestCase):
     def test_shards_split_every_mutant_exactly_once(self):
+        with self.assertRaises(SystemExit):
+            test_value.main(["run", "--sample", "guard", "--mutants", "m", "--baseline", "b", "--shard", "8/8",
+                             "--out", "o"])
         mutants = [{"id": number} for number in range(101)]
         seen = [mutant["id"] for index in range(7) for mutant in test_value.shard(mutants, index, 7)]
         self.assertEqual(sorted(seen), list(range(101)))
@@ -122,8 +127,14 @@ class Analysis(unittest.TestCase):
     def test_a_pool_whose_every_test_moves_has_no_cover(self):
         rows, _ = self.analyse([["b s1", "b s2"]], {"b s1": 60, "b s2": 50})
         self.assertEqual([rows[test]["verdict"].split(" within")[0] for test in ("b s1", "b s2")],
-                         ["slow, catches nothing else", "slow, alone catches 1"])
+                         ["slow, alone catches 1", "slow, alone catches 1"])
+        self.assertEqual((rows["b s1"]["merge_path_loses"], rows["b s2"]["merge_path_loses"]), (1, 1))
         self.assertEqual((rows["b s1"]["covered_by"], rows["b s2"]["covered_by"]), ("", ""))
+
+    def test_every_moved_slow_test_stays_within_few_once_all_move(self):
+        rows, _ = self.analyse([["b s1", "b s2"], ["b s1", "b s3"]], {"b s1": 90, "b s2": 80, "b s3": 70}, few=1)
+        self.assertEqual([rows[test]["verdict"].split(" within")[0] for test in ("b s1", "b s2", "b s3")],
+                         ["slow, alone catches 1", "slow, alone catches 1", "keep"])
 
     def test_two_slow_tests_that_only_cover_each_other_do_not_both_move(self):
         rows, _ = self.analyse([["b s1", "b s2"], ["b s1", "b s2"], ["b s1", "b s2"]], {"b s1": 60, "b s2": 70}, few=0)
@@ -157,10 +168,28 @@ class Analysis(unittest.TestCase):
                 (planned("commit", 1), base, records([["b x"]]))]
         rows, mutants, measured, _, _ = test_value.analyse(runs, set(), 10, 2)
         rows = {row["test"]: row for row in rows}
+        self.assertEqual(rows["b x"]["ran_on"], "every mutant")
         self.assertEqual((rows["b x"]["kills"], rows["b x"]["unique_kills"]), (2, 1))
         self.assertEqual(rows["b y"]["verdict"], "redundant within core/x/src/commit.rs, core/x/src/guard.rs")
         self.assertEqual([(row["sample"], row["id"]) for row in mutants], [("commit", 0), ("guard", 0)])
         self.assertEqual(measured, "core/x/src/commit.rs, core/x/src/guard.rs")
+
+
+    def test_a_test_slow_in_one_sample_reports_each_tier(self):
+        runs = [(planned("guard", 1), {"durations": {"b x": 1, "b y": 12}, "flaky": []}, records([["b x"]])),
+                (planned("commit", 1), {"durations": {"b x": 1, "b y": 8}, "flaky": []}, records([["b y"]]))]
+        for order in (runs, runs[::-1]):
+            rows, _, _, _, _ = test_value.analyse(order, set(), 10, 0)
+            rows = {row["test"]: row for row in rows}
+            self.assertEqual((rows["b y"]["seconds"], rows["b y"]["ran_on"]),
+                             (12, "every mutant in commit; mutants the faster tests missed in guard"))
+
+    def test_a_mutant_whose_patch_did_not_apply_makes_verdicts_provisional(self):
+        base = {"durations": {"b x": 1}, "flaky": []}
+        result = records([["b x"], []])
+        result[1]["status"] = "stale"
+        rows, _, _, provisional, _ = test_value.analyse([(planned("guard", 2), base, result)], set(), 10, 0)
+        self.assertTrue(provisional)
 
 
 class Report(unittest.TestCase):
@@ -221,12 +250,15 @@ class Sources(unittest.TestCase):
                 proptest! {
                     #![proptest_config(battery_config("x", 8))]
                     #[test]
-                    fn holds(x in 0..3u8) { if x > 1 { assert!(true) } }
+                    fn holds(x in 0..3u8) { if x > 1 { assert!(true, "}") } }
+                    // }
+                    #[test]
+                    fn also_holds(c in any::<char>()) { assert_ne!(c, '}') }
                 }
                 #[test]
                 fn plain() {}
             """))
-            self.assertEqual(test_value.property_tests(Path(directory)), {"holds"})
+            self.assertEqual(test_value.property_tests(Path(directory)), {"holds", "also_holds"})
 
     def test_every_hand_mutant_applies_to_the_checkout(self):
         mutants, stale = test_value.hand_mutants(ROOT)
