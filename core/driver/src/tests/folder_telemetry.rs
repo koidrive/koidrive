@@ -76,6 +76,41 @@ fn each_landed_commit_logs_its_ops_chunks_and_the_time_of_its_upload_and_send() 
 }
 
 #[test]
+fn a_commit_served_entirely_by_uploads_ahead_logs_no_chunks_of_its_own_and_its_send_time() {
+    let landed = landed_lines(|| {
+        crate::clock::freeze();
+        let mut remote = Remote::new();
+        let site = Site::new(&remote, "a");
+        for n in 0..koidrive_engine::commit::MAX_OPS + 4 {
+            fs::write(site.root.join(format!("file {n:04}")), format!("bytes {n}")).unwrap();
+        }
+        let mut a = site.start();
+        a.connect(&remote);
+        a.scan_until(|a| a.folder.scanned);
+        a.settle();
+        let mut first = None;
+        while let Some(work) = a.work.pop_front() {
+            match work {
+                Work::Send(_) if first.is_none() => first = Some(work),
+                work => a.perform(work, &mut remote).unwrap(),
+            }
+        }
+        a.perform(first.expect("the first commit is sent"), &mut remote)
+            .unwrap();
+        let Some(Work::Send(second)) = a.work.front() else {
+            panic!("the next commit is sent without an upload of its own");
+        };
+        assert_eq!(second.receipts.len(), 4);
+        crate::clock::advance_to(crate::clock::instant() + std::time::Duration::from_secs(7));
+        a.rest(&mut remote);
+    });
+    assert_eq!(landed.len(), 2, "{landed:?}");
+    for field in ["chunks=0", "upload_ms=0", "send_ms=7000"] {
+        assert!(landed[1].contains(field), "{landed:?}");
+    }
+}
+
+#[test]
 fn a_stored_commit_that_lands_after_a_restart_logs_its_ops_without_timings() {
     for reached_the_server in [false, true] {
         let landed = landed_lines(|| {

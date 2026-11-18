@@ -1128,9 +1128,13 @@ impl Disk {
         }
     }
 
-    /// The chunks `commit` adds, with where the bytes of each are: for every content the commit creates or
-    /// updates, the file of its node in L and the offset of each chunk in it.
-    pub fn upload(&self, commit: &Commit, engine: &Engine) -> Upload {
+    /// The chunks of `files`, with where the bytes of each are: the file of its node in L and the offset of each
+    /// chunk in it.
+    pub fn upload<'a>(
+        &self,
+        files: impl IntoIterator<Item = (NodeId, &'a Content)>,
+        engine: &Engine,
+    ) -> Upload {
         let mut upload = Upload {
             timing_bytes: None,
             credit: Credit::default(),
@@ -1138,14 +1142,7 @@ impl Disk {
             chunks: Vec::new(),
             sources: HashMap::new(),
         };
-        for op in &commit.ops {
-            let (node, content) = match &op.op {
-                Some(op::Op::CreateFile(create)) => (&create.node_id, &create.content),
-                Some(op::Op::UpdateContent(update)) => (&update.node_id, &update.content),
-                _ => continue,
-            };
-            let Some(content) = content else { continue };
-            let node = NodeId::from(node);
+        for (node, content) in files {
             let path = engine.path_of(&node);
             let at = location_of(&engine.trees, &node).and_then(|at| location(&at).ok());
             let identity = (engine.trees.local().get(&node)).map(|held| file_id(held.identity));
@@ -1521,6 +1518,18 @@ fn commit_token(token: Minted, store: &mut Store) -> Result<(), Stop> {
 }
 
 pub(crate) type Sources = BTreeMap<Vec<u8>, (NodeId, Option<PathBuf>)>;
+
+pub(crate) fn added(commit: &Commit) -> impl Iterator<Item = (NodeId, &Content)> {
+    (commit.ops.iter()).filter_map(|op| match &op.op {
+        Some(op::Op::CreateFile(create)) => {
+            Some((NodeId::from(&create.node_id), create.content.as_ref()?))
+        }
+        Some(op::Op::UpdateContent(update)) => {
+            Some((NodeId::from(&update.node_id), update.content.as_ref()?))
+        }
+        _ => None,
+    })
+}
 
 /// The chunks a commit adds to the server and where the bytes of each are in the folder.
 pub(crate) struct Upload {
