@@ -78,19 +78,20 @@ def hand_mutants(root):
     listed = subprocess.run(
         ["bash", "-c", 'mutation() { printf "%s\\0%s\\0%s\\0" "$1" "$2" "$3"; }; source scripts/engine-mutations.sh'],
         cwd=root, capture_output=True, text=True, check=True).stdout.split("\0")[:-1]
-    mutants = []
+    mutants, stale = [], []
     for name, file, expression in zip(listed[0::3], listed[1::3], listed[2::3]):
         source = (root / file).read_text()
         mutated = subprocess.run(["perl", "-0pe", expression], input=source, capture_output=True, text=True,
                                  check=True).stdout
         if mutated == source:
-            sys.exit(f"Hand mutant {name} no longer matches {file}; update scripts/engine-mutations.sh first.")
+            stale.append(name)
+            continue
         before, after = source.splitlines(keepends=True), mutated.splitlines(keepends=True)
         line = next(i for i, (a, b) in enumerate(zip(before + [""], after + [""])) if a != b) + 1
         diff = "".join(difflib.unified_diff(before, after, f"a/{file}", f"b/{file}"))
         mutants.append({"name": f"{name} (scripts/engine-mutations.sh)", "file": file, "line": line,
                         "function": None, "genre": "hand", "diff": diff})
-    return mutants
+    return mutants, stale
 
 
 def generated_mutants(root, sample):
@@ -108,11 +109,14 @@ def generated_mutants(root, sample):
 
 def plan(args):
     sample = SAMPLES[args.sample]
-    mutants = generated_mutants(args.root, sample) + (hand_mutants(args.root) if sample.hand else [])
+    hand, stale = hand_mutants(args.root) if sample.hand else ([], [])
+    mutants = generated_mutants(args.root, sample) + hand
     for number, mutant in enumerate(mutants):
         mutant["id"] = number
-    args.out.write_text(json.dumps({"sample": args.sample, "mutants": mutants}, indent=1) + "\n")
+    args.out.write_text(json.dumps({"sample": args.sample, "mutants": mutants, "stale": stale}, indent=1) + "\n")
     print(f"{len(mutants)} mutants for the {args.sample} sample")
+    for name in stale:
+        print(f"::warning::Hand mutant {name} in scripts/engine-mutations.sh no longer matches its file; it is left out.")
 
 
 def shard(mutants, index, count):
@@ -322,7 +326,7 @@ def analyse(planned, base, records, properties, slow_seconds, few):
 
 def write_csv(path, rows):
     with open(path, "w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 

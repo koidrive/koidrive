@@ -754,6 +754,8 @@ jobs:
         run: python3 scripts/test-split-sync-design.py -v
       - name: Test the property battery workflows, its triage and the known-failure registry
         run: python3 scripts/test-property-battery.py -v
+      - name: Test the test-value harness
+        run: python3 scripts/test-test-value.py -v
       - name: Fail on comments that this change adds
         env:
           EVENT: ${{ github.event_name }}
