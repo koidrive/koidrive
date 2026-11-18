@@ -212,7 +212,7 @@ impl Trees {
                 .and_then(|row| Some((row, HeldRow::of(row)?)))
                 .is_some_and(|(row, held)| full_held(&self.r, &key, &held) == *row);
             if compact {
-                self.journal.compact(key, quiet);
+                self.journal.compact(key);
             }
         }
     }
