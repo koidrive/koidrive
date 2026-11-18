@@ -702,7 +702,9 @@ impl Engine {
     /// follow paths toward the root, so such a change is always left. A node whose rename is still to come is set aside
     /// while another entry takes its name, with what is under it, until its own rename places it. A renamed or
     /// modified entry is the node L holds at its path with its identity, else the node with its identity, else the
-    /// node at its path. A created entry with the identity of a node L holds is that node, wherever L had it, except a
+    /// node at its path. An entry is never a node of the other kind by its identity: an entry keeps its kind, so it has
+    /// an inode the file system freed and gave out again, which Linux can do within one tick of its birth-time clock.
+    /// A created entry with the identity of a node L holds is that node, wherever L had it, except a
     /// folder L holds on disk, not recorded, at a path no change of the batch leaves: the scan kept the folder there
     /// with a new identity, as when an entry moved back into a new folder made at its path, so the created folder is a
     /// new one. So is a created entry with the path and identity a node had before an earlier change of the batch took
@@ -734,11 +736,16 @@ impl Engine {
             .map(|change| match change {
                 Observed::Removed { path, .. } => local_at(&self.trees, path),
                 Observed::Renamed {
-                    from, id, linked, ..
+                    from,
+                    id,
+                    linked,
+                    kind,
+                    ..
                 } => resolve(
                     &self.trees,
                     &self.mounts,
                     from,
+                    *kind,
                     &file_identity(*id),
                     *linked,
                 ),
@@ -950,22 +957,30 @@ impl Engine {
                     }
                     let identity = file_identity(*id);
                     let takes = |node: &&NodeId| {
-                        !linked
-                            || self.trees.recorded_local(node)
-                            || self.trees.displaced_local().contains_key(*node)
+                        holds_kind(&self.trees, node, *kind)
+                            && (!linked
+                                || self.trees.recorded_local(node)
+                                || self.trees.displaced_local().contains_key(*node))
                     };
                     let node = (self.trees.locals_with_identity(&identity).rev())
                         .filter(|node| !staying.contains(*node))
                         .filter(|node| same_volume(&self.trees, &self.mounts, node, path))
                         .find(takes)
-                        .or_else(|| self.trees.displaced_with_identity(&identity).filter(takes))
+                        .or_else(|| {
+                            (self
+                                .trees
+                                .displaced_with_identity(&identity, tree_kind(*kind)))
+                            .filter(takes)
+                        })
                         .cloned()
                         .or_else(|| {
                             (gone.get(path))
-                                .filter(|(node, held)| {
-                                    *held == identity && self.trees.local().get(node).is_none()
+                                .filter(|(node, held, held_kind)| {
+                                    *held == identity
+                                        && *held_kind == *kind
+                                        && self.trees.local().get(node).is_none()
                                 })
-                                .map(|(node, _)| node.clone())
+                                .map(|(node, _, _)| node.clone())
                         })
                         .or_else(|| self.unclaimed(marked_node.as_ref(), *linked));
                     self.place(
@@ -989,8 +1004,15 @@ impl Engine {
                 } => {
                     let Some(content) = content else { continue };
                     let identity = file_identity(*id);
-                    let node = resolve(&self.trees, &self.mounts, path, &identity, *linked)
-                        .or_else(|| self.unclaimed(marked_node.as_ref(), *linked));
+                    let node = resolve(
+                        &self.trees,
+                        &self.mounts,
+                        path,
+                        EntryKind::File,
+                        &identity,
+                        *linked,
+                    )
+                    .or_else(|| self.unclaimed(marked_node.as_ref(), *linked));
                     self.place(
                         node,
                         path,
@@ -1256,7 +1278,11 @@ impl Engine {
         }
         for id in &doomed {
             if let (Some(path), Some(node)) = (self.path_of(id), self.trees.local().get(id)) {
-                gone.insert(path, (id.clone(), node.identity));
+                let kind = match node.shape.kind {
+                    Kind::File => EntryKind::File,
+                    Kind::Dir => EntryKind::Dir,
+                };
+                gone.insert(path, (id.clone(), node.identity, kind));
             }
         }
         for id in doomed {
@@ -1270,7 +1296,7 @@ impl Engine {
 }
 
 /// The nodes a batch took out of L, by the path each had, with the identity it had.
-type Gone = BTreeMap<PathBuf, (NodeId, FileIdentity)>;
+type Gone = BTreeMap<PathBuf, (NodeId, FileIdentity, EntryKind)>;
 
 /// The path of a node `tree` holds live, relative to the linked folder.
 fn path<N: Node>(tree: &Tree<N>, id: &str) -> String {
@@ -1296,13 +1322,14 @@ fn local_at(trees: &Trees, path: &Path) -> Option<NodeId> {
     Some(current)
 }
 
-/// The node at `path` when it has `identity`, else the node with `identity`, else the node at `path`. The identity of
+/// The node at `path` when it has `identity`, else the node of `kind` with `identity`, else the node at `path`. The identity of
 /// a file with several links (`linked`) names no single path, so it never takes a node from another path, where the
 /// other link may still be.
 fn resolve(
     trees: &Trees,
     mounts: &BTreeMap<PathBuf, Mount>,
     path: &Path,
+    kind: EntryKind,
     identity: &FileIdentity,
     linked: bool,
 ) -> Option<NodeId> {
@@ -1311,12 +1338,24 @@ fn resolve(
         .filter(|id| (trees.local().get(id)).is_some_and(|node| node.identity == *identity))
         .or_else(|| {
             (trees.locals_with_identity(identity).rev())
+                .filter(|node| holds_kind(trees, node, kind))
                 .find(|node| same_volume(trees, mounts, node, path))
-                .or_else(|| trees.displaced_with_identity(identity))
+                .or_else(|| trees.displaced_with_identity(identity, tree_kind(kind)))
                 .filter(|_| !linked)
                 .cloned()
         })
         .or(at)
+}
+
+fn holds_kind(trees: &Trees, node: &NodeId, kind: EntryKind) -> bool {
+    (trees.local().get(node)).is_none_or(|held| held.shape.kind == tree_kind(kind))
+}
+
+fn tree_kind(kind: EntryKind) -> Kind {
+    match kind {
+        EntryKind::File => Kind::File,
+        EntryKind::Dir => Kind::Dir,
+    }
 }
 
 fn same_volume(
@@ -3551,6 +3590,72 @@ mod tests {
         assert_eq!(holding(&engine, "four"), Some(two));
     }
 
+    #[test]
+    fn an_identity_reused_by_an_entry_of_another_kind_never_takes_the_old_entrys_node() {
+        let folder = |path: &str, id: u64| Observed::Created {
+            path: path.into(),
+            kind: EntryKind::Dir,
+            id: ino(id),
+            linked: false,
+            content: None,
+            marked_node: None,
+        };
+        let reidentified = |path: &str, id: u64| Observed::Reidentified {
+            path: path.into(),
+            id: ino(id),
+        };
+        let check = |first: &[Observed], second: &[Observed], held: &[(&str, Kind)]| {
+            let (_dir, mut engine) = mapper();
+            engine.observe(first, 0);
+            engine.observe(second, 1);
+            assert_eq!(engine.trees.check(), Ok(()), "after {second:?}");
+            let kinds: BTreeMap<PathBuf, Kind> = (engine.trees.local().iter())
+                .filter_map(|(id, node)| Some((engine.path_of(id)?, node.shape.kind)))
+                .collect();
+            let held = (held.iter())
+                .map(|&(path, kind)| (PathBuf::from(path), kind))
+                .collect();
+            assert_eq!(kinds, held, "after {second:?}");
+        };
+        check(
+            &[folder("ß", 1), created("a", ino(2), false, 1)],
+            &[
+                renamed("a", "ß/a", ino(2), false),
+                created("ß/ß", ino(1), false, 2),
+                reidentified("ß", 3),
+            ],
+            &[("ß", Kind::Dir), ("ß/a", Kind::File), ("ß/ß", Kind::File)],
+        );
+        check(
+            &[folder("a", 1)],
+            &[created("ß", ino(1), false, 2), reidentified("a", 3)],
+            &[("a", Kind::Dir), ("ß", Kind::File)],
+        );
+        let modified = Observed::Modified {
+            path: "f".into(),
+            id: ino(1),
+            linked: false,
+            content: Some(bytes(2)),
+            marked_node: None,
+        };
+        check(
+            &[folder("d", 1), created("f", ino(5), false, 1)],
+            &[modified, reidentified("d", 3)],
+            &[("d", Kind::Dir), ("f", Kind::File)],
+        );
+        let (_dir, mut engine) = mapper();
+        engine.observe(&[folder("x", 1)], 0);
+        let (removed, _, _) = holding(&engine, "x").unwrap();
+        let replaced = Observed::Removed {
+            path: "x".into(),
+            kind: EntryKind::Dir,
+        };
+        engine.observe(&[replaced, created("x", ino(1), false, 2)], 1);
+        let (node, identity, _) = holding(&engine, "x").unwrap();
+        assert_ne!(node, removed);
+        assert_eq!(identity, file_identity(ino(1)));
+    }
+
     /// Names that the edits of [`batches`] pick from, few enough that entries often take each other's names.
     const EDITED: [&str; 3] = ["a", "b", "ß"];
 
@@ -3671,6 +3776,7 @@ mod tests {
             let mut engine = empty_engine();
             let folder = tempfile::tempdir().unwrap();
             let mut snapshot = Snapshot::default();
+            let mut kinds = BTreeMap::new();
             for edits in rounds {
                 for edit in &edits {
                     make(folder.path(), edit);
@@ -3679,6 +3785,10 @@ mod tests {
                 engine.observe(&batch, 0);
                 prop_assert_eq!(engine.trees.check(), Ok(()), "after {:?}", batch);
                 prop_assert_eq!(in_l(&engine), on_disk(&snapshot), "after {:?}", batch);
+                for (id, node) in engine.trees.local().iter() {
+                    let kind = *kinds.entry(id.clone()).or_insert(node.shape.kind);
+                    prop_assert_eq!(kind, node.shape.kind, "{} after {:?}", id, batch);
+                }
             }
         }
     }
