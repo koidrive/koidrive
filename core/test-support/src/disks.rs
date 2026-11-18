@@ -4,7 +4,6 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write;
-#[cfg(target_os = "macos")]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -376,16 +375,7 @@ fn unmount(mounted: &Mounted) -> Result<(), String> {
     let started = std::time::Instant::now();
     let mut busy = None;
     loop {
-        let is_mounted = match (
-            fs::metadata(&mounted.at),
-            mounted.at.parent().map(fs::metadata),
-        ) {
-            (Ok(at), Some(Ok(parent))) => at.dev() != parent.dev(),
-            (Err(error), _) if error.kind() == std::io::ErrorKind::NotFound => false,
-            (Err(error), _) | (_, Some(Err(error))) => return Err(error.to_string()),
-            _ => return Err(format!("no parent for {}", mounted.at.display())),
-        };
-        let detached = if is_mounted {
+        let detached = if is_mount_point(&mounted.at)? {
             output("/sbin/umount", &["-f".as_ref(), mounted.at.as_os_str()])
         } else {
             Ok(String::new())
@@ -430,17 +420,28 @@ fn unmount(mounted: &Mounted) -> Result<(), String> {
     Ok(())
 }
 
+fn is_mount_point(at: &Path) -> Result<bool, String> {
+    match (fs::metadata(at), at.parent().map(fs::metadata)) {
+        (Ok(at), Some(Ok(parent))) => Ok(at.dev() != parent.dev()),
+        (Err(error), _) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        (Err(error), _) | (_, Some(Err(error))) => Err(error.to_string()),
+        _ => Err(format!("no parent for {}", at.display())),
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn unmount(mounted: &Mounted) -> Result<(), String> {
-    output(
-        "sudo",
-        &[
-            "-n".as_ref(),
-            "umount".as_ref(),
-            "--lazy".as_ref(),
-            mounted.at.as_ref(),
-        ],
-    )?;
+    if is_mount_point(&mounted.at)? {
+        output(
+            "sudo",
+            &[
+                "-n".as_ref(),
+                "umount".as_ref(),
+                "--lazy".as_ref(),
+                mounted.at.as_ref(),
+            ],
+        )?;
+    }
     let started = std::time::Instant::now();
     loop {
         let loops = output(
@@ -590,7 +591,6 @@ mod tests {
 
     #[test]
     fn a_disk_with_a_file_open_on_it_is_ejected_and_mounts_again_with_its_files() {
-        use std::os::unix::fs::MetadataExt;
         let Some(mut disks) = Disks::new() else {
             return;
         };
@@ -604,12 +604,26 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_secs(2));
             drop(held);
         });
+        #[cfg(target_os = "macos")]
+        let device = disks.mounted[0].device.clone();
         disks.detach(&at);
-        release.join().unwrap();
+        assert_eq!(is_mount_point(&at), Ok(false));
+        #[cfg(target_os = "macos")]
+        assert!(!Path::new(&device).exists(), "{device}");
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(
-            fs::metadata(&at).unwrap().dev(),
-            fs::metadata(disks.base()).unwrap().dev()
+            run(
+                "sudo",
+                &[
+                    "-n".as_ref(),
+                    "losetup".as_ref(),
+                    "--associated".as_ref(),
+                    image.as_ref()
+                ]
+            ),
+            ""
         );
+        release.join().unwrap();
         disks.attach(&image, &at);
         assert_eq!(fs::read(at.join("open.txt")).unwrap(), b"held");
     }
