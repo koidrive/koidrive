@@ -555,7 +555,7 @@ fn the_servers_token_at_its_count_decides_which_kept_slot_bounds_what_it_holds()
     assert_eq!(commits.connected(&welcome(2)), Reconnect::Idle);
     assert_eq!(commits.held_through(), 7);
     let reissued = Welcome {
-        device_commit_id: "commit-at-8".into(),
+        device_commit_id: "commit-at-7".into(),
         device_committed_at_ms: 8,
         ..welcome(2)
     };
@@ -703,7 +703,7 @@ fn a_welcome_that_holds_the_record_of_the_commit_in_flight_bounds_by_its_seq() {
     let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert!(commits.own_record(9, &commit.commit_id));
+    assert!(commits.own_record(9, &commit.commit_id, 90));
     let holding = Welcome {
         device_commit_id: commit.commit_id.clone(),
         device_committed_at_ms: 90,
@@ -752,14 +752,32 @@ fn a_held_result_without_a_time_is_no_loss_for_a_welcome_that_names_its_commit_w
 }
 
 #[test]
-fn a_welcome_that_names_this_devices_commit_at_another_time_holds_it() {
-    let (mut trees, mut commits, commit_id) = held_at(90);
-    let applied_again = naming(&commit_id, 91);
-    assert_eq!(commits.connected(&applied_again), Reconnect::Idle);
-    assert!(commits.in_flight().is_some());
+fn a_welcome_that_names_this_devices_commit_at_another_time_holds_another_application_of_it() {
+    let (_, mut held, commit_id) = held_at(90);
+    assert_eq!(held.connected(&naming(&commit_id, 91)), Reconnect::AheadOfServer);
+    assert!(held.in_flight().is_none());
+    assert_eq!((held.accepted(), held.held_through()), (1, 0));
+
+    let (mut trees, mut acknowledged, commit_id) = held_at(90);
+    assert!(acknowledged.acknowledge(&mut trees, 9));
+    assert_eq!(acknowledged.connected(&naming(&commit_id, 91)), Reconnect::Idle);
+    assert_eq!((acknowledged.accepted(), acknowledged.held_through()), (1, 0));
+    assert_eq!(acknowledged.connected(&naming(&commit_id, 90)), Reconnect::Idle);
+    assert_eq!(acknowledged.held_through(), 9);
+}
+
+#[test]
+fn a_result_without_a_time_keeps_the_time_the_commits_record_gave_its_slot() {
+    let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(commits.own_record(9, &commit.commit_id, 90));
+    commits.received(result(9, vec![outcome(op_result::Code::Applied)])).unwrap();
     assert!(commits.acknowledge(&mut trees, 9));
-    assert_eq!(commits.connected(&applied_again), Reconnect::Idle);
-    assert_eq!((commits.accepted(), commits.held_through()), (1, 9));
+    assert_eq!(commits.connected(&naming(&commit.commit_id, 91)), Reconnect::Idle);
+    assert_eq!(commits.held_through(), 0);
+    assert_eq!(commits.connected(&naming(&commit.commit_id, 90)), Reconnect::Idle);
+    assert_eq!(commits.held_through(), 9);
 }
 
 #[test]

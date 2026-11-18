@@ -350,6 +350,7 @@ fn commits_state() -> CommitsState {
                 Slot {
                     seq: 8,
                     commit_id: "c3".into(),
+                    committed_at_ms: 3,
                 },
             ),
         ]

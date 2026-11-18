@@ -20,6 +20,7 @@ upgrade_case!(commit_slot_tokens, |store| {
                 history_id: tx.cursor()?.unwrap().history_id,
                 device_seq: 3,
                 device_commit_id: tx.cursor()?.unwrap().commit_id,
+                device_committed_at_ms: 3,
                 ..Default::default()
             };
             commits.connected(&welcome);
@@ -27,6 +28,7 @@ upgrade_case!(commit_slot_tokens, |store| {
             let made = koidrive_engine::commit::Slot {
                 seq: 3,
                 commit_id: "commit-3".into(),
+                committed_at_ms: 1_700_000_000_003,
             };
             state.commits.slots.insert(3, made.clone());
             tx.set_engine_state(&state)?;

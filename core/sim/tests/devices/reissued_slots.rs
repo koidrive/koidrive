@@ -129,3 +129,30 @@ fn a_rolled_back_copy_sends_no_edit_again_that_the_server_holds_through_its_rese
     )
     .unwrap();
 }
+
+#[test]
+fn a_reapplied_commit_does_not_hold_another_devices_edit_from_the_history_a_restore_left() {
+    let mut world = converge(2, &[vec![(0, file("a")), (1, file("b"))]]).unwrap();
+    let mut s = vec![
+        (0, BACKUP),
+        (0, overwrite(0)),
+        (0, SCAN),
+        (0, COMMIT),
+        (0, COMMIT),
+        (0, Step::Drop),
+        (0, BACKUP),
+        (0, Step::RestoreEarlier),
+        (1, Step::Connect),
+    ];
+    s.extend([(1, Step::Work(0)); 16]);
+    s.push((1, overwrite(1)));
+    s.extend(commit(1));
+    s.extend([(1, Step::Work(0)); 8]);
+    s.push((0, Step::Connect));
+    s.extend([(0, Step::Work(0)); 24]);
+    world.run(1, &s).unwrap();
+    world
+        .run(2, &[(1, Step::Leave), (0, RESTORE), (0, Step::Connect)])
+        .unwrap();
+    world.phase(3, &[]).unwrap();
+}

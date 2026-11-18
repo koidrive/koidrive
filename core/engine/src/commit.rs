@@ -55,12 +55,14 @@ pub struct Base {
     pub committed_at_ms: i64,
 }
 
-/// The seq of one of this device's commits and its `commit_id`, by slot. An empty `commit_id`, as
-/// for a slot kept before commit tokens, names no commit.
+/// The seq of one of this device's commits and its commit token (RFC 0013), by slot. An empty
+/// `commit_id`, as for a slot kept before commit tokens, names no commit, and a `committed_at_ms`
+/// of 0, as from a server before RFC 0013, leaves the application unknown.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Slot {
     pub seq: u64,
     pub commit_id: String,
+    pub committed_at_ms: i64,
 }
 
 impl From<u64> for Base {
@@ -359,8 +361,8 @@ impl Commits {
     /// bound breaks that either way: one too high takes changes the server lost for held ones, and
     /// one too low sends held changes again over deletes made since. A restored server gives slots
     /// out again, so a slot number alone names no commit, and the last `Welcome` decides which
-    /// slot counts ([`Commits::connected`]): the slot at its count when it carries the `commit_id`
-    /// kept for it (RFC 0013), the newest kept slot below its count when it carries another, and
+    /// slot counts ([`Commits::connected`]): the slot at its count when it names the application
+    /// kept for it (RFC 0013), the newest kept slot below its count when it names another, and
     /// the newest kept slot at or below *a* when either `commit_id` is empty. A result applied since
     /// counts its own slot. A server that gave out again the kept slots below its count too holds
     /// none of them, which a `Welcome` cannot show (RFC 0028).
@@ -383,7 +385,7 @@ impl Commits {
     /// acknowledged commit, or one of the commit in flight, which can arrive before its result. The
     /// record of the commit in flight gives it slot `seq`, so a loss that drops the commit before its
     /// result still finds the commit made here.
-    pub fn own_record(&mut self, seq: u64, commit_id: &str) -> bool {
+    pub fn own_record(&mut self, seq: u64, commit_id: &str, committed_at_ms: i64) -> bool {
         let Some(slot) = (self.in_flight.as_ref())
             .filter(|flight| flight.commit.commit_id == commit_id)
             .map(|flight| flight.commit.device_seq)
@@ -393,9 +395,20 @@ impl Commits {
         let made = Slot {
             seq,
             commit_id: commit_id.to_owned(),
+            committed_at_ms,
         };
-        self.slots.insert(slot, made);
+        self.keep_slot(slot, made);
         true
+    }
+
+    fn keep_slot(&mut self, slot: u64, mut made: Slot) {
+        if let Some(kept) = self.slots.get(&slot)
+            && made.committed_at_ms == 0
+            && kept.commit_id == made.commit_id
+        {
+            made.committed_at_ms = kept.committed_at_ms;
+        }
+        self.slots.insert(slot, made);
     }
 
     /// Whether the commit in flight is `commit_id` and its last op that sets the content of `id` is
@@ -2272,8 +2285,9 @@ impl Commits {
         let made = Slot {
             seq: result.seq,
             commit_id: flight.commit.commit_id.clone(),
+            committed_at_ms: result.committed_at_ms,
         };
-        self.slots.insert(flight.commit.device_seq, made);
+        self.keep_slot(flight.commit.device_seq, made);
         self.confirmed.0 = Some(flight.commit.device_seq);
         while self.slots.len() > SLOTS_KEPT {
             self.slots.pop_first();
@@ -2453,7 +2467,8 @@ impl Commits {
     /// commits it had accepted, since its counter only grows and *a* takes a slot only from a
     /// result. So does *w* = *a* while the result of the commit in flight is held, since the
     /// server sent that result, and *w* = *a* + 1 while it is held and the `Welcome` carries
-    /// another commit's `commit_id` for that slot, since the server gave the slot to that commit. Either way *a* takes *w*, and the commit in flight is dropped, its
+    /// another application for that slot, since the server gave the slot to another commit or
+    /// applied this one again there. Either way *a* takes *w*, and the commit in flight is dropped, its
     /// restores staying queued, so that its changes are planned again once R is listed again. Any other *w*, or a commit
     /// built in another history, starts recovery. A read-only device resends nothing. A device
     /// under a policy halt resends nothing whatever the `Welcome` says, but *w* < *a* is a loss
@@ -2466,9 +2481,11 @@ impl Commits {
     /// from a second restore of the server before R is listed again, is handled as a loss too: *a*
     /// takes *w* and R is listed again. Whether R
     /// itself belongs to the `Welcome`'s history is checked where R is kept. Every `Welcome` also
-    /// decides what [`Commits::held_through`] counts: the kept slot *w* when the `Welcome` carries
-    /// the `commit_id` this device kept for it, the newest kept slot below *w* when it carries
-    /// another, and the newest kept slot at or below *a* when either `commit_id` is empty.
+    /// decides what [`Commits::held_through`] counts: the kept slot *w* when the `Welcome` names
+    /// the application this device kept for it, the newest kept slot below *w* when it names
+    /// another, and the newest kept slot at or below *a* when either `commit_id` is empty. The
+    /// bound is a server seq, so only the same application holds the commit at the kept seq: the
+    /// same `commit_id`, and the same `committed_at_ms` when both are known.
     ///
     /// Recovery keeps the queued restores with the commit in flight: nothing is built under that
     /// halt, so none is sent again or planned again, and each stays as the request it was
@@ -2479,16 +2496,17 @@ impl Commits {
         let kept = (self.slots.get(&w))
             .filter(|slot| !slot.commit_id.is_empty() && !welcome.device_commit_id.is_empty());
         self.confirmed.0 = kept.map(|slot| {
-            if slot.commit_id == welcome.device_commit_id {
+            if same_application(welcome, &slot.commit_id, slot.committed_at_ms) {
                 w
             } else {
                 (self.slots.range(..w).next_back()).map_or(0, |(below, _)| *below)
             }
         });
         let held_elsewhere = |flight: &InFlight| {
-            flight.result.is_some()
-                && !welcome.device_commit_id.is_empty()
-                && welcome.device_commit_id != flight.commit.commit_id
+            (flight.result.as_ref()).is_some_and(|result| {
+                !welcome.device_commit_id.is_empty()
+                    && !same_application(welcome, &flight.commit.commit_id, result.committed_at_ms)
+            })
         };
         let policy = matches!(*self.halted, Some(Halt::Policy { .. }));
         let reconnect = match &*self.in_flight {
@@ -2543,6 +2561,11 @@ impl Commits {
         }
         reconnect
     }
+}
+
+fn same_application(welcome: &proto::Welcome, commit_id: &str, committed_at_ms: i64) -> bool {
+    let (named, at) = (&welcome.device_commit_id, welcome.device_committed_at_ms);
+    *named == commit_id && (at == 0 || committed_at_ms == 0 || at == committed_at_ms)
 }
 
 /// The queued restore each `Restore` op of a commit carries, by the op's index: the first in

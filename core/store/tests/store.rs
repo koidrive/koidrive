@@ -1436,6 +1436,7 @@ fn engine_state() -> EngineState {
                     koidrive_engine::commit::Slot {
                         seq: 9,
                         commit_id: "commit-4".into(),
+                        committed_at_ms: 1_700_000_000_004,
                     },
                 ),
             ]),
