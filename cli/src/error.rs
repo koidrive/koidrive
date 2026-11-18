@@ -615,7 +615,7 @@ fn driver_human(error: &DriverError) -> Option<String> {
             koidrive_store::Error::Sqlite(_) => return None,
         },
         DriverError::PausedUnsaved { .. } => {
-            "Sync is paused, but Koidrive could not save the pause, so sync may start again after a restart. Run koi pause again to save it."
+            "Sync is paused, but Koidrive could not finish saving the pause, so it may not survive a crash. Run koi pause again to save it."
         }
         DriverError::Io { error, .. } => return local_io_human(error).map(str::to_owned),
     };

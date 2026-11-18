@@ -209,7 +209,7 @@ pub enum DriverError {
         error: koidrive_store::Error,
     },
     #[error(
-        "sync is paused, but {} could not be saved, so a restart may resume sync: {error}",
+        "sync is paused, but {} could not be saved completely: {error}",
         koidrive_fs::quoted(.path)
     )]
     PausedUnsaved { path: PathBuf, error: io::Error },

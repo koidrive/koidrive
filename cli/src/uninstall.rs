@@ -942,9 +942,10 @@ async fn sign_out(
         };
         match found.state {
             true => ipc::run(paths, request).await,
-            false => ipc::ask(paths, &request)
-                .await?
-                .ok_or_else(|| CliError::from("background sync did not answer".to_owned())),
+            false => match ipc::ask(paths, &request).await? {
+                Some(response) => ipc::answered(response),
+                None => Err(CliError::from("background sync did not answer".to_owned())),
+            },
         }
     };
     let mut answer = leave(options.last_device).await;

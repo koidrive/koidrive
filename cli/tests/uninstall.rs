@@ -63,7 +63,6 @@ impl Machine {
         path
     }
 
-    #[cfg(target_os = "macos")]
     fn paths(&self) -> koidrive_driver::Paths {
         let vars = [
             ("XDG_CONFIG_HOME", self.path("config")),
@@ -280,11 +279,14 @@ fn an_older_release_whose_daemon_runs_signs_out_through_the_daemon() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
+    let (_, refused) = machine.envelope(machine.command(&koi, &["uninstall", "--yes", "--json"]));
     let (_, envelope) =
         machine.envelope(machine.command(&koi, &["uninstall", "--yes", "--last-device", "--json"]));
     let _ = daemon.kill();
     let _ = daemon.wait();
 
+    let problem = refused["data"]["device"]["problem"].as_str().unwrap();
+    assert!(problem.starts_with("the server did not "), "{refused:#}");
     assert_eq!(
         envelope["data"]["device"]["state"], "signed_out",
         "{envelope:#}"
