@@ -498,7 +498,7 @@ fn a_change_time_on_a_whole_second_or_on_another_volume_than_its_folder_waits_ou
 }
 
 #[test]
-fn a_swap_seen_halfway_through_a_scan_publishes_nothing_and_the_next_scan_reads_it_as_renames() {
+fn a_swap_seen_halfway_through_a_scan_keeps_both_names_for_a_rescan_that_reads_two_renames() {
     let swap = [("a.txt", "t.tmp"), ("b.txt", "a.txt"), ("t.tmp", "b.txt")];
     let interleavings = [(&swap[..0], &swap[..]), (&swap[..1], &swap[1..])];
     for ((at_a, at_b), scope) in interleavings
@@ -523,12 +523,11 @@ fn a_swap_seen_halfway_through_a_scan_publishes_nothing_and_the_next_scan_reads_
                 fs::rename(root.join(from), root.join(to)).unwrap();
             }
         });
-        assert!(
-            matches!(result, Err(Error::Changed)),
-            "{scope:?}: {result:?}"
-        );
-        assert_eq!(snapshot, before);
-        let changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
+        let rescan = result.unwrap();
+        assert_eq!(rescan.changes, [], "{scope:?}");
+        assert_eq!(rescan.unsettled, [Path::new("a.txt"), Path::new("b.txt")]);
+        assert_eq!(snapshot.entries, before.entries);
+        let changes = snapshot.rescan(root, rescan.unsettled).unwrap().changes;
         assert_eq!(
             changes,
             [
