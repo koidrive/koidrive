@@ -22,8 +22,7 @@ pub type RestoreId = String;
 /// commit of restores always fit.
 pub const RESOLVED_KEPT: usize = MAX_OPS;
 
-/// What a person asked the server to bring back, as the `Restore` op that asks for it. Every ID
-/// in it is a UUIDv7: the server refuses a whole commit for one malformed ID, and the engine
+/// Every ID in it is a UUIDv7: the server refuses a whole commit for one malformed ID, and the engine
 /// answers that refusal by halting the space.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestoreIntent(proto::Restore);
@@ -82,8 +81,7 @@ impl RestoreIntent {
         Ok(Self(op))
     }
 
-    /// The op a commit carries for this restore. An op in flight belongs to a queued restore
-    /// whose op equals it.
+    /// An op in flight belongs to a queued restore whose op equals it.
     pub fn op(&self) -> &proto::Restore {
         &self.0
     }

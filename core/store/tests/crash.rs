@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Kills a real process in the middle of store transactions and checks what
-//! the next open sees. The test binary re-runs itself as the child process;
-//! the environment variable tells the child which database to use.
-
 use std::collections::BTreeMap;
 use std::env;
 use std::io::{BufRead, BufReader};
@@ -44,15 +40,12 @@ fn shape(n: u64) -> Shape {
     }
 }
 
-/// The restore a person asks for while input `seq` is written.
 fn request(seq: u64) -> (RestoreId, RestoreIntent) {
     let node = uuid_v7(1, u128::from(seq));
     let intent = RestoreIntent::from_trash(node, None, None).unwrap();
     (uuid_v7(2, u128::from(seq)), intent)
 }
 
-/// The engine state after input `seq`, which took the requests `taken` from the inbox: they are
-/// queued, and the commit in flight carries their ops.
 fn engine(seq: u64, taken: Vec<(RestoreId, RestoreIntent)>) -> EngineState {
     let ops = taken.iter().map(|(_, intent)| Op {
         op: Some(op::Op::Restore(intent.op().clone())),
