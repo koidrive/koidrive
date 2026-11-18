@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::CliError;
 use crate::output::Tone;
-use crate::report::Done;
+use crate::report::{Done, UnconfirmedData};
 use crate::service::{Manager, ServiceManager, State};
 use crate::setup::shown_folder;
 use crate::terminal::Terminal;
@@ -62,6 +62,9 @@ pub enum DeviceOutcome {
     NotPaired,
     SignedOut {
         server: String,
+        /// Present when the server did not confirm that it revoked this device, so it may still list it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        unconfirmed: Option<UnconfirmedData>,
     },
     /// Still on the server's list, because of `--keep-signed-in` or, with `problem`, because the sign-out did not go
     /// through.

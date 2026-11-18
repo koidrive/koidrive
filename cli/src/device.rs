@@ -6,6 +6,7 @@ use crate::options::RequestArg;
 use crate::profile::{signed_in, unexpected};
 use crate::report::{
     DeviceData, DevicesData, Done, InvitationData, LeftData, NotRemovedData, RevokedData,
+    UnconfirmedData,
 };
 use crate::request::Begun;
 use crate::{ipc, output, pairing, request};
@@ -54,11 +55,30 @@ pub(crate) fn device_id(text: &str) -> Result<String, String> {
     }
 }
 
-pub(crate) fn left(not_removed: Vec<koidrive_driver::CleanupFailure>) -> Done {
+pub(crate) fn still_listed(unconfirmed: &koidrive_driver::Unconfirmed) -> String {
+    format!(
+        "The server did not confirm that it revoked this device, so it may still list it. To remove it, run this on another device signed in to {}: koi device revoke {}\n",
+        printable(&unconfirmed.server),
+        crate::output::command_word(&unconfirmed.device_id)
+    )
+}
+
+pub(crate) fn left(
+    not_removed: Vec<koidrive_driver::CleanupFailure>,
+    unconfirmed: Option<koidrive_driver::Unconfirmed>,
+) -> Done {
     let mut text = "Signed out. This device no longer syncs, and the files in its folders stay where they are.\n".to_owned();
+    if let Some(unconfirmed) = &unconfirmed {
+        text.push_str(&still_listed(unconfirmed));
+    }
     let mut summary = text.clone();
-    let tone = if not_removed.is_empty() {
+    if let Some(unconfirmed) = &unconfirmed {
+        text.push_str(&format!("Reason: {}.\n", printable(&unconfirmed.reason)));
+    }
+    let tone = if not_removed.is_empty() && unconfirmed.is_none() {
         output::Tone::Completed
+    } else if not_removed.is_empty() {
+        output::Tone::Attention
     } else {
         summary.push_str("Sign-out cleanup is incomplete. Run koi device leave again to finish it. Use --verbose for details.\n");
         output::Tone::Attention
@@ -77,6 +97,11 @@ pub(crate) fn left(not_removed: Vec<koidrive_driver::CleanupFailure>) -> Done {
                 error: failure.error,
             })
             .collect(),
+        unconfirmed: unconfirmed.map(|unconfirmed| UnconfirmedData {
+            server: unconfirmed.server,
+            device_id: unconfirmed.device_id,
+            reason: unconfirmed.reason,
+        }),
     };
     Done {
         tone,
@@ -91,11 +116,13 @@ pub(crate) async fn device(paths: Paths, action: DeviceAction) -> Result<Done, C
             let request = Request::Leave {
                 confirm_last_device: last_device,
             };
-            let not_removed = match ipc::run(&paths, request).await? {
-                Response::SignedOut { not_removed } => not_removed,
-                other => return Err(unexpected(other)),
-            };
-            Ok(left(not_removed))
+            match ipc::run(&paths, request).await? {
+                Response::SignedOut {
+                    not_removed,
+                    unconfirmed,
+                } => Ok(left(not_removed, unconfirmed)),
+                other => Err(unexpected(other)),
+            }
         }
         DeviceAction::List => {
             let auth = signed_in(&paths)?;

@@ -187,6 +187,35 @@ fn a_real_daemon_keeps_a_paused_halt_visible_after_sigterm_and_reopen() {
     );
 }
 
+#[test]
+fn a_real_daemons_last_device_sign_out_says_the_server_did_not_confirm_the_revocation() {
+    let profile = Profile::new("[service]\nbackground = false\n");
+    koidrive_driver::Credential {
+        server: "http://127.0.0.1:9/".into(),
+        user_id: "u1".into(),
+        user_name: None,
+        device_id: "d2".into(),
+        device_name: "Mac".into(),
+        refresh_credential: "test-only".into(),
+    }
+    .save_new(&profile.paths.credential())
+    .unwrap();
+
+    let _daemon = LiveDaemon::start(&profile);
+    let (output, envelope) = profile.json(&["device", "leave", "--last-device", "--json"]);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert!(!profile.paths.credential().exists());
+    let unconfirmed = &envelope["data"]["unconfirmed"];
+    assert_eq!(unconfirmed["device_id"], "d2", "{envelope:#}");
+    assert!(
+        unconfirmed["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty()),
+        "{envelope:#}"
+    );
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn reconcile_reports_a_bootstrap_error_even_when_the_service_is_not_installed() {

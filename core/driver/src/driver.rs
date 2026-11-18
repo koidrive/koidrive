@@ -75,6 +75,42 @@ fn cleanup_path<S: serde::Serializer>(path: &Path, serializer: S) -> Result<S::O
     path.to_string_lossy().serialize(serializer)
 }
 
+/// What a sign-out left undone: each file or directory it could not remove, and, when the server did not confirm that
+/// it revoked this device, why not. Such a device can stay on the server's list until another device revokes it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SignedOut {
+    pub not_removed: Vec<CleanupFailure>,
+    pub unconfirmed: Option<Unconfirmed>,
+}
+
+/// A sign-out that went ahead without the server confirming that it revoked the device. The profile keeps this record
+/// until it is paired again, so every later sign-out reports it too.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unconfirmed {
+    pub server: String,
+    pub device_id: String,
+    pub reason: String,
+}
+
+impl Unconfirmed {
+    /// The unconfirmed sign-out the profile at `paths` recorded, if any.
+    pub fn recorded(paths: &Paths) -> Option<Self> {
+        let bytes = fs::read(paths.unconfirmed_revocation()).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+}
+
+enum AuthFailure {
+    Api(ApiError),
+    Unanswered,
+}
+
+impl From<ApiError> for AuthFailure {
+    fn from(error: ApiError) -> Self {
+        AuthFailure::Api(error)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DriverError {
     #[error("another Koidrive process is using this profile ({})", koidrive_fs::quoted(.0))]
@@ -821,17 +857,14 @@ impl Driver {
     /// answer, so the person can be told that this may be their last device and confirm. While a revoke may have reached
     /// the server without a definitive answer, the account is hidden and sync stays stopped until a retry resolves it,
     /// including after a restart. With `confirm_last_device`
-    /// the revocation is best effort: a sign-out without the server finishes on the device, and the device stays active
-    /// there until another device revokes it.
+    /// the revocation is best effort: a sign-out without the server finishes on the device and returns why the
+    /// revocation is unconfirmed, and the device stays active there until another device revokes it.
     ///
     /// Before it asks the server, it checks that every folder's owner record and store can be removed, and returns
     /// [`DriverError::UnlinkBlocked`] without changing anything when one cannot. Once the server has revoked the device,
     /// it attempts every local cleanup and returns each path that stayed. A durable cleanup record lets another
     /// sign-out finish without the credential or the stores, including after a restart.
-    pub async fn sign_out(
-        &self,
-        confirm_last_device: bool,
-    ) -> Result<Vec<CleanupFailure>, DriverError> {
+    pub async fn sign_out(&self, confirm_last_device: bool) -> Result<SignedOut, DriverError> {
         let _lifecycle = self.inner.lifecycle.lock().await;
         self.signing_out(confirm_last_device).await
     }
@@ -839,10 +872,7 @@ impl Driver {
     /// Signs out like [`Driver::sign_out`] with `confirm_last_device`, but only while the saved credential is
     /// `device_id`'s. A caller that found the server refusing that device's credential uses it, so a credential another
     /// run saved meanwhile is kept and [`DriverError::CredentialReplaced`] names its device.
-    pub async fn sign_out_device(
-        &self,
-        device_id: &str,
-    ) -> Result<Vec<CleanupFailure>, DriverError> {
+    pub async fn sign_out_device(&self, device_id: &str) -> Result<SignedOut, DriverError> {
         let _lifecycle = self.inner.lifecycle.lock().await;
         let saved = Credential::load_stored_for_revocation(&self.inner.paths.credential())?;
         if let Some(saved) = saved.as_ref().map(|stored| &stored.credential)
@@ -855,10 +885,7 @@ impl Driver {
         self.signing_out(true).await
     }
 
-    async fn signing_out(
-        &self,
-        confirm_last_device: bool,
-    ) -> Result<Vec<CleanupFailure>, DriverError> {
+    async fn signing_out(&self, confirm_last_device: bool) -> Result<SignedOut, DriverError> {
         let was_running = self.inner.running.load(Ordering::SeqCst);
         let was_checking = self.inner.updates.is_running();
         self.inner.startup_blocked.store(true, Ordering::SeqCst);
@@ -887,6 +914,8 @@ impl Driver {
                 .as_ref()
                 .is_some_and(|leaving| leaving.intent.resume_updates);
         let mut failed = Vec::new();
+        let mut unconfirmed = None;
+        let mut revoked_here = false;
         let mut leaving = if leaving
             .as_ref()
             .is_none_or(|leaving| leaving.phase == Phase::Prepared)
@@ -930,6 +959,7 @@ impl Driver {
             let recovering = leaving.phase == Phase::Revoking;
             let stored = Credential::load_stored_for_revocation(&self.inner.paths.credential())?;
             let mut previous_auth = None;
+            revoked_here = stored.is_some();
             let revoked = match stored {
                 Some(stored) => {
                     let credential = stored.credential.clone();
@@ -940,11 +970,26 @@ impl Driver {
                     previous_auth = self.inner.auth.lock().unwrap().take();
                     *self.inner.credential.lock().unwrap() = None;
                     self.changed();
-                    revoke(&credential, auth, confirm_last_device, recovering).await
+                    revoke(&credential, auth, confirm_last_device, recovering)
+                        .await
+                        .map(|reason| {
+                            reason.map(|reason| Unconfirmed {
+                                server: credential.server.clone(),
+                                device_id: credential.device_id.clone(),
+                                reason,
+                            })
+                        })
                 }
-                None => Ok(()),
+                None => Ok(None),
             };
-            if let Err(refused) = revoked {
+            let refused = match revoked {
+                Ok(failure) => {
+                    unconfirmed = failure;
+                    None
+                }
+                Err(refused) => Some(refused),
+            };
+            if let Some(refused) = refused {
                 if refused.definitive {
                     leaving
                         .set_phase(Phase::Prepared)
@@ -969,6 +1014,23 @@ impl Driver {
                     self.check_for_updates();
                 }
                 return Err(refused.error);
+            }
+            let record = self.inner.paths.unconfirmed_revocation();
+            let recorded = match &unconfirmed {
+                Some(unconfirmed) => koidrive_state_file::write(
+                    &record,
+                    &serde_json::to_vec(unconfirmed).expect("the record serializes"),
+                ),
+                None if revoked_here => {
+                    fs::remove_file(&record).or_else(|error| match error.kind() {
+                        io::ErrorKind::NotFound => Ok(()),
+                        _ => Err(error),
+                    })
+                }
+                None => Ok(()),
+            };
+            if let Err(error) = recorded {
+                tracing::warn!(%error, "the record of an unconfirmed revocation could not be updated");
             }
             if let Err(error) = leaving.set_phase(Phase::Committed) {
                 failed.push(CleanupFailure {
@@ -1025,7 +1087,13 @@ impl Driver {
             });
         }
         self.changed();
-        Ok(failed)
+        Ok(SignedOut {
+            not_removed: failed,
+            unconfirmed: match revoked_here {
+                true => unconfirmed,
+                false => Unconfirmed::recorded(&self.inner.paths),
+            },
+        })
     }
 
     fn remove_space_state(&self, space_id: &str) -> Result<(), CleanupFailure> {
@@ -1054,7 +1122,7 @@ impl Driver {
         &self,
         stored: &StoredCredential,
         recovering: bool,
-    ) -> Result<Arc<Auth>, ApiError> {
+    ) -> Result<Arc<Auth>, AuthFailure> {
         if recovering {
             let path = self.inner.paths.credential();
             let original = stored.credential.clone();
@@ -1083,12 +1151,7 @@ impl Driver {
         let auth = self.auth(&stored.credential)?;
         let token = tokio::time::timeout(SERVER_WAIT, auth.access_token())
             .await
-            .map_err(|_| {
-                ApiError::Credential(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "the server did not answer the token request",
-                ))
-            })??;
+            .map_err(|_| AuthFailure::Unanswered)??;
         Ok(Arc::new(
             Auth::new(stored.credential.api()?, auth.credentials()).with_token(token),
         ))
@@ -1164,7 +1227,12 @@ impl Driver {
         if Leaving::load(state)
             .map_err(io_error(&state.join("leaving")))?
             .is_some()
-            && let Some(failure) = self.signing_out(false).await?.into_iter().next()
+            && let Some(failure) = self
+                .signing_out(false)
+                .await?
+                .not_removed
+                .into_iter()
+                .next()
         {
             return Err(io_error(&failure.path)(io::Error::other(failure.error)));
         }
@@ -1255,6 +1323,11 @@ impl Driver {
             });
         }
         write(&credential)?;
+        if let Err(error) = fs::remove_file(self.inner.paths.unconfirmed_revocation())
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            tracing::warn!(%error, "a sign-out of an earlier device stays reported as unconfirmed");
+        }
         let account = credential.account();
         let stored = StoredCredential {
             credential: credential.clone(),
@@ -2614,21 +2687,24 @@ struct RevokeFailure {
     definitive: bool,
 }
 
-/// Revokes the credential's own device on the server. An answer that another device already revoked it counts as
-/// revoked. Without `confirm_last_device`, any HTTP 409 is the server's refusal to revoke the user's last active device,
-/// [`DriverError::LastDevice`], whatever its body, and any other failure, including no answer within [`SERVER_WAIT`],
-/// is [`DriverError::NotRevoked`]. With it, every failure, a 409 included, is logged and the device stays active on the
-/// server until another device revokes it.
 async fn revoke(
     credential: &Credential,
-    auth: Result<Arc<Auth>, ApiError>,
+    auth: Result<Arc<Auth>, AuthFailure>,
     confirm_last_device: bool,
     recovering: bool,
-) -> Result<(), RevokeFailure> {
+) -> Result<Option<String>, RevokeFailure> {
     let may_have_been_sent = recovering || auth.is_ok();
+    let unanswered = format!("no answer within {} seconds", SERVER_WAIT.as_secs());
     let revoked = async {
-        let auth = auth?;
-        auth.api().revoke_self(&auth, confirm_last_device).await
+        match auth {
+            Ok(auth) => auth
+                .api()
+                .revoke_self(&auth, confirm_last_device)
+                .await
+                .map_err(Some),
+            Err(AuthFailure::Api(error)) => Err(Some(error)),
+            Err(AuthFailure::Unanswered) => Err(None),
+        }
     };
     let failure = match tokio::time::timeout(SERVER_WAIT, revoked).await {
         Ok(Ok(())) => {
@@ -2636,22 +2712,23 @@ async fn revoke(
                 device_id = credential.device_id,
                 "revoked this device on the server"
             );
-            return Ok(());
+            return Ok(None);
         }
-        Ok(Err(error)) if !confirm_last_device && error.status() == Some(409) => {
+        Ok(Err(None)) => (unanswered, !recovering),
+        Ok(Err(Some(error))) if !confirm_last_device && error.status() == Some(409) => {
             return Err(RevokeFailure {
                 error: DriverError::LastDevice,
                 definitive: !recovering,
             });
         }
-        Ok(Err(error)) if error.is_unauthenticated() => {
+        Ok(Err(Some(error))) if error.is_unauthenticated() => {
             tracing::info!(
                 device_id = credential.device_id,
                 "the server had already revoked this device"
             );
-            return Ok(());
+            return Ok(None);
         }
-        Ok(Err(error)) => (
+        Ok(Err(Some(error))) => (
             error.to_string(),
             !recovering
                 && (!may_have_been_sent
@@ -2659,10 +2736,7 @@ async fn revoke(
                         .status()
                         .is_some_and(|status| (400..500).contains(&status) && status != 408)),
         ),
-        Err(_) => (
-            format!("no answer within {} seconds", SERVER_WAIT.as_secs()),
-            false,
-        ),
+        Err(_) => (unanswered, false),
     };
     if !confirm_last_device {
         return Err(RevokeFailure {
@@ -2670,11 +2744,11 @@ async fn revoke(
             definitive: failure.1,
         });
     }
-    tracing::warn!(
+    tracing::info!(
         failure = failure.0,
-        "the server did not revoke this device; revoke it from another device"
+        "the server did not confirm that it revoked this device"
     );
-    Ok(())
+    Ok(Some(failure.0))
 }
 
 #[cfg(test)]
@@ -4102,6 +4176,37 @@ mod tests {
         assert_eq!(listed[0].state, FolderState::Halted);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_sign_out_the_server_never_answers_is_reported_by_every_sign_out_until_the_next_pairing()
+     {
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let server = format!("http://{}/", silent.local_addr().unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(&dir.path().join("profile"));
+        Credential {
+            server: server.clone(),
+            ..credential("d1")
+        }
+        .save_new(&paths.credential())
+        .unwrap();
+        let driver = Driver::open(paths.clone()).unwrap();
+        let unconfirmed = Unconfirmed {
+            server,
+            device_id: "d1".into(),
+            reason: "no answer within 10 seconds".into(),
+        };
+
+        let left = driver.sign_out(true).await.unwrap();
+        let again = driver.sign_out(true).await.unwrap();
+        drop(silent);
+
+        assert_eq!(left.unconfirmed.as_ref(), Some(&unconfirmed));
+        assert_eq!(again.unconfirmed, Some(unconfirmed));
+        assert!(!paths.credential().exists());
+        driver.save_credential(credential("d2")).await.unwrap();
+        assert!(!paths.unconfirmed_revocation().exists());
+    }
+
     fn unplaced(paths: &Paths, space_id: &str) -> PathBuf {
         let store = paths.store(space_id).unwrap();
         fs::create_dir_all(store.parent().unwrap()).unwrap();
@@ -4120,7 +4225,8 @@ mod tests {
         let driver = Driver::open(paths.clone()).unwrap();
         assert_eq!(driver.status().folders.len(), 2);
 
-        driver.sign_out(true).await.unwrap();
+        let left = driver.sign_out(true).await.unwrap();
+        assert!(left.unconfirmed.is_some_and(|why| !why.reason.is_empty()));
 
         assert!(driver.status().folders.is_empty());
         assert!(!lost.exists());
@@ -4203,7 +4309,7 @@ mod tests {
         leaving.set_phase(Phase::Committed).unwrap();
 
         let driver = Driver::open(paths.clone()).unwrap();
-        assert_eq!(driver.sign_out(false).await.unwrap(), []);
+        assert_eq!(driver.sign_out(false).await.unwrap().not_removed, []);
         assert!(!lost.exists());
         assert!(!paths.state_dir.join("leaving").exists());
     }
@@ -6400,7 +6506,7 @@ mod tests {
         assert!(status.running);
         assert!(paths.credential().exists());
 
-        driver.sign_out(true).await.unwrap();
+        assert_eq!(driver.sign_out(true).await.unwrap().unconfirmed, None);
         let status = driver.status();
         assert_eq!(status.account, None);
         assert!(status.folders.is_empty());
@@ -6824,7 +6930,7 @@ mod tests {
 
             let retry = driver.sign_out(false).await;
             let failed = if remote_revoked {
-                retry.unwrap()
+                retry.unwrap().not_removed
             } else {
                 assert!(matches!(retry, Err(DriverError::LastDevice)));
                 assert_eq!(driver.status().account, None);
@@ -6841,7 +6947,7 @@ mod tests {
                 ));
                 assert_eq!(fs::read(paths.credential()).unwrap(), bytes);
                 assert!(paths.store(SPACE).unwrap().exists());
-                driver.sign_out(false).await.unwrap()
+                driver.sign_out(false).await.unwrap().not_removed
             };
             let calls = served.await.unwrap();
             open_dir(&private);
@@ -6868,7 +6974,7 @@ mod tests {
             }
             drop(driver);
             let driver = Driver::open(paths.clone()).unwrap();
-            assert_eq!(driver.sign_out(false).await.unwrap(), []);
+            assert_eq!(driver.sign_out(false).await.unwrap().not_removed, []);
             assert_eq!(claim::owner(&root).unwrap(), None);
         }
     }
@@ -6942,7 +7048,7 @@ mod tests {
         claim::set_owner(&new, &owner).unwrap();
         fs::remove_file(paths.credential()).unwrap();
         let driver = Driver::open(paths.clone()).unwrap();
-        assert_eq!(driver.sign_out(true).await.unwrap(), []);
+        assert_eq!(driver.sign_out(true).await.unwrap().not_removed, []);
         assert_eq!(
             claim::owner(&new).unwrap(),
             None,
@@ -6995,7 +7101,7 @@ mod tests {
             fs::remove_file(paths.credential()).unwrap();
 
             let driver = Driver::open(paths.clone()).unwrap();
-            assert_eq!(driver.sign_out(true).await.unwrap(), []);
+            assert_eq!(driver.sign_out(true).await.unwrap().not_removed, []);
             assert_eq!(claim::owner(&root).unwrap(), None);
             assert_eq!(claim::owner(&current_root).unwrap(), None);
             assert!(!paths.store(SPACE).unwrap().parent().unwrap().exists());
@@ -7035,7 +7141,7 @@ mod tests {
         claim::set_owner(&root, &replacement).unwrap();
 
         let driver = Driver::open(paths.clone()).unwrap();
-        assert_eq!(driver.sign_out(false).await.unwrap(), []);
+        assert_eq!(driver.sign_out(false).await.unwrap().not_removed, []);
         assert_eq!(claim::owner(&root).unwrap(), Some(replacement));
         assert!(!paths.store(SPACE).unwrap().parent().unwrap().exists());
     }
@@ -7123,7 +7229,7 @@ mod tests {
                     }
                 }))
             });
-            let failed = driver.sign_out(false).await.unwrap();
+            let failed = driver.sign_out(false).await.unwrap().not_removed;
             assert!(
                 !failed.is_empty(),
                 "sync failure was not reported for target {target}"
@@ -7159,7 +7265,7 @@ mod tests {
                 drop(driver);
                 driver = Driver::open(paths.clone()).unwrap();
             }
-            assert_eq!(driver.sign_out(false).await.unwrap(), []);
+            assert_eq!(driver.sign_out(false).await.unwrap().not_removed, []);
             let events = events.borrow();
             let retry = &events[boundary..];
             let (last, cleanup) = retry.split_last().unwrap();
@@ -7248,7 +7354,7 @@ mod tests {
                 }))
             });
             let driver = Driver::open(paths.clone()).unwrap();
-            assert_eq!(driver.sign_out(false).await.unwrap(), []);
+            assert_eq!(driver.sign_out(false).await.unwrap().not_removed, []);
             let metadata = fs::metadata(&paths.state_dir).unwrap();
             let state = (metadata.dev(), metadata.ino());
             let events = events.borrow();
@@ -7293,7 +7399,7 @@ mod tests {
             eprintln!("SKIPPED: running as root, so permissions do not block writes");
             return;
         }
-        let failed = failed.unwrap();
+        let failed = failed.unwrap().not_removed;
         assert_eq!(revoked, ["/v1/token", "/v1/devices/d1"]);
         let [failure] = failed.as_slice() else {
             panic!("one path stays: {failed:?}");
@@ -7311,7 +7417,7 @@ mod tests {
         drop(driver);
 
         let driver = Driver::open(paths.clone()).unwrap();
-        assert_eq!(driver.sign_out(false).await.unwrap(), []);
+        assert_eq!(driver.sign_out(false).await.unwrap().not_removed, []);
         assert_eq!(claim::owner(&root).unwrap(), None);
         assert!(driver.status().folders.is_empty());
         assert!(!paths.store(SPACE).unwrap().parent().unwrap().exists());
@@ -7343,7 +7449,7 @@ mod tests {
             eprintln!("SKIPPED: running as root, so permissions do not block writes");
             return;
         }
-        let failed = failed.unwrap();
+        let failed = failed.unwrap().not_removed;
         assert_eq!(revoked, ["/v1/token", "/v1/devices/d1"]);
         let [failure] = failed.as_slice() else {
             panic!("one path stays: {failed:?}");
@@ -7356,7 +7462,7 @@ mod tests {
 
         let driver = Driver::open(paths.clone()).unwrap();
         assert_eq!(driver.status().account, None);
-        assert_eq!(driver.sign_out(false).await.unwrap(), []);
+        assert_eq!(driver.sign_out(false).await.unwrap().not_removed, []);
         assert!(driver.status().folders.is_empty());
         assert!(!store_dir.exists());
     }
@@ -7438,7 +7544,7 @@ mod tests {
                 replacement.is_none(),
                 "a task started while sign-out held the startup barrier"
             );
-            let left = left.unwrap();
+            let left = left.unwrap().not_removed;
             assert!(left.is_empty(), "{left:?}");
             signed_out(&driver, &paths, &root);
         }
@@ -7482,7 +7588,7 @@ mod tests {
             let _ = served.await;
             return;
         }
-        let left = left.unwrap();
+        let left = left.unwrap().not_removed;
         assert!(
             left.iter()
                 .any(|failure| failure.path == state.join("leaving"))
@@ -7503,7 +7609,7 @@ mod tests {
         assert_eq!(driver.status().account, None);
         driver.start();
         assert!(driver.status().folders.is_empty());
-        assert_eq!(driver.sign_out(false).await.unwrap(), []);
+        assert_eq!(driver.sign_out(false).await.unwrap().not_removed, []);
         assert_eq!(
             served.await.unwrap(),
             ["/v1/token", "/v1/devices/d1", "/v1/token"]
@@ -7558,7 +7664,7 @@ mod tests {
             eprintln!("SKIPPED: running as root, so permissions do not block writes");
             return;
         }
-        let failed = failed.unwrap();
+        let failed = failed.unwrap().not_removed;
         let mut remaining: Vec<_> = failed.iter().map(|failure| failure.path.clone()).collect();
         remaining.sort();
         let mut expected = vec![
@@ -7584,13 +7690,44 @@ mod tests {
         let driver = Driver::open(paths.clone()).unwrap();
         assert_eq!(driver.status().account, None);
         assert!(driver.status().folders.is_empty());
-        assert_eq!(driver.sign_out(false).await.unwrap(), []);
+        assert_eq!(driver.sign_out(false).await.unwrap().not_removed, []);
         assert!(!paths.credential().exists());
         assert_eq!(claim::owner(&root).unwrap(), None);
         assert!(!store.exists());
         assert!(!paths.state_dir.join("leaving").exists());
         assert_eq!(fs::read(root.join("keep.txt")).unwrap(), b"keep");
         assert_eq!(fs::read(other.join("keep.txt")).unwrap(), b"keep too");
+    }
+
+    #[tokio::test]
+    async fn a_confirmed_revocation_after_a_crash_left_an_unconfirmed_record_replaces_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let credential_path = Paths::under(&base.join("profile")).credential();
+        let (server, served) =
+            serve_each(vec![access_token(), (204, Vec::new())], credential_path).await;
+        let paths = linked_with_server(&base, server.clone());
+        fs::write(
+            paths.unconfirmed_revocation(),
+            serde_json::to_vec(&Unconfirmed {
+                server: server.to_string(),
+                device_id: "d1".into(),
+                reason: "no answer within 10 seconds".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let driver = Driver::open(paths.clone()).unwrap();
+
+        let left = driver.sign_out(false).await.unwrap();
+        let again = driver.sign_out(false).await.unwrap();
+
+        let requested: Vec<String> = (served.await.unwrap().into_iter())
+            .map(|(path, _)| path)
+            .collect();
+        assert_eq!(requested, ["/v1/token", "/v1/devices/d1"]);
+        assert_eq!(left.unconfirmed, None);
+        assert_eq!(again.unconfirmed, None);
     }
 
     #[tokio::test]

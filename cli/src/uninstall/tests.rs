@@ -220,6 +220,43 @@ fn the_summary_names_what_stays_and_how_to_revoke_a_device_still_listed() {
 }
 
 #[test]
+fn a_device_id_with_control_characters_reaches_the_terminal_escaped() {
+    let id = "d9\u{1b}[31mRED\u{7} x";
+    let unconfirmed = |server: &str| UnconfirmedData {
+        server: server.into(),
+        device_id: id.into(),
+        reason: "no answer within 10 seconds".into(),
+    };
+    let escaped = r"koi device revoke 'd9\u{1b}[31mRED\u{7} x'";
+    for device in [
+        DeviceOutcome::SignedOut {
+            server: "https://files.example.com".into(),
+            unconfirmed: Some(unconfirmed("https://files.example.com")),
+        },
+        DeviceOutcome::StillListed {
+            server: Some("https://files.example.com".into()),
+            device_id: Some(id.into()),
+            problem: None,
+        },
+    ] {
+        let shown = text(&UninstalledData {
+            device,
+            removed: Vec::new(),
+            kept: Vec::new(),
+        });
+        assert!(shown.contains(escaped), "{shown}");
+        assert!(!shown.contains(['\u{1b}', '\u{7}']), "{shown}");
+    }
+    let left = crate::device::still_listed(&koidrive_driver::Unconfirmed {
+        server: "https://files.example.com".into(),
+        device_id: id.into(),
+        reason: "no answer within 10 seconds".into(),
+    });
+    assert!(left.contains(escaped), "{left}");
+    assert!(!left.contains(['\u{1b}', '\u{7}']), "{left}");
+}
+
+#[test]
 fn only_what_koidrive_writes_leaves_a_state_folder() {
     let entry = |name: &str| Paths::state_entry(Path::new(name));
     assert_eq!(entry(RECORD), Some(StateEntry::File));

@@ -54,7 +54,7 @@ pub use config::{BackgroundService, Config, ConfigError, LocalTrash, SyncRules, 
 pub use credential::{Credential, CredentialError, SET_UP_AGAIN, api_for};
 pub use driver::{
     Answered, Change, Changes, CleanupFailure, Driver, DriverError, LinkApproval, Linked,
-    PROGRESS_INTERVAL,
+    PROGRESS_INTERVAL, SignedOut, Unconfirmed,
 };
 pub use failures::{Failure, failures};
 pub use folder::MAX_FORMAT;

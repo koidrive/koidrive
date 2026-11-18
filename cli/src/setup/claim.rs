@@ -254,7 +254,10 @@ pub async fn saved_device(paths: &Paths, server: &Url) -> Result<bool, CliError>
                 device_id: credential.device_id,
             };
             match ipc::run(paths, request).await? {
-                Response::SignedOut { not_removed } => {
+                Response::SignedOut {
+                    not_removed,
+                    unconfirmed,
+                } => {
                     if !not_removed.is_empty() {
                         let failures = not_removed
                             .iter()
@@ -274,6 +277,9 @@ pub async fn saved_device(paths: &Paths, server: &Url) -> Result<bool, CliError>
                     println!(
                         "The server no longer accepts this device's saved credential, so it was removed."
                     );
+                    if let Some(unconfirmed) = &unconfirmed {
+                        print!("{}", crate::device::still_listed(unconfirmed));
+                    }
                     Ok(false)
                 }
                 other => Err(crate::unexpected(other)),
@@ -475,9 +481,15 @@ mod tests {
                 serde_json::from_str::<Request>(&line).unwrap(),
                 Request::SignOut { .. }
             ));
-            koidrive_ipc::write_line(&mut stream, &Response::SignedOut { not_removed: reply })
-                .await
-                .unwrap();
+            koidrive_ipc::write_line(
+                &mut stream,
+                &Response::SignedOut {
+                    not_removed: reply,
+                    unconfirmed: None,
+                },
+            )
+            .await
+            .unwrap();
         });
 
         let server = Found {

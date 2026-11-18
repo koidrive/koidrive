@@ -799,16 +799,15 @@ fn last_device_sign_out_keeps_the_unconfirmed_revocation_warning() {
                 .exists()
         );
         let text = format!("{}{}{}", output.stdout, output.stderr, output.terminal);
-        assert!(
-            text.contains("the server did not revoke this device; revoke it from another device"),
-            "{text}"
-        );
-        assert_eq!(
-            text.contains("koidrive_driver::driver"),
-            structured,
-            "{text}"
-        );
-        assert_eq!(text.contains("failure="), structured, "{text}");
+        let warning = match extra {
+            Some("--json") => "\"unconfirmed\":",
+            _ => "The server did not confirm that it revoked this device",
+        };
+        assert!(text.contains(warning), "{text}");
+        if extra != Some("--json") {
+            assert!(text.contains("koi device revoke device-internal"), "{text}");
+        }
+        assert!(!text.contains("koidrive_driver::driver"), "{text}");
         if !structured {
             assert!(!text.contains("HTTP 503"), "{text}");
             assert!(!text.contains("fixture-only-refresh"), "{text}");
