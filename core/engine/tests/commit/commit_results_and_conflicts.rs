@@ -132,10 +132,11 @@ fn a_folder_the_user_moves_into_the_folder_merged_into_it_goes_back_to_its_place
     };
     acknowledge(&mut commits, &mut trees, vec![merged]);
     let mut moved = trees.local().get("b").unwrap().clone();
+    let identity = moved.identity;
     moved.shape = dir("a", "e");
     trees.set_local_changed("b".into(), moved);
     trees.settle(commits.aliases());
-    let (mut effects, mut ino) = (Effects::default(), 10);
+    let (mut effects, mut ino, mut last_move) = (Effects::default(), 10, None);
     for added in ["x", "y", "z"] {
         assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
         trees.set_remote(added.into(), remote(file(ROOT, added, 1)));
@@ -145,14 +146,33 @@ fn a_folder_the_user_moves_into_the_folder_merged_into_it_goes_back_to_its_place
             .first()
             .cloned()
         {
+            if let Effect::Move { from, to, .. } = &record.effect
+                && record.node == "b"
+            {
+                let from_disk = match from {
+                    Location::Parked(_) => true,
+                    Location::At {
+                        base: koidrive_engine::effects::Base::Root,
+                        dirs,
+                        name,
+                    } => dirs.len() == 1 && name == "e",
+                    Location::At {
+                        base: koidrive_engine::effects::Base::Parked { node, .. },
+                        dirs,
+                        name,
+                    } => node == "a" && dirs.is_empty() && name == "e",
+                };
+                assert!(from_disk, "{:?}", record.effect);
+                last_move = Some(to.clone());
+            }
             ino += 1;
-            let identity = local(dir(ROOT, added), ino).identity;
+            let created = local(dir(ROOT, added), ino).identity;
             effects
                 .done(
                     &mut trees,
                     commits.in_flight(),
                     &record.effect_id,
-                    Some(identity),
+                    Some(created),
                 )
                 .unwrap();
             trees.settle(commits.aliases());
@@ -160,7 +180,11 @@ fn a_folder_the_user_moves_into_the_folder_merged_into_it_goes_back_to_its_place
     }
     assert_eq!(trees.local().get("a"), None);
     let b = trees.local().get("b").unwrap();
-    assert_eq!((&b.shape, b.identity.ino), (&dir(ROOT, "d"), 2));
+    assert_eq!((&b.shape, &b.identity), (&dir(ROOT, "d"), &identity));
+    assert!(
+        matches!(&last_move, Some(Location::At { dirs, name, .. }) if dirs.is_empty() && name == "d"),
+        "{last_move:?}"
+    );
     assert!(trees.reverted().is_empty());
     assert!(trees.work().is_empty());
 }
