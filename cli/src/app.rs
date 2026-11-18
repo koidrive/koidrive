@@ -14,8 +14,6 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 #[cfg(any(target_os = "macos", test))]
 use tokio::io::AsyncReadExt;
-#[cfg(any(target_os = "macos", test))]
-use tokio::process::Command;
 use tokio::time::Instant;
 
 use crate::app_install::{self, AppInstall, AppLaunch, AppSkip};
@@ -429,14 +427,17 @@ pub(crate) async fn install(
 async fn reconcile(binary: &Path, deadline: Instant) -> Result<service::Report, String> {
     const MAX_OUTPUT: usize = 16 * 1024 * 1024;
     let mut active = HANDOFF.lock().await;
-    let child = Command::new(binary)
-        .args(["_reconcile", "--json"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .kill_on_drop(true)
-        .spawn()
+    let child = crate::program::found_async(binary)
+        .and_then(|mut command| {
+            command
+                .args(["_reconcile", "--json"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .process_group(0)
+                .kill_on_drop(true)
+                .spawn()
+        })
         .map_err(|error| format!("The installed app's helper did not run: {error}"))?;
     *active = Some(child);
     let child = active.as_mut().expect("the handoff child was just started");
@@ -478,6 +479,7 @@ async fn reconcile(binary: &Path, deadline: Instant) -> Result<service::Report, 
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use tokio::process::Command;
 
     fn helper(home: &Path, body: &str) -> PathBuf {
         let helper = home.join("koi");

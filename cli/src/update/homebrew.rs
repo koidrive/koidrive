@@ -5,7 +5,6 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use koidrive_driver::Paths;
-use tokio::process::Command;
 
 use crate::error::CliError;
 use crate::report::{Done, Via};
@@ -57,12 +56,17 @@ pub(super) async fn homebrew(
             echo.line(&why, true);
             refresh = Some(why);
         }
-        let mut upgrade = Command::new(brew);
-        upgrade
-            .args(&command[1..])
-            .env("HOMEBREW_NO_AUTO_UPDATE", "1")
-            .env_remove("HOMEBREW_ASK");
-        match echo.run(upgrade, INSTALLER, Child::Progress).await {
+        let upgraded = match crate::program::found_async(brew) {
+            Ok(mut upgrade) => {
+                upgrade
+                    .args(&command[1..])
+                    .env("HOMEBREW_NO_AUTO_UPDATE", "1")
+                    .env_remove("HOMEBREW_ASK");
+                echo.run(upgrade, INSTALLER, Child::Progress).await
+            }
+            Err(error) => Err(error),
+        };
+        match upgraded {
             Ok(Some((status, _, _))) if status.success() => (),
             Ok(Some((status, _, _))) => {
                 failure = Some(format!("brew upgrade failed ({})", exit(status)))
@@ -144,7 +148,7 @@ pub(super) async fn homebrew(
 }
 
 async fn refresh_tap(brew: &Path, echo: &mut Echo) -> Result<(), String> {
-    let mut repository = Command::new(brew);
+    let mut repository = crate::program::found_async(brew).map_err(|error| error.to_string())?;
     repository
         .args(["--repository", TAP])
         .env("HOMEBREW_NO_AUTO_UPDATE", "1")
@@ -164,11 +168,10 @@ async fn refresh_tap(brew: &Path, echo: &mut Echo) -> Result<(), String> {
         ));
     }
     let homebrew_git = brew.with_file_name("git");
-    let git = match homebrew_git.is_file() {
-        true => homebrew_git,
-        false => PathBuf::from("/usr/bin/git"),
+    let mut pull = match homebrew_git.is_file() {
+        true => crate::program::found_async(&homebrew_git).map_err(|error| error.to_string())?,
+        false => crate::program::system_async("/usr/bin/git"),
     };
-    let mut pull = Command::new(git);
     pull.arg("-C")
         .arg(&tap)
         .args(["pull", "--ff-only", "--quiet"])

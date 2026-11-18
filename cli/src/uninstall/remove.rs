@@ -292,8 +292,15 @@ pub(super) fn strip_path_line(profile: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
-async fn helper(program: &Path, args: &[&str], within: Duration) -> Result<(), String> {
-    let output = tokio::process::Command::new(program)
+async fn helper(
+    program: &Path,
+    command: io::Result<tokio::process::Command>,
+    args: &[&str],
+    within: Duration,
+) -> Result<(), String> {
+    let mut command =
+        command.map_err(|error| format!("cannot run {}: {error}", program.display()))?;
+    let output = command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -344,7 +351,14 @@ pub(super) async fn quit_apps(programs: &[Program], run: &mut Run) {
             .collect();
         let mut args = vec!["-l", "JavaScript", "-e", crate::app_install::QUIESCE];
         args.extend(paths.iter().map(String::as_str));
-        if let Err(problem) = helper(Path::new("/usr/bin/osascript"), &args, HELPER).await {
+        if let Err(problem) = helper(
+            Path::new("/usr/bin/osascript"),
+            Ok(crate::program::system_async("/usr/bin/osascript")),
+            &args,
+            HELPER,
+        )
+        .await
+        {
             run.problems
                 .push(format!("cannot quit the Koidrive app: {problem}"));
         }
@@ -358,7 +372,14 @@ async fn unregister_login_item(bundle: &Path, run: &mut Run) {
     if !app.is_file() {
         return;
     }
-    if let Err(problem) = helper(&app, &["--unregister-login-item"], HELPER).await {
+    if let Err(problem) = helper(
+        &app,
+        crate::program::found_async(&app),
+        &["--unregister-login-item"],
+        HELPER,
+    )
+    .await
+    {
         run.kept.push(Kept::LoginItem {
             path: bundle.display().to_string(),
             problem,
@@ -435,7 +456,7 @@ async fn remove_program(program: &Program, programs: &[Program], run: &mut Run) 
                 "koidrive".to_owned(),
             ];
             let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
-            match helper(brew, &args, HOMEBREW).await {
+            match helper(brew, crate::program::found_async(brew), &args, HOMEBREW).await {
                 Ok(()) => run.removed.push(Removed::Homebrew { argv }),
                 Err(problem) => {
                     run.problems.push(problem);

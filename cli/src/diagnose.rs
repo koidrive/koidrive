@@ -5,7 +5,6 @@ use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use koidrive_driver::{Credential, Paths};
@@ -206,7 +205,7 @@ fn bundle(
 fn system() -> String {
     let arch = std::env::consts::ARCH;
     if cfg!(target_os = "macos") {
-        let version = Command::new("sw_vers")
+        let version = crate::program::system("sw_vers")
             .arg("-productVersion")
             .output()
             .ok()
@@ -256,7 +255,7 @@ fn daemon_log(paths: &Paths) -> Result<String, String> {
         "--no-pager",
         "--quiet",
     ];
-    let output = Command::new("journalctl")
+    let output = crate::program::system("journalctl")
         .args(args)
         .output()
         .map_err(|error| format!("cannot run journalctl: {error}"))?;

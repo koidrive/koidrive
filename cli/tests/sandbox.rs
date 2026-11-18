@@ -314,6 +314,44 @@ fn every_program_a_test_runs_that_could_start_koi_is_sandboxed() {
 }
 
 #[test]
+fn every_program_koi_starts_goes_through_its_program_runner() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&src, &mut files);
+    let tests = |file: &Path| {
+        file.components().any(|part| part.as_os_str() == "tests")
+            || file.file_name().is_some_and(|name| name == "tests.rs")
+    };
+    let mut direct = Vec::new();
+    for file in files
+        .iter()
+        .filter(|file| !tests(file) && **file != src.join("program.rs"))
+    {
+        let text = std::fs::read_to_string(file).unwrap();
+        let code = text.split("#[cfg(test)]\nmod tests {").next().unwrap();
+        for (number, line) in code.lines().enumerate() {
+            let spawns = line.contains(concat!("Command", "::new("))
+                && !line.contains(concat!("clap::", "Command"));
+            let exempt = line.contains(concat!("configured", "_async("))
+                && !file.ends_with("app_install/macos/control.rs");
+            if spawns || exempt {
+                direct.push(format!(
+                    "{}:{}: {}",
+                    file.display(),
+                    number + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+    assert!(
+        direct.is_empty(),
+        "start these through crate::program, so that a test koi runs only programs inside its sandbox:\n{}",
+        direct.join("\n")
+    );
+}
+
+#[test]
 fn another_test_process_leaves_a_sandbox_whole_while_it_ends() {
     let test = "another_test_process_leaves_a_sandbox_whole_while_it_ends";
     if let Some(parent) = std::env::var_os("KOI_SANDBOX_TEST_PARENT") {

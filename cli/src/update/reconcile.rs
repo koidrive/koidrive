@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use koidrive_driver::Paths;
 use koidrive_ipc::Code;
 use semver::Version;
-use tokio::process::Command;
 
 use crate::error::CliError;
 use crate::report::{Done, UpdateResult, UpdatedData, Via};
@@ -318,13 +317,14 @@ pub(super) async fn reconcile_updated(
     binary.check(deadline).await?;
     let within = deadline.saturating_duration_since(tokio::time::Instant::now());
     let args = ["_reconcile", "--json"];
-    let mut command = Command::new(koi);
-    command.args(args);
-    let output = if within.is_zero() {
-        Ok(None)
-    } else {
-        (echo.run(command, within, Child::Reconcile).await)
-            .map(|output| output.map(|(status, printed, _)| (status, printed)))
+    let output = match crate::program::found_async(koi) {
+        _ if within.is_zero() => Ok(None),
+        Ok(mut command) => {
+            command.args(args);
+            (echo.run(command, within, Child::Reconcile).await)
+                .map(|output| output.map(|(status, printed, _)| (status, printed)))
+        }
+        Err(error) => Err(error),
     };
     let app = output
         .as_ref()

@@ -72,7 +72,7 @@ fn output_within(
 }
 
 pub fn version_of(binary: &Path) -> Option<Version> {
-    let mut command = Command::new(binary);
+    let mut command = crate::program::found(binary).ok()?;
     command.arg("--version").stderr(Stdio::null());
     let (status, printed) = output_within(&mut command, PROBE).ok()??;
     if !status.success() {
@@ -118,9 +118,13 @@ pub(super) async fn delegated(
         true => &["service", "start", "--json"],
         false => &["_reconcile", "--no-app", "--json"],
     };
-    let mut command = tokio::process::Command::new(binary);
-    command.args(args).stderr(Stdio::inherit());
-    let output = delegated_output(&mut command, within).await;
+    let output = match crate::program::found_async(binary) {
+        Ok(mut command) => {
+            command.args(args).stderr(Stdio::inherit());
+            delegated_output(&mut command, within).await
+        }
+        Err(error) => Err(error),
+    };
     delegated_report(manager, service, binary, args, within, output)
 }
 

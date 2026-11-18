@@ -159,7 +159,7 @@ pub(super) async fn open_browser(url: &Url) -> bool {
     } else {
         "xdg-open"
     };
-    let opened = tokio::process::Command::new(opener)
+    let opened = crate::program::system_async(opener)
         .arg(url.as_str())
         .stdin(Stdio::null())
         .stdout(Stdio::null())

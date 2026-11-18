@@ -3,7 +3,7 @@
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
 pub(super) fn write(path: &Path, text: &str) -> Result<bool, String> {
     if fs::read(path).is_ok_and(|old| old == text.as_bytes()) {
@@ -26,8 +26,8 @@ pub(super) fn remove_file(path: &Path) -> Result<(), String> {
     }
 }
 
-pub(super) fn run(program: &str, args: &[&str]) -> Result<Output, String> {
-    Command::new(program)
+pub(super) fn run(program: &'static str, args: &[&str]) -> Result<Output, String> {
+    crate::program::system(program)
         .args(args)
         .output()
         .map_err(|error| match error.kind() {
@@ -36,7 +36,7 @@ pub(super) fn run(program: &str, args: &[&str]) -> Result<Output, String> {
         })
 }
 
-pub(super) fn ok(program: &str, args: &[&str]) -> Result<String, String> {
+pub(super) fn ok(program: &'static str, args: &[&str]) -> Result<String, String> {
     let output = run(program, args)?;
     match output.status.success() {
         true => Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned()),

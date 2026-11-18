@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use koidrive_ipc::Code;
 use semver::Version;
-use tokio::process::Command;
 use url::Url;
 
 use crate::error::CliError;
@@ -55,7 +54,7 @@ pub(super) async fn installer(
         .tempfile()
         .and_then(|mut file| file.write_all(&script).map(|()| file))
         .map_err(|error| failed(format!("install.sh cannot be saved: {error}")))?;
-    let mut command = Command::new("/bin/sh");
+    let mut command = crate::program::system_async("/bin/sh");
     command
         .arg(file.path())
         .env("KOIDRIVE_INSTALL_DIR", dir)

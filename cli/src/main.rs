@@ -30,6 +30,7 @@ mod options;
 mod output;
 mod pairing;
 mod profile;
+mod program;
 mod report;
 mod request;
 mod resolve;

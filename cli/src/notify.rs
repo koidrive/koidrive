@@ -44,7 +44,7 @@ async fn send(title: &str, body: &str) {
         "display notification (item 2 of argv) with title (item 1 of argv)",
         "end run",
     ];
-    let mut command = tokio::process::Command::new("/usr/bin/osascript");
+    let mut command = crate::program::system_async("/usr/bin/osascript");
     for line in script {
         command.args(["-e", line]);
     }

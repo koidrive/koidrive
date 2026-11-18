@@ -5,7 +5,6 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 use tokio::sync::watch;
 use tokio::time::Instant;
 
@@ -127,7 +126,7 @@ pub(super) async fn process(
     control: &Control,
 ) -> Result<Vec<u8>, AppInstallError> {
     control.check()?;
-    let mut child = Command::new(program)
+    let mut child = crate::program::configured_async(program)
         .args(args)
         .env("LC_ALL", "C")
         .stdin(Stdio::null())

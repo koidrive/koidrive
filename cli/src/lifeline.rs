@@ -17,6 +17,7 @@ pub(crate) const LIFELINE: &str = "KOIDRIVE_TEST_LIFELINE";
 pub(crate) const INVENTORY: &str = "KOIDRIVE_TEST_INSTALL_INVENTORY";
 
 static SANDBOX: OnceLock<PathBuf> = OnceLock::new();
+static ITSELF: OnceLock<PathBuf> = OnceLock::new();
 
 enum Refusal {
     Ended,
@@ -79,30 +80,32 @@ fn tie(dir: &Path) -> Result<(File, File), Refusal> {
             root.display()
         )));
     }
+    if let Ok(itself) = std::env::current_exe().and_then(fs::canonicalize) {
+        let _ = ITSELF.set(itself);
+    }
     let _ = SANDBOX.set(root);
     Ok((alive, held))
 }
 
 pub(crate) fn confine(path: &Path) -> io::Result<()> {
-    refuse_outside("change", path, || {
+    refuse_outside("change", path, |root| {
         (path.parent().zip(path.file_name()))
             .and_then(|(parent, name)| Some(resolved(parent)?.join(name)))
+            .is_some_and(|entry| entry.starts_with(root))
     })
 }
 
 pub(crate) fn confine_program(path: &Path) -> io::Result<()> {
-    refuse_outside("run", path, || resolved(path))
+    refuse_outside("run", path, |root| {
+        resolved(path).is_some_and(|real| real.starts_with(root) || ITSELF.get() == Some(&real))
+    })
 }
 
-fn refuse_outside(
-    act: &str,
-    path: &Path,
-    real: impl FnOnce() -> Option<PathBuf>,
-) -> io::Result<()> {
+fn refuse_outside(act: &str, path: &Path, allowed: impl FnOnce(&Path) -> bool) -> io::Result<()> {
     let Some(root) = SANDBOX.get() else {
         return Ok(());
     };
-    match path.is_absolute() && real().is_some_and(|real| real.starts_with(root)) {
+    match path.is_absolute() && allowed(root) {
         true => Ok(()),
         false => Err(io::Error::new(
             ErrorKind::PermissionDenied,

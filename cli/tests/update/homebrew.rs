@@ -878,3 +878,32 @@ fn adversarial_b_brew_failing_after_it_upgraded_koi_still_moves_the_service() {
         "koi 99.0.0 is installed but the service was never handed to it; koi calls: {calls:?}"
     );
 }
+
+#[test]
+fn koi_update_never_runs_a_homebrew_koi_outside_its_sandbox() {
+    let home = Sandbox::new();
+    let github = github("v99.0.0");
+    let link = homebrew_binary(home.path(), false);
+    let outside = tempfile::tempdir().unwrap();
+    let ran = outside.path().join("ran");
+    let real = outside.path().join("koi");
+    executable(
+        &real,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in\n--version) echo 'koi 99.0.0' ;;\n_reconcile) echo '{REPORT}' ;;\nesac\n",
+            ran.display()
+        ),
+    );
+    let opt = home.path().join("brew/opt/koidrive");
+    std::fs::remove_file(&opt).unwrap();
+    std::fs::create_dir_all(opt.join("bin")).unwrap();
+    std::os::unix::fs::symlink(&real, opt.join("bin/koi")).unwrap();
+    let output = koi_at(&link, home.path(), &github, &["update", "--json"])
+        .output()
+        .unwrap();
+    if development_update(&output, home.path(), &github) {
+        return;
+    }
+    let calls = std::fs::read_to_string(&ran).unwrap_or_default();
+    assert!(calls.is_empty(), "outside koi ran: {calls:?}");
+}
