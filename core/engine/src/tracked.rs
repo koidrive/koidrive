@@ -243,7 +243,6 @@ impl<K: Ord + Clone, V: Clone + PartialEq> TrackedMap<K, V> {
         Some((value, changed))
     }
 
-    /// Inserts `value` without recording a change, for a value the store holds already in this form.
     pub fn insert_quietly(&mut self, key: K, value: V) -> Option<V> {
         self.map.insert(key, value)
     }

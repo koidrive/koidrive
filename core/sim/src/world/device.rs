@@ -53,7 +53,7 @@ impl Engine {
     pub fn new(root: &str, history: &str, seed: u64) -> Self {
         let ids = IdGen::new(seed);
         let mut trees = Trees::new(root);
-        trees.journal_mut().seed(ids.state);
+        trees.journal_mut().seed(&ids);
         trees.take_changes();
         Self {
             trees,

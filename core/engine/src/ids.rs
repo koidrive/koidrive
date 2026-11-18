@@ -14,7 +14,6 @@ pub fn uuid_v7(unix_ms: u64, random: u128) -> String {
     )
 }
 
-/// The 128 bits of [`uuid_v7`], most significant first.
 pub fn uuid_v7_bits(unix_ms: u64, random: u128) -> u128 {
     (u128::from(unix_ms & 0xffff_ffff_ffff) << 80)
         | (0x7 << 76)

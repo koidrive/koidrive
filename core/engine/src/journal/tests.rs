@@ -25,7 +25,7 @@ fn held(n: u8, at: i64) -> FieldIntent {
     FieldIntent {
         id: id(n),
         author: "d1".into(),
-        carried: false,
+        replay: false,
         applied_at_ms: at,
     }
 }
@@ -93,7 +93,7 @@ fn field_intents_round_trip_through_the_wire_message() {
         place: Some(held(1, 5)),
         content: None,
         status: Some(FieldIntent {
-            carried: true,
+            replay: true,
             ..held(2, 6)
         }),
     };
@@ -378,13 +378,13 @@ fn replacing_computed_ids_reaches_rows_history_and_seen_lists() {
 fn the_generator_is_its_own_stream_and_survives_a_restore() {
     let mut engine = IdGen::new(42);
     let mut journal = Journal::default();
-    journal.seed(engine.state);
+    journal.seed(&engine);
     engine.next_u64();
     let mut earlier: Vec<String> = (0..64).map(|_| engine.uuid_v7(0)).collect();
     let minted: Vec<IntentId> = (0..64).map(|_| journal.mint()).collect();
     earlier.extend(minted.iter().map(IntentId::to_string));
     let mut restored = Journal::restore(journal.state(whole));
-    restored.seed(IdGen::new(42).state);
+    restored.seed(&IdGen::new(42));
     let next = restored.mint().to_string();
     assert!(!earlier.contains(&next), "{next}");
     assert_eq!(earlier.iter().collect::<BTreeSet<_>>().len(), earlier.len());
