@@ -114,7 +114,7 @@ fn a_link_admits_the_token_it_wrote_or_is_writing_and_any_before_its_first() {
 }
 
 #[test]
-fn a_marker_keeps_the_latest_tokens_it_replaced_only_while_its_link_vouches_for_it() {
+fn a_marker_keeps_the_latest_tokens_it_replaced_only_while_its_link_recorded_its_token() {
     let recorded = |current: &str| RootTokens {
         current: Some(current.into()),
         pending: None,
@@ -130,9 +130,15 @@ fn a_marker_keeps_the_latest_tokens_it_replaced_only_while_its_link_vouches_for_
     assert_eq!(marker.earlier, latest);
     assert!(recorded("1").precede(&marker));
     assert!(!recorded("0").precede(&marker));
-    let restored = marker.rotated("next", &recorded("5"));
-    assert_eq!(restored.earlier.last(), marker.token.as_ref());
-    for stranger in [recorded("0"), RootTokens::default()] {
+    let pending = RootTokens {
+        current: None,
+        pending: marker.token.clone(),
+    };
+    assert_eq!(
+        marker.rotated("next", &pending).earlier.last(),
+        marker.token.as_ref()
+    );
+    for stranger in [recorded("5"), recorded("0"), RootTokens::default()] {
         assert!(marker.rotated("next", &stranger).earlier.is_empty());
     }
 }

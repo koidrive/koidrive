@@ -934,8 +934,10 @@ enum Standing {
 
 fn standing(found: &Marker, tokens: &RootTokens, effects: &Effects) -> Result<Standing, Stop> {
     let (marker, cleared) = (found.effects, effects.cleared());
+    if marker > cleared + effects.in_flight().len() as u64 {
+        return Ok(Standing::StoreOlder);
+    }
     match tokens.admits(found) {
-        Ok(()) if marker > cleared + effects.in_flight().len() as u64 => Ok(Standing::StoreOlder),
         Ok(()) if marker < cleared => Err(Stop::DiskBehind { marker, cleared }),
         Ok(()) => Ok(Standing::Current),
         Err(RootProblem::Copy) if marker >= cleared && tokens.precede(found) => {

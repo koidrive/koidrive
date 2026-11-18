@@ -38,9 +38,9 @@ pub struct Marker {
     /// `None` in a marker from a build without tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
-    /// The tokens `token` replaced while this link vouched for the folder,
-    /// oldest first, at most [`EARLIER_TOKENS`]. Empty after a relink and in
-    /// a marker from a build without them.
+    /// The tokens `token` replaced, oldest first, at most [`EARLIER_TOKENS`],
+    /// each one a token the link that replaced it had recorded. Empty after a
+    /// relink and in a marker from a build without them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub earlier: Vec<String>,
 }
@@ -48,12 +48,12 @@ pub struct Marker {
 pub const EARLIER_TOKENS: usize = 128;
 
 impl Marker {
-    /// This marker with `next` as its token. It keeps the token it replaces
-    /// among the earlier ones only when `tokens` recorded that token or
-    /// [`RootTokens::precede`] this marker, and otherwise carries none.
+    /// This marker with `next` as its token. It keeps its earlier tokens and
+    /// the one it replaces only when `tokens` recorded that one, and
+    /// otherwise carries none.
     pub fn rotated(&self, next: &str, tokens: &RootTokens) -> Marker {
         let earlier = match &self.token {
-            Some(token) if tokens.vouch_for(self) => {
+            Some(token) if tokens.recorded(token) => {
                 let dropped = (self.earlier.len() + 1).saturating_sub(EARLIER_TOKENS);
                 (self.earlier[dropped..].iter().chain([token]).cloned()).collect()
             }
@@ -99,14 +99,6 @@ impl RootTokens {
     /// recorded: that token is among the ones `marker` replaced.
     pub fn precede(&self, marker: &Marker) -> bool {
         marker.earlier.iter().any(|token| self.recorded(token))
-    }
-
-    fn vouch_for(&self, marker: &Marker) -> bool {
-        marker
-            .token
-            .as_ref()
-            .is_some_and(|token| self.recorded(token))
-            || self.precede(marker)
     }
 
     fn recorded(&self, token: &str) -> bool {

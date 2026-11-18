@@ -817,10 +817,15 @@ fn a_copy_another_link_carried_halts_when_it_comes_back() {
     let (site, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site.root.join("kept.txt"), b"kept");
     drop(a);
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("theirs.txt"), b"theirs");
+    drop(b);
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    drop(a);
     let copy = site.root.with_file_name("copy");
     copy_folder(&site.root, &copy);
-    let (other, b) = linked(&mut remote, "b");
-    drop(b);
     for _ in 0..8 {
         drop(restarted(&other, &mut remote));
     }
@@ -832,6 +837,7 @@ fn a_copy_another_link_carried_halts_when_it_comes_back() {
     let mut a = restarted(&site, &mut remote);
     a.create(&mut remote, &site.root.join("after.txt"), b"after");
     drop(a);
+    assert_eq!(marker_of(&other).effects, site.stored().effects.cleared());
     fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
     fs::rename(&copy, &site.root).unwrap();
     assert!(halts_as_a_copy(&site));
@@ -843,11 +849,20 @@ fn a_marker_two_links_share_halts_whichever_finds_the_others_and_writes_nothing(
     let (first, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &first.root.join("one.txt"), b"one");
     drop(a);
-    let (second, b) = linked(&mut remote, "b");
+    let (second, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &second.root.join("two.txt"), b"two");
     drop(b);
+    let mut a = restarted(&first, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    drop(a);
     for _ in 0..8 {
         drop(restarted(&second, &mut remote));
     }
+    assert_eq!(
+        first.stored().effects.cleared(),
+        second.stored().effects.cleared()
+    );
     for _ in 0..2 {
         for (from, to) in [(&second, &first), (&first, &second)] {
             let own = fs::read(marker_file(to)).unwrap();
