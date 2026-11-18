@@ -1319,14 +1319,9 @@ fn a_node_deleted_after_the_rules_let_it_in_again_is_deleted() {
     for id in ["app", "dist", "log"] {
         trees.remove_local(id);
     }
-    let sent: BTreeSet<String> = (ops(&mut trees).into_iter())
-        .map(|op| format!("{op:?}"))
-        .collect();
-    let wanted: BTreeSet<String> = [delete("dist"), delete("log")]
-        .iter()
-        .map(|op| format!("{op:?}"))
-        .collect();
-    assert_eq!(sent, wanted);
+    let mut sent = ops(&mut trees);
+    sent.sort_by_key(|op| format!("{op:?}"));
+    assert_eq!(sent, [delete("dist"), delete("log")]);
     assert_eq!(effects(&mut trees), []);
 }
 

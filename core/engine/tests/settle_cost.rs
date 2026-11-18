@@ -72,9 +72,11 @@ fn median(trees: &mut Trees, mut change: impl FnMut(&mut Trees, usize)) -> Durat
 
 fn report(trees: &mut Trees, nodes: usize, label: &str) {
     let idle = median(trees, |_, _| {});
-    let one_file = median(trees, |trees, round| {
+    let one_file = median(trees, |trees, _| {
         let mut node = trees.local().get("w0").unwrap().clone();
-        node.shape.content = shape(ROOT, "w0", Kind::File, 2 + (round % 2) as u8).content;
+        let edited = shape(ROOT, "w0", Kind::File, 2).content;
+        let digest = if node.shape.content == edited { 3 } else { 2 };
+        node.shape.content = shape(ROOT, "w0", Kind::File, digest).content;
         trees.set_local_changed("w0".into(), node);
     });
     let mut stderr = std::io::stderr();
@@ -92,6 +94,7 @@ fn report(trees: &mut Trees, nodes: usize, label: &str) {
 fn settle_cost_while_the_rules_leave_out_a_large_folder() {
     let nodes: usize =
         std::env::var("KOIDRIVE_BENCH_NODES").map_or(110_000, |nodes| nodes.parse().unwrap());
+    assert!(nodes >= 102, "KOIDRIVE_BENCH_NODES must be at least 102");
     let mut trees = Trees::new(ROOT);
     for file in 0..100 {
         add(

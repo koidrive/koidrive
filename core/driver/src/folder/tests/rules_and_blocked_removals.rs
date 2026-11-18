@@ -1217,7 +1217,7 @@ fn a_build_folder_rebuilt_with_the_same_files_while_excluded_sends_nothing_when_
     assert_eq!(files(&site.root), synced);
 }
 
-fn rebuilt_under_another_spelling(server_name: &str, local_name: &str) {
+fn rebuilt_under_another_spelling(server_name: &str, local_name: &str, synced_name: &str) {
     let mut remote = Remote::new();
     let (site, mut b) = linked(&mut remote, "b");
     fs::create_dir(site.root.join("dist")).unwrap();
@@ -1226,6 +1226,7 @@ fn rebuilt_under_another_spelling(server_name: &str, local_name: &str) {
     b.rest(&mut remote);
     drop(b);
     let server = remote.tree();
+    let id = server[&format!("dist/{server_name}")].clone();
     let mut b = started(&site, &mut remote, &dist_left_out());
     fs::remove_dir_all(site.root.join("dist")).unwrap();
     b.rescan();
@@ -1251,16 +1252,21 @@ fn rebuilt_under_another_spelling(server_name: &str, local_name: &str) {
         server.into_values().collect::<Vec<_>>(),
         "the rebuilt file is the server's node"
     );
+    assert_eq!(
+        remote.tree().into_keys().collect::<Vec<_>>(),
+        ["dist".to_owned(), format!("dist/{synced_name}")]
+    );
+    assert_eq!(server_size(&remote, &id), "rebuilt".len() as u64);
 }
 
 #[test]
 fn a_file_rebuilt_while_excluded_with_its_name_in_another_case_replaces_the_server_copy() {
-    rebuilt_under_another_spelling("f0.docx", "F0.docx");
+    rebuilt_under_another_spelling("f0.docx", "F0.docx", "F0.docx");
 }
 
 #[test]
 fn a_file_rebuilt_while_excluded_with_its_name_in_another_normalization_replaces_the_server_copy() {
-    rebuilt_under_another_spelling("caf\u{e9}.docx", "cafe\u{301}.docx");
+    rebuilt_under_another_spelling("caf\u{e9}.docx", "cafe\u{301}.docx", "caf\u{e9}.docx");
 }
 
 fn relinked(site: &Site, remote: &Remote) -> Site {
