@@ -212,12 +212,13 @@ class TestLines(unittest.TestCase):
 
     def test_a_file_production_also_reaches_stays_implementation(self):
         counts = self.counts({
+            "core/a/benches/speed.rs": '#[path = "../src/shared.rs"]\nmod shared;\n',
             "core/a/src/lib.rs": "mod production;\n#[cfg(test)]\nmod validation;\n",
             "core/a/src/production.rs": '#[path = "shared.rs"]\nmod shared;\n',
             "core/a/src/validation.rs": '#[path = "shared.rs"]\nmod shared;\n',
             "core/a/src/shared.rs": self.lines(10),
         })
-        self.assertEqual((counts["test"], counts["implementation"]), (4, 13))
+        self.assertEqual((counts["test"], counts["implementation"]), (6, 13))
 
     def test_grandchildren_of_an_out_of_line_test_module_are_test_code(self):
         after = {

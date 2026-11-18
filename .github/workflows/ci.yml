@@ -75,7 +75,7 @@ jobs:
             echo "$EVENT run: every Linux and macOS job runs, so a run on main saves every Rust cache that pull requests and the merge queue restore."
             {
               echo "site_only=false"
-              printf '%s=true\n' rust rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration rust_macos server_macos spec_macos macos_app
+              printf '%s=true\n' rust rust_driver rust_engine rust_sim server server_deploy net_integration driver_integration cli_integration ffi_integration test_lines rust_macos server_macos spec_macos macos_app
               echo 'rust_suites=["driver","engine","sim"]'
             } >> "$GITHUB_OUTPUT"
             exit 0
