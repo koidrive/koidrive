@@ -334,6 +334,14 @@ fn a_node_moved_into_a_merged_folder_follows_it_on_disk() {
 }
 
 #[test]
+fn an_edited_file_purged_remotely_settles_as_the_copy_the_server_makes() {
+    let seed = [act(1, 0, 0, 0, 0)];
+    let local = [act(2, 0, 0, 0, 1)];
+    let remote = [act(7, 0, 0, 0, 0), act(7, 0, 0, 0, 0)];
+    run(&seed, &local, &remote, MAX_OPS, false, &[]).unwrap();
+}
+
+#[test]
 fn an_edited_renamed_file_deleted_remotely_is_uploaded_as_a_new_file() {
     let seed = vec![Action {
         kind: 1,
