@@ -1692,7 +1692,9 @@ fn attack_r10_inner_folder_made_again_while_stopped() {
     r10_clean(&site, &b, &remote, &["app/sub/.env"]);
 }
 
-fn r11_kept_env_leaves_while_its_folder_is_removed(leave: impl Fn(&Path) + Send + 'static) -> (Remote, Site, Device) {
+fn r11_kept_env_leaves_while_its_folder_is_removed(
+    leave: impl Fn(&Path) + Send + 'static,
+) -> (Remote, Site, Device) {
     let (mut remote, site_a, mut a, site, mut b) = r9_taken_over_without_rules();
     fs::create_dir(site.root.join("app/sub")).unwrap();
     fs::write(site.root.join("app/sub/lib.rs"), b"synced").unwrap();
@@ -1726,7 +1728,11 @@ fn attack_r11_kept_env_moved_out_while_its_folder_is_removed() {
     r9_round(&mut b, &mut remote);
     r9_round(&mut b, &mut remote);
     let report = r9_report(&site, &b, &remote);
-    assert_eq!(fs::read(site.root.join("moved.env")).unwrap(), b"SECRET=kept", "{report}");
+    assert_eq!(
+        fs::read(site.root.join("moved.env")).unwrap(),
+        b"SECRET=kept",
+        "{report}"
+    );
     assert!(!site.root.join("app/sub").exists(), "{report}");
     assert!(remote.tree().is_empty(), "{report}");
     assert_eq!(b.folder.engine.trees.kept_entry_paths(), [vec!["moved.env"]], "{report}");
@@ -1741,6 +1747,9 @@ fn attack_r11_kept_env_deleted_while_its_folder_is_removed() {
     let report = r9_report(&site, &b, &remote);
     assert!(!site.root.join("app").exists(), "{report}");
     assert!(remote.tree().is_empty(), "{report}");
-    assert!(b.folder.engine.trees.kept_entry_paths().is_empty(), "{report}");
+    assert!(
+        b.folder.engine.trees.kept_entry_paths().is_empty(),
+        "{report}"
+    );
     assert_eq!(b.folder.view().problem, None, "{report}");
 }

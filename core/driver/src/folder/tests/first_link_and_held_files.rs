@@ -240,8 +240,16 @@ fn a_stuck_folder_the_person_deletes_drops_its_failure_entries() {
     fs::remove_dir_all(site.root.join("held")).unwrap();
     b.settle();
     b.run(&mut remote);
-    assert!(b.folder.stuck_effects.is_empty(), "{:?}", b.folder.stuck_effects);
-    assert!(b.folder.effect_failures.is_empty(), "{:?}", b.folder.effect_failures);
+    assert!(
+        b.folder.stuck_effects.is_empty(),
+        "{:?}",
+        b.folder.stuck_effects
+    );
+    assert!(
+        b.folder.effect_failures.is_empty(),
+        "{:?}",
+        b.folder.effect_failures
+    );
 }
 
 #[test]
