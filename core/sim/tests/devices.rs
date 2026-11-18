@@ -1161,6 +1161,52 @@ fn a_write_a_rewind_took_comes_back_beside_the_later_write_when_a_user_publishes
 }
 
 #[test]
+fn a_name_a_user_kept_after_a_rollback_goes_with_the_file_onto_its_conflict_copy() {
+    let phases = vec![
+        vec![
+            (0, Step::CopyStore),
+            (0, user(1, 0, 0, "b")),
+            (0, user(0, 0, 0, "a")),
+            (0, Step::Backup),
+        ],
+        vec![
+            (0, Step::Restore),
+            (1, Step::CopyStore),
+            (0, Step::RollBack),
+            (1, user(2, 860696635666478654, 0, "a")),
+        ],
+        vec![
+            (1, Step::RollBack),
+            (1, Step::Work(0)),
+            (1, Step::Connect),
+            (1, Step::Deliver(0)),
+            (1, Step::Answer(0)),
+        ],
+    ];
+    for intents in [false, true] {
+        FIELD_INTENTS.set(intents);
+        let world = converge(3, &phases).unwrap();
+        let mut files: Vec<(String, i64)> = (world.space().nodes().into_iter())
+            .filter(|node| node.status == NodeStatus::Live as i32)
+            .filter_map(|node| Some((node.name, tag(&node.current?.content?))))
+            .collect();
+        files.sort();
+        let copy = "b (conflict from device-1 2026-11-09)";
+        let twice = format!("{copy} (conflict from device-1 2026-11-09)");
+        let kept = match intents {
+            false => vec![("b".to_owned(), 1), (copy.to_owned(), 2), (twice, 2)],
+            true => vec![
+                ("b".to_owned(), 1),
+                (copy.to_owned(), 2),
+                (format!("{copy} (conflict from device-1 2026-11-09 2)"), 2),
+                (twice, 1),
+            ],
+        };
+        assert_eq!(files, kept, "intents {intents}");
+    }
+}
+
+#[test]
 #[ignore = "a device goes quiet out of sync after a rewind, or keeps a write off the server while it waits (GUN-551)"]
 fn rewinds_converge_from_the_saved_gun_551_cases() {
     converges_from_saved_cases(
