@@ -15,7 +15,7 @@ import { type Field, legacyIntentId, legacyPlaceKey, type LostChangeRule } from 
 import { getNode, nodeState } from "../src/space/store";
 import legacyVectors from "../../spec/vectors/legacy-intents.json";
 import { pageWithoutIntents, restoreFromR2, serverState, snapshotWithoutIntents } from "./export-reader";
-import { client, content, freezeClock, newSpace, op, revertIntentsMigration, runSpaceAlarm, type TestClient } from "./helpers";
+import { client, content, freezeClock, newSpace, op, revertIntentsMigration, runSpaceAlarm, type TestClient, unknownOutcome } from "./helpers";
 
 type Space = Awaited<ReturnType<typeof newSpace>>;
 type IntentInit = { id?: Uint8Array; author?: string; replay?: boolean; over?: Uint8Array; appliedAtMs?: bigint };
@@ -939,6 +939,24 @@ describe("RFC 0029 section 7.2: legacy intents", () => {
     for (const minutes of [2, 3, 4, 5]) await runSpaceAlarm(space.stub, exportAt + minutes * 60_000, { pageNodes: 2 });
     const restored = await restoreFromR2(space.spaceId);
     expect(restored.manifest!.start_seq).toBe((await serverState(space.stub)).headSeq);
+    expect(restored.nodes).toEqual((await serverState(space.stub)).nodes);
+  });
+
+  it("keeps the pages of a snapshot whose manifest write had an unknown outcome when the backfill ran", async () => {
+    const { space, a, root } = await setup();
+    const now = Date.now();
+    await setClock(space, now);
+    for (const name of ["one", "two", "three", "four"]) await a.commit([op.mkdir(uuidv7(), root, name)]);
+    const exportAt = now + DAY_MS + 10 * 60_000;
+    await runSpaceAlarm(space.stub, exportAt, { pageNodes: 2, intercept: unknownOutcome((key) => key.endsWith("/manifest.json"), true) });
+    const published = await restoreFromR2(space.spaceId);
+    await revertIntentsMigration(space.stub);
+    await runSpaceAlarm(space.stub, exportAt + 2 * 60_000, { pageNodes: 2, intercept: async (key, put) => (key.endsWith("/manifest.json") ? Promise.reject(new Error("R2 is down")) : put()) });
+    expect((await restoreFromR2(space.spaceId)).manifest).toEqual(published.manifest);
+    await a.commit([op.mkdir(uuidv7(), root, "five")]);
+    for (const minutes of [10, 11, 12]) await runSpaceAlarm(space.stub, exportAt + minutes * 60_000, { pageNodes: 2 });
+    const restored = await restoreFromR2(space.spaceId);
+    expect(restored.manifest!.start_seq).toBe(published.manifest!.start_seq + 1);
     expect(restored.nodes).toEqual((await serverState(space.stub)).nodes);
   });
 
