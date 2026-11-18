@@ -137,7 +137,6 @@ const CLOSED_RECHECK_MS = 10 * 60_000;
 const EXPORT_RETRY_MS = 60_000;
 const MAX_PARKED_BYTES = 8192;
 const USAGE_GRACE_MS = 60_000;
-const GAUGES_HINT_MS = 60_000;
 
 export type Role = "owner" | "editor" | "viewer";
 
@@ -346,7 +345,6 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     protected readonly traffic = new UsageTally(() => this.clock(), "do_space_active_ms");
     private usageArmed = false;
     private storedHour: number | undefined;
-    private gaugesHintedMs: number | undefined;
     private exporting: Promise<void> | undefined;
     private alarmStale = false;
     private bookmarking: Promise<void> = Promise.resolve();
@@ -815,13 +813,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     protected async ended(event: string, args: unknown[], replying: boolean): Promise<void> {
       if (this.traffic.reporting !== true) return;
       this.traffic.lapse();
-      if (replying) {
-        const nowMs = this.clock();
-        if (this.storedHour === Math.floor(nowMs / HOUR_MS) || nowMs - (this.gaugesHintedMs ?? -Infinity) < GAUGES_HINT_MS) return;
-        this.gaugesHintedMs = nowMs;
-        this.traffic.gaugesDue = true;
-        return;
-      }
+      if (replying) return;
       this.noteStored();
       const nowMs = this.clock();
       const open = this.state.getWebSockets().filter((ws) => ws.readyState === WebSocket.OPEN);
@@ -887,11 +879,10 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (batch && target) this.park(target, batch);
     }
 
-    noteStored(): void {
+    private noteStored(): void {
       const nowMs = this.clock();
       const hour = Math.floor(nowMs / HOUR_MS);
-      if (this.traffic.reporting !== true || this.storedHour === hour) return;
-      this.traffic.gaugesDue = false;
+      if (this.storedHour === hour) return;
       this.storedHour = hour;
       const day = Math.floor(nowMs / DAY_MS);
       const cached = getMeta(this.sql, "r2_stored");

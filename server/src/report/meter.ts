@@ -142,7 +142,6 @@ export const CARRIED_HEADER = "Koidrive-Carried";
 
 export interface MeteredCall {
   keep?: boolean;
-  gauges?: boolean;
 }
 
 export type Ended = (event: string, args: unknown[], replying: boolean) => Promise<void> | void;
@@ -163,10 +162,8 @@ function rethrow({ name, message, overloaded, retryable }: Thrown): never {
   throw error;
 }
 
-function carriedBy(tally: UsageTally, gauges: boolean | undefined): Carried {
-  const gaugesDue = (gauges && tally.gaugesDue) || undefined;
-  if (gaugesDue) tally.gaugesDue = false;
-  return { usage: tally.take(), reporting: tally.reporting, startedMs: tally.startedMs, gaugesDue };
+function carriedBy(tally: UsageTally): Carried {
+  return { usage: tally.take(), reporting: tally.reporting, startedMs: tally.startedMs };
 }
 
 function withHeader(response: Response, headers: Headers): Response {
@@ -190,7 +187,7 @@ export async function meteredReply(object: object, kind: ObjectKind, tally: Usag
     if (call.keep) tally.keep();
     tally.leave();
   }
-  return { value: result, thrown, ...carriedBy(tally, call.gauges) };
+  return { value: result, thrown, ...carriedBy(tally) };
 }
 
 export function meteredObject<T extends object>(object: T, kind: ObjectKind, tally: UsageTally, ended: Ended): T {
@@ -218,7 +215,7 @@ export function meteredObject<T extends object>(object: T, kind: ObjectKind, tal
         if (!replying) return result;
         const response = thrown ? new Response(null, { status: 500 }) : (result as Response);
         const headers = new Headers(response.headers);
-        headers.set(CARRIED_HEADER, JSON.stringify({ thrown, ...carriedBy(tally, true) }));
+        headers.set(CARRIED_HEADER, JSON.stringify({ thrown, ...carriedBy(tally) }).replace(/[\u007f-\uffff]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`));
         return withHeader(response, headers);
       };
     },

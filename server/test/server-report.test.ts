@@ -19,7 +19,7 @@ import {
 import { ClientMessageSchema, RpcRequestSchema, RpcResponseSchema, type ServerMessage, ServerMessageSchema } from "../src/gen/koidrive/v1/messages_pb";
 import { ChunkBundleResultSchema, ChunkBundleSchema } from "../src/gen/koidrive/v1/rpc_pb";
 import { estimateMonthlyCost } from "../src/report/cost";
-import { CARRIED_HEADER, countedBucket, countedEgress, countedState, meteredObject, meteredReply, meteredStub, type Reply } from "../src/report/meter";
+import { CARRIED_HEADER, countedBucket, countedEgress, countedState, meteredObject, meteredReply, meteredStub } from "../src/report/meter";
 import { reportBatch } from "../src/report/payload";
 import type { SpaceDO } from "../src/space-do";
 import { uuidv7 } from "../src/ids";
@@ -158,6 +158,21 @@ async function watchUsage() {
     prototype.recordUsage = original;
   });
   return { calls, failures, stored, delay, hooks };
+}
+
+async function watchScans(stub: SpaceStub) {
+  const scans: string[] = [];
+  await runInDurableObject(stub, (instance: SpaceDO, state) => {
+    Object.assign(instance, { storedHour: undefined });
+    state.storage.sql.exec("DELETE FROM meta WHERE key = 'r2_stored'");
+    const sql = Object.getPrototypeOf(state.storage.sql) as { exec(this: unknown, query: string, ...bindings: unknown[]): unknown };
+    const exec = sql.exec;
+    vi.spyOn(sql, "exec").mockImplementation(function (this: unknown, query: string, ...bindings: unknown[]) {
+      if (query.includes("FROM chunks WHERE state != ?")) scans.push("scan");
+      return exec.call(this, query, ...bindings);
+    });
+  });
+  return scans;
 }
 
 async function useClock(stub: SpaceStub, now: () => number) {
@@ -627,6 +642,7 @@ describe("hourly server report", () => {
     for (let reqId = 1n; reqId <= 2n; reqId++) {
       expect((await post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId, call: { case: "listTree", value: {} } }), owner.access!.token)).status).toBe(200);
     }
+    expect(await runDurableObjectAlarm(spaceStub(spaceId))).toBe(true);
     await vi.waitFor(async () => {
       const usages = (await storedHours()).map((row) => JSON.parse(String(row.usage)) as Usage);
       expect(usages.flatMap((usage) => Object.keys(usage.counts))).toEqual(expect.arrayContaining(["post_spaces.201", "rpc_list_tree.ok"]));
@@ -853,40 +869,37 @@ describe("hourly server report", () => {
     expect(before[0]).not.toHaveProperty("usage");
   });
 
-  it("hands a Space DO's counts from each HTTP RPC back to the Worker in its reply, and its stored sizes through one call the Worker makes after the reply, and calls and arms nothing itself", async () => {
+  it("hands a Space DO's counts from each HTTP RPC back to the Worker in its reply, counts no stored sizes for it, and calls and arms nothing itself", async () => {
     const { owner, spaceId, stub } = await reportingSpace();
     const usage = await watchUsage();
+    const scans = await watchScans(stub);
     for (let reqId = 1n; reqId <= 3n; reqId++) {
       expect((await post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId, call: { case: "listTree", value: {} } }), owner.access!.token)).status).toBe(200);
     }
-    await vi.waitFor(async () => expect((await storedTotal()).billing.do_space_requests).toBe(4));
-    expect(usage.stored.map((object) => object.object)).toContain(stub.id.toString());
+    await vi.waitFor(async () => expect((await storedTotal()).billing.do_space_requests).toBe(3));
+    expect(scans).toEqual([]);
+    expect(usage.stored.map((object) => object.object)).not.toContain(stub.id.toString());
     expect(await usageDueMs(stub)).toBeUndefined();
     expect(usage.calls.filter((hours) => Object.values(hours).every((counted) => Object.keys(counted.counts).length === 0))).toEqual([]);
   });
 
-  it("counts a Space DO's stored chunks only after the reply to its first HTTP RPC of a day, and the stored sizes still reach the report", async () => {
+  it("notes the stored sizes of a Space DO that only HTTP RPCs reach when its daily gc alarm runs, and hands them to the Account DO", async () => {
     const { owner, spaceId, stub } = await reportingSpace();
-    UsageTally.batchMs = 0;
-    restorers.push(() => {
-      UsageTally.batchMs = BATCH_MS;
-    });
     await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("DELETE FROM object_usage"));
-    const order: string[] = [];
-    await runInDurableObject(stub, (instance: object, state) => {
-      (instance as unknown as { storedHour: number | undefined }).storedHour = undefined;
-      state.storage.sql.exec("DELETE FROM meta WHERE key = 'r2_stored'");
-      const sql = Object.getPrototypeOf(state.storage.sql) as { exec(this: unknown, query: string, ...bindings: unknown[]): unknown };
-      const exec = sql.exec;
-      vi.spyOn(sql, "exec").mockImplementation(function (this: unknown, query: string, ...bindings: unknown[]) {
-        if (query.includes("FROM chunks WHERE state != ?")) order.push("scan");
-        return exec.call(this, query, ...bindings);
-      });
-    });
+    const scans = await watchScans(stub);
     expect((await post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId: 1n, call: { case: "listTree", value: {} } }), owner.access!.token)).status).toBe(200);
-    order.push("reply");
-    await vi.waitFor(() => expect(order).toEqual(["reply", "scan"]));
-    await vi.waitFor(async () => expect((await storedObjects()).find((row) => row.object === stub.id.toString())?.sql_bytes).toBeGreaterThan(0));
+    await vi.waitFor(async () => expect((await storedCounts())["rpc_list_tree.ok"]).toBe(1));
+    expect({ scans, stored: (await storedObjects()).map((row) => row.object) }).toEqual({ scans: [], stored: [] });
+    await runInDurableObject(stub, async (_instance, state) => {
+      state.storage.sql.exec("UPDATE schedule SET due_ms = ? WHERE task = 'gc'", Date.now());
+      await state.storage.setAlarm(Date.now());
+    });
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(scans).toEqual(["scan"]);
+    const stored = (await storedObjects()).find((row) => row.object === stub.id.toString());
+    expect(Number(stored?.sql_bytes)).toBeGreaterThan(0);
+    const gcDueMs = await runInDurableObject(stub, (_instance, state) => Number(state.storage.sql.exec("SELECT due_ms FROM schedule WHERE task = 'gc'").one().due_ms));
+    expect(gcDueMs).toBeGreaterThan(Date.now() + HOUR_MS);
   });
 
   it("counts each chunk a bundle stores as one R2 Class A write, as it counts a chunk uploaded alone", async () => {
@@ -1386,7 +1399,7 @@ describe("billing counts across evictions", () => {
     expect(await leftover(stub)).toEqual([null, null]);
   });
 
-  it("counts share-link calls, the Account DO's calls into an evicted Space DO, and the Worker's one call for its stored sizes", async () => {
+  it("counts share-link calls and the Account DO's calls into an evicted Space DO", async () => {
     const { owner, spaceId, stub } = await reportingSpace();
     await vi.waitFor(async () => expect((await storedCounts())["post_spaces.201"]).toBe(1));
     await clearHours();
@@ -1398,7 +1411,7 @@ describe("billing counts across evictions", () => {
       await evictDurableObject(account());
       expect((await exports.default.fetch(`${BASE}/v1/share/${created.message!.linkId}`)).status).toBe(200);
     }
-    await vi.waitFor(async () => expect((await storedTotal()).billing.do_space_requests).toBe(4));
+    await vi.waitFor(async () => expect((await storedTotal()).billing.do_space_requests).toBe(3));
     expect(await leftover(stub)).toEqual([null, null]);
   });
 
@@ -1639,26 +1652,25 @@ describe("replies carry their counts", () => {
     expect(await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("SELECT 1 FROM usage_hours").toArray().length)).toBe(1);
   });
 
-  it("asks the Worker for a Space DO's stored sizes in one reply an hour, however many RPCs answer at once", { timeout: 30_000 }, async () => {
+  it("returns a fetch's error with a message that is not ASCII in an ASCII header, which the stub throws again with the same message and the Worker never shows", { timeout: 30_000 }, async () => {
     const { owner, spaceId, stub } = await reportingSpace();
-    const hour = Math.floor(Date.now() / HOUR_MS);
-    const calls = { hints: 0, notes: 0 };
-    await runInDurableObject(stub, (instance: SpaceDO) => {
-      Object.assign(instance, { storedHour: hour - 1, gaugesHintedMs: undefined });
-      const prototype = Object.getPrototypeOf(instance) as { metered(method: string, args: unknown[], call?: unknown): Promise<Reply<unknown>> };
-      const metered = prototype.metered;
-      vi.spyOn(prototype, "metered").mockImplementation(async function (this: unknown, method: string, args: unknown[], call?: unknown) {
-        if (method === "noteStored") calls.notes++;
-        const reply = await metered.call(this, method, args, call);
-        if (reply.gaugesDue) calls.hints++;
-        return reply;
-      });
+    const message = "공간 없음 ✗";
+    const prototype = (await runInDurableObject(stub, (instance: SpaceDO) => Object.getPrototypeOf(instance))) as SpaceDO;
+    const fetch = prototype.fetch;
+    prototype.fetch = async () => {
+      throw new Error(message);
+    };
+    restorers.push(() => {
+      prototype.fetch = fetch;
     });
-    const replies = await Promise.all([1n, 2n, 3n, 4n, 5n, 6n].map((reqId) => listTree(owner, spaceId, reqId)));
-    expect(replies.map((reply) => reply.status)).toEqual([200, 200, 200, 200, 200, 200]);
-    expect(calls.hints).toBe(1);
-    await vi.waitFor(() => expect(calls.notes).toBe(calls.hints));
-    expect(await runInDurableObject(stub, (instance: object) => (instance as unknown as { storedHour: number }).storedHour)).toBe(hour);
+    const header = (await stub.fetch(`${BASE}/v1/spaces/${spaceId}/ws`)).headers.get(CARRIED_HEADER)!;
+    expect(header).toMatch(/^[\x20-\x7e]+$/);
+    expect((JSON.parse(header) as { thrown: { message: string } }).thrown.message).toBe(message);
+    await expect(meteredStub(stub, () => {}).fetch(`${BASE}/v1/spaces/${spaceId}/ws`)).rejects.toThrow(message);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const response = await exports.default.fetch(`${BASE}/v1/spaces/${spaceId}/ws`, { headers: { Authorization: "Bearer " + owner.access!.token } });
+    expect([response.status, response.headers.get(CARRIED_HEADER)]).toEqual([500, null]);
+    expect(logged.mock.calls.map((args) => args.map(String).join(" "))).toEqual(expect.arrayContaining([expect.stringContaining(message)]));
   });
 });
 

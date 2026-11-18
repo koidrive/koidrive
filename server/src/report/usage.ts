@@ -51,7 +51,6 @@ export interface Carried {
   usage?: UsageBatch;
   reporting?: boolean;
   startedMs?: number;
-  gaugesDue?: boolean;
 }
 
 export interface Counted {
@@ -106,7 +105,6 @@ export function nextHourMs(nowMs: number): number {
 export class UsageTally {
   static quietMs = QUIET_MS;
   static batchMs = BATCH_MS;
-  gaugesDue = false;
   private batch: UsageBatch | undefined;
   private kept: UsageBatch | undefined;
   private lastMs = 0;
