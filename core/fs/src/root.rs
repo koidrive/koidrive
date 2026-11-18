@@ -429,24 +429,19 @@ pub(crate) fn has_no_root_birth(dir: BorrowedFd<'_>, name: &OsStr, flags: AtFlag
     volume.is_ok_and(|stat| fat_kind(&stat).is_some())
 }
 
-/// udev keeps a `/dev/disk/by-uuid` link until it handles the event that
-/// removes its device, so a disk that reuses a device number can find the link
-/// of the disk before it. Linux raises a disk's `diskseq` for each new disk and
-/// media change, and udev links `/dev/disk/by-diskseq` only once it has handled
-/// the disk (<https://www.kernel.org/doc/Documentation/ABI/stable/sysfs-block>).
+/// udev keeps one `/dev/disk/by-uuid` link for every disk with that UUID, so
+/// the UUID comes from udev's record of the device number, which lists its
+/// properties and links (<https://github.com/systemd/systemd/blob/v255/src/libsystemd/sd-device/sd-device.c>).
+/// udev keeps a record until it handles the event that removes its device, so
+/// a disk that reuses a device number can find the record of the disk before
+/// it. Linux raises a disk's `diskseq` for each new disk and media change, and
+/// udev records the `/dev/disk/by-diskseq` link only once it has handled the
+/// disk (<https://www.kernel.org/doc/Documentation/ABI/stable/sysfs-block>).
 #[cfg(target_os = "linux")]
 fn udev_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
-    use std::os::unix::fs::{FileTypeExt, MetadataExt};
     let dev = stat_fd(dir).ok()?.dev;
-    let is_this_device = |path: &Path| {
-        std::fs::metadata(path)
-            .is_ok_and(|meta| meta.file_type().is_block_device() && meta.rdev() == dev)
-    };
-    let sys = Path::new("/sys/dev/block").join(format!(
-        "{}:{}",
-        rustix::fs::major(dev),
-        rustix::fs::minor(dev)
-    ));
+    let device = format!("{}:{}", rustix::fs::major(dev), rustix::fs::minor(dev));
+    let sys = Path::new("/sys/dev/block").join(&device);
     let read = |path: &Path| Some(std::fs::read_to_string(path).ok()?.trim().to_owned());
     let partition = read(&sys.join("partition"));
     let disk = if partition.is_some() {
@@ -458,14 +453,15 @@ fn udev_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
     if let Some(number) = partition {
         seq = format!("{seq}-part{number}");
     }
-    if !is_this_device(&Path::new("/dev/disk/by-diskseq").join(seq)) {
+    let record = std::fs::read_to_string(format!("/run/udev/data/b{device}")).ok()?;
+    let handled = format!("S:disk/by-diskseq/{seq}");
+    if !record.lines().any(|line| line == handled) {
         return None;
     }
-    std::fs::read_dir("/dev/disk/by-uuid")
-        .ok()?
-        .flatten()
-        .find(|link| is_this_device(&link.path()))
-        .and_then(|link| udev_id(link.file_name().to_str()?))
+    record
+        .lines()
+        .find_map(|line| line.strip_prefix("E:ID_FS_UUID="))
+        .and_then(udev_id)
 }
 
 /// libblkid prints a serial shorter than a UUID as the number, so its bytes are the reverse of the little-endian ones on disk.

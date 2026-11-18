@@ -216,10 +216,10 @@ impl Entry {
     fn is_back(&self, now: &Entry, plain: Option<VolumeId>) -> bool {
         match self.mount {
             Some(Mount::Volume(known)) => {
-                let birth = (self.id.birth_ns).zip(now.id.birth_ns);
+                let fat = plain.is_some_and(|plain| now.mount != Some(Mount::Volume(plain)));
                 (now.mount == Some(Mount::Volume(known)) || plain == Some(known))
                     && self.id.ino == now.id.ino
-                    && birth.is_none_or(|(was, is)| was == is)
+                    && (self.id.birth_ns == now.id.birth_ns || fat && now.id.birth_ns.is_none())
             }
             Some(Mount::Unidentified) => matches!(now.mount, Some(Mount::Volume(_))),
             None => now.mount.is_none(),
@@ -510,30 +510,33 @@ impl Scan<'_> {
             return Ok(());
         };
         let mut mount_root = None;
+        let mut locked = false;
         if entry.kind == EntryKind::Dir && stat.dev != dev {
-            let sub = match open_dir_at(dir, name) {
-                Ok(sub) => sub,
-                Err(err) if is_gone(&err) => return Err(Error::Changed),
-                Err(err) if denied(&err) => {
-                    self.unreadable.push(rel);
-                    return Ok(());
+            match open_dir_at(dir, name) {
+                Ok(sub) => {
+                    if !stat_fd(sub.as_fd())?.is_at(stat.dev, &entry.id) {
+                        return Err(Error::Changed);
+                    }
+                    let (mount, plain) = mount_at(sub.as_fd());
+                    entry.mount = Some(mount);
+                    if let Some(plain) = plain {
+                        self.plain_ids.insert(rel.clone(), plain);
+                    }
+                    mount_root = Some(sub);
                 }
+                Err(err) if is_gone(&err) => return Err(Error::Changed),
+                Err(err) if denied(&err) => locked = true,
                 Err(err) => return Err(err.into()),
-            };
-            if !stat_fd(sub.as_fd())?.is_at(stat.dev, &entry.id) {
-                return Err(Error::Changed);
             }
-            let (mount, plain) = mount_at(sub.as_fd());
-            entry.mount = Some(mount);
-            if let Some(plain) = plain {
-                self.plain_ids.insert(rel.clone(), plain);
-            }
-            mount_root = Some(sub);
         }
         if let Some(rules) = &mut self.rules
             && rules.leaves_out(&rel, entry.kind)
         {
             self.left_out.insert(rel, entry);
+            return Ok(());
+        }
+        if locked {
+            self.unreadable.push(rel);
             return Ok(());
         }
         let held = match self.mounts.get(&rel) {
@@ -1696,13 +1699,8 @@ impl Snapshot {
                 let Some(above) = above else {
                     return Ok(None);
                 };
-                let found = (stat.dev != dev).then(|| mount_at(dir.as_fd()));
-                let now = Entry {
-                    id: stat.id,
-                    mount: found.map(|(mount, _)| mount),
-                    ..*above
-                };
-                if !above.is_back(&now, found.and_then(|(_, plain)| plain)) {
+                let found = (stat.dev != dev).then(|| mount_at(dir.as_fd()).0);
+                if (above.mount, above.id) != (found, stat.id) {
                     return Ok(None);
                 }
             }

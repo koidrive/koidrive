@@ -218,3 +218,31 @@ fn a_left_out_entry_back_while_its_removal_is_confirmed_stays_left_out_until_inc
         "{rescan:?}"
     );
 }
+
+#[test]
+fn a_mount_point_that_cannot_be_opened_is_left_out_once_its_folder_rules_leave_it_out() {
+    use std::os::unix::fs::PermissionsExt;
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let Some(mut disks) = koidrive_test_support::Disks::new() else {
+        return;
+    };
+    let root = disks.base().join("Sync");
+    let image = disks.image("Locked");
+    fs::create_dir_all(root.join("Disk")).unwrap();
+    disks.attach(&image, &root.join("Disk"));
+    fs::write(root.join("Disk/report.docx"), "kept").unwrap();
+    let mut rules = Rules::new(Box::new(Lines::default()));
+    let mut snapshot = Snapshot::scan_with_rules(&root, &mut rules).unwrap();
+    fs::write(root.join(RULES_FILE), "Disk\n").unwrap();
+    fs::set_permissions(root.join("Disk"), fs::Permissions::from_mode(0o0)).unwrap();
+    let rescan = snapshot.rescan_with_rules(&root, [PathBuf::new()], &mut rules);
+    fs::set_permissions(root.join("Disk"), fs::Permissions::from_mode(0o755)).unwrap();
+    rescan.unwrap();
+    let below: Vec<_> = (snapshot.entries.keys())
+        .filter(|path| path.starts_with("Disk"))
+        .collect();
+    assert_eq!(below, Vec::<&PathBuf>::new());
+    assert!(snapshot.left_out.contains_key(Path::new("Disk")));
+}

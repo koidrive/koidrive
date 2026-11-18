@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const MOUNTS: &str = "KOIDRIVE_TEST_MOUNTS";
+const EXFAT: &str = "KOIDRIVE_TEST_EXFAT";
 
 const VOLUME_METADATA: [&str; 5] = [
     ".fseventsd",
@@ -187,22 +188,35 @@ impl Disks {
     }
 
     /// Whether exFAT volumes have IDs here. On Linux only udev reads an exFAT volume's serial number, so that takes
-    /// `/dev/disk/by-diskseq` links and `mkfs.exfat` from exfatprogs.
+    /// udev's device records, an exFAT driver, and `mkfs.exfat` and `tune.exfat` from exfatprogs.
     pub fn exfat_has_ids(&self) -> bool {
         if cfg!(target_os = "macos") {
             return true;
         }
-        if !Path::new("/dev/disk/by-diskseq").is_dir() {
-            eprintln!(
-                "SKIPPED: udev keeps no /dev/disk/by-diskseq links here, so exFAT volumes have no ID"
-            );
-            return false;
-        }
-        if Command::new("mkfs.exfat").arg("-V").output().is_err() {
-            eprintln!("SKIPPED: mkfs.exfat from exfatprogs is not installed");
-            return false;
-        }
-        true
+        let tools = ["mkfs.exfat", "tune.exfat"];
+        let driver = std::fs::read_to_string("/proc/filesystems")
+            .is_ok_and(|known| known.split_whitespace().any(|name| name == "exfat"))
+            || (Command::new("modprobe")
+                .args(["-n", "-q", "exfat"])
+                .status())
+            .is_ok_and(|status| status.success());
+        let missing = match tools
+            .iter()
+            .find(|tool| Command::new(tool).arg("-V").output().is_err())
+        {
+            _ if !Path::new("/run/udev/data").is_dir() => {
+                "udev keeps no device records here, so exFAT volumes have no ID".to_owned()
+            }
+            Some(tool) => format!("{tool} from exfatprogs is not installed"),
+            None if !driver => "this kernel has no exFAT driver".to_owned(),
+            None => return true,
+        };
+        assert!(
+            std::env::var_os(EXFAT).is_none(),
+            "{EXFAT} is set, but {missing}"
+        );
+        eprintln!("SKIPPED: {missing}");
+        false
     }
 
     /// Creates an empty exFAT image of 16 MB named `name`. On Linux it takes `mkfs.exfat` from exfatprogs.
