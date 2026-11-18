@@ -1,0 +1,5 @@
+class = "C"
+issue = "GUN-984"
+tests = ["devices_converge_across_restores_and_rewinds", "devices_lose_no_write_across_restores_and_rewinds"]
+message = '''after phase <n>: recovery started with no rewind, no rolled-back store and no restore of commits it lost: the server counts <n> commits of this device, which the store cannot account for\.'''
+examples = ["after phase 2: recovery started with no rewind, no rolled-back store and no restore of commits it lost: the server counts 1 commits of this device, which the store cannot account for."]
