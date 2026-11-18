@@ -269,6 +269,16 @@ class TestLines(unittest.TestCase):
         self.assertIn("core/a/src/lib.rs:", warnings[0])
         self.assertIn("does not parse, so its lines count as implementation", warnings[0])
 
+    def test_workspace_globs_with_brackets_and_excludes_cover_the_right_packages(self):
+        files = {"core/a/Cargo.toml": "", "core/b/Cargo.toml": "", "core/vendor/Cargo.toml": "",
+                 "Cargo.toml": '[workspace]\nmembers = [\n    "core/[ab]",\n    "core/*",\n]\nexclude = ["core/vendor"]\n'}
+        cwd = os.getcwd()
+        os.chdir(self.repo)
+        try:
+            self.assertEqual(self.check.Tree(self.tree(files)).scope[:3], ("core/a/", "core/b/", "spec/testdata/"))
+        finally:
+            os.chdir(cwd)
+
     def test_rust_files_under_fixtures_are_fixture_data(self):
         counts = self.counts({"core/a/tests/fixtures/template.rs": self.lines(5), "core/a/tests/flow.rs": self.lines(2)})
         self.assertEqual((counts["test"], counts["fixture"]), (2, 5))

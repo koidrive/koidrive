@@ -94,17 +94,25 @@ def line_count(data):
     return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
 
 
+def toml_strings(cargo_toml, key):
+    workspace = re.search(r"(?ms)^\[workspace\]\s*$(.*?)(?=^\[|\Z)", cargo_toml)
+    start = workspace and re.search(rf"(?m)^\s*{key}\s*=\s*\[", workspace.group(1))
+    if not start:
+        return []
+    array = re.match(r'(?:\s|,|#[^\n]*|"(?:[^"\\]|\\.)*")*\]', workspace.group(1)[start.end():])
+    return re.findall(r'"((?:[^"\\]|\\.)*)"', array.group(0)) if array else []
+
+
 def workspace_members(cargo_toml, paths):
-    block = re.search(r"(?s)\[workspace\].*?members\s*=\s*\[(.*?)\]", cargo_toml)
-    patterns = [member.rstrip("/") for member in re.findall(r'"([^"]+)"', block.group(1))] if block else []
     packages = {posixpath.dirname(path) for path in paths if path.endswith("/Cargo.toml")}
     members = set()
-    for pattern in patterns:
+    for pattern in (member.rstrip("/") for member in toml_strings(cargo_toml, "members")):
         if not re.search(r"[*?\[]", pattern):
             members.add(pattern)
             continue
         depth = pattern.count("/")
         members.update(p for p in packages if p.count("/") == depth and fnmatch.fnmatchcase(p, pattern))
+    members -= {member.rstrip("/") for member in toml_strings(cargo_toml, "exclude")}
     return tuple(sorted(member + "/" for member in members))
 
 
