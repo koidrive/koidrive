@@ -17,25 +17,33 @@ if ! mkdir "$lock" 2>/dev/null; then
   echo "another proof run in this checkout holds $lock" >&2
   exit 2
 fi
-scratch=$(mktemp -d "${TMPDIR:-/tmp}/trees-generator-proof.XXXXXX")
+scratch=
 restore() {
-  for kept in "$L:classify.rs" "$T:trees.rs"; do
-    if [ -f "$scratch/${kept#*:}" ]; then
-      cp "$scratch/${kept#*:}" "${kept%%:*}"
-      touch "${kept%%:*}"
+  if [ -n "$scratch" ]; then
+    for kept in "$L:classify.rs" "$T:trees.rs"; do
+      if [ -f "$scratch/${kept#*:}" ]; then
+        cp "$scratch/${kept#*:}" "${kept%%:*}"
+        touch "${kept%%:*}"
+      fi
+    done
+    if [ -d "$scratch/cases" ]; then
+      rm -rf "$cases"
+      mv "$scratch/cases" "$cases"
     fi
-  done
-  if [ -d "$scratch/cases" ]; then
-    rm -rf "$cases"
-    mv "$scratch/cases" "$cases"
+    rm -rf "$scratch"
   fi
-  rm -rf "$scratch"
   rmdir "$lock"
 }
 trap restore EXIT
-cp "$L" "$scratch/classify.rs"
-cp "$T" "$scratch/trees.rs"
-mv "$cases" "$scratch/cases"
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/trees-generator-proof.XXXXXX")
+back_up() {
+  cp -R "$1" "$scratch/$2.partial"
+  mv "$scratch/$2.partial" "$scratch/$2"
+}
+back_up "$L" classify.rs
+back_up "$T" trees.rs
+back_up "$cases" cases
+rm -rf "$cases"
 mkdir "$cases"
 
 apply() {
@@ -51,7 +59,12 @@ measure() {
   failed=0
   for _ in $(seq "$runs"); do
     rm -f "$cases"/*.txt
-    if ! "${test[@]}" > "$scratch/log" 2>&1; then
+    if "${test[@]}" > "$scratch/log" 2>&1; then
+      if ! grep -q 'test result: ok. 1 passed' "$scratch/log"; then
+        cat "$scratch/log" >&2
+        exit 2
+      fi
+    else
       if ! grep -q 'test result: FAILED' "$scratch/log"; then
         cat "$scratch/log" >&2
         exit 2

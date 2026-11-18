@@ -170,7 +170,7 @@ scripts/mutations.sh --shard 0/4   # every fourth mutation, starting with the fi
 
 `MUTATION_CASES` sets the property case count. `MUTATION_SEED` sets one unsigned 64-bit seed for the baseline and every mutation, defaulting to `0`. The hosted mutation jobs use seed `0` too. Shard numbers do not change it.
 
-`scripts/trees-generator-proof.sh` shows that the trees property needs rules below the root to catch a missed mark. It hides the saved cases and plants a mutation that skips the walk below a changed node that is not itself left out. It then runs `settling_what_changed_ends_where_settling_everything_ends` `PROOF_RUNS` times (default 5) at `PROOF_CASES` cases (default 2000): unmutated, with the mutation, and with the mutation and rules only at the root. It prints how many runs failed in each, restores the files, and fails unless the unmutated runs pass and the mutation fails at least one run with nested rules.
+`scripts/trees-generator-proof.sh` compares how often the trees property catches a missed mark with rules below the root and with rules only at the root. It hides the saved cases and plants a mutation that skips the walk below a changed node that is not itself left out. It then runs `settling_what_changed_ends_where_settling_everything_ends` `PROOF_RUNS` times (default 5) at `PROOF_CASES` cases (default 2000): unmutated, with the mutation, and with the mutation and rules only at the root. It prints how many runs failed in each, restores the files, and fails unless the unmutated runs pass and the mutation fails at least one run with nested rules. The root-only count is printed for comparison and does not decide the result.
 
 ## Test value
 
