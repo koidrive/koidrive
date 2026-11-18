@@ -2967,53 +2967,58 @@ fn rebase(
 
 fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
     trees.keep_folders_of_kept_folders();
-    let ended: Vec<NodeId> = (trees.kept_folders().iter())
-        .filter(|id| !trees.kept_folder(id) && !trees.kept_rules_file(id))
-        .cloned()
-        .collect();
-    for id in ended {
-        trees.end_kept_folder(&id);
-        let Some(local) = trees.local().get(&id).map(|node| node.shape.clone()) else {
-            continue;
-        };
-        if trees.remote().live(&id).is_some() {
-            continue;
-        }
-        if local.kind == Kind::File {
-            rekey(trees, &id, &ids.uuid_v7(now_ms));
-            continue;
-        }
-        let taken = twin(trees, &local, true);
-        if taken.is_some() {
-            trees.take_kept_entries(&id);
-        }
-        let to = taken.clone().unwrap_or_else(|| ids.uuid_v7(now_ms));
-        rekey(trees, &id, &to);
-        if taken.is_some() {
-            trees.set_synced_if_valid(to.clone(), Some(local));
-        }
-        let rules: Vec<(NodeId, Shape)> = (trees.local_children(&to))
-            .filter(|child| trees.left_rules_file(child))
-            .filter_map(|child| Some((child.clone(), trees.local().get(child)?.shape.clone())))
+    loop {
+        let ended: Vec<NodeId> = (trees.kept_folders().iter())
+            .filter(|id| !trees.kept_folder(id) && !trees.kept_rules_file(id))
+            .cloned()
             .collect();
-        for (child, shape) in rules {
-            let deleted = (trees.remote().get(&child))
-                .is_some_and(|remote| same_contents(&remote.shape, &shape));
-            match (twin(trees, &shape, true), taken.is_some() && deleted) {
-                (Some(twin), _) => {
-                    rekey(trees, &child, &twin);
-                    trees.set_synced_if_valid(twin, Some(shape));
-                }
-                (None, true) => {
-                    if let Some(twin) = twin(trees, &shape, false) {
+        if ended.is_empty() {
+            return;
+        }
+        for id in ended {
+            trees.end_kept_folder(&id);
+            let Some(local) = trees.local().get(&id).map(|node| node.shape.clone()) else {
+                continue;
+            };
+            if trees.remote().live(&id).is_some() {
+                continue;
+            }
+            if local.kind == Kind::File {
+                rekey(trees, &id, &ids.uuid_v7(now_ms));
+                continue;
+            }
+            let taken = twin(trees, &local, true);
+            if taken.is_some() {
+                trees.take_kept_entries(&id);
+            }
+            let to = taken.clone().unwrap_or_else(|| ids.uuid_v7(now_ms));
+            rekey(trees, &id, &to);
+            if taken.is_some() {
+                trees.set_synced_if_valid(to.clone(), Some(local));
+            }
+            let rules: Vec<(NodeId, Shape)> = (trees.local_children(&to))
+                .filter(|child| trees.left_rules_file(child))
+                .filter_map(|child| Some((child.clone(), trees.local().get(child)?.shape.clone())))
+                .collect();
+            for (child, shape) in rules {
+                let deleted = (trees.remote().get(&child))
+                    .is_some_and(|remote| same_contents(&remote.shape, &shape));
+                match (twin(trees, &shape, true), taken.is_some() && deleted) {
+                    (Some(twin), _) => {
                         rekey(trees, &child, &twin);
                         trees.set_synced_if_valid(twin, Some(shape));
-                    } else {
-                        trees.end_kept_folder(&child);
-                        trees.set_synced_if_valid(child, Some(shape));
                     }
+                    (None, true) => {
+                        if let Some(twin) = twin(trees, &shape, false) {
+                            rekey(trees, &child, &twin);
+                            trees.set_synced_if_valid(twin, Some(shape));
+                        } else {
+                            trees.end_kept_folder(&child);
+                            trees.set_synced_if_valid(child, Some(shape));
+                        }
+                    }
+                    (None, false) => rekey(trees, &child, &ids.uuid_v7(now_ms)),
                 }
-                (None, false) => rekey(trees, &child, &ids.uuid_v7(now_ms)),
             }
         }
     }

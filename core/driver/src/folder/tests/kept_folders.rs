@@ -1221,3 +1221,24 @@ fn another_devices_file_at_a_kept_entrys_name_is_reported_and_the_kept_entry_sta
     assert!(on_a.iter().all(|(_, content)| *content != kept), "{on_a:?}");
 }
 
+
+#[test]
+fn a_kept_folder_inside_a_kept_folder_takes_the_folder_another_device_makes_at_its_place() {
+    let (mut remote, site_a, mut a, site, mut b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env\n")],
+        &["README.md", "sub/lib.rs"],
+        &["sub/.env"],
+    );
+    assert!(site.root.join("app/sub/.env").exists());
+    fs::create_dir_all(site_a.root.join("app/sub")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/sub/lib.rs"), b"made again");
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    let tree = remote.tree();
+    assert!(!tree.keys().any(|k| k.contains("conflict") || k.ends_with(".env")), "{tree:?} {:?}", files(&site.root));
+    assert_eq!(fs::read(site.root.join("app/sub/lib.rs")).unwrap(), b"made again");
+    assert!(site.root.join("app/sub/.env").exists(), "{:?}", files(&site.root));
+}
