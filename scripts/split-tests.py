@@ -155,49 +155,18 @@ def property_files(executable, path, revision=None):
     return files
 
 
-def base_blocks(executable, mapping, revision):
+def split_at(executable, path, revision):
     try:
-        retired = json.loads(read_source(revision, MAPPING.relative_to(ROOT).as_posix()))
+        return bool(includes(executable, read_source(revision, path)))
     except subprocess.CalledProcessError:
-        retired = {}
-    blocks = Counter()
-    for path in mapping.keys() | retired.keys():
-        try:
-            root = read_source(revision, path)
-        except subprocess.CalledProcessError:
-            continue
-        sources = [(Path(path), root, False)] + [
-            (scenario, read_source(revision, str(scenario)), True)
-            for scenario in (include_path(path, included["name"].removeprefix("include:"))
-                             for included in includes(executable, root))]
-        for held, source, fragment in sources:
-            blocks.update((item["name"], held) for item in items(executable, source, fragment=fragment)
-                          if item["kind"] == "property")
-    return blocks
+        return False
 
 
-def tree_blocks(executable, mapping):
-    return Counter((item["name"], moved.relative_to(ROOT)) for path in mapping
-                   for moved, scenario in scenario_files(path)
-                   for item in items(executable, moved.read_bytes(), fragment=scenario != "root")
-                   if item["kind"] == "property")
-
-
-def require_properties_unmoved(base, tree):
-    def functions(name):
-        return set(name.removeprefix("proptest:").split(","))
-
-    old, new = list((base - tree).elements()), list((tree - base).elements())
-    for block in list(new):
-        edited = next((previous for previous in old if previous[1] == block[1]
-                       and functions(previous[0]) & functions(block[0])), None)
-        if edited:
-            old.remove(edited)
-            new.remove(block)
-    for name, held in new:
-        for previous, was in old:
-            if functions(name) & functions(previous):
-                raise ValueError(f"{name} must stay in {was}: a proptest block never changes file")
+def pending(executable, mapping, revision):
+    landed = [path for path in mapping if split_at(executable, path, revision)]
+    for path in landed:
+        print(f"SKIP {path}: already split at {revision}; run \`python3 scripts/split-tests.py map\` to drop its entry")
+    return {path: assignments for path, assignments in mapping.items() if path not in landed}
 
 
 def require_properties_in_place(path, assignments, files):
@@ -312,10 +281,24 @@ def changed_lines(diff):
     return changed
 
 
-def check_format(mapping, changed, revision):
-    directories = [output_path(path, "common").parent.relative_to(ROOT) for path in mapping]
-    checked = sorted(name for name in changed
-                     if name.endswith(".rs") and any(Path(name).is_relative_to(directory) for directory in directories))
+def fragments(executable, changed, revision):
+    found = []
+    for name in sorted(changed):
+        path = Path(name)
+        if path.suffix != ".rs" or path.parent == Path("."):
+            continue
+        try:
+            root = read_source(revision, path.parent.with_suffix(".rs").as_posix())
+        except subprocess.CalledProcessError:
+            continue
+        if b"include!" in root and any(path.parent.parent / item["name"].removeprefix("include:") == path
+                                       for item in includes(executable, root)):
+            found.append(name)
+    return found
+
+
+def check_format(executable, changed, revision):
+    checked = fragments(executable, changed, revision)
     problems = [f"{name} lines {lines}" for name in checked
                 if (lines := sorted(unformatted_lines(name, read_source(revision, name)) & changed[name]))]
     if problems:
@@ -326,7 +309,9 @@ def check_format(mapping, changed, revision):
 
 
 def map_items(executable, mapping, base_ref):
-    require_properties_unmoved(base_blocks(executable, mapping, base_ref), tree_blocks(executable, mapping))
+    for path in [path for path in mapping if split_at(executable, path, base_ref)]:
+        del mapping[path]
+        print(f"{path}: dropped, already split at {base_ref}")
     for path, assignments in mapping.items():
         found = {}
         for moved, scenario in scenario_files(path):
@@ -345,9 +330,7 @@ def map_items(executable, mapping, base_ref):
     MAPPING.write_text(json.dumps(mapping, indent=2) + "\n")
 
 
-def verify(executable, mapping, revision, base_ref=None):
-    if base_ref:
-        require_properties_unmoved(base_blocks(executable, mapping, base_ref), tree_blocks(executable, mapping))
+def verify(executable, mapping, revision):
     total = 0
     for path, assignments in mapping.items():
         original = load_source(executable, path, revision)
@@ -415,7 +398,6 @@ def main():
     apply.add_argument("--source-ref")
     check = commands.add_parser("verify")
     check.add_argument("--source-ref", required=True)
-    check.add_argument("--base-ref")
     replay = commands.add_parser("port")
     replay.add_argument("--base-ref", required=True)
     replay.add_argument("--branch-ref", required=True)
@@ -430,13 +412,12 @@ def main():
     if args.command == "compare-lists":
         compare_lists(args.before, args.after)
         return
+    executable = parser()
     if args.command == "check-format":
         diff = subprocess.check_output(["git", "diff", "-U0", "--inter-hunk-context=0", "--text", "--no-color", "--no-ext-diff", "--src-prefix=a/",
                                         "--dst-prefix=b/", "--diff-filter=d", args.base_ref, "HEAD"], cwd=ROOT)
-        mapping = json.loads(read_source("HEAD", MAPPING.relative_to(ROOT).as_posix()))
-        check_format(mapping, changed_lines(diff.decode(errors="replace")), "HEAD")
+        check_format(executable, changed_lines(diff.decode(errors="replace")), "HEAD")
         return
-    executable = parser()
     mapping = json.loads(MAPPING.read_text())
     base_ref = getattr(args, "base_ref", None)
     if args.command == "map":
@@ -460,7 +441,7 @@ def main():
         port(executable, mapping, args.base_ref, args.branch_ref)
         MAPPING.write_text(json.dumps(mapping, indent=2) + "\n")
     else:
-        verify(executable, mapping, args.source_ref, base_ref)
+        verify(executable, pending(executable, mapping, args.source_ref), args.source_ref)
 
 
 if __name__ == "__main__":

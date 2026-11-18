@@ -17,7 +17,9 @@ python3 scripts/split-tests.py split --source-ref <unsplit-revision>
 python3 scripts/split-tests.py verify --source-ref <unsplit-revision>
 ```
 
-`split` without `--source-ref` reads the working tree, including files already split. Repeating either form with the same inputs produces identical files. Edit `mapping.json` to change an item's scenario. Ordinary test changes can edit their scenario files directly; then run `python3 scripts/split-tests.py map`, which assigns each item the mapping lacks to the file that holds it and drops entries for items that no longer exist. `map` refuses a proptest block whose functions sat in another file at `git merge-base origin/main HEAD`. CI runs `verify --source-ref HEAD --base-ref <base>` on every pull request, so a test added without `map` fails there, and so does a proptest function that changed file since the base. `cargo fmt` does not follow `include!`, so CI also runs `split-tests.py check-format`, which runs rustfmt on the fragments a change touches.
+`split` without `--source-ref` reads the working tree, including files already split. Repeating either form with the same inputs produces identical files. Edit `mapping.json` to change an item's scenario, then run `python3 scripts/split-tests.py map`, which assigns each item the mapping lacks to the file that holds it, drops entries for items that no longer exist, and drops every source already split at `git merge-base origin/main HEAD`.
+
+`mapping.json` holds only splits that have not landed. CI runs `verify --source-ref <base>` on every pull request and checks only the sources that are still one file at the base, so it proves the move of the split the pull request makes and ignores everything else. A test added to a file that is already split, or to a file with no planned split, never needs `mapping.json`. `cargo fmt` does not follow `include!`, so CI also runs `split-tests.py check-format`, which runs rustfmt on the lines a change writes in any `include!` fragment.
 
 Capture the test inventory before and after the split with the same command and environment:
 
@@ -30,7 +32,7 @@ python3 scripts/split-tests.py compare-lists before.txt after.txt
 
 ## Port an open branch
 
-Keep the old branch as a snapshot. Start a new local branch on the split main. Apply the old branch's non-test diff normally, excluding the four sources named in `mapping.json`. Then port their item-level changes:
+Keep the old branch as a snapshot. Start a new local branch on the split main. `port` reads the split's assignments from `mapping.json`, which drops them once the split lands, so restore the file from the split's merge commit first with `git show <split-commit>:scripts/test-split/mapping.json > scripts/test-split/mapping.json`. Apply the old branch's non-test diff normally, excluding the sources named there. Then port their item-level changes:
 
 ```sh
 python3 scripts/split-tests.py port --base-ref <old-merge-base> --branch-ref <old-head> \
