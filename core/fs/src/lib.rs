@@ -867,16 +867,10 @@ impl Snapshot {
                         _ => Ok(stat),
                     }
                 });
-            let elsewhere = match &scanned {
+            let unscanned = match &scanned {
                 Ok(_) => self.known_elsewhere(&scan, &paths),
                 Err(_) => Vec::new(),
             };
-            let unscanned: Vec<PathBuf> = (elsewhere.iter())
-                .filter(|(_, known)| {
-                    !(scan.replaced.iter().chain(&paths)).any(|scope| known.starts_with(scope))
-                })
-                .map(|(_, known)| known.clone())
-                .collect();
             let whole = paths.iter().any(|path| path.as_os_str().is_empty());
             if let Ok(stat) = &scanned
                 && !unscanned.is_empty()
@@ -894,31 +888,17 @@ impl Snapshot {
                 widened = true;
                 continue;
             }
-            let deferred: BTreeSet<PathBuf> = elsewhere.into_iter().map(|(at, _)| at).collect();
-            for at in &deferred {
-                scan.new.retain(|path, _| !path.starts_with(at));
-                scan.new.extend(
-                    (self.entries.range(at.clone()..))
-                        .take_while(|(path, _)| path.starts_with(at))
-                        .map(|(path, entry)| (path.clone(), *entry)),
-                );
-            }
             let result = scanned.and_then(|stat| self.publish(root, &stat, &mut scan));
             if result.is_err()
                 && let Some(rules) = scan.rules
             {
                 rules.undo();
             }
-            return result.map(|mut rescan| {
-                rescan.unsettled.extend(deferred);
-                rescan.unsettled.sort();
-                rescan.unsettled.dedup();
-                rescan
-            });
+            return result;
         }
     }
 
-    fn known_elsewhere(&self, scan: &Scan<'_>, scopes: &[PathBuf]) -> Vec<(PathBuf, PathBuf)> {
+    fn known_elsewhere(&self, scan: &Scan<'_>, scopes: &[PathBuf]) -> Vec<PathBuf> {
         let mut arrived: HashMap<(FileId, EntryKind), Vec<&PathBuf>> = HashMap::new();
         for (path, now) in &scan.new {
             if (self.entries.get(path))
@@ -930,19 +910,19 @@ impl Snapshot {
         if arrived.is_empty() {
             return Vec::new();
         }
-        let read = |path: &Path| {
-            (scan.replaced.iter().chain(scopes)).any(|scope| path.starts_with(scope))
-                && !(scan.unreadable.iter()).any(|blocked| path.starts_with(blocked))
-        };
         (self.entries.iter())
-            .filter(|(known, _)| !read(known))
-            .filter_map(|(known, entry)| Some((known, arrived.get(&(entry.id, entry.kind))?)))
-            .flat_map(|(known, at)| at.iter().map(move |at| (*at, known)))
-            .filter(|(at, known)| {
-                volume_of(at, &scan.new, &self.entries)
-                    == volume_of(known, &self.entries, &self.entries)
+            .filter(|(known, _)| {
+                !(scan.replaced.iter().chain(scopes)).any(|scope| known.starts_with(scope))
             })
-            .map(|(at, known)| (at.clone(), known.clone()))
+            .filter(|(known, entry)| {
+                (arrived.get(&(entry.id, entry.kind))).is_some_and(|at| {
+                    at.iter().any(|at| {
+                        volume_of(at, &scan.new, &self.entries)
+                            == volume_of(known, &self.entries, &self.entries)
+                    })
+                })
+            })
+            .map(|(known, _)| known.clone())
             .collect()
     }
 

@@ -76,53 +76,102 @@ fn a_rotation_seen_from_one_path_takes_at_most_three_scans() {
 }
 
 #[test]
-fn an_arrival_whose_identity_is_still_known_in_an_unreadable_folder_waits_for_it() {
+fn a_file_moved_over_another_from_a_folder_that_turns_unreadable_reads_as_modified() {
+    moved_from_a_folder_that_turns_unreadable(
+        "a_file_moved_over_another_from_a_folder_that_turns_unreadable_reads_as_modified",
+        "doc",
+        Change::Modified {
+            path: PathBuf::from("doc"),
+        },
+    );
+}
+
+#[test]
+fn a_file_moved_to_a_new_name_from_a_folder_that_turns_unreadable_reads_as_created() {
+    moved_from_a_folder_that_turns_unreadable(
+        "a_file_moved_to_a_new_name_from_a_folder_that_turns_unreadable_reads_as_created",
+        "moved",
+        Change::Created {
+            path: PathBuf::from("moved"),
+            kind: EntryKind::File,
+        },
+    );
+}
+
+fn moved_from_a_folder_that_turns_unreadable(test: &str, to: &str, moved: Change) {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let locked = root.join("locked");
+    let locked = root.join("d");
     fs::create_dir(&locked).unwrap();
-    fs::create_dir(root.join("open")).unwrap();
-    fs::write(root.join("open/a"), "a").unwrap();
-    fs::write(locked.join("b"), "b").unwrap();
+    fs::write(locked.join("f"), "report v2").unwrap();
+    fs::write(root.join("doc"), "report v1").unwrap();
     let mut snapshot = Snapshot::scan(root).unwrap();
-    let before = snapshot.clone();
-    for (from, to) in [
-        ("open/a", "tmp"),
-        ("locked/b", "open/a"),
-        ("tmp", "locked/b"),
-    ] {
-        fs::rename(root.join(from), root.join(to)).unwrap();
-    }
+    fs::rename(locked.join("f"), root.join(to)).unwrap();
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
     let probe = fs::read_dir(&locked).map(|_| ());
-    if !blocks_reads(
-        "an_arrival_whose_identity_is_still_known_in_an_unreadable_folder_waits_for_it",
-        probe,
-    ) {
+    if !blocks_reads(test, probe) {
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
         return;
     }
-    let rescan = snapshot.rescan(root, [PathBuf::from("open/a")]);
+    let first = snapshot.rescan(root, [PathBuf::from(to)]);
+    let whole = snapshot.rescan(root, [PathBuf::new()]);
+    fs::write(root.join(to), "report v3, edited").unwrap();
+    let edited = snapshot.rescan(root, [PathBuf::from(to)]);
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
-    let rescan = rescan.unwrap();
-    assert_eq!(rescan.changes, []);
-    assert_eq!(rescan.unreadable, [PathBuf::from("locked")]);
-    assert_eq!(rescan.unsettled, [PathBuf::from("open/a")]);
-    assert_eq!(snapshot, before);
-
-    let changes = snapshot.rescan(root, rescan.unsettled).unwrap().changes;
-    let renamed = |from: &str, to: &str| Change::Renamed {
-        from: from.into(),
-        to: to.into(),
-        kind: EntryKind::File,
-    };
+    let first = first.unwrap();
+    assert_eq!(first.changes, [moved]);
+    assert_eq!(first.unsettled, Vec::<PathBuf>::new());
+    let whole = whole.unwrap();
+    assert_eq!(whole.changes, []);
+    assert_eq!(whole.unsettled, Vec::<PathBuf>::new());
     assert_eq!(
-        changes,
-        [renamed("locked/b", "open/a"), renamed("open/a", "locked/b")]
+        edited.unwrap().changes,
+        [Change::Modified {
+            path: PathBuf::from(to),
+        }]
     );
-    assert_eq!(snapshot, Snapshot::scan(root).unwrap());
+}
+
+#[test]
+fn a_folder_swapped_for_one_it_cannot_list_keeps_both_identities() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for name in ["x", "y"] {
+        fs::create_dir(root.join(name)).unwrap();
+        fs::write(root.join(name).join("note"), name).unwrap();
+    }
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    let before = snapshot.clone();
+    for (from, to) in [("x", "tmp"), ("y", "x"), ("tmp", "y")] {
+        fs::rename(root.join(from), root.join(to)).unwrap();
+    }
+    fs::set_permissions(root.join("x"), fs::Permissions::from_mode(0o000)).unwrap();
+    let probe = fs::read_dir(root.join("x")).map(|_| ());
+    if !blocks_reads(
+        "a_folder_swapped_for_one_it_cannot_list_keeps_both_identities",
+        probe,
+    ) {
+        fs::set_permissions(root.join("x"), fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+    let rescan = snapshot.rescan(root, [PathBuf::from("y")]);
+    fs::set_permissions(root.join("x"), fs::Permissions::from_mode(0o700)).unwrap();
+    let rescan = rescan.unwrap();
+    assert_eq!(rescan.unreadable, [PathBuf::from("x")]);
+    assert_ne!(
+        snapshot.entries[Path::new("x")].id,
+        snapshot.entries[Path::new("y")].id
+    );
+    let mut whole = before;
+    let expected = whole.rescan(root, [PathBuf::new()]).unwrap().changes;
+    let mut actual = rescan.changes;
+    actual.extend(snapshot.rescan(root, rescan.unsettled).unwrap().changes);
+    assert_eq!(actual, expected);
+    assert_eq!(snapshot, whole);
 }
 
 fn blocks_reads<T: std::fmt::Debug>(test: &str, probe: std::io::Result<T>) -> bool {
