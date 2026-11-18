@@ -854,7 +854,12 @@ fn mtime_ns(meta: &std::fs::Metadata) -> i128 {
 
 fn same_version(meta: &std::fs::Metadata, entry: &Entry) -> bool {
     let ctime_ns = i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec());
-    meta.size() == entry.size && mtime_ns(meta) == entry.mtime_ns && ctime_ns == entry.ctime.at()
+    meta.size() == entry.size
+        && mtime_ns(meta) == entry.mtime_ns
+        && match entry.ctime {
+            Ctime::NotAfter(at) => ctime_ns <= at,
+            ctime => ctime_ns == ctime.at(),
+        }
 }
 
 /// Opens the file at the relative `path` under `root` for reading, one folder at a time, following no symbolic link.

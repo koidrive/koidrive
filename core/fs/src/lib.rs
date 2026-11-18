@@ -354,14 +354,15 @@ fn now_ns() -> i128 {
         .map_or(0, |since| since.as_nanos() as i128)
 }
 
+#[cfg(not(target_os = "linux"))]
 const APFS_TICK: i128 = 1_000_000;
 const KERNEL_TICK: i128 = 20_000_000;
-const COARSE_TICK: i128 = 2_000_000_000;
+const COARSE_TICK: i128 = 2_000_000_000 + KERNEL_TICK;
 
 /// How far apart two writes to a file on the volume of `dir` must be for the second to get a later change time.
 /// APFS stamps writes to the microsecond or finer. Linux stamps them with a clock that ticks every few milliseconds,
 /// and exFAT keeps 10 ms. FAT keeps 2 s, HFS+ whole seconds, and a network file system takes the time from another
-/// machine.
+/// machine; their stamps come from the kernel's coarse clock too, which lags the system clock by up to its tick.
 #[cfg(target_os = "linux")]
 fn timestamp_tick(dir: BorrowedFd<'_>) -> i128 {
     const EXT: u64 = 0xEF53;
@@ -2845,7 +2846,7 @@ impl NativeWatcher {
             return Ok(());
         }
         let listing_only = match event.kind {
-            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Extended)) => return Ok(()),
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Extended)) => true,
             // FSEvents gives an event every flag its path collected lately, so a mark on a folder made moments before
             // also reports the folder's creation:
             // https://developer.apple.com/documentation/coreservices/1455361-fseventstreameventflags
