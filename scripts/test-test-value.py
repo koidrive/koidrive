@@ -76,8 +76,10 @@ class Analysis(unittest.TestCase):
         self.assertEqual(rows["b x"]["covered_by"], "b y; b z")
 
     def test_a_slow_test_with_few_unique_kills_moves_off_the_merge_path(self):
-        rows, _ = self.analyse([["b slow"], ["b slow", "b fast"]], {"b slow": 60, "b fast": 0.1})
+        rows, _ = self.analyse([["b slow"], ["b fast"]], {"b slow": 60, "b fast": 0.1, "b idle": 60})
         self.assertEqual(rows["b slow"]["verdict"], "move off the merge path")
+        self.assertEqual(rows["b idle"]["verdict"], "move off the merge path")
+        self.assertEqual(rows["b idle"]["ran_on"], "mutants the faster tests missed")
 
     def test_property_tests_and_flaky_tests_are_never_deletion_candidates(self):
         rows, _ = self.analyse([["b prop", "b x", "b flaky"]], {"b prop": 1, "b x": 1, "b flaky": 1},

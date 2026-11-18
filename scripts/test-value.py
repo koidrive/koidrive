@@ -306,16 +306,18 @@ def analyse(runs, properties, slow_seconds, few):
             verdict = "flaky in baseline: not measured"
         elif kind == "property":
             verdict = "keep: property test"
+        elif seconds >= slow_seconds:
+            verdict = "keep" if len(unique[test]) > few else "move off the merge path"
         elif not kills[test]:
             verdict = "no kills in the mutated code"
         elif not unique[test]:
             verdict = "delete or merge"
-        elif seconds >= slow_seconds and len(unique[test]) <= few:
-            verdict = "move off the merge path"
         else:
             verdict = "keep"
-        rows.append({"test": test, "kind": kind, "seconds": round(seconds, 3), "kills": len(kills[test]),
-                     "unique_kills": len(unique[test]), "covered_by": "; ".join(covered), "verdict": verdict})
+        rows.append({"test": test, "kind": kind, "seconds": round(seconds, 3),
+                     "ran_on": "mutants the faster tests missed" if seconds >= slow_seconds else "every mutant",
+                     "kills": len(kills[test]), "unique_kills": len(unique[test]), "covered_by": "; ".join(covered),
+                     "verdict": verdict})
     mutant_rows = []
     for (sample, number), mutant in sorted(mutants.items()):
         record = by_mutant.get((sample, number))
