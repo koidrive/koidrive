@@ -242,8 +242,11 @@ def unformatted_lines(name, source):
     result = subprocess.run(["rustfmt", "--edition", "2024", "--emit", "stdout"], input=source, capture_output=True)
     if result.returncode:
         raise ValueError(f"rustfmt cannot format {name}: {result.stderr.decode().strip()}")
+    def records(text):
+        return re.findall(rb"[^\n]*\n|[^\n]+$", text)
+
     lines = set()
-    matcher = difflib.SequenceMatcher(None, source.split(b"\n"), result.stdout.split(b"\n"), autojunk=False)
+    matcher = difflib.SequenceMatcher(None, records(source), records(result.stdout), autojunk=False)
     for tag, start, end, _, _ in matcher.get_opcodes():
         if tag != "equal":
             lines.update(range(start + 1, max(end, start + 1) + 1))
@@ -265,9 +268,9 @@ def changed_lines(diff):
 
 
 def check_format(mapping, changed, revision):
-    fragments = {moved.relative_to(ROOT).as_posix() for path in mapping for moved, scenario in scenario_files(path)
-                 if scenario != "root"}
-    checked = sorted(fragments & changed.keys())
+    directories = [output_path(path, "common").parent.relative_to(ROOT) for path in mapping]
+    checked = sorted(name for name in changed
+                     if name.endswith(".rs") and any(Path(name).is_relative_to(directory) for directory in directories))
     problems = [f"{name} lines {lines}" for name in checked
                 if (lines := sorted(unformatted_lines(name, read_source(revision, name)) & changed[name]))]
     if problems:
@@ -286,9 +289,15 @@ def map_items(executable, mapping):
                 if item["kind"] == "property":
                     properties.append(item["name"])
         for name in properties:
-            if name in assignments and assignments[name] != found[name]:
-                held = scenario_file(path, assignments[name]).relative_to(ROOT)
-                raise ValueError(f"{name} must stay in {held}: a proptest block never changes file")
+            functions = set(name.removeprefix("proptest:").split(","))
+            for key, scenario in assignments.items():
+                if (key.startswith("proptest:") and scenario != found[name]
+                        and functions & set(key.removeprefix("proptest:").split(","))):
+                    held = scenario_file(path, scenario).relative_to(ROOT)
+                    raise ValueError(f"{name} must stay in {held}: a proptest block never changes file")
+        modules = [name for name in found if name.startswith("mod:") and found[name] != "root"]
+        if modules:
+            raise ValueError(f"{path}: move {modules} back to {path}: modules stay in root to preserve relative paths")
         gone = [name for name in assignments if name not in found]
         for name in gone:
             del assignments[name]
@@ -334,6 +343,8 @@ def verify(executable, mapping, revision):
                     raise ValueError(f"duplicated item in {path}: {name}")
                 if name in reference_files and moved.relative_to(ROOT) != reference_files[name]:
                     raise ValueError(f"{name} must stay in {reference_files[name]}: a proptest block never changes file")
+                if item["kind"] == "module" and moved != ROOT / path:
+                    raise ValueError(f"{name} must stay in {path}: modules stay in root to preserve relative paths")
                 if moved != scenario_file(path, assignments[name]):
                     raise ValueError(f"wrong scenario for {name}: {moved}{MAP_FIX}")
                 after[name] = source[item["start"]:item["end"]]
@@ -380,8 +391,10 @@ def main():
         compare_lists(args.before, args.after)
         return
     if args.command == "check-format":
-        diff = subprocess.check_output(["git", "diff", "-U0", "--diff-filter=d", args.base_ref, "HEAD"], cwd=ROOT, text=True)
-        check_format(json.loads(MAPPING.read_text()), changed_lines(diff), "HEAD")
+        diff = subprocess.check_output(["git", "diff", "-U0", "--no-color", "--no-ext-diff", "--src-prefix=a/",
+                                        "--dst-prefix=b/", "--diff-filter=d", args.base_ref, "HEAD"], cwd=ROOT)
+        mapping = json.loads(read_source("HEAD", MAPPING.relative_to(ROOT).as_posix()))
+        check_format(mapping, changed_lines(diff.decode(errors="replace")), "HEAD")
         return
     executable = parser()
     mapping = json.loads(MAPPING.read_text())

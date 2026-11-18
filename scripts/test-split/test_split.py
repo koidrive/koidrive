@@ -281,6 +281,44 @@ class SplitTests(unittest.TestCase):
             split.map_items(self.executable, self.mapping)
         self.assertFalse(split.MAPPING.exists())
 
+    def test_map_refuses_a_proptest_block_whose_key_changed_in_another_file(self):
+        original = self.source
+        self.generate()
+        config = b'    #![proptest_config(koidrive_test_support::battery_config(concat!(file!(), ".regressions.txt"), 1))]\n'
+        source = self.property_source(original, b"proptest::proptest", config)
+        self.mapping["tests.rs"]["proptest:holds,also_holds"] = "root"
+        (self.root / "tests/props.rs").write_bytes(source[len(original):])
+        with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests.rs"):
+            split.map_items(self.executable, self.mapping)
+        self.assertFalse(split.MAPPING.exists())
+
+    def test_a_module_moved_into_a_scenario_is_refused(self):
+        self.generate()
+        module = b"mod telemetry {\n    #[test]\n    fn nested() {}\n}\n"
+        scenario = self.root / "tests/scenario.rs"
+        scenario.write_bytes(scenario.read_bytes() + b"\n" + module)
+        with self.assertRaisesRegex(ValueError, r"move \['mod:telemetry'\] back to tests\.rs"):
+            split.map_items(self.executable, self.mapping)
+        self.assertFalse(split.MAPPING.exists())
+        self.mapping["tests.rs"]["mod:telemetry"] = "scenario"
+        with patch.object(split, "git_source", return_value=self.source + b"\n" + module):
+            with self.assertRaisesRegex(ValueError, "mod:telemetry must stay in tests.rs"):
+                split.verify(self.executable, self.mapping, "branch")
+
+    def test_check_format_reads_a_fragment_from_the_revision_even_when_the_tree_lacks_it(self):
+        self.generate()
+        with patch.object(split, "read_source", return_value=b"fn  spaced(){}\n"):
+            with self.assertRaisesRegex(ValueError, r"tests/deleted\.rs lines \[1\]"):
+                split.check_format(self.mapping, {"tests/deleted.rs": {1}}, "HEAD")
+
+    def test_check_format_flags_a_removed_final_newline(self):
+        self.generate()
+        scenario = self.root / "tests/scenario.rs"
+        scenario.write_bytes(b"fn added() {}\n\nfn last() {}")
+        self.assertEqual(split.unformatted_lines("tests/scenario.rs", scenario.read_bytes()), {3})
+        with self.assertRaisesRegex(ValueError, r"tests/scenario\.rs lines \[3\]"):
+            split.check_format(self.mapping, {"tests/scenario.rs": {3}}, None)
+
     def test_map_follows_a_test_moved_between_scenarios(self):
         self.generate()
         common = self.root / "tests/common.rs"
