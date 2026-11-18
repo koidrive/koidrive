@@ -3,6 +3,7 @@ use super::*;
 pub(super) fn finish(device: DeviceOutcome, run: Run) -> Result<Done, CliError> {
     let Run {
         removed,
+        brought_back,
         kept,
         problems,
         next,
@@ -11,6 +12,7 @@ pub(super) fn finish(device: DeviceOutcome, run: Run) -> Result<Done, CliError> 
     let data = UninstalledData {
         device,
         removed,
+        brought_back,
         kept,
     };
     let other = (data.kept.iter()).any(|kept| matches!(kept, Kept::OtherProfile { .. }));
@@ -102,7 +104,7 @@ pub(super) fn text(data: &UninstalledData) -> String {
         }
     }
     for removed in &data.removed {
-        let shown = |path: &str| shown_folder(Path::new(path));
+        let shown = |path: &str| crate::output::path(Path::new(path));
         lines.push(match removed {
             Removed::Service { name } => format!("Removed the background service {name}."),
             Removed::App { path } => format!("Removed the app {}.", shown(path)),
@@ -115,6 +117,12 @@ pub(super) fn text(data: &UninstalledData) -> String {
             }
         });
     }
+    for path in &data.brought_back {
+        lines.push(format!(
+            "Brought back {}, which Koidrive had set aside while syncing.",
+            crate::output::path(Path::new(path))
+        ));
+    }
     let mut text = lines.join("\n");
     if !text.is_empty() {
         text.push('\n');
@@ -126,11 +134,15 @@ pub(super) fn text(data: &UninstalledData) -> String {
 pub(super) fn kept_text(kept: &[Kept]) -> String {
     let mut text = String::new();
     for kept in kept {
-        let shown = |path: &str| shown_folder(Path::new(path));
+        let shown = |path: &str| crate::output::path(Path::new(path));
         let line = match kept {
             Kept::Folder { path } => format!("Kept {} and every file in it.", shown(path)),
             Kept::FolderData { path } => format!(
                 "Kept {}, which still holds files. Delete it when you no longer need them.",
+                shown(path)
+            ),
+            Kept::SetAside { path } => format!(
+                "Could not bring back {}, which Koidrive had set aside while syncing. Move it out of .koidrive to keep it.",
                 shown(path)
             ),
             Kept::LinkedElsewhere { path } => format!(

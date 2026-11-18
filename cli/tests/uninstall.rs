@@ -1228,6 +1228,62 @@ fn an_app_in_applications_is_unregistered_and_removed() {
     );
 }
 
+#[test]
+fn versions_syncing_set_aside_come_back_into_the_folder_or_are_named_when_they_cannot() {
+    let machine = Machine::new();
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let folder = machine.path("Work");
+    machine.write("Work/.koidrive/quarantine/e7", "the only copy");
+    record(&machine, &folder);
+    let space_id = "0190f0a0-0000-7000-8000-000000000001";
+    let store = machine.paths().store(space_id).unwrap();
+    fs::create_dir_all(store.parent().unwrap()).unwrap();
+    koidrive_store::Store::open(&store)
+        .unwrap()
+        .transaction(|tx| {
+            tx.set_link(&koidrive_store::Link {
+                space_id: space_id.into(),
+                space_name: "Work".into(),
+                root: folder.clone(),
+                root_dev: std::os::unix::fs::MetadataExt::dev(&fs::metadata(&folder).unwrap()),
+                root_volume: None,
+                server_url: "https://files.example.com/".into(),
+                device_id: "d1".into(),
+                linked_at_ms: 1,
+                found_marker: false,
+            })
+        })
+        .unwrap();
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    assert!(output.status.success(), "{envelope:#}");
+    let brought_back = envelope["data"]["brought_back"].as_array().unwrap();
+    assert_eq!(brought_back.len(), 1, "{envelope:#}");
+    let back = PathBuf::from(brought_back[0].as_str().unwrap());
+    assert_eq!(back.parent(), Some(folder.as_path()), "{envelope:#}");
+    assert_eq!(fs::read_to_string(&back).unwrap(), "the only copy");
+    assert!(!folder.join(".koidrive").exists(), "{envelope:#}");
+
+    let machine = Machine::new();
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let folder = machine.path("Work");
+    let held = machine.write("Work/.koidrive/quarantine/e7", "the only copy");
+    record(&machine, &folder);
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert_eq!(fs::read_to_string(&held).unwrap(), "the only copy");
+    assert!(
+        kept(&envelope)
+            .contains(&json!({ "kind": "set_aside", "path": held.display().to_string() })),
+        "{envelope:#}"
+    );
+}
+
 fn on_terminal(machine: &Machine, koi: &Path, args: &[&str], answer: &str) -> (i32, String) {
     let mut terminal = Terminal::open(160, 40);
     let mut child = terminal::spawn(

@@ -76,6 +76,7 @@ impl Paths {
                 | "lifecycle.json"
                 | "link.json"
                 | "unlinking"
+                | "unlink-brought-back.json"
                 | "first-sync",
             ] if is_space_id(id) => File,
             ["requests", name] if hex_named(name, ".json", 64) => File,

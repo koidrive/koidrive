@@ -451,6 +451,24 @@ fn pairing_and_unlinking_presentations_keep_original_actions() {
             .unwrap()
             .contains("could not be relinked because the root marker is missing")
     );
+    let back = PathBuf::from("/Documents/report (recovered 2026-11-18).docx");
+    let stopped = CliError::from(DriverError::UnlinkFailedAfterBringingBack {
+        error: Box::new(DriverError::Io {
+            path: PathBuf::from("/state/spaces"),
+            error: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        }),
+        brought_back: vec![back],
+    });
+    assert!(
+        stopped
+            .message
+            .contains("report (recovered 2026-11-18).docx")
+    );
+    let human = stopped.human.unwrap();
+    assert!(
+        human.contains("Brought back /Documents/report (recovered 2026-11-18).docx"),
+        "{human}"
+    );
     let wrong = CliError::code_refused(DriverError::Api(refused_with(
         403,
         ServerCode::Forbidden,

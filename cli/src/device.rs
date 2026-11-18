@@ -6,7 +6,7 @@ use crate::options::RequestArg;
 use crate::profile::{signed_in, unexpected};
 use crate::report::{
     DeviceData, DevicesData, Done, InvitationData, LeftData, NotRemovedData, RevokedData,
-    UnconfirmedData,
+    SetAsideData, UnconfirmedData,
 };
 use crate::request::Begun;
 use crate::{ipc, output, pairing, request};
@@ -66,8 +66,11 @@ pub(crate) fn still_listed(unconfirmed: &koidrive_driver::Unconfirmed) -> String
 pub(crate) fn left(
     not_removed: Vec<koidrive_driver::CleanupFailure>,
     unconfirmed: Option<koidrive_driver::Unconfirmed>,
+    set_aside: &koidrive_driver::SetAside,
 ) -> Done {
+    let set_aside = SetAsideData::of(set_aside);
     let mut text = "Signed out. This device no longer syncs, and the files in its folders stay where they are.\n".to_owned();
+    text.push_str(&set_aside.lines());
     if let Some(unconfirmed) = &unconfirmed {
         text.push_str(&still_listed(unconfirmed));
     }
@@ -75,7 +78,7 @@ pub(crate) fn left(
     if let Some(unconfirmed) = &unconfirmed {
         text.push_str(&format!("Reason: {}.\n", printable(&unconfirmed.reason)));
     }
-    let tone = if not_removed.is_empty() && unconfirmed.is_none() {
+    let tone = if not_removed.is_empty() && unconfirmed.is_none() && set_aside.kept.is_empty() {
         output::Tone::Completed
     } else if not_removed.is_empty() {
         output::Tone::Attention
@@ -102,6 +105,7 @@ pub(crate) fn left(
             device_id: unconfirmed.device_id,
             reason: unconfirmed.reason,
         }),
+        set_aside,
     };
     Done {
         tone,
@@ -120,7 +124,8 @@ pub(crate) async fn device(paths: Paths, action: DeviceAction) -> Result<Done, C
                 Response::SignedOut {
                     not_removed,
                     unconfirmed,
-                } => Ok(left(not_removed, unconfirmed)),
+                    set_aside,
+                } => Ok(left(not_removed, unconfirmed, &set_aside)),
                 other => Err(unexpected(other)),
             }
         }

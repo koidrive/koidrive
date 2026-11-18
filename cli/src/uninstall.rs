@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use koidrive_driver::{Credential, Flock, Paths, StateEntry};
+use koidrive_driver::{Credential, Flock, Paths, SetAside, StateEntry};
 use koidrive_ipc::{Request, Response};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,7 @@ mod text;
 use find::{find, is_koi, is_path_line, kept_programs};
 use remove::{
     clean_folder, keep_shared, prune_runtime, quit_apps, released, remove_path, remove_programs,
-    remove_service, sign_out,
+    remove_service, sign_out, unlink,
 };
 use text::{finish, kept_text};
 
@@ -36,6 +36,7 @@ const RECORD: &str = "uninstall.json";
 const PATH_MARKERS: [&str; 2] = ["; : 'koidrive PATH'", "; true 'koidrive PATH'"];
 const BASH_PRELUDE: &str = r#"if [ -r "$HOME/.bash_login" ]; then . "$HOME/.bash_login"; elif [ -r "$HOME/.profile" ]; then . "$HOME/.profile"; fi"#;
 const FOLDER_RECORDS: [&str; 4] = ["space.json", "device.json", "device.json.tmp", "staging"];
+const RECOVERY_RECORDS: [&str; 2] = ["brought-back.json", "brought-back.json.tmp"];
 const KOI_MARK: &[u8] = b"Koidrive sync client";
 const STATUS: Duration = Duration::from_secs(10);
 const HELPER: Duration = Duration::from_secs(20);
@@ -52,6 +53,10 @@ pub struct Options {
 pub struct UninstalledData {
     pub device: DeviceOutcome,
     pub removed: Vec<Removed>,
+    /// Each version of a file that syncing had set aside in a synced folder's `.koidrive`, now back in its folder under
+    /// a recovered name.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub brought_back: Vec<String>,
     pub kept: Vec<Kept>,
 }
 
@@ -117,6 +122,10 @@ pub enum Kept {
     },
     /// A part of a synced folder's `.koidrive` that still holds files, such as the local trash.
     FolderData {
+        path: String,
+    },
+    /// A version of a file that syncing set aside in a synced folder's `.koidrive` and that could not be brought back.
+    SetAside {
         path: String,
     },
     /// The `.koidrive` folder of a synced folder that another device or profile links.
@@ -227,6 +236,7 @@ impl Found {
 #[derive(Default)]
 struct Run {
     removed: Vec<Removed>,
+    brought_back: Vec<String>,
     kept: Vec<Kept>,
     problems: Vec<String>,
     next: Vec<Vec<String>>,
@@ -425,6 +435,7 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
         let data = UninstalledData {
             device: DeviceOutcome::NotPaired,
             removed: Vec::new(),
+            brought_back: Vec::new(),
             kept,
         };
         return Ok(Done::ok(data, text).unchanged());
@@ -447,12 +458,22 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
     if !shared {
         quit_apps(&found.programs, &mut run).await;
     }
-    let device = sign_out(paths, &found, &options, terminal).await;
+    let (device, set_aside) = sign_out(paths, &found, &options, terminal).await;
+    let set_aside = match set_aside {
+        Some(set_aside) => set_aside,
+        None => unlink(paths, &found, &mut run).await,
+    };
+    (run.brought_back)
+        .extend((set_aside.brought_back.iter()).map(|path| path.display().to_string()));
     remove_service(&found, &mut run).await;
     let _lock = match released(paths).await {
         Ok(lock) => lock,
         Err(problem) => {
             run.problems.push(problem);
+            run.kept
+                .extend(set_aside.kept.iter().map(|path| Kept::SetAside {
+                    path: path.display().to_string(),
+                }));
             return finish(device, run);
         }
     };

@@ -1,0 +1,4 @@
+60
+# The change brings set-aside versions back on unlink, sign-out and uninstall, so each path that can lose or misreport one needs its own case.
+# Driver tests cover a version brought back under its recovered name, another device's versions left alone (unlocked and while it syncs), unreadable, symlinked and non-UTF-8 holding paths, an unlink of a folder whose .koidrive is a symlink, a failed unlink and its retry in a new process, and a FIFO in place of the retry record.
+# The CLI tests cover the leave, unlink, setup and uninstall reports, including escaped paths and a directory in place of a recovery record.

@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 
 use koidrive_driver::{
     Account, Answer, CleanupFailure, Credential, Expiry, FolderStatus, LinkApproval, Paths,
-    Question, RestoreRequest, RestoreStatus, Secret, SharedLink, Status, Unconfirmed, Update,
+    Question, RestoreRequest, RestoreStatus, Secret, SetAside, SharedLink, Status, Unconfirmed,
+    Update,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -173,6 +174,8 @@ pub enum Response {
     Unlinked {
         space_id: String,
         path: PathBuf,
+        #[serde(flatten)]
+        set_aside: SetAside,
     },
     /// The folder of `space_id` was unlinked, whose path was unknown.
     UnlinkedSpace {
@@ -208,6 +211,8 @@ pub enum Response {
         not_removed: Vec<CleanupFailure>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         unconfirmed: Option<Unconfirmed>,
+        #[serde(flatten)]
+        set_aside: SetAside,
     },
     Access {
         blocked: Vec<Blocked>,
@@ -622,6 +627,7 @@ mod tests {
                 error: "denied\n\x1b[31m".into(),
             }],
             unconfirmed: None,
+            set_aside: SetAside::default(),
         };
         let (mut writer, mut reader) = UnixStream::pair().unwrap();
         write_line(&mut writer, &response)
@@ -994,6 +1000,7 @@ mod tests {
             Response::SignedOut {
                 not_removed: Vec::new(),
                 unconfirmed: None,
+                set_aside: SetAside::default(),
             },
             r#"{"response":"signed_out"}"#,
         );
@@ -1005,6 +1012,7 @@ mod tests {
                     device_id: "d1".into(),
                     reason: "no answer within 10 seconds".into(),
                 }),
+                set_aside: SetAside::default(),
             },
             r#"{"response":"signed_out","unconfirmed":{"server":"https://files.example.com/","device_id":"d1","reason":"no answer within 10 seconds"}}"#,
         );
@@ -1015,6 +1023,7 @@ mod tests {
                     error: "Permission denied (os error 13)".into(),
                 }],
                 unconfirmed: None,
+                set_aside: SetAside::default(),
             },
             r#"{"response":"signed_out","not_removed":[{"path":"/a/.koidrive/device.json","error":"Permission denied (os error 13)"}]}"#,
         );
@@ -1058,8 +1067,20 @@ mod tests {
             Response::Unlinked {
                 space_id: "s1".into(),
                 path: "/home/ada/Docs".into(),
+                set_aside: SetAside::default(),
             },
             r#"{"response":"unlinked","space_id":"s1","path":"/home/ada/Docs"}"#,
+        );
+        pinned(
+            Response::Unlinked {
+                space_id: "s1".into(),
+                path: "/home/ada/Docs".into(),
+                set_aside: SetAside {
+                    brought_back: vec!["/home/ada/Docs/a (recovered 2026-11-18).txt".into()],
+                    kept: vec!["/home/ada/Docs/.koidrive/parked/n1".into()],
+                },
+            },
+            r#"{"response":"unlinked","space_id":"s1","path":"/home/ada/Docs","brought_back":["/home/ada/Docs/a (recovered 2026-11-18).txt"],"kept":["/home/ada/Docs/.koidrive/parked/n1"]}"#,
         );
         pinned(
             Response::AnsweredQuestion { question: None },

@@ -345,8 +345,28 @@ impl From<OauthError> for CliError {
 
 impl From<DriverError> for CliError {
     fn from(error: DriverError) -> Self {
-        let human = driver_human(&error);
         let message = error.to_string();
+        if let DriverError::UnlinkFailedAfterBringingBack {
+            error,
+            brought_back,
+        } = error
+        {
+            let mut result = CliError::from(*error);
+            result.message = message;
+            let named = crate::report::SetAsideData {
+                brought_back: (brought_back.iter())
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect(),
+                kept: Vec::new(),
+            }
+            .lines();
+            if let Some(human) = &mut result.human {
+                human.push('\n');
+                human.push_str(named.trim_end());
+            }
+            return result;
+        }
+        let human = driver_human(&error);
         let mut result = match error {
             DriverError::Api(error) => CliError::from(error),
             DriverError::Refused(error) => CliError::rpc_refusal(error.0),
@@ -430,7 +450,9 @@ impl From<DriverError> for CliError {
 
 fn driver_human(error: &DriverError) -> Option<String> {
     let human = match error {
-        DriverError::Api(_) | DriverError::Refused(_) => return None,
+        DriverError::Api(_)
+        | DriverError::Refused(_)
+        | DriverError::UnlinkFailedAfterBringingBack { .. } => return None,
         DriverError::Busy(_) => {
             "Another Koidrive process is using this device's profile. Use the running app or service rather than starting a second one."
         }
