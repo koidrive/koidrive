@@ -4920,20 +4920,15 @@ mod tests {
         leaving.set_phase(Phase::Committed).unwrap();
         drop(driver);
         fs::remove_file(paths.credential()).unwrap();
-        let other_store = paths
-            .store(other_id)
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
+        let spaces = paths.spaces();
         let date = koidrive_fs::utc_date(SystemTime::now());
         let driver = Driver::open(paths).unwrap();
-        if !close_dir(&other_store) {
+        if !close_dir(&spaces) {
             return;
         }
 
         let failed = driver.save_credential(credential("d2")).await;
-        open_dir(&other_store);
+        open_dir(&spaces);
         let (_, set_aside) = driver.save_credential(credential("d2")).await.unwrap();
         if koidrive_fs::utc_date(SystemTime::now()) != date {
             eprintln!("SKIPPED: the UTC date changed during the test");
