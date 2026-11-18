@@ -428,12 +428,18 @@ impl Disks {
         let index = self
             .mounted
             .iter()
-            .position(|mounted| mounted.at == at)
+            .rposition(|mounted| mounted.at == at)
             .unwrap_or_else(|| panic!("no image owned at {}", at.display()));
         if let Err(failure) = unmount(&self.mounted[index]) {
             panic!("{failure}");
         }
         self.mounted.remove(index);
+    }
+
+    /// Unmounts the folder `at` and keeps its image attached, so no image attached later takes its device number.
+    #[cfg(target_os = "macos")]
+    pub fn unmount(&mut self, at: &Path) {
+        run("/sbin/umount", &["-f".as_ref(), at.as_os_str()]);
     }
 
     /// Records that the image mounted at `from` is at `to` now, after a folder above it moved.
