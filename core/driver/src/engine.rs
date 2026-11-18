@@ -86,9 +86,25 @@ impl Engine {
         let mut stored = Stored::new(root);
         let whole = stored.read_unless(tx, root, &|| false)?;
         assert!(whole, "a read nobody abandons reads every row");
-        stored
-            .engine_unless(&|| false)
-            .map(|engine| engine.expect("a load nobody abandons ends with the engine"))
+        let mut engine = (stored.engine_unless(&|| false)?)
+            .expect("a load nobody abandons ends with the engine");
+        engine.backfill_journal(tx)?;
+        Ok(engine)
+    }
+
+    pub fn backfill_journal(&mut self, tx: &Tx<'_>) -> Result<(), Error> {
+        if !tx.journal_backfill_owed()? {
+            return Ok(());
+        }
+        let recovering = matches!(self.commits.halted(), Some(Halt::Recovery { .. }));
+        (self.trees).backfill(self.commits.in_flight().map(|flight| &flight.commit), recovering);
+        tx.write_engine_changes(&EngineChanges {
+            trees: self.trees.take_changes(),
+            commits: Default::default(),
+            effects: Default::default(),
+        })?;
+        tx.journal_backfilled()?;
+        Ok(())
     }
 
     /// Ends a step that changed the engine, inside the step's transaction. It settles the trees, then writes the L
@@ -5042,6 +5058,53 @@ mod tests {
             engine.trees.state().edited_here,
             BTreeMap::from([("e".into(), 6)])
         );
+    }
+
+    #[test]
+    fn a_store_from_an_earlier_release_gets_its_journal_once_when_it_loads() {
+        let (_dir, mut store) = store();
+        let shape = koidrive_store::Shape {
+            parent_id: ROOT.into(),
+            name: "d".into(),
+            kind: NodeKind::Dir as i32,
+            content: None,
+        };
+        let mut state = EngineState::default();
+        state.trees.lost_creates.insert("d".into());
+        state.trees.dirty.insert("d".into());
+        store
+            .transaction(|tx| {
+                tx.put_synced_node(&SyncedNode {
+                    node_id: "d".into(),
+                    shape: shape.clone(),
+                    pending_for: String::new(),
+                })?;
+                tx.put_local_node(&koidrive_store::LocalNode {
+                    left_out_when_placed: false,
+                    content_from_server: false,
+                    node_id: "d".into(),
+                    shape,
+                    identity: ino(1),
+                    parked: false,
+                })?;
+                tx.set_engine_state(&state)
+            })
+            .unwrap();
+        let rows = |engine: &Engine| {
+            (engine.trees.journal_rows())
+                .map(|(key, row)| (key.clone(), row.into_owned()))
+                .collect::<Vec<_>>()
+        };
+        let backfilled = store
+            .transaction(|tx| {
+                let engine = Engine::load(tx, ROOT)?;
+                assert!(!tx.journal_backfill_owed()?);
+                Ok::<_, Error>(rows(&engine))
+            })
+            .unwrap();
+        assert_eq!(backfilled.len(), 2);
+        let reloaded = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+        assert_eq!(rows(&reloaded), backfilled);
     }
 
     #[test]

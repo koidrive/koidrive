@@ -26,6 +26,7 @@ use crate::tree::{
     ContentKey, CountedMap, CountedSet, FileIdentity, Kind, LocalNode, Names, Node, NodeId,
     RemoteNode, Shape, TrackedTree, Tree, TreeError, counted, read_entries, same, same_content,
 };
+use intents::Carrier;
 
 use release::Released;
 
@@ -682,6 +683,7 @@ pub struct Trees {
     unsent_marks: TrackedMap<NodeId, String>,
     pending_finishes: TrackedMap<NodeId, PendingFinish>,
     journal: Journal,
+    ended_carriers: BTreeSet<NodeId>,
     synced_intents: BTreeMap<NodeId, NodeIntents>,
     ignore: Matcher,
     /// Nodes whose local copy the user moved into an ignored folder that is no node. L keeps the
@@ -815,6 +817,7 @@ impl Trees {
             unsent_marks: TrackedMap::default(),
             pending_finishes: TrackedMap::default(),
             journal: Journal::default(),
+            ended_carriers: BTreeSet::new(),
             synced_intents: BTreeMap::new(),
             ignore: Matcher::new(LocalRules::default()),
             outside: TrackedSet::default(),
@@ -1401,8 +1404,8 @@ impl Trees {
                     || holds_local(&node.shape) && !self.r.live(&id).is_some_and(holds_local)
             });
         self.mark(&id);
-        self.lost_creates.remove(&id);
-        self.unsent_creates.remove(&id);
+        self.end_carrier(Carrier::LostCreate, &id);
+        self.end_carrier(Carrier::UnsentCreate, &id);
         if !node.trashed {
             self.unsent_moves.remove(&id);
         }
@@ -1647,10 +1650,10 @@ impl Trees {
     }
 
     pub(crate) fn end_resend(&mut self, id: &NodeId) -> bool {
-        self.unsent_creates.remove(id);
-        self.lost_creates.remove(id);
+        self.end_carrier(Carrier::UnsentCreate, id);
+        self.end_carrier(Carrier::LostCreate, id);
         self.lost_positions.remove(id);
-        self.resends.remove(id)
+        self.end_carrier(Carrier::Resend, id)
     }
 
     fn local_chain<'a>(&'a self, id: &'a NodeId) -> impl Iterator<Item = &'a NodeId> + 'a {
@@ -1747,8 +1750,8 @@ impl Trees {
     }
 
     pub(crate) fn take_local(&mut self, id: NodeId) {
-        self.lost_creates.remove(&id);
-        self.resends.remove(&id);
+        self.end_carrier(Carrier::LostCreate, &id);
+        self.end_carrier(Carrier::Resend, &id);
         self.agree_with_local(id);
     }
 
@@ -1767,8 +1770,8 @@ impl Trees {
             self.end_resend(&id);
             return;
         };
-        self.lost_creates.remove(&id);
-        self.resends.remove(&id);
+        self.end_carrier(Carrier::LostCreate, &id);
+        self.end_carrier(Carrier::Resend, &id);
         self.end_local_claim(&id);
         let shape = Shape {
             parent: local.parent,
@@ -1822,8 +1825,8 @@ impl Trees {
         self.missing.remove(id);
         self.edited_here.remove(id);
         self.replaced_versions.remove(id);
-        self.lost_creates.remove(id);
-        self.resends.remove(id);
+        self.end_carrier(Carrier::LostCreate, id);
+        self.end_carrier(Carrier::Resend, id);
         self.moved_here.remove(id);
         self.past_positions.remove(id);
         self.synced_positions.remove(id);
@@ -2143,13 +2146,13 @@ impl Trees {
         let left_folder = (self.l.get(&id))
             .map(|old| old.shape.parent.clone())
             .filter(|parent| *parent != node.shape.parent);
+        if (self.l.get(&id)).is_some_and(|old| !old.shape.same(&node.shape)) {
+            self.end_carrier(Carrier::Resend, &id);
+            self.end_carrier(Carrier::LostCreate, &id);
+        }
         if let Some(old) = self.l.get(&id) {
             node.left_out_when_placed = old.left_out_when_placed;
             node.content_from_server = old.content_from_server;
-            if !old.shape.same(&node.shape) {
-                self.resends.remove(&id);
-                self.lost_creates.remove(&id);
-            }
             if !old.shape.same_position(&node.shape) {
                 self.lost_positions.remove(&id);
             }
@@ -6531,7 +6534,7 @@ impl Trees {
     }
 
     fn end_local_claim(&mut self, id: &NodeId) -> bool {
-        let created = self.unsent_creates.remove(id);
+        let created = self.end_carrier(Carrier::UnsentCreate, id);
         let edited = self.unsent_edits.remove(id);
         self.unsent_moves.remove(id) || edited || created
     }
@@ -6543,7 +6546,7 @@ impl Trees {
     }
 
     pub(crate) fn sent_create(&mut self, id: &NodeId) {
-        if self.unsent_creates.remove(id) {
+        if self.end_carrier(Carrier::UnsentCreate, id) {
             self.mark(id);
         }
     }
@@ -6816,6 +6819,7 @@ impl Trees {
         if std::mem::take(&mut self.release_due) && self.release_vanished() {
             self.settle_marked(abandoned)?;
         }
+        self.end_carried_rows();
         Some(())
     }
 
@@ -7545,8 +7549,8 @@ impl Trees {
         if (shape.as_ref())
             .is_some_and(|shape| (self.l.get(id)).is_some_and(|local| local.shape.same(shape)))
         {
-            self.lost_creates.remove(id);
-            self.resends.remove(id);
+            self.end_carrier(Carrier::LostCreate, id);
+            self.end_carrier(Carrier::Resend, id);
             self.local_changes.remove(id);
         }
         let left = (self.s.get(id))
@@ -7877,6 +7881,7 @@ impl Trees {
             unsent_marks,
             pending_finishes,
             journal,
+            ended_carriers: _,
             synced_intents: _,
             ignore: _,
             outside,
