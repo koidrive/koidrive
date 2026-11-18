@@ -580,7 +580,7 @@ fn differences(steps: &[Step], priorities: &[Vec<usize>]) -> Vec<String> {
         let path = dir.path().join(name);
         std::fs::copy(&base, &path).unwrap();
         let conn = Connection::open(&path).unwrap();
-        koidrive_store::migrations::register_functions(&conn).unwrap();
+        koidrive_store::migrations::register_functions(&conn, None).unwrap();
         conn.pragma_update(None, "synchronous", "OFF").unwrap();
         for step in &order {
             conn.execute_batch(step.sql).unwrap();
@@ -809,7 +809,7 @@ fn rewind(path: &Path, version: usize) {
 fn rebuild(path: &Path, migrate: impl FnOnce(&Connection)) {
     let rebuilt = path.with_extension("rebuilt");
     let conn = Connection::open(&rebuilt).unwrap();
-    koidrive_store::migrations::register_functions(&conn).unwrap();
+    koidrive_store::migrations::register_functions(&conn, None).unwrap();
     conn.pragma_update(None, "foreign_keys", false).unwrap();
     conn.pragma_update(None, "synchronous", "OFF").unwrap();
     migrate(&conn);
@@ -5225,4 +5225,34 @@ fn a_kept_cause_the_store_cannot_read_loads_as_none() {
     let mut store = Store::open(&path).unwrap();
     let state = store.transaction(|tx| tx.engine_state()).unwrap();
     assert_eq!(state.trees.kept_nodes, BTreeMap::from([("n".into(), None)]));
+}
+
+#[test]
+fn an_upgrade_bounds_change_times_by_the_last_write_before_it_on_every_open() {
+    let epoch = std::time::UNIX_EPOCH;
+    let second = std::time::Duration::from_secs(1);
+    for (written, at) in [
+        (epoch + second * 1_793_491_200, 1_793_491_200_000_000_000),
+        (epoch - second, -1_000_000_000),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        std::fs::copy(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/alpha6.db"),
+            &path,
+        )
+        .unwrap();
+        (std::fs::File::options().write(true).open(&path).unwrap())
+            .set_modified(written)
+            .unwrap();
+        for _ in 0..2 {
+            let mut store = Store::open_existing(&path).unwrap();
+            let nodes = store.transaction(|tx| tx.local_nodes()).unwrap();
+            let ctimes = store.transaction(|tx| tx.local_ctimes()).unwrap();
+            assert!(!nodes.is_empty());
+            for node in nodes {
+                assert_eq!(ctimes.get(&node.node_id), Some(&at), "{ctimes:?}");
+            }
+        }
+    }
 }

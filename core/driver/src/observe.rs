@@ -26,8 +26,8 @@ use std::time::{Duration, Instant};
 use koidrive_chunk::ChunkerConfig;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_fs::{
-    Change, Detached, Entry, EntryKind, Error as FsError, FileId, Known, Mount, NativeWatcher,
-    RescanWatcher, RootAt, RootProblem, Snapshot, Watcher, check_root,
+    Change, Ctime, Detached, Entry, EntryKind, Error as FsError, FileId, Known, MarkLog, Mount,
+    NativeWatcher, RescanWatcher, RootAt, RootProblem, Snapshot, Watcher, check_root,
 };
 use koidrive_proto::v1::{ChunkRef, Content};
 use rustix::fs::{Mode, OFlags};
@@ -77,6 +77,7 @@ pub struct Observation {
     pub all_rules: bool,
     pub mounts: BTreeMap<PathBuf, Mount>,
     pub detached: BTreeMap<PathBuf, Detached>,
+    pub ctimes: BTreeMap<PathBuf, i64>,
 }
 
 /// The rules of the `.koiignore` file in `dir`, a folder relative to the root and empty for the root, or `None` when
@@ -150,6 +151,7 @@ pub struct FsObserver {
     linked: RootAt,
     watcher: Box<dyn Watcher + Send>,
     native: bool,
+    marks: MarkLog,
     matcher: Arc<dyn Matcher>,
     /// The root folder the latest scan opened.
     scanned: Option<FileId>,
@@ -320,11 +322,13 @@ impl FsObserver {
     /// for a walk of the whole tree nor for every file of a scan to be read. The observer's snapshot then counts
     /// changes it never returned, so drop the observer. Each observation calls `progress` as it walks the folder and
     /// as it reads file content, at each file found and each chunk read.
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         root: &Path,
         space_id: &str,
         linked: RootAt,
         previous: Snapshot,
+        marks: MarkLog,
         matcher: Arc<dyn Matcher>,
         stopped: impl Fn() -> bool + Send + Sync + 'static,
         progress: impl Fn(Observing) + Send + Sync + 'static,
@@ -334,7 +338,9 @@ impl FsObserver {
         let (watcher, native): (Box<dyn Watcher + Send>, bool) =
             match NativeWatcher::start_with_rules(root, previous.clone(), scan_rules(&matcher)) {
                 Ok(watcher) => {
-                    let watcher = watcher.stopping_when(watching(&stopped));
+                    let watcher = watcher
+                        .stopping_when(watching(&stopped))
+                        .marking(marks.clone());
                     (Box::new(watcher.counting(walking(&progress))), true)
                 }
                 Err(FsError::Watch(error)) => {
@@ -342,7 +348,9 @@ impl FsObserver {
                     let rules = scan_rules(&matcher);
                     let watcher =
                         RescanWatcher::with_rules(root, previous, RESCAN_INTERVAL, rules)?;
-                    let watcher = watcher.stopping_when(watching(&stopped));
+                    let watcher = watcher
+                        .stopping_when(watching(&stopped))
+                        .marking(marks.clone());
                     (Box::new(watcher.counting(walking(&progress))), false)
                 }
                 Err(error) => return Err(error),
@@ -353,6 +361,7 @@ impl FsObserver {
             linked,
             watcher,
             native,
+            marks,
             matcher,
             scanned: None,
             first: true,
@@ -368,6 +377,16 @@ impl FsObserver {
     /// their bytes.
     pub fn unread(&self) -> (u64, u64) {
         self.unread.totals()
+    }
+
+    pub fn racy_reads(&self) -> Vec<PathBuf> {
+        let entries = &self.watcher.snapshot().entries;
+        (self.unread.files.keys())
+            .filter(|path| {
+                (entries.get(*path)).is_some_and(|entry| matches!(entry.ctime, Ctime::Racy { .. }))
+            })
+            .cloned()
+            .collect()
     }
 
     fn size(&self, path: &Path) -> u64 {
@@ -537,7 +556,7 @@ impl FsObserver {
                 self.unread.remove(&path);
                 continue;
             };
-            if !reads.take(entry.size, false) {
+            if matches!(entry.ctime, Ctime::Racy { .. }) || !reads.take(entry.size, false) {
                 continue;
             }
             match self.read(&path, &entry, reads) {
@@ -595,7 +614,7 @@ impl FsObserver {
         reads: &mut Reads,
         must: bool,
     ) -> Option<Content> {
-        if !reads.take(entry.size, must) {
+        if matches!(entry.ctime, Ctime::Racy { .. }) || !reads.take(entry.size, must) {
             reads.deferred.push(path.to_path_buf());
             return None;
         }
@@ -634,6 +653,8 @@ impl Observer for FsObserver {
             Some(due) => timeout.min(due.saturating_duration_since(Instant::now())),
             None => timeout,
         };
+        let racy = self.racy_reads();
+        self.watcher.revisit(racy);
         let poll = match self.watcher.poll(timeout) {
             Err(FsError::Watch(error)) if self.native => {
                 tracing::warn!(%error, "the platform watcher failed; rescanning periodically");
@@ -641,7 +662,8 @@ impl Observer for FsObserver {
                 let rules = scan_rules(&self.matcher);
                 let watcher =
                     RescanWatcher::with_rules(&self.root, snapshot, RESCAN_INTERVAL, rules)?;
-                let watcher = watcher.stopping_when(watching(&self.stopped));
+                let watcher =
+                    (watcher.stopping_when(watching(&self.stopped))).marking(self.marks.clone());
                 self.watcher = Box::new(watcher.counting(walking(&self.progress)));
                 self.native = false;
                 self.first = true;
@@ -750,6 +772,7 @@ impl Observer for FsObserver {
             && changes.is_empty()
             && unreadable.is_empty()
             && poll.read.is_empty()
+            && poll.settled.is_empty()
             && rules.is_empty()
         {
             return Ok(None);
@@ -757,6 +780,29 @@ impl Observer for FsObserver {
         self.first &= !first;
         self.reset &= !answers;
         let root = check_root(&self.root, &self.space_id, &self.linked).map(|_| ());
+        let entries = &self.watcher.snapshot().entries;
+        let read = (changes.iter()).filter_map(|change| match change {
+            Observed::Created {
+                path,
+                content: Some(_),
+                ..
+            }
+            | Observed::Modified {
+                path,
+                content: Some(_),
+                ..
+            } => Some(path),
+            _ => None,
+        });
+        let accepted = (poll.settled.iter()).filter(|path| !self.unread.files.contains_key(*path));
+        let ctimes = (read.chain(accepted))
+            .filter_map(|path| match entries.get(path)?.ctime {
+                Ctime::Settled { at, .. } | Ctime::NotAfter(at) => {
+                    Some((path.clone(), i64::try_from(at).unwrap_or(i64::MAX)))
+                }
+                Ctime::Racy { .. } => None,
+            })
+            .collect();
         Ok(Some(Observation {
             changes,
             root,
@@ -770,6 +816,7 @@ impl Observer for FsObserver {
                 .filter_map(|(path, entry)| Some((path.clone(), entry.mount?)))
                 .collect(),
             detached: self.watcher.snapshot().detached.clone(),
+            ctimes,
         }))
     }
 
@@ -789,6 +836,11 @@ fn walking(progress: &Arc<dyn Fn(Observing) + Send + Sync>) -> impl Fn(u64) + Se
     move |files| progress(Observing::Walking { files })
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static READS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// The content of the file at `path` under `root`, or `None` when it is not the file the scan saw or changed while
 /// it was read. Fails with [`io::ErrorKind::Interrupted`] at the first chunk after `stopped` holds. Passes the size of
 /// each chunk to `chunked` once it is read.
@@ -800,6 +852,8 @@ pub(crate) fn read_content(
     chunked: &mut dyn FnMut(u64),
 ) -> io::Result<Option<Content>> {
     let file = open_beneath(root, path)?;
+    #[cfg(test)]
+    READS.with_borrow_mut(|reads| reads.push(path.to_path_buf()));
     let before = file.metadata()?;
     let same_file = before.is_file() && koidrive_fs::id_of(file.as_fd())? == entry.id;
     if !same_file || !same_version(&before, entry) {
@@ -832,7 +886,13 @@ fn mtime_ns(meta: &std::fs::Metadata) -> i128 {
 }
 
 fn same_version(meta: &std::fs::Metadata, entry: &Entry) -> bool {
-    meta.size() == entry.size && mtime_ns(meta) == entry.mtime_ns
+    let ctime_ns = i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec());
+    meta.size() == entry.size
+        && mtime_ns(meta) == entry.mtime_ns
+        && match entry.ctime {
+            Ctime::NotAfter(at) => ctime_ns <= at,
+            ctime => ctime_ns == ctime.at(),
+        }
 }
 
 /// Opens the file at the relative `path` under `root` for reading, one folder at a time, following no symbolic link.
@@ -906,6 +966,7 @@ mod tests {
             SPACE,
             dev,
             Snapshot::default(),
+            MarkLog::default(),
             Arc::new(Unfiltered),
             || false,
             |_| {},
@@ -936,6 +997,7 @@ mod tests {
             SPACE,
             dev,
             Snapshot::default(),
+            MarkLog::default(),
             Arc::new(Unfiltered),
             stopped,
             |_| {},
@@ -1361,6 +1423,7 @@ mod tests {
             SPACE,
             dev,
             Snapshot::default(),
+            MarkLog::default(),
             Arc::new(Unfiltered),
             stopped,
             |_| {},
@@ -1482,6 +1545,7 @@ mod tests {
             SPACE,
             dev,
             Snapshot::default(),
+            MarkLog::default(),
             Arc::new(Unfiltered),
             || false,
             move |report| reported.lock().unwrap().push(report),
@@ -1803,6 +1867,7 @@ mod tests {
             SPACE,
             dev,
             Snapshot::default(),
+            MarkLog::default(),
             Arc::new(IgnoredFolder),
             || false,
             |_| {},
@@ -1887,6 +1952,8 @@ mod tests {
         }
 
         fn reset(&mut self, _scope: &Path, _known: BTreeMap<PathBuf, Known>) {}
+
+        fn revisit(&mut self, _paths: Vec<PathBuf>) {}
     }
 
     /// The first scan of an observer saw `proj`, a folder it knew, disappear and could not settle it, so it may not
@@ -1910,6 +1977,7 @@ mod tests {
             SPACE,
             dev,
             snapshot.clone(),
+            MarkLog::default(),
             Arc::new(Unfiltered),
             || false,
             |_| {},
@@ -2102,6 +2170,7 @@ mod tests {
             SPACE,
             dev,
             previous,
+            MarkLog::default(),
             Arc::new(Unfiltered),
             || false,
             |_| {},
@@ -2145,6 +2214,7 @@ mod tests {
             SPACE,
             dev,
             Snapshot::default(),
+            MarkLog::default(),
             matcher,
             || false,
             |_| {},

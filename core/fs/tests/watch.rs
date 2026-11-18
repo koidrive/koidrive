@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use koidrive_fs::{
-    Change, Entry, EntryKind, Error, FileId, Known, NativeWatcher, Poll, Rescan, RescanWatcher,
-    Snapshot, Space, Watcher,
+    Change, Ctime, Entry, EntryKind, Error, FileId, Known, NativeWatcher, Poll, Rescan,
+    RescanWatcher, Snapshot, Space, Watcher,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -63,6 +63,7 @@ fn nothing(root: &Path) -> Rescan {
         root: root_id(root),
         rules: vec![],
         read: vec![],
+        settled: vec![],
     }
 }
 
@@ -454,6 +455,7 @@ fn folder_replaced_by_a_symlink_is_removed_not_followed() {
             root: root_id(&root),
             rules: vec![],
             read: vec![],
+            settled: vec![],
         }
     );
     assert_eq!(snapshot, Snapshot::scan(&root).unwrap());
@@ -503,6 +505,7 @@ fn unreadable_folder_is_kept_and_reported() {
                 root: root_id(root),
                 rules: vec![],
                 read: vec![],
+                settled: vec![],
             },
             "{mode:o}"
         );
@@ -866,6 +869,7 @@ fn rescans_and_polls_report_the_root_they_scanned() {
             root: second,
             rules: vec![],
             read: vec![],
+            settled: vec![],
         }
     );
     let poll = watcher.poll(Duration::from_millis(50)).unwrap();
@@ -1167,6 +1171,64 @@ fn a_file_replaced_by_a_rename_is_modified_in_place() {
 }
 
 #[test]
+fn an_in_place_edit_that_keeps_the_size_and_restores_the_mtime_is_modified() {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(root.join("doc"), "first").unwrap();
+    let written = fs::metadata(root.join("doc")).unwrap().modified().unwrap();
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    while matches!(snapshot.entries[Path::new("doc")].ctime, Ctime::Racy { .. }) {
+        assert!(
+            snapshot
+                .rescan(root, [PathBuf::new()])
+                .unwrap()
+                .changes
+                .is_empty()
+        );
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .open(root.join("doc"))
+        .unwrap();
+    file.write_all(b"other").unwrap();
+    file.set_modified(written).unwrap();
+    let changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
+    assert_eq!(changes, [modified("doc")]);
+}
+
+#[test]
+fn a_file_written_on_fat_right_before_a_scan_is_racy_until_its_tick_passes() {
+    let Some(mut disks) = koidrive_test_support::Disks::new() else {
+        return;
+    };
+    let stick = disks.base().join("Stick");
+    fs::create_dir(&stick).unwrap();
+    let image = disks.fat("Stick");
+    disks.attach(&image, &stick);
+    let into_tick = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        % 2000;
+    std::thread::sleep(Duration::from_millis(((2050 - into_tick) % 2000) as u64));
+    fs::write(stick.join("doc"), "first").unwrap();
+    let started = Instant::now();
+    let mut snapshot = Snapshot::scan(&stick).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(1));
+    let racy = |snapshot: &Snapshot| {
+        matches!(snapshot.entries[Path::new("doc")].ctime, Ctime::Racy { .. })
+    };
+    assert!(racy(&snapshot));
+    std::thread::sleep(Duration::from_millis(2100));
+    let changes = snapshot.rescan(&stick, [PathBuf::new()]).unwrap().changes;
+    assert!(!racy(&snapshot));
+    assert!(!changes.contains(&modified("doc")), "{changes:?}");
+}
+
+#[test]
 fn a_mark_on_a_folder_rescans_nothing_below_it() {
     #[cfg(target_vendor = "apple")]
     const MARK: &str = "com.koidrive.node";
@@ -1341,11 +1403,23 @@ fn a_new_link_a_scan_finds_beside_the_file_it_links_is_created() {
     fs::create_dir_all(root.join("x")).unwrap();
     fs::create_dir(root.join("e")).unwrap();
     fs::write(root.join("x/g.txt"), "g").unwrap();
+    fs::set_permissions(root.join("x/g.txt"), fs::Permissions::from_mode(0o644)).unwrap();
     let mut snapshot = Snapshot::scan(&root).unwrap();
     fs::hard_link(root.join("x/g.txt"), root.join("e/link.txt")).unwrap();
     let rescan = snapshot.rescan(&root, [PathBuf::from("e")]).unwrap();
     assert_eq!(rescan.changes, vec![created("e/link.txt", File)]);
     assert!(snapshot.entries.contains_key(Path::new("x/g.txt")));
+    fs::remove_file(root.join("e/link.txt")).unwrap();
+    let rescan = snapshot.rescan(&root, [PathBuf::new()]).unwrap();
+    assert_eq!(
+        rescan.changes,
+        vec![removed("e/link.txt", File), modified("x/g.txt")]
+    );
+    fs::set_permissions(root.join("x/g.txt"), fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        snapshot.rescan(&root, [PathBuf::new()]).unwrap().changes,
+        vec![]
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -1431,7 +1505,10 @@ fn a_file_removed_beside_a_link_is_removed_by_the_first_scan() {
     let mut snapshot = Snapshot::scan(&root).unwrap();
     fs::remove_dir_all(root.join("x/d")).unwrap();
     let rescan = snapshot.rescan(&root, [PathBuf::from("x")]).unwrap();
-    assert_eq!(rescan.changes, vec![removed("x/d", Dir)]);
+    assert_eq!(
+        rescan.changes,
+        vec![removed("x/d", Dir), modified("x/alias.txt")]
+    );
     assert_eq!(snapshot, Snapshot::scan(&root).unwrap());
 }
 

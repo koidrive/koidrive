@@ -168,6 +168,7 @@ pub struct Entry {
     pub id: FileId,
     pub size: u64,
     pub mtime_ns: i128,
+    pub ctime: Ctime,
     pub executable: bool,
     /// Whether the file may have another link: it had one when it was
     /// scanned, or it was not scanned. Two entries that differ only here are
@@ -177,6 +178,31 @@ pub struct Entry {
     /// The volume mounted at the folder, when it is the root of a volume mounted inside the tree: on another device
     /// than the folder that holds it when it was scanned.
     pub mount: Option<Mount>,
+}
+
+/// When a file's metadata last changed. A write always moves it, and no process can set it back, but a write within
+/// the same tick of the file system's clock keeps it. A chmod, a link made or removed, or an extended attribute moves
+/// it too. Folders have `Settled { at: 0, mode: 0 }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ctime {
+    /// Read once its tick had passed, so any later write moves it, with the permission bits the file had then.
+    Settled { at: i128, mode: u32 },
+    /// Read while its tick lasted, so a later write can keep it: nothing read from the file can be trusted yet. A
+    /// scan that finds it unchanged at `until` or later, by this machine's clock, settles it.
+    Racy { at: i128, mode: u32, until: i128 },
+    /// Not known, but no later than this: a file whose change time is not later counts as unchanged. A file with
+    /// several links has `NotAfter(i128::MAX)`, since a link made, moved or removed elsewhere moves its change time,
+    /// and no change time it has once it is left with one link matches that.
+    NotAfter(i128),
+}
+
+impl Ctime {
+    /// The change time, or the latest it can be.
+    pub fn at(self) -> i128 {
+        match self {
+            Ctime::Settled { at, .. } | Ctime::Racy { at, .. } | Ctime::NotAfter(at) => at,
+        }
+    }
 }
 
 /// The volume mounted at a folder inside the tree.
@@ -231,6 +257,27 @@ impl Entry {
             Some(_) => Detached::Away,
             None => Detached::Covered,
         }
+    }
+
+    fn same_version(&self, now: &Entry) -> bool {
+        self == now
+            && match (self.ctime, now.ctime) {
+                (_, Ctime::NotAfter(_)) => true,
+                (Ctime::NotAfter(i128::MAX), _) => false,
+                (Ctime::NotAfter(at), now) => now.at() <= at,
+                (
+                    Ctime::Settled { at, mode } | Ctime::Racy { at, mode, .. },
+                    Ctime::Settled {
+                        at: now_at,
+                        mode: now_mode,
+                    }
+                    | Ctime::Racy {
+                        at: now_at,
+                        mode: now_mode,
+                        ..
+                    },
+                ) => at == now_at || mode != now_mode,
+            }
     }
 }
 
@@ -288,6 +335,7 @@ impl Stat {
                 id: self.id,
                 size: 0,
                 mtime_ns: 0,
+                ctime: Ctime::Settled { at: 0, mode: 0 },
                 executable: false,
                 linked: false,
                 mount: None,
@@ -297,6 +345,13 @@ impl Stat {
                 id: self.id,
                 size: self.size,
                 mtime_ns: self.mtime_ns,
+                ctime: match self.nlink {
+                    0 | 1 => Ctime::Settled {
+                        at: self.ctime_ns,
+                        mode: self.mode & 0o7777,
+                    },
+                    _ => Ctime::NotAfter(i128::MAX),
+                },
                 executable: self.mode & 0o111 != 0,
                 linked: self.nlink > 1,
                 mount: None,
@@ -307,6 +362,67 @@ impl Stat {
 
     fn is_at(&self, dev: u64, id: &FileId) -> bool {
         self.dev == dev && self.id.ino == id.ino
+    }
+}
+
+fn tick_of(at: i128, measured: Option<i128>) -> i128 {
+    let tick = measured.unwrap_or(COARSE_TICK);
+    match at % 1_000_000_000 {
+        0 => tick.max(SECOND_TICK),
+        _ => tick,
+    }
+}
+
+fn now_ns() -> i128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos() as i128)
+}
+
+#[cfg(not(target_os = "linux"))]
+const APFS_TICK: i128 = 1_000_000;
+const KERNEL_TICK: i128 = 20_000_000;
+const SECOND_TICK: i128 = 1_000_000_000 + KERNEL_TICK;
+const COARSE_TICK: i128 = 2_000_000_000 + KERNEL_TICK;
+
+/// How far apart two writes to a file on the volume of `dir` must be for the second to get a later change time.
+/// APFS stamps writes to the microsecond or finer. Linux stamps them with a clock that ticks every few milliseconds,
+/// and exFAT keeps 10 ms. FAT keeps 2 s, HFS+ whole seconds, and a network file system takes the time from another
+/// machine; their stamps come from the kernel's coarse clock too, which lags the system clock by up to its tick.
+#[cfg(target_os = "linux")]
+fn timestamp_tick(dir: BorrowedFd<'_>) -> i128 {
+    const EXT: u64 = 0xEF53;
+    const XFS: u64 = 0x5846_5342;
+    const BTRFS: u64 = 0x9123_683E;
+    const TMPFS: u64 = 0x0102_1994;
+    const OVERLAYFS: u64 = 0x794C_7630;
+    const F2FS: u64 = 0xF2F5_2010;
+    const ZFS: u64 = 0x2FC1_2FC1;
+    const EXFAT: u64 = 0x2011_BAB0;
+    match rustix::fs::fstatfs(dir) {
+        Ok(volume)
+            if [EXT, XFS, BTRFS, TMPFS, OVERLAYFS, F2FS, ZFS, EXFAT]
+                .contains(&(volume.f_type as u64)) =>
+        {
+            KERNEL_TICK
+        }
+        _ => COARSE_TICK,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn timestamp_tick(dir: BorrowedFd<'_>) -> i128 {
+    let Ok(volume) = rustix::fs::fstatfs(dir) else {
+        return COARSE_TICK;
+    };
+    let name: Vec<u8> = (volume.f_fstypename.iter())
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as u8)
+        .collect();
+    match name.as_slice() {
+        b"apfs" => APFS_TICK,
+        b"exfat" => KERNEL_TICK,
+        _ => COARSE_TICK,
     }
 }
 
@@ -493,14 +609,45 @@ struct Scan<'c> {
     stopped: &'c dyn Fn() -> bool,
     files: u64,
     found: &'c dyn Fn(u64),
+    ticks: HashMap<u64, i128>,
+    racy: BTreeMap<PathBuf, Ctime>,
+    marks: &'c MarkLog,
 }
 
 impl Scan<'_> {
+    fn settle(
+        &mut self,
+        dir: (BorrowedFd<'_>, u64),
+        dev: u64,
+        rel: &Path,
+        ctime: Ctime,
+        seen: i128,
+    ) -> Ctime {
+        let Ctime::Settled { at, mode } = ctime else {
+            return ctime;
+        };
+        let measured = (dir.1 == dev).then(|| {
+            *self
+                .ticks
+                .entry(dev)
+                .or_insert_with(|| timestamp_tick(dir.0))
+        });
+        let until = match self.racy.get(rel) {
+            Some(&Ctime::Racy { at: was, until, .. }) if was == at => until,
+            _ => at.min(seen) + tick_of(at, measured),
+        };
+        match seen >= until {
+            true => ctime,
+            false => Ctime::Racy { at, mode, until },
+        }
+    }
+
     /// Records the entry `name` of `dir` at `rel`, and everything below it.
     fn entry(&mut self, dir: BorrowedFd<'_>, dev: u64, name: &OsStr, rel: PathBuf) -> Result<()> {
         if (self.stopped)() {
             return Err(Error::Stopped);
         }
+        let seen = now_ns();
         let stat = match stat_at(dir, name) {
             Ok(stat) => stat,
             Err(err) if is_gone(&err) => return Ok(()),
@@ -511,6 +658,9 @@ impl Scan<'_> {
         };
         let mut mount_root = None;
         let mut locked = false;
+        if entry.kind == EntryKind::File {
+            entry.ctime = self.settle((dir, dev), stat.dev, &rel, entry.ctime, seen);
+        }
         if entry.kind == EntryKind::Dir && stat.dev != dev {
             match open_dir_at(dir, name) {
                 Ok(sub) => {
@@ -723,6 +873,7 @@ pub struct Rescan {
     /// before has known rules again once it is here, whatever its rules file
     /// did meanwhile. Empty for a scan without [`Rules`].
     pub read: Vec<PathBuf>,
+    pub settled: Vec<PathBuf>,
 }
 
 impl Snapshot {
@@ -819,6 +970,7 @@ impl Snapshot {
             &|_| {},
             Keep::Unplaced,
             &mut |_| {},
+            &MarkLog::default(),
         )
     }
 
@@ -863,6 +1015,7 @@ impl Snapshot {
                         id,
                         size: 0,
                         mtime_ns,
+                        ctime: Ctime::Settled { at: 0, mode: 0 },
                         executable: false,
                         linked: kind == EntryKind::File,
                         mount: (mounts.get(&path))
@@ -893,6 +1046,7 @@ impl Snapshot {
             &|_| {},
             Keep::Unplaced,
             cut,
+            &MarkLog::default(),
         )
     }
 
@@ -912,6 +1066,7 @@ impl Snapshot {
         found: &dyn Fn(u64),
         keep: Keep,
         cut: &mut dyn FnMut(Cut<'_>),
+        marks: &MarkLog,
     ) -> Result<Rescan> {
         let mut paths: Vec<PathBuf> = paths.into_iter().collect();
         let mut bound = None;
@@ -937,6 +1092,12 @@ impl Snapshot {
                 stopped,
                 files: 0,
                 found,
+                ticks: HashMap::new(),
+                racy: (self.entries.iter())
+                    .filter(|(_, entry)| matches!(entry.ctime, Ctime::Racy { .. }))
+                    .map(|(path, entry)| (path.clone(), entry.ctime))
+                    .collect(),
+                marks,
             };
             let scanned =
                 (self.scan_scopes(root, &paths, listed, expected, &mut scan)).and_then(|stat| {
@@ -1072,7 +1233,13 @@ impl Snapshot {
                     unsure.push(path.clone());
                     moved = Some(path);
                 }
-                Whereabouts::Nowhere => {}
+                Whereabouts::Nowhere => {
+                    ends.extend(
+                        (links.iter())
+                            .filter(|link| !covered(link))
+                            .map(|link| link.to_path_buf()),
+                    );
+                }
             }
         }
         (ends, hidden, unsure)
@@ -1434,6 +1601,24 @@ impl Snapshot {
             }
             None => Vec::new(),
         };
+        let mut settled: Vec<PathBuf> = (scan.new.iter())
+            .filter(|(path, now)| {
+                now.kind == EntryKind::File
+                    && match (old.get(*path).map(|before| before.ctime), now.ctime) {
+                        (_, Ctime::Racy { .. }) => false,
+                        (
+                            Some(Ctime::Racy { at, mode, .. }),
+                            Ctime::Settled {
+                                at: now_at,
+                                mode: now_mode,
+                            },
+                        ) => (at, mode) != (now_at, now_mode),
+                        (before, now) => before != Some(now),
+                    }
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        scan.marks.carry(&mut old, &scan.new);
         let mut changes = diff(&old, &scan.new, &self.entries);
         if let Some(rules) = &mut scan.rules {
             rules.settle();
@@ -1602,6 +1787,13 @@ impl Snapshot {
             }),
             None => (Vec::new(), Vec::new()),
         };
+        let reported: HashSet<&Path> = (changes.iter())
+            .filter_map(|change| match change {
+                Change::Created { path, .. } | Change::Modified { path } => Some(path.as_path()),
+                _ => None,
+            })
+            .collect();
+        settled.retain(|path| !reported.contains(path.as_path()));
         Ok(Rescan {
             changes,
             unsettled,
@@ -1609,6 +1801,7 @@ impl Snapshot {
             root: root_stat.id,
             rules,
             read,
+            settled,
         })
     }
 
@@ -2438,7 +2631,14 @@ fn diff<'t>(
     for (path, before) in old {
         match new.get(path) {
             Some(after) if !changed.contains(path.as_path()) => {
-                if after.kind == EntryKind::File && after != before {
+                let moved = (path.parent()).is_some_and(|parent| {
+                    old.get(parent).map(|entry| entry.id) != new.get(parent).map(|entry| entry.id)
+                });
+                let differs = match moved {
+                    true => after != before,
+                    false => !before.same_version(after),
+                };
+                if after.kind == EntryKind::File && differs {
                     modified.push(path);
                 } else if after.kind == EntryKind::Dir && after.id != before.id {
                     reidentified.push(path);
@@ -2560,6 +2760,9 @@ pub struct Poll {
     /// The folders whose rules the scans of this poll established and that no
     /// later scan of the poll found unreadable; see [`Rescan::read`].
     pub read: Vec<PathBuf>,
+    /// The files the scans of this poll found unchanged in content but whose change time moved, by any cause, to a new
+    /// settled value or bound.
+    pub settled: Vec<PathBuf>,
 }
 
 /// A source of changes under one root.
@@ -2584,6 +2787,9 @@ pub trait Watcher {
     /// another identity until the search decides it, as the first scan of a
     /// new watcher does.
     fn reset(&mut self, scope: &Path, known: BTreeMap<PathBuf, Known>);
+
+    /// Asks the next poll to scan `paths` again, such as files whose change time has not settled.
+    fn revisit(&mut self, paths: Vec<PathBuf>);
 }
 
 /// Watches with FSEvents on macOS and inotify on Linux.
@@ -2621,6 +2827,8 @@ pub struct NativeWatcher {
     failed: Option<Error>,
     stopped: Box<dyn Fn() -> bool + Send>,
     found: Box<dyn Fn(u64) + Send>,
+    marks: MarkLog,
+    settled: BTreeSet<PathBuf>,
     sender: mpsc::Sender<notify::Result<notify::Event>>,
     events: mpsc::Receiver<notify::Result<notify::Event>>,
     watcher: RecommendedWatcher,
@@ -2673,6 +2881,8 @@ impl NativeWatcher {
             failed: None,
             stopped: Box::new(|| false),
             found: Box::new(|_| {}),
+            marks: MarkLog::default(),
+            settled: BTreeSet::new(),
             sender,
             events,
             watcher,
@@ -2702,6 +2912,11 @@ impl NativeWatcher {
         }
     }
 
+    /// Reads no change into a change time that a mark `marks` records moved.
+    pub fn marking(self, marks: MarkLog) -> Self {
+        Self { marks, ..self }
+    }
+
     fn note(&mut self, event: notify::Result<notify::Event>) -> Result<()> {
         let event = event.map_err(watch_error)?;
         if event.need_rescan() {
@@ -2714,7 +2929,7 @@ impl NativeWatcher {
             return Ok(());
         }
         let listing_only = match event.kind {
-            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Extended)) => return Ok(()),
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Extended)) => true,
             // FSEvents gives an event every flag its path collected lately, so a mark on a folder made moments before
             // also reports the folder's creation:
             // https://developer.apple.com/documentation/coreservices/1455361-fseventstreameventflags
@@ -2848,6 +3063,7 @@ impl NativeWatcher {
             root,
             rules: std::mem::take(&mut self.changed_rules),
             read: std::mem::take(&mut self.read).into_iter().collect(),
+            settled: std::mem::take(&mut self.settled).into_iter().collect(),
         }
     }
 
@@ -3040,6 +3256,7 @@ impl Watcher for NativeWatcher {
                 &*self.found,
                 Keep::Unexplained,
                 &mut |_| {},
+                &self.marks,
             ) {
                 Ok(rescan) => rescan,
                 Err(Error::Changed) if Instant::now() < deadline => continue,
@@ -3054,6 +3271,7 @@ impl Watcher for NativeWatcher {
             self.listed.clear();
             root = Some(rescan.root);
             self.changed_rules.extend(rescan.rules);
+            self.settled.extend(rescan.settled);
             self.dirty = rescan.unsettled.into_iter().collect();
             #[cfg(target_os = "linux")]
             let readable = self.unblock(&scopes, &rescan.unreadable);
@@ -3063,6 +3281,7 @@ impl Watcher for NativeWatcher {
             self.cover(&changes, readable, rescan.root);
             if !changes.is_empty()
                 || !self.changed_rules.is_empty()
+                || !self.settled.is_empty()
                 || Instant::now() >= deadline
                 || !self.snapshot.unplaced.is_subset(&held)
             {
@@ -3089,6 +3308,10 @@ impl Watcher for NativeWatcher {
         self.snapshot.reset(scope, known);
         self.dirty.insert(scope.to_path_buf());
     }
+
+    fn revisit(&mut self, paths: Vec<PathBuf>) {
+        self.dirty.extend(paths);
+    }
 }
 
 /// Rescans the whole tree every `interval`. Slower than [`NativeWatcher`] on
@@ -3101,6 +3324,7 @@ pub struct RescanWatcher {
     rules: Option<Rules>,
     stopped: Box<dyn Fn() -> bool + Send>,
     found: Box<dyn Fn(u64) + Send>,
+    marks: MarkLog,
 }
 
 impl RescanWatcher {
@@ -3114,6 +3338,7 @@ impl RescanWatcher {
             rules: None,
             stopped: Box::new(|| false),
             found: Box::new(|_| {}),
+            marks: MarkLog::default(),
         })
     }
 
@@ -3148,6 +3373,11 @@ impl RescanWatcher {
             ..self
         }
     }
+
+    /// As [`NativeWatcher::marking`] does.
+    pub fn marking(self, marks: MarkLog) -> Self {
+        Self { marks, ..self }
+    }
 }
 
 impl Watcher for RescanWatcher {
@@ -3165,6 +3395,7 @@ impl Watcher for RescanWatcher {
                 &*self.found,
                 Keep::Unplaced,
                 &mut |_| {},
+                &self.marks,
             );
             let poll = match rescan {
                 Ok(rescan) => Poll {
@@ -3174,6 +3405,7 @@ impl Watcher for RescanWatcher {
                     root: Some(rescan.root),
                     rules: rescan.rules,
                     read: rescan.read,
+                    settled: rescan.settled,
                 },
                 Err(Error::Changed) => Poll {
                     pending: vec![PathBuf::new()],
@@ -3182,7 +3414,11 @@ impl Watcher for RescanWatcher {
                 Err(err) => return Err(err),
             };
             let left = deadline.saturating_duration_since(Instant::now());
-            if !poll.changes.is_empty() || !poll.rules.is_empty() || left.is_zero() {
+            if !poll.changes.is_empty()
+                || !poll.rules.is_empty()
+                || !poll.settled.is_empty()
+                || left.is_zero()
+            {
                 return Ok(poll);
             }
             if !self.rules.as_ref().is_some_and(Rules::searching) {
@@ -3202,6 +3438,8 @@ impl Watcher for RescanWatcher {
         self.view.take();
         self.snapshot.reset(scope, known);
     }
+
+    fn revisit(&mut self, _paths: Vec<PathBuf>) {}
 }
 
 fn view<'a>(
@@ -3312,7 +3550,7 @@ pub use effect::{
 };
 pub use ignore::{Ignore, Ignored, RULES_FILE, Rules};
 use ignore::{Key, Pending, RulesRead, Seeded, Wanted};
-pub use mark::node_mark;
+pub use mark::{MarkLog, node_mark};
 pub use recovered::{recovered_name, utc_date};
 pub use resolve::{Base, Dir, Folder, Location, PARKED_DIR, Space, Unresolved};
 pub use root::{

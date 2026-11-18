@@ -278,6 +278,7 @@ impl Site {
             &self.link.space_id,
             folder.link.root_at(),
             folder.snapshot(),
+            folder.sections().marks(),
             matcher(sync).unwrap(),
             || false,
             move |report| reported.lock().unwrap().push(report),
@@ -397,7 +398,10 @@ impl Device {
             let unseen = rescan.map_or(true, |rescan| {
                 !rescan.changes.is_empty() || !rescan.unsettled.is_empty()
             });
-            let now = self.observer.answered() && self.observer.scanned().is_some() && !unseen;
+            let now = self.observer.answered()
+                && self.observer.scanned().is_some()
+                && !unseen
+                && self.observer.racy_reads().is_empty();
             let settled = now && caught_up;
             caught_up = now;
             settled

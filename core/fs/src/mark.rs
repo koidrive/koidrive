@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use rustix::fs::{Mode, OFlags, XattrFlags};
 use rustix::io::Errno;
 
 use crate::resolve::{Location, Space, Unresolved};
-use crate::{FileId, stat_fd};
+use crate::{Entry, FileId, stat_fd};
 
 #[cfg(target_vendor = "apple")]
 const NAME: &str = "com.koidrive.node";
@@ -21,13 +24,17 @@ impl Space {
     /// that keeps extended attributes in companion files, or one whose attribute cannot be written,
     /// gets no mark.
     pub fn mark(&self, at: &Location, expected: FileId, node: &str) -> io::Result<()> {
-        match self.open_entry(at, expected)? {
-            Some(entry) => {
-                write(entry.as_fd(), node);
-                Ok(())
-            }
-            None => Ok(()),
+        if let Some(entry) = self.open_entry(at, expected)?
+            && let Some((before, after)) = write(entry.as_fd(), node)
+        {
+            self.marks.record(expected, before, after);
         }
+        Ok(())
+    }
+
+    /// The change times this space's marks moved, for the scans of its root.
+    pub fn marks(&self) -> MarkLog {
+        self.marks.clone()
     }
 
     /// The node the mark on the entry at `at` names, when the entry is still `expected` and the
@@ -56,6 +63,45 @@ impl Space {
     }
 }
 
+/// The change times marks moved: for each marked entry, its change time before and after its latest mark.
+#[derive(Debug, Clone, Default)]
+pub struct MarkLog(Arc<Mutex<HashMap<FileId, (i128, i128)>>>);
+
+impl MarkLog {
+    fn record(&self, id: FileId, before: i128, after: i128) {
+        self.0.lock().unwrap().insert(id, (before, after));
+    }
+
+    pub(crate) fn carry(&self, old: &mut BTreeMap<PathBuf, Entry>, new: &BTreeMap<PathBuf, Entry>) {
+        let mut marks = self.0.lock().unwrap();
+        if marks.is_empty() {
+            return;
+        }
+        for (path, before) in old.iter_mut() {
+            if let Some(now) = new.get(path)
+                && now.id == before.id
+                && marks.get(&now.id) == Some(&(before.ctime.at(), now.ctime.at()))
+            {
+                before.ctime = now.ctime;
+            }
+        }
+        let seen: HashSet<FileId> = new.values().map(|now| now.id).collect();
+        let gone: HashSet<FileId> = (old.values())
+            .map(|before| before.id)
+            .filter(|id| !seen.contains(id))
+            .collect();
+        let raced: HashSet<FileId> = (new.values())
+            .filter(|now| {
+                marks
+                    .get(&now.id)
+                    .is_some_and(|&(was, _)| was == now.ctime.at())
+            })
+            .map(|now| now.id)
+            .collect();
+        marks.retain(|id, _| raced.contains(id) || !(seen.contains(id) || gone.contains(id)));
+    }
+}
+
 pub(crate) fn open(folder: BorrowedFd<'_>, name: &OsStr) -> io::Result<Option<OwnedFd>> {
     let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
     match rustix::fs::openat(folder, name, flags, Mode::empty()) {
@@ -65,16 +111,17 @@ pub(crate) fn open(folder: BorrowedFd<'_>, name: &OsStr) -> io::Result<Option<Ow
     }
 }
 
-pub(crate) fn write(entry: BorrowedFd<'_>, node: &str) {
-    let Ok(stat) = stat_fd(entry) else {
-        return;
-    };
-    if native(entry) {
-        let value = encode(node, stat.id);
-        if rustix::fs::fsetxattr(entry, NAME, value.as_bytes(), XattrFlags::empty()).is_err() {
-            let _ = rustix::fs::fremovexattr(entry, NAME);
-        }
+pub(crate) fn write(entry: BorrowedFd<'_>, node: &str) -> Option<(i128, i128)> {
+    let stat = stat_fd(entry).ok()?;
+    if !native(entry) {
+        return None;
     }
+    let value = encode(node, stat.id);
+    if rustix::fs::fsetxattr(entry, NAME, value.as_bytes(), XattrFlags::empty()).is_err() {
+        let _ = rustix::fs::fremovexattr(entry, NAME);
+        return None;
+    }
+    Some((stat.ctime_ns, stat_fd(entry).ok()?.ctime_ns))
 }
 
 /// The node the mark on the open entry `entry` names, when the mark was written on this entry rather than copied

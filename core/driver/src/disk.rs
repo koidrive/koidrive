@@ -54,7 +54,7 @@ use koidrive_engine::ignore::is_rules_file;
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{Content, Kind, LocalNode, NodeId};
 use koidrive_fs::{
-    Action, Base, BroughtBack, Contents, Dir, Displaced, Effect, Entry, EntryKind, FileId,
+    Action, Base, BroughtBack, Contents, Ctime, Dir, Displaced, Effect, Entry, EntryKind, FileId,
     Location, Marker, Outcome, Reason, Reclaimed, Refusal, RootProblem, RootTokens, Space, Step,
     Unresolved, check_root_at, open_root_folder, root_at,
 };
@@ -185,6 +185,7 @@ pub(crate) struct Sections {
     /// Scopes the observer resets to L's view and scans again before its next batch, in the order requested, and
     /// how many requests there have been.
     resets: Mutex<(Vec<Reset>, u64)>,
+    marks: koidrive_fs::MarkLog,
 }
 
 /// A count of the reset requests of the effect sections. The count a request returns names that request and every
@@ -201,6 +202,10 @@ impl Sections {
     /// scans and content reads.
     pub fn stamp(&self) -> Stamp {
         Stamp(self.epoch.load(Ordering::SeqCst))
+    }
+
+    pub fn marks(&self) -> koidrive_fs::MarkLog {
+        self.marks.clone()
     }
 
     /// The resets to pass to [`FsObserver::reset`] before the next observation, with the requests they complete.
@@ -405,11 +410,15 @@ impl Disk {
         hook: Hook,
     ) -> Result<Disk, Stop> {
         let space = Space::bind(OwnedFd::from(lock.try_clone()?), &link.root)?;
+        let sections = Arc::new(Sections {
+            marks: space.marks(),
+            ..Sections::default()
+        });
         let mut disk = Disk {
             space: Arc::new(space),
             path: link.root.clone(),
             space_id: link.space_id.clone(),
-            sections: Arc::default(),
+            sections,
             spans: VecDeque::new(),
             forgotten: 0,
             scan_after: None,
@@ -741,7 +750,13 @@ impl Disk {
             .cloned()
             .collect();
         let mounts = (observation.mounts != engine.mounts).then_some(observation.mounts);
-        if !changes.is_empty() || mounts.is_some() || engine.sees_unobserved(&listed) {
+        let mut ctimes = observation.ctimes;
+        ctimes.retain(|path, _| !dropped.contains(path));
+        if !changes.is_empty()
+            || mounts.is_some()
+            || !ctimes.is_empty()
+            || engine.sees_unobserved(&listed)
+        {
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_millis() as u64);
@@ -753,6 +768,7 @@ impl Disk {
                 engine.observe(&changes, now_ms);
                 engine.read(&read, &observation.unreadable);
                 engine.listed(&listed);
+                engine.read_ctimes(ctimes);
                 Ok(engine.checkpoint(tx)?)
             })?;
         } else {
@@ -1999,6 +2015,7 @@ fn displaced(displaced: &EngineDisplaced) -> Result<Displaced, String> {
             id: file_id(displaced.identity),
             size: displaced.content.size,
             mtime_ns: i128::from(displaced.content.mtime_ns),
+            ctime: Ctime::Settled { at: 0, mode: 0 },
             executable: displaced.content.executable,
             linked: false,
             mount: None,

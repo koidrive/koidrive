@@ -557,6 +557,160 @@ fn an_edit_after_a_restart_is_an_edit_of_the_synced_file() {
     assert_eq!(a.state(), FolderState::UpToDate);
 }
 
+#[test]
+fn an_in_place_edit_made_while_stopped_that_keeps_the_size_and_mtime_is_sent_after_a_restart() {
+    for outside_link in [false, true] {
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site.root.join("notes.txt"), b"written on a");
+        a.settle();
+        let path = site.root.join("notes.txt");
+        let outside = site.root.with_file_name("outside.txt");
+        if outside_link {
+            fs::hard_link(&path, &outside).unwrap();
+            a.rescan();
+            a.settle();
+        }
+        drop(a);
+
+        if outside_link {
+            fs::remove_file(&outside).unwrap();
+        }
+        edit_keeping_the_size_and_mtime(&path);
+
+        let mut a = site.start();
+        a.connect(&remote);
+        a.settle();
+        assert_eq!(
+            a.run(&mut remote),
+            ["subscribe", "upload", "send"],
+            "{outside_link}"
+        );
+        assert_eq!(kinds(&a.sent[0]), ["update content"]);
+        assert_eq!(a.state(), FolderState::UpToDate);
+    }
+}
+
+#[test]
+fn an_edit_made_while_a_new_file_with_an_outside_link_is_read_is_sent_after_a_restart() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("notes.txt"), b"written on a");
+    let path = site.root.join("copy.txt");
+    let outside = site.root.with_file_name("outside.txt");
+    fs::write(&path, b"written on a").unwrap();
+    fs::hard_link(&path, &outside).unwrap();
+    a.rescan();
+    take_one_observation(&mut a, || {
+        fs::remove_file(&outside).unwrap();
+        edit_keeping_the_size_and_mtime(&path);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+    });
+    drop(a);
+
+    let mut a = site.start();
+    a.connect(&remote);
+    a.rest(&mut remote);
+    assert_eq!(kinds(a.sent.last().unwrap()), ["update content"]);
+}
+
+fn take_one_observation(a: &mut Device, meanwhile: impl FnOnce()) {
+    let stamp = a.folder.sections().stamp();
+    let observed = Observer::observe(&mut a.observer, Duration::from_millis(500)).unwrap();
+    meanwhile();
+    if let Some(observation) = observed {
+        let unread = a.observer.unread();
+        let batch = crate::disk::Batch {
+            stamp,
+            answered: None,
+            observation,
+            unread,
+        };
+        let entries = a.observer.snapshot().entries.len() as u64;
+        let step = a.folder.observed(batch, entries);
+        a.take(step).unwrap();
+    }
+}
+
+fn edit_keeping_the_size_and_mtime(path: &Path) {
+    use std::io::Write;
+
+    let written = fs::metadata(path).unwrap().modified().unwrap();
+    let mut file = fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.write_all(b"edited on a!").unwrap();
+    file.set_modified(written).unwrap();
+}
+
+#[test]
+fn an_upgraded_store_reports_only_files_changed_after_its_last_write_before_the_upgrade() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("kept.txt"), b"kept on a");
+    a.create(&mut remote, &site.root.join("notes.txt"), b"written on a");
+    a.settle();
+    drop(a);
+    (rusqlite::Connection::open(&site.db).unwrap())
+        .execute_batch(
+            "ALTER TABLE local_nodes DROP COLUMN ctime_ns;
+             DELETE FROM migrations WHERE name = 'local_nodes_ctime';",
+        )
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let path = site.root.join("notes.txt");
+    edit_keeping_the_size_and_mtime(&path);
+
+    let mut a = site.start();
+    let mut snapshot = a.folder.snapshot();
+    let found = snapshot.rescan(&site.root, [PathBuf::new()]).unwrap();
+    assert_eq!(
+        found.changes,
+        [koidrive_fs::Change::Modified {
+            path: "notes.txt".into()
+        }]
+    );
+    a.connect(&remote);
+    a.settle();
+    assert_eq!(a.run(&mut remote), ["subscribe", "upload", "send"]);
+    assert_eq!(kinds(&a.sent[0]), ["update content"]);
+}
+
+#[test]
+fn an_uploaded_file_is_read_again_only_once_for_an_attribute_another_app_wrote() {
+    #[cfg(target_vendor = "apple")]
+    const ATTRIBUTE: &str = "com.example.tag";
+    #[cfg(not(target_vendor = "apple"))]
+    const ATTRIBUTE: &str = "user.example.tag";
+    let reads = |a: &Device| {
+        (a.reports.lock().unwrap().iter())
+            .filter(|report| matches!(report, Observing::Reading { bytes, .. } if *bytes > 0))
+            .count()
+    };
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let path = site.root.join("notes.txt");
+    a.create(&mut remote, &path, b"written on a");
+    let uploaded = reads(&a);
+    a.settle();
+    assert_eq!(reads(&a), uploaded, "the node mark reads nothing again");
+
+    rustix::fs::setxattr(&path, ATTRIBUTE, b"red", rustix::fs::XattrFlags::empty()).unwrap();
+    a.settle();
+    assert_eq!(reads(&a), uploaded + 1);
+    assert!(a.run(&mut remote).is_empty());
+    drop(a);
+    let mut snapshot = site.start().folder.snapshot();
+    assert_eq!(
+        snapshot
+            .rescan(&site.root, [PathBuf::new()])
+            .unwrap()
+            .changes,
+        []
+    );
+}
+
 /// Design §2.7 leaves a node the server refused an op for out of commits until the next rescan. The first whole scan
 /// of a start is that rescan (GUN-345). Nothing cleared the node before, so it never synced again.
 #[test]
@@ -908,4 +1062,108 @@ fn with_four_uploads_at_once_a_file_that_changed_after_it_was_chunked_abandons_t
     }));
     assert_eq!(remote.names().len(), 8);
     assert_eq!(a.state(), FolderState::UpToDate);
+}
+
+#[test]
+fn a_restart_reads_nothing_after_any_change_the_observer_accepted() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let reads = || crate::observe::READS.take();
+    type Change = fn(&Site, &mut Device, &mut Remote);
+    let rows: [(&str, &[&str], &[&str], Change); 7] = [
+        ("an edit", &["notes.txt"], &[], |site, a, remote| {
+            fs::write(site.root.join("notes.txt"), b"edited on a!").unwrap();
+            a.rest(remote);
+        }),
+        (
+            "a mark the next poll sees",
+            &["marked.txt"],
+            &[],
+            |site, a, remote| {
+                fs::write(site.root.join("marked.txt"), b"marked on a").unwrap();
+                a.scan_until(|a| !a.work.is_empty());
+                assert_eq!(a.run(remote), ["upload", "send"]);
+                take_one_observation(a, || {});
+            },
+        ),
+        ("a rename", &[], &[], |site, _, _| {
+            fs::rename(site.root.join("notes.txt"), site.root.join("renamed.txt")).unwrap();
+        }),
+        ("a chmod", &[], &[], |site, _, _| {
+            let path = site.root.join("notes.txt");
+            let mode = fs::metadata(&path).unwrap().permissions().mode() ^ 0o020;
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+        }),
+        ("a link added", &[], &[], |site, _, _| {
+            fs::hard_link(
+                site.root.join("notes.txt"),
+                site.root.with_file_name("outside.txt"),
+            )
+            .unwrap();
+        }),
+        (
+            "edited once unlinked",
+            &["notes.txt", "notes.txt"],
+            &[],
+            |site, a, _| {
+                let outside = site.root.with_file_name("outside.txt");
+                fs::hard_link(site.root.join("notes.txt"), &outside).unwrap();
+                a.rescan();
+                a.settle();
+                fs::remove_file(&outside).unwrap();
+                edit_keeping_the_size_and_mtime(&site.root.join("notes.txt"));
+            },
+        ),
+        (
+            "a link removed",
+            &["link.txt", "notes.txt"],
+            &[],
+            |site, a, remote| {
+                fs::hard_link(site.root.join("notes.txt"), site.root.join("link.txt")).unwrap();
+                a.rest(remote);
+                fs::remove_file(site.root.join("link.txt")).unwrap();
+            },
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (row, read, read_again, change) in rows {
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site.root.join("notes.txt"), b"written on a");
+        a.settle();
+        reads();
+        change(&site, &mut a, &mut remote);
+        a.rest(&mut remote);
+        let live = reads();
+        drop(a);
+
+        let mut a = site.start();
+        a.connect(&remote);
+        let mut polls = 0;
+        while !a.folder.scanned || polls < 5 || !a.observer.racy_reads().is_empty() {
+            assert!(polls < 600, "{row}: the restarted observer never settles");
+            polls += 1;
+            let sections = a.folder.sections();
+            if let Some(batch) = sections
+                .observe(&mut a.observer, Duration::from_millis(100))
+                .unwrap()
+            {
+                let entries = a.observer.snapshot().entries.len() as u64;
+                let step = a.folder.observed(batch, entries);
+                a.take(step).unwrap();
+            }
+            if !a.folder.scanned && a.observer.scanned().is_some() {
+                let step = a.folder.scanned();
+                a.take(step).unwrap();
+            }
+        }
+        let seen = reads();
+        let paths = |read: &[&str]| read.iter().map(PathBuf::from).collect::<Vec<_>>();
+        if (&live, &seen) != (&paths(read), &paths(read_again)) {
+            wrong.push(format!(
+                "{row}: read {live:?} then {seen:?} after a restart, {read:?} then {read_again:?} expected"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }

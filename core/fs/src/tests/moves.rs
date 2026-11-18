@@ -134,6 +134,7 @@ fn scan_settling(snapshot: &mut Snapshot, root: &Path, scope: &str) -> Rescan {
             &|_| {},
             Keep::Unexplained,
             &mut |_| {},
+            &MarkLog::default(),
         )
         .unwrap()
 }
@@ -576,6 +577,7 @@ fn a_volume_root_born_on_one_side_only_comes_back_only_as_a_fat_or_exfat_volume(
         id: FileId { ino: 2, birth_ns },
         size: 0,
         mtime_ns: 0,
+        ctime: Ctime::Settled { at: 0, mode: 0 },
         executable: false,
         linked: false,
         mount: Some(Mount::Volume(volume)),

@@ -488,6 +488,7 @@ impl FolderTask {
                 &link.space_id,
                 link.root_at(),
                 previous,
+                sections.marks(),
                 matcher,
                 move || closed.is_closed(),
                 report,
