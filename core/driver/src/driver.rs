@@ -8301,8 +8301,9 @@ mod tests {
 
         let failed = driver.sign_out(false).await;
         assert_eq!(served.await.unwrap(), ["/v1/token", "/v1/devices/d1"]);
+        let removing = paths.removing(SPACE, 1);
         open_dir(&private);
-        open_dir(&store);
+        open_dir(&removing);
         open_dir(&paths.state_dir);
         if rustix::process::geteuid().is_root() {
             eprintln!("SKIPPED: running as root, so permissions do not block writes");
@@ -8311,11 +8312,7 @@ mod tests {
         let failed = failed.unwrap().not_removed;
         let mut remaining: Vec<_> = failed.iter().map(|failure| failure.path.clone()).collect();
         remaining.sort();
-        let mut expected = vec![
-            paths.credential(),
-            private.join("device.json"),
-            store.clone(),
-        ];
+        let mut expected = vec![paths.credential(), private.join("device.json")];
         expected.sort();
         assert_eq!(remaining, expected, "{failed:?}");
         assert_eq!(driver.status().account, None);
@@ -8329,6 +8326,8 @@ mod tests {
                 .is_none()
         );
         assert!(!paths.store(other_id).unwrap().parent().unwrap().exists());
+        assert!(!store.exists());
+        assert!(removing.exists());
         drop(driver);
 
         let driver = Driver::open(paths.clone()).unwrap();
@@ -8338,6 +8337,7 @@ mod tests {
         assert!(!paths.credential().exists());
         assert_eq!(claim::owner(&root).unwrap(), None);
         assert!(!store.exists());
+        assert!(!removing.exists());
         assert!(!paths.state_dir.join("leaving").exists());
         assert_eq!(fs::read(root.join("keep.txt")).unwrap(), b"keep");
         assert_eq!(fs::read(other.join("keep.txt")).unwrap(), b"keep too");
