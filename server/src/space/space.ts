@@ -96,6 +96,7 @@ import { PROTO_MAX, PROTO_MIN, SERVER_VERSION } from "../version";
 export const FORMAT_VERSION = 1;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
+const COMMIT_BOOKMARK_MAX_AGE_MS = 29 * DAY_MS;
 export const HOLD_MS = DAY_MS;
 export const GRANT_MS = HOUR_MS;
 const MAX_OPS = 1000;
@@ -316,6 +317,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     snapshotPageNodes = 1000;
     private exporting: Promise<void> | undefined;
     private alarmStale = false;
+    private bookmarking: Promise<void> = Promise.resolve();
     private readonly leases = new Map<string, { check: SessionCheck; askedAtMs: number; untilMs: number }>();
     private leaseGeneration = 0;
     private readonly renewalsDue = new Set<string>();
@@ -874,6 +876,19 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         digest,
       );
       setMeta(this.sql, "head_seq", Number(record.seq));
+      this.bookmarkHead(Number(record.seq), Number(record.committedAtMs));
+    }
+
+    private bookmarkHead(seq: number, fromMs: number): void {
+      this.bookmarking = this.bookmarking.then(async () => {
+        try {
+          const bookmark = await this.pitr.currentBookmark();
+          if (this.headSeq !== seq) return;
+          this.sql.exec("INSERT INTO commit_bookmarks (seq, bookmark, from_ms) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", seq, bookmark, fromMs);
+        } catch (error) {
+          console.error("commit bookmark read failed", errorText(error));
+        }
+      });
     }
 
     private async commit(session: Session, commit: Commit): Promise<{ result: CommitResult; record?: CommitRecord }> {
@@ -958,18 +973,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         );
         return { result, record, rearm: noteCommitted(this.sql, record) };
       });
-      if (done.record) await this.recordBookmark(Number(done.record.seq));
       if (done.rearm || !done.record || this.alarmStale) await this.armAfterCommit();
       return { result: done.result, record: done.record };
-    }
-
-    private async recordBookmark(seq: number): Promise<void> {
-      try {
-        const bookmark = await this.pitr.currentBookmark();
-        if (this.headSeq === seq) this.sql.exec("INSERT INTO commit_bookmarks (seq, bookmark) VALUES (?, ?) ON CONFLICT DO NOTHING", seq, bookmark);
-      } catch (error) {
-        console.error("commit bookmark read failed", errorText(error));
-      }
     }
 
     private async armAfterCommit(): Promise<void> {
@@ -1199,6 +1204,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const settings = this.settings();
       const spaceId = this.spaceId;
       const purge = this.db.transactionSync(() => {
+        this.sql.exec("DELETE FROM commit_bookmarks WHERE from_ms < ?", nowMs - COMMIT_BOOKMARK_MAX_AGE_MS);
         const expired = rows<VersionRow>(
           this.sql.exec(
             "SELECT * FROM versions WHERE superseded_at_ms IS NOT NULL AND superseded_at_ms < ? LIMIT ?",
@@ -1316,11 +1322,14 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
 
     async rewindInfo(restorePointMs: number): Promise<{ historyId: string; headSeq: number; descriptorDurable: boolean; bookmark: string | undefined }> {
       this.dropLeases();
+      await this.bookmarking;
       const approximate = await this.pitr.bookmarkForTime(restorePointMs);
       const exact = this.sql
         .exec(
-          `SELECT b.bookmark FROM commits c LEFT JOIN commit_bookmarks b ON b.seq = c.seq
+          `SELECT b.bookmark FROM commits c LEFT JOIN commit_bookmarks b ON b.seq = c.seq AND b.from_ms <= ? AND b.from_ms >= ?
            WHERE c.seq < COALESCE((SELECT MIN(seq) FROM commits WHERE committed_at_ms > ?), c.seq + 1) ORDER BY c.seq DESC LIMIT 1`,
+          restorePointMs,
+          this.clock() - COMMIT_BOOKMARK_MAX_AGE_MS,
           restorePointMs,
         )
         .toArray()[0]?.bookmark;
@@ -1379,11 +1388,13 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         this.sql.exec("UPDATE chunks SET state = ?, hold_until_ms = ? WHERE refcount = 0", ChunkState.PENDING, holdUntil);
         this.sql.exec("DELETE FROM rewind_markers");
         this.sql.exec("DELETE FROM commit_bookmarks");
+        this.bookmarkHead(completed.restoreSeq, args.completedAtMs);
         startExport(this.sql, completed.restoreSeq, args.completedAtMs, true);
         setMeta(this.sql, "rewind_receipt", JSON.stringify(completed));
         return completed;
       });
       await this.armAlarm();
+      await this.bookmarking;
       return { state: "completed", receipt };
     }
 

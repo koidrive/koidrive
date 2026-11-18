@@ -108,7 +108,7 @@ export const MIGRATIONS: readonly Migration[] = [
     if (!columns.includes("made_over")) sql.exec("ALTER TABLE versions ADD COLUMN made_over TEXT NOT NULL DEFAULT ''");
   },
   `
-  CREATE TABLE IF NOT EXISTS commit_bookmarks (seq INTEGER PRIMARY KEY, bookmark TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS commit_bookmarks (seq INTEGER PRIMARY KEY, bookmark TEXT NOT NULL, from_ms INTEGER NOT NULL);
   `,
 ];
 
