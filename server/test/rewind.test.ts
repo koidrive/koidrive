@@ -322,6 +322,7 @@ describe("space rewind (RFC 0003)", () => {
     const early = await snapshot(spaceId, createdAtMs + MINUTE);
     await a.commit([op.delete(doomed)]);
     const purgeAt = createdAtMs + 31 * DAY;
+    await setSpaceClock(spaceId, purgeAt);
     const report = await runInDurableObject(space(spaceId), (instance: SpaceDO) => instance.collectGarbage(purgeAt));
     expect(report.purgedNodes).toBe(1);
     expect((await spaceRows(spaceId, "SELECT seq FROM commit_bookmarks")).map((row) => row.seq)).toEqual([3]);
