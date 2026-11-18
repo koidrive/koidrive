@@ -306,6 +306,7 @@ issue = "GUN-1038"
 tests = ["devices_converge_across_restores_and_rewinds", "devices_lose_no_write_across_restores_and_rewinds"]
 message = '''after phase <n>: after the faults stopped, on device <n>: a commit of device <n> sent write <n> again after a rewind took it from the server, though no user answered to keep it\.'''
 examples = ["after phase 2: after the faults stopped, on device 0: a commit of device 0 sent write 4 again after a rewind took it from the server, though no user answered to keep it."]
+cases = ["b544860808be"]
 
 [[failure]]
 class = "N"
@@ -353,6 +354,7 @@ issue = "GUN-1044"
 tests = ["devices_converge_when_a_folder_owing_its_name_is_deleted_and_brought_back"]
 message = '''after phase <n>: write <n> of device <n> was never in the server's tree, and its user never overwrote or deleted it\.'''
 examples = ["after phase 2: write 5 of device 2 was never in the server's tree, and its user never overwrote or deleted it."]
+cases = ["7ca11613223e"]
 
 [[failure]]
 class = "T"
