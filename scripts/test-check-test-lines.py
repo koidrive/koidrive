@@ -229,6 +229,36 @@ class TestLines(unittest.TestCase):
         }
         self.assertEqual(self.net({}, after), 417)
 
+    def test_a_test_only_if_with_a_comparison_ends_at_its_block(self):
+        counts = self.counts({"core/a/src/lib.rs": "fn f(n: u8) {\n    #[cfg(test)]\n    if n > 0 {\n        hook();\n    }\n    let kept = n;\n}\n"})
+        self.assertEqual((counts["test"], counts["implementation"]), (4, 3))
+
+    def test_a_test_only_field_with_a_generic_type_ends_at_its_comma(self):
+        counts = self.counts({"core/a/src/lib.rs": "struct S {\n    #[cfg(test)]\n    hook: Option<Box<dyn Fn(u8, u8)>>,\n    kept: u8,\n}\n"})
+        self.assertEqual((counts["test"], counts["implementation"]), (2, 3))
+
+    def test_a_path_attribute_before_other_attributes_still_moves_the_module(self):
+        after = {
+            "core/a/src/lib.rs": '#[cfg(test)]\n#[path = "actual.rs"]\n#[allow(dead_code)]\nmod cases;\n',
+            "core/a/src/actual.rs": self.lines(413),
+        }
+        self.assertEqual(self.net({}, after), 417)
+
+    def test_standalone_test_functions_are_test_code(self):
+        counts = self.counts({"core/a/src/lib.rs": "pub fn a() {}\n#[test]\nfn checks_a() {}\n#[tokio::test]\nasync fn checks_b() {}\n"})
+        self.assertEqual((counts["test"], counts["implementation"]), (4, 1))
+
+    def test_workspace_member_globs_cover_their_packages(self):
+        before = {"core/a/Cargo.toml": "", "core/a/tests/t.rs": self.lines(3)}
+        cwd = os.getcwd()
+        os.chdir(self.repo)
+        try:
+            tree = self.check.Tree(self.tree({**before, "Cargo.toml": '[workspace]\nmembers = ["core/*"]\n'}))
+            self.assertEqual(tree.scope[:1], ("core/a/",))
+            self.assertEqual(self.check.count(tree)["test"], 3)
+        finally:
+            os.chdir(cwd)
+
     def test_rust_files_under_fixtures_are_fixture_data(self):
         counts = self.counts({"core/a/tests/fixtures/template.rs": self.lines(5), "core/a/tests/flow.rs": self.lines(2)})
         self.assertEqual((counts["test"], counts["fixture"]), (2, 5))

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 import argparse
+import fnmatch
 import os
 import posixpath
 import re
@@ -33,6 +34,8 @@ SNAPSHOT = re.compile(r"\.snap(\.new)?$|(^|/)(goldens|snapshots)/")
 FIXTURE = re.compile(r"(^|/)(tests|fixtures|testdata|test-data)/")
 RUST_FIXTURE = re.compile(r"(^|/)(fixtures|testdata|test-data)/")
 ANY_MODULE = re.compile(r"\bmod\b")
+GENERIC_BEFORE = re.compile(r"[A-Za-z0-9_:]")
+TEST_ATTRIBUTE = re.compile(r"#\s*\[\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*test\s*\]")
 
 
 def git(*args, input=None):
@@ -109,12 +112,16 @@ def item_end(code, start):
     keyword = VISIBILITY.match(code, pos).end()
     until_semicolon = bool(UNTIL_SEMICOLON.match(code, keyword))
     item = until_semicolon or bool(ITEM.match(code, keyword))
-    opening, closing = ("([", ")]") if item else ("([{<", ")]}>")
-    depth = 0
+    opening, closing = ("([", ")]") if item else ("([{", ")]}")
+    depth = angle = 0
     while pos < len(code):
         c = code[pos]
         if c in "->" and code.startswith(("->", "=>"), pos - (c == ">")):
             pass
+        elif not item and c == "<" and GENERIC_BEFORE.match(code[pos - 1]):
+            angle += 1
+        elif not item and c == ">" and angle:
+            angle -= 1
         elif c in opening:
             depth += 1
         elif c in closing:
@@ -125,7 +132,7 @@ def item_end(code, start):
                 return pos + 1
         elif c == ";" and depth == 0:
             return pos + 1
-        elif c == "," and depth == 0 and not item:
+        elif c == "," and depth == 0 and angle == 0 and not item:
             return pos + 1
         elif c == "{" and depth == 0:
             pos = balanced(code, pos, "{", "}")
@@ -152,11 +159,24 @@ def module_file(path, declaration, files):
 
 
 def path_override(code, src, start):
-    before = code.rfind("]", 0, start)
-    if before < 0 or code[before + 1:start].strip():
-        return None
-    attribute = PATH_ATTRIBUTE.match(src, code.rfind("#", 0, before))
-    return attribute.group(1) if attribute else None
+    end = start
+    while True:
+        close = code.rfind("]", 0, end)
+        if close < 0 or code[close + 1:end].strip():
+            return None
+        depth, opening = 0, close
+        while opening >= 0:
+            depth += {"]": 1, "[": -1}.get(code[opening], 0)
+            if depth == 0:
+                break
+            opening -= 1
+        hash_mark = code.rfind("#", 0, opening)
+        if hash_mark < 0 or code[hash_mark + 1:opening].strip():
+            return None
+        attribute = PATH_ATTRIBUTE.match(src, hash_mark)
+        if attribute:
+            return attribute.group(1)
+        end = hash_mark
 
 
 def scan_rust(src):
@@ -173,6 +193,7 @@ def scan_rust(src):
                 whole_file = True
             continue
         ranges.append((m.start(), item_end(code, code.index("]", close) + 1)))
+    ranges.extend((m.start(), item_end(code, m.end())) for m in TEST_ATTRIBUTE.finditer(code))
     blocks = [(m.start(), balanced(code, m.end() - 1, "{", "}"), path_override(code, src, m.start()) or m.group(1))
               for m in INLINE_MODULE.finditer(code)]
     declarations, test_declarations = [], []
@@ -195,9 +216,18 @@ def line_count(data):
     return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
 
 
-def workspace_members(cargo_toml):
+def workspace_members(cargo_toml, paths):
     block = re.search(r"(?s)\[workspace\].*?members\s*=\s*\[(.*?)\]", cargo_toml)
-    return tuple(member.rstrip("/") + "/" for member in re.findall(r'"([^"]+)"', block.group(1))) if block else ()
+    patterns = [member.rstrip("/") for member in re.findall(r'"([^"]+)"', block.group(1))] if block else []
+    packages = {posixpath.dirname(path) for path in paths if path.endswith("/Cargo.toml")}
+    members = set()
+    for pattern in patterns:
+        if not re.search(r"[*?\[]", pattern):
+            members.add(pattern)
+            continue
+        depth = pattern.count("/")
+        members.update(p for p in packages if p.count("/") == depth and fnmatch.fnmatchcase(p, pattern))
+    return tuple(sorted(member + "/" for member in members))
 
 
 class Tree:
@@ -213,7 +243,7 @@ class Tree:
             if kind == b"blob" and mode != b"120000":
                 self.blobs[path.decode()] = sha.decode()
         self.rev = rev
-        members = workspace_members(self.read("Cargo.toml").decode()) if "Cargo.toml" in self.blobs else ()
+        members = workspace_members(self.read("Cargo.toml").decode(), self.blobs) if "Cargo.toml" in self.blobs else ()
         self.scope = members + SCOPE_EXTRA
 
     def read(self, path):
@@ -264,7 +294,7 @@ def count(tree):
         blob = tree.blobs[path]
         if blob not in Tree.scans:
             src = data[path].decode("utf-8", "replace")
-            Tree.scans[blob] = scan_rust(src) if "cfg" in src and "test" in src or ANY_MODULE.search(src) else EMPTY_SCAN
+            Tree.scans[blob] = scan_rust(src) if "test" in src or ANY_MODULE.search(src) else EMPTY_SCAN
         scans[path] = Tree.scans[blob]
         modules[path] = {module_file(path, d, tree.blobs) for d in scans[path]["modules"]}
         test_modules[path] = {module_file(path, d, tree.blobs) for d in scans[path]["test_modules"]}
