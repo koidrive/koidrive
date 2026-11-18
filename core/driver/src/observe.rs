@@ -166,6 +166,7 @@ pub struct FsObserver {
     /// Whether no poll of the current watcher has settled every scope yet. Until one has, a folder still pending may
     /// be one whose rules no scan of this watcher has read.
     settling: bool,
+    delivered: Vec<PathBuf>,
     /// Whether a reset still waits for the batch of a scan made after it.
     reset: bool,
     /// Files whose content could not be read, or that an observation left to a later one, with when to read them.
@@ -379,6 +380,7 @@ impl FsObserver {
             scanned: None,
             first: true,
             settling: true,
+            delivered: Vec::new(),
             reset: false,
             unread: Unread::default(),
             stopped,
@@ -788,9 +790,11 @@ impl Observer for FsObserver {
             && poll.settled.is_empty()
             && rules.is_empty()
             && self.unread.waiting.is_empty()
+            && poll.pending == self.delivered
         {
             return Ok(None);
         }
+        self.delivered.clone_from(&poll.pending);
         self.first &= !first;
         self.reset &= !answers;
         let root = check_root(&self.root, &self.space_id, &self.linked).map(|_| ());
@@ -2028,7 +2032,10 @@ mod tests {
             (observer.observe(Duration::ZERO).unwrap()).expect("the scan that read the folder");
         assert!(settled.unreadable.is_empty());
         assert_eq!(settled.read, [proj]);
-        assert!(observer.observe(Duration::ZERO).unwrap().is_none());
+        let again = (observer.observe(Duration::ZERO).unwrap())
+            .expect("the poll that found the folder pending again");
+        assert_eq!(again.pending, [PathBuf::from("proj")]);
+        assert!(again.unreadable.is_empty());
     }
 
     /// The platform watcher fails after the user deleted a rules file it had not reported. The rescanning watcher that
