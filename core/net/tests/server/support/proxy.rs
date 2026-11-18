@@ -104,9 +104,7 @@ async fn relay(mut client: TcpStream, shared: Shared) {
     let Ok(mut server) = TcpStream::connect(upstream).await else {
         return;
     };
-    let mut first = true;
-    let mut websocket = false;
-    let mut frames = Vec::new();
+    let mut stream = ClientStream::Head(Vec::new());
     let (mut damage_upload, mut damage_download) = (false, false);
     let (mut from_client, mut from_server) = ([0u8; 64 * 1024], [0u8; 64 * 1024]);
     let trips = |trigger: Fault| {
@@ -122,15 +120,9 @@ async fn relay(mut client: TcpStream, shared: Shared) {
             read = client.read(&mut from_client) => match read {
                 Ok(0) | Err(_) => return,
                 Ok(n) => {
-                    if first {
-                        websocket = from_client[..n].windows(13).any(|w| w == b"/ws HTTP/1.1\r");
-                        first = false;
-                    } else if websocket {
-                        frames.extend_from_slice(&from_client[..n]);
-                        let sent = reauths_in(&mut frames);
-                        if sent > 0 {
-                            reauths.send_modify(|count| *count += sent);
-                        }
+                    let sent = stream.reauths_in(&from_client[..n]);
+                    if sent > 0 {
+                        reauths.send_modify(|count| *count += sent);
                     }
                     let data = &mut from_client[..n];
                     if data.starts_with(b"PUT ") && contains(data, b"/chunks/") {
@@ -159,7 +151,38 @@ async fn relay(mut client: TcpStream, shared: Shared) {
     }
 }
 
-fn reauths_in(frames: &mut Vec<u8>) -> usize {
+enum ClientStream {
+    Head(Vec<u8>),
+    WebSocket(Vec<u8>),
+    Http,
+}
+
+impl ClientStream {
+    fn reauths_in(&mut self, data: &[u8]) -> usize {
+        match self {
+            ClientStream::Head(head) => {
+                head.extend_from_slice(data);
+                let Some(end) = head.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    return 0;
+                };
+                let frames = head.split_off(end + 4);
+                *self = if contains(head, b"/ws HTTP/1.1\r") {
+                    ClientStream::WebSocket(frames)
+                } else {
+                    ClientStream::Http
+                };
+                self.reauths_in(&[])
+            }
+            ClientStream::WebSocket(frames) => {
+                frames.extend_from_slice(data);
+                drain_reauths(frames)
+            }
+            ClientStream::Http => 0,
+        }
+    }
+}
+
+fn drain_reauths(frames: &mut Vec<u8>) -> usize {
     let mut reauths = 0;
     while let Some((opcode, payload, end)) = client_frame(frames) {
         let message = (opcode == 2).then(|| ClientMessage::decode(payload.as_slice()));
@@ -223,4 +246,46 @@ fn flip_body(data: &mut [u8]) -> bool {
         }
         None => false,
     }
+}
+
+#[test]
+fn reauths_are_counted_however_the_client_stream_is_split() {
+    let request =
+        b"GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
+    let reauth = ClientMessage {
+        msg: Some(client_message::Msg::Reauth(koidrive_proto::v1::Reauth {
+            access_token: "token".into(),
+        })),
+    }
+    .encode_to_vec();
+    let mask = [7, 1, 9, 4];
+    let mut stream = request.to_vec();
+    stream.extend([0x82, 0x80 | u8::try_from(reauth.len()).unwrap()]);
+    stream.extend(mask);
+    stream.extend(
+        reauth
+            .iter()
+            .zip(mask.iter().cycle())
+            .map(|(byte, key)| byte ^ key),
+    );
+    for split in 1..stream.len() {
+        let mut client = ClientStream::Head(Vec::new());
+        let (head, rest) = stream.split_at(split);
+        assert_eq!(
+            client.reauths_in(head) + client.reauths_in(rest),
+            1,
+            "split at {split}"
+        );
+    }
+    let mut http = ClientStream::Head(Vec::new());
+    assert_eq!(
+        http.reauths_in(
+            &[
+                b"GET /v1/tree HTTP/1.1\r\n\r\n".as_slice(),
+                &stream[request.len()..]
+            ]
+            .concat()
+        ),
+        0
+    );
 }
