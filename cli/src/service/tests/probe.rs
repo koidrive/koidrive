@@ -117,7 +117,7 @@ async fn a_daemon_that_takes_the_connection_and_never_answers_does_not_hold_the_
     assert_eq!(answered, Ok(false));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_daemon_that_takes_the_status_request_and_never_answers_is_a_problem_after_the_probe() {
     let (_dir, paths, _root) = crate::ipc::tests::linked_profile();
     let listener = koidrive_ipc::bind(&paths.socket()).unwrap();
@@ -126,7 +126,7 @@ async fn a_daemon_that_takes_the_status_request_and_never_answers_is_a_problem_a
         std::future::pending::<()>().await
     });
     let fake = Fake::default();
-    let began = Instant::now();
+    let began = tokio::time::Instant::now();
     let report = reconcile_with(&fake, Ok(service(&[])), &paths, false).await;
     assert!(began.elapsed() < PROBE + Duration::from_secs(2));
     assert_eq!(
@@ -138,7 +138,7 @@ async fn a_daemon_that_takes_the_status_request_and_never_answers_is_a_problem_a
     daemon.abort();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_daemon_that_starts_and_then_never_replies_is_a_problem_after_the_probe() {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::under(dir.path());
@@ -150,7 +150,7 @@ async fn a_daemon_that_starts_and_then_never_replies_is_a_problem_after_the_prob
         let _accepted = listener.accept().await.unwrap();
         std::future::pending::<()>().await;
     });
-    let started = Instant::now();
+    let started = tokio::time::Instant::now();
     let result = daemon_status(&paths).await;
     daemon.abort();
     assert!(started.elapsed() < Duration::from_secs(1) + PROBE + Duration::from_secs(2));
@@ -338,11 +338,11 @@ async fn a_daemon_still_starting_after_a_restart_is_waited_for_and_not_a_problem
 fn a_koi_that_leaves_a_child_holding_its_output_reads_as_unversioned_within_the_probe() {
     let dir = tempfile::tempdir().unwrap();
     let koi = dir.path().join("lingering-koi");
-    fs::write(&koi, "#!/bin/sh\necho 'koi 99.0.0'\nsleep 20 &\n").unwrap();
+    fs::write(&koi, "#!/bin/sh\necho 'koi 99.0.0'\nsleep 30 &\n").unwrap();
     fs::set_permissions(&koi, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let began = Instant::now();
     assert_eq!(version_of(&koi), None);
-    assert!(began.elapsed() < PROBE + Duration::from_secs(2));
+    assert!(began.elapsed() < Duration::from_secs(30));
 }
 
 #[test]

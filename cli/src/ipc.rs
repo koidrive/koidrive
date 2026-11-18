@@ -700,7 +700,7 @@ pub(crate) mod tests {
         daemon.abort();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_status_request_to_a_daemon_that_never_replies_fails_after_the_reply_limit() {
         let (_dir, paths, _root) = linked_profile();
         let listener = bind(&paths.socket()).unwrap();
