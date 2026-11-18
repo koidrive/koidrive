@@ -1179,7 +1179,9 @@ fn still_discarded_in(
         && (discarded.get(id))
             .zip(trees.local().get(id))
             .is_some_and(|(shown, local)| shown.parent == folder && local.shape.same(shown))
-        && (trees.local_children(id)).all(|child| still_discarded_in(device, child, id, discarded))
+        && (trees.local().iter())
+            .filter(|(_, node)| node.shape.parent == id)
+            .all(|(child, _)| still_discarded_in(device, child, id, discarded))
 }
 
 fn server_copy(

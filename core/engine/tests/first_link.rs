@@ -5330,9 +5330,11 @@ fn a_renamed_server_entry_keeps_its_name_when_its_taken_along_folder_is_discarde
     assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
     let asked = question(&commits);
     assert!(commits.decide(&asked.id, Answer::Discard));
-    let mut sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+    assert!(drive_until_quiet(&mut commits, &mut trees, &mut ids).is_empty());
+    assert!(local(&trees).contains(&("c".into(), "x".into(), "renamed".into())));
+    assert!(trees.local().get("f").is_some());
     trees.set_rules(&[] as &[&str], None);
-    sent.extend(drive_until_quiet(&mut commits, &mut trees, &mut ids));
+    let sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
     assert_eq!(sent, [("move", "c".into())]);
     assert_eq!(trees.remote().get("c").unwrap().shape.name, "renamed");
     assert_eq!(
