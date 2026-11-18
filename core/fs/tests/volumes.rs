@@ -268,35 +268,6 @@ fn a_volume_without_a_uuid_is_never_read() {
     assert_eq!(found.unreadable, [PathBuf::from("Disk")]);
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn a_volume_without_a_uuid_gives_way_to_one_with_a_uuid_but_not_to_its_empty_mount_point() {
-    let Some(mut disks) = Disks::new() else {
-        return;
-    };
-    let root = disks.base().join("Sync");
-    let (unknown, stick) = (disks.fat_without_serial("Unknown"), disks.fat("Stick"));
-    fs::create_dir_all(root.join("Disk")).unwrap();
-    disks.attach(&unknown, &root.join("Disk"));
-    fill(&root.join("Disk"));
-    let mut snapshot = Snapshot::scan(&root).unwrap();
-    disks.detach(&root.join("Disk"));
-    let found = rescan(&mut snapshot, &root, &["", "Disk"]);
-    assert_eq!(found.changes, []);
-    assert_eq!(away(&snapshot), ["Disk"]);
-
-    disks.attach(&stick, &root.join("Disk"));
-    fill(&root.join("Disk"));
-    let found = rescan(&mut snapshot, &root, &[""]);
-    assert_eq!(removals(&found.changes), Vec::<&Change>::new());
-    assert_eq!(away(&snapshot), Vec::<&str>::new());
-    holds(
-        &snapshot,
-        &below("Disk").iter().map(String::as_str).collect::<Vec<_>>(),
-    );
-    disks.detach(&root.join("Disk"));
-}
-
 fn identified(at: &Path) -> koidrive_fs::RootAt {
     use std::os::fd::AsFd;
     let started = Instant::now();
@@ -310,57 +281,42 @@ fn identified(at: &Path) -> koidrive_fs::RootAt {
 }
 
 #[cfg(target_os = "linux")]
-fn sticks_mounted_in_turn_have_volume_ids_of_their_own(disks: &mut Disks, one: &Path, two: &Path) {
-    let at = disks.base().join("Stick");
-    let elsewhere = disks.base().join("Elsewhere");
+#[test]
+fn sticks_mounted_in_turn_at_one_folder_have_volume_ids_of_their_own() {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    let mut pairs = vec![(disks.fat("One"), disks.fat("Two"))];
+    if disks.exfat_has_ids() {
+        pairs.push((disks.exfat("OneCard"), disks.exfat("TwoCard")));
+    }
+    let (at, elsewhere) = (disks.base().join("Stick"), disks.base().join("Elsewhere"));
     fs::create_dir_all(&at).unwrap();
     fs::create_dir_all(&elsewhere).unwrap();
-    let found = identified;
-    disks.attach(one, &at);
-    let first = found(&at);
-    disks.detach(&at);
-    disks.attach(two, &at);
-    let second = found(&at);
-    disks.attach(one, &elsewhere);
-    let again = found(&elsewhere);
-    disks.detach(&elsewhere);
-    disks.detach(&at);
-    let context = format!("{one:?} {first:?} {second:?} {again:?}");
-    assert!(first.volume.is_some(), "{context}");
-    assert!(second.volume.is_some(), "{context}");
-    assert_ne!(second.volume, first.volume, "{context}");
-    assert_eq!(again.volume, first.volume, "{context}");
-    assert!(first.admits(&again).is_ok(), "{context}");
-    assert!(
-        matches!(
-            first.admits(&second),
-            Err(koidrive_fs::RootProblem::OtherDisk)
-        ),
-        "{context}"
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn fat_sticks_mounted_in_turn_at_one_folder_have_volume_ids_of_their_own() {
-    let Some(mut disks) = Disks::new() else {
-        return;
-    };
-    let (one, two) = (disks.fat("One"), disks.fat("Two"));
-    sticks_mounted_in_turn_have_volume_ids_of_their_own(&mut disks, &one, &two);
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn exfat_sticks_mounted_in_turn_at_one_folder_have_volume_ids_of_their_own_where_udev_runs() {
-    let Some(mut disks) = Disks::new() else {
-        return;
-    };
-    if !disks.exfat_has_ids() {
-        return;
+    for (one, two) in &pairs {
+        disks.attach(one, &at);
+        let first = identified(&at);
+        disks.detach(&at);
+        disks.attach(two, &at);
+        let second = identified(&at);
+        disks.attach(one, &elsewhere);
+        let again = identified(&elsewhere);
+        disks.detach(&elsewhere);
+        disks.detach(&at);
+        let context = format!("{one:?} {first:?} {second:?} {again:?}");
+        assert!(
+            first.volume.is_some() && second.volume.is_some(),
+            "{context}"
+        );
+        assert_ne!(second.volume, first.volume, "{context}");
+        assert_eq!(again.volume, first.volume, "{context}");
+        assert!(first.admits(&again).is_ok(), "{context}");
+        let other = first.admits(&second);
+        assert!(
+            matches!(other, Err(koidrive_fs::RootProblem::OtherDisk)),
+            "{context}"
+        );
     }
-    let (one, two) = (disks.exfat("One"), disks.exfat("Two"));
-    sticks_mounted_in_turn_have_volume_ids_of_their_own(&mut disks, &one, &two);
 }
 
 #[cfg(target_os = "linux")]
@@ -430,36 +386,60 @@ fn an_exfat_stick_udev_keeps_no_link_for_is_held_until_it_does() {
 }
 
 #[test]
-fn a_stick_ejected_and_plugged_back_in_comes_back() {
+fn a_stick_plugged_back_in_comes_back_with_an_edit_made_on_another_computer() {
     let Some(mut disks) = Disks::new() else {
         return;
     };
     let mut sticks = vec![
-        ("FAT", disks.fat("Stick"), true),
-        ("empty FAT", disks.fat("Empty"), false),
+        ("FAT", disks.fat("Stick"), true, false),
+        ("empty FAT", disks.fat("Empty"), false, false),
+        ("edited FAT", disks.fat("Edited"), false, true),
+        ("edited disk", disks.image("Drive"), false, true),
     ];
     if disks.exfat_has_ids() {
-        sticks.push(("exFAT", disks.exfat("Card"), true));
+        sticks.push(("exFAT", disks.exfat("Card"), true, false));
+        sticks.push(("edited exFAT", disks.exfat("EditedCard"), false, true));
     }
-    for (kind, image, filled) in sticks {
+    for (kind, image, filled, edited) in sticks {
         let root = disks.base().join(kind);
-        let at = root.join("Disk");
+        let (at, elsewhere) = (
+            root.join("Disk"),
+            disks.base().join(format!("Elsewhere {kind}")),
+        );
         fs::create_dir_all(&at).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
         disks.attach(&image, &at);
         let first = identified(&at);
         if filled {
             fill(&at);
+        }
+        if edited {
+            write(&at.join("report.docx"), "draft");
         }
         let mut snapshot = Snapshot::scan(&root).unwrap();
         let expected = snapshot.entries.clone();
         disks.detach(&at);
         rescan(&mut snapshot, &root, &["", "Disk"]);
         assert_eq!(away(&snapshot), ["Disk"], "{kind}");
-        std::thread::sleep(Duration::from_millis(1100));
+        std::thread::sleep(Duration::from_millis(2100));
+        if edited {
+            disks.attach(&image, &elsewhere);
+            write(
+                &elsewhere.join("report.docx"),
+                "final version, edited at work",
+            );
+            disks.detach(&elsewhere);
+        }
         disks.attach(&image, &at);
         assert_eq!(identified(&at).volume, first.volume, "{kind}");
         let found = rescan(&mut snapshot, &root, &["", "Disk"]);
         disks.detach(&at);
+        if edited {
+            let edit = Change::Modified {
+                path: "Disk/report.docx".into(),
+            };
+            assert_eq!(found.changes, [edit], "{kind}");
+        }
         let created =
             (found.changes.iter()).filter(|change| matches!(change, Change::Created { .. }));
         assert_eq!(removals(&found.changes), Vec::<&Change>::new(), "{kind}");
@@ -534,51 +514,6 @@ fn an_empty_disk_formatted_with_another_disks_uuid_at_another_time_is_told_apart
     assert_eq!(changes, []);
     assert_eq!(away(&snapshot), ["Disk"]);
     assert!(!snapshot.entries.contains_key(Path::new("Disk/photo.jpg")));
-}
-
-#[test]
-fn a_disk_edited_on_another_computer_comes_back_with_the_edit() {
-    let Some(mut disks) = Disks::new() else {
-        return;
-    };
-    let mut images = vec![("FAT", disks.fat("Stick")), ("disk", disks.image("Drive"))];
-    if disks.exfat_has_ids() {
-        images.push(("exFAT", disks.exfat("Card")));
-    }
-    for (kind, image) in images {
-        let root = disks.base().join(kind);
-        let (at, elsewhere) = (
-            root.join("Disk"),
-            disks.base().join(format!("Elsewhere {kind}")),
-        );
-        fs::create_dir_all(&at).unwrap();
-        fs::create_dir_all(&elsewhere).unwrap();
-        disks.attach(&image, &at);
-        identified(&at);
-        write(&at.join("report.docx"), "draft");
-        let mut snapshot = Snapshot::scan(&root).unwrap();
-        disks.detach(&at);
-        rescan(&mut snapshot, &root, &["", "Disk"]);
-        disks.attach(&image, &elsewhere);
-        std::thread::sleep(Duration::from_millis(2100));
-        write(
-            &elsewhere.join("report.docx"),
-            "final version, edited at work",
-        );
-        disks.detach(&elsewhere);
-        disks.attach(&image, &at);
-        identified(&at);
-        let found = rescan(&mut snapshot, &root, &["", "Disk"]);
-        disks.detach(&at);
-        assert_eq!(away(&snapshot), Vec::<&str>::new(), "{kind}");
-        assert_eq!(
-            found.changes,
-            [Change::Modified {
-                path: "Disk/report.docx".into()
-            }],
-            "{kind}"
-        );
-    }
 }
 
 fn clones(disks: &mut Disks) -> (PathBuf, PathBuf) {

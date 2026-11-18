@@ -268,25 +268,13 @@ fn swapped_for_a_bigger_stick_with_its_serial(
 }
 
 #[test]
-fn a_bigger_stick_with_a_sticks_serial_and_one_of_its_file_names_keeps_the_first_sticks_files() {
+fn a_bigger_stick_with_a_sticks_serial_keeps_the_first_sticks_files() {
     let Some(disks) = koidrive_test_support::Disks::new() else {
         return;
     };
     for (_, format) in formats(&disks) {
-        for stopped in [false, true] {
-            swapped_for_a_bigger_stick_with_its_serial(format, stopped, false);
-        }
-    }
-}
-
-#[test]
-fn a_bigger_stick_with_a_sticks_serial_and_one_identical_file_keeps_the_first_sticks_files() {
-    let Some(disks) = koidrive_test_support::Disks::new() else {
-        return;
-    };
-    for (_, format) in formats(&disks) {
-        for stopped in [false, true] {
-            swapped_for_a_bigger_stick_with_its_serial(format, stopped, true);
+        for (stopped, identical) in [(false, false), (true, false), (false, true), (true, true)] {
+            swapped_for_a_bigger_stick_with_its_serial(format, stopped, identical);
         }
     }
 }
@@ -433,71 +421,8 @@ fn an_exfat_stick_swapped_for_another_and_back_deletes_nothing() {
     }
 }
 
-fn changed_on_another_computer(
-    disks: &mut koidrive_test_support::Disks,
-    remote: &mut Remote,
-    image: PathBuf,
-    stopped: bool,
-    change: impl Fn(&Path),
-) -> (Site, Device, BTreeMap<String, String>) {
-    let (site, mut a, image) = with_disk(disks, remote, "Disk", image);
-    let tree = user_files(remote);
-    let at = site.root.join("Disk");
-    disks.detach(&at);
-    observed(&mut a, remote);
-    let elsewhere = disks.base().join(format!("Another computer {stopped}"));
-    fs::create_dir_all(&elsewhere).unwrap();
-    disks.attach(&image, &elsewhere);
-    std::thread::sleep(std::time::Duration::from_millis(2100));
-    change(&elsewhere);
-    disks.detach(&elsewhere);
-    if stopped {
-        drop(a);
-        disks.attach(&image, &at);
-        identified(&at);
-        a = restarted(&site, remote);
-        a.rest(remote);
-    } else {
-        disks.attach(&image, &at);
-        identified(&at);
-    }
-    observed(&mut a, remote);
-    (site, a, tree)
-}
-
-fn sticks(disks: &koidrive_test_support::Disks, name: &str) -> Vec<PathBuf> {
-    let mut sticks = vec![disks.fat(name)];
-    if disks.exfat_has_ids() {
-        sticks.push(disks.exfat(&format!("{name}Card")));
-    }
-    sticks
-}
-
 #[test]
-fn a_stick_whose_files_were_all_deleted_on_another_computer_syncs_the_deletes_once_it_is_back() {
-    let Some(mut disks) = koidrive_test_support::Disks::new() else {
-        return;
-    };
-    for stopped in [false, true] {
-        for stick in sticks(&disks, &format!("Gone{}", u8::from(stopped))) {
-            let mut remote = Remote::new();
-            let (site, a, _) =
-                changed_on_another_computer(&mut disks, &mut remote, stick.clone(), stopped, |at| {
-                    fs::remove_file(at.join("report.docx")).unwrap();
-                    fs::remove_dir_all(at.join("Slides")).unwrap();
-                });
-            let (left, held) = (user_files(&remote), held(&a));
-            drop(a);
-            disks.detach(&site.root.join("Disk"));
-            let left: Vec<&String> = left.keys().collect();
-            assert_eq!(left, ["Disk", "notes.txt"], "{stick:?} stopped={stopped}");
-            assert_eq!(held, [], "{stick:?} stopped={stopped}");
-        }
-    }
-}
-
-#[test]
-fn a_stick_whose_files_were_all_edited_on_another_computer_comes_back_with_the_edits() {
+fn a_stick_changed_on_another_computer_comes_back_with_the_change() {
     let Some(mut disks) = koidrive_test_support::Disks::new() else {
         return;
     };
@@ -505,23 +430,56 @@ fn a_stick_whose_files_were_all_edited_on_another_computer_comes_back_with_the_e
         ("report.docx", "the report, edited at work"),
         ("Slides/deck.key", "the deck, edited on another computer"),
     ];
-    for stopped in [false, true] {
-        for stick in sticks(&disks, &format!("Edit{}", u8::from(stopped))) {
+    for (stopped, deleted) in [(false, false), (true, false), (false, true), (true, true)] {
+        let name = format!("C{}{}", u8::from(stopped), u8::from(deleted));
+        let mut sticks = vec![disks.fat(&name)];
+        if disks.exfat_has_ids() {
+            sticks.push(disks.exfat(&format!("{name}Card")));
+        }
+        for stick in sticks {
             let mut remote = Remote::new();
-            let (site, a, tree) =
-                changed_on_another_computer(&mut disks, &mut remote, stick.clone(), stopped, |at| {
-                    for (name, text) in edits {
-                        fs::write(at.join(name), text).unwrap();
-                    }
-                });
+            let (site, mut a, image) = with_disk(&mut disks, &mut remote, "Disk", stick);
+            let tree = user_files(&remote);
+            let at = site.root.join("Disk");
+            disks.detach(&at);
+            observed(&mut a, &mut remote);
+            let elsewhere = disks.base().join(format!("Another computer {name}"));
+            fs::create_dir_all(&elsewhere).unwrap();
+            disks.attach(&image, &elsewhere);
+            std::thread::sleep(std::time::Duration::from_millis(2100));
+            if deleted {
+                fs::remove_file(elsewhere.join("report.docx")).unwrap();
+                fs::remove_dir_all(elsewhere.join("Slides")).unwrap();
+            }
+            for (file, text) in edits.iter().filter(|_| !deleted) {
+                fs::write(elsewhere.join(file), text).unwrap();
+            }
+            disks.detach(&elsewhere);
+            if stopped {
+                drop(a);
+                disks.attach(&image, &at);
+                identified(&at);
+                a = restarted(&site, &mut remote);
+                a.rest(&mut remote);
+            } else {
+                disks.attach(&image, &at);
+                identified(&at);
+            }
+            observed(&mut a, &mut remote);
             let (after, held) = (user_files(&remote), held(&a));
             drop(a);
-            disks.detach(&site.root.join("Disk"));
-            assert_eq!(after, tree, "{stick:?} stopped={stopped}");
-            assert_eq!(held, [], "{stick:?} stopped={stopped}");
-            for (name, text) in edits {
-                let id = &after[&format!("Disk/{name}")];
-                assert_eq!(server_size(&remote, id), text.len() as u64, "{stick:?} {name}");
+            disks.detach(&at);
+            let case = format!("{image:?} stopped={stopped} deleted={deleted}");
+            assert_eq!(held, [], "{case}");
+            if deleted {
+                let left: Vec<&String> = after.keys().collect();
+                assert_eq!(left, ["Disk", "notes.txt"], "{case}");
+                continue;
+            }
+            assert_eq!(after, tree, "{case}");
+            for (file, text) in edits {
+                let id = &after[&format!("Disk/{file}")];
+                assert_eq!(server_size(&remote, id), text.len() as u64, "{case} {file}");
             }
         }
     }
@@ -683,81 +641,58 @@ fn a_disk_without_a_uuid_is_never_synced() {
 }
 
 #[cfg(target_os = "linux")]
-fn unidentified_disk(
-    disks: &mut koidrive_test_support::Disks,
-    remote: &mut Remote,
-) -> (Site, Device, BTreeMap<String, String>) {
-    let (site, mut a) = linked(remote, "a");
-    let at = site.root.join("Disk");
-    fs::create_dir_all(&at).unwrap();
-    let stick = disks.fat_without_serial("Unknown");
-    disks.attach(&stick, &at);
-    on_the_disk(&at, &["report.docx"]);
-    on_the_disk(&site.root, &["notes.txt"]);
-    observed(&mut a, remote);
-    let tree = user_files(remote);
-    assert!(tree.contains_key("notes.txt"), "{tree:?}");
-    assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)]);
-    (site, a, tree)
-}
-
-#[cfg(target_os = "linux")]
 #[test]
-fn a_disk_without_a_uuid_ejected_deletes_nothing_and_stays_held() {
+fn a_disk_without_a_uuid_ejected_stays_held_until_another_disk_takes_its_place() {
     let Some(mut disks) = koidrive_test_support::Disks::new() else {
         return;
     };
-    for stopped in [false, true] {
+    for (stopped, restarts) in [(false, false), (false, true), (true, true)] {
+        let case = format!("stopped={stopped} restarts={restarts}");
         let mut remote = Remote::new();
-        let (site, mut a, tree) = unidentified_disk(&mut disks, &mut remote);
+        let (site, mut a) = linked(&mut remote, "a");
         let at = site.root.join("Disk");
-        if stopped {
-            drop(a);
-            disks.detach(&at);
-            a = restarted(&site, &mut remote);
-            a.rest(&mut remote);
-        } else {
+        fs::create_dir_all(&at).unwrap();
+        let (unknown, stick) = (
+            disks.fat_without_serial(&format!("Unknown{stopped}{restarts}")),
+            disks.fat(&format!("Stick{stopped}{restarts}")),
+        );
+        disks.attach(&unknown, &at);
+        on_the_disk(&at, &["report.docx"]);
+        on_the_disk(&site.root, &["notes.txt"]);
+        observed(&mut a, &mut remote);
+        let tree = user_files(&remote);
+        assert!(tree.contains_key("notes.txt"), "{tree:?}");
+        assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)]);
+        if !stopped {
             disks.detach(&at);
             observed(&mut a, &mut remote);
+        }
+        if restarts {
             drop(a);
+            if stopped {
+                disks.detach(&at);
+            }
             a = restarted(&site, &mut remote);
             a.rest(&mut remote);
+            observed(&mut a, &mut remote);
         }
-        observed(&mut a, &mut remote);
-        assert_eq!(user_files(&remote), tree, "stopped={stopped}");
-        assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)]);
-        assert!(at.is_dir(), "stopped={stopped}");
+        assert_eq!(user_files(&remote), tree, "{case}");
+        assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)], "{case}");
+        assert!(at.is_dir(), "{case}");
         assert_eq!(fs::read(site.root.join("notes.txt")).unwrap(), b"notes.txt");
-    }
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn another_disk_mounted_where_a_disk_without_a_uuid_was_syncs() {
-    let Some(mut disks) = koidrive_test_support::Disks::new() else {
-        return;
-    };
-    for stopped in [false, true] {
-        let mut remote = Remote::new();
-        let (site, mut a, tree) = unidentified_disk(&mut disks, &mut remote);
-        let at = site.root.join("Disk");
-        let stick = disks.fat(&format!("Stick{stopped}"));
         if stopped {
             drop(a);
-            disks.detach(&at);
             disks.attach(&stick, &at);
             on_the_disk(&at, &["photo.jpg"]);
             a = restarted(&site, &mut remote);
             a.rest(&mut remote);
         } else {
-            disks.detach(&at);
-            observed(&mut a, &mut remote);
             disks.attach(&stick, &at);
             on_the_disk(&at, &["photo.jpg"]);
             observed(&mut a, &mut remote);
         }
         let synced = user_files(&remote);
-        assert!(synced.contains_key("Disk/photo.jpg"), "stopped={stopped}: {synced:?}");
+        assert!(synced.contains_key("Disk/photo.jpg"), "{case}: {synced:?}");
         assert!(!synced.contains_key("Disk/report.docx"), "{synced:?}");
         assert_eq!(synced["notes.txt"], tree["notes.txt"]);
         assert_eq!(held(&a), []);
@@ -766,7 +701,7 @@ fn another_disk_mounted_where_a_disk_without_a_uuid_was_syncs() {
         a.rest(&mut remote);
         on_the_disk(&at, &["later.txt"]);
         observed(&mut a, &mut remote);
-        assert!(remote.tree().contains_key("Disk/later.txt"), "stopped={stopped}");
+        assert!(remote.tree().contains_key("Disk/later.txt"), "{case}");
         disks.detach(&at);
         observed(&mut a, &mut remote);
         assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)]);
