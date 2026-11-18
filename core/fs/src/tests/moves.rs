@@ -135,6 +135,7 @@ fn scan_settling(snapshot: &mut Snapshot, root: &Path, scope: &str) -> Rescan {
             &|_| {},
             Keep::Unexplained,
             &mut |_| {},
+            &MarkLog::default(),
         )
         .unwrap()
 }

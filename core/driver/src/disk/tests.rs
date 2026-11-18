@@ -1737,6 +1737,7 @@ fn observer(root: &Path, previous: Snapshot) -> FsObserver {
         SPACE,
         dev,
         previous,
+        koidrive_fs::MarkLog::default(),
         Arc::new(Unfiltered),
         || false,
         |_| {},

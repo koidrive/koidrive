@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use koidrive_chunk::ChunkerConfig;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_fs::{
-    Change, Ctime, Detached, Entry, EntryKind, Error as FsError, FileId, Known, Mount,
+    Change, Ctime, Detached, Entry, EntryKind, Error as FsError, FileId, Known, MarkLog, Mount,
     NativeWatcher, RescanWatcher, RootAt, RootProblem, Snapshot, Watcher, check_root,
 };
 use koidrive_proto::v1::{ChunkRef, Content};
@@ -135,14 +135,6 @@ pub struct Reset {
     pub known: BTreeMap<PathBuf, Known>,
 }
 
-#[derive(Debug)]
-pub struct Marked {
-    pub path: PathBuf,
-    pub id: FileId,
-    pub before: i128,
-    pub after: i128,
-}
-
 /// A source of observations for one linked folder.
 pub trait Observer: Send {
     /// Waits up to about `timeout` and returns the next batch, or `None` when nothing changed.
@@ -159,6 +151,7 @@ pub struct FsObserver {
     linked: RootAt,
     watcher: Box<dyn Watcher + Send>,
     native: bool,
+    marks: MarkLog,
     matcher: Arc<dyn Matcher>,
     /// The root folder the latest scan opened.
     scanned: Option<FileId>,
@@ -329,11 +322,13 @@ impl FsObserver {
     /// for a walk of the whole tree nor for every file of a scan to be read. The observer's snapshot then counts
     /// changes it never returned, so drop the observer. Each observation calls `progress` as it walks the folder and
     /// as it reads file content, at each file found and each chunk read.
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         root: &Path,
         space_id: &str,
         linked: RootAt,
         previous: Snapshot,
+        marks: MarkLog,
         matcher: Arc<dyn Matcher>,
         stopped: impl Fn() -> bool + Send + Sync + 'static,
         progress: impl Fn(Observing) + Send + Sync + 'static,
@@ -343,7 +338,9 @@ impl FsObserver {
         let (watcher, native): (Box<dyn Watcher + Send>, bool) =
             match NativeWatcher::start_with_rules(root, previous.clone(), scan_rules(&matcher)) {
                 Ok(watcher) => {
-                    let watcher = watcher.stopping_when(watching(&stopped));
+                    let watcher = watcher
+                        .stopping_when(watching(&stopped))
+                        .marking(marks.clone());
                     (Box::new(watcher.counting(walking(&progress))), true)
                 }
                 Err(FsError::Watch(error)) => {
@@ -351,7 +348,9 @@ impl FsObserver {
                     let rules = scan_rules(&matcher);
                     let watcher =
                         RescanWatcher::with_rules(root, previous, RESCAN_INTERVAL, rules)?;
-                    let watcher = watcher.stopping_when(watching(&stopped));
+                    let watcher = watcher
+                        .stopping_when(watching(&stopped))
+                        .marking(marks.clone());
                     (Box::new(watcher.counting(walking(&progress))), false)
                 }
                 Err(error) => return Err(error),
@@ -362,6 +361,7 @@ impl FsObserver {
             linked,
             watcher,
             native,
+            marks,
             matcher,
             scanned: None,
             first: true,
@@ -401,18 +401,6 @@ impl FsObserver {
     /// gives no [`Observation`], so this is how a caller learns that the first scan is done.
     pub fn scanned(&self) -> Option<FileId> {
         self.scanned
-    }
-
-    pub fn restamp(&mut self, marked: Vec<Marked>) {
-        for Marked {
-            path,
-            id,
-            before,
-            after,
-        } in marked
-        {
-            self.watcher.restamp(&path, id, before, after);
-        }
     }
 
     /// Resets the snapshot at each scope of `resets`, in order, to the entries L holds there, so the next observation
@@ -674,7 +662,8 @@ impl Observer for FsObserver {
                 let rules = scan_rules(&self.matcher);
                 let watcher =
                     RescanWatcher::with_rules(&self.root, snapshot, RESCAN_INTERVAL, rules)?;
-                let watcher = watcher.stopping_when(watching(&self.stopped));
+                let watcher =
+                    (watcher.stopping_when(watching(&self.stopped))).marking(self.marks.clone());
                 self.watcher = Box::new(watcher.counting(walking(&self.progress)));
                 self.native = false;
                 self.first = true;
@@ -783,6 +772,7 @@ impl Observer for FsObserver {
             && changes.is_empty()
             && unreadable.is_empty()
             && poll.read.is_empty()
+            && poll.settled.is_empty()
             && rules.is_empty()
         {
             return Ok(None);
@@ -791,22 +781,26 @@ impl Observer for FsObserver {
         self.reset &= !answers;
         let root = check_root(&self.root, &self.space_id, &self.linked).map(|_| ());
         let entries = &self.watcher.snapshot().entries;
-        let ctimes = (changes.iter())
-            .filter_map(|change| match change {
-                Observed::Created {
-                    path,
-                    content: Some(_),
-                    ..
+        let read = (changes.iter()).filter_map(|change| match change {
+            Observed::Created {
+                path,
+                content: Some(_),
+                ..
+            }
+            | Observed::Modified {
+                path,
+                content: Some(_),
+                ..
+            } => Some(path),
+            _ => None,
+        });
+        let accepted = (poll.settled.iter()).filter(|path| !self.unread.files.contains_key(*path));
+        let ctimes = (read.chain(accepted))
+            .filter_map(|path| match entries.get(path)?.ctime {
+                Ctime::Settled { at, .. } | Ctime::NotAfter(at) => {
+                    Some((path.clone(), at.min(i128::from(i64::MAX)) as i64))
                 }
-                | Observed::Modified {
-                    path,
-                    content: Some(_),
-                    ..
-                } => match entries.get(path)?.ctime {
-                    Ctime::Settled { at, .. } => Some((path.clone(), at as i64)),
-                    _ => None,
-                },
-                _ => None,
+                Ctime::Racy { .. } => None,
             })
             .collect();
         Ok(Some(Observation {
@@ -965,6 +959,7 @@ mod tests {
             SPACE,
             dev,
             Snapshot::default(),
+            MarkLog::default(),
             Arc::new(Unfiltered),
             || false,
             |_| {},
@@ -995,6 +990,7 @@ mod tests {
             SPACE,
             dev,
             Snapshot::default(),
+            MarkLog::default(),
             Arc::new(Unfiltered),
             stopped,
             |_| {},
@@ -1420,6 +1416,7 @@ mod tests {
             SPACE,
             dev,
             Snapshot::default(),
+            MarkLog::default(),
             Arc::new(Unfiltered),
             stopped,
             |_| {},
@@ -1541,6 +1538,7 @@ mod tests {
             SPACE,
             dev,
             Snapshot::default(),
+            MarkLog::default(),
             Arc::new(Unfiltered),
             || false,
             move |report| reported.lock().unwrap().push(report),
@@ -1862,6 +1860,7 @@ mod tests {
             SPACE,
             dev,
             Snapshot::default(),
+            MarkLog::default(),
             Arc::new(IgnoredFolder),
             || false,
             |_| {},
@@ -1947,8 +1946,6 @@ mod tests {
 
         fn reset(&mut self, _scope: &Path, _known: BTreeMap<PathBuf, Known>) {}
 
-        fn restamp(&mut self, _path: &Path, _id: FileId, _before: i128, _after: i128) {}
-
         fn revisit(&mut self, _paths: Vec<PathBuf>) {}
     }
 
@@ -1973,6 +1970,7 @@ mod tests {
             SPACE,
             dev,
             snapshot.clone(),
+            MarkLog::default(),
             Arc::new(Unfiltered),
             || false,
             |_| {},
@@ -2165,6 +2163,7 @@ mod tests {
             SPACE,
             dev,
             previous,
+            MarkLog::default(),
             Arc::new(Unfiltered),
             || false,
             |_| {},
@@ -2208,6 +2207,7 @@ mod tests {
             SPACE,
             dev,
             Snapshot::default(),
+            MarkLog::default(),
             matcher,
             || false,
             |_| {},

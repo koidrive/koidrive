@@ -63,6 +63,7 @@ fn nothing(root: &Path) -> Rescan {
         root: root_id(root),
         rules: vec![],
         read: vec![],
+        settled: vec![],
     }
 }
 
@@ -454,6 +455,7 @@ fn folder_replaced_by_a_symlink_is_removed_not_followed() {
             root: root_id(&root),
             rules: vec![],
             read: vec![],
+            settled: vec![],
         }
     );
     assert_eq!(snapshot, Snapshot::scan(&root).unwrap());
@@ -503,6 +505,7 @@ fn unreadable_folder_is_kept_and_reported() {
                 root: root_id(root),
                 rules: vec![],
                 read: vec![],
+                settled: vec![],
             },
             "{mode:o}"
         );
@@ -866,6 +869,7 @@ fn rescans_and_polls_report_the_root_they_scanned() {
             root: second,
             rules: vec![],
             read: vec![],
+            settled: vec![],
         }
     );
     let poll = watcher.poll(Duration::from_millis(50)).unwrap();
@@ -1204,6 +1208,12 @@ fn a_file_written_on_fat_right_before_a_scan_is_racy_until_its_tick_passes() {
     fs::create_dir(&stick).unwrap();
     let image = disks.fat("Stick");
     disks.attach(&image, &stick);
+    let into_tick = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        % 2000;
+    std::thread::sleep(Duration::from_millis(((2050 - into_tick) % 2000) as u64));
     fs::write(stick.join("doc"), "first").unwrap();
     let started = Instant::now();
     let mut snapshot = Snapshot::scan(&stick).unwrap();

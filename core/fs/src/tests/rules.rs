@@ -44,6 +44,7 @@ fn a_failed_scan_leaves_the_rules_as_they_were() {
                 fs::create_dir(root.join("m")).unwrap();
             }
         },
+        &MarkLog::default(),
     );
     assert!(matches!(result, Err(Error::Changed)), "{result:?}");
     assert_eq!(snapshot, before);
@@ -151,6 +152,7 @@ fn a_search_looks_at_a_bounded_number_of_entries_per_rescan_under_deep_and_wide_
                     Cut::Confirming(_) => looked += 1,
                     _ => {}
                 },
+                &MarkLog::default(),
             )
             .unwrap();
         most = most.max(looked);
@@ -201,6 +203,7 @@ fn a_left_out_entry_back_while_its_removal_is_confirmed_stays_left_out_until_inc
                     restored = true;
                 }
             },
+            &MarkLog::default(),
         )
         .unwrap();
     assert!(restored);

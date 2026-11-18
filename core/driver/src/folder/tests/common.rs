@@ -278,6 +278,7 @@ impl Site {
             &self.link.space_id,
             folder.link.root_at(),
             folder.snapshot(),
+            folder.sections().marks(),
             matcher(sync).unwrap(),
             || false,
             move |report| reported.lock().unwrap().push(report),

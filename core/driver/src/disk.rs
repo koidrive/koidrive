@@ -67,7 +67,7 @@ use rustix::fs::{Mode, OFlags};
 
 use crate::engine::{Engine, file_id, file_identity};
 use crate::failures::{self, Failure};
-use crate::observe::{FsObserver, Marked, Observation, Observed, Observer, Reset};
+use crate::observe::{FsObserver, Observation, Observed, Observer, Reset};
 use crate::policy::{self, Disposition};
 use crate::progress::{Credit, Direction, Item};
 use crate::status::WaitKind;
@@ -164,7 +164,7 @@ pub(crate) struct Sections {
     /// Scopes the observer resets to L's view and scans again before its next batch, in the order requested, and
     /// how many requests there have been.
     resets: Mutex<(Vec<Reset>, u64)>,
-    marked: Mutex<Vec<Marked>>,
+    marks: koidrive_fs::MarkLog,
 }
 
 /// A count of the reset requests of the effect sections. The count a request returns names that request and every
@@ -181,6 +181,10 @@ impl Sections {
     /// scans and content reads.
     pub fn stamp(&self) -> Stamp {
         Stamp(self.epoch.load(Ordering::SeqCst))
+    }
+
+    pub fn marks(&self) -> koidrive_fs::MarkLog {
+        self.marks.clone()
     }
 
     /// The resets to pass to [`FsObserver::reset`] before the next observation, with the requests they complete.
@@ -211,7 +215,6 @@ impl Sections {
             Duration::ZERO
         };
         observer.reset(resets);
-        observer.restamp(std::mem::take(&mut *self.marked.lock().unwrap()));
         let stamp = self.stamp();
         let observation = observer.observe(wait)?;
         Ok(observation.map(|observation| Batch {
@@ -386,11 +389,15 @@ impl Disk {
         hook: Hook,
     ) -> Result<Disk, Stop> {
         let space = Space::bind(OwnedFd::from(lock.try_clone()?), &link.root)?;
+        let sections = Arc::new(Sections {
+            marks: space.marks(),
+            ..Sections::default()
+        });
         let mut disk = Disk {
             space: Arc::new(space),
             path: link.root.clone(),
             space_id: link.space_id.clone(),
-            sections: Arc::default(),
+            sections,
             spans: VecDeque::new(),
             forgotten: 0,
             scan_after: None,
@@ -724,7 +731,11 @@ impl Disk {
         let mounts = (observation.mounts != engine.mounts).then_some(observation.mounts);
         let mut ctimes = observation.ctimes;
         ctimes.retain(|path, _| !dropped.contains(path));
-        if !changes.is_empty() || mounts.is_some() || engine.sees_unobserved(&listed) {
+        if !changes.is_empty()
+            || mounts.is_some()
+            || !ctimes.is_empty()
+            || engine.sees_unobserved(&listed)
+        {
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_millis() as u64);
@@ -798,35 +809,15 @@ impl Disk {
             .collect()
     }
 
-    pub fn mark(
-        &self,
-        trees: &Trees,
-        entries: impl IntoIterator<Item = (NodeId, NodeId)>,
-    ) -> Vec<(NodeId, i128, i128)> {
-        let mut stamped = Vec::new();
+    pub fn mark(&self, trees: &Trees, entries: impl IntoIterator<Item = (NodeId, NodeId)>) {
         for (id, node) in entries {
             let Some((at, expected)) = self.place_of(trees, &id) else {
                 continue;
             };
-            match self.space.mark(&at, expected, &node) {
-                Ok(Some((before, after))) => {
-                    if let Some(path) = trees.local().path(&id) {
-                        (self.sections.marked.lock().unwrap()).push(Marked {
-                            path,
-                            id: expected,
-                            before,
-                            after,
-                        });
-                    }
-                    stamped.push((id, before, after));
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    tracing::warn!(space_id = self.space_id, node, %err, "could not mark an entry");
-                }
+            if let Err(err) = self.space.mark(&at, expected, &node) {
+                tracing::warn!(space_id = self.space_id, node, %err, "could not mark an entry");
             }
         }
-        stamped
     }
 
     fn place_of(&self, trees: &Trees, id: &str) -> Option<(Location, FileId)> {

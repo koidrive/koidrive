@@ -804,7 +804,7 @@ impl Folder {
         })?;
         self.questions = questions;
         let granted = self.engine.commits.take_granted();
-        self.mark_granted(granted)?;
+        self.mark_granted(granted);
         #[cfg(test)]
         if let Some(left) = &mut self.crash_after {
             if *left == 0 {
@@ -965,23 +965,12 @@ impl Folder {
         self.publish_remote()
     }
 
-    fn mark_granted(&mut self, granted: Vec<NodeId>) -> Result<(), Stop> {
+    fn mark_granted(&self, granted: Vec<NodeId>) {
         let trees = &self.engine.trees;
-        let entries: Vec<(NodeId, NodeId)> = (granted.into_iter())
+        let entries = (granted.into_iter())
             .filter(|node| trees.local().get(node).is_some())
-            .map(|node| (node.clone(), node))
-            .collect();
-        self.mark(entries)
-    }
-
-    fn mark(&mut self, entries: Vec<(NodeId, NodeId)>) -> Result<(), Stop> {
-        let stamped = self.disk.mark(&self.engine.trees, entries);
-        if stamped.is_empty() {
-            return Ok(());
-        }
-        let engine = &mut self.engine;
-        self.store
-            .transaction(|tx| -> Result<(), Stop> { Ok(engine.restamp(tx, stamped)?) })
+            .map(|node| (node.clone(), node));
+        self.disk.mark(trees, entries);
     }
 
     /// Replaces R with the bootstrap's tree once the log has caught it up (design §4.4). On the first link of the
@@ -1061,7 +1050,8 @@ impl Folder {
             })
             .map(|(id, _)| (id.clone(), id.clone()))
             .collect::<Vec<_>>();
-        self.mark(adopted)
+        self.disk.mark(trees, adopted);
+        Ok(())
     }
 
     /// Starts a recovery (design §6.4) for `why`: nothing is committed and the commit in flight is never sent again,

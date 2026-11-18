@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use rustix::io::Errno;
 
+use crate::mark::MarkLog;
 use crate::root::{PRIVATE_DIR, make_dir};
 use crate::{DIR_FLAGS, FileId, FileType, is_gone, stat_at, stat_fd, stat_path};
 
@@ -97,6 +98,7 @@ pub struct Space {
     id: FileId,
     dev: u64,
     path: PathBuf,
+    pub(crate) marks: MarkLog,
 }
 
 /// A folder resolved from the root and held open, with the route that
@@ -142,6 +144,7 @@ impl Space {
             id: stat.id,
             dev: stat.dev,
             path: path.to_path_buf(),
+            marks: MarkLog::default(),
         })
     }
 

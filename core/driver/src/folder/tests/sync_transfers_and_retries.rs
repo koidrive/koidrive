@@ -1003,9 +1003,6 @@ fn with_four_uploads_at_once_a_file_that_changed_after_it_was_chunked_abandons_t
     assert_eq!(a.state(), FolderState::UpToDate);
 }
 
-/// The store keeps, for each file, the change time the observer last accepted, whatever it accepted it for: a read,
-/// Koidrive's own mark landing during a poll, a rename, a chmod, or a link added or removed. A restart then reads none
-/// of them again.
 #[test]
 fn a_restart_reads_nothing_after_any_change_the_observer_accepted() {
     use std::os::unix::fs::PermissionsExt;

@@ -55,6 +55,7 @@ fn a_rotation_seen_from_one_path_takes_at_most_three_scans() {
             &|_| found.set(found.get() + 1),
             Keep::Unplaced,
             &mut |cut| scans += u64::from(matches!(cut, Cut::RootOpened)),
+            &MarkLog::default(),
         )
         .unwrap();
     assert_eq!(
@@ -478,10 +479,20 @@ fn sibling_recreated_after_its_parent_was_listed_publishes_no_removal() {
                 root: root_id(&root),
                 rules: vec![],
                 read: vec![],
+                settled: vec![],
             },
             "{paths:?}"
         );
         assert_eq!(snapshot, Snapshot::scan(&root).unwrap(), "{paths:?}");
         fs::remove_dir_all(&root).unwrap();
     }
+}
+
+#[test]
+fn a_change_time_on_a_whole_second_or_on_another_volume_than_its_folder_waits_out_the_coarser_tick()
+{
+    assert_eq!(tick_of(1_500_000_001, Some(KERNEL_TICK)), KERNEL_TICK);
+    assert_eq!(tick_of(2_000_000_000, Some(KERNEL_TICK)), SECOND_TICK);
+    assert_eq!(tick_of(2_000_000_000, Some(COARSE_TICK)), COARSE_TICK);
+    assert_eq!(tick_of(1_500_000_001, None), COARSE_TICK);
 }

@@ -700,23 +700,11 @@ impl Engine {
         self.trees.rules_scanned();
     }
 
-    pub fn restamp(
-        &mut self,
-        tx: &Tx<'_>,
-        stamped: Vec<(NodeId, i128, i128)>,
-    ) -> Result<(), Error> {
-        for (id, before, after) in stamped {
-            if (self.stored_ctimes.get(&id)).is_some_and(|&at| i128::from(at) >= before) {
-                tx.set_local_ctime(&id, after as i64)?;
-                self.stored_ctimes.insert(id, after as i64);
-            }
-        }
-        Ok(())
-    }
-
     pub fn read_ctimes(&mut self, ctimes: BTreeMap<PathBuf, i64>) {
         for (path, ctime) in ctimes {
-            if let Some(id) = local_at(&self.trees, &path) {
+            if let Some(id) = local_at(&self.trees, &path)
+                && self.stored_ctimes.get(&id) != Some(&ctime)
+            {
                 self.unstored_ctimes.insert(id, ctime);
             }
         }

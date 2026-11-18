@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use rustix::fs::{Mode, OFlags, XattrFlags};
 use rustix::io::Errno;
 
 use crate::resolve::{Location, Space, Unresolved};
-use crate::{FileId, stat_fd};
+use crate::{Entry, FileId, stat_fd};
 
 #[cfg(target_vendor = "apple")]
 const NAME: &str = "com.koidrive.node";
@@ -20,17 +23,18 @@ impl Space {
     /// finds the node of an entry the store lost track of (design section 6.4). An entry on a volume
     /// that keeps extended attributes in companion files, or one whose attribute cannot be written,
     /// gets no mark.
-    ///
-    /// Returns the entry's change time before and after the mark, when it was written.
-    pub fn mark(
-        &self,
-        at: &Location,
-        expected: FileId,
-        node: &str,
-    ) -> io::Result<Option<(i128, i128)>> {
-        Ok(self
-            .open_entry(at, expected)?
-            .and_then(|entry| write(entry.as_fd(), node)))
+    pub fn mark(&self, at: &Location, expected: FileId, node: &str) -> io::Result<()> {
+        if let Some(entry) = self.open_entry(at, expected)?
+            && let Some((before, after)) = write(entry.as_fd(), node)
+        {
+            self.marks.record(expected, before, after);
+        }
+        Ok(())
+    }
+
+    /// The change times this space's marks moved, for the scans of its root.
+    pub fn marks(&self) -> MarkLog {
+        self.marks.clone()
     }
 
     /// The node the mark on the entry at `at` names, when the entry is still `expected` and the
@@ -56,6 +60,45 @@ impl Space {
             return Ok(None);
         };
         Ok((stat_fd(entry.as_fd())?.id == expected).then_some(entry))
+    }
+}
+
+/// The change times marks moved: for each marked entry, its change time before and after its latest mark.
+#[derive(Debug, Clone, Default)]
+pub struct MarkLog(Arc<Mutex<HashMap<FileId, (i128, i128)>>>);
+
+impl MarkLog {
+    fn record(&self, id: FileId, before: i128, after: i128) {
+        self.0.lock().unwrap().insert(id, (before, after));
+    }
+
+    pub(crate) fn carry(&self, old: &mut BTreeMap<PathBuf, Entry>, new: &BTreeMap<PathBuf, Entry>) {
+        let mut marks = self.0.lock().unwrap();
+        if marks.is_empty() {
+            return;
+        }
+        for (path, before) in old.iter_mut() {
+            if let Some(now) = new.get(path)
+                && now.id == before.id
+                && marks.get(&now.id) == Some(&(before.ctime.at(), now.ctime.at()))
+            {
+                before.ctime = now.ctime;
+            }
+        }
+        let seen: HashSet<FileId> = new.values().map(|now| now.id).collect();
+        let gone: HashSet<FileId> = (old.values())
+            .map(|before| before.id)
+            .filter(|id| !seen.contains(id))
+            .collect();
+        let raced: HashSet<FileId> = (new.values())
+            .filter(|now| {
+                marks
+                    .get(&now.id)
+                    .is_some_and(|&(was, _)| was == now.ctime.at())
+            })
+            .map(|now| now.id)
+            .collect();
+        marks.retain(|id, _| raced.contains(id) || !(seen.contains(id) || gone.contains(id)));
     }
 }
 
