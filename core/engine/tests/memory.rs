@@ -138,6 +138,7 @@ fn first_upload() -> (Trees, usize) {
             identity: FileIdentity {
                 ino: n as u128 + 1,
                 birth_ns: Some(1_794_268_740_000_000_000),
+                handle: None,
             },
             parked: false,
             left_out_when_placed: false,

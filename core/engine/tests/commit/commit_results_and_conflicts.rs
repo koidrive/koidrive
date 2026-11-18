@@ -295,6 +295,7 @@ fn a_file_create_whose_conflict_copy_was_downloaded_before_its_result_keeps_both
     let identity = |ino| FileIdentity {
         ino,
         birth_ns: Some(0),
+        handle: None,
     };
     let download = effects
         .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
@@ -445,6 +446,7 @@ fn a_conflict_copy_downloaded_before_its_result_is_kept_once() {
     let identity = |ino| FileIdentity {
         ino,
         birth_ns: Some(0),
+        handle: None,
     };
     let download = effects
         .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
@@ -515,6 +517,7 @@ fn a_conflict_copy_whose_result_arrives_during_its_download_keeps_the_local_file
     let identity = |ino| FileIdentity {
         ino,
         birth_ns: Some(0),
+        handle: None,
     };
     let download = effects
         .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
@@ -614,6 +617,7 @@ fn a_conflict_copy_whose_s_update_waits_behind_a_new_folder_is_moved_to_its_name
         let identity = FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         };
         effects
             .done(

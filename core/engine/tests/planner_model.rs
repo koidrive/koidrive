@@ -920,6 +920,7 @@ fn trees(world: &World, space: &SpaceDo) -> Trees {
             let identity = FileIdentity {
                 ino: i as u128 + 1,
                 birth_ns: Some(0),
+                handle: None,
             };
             let node = LocalNode {
                 shape,

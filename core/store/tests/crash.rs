@@ -102,10 +102,7 @@ fn write_input(tx: &Tx<'_>, seq: u64) -> Result<(), Error> {
             content_from_server: false,
             node_id: remote(n).node_id,
             shape: shape(n),
-            identity: FileId {
-                ino: n.into(),
-                birth_ns: None,
-            },
+            identity: FileId::stored(n.into(), None, None),
             parked: false,
         })?;
     }

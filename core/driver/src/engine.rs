@@ -1042,7 +1042,7 @@ impl Engine {
                         .or_else(|| {
                             (gone.get(path))
                                 .filter(|(node, held, held_kind)| {
-                                    *held == identity
+                                    held.same(&identity)
                                         && *held_kind == *kind
                                         && self.trees.local().get(node).is_none()
                                 })
@@ -1207,7 +1207,8 @@ impl Engine {
         let node = node
             .filter(|id| {
                 !(self.trees.recorded_local(id)
-                    && (self.trees.local().get(id)).is_some_and(|held| held.identity != identity))
+                    && (self.trees.local().get(id))
+                        .is_some_and(|held| !held.identity.same(&identity)))
             })
             .or_else(|| self.trees.vanished_at(&parent, name, kind).cloned());
         let existing = node.as_ref().and_then(|id| self.trees.local().get(id));
@@ -1404,7 +1405,7 @@ fn resolve(
 ) -> Option<NodeId> {
     let at = local_at(trees, path);
     at.clone()
-        .filter(|id| (trees.local().get(id)).is_some_and(|node| node.identity == *identity))
+        .filter(|id| (trees.local().get(id)).is_some_and(|node| node.identity.same(identity)))
         .or_else(|| {
             (trees.locals_with_identity(identity).rev())
                 .filter(|node| holds_kind(trees, node, kind))
@@ -1684,15 +1685,13 @@ pub(crate) fn file_identity(id: FileId) -> FileIdentity {
     FileIdentity {
         ino: id.ino,
         birth_ns: id.birth_ns,
+        handle: id.handle,
     }
 }
 
 /// The `core/fs` name for an engine identity.
 pub(crate) fn file_id(identity: FileIdentity) -> FileId {
-    FileId {
-        ino: identity.ino,
-        birth_ns: identity.birth_ns,
-    }
+    FileId::stored(identity.ino, identity.birth_ns, identity.handle)
 }
 
 /// Whether a question of kind `after` can take the place of one of kind `before`: the same kind, and for recovery the
@@ -2126,6 +2125,7 @@ mod tests {
             identity: FileIdentity {
                 ino,
                 birth_ns: Some(0),
+                handle: None,
             },
             parked: false,
         }
@@ -2688,10 +2688,7 @@ mod tests {
     }
 
     fn ino(ino: u64) -> FileId {
-        FileId {
-            ino: ino.into(),
-            birth_ns: None,
-        }
+        FileId::stored(ino.into(), None, None)
     }
 
     fn bytes(size: u64) -> Content {
@@ -3764,7 +3761,12 @@ mod tests {
 
     /// Makes `edit` on the disk under `root`. An edit the file system refuses, such as a move into the moved
     /// folder itself, changes nothing, as it would for a person.
-    fn make(root: &Path, edit: &Edit) {
+    fn make(
+        root: &Path,
+        edit: &Edit,
+        entry_numbers: &mut BTreeMap<PathBuf, usize>,
+        last_number: &mut usize,
+    ) {
         let mut entries = Vec::new();
         let mut folders = vec![root.to_owned()];
         let mut next = 0;
@@ -3778,20 +3780,59 @@ mod tests {
             next += 1;
         }
         let at = |folder: usize, name: usize| folders[folder % folders.len()].join(EDITED[name]);
+        let relative = |path: &Path| path.strip_prefix(root).unwrap().to_owned();
+        let mut number = || {
+            *last_number += 1;
+            *last_number
+        };
         match *edit {
-            Edit::File { folder, name } => fs::write(at(folder, name), EDITED[name]).ok(),
-            Edit::Folder { folder, name } => fs::create_dir(at(folder, name)).ok(),
-            Edit::Move { .. } | Edit::Remove { .. } if entries.is_empty() => None,
+            Edit::File { folder, name } => {
+                if fs::write(at(folder, name), EDITED[name]).is_ok() {
+                    entry_numbers
+                        .entry(relative(&at(folder, name)))
+                        .or_insert_with(number);
+                }
+            }
+            Edit::Folder { folder, name } => {
+                if fs::create_dir(at(folder, name)).is_ok() {
+                    entry_numbers.insert(relative(&at(folder, name)), number());
+                }
+            }
+            Edit::Move { .. } | Edit::Remove { .. } if entries.is_empty() => {}
             Edit::Move {
                 entry,
                 folder,
                 name,
-            } => fs::rename(&entries[entry % entries.len()], at(folder, name)).ok(),
-            Edit::Remove { entry } => match &entries[entry % entries.len()] {
-                path if path.is_dir() => fs::remove_dir_all(path).ok(),
-                path => fs::remove_file(path).ok(),
-            },
-        };
+            } => {
+                let (from, to) = (&entries[entry % entries.len()], at(folder, name));
+                if fs::rename(from, &to).is_ok() {
+                    let (from, to) = (relative(from), relative(&to));
+                    let moved: Vec<(PathBuf, usize)> = (entry_numbers.iter())
+                        .filter_map(|(path, number)| {
+                            let below = path.strip_prefix(&from).ok()?;
+                            let path = match below.as_os_str().is_empty() {
+                                true => to.clone(),
+                                false => to.join(below),
+                            };
+                            Some((path, *number))
+                        })
+                        .collect();
+                    entry_numbers
+                        .retain(|path, _| !path.starts_with(&from) && !path.starts_with(&to));
+                    entry_numbers.extend(moved);
+                }
+            }
+            Edit::Remove { entry } => {
+                let path = &entries[entry % entries.len()];
+                let removed = match path.is_dir() {
+                    true => fs::remove_dir_all(path),
+                    false => fs::remove_file(path),
+                };
+                if removed.is_ok() {
+                    entry_numbers.retain(|numbered, _| !numbered.starts_with(relative(path)));
+                }
+            }
+        }
     }
 
     /// The batch an observer reports for what changed under `root` since `snapshot`, with a file's size standing for
@@ -3848,9 +3889,11 @@ mod tests {
             let folder = tempfile::tempdir().unwrap();
             let mut snapshot = Snapshot::default();
             let mut kinds = BTreeMap::new();
+            let (mut entry_numbers, mut last_number) = (BTreeMap::new(), 0);
+            let mut placed: BTreeMap<NodeId, (PathBuf, usize)> = BTreeMap::new();
             for edits in rounds {
                 for edit in &edits {
-                    make(folder.path(), edit);
+                    make(folder.path(), edit, &mut entry_numbers, &mut last_number);
                 }
                 let batch = scan(&mut snapshot, folder.path());
                 engine.observe(&batch, 0);
@@ -3859,6 +3902,14 @@ mod tests {
                 for (id, node) in engine.trees.local().iter() {
                     let kind = *kinds.entry(id.clone()).or_insert(node.shape.kind);
                     prop_assert_eq!(kind, node.shape.kind, "{} after {:?}", id, batch);
+                    let Some(path) = engine.path_of(id) else { continue };
+                    let Some(&entry) = entry_numbers.get(&path) else { continue };
+                    if let Some((was, held)) = placed.insert(id.clone(), (path.clone(), entry)) {
+                        prop_assert!(
+                            was == path || held == entry,
+                            "{} went from {:?} to {:?}, another entry, after {:?}", id, was, path, batch
+                        );
+                    }
                 }
             }
         }
@@ -4174,6 +4225,7 @@ mod tests {
                 identity: FileIdentity {
                     ino: n as u128 + 1,
                     birth_ns: Some(1),
+                    handle: None,
                 },
                 parked: false,
                 left_out_when_placed: false,

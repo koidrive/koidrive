@@ -81,6 +81,7 @@ fn trees(nodes: &[Row]) -> Trees {
             let identity = FileIdentity {
                 ino: ino as u128 + 1,
                 birth_ns: Some(0),
+                handle: None,
             };
             let node = LocalNode {
                 left_out_when_placed: false,
@@ -497,6 +498,7 @@ fn a_restore_waits_while_s_lags_what_l_and_r_agree_on() {
         identity: FileIdentity {
             ino: 9,
             birth_ns: Some(0),
+            handle: None,
         },
         parked,
     };
@@ -1382,6 +1384,7 @@ fn a_restore_the_server_rejects_leaves_the_removal_a_later_move_out_of_the_trash
         identity: FileIdentity {
             ino: 1,
             birth_ns: Some(0),
+            handle: None,
         },
         parked: false,
     };

@@ -66,6 +66,7 @@ fn local(shape: Shape, ino: u128) -> LocalNode {
         identity: FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         },
         parked: false,
     }

@@ -93,6 +93,7 @@ pub fn identity(ino: u128) -> FileIdentity {
     FileIdentity {
         ino,
         birth_ns: Some(1_700_000_000_000_000_000),
+        handle: None,
     }
 }
 

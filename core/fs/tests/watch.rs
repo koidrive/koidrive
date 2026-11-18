@@ -343,6 +343,79 @@ fn replacing_a_file_reports_a_modification() {
 }
 
 #[test]
+fn an_entry_made_on_an_inode_another_entry_just_freed_is_not_its_move() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join("a")).unwrap();
+    fs::create_dir(root.join("b")).unwrap();
+    for round in 0..200 {
+        fs::write(root.join("a/old.txt"), "old").unwrap();
+        fs::create_dir(root.join("a/old")).unwrap();
+        let mut snapshot = Snapshot::scan(root).unwrap();
+        fs::remove_file(root.join("a/old.txt")).unwrap();
+        fs::write(root.join("b/new.txt"), "new").unwrap();
+        fs::remove_dir(root.join("a/old")).unwrap();
+        fs::create_dir(root.join("b/new")).unwrap();
+        let changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
+        assert_eq!(
+            changes,
+            [
+                removed("a/old", Dir),
+                removed("a/old.txt", File),
+                created("b/new", Dir),
+                created("b/new.txt", File),
+            ],
+            "round {round}"
+        );
+        fs::remove_file(root.join("b/new.txt")).unwrap();
+        fs::remove_dir(root.join("b/new")).unwrap();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_file_made_on_a_freed_inode_gets_another_handle() {
+    use std::os::fd::AsFd;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f.txt");
+    let id = || koidrive_fs::id_of(fs::File::open(&path).unwrap().as_fd()).unwrap();
+    let mut reused = 0;
+    for _ in 0..50 {
+        fs::write(&path, "old").unwrap();
+        let old = id();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, "new").unwrap();
+        let new = id();
+        fs::remove_file(&path).unwrap();
+        if new.ino == old.ino
+            && let Some(old_handle) = old.handle
+        {
+            reused += 1;
+            assert_ne!(new.handle.unwrap(), old_handle);
+        }
+    }
+    let ext4 = rustix::fs::statfs(dir.path()).unwrap().f_type == libc::EXT4_SUPER_MAGIC;
+    assert!(reused > 0 || !ext4, "ext4 never reused an inode");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_identity_holding_another_entrys_handle_makes_its_move_a_removal_and_a_creation() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(root.join("a.txt"), "a").unwrap();
+    fs::write(root.join("b.txt"), "b").unwrap();
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    let Some(other) = snapshot.entries[Path::new("b.txt")].id.handle else {
+        return;
+    };
+    (snapshot.entries.get_mut(Path::new("a.txt")).unwrap().id).handle = Some(other);
+    fs::rename(root.join("a.txt"), root.join("c.txt")).unwrap();
+    let changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
+    assert_eq!(changes, [removed("a.txt", File), created("c.txt", File)]);
+}
+
+#[test]
 fn rescan_refuses_a_missing_root() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("space");

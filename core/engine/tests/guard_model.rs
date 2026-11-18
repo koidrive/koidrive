@@ -729,6 +729,7 @@ fn identity(ino: u128) -> FileIdentity {
     FileIdentity {
         ino,
         birth_ns: Some(0),
+        handle: None,
     }
 }
 

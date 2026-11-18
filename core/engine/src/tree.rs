@@ -176,6 +176,18 @@ pub struct FileIdentity {
     pub ino: u128,
     /// `None` when the filesystem does not report a birth time, which never equals a known one.
     pub birth_ns: Option<i64>,
+    /// `None` when the filesystem gives no handle, which never equals a known one.
+    pub handle: Option<u64>,
+}
+
+impl FileIdentity {
+    /// Whether `self` and `other` can be one entry, as `core/fs`'s `FileId::same` tells: an identity without a
+    /// handle holds every entry with its inode and birth time.
+    pub fn same(&self, other: &FileIdentity) -> bool {
+        self.ino == other.ino
+            && self.birth_ns == other.birth_ns
+            && (self.handle.is_none() || other.handle.is_none() || self.handle == other.handle)
+    }
 }
 
 /// A node of L: the disk as last observed, under its exact on-disk name.

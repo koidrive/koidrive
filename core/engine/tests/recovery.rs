@@ -63,6 +63,7 @@ fn trees(local: &[(&str, Shape)], synced: &[(&str, Shape)], remote: &[Remote]) -
             identity: FileIdentity {
                 ino: ino as u128 + 1,
                 birth_ns: Some(0),
+                handle: None,
             },
             parked: false,
         };
@@ -158,6 +159,7 @@ fn effects(trees: &mut Trees, ids: &mut IdGen) -> Vec<(String, Effect)> {
         let identity = FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         };
         effects
             .done(trees, None, &record.effect_id, Some(identity))
@@ -2689,6 +2691,7 @@ fn a_download_planned_after_a_rewind_is_still_taken_after_a_reload() {
     let identity = FileIdentity {
         ino: 9,
         birth_ns: Some(0),
+        handle: None,
     };
     effects
         .done(&mut reloaded, None, &record.effect_id, Some(identity))
@@ -4768,6 +4771,7 @@ fn a_given_up_folder_this_device_writes_a_file_in_stays_and_its_other_given_up_n
         identity: FileIdentity {
             ino: 99,
             birth_ns: Some(0),
+            handle: None,
         },
         parked: false,
     };
@@ -4793,6 +4797,7 @@ fn a_given_up_folder_this_device_puts_back_before_its_trash_again_is_kept() {
             identity: FileIdentity {
                 ino: 50 + ino as u128,
                 birth_ns: Some(0),
+                handle: None,
             },
             parked: false,
         };

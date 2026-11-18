@@ -99,6 +99,7 @@ fn local(shape: Shape, ino: u128) -> LocalNode {
         identity: FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         },
         parked: false,
     }
@@ -734,6 +735,7 @@ fn effects_for(trees: &mut Trees, ids: &mut IdGen, node: &str) -> Vec<Effect> {
         let identity = written.then_some(FileIdentity {
             ino: 100,
             birth_ns: Some(0),
+            handle: None,
         });
         effects
             .done(trees, None, &record.effect_id, identity)

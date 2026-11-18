@@ -65,6 +65,7 @@ fn put_back(trees: &mut Trees, id: &str, shape: Shape, ino: u128) {
     let identity = FileIdentity {
         ino,
         birth_ns: Some(0),
+        handle: None,
     };
     trees.set_local(
         id.into(),
@@ -1212,6 +1213,7 @@ fn a_folder_restored_after_its_notice_was_dismissed_is_noticed_when_deleted_agai
         let identity = FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         };
         if let Some(removal) = (effects.done(
             &mut trees,
@@ -1439,6 +1441,7 @@ fn a_folder_restored_after_a_dismissal_without_its_record_is_noticed_when_delete
         let identity = FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         };
         if let Some(removal) = (effects.done(
             &mut trees,

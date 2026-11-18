@@ -88,6 +88,7 @@ fn first_sync(files: usize, per_dir: usize, size: u64, limit: BatchLimit) -> u64
                     let identity = FileIdentity {
                         ino: planned as u128,
                         birth_ns: Some(0),
+                        handle: None,
                     };
                     (engine.effects.done(
                         &mut engine.trees,

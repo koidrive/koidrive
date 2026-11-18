@@ -653,6 +653,7 @@ fn other(parent: &str, name: &str, kind: Kind) -> LocalNode {
         identity: FileIdentity {
             ino: 1,
             birth_ns: None,
+            handle: None,
         },
         parked: false,
     }
@@ -1999,6 +2000,7 @@ fn translation_copies_names_and_identities_and_refuses_what_is_not_a_name() {
     let no_birth = FileIdentity {
         ino: 8,
         birth_ns: None,
+        handle: None,
     };
     let born = FileIdentity {
         birth_ns: Some(-5),
@@ -2037,17 +2039,11 @@ fn translation_copies_names_and_identities_and_refuses_what_is_not_a_name() {
         Location::At {
             base: Base::Parked {
                 name: "parked-node".into(),
-                id: FileId {
-                    ino: 8,
-                    birth_ns: Some(-5)
-                },
+                id: FileId::stored(8, Some(-5), None),
             },
             dirs: vec![Dir {
                 name: "dossier".into(),
-                id: FileId {
-                    ino: 8,
-                    birth_ns: None
-                },
+                id: FileId::stored(8, None, None),
             }],
             name: OsString::from("e\u{301}t\u{e9}.txt"),
         }
@@ -2110,6 +2106,7 @@ fn kinds_map_one_to_one() {
     let identity = FileIdentity {
         ino: 2,
         birth_ns: Some(3),
+        handle: None,
     };
     let here = EngineLocation::At {
         base: EngineBase::Root,
@@ -2177,6 +2174,7 @@ fn a_folder_removal_expects_each_file_it_takes_along_at_its_own_place() {
     let identity = FileIdentity {
         ino: 2,
         birth_ns: Some(3),
+        handle: None,
     };
     let at = |name: &str| EngineLocation::At {
         base: EngineBase::Root,
@@ -2232,10 +2230,7 @@ fn a_parked_folder_removal_that_an_entry_left_first_stays_stuck_without_holding_
                     },
                     identity: match node == NODE {
                         true => id,
-                        false => FileId {
-                            ino: 9,
-                            birth_ns: None,
-                        },
+                        false => FileId::stored(9, None, None),
                     },
                     parked: node == NODE,
                     left_out_when_placed: false,

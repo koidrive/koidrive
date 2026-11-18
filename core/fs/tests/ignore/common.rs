@@ -6,7 +6,8 @@ use std::ffi::{OsStr, OsString};
 
 use std::fs;
 
-use std::os::unix::fs::MetadataExt;
+use std::os::fd::AsFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
 use std::path::{Path, PathBuf};
 
@@ -185,15 +186,12 @@ fn on_disk(root: &Path) -> Vec<FileId> {
     listed(root, Path::new(""), &mut all);
     (all.iter())
         .map(|(path, _)| {
-            let meta = fs::symlink_metadata(root.join(path)).unwrap();
-            let born = meta.created().ok().map(|time| {
-                let since = time.duration_since(std::time::UNIX_EPOCH).unwrap();
-                i64::try_from(since.as_nanos()).unwrap()
-            });
-            FileId {
-                ino: u128::from(meta.ino()),
-                birth_ns: born,
-            }
+            let opened = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(root.join(path))
+                .unwrap();
+            koidrive_fs::id_of(opened.as_fd()).unwrap()
         })
         .collect()
 }

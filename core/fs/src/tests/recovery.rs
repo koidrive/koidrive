@@ -228,11 +228,13 @@ fn a_record_of_brought_back_entries_written_with_device_numbers_is_read() {
         HashSet::from([
             FileId {
                 ino: 9,
-                birth_ns: None
+                birth_ns: None,
+                handle: None,
             },
             FileId {
                 ino: 12,
-                birth_ns: Some(1_700_000_000_000_000_000)
+                birth_ns: Some(1_700_000_000_000_000_000),
+                handle: None,
             },
         ])
     );
@@ -260,7 +262,8 @@ fn a_partial_record_of_brought_back_entries_is_repaired_to_every_root_entry() {
     assert_eq!(space.brought_back().unwrap(), BroughtBack::Unreadable);
     assert!(BroughtBack::Unreadable.holds(FileId {
         ino: 2,
-        birth_ns: None
+        birth_ns: None,
+        handle: None,
     }));
 
     space.repair_brought_back().unwrap();

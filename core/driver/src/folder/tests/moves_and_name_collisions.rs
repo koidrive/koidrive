@@ -749,3 +749,66 @@ fn a_pending_name_finished_on_a_server_restored_to_before_the_rename_is_finished
         ]
     );
 }
+
+#[test]
+fn entries_moved_while_stopped_before_their_handles_were_stored_keep_their_nodes() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site.root.join("docs")).unwrap();
+    a.create(&mut remote, &site.root.join("top.txt"), b"top");
+    a.create(&mut remote, &site.root.join("docs/plan.txt"), b"plan");
+    a.rest(&mut remote);
+    let before = server_nodes(&remote);
+    drop(a);
+    stored_before_handles(&site);
+    fs::rename(site.root.join("top.txt"), site.root.join("docs/moved.txt")).unwrap();
+    fs::rename(site.root.join("docs"), site.root.join("papers")).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    let after = server_nodes(&remote);
+    for (was, now) in [
+        ("docs", "papers"),
+        ("top.txt", "moved.txt"),
+        ("plan.txt", "plan.txt"),
+    ] {
+        assert_eq!(live_id(&after, now), live_id(&before, was), "{after:?}");
+    }
+    assert!(after.iter().all(|(_, _, live)| *live), "{after:?}");
+}
+
+#[test]
+fn a_file_the_first_start_after_the_upgrade_cannot_read_keeps_its_node_when_moved_later() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site.root.join("docs")).unwrap();
+    a.create(&mut remote, &site.root.join("docs/plan.txt"), b"plan");
+    a.rest(&mut remote);
+    let before = server_nodes(&remote);
+    drop(a);
+    stored_before_handles(&site);
+    let docs = site.root.join("docs");
+    fs::set_permissions(&docs, fs::Permissions::from_mode(0o000)).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    drop(a);
+    fs::set_permissions(&docs, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::rename(docs.join("plan.txt"), site.root.join("plan2.txt")).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    let after = server_nodes(&remote);
+    assert_eq!(
+        live_id(&after, "plan2.txt"),
+        live_id(&before, "plan.txt"),
+        "{after:?}"
+    );
+    assert!(after.iter().all(|(_, _, live)| *live), "{after:?}");
+}
+
+fn stored_before_handles(site: &Site) {
+    (rusqlite::Connection::open(&site.db).unwrap())
+        .execute_batch(
+            "UPDATE local_nodes SET handle = NULL; UPDATE recorded_nodes SET handle = NULL;",
+        )
+        .unwrap();
+}

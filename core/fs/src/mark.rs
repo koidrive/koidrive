@@ -59,7 +59,7 @@ impl Space {
         let Some(entry) = open(parent.fd(), name)? else {
             return Ok(None);
         };
-        Ok((stat_fd(entry.as_fd())?.id == expected).then_some(entry))
+        Ok((stat_fd(entry.as_fd())?.id.same(&expected)).then_some(entry))
     }
 }
 
@@ -139,7 +139,7 @@ pub fn node_mark(entry: BorrowedFd<'_>) -> io::Result<Option<String>> {
     };
     let id = stat_fd(entry)?.id;
     Ok(decode(&value[..len])
-        .filter(|(_, marked)| *marked == id)
+        .filter(|(_, marked)| *marked == id.without_handle())
         .map(|(node, _)| node))
 }
 
@@ -167,6 +167,7 @@ fn decode(value: &[u8]) -> Option<(String, FileId)> {
     let id = FileId {
         ino: ino.parse().ok()?,
         birth_ns,
+        handle: None,
     };
     Some((node.to_owned(), id))
 }

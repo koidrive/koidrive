@@ -604,7 +604,11 @@ fn a_volume_root_born_on_one_side_only_comes_back_only_as_a_fat_or_exfat_volume(
     let (disk, stick) = (VolumeId::Uuid([7; 16]), VolumeId::Uuid([9; 16]));
     let root = |birth_ns, volume| Entry {
         kind: EntryKind::Dir,
-        id: FileId { ino: 2, birth_ns },
+        id: FileId {
+            ino: 2,
+            birth_ns,
+            handle: None,
+        },
         size: 0,
         mtime_ns: 0,
         ctime: Ctime::Settled { at: 0, mode: 0 },

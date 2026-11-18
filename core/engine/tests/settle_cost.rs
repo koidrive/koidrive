@@ -50,6 +50,7 @@ fn add(trees: &mut Trees, id: String, shape: Shape) {
             identity: FileIdentity {
                 ino,
                 birth_ns: Some(0),
+                handle: None,
             },
             parked: false,
         },

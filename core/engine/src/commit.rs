@@ -5758,6 +5758,7 @@ mod ancestry_size_tests {
                 identity: FileIdentity {
                     ino: n as u128 + 1,
                     birth_ns: Some(0),
+                    handle: None,
                 },
                 parked: false,
                 left_out_when_placed: false,
