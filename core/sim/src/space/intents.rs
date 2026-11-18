@@ -38,11 +38,11 @@ pub(crate) enum Field {
 pub(crate) const FIELDS: [Field; 3] = [Field::Place, Field::Content, Field::Status];
 
 impl Field {
-    fn name(self) -> &'static str {
+    fn journal(self) -> journal::Field {
         match self {
-            Field::Place => "place",
-            Field::Content => "content",
-            Field::Status => "status",
+            Field::Place => journal::Field::Place,
+            Field::Content => journal::Field::Content,
+            Field::Status => journal::Field::Status,
         }
     }
 }
@@ -238,13 +238,6 @@ pub(crate) fn intents_valid(op: &Op) -> bool {
     }
 }
 
-/// The legacy intent id of RFC 0029 section 7.2, as the engine computes it. `field` is `place`,
-/// `content` or `status`.
-pub fn legacy_intent_id(node_id: &str, field: &str, key: &str) -> [u8; 16] {
-    let field = journal::Field::parse(field).expect("a field of RFC 0029");
-    *journal::IntentId::legacy(node_id, field, &[key]).as_bytes()
-}
-
 pub(crate) fn legacy_intents(
     node_id: &str,
     meta_rev: u64,
@@ -253,7 +246,7 @@ pub(crate) fn legacy_intents(
     live_since: u64,
 ) -> NodeIntents {
     let legacy = |field: Field, key: String, seq: u64| FieldIntent {
-        id: IntentId(legacy_intent_id(node_id, field.name(), &key)),
+        id: IntentId(*journal::IntentId::legacy(node_id, field.journal(), &[&key]).as_bytes()),
         author: String::new(),
         carried: false,
         applied_at_ms: 0,
