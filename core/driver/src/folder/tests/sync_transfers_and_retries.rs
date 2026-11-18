@@ -940,3 +940,196 @@ fn an_upload_keeps_moving_while_the_folder_computes_for_longer_than_a_transfer_m
     assert!(receipts.is_ok(), "{receipts:?}");
     assert_eq!(stored_while_busy, hashes);
 }
+
+fn a_folder_of_more_than_one_commit() -> (Remote, Site, Device) {
+    let remote = Remote::new();
+    let site = Site::new(&remote, "a");
+    for n in 0..1300 {
+        fs::write(site.root.join(format!("file {n:04}")), format!("bytes of file {n}")).unwrap();
+    }
+    let mut a = site.start();
+    a.connect(&remote);
+    a.scan_until(|a| a.folder.scanned);
+    a.settle();
+    (remote, site, a)
+}
+
+fn run_holding(a: &mut Device, remote: &mut Remote, hold: fn(&Work) -> bool) -> Vec<Work> {
+    let mut held = Vec::new();
+    while let Some(work) = a.work.pop_front() {
+        match hold(&work) {
+            true => held.push(work),
+            false => a.perform(work, remote).unwrap(),
+        }
+    }
+    held
+}
+
+fn created_names(commit: &Commit) -> Vec<&str> {
+    (commit.ops.iter())
+        .filter_map(|op| match &op.op {
+            Some(op::Op::CreateFile(create)) => Some(create.name.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn own_chunks(commit: &Commit) -> std::collections::BTreeSet<&[u8]> {
+    (commit.ops.iter())
+        .filter_map(|op| match &op.op {
+            Some(op::Op::CreateFile(create)) => create.content.as_ref(),
+            _ => None,
+        })
+        .flat_map(|content| content.chunks.iter().map(|chunk| chunk.hash.as_slice()))
+        .collect()
+}
+
+#[test]
+fn the_next_commits_chunks_are_on_the_server_before_the_result_of_a_slow_commit_arrives() {
+    let (mut remote, _site, mut a) = a_folder_of_more_than_one_commit();
+    let held = run_holding(&mut a, &mut remote, |work| matches!(work, Work::Send(_)));
+    let [Work::Send(first)] = held.as_slice() else {
+        panic!("one commit out, not {}", held.len());
+    };
+    assert_eq!(first.ops.len(), koidrive_engine::commit::MAX_OPS);
+    let in_first = created_names(first);
+    let stored: Vec<&[u8]> = remote.chunks.chunks.values().map(Vec::as_slice).collect();
+    let missing: Vec<String> = (0..1300)
+        .filter(|n| !in_first.contains(&format!("file {n:04}").as_str()))
+        .map(|n| format!("bytes of file {n}"))
+        .filter(|bytes| !stored.contains(&bytes.as_bytes()))
+        .collect();
+    assert_eq!(missing, Vec::<String>::new(), "not uploaded while the first commit is out");
+
+    a.work.extend(held);
+    assert_eq!(a.run(&mut remote), ["send", "send"]);
+    a.rest(&mut remote);
+    let second = &a.sent[1];
+    assert_eq!(second.receipts.len(), 300);
+    assert!((second.receipts.iter()).all(|receipt| own_chunks(second).contains(receipt.hash.as_slice())));
+    assert_eq!(remote.names().len(), 1300);
+    assert_eq!(a.state(), FolderState::UpToDate);
+}
+
+#[test]
+fn a_commit_waits_for_the_uploads_ahead_that_hold_its_files_and_uploads_those_of_a_failed_one() {
+    let (mut remote, _site, mut a) = a_folder_of_more_than_one_commit();
+    let held = run_holding(&mut a, &mut remote, |work| matches!(work, Work::UploadAhead(..)));
+    let [Work::UploadAhead(id, failed), still_out] = <[Work; 2]>::try_from(held).ok().unwrap() else {
+        panic!("two uploads ahead");
+    };
+    assert_eq!(a.sent.len(), 1);
+    assert!(a.folder.engine.commits.in_flight().is_some_and(|flight| flight.commit.device_seq == 2));
+
+    let error = ChunkError::Unavailable {
+        hash: failed.chunks[0].hash.clone(),
+        message: "a test failure".into(),
+        cause: None,
+    };
+    let step = a.folder.uploaded_ahead(id, Err(error));
+    a.take(step).unwrap();
+    assert!(a.work.is_empty(), "the other upload ahead holds files of the commit");
+    a.perform(still_out, &mut remote).unwrap();
+    assert_eq!(a.run(&mut remote), ["upload", "send"]);
+    a.rest(&mut remote);
+    assert_eq!(a.sent[1].receipts.len(), 300);
+    assert_eq!(remote.names().len(), 1300);
+    assert_eq!(a.state(), FolderState::UpToDate);
+}
+
+#[test]
+fn a_file_that_changes_after_its_upload_ahead_is_committed_with_its_new_bytes() {
+    let (mut remote, site, mut a) = a_folder_of_more_than_one_commit();
+    let held = run_holding(&mut a, &mut remote, |work| matches!(work, Work::Send(_)));
+    let [Work::Send(first)] = held.as_slice() else {
+        panic!("one commit out");
+    };
+    let in_first = created_names(first);
+    let name = (0..1300)
+        .map(|n| format!("file {n:04}"))
+        .find(|name| !in_first.contains(&name.as_str()))
+        .unwrap();
+    fs::write(site.root.join(&name), b"written after its upload ahead").unwrap();
+    a.rescan();
+    a.settle();
+    a.work.extend(held);
+    assert_eq!(a.run(&mut remote), ["send", "upload", "send"]);
+    a.rest(&mut remote);
+
+    let content = (a.sent[1].ops.iter())
+        .find_map(|op| match &op.op {
+            Some(op::Op::CreateFile(create)) if create.name == name => create.content.as_ref(),
+            _ => None,
+        })
+        .expect("the second commit creates the file");
+    assert_eq!(remote.chunks.chunks[&content.chunks[0].hash], b"written after its upload ahead");
+    assert_eq!(a.sent[1].receipts.len(), 300);
+    assert_eq!(remote.names().len(), 1300);
+}
+
+#[test]
+fn a_commit_whose_reused_receipts_the_server_refuses_uploads_its_files_again() {
+    let (mut remote, _site, mut a) = a_folder_of_more_than_one_commit();
+    let held = run_holding(&mut a, &mut remote, |work| matches!(work, Work::Send(_)));
+    let [first] = <[Work; 1]>::try_from(held).ok().unwrap();
+    a.perform(first, &mut remote).unwrap();
+    let Some(Work::Send(second)) = a.work.pop_front() else {
+        panic!("the second commit is sent with the receipts of its uploads ahead");
+    };
+    assert_eq!(second.receipts.len(), 300);
+    let missing = ProtoError {
+        code: Code::MissingChunks as i32,
+        missing_chunks: second.receipts.iter().map(|receipt| receipt.hash.clone()).collect(),
+        ..Default::default()
+    };
+    let step = a.folder.sent(Err(CallError::Server(ServerError(missing))));
+    a.take(step).unwrap();
+    let Some(Work::Upload(upload)) = a.work.front() else {
+        panic!("the refused content is uploaded again");
+    };
+    assert_eq!(upload.chunks.len(), 300);
+    assert_eq!(a.run(&mut remote), ["upload", "send"]);
+    a.rest(&mut remote);
+    assert!(a.sent.iter().all(|commit| remote.results.contains_key(&commit.commit_id)));
+    assert_eq!(remote.names().len(), 1300);
+}
+
+#[test]
+fn a_crash_with_a_commit_and_an_upload_ahead_out_keeps_the_stored_commit_and_uploads_the_next_one_again() {
+    let (mut remote, site, mut a) = a_folder_of_more_than_one_commit();
+    let held = run_holding(&mut a, &mut remote, |work| {
+        matches!(work, Work::Upload(_) | Work::UploadAhead(..))
+    });
+    let [own, through, out] = <[Work; 3]>::try_from(held).ok().unwrap();
+    a.perform(through, &mut remote).unwrap();
+    a.perform(own, &mut remote).unwrap();
+    let Some(Work::Send(sent)) = a.work.pop_front() else {
+        panic!("the first commit is sent");
+    };
+    let Work::UploadAhead(_, out) = out else {
+        panic!("an upload ahead is out");
+    };
+    remote.commit(&a.caller, &sent).unwrap();
+    remote.store(&a.caller, &out).unwrap();
+    assert!(sent.receipts.iter().all(|receipt| own_chunks(&sent).contains(receipt.hash.as_slice())));
+    drop(a);
+
+    let stored = site.stored().commits.in_flight().cloned().expect("a commit in flight");
+    assert_eq!((&stored.commit.commit_id, &stored.commit.ops), (&sent.commit_id, &sent.ops));
+    assert!((stored.commit.receipts.iter()).all(|receipt| own_chunks(&sent).contains(receipt.hash.as_slice())));
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    let mut uploaded = 0;
+    while let Some(work) = b.work.pop_front() {
+        if let Work::Upload(upload) = &work {
+            uploaded += upload.chunks.len();
+        }
+        b.perform(work, &mut remote).unwrap();
+    }
+    b.rest(&mut remote);
+    assert_eq!(uploaded, 300, "the next commit uploads all it adds");
+    assert!(b.sent.iter().all(|commit| remote.results.contains_key(&commit.commit_id)));
+    assert_eq!(remote.names().len(), 1300);
+    assert_eq!(b.state(), FolderState::UpToDate);
+}

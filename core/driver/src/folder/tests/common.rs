@@ -480,6 +480,10 @@ impl Device {
                 let receipts = remote.store(&self.caller, &upload);
                 self.folder.uploaded(receipts)
             }
+            Work::UploadAhead(id, upload) => {
+                let receipts = remote.store(&self.caller, &upload);
+                self.folder.uploaded_ahead(id, receipts)
+            }
             Work::Send(commit) => {
                 self.sent.push(commit.clone());
                 let result = remote.commit(&self.caller, &commit);
@@ -516,6 +520,7 @@ impl Device {
                 Work::Stage(_) => "stage",
                 Work::StageAfter(..) => "stage again",
                 Work::Upload(_) => "upload",
+                Work::UploadAhead(..) => "upload ahead",
                 Work::Send(_) => "send",
                 Work::ResendAfter(_) => "wait",
                 Work::RetryAfter(_) => "retry",

@@ -27,7 +27,9 @@ use koidrive_engine::tree::{FileIdentity, LocalNode, NodeId};
 use koidrive_fs::{Detached, Refusal, Snapshot};
 use koidrive_net::{Backoff, Cause, DisconnectReason, Event, ServerError};
 use koidrive_proto::v1::resync_required::Reason;
-use koidrive_proto::v1::{Commit, CommitRecord, Resume, TrashPage, TreePage, Welcome};
+use koidrive_proto::v1::{
+    Commit, CommitRecord, Resume, TrashPage, TreePage, UploadReceipt, Welcome,
+};
 use koidrive_store::{Cursor, Link, Store, Tx};
 
 use crate::clock;
@@ -38,6 +40,7 @@ use crate::status::{FolderState, HeldDisk, Wait, WaitKind, describe};
 use crate::timing::{Time, Timing};
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 
+mod ahead;
 mod commit;
 mod effect;
 mod outstanding;
@@ -62,7 +65,7 @@ use koidrive_net::{CallError, ChunkError, NotResent, StopReason, Transfer, Uploa
 #[cfg(test)]
 use koidrive_proto::v1::error::Code;
 #[cfg(test)]
-use koidrive_proto::v1::{ChunkRef, CommitResult, Error as ProtoError, UploadReceipt, op_result};
+use koidrive_proto::v1::{ChunkRef, CommitResult, Error as ProtoError, op_result};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 pub(crate) use task::FolderTask;
@@ -130,6 +133,7 @@ pub(crate) struct Folder {
     disk: Disk,
     stream: Stream,
     flight: Flight,
+    ahead: ahead::Ahead,
     sent_commit: Option<String>,
     /// The observer has scanned the folder once. Nothing is planned before, because L does not describe the disk
     /// until then.
@@ -194,7 +198,8 @@ enum Flight {
     /// again unchanged, once a `Welcome` allows that (design §2.8).
     Unknown,
     /// The content the commit adds is being uploaded from these files. The server holds nothing of the commit.
-    Uploading(Sources),
+    Uploading(Sources, Vec<UploadReceipt>),
+    AwaitingAhead,
     /// `Session::commit` is out with this copy of the commit, which carries the upload's receipts. The session
     /// resends it after a reconnect, so the folder starts no second call.
     Sending(Commit),
@@ -227,6 +232,7 @@ pub(crate) enum Work {
     StageAfter(Duration, Pending),
     /// `Transfer::upload` of the chunks a commit adds. Answered with [`Folder::uploaded`].
     Upload(Upload),
+    UploadAhead(u64, Upload),
     /// `Session::commit`. Answered with [`Folder::sent`].
     Send(Commit),
     /// Answered with [`Folder::resend`] after the wait.
@@ -368,6 +374,7 @@ impl Folder {
             disk,
             stream: Stream::Connecting,
             flight,
+            ahead: ahead::Ahead::default(),
             sent_commit,
             scanned: false,
             disconnected: None,
@@ -1049,6 +1056,7 @@ impl Folder {
     /// and S stay.
     fn list_again(&mut self, work: &mut Vec<Work>) {
         self.timing.clear_origins();
+        self.ahead.clear();
         if let Stream::Listing { superseded } = &mut self.stream {
             *superseded = true;
             return;

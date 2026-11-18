@@ -119,15 +119,16 @@ impl Folder {
         receipts: Result<Vec<UploadReceipt>, ChunkError>,
     ) -> Result<Vec<Work>, Stop> {
         let mut work = Vec::new();
-        let sources = match std::mem::replace(&mut self.flight, Flight::Idle) {
-            Flight::Uploading(sources) => sources,
+        let (sources, reused) = match std::mem::replace(&mut self.flight, Flight::Idle) {
+            Flight::Uploading(sources, reused) => (sources, reused),
             other => {
                 self.flight = other;
                 return Ok(work);
             }
         };
         let error = match receipts {
-            Ok(receipts) => {
+            Ok(mut receipts) => {
+                receipts.extend(reused);
                 self.failures = 0;
                 self.retrying.remove(&Call::Upload);
                 for (node, _) in sources.values() {
@@ -141,6 +142,7 @@ impl Folder {
                     self.sent_commit = Some(commit.commit_id.clone());
                     self.flight = Flight::Sending(commit.clone());
                     work.push(Work::Send(commit));
+                    self.upload_ahead(&mut work);
                 }
                 return Ok(work);
             }
@@ -154,7 +156,7 @@ impl Folder {
                 return Ok(work);
             }
             ChunkError::Call(CallError::Stopped(_)) => {
-                self.flight = Flight::Uploading(sources);
+                self.flight = Flight::Uploading(sources, reused);
                 return Ok(work);
             }
             ChunkError::Call(call) => policy::after_call_error(call),

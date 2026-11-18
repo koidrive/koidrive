@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use koidrive_engine::commit::{Base, Failure, Halt as CommitHalt};
-use koidrive_net::{CallError, Cause, Event, NotResent, ServerError};
+use koidrive_net::{CallError, Cause, ChunkError, Event, NotResent, ServerError};
 use koidrive_proto::v1::error::Code;
-use koidrive_proto::v1::{Commit, CommitResult, Error as ProtoError, op, op_result};
+use koidrive_proto::v1::{Commit, CommitResult, Error as ProtoError, UploadReceipt, op, op_result};
 
 use crate::clock;
-use crate::disk::Stop;
+use crate::disk::{self, Stop};
 use crate::engine::Engine;
 use crate::failures;
 use crate::policy;
@@ -17,7 +18,7 @@ use crate::status::{WaitKind, describe};
 use crate::timing::Time;
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 
-use super::{Call, Flight, Folder, Next, NotTaken, Retrying, Stream, Work};
+use super::{Call, Flight, Folder, Next, NotTaken, Retrying, Stream, Work, ahead};
 
 impl Folder {
     /// `Session::commit` returned. A result is acknowledged once R has reached it. A refusal goes to the engine,
@@ -256,6 +257,7 @@ impl Folder {
         }
         match failure {
             Failure::Resend if refusal.code() == Code::MissingChunks => {
+                self.ahead.clear();
                 if let Some(commit) = self.in_flight() {
                     self.start(commit, work);
                 }
@@ -302,21 +304,101 @@ impl Folder {
         Ok(())
     }
 
-    /// Starts the upload of what `commit` adds, or its send when it adds no content.
+    /// Starts the upload of what `commit` adds that was not uploaded ahead of it, or its send when nothing is left.
+    /// While an upload ahead of it holds some of its chunks, it waits for that upload instead.
     pub(super) fn start(&mut self, commit: Commit, work: &mut Vec<Work>) {
-        let mut upload = self.disk.upload(&commit, &self.engine);
-        upload.credit = Credit::upload(&self.progress, &commit, |node| self.engine.path_of(node));
+        let mut upload = self.disk.upload(disk::added(&commit), &self.engine);
+        if self.ahead.awaits(&upload.chunks) {
+            self.flight = Flight::AwaitingAhead;
+            return;
+        }
+        let path_of = |node: &str| self.engine.path_of(node);
+        upload.credit = Credit::upload(&self.progress, disk::added(&commit), path_of);
         if self.timing.is_on() {
             upload.timing_bytes = self.timing.uploading(&commit, Time::now());
         }
+        let reused = self.ahead.take(&mut upload.chunks);
+        for receipt in &reused {
+            upload.credit.chunk(&receipt.hash);
+        }
         if upload.chunks.is_empty() {
+            let commit = Commit {
+                receipts: reused,
+                ..commit
+            };
             self.sent_commit = Some(commit.commit_id.clone());
             self.flight = Flight::Sending(commit.clone());
             work.push(Work::Send(commit));
         } else {
-            self.flight = Flight::Uploading(upload.sources());
+            self.flight = Flight::Uploading(upload.sources(), reused);
             work.push(Work::Upload(upload));
         }
+        self.upload_ahead(work);
+    }
+
+    pub(super) fn upload_ahead(&mut self, work: &mut Vec<Work>) {
+        let own: HashSet<&[u8]> = match &self.flight {
+            Flight::Uploading(sources, _) => sources.keys().map(Vec::as_slice).collect(),
+            Flight::Sending(_) => HashSet::new(),
+            _ => return,
+        };
+        let upcoming = (self.engine.commits).upcoming(&self.engine.trees, ahead::FILES);
+        let mut files = upcoming.iter();
+        while self.ahead.running() < ahead::BATCHES {
+            let ahead = &self.ahead;
+            let new = |hash: &[u8]| !ahead.knows(hash) && !own.contains(hash);
+            let mut batch = Vec::new();
+            let mut batched = HashSet::new();
+            for (node, content) in files.by_ref() {
+                let hashes = content.chunks.iter().map(|chunk| chunk.hash.as_slice());
+                if !hashes
+                    .clone()
+                    .any(|hash| new(hash) && !batched.contains(hash))
+                {
+                    continue;
+                }
+                batched.extend(hashes);
+                batch.push((node, content));
+                if batch.len() == ahead::BATCH_FILES {
+                    break;
+                }
+            }
+            if batch.is_empty() {
+                return;
+            }
+            let mut upload = self.disk.upload(batch.iter().copied(), &self.engine);
+            upload.chunks.retain(|chunk| new(&chunk.hash));
+            let path_of = |node: &str| self.engine.path_of(node);
+            upload.credit = Credit::upload(&self.progress, batch.iter().copied(), path_of);
+            let id = self.ahead.start(&upload.chunks);
+            work.push(Work::UploadAhead(id, upload));
+        }
+    }
+
+    /// An upload ahead of its commit ended. A commit that waited for it starts, and another upload ahead starts after
+    /// one that went through.
+    pub fn uploaded_ahead(
+        &mut self,
+        id: u64,
+        receipts: Result<Vec<UploadReceipt>, ChunkError>,
+    ) -> Result<Vec<Work>, Stop> {
+        let mut work = Vec::new();
+        if let Err(error) = &receipts {
+            tracing::info!(space_id = self.link.space_id, %error, "an upload ahead of its commit failed");
+        }
+        let through = receipts.is_ok();
+        if !self.ahead.ended(id, receipts.ok()) {
+            return Ok(work);
+        }
+        if matches!(self.flight, Flight::AwaitingAhead) {
+            self.flight = Flight::Idle;
+            if let Some(commit) = self.in_flight() {
+                self.start(commit, &mut work);
+            }
+        } else if through {
+            self.upload_ahead(&mut work);
+        }
+        Ok(work)
     }
 }
 

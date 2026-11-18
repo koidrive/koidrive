@@ -4,12 +4,12 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use koidrive_engine::classify::Trees;
-use koidrive_engine::commit::Commits;
+use koidrive_engine::commit::{Commits, MAX_OPS};
 use koidrive_engine::effects::{BatchLimit, Effects};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::state::CommitsState;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
-use koidrive_proto::v1::{CommitResult, OpResult, op, op_result};
+use koidrive_proto::v1::{Commit, CommitResult, OpResult, op, op_result};
 
 const ROOT: &str = "root";
 const NOW: u64 = 1_794_268_740_000;
@@ -133,14 +133,14 @@ struct Upload {
     cap: Option<usize>,
 }
 
-fn first_upload(upload: Upload) -> u64 {
+fn local_trees(upload: Upload) -> Trees {
     let Upload {
         files,
         per_dir,
         ids: order,
         nested,
         ignored,
-        cap,
+        ..
     } = upload;
     let mut trees = Trees::new(ROOT);
     trees.rules_scanned();
@@ -182,6 +182,18 @@ fn first_upload(upload: Upload) -> u64 {
         trees.ignore_local("!d");
     }
     trees.settle(&Default::default());
+    trees
+}
+
+fn first_upload(upload: Upload) -> u64 {
+    let Upload {
+        files,
+        per_dir,
+        cap,
+        ..
+    } = upload;
+    let dirs = files.div_ceil(per_dir);
+    let mut trees = local_trees(upload);
     let state = CommitsState {
         cap,
         ..Default::default()
@@ -195,36 +207,8 @@ fn first_upload(upload: Upload) -> u64 {
         .cloned()
     {
         seq += 1;
-        for op in commit.ops.iter().filter_map(|op| op.op.as_ref()) {
-            let (id, shape) = created(op);
-            let node = RemoteNode {
-                made_over: Vec::new(),
-                shape,
-                trashed: false,
-                content_rev: seq,
-                meta_rev: seq,
-                trash_group: String::new(),
-                version_id: String::new(),
-                edit_rev: seq,
-                meta_edit_rev: seq,
-                pending_for: None,
-                pending_by: None,
-            };
-            trees.set_remote_made_here(id, node);
-        }
         sent += commit.ops.len();
-        let applied = OpResult {
-            code: op_result::Code::Applied as i32,
-            ..Default::default()
-        };
-        let result = CommitResult {
-            seq,
-            results: vec![applied; commit.ops.len()],
-            ..Default::default()
-        };
-        commits.received(result).unwrap();
-        assert!(commits.acknowledge(&mut trees, seq));
-        trees.settle(commits.aliases());
+        applied(&mut commits, &mut trees, &commit, seq);
     }
     let work = allocated() - before;
     assert!(
@@ -235,6 +219,91 @@ fn first_upload(upload: Upload) -> u64 {
     assert_eq!(sent, files + dirs);
     assert_eq!(trees.synced().len(), files + dirs);
     work
+}
+
+fn applied(commits: &mut Commits, trees: &mut Trees, commit: &Commit, seq: u64) {
+    for op in commit.ops.iter().filter_map(|op| op.op.as_ref()) {
+        let (id, shape) = created(op);
+        let node = RemoteNode {
+            made_over: Vec::new(),
+            shape,
+            trashed: false,
+            content_rev: seq,
+            meta_rev: seq,
+            trash_group: String::new(),
+            version_id: String::new(),
+            edit_rev: seq,
+            meta_edit_rev: seq,
+            pending_for: None,
+            pending_by: None,
+        };
+        trees.set_remote_made_here(id, node);
+    }
+    let applied = OpResult {
+        code: op_result::Code::Applied as i32,
+        ..Default::default()
+    };
+    let result = CommitResult {
+        seq,
+        results: vec![applied; commit.ops.len()],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(trees, seq));
+    trees.settle(commits.aliases());
+}
+
+#[test]
+fn while_a_commit_is_out_the_files_of_the_next_one_are_upcoming() {
+    let shapes = [(1, false), (100, false), (7, true)];
+    for ids in [Ids::FoldersFirst, Ids::FilesFirst, Ids::Shuffled] {
+        for (per_dir, nested) in shapes {
+            let upload = Upload {
+                files: 3000,
+                per_dir,
+                ids,
+                nested,
+                ignored: true,
+                cap: None,
+            };
+            let mut trees = local_trees(upload);
+            let mut commits = Commits::from_state(CommitsState::default()).unwrap();
+            let mut next_ids = IdGen::new(1);
+            let mut seq = 0;
+            let mut upcoming: Option<Vec<String>> = None;
+            while let Some(commit) = commits
+                .build(&mut trees, &mut next_ids, NOW, "history", "me", seq)
+                .cloned()
+            {
+                seq += 1;
+                let added: Vec<String> = (commit.ops.iter())
+                    .filter_map(|op| match &op.op {
+                        Some(op::Op::CreateFile(create)) => Some(create.node_id.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(upcoming) = upcoming.take() {
+                    let missed: Vec<&String> =
+                        added.iter().filter(|id| !upcoming.contains(*id)).collect();
+                    assert!(
+                        missed.is_empty(),
+                        "{ids:?}, {per_dir} per folder, nested {nested}, commit {seq}: {missed:?}"
+                    );
+                }
+                let next: Vec<String> = (commits.upcoming(&trees, MAX_OPS).into_iter())
+                    .map(|(id, _)| id)
+                    .collect();
+                assert!(
+                    next.iter()
+                        .all(|id| !added.contains(id) && !id.starts_with('!'))
+                );
+                upcoming = Some(next);
+                applied(&mut commits, &mut trees, &commit, seq);
+            }
+            assert_eq!(upcoming, Some(Vec::new()));
+            assert!(commits.upcoming(&trees, MAX_OPS).is_empty());
+        }
+    }
 }
 
 #[test]

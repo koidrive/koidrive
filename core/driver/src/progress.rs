@@ -4,8 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use koidrive_engine::tree::NodeId;
-use koidrive_proto::v1::{Commit, op};
+use koidrive_engine::tree::{Content, NodeId};
 use tokio::sync::watch;
 
 use crate::lifecycle::Lifecycle;
@@ -270,20 +269,14 @@ pub(crate) struct Credit {
 }
 
 impl Credit {
-    pub fn upload(
+    pub fn upload<'a>(
         tracker: &Arc<Mutex<Tracker>>,
-        commit: &Commit,
+        files: impl IntoIterator<Item = (&'a String, &'a Content)>,
         path_of: impl Fn(&str) -> Option<PathBuf>,
     ) -> Credit {
         let mut credit = Credit::download(tracker, []);
         let mut items = Vec::new();
-        for op in &commit.ops {
-            let (node, content) = match &op.op {
-                Some(op::Op::CreateFile(create)) => (&create.node_id, &create.content),
-                Some(op::Op::UpdateContent(update)) => (&update.node_id, &update.content),
-                _ => continue,
-            };
-            let Some(content) = content else { continue };
+        for (node, content) in files {
             if let Some(path) = path_of(node) {
                 credit
                     .paths
@@ -411,7 +404,7 @@ mod tests {
 
     #[test]
     fn an_upload_that_starts_before_a_recount_counts_its_file_and_the_chunks_it_sends() {
-        use koidrive_proto::v1::{ChunkRef, Content, CreateFile, Op};
+        use koidrive_proto::v1::{ChunkRef, Commit, Content, CreateFile, Op, op};
         let sum = Arc::default();
         let a = folder("a", &sum);
         let tracker = Arc::new(Mutex::new(a.tracker));
@@ -438,7 +431,7 @@ mod tests {
             ..Default::default()
         };
 
-        let credit = Credit::upload(&tracker, &commit, |_| None);
+        let credit = Credit::upload(&tracker, crate::disk::added(&commit), |_| None);
         assert_eq!(shown(&sum), Some((0, 100)));
         credit.chunk(b"1");
         assert_eq!(shown(&sum), Some((40, 100)));

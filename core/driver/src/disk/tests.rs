@@ -2624,7 +2624,7 @@ fn a_parked_fork_whose_name_is_taken_is_uploaded_from_the_parked_directory() {
             .iter()
             .any(|op| matches!(&op.op, Some(op::Op::CreateFile(create)) if create.node_id == fork))
     );
-    let upload = running.disk.upload(&commit, &running.engine);
+    let upload = running.disk.upload(added(&commit), &running.engine);
     let read: Vec<u8> = (upload.chunks.iter())
         .flat_map(|chunk| upload.read(chunk).unwrap().to_vec())
         .collect();
