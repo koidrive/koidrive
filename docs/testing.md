@@ -30,7 +30,7 @@ Each job runs on Ubuntu, and the jobs marked macOS run on macOS. The `changes` j
 | `test lines` | Reports the net Rust test lines the change adds against its allowance | `python3 scripts/check-test-lines.py` |
 | `test split mapping` | A test split moves every item unchanged and `mapping.json` lists it, and every changed `include!` fragment is rustfmt-formatted | `python3 scripts/split-tests.py verify --source-ref origin/main` and `python3 scripts/split-tests.py check-format --base-ref origin/main` |
 | `Store upgrade` | Every store migration has upgrade cases, and they pass | `python3 scripts/check-store-upgrades.py origin/main HEAD` |
-| `state file safety` (macOS) | The change adds no raw writes of state files | `python3 scripts/check-state-io.py origin/main` |
+| `state file safety` (macOS) | The change adds no direct reads or writes of state files and no async lock borrows | `python3 scripts/check-state-io.py origin/main` |
 
 On a pull request, CI adds macOS jobs only where a change needs them. The macOS Rust jobs and `macos app` run when the change touches a file that builds or behaves differently on macOS, as `scripts/macos-changes.sh` lists them. Every macOS job, `server (macos)` and `spec (macos)` included, runs when it touches `ci.yml`. The merge queue runs the macOS leg of every job it selects, and a push to `main` skips the macOS jobs only when CI finds a merge queue run that passed CI on the same commit. If that lookup fails or finds no such run, the push runs all four macOS groups. The macOS jobs run on GitHub-hosted runners.
 
@@ -44,11 +44,13 @@ Four other workflows run on pull requests. [CLI distribution](../.github/workflo
 
 ## Some tests run only on request
 
-`cargo test` skips a test marked `#[ignore]`. `grep -rn '#\[ignore' core cli` lists them. They are of three kinds:
+`cargo test` skips a test marked `#[ignore]`. `grep -rn '#\[ignore' core cli` lists them. They are of these kinds:
 
 - The integration tests that need a Worker. They run through the scripts in the table above.
 - Benchmarks, timing probes and models that take too long for every run, such as `upload_benchmark` in `core/net/tests/upload_bench.rs`, which runs in the [deploy test's bench mode](deploy-test.md#modes) or against a local Worker. For a local run, start `wrangler dev` in `server/`, then set `KOIDRIVE_TEST_SERVER` to its URL, `KOIDRIVE_TEST_SERVER_LOG` to the file that holds its output, where the test reads the claim code, and `KOIDRIVE_BENCH_MIB=64`. Run one with `cargo test -p <package> <name> -- --ignored`, adding `--release` where the test says so.
 - Known failures. Their ignore reason names the issue, and the fix removes the `#[ignore]`.
+- Helpers that another test starts as a process or calls, such as the other process in `core/ipc/src/bind.rs` and the fixtures in `core/test-support/tests/budgets.rs`.
+- Tests that CI runs on its own runners, such as the signing test in `cli/src/app_install/macos/tests/verification.rs`, which creates a throwaway keychain.
 
 ## Property tests
 
@@ -82,7 +84,7 @@ The loader also reads legacy `.proptest-regressions` files. To move their lines 
 - `devices_lose_no_write...` fails when a write is lost, or when the engine, the store or the server refuses a state.
 - `devices_converge...` also fails when a device does not reach the server's tree once the faults stop, or when a commit makes a change that the user of its device never made.
 
-The plain pair runs without server losses. The `..._across_server_restores` pairs add servers restored from backups, and the `..._across_rewinds_and_rollbacks` pair adds rewinds, copied stores and rolled-back stores. Further properties cover folders rescanned one at a time, a folder another device replaces, and renames a device still owes. `cargo test` and the battery skip the properties marked `#[ignore]`. To print the state after every step of one test:
+The plain pair runs without server losses. The `..._across_server_restores` pair adds servers restored from backups, and the `..._across_rewinds_and_rollbacks` pair adds rewinds, copied stores and rolled-back stores. Further properties cover folders rescanned one at a time, a folder another device replaces, and renames a device still owes, with and without servers restored from backups. `cargo test` and the battery skip the properties marked `#[ignore]`. To print the state after every step of one test:
 
 ```sh
 KOIDRIVE_SIM_TRACE=1 cargo test -p koidrive-sim --test devices <test name> -- --nocapture

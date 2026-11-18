@@ -1,10 +1,10 @@
-# Sync driver and Linux daemon
+# Sync driver and daemon
 
-`core/driver` (`koidrive-driver`) is everything a client runs on one device around the sync engine: the profile, one task per linked folder, the session with each space, and the observer of each folder. The daemon `koi _daemon` runs it, and so does a `koi` command that finds no daemon. The macOS app reaches it through `koi`. Paths, configuration keys, the API and the event handling are in [driver-reference.md](driver-reference.md). Engine sections cited as §N are in [the sync engine reference](sync-engine/README.md).
+`core/driver` (`koidrive-driver`) is everything a client runs on one device around the sync engine: the profile, one task per linked folder, the session with each space, and the observer of each folder. The daemon `koi _daemon` runs it, as a launch agent on macOS and a systemd user service on Linux, and so does a `koi` command that finds no daemon. The macOS app reaches it through `koi`. Paths, configuration keys, the API and the event handling are in [driver-reference.md](driver-reference.md). Engine sections cited as §N are in [the sync engine reference](sync-engine/README.md).
 
 ## The CLI and the app share one daemon
 
-The driver is a library with an async API. It never prints or exits, and it logs through `tracing`. The daemon calls it from its Tokio runtime. A `koi` command sends its request to the daemon's socket, or opens a driver of its own when no daemon runs. The macOS app does the same through `core/ffi`: its `DaemonCore` runs each change, and each call the driver doesn't make such as listing devices or spaces, as a `koi --json` command of the `koi` it carries, and follows the daemon over its socket.
+The driver is a library with an async API. It never prints or exits, and it logs through `tracing`. The daemon calls it from its Tokio runtime. A `koi` command sends its request to the daemon's socket, or opens a driver of its own when no daemon runs. The macOS app does the same through `core/ffi`: its `DaemonCore` runs each change, and each call the driver doesn't make such as listing devices or spaces, as a `koi --json` command of the `koi` it carries, and follows the daemon over its socket. It checks a server address and asks for a claim code itself, through `core/net`.
 
 ## One credential has one writer
 
@@ -69,4 +69,4 @@ A folder whose only work is its transfers reports no activity. A folder that doe
 
 ## A rewound space sends its folders into recovery
 
-A rewound space sends each folder that syncs it into the engine's recovery (§6.4) for the restored history. The folder drops the commit in flight and reconnects.
+A rewound space sends each folder that syncs it into the engine's recovery (§6.4) for the restored history. A `HISTORY_CHANGED` resync does this and reconnects. A Welcome whose history differs from the folder's cursor does it on the same connection and lists the tree again. The engine drops the commit in flight once the restored tree replaces R.

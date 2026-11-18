@@ -67,10 +67,10 @@ background = true         # the default
 
 | Event | What the folder task does |
 |---|---|
-| `Connected(Welcome)` | A cursor of another history halts as a recovery. Otherwise the engine compares the server's count of this device's commits with the store (§2.8), and a store that never synced takes the server's count. No cursor, or a cursor that records the server behind it: bootstrap. Any other cursor: subscribe from `last_seq` |
+| `Connected(Welcome)` | A cursor of another history enters recovery (§6.4) and lists the tree again. Otherwise the engine compares the server's count of this device's commits with the store (§2.8), and a store that never synced takes the server's count. No cursor, or a cursor that records the server behind it: bootstrap. Any other cursor: subscribe from `last_seq` |
 | `Changes` | Applied to the remote tree in one transaction, in seq order. A gap resubscribes from the cursor. An unknown change kind halts |
 | `CaughtUp` | The head is known. `up_to_date` once the store holds it, the folder was scanned and nothing is left to move |
-| `ResyncRequired` | `LOG_TRUNCATED` and `AHEAD_OF_SERVER`: bootstrap again. `AHEAD_OF_SERVER` first records that the server is behind, so the bootstrap forgets what the server lost (§4.4). `HISTORY_CHANGED` and unknown reasons: halt |
+| `ResyncRequired` | `LOG_TRUNCATED` and `AHEAD_OF_SERVER`: bootstrap again. `AHEAD_OF_SERVER` first records that the server is behind, so the bootstrap forgets what the server lost (§4.4). `HISTORY_CHANGED`: enter recovery (§6.4) and reconnect. Unknown reasons: halt |
 | `Disconnected` | `offline`. The session retries |
 | `Stopped` | Halt: credentials refused, device revoked, space not found or forbidden, unsupported version |
 | `Committed` | The result of this device's commit. Whichever of it and the commit call's answer comes first is applied |

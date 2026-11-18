@@ -6,7 +6,7 @@ Each device replaces its refresh credential once a day, so a copy taken from a b
 
 `devices.refresh_hash` holds the one credential the server accepts, and a rotation overwrites it. The Account DO's `rotation_clock_ms` column is the device's rotation clock (RFC 0011 §1). `refreshAccess` in `server/src/account/account.ts` hashes the presented and proposed credentials first, because hashing is asynchronous. Then, with no `await` between the read and the write, it reads the time, checks the device, and computes T as the later of that time and the stored clock. One `UPDATE` sets `last_seen_ms`, advances the clock to T, and replaces `refresh_hash` when T is at most the proposal's deadline. Every refresh already writes `last_seen_ms`, so a rotation adds no write. The Durable Object's output gate holds the answer until that write is durable, so a client never sees a time the stored clock does not hold.
 
-## One `Auth` per process rotates the credential
+## Each process presents the credential through one `Auth`
 
 After a rotation the server refuses the old credential. So a process uses one `Auth` for every call that presents the credential. `Driver::auth` builds it once per profile, and folder tasks, `link`, the sign-out revocation and the server calls the daemon makes for a command (`Driver::signed_in`) all share it. A `koi` process that only reads the credential, such as one that lists devices for the macOS app, uses `Auth::reloading`: when the server refuses the credential, it reads the stored one again once.
 
