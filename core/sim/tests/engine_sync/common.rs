@@ -2312,6 +2312,8 @@ fn run_ignoring_answering_after(
     }
 
     let me = session("me");
+    space.announce_field_intents(true);
+    prop_assert_eq!(commits.connected(&space.welcome(&me)), Reconnect::Idle);
     let mut effects = Effects::default();
     let (mut steps, mut quiet, mut due, mut parked_reverted) = (0, false, false, 0);
     let mut retried: Option<Trees> = None;
