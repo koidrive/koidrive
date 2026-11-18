@@ -1847,6 +1847,30 @@ fn a_copy_rebuilt_while_excluded_whose_content_a_later_batch_reads_takes_back_it
 }
 
 #[test]
+fn a_file_read_in_a_later_batch_downloads_again_once_removed_while_excluded() {
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &site.root.join("zzz.txt"), b"one");
+    b.rest(&mut remote);
+    for n in 0..crate::observe::READ_FILES {
+        fs::write(site.root.join(format!("f{n:04}.txt")), b"f").unwrap();
+    }
+    fs::write(site.root.join("zzz.txt"), b"two").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    fs::write(site.root.join(".koiignore"), b"zzz.txt\n").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    fs::remove_file(site.root.join("zzz.txt")).unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    fs::write(site.root.join(".koiignore"), b"other.txt\n").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    assert_eq!(fs::read(site.root.join("zzz.txt")).unwrap(), b"two");
+}
+
+#[test]
 fn a_copy_rebuilt_while_excluded_takes_back_its_node_when_another_device_moves_it_into_the_rules() {
     let mut remote = Remote::new();
     let (site, mut b) = linked(&mut remote, "b");
