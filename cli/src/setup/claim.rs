@@ -254,7 +254,10 @@ pub async fn saved_device(paths: &Paths, server: &Url) -> Result<bool, CliError>
                 device_id: credential.device_id,
             };
             match ipc::run(paths, request).await? {
-                Response::SignedOut { not_removed } => {
+                Response::SignedOut {
+                    not_removed,
+                    unconfirmed,
+                } => {
                     if !not_removed.is_empty() {
                         let failures = not_removed
                             .iter()
@@ -263,17 +266,26 @@ pub async fn saved_device(paths: &Paths, server: &Url) -> Result<bool, CliError>
                             })
                             .collect::<Vec<_>>()
                             .join("; ");
-                        return Err(CliError::new(
-                            koidrive_ipc::Code::Failed,
-                            format!(
-                                "the server no longer accepts this device's saved credential, but cleanup is incomplete: {failures}. Run koi device leave to finish cleanup before setting up this device again"
-                            ),
-                        )
-                        .then(&["koi", "device", "leave"]));
+                        let mut message = format!(
+                            "the server no longer accepts this device's saved credential, but cleanup is incomplete: {failures}. Run koi device leave to finish cleanup before setting up this device again"
+                        );
+                        if let Some(unconfirmed) = &unconfirmed {
+                            message.push_str(". ");
+                            message.push_str(
+                                &crate::device::still_listed(unconfirmed)
+                                    .trim_end()
+                                    .replace('\n', " "),
+                            );
+                        }
+                        return Err(CliError::new(koidrive_ipc::Code::Failed, message)
+                            .then(&["koi", "device", "leave"]));
                     }
                     println!(
                         "The server no longer accepts this device's saved credential, so it was removed."
                     );
+                    if let Some(unconfirmed) = &unconfirmed {
+                        print!("{}", crate::device::still_listed(unconfirmed));
+                    }
                     Ok(false)
                 }
                 other => Err(crate::unexpected(other)),
@@ -475,9 +487,19 @@ mod tests {
                 serde_json::from_str::<Request>(&line).unwrap(),
                 Request::SignOut { .. }
             ));
-            koidrive_ipc::write_line(&mut stream, &Response::SignedOut { not_removed: reply })
-                .await
-                .unwrap();
+            koidrive_ipc::write_line(
+                &mut stream,
+                &Response::SignedOut {
+                    not_removed: reply,
+                    unconfirmed: Some(koidrive_driver::Unconfirmed {
+                        server: "https://files.example.com/".into(),
+                        device_id: "d1".into(),
+                        reason: "no answer within 10 seconds".into(),
+                    }),
+                },
+            )
+            .await
+            .unwrap();
         });
 
         let server = Found {
@@ -511,6 +533,11 @@ mod tests {
         assert!(error.message.contains("cleanup\\n\\u{1b}[2J\""));
         assert!(error.message.contains("disk\\u{a}\\u{1b}[31m error"));
         assert!(!error.message.contains("so it was removed"));
+        assert!(
+            error
+                .message
+                .contains("signed in to https://files.example.com/: koi device revoke d1 If you have no other device, add one with koi server add-device")
+        );
         assert_eq!(
             error.next,
             [koidrive_ipc::Next::of(&["koi", "device", "leave"])]

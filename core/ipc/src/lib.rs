@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use koidrive_driver::{
     Account, Answer, CleanupFailure, Credential, Expiry, FolderStatus, LinkApproval, Paths,
-    Question, RestoreRequest, RestoreStatus, Secret, SharedLink, Status, Update,
+    Question, RestoreRequest, RestoreStatus, Secret, SharedLink, Status, Unconfirmed, Update,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -206,6 +206,8 @@ pub enum Response {
     SignedOut {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         not_removed: Vec<CleanupFailure>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unconfirmed: Option<Unconfirmed>,
     },
     Access {
         blocked: Vec<Blocked>,
@@ -619,6 +621,7 @@ mod tests {
                 path: PathBuf::from(OsString::from_vec(bytes.to_vec())),
                 error: "denied\n\x1b[31m".into(),
             }],
+            unconfirmed: None,
         };
         let (mut writer, mut reader) = UnixStream::pair().unwrap();
         write_line(&mut writer, &response)
@@ -627,7 +630,7 @@ mod tests {
         let line = read_line(&mut reader).await.unwrap();
         assert_eq!(line.matches('\n').count(), 1);
         assert!(!line.contains('\x1b'));
-        let Response::SignedOut { not_removed } = parse(&line).unwrap() else {
+        let Response::SignedOut { not_removed, .. } = parse(&line).unwrap() else {
             panic!("the cleanup result must survive IPC");
         };
         assert_eq!(
@@ -635,7 +638,7 @@ mod tests {
             PathBuf::from(String::from_utf8_lossy(bytes).as_ref())
         );
         assert_eq!(not_removed[0].error, "denied\n\x1b[31m");
-        let Response::SignedOut { not_removed } = response else {
+        let Response::SignedOut { not_removed, .. } = response else {
             unreachable!();
         };
         assert_eq!(not_removed[0].path.as_os_str().as_bytes(), bytes);
@@ -990,8 +993,20 @@ mod tests {
         pinned(
             Response::SignedOut {
                 not_removed: Vec::new(),
+                unconfirmed: None,
             },
             r#"{"response":"signed_out"}"#,
+        );
+        pinned(
+            Response::SignedOut {
+                not_removed: Vec::new(),
+                unconfirmed: Some(Unconfirmed {
+                    server: "https://files.example.com/".into(),
+                    device_id: "d1".into(),
+                    reason: "no answer within 10 seconds".into(),
+                }),
+            },
+            r#"{"response":"signed_out","unconfirmed":{"server":"https://files.example.com/","device_id":"d1","reason":"no answer within 10 seconds"}}"#,
         );
         pinned(
             Response::SignedOut {
@@ -999,6 +1014,7 @@ mod tests {
                     path: "/a/.koidrive/device.json".into(),
                     error: "Permission denied (os error 13)".into(),
                 }],
+                unconfirmed: None,
             },
             r#"{"response":"signed_out","not_removed":[{"path":"/a/.koidrive/device.json","error":"Permission denied (os error 13)"}]}"#,
         );

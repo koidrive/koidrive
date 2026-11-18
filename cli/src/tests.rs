@@ -719,6 +719,7 @@ async fn leave_cleanup_quotes_terminal_controls_but_preserves_json_data() {
                     path: path.into(),
                     error: error.into(),
                 }],
+                unconfirmed: None,
             },
         )
         .await
@@ -746,10 +747,13 @@ async fn leave_cleanup_quotes_terminal_controls_but_preserves_json_data() {
 fn leave_cleanup_accepts_non_utf8_paths_and_emits_lossy_json_without_panicking() {
     use std::os::unix::ffi::OsStringExt;
 
-    let done = left(vec![koidrive_driver::CleanupFailure {
-        path: PathBuf::from(OsString::from_vec(b"/cleanup/bad\xff\n\x1b".to_vec())),
-        error: "denied\n\u{1b}".into(),
-    }]);
+    let done = left(
+        vec![koidrive_driver::CleanupFailure {
+            path: PathBuf::from(OsString::from_vec(b"/cleanup/bad\xff\n\x1b".to_vec())),
+            error: "denied\n\u{1b}".into(),
+        }],
+        None,
+    );
 
     assert!(done.text.contains("\"/cleanup/bad\\xFF\\n\\u{1b}\""));
     assert!(done.text.contains("denied\\u{a}\\u{1b}"));

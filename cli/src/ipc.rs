@@ -109,16 +109,24 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
             .save_credential(credential)
             .await
             .map(|account| Response::Paired { account }),
-        Request::SignOut { device_id } => driver
-            .sign_out_device(&device_id)
-            .await
-            .map(|not_removed| Response::SignedOut { not_removed }),
+        Request::SignOut { device_id } => {
+            driver
+                .sign_out_device(&device_id)
+                .await
+                .map(|left| Response::SignedOut {
+                    not_removed: left.not_removed,
+                    unconfirmed: left.unconfirmed,
+                })
+        }
         Request::Leave {
             confirm_last_device,
         } => driver
             .sign_out(confirm_last_device)
             .await
-            .map(|not_removed| Response::SignedOut { not_removed }),
+            .map(|left| Response::SignedOut {
+                not_removed: left.not_removed,
+                unconfirmed: left.unconfirmed,
+            }),
         Request::Link { folder, space } => {
             driver
                 .link(&folder, &space)
@@ -956,12 +964,14 @@ pub(crate) mod tests {
         assert!(paths.credential().exists());
         assert_eq!(driver.status().folders.len(), 1);
 
-        assert_eq!(
-            leave(true).await,
-            Response::SignedOut {
-                not_removed: Vec::new()
-            }
-        );
+        let Response::SignedOut {
+            not_removed,
+            unconfirmed: Some(_),
+        } = leave(true).await
+        else {
+            panic!("a leave without the server must say the revocation is unconfirmed");
+        };
+        assert_eq!(not_removed, []);
         assert!(!paths.credential().exists());
         let status = driver.status();
         assert!(

@@ -58,6 +58,7 @@ impl Paths {
                 | "leaving"
                 | "leaving.next"
                 | "update-check.json.new"
+                | "unconfirmed-revocation.json"
                 | "daemon.sock",
             ] => File,
             [made] if *made == koidrive_state_file::MADE => File,
@@ -147,6 +148,10 @@ impl Paths {
 
     pub fn credential(&self) -> PathBuf {
         self.state_dir.join("credential.json")
+    }
+
+    pub fn unconfirmed_revocation(&self) -> PathBuf {
+        self.state_dir.join("unconfirmed-revocation.json")
     }
 
     /// The creates this profile sent with a request ID and has not seen answered for good, one file each.
@@ -375,6 +380,7 @@ mod tests {
             (&request, Some(File)),
             (".koidrive-state", Some(File)),
             ("update-check.json.new", Some(File)),
+            ("unconfirmed-revocation.json", Some(File)),
             (&format!("spaces/{space}/lifecycle.json"), Some(File)),
             (&format!("spaces/{space}/link.json"), Some(File)),
             (&format!("spaces/{space}/unlinking"), Some(File)),

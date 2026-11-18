@@ -295,11 +295,38 @@ fn an_older_release_whose_daemon_runs_signs_out_through_the_daemon() {
 
     let problem = refused["data"]["device"]["problem"].as_str().unwrap();
     assert!(problem.starts_with("the server did not "), "{refused:#}");
+    let device = &envelope["data"]["device"];
+    assert_eq!(device["state"], "signed_out", "{envelope:#}");
+    assert_eq!(device["unconfirmed"]["device_id"], "d1", "{envelope:#}");
+    assert!(!credential.exists(), "{envelope:#}");
+}
+
+#[test]
+fn a_profile_whose_last_sign_out_was_not_confirmed_names_the_device_to_revoke() {
+    let machine = Machine::new();
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    machine.write(
+        "state/koidrive/unconfirmed-revocation.json",
+        r#"{"server":"https://files.example.com/","device_id":"d1","reason":"no answer within 10 seconds"}"#,
+    );
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    assert!(output.status.success(), "{envelope:#}");
     assert_eq!(
-        envelope["data"]["device"]["state"], "signed_out",
+        envelope["data"]["device"],
+        json!({
+            "state": "signed_out",
+            "server": "https://files.example.com/",
+            "unconfirmed": {
+                "server": "https://files.example.com/",
+                "device_id": "d1",
+                "reason": "no answer within 10 seconds",
+            },
+        }),
         "{envelope:#}"
     );
-    assert!(!credential.exists(), "{envelope:#}");
 }
 
 #[test]

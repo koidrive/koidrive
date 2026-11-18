@@ -8,7 +8,10 @@ pub(super) async fn sign_out(
 ) -> DeviceOutcome {
     let still_listed = |problem| listed(found, problem);
     if !found.paired {
-        return DeviceOutcome::NotPaired;
+        return match koidrive_driver::Unconfirmed::recorded(paths) {
+            Some(unconfirmed) => signed_out_unconfirmed(unconfirmed),
+            None => DeviceOutcome::NotPaired,
+        };
     }
     if options.keep_signed_in {
         return still_listed(None);
@@ -51,14 +54,30 @@ pub(super) async fn sign_out(
         }
     }
     match answer {
+        Ok(Response::SignedOut {
+            unconfirmed: Some(unconfirmed),
+            ..
+        }) => signed_out_unconfirmed(unconfirmed),
         Ok(Response::SignedOut { .. }) => match &found.owner {
             Some(owner) => DeviceOutcome::SignedOut {
                 server: owner.server.clone(),
+                unconfirmed: None,
             },
             None => still_listed(Some("the server's address is unknown".into())),
         },
         Ok(other) => still_listed(Some(format!("the daemon answered {other:?}"))),
         Err(error) => still_listed(Some(error.message)),
+    }
+}
+
+fn signed_out_unconfirmed(unconfirmed: koidrive_driver::Unconfirmed) -> DeviceOutcome {
+    DeviceOutcome::SignedOut {
+        server: unconfirmed.server.clone(),
+        unconfirmed: Some(UnconfirmedData {
+            server: unconfirmed.server,
+            device_id: unconfirmed.device_id,
+            reason: unconfirmed.reason,
+        }),
     }
 }
 

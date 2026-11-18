@@ -406,6 +406,17 @@
             "state": {
               "const": "signed_out",
               "type": "string"
+            },
+            "unconfirmed": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/UnconfirmedData"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Present when the server did not confirm that it revoked this device, so it may still list it."
             }
           },
           "required": [
@@ -1199,6 +1210,26 @@
       "required": [
         "content_rev",
         "meta_rev"
+      ],
+      "type": "object"
+    },
+    "UnconfirmedData": {
+      "properties": {
+        "device_id": {
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why the server did not confirm, such as no answer within 10 seconds.",
+          "type": "string"
+        },
+        "server": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "server",
+        "device_id",
+        "reason"
       ],
       "type": "object"
     },

@@ -54,8 +54,27 @@ pub(super) fn text(data: &UninstalledData) -> String {
     let mut lines = Vec::new();
     match &data.device {
         DeviceOutcome::NotPaired => {}
-        DeviceOutcome::SignedOut { server } => {
+        DeviceOutcome::SignedOut {
+            server,
+            unconfirmed: None,
+        } => {
             lines.push(format!("Signed this device out of {}.", printable(server)));
+        }
+        DeviceOutcome::SignedOut {
+            server,
+            unconfirmed: Some(unconfirmed),
+        } => {
+            lines.push(format!(
+                "Signed this device out, but {} did not confirm that it revoked it: {}.",
+                printable(server),
+                printable(&unconfirmed.reason)
+            ));
+            lines.push(format!(
+                "If it still lists this device, run this on another device signed in to {}: koi device revoke {}",
+                printable(server),
+                crate::output::command_word(&unconfirmed.device_id)
+            ));
+            lines.push("If you have no other device, add one with koi server add-device --interactive and run the command there.".to_owned());
         }
         DeviceOutcome::StillListed {
             server,
@@ -73,7 +92,8 @@ pub(super) fn text(data: &UninstalledData) -> String {
             }
             lines.push(match device_id {
                 Some(id) => format!(
-                    "{server} still lists this device. To remove it, run this on another device: koi device revoke {id}"
+                    "{server} still lists this device. To remove it, run this on another device: koi device revoke {}",
+                    crate::output::command_word(id)
                 ),
                 None => format!(
                     "{server} still lists this device. To remove it, revoke it from another device with koi device revoke."

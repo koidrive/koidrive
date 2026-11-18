@@ -898,6 +898,26 @@
         }
       ]
     },
+    "UnconfirmedData": {
+      "properties": {
+        "device_id": {
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why the server did not confirm, such as no answer within 10 seconds.",
+          "type": "string"
+        },
+        "server": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "server",
+        "device_id",
+        "reason"
+      ],
+      "type": "object"
+    },
     "WithService_LeftData": {
       "description": "The data of a command that brings the background service in line with the profile, with the service's report.",
       "properties": {
@@ -910,6 +930,17 @@
         },
         "service": {
           "$ref": "#/$defs/Report"
+        },
+        "unconfirmed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UnconfirmedData"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present when the server did not confirm that it revoked this device, including after an earlier sign-out of it.\nSuch a device can stay on the server's list until another device runs `koi device revoke` with its `device_id`."
         }
       },
       "required": [

@@ -1319,6 +1319,18 @@ pub struct LeftData {
     /// The files and directories that could not be removed after the server revoked this device, such as a folder's
     /// `.koidrive/device.json` owner record. Running `koi device leave` again removes them.
     pub not_removed: Vec<NotRemovedData>,
+    /// Present when the server did not confirm that it revoked this device, including after an earlier sign-out of it.
+    /// Such a device can stay on the server's list until another device runs `koi device revoke` with its `device_id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unconfirmed: Option<UnconfirmedData>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct UnconfirmedData {
+    pub server: String,
+    pub device_id: String,
+    /// Why the server did not confirm, such as no answer within 10 seconds.
+    pub reason: String,
 }
 
 #[derive(Debug, PartialEq, Serialize, JsonSchema)]
