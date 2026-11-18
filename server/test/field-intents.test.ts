@@ -8,6 +8,7 @@ import { type ChangeRecord, type Content, FieldIntentsSchema, type Intent, Inten
 import { Error_Code } from "../src/gen/koidrive/v1/rpc_pb";
 import { fromHex, toHex, uuidv7 } from "../src/ids";
 import type { SpaceDO } from "../src/space-do";
+import { MAX_DEPTH } from "../src/space/commit";
 import { commitDigest } from "../src/space/digest";
 import { type Field, legacyIntentId, legacyPlaceKey, type LostChangeRule } from "../src/space/intents";
 import { getNode, nodeState } from "../src/space/store";
@@ -254,6 +255,7 @@ describe("RFC 0029 section 3.1: recording intents", () => {
         atMs += ms;
       };
     });
+    a.nowMs = atMs;
     const part = await content("uploaded " + uuidv7());
     const receipts = await a.uploadParts(part);
     const results = await Promise.all([
@@ -261,6 +263,7 @@ describe("RFC 0029 section 3.1: recording intents", () => {
       b.commit([op.mkdir(uuidv7(), root, "b")]),
       c.commit([op.mkdir(uuidv7(), root, "c")]),
     ]);
+    expect(results.map((result) => result.results[0]!.code)).toEqual([OpResult_Code.APPLIED, OpResult_Code.APPLIED, OpResult_Code.APPLIED]);
     const stamps = results.sort((x, y) => Number(x.seq - y.seq)).map((result) => result.committedAtMs);
     expect(stamps.slice(1).every((stamp, i) => stamp > stamps[i]!)).toBe(true);
     expect(stamps.every((stamp) => stamp <= BigInt(atMs))).toBe(true);
@@ -610,9 +613,13 @@ describe("RFC 0029 section 3.3: deletes with a view", () => {
     expect(moved.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
     const known = await b.commit([sent(update(nodeId, values[0]!), create(IntentSchema, { ...held, replay: true }))]);
     expect(known.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
-    const lost = await b.commit([sent(update(nodeId, values[1]!), intent(a.session.deviceId, { replay: true }))]);
+    const lostIntent = intent(a.session.deviceId, { replay: true });
+    const lost = await b.commit([sent(update(nodeId, values[1]!), lostIntent)]);
     expect(lost.results[0]!.code).toBe(OpResult_Code.CONFLICT_COPY);
     expect((await stateOf(space, lost.results[0]!.nodeId))!.parentId).toBe(dir);
+    const resent = await b.commit([sent(update(nodeId, values[1]!), lostIntent)]);
+    const recreatedCopy = await b.commit([sent(op.create(nodeId, dir, "gone.txt", values[1]!), lostIntent)]);
+    expect([resent.results[0]!.code, recreatedCopy.results[0]!.code]).toEqual([OpResult_Code.SUPERSEDED, OpResult_Code.SUPERSEDED]);
     const carried = await b.commit([sent(update(nodeId, values[2]!), intent(a.session.deviceId))]);
     expect(carried.results[0]!.code).toBe(OpResult_Code.CONFLICT_COPY);
     const recreated = await b.commit([op.mkdir(nodeId, root, "again")]);
@@ -620,6 +627,36 @@ describe("RFC 0029 section 3.3: deletes with a view", () => {
     const own = await b.commit([sent(op.move(nodeId, root, "mine.txt"), intent(b.session.deviceId))]);
     expect(own.results[0]).toMatchObject({ code: OpResult_Code.REJECTED, rejectReason: "NOT_FOUND" });
     expect(await stateOf(space, nodeId)).toBeUndefined();
+  });
+
+  it("lands the conflict copy of a purged file one folder up when its last folder sits at the depth limit", async () => {
+    const { space, a, b, values, root } = await setup();
+    const chain = Array.from({ length: MAX_DEPTH - 1 }, () => uuidv7());
+    await a.commit(chain.map((id, i) => op.mkdir(id, i === 0 ? root : chain[i - 1]!, `d${i}`)));
+    const dir = uuidv7();
+    await a.commit([op.mkdir(dir, root, "Last")]);
+    const nodeId = await file(a, dir, "deep.txt", values[0]!);
+    await a.commit([sent(del(nodeId), intent(a.session.deviceId))]);
+    expect((await runInDurableObject(space.stub, (instance: SpaceDO) => instance.collectGarbage(Date.now() + 31 * DAY_MS))).purgedNodes).toBe(1);
+    expect((await a.commit([op.move(dir, chain.at(-1)!, "Last")])).results[0]!.code).toBe(OpResult_Code.APPLIED);
+    const lost = await b.commit([sent(update(nodeId, values[1]!), intent(a.session.deviceId, { replay: true }))]);
+    expect(lost.results[0]!.code).toBe(OpResult_Code.CONFLICT_COPY);
+    expect((await stateOf(space, lost.results[0]!.nodeId))!.parentId).toBe(chain.at(-1));
+  });
+
+  it("splits a purge of trash groups whose tombstones together would not fit in one 1 MiB message across several commits", async () => {
+    const { space, a, b, root } = await setup();
+    const dirs = [uuidv7(), uuidv7()];
+    for (const [n, dir] of dirs.entries()) {
+      await a.commit([op.mkdir(dir, root, `Big ${n}`), ...Array.from({ length: 20 }, (_, i) => op.mkdir(uuidv7(), dir, `d${i}`))]);
+      await a.commit([sent(del(dir, { held: Array.from({ length: 2000 }, () => intent(b.session.deviceId).id) }), intent(a.session.deviceId))]);
+    }
+    const purged: number[] = [];
+    while ((await Promise.all(dirs.map((dir) => stateOf(space, dir)))).some(Boolean) && purged.length < 5) {
+      purged.push((await runInDurableObject(space.stub, (instance: SpaceDO) => instance.collectGarbage(Date.now() + 31 * DAY_MS))).purgedNodes);
+    }
+    expect(purged.length).toBeGreaterThan(1);
+    expect(purged.reduce((x, y) => x + y)).toBe(42);
   });
 
   it("places a create or move into a purged folder under the nearest live ancestor of its last parent, and reports that place", async () => {
