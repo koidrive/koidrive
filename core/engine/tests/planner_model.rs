@@ -485,13 +485,17 @@ impl World {
         if self.changes() > bounds.changes + usize::from(nested) {
             return false;
         }
-        if self
-            .remote
-            .iter()
-            .filter(|remote| **remote != Remote::Kept)
-            .count()
-            > 1
-        {
+        let changed: Vec<usize> = (0..k).filter(|&i| self.remote[i] != Remote::Kept).collect();
+        let synced = |i: usize| Some(self.synced[i]);
+        let nested_trash = match changed[..] {
+            [i, j] => {
+                self.remote[i] == Remote::Trashed
+                    && self.remote[j] == Remote::Trashed
+                    && (self.inside(i, j, &synced) || self.inside(j, i, &synced))
+            }
+            _ => false,
+        };
+        if changed.len() > 1 && !nested_trash {
             return false;
         }
         let stray = |i: usize, spot: Spot, bound: usize| matches!(spot, Spot::In(j) if j >= bound || j == i);
@@ -825,7 +829,17 @@ fn server(world: &World) -> SpaceDo {
             );
         }
     }
-    for i in (0..world.existing()).filter(|&i| world.remote[i] == Remote::Trashed) {
+    let up = |i: usize| Some(world.remote_place(i).0);
+    let depth = |i: usize| {
+        (0..world.existing())
+            .filter(|&j| j != i && world.inside(i, j, &up))
+            .count()
+    };
+    let mut trashed: Vec<usize> = (0..world.existing())
+        .filter(|&i| world.remote[i] == Remote::Trashed)
+        .collect();
+    trashed.sort_by_key(|&i| std::cmp::Reverse(depth(i)));
+    for i in trashed {
         other(&mut space, &mut ids, vec![delete(world.id(i))]);
     }
     space
@@ -2180,7 +2194,20 @@ fn restored(world: &World, i: usize, target: Option<Spot>) -> Intent {
     let k = world.existing();
     let remote = |j: usize| (j < k).then(|| world.remote_place(j).0);
     let local = |j: usize| world.local_place(j).map(|(spot, _)| spot);
-    let group: Vec<usize> = (0..k).filter(|&j| world.inside(j, i, &remote)).collect();
+    let own_group = |j: usize| {
+        let mut at = j;
+        while at != i {
+            match (world.remote[at], remote(at)) {
+                (Remote::Trashed, _) => return false,
+                (_, Some(Spot::In(up))) => at = up,
+                _ => return false,
+            }
+        }
+        true
+    };
+    let group: Vec<usize> = (0..k)
+        .filter(|&j| world.inside(j, i, &remote) && own_group(j))
+        .collect();
     let cycle =
         |j: usize| world.inside(j, i, &remote) || group.iter().any(|&g| world.inside(j, g, &local));
     let target = target.unwrap_or(world.remote_place(i).0);
@@ -2672,7 +2699,8 @@ impl Tally {
     }
 }
 
-fn remotes(k: usize) -> Vec<Vec<Remote>> {
+fn remotes(synced: &[Spot]) -> Vec<Vec<Remote>> {
+    let k = synced.len();
     let mut all = vec![vec![Remote::Kept; k]];
     for i in 0..k {
         let menu = [Remote::Trashed, Remote::Forgotten, Remote::Into(Spot::Root)].into_iter();
@@ -2683,6 +2711,25 @@ fn remotes(k: usize) -> Vec<Vec<Remote>> {
         ) {
             let mut next = vec![Remote::Kept; k];
             next[i] = remote;
+            all.push(next);
+        }
+    }
+    let below = |i: usize, top: usize| {
+        let mut at = i;
+        for _ in 0..k {
+            match synced[at] {
+                Spot::In(up) if up == top => return true,
+                Spot::In(up) => at = up,
+                Spot::Root => return false,
+            }
+        }
+        false
+    };
+    for i in 0..k {
+        for top in (0..k).filter(|&top| below(i, top)) {
+            let mut next = vec![Remote::Kept; k];
+            next[i] = Remote::Trashed;
+            next[top] = Remote::Trashed;
             all.push(next);
         }
     }
@@ -2795,7 +2842,7 @@ fn sweep(bounds: &Bounds, threads: usize, (shard, shards): (usize, usize)) -> Ta
     let jobs: Vec<(Vec<Spot>, Vec<Remote>)> = (least..=most)
         .flat_map(|k| {
             (forests(k).into_iter()).flat_map(move |synced| {
-                remotes(k)
+                remotes(&synced)
                     .into_iter()
                     .map(move |remote| (synced.clone(), remote))
             })
@@ -3335,7 +3382,7 @@ fn a_revival_a_later_commit_hides_is_found_over_the_run() {
 fn every_world_of_the_slice_keeps_trashed_folders_trashed_and_names_given() {
     let tally = sweep(&SLICE, threads(), (0, 1));
     println!("{}", tally.summary());
-    assert_eq!(tally.worlds, 5712, "{}", tally.summary());
+    assert_eq!(tally.worlds, 5756, "{}", tally.summary());
     assert_eq!(tally.hard, 0, "{}", tally.summary());
 }
 
