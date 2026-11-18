@@ -851,6 +851,7 @@ mod tests {
                 vec![[12, 12]],
                 "changed on main after",
             ),
+            (blob.clone(), vec![], "no changed lines"),
         ] {
             let selection = tests_with(
                 &["core/engine/src/commit.rs"],

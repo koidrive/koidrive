@@ -197,8 +197,10 @@ class CoverageMap(unittest.TestCase):
         self.assertEqual(tool.function_spans(report, "/w"), {"core/a.rs": {(10, 30), (40, 41)}})
 
     def test_a_const_fn_has_no_span_because_its_body_can_run_at_compile_time(self):
-        source = ["pub const fn limit() -> u32 {", "    7", "}", "pub fn twice(x: u32) -> u32 {", "    x * 2", "}"]
-        self.assertEqual(tool.without_const_fns({"a.rs": {(1, 3), (4, 6)}}, lambda file: source), {"a.rs": {(4, 6)}})
+        source = ["pub const fn limit() -> u32 {", "    7", "}", "pub fn twice(x: u32) -> u32 {", "    x * 2", "}",
+                  "pub const unsafe fn raw() -> u32 {", "    1", "}", 'const extern "C" fn c() {}', "fn constant_name() {}"]
+        self.assertEqual(tool.without_const_fns({"a.rs": {(1, 3), (4, 6), (7, 9), (10, 10), (11, 11)}}, lambda file: source),
+                         {"a.rs": {(4, 6), (11, 11)}})
 
     def test_a_blob_is_the_git_object_id(self):
         with tempfile.TemporaryDirectory() as temp:

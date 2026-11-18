@@ -275,6 +275,11 @@ pub fn select(
                         .iter()
                         .any(|function| function[0] <= hunk[0] && hunk[1] <= function[1])
                 };
+                if change.hunks.is_empty() {
+                    return everything(format!(
+                        "git reports no changed lines in `{path}`, so the change cannot be placed"
+                    ));
+                }
                 if let Some(hunk) = change.hunks.iter().find(|hunk| !inside(hunk)) {
                     return everything(format!(
                         "`{path}` changes lines {}-{} outside the function bodies the coverage map records, where code runs without coverage (constants, macros, derives, types)",

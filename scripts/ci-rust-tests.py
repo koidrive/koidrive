@@ -5,6 +5,7 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import json
 import math
+import re
 import os
 from pathlib import Path
 import subprocess
@@ -210,7 +211,7 @@ def without_const_fns(spans, lines):
     kept = {}
     for file, functions in spans.items():
         text = lines(file)
-        kept[file] = {(start, end) for start, end in functions if "const fn" not in text[start - 1]}
+        kept[file] = {(start, end) for start, end in functions if not re.search(r"\bconst\b[^{]*\bfn\b", text[start - 1])}
     return kept
 
 
