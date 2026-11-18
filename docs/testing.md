@@ -47,7 +47,7 @@ Four other workflows run on pull requests. [CLI distribution](../.github/workflo
 `cargo test` skips a test marked `#[ignore]`. `grep -rn '#\[ignore' core cli` lists them. They are of three kinds:
 
 - The integration tests that need a Worker. They run through the scripts in the table above.
-- Benchmarks, timing probes and models that take too long for every run, such as `upload_benchmark` in `core/net/tests/upload_bench.rs`, which runs in the [deploy test's bench mode](deploy-test.md#modes) or against a local Worker with `KOIDRIVE_BENCH_MIB=64`. Run one with `cargo test -p <package> <name> -- --ignored`, adding `--release` where the test says so.
+- Benchmarks, timing probes and models that take too long for every run, such as `upload_benchmark` in `core/net/tests/upload_bench.rs`, which runs in the [deploy test's bench mode](deploy-test.md#modes) or against a local Worker. For a local run, start `wrangler dev` in `server/`, then set `KOIDRIVE_TEST_SERVER` to its URL, `KOIDRIVE_TEST_SERVER_LOG` to the file that holds its output, where the test reads the claim code, and `KOIDRIVE_BENCH_MIB=64`. Run one with `cargo test -p <package> <name> -- --ignored`, adding `--release` where the test says so.
 - Known failures. Their ignore reason names the issue, and the fix removes the `#[ignore]`.
 
 ## Property tests
@@ -137,13 +137,13 @@ gh run list --workflow heavy-tests.yml --limit 1   # the run's ID, for gh run wa
 | Input | What it sets | Default |
 |---|---|---|
 | `ref` | The branch, tag or commit to test | The ref the run starts from |
-| `crate` | The package, as for `cargo test -p` | Required |
+| `crate` | The package, as for `cargo test -p` | Required, except with `mode` `macos-ui`, which takes none |
 | `test` | One integration test target, as for `cargo test --test` | Every target of the package |
 | `filter` | A test name filter, as for `cargo test` | Every test |
 | `cases` | `KOIDRIVE_BATTERY_CASES`, for stress properties only | Each property's own count |
-| `mode` | `cargo` for Cargo tests, `worker` for the integration launchers against a fresh local Worker, `server` for the Vitest suite of `server/` (crate `koidrive-server`, where `test` filters test files and `filter` test names), or `macos-ui` for the macOS app's UI tests on a fresh runner per run | `cargo` |
+| `mode` | `cargo` for Cargo tests, `worker` for the integration launchers against a fresh local Worker (crate `koidrive-net` or `koidrive-driver`, which run their `server` and `sync` targets), `server` for the Vitest suite of `server/` (crate `koidrive-server`, where `test` filters test files and `filter` test names), or `macos-ui` for the macOS app's UI tests on a fresh runner per run, which takes only `ref`, `repeat` and `os` `macos` or `both` | `cargo` |
 | `repeat` | How many times each OS runs the selection, 1 to 100 | 1 |
-| `parallel` | How many repetitions run at once on the same host, 1 to 8 | 1 |
+| `parallel` | How many repetitions run at once on the same host, 1 to 8. Only 1 with `mode` `server` or `macos-ui` | 1 |
 | `seed` | `PROPTEST_RNG_SEED` of the first run; run k uses seed + k - 1 | Run ID × 1000 |
 | `features` | Cargo features, comma-separated, such as `koidrive-engine/serde` | None |
 | `ignored` | Also runs the tests marked `#[ignore]` | Off |
