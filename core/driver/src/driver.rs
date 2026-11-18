@@ -8274,11 +8274,11 @@ mod tests {
         let store = paths.store(SPACE).unwrap().parent().unwrap().to_path_buf();
         let (server, served) = serve_calling(vec![access_token(), (204, Vec::new())], 1, {
             let private = private.clone();
-            let store = store.clone();
+            let held = store.join("held");
             let state = paths.state_dir.clone();
             move || {
                 close_dir(&private);
-                close_dir(&store);
+                close_dir(&held);
                 close_dir(&state);
             }
         })
@@ -8297,13 +8297,15 @@ mod tests {
         .unwrap();
         fs::write(root.join("keep.txt"), b"keep").unwrap();
         fs::write(other.join("keep.txt"), b"keep too").unwrap();
+        fs::create_dir(store.join("held")).unwrap();
+        fs::write(store.join("held/f"), b"x").unwrap();
         let driver = Driver::open(paths.clone()).unwrap();
 
         let failed = driver.sign_out(false).await;
         assert_eq!(served.await.unwrap(), ["/v1/token", "/v1/devices/d1"]);
         let removing = paths.removing(SPACE, 1);
         open_dir(&private);
-        open_dir(&removing);
+        open_dir(&removing.join("held"));
         open_dir(&paths.state_dir);
         if rustix::process::geteuid().is_root() {
             eprintln!("SKIPPED: running as root, so permissions do not block writes");
