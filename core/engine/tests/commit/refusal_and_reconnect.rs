@@ -1022,3 +1022,31 @@ fn a_restore_that_brings_back_a_commit_built_again_at_its_slot_starts_no_recover
     };
     assert_eq!(commits.connected(&welcome), Reconnect::AheadOfServer);
 }
+
+#[test]
+fn a_restore_that_brings_back_a_commit_a_reconnect_dropped_from_flight_starts_no_recovery() {
+    let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 1,
+        slots: [(1, given(0))].into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let dropped = build(&mut commits, &mut trees, &mut IdGen::new(1)).unwrap();
+    assert_eq!(dropped.device_seq, 2);
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    assert!(commits.in_flight().is_none());
+    let state = commits.state();
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 3,
+        slots: [(1, given(0)), (2, given(1)), (3, slot(7))].into(),
+        ..state
+    })
+    .unwrap();
+    let welcome = Welcome {
+        device_commit_id: dropped.commit_id,
+        device_committed_at_ms: 30,
+        ..welcome(2)
+    };
+    assert_eq!(commits.connected(&welcome), Reconnect::AheadOfServer);
+}
