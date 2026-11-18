@@ -514,6 +514,7 @@ fn set_marker(root: &Path, effects: u64) {
         &Marker {
             space_id: SPACE.into(),
             effects,
+            token: read_marker(root).unwrap().and_then(|marker| marker.token),
         },
     )
     .unwrap();

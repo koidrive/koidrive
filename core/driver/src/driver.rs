@@ -1379,6 +1379,7 @@ impl Driver {
                 &Marker {
                     space_id: space.space_id.clone(),
                     effects: 0,
+                    token: None,
                 },
             )
             .map_err(io_error(&root))?;
@@ -2673,6 +2674,8 @@ mod tests {
     use crate::question::{HeldItem, QuestionKind};
     use crate::restore::{RestoreRejection, RestoreState, RestoreWait};
 
+    mod root_token;
+
     use super::*;
 
     const SPACE: &str = "0190f0a0-0000-7000-8000-000000000001";
@@ -3444,6 +3447,7 @@ mod tests {
                 &Marker {
                     space_id: SPACE.into(),
                     effects: 0,
+                    token: None,
                 },
             )
             .unwrap();
@@ -3539,6 +3543,7 @@ mod tests {
                             &Marker {
                                 space_id: "another-space".into(),
                                 effects: 0,
+                                token: None,
                             },
                         )
                         .unwrap();
@@ -3573,6 +3578,7 @@ mod tests {
                 &Marker {
                     space_id: SPACE.into(),
                     effects: 0,
+                    token: None,
                 },
             )
             .unwrap();
@@ -3697,6 +3703,7 @@ mod tests {
                 &Marker {
                     space_id: SPACE.into(),
                     effects: 0,
+                    token: None,
                 },
             )
             .unwrap();
@@ -4585,6 +4592,7 @@ mod tests {
             &Marker {
                 space_id: space_id.into(),
                 effects: 0,
+                token: None,
             },
         )
         .unwrap();
@@ -4798,6 +4806,7 @@ mod tests {
             &Marker {
                 space_id: SPACE.into(),
                 effects: 0,
+                token: None,
             },
         )
         .unwrap();
@@ -4977,6 +4986,7 @@ mod tests {
             &Marker {
                 space_id: SPACE.into(),
                 effects: 0,
+                token: None,
             },
         )
         .unwrap();

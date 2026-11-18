@@ -207,6 +207,11 @@ impl Folder {
             _ if offline.is_some() => offline,
             _ if refused.is_some() => refused,
             _ if retrying.is_some() => retrying,
+            _ if self.disk.unwritable().is_some() => self.disk.unwritable().map(|why| {
+                format!(
+                    "changes made here wait to be uploaded until this folder can be written: {why}"
+                )
+            }),
             Some(CommitHalt::ReadOnly) => {
                 Some("the server takes no changes from this device".into())
             }

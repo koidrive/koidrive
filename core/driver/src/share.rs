@@ -1020,6 +1020,7 @@ mod tests {
             &koidrive_fs::Marker {
                 space_id: SPACE.into(),
                 effects: 0,
+                token: None,
             },
         )
         .unwrap();

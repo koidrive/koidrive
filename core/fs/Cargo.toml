@@ -10,6 +10,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+getrandom = "0.4.3"
 koidrive-ignore = { path = "../ignore" }
 libc = "0.2.191"
 notify = "8.2.2"

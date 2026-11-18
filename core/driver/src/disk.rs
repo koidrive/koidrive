@@ -55,8 +55,8 @@ use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{Content, Kind, LocalNode, NodeId};
 use koidrive_fs::{
     Action, Base, BroughtBack, Contents, Dir, Displaced, Effect, Entry, EntryKind, FileId,
-    Location, Marker, Outcome, Reason, Reclaimed, Refusal, RootProblem, Space, Step, check_root_at,
-    open_root_folder, root_at,
+    Location, Marker, Outcome, Reason, Reclaimed, Refusal, RootProblem, RootTokens, Space, Step,
+    check_root_at, open_root_folder, root_at,
 };
 use koidrive_net::{CallError, ChunkError, Session, StopReason, Transfer};
 use koidrive_proto::v1::error::Code;
@@ -245,6 +245,9 @@ pub(crate) enum Cut {
     BeforeAck,
     /// After that transaction committed.
     AfterAck,
+    TokenPended,
+    TokenWritten,
+    TokenCommitted,
 }
 
 type Hook = Box<dyn FnMut(Cut) + Send>;
@@ -268,6 +271,12 @@ pub(crate) struct Disk {
     batch: BatchLimit,
     hook: Hook,
     brought_back: BroughtBack,
+    tokens: RootTokens,
+    fresh: bool,
+    unwritable: Option<String>,
+    flushed: bool,
+    #[cfg(test)]
+    flush_fails: bool,
 }
 
 /// A planned batch of effects the store holds, in the order they were planned.
@@ -338,17 +347,21 @@ impl Disk {
     /// Startup for the folder `link` names, through `lock`, the descriptor the task locked. In order:
     ///
     /// 1. The root check of design §6.2 through that descriptor: the linked path still names it, it is on the linked
-    ///    device, and its marker names the space. Nothing is written when it fails.
+    ///    device, and its marker names the space and, unless it counts more effects than the store (step 2), carries a
+    ///    token the store recorded ([`RootProblem::Copy`] otherwise). Nothing is written when it fails.
     /// 2. The counters: with *e* the store's effect counter and *upper* that plus the number of effects in flight, a
     ///    marker above *upper* means the store is older than the folder. The disk carried out every effect the
-    ///    marker counts, so the store continues from it, and the folder recovers (§6.4). A marker below *e* is
-    ///    [`Stop::DiskBehind`], which leaves the marker, staging and quarantine as they are.
+    ///    marker counts, so the store continues from it and from the marker's token, and the folder recovers (§6.4).
+    ///    A marker below *e* is [`Stop::DiskBehind`], which leaves the marker, staging and quarantine as they are.
     /// 3. The no-replace probe.
-    /// 4. The effects in flight are recovered in one section without staging anything again, and acknowledged in one
+    /// 4. The marker gets a new token: the store records it as pending, the marker takes it, and the store makes it
+    ///    current. Each commit this device builds rotates the token the same way before it is sent. A marker that
+    ///    cannot be written keeps its token until the next marker write.
+    /// 5. The effects in flight are recovered in one section without staging anything again, and acknowledged in one
     ///    transaction. An interrupted one is planned again; one that met another state on disk stays blocked, and so
     ///    does one that recovery found done where L shows another entry
     ///    ([`koidrive_engine::effects::Effects::confirms`]). The marker must then equal *e*.
-    /// 5. Staged files without an effect are deleted.
+    /// 6. Staged files without an effect are deleted.
     ///
     /// The observer then resets the paths of the recovered effects to L, so it reads a file an effect placed before
     /// the crash once, whatever the snapshot it starts from says about that file.
@@ -381,6 +394,12 @@ impl Disk {
             batch: BATCH,
             hook,
             brought_back: BroughtBack::Entries(HashSet::new()),
+            tokens: RootTokens::default(),
+            fresh: false,
+            unwritable: None,
+            flushed: false,
+            #[cfg(test)]
+            flush_fails: false,
         };
         if !disk.space.held()? {
             return Err(Stop::Withdrawn(disk.path));
@@ -388,9 +407,15 @@ impl Disk {
         link.root_at()
             .admits(&disk.space.root_at()?)
             .map_err(Stop::Root)?;
-        let marker = disk.marker()?;
+        let found = disk.marker()?;
+        let marker = found.effects;
         let cleared = engine.effects.cleared();
         let upper = cleared + engine.effects.in_flight().len() as u64;
+        if marker <= upper {
+            (store.transaction(|tx| tx.root_tokens())?)
+                .admits(&found)
+                .map_err(Stop::Root)?;
+        }
         if marker > upper {
             tracing::warn!(
                 space_id = link.space_id,
@@ -420,6 +445,10 @@ impl Disk {
                     .commits
                     .enter_recovery(RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk));
                 engine.checkpoint(tx)?;
+                tx.set_root_tokens(&RootTokens {
+                    current: found.token.clone(),
+                    pending: None,
+                })?;
                 Ok(())
             })?;
         }
@@ -433,6 +462,7 @@ impl Disk {
         if !disk.space.probe_no_replace()? {
             return Err(Stop::NoReplace);
         }
+        disk.tokens = rotate_token(&disk.space, found, store)?;
         let records = engine.effects.in_flight().to_vec();
         if let Some(first) = records.first() {
             let mut translated = (records.iter().map(translate)).collect::<Result<Vec<_>, _>>()?;
@@ -448,7 +478,8 @@ impl Disk {
                 .map(|(record, outcome)| (record, confirmed(outcome, record, engine)))
                 .collect();
             acknowledge(&outcomes, true, &link.space_id, engine, store, hook)?;
-            let (marker, cleared) = (disk.marker()?, engine.effects.cleared());
+            disk.finish_rotation(store)?;
+            let (marker, cleared) = (disk.marker()?.effects, engine.effects.cleared());
             if marker != cleared {
                 return Err(Stop::DiskBehind { marker, cleared });
             }
@@ -588,6 +619,7 @@ impl Disk {
             })
             .collect();
         let settled = acknowledge(&outcomes, false, &self.space_id, engine, store, hook)?;
+        self.finish_rotation(store)?;
         let end = self.sections.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let rules_file = |scope: &PathBuf| {
             (scope.file_name()).is_some_and(|name| is_rules_file(&name.to_string_lossy()))
@@ -637,6 +669,7 @@ impl Disk {
         engine: &mut Engine,
         store: &mut Store,
     ) -> Result<(), Stop> {
+        self.fresh = false;
         let Batch {
             stamp,
             answered,
@@ -823,11 +856,86 @@ impl Disk {
         Marker {
             space_id: self.space_id.clone(),
             effects,
+            token: (self.tokens.pending.clone()).or_else(|| self.tokens.current.clone()),
         }
     }
 
-    /// The marker's counter, read through the locked descriptor, for a marker that names this space.
-    fn marker(&self) -> Result<u64, Stop> {
+    pub fn rotate_before_build(&mut self, store: &mut Store) -> Result<Option<RootTokens>, Stop> {
+        let marker = self.marker()?;
+        if !self.fresh {
+            let next = pend_token(&marker, store)?;
+            (self.hook)(Cut::TokenPended);
+            self.tokens = RootTokens {
+                current: marker.token.clone(),
+                pending: Some(next),
+            };
+            self.fresh = true;
+            self.flushed = false;
+        }
+        let Some(pending) = self.tokens.pending.clone() else {
+            self.unwritable = None;
+            return Ok(Some(self.tokens.clone()));
+        };
+        if !self.flushed {
+            let rotated = Marker {
+                token: Some(pending.clone()),
+                ..marker
+            };
+            if let Err(error) = self.write_rotated(&rotated) {
+                if self.unwritable.is_none() {
+                    tracing::warn!(space_id = self.space_id, %error, "nothing is uploaded until the folder's marker can be written");
+                }
+                self.unwritable = Some(error.to_string());
+                return Ok(None);
+            }
+            self.flushed = true;
+            (self.hook)(Cut::TokenWritten);
+        }
+        self.unwritable = None;
+        Ok(Some(RootTokens {
+            current: Some(pending),
+            pending: None,
+        }))
+    }
+
+    pub fn built(&mut self, tokens: RootTokens) {
+        self.fresh = false;
+        self.tokens = tokens;
+        (self.hook)(Cut::TokenCommitted);
+    }
+
+    fn write_rotated(&self, marker: &Marker) -> io::Result<()> {
+        self.space.write_marker(marker)?;
+        #[cfg(test)]
+        if self.flush_fails {
+            return Err(io::Error::other("the test failed the marker's flush"));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_marker_flush(&mut self, fails: bool) {
+        self.flush_fails = fails;
+    }
+
+    pub fn unwritable(&self) -> Option<&str> {
+        self.unwritable.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_hook(&mut self, hook: Hook) {
+        self.hook = hook;
+    }
+
+    fn finish_rotation(&mut self, store: &mut Store) -> Result<(), Stop> {
+        if let Some(next) = self.tokens.pending.take() {
+            self.tokens = commit_token(next, store)?;
+        }
+        Ok(())
+    }
+
+    /// The marker, read through the locked descriptor, for a marker that names this space.
+    fn marker(&self) -> Result<Marker, Stop> {
         let marker = self
             .space
             .marker()
@@ -836,8 +944,50 @@ impl Disk {
         if marker.space_id != self.space_id {
             return Err(Stop::Root(RootProblem::OtherSpace(marker.space_id)));
         }
-        Ok(marker.effects)
+        Ok(marker)
     }
+}
+
+fn rotate_token(space: &Space, marker: Marker, store: &mut Store) -> Result<RootTokens, Stop> {
+    let next = pend_token(&marker, store)?;
+    if !write_token(space, &marker, &next) {
+        return Ok(RootTokens {
+            current: marker.token,
+            pending: Some(next),
+        });
+    }
+    commit_token(next, store)
+}
+
+fn write_token(space: &Space, marker: &Marker, next: &str) -> bool {
+    let rotated = Marker {
+        token: Some(next.to_owned()),
+        ..marker.clone()
+    };
+    let written = space.write_marker(&rotated);
+    if let Err(error) = &written {
+        tracing::warn!(space_id = rotated.space_id, %error, "the folder's marker keeps its token until the next marker write");
+    }
+    written.is_ok()
+}
+
+pub(crate) fn pend_token(marker: &Marker, store: &mut Store) -> Result<String, Stop> {
+    let next = koidrive_fs::new_token();
+    let tokens = RootTokens {
+        current: marker.token.clone(),
+        pending: Some(next.clone()),
+    };
+    store.transaction(|tx| tx.set_root_tokens(&tokens))?;
+    Ok(next)
+}
+
+pub(crate) fn commit_token(token: String, store: &mut Store) -> Result<RootTokens, Stop> {
+    let tokens = RootTokens {
+        current: Some(token),
+        pending: None,
+    };
+    store.transaction(|tx| tx.set_root_tokens(&tokens))?;
+    Ok(tokens)
 }
 
 pub(crate) type Sources = BTreeMap<Vec<u8>, (String, Option<PathBuf>)>;

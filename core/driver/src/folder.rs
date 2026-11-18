@@ -1088,7 +1088,12 @@ impl Folder {
         let now_ms = (SystemTime::now().duration_since(UNIX_EPOCH))
             .map_or(0, |since| since.as_millis() as u64);
         let device_id = self.link.device_id.clone();
-        let built = self.step(|engine, _| {
+        let Some(rotated) = self.disk.rotate_before_build(&mut self.store)? else {
+            self.flight = Flight::Waiting(Next::Build);
+            work.push(Work::ResendAfter(BUILD_AGAIN));
+            return Ok(());
+        };
+        let built = self.step(|engine, tx| {
             let cursor = engine.cursor.as_ref().expect("R follows the log");
             let built = engine.commits.build(
                 &mut engine.trees,
@@ -1098,10 +1103,16 @@ impl Folder {
                 &device_id,
                 cursor.base(),
             );
+            if built.is_some() {
+                tx.set_root_tokens(&rotated)?;
+            }
             Ok(built.cloned())
         })?;
         match built {
-            Some(commit) => self.start(commit, work),
+            Some(commit) => {
+                self.disk.built(rotated);
+                self.start(commit, work)
+            }
             None => {
                 self.plan_effect(work)?;
             }
