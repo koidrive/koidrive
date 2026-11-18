@@ -15,7 +15,7 @@ SECTION = re.compile(r"^---- (\S+) stdout ----$", re.M)
 FAILURES = re.compile(r"^failures:$", re.M)
 SAVED = re.compile(r"^proptest regression saved in (\S+): cc ([0-9a-f]+)$", re.M)
 CASE = re.compile(r"^cc-([0-9a-f]+)\.txt$")
-LOCATION = re.compile(r"\.rs:\d+(?::\d+)?")
+LOCATION = re.compile(r"[\w./-]*\.rs:\d+(?::\d+)?")
 CHECKED_PROFILE = re.compile(r"(?ms)^\[profile\.checked\]\n.*?(?=^\[|\Z)")
 RUNTIME_CHECKS = Path(__file__).resolve().parent / "require-runtime-checks.sh"
 PROBE_SOURCE = Path(__file__).resolve().parent.parent / "core/test-support/src/lib.rs"
@@ -62,7 +62,7 @@ def failure_message(output):
 
 
 def comparable(message):
-    return LOCATION.sub(".rs:N", message or "")
+    return LOCATION.sub("<location>", message or "")
 
 
 def normalized(message):
@@ -483,7 +483,7 @@ def markdown(spec, rows, others, run_url, problem=None):
         "PR-caused means the case fails on the head and passes on the base, fails on both with a different message, "
         "or the base has no such test. "
         f"{SAME[0].upper() + SAME[1:]} means both sides fail with exactly the same message. "
-        f"{MOVED[0].upper() + MOVED[1:]} means the messages match only once their `file.rs:line:column` positions "
+        f"{MOVED[0].upper() + MOVED[1:]} means the messages match only once their `path/file.rs:line:column` locations "
         "are ignored, so they may come from different assertions. "
         f"{SILENT[0].upper() + SILENT[1:]} means both sides fail but one was killed by a signal before it printed \
 anything of its own, so the two failures can't be compared. "
