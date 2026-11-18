@@ -808,7 +808,7 @@ fn a_copy_rolled_back_past_its_resend_does_not_send_its_edit_again() {
     let mut trees = trees(&[synced("n", file(ROOT, "n", 1))]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     trees.set_local("n".into(), local(file(ROOT, "n", 2), 1));
-    trees.settle();
+    trees.settle(commits.aliases());
     build(&mut commits, &mut trees, &mut ids).unwrap();
     let edited = RemoteNode {
         content_rev: 2,
@@ -820,7 +820,7 @@ fn a_copy_rolled_back_past_its_resend_does_not_send_its_edit_again() {
         .received(result(2, vec![outcome(op_result::Code::Applied)]))
         .unwrap();
     assert!(commits.acknowledge(&mut trees, 2));
-    trees.settle();
+    trees.settle(commits.aliases());
     assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
 
     let resent = Welcome {
@@ -857,7 +857,7 @@ fn a_copy_rolled_back_past_its_resend_does_not_send_its_edit_again() {
         commits.accepted(),
     );
     commits.forget_lost_slots();
-    trees.settle();
+    trees.settle(commits.aliases());
     let sent = build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit));
     assert_eq!(
         sent_for(&sent, "n"),
