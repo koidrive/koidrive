@@ -15,8 +15,8 @@ use koidrive_engine::question::{
 };
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 use koidrive_engine::state::{
-    Agreed, CommitsState, EffectsState, FinishOrigin, LostPosition, MovedHere, PendingFinish,
-    TreesState,
+    Agreed, CommitsState, EffectsState, FinishOrigin, KeptEntries, LostPosition, MovedHere,
+    PendingFinish, TreesState,
 };
 use koidrive_engine::tree::{
     FileIdentity, Kind, LocalNode as EngineLocalNode, RemoteNode, Shape as EngineShape,
@@ -112,6 +112,9 @@ fn migrations_apply_from_empty() {
             "guard_ledger",
             "guard_remote",
             "guard_remote_dismissed",
+            "kept_entries",
+            "kept_folders",
+            "kept_nodes",
             "kept_originals",
             "link",
             "local_changes",
@@ -683,6 +686,11 @@ fn legacy_state() -> EngineState {
     state.effects.in_flight = full.effects.in_flight;
     state.effects.cleared = full.effects.cleared;
     state.effects.failed = full.effects.failed;
+    for effect in state.effects.failed.values_mut() {
+        if let Effect::RemoveDir { along, .. } = effect {
+            along.clear();
+        }
+    }
     state
 }
 
@@ -1372,6 +1380,26 @@ fn engine_state() -> EngineState {
             dropped_edits: nodes(["d"]),
             unsent_moves: nodes(["m"]),
             unsent_creates: nodes(["c"]),
+            kept_folders: nodes(["k"]),
+            kept_entries: BTreeMap::from([
+                (
+                    "e".into(),
+                    KeptEntries {
+                        names: [".env".into(), "node_modules".into()].into(),
+                        moved: [".env.local".into()].into(),
+                        listed: true,
+                    },
+                ),
+                (
+                    "f".into(),
+                    KeptEntries {
+                        names: [".env".into()].into(),
+                        moved: Default::default(),
+                        listed: false,
+                    },
+                ),
+            ]),
+            kept_nodes: nodes(["n1"]),
             unseen_changes: nodes(["u"]),
             resends: nodes(["u"]),
             local_changes: nodes(["u"]),
@@ -1568,12 +1596,18 @@ fn engine_state() -> EngineState {
                         to: Location::Parked("m".into()),
                     },
                 ),
-                ("f".into(), Effect::RemoveFile { displaced }),
+                (
+                    "f".into(),
+                    Effect::RemoveFile {
+                        displaced: displaced.clone(),
+                    },
+                ),
                 (
                     "d".into(),
                     Effect::RemoveDir {
                         at: in_docs("empty"),
                         identity: identity(8),
+                        along: vec![displaced],
                     },
                 ),
             ]),
@@ -1606,7 +1640,7 @@ fn engine_state_survives_a_reopen() {
 }
 
 /// The tables of the engine state besides the nodes of R, L and S.
-const ENGINE_TABLES: [&str; 45] = [
+const ENGINE_TABLES: [&str; 48] = [
     "node_sets",
     "node_maps",
     "waiting_updates",
@@ -1647,6 +1681,9 @@ const ENGINE_TABLES: [&str; 45] = [
     "unsent_moves",
     "unsent_creates",
     "removed_here",
+    "kept_folders",
+    "kept_entries",
+    "kept_nodes",
     "unsent_marks",
     "pending_finishes",
     "lost_positions",
@@ -4772,6 +4809,35 @@ fn a_store_from_before_unsent_creates_were_recorded_opens_with_none_recorded() {
     let after = before.clone();
     before.trees.unsent_creates.clear();
     assert!(!after.trees.unsent_creates.is_empty());
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
+    store
+        .transaction(|tx| tx.update_engine_state(&before, &after))
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), after);
+}
+
+#[test]
+fn a_store_from_before_kept_folders_were_recorded_opens_with_none_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut before = engine_state();
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_engine_state(&before))
+        .unwrap();
+    store_before(&path, "kept_folders");
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(applied(&path), all_migrations());
+    let after = before.clone();
+    before.trees.kept_folders.clear();
+    before.trees.kept_entries.clear();
+    before.trees.kept_nodes.clear();
+    assert!(!after.trees.kept_folders.is_empty());
+    assert!(!after.trees.kept_entries.is_empty());
+    assert!(!after.trees.kept_nodes.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
         .transaction(|tx| tx.update_engine_state(&before, &after))

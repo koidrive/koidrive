@@ -79,10 +79,12 @@ pub enum Action {
     RemoveFile {
         displaced: Displaced,
     },
-    /// Removes a folder, which must be empty once quarantined.
+    /// Removes a folder, which must hold nothing but the files `along` once quarantined. They go to the trash inside
+    /// it.
     RemoveDir {
         at: Location,
         id: FileId,
+        along: Vec<Displaced>,
     },
 }
 
@@ -103,6 +105,8 @@ pub trait Contents {
     fn displaced(&mut self, file: &File) -> io::Result<bool>;
     /// Whether `file` holds the content the effect writes.
     fn written(&mut self, file: &File) -> io::Result<bool>;
+    /// Whether `file` holds the content of the file at `index` among the files a folder removal takes along.
+    fn along(&mut self, index: usize, file: &File) -> io::Result<bool>;
     /// What the local trash records as the displaced file's content, for
     /// [`Space::reclaim_trash`] to compare the trashed file with later.
     fn displaced_content(&self) -> Option<Vec<u8>>;
@@ -163,9 +167,11 @@ pub enum Reason {
     /// target does not hold the new content: the user changed or removed the
     /// written file, or took its name before it was placed.
     Overtaken,
-    /// The folder a removal acts on holds entries other than platform files,
-    /// named here in order. The folder went back as it was.
-    Holds(Vec<OsString>),
+    /// The folder a removal acts on holds entries other than platform files and
+    /// the files it takes along, named here in order with their kinds: none
+    /// for an entry that is neither a file nor a folder, such as a symlink.
+    /// The folder went back as it was.
+    Holds(Vec<(OsString, Option<EntryKind>)>),
     /// The system did not allow the effect, as for a folder without write
     /// permission, a locked file or a read-only volume. Nothing changed.
     Denied,
@@ -668,7 +674,7 @@ impl Space {
             Action::RemoveFile { displaced } => {
                 self.displace(effect, displaced, None, contents, now, hook)?
             }
-            Action::RemoveDir { at, id } => {
+            Action::RemoveDir { at, id, .. } => {
                 let displaced = Displaced {
                     at: at.clone(),
                     entry: folder_entry(*id),
@@ -739,6 +745,15 @@ impl Space {
             }
             Ok(Some(_)) => {}
         }
+        let along = match &effect.action {
+            Action::RemoveDir { along, .. } => along.as_slice(),
+            _ => &[],
+        };
+        if displaced.entry.kind == EntryKind::Dir
+            && let Some(reason) = held(parent.fd(), name, along)?
+        {
+            return Ok(failed(reason));
+        }
         hook(Step::Checked);
 
         resolve!(self.recheck(&parent));
@@ -755,7 +770,13 @@ impl Space {
         self.flush_folder(&quarantine, Flush::Barrier)?;
         hook(Step::Quarantined);
 
-        let differs = differs(quarantine.fd(), id, &displaced.entry, contents)?;
+        let differs = match differs(quarantine.fd(), id, &displaced.entry, along, contents) {
+            Ok(differs) => differs,
+            Err(err) => {
+                self.put_back(&quarantine, id, &displaced.at, now)?;
+                return Err(err);
+            }
+        };
         hook(Step::Compared);
         if let Some(reason) = differs {
             let recovered = self.put_back(&quarantine, id, &displaced.at, now)?;
@@ -896,7 +917,7 @@ impl Space {
                 replaces: Some(displaced),
             } => Some((displaced.clone(), Some(at))),
             Action::RemoveFile { displaced } => Some((displaced.clone(), None)),
-            Action::RemoveDir { at, id } => Some((
+            Action::RemoveDir { at, id, .. } => Some((
                 Displaced {
                     at: at.clone(),
                     entry: folder_entry(*id),
@@ -908,7 +929,17 @@ impl Space {
         if let Some((displaced, place)) = displacing
             && lookup(quarantine.fd(), id)?.is_some()
         {
-            let differs = differs(quarantine.fd(), id, &displaced.entry, contents)?;
+            let along = match &effect.action {
+                Action::RemoveDir { along, .. } => along.as_slice(),
+                _ => &[],
+            };
+            let differs = match differs(quarantine.fd(), id, &displaced.entry, along, contents) {
+                Ok(differs) => differs,
+                Err(err) => {
+                    self.returned(&quarantine, effect, &displaced, Reason::Changed, now, hook)?;
+                    return Err(err);
+                }
+            };
             hook(Step::Compared);
             if let Some(reason) = differs {
                 return self.returned(&quarantine, effect, &displaced, reason, now, hook);
@@ -1074,6 +1105,20 @@ fn differs(
     quarantine: BorrowedFd<'_>,
     id: &OsStr,
     expected: &Entry,
+    along: &[Displaced],
+    contents: &mut dyn Contents,
+) -> io::Result<Option<Reason>> {
+    match compare(quarantine, id, expected, along, contents) {
+        Err(err) if refused(&err) => Ok(Some(Reason::Denied)),
+        compared => compared,
+    }
+}
+
+fn compare(
+    quarantine: BorrowedFd<'_>,
+    id: &OsStr,
+    expected: &Entry,
+    along: &[Displaced],
     contents: &mut dyn Contents,
 ) -> io::Result<Option<Reason>> {
     if lookup(quarantine, id)?.and_then(|stat| stat.entry()) != Some(*expected) {
@@ -1085,17 +1130,77 @@ fn differs(
             Ok((!same).then_some(Reason::Changed))
         }
         EntryKind::Dir => {
+            if let Some(reason) = held(quarantine, id, along)? {
+                return Ok(Some(reason));
+            }
             let dir = rustix::fs::openat(quarantine, id, crate::DIR_FLAGS, Mode::empty())?;
-            let mut held = Vec::new();
-            for name in list(dir.as_fd())? {
-                let platform = PLATFORM_FILES.iter().any(|file| name == OsStr::new(file));
-                if !platform || stat_at(dir.as_fd(), &name)?.file_type != FileType::RegularFile {
-                    held.push(name);
+            for (index, file) in along.iter().enumerate() {
+                let name = location_name(&file.at);
+                if lookup(dir.as_fd(), name)?.is_some()
+                    && !contents.along(index, &open_file(dir.as_fd(), name)?)?
+                {
+                    return Ok(Some(Reason::Changed));
                 }
             }
-            Ok((!held.is_empty()).then_some(Reason::Holds(held)))
+            Ok(None)
         }
     }
+}
+
+impl Space {
+    /// The entries of the folder `dirs` resolve to from `base`, each with its kind: none for an entry that is neither
+    /// a file nor a folder.
+    pub fn entries(
+        &self,
+        base: &Base,
+        dirs: &[crate::Dir],
+    ) -> Result<Vec<(OsString, Option<EntryKind>)>, Unresolved> {
+        let folder = self.folder(base, dirs)?;
+        let failed = |err| Unresolved::Io {
+            path: folder.path(),
+            err,
+        };
+        let mut entries = Vec::new();
+        for name in list(folder.fd()).map_err(failed)? {
+            let Some(stat) = lookup(folder.fd(), &name).map_err(failed)? else {
+                continue;
+            };
+            let kind = match stat.file_type {
+                FileType::Directory => Some(EntryKind::Dir),
+                FileType::RegularFile => Some(EntryKind::File),
+                _ => None,
+            };
+            entries.push((name, kind));
+        }
+        Ok(entries)
+    }
+}
+
+fn held(parent: BorrowedFd<'_>, name: &OsStr, along: &[Displaced]) -> io::Result<Option<Reason>> {
+    let dir = rustix::fs::openat(parent, name, crate::DIR_FLAGS, Mode::empty())?;
+    let mut held = Vec::new();
+    for name in list(dir.as_fd())? {
+        if let Some(file) = along.iter().find(|file| location_name(&file.at) == name) {
+            if lookup(dir.as_fd(), &name)?.and_then(|stat| stat.entry()) != Some(file.entry) {
+                return Ok(Some(Reason::Changed));
+            }
+            continue;
+        }
+        let platform = PLATFORM_FILES.iter().any(|file| name == OsStr::new(file));
+        let Some(stat) = lookup(dir.as_fd(), &name)? else {
+            continue;
+        };
+        let file_type = stat.file_type;
+        if !platform || file_type != FileType::RegularFile {
+            let kind = match file_type {
+                FileType::Directory => Some(EntryKind::Dir),
+                FileType::RegularFile => Some(EntryKind::File),
+                _ => None,
+            };
+            held.push((name, kind));
+        }
+    }
+    Ok((!held.is_empty()).then_some(Reason::Holds(held)))
 }
 
 fn clear_platform_files(quarantine: BorrowedFd<'_>, id: &OsStr) -> io::Result<()> {

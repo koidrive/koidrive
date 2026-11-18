@@ -8,13 +8,13 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 use common::{
-    EDITED, ID, REMOTE, SCENARIOS, SYNCED, apply_one, assert_settled, at, bind, contents, dir,
-    entries, marker, now, prepare, private_names, recover_one, rewrite_keeping_mtime, same, stage,
-    trashed,
+    EDITED, ID, REMOTE, RULES, SCENARIOS, SYNCED, apply_one, assert_settled, at, bind, contents,
+    dir, entries, marker, now, prepare, private_names, recover_one, rewrite_keeping_mtime, same,
+    stage, trashed,
 };
 use koidrive_fs::{
-    Action, Base, Displaced, Effect, Location, Outcome, PARKED_DIR, PRIVATE_DIR, QUARANTINE_DIR,
-    Reason, STAGING_DIR, Snapshot, Step, TRASH_RETENTION, Unresolved, read_marker,
+    Action, Base, Displaced, Effect, EntryKind, Location, Outcome, PARKED_DIR, PRIVATE_DIR,
+    QUARANTINE_DIR, Reason, STAGING_DIR, Snapshot, Step, TRASH_RETENTION, Unresolved, read_marker,
 };
 
 fn replace(root: &Path) -> Effect {
@@ -285,7 +285,13 @@ fn folder_that_gained_an_entry_is_put_back() {
             fs::write(root.join("docs/empty/late.txt"), "late").unwrap();
         }
     });
-    assert_eq!(outcome, failed(Reason::Holds(vec!["late.txt".into()])));
+    assert_eq!(
+        outcome,
+        failed(Reason::Holds(vec![(
+            "late.txt".into(),
+            Some(EntryKind::File)
+        )]))
+    );
     assert_eq!(fs::read(root.join("docs/empty/late.txt")).unwrap(), b"late");
     assert!(private_names(root, "trash").is_empty());
     assert_settled(root);
@@ -315,7 +321,11 @@ fn folder_that_holds_anything_but_platform_files_is_put_back_as_it_was() {
         |folder| fs::create_dir(folder.join("Thumbs.db")).unwrap(),
         |folder| std::os::unix::fs::symlink("build.log", folder.join("desktop.ini")).unwrap(),
     ];
-    let names = ["build.log", "Thumbs.db", "desktop.ini"];
+    let names = [
+        ("build.log", Some(EntryKind::File)),
+        ("Thumbs.db", Some(EntryKind::Dir)),
+        ("desktop.ini", None),
+    ];
     for (other, name) in others.into_iter().zip(names) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -326,11 +336,193 @@ fn folder_that_holds_anything_but_platform_files_is_put_back_as_it_was() {
         let before = listing(&folder);
         assert_eq!(before.len(), 2);
 
-        let held = Reason::Holds(vec![name.into()]);
+        let held = Reason::Holds(vec![(name.0.into(), name.1)]);
         assert_eq!(apply(root, &effect, |_| {}), failed(held));
         assert_eq!(listing(&folder), before);
         assert_eq!(fs::read(folder.join(".DS_Store")).unwrap(), b"view");
         assert!(private_names(root, "trash").is_empty());
+        assert_settled(root);
+    }
+}
+
+#[test]
+fn a_folder_that_holds_an_entry_is_left_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let effect = prepare(&SCENARIOS[5], root);
+    let folder = root.join("docs/empty");
+    fs::create_dir(folder.join("node_modules")).unwrap();
+    let before = fs::metadata(&folder).unwrap().ino();
+    let mut steps = Vec::new();
+    let outcome = apply(root, &effect, |step| steps.push(step));
+    assert_eq!(
+        outcome,
+        failed(Reason::Holds(vec![(
+            "node_modules".into(),
+            Some(EntryKind::Dir)
+        )]))
+    );
+    assert_eq!(steps, [Step::Marked]);
+    assert_eq!(fs::metadata(&folder).unwrap().ino(), before);
+    assert!(private_names(root, "quarantine").is_empty());
+    assert_settled(root);
+}
+
+fn with_rules_file(root: &Path) -> (Effect, PathBuf) {
+    let mut effect = prepare(&SCENARIOS[5], root);
+    let folder = root.join("docs/empty");
+    fs::write(folder.join(".koiignore"), RULES).unwrap();
+    let [docs, empty, rules] = entries(root, &["docs", "docs/empty", "docs/empty/.koiignore"])[..]
+    else {
+        unreachable!()
+    };
+    let Action::RemoveDir { along, .. } = &mut effect.action else {
+        unreachable!()
+    };
+    along.push(Displaced {
+        at: at(vec![dir("docs", &docs), dir("empty", &empty)], ".koiignore"),
+        entry: rules,
+    });
+    (effect, folder)
+}
+
+#[test]
+fn a_folder_that_holds_only_the_files_it_takes_along_goes_to_the_trash_with_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let (effect, folder) = with_rules_file(root);
+    let outcome = apply(root, &effect, |_| {});
+    assert_eq!(outcome, Outcome::Done { identity: None });
+    assert!(!folder.exists());
+    let [trashed] = &private_names(root, "trash")[..] else {
+        panic!("{:?}", private_names(root, "trash"))
+    };
+    let trash = root.join(PRIVATE_DIR).join("trash").join(trashed);
+    assert_eq!(fs::read(trash.join(".koiignore")).unwrap(), RULES);
+    assert!(private_names(root, "quarantine").is_empty());
+    assert_settled(root);
+}
+
+#[test]
+fn a_folder_that_holds_an_entry_beside_the_files_it_takes_along_is_left_in_place_with_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let (effect, folder) = with_rules_file(root);
+    fs::write(folder.join(".env"), b"SECRET=local").unwrap();
+    let outcome = apply(root, &effect, |_| {});
+    assert_eq!(
+        outcome,
+        failed(Reason::Holds(vec![(".env".into(), Some(EntryKind::File))]))
+    );
+    assert_eq!(fs::read(folder.join(".koiignore")).unwrap(), RULES);
+    assert!(private_names(root, "quarantine").is_empty());
+    assert_settled(root);
+}
+
+#[test]
+fn a_folder_whose_file_to_take_along_changed_is_left_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let (effect, folder) = with_rules_file(root);
+    fs::write(folder.join(".koiignore"), b".env\nbuild/\n").unwrap();
+    let outcome = apply(root, &effect, |_| {});
+    assert_eq!(outcome, failed(Reason::Changed));
+    assert_eq!(
+        fs::read(folder.join(".koiignore")).unwrap(),
+        b".env\nbuild/\n"
+    );
+    assert_settled(root);
+}
+
+#[test]
+fn a_folder_whose_file_to_take_along_changed_in_place_keeping_its_size_and_time_is_left_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let (effect, folder) = with_rules_file(root);
+    let rules = folder.join(".koiignore");
+    rewrite_keeping_mtime(&rules, b".log\n");
+    let outcome = apply(root, &effect, |_| {});
+    assert_eq!(outcome, failed(Reason::Changed));
+    assert_eq!(fs::read(&rules).unwrap(), b".log\n");
+    assert_settled(root);
+}
+
+struct FailingRead;
+
+impl koidrive_fs::Contents for FailingRead {
+    fn displaced(&mut self, _: &fs::File) -> std::io::Result<bool> {
+        Err(std::io::Error::other("read failed"))
+    }
+
+    fn written(&mut self, _: &fs::File) -> std::io::Result<bool> {
+        Ok(false)
+    }
+
+    fn along(&mut self, _: usize, _: &fs::File) -> std::io::Result<bool> {
+        Err(std::io::Error::other("read failed"))
+    }
+
+    fn displaced_content(&self) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+#[test]
+fn a_removal_whose_comparison_fails_puts_the_entry_back_before_the_error() {
+    for removal in ["remove_file", "remove_dir"] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (effect, file) = match removal {
+            "remove_file" => (
+                prepare(common::scenario(removal), root),
+                root.join("docs/report.txt"),
+            ),
+            _ => {
+                let (effect, folder) = with_rules_file(root);
+                (effect, folder.join(".koiignore"))
+            }
+        };
+        let space = bind(root);
+        let mut hook = |_| {};
+        let mut section = space.section(&marker(), &mut hook).unwrap();
+        assert!(
+            section.apply(&effect, &mut FailingRead, now()).is_err(),
+            "{removal}"
+        );
+        drop(section);
+        assert!(file.exists(), "{removal}");
+        assert!(private_names(root, "quarantine").is_empty(), "{removal}");
+    }
+}
+
+#[test]
+fn a_removal_whose_file_became_unreadable_is_left_in_place() {
+    use std::os::unix::fs::PermissionsExt;
+    for removal in ["remove_file", "remove_dir"] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (effect, file) = match removal {
+            "remove_file" => (
+                prepare(common::scenario(removal), root),
+                root.join("docs/report.txt"),
+            ),
+            _ => {
+                let (effect, folder) = with_rules_file(root);
+                (effect, folder.join(".koiignore"))
+            }
+        };
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&file).is_ok() {
+            return;
+        }
+        let outcome = apply(root, &effect, |_| {});
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(outcome, failed(Reason::Denied), "{removal}");
+        assert!(
+            fs::read(&file).is_ok_and(|read| !read.is_empty()),
+            "{removal}"
+        );
+        assert!(private_names(root, "quarantine").is_empty(), "{removal}");
         assert_settled(root);
     }
 }

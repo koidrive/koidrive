@@ -72,7 +72,9 @@ use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, location_of};
 use koidrive_engine::first_link::{self, History, Marks};
 use koidrive_engine::names::{conflict_name, nfc, same_name};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
-use koidrive_engine::tree::{Content, FileIdentity, NodeId, RemoteNode, Shape, same, same_content};
+use koidrive_engine::tree::{
+    Content, FileIdentity, Kind, NodeId, RemoteNode, Shape, same, same_content,
+};
 use koidrive_proto::v1::{
     ChunkRef, Commit, CommitResult, Error, ListVersions, Move, NodeKind, NodeState, NodeStatus,
     PrepareUpload, Resume, UploadReceipt, change_record, chunk_plan, error, op, op_result,
@@ -599,6 +601,12 @@ fn unspend(spent: &mut Vec<Spent>, touches: &mut [BTreeMap<u128, BTreeSet<u64>>]
             spent.push(kept.clone());
         }
     }
+}
+
+fn names_and_kinds(held: &[(String, Kind)]) -> Vec<(&str, Option<Kind>)> {
+    (held.iter())
+        .map(|(name, kind)| (name.as_str(), Some(*kind)))
+        .collect()
 }
 
 fn note(seen: &mut BTreeMap<&'static str, u64>, what: &'static str) {
@@ -1680,13 +1688,17 @@ impl World {
                 device.link = None;
                 return Ok(false);
             }
-            ends.push((record, applied, applies, outcome));
+            let held = match applied {
+                Some(Err(Refused::NotEmpty)) => device.disk.held(&record.effect),
+                _ => Vec::new(),
+            };
+            ends.push((record, applied, applies, outcome, held));
         }
         if batch.len() > 1 {
             note(&mut self.seen, "a batch of effects ends in one transaction");
         }
         let device = &mut self.devices[d];
-        for (record, applied, applies, outcome) in ends {
+        for (record, applied, applies, outcome, held) in ends {
             let Engine {
                 trees,
                 effects,
@@ -1706,6 +1718,16 @@ impl World {
                     )
                 }
                 Some(Err(Refused::Overtaken)) => effects.overtaken(trees, &record.effect_id),
+                Some(Err(Refused::NotEmpty))
+                    if applies
+                        && effects.keeps(trees, &record.effect_id, &names_and_kinds(&held)) =>
+                {
+                    note(
+                        &mut self.seen,
+                        "a folder to remove that holds only excluded entries stays",
+                    );
+                    effects.kept(trees, &record.effect_id, &names_and_kinds(&held))
+                }
                 _ => effects.failed(trees, &record.effect_id).map(|()| {
                     if !applies {
                         effects.unblock(&record.node);

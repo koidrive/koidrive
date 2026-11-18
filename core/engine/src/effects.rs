@@ -81,10 +81,12 @@ pub enum Effect {
     RemoveFile {
         displaced: Displaced,
     },
-    /// Removes a directory, which must be empty once quarantined.
+    /// Removes a directory, which must hold nothing but the rules files `along` once quarantined. They go to the
+    /// local trash inside it.
     RemoveDir {
         at: Location,
         identity: FileIdentity,
+        along: Vec<Displaced>,
     },
 }
 
@@ -149,6 +151,18 @@ impl EffectRecord {
         self.recoveries == trees.recoveries() && View::new(trees).applies(self, in_flight)
     }
 
+    /// Whether L takes the folder this removal took from the disk as gone: only while L holds nothing in it but the
+    /// files it took along, since the folder held nothing else when it went.
+    pub fn left_nothing_behind(&self, trees: &Trees) -> bool {
+        let Effect::RemoveDir { along, .. } = &self.effect else {
+            return true;
+        };
+        trees.local_children(&self.node).all(|child| {
+            (trees.local().get(child))
+                .is_some_and(|node| along.iter().any(|file| file.identity == node.identity))
+        })
+    }
+
     fn parks(&self) -> bool {
         matches!(
             self.effect,
@@ -168,6 +182,8 @@ pub enum EffectError {
     MissingIdentity,
     /// L does not take the outcome of this effect in flight ([`EffectRecord::applies`]).
     DoesNotApply(String),
+    /// The effect in flight is no removal of a folder another device deleted ([`Effects::keeps`]).
+    NotKept(String),
 }
 
 /// The disk side of a space: the effects in flight, the effects cleared so far, and the effect that
@@ -546,13 +562,29 @@ impl Effects {
             None => return Err(EffectError::NotInFlight(effect_id.to_owned())),
         };
         let record = self.take(effect_id)?;
+        let mut below: Vec<NodeId> = Vec::new();
+        if matches!(record.effect, Effect::RemoveDir { .. }) {
+            let mut folders = vec![record.node.clone()];
+            while let Some(folder) = folders.pop() {
+                let children = trees.local_children(&folder).cloned();
+                let children: Vec<NodeId> = children.collect();
+                folders.extend(children.iter().cloned());
+                below.extend(children);
+            }
+        }
+        let carried = below.iter().filter(|id| trees.carried(id)).count();
         let removal =
             (record.after.is_none() && trees.remote().live(&record.node).is_none()).then(|| {
                 RemoteRemoval {
                     within: within(trees, &record.node),
-                    files: u64::from(matches!(record.effect, Effect::RemoveFile { .. })),
+                    files: u64::from(matches!(record.effect, Effect::RemoveFile { .. }))
+                        + carried as u64,
                 }
             });
+        for id in below.iter().rev() {
+            trees.give_up(id);
+            trees.remove_local(id);
+        }
         let parked = record.parks();
         let base = trees.acknowledged(&record.node);
         let local = trees.local().live(&record.node);
@@ -650,6 +682,48 @@ impl Effects {
         } else {
             self.failed.insert(record.node, record.effect);
         }
+        Ok(())
+    }
+
+    /// Whether the effect in flight removes a folder that R holds trashed and this device syncs no entry of `held`,
+    /// the names and kinds of what the folder holds beside the files it takes along: the rules in force exclude each
+    /// file or folder, or L holds it as a node this device leaves out, such as a kept entry, and an entry of no kind,
+    /// such as a symlink, is never synced. [`Effects::kept`] then keeps it.
+    pub fn keeps(&self, trees: &Trees, effect_id: &str, held: &[(&str, Option<Kind>)]) -> bool {
+        let Some(record) = self.flight(effect_id) else {
+            return false;
+        };
+        let Some((folder, _)) = crate::classify::path(trees.local(), &record.node) else {
+            return false;
+        };
+        matches!(record.effect, Effect::RemoveDir { .. })
+            && (trees.remote().get(&record.node)).is_some_and(|node| node.trashed)
+            && held.iter().all(|(name, kind)| {
+                let mut entry = folder.clone();
+                entry.push(name);
+                kind.is_none_or(|kind| trees.ignores(&entry, kind))
+                    || (trees.local_holders(&record.node, name))
+                        .any(|id| trees.under_kept_entry(id))
+            })
+    }
+
+    /// The folder the removal in flight acts on holds entries this device does not sync, so it stays on disk with them
+    /// (section 5.10): S gives it up as R did, and L keeps it where it is with nothing planned for it, until L holds
+    /// something below it that this device syncs or R holds a live node at its place.
+    pub fn kept(
+        &mut self,
+        trees: &mut Trees,
+        effect_id: &str,
+        held: &[(&str, Option<Kind>)],
+    ) -> Result<(), EffectError> {
+        if !self.keeps(trees, effect_id, held) {
+            return Err(EffectError::NotKept(effect_id.to_owned()));
+        }
+        let record = self.take(effect_id)?;
+        self.cleared.set(*self.cleared + 1);
+        trees.keep_folder(&record.node);
+        trees.keep_folders_of_kept_folders();
+        self.failed.remove(&record.node);
         Ok(())
     }
 
@@ -1108,7 +1182,15 @@ impl<'a> View<'a> {
             return false;
         }
         let Some(after) = &record.after else {
-            return self.trees.local_children(&record.node).next().is_none();
+            let along = match &record.effect {
+                Effect::RemoveDir { along, .. } => along.as_slice(),
+                _ => &[],
+            };
+            return self.trees.local_children(&record.node).all(|child| {
+                self.trees.under_kept_entry(child)
+                    || (self.trees.local().get(child))
+                        .is_some_and(|node| along.iter().any(|file| file.identity == node.identity))
+            });
         };
         let kept = match &record.effect {
             Effect::Move { identity, .. } => Some(identity),
@@ -1203,7 +1285,13 @@ impl<'a> View<'a> {
     }
 
     fn remove(&self, id: &str, local: &LocalNode) -> Step {
-        if self.trees.local_children(id).next().is_some() {
+        if self.trees.carried(id) || self.trees.kept_folders().contains(id) {
+            return Step::Skip;
+        }
+        let children: Vec<&NodeId> = self.trees.local_children(id).collect();
+        if (children.iter())
+            .any(|child| !self.trees.carried(child) && !self.trees.under_kept_entry(child))
+        {
             return Step::Blocked(None);
         }
         let Some(at) = self.location(id) else {
@@ -1213,6 +1301,17 @@ impl<'a> View<'a> {
             Kind::Dir => Effect::RemoveDir {
                 at,
                 identity: local.identity,
+                along: match (children.iter())
+                    .filter(|child| self.trees.carried(child))
+                    .map(|child| {
+                        let file = self.trees.local().get(child)?;
+                        self.displaced(self.location(child)?, file)
+                    })
+                    .collect::<Option<Vec<_>>>()
+                {
+                    Some(along) => along,
+                    None => return Step::Skip,
+                },
             },
             Kind::File => match self.displaced(at, local) {
                 Some(displaced) => Effect::RemoveFile { displaced },

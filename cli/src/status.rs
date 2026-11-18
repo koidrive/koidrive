@@ -110,6 +110,10 @@ pub(crate) fn status_summary(
         for disk in &folder.held_disks {
             text.push_str(&format!("  {}\n", printable(&disk.describe(&folder.path))));
         }
+        if !folder.kept_entries.is_empty() {
+            let kept = koidrive_driver::describe_kept(&folder.path, &folder.kept_entries);
+            text.push_str(&format!("  {}\n", printable(&kept)));
+        }
         if let Some(wait) = &folder.wait {
             text.push_str(&format!("  {}\n", output::wait_cause(wait, now_ms())));
         }
@@ -252,6 +256,10 @@ pub(crate) fn folder_text(folder: &FolderStatus) -> String {
     }
     for disk in &folder.held_disks {
         text.push_str(&format!("  {}\n", printable(&disk.describe(&folder.path))));
+    }
+    if !folder.kept_entries.is_empty() {
+        let kept = koidrive_driver::describe_kept(&folder.path, &folder.kept_entries);
+        text.push_str(&format!("  {}\n", printable(&kept)));
     }
     if let Some(cause) = &folder.recovery {
         let described = koidrive_driver::describe(cause);

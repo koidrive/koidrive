@@ -398,6 +398,7 @@ impl FolderData {
             held_disks: Vec::new(),
             activity: None,
             bytes_moved: 0,
+            kept_entries: Vec::new(),
         }
     }
 

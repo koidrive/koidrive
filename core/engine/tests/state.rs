@@ -14,8 +14,8 @@ use koidrive_engine::question::{
 };
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 use koidrive_engine::state::{
-    Agreed, CommitsState, EffectsState, FinishOrigin, LostPosition, MovedHere, PendingFinish,
-    StateError, TreesState,
+    Agreed, CommitsState, EffectsState, FinishOrigin, KeptEntries, LostPosition, MovedHere,
+    PendingFinish, StateError, TreesState,
 };
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape, TreeError};
 use koidrive_proto::v1::{Commit, CommitResult, Delete, Move, Op, OpResult, op};
@@ -138,6 +138,17 @@ fn trees_state() -> TreesState {
         dropped_edits: ["a".into()].into(),
         unsent_moves: ["a".into()].into(),
         unsent_creates: ["a".into()].into(),
+        kept_folders: ["k".into()].into(),
+        kept_entries: [(
+            "e".into(),
+            KeptEntries {
+                names: [".env".into()].into(),
+                moved: Default::default(),
+                listed: true,
+            },
+        )]
+        .into(),
+        kept_nodes: ["n".into()].into(),
         unseen_changes: ["b".into()].into(),
         resends: Default::default(),
         local_changes: ["b".into()].into(),
@@ -800,6 +811,7 @@ fn an_identity_without_a_birth_time_round_trips() {
             Effect::RemoveDir {
                 at: Location::Parked("w".into()),
                 identity: unknown,
+                along: vec![],
             },
         )]
         .into(),

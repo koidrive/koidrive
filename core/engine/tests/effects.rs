@@ -212,10 +212,25 @@ impl Disk {
                 self.entries.remove(&ino);
                 Ok(None)
             }
-            Effect::RemoveDir { at, identity } => {
+            Effect::RemoveDir {
+                at,
+                identity,
+                along,
+            } => {
                 let ino = self.existing(at, identity)?;
-                if self.entries.values().any(|e| e.area == Area::Dir(ino)) {
+                let mut carried = Vec::new();
+                for displaced in along {
+                    let file = self.existing(&displaced.at, &displaced.identity)?;
+                    self.check_content(file, displaced)?;
+                    carried.push(file);
+                }
+                if (self.entries.iter())
+                    .any(|(child, e)| e.area == Area::Dir(ino) && !carried.contains(child))
+                {
                     return Err(format!("{at:?} is not empty"));
+                }
+                for file in carried {
+                    self.entries.remove(&file);
                 }
                 self.entries.remove(&ino);
                 Ok(None)
@@ -488,7 +503,8 @@ fn children_are_removed_before_their_directory() {
         done[1..],
         [Effect::RemoveDir {
             at: root_at("d"),
-            identity: identity(1)
+            identity: identity(1),
+            along: vec![],
         }]
     );
     assert_in_sync(&mut trees);

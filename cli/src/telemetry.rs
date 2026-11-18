@@ -977,6 +977,7 @@ mod tests {
             activity: None,
             bytes_moved: 0,
             held_disks: Vec::new(),
+            kept_entries: Vec::new(),
             wait: None,
         };
         let status = Status {

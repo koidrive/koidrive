@@ -2877,6 +2877,7 @@ pub(crate) fn rekey(trees: &mut Trees, from: &str, to: &str) {
     trees.rekey_discarded(from, to);
     trees.rekey_lost_shapes(from, to);
     trees.sent_create(from);
+    trees.rekey_kept_entries(from, to);
     trees.rekey_local(from, to, node);
     trees.set_left_out_when_placed(to, left_out_when_placed);
     if parked {
@@ -2927,6 +2928,7 @@ fn rebase(
     now_ms: u64,
     skip: &BTreeSet<NodeId>,
 ) -> (BTreeSet<NodeId>, Vec<(NodeId, Option<Shape>)>) {
+    settle_kept_folders(trees, ids, now_ms);
     let dirty: Vec<NodeId> = trees.dirty_others().iter().cloned().collect();
     for id in &dirty {
         let held = trees.reverted().contains(id)
@@ -2990,6 +2992,83 @@ fn rebase(
         }
     }
     (needed, agreed)
+}
+
+fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
+    trees.keep_folders_of_kept_folders();
+    loop {
+        let ended: Vec<NodeId> = (trees.kept_folders().iter())
+            .filter(|id| !trees.kept_folder(id) && !trees.kept_rules_file(id))
+            .cloned()
+            .collect();
+        if ended.is_empty() {
+            return;
+        }
+        for id in ended {
+            trees.end_kept_folder(&id);
+            let Some(local) = trees.local().get(&id).map(|node| node.shape.clone()) else {
+                continue;
+            };
+            if trees.remote().live(&id).is_some() {
+                continue;
+            }
+            if local.kind == Kind::File {
+                rekey(trees, &id, &ids.uuid_v7(now_ms));
+                continue;
+            }
+            let taken = twin(trees, &local, true);
+            if taken.is_some() {
+                trees.take_kept_entries(&id);
+            }
+            let to = taken.clone().unwrap_or_else(|| ids.uuid_v7(now_ms));
+            rekey(trees, &id, &to);
+            if taken.is_some() {
+                trees.set_synced_if_valid(to.clone(), Some(local));
+            }
+            let rules: Vec<(NodeId, Shape)> = (trees.local_children(&to))
+                .filter(|child| trees.left_rules_file(child))
+                .filter_map(|child| Some((child.clone(), trees.local().get(child)?.shape.clone())))
+                .collect();
+            for (child, shape) in rules {
+                let deleted = (trees.remote().get(&child))
+                    .is_some_and(|remote| same_contents(&remote.shape, &shape));
+                match (twin(trees, &shape, true), taken.is_some() && deleted) {
+                    (Some(twin), _) => {
+                        rekey(trees, &child, &twin);
+                        trees.set_synced_if_valid(twin, Some(shape));
+                    }
+                    (None, true) => {
+                        if let Some(twin) = twin(trees, &shape, false) {
+                            rekey(trees, &child, &twin);
+                            trees.set_synced_if_valid(twin, Some(shape));
+                        } else {
+                            trees.end_kept_folder(&child);
+                            trees.set_synced_if_valid(child, Some(shape));
+                        }
+                    }
+                    (None, false) => rekey(trees, &child, &ids.uuid_v7(now_ms)),
+                }
+            }
+        }
+    }
+}
+
+fn twin(trees: &Trees, shape: &Shape, same: bool) -> Option<NodeId> {
+    (trees.remote_holders_of_key(&shape.parent, &name_key(&shape.name)))
+        .find(|other| {
+            trees.local().get(other).is_none()
+                && (trees.remote().live(other)).is_some_and(|remote| {
+                    remote.kind == shape.kind && (!same || same_contents(remote, shape))
+                })
+        })
+        .cloned()
+}
+
+fn same_contents(a: &Shape, b: &Shape) -> bool {
+    match (&a.content, &b.content) {
+        (Some(a), Some(b)) => same_content(a, b),
+        (a, b) => a.is_none() && b.is_none(),
+    }
 }
 
 /// S takes the part of a concurrent change that both sides made the same way, position or

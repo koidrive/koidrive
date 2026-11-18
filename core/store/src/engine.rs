@@ -287,12 +287,32 @@ impl Tx<'_> {
         while let Some(row) = rows.next()? {
             state.trees.unsent_moves.insert(row.get(0)?);
         }
+        let mut stmt = self.0.prepare_cached("SELECT node_id FROM kept_folders")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            state.trees.kept_folders.insert(row.get(0)?);
+        }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id FROM unsent_creates")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             state.trees.unsent_creates.insert(row.get(0)?);
+        }
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT node_id, entries FROM kept_entries")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let bytes: Vec<u8> = row.get(1)?;
+            let kept = serde_json::from_slice(&bytes)
+                .map_err(|error| invalid(format!("kept entries: {error}")))?;
+            state.trees.kept_entries.insert(row.get(0)?, kept);
+        }
+        let mut stmt = self.0.prepare_cached("SELECT node_id FROM kept_nodes")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            state.trees.kept_nodes.insert(row.get(0)?);
         }
         let mut stmt = self
             .0
@@ -490,6 +510,9 @@ impl Tx<'_> {
             "cycle_reverted",
             "unsent_moves",
             "unsent_creates",
+            "kept_folders",
+            "kept_entries",
+            "kept_nodes",
             "unseen_changes",
             "replaced_versions",
             "content_provenance",
@@ -560,6 +583,9 @@ impl Tx<'_> {
             cycle_reverted,
             unsent_moves,
             unsent_creates,
+            kept_folders,
+            kept_entries,
+            kept_nodes,
             unseen_changes,
             replaced_versions,
             content_provenance,
@@ -758,6 +784,34 @@ impl Tx<'_> {
             unsent_creates,
             "DELETE FROM unsent_creates WHERE node_id = ?1",
             "INSERT OR IGNORE INTO unsent_creates (node_id) VALUES (?1)",
+        )?;
+        self.write_set(
+            kept_folders,
+            "DELETE FROM kept_folders WHERE node_id = ?1",
+            "INSERT OR IGNORE INTO kept_folders (node_id) VALUES (?1)",
+        )?;
+        let mut remove = self
+            .0
+            .prepare_cached("DELETE FROM kept_entries WHERE node_id = ?1")?;
+        let mut put = self.0.prepare_cached(
+            "INSERT OR REPLACE INTO kept_entries (node_id, entries) VALUES (?1, ?2)",
+        )?;
+        for (node, kept) in kept_entries {
+            match kept {
+                Some(kept) => {
+                    let bytes = serde_json::to_vec(kept)
+                        .map_err(|error| invalid(format!("kept entries: {error}")))?;
+                    put.execute(params![node, bytes])?;
+                }
+                None => {
+                    remove.execute([node])?;
+                }
+            }
+        }
+        self.write_set(
+            kept_nodes,
+            "DELETE FROM kept_nodes WHERE node_id = ?1",
+            "INSERT OR IGNORE INTO kept_nodes (node_id) VALUES (?1)",
         )?;
         self.write_set(
             unseen_changes,
@@ -1288,6 +1342,8 @@ struct StoredRemoveDir {
     at: Option<StoredLocation>,
     #[prost(message, optional, tag = "2")]
     identity: Option<StoredIdentity>,
+    #[prost(message, repeated, tag = "3")]
+    along: Vec<StoredDisplaced>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -1416,9 +1472,14 @@ impl From<&Effect> for StoredEffect {
                 to: Some(to.into()),
             }),
             Effect::RemoveFile { displaced } => Action::RemoveFile(displaced.into()),
-            Effect::RemoveDir { at, identity } => Action::RemoveDir(StoredRemoveDir {
+            Effect::RemoveDir {
+                at,
+                identity,
+                along,
+            } => Action::RemoveDir(StoredRemoveDir {
                 at: Some(at.into()),
                 identity: Some(identity.into()),
+                along: along.iter().map(Into::into).collect(),
             }),
         };
         Self {
@@ -1449,6 +1510,9 @@ impl TryFrom<StoredEffect> for Effect {
             Action::RemoveDir(removed) => Effect::RemoveDir {
                 at: required(removed.at, "the removed location")?.try_into()?,
                 identity: required(removed.identity, "the removed identity")?.into(),
+                along: (removed.along.into_iter())
+                    .map(TryInto::try_into)
+                    .collect::<Result<_>>()?,
             },
         })
     }

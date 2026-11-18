@@ -299,6 +299,7 @@ extension RecentChange {
         case .edited: String(localized: "Edited \(way)")
         case .moved(let from): String(localized: "Moved from \(from) \(way)")
         case .deleted: String(localized: "Deleted \(way)")
+        case .kept: String(localized: "Kept here: it holds files this Mac doesn't sync")
         case .conflictCopy(let original): String(localized: "Conflicting copy of \(original)")
         }
     }

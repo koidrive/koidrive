@@ -67,7 +67,7 @@ For a node with a remote change and no local change, the planner emits one effec
 | content change | `WriteFile(path, content, replaces)` | the displaced file, once quarantined, has the identity and content `replaces` (S's content) |
 | move or rename | `Move(from, to)` | the source has the recorded identity; the target name is free (no-replace rename) |
 | trashed file | `RemoveFile(path)` | the quarantined file has S's content |
-| trashed directory | `RemoveDir(path)` | the quarantined directory is empty or holds only platform files (§5.2); children are removed first, bottom up |
+| trashed directory | `RemoveDir(path)` | the directory is empty or holds only platform files and the `.koiignore` file it takes along (§5.2); children are removed first, bottom up. One that holds entries this device does not sync stays and leaves the tree (§5.10) |
 
 Every effect follows these rules:
 
@@ -240,6 +240,7 @@ The store writes, per `handle` call and in one transaction:
 - parked nodes with the name of their parked entry, and held and problem nodes;
 - the queued restores with the outcomes of those that ended;
 - the entries a Publish answer to a first link released, or a fresh first link sent, until the server applies their create (§2.7);
+- the folders another device deleted that stay on disk for the entries this device does not sync in them, and, for each one another device's folder took over and each folder below it, the names of the entries a listing found there that L does not hold, which stay excluded (§5.10);
 - the nodes recorded as moved into an ignored folder that is no node, each with its file identity once another entry took its path, and which of them are folders the disk lost that L keeps only for recorded nodes below them (§5.10);
 - every open question with what it holds;
 - the ID generator's state (`IdGen::state`).

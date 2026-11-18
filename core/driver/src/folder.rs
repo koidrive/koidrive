@@ -326,6 +326,7 @@ pub(crate) struct View {
     pub questions: u64,
     pub recovery: Option<RecoveryCause>,
     pub held_disks: Vec<HeldDisk>,
+    pub kept_entries: Vec<koidrive_fs::ItemPath>,
 }
 
 impl Folder {

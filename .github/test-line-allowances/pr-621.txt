@@ -1,0 +1,4 @@
+3170
+# The tests keep a folder another device deleted on this device while it holds entries this device leaves out, and keep those entries out of sync through takeovers, renames, moves, restarts and rules changes.
+# kept_attacks.rs holds the reviewers' attacks from ten review rounds as tests; each one reproduced a way to upload an excluded entry or bring a deleted folder back, which no earlier test caught.
+# kept_folders.rs covers each outcome the change adds once, and the engine, fs and store tests cover the record, the removal outcome and the upgrade.
