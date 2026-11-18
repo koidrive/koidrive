@@ -930,6 +930,16 @@ impl Tx<'_> {
         Ok(())
     }
 
+    /// Records that the marker took the pending token, which this link minted, when `taken` is that token: it becomes
+    /// the token minted last.
+    pub fn commit_pending_as_minted(&self, taken: &str) -> Result<()> {
+        self.0.execute(
+            "UPDATE link SET root_minted = root_token_pending WHERE id = 1 AND root_token_pending = ?1",
+            params![taken],
+        )?;
+        Ok(())
+    }
+
     /// The mount points of other volumes inside the folder, relative to its root, as its scans last saw them.
     pub fn volume_mounts(&self) -> Result<BTreeMap<PathBuf, Mount>> {
         let mut stmt = self

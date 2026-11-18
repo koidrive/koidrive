@@ -1606,3 +1606,58 @@ fn a_store_restored_with_a_delete_in_flight_recovers() {
         }
     }
 }
+
+#[test]
+fn a_store_restored_after_a_start_left_the_markers_token_pending_recovers_the_folder() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.folder.disk.set_hook(crash_at(disk::Cut::TokenWritten));
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        a.create(&mut remote, &site.root.join("after.txt"), b"after")
+    }));
+    assert!(crashed.is_err());
+    drop(a);
+    let blocker = block_marker(&site);
+    drop(opened(&site).unwrap());
+    fs::remove_dir_all(&blocker).unwrap();
+    drop(opened(&site).unwrap());
+    fs::copy(&saved, &site.db).unwrap();
+    assert!(recovers(&site));
+}
+
+#[test]
+fn a_token_log_longer_than_any_rotation_writes_counts_as_no_log() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    drop(restarted(&site, &mut remote));
+    let log = site.root.join(koidrive_fs::PRIVATE_DIR).join("lineage");
+    let kept = fs::read(&log).unwrap();
+    let fillers = (1..=2 * koidrive_fs::LINEAGE_KEPT as u128).flat_map(u128::to_be_bytes);
+    let full = [&kept[..16], &fillers.collect::<Vec<_>>(), &kept[16..]].concat();
+    fs::write(&log, full).unwrap();
+    fs::copy(&saved, &site.db).unwrap();
+    assert!(halts_as_a_copy(&site));
+}
+
+#[test]
+fn a_start_replaces_a_token_log_that_is_not_a_file_without_waiting_on_it() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let log = site.root.join(koidrive_fs::PRIVATE_DIR).join("lineage");
+    fs::remove_file(&log).unwrap();
+    let made = std::process::Command::new("mkfifo").arg(&log).status();
+    assert!(made.unwrap().success());
+    let clone = store_clone(&site);
+    let (started, start) = std::sync::mpsc::channel();
+    std::thread::spawn(move || started.send(opened(&clone).is_ok()).unwrap());
+    assert_eq!(start.recv_timeout(Duration::from_secs(30)), Ok(true));
+    assert!(fs::symlink_metadata(&log).unwrap().is_file());
+}

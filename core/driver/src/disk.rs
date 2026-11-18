@@ -1225,6 +1225,9 @@ pub(crate) fn pend_token(
     };
     let ours = store.transaction(|tx| -> Result<_, Stop> {
         let own = [tx.root_minted()?, tx.root_tokens()?.pending];
+        if let Some(taken) = &marker.token {
+            tx.commit_pending_as_minted(taken)?;
+        }
         tx.set_root_tokens(&tokens)?;
         Ok(marker.token.is_some() && own.contains(&marker.token))
     })?;

@@ -92,14 +92,14 @@ impl Lineage {
     }
 
     fn read(private: BorrowedFd<'_>) -> io::Result<Lineage> {
-        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        let file = match rustix::fs::openat(private, LINEAGE, flags, Mode::empty()) {
-            Ok(file) => file,
-            Err(Errno::NOENT) => return Ok(Lineage::default()),
-            Err(err) => return Err(err.into()),
+        let Some(file) = open_lineage(private, OFlags::RDONLY)? else {
+            return Ok(Lineage::default());
         };
+        if file.metadata()?.len() > LINEAGE_BYTES {
+            return Ok(Lineage::default());
+        }
         let mut bytes = Vec::new();
-        File::from(file).read_to_end(&mut bytes)?;
+        file.take(LINEAGE_BYTES).read_to_end(&mut bytes)?;
         let (tokens, _) = bytes.as_chunks::<16>();
         Ok(Lineage(
             tokens
@@ -108,6 +108,18 @@ impl Lineage {
                 .collect(),
         ))
     }
+}
+
+const LINEAGE_BYTES: u64 = (2 * LINEAGE_KEPT as u64 + 1) * 16;
+
+fn open_lineage(private: BorrowedFd<'_>, flags: OFlags) -> io::Result<Option<File>> {
+    let flags = flags | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let file = match rustix::fs::openat(private, LINEAGE, flags, Mode::empty()) {
+        Ok(file) => File::from(file),
+        Err(Errno::NOENT) => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    Ok(file.metadata()?.is_file().then_some(file))
 }
 
 fn token_bits(token: &str) -> Option<u128> {
@@ -146,11 +158,8 @@ fn write_lineage(
 }
 
 fn append_after(private: BorrowedFd<'_>, last: u128, next: &[u8; 16]) -> io::Result<bool> {
-    let flags = OFlags::RDWR | OFlags::APPEND | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let mut file = match rustix::fs::openat(private, LINEAGE, flags, Mode::empty()) {
-        Ok(file) => File::from(file),
-        Err(Errno::NOENT) => return Ok(false),
-        Err(err) => return Err(err.into()),
+    let Some(mut file) = open_lineage(private, OFlags::RDWR | OFlags::APPEND)? else {
+        return Ok(false);
     };
     let len = file.metadata()?.len();
     if len == 0 || len % 16 != 0 || len >= 32 * LINEAGE_KEPT as u64 {
@@ -166,6 +175,7 @@ fn append_after(private: BorrowedFd<'_>, last: u128, next: &[u8; 16]) -> io::Res
         return Ok(false);
     }
     file.write_all(next)?;
+    flush(file.as_fd(), Flush::Barrier)?;
     Ok(true)
 }
 
