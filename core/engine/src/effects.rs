@@ -840,8 +840,11 @@ pub(crate) fn displaced_by_excluded(trees: &Trees) -> BTreeMap<NodeId, NodeId> {
             };
             let folder =
                 (trees.local().get(&holder)).is_some_and(|node| node.shape.kind == Kind::Dir);
-            (folder && remote.shape.kind != Kind::Dir && trees.excluded(&holder))
-                .then(|| (id.clone(), holder))
+            (folder
+                && remote.shape.kind != Kind::Dir
+                && trees.excluded(&holder)
+                && !trees.discarded_here(&holder))
+            .then(|| (id.clone(), holder))
         })
         .collect()
 }
