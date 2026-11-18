@@ -93,7 +93,7 @@ When the space is rewound on the server, the folder reads the server's tree agai
 | files deleted on this device that the server still holds | `delete` deletes these files on the server and other devices. `restore` downloads these files to this device again. |
 | restores asked for before recovery began, which the server does not show | `repeat` sends the request again. `cancel` drops the request. |
 
-Following the server downloads the server's version of a file when the space holds the file outside its trash. Otherwise this device's copy stays in the local trash.
+Following the server downloads the server's version of a file when the space holds the file outside its trash. Otherwise this device's copy goes to the local trash.
 
 ### A conflict opens a decision
 
