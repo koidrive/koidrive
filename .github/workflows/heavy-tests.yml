@@ -437,6 +437,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: heavy-tests-macos-ui
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build the Rust core and the Swift bindings, and generate the project
         run: scripts/build-ffi.sh && scripts/generate-project.sh
       - name: Run the UI tests against the fake core
