@@ -892,6 +892,72 @@ fn a_resent_folder_the_user_moved_into_another_folder_is_created_there() {
     assert!(matches!(commit.as_deref(), Some([op::Op::CreateDir(create), moved]) if create.node_id == "p" && create.parent_id == "q" && create.name == "p" && *moved == mv("f", "p", "b")), "{commit:?}");
 }
 
+#[test]
+fn a_folder_the_user_created_in_a_resent_folder_is_never_marked_as_resent() {
+    let (mut trees, mut commits, mut ids) = renamed_in_a_resent_folder();
+    trees.set_local_changed("n".into(), local(dir("p", "n"), 3));
+    trees.set_local_changed("g".into(), local(file("n", "g", 4), 4));
+    trees.settle(&Default::default());
+    let commit = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(commit.iter().any(|op| matches!(op, op::Op::CreateDir(create) if create.node_id == "n" && create.parent_id == "p")), "{commit:?}");
+    assert_eq!(trees.state().unsent_creates, ["p".into()].into());
+}
+
+#[test]
+fn a_folder_the_user_created_whose_create_the_server_lost_is_created_again_without_a_mark() {
+    let mut trees = trees(&[
+        ("p", Some(dir(ROOT, "p")), None, None),
+        ("f", Some(file("p", "a", 1)), None, None),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let first = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert_eq!(first.len(), 2, "{first:?}");
+    trees.set_remote_made_here("p".into(), remote_at(dir(ROOT, "p"), 1));
+    trees.set_remote_made_here("f".into(), remote_at(file("p", "a", 1), 1));
+    commits.received(result(1, vec![outcome(op_result::Code::Applied); 2])).unwrap();
+    assert!(commits.acknowledge(&mut trees, 1));
+    trees.settle(commits.aliases());
+    trees.set_local_changed("f".into(), local(file("p", "b", 1), 2));
+    trees.settle(commits.aliases());
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    let (trashed, edited, moved) = (trees.trashed_here(), trees.edited_here(), trees.moved_here());
+    let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
+    let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
+    let records = trees.remote_records(|seq| commits.lost_here(seq));
+    trees.remove_remote("f");
+    trees.remove_remote("p");
+    trees.forget_lost(trashed, edited, synced, moved, untaken, records, &Default::default(), commits.held_through(), commits.accepted());
+    commits.forget_lost_slots();
+    trees.settle(commits.aliases());
+    assert_eq!(trees.synced().live("p"), None);
+    let again = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(again.iter().any(|op| matches!(op, op::Op::CreateDir(create) if create.node_id == "p")), "{again:?}");
+    assert!(again.iter().any(|op| matches!(op, op::Op::CreateFile(create) if create.node_id == "f" && create.parent_id == "p" && create.name == "b")), "{again:?}");
+    assert!(trees.state().unsent_creates.is_empty());
+}
+
+#[test]
+fn a_folder_the_user_created_that_another_device_deleted_and_purged_is_marked_for_a_change_in_it() {
+    let mut trees = trees(&[
+        ("p", Some(dir(ROOT, "p")), None, None),
+        ("f", Some(file("p", "a", 1)), None, None),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    trees.set_remote_made_here("p".into(), remote_at(dir(ROOT, "p"), 1));
+    trees.set_remote_made_here("f".into(), remote_at(file("p", "a", 1), 1));
+    commits.received(result(1, vec![outcome(op_result::Code::Applied); 2])).unwrap();
+    assert!(commits.acknowledge(&mut trees, 1));
+    trees.settle(commits.aliases());
+    trees.set_remote("f".into(), trashed(file("p", "a", 1)));
+    trees.remove_remote("p");
+    trees.set_local_changed("f".into(), local(file("p", "b", 1), 2));
+    trees.settle(commits.aliases());
+    let commit = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(commit.iter().any(|op| matches!(op, op::Op::CreateDir(create) if create.node_id == "p")), "{commit:?}");
+    assert_eq!(trees.state().unsent_creates, ["p".into()].into());
+}
+
 fn held_elsewhere_in_a_lost_folder() -> Trees {
     trees(&[
         ("p", Some(dir(ROOT, "p")), Some(dir(ROOT, "p")), None),

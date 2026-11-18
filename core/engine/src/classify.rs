@@ -1354,6 +1354,10 @@ impl Trees {
                 self.mark(&id);
             }
         }
+        debug_assert!(
+            !(self.unsent_creates.iter()).any(|id| self.lost_positions.contains_key(id)),
+            "a node marked in unsent_creates never has a lost position"
+        );
         self.resends.extend(folders);
         self.yield_resends();
     }
