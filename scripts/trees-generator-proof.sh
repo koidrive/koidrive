@@ -18,19 +18,39 @@ if ! mkdir "$lock" 2>/dev/null; then
   exit 2
 fi
 scratch=
+written() {
+  if [ -f "$scratch/$1.applied" ]; then
+    echo "$scratch/$1.applied"
+  else
+    echo "$scratch/$1"
+  fi
+}
 restore() {
+  set +e
+  local failed=0 edited=0
   if [ -n "$scratch" ]; then
     for kept in "$L:classify.rs" "$T:trees.rs"; do
-      if [ -f "$scratch/${kept#*:}" ]; then
-        cp "$scratch/${kept#*:}" "${kept%%:*}"
-        touch "${kept%%:*}"
+      local file=${kept%%:*} name=${kept#*:}
+      [ -f "$scratch/$name" ] || continue
+      if ! cmp -s "$file" "$(written "$name")"; then
+        echo "kept the edit saved to $file during the run; its original is $scratch/$name" >&2
+        edited=1
+      elif ! { cp "$scratch/$name" "$file" && touch "$file"; }; then
+        echo "could not restore $file from $scratch/$name" >&2
+        failed=1
       fi
     done
-    if [ -d "$scratch/cases" ]; then
-      rm -rf "$cases"
-      mv "$scratch/cases" "$cases"
+    if [ -d "$scratch/cases" ] && ! { rm -rf "$cases" && mv "$scratch/cases" "$cases"; }; then
+      echo "could not restore $cases from $scratch/cases" >&2
+      failed=1
     fi
-    rm -rf "$scratch"
+    if [ "$failed" -eq 0 ] && [ "$edited" -eq 0 ]; then
+      rm -rf "$scratch"
+    fi
+  fi
+  if [ "$failed" -ne 0 ]; then
+    echo "copy each file above back from $scratch by hand, then remove $scratch and $lock" >&2
+    exit 2
   fi
   rmdir "$lock"
 }
@@ -47,11 +67,16 @@ rm -rf "$cases"
 mkdir "$cases"
 
 apply() {
+  if ! cmp -s "$1" "$(written "$(basename "$1")")"; then
+    echo "$1 changed during the run" >&2
+    exit 2
+  fi
   perl -0pi -e "$2" "$1"
   if cmp -s "$1" "$scratch/$(basename "$1")"; then
     echo "STALE: the pattern no longer matches $1" >&2
     exit 2
   fi
+  cp "$1" "$scratch/$(basename "$1").applied"
 }
 
 failed=0
@@ -69,13 +94,16 @@ measure() {
         cat "$scratch/log" >&2
         exit 2
       fi
+      if [ "${2:-}" = show ]; then
+        cat "$scratch/log" >&2
+      fi
       failed=$((failed + 1))
     fi
   done
   echo "$1: failed $failed of $runs runs at $KOIDRIVE_BATTERY_CASES cases"
 }
 
-measure "fix, nested rules"
+measure "fix, nested rules" show
 fix=$failed
 apply "$L" "$mutant"
 measure "mutant, nested rules"
