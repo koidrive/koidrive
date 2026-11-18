@@ -1,6 +1,6 @@
 # Usage reports
 
-Koidrive can send usage reports to the Koidrive project. They help the project find failed setups, crashes and slow sync. Reports never hold your files' names, paths or contents, your server's address or your account. Each report carries your IP address, which the project stores and uses to estimate your country and city.
+Koidrive can send usage reports to the Koidrive project. They help the project find failed setups, crashes and slow sync. Reports never hold your files' names, paths or contents. Each report carries your IP address, which the project stores and uses to estimate your country and city.
 
 ## Turn reports on or off
 
@@ -74,12 +74,20 @@ A completed duration or rate counts in the hour it completes. Spans can cross an
 
 - File and folder names, paths, contents, or hashes of any of them. Koidrive sends sizes only as hourly totals or throughput distributions.
 - Space, device, user and node ids, and the names of spaces, devices and users.
-- Your server's address, Worker and bucket names, and your Cloudflare account id.
+- Worker and bucket names, and your Cloudflare account id.
 - Pairing codes, claim codes, recovery keys, tokens or credentials.
 - Error messages, log lines, `.koiignore` rules and configuration values, and from a stack trace anything other than the names of Koidrive's own functions.
 - Your host name or user name.
 
-Your own Koidrive server sends nothing to the project. Its Worker logs stay in your Cloudflare account.
+## Your server's report
+
+While reports are on, your Koidrive server sends one report an hour to `tel.koidrive.com`. It reports while at least one running device has reports on and no device has them off. Turning reports off on a device stops the server's report as soon as that device reaches the server, and a device that hasn't connected for a day no longer counts as on. The report holds:
+
+- How many requests each kind of call got in the hour, such as a file upload, a sign-in or a sync call, by HTTP status, refusal code and what failed inside the server.
+- How long those calls took, as 16 power-of-two ranges in milliseconds for each kind of call.
+- The server's version and the protocol versions it speaks.
+
+Each hour's report carries a new random id. It holds no names, paths, contents or ids of files, spaces, devices or people, and not your Cloudflare account id. Counting adds at most one small request and one storage write per request your server answers. A failed send is retried each hour for up to a day. Your Worker logs stay in your Cloudflare account.
 
 ## Where reports go
 

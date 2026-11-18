@@ -21,6 +21,7 @@ import {
   SpaceInfoSchema,
   type SpaceList,
   SpaceListSchema,
+  TokenRequest_Telemetry,
 } from "../gen/koidrive/v1/auth_pb";
 import { Error_Code } from "../gen/koidrive/v1/rpc_pb";
 import type { ShareLink, ShareLinkList } from "../gen/koidrive/v1/share_pb";
@@ -29,6 +30,9 @@ import type { SpaceDO } from "../space-do";
 import { isUuidV7, uuidv7 } from "../ids";
 import { knownPrincipal } from "../policy";
 import { FORMAT_VERSION } from "../space/space";
+import { REPORT_URL, reportBatch } from "../report/payload";
+import { mergeUsage, type UsageBatch } from "../report/usage";
+import { PROTO_MAX, PROTO_MIN, SERVER_VERSION } from "../version";
 import { MAX_REQUEST_ID_LENGTH, type Outcome, type ResolvedLink, type ShareOutcome, ShareLinks } from "../share/links";
 
 const CLAIM_CODE_MS = 3_600_000;
@@ -44,6 +48,15 @@ const PITR_WINDOW_MS = 30 * DAY_MS;
 const REWIND_MIN_AGE_MS = 60_000;
 const REWIND_MAX_AGE_MS = 29 * DAY_MS;
 const REWIND_RETRY_MIN_MS = 1000;
+const HOUR_MS = 3_600_000;
+const REPORT_DELAY_MS = 5 * 60_000;
+const REPORT_VOTE_MS = 24 * HOUR_MS;
+
+function onVoteEndMs(seenMs: number): number {
+  return Math.ceil((seenMs + REPORT_VOTE_MS) / HOUR_MS) * HOUR_MS;
+}
+const REPORT_KEEP_HOURS = 24;
+const REPORT_TIMEOUT_MS = 10_000;
 const NOTICE_RETRY_MS = 30_000;
 export const SESSION_LEASE_MS = 5000;
 const REWIND_RETRY_MAX_MS = 10 * 60_000;
@@ -106,6 +119,12 @@ function sameBytes(a: ArrayBuffer, b: ArrayBuffer): boolean {
   return x.length === y.length && x.every((byte, i) => byte === y[i]);
 }
 
+interface ReportVotes {
+  onUntilMs: number;
+  off: boolean;
+  startedMs?: number;
+}
+
 interface DeviceRow {
   device_id: string;
   user_id: string;
@@ -119,6 +138,7 @@ interface DeviceRow {
   scope: string | null;
   expires_at_ms: number | null;
   issued_by: string | null;
+  telemetry: number | null;
   rotation_clock_ms: number;
 }
 
@@ -130,6 +150,7 @@ export interface SessionCheck {
   kind: string;
   scope: string | null;
   leaseMs: number;
+  reporting: boolean;
 }
 
 const KINDS: Record<string, DeviceInfo_Kind> = { device: DeviceInfo_Kind.DEVICE, agent: DeviceInfo_Kind.AGENT };
@@ -166,6 +187,11 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
     private readonly admitting = new Set<string>();
     sessionLeaseMs = SESSION_LEASE_MS;
     clock: () => number = () => Date.now();
+    sendReport = async (body: unknown): Promise<boolean> => {
+      const response = await fetch(REPORT_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(REPORT_TIMEOUT_MS) });
+      await response.body?.cancel();
+      return response.ok;
+    };
     protected abstract readonly shares: ShareLinks;
 
     async serverKey(): Promise<ServerKey> {
@@ -372,7 +398,8 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       rotation?: boolean;
       nextRefreshCredential?: string;
       rotateBeforeMs?: bigint;
-    }): Promise<Outcome<AccessToken>> {
+      telemetry?: TokenRequest_Telemetry;
+    }): Promise<Outcome<AccessToken> & { reporting?: boolean }> {
       const proposed = args.nextRefreshCredential ?? "";
       const rotateBeforeMs = Number(args.rotateBeforeMs ?? 0n);
       if (proposed !== "" && (!REFRESH_CREDENTIAL.test(proposed) || !args.rotation || rotateBeforeMs === 0)) {
@@ -387,19 +414,23 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       }
       const serverTimeMs = Math.max(nowMs, device.rotation_clock_ms);
       const rotated = proposal !== undefined && serverTimeMs <= rotateBeforeMs;
+      const vote = args.telemetry ?? TokenRequest_Telemetry.UNSPECIFIED;
       this.sql.exec(
-        "UPDATE devices SET last_seen_ms = ?, rotation_clock_ms = ?, refresh_hash = ? WHERE device_id = ?",
+        "UPDATE devices SET last_seen_ms = ?, rotation_clock_ms = ?, refresh_hash = ?, telemetry = ? WHERE device_id = ?",
         nowMs,
         args.rotation ? serverTimeMs : device.rotation_clock_ms,
         rotated ? proposal : device.refresh_hash,
+        vote,
         device.device_id,
       );
+      if (vote !== (device.telemetry ?? TokenRequest_Telemetry.UNSPECIFIED)) this.countVotes();
+      else if (vote === TokenRequest_Telemetry.ON && onVoteEndMs(nowMs) > this.votes().onUntilMs) this.storeVotes({ ...this.votes(), onUntilMs: onVoteEndMs(nowMs) });
       const token = await this.accessToken(device, nowMs);
       if (args.rotation) {
         token.serverTimeMs = BigInt(serverTimeMs);
         token.rotated = rotated;
       }
-      return ok(token);
+      return { ...ok(token), reporting: this.reporting() };
     }
 
     async listDevices(args: { userId: string; callerId: string; cursor: string }): Promise<DeviceList> {
@@ -450,6 +481,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       this.db.transactionSync(() => {
         const revoked = this.sql.exec("UPDATE devices SET revoked_at_ms = ? WHERE device_id = ? AND revoked_at_ms IS NULL", nowMs, deviceId).rowsWritten;
         if (revoked === 0) return;
+        this.countVotes();
         this.sql.exec(
           "INSERT INTO revocation_notices (device_id, space_id, next_try_ms) SELECT ?, space_id, ? FROM spaces WHERE true ON CONFLICT DO NOTHING",
           deviceId,
@@ -556,7 +588,101 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
         kind: device?.kind ?? "",
         scope: device?.scope ?? null,
         leaseMs: Math.min(this.sessionLeaseMs, untilExpiryMs),
+        reporting: this.reporting(),
       };
+    }
+
+    reporting(): boolean {
+      const votes = this.votes();
+      return this.reportsWith(votes);
+    }
+
+    private reportsWith(votes: ReportVotes): boolean {
+      return !votes.off && this.clock() < votes.onUntilMs;
+    }
+
+    private votes(): ReportVotes {
+      const row = this.sql.exec("SELECT value FROM settings WHERE key = 'report_votes'").toArray()[0];
+      return row ? (JSON.parse(String(row.value)) as ReportVotes) : { onUntilMs: 0, off: false };
+    }
+
+    private storeVotes(votes: ReportVotes): void {
+      const before = this.votes();
+      const startedMs = !this.reportsWith(before) && this.reportsWith(votes) ? this.clock() : before.startedMs;
+      this.sql.exec("INSERT INTO settings (key, value) VALUES ('report_votes', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", JSON.stringify({ ...votes, startedMs }));
+      if (!this.reportsWith(votes)) this.sql.exec("DELETE FROM usage_hours");
+    }
+
+    private countVotes(): void {
+      const counted = this.sql
+        .exec(
+          "SELECT COALESCE(MAX(CASE WHEN telemetry = ? THEN last_seen_ms END), 0) AS on_seen_ms, COALESCE(MAX(telemetry = ?), 0) AS off FROM devices WHERE revoked_at_ms IS NULL",
+          TokenRequest_Telemetry.ON,
+          TokenRequest_Telemetry.OFF,
+        )
+        .one();
+      const onSeenMs = Number(counted.on_seen_ms);
+      this.storeVotes({ onUntilMs: onSeenMs === 0 ? 0 : onVoteEndMs(onSeenMs), off: Number(counted.off) === 1 });
+    }
+
+    async recordUsage({ openedMs, hours }: UsageBatch): Promise<boolean> {
+      const votes = this.votes();
+      if (!this.reportsWith(votes)) {
+        this.sql.exec("DELETE FROM usage_hours");
+        return false;
+      }
+      if (openedMs < (votes.startedMs ?? 0)) return true;
+      const nowHour = Math.floor(this.clock() / HOUR_MS);
+      let added = false;
+      this.db.transactionSync(() => {
+        for (const [key, usage] of Object.entries(hours)) {
+          const hour = Number(key);
+          if (!Number.isInteger(hour) || (hour + 1) * HOUR_MS + REPORT_DELAY_MS <= this.clock() || hour > nowHour) continue;
+          const stored = this.sql.exec("SELECT usage FROM usage_hours WHERE hour = ?", hour).toArray()[0];
+          if (stored) {
+            this.sql.exec("UPDATE usage_hours SET usage = ? WHERE hour = ?", JSON.stringify(mergeUsage(JSON.parse(String(stored.usage)), usage)), hour);
+          } else {
+            this.sql.exec("INSERT INTO usage_hours (hour, report_id, usage) VALUES (?, ?, ?)", hour, crypto.randomUUID(), JSON.stringify(usage));
+            added = true;
+          }
+        }
+      });
+      const unarmed = this.sql.exec("SELECT 1 FROM settings WHERE key = 'usage_alarm_unarmed'").toArray().length > 0;
+      if (!added && !unarmed) return true;
+      try {
+        await this.armAlarm();
+        if (unarmed) this.sql.exec("DELETE FROM settings WHERE key = 'usage_alarm_unarmed'");
+      } catch (error) {
+        console.error("usage alarm not armed", errorText(error));
+        if (!unarmed) this.sql.exec("INSERT INTO settings (key, value) VALUES ('usage_alarm_unarmed', '1')");
+      }
+      return true;
+    }
+
+    private async sendUsage(): Promise<void> {
+      const nowMs = this.clock();
+      const oldest = Math.floor(nowMs / HOUR_MS) - REPORT_KEEP_HOURS;
+      this.sql.exec("DELETE FROM usage_hours WHERE hour < ?", oldest);
+      const ended = this.sql
+        .exec("SELECT hour, report_id, usage, tried_at_ms FROM usage_hours WHERE (hour + 1) * ? + ? <= ? ORDER BY hour", HOUR_MS, REPORT_DELAY_MS, nowMs)
+        .toArray()
+        .filter((row) => row.tried_at_ms === null || Number(row.tried_at_ms) + HOUR_MS <= nowMs);
+      if (ended.length === 0) return;
+      const sent = this.reporting()
+        ? await this.sendReport(
+            reportBatch(
+              ended.map((row) => ({ hour: Number(row.hour), id: String(row.report_id), usage: JSON.parse(String(row.usage)) })),
+              { version: SERVER_VERSION, protoMin: PROTO_MIN, protoMax: PROTO_MAX },
+            ),
+          ).catch((error: unknown) => {
+            console.error("usage report failed", errorText(error));
+            return false;
+          })
+        : true;
+      for (const row of ended) {
+        if (sent) this.sql.exec("DELETE FROM usage_hours WHERE hour = ?", row.hour);
+        else this.sql.exec("UPDATE usage_hours SET tried_at_ms = ? WHERE hour = ?", nowMs, row.hour);
+      }
     }
 
     async isSpaceClosed(spaceId: string, historyId?: string): Promise<boolean> {
@@ -757,7 +883,10 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
     private async armAlarm(): Promise<void> {
       const rewind = this.sql.exec("SELECT MIN(next_try_ms) AS due FROM rewinds WHERE phase NOT IN ('completed', 'failed')").one().due;
       const notice = this.sql.exec("SELECT MIN(next_try_ms) AS due FROM revocation_notices").one().due;
-      const due = [rewind, notice].filter((value) => value !== null).map(Number);
+      const usage = this.sql
+        .exec("SELECT MIN(MAX((hour + 1) * ? + ?, COALESCE(tried_at_ms + ?, 0))) AS due FROM usage_hours", HOUR_MS, REPORT_DELAY_MS, HOUR_MS)
+        .one().due;
+      const due = [rewind, notice, usage].filter((value) => value !== null).map(Number);
       if (due.length === 0) await this.state.storage.deleteAlarm();
       else await this.state.storage.setAlarm(Math.max(Math.min(...due), Date.now() + REWIND_RETRY_MIN_MS));
     }
@@ -768,6 +897,8 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
         .toArray();
       for (const { rewind_id } of due) await this.drive(String(rewind_id));
       await this.deliverNotices();
+      await this.sendUsage();
+      await this.armAlarm();
     }
 
     async listSpaces(args: { userId: string; after: number }): Promise<SpaceList> {

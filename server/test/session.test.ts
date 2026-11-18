@@ -409,7 +409,7 @@ describe("owner claim, pairing and tokens", () => {
     await evictDurableObject(stub);
     const identity = { userId: tv.userId, deviceId: tv.deviceId, deviceName: "TV", expiresAtMs: Date.now() + 900_000, kind: "device", scope: null };
     const request = body(RpcRequestSchema, { reqId: 1n, call: { case: "commit", value: { commitId: uuidv7(), baseSeq: 0n, ops: [op.mkdir(uuidv7(), spaceId, "x")] } } });
-    const result = fromBinary(RpcResponseSchema, await stub.httpRpc({ identity, origin: BASE }, request)).result;
+    const result = fromBinary(RpcResponseSchema, (await stub.httpRpc({ identity, origin: BASE }, request)).response).result;
     expect(result.case === "error" && result.value.code).toBe(Error_Code.UNAUTHENTICATED);
     const commits = await runInDurableObject(stub, (_instance, state) => state.storage.sql.exec("SELECT seq FROM commits").toArray());
     expect(commits).toEqual([]);
@@ -1408,7 +1408,7 @@ describe("RFC 0014 session leases", () => {
     const renewal = await holdAccount("checkSessions");
     const identity = { userId: device.userId, deviceId: device.deviceId, deviceName: "Revoked while renewing", expiresAtMs: Date.now() + 900_000, kind: "device", scope: null };
     const ask = async () =>
-      fromBinary(RpcResponseSchema, await env.SPACE.get(env.SPACE.idFromName(spaceId)).httpRpc({ identity, origin: BASE }, body(RpcRequestSchema, { reqId: 1n, call: { case: "listTree", value: {} } }))).result;
+      fromBinary(RpcResponseSchema, (await env.SPACE.get(env.SPACE.idFromName(spaceId)).httpRpc({ identity, origin: BASE }, body(RpcRequestSchema, { reqId: 1n, call: { case: "listTree", value: {} } }))).response).result;
     try {
       expect(await listTree(socket)).toMatchObject({ case: "rpc", value: { result: { case: "tree" } } });
       await vi.waitFor(() => expect(renewal.asked).toHaveLength(1));
@@ -1428,7 +1428,7 @@ describe("RFC 0014 session leases", () => {
     const renewal = await holdAccount("checkSessions", 1);
     const identity = { userId: device.userId, deviceId: device.deviceId, deviceName: "Renewal overtaken", expiresAtMs: Date.now() + 900_000, kind: "device", scope: null };
     const ask = async () =>
-      fromBinary(RpcResponseSchema, await env.SPACE.get(env.SPACE.idFromName(spaceId)).httpRpc({ identity, origin: BASE }, body(RpcRequestSchema, { reqId: 1n, call: { case: "listTree", value: {} } }))).result;
+      fromBinary(RpcResponseSchema, (await env.SPACE.get(env.SPACE.idFromName(spaceId)).httpRpc({ identity, origin: BASE }, body(RpcRequestSchema, { reqId: 1n, call: { case: "listTree", value: {} } }))).response).result;
     try {
       expect(await listTree(socket)).toMatchObject({ case: "rpc", value: { result: { case: "tree" } } });
       await vi.waitFor(() => expect(renewal.asked).toHaveLength(1));
@@ -1554,7 +1554,7 @@ describe("RFC 0014 session leases", () => {
     const stub = env.SPACE.get(env.SPACE.idFromName(spaceId));
     const identity = { userId: tablet.userId, deviceId: tablet.deviceId, deviceName: "Tablet", expiresAtMs: Date.now() + 900_000, kind: "device", scope: null };
     const request = body(RpcRequestSchema, { reqId: 1n, call: { case: "listTree", value: {} } });
-    const ask = async () => fromBinary(RpcResponseSchema, await env.SPACE.get(env.SPACE.idFromName(spaceId)).httpRpc({ identity, origin: BASE }, request)).result;
+    const ask = async () => fromBinary(RpcResponseSchema, (await env.SPACE.get(env.SPACE.idFromName(spaceId)).httpRpc({ identity, origin: BASE }, request)).response).result;
     expect((await ask()).case).toBe("tree");
     await revokeRowOnly(tablet.deviceId);
     expect((await ask()).case).toBe("tree");
@@ -2240,7 +2240,7 @@ describe("chunk relay", () => {
 
   function relay(request: Request, put: (key: string, body: ReadableStream | null, options: R2PutOptions) => Promise<R2Object | null>) {
     const bucket = { put };
-    return worker.fetch(request as Parameters<typeof worker.fetch>[0], { ...env, BUCKET: bucket } as unknown as Env, {} as ExecutionContext);
+    return worker.fetch(request as Parameters<typeof worker.fetch>[0], { ...env, BUCKET: bucket } as unknown as Env, { waitUntil() {} } as unknown as ExecutionContext);
   }
 
   it("removes an object that a late PUT recreated after GC deleted its row", async () => {
@@ -2331,7 +2331,7 @@ describe("chunk relay", () => {
       if (calls === 1) throw new Error("injected Account DO failure");
       return account().serverKey();
     });
-    const send = () => worker.fetch(request() as Parameters<typeof worker.fetch>[0], { ...env, ACCOUNT } as unknown as Env, {} as ExecutionContext);
+    const send = () => worker.fetch(request() as Parameters<typeof worker.fetch>[0], { ...env, ACCOUNT } as unknown as Env, { waitUntil() {} } as unknown as ExecutionContext);
     vi.spyOn(console, "error").mockImplementation(() => {});
     const failed = await send();
     expect(failed.status).toBe(500);
@@ -2356,7 +2356,7 @@ describe("chunk relay", () => {
       },
     );
     const relayEnv = { ...env, ACCOUNT, BUCKET } as unknown as Env;
-    const send = (url: string, init?: RequestInit) => worker.fetch(new Request(url, init) as Parameters<typeof worker.fetch>[0], relayEnv, {} as ExecutionContext);
+    const send = (url: string, init?: RequestInit) => worker.fetch(new Request(url, init) as Parameters<typeof worker.fetch>[0], relayEnv, { waitUntil() {} } as unknown as ExecutionContext);
     for (let i = 0; i < 20; i++) {
       const url = `${BASE}/v1/spaces/${uuidv7()}/chunks/${"ab".repeat(32)}?inc=0.1&ticket=v1.9999999999999.AAAA`;
       expect((await send(url, { method: "PUT", body: new Uint8Array(4), headers: { "Content-Length": "4" } })).status).toBe(403);

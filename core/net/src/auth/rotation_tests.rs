@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use koidrive_proto::v1::error::Code;
+use koidrive_proto::v1::token_request::Telemetry;
 use koidrive_proto::v1::{AccessToken, TokenRequest};
 use prost::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -528,5 +530,29 @@ async fn a_reader_that_is_refused_presents_the_reloaded_current_and_then_staged_
     assert!(
         refused.as_ref().is_err_and(ApiError::is_unauthenticated),
         "{refused:?}"
+    );
+}
+
+#[tokio::test]
+async fn each_refresh_carries_the_usage_report_choice_its_source_reads_at_that_moment() {
+    let (stub, api) = Stub::start("old").await;
+    let credentials = Credentials {
+        user_id: "u".into(),
+        device_id: "d".into(),
+        refresh_credential: "old".into(),
+    };
+    let auth = Auth::new(api, credentials).with_refresh_margin(Duration::from_secs(20 * 60));
+    static CHOICE: AtomicI32 = AtomicI32::new(Telemetry::On as i32);
+    auth.access_token().await.unwrap();
+    crate::set_telemetry_source(|| Telemetry::try_from(CHOICE.load(Ordering::Relaxed)).unwrap());
+    auth.access_token().await.unwrap();
+    CHOICE.store(Telemetry::Off as i32, Ordering::Relaxed);
+    auth.access_token().await.unwrap();
+    let sent: Vec<Telemetry> = (stub.server().seen.iter())
+        .map(|request| request.telemetry())
+        .collect();
+    assert_eq!(
+        sent,
+        [Telemetry::Unspecified, Telemetry::On, Telemetry::Off]
     );
 }

@@ -32,7 +32,8 @@ import { countBundledChunks, decodeChunkBundle, MAX_BUNDLE_CHUNKS } from "./chun
 import { causeOf } from "./cause";
 import { errorText } from "./errors";
 import type { ObjectStore } from "./host";
-import { BadRequest, errorReply, readMessage, reply } from "./http";
+import { BadRequest, errorReply, readMessage, reply, responseOutcome } from "./http";
+import { UsageTally } from "./report/usage";
 import { type ChunkObject, deriveSpaceKey, signChunkGrant, verifyChunkGrant } from "./crypto";
 import { fromHex, isUuidV7 } from "./ids";
 import { type Capability, policy } from "./policy";
@@ -47,6 +48,34 @@ export { AccountDO } from "./account-do";
 export { SpaceDO } from "./space-do";
 
 const serverKeys = new WeakMap<object, Promise<ServerKey>>();
+const traffic = new UsageTally();
+
+const ROUTES: [string, RegExp][] = [
+  ["chunk", /^\/v1\/spaces\/[^/]+\/chunks\/[^/]+$/],
+  ["chunk_bundle", /^\/v1\/spaces\/[^/]+\/chunks$/],
+  ["rpc", /^\/v1\/spaces\/[^/]+\/rpc$/],
+  ["ws", /^\/v1\/spaces\/[^/]+\/ws$/],
+  ["links", /^\/v1\/spaces\/[^/]+\/links(?:\/[^/]+)?$/],
+  ["rewind", /^\/v1\/spaces\/[^/]+\/rewind$/],
+  ["usage", /^\/v1\/spaces\/[^/]+\/usage$/],
+  ["spaces", /^\/v1\/spaces$/],
+  ["devices", /^\/v1\/devices(?:\/[^/]+)?$/],
+  ["token", /^\/v1\/token$/],
+  ["claim", /^\/v1\/claim$/],
+  ["pair_start", /^\/v1\/pair\/start$/],
+  ["pair_complete", /^\/v1\/pair\/complete$/],
+  ["server", /^\/v1\/server$/],
+  ["setup", /^\/setup$/],
+  ["share", /^\/v1\/share\//],
+  ["share_page", /^\/s\//],
+];
+const METHODS = new Set(["GET", "HEAD", "POST", "PUT", "DELETE"]);
+
+function routeOf(request: Request): string {
+  const path = new URL(request.url).pathname;
+  const name = ROUTES.find(([, pattern]) => pattern.test(path))?.[0] ?? "other";
+  return (METHODS.has(request.method) ? request.method.toLowerCase() : "other") + "_" + name;
+}
 
 function account(env: Env) {
   return env.ACCOUNT.get(env.ACCOUNT.idFromName("account"));
@@ -72,6 +101,7 @@ async function authenticate(request: Request, env: Env, spaceId?: string): Promi
   if (!identity) return errorReply(request, Error_Code.UNAUTHENTICATED, "missing or invalid access token");
   const check = await account(env).checkSession(identity.deviceId, spaceId);
   if (!check.active) return errorReply(request, Error_Code.UNAUTHENTICATED, "this device was revoked");
+  traffic.reporting = check.reporting;
   if (check.closed) return errorReply(request, Error_Code.RETRY_LATER, "the space is being rewound; retry later", 503);
   return { ...identity, kind: check.kind, scope: check.scope };
 }
@@ -314,6 +344,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     const body = await readMessage(request, TokenRequestSchema);
     const outcome = await account(env).refreshAccess(body);
     if (!outcome.ok) return errorReply(request, outcome.code, outcome.message);
+    traffic.reporting = outcome.reporting;
     return reply(request, AccessTokenSchema, create(AccessTokenSchema, outcome.value));
   }
 
@@ -374,23 +405,34 @@ async function route(request: Request, env: Env): Promise<Response> {
       if (Number(request.headers.get("Content-Length") ?? 0) > MAX_CLIENT_FRAME) return tooLarge();
       const body = new Uint8Array(await request.arrayBuffer());
       if (body.length > MAX_CLIENT_FRAME) return tooLarge();
-      return new Response(await stub.httpRpc(connect, body), { headers: { "Content-Type": "application/x-protobuf" } });
+      const { response, counted } = await stub.httpRpc(connect, body);
+      traffic.count(counted.route, counted.outcome, counted.latencyMs, Date.now());
+      return new Response(response, { headers: { "Content-Type": "application/x-protobuf" } });
     }
   }
 
   return new Response("Not Found", { status: 404 });
 }
 
+async function answer(request: Request, env: Env): Promise<Response> {
+  try {
+    return await route(request, env);
+  } catch (error) {
+    if (error instanceof BadRequest) return errorReply(request, Error_Code.INVALID_ARGUMENT, error.message);
+    if (error instanceof LimitExceeded) return errorReply(request, Error_Code.LIMIT_EXCEEDED, error.message);
+    const failure = platformFailure(error, Date.now());
+    console.error(failure.code === Error_Code.QUOTA_EXCEEDED ? "request stopped at a platform limit" : "request failed", errorText(error));
+    return reply(request, ErrorSchema, create(ErrorSchema, { code: failure.code, message: failure.message, retryAfterMs: BigInt(failure.retryAfterMs), cause: failure.cause }), failure.status);
+  }
+}
+
 export default {
-  async fetch(request, env, _ctx): Promise<Response> {
-    try {
-      return await route(request, env);
-    } catch (error) {
-      if (error instanceof BadRequest) return errorReply(request, Error_Code.INVALID_ARGUMENT, error.message);
-      if (error instanceof LimitExceeded) return errorReply(request, Error_Code.LIMIT_EXCEEDED, error.message);
-      const failure = platformFailure(error, Date.now());
-      console.error(failure.code === Error_Code.QUOTA_EXCEEDED ? "request stopped at a platform limit" : "request failed", errorText(error));
-      return reply(request, ErrorSchema, create(ErrorSchema, { code: failure.code, message: failure.message, retryAfterMs: BigInt(failure.retryAfterMs), cause: failure.cause }), failure.status);
-    }
+  async fetch(request, env, ctx): Promise<Response> {
+    const startedMs = Date.now();
+    const response = await answer(request, env);
+    const nowMs = Date.now();
+    traffic.count(routeOf(request), responseOutcome(response), nowMs - startedMs, nowMs);
+    if (traffic.reporting) ctx.waitUntil(traffic.settle((batch) => account(env).recordUsage(batch), Date.now, (ms) => scheduler.wait(ms)));
+    return response;
   },
 } satisfies ExportedHandler<Env>;

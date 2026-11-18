@@ -317,7 +317,7 @@ describe("share links: guessing resistance (RFC 0005 sections 1 and 5)", () => {
     const unreachable = { ...env, ACCOUNT: { idFromName: () => { throw new Error("a malformed id reached the Account DO"); } } } as unknown as Env;
     const malformed = [live.linkId.slice(0, 21) + "B", live.linkId + "A", live.linkId.slice(1), "", "..%2F..", live.linkId.replace(/.$/, "=")];
     for (const id of malformed) {
-      const response = await worker.fetch(new Request(`${BASE}/v1/share/${id}`, { headers: { Accept: "application/json" } }) as Parameters<typeof worker.fetch>[0], unreachable, {} as ExecutionContext);
+      const response = await worker.fetch(new Request(`${BASE}/v1/share/${id}`, { headers: { Accept: "application/json" } }) as Parameters<typeof worker.fetch>[0], unreachable, { waitUntil() {} } as unknown as ExecutionContext);
       expect(response.status).toBe(404);
     }
 
@@ -568,7 +568,7 @@ function withoutR2(path: string): Promise<Response> {
   return worker.fetch(
     new Request(BASE + path, { headers: { "CF-Connecting-IP": newIp() } }) as Parameters<typeof worker.fetch>[0],
     { ...env, BUCKET } as unknown as Env,
-    {} as ExecutionContext,
+    { waitUntil() {} } as unknown as ExecutionContext,
   );
 }
 

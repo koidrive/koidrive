@@ -161,6 +161,6 @@ pub(crate) async fn execute(
         Command::Device { action } => device(paths, action).await,
         Command::History { action } => history::run(&paths, action).await,
         Command::Share { action } => share::run(&paths, action).await,
-        Command::Telemetry { action } => telemetry::command(&paths, action),
+        Command::Telemetry { action } => telemetry::command(&paths, action).await,
     }
 }

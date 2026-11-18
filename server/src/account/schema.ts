@@ -84,6 +84,11 @@ export const MIGRATIONS: readonly Migration[] = [
     sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS spaces_request ON spaces(owner_id, request_id) WHERE request_id IS NOT NULL");
     sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS share_links_request ON share_links(space_id, request_id) WHERE request_id IS NOT NULL");
   },
+  (sql) => {
+    const columns = sql.exec("SELECT name FROM pragma_table_info('devices')").toArray().map((row) => row.name);
+    if (!columns.includes("telemetry")) sql.exec("ALTER TABLE devices ADD COLUMN telemetry INTEGER");
+    sql.exec("CREATE TABLE IF NOT EXISTS usage_hours (hour INTEGER PRIMARY KEY, report_id TEXT NOT NULL, usage TEXT NOT NULL, tried_at_ms INTEGER)");
+  },
 ];
 
 export function migrate(sql: Sql): void {

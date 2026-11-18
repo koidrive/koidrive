@@ -65,6 +65,8 @@ import { fromHex, isUuidV7, toHex, uuidv7 } from "../ids";
 import { policy } from "../policy";
 import { causeOf } from "../cause";
 import { platformFailure, quotaRefusal } from "../quota";
+import { refusalOutcome } from "../http";
+import { batchDue, type Counted, mergeBatch, nextHourMs, type UsageBatch, UsageTally } from "../report/usage";
 import { type ApplyContext, CallFailure, CommitApplier } from "./commit";
 import { type DigestVersion, type Digests, commitDigests } from "./digest";
 import { descriptorDurable, Exporter, noteCommitted, startExport } from "./export";
@@ -123,6 +125,8 @@ const R2_DELETE_BATCH = 1000;
 const ORPHAN_SWEEP_MS = 7 * DAY_MS;
 const CLOSED_RECHECK_MS = 10 * 60_000;
 const EXPORT_RETRY_MS = 60_000;
+const MAX_PARKED_BYTES = 8192;
+const USAGE_GRACE_MS = 60_000;
 
 export type Role = "owner" | "editor" | "viewer";
 
@@ -174,6 +178,7 @@ export interface Attachment {
   maxFormat: number;
   hello: boolean;
   live: boolean;
+  usage?: UsageBatch;
 }
 
 export interface Session {
@@ -285,6 +290,10 @@ function opContent(op: Op): Content | undefined | null {
   return null;
 }
 
+function rpcRoute(request: RpcRequest): string {
+  return "rpc_" + (request.call.case ?? "empty").replace(/[A-Z]/g, (letter) => "_" + letter.toLowerCase());
+}
+
 function frameBytes(response: RpcResponse): number {
   return toBinary(ServerMessageSchema, create(ServerMessageSchema, { msg: { case: "rpc", value: response } })).length;
 }
@@ -307,7 +316,7 @@ function fitPage<R, T>(rows: R[], build: (row: R) => T, encodedSize: (item: T) =
   return page;
 }
 
-export type Directory = Pick<AccountDO, "checkSessions" | "isSpaceClosed" | "retireChunks" | "serverKey" | "shareResolve">;
+export type Directory = Pick<AccountDO, "checkSessions" | "isSpaceClosed" | "recordUsage" | "retireChunks" | "serverKey" | "shareResolve">;
 
 export function spaceLogic<B extends abstract new (...args: any[]) => object>(Base: B) {
   abstract class Space extends Base {
@@ -320,6 +329,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     private spaceKeyCache: Uint8Array | undefined;
     clock: () => number = () => Date.now();
     snapshotPageNodes = 1000;
+    private readonly traffic = new UsageTally();
+    private usageArmed = false;
     private exporting: Promise<void> | undefined;
     private alarmStale = false;
     private bookmarking: Promise<void> = Promise.resolve();
@@ -361,15 +372,19 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     }
 
     async rpc(session: Session, request: Uint8Array): Promise<Uint8Array> {
-      const { response } = await this.call(session, fromBinary(RpcRequestSchema, request));
+      const { response, counted } = await this.call(session, fromBinary(RpcRequestSchema, request));
+      await this.settleUsage(counted);
       return toBinary(RpcResponseSchema, response);
     }
 
-    async httpRpc(connect: Connect, request: Uint8Array): Promise<Uint8Array> {
+    async httpRpc(connect: Connect, request: Uint8Array): Promise<{ response: Uint8Array; counted: Counted }> {
+      const startedMs = this.clock();
       const req = fromBinary(RpcRequestSchema, request);
       const role = this.memberRole(connect.identity.userId);
-      const refuse = (code: Error_Code, message: string, cause = Error_Cause.UNSPECIFIED) =>
-        toBinary(RpcResponseSchema, create(RpcResponseSchema, { reqId: req.reqId, result: { case: "error", value: create(ErrorSchema, { code, message, cause }) } }));
+      const refuse = (code: Error_Code, message: string, cause = Error_Cause.UNSPECIFIED) => ({
+        response: toBinary(RpcResponseSchema, create(RpcResponseSchema, { reqId: req.reqId, result: { case: "error", value: create(ErrorSchema, { code, message, cause }) } })),
+        counted: { route: rpcRoute(req), outcome: refusalOutcome(code, cause), latencyMs: this.clock() - startedMs },
+      });
       if (!role) return refuse(Error_Code.FORBIDDEN, "not a member of this space");
       const check = await this.checkDevice(connect.identity.deviceId);
       if (check instanceof CheckFailed) return refuse(Error_Code.RETRY_LATER, "could not check the device; retry later", check.cause);
@@ -378,9 +393,9 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (this.historyRetired(check)) return refuse(Error_Code.HISTORY_MISMATCH, RETIRED_HISTORY);
       const device = this.sql.exec("SELECT max_format FROM devices WHERE device_id = ?", connect.identity.deviceId).toArray()[0];
       const session = this.sessionOf(connect, role, device ? Number(device.max_format) : FORMAT_VERSION, check);
-      const { response, record } = await this.call(session, req);
+      const { response, record, counted } = await this.call(session, req);
       if (record) await this.broadcast(record);
-      return toBinary(RpcResponseSchema, response);
+      return { response: toBinary(RpcResponseSchema, response), counted };
     }
 
     async webSocketMessage(ws: Socket, message: string | ArrayBuffer): Promise<void> {
@@ -418,10 +433,10 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (!attachment.hello) return this.goodbye(ws, Close.PROTOCOL, "Hello must come first");
       if (msg.case === "resume") return this.resume(ws, attachment, msg.value);
       if (msg.case === "rpc") {
-        const { response, record } = await this.call(this.sessionOf(attachment, attachment.role, attachment.maxFormat, check), msg.value);
+        const { response, record, counted } = await this.call(this.sessionOf(attachment, attachment.role, attachment.maxFormat, check), msg.value);
         this.send(ws, { case: "rpc", value: response });
         if (record) await this.broadcast(record, attachment.connId);
-        return;
+        return this.settleUsage(counted, ws);
       }
       return this.goodbye(ws, Close.PROTOCOL, "empty ClientMessage");
     }
@@ -440,7 +455,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     }
 
     private knownCheck(deviceId: string): SessionCheck | undefined {
-      if (this.revoked(deviceId)) return { active: false, revoked: true, closed: false, historyId: null, kind: "", scope: null, leaseMs: 0 };
+      if (this.revoked(deviceId)) return { active: false, revoked: true, closed: false, historyId: null, kind: "", scope: null, leaseMs: 0, reporting: false };
       const lease = this.leases.get(deviceId);
       if (!lease) return undefined;
       const leftMs = lease.untilMs - this.clock();
@@ -461,6 +476,9 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (check.historyId === undefined) return;
       if ((this.leases.get(deviceId)?.askedAtMs ?? -Infinity) > askedAtMs) return;
       this.leases.set(deviceId, { check, askedAtMs, untilMs: askedAtMs + check.leaseMs });
+      const stopped = check.reporting === false && this.traffic.reporting !== false;
+      this.traffic.reporting = check.reporting;
+      if (stopped) this.dropParked();
     }
 
     private renewLeases(): void {
@@ -592,6 +610,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     }
 
     private goodbye(ws: Socket, code: number, reason: string): void {
+      void this.releaseUsage(ws);
       try {
         this.send(ws, { case: "goodbye", value: create(GoodbyeSchema, { code, reason }) });
         ws.close(code, closeReason(reason));
@@ -629,9 +648,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (proto < Math.max(PROTO_MIN, hello.protoMin)) {
         return this.goodbye(ws, Close.UNSUPPORTED_VERSION, "this server speaks protocol 1." + PROTO_MIN + " to 1." + PROTO_MAX);
       }
-      attachment.hello = true;
-      attachment.maxFormat = hello.maxFormat;
-      ws.serializeAttachment(attachment);
+      ws.serializeAttachment({ ...(ws.deserializeAttachment() as Attachment), hello: true, maxFormat: hello.maxFormat });
       const { identity } = attachment;
       this.sql.exec(
         `INSERT INTO devices (device_id, user_id, name, max_format, last_seen_ms) VALUES (?, ?, ?, ?, ?)
@@ -695,8 +712,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         case: "caughtUp",
         value: create(CaughtUpSchema, { headSeq: BigInt(head), headCommitId: token.commitId, headCommittedAtMs: token.committedAtMs }),
       });
-      attachment.live = true;
-      ws.serializeAttachment(attachment);
+      ws.serializeAttachment({ ...(ws.deserializeAttachment() as Attachment), live: true });
     }
 
     private async reauth(ws: Socket, attachment: Attachment, token: string): Promise<void> {
@@ -720,7 +736,95 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const current = this.sql.exec("SELECT due_ms FROM schedule WHERE task = 'tokens'").toArray()[0];
       if (!current || Number(current.due_ms) > dueMs) await this.schedule("tokens", dueMs);
     }
-    async call(session: Session, request: RpcRequest): Promise<{ response: RpcResponse; record?: CommitRecord }> {
+    async call(session: Session, request: RpcRequest): Promise<{ response: RpcResponse; record?: CommitRecord; counted: Counted }> {
+      const startedMs = this.clock();
+      const answered = await this.answer(session, request);
+      const result = answered.response.result;
+      return {
+        ...answered,
+        counted: {
+          route: rpcRoute(request),
+          outcome: result.case === "error" ? refusalOutcome(result.value.code, result.value.cause) : "ok",
+          latencyMs: this.clock() - startedMs,
+        },
+      };
+    }
+
+    async webSocketClose(ws: Socket): Promise<void> {
+      await this.releaseUsage(ws);
+    }
+
+    async webSocketError(ws: Socket): Promise<void> {
+      await this.releaseUsage(ws);
+    }
+
+    private async settleUsage(counted: Counted, carrier?: Socket): Promise<void> {
+      const nowMs = this.clock();
+      this.traffic.count(counted.route, counted.outcome, counted.latencyMs, nowMs);
+      if (this.traffic.reporting === false) return this.dropParked();
+      const batch = this.traffic.reporting === true ? this.traffic.take() : undefined;
+      if (!batch) return;
+      const open = this.state.getWebSockets().filter((ws) => ws.readyState === WebSocket.OPEN);
+      const target = carrier?.readyState === WebSocket.OPEN ? carrier : open[0];
+      const due = [batch, ...open.flatMap((ws) => (ws.deserializeAttachment() as Attachment).usage ?? [])].some((one) => batchDue(one, nowMs));
+      if (target && !due && this.park(target, batch)) return this.armUsage();
+      this.traffic.put(batch);
+      await this.handOverUsage();
+    }
+
+    private park(ws: Socket, batch: UsageBatch): boolean {
+      const attachment = ws.deserializeAttachment() as Attachment;
+      attachment.usage = mergeBatch(attachment.usage, batch);
+      if (JSON.stringify(attachment).length > MAX_PARKED_BYTES) return false;
+      ws.serializeAttachment(attachment);
+      return true;
+    }
+
+    private unpark(ws: Socket): UsageBatch | undefined {
+      const attachment = ws.deserializeAttachment() as Attachment;
+      const { usage } = attachment;
+      if (!usage) return undefined;
+      delete attachment.usage;
+      ws.serializeAttachment(attachment);
+      return usage;
+    }
+
+    private dropParked(): void {
+      for (const ws of this.state.getWebSockets()) this.unpark(ws);
+    }
+
+    private async armUsage(): Promise<void> {
+      if (this.usageArmed) return;
+      this.usageArmed = true;
+      if (this.sql.exec("SELECT 1 FROM schedule WHERE task = 'usage'").toArray().length > 0) return;
+      await this.schedule("usage", nextHourMs(this.clock()) + USAGE_GRACE_MS);
+    }
+
+    private async releaseUsage(ws: Socket): Promise<void> {
+      const usage = this.unpark(ws);
+      if (!usage || this.traffic.reporting === false) return;
+      const { connId } = ws.deserializeAttachment() as Attachment;
+      const target = this.state.getWebSockets().find((other) => other.readyState === WebSocket.OPEN && (other.deserializeAttachment() as Attachment).connId !== connId);
+      if (target && this.park(target, usage)) return this.armUsage();
+      this.traffic.put(usage);
+      await this.handOverUsage();
+    }
+
+    private async handOverUsage(): Promise<void> {
+      for (const ws of this.state.getWebSockets()) {
+        const usage = this.unpark(ws);
+        if (usage) this.traffic.put(usage);
+      }
+      await this.traffic.handOver((batch) => this.account().recordUsage(batch));
+      if (this.traffic.reporting === false) return this.dropParked();
+      const kept = this.traffic.take();
+      if (!kept) return;
+      const target = this.state.getWebSockets().find((ws) => ws.readyState === WebSocket.OPEN);
+      if (target && this.park(target, kept)) return this.armUsage();
+      this.traffic.put(kept);
+    }
+
+    private async answer(session: Session, request: RpcRequest): Promise<{ response: RpcResponse; record?: CommitRecord }> {
       const reqId = request.reqId;
       try {
         this.checkOpen();
@@ -1490,6 +1594,11 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
             console.error("space export failed", errorText(error));
             this.sql.exec("UPDATE schedule SET due_ms = ? WHERE task = 'export'", nowMs + EXPORT_RETRY_MS);
           }
+        }
+        if (task === "usage") {
+          this.usageArmed = false;
+          this.sql.exec("DELETE FROM schedule WHERE task = 'usage'");
+          await this.handOverUsage();
         }
         if (task === "tokens") {
           const next = this.closeExpired(nowMs);

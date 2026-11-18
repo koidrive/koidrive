@@ -9,6 +9,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use koidrive_driver::{Driver, Paths, Status, Volume};
+use koidrive_proto::v1::token_request::Telemetry;
 use koidrive_telemetry::schema::{
     self, Client, Counter, ErrorCode, Failure, Level, Outcome, SetupFlow, SetupStep, Synced,
     magnitude,
@@ -27,6 +28,7 @@ use crate::terminal::{PromptFailure, Terminal};
 /// How often the daemon moves its sums to disk and sends what is due.
 const TICK: Duration = Duration::from_secs(60);
 const EXIT_SEND: Duration = Duration::from_secs(2);
+const VOTE_SEND: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Switch {
@@ -216,17 +218,16 @@ fn flow() -> Option<SetupFlow> {
 async fn question(terminal: &Terminal) -> Result<Option<bool>, CliError> {
     let question = if terminal.setup_guided() {
         terminal.separator();
-        terminal.message("Reports include setup steps, usage counts, crash locations, hourly sync totals, OS, and Koidrive version.");
-        terminal
-            .message("No file names, paths, contents, error messages, server address, or account.");
+        terminal.message("Reports include setup steps, usage counts, crash locations, hourly sync totals, your server's hourly request counts, OS, and Koidrive version.");
+        terminal.message("No file names, paths or contents.");
         terminal.message("Reports carry your IP address, which estimates your country and city.");
         terminal
             .message("Yes also sends the reports of this setup. Preview: koi telemetry preview.");
         "Send usage reports?"
     } else {
         terminal.message("Send usage reports to the Koidrive project?");
-        terminal.message("Reports hold setup steps, command and error counts, crash locations, hourly sync totals, and your OS and Koidrive version.");
-        terminal.message("They never hold file names, paths, contents, error messages, your server address or your account.");
+        terminal.message("Reports hold setup steps, command and error counts, crash locations, hourly sync totals, your server's hourly request counts, and your OS and Koidrive version.");
+        terminal.message("They never hold file names, paths or contents.");
         terminal.message("They carry your IP address, which estimates your country and city.");
         terminal
             .message("Yes also sends the reports of this command. Preview: koi telemetry preview.");
@@ -352,6 +353,35 @@ async fn send(store: &Store, client: Client) -> Option<Sent> {
     .await
     .inspect_err(|error| tracing::debug!(%error, "telemetry could not be read or written"))
     .ok()
+}
+
+pub fn vote_with_each_token_refresh(paths: &Paths) {
+    let store = Store::new(&paths.state_dir);
+    koidrive_net::set_telemetry_source(move || stored_vote(&store));
+}
+
+fn stored_vote(store: &Store) -> Telemetry {
+    store.status(var).map_or(Telemetry::Off, vote)
+}
+
+async fn send_vote(paths: &Paths) {
+    let Ok(auth) = crate::profile::signed_in(paths) else {
+        return;
+    };
+    if !matches!(
+        tokio::time::timeout(VOTE_SEND, auth.access_token()).await,
+        Ok(Ok(_))
+    ) {
+        tracing::debug!("the server learns the usage-report choice at the next token refresh");
+    }
+}
+
+fn vote(status: koidrive_telemetry::Status) -> Telemetry {
+    match (status.mode, status.source) {
+        (Mode::On, _) => Telemetry::On,
+        (Mode::Off, Source::Unset) => Telemetry::Unspecified,
+        (Mode::Off | Mode::Debug, _) => Telemetry::Off,
+    }
 }
 
 fn environment(store: &Store, client: Client) -> Environment {
@@ -542,7 +572,7 @@ pub(crate) struct ChoiceData {
 }
 
 /// `koi telemetry ...`.
-pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError> {
+pub async fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError> {
     let store = Store::new(&paths.state_dir);
     let failed = |error: std::io::Error| {
         let human = if error.kind() == std::io::ErrorKind::InvalidData {
@@ -641,6 +671,7 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
         }
         TelemetryAction::On => {
             let settings = store.set(true).map_err(failed)?;
+            send_vote(paths).await;
             let data = ChoiceData {
                 enabled: true,
                 install_id: settings.install_id,
@@ -661,6 +692,7 @@ pub fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError>
         }
         TelemetryAction::Off => {
             store.set(false).map_err(failed)?;
+            send_vote(paths).await;
             let data = ChoiceData {
                 enabled: false,
                 install_id: None,
@@ -775,6 +807,115 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
+
+    #[tokio::test]
+    async fn turning_reports_on_or_off_tells_the_server_at_once_and_a_server_out_of_reach_keeps_the_choice()
+     {
+        use crate::setup::fake::{Fake, proto};
+        use koidrive_driver::Credential;
+        use koidrive_proto::v1::{AccessToken, TokenRequest};
+        use prost::Message;
+
+        let signed_in = |server: &str| {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = Paths::under(dir.path());
+            Credential {
+                server: server.to_owned(),
+                user_id: "u".into(),
+                user_name: None,
+                device_id: "0190a0b0-0000-7000-8000-000000000001".into(),
+                device_name: "d".into(),
+                refresh_credential: "secret".into(),
+            }
+            .save_new(&paths.credential())
+            .unwrap();
+            (dir, paths)
+        };
+        let token = || {
+            proto(
+                "POST",
+                "/v1/token",
+                AccessToken {
+                    token: "t".into(),
+                    expires_at_ms: i64::MAX,
+                    ..Default::default()
+                },
+            )
+        };
+        let server = Fake::start(vec![token(), token()]).await;
+        let (_dir, paths) = signed_in(server.base.as_str());
+        vote_with_each_token_refresh(&paths);
+        command(&paths, TelemetryAction::On).await.unwrap();
+        command(&paths, TelemetryAction::Off).await.unwrap();
+        command(&paths, TelemetryAction::Reset).await.unwrap();
+        let sent: Vec<(String, String, Telemetry)> = (server.seen().iter())
+            .map(|seen| {
+                let request = TokenRequest::decode(seen.body.as_slice()).unwrap();
+                (seen.method.clone(), seen.path.clone(), request.telemetry())
+            })
+            .collect();
+        let refresh = |vote| ("POST".to_owned(), "/v1/token".to_owned(), vote);
+        assert_eq!(sent, [refresh(Telemetry::On), refresh(Telemetry::Off)]);
+
+        let out_of_reach = format!("http://{}", koidrive_test_support::reset_tcp_address());
+        let (_dir, paths) = signed_in(&out_of_reach);
+        command(&paths, TelemetryAction::On).await.unwrap();
+        command(&paths, TelemetryAction::Off).await.unwrap();
+        assert_eq!(
+            Store::new(&paths.state_dir).settings().unwrap().enabled,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn a_choice_that_cannot_be_read_votes_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path());
+        std::fs::create_dir_all(dir.path().join("telemetry/settings.json")).unwrap();
+        assert!(store.settings().is_err());
+        assert_eq!(stored_vote(&store), Telemetry::Off);
+    }
+
+    #[test]
+    fn the_server_hears_on_only_while_reports_are_sent_and_no_vote_until_someone_chose() {
+        let vote_with = |pairs: &[(&str, &str)], stored: Option<bool>| {
+            let pairs: Vec<(String, std::ffi::OsString)> = (pairs.iter())
+                .map(|(name, value)| ((*name).to_owned(), (*value).into()))
+                .collect();
+            vote(koidrive_telemetry::resolve(
+                |name| (pairs.iter().find(|(key, _)| key == name)).map(|(_, value)| value.clone()),
+                stored,
+            ))
+        };
+        assert_eq!(vote_with(&[], None), Telemetry::Unspecified);
+        assert_eq!(vote_with(&[], Some(false)), Telemetry::Off);
+        assert_eq!(
+            vote_with(&[("DO_NOT_TRACK", "1")], Some(true)),
+            Telemetry::Off
+        );
+        assert_eq!(vote_with(&[("DO_NOT_TRACK", "1")], None), Telemetry::Off);
+        assert_eq!(
+            vote_with(&[("KOIDRIVE_TELEMETRY", "0")], Some(true)),
+            Telemetry::Off
+        );
+        assert_eq!(
+            vote_with(&[("KOIDRIVE_TELEMETRY", "maybe")], None),
+            Telemetry::Off
+        );
+        assert_eq!(
+            vote_with(&[("KOIDRIVE_TELEMETRY", "debug")], None),
+            Telemetry::Off
+        );
+        assert_eq!(vote_with(&[], Some(true)), Telemetry::On);
+        assert_eq!(
+            vote_with(&[("KOIDRIVE_TELEMETRY", "1")], Some(false)),
+            Telemetry::On
+        );
+        assert_eq!(
+            vote_with(&[("KOIDRIVE_TELEMETRY", "internal")], None),
+            Telemetry::On
+        );
+    }
 
     #[test]
     fn the_daemon_records_the_failures_seen_since_its_last_tick_as_sums_and_problem_events() {

@@ -39,6 +39,7 @@ const ACCOUNT_SCHEMA_DIGESTS = [
   "9b588dbfc49e370ed9f83bfe686d334d291250b3b818f61493eb9b6e9ad652d7",
   "aaec735e7ef47b5644e1f838dab896941f056da73eca6c6dcb65c3fd67cabac3",
   "6b5b1959385d6b4431dc9dd381a45519e6af594b2561538767c8a46a1a6f6e63",
+  "f51f5555add29ee9d463a97ee9d91914e809fda565d0c86ee671576ebbaafea5",
 ];
 
 type Stub = DurableObjectStub<SpaceDO> | DurableObjectStub<AccountDO>;
@@ -292,7 +293,7 @@ describe("upgraded objects keep working", () => {
       );
     });
     await evictDurableObject(stub);
-    expect(await stub.checkSession(deviceId)).toEqual({ active: true, revoked: false, closed: false, historyId: null, kind: "device", scope: null, leaseMs: SESSION_LEASE_MS });
+    expect(await stub.checkSession(deviceId)).toEqual({ active: true, revoked: false, closed: false, historyId: null, kind: "device", scope: null, leaseMs: SESSION_LEASE_MS, reporting: false });
     const row = await inObject(stub, (sql) => sql.exec("SELECT kind, scope, expires_at_ms, issued_by FROM devices WHERE device_id = ?", deviceId).one());
     expect(row).toEqual({ kind: "device", scope: null, expires_at_ms: null, issued_by: null });
   });
