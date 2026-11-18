@@ -1,16 +1,54 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
-use super::{Field, HeldRow, IntentId, NodeId, Row, RowKey, RowState, Value};
+use super::{Author, Field, HeldRow, IntentId, NodeId, Row, RowKey, RowState, Value};
 use crate::tracked::TrackedMap;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Rows {
     full: TrackedMap<RowKey, Row>,
-    compact: BTreeMap<RowKey, HeldRow>,
+    compact: BTreeMap<NodeId, [Option<Compact>; 3]>,
     full_over: BTreeSet<(IntentId, RowKey)>,
     compact_over: BTreeSet<(IntentId, RowKey)>,
     under: BTreeSet<(NodeId, RowKey)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Compact {
+    Own { intent: IntentId, versioned: bool },
+    Row(Box<HeldRow>),
+}
+
+impl Compact {
+    fn of(held: HeldRow) -> Self {
+        let own = held.author == Author::Own
+            && held.base.is_none()
+            && held.held_as == held.intent
+            && held.wire_base.is_none()
+            && !held.replay;
+        match own {
+            true => Compact::Own {
+                intent: held.intent,
+                versioned: held.versioned,
+            },
+            false => Compact::Row(Box::new(held)),
+        }
+    }
+
+    fn held(&self) -> HeldRow {
+        match self {
+            Compact::Own { intent, versioned } => HeldRow {
+                intent: *intent,
+                author: Author::Own,
+                base: None,
+                held_as: *intent,
+                wire_base: None,
+                replay: false,
+                versioned: *versioned,
+            },
+            Compact::Row(held) => (**held).clone(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -74,16 +112,27 @@ impl Rows {
         self.full.get(key)
     }
 
-    pub(super) fn get_compact(&self, key: &RowKey) -> Option<&HeldRow> {
-        self.compact.get(key)
+    pub(super) fn get_compact(&self, (node, field): &RowKey) -> Option<HeldRow> {
+        self.compact.get(node)?[*field as usize]
+            .as_ref()
+            .map(Compact::held)
     }
 
     pub(super) fn iter(&self) -> impl Iterator<Item = (&RowKey, &Row)> {
         self.full.iter().inspect(visit)
     }
 
-    pub(super) fn iter_compact(&self) -> impl Iterator<Item = (&RowKey, &HeldRow)> {
-        self.compact.iter().inspect(visit)
+    pub(super) fn iter_compact(&self) -> impl Iterator<Item = (RowKey, HeldRow)> {
+        (self.compact.iter()).flat_map(|(node, fields)| {
+            (Field::ALL.into_iter())
+                .filter_map(|field| {
+                    Some((
+                        (node.clone(), field),
+                        fields[field as usize].as_ref()?.held(),
+                    ))
+                })
+                .inspect(visit)
+        })
     }
 
     pub(super) fn full_over(&self, from: IntentId) -> Vec<RowKey> {
@@ -136,11 +185,17 @@ impl Rows {
         self.remove_compact(&key);
         self.compact_over
             .extend(held.base.map(|base| (base, key.clone())));
-        self.compact.insert(key, held);
+        let (node, field) = key;
+        self.compact.entry(node).or_default()[field as usize] = Some(Compact::of(held));
     }
 
     pub(super) fn remove_compact(&mut self, key: &RowKey) -> Option<HeldRow> {
-        let held = self.compact.remove(key)?;
+        let (node, field) = key;
+        let fields = self.compact.get_mut(node)?;
+        let held = fields[*field as usize].take()?.held();
+        if fields.iter().all(Option::is_none) {
+            self.compact.remove(node);
+        }
         if let Some(base) = held.base {
             self.compact_over.remove(&(base, key.clone()));
         }
@@ -152,13 +207,9 @@ impl Rows {
         key: &RowKey,
         change: impl FnOnce(&mut HeldRow) -> T,
     ) -> Option<T> {
-        let held = self.compact.get_mut(key)?;
-        if let Some(base) = held.base {
-            self.compact_over.remove(&(base, key.clone()));
-        }
-        let changed = change(held);
-        self.compact_over
-            .extend(held.base.map(|base| (base, key.clone())));
+        let mut held = self.remove_compact(key)?;
+        let changed = change(&mut held);
+        self.insert_compact(key.clone(), held);
         Some(changed)
     }
 
