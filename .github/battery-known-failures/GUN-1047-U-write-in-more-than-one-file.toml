@@ -1,0 +1,6 @@
+class = "U"
+issue = "GUN-1047"
+tests = ["devices_converge_across_rewinds_and_rollbacks"]
+message = '''after phase <n>: write <n> is in more than one file on the server, and no user copied it: \[\[.*\]\]\.'''
+examples = ["after phase 0: write 2 is in more than one file on the server, and no user copied it: [[\"C.TXT\"], [\"b\"]]."]
+cases = ["f934ef3b902e"]

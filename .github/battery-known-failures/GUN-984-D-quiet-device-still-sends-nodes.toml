@@ -1,0 +1,12 @@
+class = "D"
+issue = "GUN-984"
+tests = [
+  "devices_converge_across_restores_and_rewinds",
+  "devices_converge_across_server_restores",
+  "devices_lose_no_write_across_restores_and_rewinds",
+]
+message = '''after phase <n>: device <n> is quiet, but (it still sends nodes again: \{.*\}, at \{.*\}, lost creates \{.*\}|node <id> is parked)\.'''
+examples = [
+  "after phase 2: device 0 is quiet, but node 01a1c2c0-39a0-7ea7-93f8-3d888a182e12 is parked.",
+  "after phase 2: device 1 is quiet, but it still sends nodes again: {01a1c2c0-39a0-7ea7-93f8-3d888a182e12}, at {}, lost creates {}.",
+]

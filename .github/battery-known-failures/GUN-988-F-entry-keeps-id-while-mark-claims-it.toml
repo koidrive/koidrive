@@ -1,0 +1,5 @@
+class = "F"
+issue = "GUN-988"
+tests = ["a_recovery_by_mark_keeps_its_rules_for_any_marks_places_and_history"]
+message = '''entry n<n> kept its ID while the mark of n<n> claims'''
+examples = ["entry n1 kept its ID while the mark of n0 claims\n"]

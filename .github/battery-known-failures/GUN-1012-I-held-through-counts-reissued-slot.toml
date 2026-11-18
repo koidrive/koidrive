@@ -1,0 +1,5 @@
+class = "I"
+issue = "GUN-1012"
+tests = ["a_server_that_gave_every_kept_slot_out_again_holds_none_of_them"]
+message = '''assertion `left == right` failed: held_through counts slot <n>, which the server gave out again too left: <n> right: <n>'''
+examples = ["assertion `left == right` failed: held_through counts slot 1, which the server gave out again too\n  left: 4\n right: 0"]

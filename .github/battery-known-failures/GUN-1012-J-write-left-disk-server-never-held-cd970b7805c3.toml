@@ -1,0 +1,8 @@
+class = "J"
+issue = "GUN-1012"
+tests = ["devices_converge_across_server_restores", "devices_lose_no_write_across_server_restores"]
+message = '''after phase <n>: write <n> left the disk of device <n>: the server never held it, and its user never overwrote or deleted it\.'''
+examples = ["after phase 1: write 7 left the disk of device 0: the server never held it, and its user never overwrote or deleted it."]
+cases = [
+  "cd970b7805c3",
+]

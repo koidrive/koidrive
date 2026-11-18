@@ -1,0 +1,8 @@
+class = "J"
+issue = "GUN-1012"
+tests = ["devices_converge_across_server_restores"]
+message = '''after phase <n>: write <n> is in the recovery copy ".*" of node <id>, but device <n>'s own commit <n> shows the server kept it at \[(<n>(, <n>)*)?\]\.'''
+examples = ["after phase 1: write 1 is in the recovery copy \"ß\" of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3, but device 1's own commit 1 shows the server kept it at [1]."]
+cases = [
+  "8c10769408c5",
+]

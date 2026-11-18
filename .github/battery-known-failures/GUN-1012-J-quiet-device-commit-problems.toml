@@ -1,0 +1,8 @@
+class = "J"
+issue = "GUN-1012"
+tests = ["devices_converge_across_server_restores"]
+message = '''after phase <n>: device <n> is quiet, but committing has problems \{.*\} or has stopped: (None|Some\(.*\))\.'''
+examples = ["after phase 2: device 1 is quiet, but committing has problems {\"01a1c2c0-39a0-7cb2-989b-810659c5a8bc\"} or has stopped: None."]
+cases = [
+  "de9c5cde7dfc",
+]

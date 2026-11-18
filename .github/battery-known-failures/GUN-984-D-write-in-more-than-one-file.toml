@@ -1,0 +1,12 @@
+class = "D"
+issue = "GUN-984"
+tests = [
+  "devices_converge_across_restores_and_rewinds",
+  "devices_converge_across_server_restores",
+  "devices_lose_no_write_across_restores_and_rewinds",
+]
+message = '''after phase <n>: write <n> is in more than one file on the server, and no user copied it: \[\[.*\]\]\.'''
+examples = [
+  "after phase 2: write 3 is in more than one file on the server, and no user copied it: [[\"b\"], [\"b (conflict from device-2 2026-11-09)\"]].",
+  "after phase 2: write 2 is in more than one file on the server, and no user copied it: [[\"C (conflict from device-0 2026-11-09 2).TXT\"], [\"C.TXT\"]].",
+]

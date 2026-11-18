@@ -1,0 +1,6 @@
+class = "N"
+issue = "GUN-1039"
+tests = ["a_device_with_local_changes_converges_with_the_server_and_keeps_every_write"]
+message = '''assertion failed: `\(left == right\)` left: `\["<id>"(, "<id>")*\]`, right: `\[\]` at \S+\.rs:<line>\.'''
+examples = ["assertion failed: `(left == right)` \n  left: `[\"01a1c2c0-39a0-76dc-88ae-d188b2550aaa\", \"01a1c2c0-39a0-7938-bab6-704a2352bf14\", \"01a1c2c0-39a0-7c24-82f7-492db6123bbe\", \"01a1c2c0-39a0-7c77-b7a3-02f3692242e6\", \"01a1c2c0-39a0-7d85-bf82-44e945ef6661\"]`,\n right: `[]` at core/sim/tests/engine_sync/common.rs:2036."]
+cases = ["62f7a056c8c4"]
