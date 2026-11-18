@@ -132,14 +132,32 @@ impl Engine {
     /// has, an entry with an unknown identity becomes a new node, and a node whose entry is gone
     /// leaves L. A parked entry keeps the position L holds for it and takes the content it has.
     pub fn scan(&mut self, disk: &Disk) {
+        self.scan_at(disk, &[]);
+    }
+
+    /// A rescan of the folder at `scope`, as a watcher does for a folder its events name, which
+    /// takes the disk as [`Engine::scan`] does for every entry it reaches. It reaches what is at
+    /// and below the scope on the disk and in L, and both places of every entry whose identity
+    /// crosses the edge of what it reaches, so a move into or out of the scope stays one node. A
+    /// place whose parent folder on the disk is not the folder L holds there widens to that
+    /// parent, and a place in the parked directory widens to the whole disk. The rest of L keeps
+    /// its state, also where the disk changed.
+    pub fn scan_at(&mut self, disk: &Disk, scope: &[String]) -> Reached {
+        let Reach {
+            places,
+            widened,
+            entries,
+            nodes: reached,
+        } = self.reach(disk, scope);
         let root = self.trees.local().root.clone();
         let known: BTreeMap<u128, NodeId> = (self.trees.local().iter())
             .map(|(id, node)| (node.identity.ino, id.clone()))
             .collect();
         let mut nodes: BTreeMap<u128, NodeId> = BTreeMap::new();
-        let mut queue: VecDeque<u128> = (disk.entries().iter())
-            .filter(|(_, entry)| !matches!(entry.place, Place::In(_)))
-            .map(|(ino, _)| *ino)
+        let mut queue: VecDeque<u128> = (entries.iter().copied())
+            .filter(|ino| {
+                !matches!(&disk.entries()[ino].place, Place::In(parent) if entries.contains(parent))
+            })
             .collect();
         while let Some(ino) = queue.pop_front() {
             let entry = &disk.entries()[&ino];
@@ -161,7 +179,7 @@ impl Engine {
             queue.extend(disk.children(&Place::In(ino)));
             let parent = match &entry.place {
                 Place::Root => root.clone(),
-                Place::In(parent) => nodes[parent].clone(),
+                Place::In(parent) => nodes.get(parent).unwrap_or_else(|| &known[parent]).clone(),
                 Place::Parked(_) => {
                     let parked = self.trees.local().get(&id).cloned();
                     if let Some(mut node) =
@@ -196,15 +214,128 @@ impl Engine {
             }
         }
         let on_disk: BTreeSet<&NodeId> = nodes.values().collect();
-        let gone: Vec<NodeId> = (self.trees.local().iter())
-            .map(|(id, _)| id)
+        let gone: Vec<NodeId> = (reached.into_iter())
             .filter(|id| !on_disk.contains(id))
-            .cloned()
             .collect();
         for id in gone {
             self.trees.remove_local(&id);
         }
+        Reached { places, widened }
     }
+
+    fn reach(&self, disk: &Disk, scope: &[String]) -> Reach {
+        let local = self.trees.local();
+        let whole = || Reach {
+            places: vec![Vec::new()],
+            widened: !scope.is_empty(),
+            entries: disk.entries().keys().copied().collect(),
+            nodes: local.iter().map(|(id, _)| id.clone()).collect(),
+        };
+        let entry_at = |path: &[String]| {
+            path.iter().try_fold(None, |parent, name| {
+                let place = parent.map_or(Place::Root, Place::In);
+                disk.child(&place, name).map(Some)
+            })?
+        };
+        let node_at = |path: &[String]| {
+            path.iter().try_fold(&local.root, |parent, name| {
+                let child = local.iter().find(|(_, node)| {
+                    !node.parked && node.shape.parent == *parent && node.shape.name == *name
+                });
+                child.map(|(id, _)| id)
+            })
+        };
+        let path_of = |id: &NodeId| {
+            let mut names = Vec::new();
+            let mut current = id;
+            while *current != local.root {
+                let node = local.get(current).filter(|node| !node.parked)?;
+                names.push(node.shape.name.clone());
+                current = &node.shape.parent;
+            }
+            names.reverse();
+            Some(names)
+        };
+        let widen = |mut path: Vec<String>| {
+            while path.len() > 1 && entry_at(&path).is_some() {
+                let parent = &path[..path.len() - 1];
+                let held =
+                    (node_at(parent).and_then(|id| local.get(id))).map(|node| node.identity.ino);
+                if held.is_some() && held == entry_at(parent) {
+                    break;
+                }
+                path.pop();
+            }
+            path
+        };
+        let known: BTreeMap<u128, &NodeId> = (local.iter())
+            .map(|(id, node)| (node.identity.ino, id))
+            .collect();
+        let mut reach = Reach::default();
+        let mut pending = vec![scope.to_vec()];
+        while let Some(asked) = pending.pop() {
+            let place = widen(asked.clone());
+            reach.widened |= place != asked;
+            if place.is_empty() {
+                return whole();
+            }
+            if reach.places.contains(&place) {
+                continue;
+            }
+            if let Some(top) = entry_at(&place) {
+                reach.entries.extend(
+                    (disk.entries().iter())
+                        .filter(|(ino, entry)| **ino == top || disk.inside(&entry.place, top))
+                        .map(|(ino, _)| *ino),
+                );
+            }
+            if let Some(top) = node_at(&place) {
+                reach.nodes.extend(
+                    (local.iter())
+                        .filter(|(id, _)| {
+                            std::iter::successors(Some(*id), |id| {
+                                local.get(id).map(|node| &node.shape.parent)
+                            })
+                            .take(local.len() + 1)
+                            .any(|above| above == top)
+                        })
+                        .map(|(id, _)| id.clone()),
+                );
+            }
+            reach.places.push(place);
+            for id in &reach.nodes {
+                let ino = local.get(id).expect("reached in L").identity.ino;
+                if disk.entries().contains_key(&ino) && !reach.entries.contains(&ino) {
+                    match disk.path(ino) {
+                        Some(path) => pending.push(path),
+                        None => return whole(),
+                    }
+                }
+            }
+            for ino in &reach.entries {
+                if let Some(id) = known.get(ino).filter(|id| !reach.nodes.contains(**id)) {
+                    match path_of(id) {
+                        Some(path) => pending.push(path),
+                        None => return whole(),
+                    }
+                }
+            }
+        }
+        reach
+    }
+}
+
+pub struct Reached {
+    pub places: Vec<Vec<String>>,
+    pub widened: bool,
+}
+
+#[derive(Default)]
+struct Reach {
+    places: Vec<Vec<String>>,
+    widened: bool,
+    entries: BTreeSet<u128>,
+    nodes: BTreeSet<NodeId>,
 }
 
 /// A message on its way from the server to a device.

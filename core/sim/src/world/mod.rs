@@ -194,6 +194,10 @@ pub enum Step {
     User(Action),
     /// A full rescan of the disk.
     Scan,
+    /// A rescan of one folder, as a watcher does for a folder its events name
+    /// ([`device::Engine::scan_at`]). The number picks the root or a folder the disk shows, in
+    /// the order the folders were made, and the root is a full rescan.
+    ScanFolder(usize),
     /// Plans the next effect when none is in flight, and ends the one in flight otherwise.
     Effect(Outcome),
     /// Builds the next commit when none is in flight, and sends the one in flight otherwise.
@@ -918,6 +922,9 @@ impl World {
             Step::Scan => {
                 self.scan(d)?;
             }
+            Step::ScanFolder(pick) => {
+                self.scan_folder(d, *pick)?;
+            }
             Step::Effect(outcome) => {
                 if self.effect(d, *outcome)? && *outcome != Outcome::Run {
                     self.effect(d, *outcome)?;
@@ -1448,14 +1455,40 @@ impl World {
 
     /// A full rescan. True when L changed.
     fn scan(&mut self, d: usize) -> Result<bool, Failure> {
-        let device = &mut self.devices[d];
-        if device.rescan() > 0 {
+        if self.devices[d].rescan() > 0 {
             note(
                 &mut self.seen,
                 "rescan lets a problem node be planned again",
             );
         }
+        self.observed(d)
+    }
+
+    fn scan_folder(&mut self, d: usize, pick: usize) -> Result<bool, Failure> {
+        let device = &mut self.devices[d];
+        let folders: Vec<u128> = (device.disk.visible().into_iter())
+            .filter(|ino| device.disk.entries()[ino].content.is_none())
+            .collect();
+        let Some(folder) = (pick % (folders.len() + 1)).checked_sub(1) else {
+            return self.scan(d);
+        };
+        let scope = (device.disk.path(folders[folder])).expect("a folder the disk shows");
+        let reached = device.engine.scan_at(&device.disk, &scope);
+        if reached.widened {
+            note(&mut self.seen, "a rescan of a folder widens");
+        }
+        if reached.places.len() > 1 {
+            note(
+                &mut self.seen,
+                "a rescan of a folder follows an entry across its edge",
+            );
+        }
+        self.observed(d)
+    }
+
+    fn observed(&mut self, d: usize) -> Result<bool, Failure> {
         self.scanned[d] = self.clock;
+        let device = &mut self.devices[d];
         let changed = device.engine != device.store;
         device.persist()?;
         Ok(changed)
