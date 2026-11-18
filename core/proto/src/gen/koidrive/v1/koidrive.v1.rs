@@ -413,6 +413,8 @@ pub struct VersionInfo {
     pub created_at_ms: i64,
     #[prost(string, repeated, tag="7")]
     pub made_over: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, tag="8")]
+    pub source_version_id: ::prost::alloc::string::String,
 }
 /// The full resulting state of a node after a commit.
 #[derive(Clone, PartialEq, ::prost::Message)]

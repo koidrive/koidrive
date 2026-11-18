@@ -1060,6 +1060,7 @@ fn three_trees_round_trip() {
         current: Some(VersionInfo {
             version_id: "v1".into(),
             made_over: Vec::new(),
+            source_version_id: String::new(),
             seq: 4,
             content: Some(content(3)),
             device_id: "d1".into(),

@@ -398,6 +398,12 @@ impl<'a> Applier<'a> {
         ancestry
     }
 
+    fn set_lineage(&mut self, version_id: &str, made_over: Vec<String>, source: &str) {
+        let version = self.st.versions.get_mut(version_id).unwrap();
+        version.made_over = made_over;
+        version.source_version_id = source.to_owned();
+    }
+
     fn insert_version(&mut self, node_id: &str, content: &Content, chunks: &[ChunkRef]) -> String {
         let version_id = self.st.ids.uuid_v7(self.ctx.now_ms as u64);
         let content = Content {
@@ -416,6 +422,7 @@ impl<'a> Applier<'a> {
                 user_id: self.ctx.committer.user_id.clone(),
                 created_at_ms: self.ctx.now_ms,
                 made_over: Vec::new(),
+                source_version_id: String::new(),
             },
         );
         let distinct: BTreeSet<&[u8]> = chunks.iter().map(|c| c.hash.as_slice()).collect();
@@ -495,7 +502,7 @@ impl<'a> Applier<'a> {
         let content = op.content.as_ref().expect("checked before applying");
         let version_id = self.insert_version(&op.node_id, content, &content.chunks);
         let ancestry = self.made_over(&op.node_id, &op.made_over, &op.source_version_id);
-        self.st.versions.get_mut(&version_id).unwrap().made_over = ancestry;
+        self.set_lineage(&version_id, ancestry, &op.source_version_id);
         let dev = self.dev().to_string();
         self.insert_node(
             &op.node_id,
@@ -550,11 +557,8 @@ impl<'a> Applier<'a> {
             return Ok(result(op_result::Code::Superseded, "", ""));
         }
         let bases = self.made_over(node_id, made_over, "");
-        let ancestry = self.made_over(
-            node_id,
-            made_over,
-            if resend { source_version_id } else { "" },
-        );
+        let source = if resend { source_version_id } else { "" };
+        let ancestry = self.made_over(node_id, made_over, source);
         let current = (found.cur_version_id.as_ref()).map(|id| &self.st.versions[id].content);
         if self.unseen_content(&found)
             && current.is_some_and(|current| same_content(current, content))
@@ -601,7 +605,7 @@ impl<'a> Applier<'a> {
             let copy_id = self.st.ids.uuid_v7(self.ctx.now_ms as u64);
             let name = self.pick_conflict_copy_name(&parent_id, &node.name);
             let version_id = self.insert_version(&copy_id, content, chunks);
-            self.st.versions.get_mut(&version_id).unwrap().made_over = ancestry;
+            self.set_lineage(&version_id, ancestry, source);
             self.insert_node(
                 &copy_id,
                 &parent_id,
@@ -613,7 +617,7 @@ impl<'a> Applier<'a> {
             return Ok(result(op_result::Code::ConflictCopy, &copy_id, &name));
         }
         let version_id = self.insert_version(&node.node_id, content, chunks);
-        self.st.versions.get_mut(&version_id).unwrap().made_over = ancestry;
+        self.set_lineage(&version_id, ancestry, source);
         let (seq, dev) = (self.ctx.seq, self.dev().to_string());
         let stored = self
             .st

@@ -11,7 +11,7 @@ import { OpResult_Code } from "../src/gen/koidrive/v1/commit_pb";
 import { toHex, uuidv7 } from "../src/ids";
 import type { Migration } from "../src/migrations";
 import type { SpaceDO } from "../src/space-do";
-import { MIGRATIONS as SPACE_MIGRATIONS } from "../src/space/schema";
+import { LEGACY_INTENTS_DUE, MIGRATIONS as SPACE_MIGRATIONS } from "../src/space/schema";
 import { client, op, OWNER, SPACE_KEY } from "./helpers";
 
 const SPACE_SCHEMA_DIGESTS = [
@@ -28,6 +28,7 @@ const SPACE_SCHEMA_DIGESTS = [
   "f37e5acc2df24bfb96c01b1a1e9a510af144a188bded5e759550d68e23ed444a",
   "d0c113836a36963a0fac3ee0c3dd7465829987187aa4c248d3c6e1fb6039e3b8",
   "bb0fb66becaebda26b5a74d92d6e27e3e03637a70ec914eb4cbcf1d02bc600ac",
+  "39282002f50e1334fb92e3caf96970bdd08518082994aebf6cca19c86661744e",
 ];
 const ACCOUNT_SCHEMA_DIGESTS = [
   "cdd5988fc835119f5b6ad96ebde0be7f38aac621215c10844fdb4fb99f4a7fcf",
@@ -114,6 +115,7 @@ function rewrite(sql: SqlStorage, kind: StorageKind, state: OldState, version = 
     if (typeof step === "string") sql.exec(step);
     else step(sql);
   }
+  if (kind === SPACE && userTables(sql).includes("meta")) sql.exec("DELETE FROM meta WHERE key = ?", LEGACY_INTENTS_DUE);
   if (state.versioned && state.applied > 0) {
     sql.exec(`INSERT INTO ${kind.versionTable} (key, value) VALUES ('schema_version', ?)`, version);
   }

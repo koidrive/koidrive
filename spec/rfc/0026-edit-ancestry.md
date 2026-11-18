@@ -4,7 +4,7 @@ Status: proposed. Applies to spec v0, format_version 1. Amends spec v0 §6.2 R3,
 
 ## 1. Messages
 
-`UpdateContent` adds `repeated string made_over = 4` and `string source_version_id = 5`. `CreateFile` adds `repeated string made_over = 5` and `string source_version_id = 6`. `VersionInfo` adds `repeated string made_over = 7`, including the current version in `NodeState`, change records, version listings, and exports.
+`UpdateContent` adds `repeated string made_over = 4` and `string source_version_id = 5`. `CreateFile` adds `repeated string made_over = 5` and `string source_version_id = 6`. `VersionInfo` adds `repeated string made_over = 7`, including the current version in `NodeState`, change records, version listings, and exports. `VersionInfo` adds `string source_version_id = 8`: the source alias the server prepended to this version's chain (§2), or empty when it prepended none.
 
 An operation's `made_over` identifies versions whose content the edit was made over. Clients MUST order these IDs newest first and MUST send at most 64 distinct IDs. IDs MUST be UUIDv7 version IDs. An ID does not assert that the server still retains that version.
 
@@ -14,7 +14,7 @@ An operation's `made_over` identifies versions whose content the edit was made o
 
 The server MUST expand the incoming `made_over` before deciding R3. It visits the incoming IDs in order, retaining the first occurrence of each ID. Immediately after retaining an ID, it visits that stored version's `made_over` in the same way, but only if the version belongs to the target node. Unknown IDs and IDs of another node remain in the result without expansion. An ID already visited MUST NOT be expanded again. The walk stops after retaining 64 IDs.
 
-This depth-first order defines the expanded bases without comparing version timestamps. When a resend or `CreateFile` creates a version, including a conflict copy or renamed create, the server MUST prepend its nonempty `source_version_id` to those bases, remove later duplicates, and truncate the result to 64 IDs. An `UpdateContent` without `resend` MUST NOT add a source alias. The server MUST persist the resulting chain with the new version.
+This depth-first order defines the expanded bases without comparing version timestamps. When a resend or `CreateFile` creates a version, including a conflict copy or renamed create, the server MUST prepend its nonempty `source_version_id` to those bases, remove later duplicates, and truncate the result to 64 IDs. An `UpdateContent` without `resend` MUST NOT add a source alias. The server MUST persist the resulting chain with the new version. It MUST persist the prepended source alias with the version as well, and report it in `VersionInfo.source_version_id`. An export carries it, and an RFC 0004 §5 rebuild restores it. A version stored or exported without it has no known alias.
 
 The source entry is a same-value alias, not evidence of a user's overwrite. A replay mints a new server version ID for the value identified by `source_version_id`. `VersionInfo.made_over` reports both such aliases and overwritten bases as inclusion evidence. An edit over that replay therefore includes its original source value when the server expands the replay's chain. Adding an alias MUST NOT change RFC 0018's edit attribution or make a resend count as a user's edit.
 

@@ -37,6 +37,8 @@ import { conflictName, isReservedAtRoot, nameKey, normalizeName } from "./names"
 import { NodeKindValue, NodeStatusValue } from "./schema";
 import {
   boundMadeOver,
+  type Chain,
+  chain,
   encodeChunkList,
   expandMadeOver,
   getNode,
@@ -50,6 +52,7 @@ import {
   rows,
   tombstoneOf,
   versionChunks,
+  versionChain,
   versionContent,
   versionMadeOver,
 } from "./store";
@@ -475,12 +478,12 @@ export class CommitApplier {
     this.created.add(nodeId);
   }
 
-  private insertVersion(nodeId: string, content: Content, chunks: readonly ChunkRef[], madeOver: readonly string[] = []): string {
+  private insertVersion(nodeId: string, content: Content, chunks: readonly ChunkRef[], lineage: Chain = chain("", [])): string {
     const versionId = uuidv7(this.ctx.nowMs);
     const paged = chunks.length > PAGE_CHUNKS;
     this.sql.exec(
       `INSERT INTO versions (version_id, node_id, seq, size, mtime_ns, executable, chunk_count, manifest_digest, chunker,
-         chunks, device_id, user_id, created_at_ms, made_over) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         chunks, device_id, user_id, created_at_ms, made_over, source_version_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       versionId,
       nodeId,
       this.ctx.seq,
@@ -494,7 +497,8 @@ export class CommitApplier {
       this.dev,
       this.ctx.committer.userId,
       this.ctx.nowMs,
-      boundMadeOver(madeOver).join(","),
+      lineage.madeOver.join(","),
+      lineage.source,
     );
     for (let page = 0; paged && page * PAGE_CHUNKS < chunks.length; page++) {
       this.sql.exec(
@@ -511,11 +515,11 @@ export class CommitApplier {
     return versionId;
   }
 
-  private conflictCopy(parent: NodeRow, original: string, content: Content, chunks: readonly ChunkRef[], madeOver: readonly string[], intent: FieldIntent): OpResult {
+  private conflictCopy(parent: NodeRow, original: string, content: Content, chunks: readonly ChunkRef[], lineage: Chain, intent: FieldIntent): OpResult {
     const home = this.depth(parent) < MAX_DEPTH ? parent : getNode(this.sql, parent.parent_id!)!;
     const copyId = uuidv7(this.ctx.nowMs);
     const name = this.pickConflictCopyName(home.node_id, original);
-    const versionId = this.insertVersion(copyId, content, chunks, madeOver);
+    const versionId = this.insertVersion(copyId, content, chunks, lineage);
     this.insertNode(copyId, home.node_id, name, NodeKindValue.FILE, versionId, "");
     const [place, status] = intent.carried ? [this.minted(intent.author, true), this.minted(intent.author, true)] : [this.minted(this.dev, false), this.minted(this.dev, false)];
     this.setIntent(copyId, "content", intent);
@@ -527,7 +531,7 @@ export class CommitApplier {
 
   private copyOf(node: NodeRow, parent: NodeRow, intent: FieldIntent): void {
     const version = getVersion(this.sql, node.cur_version_id!)!;
-    this.conflictCopy(parent, node.name, versionContent(this.sql, version, false), versionChunks(this.sql, version), versionMadeOver(version), intent);
+    this.conflictCopy(parent, node.name, versionContent(this.sql, version, false), versionChunks(this.sql, version), versionChain(version), intent);
   }
 
   private mark(nodeId: string, pendingFor: string | null): void {
@@ -571,7 +575,7 @@ export class CommitApplier {
     nodeId: string,
     parentId: string,
     name: string,
-    content: { value: Content; madeOver: string[] } | undefined,
+    content: { value: Content; lineage: Chain } | undefined,
     pendingFor: string | null = null,
   ): OpResult | undefined {
     const deleted = this.deletedParent(parentId);
@@ -580,7 +584,7 @@ export class CommitApplier {
     const intent = this.incoming("content");
     const seen = !content || deleted.knows(intent.id);
     if (trash && seen && this.depth(trash) < MAX_DEPTH) {
-      const versionId = content ? this.insertVersion(nodeId, content.value, content.value.chunks, content.madeOver) : null;
+      const versionId = content ? this.insertVersion(nodeId, content.value, content.value.chunks, content.lineage) : null;
       this.insertNode(nodeId, trash.node_id, name, content ? NodeKindValue.FILE : NodeKindValue.DIR, versionId, this.dev);
       this.sql.exec("UPDATE nodes SET status = 2, trash_group = ?, trashed_at_ms = ? WHERE node_id = ?", trash.trash_group, this.ctx.nowMs, nodeId);
       for (const field of content ? FIELDS : (["place", "status"] as const)) this.setIntent(nodeId, field);
@@ -602,7 +606,7 @@ export class CommitApplier {
       this.purged.push(create(ChangeRecordSchema, { change: { case: "purged", value: purgedRecord(nodeId, this.id(parentId), intents, held) } }));
     }
     if (seen) return superseded();
-    return this.conflictCopy(this.nearestLive(this.id(parentId)), name, content.value, content.value.chunks, content.madeOver, intent);
+    return this.conflictCopy(this.nearestLive(this.id(parentId)), name, content.value, content.value.chunks, content.lineage, intent);
   }
 
   private createDir(op: CreateDir): OpResult {
@@ -639,22 +643,22 @@ export class CommitApplier {
     const existing = getNode(this.sql, op.nodeId);
     if (existing) return this.sameCreate(existing, op.parentId, name, op.content!) ? unchanged(existing) : rejected("ID_EXISTS");
     const bases = expandMadeOver(this.sql, op.nodeId, op.madeOver);
-    const madeOver = boundMadeOver(op.sourceVersionId ? [op.sourceVersionId, ...bases] : bases);
+    const lineage = chain(op.sourceVersionId, bases);
     const tombstone = this.purgedReplay(op.nodeId, true);
     if (tombstone) {
       const intent = this.incoming("content");
       if (tombstone.knows.has(intent.id) || this.heldElsewhere(op.nodeId, ["content"])) return superseded();
-      return this.conflictCopy(this.nearestLive(tombstone.parent_id), name, op.content!, op.content!.chunks, madeOver, intent);
+      return this.conflictCopy(this.nearestLive(tombstone.parent_id), name, op.content!, op.content!.chunks, lineage, intent);
     }
     if (this.heldElsewhere(op.nodeId, ["place", "content", "status"])) return superseded();
-    const deleted = this.createIntoDeleted(op.nodeId, op.parentId, name, { value: op.content!, madeOver });
+    const deleted = this.createIntoDeleted(op.nodeId, op.parentId, name, { value: op.content!, lineage });
     if (deleted) return deleted;
     const found = this.parentRow(op.parentId);
     if (typeof found === "string") return rejected(found);
     if (!found.parent_id && isReservedAtRoot(name)) return rejected("INVALID_NAME");
     const parent = this.parentFor(op.parentId) as NodeRow;
     const picked = this.pickName(parent.node_id, name, "");
-    const versionId = this.insertVersion(op.nodeId, op.content!, op.content!.chunks, madeOver);
+    const versionId = this.insertVersion(op.nodeId, op.content!, op.content!.chunks, lineage);
     this.insertNode(op.nodeId, parent.node_id, picked.name, NodeKindValue.FILE, versionId, this.dev);
     for (const field of FIELDS) this.setIntent(op.nodeId, field);
     return result(picked.renamed ? OpResult_Code.APPLIED_RENAMED : OpResult_Code.APPLIED, "", picked.name);
@@ -669,7 +673,7 @@ export class CommitApplier {
       if (!tombstone) return rejected("NOT_FOUND");
       if (tombstone.knows.has(intent.id) || this.heldElsewhere(this.id(nodeId), ["content"])) return superseded();
       const parent = this.nearestLive(tombstone.parent_id);
-      return this.conflictCopy(parent, tombstone.name, content, chunks, boundMadeOver(ancestry?.madeOver ?? []), intent);
+      return this.conflictCopy(parent, tombstone.name, content, chunks, chain("", ancestry?.madeOver ?? []), intent);
     }
     if (found.kind !== NodeKindValue.FILE) return rejected("NOT_FILE");
     if (this.client && this.holdsIntents(found, ["content"]) && this.holds(found, content)) return unchanged(found);
@@ -680,7 +684,7 @@ export class CommitApplier {
     if (found.status === NodeStatusValue.TRASHED) {
       if (this.client && intent.carried) {
         if (this.trashKnows(found, intent.id)) return superseded();
-        return this.conflictCopy(this.nearestLive(found.parent_id), found.name, content, chunks, boundMadeOver(ancestry?.madeOver ?? []), intent);
+        return this.conflictCopy(this.nearestLive(found.parent_id), found.name, content, chunks, chain("", ancestry?.madeOver ?? []), intent);
       }
       if (resend) return superseded();
     }
@@ -689,10 +693,13 @@ export class CommitApplier {
       return superseded();
     }
     const bases = expandMadeOver(this.sql, found.node_id, ancestry?.madeOver ?? []);
-    const overCurrent = current !== undefined && bases.includes(current.version_id);
+    const alias = this.client ? current?.source_version_id : "";
+    const overCurrent = current !== undefined && (bases.includes(current.version_id) || (!!alias && bases.includes(alias)));
     const byAncestry = this.client && bases.length > 0;
-    const stale = (node: NodeRow) => (byAncestry ? !overCurrent : this.unseenContent(node) && !overCurrent);
-    if ((byAncestry ? !overCurrent : this.unseenContent(found)) && this.holds(found, content)) {
+    const known = current ? [current.version_id, ...versionMadeOver(current)] : [];
+    const merges = byAncestry && current !== undefined && !overCurrent && this.holds(found, content) && bases.some((id) => !known.includes(id));
+    const stale = (node: NodeRow) => !merges && (byAncestry ? !overCurrent : this.unseenContent(node) && !overCurrent);
+    if (!merges && (byAncestry ? !overCurrent : this.unseenContent(found)) && this.holds(found, content)) {
       if (replay && sourceVersionId && current) {
         const madeOver = boundMadeOver([sourceVersionId, ...versionMadeOver(current)]);
         this.sql.exec("UPDATE versions SET made_over = ? WHERE version_id = ?", madeOver.join(","), current.version_id);
@@ -707,11 +714,11 @@ export class CommitApplier {
       this.touch(node.node_id);
       return result(renamed ? OpResult_Code.APPLIED_RENAMED : OpResult_Code.APPLIED, "", node.name);
     }
-    const madeOver = boundMadeOver(replay && sourceVersionId ? [sourceVersionId, ...bases] : bases);
+    const lineage = chain(replay ? sourceVersionId : "", merges ? [...bases, ...known] : bases);
     const { node, renamed } = this.reviveTarget(found);
-    if (stale(node)) return this.conflictCopy(getNode(this.sql, node.parent_id!)!, node.name, content, chunks, madeOver, intent);
+    if (stale(node)) return this.conflictCopy(getNode(this.sql, node.parent_id!)!, node.name, content, chunks, lineage, intent);
     this.sql.exec("UPDATE versions SET superseded_at_ms = ? WHERE version_id = ?", this.ctx.nowMs, node.cur_version_id);
-    const versionId = this.insertVersion(node.node_id, content, chunks, madeOver);
+    const versionId = this.insertVersion(node.node_id, content, chunks, lineage);
     const [editRev, editDev] = yields ? [node.edit_rev, node.edit_dev] : [this.ctx.seq, this.dev];
     this.sql.exec(
       "UPDATE nodes SET cur_version_id = ?, content_rev = ?, content_dev = ?, edit_rev = ?, edit_dev = ? WHERE node_id = ?",

@@ -5000,6 +5000,7 @@ mod ancestry_size_tests {
                         version_id: version(3000),
                         content: update.content.clone(),
                         made_over,
+                        source_version_id: String::new(),
                         user_id: version(4000),
                         device_id: version(5000),
                         seq: 2,

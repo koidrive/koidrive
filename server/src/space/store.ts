@@ -52,6 +52,7 @@ export interface NodeRow {
 export interface VersionRow {
   version_id: string;
   made_over: string;
+  source_version_id: string;
   node_id: string;
   seq: number;
   size: number;
@@ -157,6 +158,19 @@ export function versionMadeOver(version: VersionRow): string[] {
   return boundMadeOver(version.made_over.split(","));
 }
 
+export interface Chain {
+  madeOver: string[];
+  source: string;
+}
+
+export function chain(source: string, bases: readonly string[]): Chain {
+  return { madeOver: boundMadeOver(source ? [source, ...bases] : bases), source };
+}
+
+export function versionChain(version: VersionRow): Chain {
+  return { madeOver: versionMadeOver(version), source: version.source_version_id };
+}
+
 export function expandMadeOver(sql: Sql, nodeId: string, ids: readonly string[]): string[] {
   const seen = new Set<string>();
   const pending = [...ids].reverse();
@@ -209,6 +223,7 @@ export function versionInfo(sql: Sql, version: VersionRow, complete = false): Ve
     userId: version.user_id,
     createdAtMs: BigInt(version.created_at_ms),
     madeOver: versionMadeOver(version),
+    sourceVersionId: version.source_version_id,
   });
 }
 
