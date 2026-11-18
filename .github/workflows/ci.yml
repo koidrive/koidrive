@@ -407,11 +407,18 @@ jobs:
         run: |
           cargo nextest run --archive-file "$RUNNER_TEMP/rust-tests/archive.tar.zst" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite \
             --config-file "$RUNNER_TEMP/rust-tests/shards.toml" --profile "shard-$SHARD" --no-tests=pass
+      - name: Put this shard's results in a folder named after it
+        if: ${{ !cancelled() }}
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/junit/rust-junit-$OS-$SHARD"
+          cp "target/nextest/shard-$SHARD/junit.xml" "$RUNNER_TEMP/junit/rust-junit-$OS-$SHARD/"
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rust-junit-${{ env.OS }}-${{ matrix.shard }}
-          path: target/nextest/shard-${{ matrix.shard }}/junit.xml
+          path: ${{ runner.temp }}/junit
           if-no-files-found: error
           retention-days: 7
 
@@ -565,6 +572,7 @@ jobs:
         with:
           pattern: rust-junit-*
           path: ${{ runner.temp }}/junit
+          merge-multiple: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:

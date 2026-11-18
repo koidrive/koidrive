@@ -289,6 +289,12 @@ class RustShards(unittest.TestCase):
         outputs = self.run_step(RUST="false", RUST_DRIVER="false", RUST_ENGINE="false")
         self.assertEqual(outputs["rust_archive"], "false")
 
+    def test_each_shard_result_keeps_its_own_folder_however_many_shards_upload(self):
+        workflow = WORKFLOW.read_text()
+        self.assertIn('cp "target/nextest/shard-$SHARD/junit.xml" "$RUNNER_TEMP/junit/rust-junit-$OS-$SHARD/"', workflow)
+        self.assertIn("name: rust-junit-${{ env.OS }}-${{ matrix.shard }}\n          path: ${{ runner.temp }}/junit\n", workflow)
+        self.assertIn("pattern: rust-junit-*\n          path: ${{ runner.temp }}/junit\n          merge-multiple: true\n", workflow)
+
     def test_every_macos_rust_job_is_a_coverage_condition_on_push(self):
         workflow = WORKFLOW.read_text()
         shards = json.loads(self.run_step(RUST="true", RUST_DRIVER="true", RUST_ENGINE="true")["rust_shards_macos"])["include"]
