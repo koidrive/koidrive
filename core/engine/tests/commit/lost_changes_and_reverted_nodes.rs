@@ -415,6 +415,7 @@ fn a_folder_deleted_around_a_parked_node_is_brought_back_for_it() {
             let identity = FileIdentity {
                 ino,
                 birth_ns: Some(0),
+                handle: None,
             };
             effects
                 .done(
@@ -529,6 +530,7 @@ fn a_parked_file_rekeyed_for_its_edit_is_moved_out_from_where_it_was_parked() {
         let identity = FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         };
         effects
             .done(

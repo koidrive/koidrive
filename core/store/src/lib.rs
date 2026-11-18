@@ -625,17 +625,18 @@ impl Tx<'_> {
     pub fn local_nodes(&self) -> Result<Vec<LocalNode>> {
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, parent_id, name, kind, content, ino, ino_high, birth_ns, parked,
-                    left_out_when_placed, content_from_server
+                    left_out_when_placed, content_from_server, handle
              FROM local_nodes ORDER BY node_id",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 ShapeRow::read(row, 1)?,
-                FileId {
-                    ino: ino_from_columns(row.get(5)?, row.get(6)?),
-                    birth_ns: row.get(7)?,
-                },
+                FileId::stored(
+                    ino_from_columns(row.get(5)?, row.get(6)?),
+                    row.get(7)?,
+                    row.get::<_, Option<i64>>(11)?.map(|handle| handle as u64),
+                ),
                 row.get::<_, bool>(8)?,
                 row.get::<_, bool>(9)?,
                 row.get::<_, bool>(10)?,
@@ -664,13 +665,13 @@ impl Tx<'_> {
             .prepare_cached(
                 "INSERT INTO local_nodes
                  (node_id, parent_id, name, kind, content, ino, ino_high, birth_ns, parked,
-                  left_out_when_placed, content_from_server)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                  left_out_when_placed, content_from_server, handle)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                  ON CONFLICT (node_id) DO UPDATE SET parent_id = excluded.parent_id,
                   name = excluded.name, kind = excluded.kind, content = excluded.content,
                   ino = excluded.ino, ino_high = excluded.ino_high, birth_ns = excluded.birth_ns,
                   parked = excluded.parked, left_out_when_placed = excluded.left_out_when_placed,
-                  content_from_server = excluded.content_from_server",
+                  content_from_server = excluded.content_from_server, handle = excluded.handle",
             )?
             .execute(params![
                 node.node_id,
@@ -684,6 +685,7 @@ impl Tx<'_> {
                 node.parked,
                 node.left_out_when_placed,
                 node.content_from_server,
+                node.identity.handle.map(|handle| handle as i64),
             ])?;
         Ok(())
     }

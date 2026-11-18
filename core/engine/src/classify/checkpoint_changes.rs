@@ -47,6 +47,7 @@ fn local(i: u8, placed: Placed, left_out: bool, from_server: bool) -> LocalNode 
         identity: FileIdentity {
             ino: u128::from(i) + 1 + 100 * u128::from(placed.inode),
             birth_ns: Some(1),
+            handle: None,
         },
         parked: placed.parked,
         left_out_when_placed: left_out,

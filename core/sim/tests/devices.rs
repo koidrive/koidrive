@@ -11733,6 +11733,7 @@ mod planned_against_the_server {
             let identity = FileIdentity {
                 ino,
                 birth_ns: Some(0),
+                handle: None,
             };
             trees.set_local(
                 id.clone(),

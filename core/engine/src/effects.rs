@@ -159,7 +159,7 @@ impl EffectRecord {
         };
         trees.local_children(&self.node).all(|child| {
             (trees.local().get(child))
-                .is_some_and(|node| along.iter().any(|file| file.identity == node.identity))
+                .is_some_and(|node| along.iter().any(|file| file.identity.same(&node.identity)))
         })
     }
 
@@ -1188,8 +1188,9 @@ impl<'a> View<'a> {
             };
             return self.trees.local_children(&record.node).all(|child| {
                 self.trees.under_kept_entry(child)
-                    || (self.trees.local().get(child))
-                        .is_some_and(|node| along.iter().any(|file| file.identity == node.identity))
+                    || (self.trees.local().get(child)).is_some_and(|node| {
+                        along.iter().any(|file| file.identity.same(&node.identity))
+                    })
             });
         };
         let kept = match &record.effect {
@@ -1201,7 +1202,7 @@ impl<'a> View<'a> {
             _ => None,
         };
         let held_by_node = |identity: &FileIdentity| {
-            (self.trees.local().get(&record.node)).is_some_and(|node| node.identity == *identity)
+            (self.trees.local().get(&record.node)).is_some_and(|node| node.identity.same(identity))
         };
         if kept.is_some_and(|identity| {
             !held_by_node(identity) && self.trees.local_with_identity(identity).is_some()

@@ -44,7 +44,7 @@ impl BroughtBack {
     /// Whether `id` may be an entry a store rollback brought back.
     pub fn holds(&self, id: FileId) -> bool {
         match self {
-            BroughtBack::Entries(ids) => ids.contains(&id),
+            BroughtBack::Entries(ids) => ids.contains(&id.without_handle()),
             BroughtBack::Unreadable => true,
         }
     }
@@ -609,7 +609,11 @@ impl Space {
         };
         Ok(BroughtBack::Entries(
             (ids.into_iter())
-                .map(|(_, ino, birth_ns)| FileId { ino, birth_ns })
+                .map(|(_, ino, birth_ns)| FileId {
+                    ino,
+                    birth_ns,
+                    handle: None,
+                })
                 .collect(),
         ))
     }
@@ -724,7 +728,7 @@ impl Space {
                 match lookup(source.fd(), name) {
                     Err(err) => return denied(err),
                     Ok(None) => return Ok(failed(Reason::Missing)),
-                    Ok(Some(found)) if found.id != *id => return Ok(failed(Reason::Changed)),
+                    Ok(Some(found)) if !found.id.same(id) => return Ok(failed(Reason::Changed)),
                     Ok(Some(_)) => {}
                 }
                 hook(Step::Checked);
@@ -1065,7 +1069,7 @@ impl Space {
                 None => return Ok(None),
             },
             Action::Move { to, id, .. } => match entry_at(to)? {
-                Some(Some(stat)) if stat.id == *id => None,
+                Some(Some(stat)) if stat.id.same(id) => None,
                 _ => return Ok(None),
             },
             Action::RemoveFile { .. } | Action::RemoveDir { .. } if trashed()? => None,

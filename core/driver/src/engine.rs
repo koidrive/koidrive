@@ -1042,7 +1042,7 @@ impl Engine {
                         .or_else(|| {
                             (gone.get(path))
                                 .filter(|(node, held, held_kind)| {
-                                    *held == identity
+                                    held.same(&identity)
                                         && *held_kind == *kind
                                         && self.trees.local().get(node).is_none()
                                 })
@@ -1207,7 +1207,8 @@ impl Engine {
         let node = node
             .filter(|id| {
                 !(self.trees.recorded_local(id)
-                    && (self.trees.local().get(id)).is_some_and(|held| held.identity != identity))
+                    && (self.trees.local().get(id))
+                        .is_some_and(|held| !held.identity.same(&identity)))
             })
             .or_else(|| self.trees.vanished_at(&parent, name, kind).cloned());
         let existing = node.as_ref().and_then(|id| self.trees.local().get(id));
@@ -1404,7 +1405,7 @@ fn resolve(
 ) -> Option<NodeId> {
     let at = local_at(trees, path);
     at.clone()
-        .filter(|id| (trees.local().get(id)).is_some_and(|node| node.identity == *identity))
+        .filter(|id| (trees.local().get(id)).is_some_and(|node| node.identity.same(identity)))
         .or_else(|| {
             (trees.locals_with_identity(identity).rev())
                 .filter(|node| holds_kind(trees, node, kind))
@@ -1684,15 +1685,13 @@ pub(crate) fn file_identity(id: FileId) -> FileIdentity {
     FileIdentity {
         ino: id.ino,
         birth_ns: id.birth_ns,
+        handle: id.handle,
     }
 }
 
 /// The `core/fs` name for an engine identity.
 pub(crate) fn file_id(identity: FileIdentity) -> FileId {
-    FileId {
-        ino: identity.ino,
-        birth_ns: identity.birth_ns,
-    }
+    FileId::stored(identity.ino, identity.birth_ns, identity.handle)
 }
 
 /// Whether a question of kind `after` can take the place of one of kind `before`: the same kind, and for recovery the
@@ -2126,6 +2125,7 @@ mod tests {
             identity: FileIdentity {
                 ino,
                 birth_ns: Some(0),
+                handle: None,
             },
             parked: false,
         }
@@ -2688,10 +2688,7 @@ mod tests {
     }
 
     fn ino(ino: u64) -> FileId {
-        FileId {
-            ino: ino.into(),
-            birth_ns: None,
-        }
+        FileId::stored(ino.into(), None, None)
     }
 
     fn bytes(size: u64) -> Content {
@@ -4228,6 +4225,7 @@ mod tests {
                 identity: FileIdentity {
                     ino: n as u128 + 1,
                     birth_ns: Some(1),
+                    handle: None,
                 },
                 parked: false,
                 left_out_when_placed: false,

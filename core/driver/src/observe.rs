@@ -635,7 +635,7 @@ impl FsObserver {
     fn marked_node(&self, path: &Path, entry: &Entry) -> Option<String> {
         let read = || -> io::Result<Option<String>> {
             let opened = open_beneath(&self.root, path)?;
-            if koidrive_fs::id_of(opened.as_fd())? != entry.id {
+            if !koidrive_fs::id_of(opened.as_fd())?.same(&entry.id) {
                 return Ok(None);
             }
             koidrive_fs::node_mark(opened.as_fd())
@@ -855,7 +855,7 @@ pub(crate) fn read_content(
     #[cfg(test)]
     READS.with_borrow_mut(|reads| reads.push(path.to_path_buf()));
     let before = file.metadata()?;
-    let same_file = before.is_file() && koidrive_fs::id_of(file.as_fd())? == entry.id;
+    let same_file = before.is_file() && koidrive_fs::id_of(file.as_fd())?.same(&entry.id);
     if !same_file || !same_version(&before, entry) {
         return Ok(None);
     }

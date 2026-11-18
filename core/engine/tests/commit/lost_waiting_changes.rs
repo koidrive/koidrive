@@ -788,6 +788,7 @@ fn a_lost_update_is_not_the_effects_base_while_it_cannot_fit() {
     let identity = FileIdentity {
         ino: 100,
         birth_ns: Some(0),
+        handle: None,
     };
     for _ in 0..3 {
         assert_eq!(build(&mut commits, &mut trees, &mut ids), None);

@@ -207,6 +207,14 @@ pub(crate) type Wanted = HashMap<Key, Option<PathBuf>>;
 
 pub(crate) type Key = (FileId, EntryKind);
 
+fn keys_of(entry: &Entry) -> impl Iterator<Item = Key> {
+    [
+        (entry.id, entry.kind),
+        (entry.id.without_handle(), entry.kind),
+    ]
+    .into_iter()
+}
+
 pub(crate) struct Pending<'r> {
     rules: &'r mut Rules,
     before: BTreeMap<PathBuf, Option<Held>>,
@@ -338,7 +346,8 @@ impl<'r> Pending<'r> {
                 match stat_at(dir.as_fd(), name) {
                     Ok(stat) => {
                         if let Some(entry) = stat.entry()
-                            && let Some(found @ None) = wanted.get_mut(&(entry.id, entry.kind))
+                            && let Some(key) = keys_of(&entry).find(|key| wanted.contains_key(key))
+                            && let Some(found @ None) = wanted.get_mut(&key)
                         {
                             *found = Some(folder.join(name));
                             missing -= 1;
@@ -441,7 +450,7 @@ impl<'r> Pending<'r> {
                     let still = (parent.zip(folder.dir.file_name()))
                         .and_then(|(parent, name)| stat_at(parent, name).ok())
                         .and_then(|stat| stat.entry())
-                        .is_some_and(|entry| entry.id == folder.id);
+                        .is_some_and(|entry| entry.id.same(&folder.id));
                     if !still {
                         moved = true;
                         break;
@@ -487,7 +496,9 @@ impl<'r> Pending<'r> {
                                 .and_then(|next| Ok((stat_fd(next.as_fd())?.id, next)));
                             let (id, next) = match opened {
                                 Ok((id, next))
-                                    if at.is_none_or(|at| reach.expect.get(at) == Some(&id)) =>
+                                    if at.is_none_or(|at| {
+                                        reach.expect.get(at).is_some_and(|dir| dir.same(&id))
+                                    }) =>
                                 {
                                     (id, next)
                                 }
@@ -583,8 +594,7 @@ impl<'r> Pending<'r> {
                 let Some(entry) = stat_at(parent, &name).ok().and_then(|stat| stat.entry()) else {
                     continue;
                 };
-                let key = (entry.id, entry.kind);
-                if pending.contains_key(&key) {
+                if let Some(key) = keys_of(&entry).find(|key| pending.contains_key(key)) {
                     left = left.saturating_sub(path.components().count());
                     if !holds(root, &path, key) {
                         moved = true;
@@ -822,5 +832,5 @@ fn holds(root: BorrowedFd<'_>, path: &Path, key: Key) -> bool {
     };
     (stat_at(dir.as_fd(), name).ok())
         .and_then(|stat| stat.entry())
-        .is_some_and(|entry| (entry.id, entry.kind) == key)
+        .is_some_and(|entry| entry.id.same(&key.0) && entry.kind == key.1)
 }

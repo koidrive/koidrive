@@ -407,7 +407,7 @@ fn verified(
         let Some(entry) = disk.entries.get(&path) else {
             return Ok(false);
         };
-        if entry.id != file_id(local.identity) {
+        if !entry.id.same(&file_id(local.identity)) {
             return Ok(false);
         }
         match (entry.kind, remote_shape.shape.content.as_ref()) {
@@ -442,7 +442,7 @@ fn verified(
         return Ok(false);
     };
     let typed: PathBuf = names.iter().collect();
-    Ok(koidrive_fs::id_of(open_beneath(root, &typed)?.as_fd())? == expected)
+    Ok(koidrive_fs::id_of(open_beneath(root, &typed)?.as_fd())?.same(&expected))
 }
 
 enum LinkRef {

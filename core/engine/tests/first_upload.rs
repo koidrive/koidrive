@@ -70,6 +70,7 @@ fn local(parent: String, name: String, kind: Kind, ino: u128) -> LocalNode {
         identity: FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         },
         parked: false,
     }
@@ -326,6 +327,7 @@ fn first_download(files: usize, per_dir: usize) -> u64 {
             let identity = FileIdentity {
                 ino,
                 birth_ns: Some(0),
+                handle: None,
             };
             (effects.done(&mut trees, None, &effect_id, Some(identity))).unwrap();
             trees.settle(&Default::default());

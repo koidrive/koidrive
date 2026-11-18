@@ -152,12 +152,44 @@ pub enum EntryKind {
 
 /// What survives a rename and changes when a path is deleted and created
 /// again, within the volume the space's root check vouches for. The birth time
-/// guards against inode numbers being reused, on file systems that report it.
-/// `ino` is 128 bits wide because ReFS file IDs are.
+/// and the handle guard against inode numbers being reused, on file systems
+/// that report them. `ino` is 128 bits wide because ReFS file IDs are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct FileId {
     pub ino: u128,
     pub birth_ns: Option<i64>,
+    /// A digest of the handle Linux gives the entry through `name_to_handle_at`, on file systems that give one. The
+    /// handle holds the inode's generation, which changes when the inode number is reused, so it tells a new entry
+    /// from a deleted one whose inode number and birth time it took within one tick of the kernel's coarse clock.
+    pub handle: Option<u64>,
+}
+
+impl FileId {
+    /// An identity a store or record kept, read back. Only a stat of the entry gives one for an entry on disk.
+    pub fn stored(ino: u128, birth_ns: Option<i64>, handle: Option<u64>) -> FileId {
+        FileId {
+            ino,
+            birth_ns,
+            handle,
+        }
+    }
+
+    /// Whether `self` and `other` can be one entry: the same inode and birth time, and the same handle when both
+    /// have one. An identity a store kept before it kept handles has none, and holds every entry with its inode and
+    /// birth time.
+    pub fn same(&self, other: &FileId) -> bool {
+        self.ino == other.ino
+            && self.birth_ns == other.birth_ns
+            && (self.handle.is_none() || other.handle.is_none() || self.handle == other.handle)
+    }
+
+    pub(crate) fn without_handle(self) -> FileId {
+        FileId {
+            handle: None,
+            ..self
+        }
+    }
 }
 
 /// One file or folder. For folders, `size`, `mtime_ns` and `executable` are
@@ -283,19 +315,9 @@ impl Entry {
 
 impl PartialEq for Entry {
     fn eq(&self, other: &Self) -> bool {
-        (
-            self.kind,
-            self.id,
-            self.size,
-            self.mtime_ns,
-            self.executable,
-        ) == (
-            other.kind,
-            other.id,
-            other.size,
-            other.mtime_ns,
-            other.executable,
-        )
+        self.id.same(&other.id)
+            && (self.kind, self.size, self.mtime_ns, self.executable)
+                == (other.kind, other.size, other.mtime_ns, other.executable)
     }
 }
 
@@ -429,13 +451,10 @@ fn timestamp_tick(dir: BorrowedFd<'_>) -> i128 {
 #[cfg(target_os = "linux")]
 fn statx(dir: BorrowedFd<'_>, name: &OsStr, flags: rustix::fs::AtFlags) -> io::Result<Stat> {
     use rustix::fs::StatxFlags;
-    let st = rustix::fs::statx(
-        dir,
-        name,
-        flags,
-        StatxFlags::BASIC_STATS | StatxFlags::BTIME,
-    )?;
+    let mask = StatxFlags::BASIC_STATS | StatxFlags::BTIME;
     let nanos = |sec: i64, nsec: u32| i128::from(sec) * 1_000_000_000 + i128::from(nsec);
+    let st = rustix::fs::statx(dir, name, flags, mask)?;
+    let handle_of = handle(dir, name, flags)?;
     let mount_root = (st.stx_attributes & st.stx_attributes_mask)
         .contains(rustix::fs::StatxAttributes::MOUNT_ROOT);
     let birth_ns = (st.stx_mask & StatxFlags::BTIME.bits() != 0
@@ -447,6 +466,7 @@ fn statx(dir: BorrowedFd<'_>, name: &OsStr, flags: rustix::fs::AtFlags) -> io::R
         id: FileId {
             ino: st.stx_ino.into(),
             birth_ns,
+            handle: handle_of,
         },
         dev: rustix::fs::makedev(st.stx_dev_major, st.stx_dev_minor),
         size: st.stx_size,
@@ -455,6 +475,66 @@ fn statx(dir: BorrowedFd<'_>, name: &OsStr, flags: rustix::fs::AtFlags) -> io::R
         mode: u32::from(st.stx_mode),
         nlink: u64::from(st.stx_nlink),
     })
+}
+
+#[cfg(target_os = "linux")]
+fn handle(
+    dir: BorrowedFd<'_>,
+    name: &OsStr,
+    flags: rustix::fs::AtFlags,
+) -> io::Result<Option<u64>> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(name.as_bytes()).map_err(io::Error::other)?;
+    let at = if flags.contains(rustix::fs::AtFlags::EMPTY_PATH) {
+        libc::AT_EMPTY_PATH
+    } else if flags.contains(rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+        0
+    } else {
+        libc::AT_SYMLINK_FOLLOW
+    };
+    use std::os::fd::AsRawFd;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static FID_REFUSED: AtomicBool = AtomicBool::new(false);
+    #[repr(C)]
+    struct Handle {
+        len: libc::c_uint,
+        kind: libc::c_int,
+        bytes: [u8; libc::MAX_HANDLE_SZ as usize],
+    }
+    let mut handle = Handle {
+        len: libc::MAX_HANDLE_SZ as libc::c_uint,
+        kind: 0,
+        bytes: [0; libc::MAX_HANDLE_SZ as usize],
+    };
+    let mut mount: libc::c_int = 0;
+    let fid = !FID_REFUSED.load(Ordering::Relaxed);
+    let done = unsafe {
+        libc::syscall(
+            libc::SYS_name_to_handle_at,
+            dir.as_raw_fd(),
+            path.as_ptr(),
+            &raw mut handle,
+            &raw mut mount,
+            at | if fid { libc::AT_HANDLE_FID } else { 0 },
+        )
+    };
+    if done != 0 {
+        let error = io::Error::last_os_error();
+        return match error.raw_os_error() {
+            Some(libc::EINVAL) if fid => {
+                FID_REFUSED.store(true, Ordering::Relaxed);
+                crate::handle(dir, name, flags)
+            }
+            Some(libc::EOPNOTSUPP | libc::EOVERFLOW) => Ok(None),
+            _ => Err(error),
+        };
+    }
+    let fnv_1a = |hash: u64, byte: &u8| (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+    Ok(Some(
+        (handle.kind.to_le_bytes().iter())
+            .chain(&handle.bytes[..handle.len as usize])
+            .fold(0xcbf2_9ce4_8422_2325, fnv_1a),
+    ))
 }
 
 /// Stats `name` inside `dir` without following a symbolic link.
@@ -491,6 +571,7 @@ fn from_stat(st: rustix::fs::Stat) -> Stat {
         id: FileId {
             ino: st.st_ino.into(),
             birth_ns: i64::try_from(nanos(st.st_birthtime, st.st_birthtime_nsec)).ok(),
+            handle: None,
         },
         dev: st.st_dev as u64,
         size: st.st_size as u64,
@@ -1019,7 +1100,7 @@ impl Snapshot {
                         executable: false,
                         linked: kind == EntryKind::File,
                         mount: (mounts.get(&path))
-                            .filter(|(was, _)| *was == id)
+                            .filter(|(was, _)| was.same(&id))
                             .map(|(_, mount)| *mount),
                     };
                     (path, entry)
@@ -1106,6 +1187,9 @@ impl Snapshot {
                         _ => Ok(stat),
                     }
                 });
+            if scanned.is_ok() {
+                self.learn_handles(&scan);
+            }
             let (unscanned, hidden, unsure) = match &scanned {
                 Ok(_) => self.other_ends(root, &scan, &paths),
                 Err(_) => (Vec::new(), Vec::new(), Vec::new()),
@@ -1138,6 +1222,33 @@ impl Snapshot {
         }
     }
 
+    fn learn_handles(&mut self, scan: &Scan<'_>) {
+        let mut found: HashMap<(FileId, EntryKind), Option<u64>> = HashMap::new();
+        for (path, now) in scan.new.iter().chain(&scan.left_out) {
+            let at_its_path = (self.entries.get(path))
+                .is_some_and(|before| before.id.without_handle() == now.id.without_handle());
+            if now.id.handle.is_some() && !at_its_path {
+                (found.entry((now.id.without_handle(), now.kind)))
+                    .and_modify(|held| {
+                        if *held != now.id.handle {
+                            *held = None;
+                        }
+                    })
+                    .or_insert(now.id.handle);
+            }
+        }
+        if found.is_empty() {
+            return;
+        }
+        for entry in self.entries.values_mut() {
+            if entry.id.handle.is_none()
+                && let Some(&handle) = found.get(&(entry.id, entry.kind))
+            {
+                entry.id.handle = handle;
+            }
+        }
+    }
+
     fn other_ends(
         &self,
         root: &Path,
@@ -1149,7 +1260,8 @@ impl Snapshot {
             .collect();
         let covered = |path: &Path| path.ancestors().any(|above| scanned.contains(above));
         let blocked = |path: &Path| (scan.unreadable.iter()).any(|dir| path.starts_with(dir));
-        let same = |entry: &Entry, other: &Entry| (entry.id, entry.kind) == (other.id, other.kind);
+        let same =
+            |entry: &Entry, other: &Entry| entry.id.same(&other.id) && entry.kind == other.kind;
         let mut arrived: HashMap<(FileId, EntryKind), Vec<&PathBuf>> = HashMap::new();
         for (path, now) in &scan.new {
             if !(self.entries.get(path)).is_some_and(|before| same(before, now)) {
@@ -1255,7 +1367,7 @@ impl Snapshot {
     ) -> Result<Stat> {
         let root_dir = open_root(root)?;
         let root_stat = stat_fd(root_dir.as_fd())?;
-        if expected.is_some_and(|expected| root_stat.id != expected) {
+        if expected.is_some_and(|expected| !root_stat.id.same(&expected)) {
             return Err(Error::RootReplaced);
         }
         (scan.cut)(Cut::RootOpened);
@@ -1404,7 +1516,9 @@ impl Snapshot {
                 }
                 None => now.is_some_and(|now| {
                     now.mount.is_some()
-                        && (held || now.id != known.id || now.mount == Some(Mount::Unidentified))
+                        && (held
+                            || !now.id.same(&known.id)
+                            || now.mount == Some(Mount::Unidentified))
                 }),
             };
             if !keep {
@@ -1437,7 +1551,7 @@ impl Snapshot {
                         && (stat_rel(again.as_fd(), to).ok())
                             .and_then(|stat| stat.entry())
                             .is_some_and(|now| {
-                                (now.id, now.kind, now.linked) == (entry.id, entry.kind, false)
+                                now.id.same(&entry.id) && now.kind == entry.kind && !now.linked
                             })
                 })
                 .map(|(to, _)| to)
@@ -1456,7 +1570,7 @@ impl Snapshot {
                 .all(|(inside, before)| {
                     let at = to.join(inside.strip_prefix(path).expect("taken below the folder"));
                     (new.get(&at).or_else(|| scan.left_out.get(&at)))
-                        .is_some_and(|now| (now.id, now.kind) == (before.id, before.kind))
+                        .is_some_and(|now| now.id.same(&before.id) && now.kind == before.kind)
                         || (unreadable.iter())
                             .any(|blocked| at.starts_with(blocked) && at != *blocked)
                         || arrived(before, &volume).is_some()
@@ -1498,7 +1612,7 @@ impl Snapshot {
                         let volume = volume_of(blocked, &scan.new, &self.entries);
                         old.iter().find(|(path, before)| {
                             before.kind == EntryKind::Dir
-                                && before.id == now.id
+                                && before.id.same(&now.id)
                                 && volume_now(path, &old, &scan.new, &self.entries).as_deref()
                                     == volume
                         })
@@ -1550,7 +1664,7 @@ impl Snapshot {
         let arrived: HashSet<(FileId, EntryKind)> = (scan.new.iter())
             .filter(|(path, now)| {
                 !(old.get(*path))
-                    .is_some_and(|before| (before.id, before.kind) == (now.id, now.kind))
+                    .is_some_and(|before| before.id.same(&now.id) && before.kind == now.kind)
             })
             .map(|(_, now)| (now.id, now.kind))
             .collect();
@@ -1774,7 +1888,7 @@ impl Snapshot {
         self.left_out.extend(changes.iter().filter_map(|change| {
             match change {
                 Change::Ignored { to, kind, id, .. } => (scan.left_out.get(to))
-                    .filter(|now| now.kind == *kind && now.id == *id)
+                    .filter(|now| now.kind == *kind && now.id.same(id))
                     .map(|now| (to.clone(), *now)),
                 _ => None,
             }
@@ -1894,14 +2008,14 @@ impl Snapshot {
                 };
                 let found = (stat.dev != dev).then(|| mount_at(dir.as_fd()).0);
                 let unread = above.mount == Some(Mount::Unidentified);
-                if unread || (above.mount, above.id) != (found, stat.id) {
+                if unread || above.mount != found || !above.id.same(&stat.id) {
                     return Ok(None);
                 }
             }
             dev = stat.dev;
             chain.push((path.clone(), stat.dev, stat.id));
         }
-        let same = chain.last().is_some_and(|(_, _, id)| *id == known.id);
+        let same = chain.last().is_some_and(|(_, _, id)| id.same(&known.id));
         Ok(same.then_some((dir, chain)))
     }
 
@@ -1930,13 +2044,13 @@ fn moved_to(
     let Some(before) = old.get(parent) else {
         return Some(path.to_path_buf());
     };
-    if new.get(parent).is_some_and(|now| now.id == before.id) {
+    if new.get(parent).is_some_and(|now| now.id.same(&before.id)) {
         return Some(path.to_path_buf());
     }
     let volume = volume_now(parent, old, new, beyond);
     match (new.iter()).find(|(at, now)| {
         now.kind == EntryKind::Dir
-            && now.id == before.id
+            && now.id.same(&before.id)
             && volume_of(at, new, beyond) == volume.as_deref()
     }) {
         Some((at, _)) => Some(at.join(path.file_name()?)),
@@ -2066,7 +2180,7 @@ enum Whereabouts {
 fn whereabouts(root: BorrowedFd<'_>, root_dev: u64, entry: &Entry, links: &[&Path]) -> Whereabouts {
     let is_it = |stat: &Stat| {
         stat.dev == root_dev
-            && (stat.entry()).is_some_and(|now| (now.id, now.kind) == (entry.id, entry.kind))
+            && (stat.entry()).is_some_and(|now| now.id.same(&entry.id) && now.kind == entry.kind)
     };
     let rel = match located(root, entry) {
         Ok(Some(rel)) => rel,
@@ -2321,7 +2435,7 @@ fn hold_back(
         .filter_map(|change| match change {
             Change::Modified { path }
                 if (old.get(path).zip(new.get(path)))
-                    .is_some_and(|(before, after)| after.id != before.id) =>
+                    .is_some_and(|(before, after)| !after.id.same(&before.id)) =>
             {
                 Some(path.clone())
             }
@@ -2350,7 +2464,7 @@ fn hold_back(
             .filter_map(|from| Some((renamed.get(from)?, path.strip_prefix(from).ok()?)))
             .any(|(to, below)| {
                 (new.get(&to.join(below)))
-                    .is_some_and(|after| after.id == entry.id && after.kind == entry.kind)
+                    .is_some_and(|after| after.id.same(&entry.id) && after.kind == entry.kind)
             })
     };
     let mut held: BTreeSet<&PathBuf> = (removed.iter())

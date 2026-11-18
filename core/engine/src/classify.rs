@@ -474,7 +474,7 @@ pub struct Trees {
     l_names: ByName,
     l_parked: ByName,
     /// Every node of L, placed or parked, by its identity.
-    l_identities: HashMap<FileIdentity, Holders>,
+    l_identities: HashMap<(u128, Option<i64>), Holders>,
     /// The nodes of S.
     s_names: ByName,
     s_marks: BTreeMap<NodeId, String>,
@@ -873,7 +873,7 @@ impl Trees {
 
     /// A node of L, placed or parked, with `identity`: the greatest ID when several have it.
     pub fn local_with_identity(&self, identity: &FileIdentity) -> Option<&NodeId> {
-        (self.l_identities.get(identity)).and_then(|ids| ids.iter().next_back())
+        self.locals_with_identity(identity).next_back()
     }
 
     /// The nodes of L, placed or parked, with `identity`, in ID order.
@@ -881,10 +881,17 @@ impl Trees {
         &self,
         identity: &FileIdentity,
     ) -> impl DoubleEndedIterator<Item = &NodeId> {
-        self.l_identities
-            .get(identity)
-            .into_iter()
-            .flat_map(Holders::iter)
+        let identity = *identity;
+        (self
+            .l_identities
+            .get(&(identity.ino, identity.birth_ns))
+            .into_iter())
+        .flat_map(Holders::iter)
+        .filter(move |id| {
+            self.l
+                .get(id)
+                .is_some_and(|node| node.identity.same(&identity))
+        })
     }
 
     /// The placed nodes of L under `parent` whose name has the `name_key` of `name`.
@@ -1843,9 +1850,11 @@ impl Trees {
         if as_remote && self.discarded.contains_key(&id) {
             self.discarded.insert(id.clone(), node.shape.clone());
         }
-        (self.l_identities.entry(node.identity))
-            .and_modify(|ids| ids.insert(id.clone()))
-            .or_insert_with(|| Holders::One(id.clone()));
+        (self
+            .l_identities
+            .entry((node.identity.ino, node.identity.birth_ns)))
+        .and_modify(|ids| ids.insert(id.clone()))
+        .or_insert_with(|| Holders::One(id.clone()));
         self.mark(&id);
         self.count_held_trash(&id, false);
         self.l.insert(id.clone(), node);
@@ -1916,7 +1925,7 @@ impl Trees {
         let placed = !node.parked
             && (self.l.get(&id)).is_none_or(|old| !old.shape.same_position(&node.shape));
         let rewritten = (self.l.get(&id)).is_some_and(|old| {
-            old.identity != node.identity
+            !old.identity.same(&node.identity)
                 || !matches!(
                     (&old.shape.content, &node.shape.content),
                     (Some(old), Some(new)) if same_content(old, new)
@@ -2056,8 +2065,9 @@ impl Trees {
     }
 
     fn forget_identity(&mut self, id: &str, identity: &FileIdentity) {
-        if (self.l_identities.get_mut(identity)).is_some_and(|ids| ids.remove(id)) {
-            self.l_identities.remove(identity);
+        let inode = (identity.ino, identity.birth_ns);
+        if (self.l_identities.get_mut(&inode)).is_some_and(|ids| ids.remove(id)) {
+            self.l_identities.remove(&inode);
         }
     }
 
@@ -2802,7 +2812,7 @@ impl Trees {
     pub fn displaced_with_identity(&self, identity: &FileIdentity, kind: Kind) -> Option<&NodeId> {
         (self.displaced.iter().rev())
             .find(|(id, held)| {
-                *held == identity
+                held.same(identity)
                     && identity.birth_ns.is_some()
                     && self.r.live(id).is_some_and(|shape| shape.kind == kind)
             })

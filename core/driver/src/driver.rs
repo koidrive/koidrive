@@ -4409,10 +4409,7 @@ mod tests {
                         kind: koidrive_proto::v1::NodeKind::File as i32,
                         content: None,
                     },
-                    identity: koidrive_fs::FileId {
-                        ino: u128::from(identity.ino()),
-                        birth_ns: None,
-                    },
+                    identity: koidrive_fs::FileId::stored(u128::from(identity.ino()), None, None),
                     parked: true,
                     left_out_when_placed: false,
                     content_from_server: false,

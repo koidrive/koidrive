@@ -164,7 +164,7 @@ impl Space {
     /// that fails for another reason is an error.
     pub fn held(&self) -> io::Result<bool> {
         match stat_path(&self.path) {
-            Ok(stat) => Ok(stat.id == self.id && stat.dev == self.dev),
+            Ok(stat) => Ok(stat.id.same(&self.id) && stat.dev == self.dev),
             Err(err) if is_gone(&err) => Ok(false),
             Err(err) => Err(err),
         }
@@ -323,7 +323,7 @@ fn descend(folder: Folder, dir: &Dir) -> Result<Folder, Unresolved> {
     let found = identity(&fd, &folder.route, &dir.name)?;
     let mut route = folder.route;
     route.push(dir.clone());
-    if found != dir.id {
+    if !found.same(&dir.id) {
         return Err(Unresolved::Replaced {
             path: route.iter().map(|dir| dir.name.as_os_str()).collect(),
             expected: dir.id,
@@ -354,7 +354,7 @@ fn search(folder: Folder, id: FileId) -> Result<Option<Folder>, Unresolved> {
         }
         let fd = match open_beneath(folder.fd(), &name) {
             Ok(fd) => fd,
-            Err(err) if stat_at(folder.fd(), &name).is_ok_and(|stat| stat.id == id) => {
+            Err(err) if stat_at(folder.fd(), &name).is_ok_and(|stat| stat.id.same(&id)) => {
                 return Err(Unresolved::Io {
                     path: join(&folder.route, &name),
                     err: err.into(),
@@ -372,7 +372,7 @@ fn search(folder: Folder, id: FileId) -> Result<Option<Folder>, Unresolved> {
             id: found,
             route,
         };
-        if found == id {
+        if found.same(&id) {
             return Ok(Some(child));
         }
         if let Some(found) = search(child, id)? {

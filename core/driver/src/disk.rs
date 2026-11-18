@@ -1195,7 +1195,7 @@ impl Upload {
         let file = File::from(rustix::fs::openat(folder.fd(), name, flags, Mode::empty())?);
         let meta = file.metadata()?;
         let live = koidrive_fs::id_of(file.as_fd())?;
-        let same = |id: FileId| meta.is_file() && id == live;
+        let same = |id: FileId| meta.is_file() && id.same(&live);
         if !source.identity.is_some_and(same) {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -1460,7 +1460,7 @@ fn matching_children(space: &Space, trees: &Trees) -> io::Result<usize> {
         };
         match space.child_id(OsStr::new(&node.shape.name))? {
             None => {}
-            Some(found) if found == file_id(node.identity) => matched += 1,
+            Some(found) if found.same(&file_id(node.identity)) => matched += 1,
             Some(_) => return Ok(0),
         }
     }

@@ -59,6 +59,7 @@ fn ancestry_tree() -> Trees {
             identity: FileIdentity {
                 ino: 1,
                 birth_ns: Some(0),
+                handle: None,
             },
             parked: false,
             left_out_when_placed: false,
@@ -362,6 +363,7 @@ fn reclaimable(child_to: &str, own_wait: bool) -> Trees {
         let identity = FileIdentity {
             ino: ino as u128 + 1,
             birth_ns: Some(0),
+            handle: None,
         };
         let local = LocalNode {
             left_out_when_placed: false,
@@ -433,6 +435,7 @@ fn a_server_folder_in_a_discarded_folder(folders: usize, waiting: bool) -> (Tree
         let identity = FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         };
         if server {
             trees.set_remote(id.clone(), remote(shape.clone()));
@@ -518,6 +521,7 @@ fn two_server_folders_swapped_below_a_discarded_folder_stay_discarded() {
         let identity = FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         };
         let local = LocalNode {
             left_out_when_placed: false,
@@ -558,6 +562,7 @@ fn a_discarded_node_drops_its_unsent_move_and_follows_the_server() {
         identity: FileIdentity {
             ino: 1,
             birth_ns: Some(0),
+            handle: None,
         },
         parked: false,
     };
@@ -588,6 +593,7 @@ fn a_resend_that_yields_to_the_server_trash_drops_its_unsent_move() {
         identity: FileIdentity {
             ino: 1,
             birth_ns: Some(0),
+            handle: None,
         },
         parked: false,
     };
@@ -617,6 +623,7 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_a_loss_follows() {
         identity: FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         },
         parked: false,
     };
@@ -660,6 +667,7 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_the_loss_also_takes_th
         identity: FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         },
         parked: false,
     };
@@ -704,6 +712,7 @@ fn a_discard_check_over_a_deep_chain_of_taken_along_server_folders_finishes() {
         identity: FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         },
         parked: false,
     };
@@ -734,6 +743,7 @@ fn a_discard_check_over_a_deep_chain_of_kept_back_folders_finishes() {
         let identity = FileIdentity {
             ino: k + 1,
             birth_ns: Some(0),
+            handle: None,
         };
         let local = LocalNode {
             left_out_when_placed: false,
@@ -757,6 +767,7 @@ fn nodes_sharing_an_identity_or_a_name_key_are_found_in_id_order_as_they_come_an
     let identity = FileIdentity {
         ino: 7,
         birth_ns: Some(1),
+        handle: None,
     };
     let local = |name: &str| LocalNode {
         shape: Shape {
@@ -847,6 +858,7 @@ mod holders_against_a_rebuild {
         FileIdentity {
             ino: u128::from(k),
             birth_ns: Some(1),
+            handle: None,
         }
     }
 
@@ -1007,6 +1019,7 @@ fn kept_local(parent: &str, name: &str, kind: Kind, ino: u128) -> LocalNode {
         identity: FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         },
         parked: false,
         left_out_when_placed: false,

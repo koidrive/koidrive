@@ -557,13 +557,17 @@ pub fn encode(entries: &[Entry]) -> String {
         .iter()
         .map(|entry| {
             format!(
-                "{} {} {} {} {} {}\n",
+                "{} {} {} {} {} {} {}\n",
                 matches!(entry.kind, EntryKind::Dir),
                 entry.id.ino,
                 entry
                     .id
                     .birth_ns
                     .map_or("-".to_string(), |ns| ns.to_string()),
+                entry
+                    .id
+                    .handle
+                    .map_or("-".to_string(), |handle| handle.to_string()),
                 entry.size,
                 entry.mtime_ns,
                 entry.executable
@@ -582,14 +586,15 @@ pub fn decode(text: &str) -> Vec<Entry> {
                 } else {
                     EntryKind::File
                 },
-                id: FileId {
-                    ino: fields[1].parse().unwrap(),
-                    birth_ns: (fields[2] != "-").then(|| fields[2].parse().unwrap()),
-                },
-                size: fields[3].parse().unwrap(),
-                mtime_ns: fields[4].parse().unwrap(),
+                id: FileId::stored(
+                    fields[1].parse().unwrap(),
+                    (fields[2] != "-").then(|| fields[2].parse().unwrap()),
+                    (fields[3] != "-").then(|| fields[3].parse().unwrap()),
+                ),
+                size: fields[4].parse().unwrap(),
+                mtime_ns: fields[5].parse().unwrap(),
                 ctime: koidrive_fs::Ctime::Settled { at: 0, mode: 0 },
-                executable: fields[5] == "true",
+                executable: fields[6] == "true",
                 linked: false,
                 mount: None,
             }

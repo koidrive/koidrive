@@ -726,10 +726,7 @@ fn populate(path: &Path) {
                 content_from_server: false,
                 node_id: "moved".into(),
                 shape: moved.clone(),
-                identity: FileId {
-                    ino: 7,
-                    birth_ns: Some(-1),
-                },
+                identity: FileId::stored(7, Some(-1), None),
                 parked: false,
             })?;
             tx.put_remote_node(&NodeState {
@@ -1094,10 +1091,7 @@ fn three_trees_round_trip() {
             content_from_server: false,
             node_id: "f".into(),
             shape: file_shape("root", "b\u{301}.txt"),
-            identity: FileId {
-                ino: 1 << 63,
-                birth_ns: Some(1_700_000_000_123_456_789),
-            },
+            identity: FileId::stored(1 << 63, Some(1_700_000_000_123_456_789), Some(u64::MAX)),
             parked: false,
         },
         LocalNode {
@@ -1105,10 +1099,7 @@ fn three_trees_round_trip() {
             content_from_server: false,
             node_id: "p".into(),
             shape: dir_shape("root", "swap"),
-            identity: FileId {
-                ino: 42,
-                birth_ns: None,
-            },
+            identity: FileId::stored(42, None, None),
             parked: true,
         },
     ];
@@ -1154,6 +1145,7 @@ fn identity(ino: u128) -> FileIdentity {
     FileIdentity {
         ino,
         birth_ns: ino.is_multiple_of(2).then_some(-1),
+        handle: None,
     }
 }
 
@@ -1367,6 +1359,7 @@ fn engine_state() -> EngineState {
                 FileIdentity {
                     ino: 9,
                     birth_ns: Some(-1),
+                    handle: None,
                 },
             )]),
             edited_here: BTreeMap::from([("e".into(), 6)]),
@@ -2332,6 +2325,7 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
             identity: FileIdentity {
                 ino: 1,
                 birth_ns: Some(0),
+                handle: None,
             },
             parked: false,
         },
@@ -2371,10 +2365,7 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
                     kind: NodeKind::File as i32,
                     content: shape.content.clone(),
                 },
-                identity: FileId {
-                    ino: 1,
-                    birth_ns: Some(0),
-                },
+                identity: FileId::stored(1, Some(0), None),
                 parked: false,
             })
         })
@@ -2438,6 +2429,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
     let identity = FileIdentity {
         ino: 1,
         birth_ns: Some(0),
+        handle: None,
     };
     trees.set_remote("f".into(), remote.clone());
     trees.set_local(
@@ -2497,10 +2489,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
                     kind: NodeKind::File as i32,
                     content: shape.content.clone(),
                 },
-                identity: FileId {
-                    ino: 1,
-                    birth_ns: Some(0),
-                },
+                identity: FileId::stored(1, Some(0), None),
                 parked: false,
             })
         })
@@ -3012,6 +3001,7 @@ fn an_own_move_acknowledged_before_the_upgrade_is_sent_again_after_a_later_loss(
         identity: FileIdentity {
             ino: 1,
             birth_ns: Some(0),
+            handle: None,
         },
         parked: false,
     };
@@ -3137,6 +3127,7 @@ fn an_own_move_whose_earlier_positions_aged_out_before_the_upgrade_is_sent_again
         identity: FileIdentity {
             ino: 1,
             birth_ns: Some(0),
+            handle: None,
         },
         parked: false,
     };
@@ -3233,10 +3224,7 @@ fn a_store_from_before_inodes_took_128_bits_keeps_every_identity() {
             content_from_server: false,
             node_id: node_id.into(),
             shape: file_shape("root", node_id),
-            identity: FileId {
-                ino: ino.into(),
-                birth_ns: Some(-1),
-            },
+            identity: FileId::stored(ino.into(), Some(-1), None),
             parked: false,
         });
     Store::open(&path)
@@ -3444,6 +3432,7 @@ fn a_rename_a_store_recorded_before_pending_marks_is_finished_after_the_upgrade_
                         identity: FileIdentity {
                             ino,
                             birth_ns: Some(0),
+                            handle: None,
                         },
                         parked: false,
                     },
@@ -3515,10 +3504,7 @@ fn a_store_that_recorded_a_pending_name_its_commit_in_flight_sends_opens_owing_t
                 content_from_server: false,
                 node_id: "d".into(),
                 shape: dir_shape("root", "A (pending)"),
-                identity: FileId {
-                    ino: 7u64.into(),
-                    birth_ns: None,
-                },
+                identity: FileId::stored(7u64.into(), None, None),
                 parked: false,
             })
         })
@@ -3546,12 +3532,13 @@ fn a_store_that_recorded_a_pending_name_its_commit_in_flight_sends_opens_owing_t
 }
 
 #[test]
-fn an_inode_wider_than_64_bits_survives_a_reopen() {
+fn an_inode_wider_than_64_bits_and_a_handle_survive_a_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     let wide = |ino: u128| FileIdentity {
         ino,
         birth_ns: None,
+        handle: Some(u64::MAX - (ino as u64 & 1)),
     };
     let mut state = engine_state();
     state.trees.displaced.insert("wide".into(), wide(u128::MAX));
@@ -3578,10 +3565,7 @@ fn an_inode_wider_than_64_bits_survives_a_reopen() {
         content_from_server: false,
         node_id: node_id.into(),
         shape: file_shape("root", node_id),
-        identity: FileId {
-            ino,
-            birth_ns: None,
-        },
+        identity: FileId::stored(ino, None, Some(u64::MAX)),
         parked: false,
     });
     Store::open(&path)
@@ -3756,10 +3740,7 @@ fn a_store_from_before_discarded_shapes_were_recorded_takes_them_from_the_waitin
                     content_from_server: false,
                     node_id: node_id.into(),
                     shape: file_shape("root", name),
-                    identity: FileId {
-                        ino: 1,
-                        birth_ns: Some(0),
-                    },
+                    identity: FileId::stored(1, Some(0), None),
                     parked: false,
                 })?;
             }
@@ -3820,6 +3801,7 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
     let identity = FileIdentity {
         ino: 1,
         birth_ns: Some(0),
+        handle: None,
     };
     trees.set_local(
         "secret".into(),
@@ -3892,10 +3874,7 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
                 content_from_server: false,
                 node_id: "secret".into(),
                 shape: now,
-                identity: FileId {
-                    ino: 1,
-                    birth_ns: Some(0),
-                },
+                identity: FileId::stored(1, Some(0), None),
                 parked: false,
             })?;
             tx.set_engine_state(&before)
@@ -4365,6 +4344,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
             let identity = FileIdentity {
                 ino: ino as u128 + 1,
                 birth_ns: Some(0),
+                handle: None,
             };
             let entry = Entry {
                 left_out_when_placed: false,
@@ -4431,10 +4411,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
                         content_from_server: false,
                         node_id: id.into(),
                         shape,
-                        identity: FileId {
-                            ino: ino as u128 + 1,
-                            birth_ns: Some(0),
-                        },
+                        identity: FileId::stored(ino as u128 + 1, Some(0), None),
                         parked: false,
                     })?;
                 }
@@ -4525,10 +4502,7 @@ fn a_store_from_before_local_changes_were_recorded_records_each_local_node_s_hol
         content_from_server: false,
         node_id: node_id.into(),
         shape,
-        identity: FileId {
-            ino: ino.into(),
-            birth_ns: None,
-        },
+        identity: FileId::stored(ino.into(), None, None),
         parked: false,
     };
     Store::open(&path)
@@ -4709,10 +4683,7 @@ fn a_store_from_before_local_changes_were_recorded_records_no_node_l_holds_as_s_
         content_from_server: false,
         node_id: node_id.into(),
         shape,
-        identity: FileId {
-            ino: ino.into(),
-            birth_ns: None,
-        },
+        identity: FileId::stored(ino.into(), None, None),
         parked: false,
     };
     let synced = file_shape("root", "m.txt");
@@ -4997,6 +4968,7 @@ fn an_edit_in_flight_in_a_store_from_before_dropped_edits_were_recorded_is_sent_
         identity: FileIdentity {
             ino,
             birth_ns: Some(0),
+            handle: None,
         },
         parked: false,
     };
@@ -5124,10 +5096,7 @@ fn placed(
     LocalNode {
         node_id: node_id.into(),
         shape: file_shape("root", node_id),
-        identity: FileId {
-            ino: ino.into(),
-            birth_ns: None,
-        },
+        identity: FileId::stored(ino.into(), None, None),
         parked: false,
         left_out_when_placed,
         content_from_server,

@@ -225,9 +225,9 @@ impl Tx<'_> {
         while let Some(row) = rows.next()? {
             state.commits.answer_moves.insert(row.get(0)?);
         }
-        let mut stmt = self
-            .0
-            .prepare_cached("SELECT node_id, ino, ino_high, birth_ns, lost FROM recorded_nodes")?;
+        let mut stmt = self.0.prepare_cached(
+            "SELECT node_id, ino, ino_high, birth_ns, lost, handle FROM recorded_nodes",
+        )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let node: NodeId = row.get(0)?;
@@ -236,6 +236,7 @@ impl Tx<'_> {
                     let identity = FileIdentity {
                         ino: ino_from_columns(ino, row.get(2)?),
                         birth_ns: row.get(3)?,
+                        handle: row.get::<_, Option<i64>>(5)?.map(|handle| handle as u64),
                     };
                     state.trees.displaced.insert(node, identity);
                 }
@@ -1165,13 +1166,19 @@ impl Tx<'_> {
             remove.execute(params![node, displaced])?;
         }
         let mut put = self.0.prepare_cached(
-            "INSERT OR REPLACE INTO recorded_nodes (node_id, displaced, ino, ino_high, birth_ns, lost)
-             VALUES (?1, 1, ?2, ?3, ?4, 0)",
+            "INSERT OR REPLACE INTO recorded_nodes (node_id, displaced, ino, ino_high, birth_ns, lost, handle)
+             VALUES (?1, 1, ?2, ?3, ?4, 0, ?5)",
         )?;
         for (node, held) in displaced {
             if let Some(held) = held {
                 let (ino, ino_high) = ino_columns(held.ino);
-                put.execute(params![node, ino, ino_high, held.birth_ns])?;
+                put.execute(params![
+                    node,
+                    ino,
+                    ino_high,
+                    held.birth_ns,
+                    held.handle.map(|handle| handle as i64)
+                ])?;
             }
         }
         let mut put = self.0.prepare_cached(
@@ -1480,6 +1487,8 @@ struct StoredIdentity {
     birth_ns: Option<i64>,
     #[prost(uint64, tag = "4")]
     ino_high: u64,
+    #[prost(uint64, optional, tag = "5")]
+    handle: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -1684,6 +1693,7 @@ impl From<&FileIdentity> for StoredIdentity {
             ino: identity.ino as u64,
             birth_ns: identity.birth_ns,
             ino_high: (identity.ino >> 64) as u64,
+            handle: identity.handle,
         }
     }
 }
@@ -1693,6 +1703,7 @@ impl From<StoredIdentity> for FileIdentity {
         Self {
             ino: (u128::from(identity.ino_high) << 64) | u128::from(identity.ino),
             birth_ns: identity.birth_ns,
+            handle: identity.handle,
         }
     }
 }

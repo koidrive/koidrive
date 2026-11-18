@@ -1264,6 +1264,7 @@ mod tests {
             identity: koidrive_engine::tree::FileIdentity {
                 ino: 1,
                 birth_ns: None,
+                handle: None,
             },
             to: Location::Parked("secret-node-id".into()),
         };
