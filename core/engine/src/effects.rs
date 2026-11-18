@@ -151,6 +151,18 @@ impl EffectRecord {
         self.recoveries == trees.recoveries() && View::new(trees).applies(self, in_flight)
     }
 
+    /// Whether L takes the folder this removal took from the disk as gone: only while L holds nothing in it but the
+    /// files it took along, since the folder held nothing else when it went.
+    pub fn left_nothing_behind(&self, trees: &Trees) -> bool {
+        let Effect::RemoveDir { along, .. } = &self.effect else {
+            return true;
+        };
+        trees.local_children(&self.node).all(|child| {
+            (trees.local().get(child))
+                .is_some_and(|node| along.iter().any(|file| file.identity == node.identity))
+        })
+    }
+
     fn parks(&self) -> bool {
         matches!(
             self.effect,

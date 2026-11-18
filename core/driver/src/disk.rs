@@ -1465,6 +1465,13 @@ fn settle(
                 engine.effects.unblock(&record.node);
                 Settled::Failed("L changed since it was planned".into())
             }
+            Outcome::Done { .. } if !record.left_nothing_behind(&engine.trees) => {
+                engine
+                    .effects
+                    .failed(&mut engine.trees, &record.effect_id)
+                    .map_err(refused)?;
+                Settled::Stuck("an entry left the folder before it was removed".into())
+            }
             Outcome::Done { identity } => {
                 let removal = (engine.effects)
                     .done(

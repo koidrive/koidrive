@@ -1691,3 +1691,33 @@ fn attack_r10_inner_folder_made_again_while_stopped() {
     r10_round(&mut b, &mut remote);
     r10_clean(&site, &b, &remote, &["app/sub/.env"]);
 }
+
+#[test]
+fn attack_r11_kept_env_moved_out_while_its_folder_is_removed() {
+    let (mut remote, site_a, mut a, site, mut b) = r9_taken_over_without_rules();
+    fs::create_dir(site.root.join("app/sub")).unwrap();
+    fs::write(site.root.join("app/sub/lib.rs"), b"synced").unwrap();
+    fs::write(site.root.join("app/.env"), b"SECRET=kept").unwrap();
+    fs::rename(site.root.join("app/.env"), site.root.join("app/sub/.env")).unwrap();
+    r9_round(&mut b, &mut remote);
+    for _ in 0..2 { a.pull(&remote); a.run(&mut remote); a.settle(); }
+    assert!(site_a.root.join("app/sub/lib.rs").exists());
+    let (kept, lib) = (site.root.join("app/sub/.env"), site.root.join("app/sub/lib.rs"));
+    let moved = site.root.join("moved.env");
+    let to = moved.clone();
+    b.folder.disk.set_hook(Box::new(move |cut| {
+        if cut == crate::disk::Cut::Step(koidrive_fs::Step::Marked) && !lib.exists() && kept.exists() {
+            fs::rename(&kept, &to).unwrap();
+        }
+    }));
+    fs::remove_dir_all(site_a.root.join("app")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    r9_round(&mut b, &mut remote);
+    r9_round(&mut b, &mut remote);
+    let report = r9_report(&site, &b, &remote);
+    assert_eq!(fs::read(&moved).unwrap(), b"SECRET=kept", "{report}");
+    assert!(remote.tree().is_empty(), "{report}");
+    assert_eq!(b.folder.engine.trees.kept_entry_paths(), [vec!["moved.env"]], "{report}");
+    assert_eq!(b.folder.view().problem, None, "{report}");
+}
