@@ -692,6 +692,25 @@ impl Engine {
         }
     }
 
+    /// Gives the trees the folders a scan listed, each at the path where it listed it.
+    pub fn listed(&mut self, listed: &[PathBuf]) {
+        let listed: Vec<NodeId> = (listed.iter())
+            .filter_map(|dir| local_at(&self.trees, dir))
+            .collect();
+        self.trees.listed(&listed);
+    }
+
+    /// The paths of the folders a scan saw moved here that a scan must list again ([`Trees::take_relist`]).
+    pub fn relist(&mut self) -> Vec<PathBuf> {
+        let folders = self.trees.take_relist();
+        folders.iter().filter_map(|id| self.path_of(id)).collect()
+    }
+
+    /// Whether [`Engine::listed`] would change what the trees hold.
+    pub fn sees_unobserved(&self, listed: &[PathBuf]) -> bool {
+        (self.trees).sees_unobserved(listed.iter().filter_map(|dir| local_at(&self.trees, dir)))
+    }
+
     /// Puts `changes` into L and returns the nodes whose L entry changed. Paths a change names in the previous state
     /// (`Removed::path`, `Renamed::from`) are resolved before any change applies. The changes apply in batch order,
     /// except that a change waits for the change of the batch that creates or moves the nearest folder above it into
@@ -1138,10 +1157,12 @@ impl Engine {
                 Kind::Dir => None,
             },
         };
-        let node = node.filter(|id| {
-            !(self.trees.recorded_local(id)
-                && (self.trees.local().get(id)).is_some_and(|held| held.identity != identity))
-        });
+        let node = node
+            .filter(|id| {
+                !(self.trees.recorded_local(id)
+                    && (self.trees.local().get(id)).is_some_and(|held| held.identity != identity))
+            })
+            .or_else(|| self.trees.vanished_at(&parent, name, kind).cloned());
         let existing = node.as_ref().and_then(|id| self.trees.local().get(id));
         let unchanged = existing.is_some_and(|old| {
             !old.parked
@@ -1179,7 +1200,8 @@ impl Engine {
             let replaced = self.trees.local().get(&holder).map(|node| node.shape.kind);
             let synced =
                 self.trees.synced().get(&id).is_some() || self.trees.remote().get(&id).is_some();
-            let kept = self.trees.ignored_local().contains(&holder)
+            let kept = (self.trees.ignored_local().contains(&holder)
+                || self.trees.unobserved(&holder))
                 && self.trees.remote().live(&holder).is_some();
             let recorded = self.trees.recorded_local(&holder);
             if kind == Kind::File && replaced == Some(Kind::File) && !synced && !recorded {
@@ -1285,7 +1307,7 @@ impl Engine {
                 gone.insert(path, (id.clone(), node.identity, kind));
             }
         }
-        for id in doomed {
+        for id in doomed.into_iter().rev() {
             match displaced.contains(&id) {
                 true => self.trees.displace_local(&id),
                 false => self.trees.remove_local(&id),

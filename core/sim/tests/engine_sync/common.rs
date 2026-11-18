@@ -615,6 +615,26 @@ impl Device {
             Ruling::Include(paths) => self.rules.include = paths.clone(),
         }
         self.rules.read(&mut self.trees);
+        self.rescan();
+    }
+
+    fn rescan(&mut self) {
+        let local = self.trees.local();
+        let folders: Vec<String> = std::iter::once(local.root.clone())
+            .chain(
+                (local.iter())
+                    .filter(|(id, node)| node.shape.kind == Kind::Dir && visible(&self.trees, id))
+                    .map(|(id, _)| id.clone()),
+            )
+            .collect();
+        self.trees.listed(&folders);
+    }
+
+    fn list_moved(&mut self) {
+        let moved: Vec<String> = (self.trees.take_relist().into_iter())
+            .filter(|id| visible(&self.trees, id))
+            .collect();
+        self.trees.listed(&moved);
     }
 
     /// One change the user makes on disk, as the next rescan reports it. The user sees no parked
@@ -628,24 +648,9 @@ impl Device {
     fn act(&mut self, action: &Action) {
         let root = self.trees.local().root.clone();
         let local = self.trees.local();
-        let hidden = self.trees.ignored_local();
-        let visible = |id: &str| {
-            let mut current = id;
-            for _ in 0..=local.len() {
-                if hidden.contains(current) {
-                    return false;
-                }
-                match local.get(current) {
-                    Some(node) if node.parked => return false,
-                    Some(node) => current = &node.shape.parent,
-                    None => return true,
-                }
-            }
-            false
-        };
         let nodes: Vec<(String, LocalNode)> = local
             .iter()
-            .filter(|(id, _)| visible(id))
+            .filter(|(id, _)| visible(&self.trees, id))
             .map(|(id, node)| (id.clone(), node.clone()))
             .collect();
         let dirs: Vec<String> = [root.clone()]
@@ -783,7 +788,7 @@ impl Device {
                     self.acted.insert(folder.clone());
                     self.trees.ignore_local(folder);
                 }
-                for other in doomed {
+                for other in doomed.into_iter().rev() {
                     if let Some(node) = self.trees.local().get(&other) {
                         self.removed_from.insert(other.clone(), node.shape.parent.clone());
                     }
@@ -810,6 +815,22 @@ impl Device {
             }
         }
     }
+}
+
+fn visible(trees: &Trees, id: &str) -> bool {
+    let (local, hidden) = (trees.local(), trees.ignored_local());
+    let mut current = id;
+    for _ in 0..=local.len() {
+        if hidden.contains(current) {
+            return false;
+        }
+        match local.get(current) {
+            Some(node) if node.parked => return false,
+            Some(node) => current = &node.shape.parent,
+            None => return true,
+        }
+    }
+    false
 }
 
 fn aim(
@@ -1666,6 +1687,7 @@ fn run_ignoring_answering_after(
         steps += 1;
         prop_assert!(steps <= STEPS, "no convergence within {} steps", STEPS);
         device.trees.settle(commits.aliases());
+        prop_assert_eq!(device.trees.check(), Ok(()));
         note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
         if (due || steps % 2 == 0)
             && let Some((on_device, actions)) = during.next()
@@ -1727,6 +1749,7 @@ fn run_ignoring_answering_after(
         }
         device.trees.settle(commits.aliases());
         prop_assert_eq!(device.trees.check(), Ok(()));
+        device.list_moved();
         (device.trees, commits, effects) =
             reload(&device.trees, &commits, &effects, &device.rules)?;
         note_kept_back(&mut device);
@@ -2067,6 +2090,7 @@ fn run_ignoring_answering_after(
     );
 
     device.trees.settle(commits.aliases());
+    prop_assert_eq!(device.trees.check(), Ok(()));
     let kept_for_excluded = device.trees.kept_for_excluded();
     let outside = |id: &str| device.trees.ignored(id) || kept_for_excluded(id);
     let unsettled: Vec<String> = (device.trees.work().into_iter())

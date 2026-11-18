@@ -3187,3 +3187,42 @@ fn a_chunk_the_server_reports_missing_fails_only_the_writes_of_the_batch_that_li
     assert_eq!(names(&folder, STAGING_DIR), Vec::<String>::new());
     assert!(running.engine.effects.blocked().contains_key(missing_node));
 }
+
+#[test]
+fn a_path_an_effect_changed_after_the_scan_read_it_is_not_listed_from_that_scan() {
+    for stale in [true, false] {
+        let folder = Folder::new();
+        let mut server = Server::default();
+        (SCENARIOS[2].setup)(&folder, &mut server);
+        let mut running = folder.start(no_hook()).unwrap();
+        let sections = running.disk.sections();
+        let mut watching = observer(&folder.root, Snapshot::default());
+        let mut batch = observe_until(&mut watching, sections.stamp(), |seen| {
+            created(seen, "report.txt").is_some()
+        });
+        assert_eq!(running.step(&server), Some(Settled::Done));
+        let excluding = koidrive_engine::ignore::RuleFile::parse(b"report.txt\n");
+        running
+            .engine
+            .trees
+            .set_rules(&[] as &[&str], Some(excluding));
+        running.engine.trees.settle(&Default::default());
+        running.engine.trees.set_rules(&[] as &[&str], None);
+        assert!(running.engine.trees.unobserved(NODE));
+
+        if !stale {
+            batch.stamp = running.disk.sections().stamp();
+        }
+        batch.observation.changes.clear();
+        assert_eq!(batch.observation.read, [PathBuf::new()]);
+        running
+            .disk
+            .observed(batch, &mut running.engine, &mut running.store)
+            .unwrap();
+        assert_eq!(
+            running.engine.trees.unobserved(NODE),
+            stale,
+            "a scan of the root that began before the effect wrote report.txt saw another entry there"
+        );
+    }
+}

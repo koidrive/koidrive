@@ -131,6 +131,7 @@ globs = [
   "scripts/mutations.sh",
   "scripts/engine-mutations.sh",
   "scripts/test-engine-mutations.sh",
+  "scripts/trees-generator-proof.sh",
   "scripts/test-mutations.py",
   "scripts/test-value.py",
   "scripts/test-test-value.py",

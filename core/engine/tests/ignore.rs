@@ -1204,7 +1204,7 @@ fn a_kept_folder_another_device_moves_below_the_folder_taking_its_stale_name_com
 }
 
 #[test]
-fn a_kept_folder_another_device_renames_comes_back_and_the_child_the_rules_let_in_is_deleted() {
+fn a_kept_folder_another_device_renames_comes_back_with_the_child_the_rules_let_in() {
     let mut trees = trees(&[
         synced("d", dir(ROOT, "ss")),
         synced("log", file("d", "a.log", 1)),
@@ -1218,7 +1218,828 @@ fn a_kept_folder_another_device_renames_comes_back_and_the_child_the_rules_let_i
     assert!(trees.kept_for_excluded()("d"));
     assert_eq!(ops(&mut trees), []);
     let done: Vec<String> = effects(&mut trees).into_iter().map(|(id, _)| id).collect();
-    assert_eq!(done, ["d"]);
+    assert_eq!(done, ["d", "log"]);
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(ops(&mut trees), [delete("log")]);
+    assert_eq!(trees.local().live("log"), Some(&file("d", "a.log", 1)));
+    assert_eq!(ops(&mut trees), []);
+}
+
+#[test]
+fn a_node_deleted_while_excluded_is_downloaded_again_when_the_rules_let_it_in() {
+    let mut trees = trees(&[
+        synced("dist", dir(ROOT, "dist")),
+        synced("app", file("dist", "app.js", 1)),
+        synced("sub", dir("dist", "sub")),
+        synced("deep", file("sub", "report.docx", 2)),
+        synced("log", file(ROOT, "a.log", 3)),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("dist/\n*.log\n"));
+    for id in ["deep", "sub", "app", "dist", "log"] {
+        trees.remove_local(id);
+    }
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(effects(&mut trees), []);
+
+    trees.set_rules(&AT_ROOT, None);
+    assert_eq!(ops(&mut trees), []);
+    let mut done = nodes(&effects(&mut trees))
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>();
+    done.sort();
+    assert_eq!(done, ["app", "deep", "dist", "log", "sub"]);
+    for id in ["dist", "app", "sub", "deep", "log"] {
+        assert_eq!(trees.local().live(id), trees.remote().live(id), "{id}");
+    }
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_file_that_vanished_in_a_deleted_folder_the_server_keeps_for_an_excluded_file_downloads_into_it()
+ {
+    let mut trees = trees(&[
+        synced("k", dir(ROOT, "k")),
+        synced("v", file("k", "v.docx", 1)),
+        synced("x", file("k", "x.docx", 2)),
+        synced("e", dir(ROOT, "e")),
+        synced("p", dir(ROOT, "p")),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("e/\n*.log\n"));
+    assert_eq!(ops(&mut trees), []);
+    rename_here(&mut trees, "v", "p", "v.log");
+    rename_here(&mut trees, "x", "e", "x.docx");
+    assert_eq!(ops(&mut trees), []);
+    assert!(trees.unobserved("v") && trees.excluded("x"));
+    for id in ["v", "p", "k"] {
+        trees.remove_local(id);
+    }
+    assert_eq!(ops(&mut trees), [delete("p")]);
+    trash(&mut trees, "p");
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(nodes(&effects(&mut trees)), ["k", "v"]);
+    assert_eq!(trees.local().live("v"), Some(&file("k", "v.docx", 1)));
+    assert_eq!(trees.local().live("x"), Some(&file("e", "x.docx", 2)));
+    assert_eq!(trees.synced().get("x"), Some(&file("k", "x.docx", 2)));
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_folder_deleted_with_the_excluded_file_it_holds_comes_back_with_it_when_the_rules_let_the_file_in()
+ {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "d")),
+        synced("log", file("d", "a.log", 1)),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.remove_local("log");
+    trees.remove_local("d");
+    assert_eq!(ops(&mut trees), []);
+
+    trees.set_rules(&AT_ROOT, None);
+    trees.listed(&[ROOT.into()]);
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(nodes(&effects(&mut trees)), ["d", "log"]);
+    assert_eq!(trees.local().live("log"), Some(&file("d", "a.log", 1)));
+    assert_eq!(ops(&mut trees), []);
+}
+
+#[test]
+fn a_node_deleted_after_the_rules_let_it_in_again_is_deleted() {
+    let mut trees = trees(&[
+        synced("dist", dir(ROOT, "dist")),
+        synced("app", file("dist", "app.js", 1)),
+        synced("log", file(ROOT, "a.log", 2)),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("dist/\n*.log\n"));
+    assert_eq!(ops(&mut trees), []);
+    trees.set_rules(&AT_ROOT, None);
+    trees.listed(&[ROOT.into(), "dist".into()]);
+    for id in ["app", "dist", "log"] {
+        trees.remove_local(id);
+    }
+    let mut sent = ops(&mut trees);
+    sent.sort_by_key(|op| format!("{op:?}"));
+    assert_eq!(sent, [delete("dist"), delete("log")]);
+    assert_eq!(effects(&mut trees), []);
+}
+
+fn the_mark_of_an_excluded_dist_after_the_server_drops_it(drop_remote: impl Fn(&mut Trees, &str)) {
+    for vanished in [true, false] {
+        for lift in [true, false] {
+            let case = format!("vanished={vanished}, lift={lift}");
+            let mut trees = trees(&[
+                synced("d", dir(ROOT, "dist")),
+                synced("a", file("d", "a.js", 1)),
+            ]);
+            trees.set_rules(&AT_ROOT, rules("dist/\n"));
+            assert_eq!(ops(&mut trees), []);
+            if vanished {
+                trees.remove_local("a");
+                trees.remove_local("d");
+                assert_eq!(ops(&mut trees), []);
+            }
+            assert_eq!(
+                trees.state().unobserved,
+                BTreeSet::from(["a".into(), "d".into()])
+            );
+            for id in ["a", "d"] {
+                drop_remote(&mut trees, id);
+            }
+            assert_eq!(ops(&mut trees), [], "{case}");
+            assert_eq!(effects(&mut trees), [], "{case}");
+            if lift {
+                trees.set_rules(&AT_ROOT, None);
+                trees.listed(&[ROOT.into(), "d".into()]);
+            }
+            assert_eq!(ops(&mut trees), [], "{case}");
+            let done = effects(&mut trees);
+            assert!(
+                (done.iter()).all(|(_, effect)| !matches!(
+                    effect,
+                    Effect::WriteFile { .. } | Effect::CreateDir { .. }
+                )),
+                "{case}: {done:?}"
+            );
+            assert_eq!(ops(&mut trees), [], "{case}");
+            for id in ["a", "d"] {
+                assert!(!trees.held(id), "{case}: {id}");
+            }
+            let left_here = !vanished && !lift;
+            let held_here: Vec<&str> = (trees.local().iter()).map(|(id, _)| id.as_str()).collect();
+            let state = trees.state();
+            let marked: Vec<&str> = state.unobserved.iter().map(String::as_str).collect();
+            match left_here {
+                true => {
+                    assert_eq!(
+                        held_here,
+                        ["a", "d"],
+                        "{case}: the local copy stays while the rules leave it out"
+                    );
+                    assert_eq!(marked, ["a", "d"], "{case}");
+                }
+                false => {
+                    assert!(held_here.is_empty(), "{case}: {held_here:?}");
+                    assert!(trees.synced().iter().next().is_none(), "{case}");
+                    assert!(marked.is_empty(), "{case}: {marked:?}");
+                }
+            }
+            assert_eq!(trees.check(), Ok(()), "{case}");
+        }
+    }
+}
+
+#[test]
+fn the_mark_of_an_excluded_node_goes_with_it_when_the_server_purges_it() {
+    the_mark_of_an_excluded_dist_after_the_server_drops_it(|trees, id| trees.remove_remote(id));
+}
+
+#[test]
+fn the_mark_of_an_excluded_node_goes_with_it_when_another_device_trashes_it() {
+    the_mark_of_an_excluded_dist_after_the_server_drops_it(|trees, id| {
+        let shape = trees.remote().get(id).unwrap().shape.clone();
+        trees.set_remote(
+            id.into(),
+            RemoteNode {
+                trashed: true,
+                ..remote(shape)
+            },
+        );
+    });
+}
+
+fn restarted(before: &Trees) -> Trees {
+    let mut trees = Trees::new(ROOT);
+    for (id, node) in before.remote().iter() {
+        trees.set_remote(id.clone(), node.clone());
+    }
+    for (id, node) in before.local().iter() {
+        trees.set_local(id.clone(), node.clone());
+    }
+    for (id, shape) in before.synced().iter() {
+        trees.set_synced(id.clone(), Some(shape.clone()));
+    }
+    assert_eq!(trees.restore(before.state()), Ok(()));
+    trees
+}
+
+fn rename_here(trees: &mut Trees, id: &str, parent: &str, name: &str) {
+    let mut node = trees.local().get(id).unwrap().clone();
+    node.shape.parent = parent.into();
+    node.shape.name = name.into();
+    trees.set_local_changed(id.into(), node);
+}
+
+#[test]
+fn a_file_the_server_moved_out_of_an_excluded_folder_it_trashed_downloads_again_after_both_copies_went_while_stopped()
+ {
+    let mut before = trees(&[
+        synced("d", dir(ROOT, "dist")),
+        synced("f", file("d", "f.docx", 1)),
+    ]);
+    before.set_rules(&AT_ROOT, rules("dist/\n"));
+    assert_eq!(ops(&mut before), []);
+    before.remove_local("f");
+    before.remove_local("d");
+    let mut moved = before.remote().get("f").unwrap().clone();
+    moved.shape.parent = ROOT.into();
+    before.set_remote("f".into(), moved);
+    trash(&mut before, "d");
+
+    let mut trees = restarted(&before);
+    trees.set_rules(&AT_ROOT, rules("dist/\n"));
+    trees.rules_scanned();
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(nodes(&effects(&mut trees)), ["f"]);
+    assert_eq!(trees.local().live("f"), Some(&file(ROOT, "f.docx", 1)));
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_node_whose_copy_vanished_while_excluded_keeps_its_place_until_the_rules_are_scanned_after_a_restart()
+ {
+    let mut before = trees(&[synced("a", file(ROOT, "a.log", 1))]);
+    before.set_rules(&AT_ROOT, rules("*.log\n"));
+    assert_eq!(ops(&mut before), []);
+    before.remove_local("a");
+    assert_eq!(ops(&mut before), []);
+
+    let mut trees = restarted(&before);
+    assert!(!trees.rules_known());
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(effects(&mut trees), []);
+    assert_eq!(
+        trees
+            .vanished_at(ROOT, "a.log", Kind::File)
+            .map(String::as_str),
+        Some("a")
+    );
+
+    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.rules_scanned();
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(effects(&mut trees), []);
+    assert_eq!(
+        trees
+            .vanished_at(ROOT, "a.log", Kind::File)
+            .map(String::as_str),
+        Some("a")
+    );
+
+    trees.set_rules(&AT_ROOT, None);
+    trees.listed(&[ROOT.into()]);
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(nodes(&effects(&mut trees)), ["a"]);
+    assert_eq!(trees.local().live("a"), Some(&file(ROOT, "a.log", 1)));
+}
+
+#[test]
+fn an_excluded_file_lost_with_its_folder_downloads_as_the_same_node_after_the_folder_comes_back() {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "dist")),
+        synced("log", file("d", "a.log", 1)),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("dist/\n*.log\n"));
+    assert_eq!(ops(&mut trees), []);
+    trees.remove_local("log");
+    trees.remove_local("d");
+    assert_eq!(ops(&mut trees), []);
+
+    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.listed(&[ROOT.into()]);
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(nodes(&effects(&mut trees)), ["d"]);
+    assert!(trees.excluded("log"));
+    assert_eq!(trees.synced().live("log"), None);
+    assert_eq!(trees.local().live("log"), None);
+
+    trees.set_rules(&AT_ROOT, None);
+    trees.listed(&[ROOT.into(), "d".into()]);
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(nodes(&effects(&mut trees)), ["log"]);
+    assert_eq!(trees.local().live("log"), Some(&file("d", "a.log", 1)));
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_node_whose_copy_vanished_below_a_folder_with_unread_rules_waits_for_them() {
+    let mut before = trees(&[
+        synced("d", dir(ROOT, "d")),
+        synced("f", file("d", "f.txt", 1)),
+    ]);
+    before.set_rules(&["d"], rules("f.txt\n"));
+    assert_eq!(ops(&mut before), []);
+    assert!(before.unobserved("f"));
+    before.remove_local("f");
+    assert_eq!(ops(&mut before), []);
+
+    let mut trees = restarted(&before);
+    trees.set_rules_unknown("d");
+    trees.rules_scanned();
+    trees.listed(&[ROOT.into(), "d".into()]);
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(effects(&mut trees), []);
+    assert_eq!(
+        trees
+            .vanished_at("d", "f.txt", Kind::File)
+            .map(String::as_str),
+        Some("f")
+    );
+
+    trees.set_rules(&["d"], rules("f.txt\n"));
+    trees.set_rules_known("d");
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(effects(&mut trees), []);
+    assert_eq!(
+        trees
+            .vanished_at("d", "f.txt", Kind::File)
+            .map(String::as_str),
+        Some("f")
+    );
+
+    trees.set_rules(&["d"], None);
+    trees.listed(&[ROOT.into(), "d".into()]);
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(nodes(&effects(&mut trees)), ["f"]);
+}
+
+#[test]
+fn a_file_moved_out_of_an_excluded_folder_keeps_its_move_when_the_folder_vanishes_and_comes_back() {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "dist")),
+        synced("f", file("d", "f.docx", 1)),
+        synced("g", file("d", "g.docx", 2)),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("dist/\n"));
+    assert_eq!(ops(&mut trees), []);
+    place(&mut trees, "f", ROOT, "f.docx");
+    trees.remove_local("g");
+    trees.remove_local("d");
+    let sent = ops(&mut trees);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(
+        matches!(&sent[0], op::Op::Move(moved) if moved.node_id == "f"),
+        "{sent:?}"
+    );
+    assert_eq!(trees.synced().get("f"), Some(&file("d", "f.docx", 1)));
+    let mut moved = trees.remote().get("f").unwrap().clone();
+    moved.shape.parent = ROOT.into();
+    trees.set_remote("f".into(), moved);
+
+    trees.set_rules(&AT_ROOT, None);
+    trees.listed(&[ROOT.into()]);
+    let mut done: Vec<String> = nodes(&effects(&mut trees))
+        .into_iter()
+        .map(String::from)
+        .collect();
+    done.sort();
+    assert_eq!(done, ["d", "g"]);
+    assert_eq!(trees.local().live("f"), Some(&file(ROOT, "f.docx", 1)));
+    assert_eq!(trees.synced().get("f"), Some(&file(ROOT, "f.docx", 1)));
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_file_below_a_folder_renamed_out_of_the_rules_stays_observed_after_the_relisting() {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "dist")),
+        synced("sub", dir("d", "sub")),
+        synced("f", file("sub", "f.docx", 1)),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("dist/\n"));
+    assert_eq!(ops(&mut trees), []);
+    rename_here(&mut trees, "d", ROOT, "shipped");
+    assert_eq!(trees.take_relist(), ["d"]);
+    trees.listed(&["d".into(), "sub".into()]);
+    assert!(!trees.unobserved("f"));
+    set_content(&mut trees, "f", 2);
+    trees.settle(&Default::default());
+    assert!(!trees.unobserved("f"), "a remote edit marks the file again");
+    trees.remove_local("f");
+    trees.settle(&Default::default());
+    assert_eq!(trees.vanished_at("sub", "f.docx", Kind::File), None);
+}
+
+#[test]
+fn a_folder_removed_with_only_an_excluded_file_left_in_it_stays_removed_after_its_included_file_is_deleted()
+ {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "d")),
+        synced("log", file("d", "a.log", 1)),
+        synced("txt", file("d", "b.txt", 2)),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    assert_eq!(ops(&mut trees), []);
+    for id in ["log", "txt", "d"] {
+        trees.remove_local(id);
+    }
+    trees.listed(&[ROOT.into()]);
+    assert_eq!(ops(&mut trees), [delete("txt")]);
+    let mut gone = trees.remote().get("txt").unwrap().clone();
+    gone.trashed = true;
+    trees.set_remote("txt".into(), gone);
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(trees.synced().get("txt"), None);
+    assert_eq!(effects(&mut trees), []);
+    assert!(trees.synced().get("d").is_some());
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_file_removed_below_a_folder_renamed_into_the_rules_downloads_once_s_follows_the_rename() {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "dist")),
+        synced("sub", dir("d", "sub")),
+        synced("f", file("sub", "f.docx", 1)),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("dist/\n"));
+    assert_eq!(ops(&mut trees), []);
+    rename_here(&mut trees, "d", ROOT, "shipped");
+    assert_eq!(trees.take_relist(), ["d"]);
+    trees.remove_local("f");
+    trees.listed(&[ROOT.into(), "d".into(), "sub".into()]);
+    let sent = ops(&mut trees);
+    assert!(
+        matches!(sent.as_slice(), [op::Op::Move(moved)] if moved.node_id == "d"),
+        "{sent:?}"
+    );
+    assert_eq!(trees.synced().get("d"), Some(&dir(ROOT, "dist")));
+    assert!(trees.synced().get("f").is_some());
+    let mut moved = trees.remote().get("d").unwrap().clone();
+    moved.shape.name = "shipped".into();
+    trees.set_remote("d".into(), moved);
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(trees.synced().get("d"), Some(&dir(ROOT, "shipped")));
+    assert_eq!(nodes(&effects(&mut trees)), ["f"]);
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_file_renamed_out_of_the_rules_downloads_again_at_its_synced_place_when_its_new_folder_is_deleted()
+ {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "d")),
+        synced("f", file("d", "f.docx", 1)),
+        synced("p", dir(ROOT, "p")),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    assert_eq!(ops(&mut trees), []);
+    rename_here(&mut trees, "f", "p", "f.log");
+    assert_eq!(ops(&mut trees), []);
+    assert!(trees.unobserved("f"));
+    trees.remove_local("p");
+    trees.remove_local("f");
+    assert_eq!(ops(&mut trees), [delete("p")]);
+    assert_eq!(nodes(&effects(&mut trees)), ["f"]);
+    assert_eq!(trees.local().live("f"), Some(&file("d", "f.docx", 1)));
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_file_removed_below_a_folder_renamed_back_into_the_rules_before_a_scan_lists_it_downloads_again()
+ {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "d")),
+        synced("f", file("d", "f.docx", 1)),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    assert_eq!(ops(&mut trees), []);
+    rename_here(&mut trees, "d", ROOT, "d.log");
+    trees.settle(&Default::default());
+    assert!(trees.unobserved("f"));
+    rename_here(&mut trees, "d", ROOT, "d");
+    assert_eq!(trees.take_relist(), ["d"]);
+    assert!(!trees.excluded("f") && trees.unobserved("f"));
+    trees.remove_local("f");
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(nodes(&effects(&mut trees)), ["f"]);
+    assert_eq!(trees.local().live("f"), Some(&file("d", "f.docx", 1)));
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_folder_deleted_with_a_file_that_vanished_while_renamed_out_of_the_rules_stays_for_that_file() {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "d")),
+        synced("f", file("d", "f.docx", 1)),
+        synced("g", file("d", "g.docx", 2)),
+        synced("p", dir(ROOT, "p")),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    assert_eq!(ops(&mut trees), []);
+    rename_here(&mut trees, "f", "p", "f.log");
+    assert_eq!(ops(&mut trees), []);
+    assert!(trees.unobserved("f"));
+    for id in ["f", "p", "g", "d"] {
+        trees.remove_local(id);
+    }
+    assert_eq!(ops(&mut trees), [delete("p"), delete("g")]);
+    trash(&mut trees, "p");
+    trash(&mut trees, "g");
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(nodes(&effects(&mut trees)), ["d", "f"]);
+    assert_eq!(trees.local().live("d"), Some(&dir(ROOT, "d")));
+    assert_eq!(trees.local().live("f"), Some(&file("d", "f.docx", 1)));
+    assert_eq!(ops(&mut trees), []);
+    assert!(trees.work().is_empty());
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_file_renamed_out_of_the_rules_downloads_again_however_its_folder_is_moved_renamed_or_deleted()
+{
+    let applied = |trees: &mut Trees, sent: Vec<op::Op>| {
+        for op in sent {
+            match op {
+                op::Op::Delete(deleted) => {
+                    let mut below = vec![deleted.node_id];
+                    while let Some(id) = below.pop() {
+                        below.extend(
+                            (trees.remote().iter())
+                                .filter(|(_, node)| !node.trashed && node.shape.parent == id)
+                                .map(|(child, _)| child.clone()),
+                        );
+                        assert_ne!(id, "f");
+                        trash(trees, &id);
+                    }
+                }
+                op::Op::Move(moved) => {
+                    let mut node = trees.remote().get(&moved.node_id).unwrap().clone();
+                    (node.shape.parent, node.shape.name) = (moved.new_parent_id, moved.new_name);
+                    trees.set_remote(moved.node_id, node);
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+    let renamed_there = |trees: &mut Trees| {
+        let mut node = trees.remote().get("d").unwrap().clone();
+        node.shape.name = "e".into();
+        trees.set_remote("d".into(), node);
+    };
+    for case in 0..7 {
+        let mut trees = trees(&[
+            synced("a", dir(ROOT, "a")),
+            synced("d", dir("a", "d")),
+            synced("f", file("d", "f.docx", 1)),
+            synced("g", file("d", "g.docx", 2)),
+            synced("h", file("a", "h.docx", 3)),
+            synced("p", dir(ROOT, "p")),
+            synced("q", dir(ROOT, "q")),
+        ]);
+        trees.set_rules(&AT_ROOT, rules("*.log\n"));
+        assert_eq!(ops(&mut trees), []);
+        if case == 5 {
+            renamed_there(&mut trees);
+        }
+        rename_here(&mut trees, "f", "p", "f.log");
+        assert_eq!(ops(&mut trees), []);
+        trees.remove_local("f");
+        trees.remove_local("p");
+        let gone: &[&str] = match case {
+            0 => {
+                rename_here(&mut trees, "d", "q", "d2");
+                &["g"]
+            }
+            1 | 2 => {
+                rename_here(&mut trees, "d", "q", "d");
+                &["g", "d", "q"]
+            }
+            3 | 4 => {
+                rename_here(&mut trees, "d", "a", "d2");
+                &["g", "d"]
+            }
+            _ => &["g", "d", "h", "a"],
+        };
+        if matches!(case, 2 | 4) {
+            let sent = ops(&mut trees);
+            applied(&mut trees, sent);
+        }
+        for id in gone {
+            trees.remove_local(id);
+        }
+        if case == 6 {
+            let sent = ops(&mut trees);
+            renamed_there(&mut trees);
+            applied(&mut trees, sent);
+        }
+        for _ in 0..4 {
+            let sent = ops(&mut trees);
+            applied(&mut trees, sent);
+            effects(&mut trees);
+        }
+        assert!(trees.work().is_empty(), "case {case}: {:?}", trees.work());
+        assert!(trees.remote().live("f").is_some(), "case {case}");
+        assert_eq!(
+            trees.local().live("f"),
+            trees.remote().live("f"),
+            "case {case}"
+        );
+        assert!(!trees.unobserved("f"), "case {case}");
+        assert_eq!(trees.check(), Ok(()), "case {case}");
+    }
+}
+
+#[test]
+fn a_file_whose_folder_is_deleted_around_it_downloads_again_after_a_restart_without_another_scan() {
+    let mut before = trees(&[
+        synced("d", dir(ROOT, "d")),
+        synced("f", file("d", "f.docx", 1)),
+        synced("g", file("d", "g.docx", 2)),
+        synced("p", dir(ROOT, "p")),
+    ]);
+    before.set_rules(&AT_ROOT, rules("*.log\n"));
+    assert_eq!(ops(&mut before), []);
+    rename_here(&mut before, "f", "p", "f.log");
+    assert_eq!(ops(&mut before), []);
+    for id in ["f", "p", "g", "d"] {
+        before.remove_local(id);
+    }
+    assert_eq!(ops(&mut before), [delete("p"), delete("g")]);
+
+    let mut trees = restarted(&before);
+    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.rules_scanned();
+    trash(&mut trees, "p");
+    trash(&mut trees, "g");
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(nodes(&effects(&mut trees)), ["d", "f"]);
+    assert_eq!(trees.local().live("f"), Some(&file("d", "f.docx", 1)));
+    assert_eq!(ops(&mut trees), []);
+    assert!(trees.work().is_empty());
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_file_a_scan_reports_as_l_holds_it_after_the_rules_let_it_in_again_is_deleted_once_removed() {
+    let mut trees = trees(&[synced("f", file(ROOT, "f.docx", 1))]);
+    trees.set_rules(&AT_ROOT, rules("*.docx\n"));
+    assert_eq!(ops(&mut trees), []);
+    trees.set_rules(&AT_ROOT, None);
+    assert_eq!(ops(&mut trees), []);
+    assert!(trees.unobserved("f"));
+    let held = trees.local().get("f").unwrap().clone();
+    trees.set_local_changed("f".into(), held);
+    trees.settle(&Default::default());
+    assert!(!trees.unobserved("f"));
+    trees.remove_local("f");
+    let sent = ops(&mut trees);
+    assert!(
+        matches!(sent.as_slice(), [op::Op::Delete(deleted)] if deleted.node_id == "f"),
+        "{sent:?}"
+    );
+    assert!(nodes(&effects(&mut trees)).is_empty());
+}
+
+#[test]
+fn a_file_the_rules_of_the_folder_it_moves_into_leave_out_downloads_again_after_it_vanishes() {
+    let mut trees = trees(&[
+        synced("p", dir(ROOT, "p")),
+        synced("log", file("p", "a.log", 1)),
+        synced("q", dir(ROOT, "q")),
+    ]);
+    trees.set_rules(&["q"], rules("*.log\n"));
+    assert_eq!(ops(&mut trees), []);
+    place(&mut trees, "p", "q", "p");
+    let sent = ops(&mut trees);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    let mut moved = trees.remote().get("p").unwrap().clone();
+    moved.shape.parent = "q".into();
+    trees.set_remote("p".into(), moved);
+    assert_eq!(ops(&mut trees), []);
+    assert!(trees.unobserved("log"));
+    trees.remove_local("log");
+    assert_eq!(ops(&mut trees), []);
+    trees.set_rules(&["q"], None);
+    trees.listed(&["q".into(), "p".into()]);
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(nodes(&effects(&mut trees)), ["log"]);
+}
+
+fn excluded_and_removed_in_one_batch(folder: bool, rules_first: bool, stopped: bool) -> Trees {
+    let (before, rule, gone): (Trees, &str, &[&str]) = match folder {
+        true => (
+            trees(&[
+                synced("d", dir(ROOT, "d")),
+                synced("f", file("d", "f.docx", 1)),
+            ]),
+            "d/\n",
+            &["f", "d"],
+        ),
+        false => (
+            trees(&[synced("f", file(ROOT, "f.docx", 1))]),
+            "*.docx\n",
+            &["f"],
+        ),
+    };
+    let mut trees = match stopped {
+        true => restarted(&before),
+        false => before,
+    };
+    let exclude = |trees: &mut Trees| {
+        trees.set_rules(&AT_ROOT, rules(rule));
+        trees.rules_scanned();
+    };
+    if rules_first {
+        exclude(&mut trees);
+    }
+    for id in gone {
+        trees.remove_local(id);
+    }
+    if !rules_first {
+        exclude(&mut trees);
+    }
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(effects(&mut trees), []);
+    trees.set_rules(&AT_ROOT, None);
+    trees.listed(&[ROOT.into()]);
+    trees
+}
+
+#[test]
+fn a_copy_removed_in_the_batch_whose_rules_exclude_it_downloads_again() {
+    for (folder, downloaded) in [(false, &["f"][..]), (true, &["d", "f"][..])] {
+        let mut trees = excluded_and_removed_in_one_batch(folder, true, false);
+        assert_eq!(ops(&mut trees), [], "folder: {folder}");
+        assert_eq!(nodes(&effects(&mut trees)), downloaded, "folder: {folder}");
+        assert_eq!(trees.check(), Ok(()));
+    }
+}
+
+#[test]
+fn a_copy_removed_before_the_rules_excluded_it_is_deleted_once_they_let_it_in_again() {
+    for (folder, top) in [(false, "f"), (true, "d")] {
+        let mut trees = excluded_and_removed_in_one_batch(folder, false, false);
+        assert_eq!(ops(&mut trees), [delete(top)], "folder: {folder}");
+        assert_eq!(effects(&mut trees), [], "folder: {folder}");
+    }
+}
+
+#[test]
+fn a_copy_removed_while_the_device_was_stopped_through_a_rules_change_downloads_again_whichever_came_first()
+ {
+    for (folder, downloaded) in [(false, &["f"][..]), (true, &["d", "f"][..])] {
+        let mut trees = excluded_and_removed_in_one_batch(folder, true, true);
+        assert_eq!(ops(&mut trees), [], "folder: {folder}");
+        assert_eq!(nodes(&effects(&mut trees)), downloaded, "folder: {folder}");
+        assert_eq!(trees.check(), Ok(()));
+    }
+}
+
+#[test]
+fn a_folder_removed_while_left_out_comes_back_whole_with_a_removed_folder_the_server_keeps_for_an_excluded_file()
+ {
+    let mut trees = trees(&[
+        synced("a", dir(ROOT, "a")),
+        synced("A", file("a", "A.docx", 1)),
+        synced("ss", dir("a", "ss")),
+        incoming("c", file("ss", "c.txt", 2)),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("c.txt\n"));
+    assert_eq!(ops(&mut trees), []);
+    trees.remove_local("ss");
+    assert_eq!(ops(&mut trees), []);
+    trees.set_rules(&AT_ROOT, rules("c.txt\na/\n"));
+    assert_eq!(ops(&mut trees), []);
+    assert!(trees.unobserved("a") && trees.unobserved("A"));
+    trees.remove_local("A");
+    trees.remove_local("a");
+    assert_eq!(ops(&mut trees), []);
+
+    trees.set_rules(&AT_ROOT, rules("c.txt\n"));
+    trees.listed(&[ROOT.into()]);
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(nodes(&effects(&mut trees)), ["a", "A", "ss"]);
+    let left: Vec<String> = (trees.work().into_iter())
+        .map(|(id, _)| id)
+        .filter(|id| !trees.excluded(id))
+        .collect();
+    assert_eq!(left, Vec::<String>::new());
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_released_file_moved_into_a_folder_whose_release_waits_on_unknown_rules_keeps_the_trees_consistent()
+ {
+    let mut trees = trees(&[
+        synced("u", dir(ROOT, "u")),
+        synced("v", dir("u", "v")),
+        synced("f", file(ROOT, "f.docx", 1)),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("v/\nf.docx\n"));
+    assert_eq!(ops(&mut trees), []);
+    trees.remove_local("f");
+    trees.remove_local("v");
+    assert_eq!(ops(&mut trees), []);
+    trees.set_rules_unknown("u");
+    trees.set_rules(&AT_ROOT, None);
+    ops(&mut trees);
+    assert!(trees.synced().get("f").is_none() && trees.synced().get("v").is_some());
+    trees.set_remote("f".into(), remote(file("v", "f.docx", 1)));
+    trees.settle(&Default::default());
+    assert_eq!(trees.check(), Ok(()));
 }

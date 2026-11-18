@@ -1084,11 +1084,13 @@ proptest! {
     fn settling_what_changed_ends_where_settling_everything_ends(
         start in proptest::collection::vec(draws(), 1..8),
         steps in proptest::collection::vec(
-            (proptest::collection::vec((any::<u8>(), 0u8..3, edits()), 1..4), 0usize..5),
+            (proptest::collection::vec((any::<u8>(), 0u8..3, edits()), 1..4), 0usize..5, 0usize..3),
             1..6,
         ),
     ) {
         let rule_files = [None, Some("x\n"), Some("y\n"), Some("x/\n"), Some("*\n")];
+        let rule_dirs: [&[&str]; 3] = [&[], &["y"], &["y", "x"]];
+        let mut rules_at = [None; 3];
         let n = start.len();
         let mut trees = Trees::new(ROOT);
         for (i, shape) in draw_tree(&start).into_iter().enumerate() {
@@ -1100,9 +1102,9 @@ proptest! {
             trees.set_synced(id, shape);
         }
         trees.settle(&Default::default());
-        for (step, rules) in steps {
-            let rules = rule_files[rules];
-            trees.set_rules(&[] as &[&str], rules.map(|rules| RuleFile::parse(rules.as_bytes())));
+        for (step, rules, at) in steps {
+            rules_at[at] = rule_files[rules];
+            trees.set_rules(rule_dirs[at], rules_at[at].map(|rules| RuleFile::parse(rules.as_bytes())));
             for (node, side, edit) in step {
                 let id = format!("n{}", node as usize % n);
                 let shape = edit.map(|(parent, name, directory, digest)| {
@@ -1142,7 +1144,9 @@ proptest! {
                 prop_assert_eq!(trees.check(), Ok(()));
             }
             let mut everything = Trees::new(ROOT);
-            everything.set_rules(&[] as &[&str], rules.map(|rules| RuleFile::parse(rules.as_bytes())));
+            for (folder, rules) in rule_dirs.iter().zip(rules_at) {
+                everything.set_rules(folder, rules.map(|rules| RuleFile::parse(rules.as_bytes())));
+            }
             for (id, node) in trees.remote().iter() {
                 everything.set_remote(id.clone(), node.clone());
             }
@@ -1152,6 +1156,12 @@ proptest! {
             for (id, shape) in trees.synced().iter() {
                 everything.set_synced(id.clone(), Some(shape.clone()));
             }
+            let mut state = everything.state();
+            state.unobserved = (trees.state().unobserved.into_iter())
+                .filter(|id| trees.local().get(id).is_some() || trees.synced().get(id).is_some())
+                .collect();
+            everything.restore(state).unwrap();
+            everything.rules_scanned();
             trees.settle(&Default::default());
             everything.settle(&Default::default());
             prop_assert_eq!(trees.work(), everything.work());

@@ -160,3 +160,4 @@ include!("upgrade_cases/commit_slot_tokens.rs");
 include!("upgrade_cases/schema_node_upserts.rs");
 include!("upgrade_cases/schema_forget_sync_state.rs");
 include!("upgrade_cases/commit_slot_given_up.rs");
+include!("upgrade_cases/unobserved.rs");

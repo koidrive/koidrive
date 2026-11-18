@@ -3491,6 +3491,23 @@ fn a_file_deleted_inside_a_server_folder_in_a_discarded_folder_makes_the_folder_
     assert!(trees.local().get("c").is_none());
 }
 
+#[test]
+fn a_server_folder_the_user_deletes_with_its_file_in_a_discarded_folder_stays_gone_here_in_either_order()
+ {
+    for order in [["c", "x"], ["x", "c"]] {
+        let (sent, trees) =
+            a_server_folder_in_a_discarded_folder_changed_after_the_answer(|trees| {
+                for id in order {
+                    trees.remove_local(id);
+                }
+            });
+        assert_eq!(sent, [], "{order:?}");
+        assert!(trees.local().get("x").is_none(), "{order:?}");
+        assert!(trees.local().get("c").is_none(), "{order:?}");
+        assert_eq!(trees.remote().live("c"), Some(&file("x", "child", 9)));
+    }
+}
+
 fn a_file_that_arrived_in_a_server_folder_in_a_discarded_folder_after(
     change: impl FnOnce(&mut Trees),
 ) -> (Vec<(&'static str, String)>, Trees) {

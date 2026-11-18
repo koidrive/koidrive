@@ -147,6 +147,7 @@ fn migrations_apply_from_empty() {
             "synced_nodes",
             "taken_answers",
             "trashed_here",
+            "unobserved",
             "unseen_changes",
             "unsent_creates",
             "unsent_edits",
@@ -1309,6 +1310,7 @@ fn engine_state() -> EngineState {
             unsearched: nodes(["b"]),
             reverted: nodes(["r"]),
             cycle_reverted: nodes(["r"]),
+            unobserved: nodes(["u"]),
             parked_as: BTreeMap::from([("p".into(), "p-before".into())]),
             waiting: BTreeMap::from([
                 (
@@ -1643,7 +1645,7 @@ fn engine_state_survives_a_reopen() {
 }
 
 /// The tables of the engine state besides the nodes of R, L and S.
-const ENGINE_TABLES: [&str; 49] = [
+const ENGINE_TABLES: [&str; 50] = [
     "node_sets",
     "node_maps",
     "waiting_updates",
@@ -1693,6 +1695,7 @@ const ENGINE_TABLES: [&str; 49] = [
     "lost_positions",
     "lost_creates",
     "unseen_changes",
+    "unobserved",
 ];
 
 /// Counts each row inserted, updated or deleted in the engine's tables from now on in the table
@@ -4722,6 +4725,31 @@ fn a_store_from_before_dropped_edits_were_recorded_opens_with_none_recorded() {
     let after = before.clone();
     before.trees.dropped_edits.clear();
     assert!(!after.trees.dropped_edits.is_empty());
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
+    store
+        .transaction(|tx| tx.update_engine_state(&before, &after))
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), after);
+}
+
+#[test]
+fn a_store_from_before_unobserved_nodes_were_recorded_opens_with_none_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut before = engine_state();
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_engine_state(&before))
+        .unwrap();
+    store_before(&path, "unobserved");
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(applied(&path), all_migrations());
+    let after = before.clone();
+    before.trees.unobserved.clear();
+    assert!(!after.trees.unobserved.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
         .transaction(|tx| tx.update_engine_state(&before, &after))

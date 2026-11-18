@@ -3800,8 +3800,9 @@ fn plan(
             .iter()
             .map(|node| record_cost(trees.synced().live(node)) + held_ancestry_cost(trees, node))
             .sum();
-        let kept = (scratch.subtree(id).iter())
-            .any(|node| trees.excluded(node) || trees.kept_original(node).is_some());
+        let kept = (scratch.subtree(id).iter()).any(|node| {
+            trees.excluded(node) || trees.kept_original(node).is_some() || trees.held(node)
+        });
         match children.get(id.as_str()) {
             Some(kids) if kept || bytes > MAX_COMMIT_BYTES || split.contains(id) => {
                 tops.extend(kids)
