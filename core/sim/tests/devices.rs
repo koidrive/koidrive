@@ -2112,14 +2112,6 @@ fn a_device_that_deletes_each_file_another_device_makes_keeps_syncing() {
 /// same commit deletes.
 #[test]
 fn an_edit_that_becomes_a_conflict_copy_in_a_folder_its_commit_deletes_is_kept() {
-    known_red(
-        "GUN-1169",
-        "called `Result::unwrap()` on an `Err` value: Diverged(\"after phase 1: write 2 of device 1 was never in the server's tree, and its user never overwrote or deleted it\")",
-        an_edit_that_becomes_a_conflict_copy_in_a_folder_its_commit_deletes,
-    );
-}
-
-fn an_edit_that_becomes_a_conflict_copy_in_a_folder_its_commit_deletes() {
     let synced = vec![(0, file("b")), (0, folder("a"))];
     let mut racing = vec![
         (1, overwrite(0)),

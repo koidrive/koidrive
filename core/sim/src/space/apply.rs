@@ -117,6 +117,7 @@ pub(super) struct Applier<'a> {
     revived_ancestors: BTreeMap<String, Node>,
     purged: Vec<ChangeRecord>,
     intents: OpIntents,
+    made_copies: BTreeSet<String>,
 }
 
 impl<'a> Applier<'a> {
@@ -132,6 +133,7 @@ impl<'a> Applier<'a> {
             revived_ancestors: BTreeMap::new(),
             purged: Vec::new(),
             intents: OpIntents::default(),
+            made_copies: BTreeSet::new(),
         }
     }
 
@@ -144,7 +146,13 @@ impl<'a> Applier<'a> {
                 now_ms: self.ctx.now_ms,
             };
             self.intents = resolve(op, &sender, &mut self.st.intent_ids);
-            results.push(self.apply_op(op, index)?);
+            let outcome = self.apply_op(op, index)?;
+            if outcome.code == op_result::Code::ConflictCopy as i32
+                && !self.incoming(Field::Content).intent.carried
+            {
+                self.made_copies.insert(outcome.node_id.clone());
+            }
+            results.push(outcome);
             let named = match &op.op {
                 Some(op::Op::CreateDir(op)) => Some(&op.node_id),
                 Some(op::Op::CreateFile(op)) => Some(&op.node_id),
@@ -1416,6 +1424,9 @@ impl<'a> Applier<'a> {
         view: &mut DeleteView,
         lost: &mut Vec<LostContent>,
     ) -> bool {
+        if self.made_copies.contains(&node.node_id) {
+            return true;
+        }
         let held = self.st.nodes[&node.node_id].intents.clone();
         if let Some(place) = held.get(Field::Place)
             && self.unseen_by(view, Some(place))
