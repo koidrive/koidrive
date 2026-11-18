@@ -7,7 +7,6 @@ upgrade_case!(root_token, |store| {
             let tokens = koidrive_fs::RootTokens {
                 current: Some("a".repeat(32)),
                 pending: Some("b".repeat(32)),
-                ..Default::default()
             };
             tx.set_root_tokens(&tokens)?;
             let mut link = tx.link()?.unwrap();

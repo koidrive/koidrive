@@ -6,9 +6,9 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
 use koidrive_fs::{
-    Marker, PRIVATE_DIR, RootAt, RootProblem, RootTokens, Space, Unresolved, VolumeId, check_root,
-    check_root_at, new_token, open_root_folder, probe_no_replace, read_marker, rename_no_replace,
-    root_at, write_marker,
+    EARLIER_TOKENS, Marker, PRIVATE_DIR, RootAt, RootProblem, RootTokens, Space, Unresolved,
+    VolumeId, check_root, check_root_at, new_token, open_root_folder, probe_no_replace,
+    read_marker, rename_no_replace, root_at, write_marker,
 };
 
 fn marker(space_id: &str, effects: u64) -> Marker {
@@ -16,7 +16,7 @@ fn marker(space_id: &str, effects: u64) -> Marker {
         space_id: space_id.into(),
         effects,
         token: None,
-        generation: 0,
+        earlier: Vec::new(),
     }
 }
 
@@ -82,7 +82,6 @@ fn a_link_admits_the_token_it_wrote_or_is_writing_and_any_before_its_first() {
     let tokens = |current: Option<&str>, pending: Option<&str>| RootTokens {
         current: current.map(str::to_owned),
         pending: pending.map(str::to_owned),
-        generation: 0,
     };
     let cases = [
         (
@@ -111,6 +110,30 @@ fn a_link_admits_the_token_it_wrote_or_is_writing_and_any_before_its_first() {
                 "{tokens:?} {token:?}"
             );
         }
+    }
+}
+
+#[test]
+fn a_marker_keeps_the_latest_tokens_it_replaced_only_while_its_link_vouches_for_it() {
+    let recorded = |current: &str| RootTokens {
+        current: Some(current.into()),
+        pending: None,
+    };
+    let mut marker = Marker {
+        token: Some("0".into()),
+        ..marker("space-1", 0)
+    };
+    for n in 1..=EARLIER_TOKENS + 1 {
+        marker = marker.rotated(&n.to_string(), &recorded(marker.token.as_deref().unwrap()));
+    }
+    let latest: Vec<String> = (1..=EARLIER_TOKENS).map(|n| n.to_string()).collect();
+    assert_eq!(marker.earlier, latest);
+    assert!(recorded("1").precede(&marker));
+    assert!(!recorded("0").precede(&marker));
+    let restored = marker.rotated("next", &recorded("5"));
+    assert_eq!(restored.earlier.last(), marker.token.as_ref());
+    for stranger in [recorded("0"), RootTokens::default()] {
+        assert!(marker.rotated("next", &stranger).earlier.is_empty());
     }
 }
 
@@ -468,7 +491,6 @@ fn a_btrfs_snapshot_rolled_back_into_the_path_is_another_root() {
     let tokens = RootTokens {
         current: Some(token),
         pending: None,
-        generation: 0,
     };
     let linked_subvolume = at(&subvolume);
     let linked = at(&subvolume.join("folder"));

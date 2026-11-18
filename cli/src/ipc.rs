@@ -1274,7 +1274,7 @@ pub(crate) mod tests {
             space_id: SPACE.into(),
             effects: 0,
             token: token("b"),
-            generation: 0,
+            earlier: Vec::new(),
         };
         koidrive_fs::write_marker(&root, &marker).unwrap();
         let mut store = koidrive_store::Store::open(paths.store(SPACE).unwrap()).unwrap();
@@ -1289,7 +1289,6 @@ pub(crate) mod tests {
                 tx.set_root_tokens(&koidrive_fs::RootTokens {
                     current: token("a"),
                     pending: None,
-                    generation: 0,
                 })
             })
             .unwrap();

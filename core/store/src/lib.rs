@@ -857,13 +857,12 @@ impl Tx<'_> {
         Ok(self
             .0
             .query_row(
-                "SELECT root_token, root_token_pending, root_token_generation FROM link WHERE id = 1",
+                "SELECT root_token, root_token_pending FROM link WHERE id = 1",
                 [],
                 |row| {
                     Ok(RootTokens {
                         current: row.get(0)?,
                         pending: row.get(1)?,
-                        generation: row.get(2)?,
                     })
                 },
             )
@@ -874,8 +873,8 @@ impl Tx<'_> {
     /// Records the marker tokens of the link.
     pub fn set_root_tokens(&self, tokens: &RootTokens) -> Result<()> {
         self.0.execute(
-            "UPDATE link SET root_token = ?1, root_token_pending = ?2, root_token_generation = ?3 WHERE id = 1",
-            params![tokens.current, tokens.pending, tokens.generation],
+            "UPDATE link SET root_token = ?1, root_token_pending = ?2 WHERE id = 1",
+            params![tokens.current, tokens.pending],
         )?;
         Ok(())
     }

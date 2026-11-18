@@ -32,7 +32,6 @@ upgrade_case!(schema_forget_sync_state, |store| {
     let tokens = koidrive_fs::RootTokens {
         current: Some("a".repeat(32)),
         pending: Some("b".repeat(32)),
-        generation: 3,
     };
     let mounts = std::collections::BTreeMap::from([(
         std::path::PathBuf::from("Disk"),

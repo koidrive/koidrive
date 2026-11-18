@@ -27,8 +27,8 @@ const PROBE: [&str; 3] = [
 ];
 
 /// The root marker `.koidrive/space.json`: the space the folder holds, the
-/// effect counter *m* of design §2.8, and the token of the folder's latest
-/// start with its generation.
+/// effect counter *m* of design §2.8, the token of the folder's latest start,
+/// and the tokens it replaced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Marker {
     pub space_id: String,
@@ -38,14 +38,33 @@ pub struct Marker {
     /// `None` in a marker from a build without tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
-    /// Grows each time the token is replaced. 0 in a marker from a build
-    /// without generations.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub generation: u64,
+    /// The tokens `token` replaced while this link vouched for the folder,
+    /// oldest first, at most [`EARLIER_TOKENS`]. Empty after a relink and in
+    /// a marker from a build without them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub earlier: Vec<String>,
 }
 
-fn is_zero(generation: &u64) -> bool {
-    *generation == 0
+pub const EARLIER_TOKENS: usize = 128;
+
+impl Marker {
+    /// This marker with `next` as its token. It keeps the token it replaces
+    /// among the earlier ones only when `tokens` recorded that token or
+    /// [`RootTokens::precede`] this marker, and otherwise carries none.
+    pub fn rotated(&self, next: &str, tokens: &RootTokens) -> Marker {
+        let earlier = match &self.token {
+            Some(token) if tokens.vouch_for(self) => {
+                let dropped = (self.earlier.len() + 1).saturating_sub(EARLIER_TOKENS);
+                (self.earlier[dropped..].iter().chain([token]).cloned()).collect()
+            }
+            _ => Vec::new(),
+        };
+        Marker {
+            token: Some(next.to_owned()),
+            earlier,
+            ..self.clone()
+        }
+    }
 }
 
 /// A new marker token: 128 random bits in hex.
@@ -61,8 +80,6 @@ pub fn new_token() -> String {
 pub struct RootTokens {
     pub current: Option<String>,
     pub pending: Option<String>,
-    /// The generation of `current`; `pending` is the next one.
-    pub generation: u64,
 }
 
 impl RootTokens {
@@ -78,9 +95,24 @@ impl RootTokens {
         }
     }
 
-    /// Whether `marker` carries a later generation than `current`.
-    pub fn trails(&self, marker: &Marker) -> bool {
-        marker.generation > self.generation
+    /// Whether `marker` descends from one that carried a token this link
+    /// recorded: that token is among the ones `marker` replaced.
+    pub fn precede(&self, marker: &Marker) -> bool {
+        marker.earlier.iter().any(|token| self.recorded(token))
+    }
+
+    fn vouch_for(&self, marker: &Marker) -> bool {
+        marker
+            .token
+            .as_ref()
+            .is_some_and(|token| self.recorded(token))
+            || self.precede(marker)
+    }
+
+    fn recorded(&self, token: &str) -> bool {
+        [&self.current, &self.pending]
+            .into_iter()
+            .any(|recorded| recorded.as_deref() == Some(token))
     }
 }
 

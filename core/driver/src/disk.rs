@@ -274,6 +274,7 @@ pub(crate) struct Disk {
     hook: Hook,
     brought_back: BroughtBack,
     tokens: RootTokens,
+    earlier: Vec<String>,
     fresh: bool,
     unwritable: Option<String>,
     flushed: bool,
@@ -349,13 +350,10 @@ impl Disk {
     /// Startup for the folder `link` names, through `lock`, the descriptor the task locked. In order:
     ///
     /// 1. The root check of design §6.2 through that descriptor: the linked path still names it, it is on the linked
-    ///    device, and its marker names the space and, unless the store is older than the folder (step 2), carries a
-    ///    token the store recorded ([`RootProblem::Copy`] otherwise). Nothing is written when it fails.
-    /// 2. The counters: with *e* the store's effect counter and *upper* that plus the number of effects in flight, the
-    ///    store is older than the folder when the marker is above *upper*, or when it counts at least *e* and carries a
-    ///    token of a later generation than the store's ([`RootTokens::trails`]). The disk carried out every effect the
-    ///    marker counts, so the store continues from it and from the marker's token, and the folder recovers (§6.4).
-    ///    A marker below *e* is [`Stop::DiskBehind`], which leaves the marker, staging and quarantine as they are.
+    ///    device, and its marker names the space. Nothing is written when it fails.
+    /// 2. The marker against the store (`standing`): a store older than the folder continues from the marker and
+    ///    from its token, and the folder recovers (§6.4). Nothing is written when the marker is a
+    ///    [`RootProblem::Copy`] or [`Stop::DiskBehind`].
     /// 3. The no-replace probe.
     /// 4. The marker gets a new token: the store records it as pending, the marker takes it, and the store makes it
     ///    current. Each commit this device builds rotates the token the same way before it is sent. A marker that
@@ -398,6 +396,7 @@ impl Disk {
             hook,
             brought_back: BroughtBack::Entries(HashSet::new()),
             tokens: RootTokens::default(),
+            earlier: Vec::new(),
             fresh: false,
             unwritable: None,
             flushed: false,
@@ -429,7 +428,6 @@ impl Disk {
                 tx.set_root_tokens(&RootTokens {
                     current: found.token.clone(),
                     pending: None,
-                    generation: found.generation,
                 })?;
                 Ok(())
             })?;
@@ -441,7 +439,7 @@ impl Disk {
         if !disk.space.probe_no_replace()? {
             return Err(Stop::NoReplace);
         }
-        disk.tokens = rotate_token(&disk.space, found, store)?;
+        (disk.tokens, disk.earlier) = rotate_token(&disk.space, found, &tokens, store)?;
         let records = engine.effects.in_flight().to_vec();
         if let Some(first) = records.first() {
             let mut translated = (records.iter().map(translate)).collect::<Result<Vec<_>, _>>()?;
@@ -843,7 +841,7 @@ impl Disk {
             space_id: self.space_id.clone(),
             effects,
             token: (self.tokens.pending.clone()).or_else(|| self.tokens.current.clone()),
-            generation: self.tokens.generation + u64::from(self.tokens.pending.is_some()),
+            earlier: self.earlier.clone(),
         }
     }
 
@@ -852,10 +850,10 @@ impl Disk {
         if !self.fresh {
             let next = pend_token(&marker, store)?;
             (self.hook)(Cut::TokenPended);
+            self.earlier = marker.rotated(&next, &self.tokens).earlier;
             self.tokens = RootTokens {
                 current: marker.token.clone(),
                 pending: Some(next),
-                generation: marker.generation,
             };
             self.fresh = true;
             self.flushed = false;
@@ -867,7 +865,7 @@ impl Disk {
         if !self.flushed {
             let rotated = Marker {
                 token: Some(pending.clone()),
-                generation: self.tokens.generation + 1,
+                earlier: self.earlier.clone(),
                 ..marker
             };
             if let Err(error) = self.write_rotated(&rotated) {
@@ -884,7 +882,6 @@ impl Disk {
         Ok(Some(RootTokens {
             current: Some(pending),
             pending: None,
-            generation: self.tokens.generation + 1,
         }))
     }
 
@@ -919,7 +916,7 @@ impl Disk {
 
     fn finish_rotation(&mut self, store: &mut Store) -> Result<(), Stop> {
         if let Some(next) = self.tokens.pending.take() {
-            self.tokens = commit_token(next, self.tokens.generation + 1, store)?;
+            self.tokens = commit_token(next, store)?;
         }
         Ok(())
     }
@@ -937,13 +934,11 @@ enum Standing {
 
 fn standing(found: &Marker, tokens: &RootTokens, effects: &Effects) -> Result<Standing, Stop> {
     let (marker, cleared) = (found.effects, effects.cleared());
-    if marker > cleared + effects.in_flight().len() as u64 {
-        return Ok(Standing::StoreOlder);
-    }
     match tokens.admits(found) {
+        Ok(()) if marker > cleared + effects.in_flight().len() as u64 => Ok(Standing::StoreOlder),
         Ok(()) if marker < cleared => Err(Stop::DiskBehind { marker, cleared }),
         Ok(()) => Ok(Standing::Current),
-        Err(RootProblem::Copy) if marker >= cleared && tokens.trails(found) => {
+        Err(RootProblem::Copy) if marker >= cleared && tokens.precede(found) => {
             Ok(Standing::StoreOlder)
         }
         Err(problem) => Err(Stop::Root(problem)),
@@ -1009,9 +1004,8 @@ pub(crate) fn relink_with_hook(
     }
     bring_back_all(&space, &before.trees).map_err(Stop::from)?;
     let next = koidrive_fs::new_token();
-    let generation = tokens.generation.max(marker.generation) + 1;
     let questions = store.transaction(|tx| -> Result<_, Stop> {
-        let recorded = tx.root_tokens()?;
+        let current = tx.root_tokens()?.current;
         let answered = tx.questions()?;
         tx.forget_sync_state()?;
         if let Some(stored) = tx.link()? {
@@ -1034,9 +1028,8 @@ pub(crate) fn relink_with_hook(
         }
         engine.checkpoint(tx)?;
         tx.set_root_tokens(&RootTokens {
+            current,
             pending: Some(next.clone()),
-            generation: generation - 1,
-            ..recorded
         })?;
         let unanswered = tx
             .questions()?
@@ -1047,12 +1040,12 @@ pub(crate) fn relink_with_hook(
     hook(Cut::TokenPended);
     let relinked = Marker {
         token: Some(next.clone()),
-        generation,
+        earlier: Vec::new(),
         ..marker
     };
     space.write_marker(&relinked).map_err(Stop::from)?;
     hook(Cut::TokenWritten);
-    commit_token(next, generation, store)?;
+    commit_token(next, store)?;
     hook(Cut::TokenCommitted);
     Ok(questions)
 }
@@ -1072,29 +1065,23 @@ pub(crate) fn held_name(trees: &Trees, held: &OsStr, found: FileId) -> OsString 
         .map_or_else(|| held.to_owned(), OsString::from)
 }
 
-fn rotate_token(space: &Space, marker: Marker, store: &mut Store) -> Result<RootTokens, Stop> {
+fn rotate_token(
+    space: &Space,
+    marker: Marker,
+    recorded: &RootTokens,
+    store: &mut Store,
+) -> Result<(RootTokens, Vec<String>), Stop> {
     let next = pend_token(&marker, store)?;
-    if !write_token(space, &marker, &next) {
-        return Ok(RootTokens {
+    let rotated = marker.rotated(&next, recorded);
+    if let Err(error) = space.write_marker(&rotated) {
+        tracing::warn!(space_id = rotated.space_id, %error, "the folder's marker keeps its token until the next marker write");
+        let pended = RootTokens {
             current: marker.token,
             pending: Some(next),
-            generation: marker.generation,
-        });
+        };
+        return Ok((pended, rotated.earlier));
     }
-    commit_token(next, marker.generation + 1, store)
-}
-
-fn write_token(space: &Space, marker: &Marker, next: &str) -> bool {
-    let rotated = Marker {
-        token: Some(next.to_owned()),
-        generation: marker.generation + 1,
-        ..marker.clone()
-    };
-    let written = space.write_marker(&rotated);
-    if let Err(error) = &written {
-        tracing::warn!(space_id = rotated.space_id, %error, "the folder's marker keeps its token until the next marker write");
-    }
-    written.is_ok()
+    Ok((commit_token(next, store)?, rotated.earlier))
 }
 
 pub(crate) fn pend_token(marker: &Marker, store: &mut Store) -> Result<String, Stop> {
@@ -1102,21 +1089,15 @@ pub(crate) fn pend_token(marker: &Marker, store: &mut Store) -> Result<String, S
     let tokens = RootTokens {
         current: marker.token.clone(),
         pending: Some(next.clone()),
-        generation: marker.generation,
     };
     store.transaction(|tx| tx.set_root_tokens(&tokens))?;
     Ok(next)
 }
 
-pub(crate) fn commit_token(
-    token: String,
-    generation: u64,
-    store: &mut Store,
-) -> Result<RootTokens, Stop> {
+pub(crate) fn commit_token(token: String, store: &mut Store) -> Result<RootTokens, Stop> {
     let tokens = RootTokens {
         current: Some(token),
         pending: None,
-        generation,
     };
     store.transaction(|tx| tx.set_root_tokens(&tokens))?;
     Ok(tokens)

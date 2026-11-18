@@ -3316,8 +3316,8 @@ pub use mark::node_mark;
 pub use recovered::{recovered_name, utc_date};
 pub use resolve::{Base, Dir, Folder, Location, PARKED_DIR, Space, Unresolved};
 pub use root::{
-    Marker, PRIVATE_DIR, RootAt, RootProblem, RootTokens, VolumeId, check_root, check_root_at,
-    new_token, open_root_folder, probe_no_replace, read_marker, rename_no_replace, root_at,
-    write_marker,
+    EARLIER_TOKENS, Marker, PRIVATE_DIR, RootAt, RootProblem, RootTokens, VolumeId, check_root,
+    check_root_at, new_token, open_root_folder, probe_no_replace, read_marker, rename_no_replace,
+    root_at, write_marker,
 };
 pub use trash::{Reclaimed, TRASH_DIR, TRASH_RETENTION};

@@ -26,9 +26,7 @@ fn tokens_of(site: &Site) -> koidrive_fs::RootTokens {
 }
 
 fn assert_rotated_from(site: &Site, earlier: &[Option<String>]) {
-    let Marker {
-        token, generation, ..
-    } = marker_of(site);
+    let token = marker_of(site).token;
     assert!(
         token
             .as_ref()
@@ -41,7 +39,6 @@ fn assert_rotated_from(site: &Site, earlier: &[Option<String>]) {
         koidrive_fs::RootTokens {
             current: token,
             pending: None,
-            generation,
         }
     );
 }
@@ -317,7 +314,6 @@ fn a_crash_between_a_rotation_and_the_send_starts_again_and_sends_the_commit() {
         koidrive_fs::RootTokens {
             current: rotated.clone(),
             pending: None,
-            generation: marker_of(&site).generation,
         }
     );
 
@@ -648,7 +644,7 @@ fn marker_file(site: &Site) -> PathBuf {
     site.root.join(koidrive_fs::PRIVATE_DIR).join("space.json")
 }
 
-fn as_an_older_build_relinked_it(site: &Site) {
+fn as_an_older_build_rewrote_it(site: &Site) {
     let json: serde_json::Value =
         serde_json::from_slice(&fs::read(marker_file(site)).unwrap()).unwrap();
     let kept: serde_json::Map<String, serde_json::Value> = (json.as_object().unwrap().iter())
@@ -656,15 +652,6 @@ fn as_an_older_build_relinked_it(site: &Site) {
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     fs::write(marker_file(site), serde_json::to_vec(&kept).unwrap()).unwrap();
-    let tokens = tokens_of(site);
-    let fresh = koidrive_fs::RootTokens {
-        current: tokens.current,
-        pending: tokens.pending,
-        ..Default::default()
-    };
-    (Store::open(&site.db).unwrap())
-        .transaction(|tx| tx.set_root_tokens(&fresh))
-        .unwrap();
 }
 
 #[test]
@@ -679,7 +666,7 @@ fn a_copy_from_before_a_downgrade_and_reupgrade_halts_as_a_copy() {
     }
     let copy = site.root.with_file_name("copy");
     copy_folder(&site.root, &copy);
-    as_an_older_build_relinked_it(&site);
+    as_an_older_build_rewrote_it(&site);
     let mut a = restarted(&site, &mut remote);
     a.create(&mut remote, &site.root.join("after.txt"), b"after");
     a.create(&mut remote, &site.root.join("edited.txt"), b"new");
@@ -752,7 +739,7 @@ fn two_copies_of_one_disk_halt_when_the_older_one_is_at_the_folder() {
         space_id: site.link.space_id.clone(),
         effects: 0,
         token: None,
-        generation: 0,
+        earlier: Vec::new(),
     };
     write_marker(&site.root, &marker).unwrap();
     let found = found_root(&site.root);

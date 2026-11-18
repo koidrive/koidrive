@@ -1562,7 +1562,7 @@ impl Driver {
                     space_id: space.space_id.clone(),
                     effects: 0,
                     token: None,
-                    generation: 0,
+                    earlier: Vec::new(),
                 },
             )
             .map_err(io_error(&root))?;
@@ -3822,7 +3822,7 @@ mod tests {
                     space_id: SPACE.into(),
                     effects: 0,
                     token: None,
-                    generation: 0,
+                    earlier: Vec::new(),
                 },
             )
             .unwrap();
@@ -3919,7 +3919,7 @@ mod tests {
                                 space_id: "another-space".into(),
                                 effects: 0,
                                 token: None,
-                                generation: 0,
+                                earlier: Vec::new(),
                             },
                         )
                         .unwrap();
@@ -3955,7 +3955,7 @@ mod tests {
                     space_id: SPACE.into(),
                     effects: 0,
                     token: None,
-                    generation: 0,
+                    earlier: Vec::new(),
                 },
             )
             .unwrap();
@@ -4081,7 +4081,7 @@ mod tests {
                     space_id: SPACE.into(),
                     effects: 0,
                     token: None,
-                    generation: 0,
+                    earlier: Vec::new(),
                 },
             )
             .unwrap();
@@ -5280,7 +5280,7 @@ mod tests {
                 space_id: space_id.into(),
                 effects: 0,
                 token: None,
-                generation: 0,
+                earlier: Vec::new(),
             },
         )
         .unwrap();
@@ -5495,7 +5495,7 @@ mod tests {
                 space_id: SPACE.into(),
                 effects: 0,
                 token: None,
-                generation: 0,
+                earlier: Vec::new(),
             },
         )
         .unwrap();
@@ -5676,7 +5676,7 @@ mod tests {
                 space_id: SPACE.into(),
                 effects: 0,
                 token: None,
-                generation: 0,
+                earlier: Vec::new(),
             },
         )
         .unwrap();

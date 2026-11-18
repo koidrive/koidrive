@@ -625,7 +625,7 @@ fn a_folder_whose_root_is_a_stick_syncs_again_once_the_stick_is_plugged_back_in(
             space_id: site.link.space_id.clone(),
             effects: 0,
             token: None,
-            generation: 0,
+            earlier: Vec::new(),
         };
         write_marker(&site.root, &marker).unwrap();
         let found = identified(&site.root);
