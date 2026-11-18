@@ -482,6 +482,8 @@ pub struct JournalState {
     pub listed: bool,
     /// The state of the generator that mints this user's intents, once seeded.
     pub ids: Option<u64>,
+    /// The journal time of the first listing or record that showed R without each node.
+    pub absent: BTreeMap<NodeId, i64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -491,6 +493,7 @@ pub struct JournalChanges {
     pub seen: MapChanges<NodeId, Vec<Seen>>,
     pub listed: Option<bool>,
     pub ids: Option<Option<u64>>,
+    pub absent: MapChanges<NodeId, i64>,
 }
 
 impl JournalChanges {
@@ -501,6 +504,7 @@ impl JournalChanges {
             seen: changes(&before.seen, &after.seen),
             listed: (before.listed != after.listed).then_some(after.listed),
             ids: (before.ids != after.ids).then_some(after.ids),
+            absent: changes(&before.absent, &after.absent),
         }
     }
 }
@@ -527,8 +531,11 @@ pub struct Journal {
     listed_before: bool,
     ids: IdGen,
     ids_before: Option<u64>,
+    absent: TrackedMap<NodeId, i64>,
     now_ms: u64,
 }
+
+const ABSENT_FOR_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
 const JOURNAL_STREAM: u64 = 0x6a09_e667_f3bc_c908;
 
@@ -539,6 +546,7 @@ impl PartialEq for Journal {
             && *self.seen == *other.seen
             && self.listed == other.listed
             && self.ids.state == other.ids.state
+            && *self.absent == *other.absent
     }
 }
 
@@ -555,6 +563,7 @@ impl Journal {
             listed_before: false,
             ids,
             ids_before: None,
+            absent: TrackedMap::default(),
             now_ms: 0,
         }
     }
@@ -572,6 +581,7 @@ impl Journal {
                 .map(IdGen::new)
                 .unwrap_or_else(|| self.ids.clone()),
             ids_before: state.ids,
+            absent: state.absent.into(),
             now_ms: self.now_ms,
         };
     }
@@ -590,6 +600,7 @@ impl Journal {
             seen: (*self.seen).clone(),
             listed: self.listed,
             ids: Some(self.ids.state),
+            absent: (*self.absent).clone(),
         }
     }
 
@@ -614,11 +625,57 @@ impl Journal {
             seen: self.seen.take_changes(),
             listed,
             ids,
+            absent: self.absent.take_changes(),
         }
     }
 
+    /// Sets the time the journal mints and ends rows at, and ends what RFC 0029 §5.1 ends for a node R has lacked
+    /// for 30 days.
     pub fn set_clock(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
+        let lapsed: Vec<NodeId> = (self.absent.iter())
+            .filter(|(_, since)| now_ms as i64 - **since >= ABSENT_FOR_MS)
+            .map(|(node, _)| node.clone())
+            .collect();
+        for node in lapsed {
+            self.end(&node, Field::Status);
+            for field in [Field::Place, Field::Content] {
+                let key = (node.clone(), field);
+                let held = self.rows.get_compact(&key).is_some()
+                    || (self.rows.get(&key))
+                        .is_some_and(|row| matches!(row.state, RowState::Held { .. }));
+                if held {
+                    self.end(&node, field);
+                }
+            }
+            let ended = (Field::ALL.iter()).all(|field| {
+                self.row(&node, *field).is_none() && self.compact_row(&node, *field).is_none()
+            });
+            if ended {
+                for field in Field::ALL {
+                    self.history.remove(&(node.clone(), field));
+                }
+                self.absent.remove(&node);
+            }
+        }
+    }
+
+    pub fn nodes(&self) -> BTreeSet<NodeId> {
+        (self.rows.iter().map(|(key, _)| key.0.clone()))
+            .chain(self.rows.iter_compact().map(|((node, _), _)| node))
+            .chain(self.history.keys().map(|key| key.0.clone()))
+            .chain(self.seen.keys().cloned())
+            .collect()
+    }
+
+    pub fn r_lacks(&mut self, node: &str) {
+        if self.absent.get(node).is_none() {
+            self.absent.insert(node.to_owned(), self.now_ms as i64);
+        }
+    }
+
+    pub fn r_holds(&mut self, node: &str) {
+        self.absent.remove(node);
     }
 
     pub fn mint(&mut self) -> IntentId {

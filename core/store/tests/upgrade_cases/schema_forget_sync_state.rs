@@ -75,7 +75,7 @@ upgrade_case!(schema_forget_sync_state, |store| {
          commit_in_flight_restore_members commit_in_flight_restore_owners commit_slot_given_up commit_slots commit_state content_provenance cycle_reverted \
          delete_views discard_members discarded_nodes dropped_edits edited_here effect_state effects_in_flight engine_state failed_effects \
          forgotten_shapes given_up guard_confirmed guard_confirmed_limits guard_confirmed_members guard_ledger \
-         guard_remote guard_remote_dismissed intent_history journal journal_state kept_entries kept_folders kept_nodes kept_originals local_changes local_nodes lost_creates \
+         guard_remote guard_remote_dismissed intent_history journal journal_absent journal_state kept_entries kept_folders kept_nodes kept_originals local_changes local_nodes lost_creates \
          lost_positions lost_shapes missing_nodes moved_here names_left_out node_maps node_sets open_question_items open_question_members owed_deletes \
          open_question_shapes open_question_frozen open_questions past_positions pending_finishes published_nodes questions \
          recorded_nodes remote_cursor remote_nodes removed_from removed_here replaced_versions resends synced_nodes synced_positions \
