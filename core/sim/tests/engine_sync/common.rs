@@ -1168,11 +1168,26 @@ fn run_cut(
     )
 }
 
+fn still_discarded_in(
+    device: &Device,
+    id: &str,
+    folder: &str,
+    discarded: &BTreeMap<String, koidrive_engine::tree::Shape>,
+) -> bool {
+    let trees = &device.trees;
+    trees.remote().get(id).is_none()
+        && (discarded.get(id))
+            .zip(trees.local().get(id))
+            .is_some_and(|(shown, local)| shown.parent == folder && local.shape.same(shown))
+        && (trees.local_children(id)).all(|child| still_discarded_in(device, child, id, discarded))
+}
+
 fn server_copy(
     device: &Device,
     id: &str,
     shown: &BTreeMap<String, koidrive_engine::tree::Shape>,
     from_server: &BTreeSet<String>,
+    discarded: &BTreeMap<String, koidrive_engine::tree::Shape>,
     kept: &mut BTreeMap<String, koidrive_engine::tree::Shape>,
 ) -> bool {
     let trees = &device.trees;
@@ -1198,7 +1213,8 @@ fn server_copy(
             !removed
                 && (trees.local_children(id)).all(|child| {
                     shown.contains_key(child)
-                        || server_copy(device, child, shown, from_server, &mut below)
+                        || still_discarded_in(device, child, id, discarded)
+                        || server_copy(device, child, shown, from_server, discarded, &mut below)
                 })
         }
         _ => false,
@@ -1890,7 +1906,7 @@ fn run_ignoring_answering_after(
                     if !shown.contains_key(child)
                         && (device.trees.excluded(child) || placed_left_out.contains(child))
                     {
-                        server_copy(&device, child, &shown, &from_server, &mut taken);
+                        server_copy(&device, child, &shown, &from_server, &discarded, &mut taken);
                     }
                 }
             }
