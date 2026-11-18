@@ -640,6 +640,58 @@ fn a_store_restored_from_before_a_start_or_an_upload_recovers_the_newer_folder()
     }
 }
 
+fn from_before_tokens(site: &Site) {
+    let marker = marker_of(site);
+    fs::write(
+        site.root.join(koidrive_fs::PRIVATE_DIR).join("space.json"),
+        format!(
+            r#"{{"space_id":"{}","effects":{}}}"#,
+            marker.space_id, marker.effects
+        ),
+    )
+    .unwrap();
+    rusqlite::Connection::open(&site.db)
+        .unwrap()
+        .execute_batch(
+            "ALTER TABLE link DROP COLUMN root_token;
+             ALTER TABLE link DROP COLUMN root_token_pending;
+             DELETE FROM migrations WHERE name = 'root_token';",
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_store_from_before_tokens_restored_from_before_a_download_recovers_at_its_first_start() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(names(&site.root), ["two.txt"]);
+    drop(a);
+    fs::copy(&saved, &site.db).unwrap();
+    from_before_tokens(&site);
+    assert_eq!(marker_of(&site).token, None);
+
+    let mut a = site.start();
+    assert!(matches!(
+        a.folder.engine.commits.halted(),
+        Some(CommitHalt::Recovery(_))
+    ));
+    assert_rotated_from(&site, &[None]);
+    a.connect(&remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(names(&site.root), ["two.txt"]);
+    assert_eq!(remote.names(), ["two.txt"]);
+    assert!(a.folder.engine.commits.halted().is_none());
+}
+
 fn marker_file(site: &Site) -> PathBuf {
     site.root.join(koidrive_fs::PRIVATE_DIR).join("space.json")
 }
