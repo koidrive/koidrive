@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Branch, tag or commit to measure (empty measures the ref the run starts from)
+        description: Branch, tag or commit to measure; it must contain scripts/test-value.py (empty measures the ref the run starts from)
         type: string
         default: ''
       sample:
@@ -82,6 +82,10 @@ jobs:
           fallback: none
       - name: List the mutants
         run: |
+          if [ ! -f scripts/test-value.py ]; then
+            echo "::error::Commit $(git rev-parse HEAD) has no scripts/test-value.py. Measure a commit that contains the harness."
+            exit 1
+          fi
           mkdir -p "$OUT"
           python3 scripts/test-value.py plan --sample "$SAMPLE" --out "$OUT/mutants.json"
       - name: Run the tests three times without mutations

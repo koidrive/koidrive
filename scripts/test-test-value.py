@@ -177,6 +177,20 @@ class Report(unittest.TestCase):
             self.assertEqual(survivors, ",".join(test_value.MUTANT_FIELDS) + "\n")
 
 
+    def test_rejects_two_runs_of_one_sample(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runs = []
+            for name in ("a", "b"):
+                run = Path(directory) / name
+                run.mkdir()
+                (run / "mutants.json").write_text(json.dumps(planned("guard", 1)))
+                (run / "baseline.json").write_text(json.dumps({"durations": {"b x": 1}, "flaky": []}))
+                runs.append(str(run))
+            with self.assertRaises(SystemExit):
+                test_value.main(["--root", directory, "report", "--sample", "guard", "--runs", *runs,
+                                 "--out", str(Path(directory) / "out")])
+
+
 class Tier(unittest.TestCase):
     def tier(self, code, results, incomplete=False):
         original = test_value.nextest

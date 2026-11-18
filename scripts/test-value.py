@@ -55,6 +55,7 @@ TESTS_FAILED = 100
 PASSING = ("PASS", "LEAK")
 ATTRIBUTED = ("killed", "survived")
 BASELINE_PERIOD = 600
+TERMINATE_GRACE = 60
 CASE_FILES = ("*.proptest-regressions", "*/proptest-regressions/*.txt", "*.cases/*.txt")
 TEST_ENV = {
     "KOIDRIVE_PROPTEST_DETERMINISTIC": "true",
@@ -161,8 +162,12 @@ def nextest(root, sample, expression, config, status_level, limit, log):
         output, _ = process.communicate(timeout=limit)
         incomplete = False
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        output, _ = process.communicate()
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            output, _ = process.communicate(timeout=TERMINATE_GRACE)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            output, _ = process.communicate()
         incomplete = True
     if log:
         log.write(output)
@@ -181,8 +186,11 @@ def restore(root, file):
 def require_clean(root):
     dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=root, capture_output=True,
                            text=True, check=True).stdout
-    if dirty:
-        sys.exit("The checkout has uncommitted changes. Commit them first: this script restores files with git.")
+    cases = subprocess.run(["git", "ls-files", "--others", "--exclude-standard", "--", *CASE_FILES], cwd=root,
+                           capture_output=True, text=True, check=True).stdout
+    if dirty or cases:
+        sys.exit("The checkout has uncommitted changes or untracked regression case files. Commit or move them first: "
+                 "this script restores files with git and deletes the case files a run writes.")
 
 
 def baseline(args):
@@ -235,13 +243,10 @@ def run(args):
     slow_expression = selection(sample, slow, include=True)
     limit = max(900, 3 * max(base["walls"]))
     index, count = (int(part) for part in args.shard.split("/"))
-    with tempfile.TemporaryDirectory() as directory, open(args.out, "a") as out, \
-            open(args.out.with_suffix(".log"), "a") as log:
+    with tempfile.TemporaryDirectory() as directory, open(args.out, "w") as out, \
+            open(args.out.with_suffix(".log"), "w") as log:
         config = nextest_config(directory, durations, args.period)
-        done = {json.loads(line)["mutant"] for line in args.out.read_text().splitlines()} if args.out.stat().st_size else set()
         for mutant in shard(planned["mutants"], index, count):
-            if mutant["id"] in done:
-                continue
             log.write(f"\n===== mutant {mutant['id']}: {mutant['name']}\n")
             log.flush()
             started = time.monotonic()
@@ -251,10 +256,12 @@ def run(args):
             if applied.returncode != 0:
                 record["status"] = "stale"
             else:
-                record.update(tier(args.root, sample, fast_expression, config, limit, log))
-                if record["status"] == "survived" and slow:
-                    record.update(tier(args.root, sample, slow_expression, config, limit, log), slow_tier=True)
-                restore(args.root, mutant["file"])
+                try:
+                    record.update(tier(args.root, sample, fast_expression, config, limit, log))
+                    if record["status"] == "survived" and slow:
+                        record.update(tier(args.root, sample, slow_expression, config, limit, log), slow_tier=True)
+                finally:
+                    restore(args.root, mutant["file"])
             record["seconds"] = round(time.monotonic() - started, 1)
             out.write(json.dumps(record) + "\n")
             out.flush()
@@ -393,6 +400,9 @@ def load_run(directory):
 
 def report(args):
     runs = [load_run(directory) for directory in args.runs]
+    samples = [planned["sample"] for planned, _, _ in runs]
+    if len(set(samples)) != len(samples):
+        sys.exit(f"Each run must measure a different sample, got {', '.join(samples)}.")
     name = "-".join(planned["sample"] for planned, _, _ in runs)
     rows, mutant_rows, measured, provisional, lost = analyse(runs, property_tests(args.root), args.slow, args.few)
     args.out.mkdir(parents=True, exist_ok=True)
@@ -439,13 +449,11 @@ def main(argv=None):
     commands.choices["run"].add_argument("--out", type=Path, required=True)
     commands.choices["report"].add_argument("--runs", type=Path, nargs="+", required=True,
                                             help="directories that each hold one run's mutants.json, baseline.json and results-*.jsonl")
-    commands.choices["report"].add_argument("--few", type=int, default=2, help="unique kills at or below which a slow test may move off the merge path")
+    commands.choices["report"].add_argument("--few", type=int, default=0, help="mutants a slow test may alone catch and still move off the merge path")
     commands.choices["report"].add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "run" and not re.fullmatch(r"(\d+)/([1-9]\d*)", args.shard):
         parser.error("--shard takes K/N, for example 0/8")
-    if args.command == "run":
-        args.out.touch()
     {"plan": plan, "baseline": baseline, "run": run, "report": report}[args.command](args)
 
 
