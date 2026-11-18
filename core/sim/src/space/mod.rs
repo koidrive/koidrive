@@ -474,6 +474,7 @@ pub struct SpaceDo {
     /// The commit token at `log_floor_seq` (RFC 0013), kept when the log is truncated past it.
     floor_token: Option<(String, i64)>,
     copies_created_files: bool,
+    field_intents: bool,
 }
 
 impl SpaceDo {
@@ -535,7 +536,13 @@ impl SpaceDo {
             log_floor_seq: 0,
             floor_token: None,
             copies_created_files: false,
+            field_intents: false,
         }
+    }
+
+    /// Whether `Welcome` lists the `field_intents` feature (RFC 0029 section 8). Off by default.
+    pub fn announce_field_intents(&mut self, on: bool) {
+        self.field_intents = on;
     }
 
     /// The commit token at `seq` (RFC 0013): the `commit_id` and `committed_at_ms` of the commit
@@ -628,6 +635,10 @@ impl SpaceDo {
             device_committed_at_ms,
             restore_seq: self.restore_seq,
             restore_point_ms: self.restore_point_ms,
+            features: (self.field_intents)
+                .then(|| "field_intents".to_owned())
+                .into_iter()
+                .collect(),
             ..Default::default()
         }
     }
@@ -685,8 +696,10 @@ impl SpaceDo {
         let objects = std::mem::take(&mut self.objects);
         let account_history = std::mem::take(&mut self.account_history);
         let copies_created_files = self.copies_created_files;
+        let field_intents = self.field_intents;
         *self = backup.clone();
         self.copies_created_files = copies_created_files;
+        self.field_intents = field_intents;
         self.state.ids = ids;
         self.state.intent_ids = intent_ids;
         self.objects = objects;
