@@ -1438,3 +1438,54 @@ fn a_file_removed_while_stopped_with_a_rules_file_written_to_exclude_it_download
     assert_eq!(b.state(), FolderState::UpToDate);
 }
 
+
+#[test]
+fn a_file_removed_while_left_out_below_a_folder_the_first_scan_after_a_restart_cannot_read_stays_the_server_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let folder = site.root.join("private");
+    fs::create_dir(&folder).unwrap();
+    a.create(&mut remote, &folder.join("report.docx"), b"report");
+    a.create(&mut remote, &folder.join(".koiignore"), b"report.docx\n");
+    a.rest(&mut remote);
+    fs::remove_file(folder.join("report.docx")).unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    let id = node_named(&a, "report.docx");
+    drop(a);
+
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(&folder).is_ok() {
+        assert!(rustix::process::geteuid().is_root());
+        eprintln!("SKIPPED: running as root, so permissions do not block reads");
+        return;
+    }
+    fs::write(site.root.join("notes.txt"), b"notes").unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    let before = a.sent.len();
+    fs::write(folder.join("report.docx"), b"rebuilt").unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    fs::write(folder.join(".koiignore"), b"other.txt\n").unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    let sent: Vec<&str> = a.sent[before..].iter().flat_map(kinds).collect();
+    assert_eq!(sent, ["update content", "update content"]);
+    assert_eq!(node_named(&a, "report.docx"), id);
+    assert_eq!(remote.names(), [".koiignore", "notes.txt", "private", "report.docx"]);
+    assert_eq!(
+        files(&site.root),
+        [
+            ("notes.txt".into(), "notes".into()),
+            ("private/.koiignore".into(), "other.txt\n".into()),
+            ("private/report.docx".into(), "rebuilt".into()),
+        ]
+    );
+    assert!(shown(&site).is_empty());
+}
