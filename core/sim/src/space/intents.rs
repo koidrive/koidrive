@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use koidrive_engine::ids::IdGen;
+use koidrive_engine::journal;
 use koidrive_proto::v1::{FieldIntents, Intent, Op, op};
-use sha1::{Digest, Sha1};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct IntentId([u8; 16]);
@@ -238,21 +238,11 @@ pub(crate) fn intents_valid(op: &Op) -> bool {
     }
 }
 
-const LEGACY_NAMESPACE: [u8; 16] = [
-    0x70, 0x14, 0x71, 0xd0, 0xf5, 0xea, 0x47, 0xeb, 0x93, 0x6a, 0x48, 0x5a, 0x91, 0xd0, 0x89, 0x1e,
-];
-
-/// The legacy intent id of RFC 0029 section 7.2, a UUIDv5 under its namespace. `field` is `place`,
+/// The legacy intent id of RFC 0029 section 7.2, as the engine computes it. `field` is `place`,
 /// `content` or `status`.
 pub fn legacy_intent_id(node_id: &str, field: &str, key: &str) -> [u8; 16] {
-    let digest = Sha1::new()
-        .chain_update(LEGACY_NAMESPACE)
-        .chain_update(format!("{node_id}\0{field}\0{key}"))
-        .finalize();
-    let mut id: [u8; 16] = digest[..16].try_into().expect("SHA-1 is 20 bytes");
-    id[6] = (id[6] & 0x0f) | 0x50;
-    id[8] = (id[8] & 0x3f) | 0x80;
-    id
+    let field = journal::Field::parse(field).expect("a field of RFC 0029");
+    *journal::IntentId::legacy(node_id, field, key).as_bytes()
 }
 
 pub(crate) fn legacy_intents(
