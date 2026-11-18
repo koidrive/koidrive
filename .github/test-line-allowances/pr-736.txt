@@ -1,4 +1,4 @@
-461
+470
 # core/test-support Sandbox (about 180 lines) is the harness these tests pin: every koi a test starts holds the sandbox's lifeline, stops when the test ends or its process dies, and must stay inside the sandbox root.
 # sandbox.rs a_koi_stops_when_its_sandbox_drops_after_its_test_passes_or_panics: a daemon a test starts is gone when its Sandbox drops, after a pass and after a panic.
 # sandbox.rs a_koi_stops_when_the_test_process_that_started_it_is_killed: a daemon outlives no SIGKILLed test process.

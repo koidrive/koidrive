@@ -47,8 +47,14 @@ fn koi_update_never_runs_an_installed_koi_outside_its_sandbox() {
     let outside = tempfile::tempdir().unwrap();
     let ran = outside.path().join("ran");
     let koi = outside.path().join("koi");
-    executable(&koi, &format!("#!/bin/sh\ntouch '{}'\necho 'koi 99.0.0'\n", ran.display()));
-    let installer = http(format!("ln -sf '{}' \"$KOIDRIVE_INSTALL_DIR/koi\"\n", koi.display()));
+    executable(
+        &koi,
+        &format!("#!/bin/sh\ntouch '{}'\necho 'koi 99.0.0'\n", ran.display()),
+    );
+    let installer = http(format!(
+        "ln -sf '{}' \"$KOIDRIVE_INSTALL_DIR/koi\"\n",
+        koi.display()
+    ));
     let output = koi_at(&binary, home.path(), &github, &["update", "--json"])
         .env("KOIDRIVE_INSTALL_SCRIPT_URL", &installer.base)
         .output()
@@ -59,7 +65,8 @@ fn koi_update_never_runs_an_installed_koi_outside_its_sandbox() {
     let envelope = envelope(&output);
     assert!(!ran.exists(), "{envelope:#}");
     assert!(
-        (envelope["error"]["message"].as_str()).is_some_and(|message| message.contains("outside its sandbox")),
+        (envelope["error"]["message"].as_str())
+            .is_some_and(|message| message.contains("outside its sandbox")),
         "{envelope:#}"
     );
 }

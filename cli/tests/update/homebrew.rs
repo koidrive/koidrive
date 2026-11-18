@@ -865,7 +865,9 @@ fn adversarial_b_brew_failing_after_it_upgraded_koi_still_moves_the_service() {
         "exit: {:?}\n--- stdout\n{stdout}--- stderr\n{stderr}",
         output.status.code()
     );
-    let version = koi_at(&koi, home.path(), &github, &["--version"]).output().unwrap();
+    let version = koi_at(&koi, home.path(), &github, &["--version"])
+        .output()
+        .unwrap();
     eprintln!(
         "installed koi now: {}",
         String::from_utf8_lossy(&version.stdout)
