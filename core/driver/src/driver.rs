@@ -1855,15 +1855,15 @@ impl Driver {
             if changed {
                 driver.stop_folders().await;
             }
-            for folder in driver.inner.folders.lock().unwrap().values() {
-                folder
-                    .status
-                    .persist()
-                    .map_err(io_error(folder.status.path()))?;
-            }
-            written
-                .map(|()| changed)
-                .map_err(|error| DriverError::PausedUnsaved { path, error })
+            let persisted =
+                (driver.inner.folders.lock().unwrap().values()).try_for_each(|folder| {
+                    folder
+                        .status
+                        .persist()
+                        .map_err(io_error(folder.status.path()))
+                });
+            written.map_err(|error| DriverError::PausedUnsaved { path, error })?;
+            persisted.map(|()| changed)
         });
         paused
             .await

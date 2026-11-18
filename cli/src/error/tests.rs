@@ -800,6 +800,28 @@ fn permission_guidance_matches_the_platform() {
 }
 
 #[test]
+fn a_pause_that_was_not_saved_names_the_cause_before_asking_to_pause_again() {
+    let unsaved = |error| {
+        let path = PathBuf::from("/private/state/paused");
+        CliError::from(DriverError::PausedUnsaved { path, error })
+            .human
+            .unwrap()
+    };
+    let denied = unsaved(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    assert!(denied.starts_with("Sync is paused, but"), "{denied}");
+    assert!(denied.contains("file permissions"), "{denied}");
+    assert!(
+        denied.ends_with("Then run koi pause again to save it."),
+        "{denied}"
+    );
+    let unknown = unsaved(std::io::Error::other("a new failure"));
+    assert!(
+        unknown.ends_with("crash. Run koi pause again to save it."),
+        "{unknown}"
+    );
+}
+
+#[test]
 fn human_store_errors_keep_the_specific_recovery_action() {
     for (error, expected) in [
         (

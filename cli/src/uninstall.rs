@@ -865,7 +865,7 @@ fn plan(found: &Found, options: &Options) -> Vec<String> {
                 shown_folder(Path::new(path))
             )),
             Kept::UnrecordedState { path } => lines.push(format!(
-                "It keeps {}, which Koidrive did not create.",
+                "It keeps {}, which Koidrive has no record of creating.",
                 shown_folder(Path::new(path))
             )),
             _ => {}
@@ -932,7 +932,7 @@ async fn sign_out(
     }
     if !found.signs_out {
         return still_listed(Some(format!(
-            "Koidrive did not create {}, so uninstall left it as it was",
+            "Koidrive has no record of creating {} and no background sync answered, so uninstall did not sign this device out",
             shown_folder(&paths.state_dir)
         )));
     }

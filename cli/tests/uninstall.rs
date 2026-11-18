@@ -229,7 +229,7 @@ fn a_signed_in_state_folder_koidrive_did_not_make_stays_signed_in_and_says_why()
     assert_ne!(code, 0, "{text}");
     assert!(!text.contains("this device from"), "{text}");
     assert!(
-        text.contains("It keeps ~/state/koidrive, which Koidrive did not create."),
+        text.contains("It keeps ~/state/koidrive, which Koidrive has no record of creating."),
         "{text}"
     );
     assert!(
@@ -244,7 +244,7 @@ fn a_signed_in_state_folder_koidrive_did_not_make_stays_signed_in_and_says_why()
         envelope["data"]["device"],
         json!({
             "state": "still_listed",
-            "problem": "Koidrive did not create ~/state/koidrive, so uninstall left it as it was",
+            "problem": "Koidrive has no record of creating ~/state/koidrive and no background sync answered, so uninstall did not sign this device out",
         }),
         "{envelope:#}"
     );
@@ -267,12 +267,21 @@ fn an_older_release_whose_daemon_runs_signs_out_through_the_daemon() {
     )
     .unwrap();
     fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
-    let mut daemon = machine
-        .command(&koi, &["_daemon"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    struct Reaped(std::process::Child);
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let daemon = Reaped(
+        machine
+            .command(&koi, &["_daemon"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     let socket = machine.paths().socket();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while !socket.exists() && std::time::Instant::now() < deadline {
@@ -282,8 +291,7 @@ fn an_older_release_whose_daemon_runs_signs_out_through_the_daemon() {
     let (_, refused) = machine.envelope(machine.command(&koi, &["uninstall", "--yes", "--json"]));
     let (_, envelope) =
         machine.envelope(machine.command(&koi, &["uninstall", "--yes", "--last-device", "--json"]));
-    let _ = daemon.kill();
-    let _ = daemon.wait();
+    drop(daemon);
 
     let problem = refused["data"]["device"]["problem"].as_str().unwrap();
     assert!(problem.starts_with("the server did not "), "{refused:#}");
