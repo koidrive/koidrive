@@ -572,13 +572,17 @@ impl Effects {
                 below.extend(children);
             }
         }
-        let carried = below.iter().filter(|id| trees.carried(id)).count();
+        let removed_file =
+            matches!(record.effect, Effect::RemoveFile { .. }).then_some(&record.node);
+        let files = (removed_file.into_iter())
+            .chain(below.iter().filter(|id| trees.carried(id)))
+            .cloned()
+            .collect();
         let removal =
             (record.after.is_none() && trees.remote().live(&record.node).is_none()).then(|| {
                 RemoteRemoval {
                     within: within(trees, &record.node),
-                    files: u64::from(matches!(record.effect, Effect::RemoveFile { .. }))
-                        + carried as u64,
+                    files,
                 }
             });
         for id in below.iter().rev() {

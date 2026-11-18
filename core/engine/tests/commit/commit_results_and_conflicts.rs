@@ -919,7 +919,7 @@ fn a_folder_moved_into_the_folder_merged_into_it_is_moved_back_when_a_removal_by
     trees.set_remote("z".into(), trashed(file(ROOT, "z", 1)));
     let removal = koidrive_engine::guard::RemoteRemoval {
         within: vec!["z".into()],
-        files: 1,
+        files: vec!["z".into()],
     };
     commits.count_remote(removal, &mut trees, 2, &mut ids, NOW);
     let mut effects = Effects::default();

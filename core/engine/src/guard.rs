@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::classify::Trees;
-use crate::ids::IdGen;
+use crate::ids::{IdGen, unix_ms};
 use crate::question::{Answer, Held, Limit, Question, QuestionKind, Revisions};
 use crate::state::GuardChanges;
 use crate::tracked::{Marked, TrackedMap, TrackedSet};
@@ -151,7 +151,7 @@ impl RemoteDeletion {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteRemoval {
     pub within: Vec<NodeId>,
-    pub files: u64,
+    pub files: Vec<NodeId>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -239,7 +239,7 @@ impl Guard {
         let mut open: BTreeMap<NodeId, Held> = (pending.into_iter())
             .filter(|(id, _)| !self.confirmed.contains_key(id))
             .collect();
-        self.count(&open, now_ms);
+        self.count(&open, trees, now_ms);
         let mut carried = match asked {
             Some(Question {
                 kind: QuestionKind::MassDelete { exceeded, .. },
@@ -274,7 +274,7 @@ impl Guard {
                 self.ledger.retain(|top, _| !open.contains_key(top));
                 checked.restored = deletions(trees, &restored);
                 open = deletions(trees, &left);
-                self.count(&open, now_ms);
+                self.count(&open, trees, now_ms);
                 true
             }
             asked => asked.is_some(),
@@ -282,7 +282,7 @@ impl Guard {
         let held_before = was_asked
             || (open.values())
                 .any(|held| held.members.keys().any(|node| unconfirmed.contains(node)));
-        let window = self.window(trees);
+        let window = self.window(&open, trees);
         let mut exceeded = window.exceeded();
         if open.is_empty() || (!held_before && exceeded.is_empty()) {
             return checked;
@@ -307,25 +307,28 @@ impl Guard {
         checked
     }
 
-    fn count(&mut self, open: &BTreeMap<NodeId, Held>, now_ms: u64) {
+    fn count(&mut self, open: &BTreeMap<NodeId, Held>, trees: &Trees, now_ms: u64) {
         for (id, held) in open {
             let at_ms = self.ledger.get(id).map_or(now_ms, |counted| counted.at_ms);
-            let counted = Counted {
-                at_ms,
-                files: held.files,
-            };
-            self.ledger.insert(id.clone(), counted);
+            let files = (held.members.keys())
+                .filter(|node| !made_in_window(node, now_ms))
+                .filter(|node| (trees.synced().live(node)).is_some_and(|s| s.kind == Kind::File))
+                .count() as u64;
+            self.ledger.insert(id.clone(), Counted { at_ms, files });
         }
     }
 
-    fn window(&self, trees: &Trees) -> Window {
+    fn window(&self, open: &BTreeMap<NodeId, Held>, trees: &Trees) -> Window {
         let gone: u64 = (self.ledger.iter())
             .filter(|(id, _)| trees.synced().live(id).is_none())
             .map(|(_, counted)| counted.files)
             .sum();
+        let affected_files = (self.ledger.iter())
+            .map(|(id, counted)| open.get(id).map_or(counted.files, |held| held.files))
+            .sum();
         Window {
             deletions: self.ledger.len() as u64,
-            affected_files: self.ledger.values().map(|counted| counted.files).sum(),
+            affected_files,
             space_files: trees.synced_files() + gone,
         }
     }
@@ -361,7 +364,9 @@ impl Guard {
             files: 0,
         });
         counted.at_ms = now_ms;
-        counted.files += removal.files;
+        counted.files += (removal.files.iter())
+            .filter(|id| !made_in_window(id, now_ms))
+            .count() as u64;
         let affected_files = self.remote.values().map(|counted| counted.files).sum();
         Some(Window {
             deletions: self.remote.len() as u64,
@@ -373,6 +378,10 @@ impl Guard {
     pub(crate) fn dismiss_remote(&mut self) {
         self.dismissed.extend(self.remote.take_all().into_keys());
     }
+}
+
+fn made_in_window(id: &str, now_ms: u64) -> bool {
+    unix_ms(id).is_some_and(|made| made <= now_ms && now_ms < made + WINDOW_MS)
 }
 
 fn not_after<K: Ord + Clone>(counts: &mut TrackedMap<K, Counted>, now_ms: u64) {
