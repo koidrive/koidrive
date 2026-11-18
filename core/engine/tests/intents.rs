@@ -1398,3 +1398,79 @@ fn a_nested_delete_lists_each_intent_below_it_once() {
         .collect();
     assert_eq!((seen.len(), distinct.len()), (fields, fields));
 }
+
+const DAY_MS: u64 = 86_400_000;
+
+fn journal_of(trees: &Trees, node: &str) -> Vec<(Field, String)> {
+    (trees.journal_rows())
+        .filter(|((id, _), _)| id == node)
+        .map(|((_, field), row)| (field, format!("{:?}", row.state)))
+        .collect()
+}
+
+fn purged(trees: &mut Trees, node: &str, at_ms: u64) {
+    trees.journal_mut().set_clock(at_ms);
+    trees.remove_remote(node);
+}
+
+#[test]
+fn a_purged_nodes_rows_and_history_end_30_days_after_the_purge() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    compact_edit(&mut trees);
+    trees.remove_local_by_user("f");
+    purged(&mut trees, "f", 1_000);
+    trees.journal_mut().set_clock(1_000 + 30 * DAY_MS - 1);
+    assert_eq!(journal_of(&trees, "f").len(), 2);
+    assert!(!trees.journal().seen("f").is_empty());
+    trees.journal_mut().set_clock(1_000 + 30 * DAY_MS);
+    assert_eq!(journal_of(&trees, "f"), []);
+    assert!(
+        Field::ALL
+            .iter()
+            .all(|field| trees.journal().history("f", *field).is_empty())
+    );
+    assert!(trees.journal().seen("f").is_empty());
+}
+
+#[test]
+fn a_local_change_of_a_purged_node_outlasts_the_30_days() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    compact_edit(&mut trees);
+    trees.set_local_changed("f".into(), local(file(ROOT, "a", 3)));
+    trees.settle(&Default::default());
+    purged(&mut trees, "f", 1_000);
+    trees.journal_mut().set_clock(1_000 + 31 * DAY_MS);
+    let rows = journal_of(&trees, "f");
+    assert!(
+        matches!(&rows[..], [(Field::Content, state)] if state.starts_with("Local")),
+        "{rows:?}"
+    );
+}
+
+#[test]
+fn a_new_nodes_status_row_ends_30_days_after_a_listing_without_it_and_its_other_rows_stay() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    trees.set_local_changed("n".into(), local(file(ROOT, "n", 1)));
+    trees.journal_mut().set_clock(1_000);
+    trees.listed_without_journal_nodes();
+    trees.journal_mut().set_clock(1_000 + 30 * DAY_MS - 1);
+    assert_eq!(journal_of(&trees, "n").len(), 3);
+    trees.journal_mut().set_clock(1_000 + 30 * DAY_MS);
+    let rows = journal_of(&trees, "n");
+    assert!(
+        matches!(&rows[..], [(Field::Place, place), (Field::Content, content)] if place.starts_with("Local") && content.starts_with("Local")),
+        "{rows:?}"
+    );
+}
+
+#[test]
+fn r_holding_a_node_again_restarts_its_30_days() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    let (_, node) = compact_edit(&mut trees);
+    purged(&mut trees, "f", 1_000);
+    trees.journal_mut().set_clock(1_000 + DAY_MS);
+    trees.set_remote("f".into(), node);
+    purged(&mut trees, "f", 1_000 + 20 * DAY_MS);
+    trees.journal_mut().set_clock(1_000 + 31 * DAY_MS);
+    assert_ne!(journal_of(&trees, "f"), []);
+}

@@ -1233,6 +1233,7 @@ impl Trees {
 
     fn apply_remote(&mut self, id: NodeId, mut node: RemoteNode, made: Made) {
         self.write_out_journal(&id);
+        self.journal.r_holds(&id);
         self.take_remote_intents(&id, &mut node);
         let made_here = made != Made::Elsewhere;
         let edit = matches!(made, Made::Edit | Made::Answer);
@@ -1368,6 +1369,7 @@ impl Trees {
     /// up to the version it lists.
     pub fn set_listed_remote(&mut self, id: NodeId, mut node: RemoteNode) {
         self.write_out_journal(&id);
+        self.journal.r_holds(&id);
         self.take_remote_intents(&id, &mut node);
         let moved = (self.r.get(&id)).is_some_and(|old| old.version_id != node.version_id);
         if moved && let Some(versions) = self.replaced_versions.get_mut(&id) {
@@ -1844,6 +1846,7 @@ impl Trees {
         if let Some(old) = self.r.remove(id) {
             self.index_remote(id, Some(&old));
             self.mark(id);
+            self.journal.r_lacks(id);
         }
     }
 
