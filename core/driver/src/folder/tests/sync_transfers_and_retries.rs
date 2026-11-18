@@ -557,6 +557,31 @@ fn an_edit_after_a_restart_is_an_edit_of_the_synced_file() {
     assert_eq!(a.state(), FolderState::UpToDate);
 }
 
+#[test]
+fn an_in_place_edit_made_while_stopped_that_keeps_the_size_and_mtime_is_sent_after_a_restart() {
+    use std::io::Write;
+
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("notes.txt"), b"written on a");
+    a.settle();
+    drop(a);
+
+    let path = site.root.join("notes.txt");
+    let written = fs::metadata(&path).unwrap().modified().unwrap();
+    let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.write_all(b"edited on a!").unwrap();
+    file.set_modified(written).unwrap();
+    drop(file);
+
+    let mut a = site.start();
+    a.connect(&remote);
+    a.scan_until(|a| a.folder.scanned);
+    assert_eq!(a.run(&mut remote), ["subscribe", "upload", "send"]);
+    assert_eq!(kinds(&a.sent[0]), ["update content"]);
+    assert_eq!(a.state(), FolderState::UpToDate);
+}
+
 /// Design §2.7 leaves a node the server refused an op for out of commits until the next rescan. The first whole scan
 /// of a start is that rescan (GUN-345). Nothing cleared the node before, so it never synced again.
 #[test]

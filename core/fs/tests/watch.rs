@@ -1167,6 +1167,58 @@ fn a_file_replaced_by_a_rename_is_modified_in_place() {
 }
 
 #[test]
+fn an_in_place_edit_that_keeps_the_size_and_restores_the_mtime_is_modified() {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(root.join("doc"), "first").unwrap();
+    let written = fs::metadata(root.join("doc")).unwrap().modified().unwrap();
+    let mut snapshot = Snapshot::scan(root).unwrap();
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .open(root.join("doc"))
+        .unwrap();
+    file.write_all(b"other").unwrap();
+    file.set_modified(written).unwrap();
+    let changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
+    assert_eq!(changes, [modified("doc")]);
+}
+
+/// Linux before 6.13 stamps a write with a clock that ticks every few
+/// milliseconds, so a write right after a scan can keep the mtime the scan
+/// saw. APFS stamps every write with a new time, and there the test skips.
+#[test]
+fn an_in_place_edit_in_the_mtime_tick_of_the_last_scan_is_modified() {
+    use std::io::Write;
+
+    for _ in 0..100 {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("doc"), "first").unwrap();
+        let written = fs::metadata(root.join("doc")).unwrap().modified().unwrap();
+        let mut snapshot = Snapshot::scan(root).unwrap();
+
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(root.join("doc"))
+            .unwrap();
+        file.write_all(b"other").unwrap();
+        if file.metadata().unwrap().modified().unwrap() != written {
+            continue;
+        }
+        let changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
+        assert_eq!(changes, [modified("doc")]);
+        return;
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "SKIPPED an_in_place_edit_in_the_mtime_tick_of_the_last_scan_is_modified: every write got a new mtime"
+    );
+}
+
+#[test]
 fn a_mark_on_a_folder_rescans_nothing_below_it() {
     #[cfg(target_vendor = "apple")]
     const MARK: &str = "com.koidrive.node";
