@@ -18,12 +18,21 @@ pub type NodeId = String;
 #[cfg(test)]
 thread_local! {
     pub(crate) static ENTRIES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    pub(crate) static ENTRIES_BUDGET: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
 }
 
 #[cfg_attr(not(test), allow(unused_variables))]
 pub(crate) fn read_entries(count: usize) {
     #[cfg(test)]
-    ENTRIES_READ.with(|read| read.set(read.get() + count as u64));
+    {
+        let read = ENTRIES_READ.with(|read| read.get() + count as u64);
+        ENTRIES_READ.with(|entries_read| entries_read.set(read));
+        let budget = ENTRIES_BUDGET.with(std::cell::Cell::get);
+        assert!(
+            read <= budget,
+            "read {read} entries, past the budget of {budget}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -36,7 +45,7 @@ pub(crate) fn counted<I: Iterator>(entries: I) -> I {
     entries
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CountedMap<K, V>(BTreeMap<K, V>);
 
 impl<K, V> Default for CountedMap<K, V> {
@@ -60,6 +69,17 @@ impl<K: Ord, V> CountedMap<K, V> {
         self.0.get_mut(key)
     }
 
+    pub(crate) fn contains_key<Q: Ord + ?Sized>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
+        self.0.contains_key(key)
+    }
+
+    pub(crate) fn insert(&mut self, key: K, value: V) -> Option<V> {
+        self.0.insert(key, value)
+    }
+
     pub(crate) fn entry(&mut self, key: K) -> Entry<'_, K, V> {
         self.0.entry(key)
     }
@@ -71,12 +91,14 @@ impl<K: Ord, V> CountedMap<K, V> {
         self.0.remove(key)
     }
 
-    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.0.len()
     }
 
-    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
         counted(self.0.iter())
     }
@@ -309,14 +331,14 @@ pub enum TreeError {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tree<N> {
     pub root: NodeId,
-    nodes: BTreeMap<NodeId, N>,
+    nodes: CountedMap<NodeId, N>,
 }
 
 impl<N: Node> Tree<N> {
     pub fn new(root: impl Into<NodeId>) -> Self {
         Self {
             root: root.into(),
-            nodes: BTreeMap::new(),
+            nodes: CountedMap::default(),
         }
     }
 
@@ -345,7 +367,7 @@ impl<N: Node> Tree<N> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&NodeId, &N)> {
-        counted(self.nodes.iter())
+        self.nodes.iter()
     }
 
     pub fn len(&self) -> usize {
@@ -380,7 +402,6 @@ impl<N: Node> Tree<N> {
         }
         let mut seen = BTreeSet::new();
         let placed = self
-            .nodes
             .iter()
             .filter(|(_, node)| node.is_live() && node.is_placed());
         for (id, node) in placed {
@@ -404,7 +425,7 @@ impl<N: Node> Tree<N> {
                 });
             }
         }
-        for id in self.nodes.keys() {
+        for (id, _) in self.iter() {
             if self.live(id).is_some() && !self.reaches_root(id) {
                 return Err(TreeError::Cycle(id.clone()));
             }
