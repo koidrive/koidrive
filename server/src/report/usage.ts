@@ -64,6 +64,7 @@ export class UsageTally {
   private batch: UsageBatch | undefined;
   private lastMs = 0;
   private reportingNow: boolean | undefined;
+  private stops = 0;
 
   get reporting(): boolean | undefined {
     return this.reportingNow;
@@ -71,7 +72,9 @@ export class UsageTally {
 
   set reporting(on: boolean | undefined) {
     this.reportingNow = on;
-    if (on === false) this.batch = undefined;
+    if (on !== false) return;
+    this.batch = undefined;
+    this.stops++;
   }
 
   count(route: string, outcome: string, latencyMs: number, nowMs: number): void {
@@ -112,11 +115,13 @@ export class UsageTally {
   async handOver(record: (hours: UsageHours) => Promise<boolean>): Promise<void> {
     const batch = this.take();
     if (!batch) return;
+    const stops = this.stops;
     try {
-      this.reporting = await record(batch.hours);
+      const on = await record(batch.hours);
+      if (!on || this.stops === stops) this.reporting = on;
     } catch (error) {
       console.error("usage flush failed", errorText(error));
-      this.put(batch);
+      if (this.stops === stops) this.put(batch);
     }
   }
 }

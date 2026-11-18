@@ -1,4 +1,4 @@
-# RFC 0029: The server's usage report
+# RFC 0030: The server's usage report
 
 Status: proposed. Applies to spec v0 (format_version 1). Amends spec v0 §15 (`POST /v1/token`). Adds a field to `TokenRequest`.
 

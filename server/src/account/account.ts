@@ -51,6 +51,10 @@ const REWIND_RETRY_MIN_MS = 1000;
 const HOUR_MS = 3_600_000;
 const REPORT_DELAY_MS = 5 * 60_000;
 const REPORT_VOTE_MS = 24 * HOUR_MS;
+
+function onVoteEndMs(seenMs: number): number {
+  return Math.ceil((seenMs + REPORT_VOTE_MS) / HOUR_MS) * HOUR_MS;
+}
 const REPORT_KEEP_HOURS = 24;
 const REPORT_TIMEOUT_MS = 10_000;
 const NOTICE_RETRY_MS = 30_000;
@@ -413,7 +417,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
         device.device_id,
       );
       if (vote !== (device.telemetry ?? TokenRequest_Telemetry.UNSPECIFIED)) this.countVotes();
-      else if (vote === TokenRequest_Telemetry.ON && nowMs + REPORT_VOTE_MS > this.votes().onUntilMs) this.storeVotes({ ...this.votes(), onUntilMs: nowMs + REPORT_VOTE_MS + HOUR_MS });
+      else if (vote === TokenRequest_Telemetry.ON && onVoteEndMs(nowMs) > this.votes().onUntilMs) this.storeVotes({ ...this.votes(), onUntilMs: onVoteEndMs(nowMs) });
       const token = await this.accessToken(device, nowMs);
       if (args.rotation) {
         token.serverTimeMs = BigInt(serverTimeMs);
@@ -593,6 +597,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
 
     private storeVotes(votes: ReportVotes): void {
       this.sql.exec("INSERT INTO settings (key, value) VALUES ('report_votes', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", JSON.stringify(votes));
+      if (!this.reporting()) this.sql.exec("DELETE FROM usage_hours");
     }
 
     private countVotes(): void {
@@ -604,11 +609,14 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
         )
         .one();
       const onSeenMs = Number(counted.on_seen_ms);
-      this.storeVotes({ onUntilMs: onSeenMs === 0 ? 0 : onSeenMs + REPORT_VOTE_MS + HOUR_MS, off: Number(counted.off) === 1 });
+      this.storeVotes({ onUntilMs: onSeenMs === 0 ? 0 : onVoteEndMs(onSeenMs), off: Number(counted.off) === 1 });
     }
 
     async recordUsage(hours: UsageHours): Promise<boolean> {
-      if (!this.reporting()) return false;
+      if (!this.reporting()) {
+        this.sql.exec("DELETE FROM usage_hours");
+        return false;
+      }
       const nowHour = Math.floor(this.clock() / HOUR_MS);
       let added = false;
       this.db.transactionSync(() => {

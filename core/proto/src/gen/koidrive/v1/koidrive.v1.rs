@@ -157,7 +157,7 @@ pub struct TokenRequest {
 }
 /// Nested message and enum types in `TokenRequest`.
 pub mod token_request {
-    /// This device's choice about usage reports, which the server's own report follows (RFC 0029).
+    /// This device's choice about usage reports, which the server's own report follows (RFC 0030).
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
     #[repr(i32)]
     pub enum Telemetry {

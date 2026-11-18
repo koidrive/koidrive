@@ -351,7 +351,7 @@ export const TokenRequestSchema: GenMessage<TokenRequest> = /*@__PURE__*/
   messageDesc(file_koidrive_v1_auth, 5);
 
 /**
- * This device's choice about usage reports, which the server's own report follows (RFC 0029).
+ * This device's choice about usage reports, which the server's own report follows (RFC 0030).
  *
  * @generated from enum koidrive.v1.TokenRequest.Telemetry
  */

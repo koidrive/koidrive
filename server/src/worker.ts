@@ -405,7 +405,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       const body = new Uint8Array(await request.arrayBuffer());
       if (body.length > MAX_CLIENT_FRAME) return tooLarge();
       const { response, counted } = await stub.httpRpc(connect, body);
-      if (counted) traffic.count(counted.route, counted.outcome, counted.latencyMs, Date.now());
+      traffic.count(counted.route, counted.outcome, counted.latencyMs, Date.now());
       return new Response(response, { headers: { "Content-Type": "application/x-protobuf" } });
     }
   }

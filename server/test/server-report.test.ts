@@ -307,6 +307,36 @@ describe("usage tally", () => {
     });
     expect(handed.map((hours) => hours[10]!.counts)).toEqual([{ "get_server.200": 1, "get_server.503": 1 }]);
   });
+
+  it("drops a failed hand-over's counts when reporting stopped and started again while it ran", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const tally = new UsageTally();
+    tally.reporting = true;
+    const handed: UsageHours[] = [];
+    tally.count("get_server", "200", 3, 10 * HOUR_MS);
+    await tally.handOver(async () => {
+      tally.reporting = false;
+      tally.reporting = true;
+      throw new Error("account unreachable");
+    });
+    tally.count("get_server", "201", 3, 10 * HOUR_MS);
+    await tally.handOver(async (hours) => {
+      handed.push(hours);
+      return true;
+    });
+    expect(handed.map((hours) => hours[10]!.counts)).toEqual([{ "get_server.201": 1 }]);
+  });
+
+  it("keeps a newer OFF answer when an older hand-over answers ON late", async () => {
+    const tally = new UsageTally();
+    tally.reporting = true;
+    tally.count("get_server", "200", 3, 10 * HOUR_MS);
+    await tally.handOver(async () => {
+      tally.reporting = false;
+      return true;
+    });
+    expect(tally.reporting).toBe(false);
+  });
 });
 
 describe("report payload", () => {
@@ -487,6 +517,13 @@ describe("hourly server report", () => {
     expect(spaceCalls(usage.calls)).toHaveLength(1);
   });
 
+  it("counts an HTTP RPC the Space DO refuses before it runs, by kind and refusal code", async () => {
+    const { stub } = await reportingSpace();
+    const identity = { userId: crypto.randomUUID(), deviceId: crypto.randomUUID(), deviceName: "Stranger", expiresAtMs: Date.now() + 900_000, kind: "device", scope: null };
+    const { counted } = await stub.httpRpc({ identity, origin: BASE }, body(RpcRequestSchema, { reqId: 1n, call: { case: "listTree", value: {} } }));
+    expect({ route: counted.route, outcome: counted.outcome }).toEqual({ route: "rpc_list_tree", outcome: "forbidden" });
+  });
+
   it("counts an HTTP RPC in the Worker's batch, so a Space DO with no socket open neither calls nor arms anything for it", async () => {
     const { owner, spaceId, stub } = await reportingSpace();
     for (let reqId = 1n; reqId <= 3n; reqId++) {
@@ -549,7 +586,7 @@ describe("hourly server report", () => {
     expect(before[0]).not.toHaveProperty("usage");
   });
 
-  it("drops the stored hours without sending them once a device turns reports off", async () => {
+  it("drops the stored hours without sending them once a device turns reports off, even when reports turn on again before the send", async () => {
     const hour = Math.floor(Date.now() / HOUR_MS);
     const sent: unknown[] = [];
     await runInDurableObject(account(), async (instance: AccountDO, state) => {
@@ -559,17 +596,18 @@ describe("hourly server report", () => {
       await instance.recordUsage({ [hour]: { counts: { "get_server.200": 1 }, latency: {} } });
       state.storage.sql.exec("UPDATE devices SET telemetry = ? WHERE rowid = (SELECT MIN(rowid) FROM devices)", TokenRequest_Telemetry.OFF);
       countVotes(instance);
+      expect(state.storage.sql.exec("SELECT hour FROM usage_hours").toArray()).toEqual([]);
+      state.storage.sql.exec("UPDATE devices SET telemetry = ?", TokenRequest_Telemetry.ON);
+      countVotes(instance);
       instance.clock = () => (hour + 2) * HOUR_MS;
       instance.sendReport = async (report) => {
         sent.push(report);
         return true;
       };
     });
-    expect(await storedHours()).toHaveLength(1);
     await runDurableObjectAlarm(account());
     expect(sent).toEqual([]);
     expect(await storedHours()).toEqual([]);
-    expect(await runInDurableObject(account(), (instance: AccountDO) => instance.recordUsage({ [hour]: emptyUsage() }))).toBe(false);
   });
 
   it("sends one server_report an hour even when a process hands over that hour's counts after it was sent", async () => {
@@ -613,6 +651,28 @@ describe("hourly server report", () => {
     expect(await at(startMs + 26 * HOUR_MS, () => refresh(second, TokenRequest_Telemetry.OFF))).toBe(false);
     expect(await at(startMs + 30 * 24 * HOUR_MS, () => refresh(owner, TokenRequest_Telemetry.ON))).toBe(false);
     expect(await at(startMs + 30 * 24 * HOUR_MS, () => runInDurableObject(account(), (instance: AccountDO) => instance.revokeDevice(second.deviceId)))).toBe(true);
+  });
+
+  it("ends an ON vote at the first full hour 24 hours after its device's last refresh, and moves that end with each refresh", async () => {
+    const owner = await ownerOnce();
+    const at = async (clockMs: number, step: () => Promise<unknown>) => {
+      await runInDurableObject(account(), (instance: AccountDO) => {
+        instance.clock = () => clockMs;
+      });
+      await step();
+      return reporting();
+    };
+    await runInDurableObject(account(), (instance: AccountDO, state) => {
+      state.storage.sql.exec("UPDATE devices SET telemetry = ?", TokenRequest_Telemetry.UNSPECIFIED);
+      countVotes(instance);
+    });
+    const hourMs = (Math.floor(Date.now() / HOUR_MS) + 1) * HOUR_MS;
+    expect(await at(hourMs + 15 * 60_000, () => refresh(owner, TokenRequest_Telemetry.ON))).toBe(true);
+    expect(await at(hourMs + 25 * HOUR_MS - 1, async () => {})).toBe(true);
+    expect(await at(hourMs + 25 * HOUR_MS, async () => {})).toBe(false);
+    expect(await at(hourMs + 24 * HOUR_MS + 5 * 60_000, () => refresh(owner, TokenRequest_Telemetry.ON))).toBe(true);
+    expect(await at(hourMs + 49 * HOUR_MS - 1, async () => {})).toBe(true);
+    expect(await at(hourMs + 49 * HOUR_MS, async () => {})).toBe(false);
   });
 
   it("reads the same rows for a session check however many devices the server has revoked", async () => {

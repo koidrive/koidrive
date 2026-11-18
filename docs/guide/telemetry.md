@@ -87,7 +87,7 @@ While reports are on, your Koidrive server sends one report an hour to `tel.koid
 - How long those calls took, as 16 power-of-two ranges in milliseconds for each kind of call.
 - The server's version and the protocol versions it speaks.
 
-Each hour's report carries a new random id. It holds no names, paths, contents or ids of files, spaces, devices or people, and not your Cloudflare account id. Counting adds at most one small request and one storage write for each request your server answers, and far fewer when requests come close together. It adds nothing while your server is idle. Your Worker logs stay in your Cloudflare account.
+Each hour's report carries a new random id. It holds no names, paths, contents or ids of files, spaces, devices or people, and not your Cloudflare account id. Counting adds at most one small request and one storage write for each request your server answers, and far fewer when requests come close together. Once requests stop, it adds only the work of handing over and sending the counts it already has, and a failed send is tried again each hour for up to a day. Your Worker logs stay in your Cloudflare account.
 
 ## Where reports go
 

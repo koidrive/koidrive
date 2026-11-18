@@ -284,6 +284,10 @@ function opContent(op: Op): Content | undefined | null {
   return null;
 }
 
+function rpcRoute(request: RpcRequest): string {
+  return "rpc_" + (request.call.case ?? "empty").replace(/[A-Z]/g, (letter) => "_" + letter.toLowerCase());
+}
+
 function frameBytes(response: RpcResponse): number {
   return toBinary(ServerMessageSchema, create(ServerMessageSchema, { msg: { case: "rpc", value: response } })).length;
 }
@@ -366,11 +370,14 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       return toBinary(RpcResponseSchema, response);
     }
 
-    async httpRpc(connect: Connect, request: Uint8Array): Promise<{ response: Uint8Array; counted?: Counted }> {
+    async httpRpc(connect: Connect, request: Uint8Array): Promise<{ response: Uint8Array; counted: Counted }> {
+      const startedMs = this.clock();
       const req = fromBinary(RpcRequestSchema, request);
       const role = this.memberRole(connect.identity.userId);
-      const refuse = (code: Error_Code, message: string, cause = Error_Cause.UNSPECIFIED) =>
-        ({ response: toBinary(RpcResponseSchema, create(RpcResponseSchema, { reqId: req.reqId, result: { case: "error", value: create(ErrorSchema, { code, message, cause }) } })) });
+      const refuse = (code: Error_Code, message: string, cause = Error_Cause.UNSPECIFIED) => ({
+        response: toBinary(RpcResponseSchema, create(RpcResponseSchema, { reqId: req.reqId, result: { case: "error", value: create(ErrorSchema, { code, message, cause }) } })),
+        counted: { route: rpcRoute(req), outcome: refusalOutcome(code, cause), latencyMs: this.clock() - startedMs },
+      });
       if (!role) return refuse(Error_Code.FORBIDDEN, "not a member of this space");
       const check = await this.checkDevice(connect.identity.deviceId);
       if (check instanceof CheckFailed) return refuse(Error_Code.RETRY_LATER, "could not check the device; retry later", check.cause);
@@ -728,7 +735,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       return {
         ...answered,
         counted: {
-          route: "rpc_" + (request.call.case ?? "empty").replace(/[A-Z]/g, (letter) => "_" + letter.toLowerCase()),
+          route: rpcRoute(request),
           outcome: result.case === "error" ? refusalOutcome(result.value.code, result.value.cause) : "ok",
           latencyMs: this.clock() - startedMs,
         },
