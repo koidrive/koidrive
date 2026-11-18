@@ -55,7 +55,7 @@ At admission, `restore_point_ms` (P) must meet all of these:
 
 The Account DO checks the PITR condition through the Space DO at admission, and refuses with `INVALID_ARGUMENT` like the others, since no retry can make PITR serve that point.
 
-The 29-day bound keeps P inside the 30-day PITR range, with a day for the rewind to finish. The window is checked once, at admission. A rewind already admitted is never refused later because time has passed.
+The 29-day bound keeps P inside the 30-day PITR range, with a day for the rewind to finish. The 29-day bound is checked once, at admission. After that, an admitted rewind fails only if P leaves the PITR window before a restore runs, which each attempt checks before it selects B (§3, step 2). Once settling finds that a restore ran, the rewind completes, however much time has passed.
 
 P is the requested point. The restored state is the state just after the last commit at or before P, the commit before the first one whose `committed_at_ms` is later than P. `getBookmarkForTime` gives only a bookmark approximately at P, which can be several commits earlier, so the Space DO stores bookmarks itself:
 - After every commit it appends, a GC purge included, it reads `getCurrentBookmark()` and stores it for that seq, usable for any P at or after the commit's `committed_at_ms`.
