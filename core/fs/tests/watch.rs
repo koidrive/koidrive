@@ -1283,3 +1283,202 @@ fn a_folder_whose_mode_changes_is_scanned_once_and_then_left_alone() {
         );
     }
 }
+
+fn moved_out_of_a_removed_folder() -> (tempfile::TempDir, PathBuf, Snapshot) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    fs::create_dir_all(root.join("x/d/sub")).unwrap();
+    fs::create_dir(root.join("e")).unwrap();
+    fs::write(root.join("x/d/g.txt"), "g").unwrap();
+    fs::write(root.join("x/d/sub/s.txt"), "s").unwrap();
+    fs::write(root.join("x/d/other.txt"), "o").unwrap();
+    let snapshot = Snapshot::scan(&root).unwrap();
+    fs::rename(root.join("x/d/g.txt"), root.join("e/moved.txt")).unwrap();
+    fs::rename(root.join("x/d/sub"), root.join("e/sub")).unwrap();
+    fs::remove_dir_all(root.join("x/d")).unwrap();
+    (dir, root, snapshot)
+}
+
+fn moves_out_of_the_removed_folder() -> Vec<Change> {
+    vec![
+        removed("x/d", Dir),
+        renamed("x/d/g.txt", "e/moved.txt", File),
+        renamed("x/d/sub", "e/sub", Dir),
+    ]
+}
+
+#[test]
+fn a_scan_of_the_place_a_file_moved_to_reports_the_move_from_a_place_it_did_not_scan() {
+    let (_dir, root, mut snapshot) = moved_out_of_a_removed_folder();
+    let rescan = snapshot.rescan(&root, [PathBuf::from("e")]).unwrap();
+    assert_eq!(rescan.changes, moves_out_of_the_removed_folder());
+    assert!(rescan.unsettled.is_empty());
+    assert_eq!(
+        snapshot.rescan(&root, [PathBuf::from("x")]).unwrap(),
+        nothing(&root)
+    );
+    assert_eq!(snapshot, Snapshot::scan(&root).unwrap());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_scan_of_the_place_a_file_moved_from_reports_the_move_to_a_place_it_did_not_scan() {
+    let (_dir, root, mut snapshot) = moved_out_of_a_removed_folder();
+    let rescan = snapshot.rescan(&root, [PathBuf::from("x")]).unwrap();
+    assert_eq!(rescan.changes, moves_out_of_the_removed_folder());
+    assert!(rescan.unsettled.is_empty());
+    assert_eq!(
+        snapshot.rescan(&root, [PathBuf::from("e")]).unwrap(),
+        nothing(&root)
+    );
+    assert_eq!(snapshot, Snapshot::scan(&root).unwrap());
+}
+
+#[test]
+fn a_new_link_a_scan_finds_beside_the_file_it_links_is_created() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    fs::create_dir_all(root.join("x")).unwrap();
+    fs::create_dir(root.join("e")).unwrap();
+    fs::write(root.join("x/g.txt"), "g").unwrap();
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    fs::hard_link(root.join("x/g.txt"), root.join("e/link.txt")).unwrap();
+    let rescan = snapshot.rescan(&root, [PathBuf::from("e")]).unwrap();
+    assert_eq!(rescan.changes, vec![created("e/link.txt", File)]);
+    assert!(snapshot.entries.contains_key(Path::new("x/g.txt")));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_file_moved_into_a_folder_the_scan_may_not_read_keeps_its_old_place_until_the_folder_is_read() {
+    let (_dir, root, mut snapshot) = moved_out_of_a_removed_folder();
+    fs::set_permissions(root.join("e"), fs::Permissions::from_mode(0o000)).unwrap();
+    let blocked = blocks_reads(
+        "a_file_moved_into_a_folder_the_scan_may_not_read_keeps_its_old_place_until_the_folder_is_read",
+        fs::read_dir(root.join("e")),
+    );
+    let while_blocked =
+        blocked.then(|| [0, 1].map(|_| snapshot.rescan(&root, [PathBuf::from("x")])));
+    fs::set_permissions(root.join("e"), fs::Permissions::from_mode(0o755)).unwrap();
+    let Some(while_blocked) = while_blocked else {
+        return;
+    };
+    for rescan in while_blocked {
+        let rescan = rescan.unwrap();
+        assert_eq!(rescan.changes, vec![]);
+        assert_eq!(rescan.unsettled, vec![PathBuf::from("x/d")]);
+    }
+    assert!(snapshot.entries.contains_key(Path::new("x/d/g.txt")));
+
+    let rescan = snapshot.rescan(&root, [PathBuf::from("e")]).unwrap();
+    assert_eq!(rescan.changes, moves_out_of_the_removed_folder());
+    assert_eq!(snapshot, Snapshot::scan(&root).unwrap());
+}
+
+fn moved_into_a_folder_renamed_after() -> (tempfile::TempDir, PathBuf, Snapshot) {
+    let (dir, root, snapshot) = moved_out_of_a_removed_folder();
+    fs::rename(root.join("e"), root.join("f")).unwrap();
+    (dir, root, snapshot)
+}
+
+fn moves_into_the_renamed_folder() -> Vec<Change> {
+    vec![
+        removed("x/d", Dir),
+        renamed("e", "f", Dir),
+        renamed("x/d/g.txt", "f/moved.txt", File),
+        renamed("x/d/sub", "f/sub", Dir),
+    ]
+}
+
+#[test]
+fn a_scan_of_a_renamed_folder_that_files_moved_into_reports_every_move() {
+    let (_dir, root, mut snapshot) = moved_into_a_folder_renamed_after();
+    let rescan = snapshot.rescan(&root, [PathBuf::from("f")]).unwrap();
+    assert_eq!(rescan.changes, moves_into_the_renamed_folder());
+    assert_eq!(
+        snapshot.rescan(&root, [PathBuf::from("x")]).unwrap(),
+        nothing(&root)
+    );
+    assert_eq!(snapshot, Snapshot::scan(&root).unwrap());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_scan_of_the_place_files_moved_from_into_a_folder_renamed_after_reports_every_move() {
+    let (_dir, root, mut snapshot) = moved_into_a_folder_renamed_after();
+    let rescan = snapshot.rescan(&root, [PathBuf::from("x")]).unwrap();
+    assert_eq!(rescan.changes, moves_into_the_renamed_folder());
+    assert_eq!(
+        snapshot.rescan(&root, [PathBuf::from("f")]).unwrap(),
+        nothing(&root)
+    );
+    assert_eq!(snapshot, Snapshot::scan(&root).unwrap());
+}
+
+fn moved_and_removed() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    fs::create_dir_all(root.join("x/d")).unwrap();
+    fs::create_dir(root.join("e")).unwrap();
+    fs::write(root.join("x/d/g.txt"), "g").unwrap();
+    (dir, root)
+}
+
+#[test]
+fn a_file_removed_beside_a_link_is_removed_by_the_first_scan() {
+    let (_dir, root) = moved_and_removed();
+    fs::hard_link(root.join("x/d/g.txt"), root.join("x/alias.txt")).unwrap();
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    fs::remove_dir_all(root.join("x/d")).unwrap();
+    let rescan = snapshot.rescan(&root, [PathBuf::from("x")]).unwrap();
+    assert_eq!(rescan.changes, vec![removed("x/d", Dir)]);
+    assert_eq!(snapshot, Snapshot::scan(&root).unwrap());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_file_moved_into_a_folder_the_scan_may_only_search_is_a_rename_once_the_folder_is_read() {
+    let (_dir, root) = moved_and_removed();
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    fs::rename(root.join("x/d/g.txt"), root.join("e/moved.txt")).unwrap();
+    fs::remove_dir(root.join("x/d")).unwrap();
+    fs::set_permissions(root.join("e"), fs::Permissions::from_mode(0o111)).unwrap();
+    let blocked = blocks_reads(
+        "a_file_moved_into_a_folder_the_scan_may_only_search_is_a_rename_once_the_folder_is_read",
+        fs::read_dir(root.join("e")),
+    );
+    let while_blocked = blocked.then(|| snapshot.rescan(&root, [PathBuf::from("x")]));
+    fs::set_permissions(root.join("e"), fs::Permissions::from_mode(0o755)).unwrap();
+    let Some(while_blocked) = while_blocked else {
+        return;
+    };
+    let while_blocked = while_blocked.unwrap();
+    let rescan = snapshot.rescan(&root, [PathBuf::from("e")]).unwrap();
+    let changes: Vec<Change> = (while_blocked.changes.into_iter())
+        .chain(rescan.changes)
+        .collect();
+    assert!(
+        changes.contains(&renamed("x/d/g.txt", "e/moved.txt", File)),
+        "{changes:?}"
+    );
+}
+
+#[test]
+fn a_folder_moved_over_an_empty_folder_through_the_native_watcher_keeps_its_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    fs::create_dir_all(root.join("drafts/inner")).unwrap();
+    fs::write(root.join("drafts/inner/two.txt"), "two").unwrap();
+    fs::create_dir(root.join("final")).unwrap();
+    let snapshot = Snapshot::scan(&root).unwrap();
+    let drafts = snapshot.entries[Path::new("drafts")].id;
+    let mut watcher = NativeWatcher::start(&root, snapshot).unwrap();
+    watcher.poll(Duration::from_millis(200)).unwrap();
+
+    fs::rename(root.join("drafts"), root.join("final")).unwrap();
+    expect(
+        &mut watcher,
+        &[removed("final", Dir), renamed("drafts", "final", Dir)],
+    );
+    assert_eq!(watcher.snapshot().entries[Path::new("final")].id, drafts);
+}

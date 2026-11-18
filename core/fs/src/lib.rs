@@ -35,6 +35,18 @@
 //! path that is present, cannot be read, or whose parent changed in between
 //! keeps its old entry and is returned for another rescan.
 //!
+//! A rescan of part of the tree reports a move whose other end lies outside
+//! the paths it was given as a rescan of both places would. On macOS, for an
+//! entry it no longer finds, it asks the system where that identity is now.
+//! An entry whose identity the system places where the scan cannot read keeps
+//! its old entry until a rescan finds it or the system no longer places it
+//! there. An entry whose whereabouts the system cannot tell is kept once, and
+//! the next rescan of its path reports it as a rename or as removed.
+//! [`NativeWatcher`] keeps every removal that neither a move nor the rules
+//! explain the same way and ends the poll, so a file replaced at its path in
+//! two steps reads as modified, and a move whose two ends reach it in
+//! different polls reads as a rename.
+//!
 //! A confirmation is a point in time, and these windows remain:
 //!
 //! - Siblings are confirmed against one listing of their parent, and the final
@@ -422,6 +434,12 @@ fn list(dir: BorrowedFd<'_>) -> io::Result<BTreeSet<OsString>> {
     Ok(names)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    Unplaced,
+    Unexplained,
+}
+
 /// Where a scan can be interrupted in tests.
 #[cfg_attr(not(test), allow(dead_code))]
 enum Cut<'a> {
@@ -613,6 +631,10 @@ pub struct Snapshot {
     /// Mount points whose volume the last scan of each did not find there: unmounted, another volume, or one without
     /// a UUID. The entries keep what was known below each, and no scan reads there until the volume is back.
     pub detached: BTreeMap<PathBuf, Detached>,
+    /// Paths where the next scan reports a removal without keeping it: paths a scan saw disappear and kept, because
+    /// the system could not tell where their identity went or a [`NativeWatcher`] waited for the other end of a
+    /// move, and the scope of a [`Snapshot::reset`]. A kept path keeps what was known at and below it.
+    pub unplaced: BTreeSet<PathBuf>,
 }
 
 /// What one [`Snapshot::rescan`] found.
@@ -745,6 +767,7 @@ impl Snapshot {
             Some(rules),
             &|| false,
             &|_| {},
+            Keep::Unplaced,
             &mut |_| {},
         )
     }
@@ -774,6 +797,8 @@ impl Snapshot {
         }
         self.left_out.retain(|path, _| !path.starts_with(scope));
         self.detached.retain(|path, _| !path.starts_with(scope));
+        self.unplaced.retain(|path| !path.starts_with(scope));
+        self.unplaced.insert(scope.to_path_buf());
         self.entries.extend(
             known
                 .into_iter()
@@ -816,6 +841,7 @@ impl Snapshot {
             None,
             &|| false,
             &|_| {},
+            Keep::Unplaced,
             cut,
         )
     }
@@ -834,6 +860,7 @@ impl Snapshot {
         mut rules: Option<&mut Rules>,
         stopped: &dyn Fn() -> bool,
         found: &dyn Fn(u64),
+        keep: Keep,
         cut: &mut dyn FnMut(Cut<'_>),
     ) -> Result<Rescan> {
         let mut paths: Vec<PathBuf> = paths.into_iter().collect();
@@ -867,9 +894,9 @@ impl Snapshot {
                         _ => Ok(stat),
                     }
                 });
-            let unscanned = match &scanned {
-                Ok(_) => self.known_elsewhere(&scan, &paths),
-                Err(_) => Vec::new(),
+            let (unscanned, hidden, unsure) = match &scanned {
+                Ok(_) => self.other_ends(root, &scan, &paths),
+                Err(_) => (Vec::new(), Vec::new(), Vec::new()),
             };
             let whole = paths.iter().any(|path| path.as_os_str().is_empty());
             if let Ok(stat) = &scanned
@@ -888,7 +915,8 @@ impl Snapshot {
                 widened = true;
                 continue;
             }
-            let result = scanned.and_then(|stat| self.publish(root, &stat, &mut scan));
+            let result =
+                scanned.and_then(|stat| self.publish(root, &stat, &mut scan, hidden, unsure, keep));
             if result.is_err()
                 && let Some(rules) = scan.rules
             {
@@ -898,22 +926,25 @@ impl Snapshot {
         }
     }
 
-    fn known_elsewhere(&self, scan: &Scan<'_>, scopes: &[PathBuf]) -> Vec<PathBuf> {
+    fn other_ends(
+        &self,
+        root: &Path,
+        scan: &Scan<'_>,
+        scopes: &[PathBuf],
+    ) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>) {
+        let scanned: HashSet<&Path> = (scan.replaced.iter().chain(scopes))
+            .map(PathBuf::as_path)
+            .collect();
+        let covered = |path: &Path| path.ancestors().any(|above| scanned.contains(above));
+        let blocked = |path: &Path| (scan.unreadable.iter()).any(|dir| path.starts_with(dir));
+        let same = |entry: &Entry, other: &Entry| (entry.id, entry.kind) == (other.id, other.kind);
         let mut arrived: HashMap<(FileId, EntryKind), Vec<&PathBuf>> = HashMap::new();
         for (path, now) in &scan.new {
-            if (self.entries.get(path))
-                .is_none_or(|before| (before.id, before.kind) != (now.id, now.kind))
-            {
+            if !(self.entries.get(path)).is_some_and(|before| same(before, now)) {
                 arrived.entry((now.id, now.kind)).or_default().push(path);
             }
         }
-        if arrived.is_empty() {
-            return Vec::new();
-        }
-        let covered: HashSet<&Path> = (scan.replaced.iter().chain(scopes))
-            .map(PathBuf::as_path)
-            .collect();
-        (self.entries.iter())
+        let mut ends: Vec<PathBuf> = (self.entries.iter())
             .filter(|(known, entry)| {
                 (arrived.get(&(entry.id, entry.kind))).is_some_and(|at| {
                     at.iter().any(|at| {
@@ -922,9 +953,78 @@ impl Snapshot {
                     })
                 })
             })
-            .filter(|(known, _)| !known.ancestors().any(|above| covered.contains(above)))
+            .filter(|(known, _)| !covered(known))
             .map(|(known, _)| known.clone())
-            .collect()
+            .collect();
+        if !ends.is_empty() {
+            return (ends, Vec::new(), Vec::new());
+        }
+        let gone: Vec<(&PathBuf, &Entry)> = (outermost(scan.replaced.clone()).iter())
+            .flat_map(|prefix| {
+                (self.entries.range(prefix.clone()..))
+                    .take_while(|(path, _)| path.starts_with(prefix))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|(path, entry)| {
+                !scan.new.get(*path).is_some_and(|now| same(entry, now))
+                    && !arrived.contains_key(&(entry.id, entry.kind))
+                    && !blocked(path)
+                    && volume_of(path, &self.entries, &scan.new).is_none()
+            })
+            .collect();
+        let Some((dir, dev)) = (!gone.is_empty())
+            .then(|| open_root(root).ok())
+            .flatten()
+            .and_then(|dir| Some((stat_fd(dir.as_fd()).ok()?.dev, dir)))
+            .map(|(dev, dir)| (dir, dev))
+        else {
+            return (ends, Vec::new(), Vec::new());
+        };
+        let linked: HashSet<(FileId, EntryKind)> = (gone.iter())
+            .filter(|(_, entry)| entry.linked)
+            .map(|(_, entry)| (entry.id, entry.kind))
+            .collect();
+        let mut links: HashMap<(FileId, EntryKind), Vec<&Path>> = HashMap::new();
+        if !linked.is_empty() {
+            for (path, entry) in
+                (scan.new.iter()).chain((self.entries.iter()).filter(|(path, _)| !covered(path)))
+            {
+                if linked.contains(&(entry.id, entry.kind)) {
+                    links.entry((entry.id, entry.kind)).or_default().push(path);
+                }
+            }
+        }
+        let mut hidden = Vec::new();
+        let mut unsure = Vec::new();
+        let mut moved: Option<&Path> = None;
+        for (path, entry) in gone {
+            if moved.is_some_and(|folder| path.starts_with(folder)) {
+                continue;
+            }
+            let links = (links.get(&(entry.id, entry.kind))).map_or(&[][..], Vec::as_slice);
+            match whereabouts(dir.as_fd(), dev, entry, links) {
+                Whereabouts::At(at) if blocked(&at) => {
+                    hidden.push(path.clone());
+                    moved = Some(path);
+                }
+                Whereabouts::Hidden => {
+                    hidden.push(path.clone());
+                    moved = Some(path);
+                }
+                Whereabouts::At(at) => {
+                    if !covered(&at) {
+                        ends.push(at);
+                    }
+                    moved = Some(path);
+                }
+                Whereabouts::Unsure => {
+                    unsure.push(path.clone());
+                    moved = Some(path);
+                }
+                Whereabouts::Nowhere => {}
+            }
+        }
+        (ends, hidden, unsure)
     }
 
     fn scan_scopes(
@@ -1015,7 +1115,15 @@ impl Snapshot {
         Ok(root_stat)
     }
 
-    fn publish(&mut self, root: &Path, root_stat: &Stat, scan: &mut Scan<'_>) -> Result<Rescan> {
+    fn publish(
+        &mut self,
+        root: &Path,
+        root_stat: &Stat,
+        scan: &mut Scan<'_>,
+        hidden: Vec<PathBuf>,
+        unsure: Vec<PathBuf>,
+        keep: Keep,
+    ) -> Result<Rescan> {
         let again = open_root(root)?;
         if !stat_fd(again.as_fd())?.is_at(root_stat.dev, &root_stat.id) {
             return Err(Error::RootReplaced);
@@ -1134,6 +1242,13 @@ impl Snapshot {
             &mut scan.new,
             &mut *scan.cut,
         )?;
+        let arrived: HashSet<(FileId, EntryKind)> = (scan.new.iter())
+            .filter(|(path, now)| {
+                !(old.get(*path))
+                    .is_some_and(|before| (before.id, before.kind) == (now.id, now.kind))
+            })
+            .map(|(_, now)| (now.id, now.kind))
+            .collect();
         for kept in &unsettled {
             for path in
                 (unseen_left_out.range(kept.clone()..)).take_while(|path| path.starts_with(kept))
@@ -1205,8 +1320,79 @@ impl Snapshot {
             unsettled.extend(postponed.keys().cloned());
             scan.new.extend(postponed);
             unsettled.extend(outermost(rules.held().cloned().collect()));
-            unsettled.sort();
         }
+        let whole = (scan.replaced.iter()).any(|prefix| prefix.as_os_str().is_empty());
+        let doubtful = match keep {
+            Keep::Unexplained if !whole => old.keys().cloned().collect(),
+            _ => [unsure, hidden.clone()].concat(),
+        };
+        let hidden: BTreeSet<PathBuf> = hidden.into_iter().collect();
+        let mut removed = BTreeSet::new();
+        let mut moved_from = BTreeSet::new();
+        for change in &changes {
+            match change {
+                Change::Removed { path, .. } => {
+                    removed.insert(path.clone());
+                }
+                Change::Renamed { from, .. } | Change::Ignored { from, .. } => {
+                    moved_from.insert(from.clone());
+                }
+                _ => {}
+            }
+        }
+        let settling: BTreeSet<PathBuf> = unsettled.iter().cloned().collect();
+        let mut unplaced = BTreeSet::new();
+        let mut still_hidden = BTreeSet::new();
+        for path in doubtful {
+            let Some(gone) = path.ancestors().find(|above| removed.contains(*above)) else {
+                continue;
+            };
+            if scan.new.contains_key(gone) {
+                continue;
+            }
+            let proven = hidden.contains(&path);
+            if gone.ancestors().any(|above| {
+                (!proven && self.unplaced.contains(above))
+                    || settling.contains(above)
+                    || unplaced.contains(above)
+                    || still_hidden.contains(above)
+            }) {
+                continue;
+            }
+            let kept: Vec<(PathBuf, Entry)> = (old.range(gone.to_path_buf()..))
+                .take_while(|(inside, _)| inside.starts_with(gone))
+                .filter(|(inside, entry)| {
+                    !arrived.contains(&(entry.id, entry.kind))
+                        && !inside.ancestors().any(|above| moved_from.contains(above))
+                })
+                .map(|(inside, entry)| (inside.clone(), *entry))
+                .collect();
+            if kept.is_empty() {
+                continue;
+            }
+            scan.new.extend(kept);
+            match proven {
+                true => still_hidden.insert(gone.to_path_buf()),
+                false => unplaced.insert(gone.to_path_buf()),
+            };
+        }
+        for kept in unplaced.iter().chain(&still_hidden) {
+            for path in
+                (unseen_left_out.range(kept.clone()..)).take_while(|path| path.starts_with(kept))
+            {
+                if let Some(entry) = scan.new.remove(path) {
+                    old.remove(path);
+                    still_left_out.push((path.clone(), entry));
+                }
+            }
+        }
+        changes.retain(|change| {
+            !matches!(change, Change::Removed { path, .. }
+                if unplaced.contains(path) || still_hidden.contains(path))
+        });
+        unsettled.extend(unplaced.iter().cloned());
+        unsettled.extend(still_hidden);
+        unsettled.sort();
         for path in old.keys().chain(&left_out) {
             self.entries.remove(path);
         }
@@ -1214,6 +1400,9 @@ impl Snapshot {
         self.detached
             .retain(|path, _| !scan.replaced.iter().any(|prefix| path.starts_with(prefix)));
         self.detached.extend(scan.detached.drain(..));
+        self.unplaced
+            .retain(|path| !scan.replaced.iter().any(|prefix| path.starts_with(prefix)));
+        self.unplaced.extend(unplaced);
         for path in &was_left_out {
             self.left_out.remove(path);
         }
@@ -1494,6 +1683,57 @@ fn keep_unconfirmed(
         );
     }
     Ok(kept)
+}
+
+enum Whereabouts {
+    At(PathBuf),
+    Hidden,
+    Unsure,
+    Nowhere,
+}
+
+fn whereabouts(root: BorrowedFd<'_>, root_dev: u64, entry: &Entry, links: &[&Path]) -> Whereabouts {
+    let is_it = |stat: &Stat| {
+        stat.dev == root_dev
+            && (stat.entry()).is_some_and(|now| (now.id, now.kind) == (entry.id, entry.kind))
+    };
+    let rel = match located(root, entry) {
+        Ok(Some(rel)) => rel,
+        Ok(None) => return Whereabouts::Nowhere,
+        Err(err) if denied(&err) => return Whereabouts::Hidden,
+        Err(_) => return Whereabouts::Nowhere,
+    };
+    if private(Path::new(""), rel.iter().next().unwrap_or_default()) {
+        return Whereabouts::Nowhere;
+    }
+    match stat_rel(root, &rel) {
+        Ok(stat) if is_it(&stat) && links.contains(&rel.as_path()) => Whereabouts::Nowhere,
+        Ok(stat) if is_it(&stat) => Whereabouts::At(rel),
+        Ok(_) => Whereabouts::Unsure,
+        Err(err) if denied(&err) => Whereabouts::Hidden,
+        Err(err) if is_gone(&err) => Whereabouts::Unsure,
+        Err(_) => Whereabouts::Nowhere,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn located(root: BorrowedFd<'_>, entry: &Entry) -> io::Result<Option<PathBuf>> {
+    ignore::path_of(root, entry.id.ino)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn located(_: BorrowedFd<'_>, _: &Entry) -> io::Result<Option<PathBuf>> {
+    Ok(None)
+}
+
+fn stat_rel(root: BorrowedFd<'_>, rel: &Path) -> io::Result<Stat> {
+    let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) else {
+        return Err(io::ErrorKind::NotFound.into());
+    };
+    match open_attached(root, parent, &mut |_| {})? {
+        Some((dir, _)) => stat_at(dir.as_fd(), name),
+        None => Err(io::ErrorKind::NotFound.into()),
+    }
 }
 
 /// What one look at a folder found, for comparing two looks.
@@ -2607,6 +2847,7 @@ impl Watcher for NativeWatcher {
                 self.blocked.extend(deferred.then(PathBuf::new));
                 self.rewatch = false;
             }
+            let held = self.snapshot.unplaced.clone();
             let (expected, uncovered) = self.uncovered.clone().unzip();
             let scopes: Vec<PathBuf> = (self.dirty.iter())
                 .chain(uncovered.iter().flatten())
@@ -2620,6 +2861,7 @@ impl Watcher for NativeWatcher {
                 self.rules.as_mut(),
                 &*self.stopped,
                 &*self.found,
+                Keep::Unexplained,
                 &mut |_| {},
             ) {
                 Ok(rescan) => rescan,
@@ -2642,7 +2884,11 @@ impl Watcher for NativeWatcher {
             let changes = rescan.changes;
             #[cfg(target_os = "linux")]
             self.cover(&changes, readable, rescan.root);
-            if !changes.is_empty() || !self.changed_rules.is_empty() || Instant::now() >= deadline {
+            if !changes.is_empty()
+                || !self.changed_rules.is_empty()
+                || Instant::now() >= deadline
+                || !self.snapshot.unplaced.is_subset(&held)
+            {
                 return Ok(self.report(changes, root));
             }
         }
@@ -2739,6 +2985,7 @@ impl Watcher for RescanWatcher {
                 self.rules.as_mut(),
                 &*self.stopped,
                 &*self.found,
+                Keep::Unplaced,
                 &mut |_| {},
             );
             let poll = match rescan {

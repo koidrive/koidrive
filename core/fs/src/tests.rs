@@ -62,6 +62,7 @@ fn a_rotation_seen_from_one_path_takes_at_most_three_scans() {
             None,
             &|| false,
             &|_| found.set(found.get() + 1),
+            Keep::Unplaced,
             &mut |cut| scans += u64::from(matches!(cut, Cut::RootOpened)),
         )
         .unwrap();
@@ -1427,6 +1428,7 @@ fn a_failed_scan_leaves_the_rules_as_they_were() {
         Some(&mut rules),
         &|| false,
         &|_| {},
+        Keep::Unplaced,
         &mut |cut| {
             if let Cut::OpeningDir(path) = cut
                 && path == Path::new("m")
@@ -1534,6 +1536,7 @@ fn a_search_looks_at_a_bounded_number_of_entries_per_rescan_under_deep_and_wide_
                 Some(&mut rules),
                 &|| false,
                 &|_| {},
+                Keep::Unplaced,
                 &mut |cut| match cut {
                     Cut::Searching(path) | Cut::OpeningDir(path) if path.starts_with("ig") => {
                         looked += 1;
@@ -1585,6 +1588,7 @@ fn a_left_out_entry_back_while_its_removal_is_confirmed_stays_left_out_until_inc
             Some(&mut rules),
             &|| false,
             &|_| {},
+            Keep::Unplaced,
             &mut |cut| {
                 if !restored && matches!(cut, Cut::Confirming(path) if path == Path::new("sub")) {
                     fs::write(root.join("sub/hidden"), "returned during confirmation").unwrap();
@@ -1730,4 +1734,215 @@ fn a_scan_counts_the_files_it_finds_as_it_walks() {
     watcher.poll(Duration::ZERO).unwrap();
     watcher.poll(Duration::ZERO).unwrap();
     assert_eq!(*rescanned.lock().unwrap(), [1, 2, 3, 1, 2, 3]);
+}
+
+fn scan_settling(snapshot: &mut Snapshot, root: &Path, scope: &str) -> Rescan {
+    snapshot
+        .rescan_under(
+            root,
+            [PathBuf::from(scope)],
+            &BTreeSet::new(),
+            None,
+            None,
+            &|| false,
+            &|_| {},
+            Keep::Unexplained,
+            &mut |_| {},
+        )
+        .unwrap()
+}
+
+fn one_file() -> (tempfile::TempDir, PathBuf, Snapshot) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    fs::create_dir_all(root.join("x")).unwrap();
+    fs::write(root.join("x/g.txt"), "old").unwrap();
+    let snapshot = Snapshot::scan(&root).unwrap();
+    (dir, root, snapshot)
+}
+
+#[test]
+fn a_file_replaced_at_its_path_after_a_scan_kept_its_removal_is_modified() {
+    let (_dir, root, mut snapshot) = one_file();
+    let _old = fs::File::open(root.join("x/g.txt")).unwrap();
+    fs::remove_file(root.join("x/g.txt")).unwrap();
+    let first = scan_settling(&mut snapshot, &root, "x");
+    assert_eq!(first.changes, vec![]);
+    assert_eq!(first.unsettled, vec![PathBuf::from("x/g.txt")]);
+    assert!(snapshot.entries.contains_key(Path::new("x/g.txt")));
+
+    fs::write(root.join("x/g.txt"), "new").unwrap();
+    let second = scan_settling(&mut snapshot, &root, "x");
+    assert_eq!(
+        second.changes,
+        vec![Change::Modified {
+            path: "x/g.txt".into()
+        }]
+    );
+    assert_eq!(snapshot.unplaced, BTreeSet::new());
+}
+
+#[test]
+fn a_scan_that_keeps_a_removal_reports_the_rest_and_the_next_scan_reports_the_removal() {
+    let (_dir, root, mut snapshot) = one_file();
+    fs::write(root.join("x/h.txt"), "h").unwrap();
+    let _old = fs::File::open(root.join("x/g.txt")).unwrap();
+    fs::remove_file(root.join("x/g.txt")).unwrap();
+    let first = scan_settling(&mut snapshot, &root, "x");
+    assert_eq!(
+        first.changes,
+        vec![Change::Created {
+            path: "x/h.txt".into(),
+            kind: EntryKind::File
+        }]
+    );
+    assert_eq!(first.unsettled, vec![PathBuf::from("x/g.txt")]);
+
+    fs::write(root.join("x/i.txt"), "i").unwrap();
+    fs::remove_file(root.join("x/h.txt")).unwrap();
+    let second = scan_settling(&mut snapshot, &root, "x");
+    assert_eq!(
+        second.changes,
+        vec![
+            Change::Removed {
+                path: "x/g.txt".into(),
+                kind: EntryKind::File
+            },
+            Change::Created {
+                path: "x/i.txt".into(),
+                kind: EntryKind::File
+            }
+        ]
+    );
+    assert_eq!(second.unsettled, vec![PathBuf::from("x/h.txt")]);
+    assert!(!snapshot.entries.contains_key(Path::new("x/g.txt")));
+}
+
+fn quiet_watcher(root: &Path, dirty: &[&str]) -> NativeWatcher {
+    let mut watcher = NativeWatcher::start(root, Snapshot::scan(root).unwrap()).unwrap();
+    (watcher.sender, watcher.events) = mpsc::channel();
+    watcher.dirty = dirty.iter().map(PathBuf::from).collect();
+    watcher
+}
+
+#[test]
+fn a_removal_during_every_poll_holds_back_neither_other_changes_nor_earlier_removals() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    fs::create_dir_all(root.join("a")).unwrap();
+    fs::create_dir_all(root.join("z/victims")).unwrap();
+    fs::write(root.join("a/sentinel"), "before").unwrap();
+    for i in 0..8 {
+        fs::write(root.join(format!("z/victims/{i}")), "existing").unwrap();
+    }
+    let during = root.clone();
+    let scans = std::sync::atomic::AtomicUsize::new(1);
+    let mut watcher = quiet_watcher(&root, &["a/sentinel", "z/victims"]).counting(move |count| {
+        let i = scans.fetch_add(
+            usize::from(count == 1),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        if count == 1 && i < 8 {
+            fs::remove_file(during.join(format!("z/victims/{i}"))).unwrap();
+        }
+    });
+    fs::write(root.join("a/sentinel"), "changed bytes").unwrap();
+    fs::remove_file(root.join("z/victims/0")).unwrap();
+
+    let first = watcher.poll(Duration::ZERO).unwrap();
+    assert!(first.changes.contains(&Change::Modified {
+        path: "a/sentinel".into()
+    }));
+    let reported: Vec<Change> = (0..2)
+        .flat_map(|_| watcher.poll(Duration::ZERO).unwrap().changes)
+        .chain(first.changes)
+        .collect();
+    assert!(
+        reported.contains(&Change::Removed {
+            path: "z/victims/0".into(),
+            kind: EntryKind::File
+        }),
+        "{reported:?}"
+    );
+}
+
+#[test]
+fn a_move_whose_destination_the_watcher_hears_of_a_poll_later_is_a_rename() {
+    for timeout in [Duration::ZERO, Duration::from_secs(1)] {
+        for linked in [false, true] {
+            a_move_heard_of_a_poll_later(timeout, linked);
+        }
+    }
+}
+
+fn a_move_heard_of_a_poll_later(timeout: Duration, linked: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    fs::create_dir_all(root.join("x/d")).unwrap();
+    fs::create_dir_all(root.join("e")).unwrap();
+    fs::write(root.join("x/d/g.txt"), "g").unwrap();
+    if linked {
+        fs::hard_link(root.join("x/d/g.txt"), root.join("x/alias.txt")).unwrap();
+    }
+    let mut watcher = quiet_watcher(&root, &["x"]);
+    fs::rename(root.join("x/d/g.txt"), root.join("e/moved.txt")).unwrap();
+    fs::remove_dir(root.join("x/d")).unwrap();
+    let departure = watcher.poll(timeout).unwrap();
+    watcher.dirty.insert("e".into());
+    let arrival = watcher.poll(timeout).unwrap();
+    let changes: Vec<Change> = (departure.changes.into_iter())
+        .chain(arrival.changes)
+        .chain(watcher.poll(timeout).unwrap().changes)
+        .collect();
+    assert_eq!(changes.len(), 2, "{changes:?}");
+    assert!(
+        changes.contains(&Change::Renamed {
+            from: "x/d/g.txt".into(),
+            to: "e/moved.txt".into(),
+            kind: EntryKind::File
+        }),
+        "{changes:?}"
+    );
+    assert!(
+        changes.contains(&Change::Removed {
+            path: "x/d".into(),
+            kind: EntryKind::Dir
+        }),
+        "{changes:?}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_file_moved_away_from_a_link_the_rules_leave_out_is_a_rename() {
+    for first_link in ["x/d/g.txt", "ig/g.txt"] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        for part in ["x/d", "e", "ig"] {
+            fs::create_dir_all(root.join(part)).unwrap();
+        }
+        fs::write(root.join(RULES_FILE), "ig\n").unwrap();
+        let other = if first_link == "x/d/g.txt" {
+            "ig/g.txt"
+        } else {
+            "x/d/g.txt"
+        };
+        fs::write(root.join(first_link), "g").unwrap();
+        fs::hard_link(root.join(first_link), root.join(other)).unwrap();
+        let mut rules = Rules::new(Box::new(Lines::default())).with_search_budget(usize::MAX);
+        let mut snapshot = Snapshot::scan_with_rules(&root, &mut rules).unwrap();
+        fs::rename(root.join("x/d/g.txt"), root.join("e/moved.txt")).unwrap();
+        fs::remove_dir(root.join("x/d")).unwrap();
+        let from = (snapshot.rescan_with_rules(&root, ["x".into()], &mut rules)).unwrap();
+        let to = (snapshot.rescan_with_rules(&root, ["e".into()], &mut rules)).unwrap();
+        let changes: Vec<&Change> = from.changes.iter().chain(&to.changes).collect();
+        assert!(
+            changes.contains(&&Change::Renamed {
+                from: "x/d/g.txt".into(),
+                to: "e/moved.txt".into(),
+                kind: EntryKind::File
+            }),
+            "created {first_link} first: {changes:?}"
+        );
+    }
 }
