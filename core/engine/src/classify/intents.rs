@@ -1069,12 +1069,16 @@ impl Trees {
                         );
                     }
                     Code::Superseded => {
-                        let elsewhere = (!outcome.node_id.is_empty() && outcome.node_id != node)
-                            .then(|| reported(self, &outcome.node_id, field))
-                            .flatten()
-                            .filter(|(held, _, _)| held.id == sent);
-                        if let Some((held, version_id, _)) = elsewhere {
-                            let target = outcome.node_id.clone();
+                        let elsewhere = (std::iter::once(outcome.node_id.as_str()))
+                            .filter(|id| !id.is_empty())
+                            .chain(states.keys().copied())
+                            .filter(|id| *id != node)
+                            .find_map(|id| {
+                                (reported(self, id, field))
+                                    .filter(|(held, _, _)| held.id == sent)
+                                    .map(|reported| (id.to_owned(), reported))
+                            });
+                        if let Some((target, (held, version_id, _))) = elsewhere {
                             (self.journal).held_elsewhere(
                                 &node,
                                 field,
