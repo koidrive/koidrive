@@ -55,9 +55,12 @@ fn attack_a_folder_another_device_makes_at_a_kept_folders_place_in_other_case() 
     let report = kept_report(&site, &b, &remote);
     assert!(b.sent.is_empty(), "nothing is sent\n{report}");
     assert_eq!(remote.tree(), after_a, "{report}");
-    let env = site.root.join("app/.env");
+    let folder = (names(&site.root).into_iter())
+        .find(|name| name.eq_ignore_ascii_case("app"))
+        .unwrap();
+    let env = site.root.join(&folder).join(".env");
     assert_eq!(fs::read_to_string(&env).unwrap(), local_only(&env));
-    assert_eq!(fs::read(site.root.join("app/README.md")).unwrap(), b"cloned again", "{report}");
+    assert_eq!(fs::read(site.root.join(&folder).join("README.md")).unwrap(), b"cloned again", "{report}");
 }
 
 #[test]
