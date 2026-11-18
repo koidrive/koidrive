@@ -1059,7 +1059,6 @@ fn entries_swapped_through_a_third_name_are_renamed() {
     assert_eq!(snapshot, Snapshot::scan(root).unwrap());
 }
 
-/// FSEvents can deliver the paths of one rename cycle in two batches, and a poll rescans only the paths of the first.
 fn rescanned_in_two_batches(renames: &[(&str, &str)], first: &[&str], later: &[&str]) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
