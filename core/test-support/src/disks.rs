@@ -535,7 +535,7 @@ fn whole_device(attached: &str) -> Result<String, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn image_on(info: &plist::Value, device: &str) -> Result<Option<PathBuf>, String> {
+fn lists(info: &plist::Value, image: &Path, device: &str) -> Result<bool, String> {
     let images = info
         .as_dictionary()
         .and_then(|info| info.get("images"))
@@ -543,6 +543,7 @@ fn image_on(info: &plist::Value, device: &str) -> Result<Option<PathBuf>, String
         .ok_or("hdiutil info has no images array")?;
     for attached in images {
         let attached = attached.as_dictionary().ok_or("invalid hdiutil image")?;
+        let path = attached.get("image-path").and_then(plist::Value::as_string);
         let on_device = attached
             .get("system-entities")
             .and_then(plist::Value::as_array)
@@ -552,14 +553,11 @@ fn image_on(info: &plist::Value, device: &str) -> Result<Option<PathBuf>, String
             .any(|entity| {
                 entity.get("dev-entry").and_then(plist::Value::as_string) == Some(device)
             });
-        if on_device {
-            return Ok(attached
-                .get("image-path")
-                .and_then(plist::Value::as_string)
-                .map(PathBuf::from));
+        if on_device && path.map(Path::new) == Some(image) {
+            return Ok(true);
         }
     }
-    Ok(None)
+    Ok(false)
 }
 
 #[cfg(target_os = "macos")]
@@ -569,7 +567,7 @@ fn still_attached(mounted: &Mounted) -> Result<bool, String> {
     }
     let info = output("hdiutil", &["info".as_ref(), "-plist".as_ref()])?;
     let info = plist::Value::from_reader_xml(info.as_bytes()).map_err(|error| error.to_string())?;
-    Ok(image_on(&info, &mounted.device)?.is_none_or(|image| image == mounted.image))
+    lists(&info, &mounted.image, &mounted.device)
 }
 
 #[cfg(target_os = "macos")]
@@ -812,12 +810,16 @@ mod tests {
     #[test]
     fn a_device_belongs_to_the_image_hdiutil_lists_on_it() {
         let info = plist::Value::from_reader_xml(br#"<?xml version="1.0"?><plist version="1.0"><dict><key>images</key><array><dict><key>image-path</key><string>/fixture/other.dmg</string><key>system-entities</key><array><dict><key>dev-entry</key><string>/dev/disk5</string></dict></array></dict></array></dict></plist>"#.as_slice()).unwrap();
+        let other = Path::new("/fixture/other.dmg");
+        assert_eq!(lists(&info, other, "/dev/disk5"), Ok(true));
+        assert_eq!(lists(&info, other, "/dev/disk7"), Ok(false));
         assert_eq!(
-            image_on(&info, "/dev/disk5"),
-            Ok(Some(PathBuf::from("/fixture/other.dmg")))
+            lists(&info, Path::new("/fixture/mine.dmg"), "/dev/disk5"),
+            Ok(false)
         );
-        assert_eq!(image_on(&info, "/dev/disk7"), Ok(None));
-        assert!(image_on(&plist::Value::String("bad".into()), "/dev/disk5").is_err());
+        let unnamed = plist::Value::from_reader_xml(br#"<?xml version="1.0"?><plist version="1.0"><dict><key>images</key><array><dict><key>system-entities</key><array><dict><key>dev-entry</key><string>/dev/disk5</string></dict></array></dict></array></dict></plist>"#.as_slice()).unwrap();
+        assert_eq!(lists(&unnamed, other, "/dev/disk5"), Ok(false));
+        assert!(lists(&plist::Value::String("bad".into()), other, "/dev/disk5").is_err());
     }
 
     #[test]
