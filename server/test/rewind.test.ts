@@ -372,6 +372,35 @@ describe("space rewind (RFC 0003)", () => {
     expect(done.message).toMatchObject({ restoreSeq: 2n, previousHeadSeq: 2n });
   });
 
+  it("retries a restore with PITR's bookmark for the restore point once the commit's bookmark is too old to arm", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const token = creds.access!.token;
+    const a = device();
+    await a.commit([op.mkdir(uuidv7(), spaceId, "one")]);
+    const early = await snapshot(spaceId, createdAtMs + MINUTE);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "two")]);
+    const [two] = await spaceRows(spaceId, "SELECT committed_at_ms, bookmark FROM commits JOIN commit_bookmarks USING (seq) WHERE seq = 2");
+    const committedMs = Number(two!.committed_at_ms);
+    const nowMs = committedMs + 29 * DAY + 2_000;
+    await setSpaceClock(spaceId, nowMs);
+    await setAccountClock(nowMs);
+    simulatedPitr.bookmarkFor = () => early;
+
+    simulatedPitr.dropArms = true;
+    const rewindId = uuidv7();
+    const args = { restorePointMs: committedMs + 5_000, expectedHistoryId: await a.history(), rewindId };
+    expect((await rewind(token, spaceId, args)).status).toBe(503);
+    expect(await rewindRecord(rewindId)).toMatchObject({ bookmark: two!.bookmark });
+
+    await spaceRows(spaceId, `UPDATE commit_bookmarks SET from_ms = from_ms - ${31 * DAY}`);
+    expect((await rewind(token, spaceId, args)).status).toBe(503);
+    expect(await rewindRecord(rewindId)).toMatchObject({ bookmark: early });
+
+    simulatedPitr.dropArms = false;
+    const done = await rewind(token, spaceId, args);
+    expect(done.message).toMatchObject({ restoreSeq: 1n, previousHeadSeq: 2n });
+  });
+
   it("restores the empty space, not the abandoned timeline, for a restore point just after a rewind to before the first commit", async () => {
     const { spaceId, createdAtMs, creds, device } = await newSpace();
     const token = creds.access!.token;

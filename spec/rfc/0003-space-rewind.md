@@ -101,7 +101,7 @@ An Account DO alarm drives the phases with backoff from one second up to ten min
    If B is not earlier than M, the restored state could contain the marker, and the rewind fails (step 5). Otherwise the Account DO records the phase `prepared`, and, on the first attempt, the returned history and head as the previous history and head. All of this happens before any restore can be armed. Preparing is idempotent: repeating it for the same attempt leaves one marker.
 3. **Arming attempt k.** The Account DO records the phase `arming`. Then the Space DO calls `onNextSessionRestoreBookmark(B)` and restarts with `ctx.abort()`.
 4. **Settling.** After an arming call, whether it answered, failed or has an unknown outcome, the Account DO first restarts the Space DO once more. A restore that is pending applies when the object starts, so after this restart none can still be pending. The Account DO then asks the Space DO to complete the rewind:
-   - **Marker of attempt k present.** No restore happened and none is pending. The Account DO goes back to step 2 with attempt k + 1, or ends in step 6 if B can no longer be restored.
+   - **Marker of attempt k present.** No restore happened and none is pending. The Account DO selects B for P again (§2), records it, and goes back to step 2 with attempt k + 1. It ends in step 6 if P has left the PITR window or no bookmark for P remains. A commit bookmark that has aged out since admission is replaced by PITR's bookmark for P, which stays restorable until P leaves the window.
    - **No marker, but a completion receipt for this rewind in `meta`.** Completion already ran, and the Space DO returns that receipt again.
    - **Neither.** The storage was restored to B, which predates every marker of this rewind. The Space DO reads the space's retired incarnations from the Account DO (§5, rule 9). It then completes the rewind in one transaction:
      - sets the new `history_id` and the rewind number, plus `restore_seq` (its `head_seq`) and `restore_point_ms` in `meta` (RFC 0002 §8);
@@ -115,7 +115,7 @@ An Account DO alarm drives the phases with backoff from one second up to ten min
 
    An Account DO that restarts in the phase `arming` resumes at this step. So it never arms again before it has settled the earlier attempt.
 5. **Reopening.** The Account DO stores the `RewindResult` and records the phase `completed`, which reopens the space.
-6. **Failure.** A rewind ends as `failed` only when no restore can have happened or be pending. That is the case when B is not earlier than M in step 2, or after step 4 has proved that the marker is still present and B can no longer be restored. The Account DO then removes the markers, records the error, and reopens the space unchanged.
+6. **Failure.** A rewind ends as `failed` only when no restore can have happened or be pending. That is the case when B is not earlier than M in step 2, or after step 4 has proved that the marker is still present and no bookmark for P can be restored. The Account DO then removes the markers, records the error, and reopens the space unchanged.
 
    Once step 4 has found the marker gone, the rewind can only complete. If completion keeps failing, the space stays closed: reopening a restored database under its old history would let devices treat it as that history. This can only happen through a server bug. A retried request with the same `rewind_id` reports `RETRY_LATER` and the last error.
 

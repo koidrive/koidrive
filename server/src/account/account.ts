@@ -698,7 +698,9 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
               if (nowMs > row.restore_point_ms + PITR_WINDOW_MS) {
                 return await this.failRewind(row, "the restore point left the PITR window before the restore ran");
               }
-              this.sql.exec("UPDATE rewinds SET phase = 'admitted', attempt = attempt + 1 WHERE rewind_id = ?", rewindId);
+              const { bookmark } = await this.spaceStub(row.space_id).rewindInfo(row.restore_point_ms);
+              if (bookmark === undefined) return await this.failRewind(row, "the restore point left the PITR window before the restore ran");
+              this.sql.exec("UPDATE rewinds SET phase = 'admitted', attempt = attempt + 1, bookmark = ? WHERE rewind_id = ?", bookmark, rewindId);
               throw new Error("the restore did not run; preparing another attempt");
             }
             const result = create(RewindResultSchema, {
