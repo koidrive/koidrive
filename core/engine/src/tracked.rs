@@ -233,13 +233,14 @@ impl<K: Ord + Clone, V: Clone + PartialEq> TrackedMap<K, V> {
         Some(value)
     }
 
-    /// Removes `key` without recording a change, for a value that lives on elsewhere in the same form.
-    pub fn remove_quietly<Q>(&mut self, key: &Q) -> Option<V>
+    pub fn hand_off<Q>(&mut self, key: &Q) -> Option<(V, bool)>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        self.map.remove(key)
+        let value = self.map.remove(key)?;
+        let changed = (self.before.remove(key)).is_some_and(|held| held.as_ref() != Some(&value));
+        Some((value, changed))
     }
 
     /// Inserts `value` without recording a change, for a value the store holds already in this form.

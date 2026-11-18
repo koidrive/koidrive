@@ -1357,7 +1357,9 @@ impl Trees {
     /// Sets R's node from a listing, which can take R back to a version that a lost commit
     /// replaced. A listing records no replaced version, and of those recorded it keeps only the ones
     /// up to the version it lists.
-    pub fn set_listed_remote(&mut self, id: NodeId, node: RemoteNode) {
+    pub fn set_listed_remote(&mut self, id: NodeId, mut node: RemoteNode) {
+        self.write_out_journal(&id);
+        self.take_remote_intents(&id, &mut node);
         let moved = (self.r.get(&id)).is_some_and(|old| old.version_id != node.version_id);
         if moved && let Some(versions) = self.replaced_versions.get_mut(&id) {
             let kept = (versions.iter())
