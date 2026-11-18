@@ -11,7 +11,7 @@ import { fromHex, toHex, uuidv7 } from "../src/ids";
 import type { SpaceDO } from "../src/space-do";
 import { MAX_DEPTH } from "../src/space/commit";
 import { commitDigest } from "../src/space/digest";
-import { type Field, legacyIntentId, legacyPlaceKey, type LostChangeRule } from "../src/space/intents";
+import { type Field, legacyIntentId, legacyPlaceKey } from "../src/space/intents";
 import { getNode, nodeState } from "../src/space/store";
 import legacyVectors from "../../spec/vectors/legacy-intents.json";
 import { logWithoutIntents, pageWithoutIntents, restoreFromR2, serverState, snapshotWithoutIntents } from "./export-reader";
@@ -54,12 +54,6 @@ async function stateOf(space: Space, nodeId: string): Promise<NodeState | undefi
   return runInDurableObject(space.stub, (_instance, state) => {
     const node = getNode(state.storage.sql, nodeId);
     return node && nodeState(state.storage.sql, node);
-  });
-}
-
-async function setRule(space: Space, rule: LostChangeRule): Promise<void> {
-  await runInDurableObject(space.stub, (instance: SpaceDO) => {
-    instance.lostChangeRule = rule;
   });
 }
 
@@ -294,23 +288,17 @@ describe("RFC 0029 section 3.1: recording intents", () => {
     expect(again.results[0]).toMatchObject({ code: OpResult_Code.REJECTED, rejectReason: "ID_EXISTS" });
   });
 
-  for (const rule of ["A", "B"] as const) {
-    it(`under rule ${rule}, the author's send of a carried value ${rule === "B" ? "claims it and moves only the edit revision" : "leaves it carried"}`, async () => {
-      const { space, a, b, values, root } = await setup();
-      await setRule(space, rule);
-      const lost = intent(a.session.deviceId);
-      const nodeId = await file(b, root, "lost.txt", values[0]!, create(IntentSchema, { ...lost, replay: true }));
-      const carried = (await stateOf(space, nodeId))!;
-      expect(carried.intents!.content!.replay).toBe(true);
-      const claim = await a.commit([sent(update(nodeId, values[0]!), lost)]);
-      expect(claim.results[0]!.code).toBe(OpResult_Code.APPLIED);
-      const after = (await stateOf(space, nodeId))!;
-      expect(after.intents!.content!.replay).toBe(rule === "A");
-      expect([after.contentRev, after.metaRev]).toEqual([carried.contentRev, carried.metaRev]);
-      expect(after.editRev > carried.editRev).toBe(rule === "B");
-      expect(claim.changes.length).toBe(rule === "B" ? 1 : 0);
-    });
-  }
+  it("leaves a carried value carried when its author sends it", async () => {
+    const { space, a, b, values, root } = await setup();
+    const lost = intent(a.session.deviceId);
+    const nodeId = await file(b, root, "lost.txt", values[0]!, create(IntentSchema, { ...lost, replay: true }));
+    const carried = (await stateOf(space, nodeId))!;
+    expect(carried.intents!.content!.replay).toBe(true);
+    const sentAgain = await a.commit([sent(update(nodeId, values[0]!), lost)]);
+    expect(sentAgain.results[0]!.code).toBe(OpResult_Code.APPLIED);
+    expect(sentAgain.changes).toEqual([]);
+    expect(await stateOf(space, nodeId)).toEqual(carried);
+  });
 
   it("supersedes a Move whose over the node's place does not hold and a Delete whose over its status does not hold", async () => {
     const { space, a, b, values, root } = await setup();
@@ -414,16 +402,14 @@ describe("RFC 0029 section 3.1: recording intents", () => {
 });
 
 describe("RFC 0029 section 3.2: carried values", () => {
-  for (const [label, author, replay, rule, carried] of [
-    ["another device's value", "other", false, "A", true],
-    ["an empty author", "", false, "A", true],
-    ["the author's own replay under rule A", "self", true, "A", true],
-    ["the author's own replay under rule B", "self", true, "B", false],
-    ["the author's own change", "self", false, "A", false],
+  for (const [label, author, replay, carried] of [
+    ["another device's value", "other", false, true],
+    ["an empty author", "", false, true],
+    ["the author's own replay", "self", true, true],
+    ["the author's own change", "self", false, false],
   ] as const) {
     it(`counts ${label} as ${carried ? "carried" : "not carried"}`, async () => {
       const { space, a, b, values, root } = await setup();
-      await setRule(space, rule);
       const nodeId = uuidv7();
       const by = author === "self" ? a.session.deviceId : author === "other" ? b.session.deviceId : "";
       await a.commit([sent(op.create(nodeId, root, "f.txt", values[0]!), intent(by, { replay }))]);
@@ -729,87 +715,38 @@ describe("RFC 0029 section 3.4 and 3.5: replays reaching the trash", () => {
     expect((await stateOf(space, dir))!.status).toBe(NodeStatus.LIVE);
   });
 
-  for (const rule of ["A", "B"] as const) {
-    it(`under rule ${rule}, the author's replayed Move of a node another device deleted is ${rule === "A" ? "superseded" : "applied and revives it"}`, async () => {
-      const { space, a, b, values, root } = await setup();
-      await setRule(space, rule);
-      const nodeId = await file(a, root, "renamed.txt", values[0]!);
-      sync(a, b);
-      await b.commit([sent(del(nodeId), intent(b.session.deviceId))]);
-      const replay = await a.commit([sent(op.move(nodeId, root, "lost rename.txt"), intent(a.session.deviceId, { replay: true }))]);
-      expect(replay.results[0]!.code).toBe(rule === "A" ? OpResult_Code.SUPERSEDED : OpResult_Code.APPLIED);
-      expect((await stateOf(space, nodeId))!.status).toBe(rule === "A" ? NodeStatus.TRASHED : NodeStatus.LIVE);
-    });
-  }
-
-  for (const rule of ["A", "B"] as const) {
-    it(`under rule ${rule}, answers a retried Move or Delete whose intent and value a trashed node holds APPLIED, changes nothing, and adds a larger held to the trash`, async () => {
-      const { space, a, b, values, root } = await setup();
-      await setRule(space, rule);
-      const nodeId = await file(a, root, "kept.txt", values[0]!);
-      const rename = intent(a.session.deviceId);
-      await a.commit([sent(op.move(nodeId, root, "renamed.txt"), rename)]);
-      sync(a, b);
-      const removal = intent(b.session.deviceId);
-      await b.commit([sent(del(nodeId), removal)]);
-      const before = (await stateOf(space, nodeId))!;
-      const moved = await a.commit([sent(op.move(nodeId, root, "renamed.txt"), rename)]);
-      const deleted = await b.commit([sent(del(nodeId), removal)]);
-      for (const retried of [moved, deleted]) {
-        expect(retried.results[0]!.code).toBe(OpResult_Code.APPLIED);
-        expect(retried.changes).toEqual([]);
-      }
-      expect(await stateOf(space, nodeId)).toEqual(before);
-      const extra = intentId();
-      const grown = await b.commit([sent(del(nodeId, { held: [extra] }), removal)]);
-      expect(grown.results[0]!.code).toBe(OpResult_Code.APPLIED);
-      expect(grown.changes.map(changedId)).toEqual([nodeId]);
-      const after = (await stateOf(space, nodeId))!;
-      expect([after.trashHeld.map(toHex), after.metaRev, after.intents!.status]).toEqual([[toHex(extra)], grown.seq, before.intents!.status]);
-    });
-  }
-
-  it("under rule B, revives a trashed file for the author's replayed edit that the trash does not list, and supersedes one it lists", async () => {
+  it("supersedes the author's replayed Move of a node another device deleted", async () => {
     const { space, a, b, values, root } = await setup();
-    await setRule(space, "B");
-    const nodeId = await file(a, root, "draft.txt", values[0]!);
-    sync(a, b);
-    const listed = intent(a.session.deviceId, { replay: true });
-    await b.commit([sent(del(nodeId, { held: [listed.id] }), intent(b.session.deviceId))]);
-    const known = await a.commit([sent(update(nodeId, values[1]!), listed)]);
-    expect(known.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
-    expect((await stateOf(space, nodeId))!.status).toBe(NodeStatus.TRASHED);
-    const lostEdit = intent(a.session.deviceId, { replay: true });
-    const lost = await a.commit([sent(update(nodeId, values[2]!), lostEdit)]);
-    expect(lost.results[0]!.code).toBe(OpResult_Code.APPLIED);
-    const revived = (await stateOf(space, nodeId))!;
-    expect(revived.status).toBe(NodeStatus.LIVE);
-    expect(idOf(revived.intents!.content)).toBe(idOf(lostEdit));
-  });
-
-  it("under rule B, supersedes the author's replayed Restore whose intent is the status the trash replaced", async () => {
-    const { space, a, b, values, root } = await setup();
-    await setRule(space, "B");
-    const nodeId = await file(a, root, "back.txt", values[0]!);
-    await a.commit([sent(del(nodeId), intent(a.session.deviceId))]);
-    const restore = intent(a.session.deviceId);
-    await a.commit([sent(op.restore(nodeId), restore)]);
+    const nodeId = await file(a, root, "renamed.txt", values[0]!);
     sync(a, b);
     await b.commit([sent(del(nodeId), intent(b.session.deviceId))]);
-    const replay = await a.commit([sent(op.restore(nodeId), create(IntentSchema, { ...restore, replay: true }))]);
+    const replay = await a.commit([sent(op.move(nodeId, root, "lost rename.txt"), intent(a.session.deviceId, { replay: true }))]);
     expect(replay.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
     expect((await stateOf(space, nodeId))!.status).toBe(NodeStatus.TRASHED);
   });
 
-  it("under rule B, supersedes the author's replay whose intent the trash lists", async () => {
+  it("answers a retried Move or Delete whose intent and value a trashed node holds APPLIED, changes nothing, and adds a larger held to the trash", async () => {
     const { space, a, b, values, root } = await setup();
-    await setRule(space, "B");
-    const nodeId = await file(a, root, "seen.txt", values[0]!);
+    const nodeId = await file(a, root, "kept.txt", values[0]!);
+    const rename = intent(a.session.deviceId);
+    await a.commit([sent(op.move(nodeId, root, "renamed.txt"), rename)]);
     sync(a, b);
-    const lost = intent(a.session.deviceId, { replay: true });
-    await b.commit([sent(del(nodeId, { held: [lost.id] }), intent(b.session.deviceId))]);
-    const replay = await a.commit([sent(op.move(nodeId, root, "seen 2.txt"), lost)]);
-    expect(replay.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
+    const removal = intent(b.session.deviceId);
+    await b.commit([sent(del(nodeId), removal)]);
+    const before = (await stateOf(space, nodeId))!;
+    const moved = await a.commit([sent(op.move(nodeId, root, "renamed.txt"), rename)]);
+    const deleted = await b.commit([sent(del(nodeId), removal)]);
+    for (const retried of [moved, deleted]) {
+      expect(retried.results[0]!.code).toBe(OpResult_Code.APPLIED);
+      expect(retried.changes).toEqual([]);
+    }
+    expect(await stateOf(space, nodeId)).toEqual(before);
+    const extra = intentId();
+    const grown = await b.commit([sent(del(nodeId, { held: [extra] }), removal)]);
+    expect(grown.results[0]!.code).toBe(OpResult_Code.APPLIED);
+    expect(grown.changes.map(changedId)).toEqual([nodeId]);
+    const after = (await stateOf(space, nodeId))!;
+    expect([after.trashHeld.map(toHex), after.metaRev, after.intents!.status]).toEqual([[toHex(extra)], grown.seq, before.intents!.status]);
   });
 
   it("keeps an old client's resend on the trash SUPERSEDED, as RFC 0018 says", async () => {

@@ -10,9 +10,6 @@ import { LEGACY_INTENTS_DUE } from "./schema";
 export const FIELDS = ["place", "content", "status"] as const;
 export type Field = (typeof FIELDS)[number];
 
-export type LostChangeRule = "A" | "B";
-export const LOST_CHANGE_RULE: LostChangeRule = "A";
-
 export interface FieldIntent {
   id: string;
   author: string;
@@ -124,8 +121,8 @@ function mintedCarried(op: Op): boolean {
   );
 }
 
-export function resolveIntents(op: Op, ctx: { deviceId: string; seq: number; nowMs: number; rule: LostChangeRule }): OpIntents {
-  const carried = (author: string, replay: boolean) => author !== ctx.deviceId || (ctx.rule === "A" && replay);
+export function resolveIntents(op: Op, ctx: { deviceId: string; seq: number; nowMs: number }): OpIntents {
+  const carried = (author: string, replay: boolean) => author !== ctx.deviceId || replay;
   if (!op.intent) {
     const author = mintedCarried(op) ? "" : ctx.deviceId;
     const minted: Incoming = { id: mintIntentId(ctx.nowMs), author, carried: carried(author, false), appliedAtMs: ctx.nowMs, seq: ctx.seq, replay: false };

@@ -74,7 +74,7 @@ import type { ShareOutcome } from "../share/links";
 import { checkFence, checkLinkRoot, type DownloadFence, type ShareFile, shareFile, shareInfo, shareListing } from "../share/space";
 import type { Pitr } from "./pitr";
 import { ChunkState } from "./schema";
-import { backfillLegacyIntents, intentsValid, LOST_CHANGE_RULE, type LostChangeRule, readIntents, trashHeld } from "./intents";
+import { backfillLegacyIntents, intentsValid, readIntents, trashHeld } from "./intents";
 import { readUsage } from "./usage";
 import {
   chunkKey,
@@ -339,7 +339,6 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     private spaceKeyCache: Uint8Array | undefined;
     clock: () => number = () => Date.now();
     sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-    lostChangeRule: LostChangeRule = LOST_CHANGE_RULE;
     snapshotPageNodes = 1000;
     private readonly traffic = new UsageTally();
     private usageArmed = false;
@@ -1106,7 +1105,6 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           baseSeq: Number(commit.baseSeq),
           nowMs: committedAtMs,
           committer: { deviceId: session.deviceId, userId: session.userId, deviceName: session.deviceName },
-          rule: this.lostChangeRule,
           authorize: (op, effect) => policy.authorize(session, op, effect),
         };
         const applier = new CommitApplier(this.sql, ctx);

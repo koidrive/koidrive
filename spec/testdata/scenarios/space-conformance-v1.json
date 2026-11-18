@@ -18,7 +18,7 @@
     "Commit expectations: error is the whole-call error code; missing lists content symbols whose chunk hashes must be exactly the error's missing_chunks; missing_some {contents, count, total} requires that missing_chunks holds exactly count hashes, each a chunk of those contents, and that the first decimal number in the error's message is total. Otherwise seq, results (one per op, in order; code, and where given node, name and reason, compared exactly) and changed (the node symbols with a NodeState in the result's changes, compared as a set). In changed and live, one symbol that is not bound yet binds to the one node the server reported that no other listed symbol names, such as a conflict copy that no result names.",
     "list_versions {node, cursor, limit}: cursor is absent (empty), a literal written with =, or {returned: k}, the next_cursor an earlier step bound to k; limit is 0 when absent. Expectations: error, count (the number of versions), versions (each with version symbol, seq and content) and next_cursor, which is either empty (the last page) or {bind: k}, which requires another page and keeps its cursor as k without looking inside it.",
     "nodes: each entry names a node and the fields it must have: parent, name, kind (DIR or FILE), status (LIVE or TRASHED), content_rev, meta_rev, meta_edit_rev, trash_group (a symbol, or null for none), pending_for (a name, or null for none), pending_by (the author of the intent that set the mark, or null for none), content (a content symbol, compared by size, manifest digest, executable bit and mtime_ns), intents {place?, content?, status?}, where each entry is null when the field holds no intent, or {id?, author?, replay?, applied_at_ms?} for the intent that set it: id is an intent symbol, author a device symbol or \"\" for an empty one, replay whether the value is carried and applied_at_ms the time the server first applied it, and the intent's over must be empty; trash_held (intent symbols, compared as a set: the trash's held list, RFC 0029 section 3.3), or absent: true when the server must not know the node. live lists every live node other than the root, as a set. head is the space's head_seq.",
-    "rule is A (the default) or B, the rule of RFC 0029 section 4 that the server runs for the whole scenario. A scenario whose covers include RFC0029-6 checks RFC 0029 section 6, which a runner may skip; the server runner skips it.",
+    "A scenario whose covers include RFC0029-6 checks RFC 0029 section 6, which a runner may skip; the server runner skips it.",
     "Steps without a device: revoke {device} revokes that device (RFC 0009) at at_ms. purge {at_ms} runs garbage collection at at_ms, which purges every trashed node older than the trash retention of 30 days. restore_storage {to_step} puts the space's storage back to its state right after step to_step (1-based, an earlier step), as a point-in-time restore the server does not see (RFC 0013), and every later step has a later at_ms; a device's next device_seq follows the restored state. rebuild {at_ms} exports the space at at_ms, which must be five minutes or more after the first commit the export lacks, rebuilds it from the export (RFC 0004 section 5) and requires the rebuilt nodes to equal the server's, intents and trash_held included, and the export to hold every tombstone an earlier purge wrote.",
     "Expected values are written by hand from the spec, RFC 0001, RFC 0002 sections 1 to 4, 9 and 11, RFC 0004 section 5, RFC 0006 section 8, RFC 0015, RFC 0016, RFC 0017, RFC 0018, RFC 0019, RFC 0026 and RFC 0029, not produced by either implementation.",
     "Every field a scenario uses is listed here. A runner fails a scenario that has an unknown field, or a field of the wrong type, rather than skipping the check."
@@ -14108,13 +14108,12 @@
       ]
     },
     {
-      "name": "rfc0029-an-authors-replayed-move-on-a-trashed-folder-is-superseded-under-rule-a",
+      "name": "rfc0029-an-authors-replayed-move-on-a-trashed-folder-is-superseded",
       "covers": [
         "RFC0029",
         "RFC0029-4",
         "RFC0029-3.4"
       ],
-      "rule": "A",
       "devices": {
         "a": {
           "name": "Laptop"
@@ -14273,180 +14272,6 @@
             }
           ],
           "live": []
-        }
-      ]
-    },
-    {
-      "name": "rfc0029-an-authors-replayed-move-on-a-trashed-folder-revives-it-under-rule-b",
-      "covers": [
-        "RFC0029",
-        "RFC0029-4",
-        "RFC0029-3.4"
-      ],
-      "rule": "B",
-      "devices": {
-        "a": {
-          "name": "Laptop"
-        },
-        "b": {
-          "name": "Desk"
-        },
-        "c": {
-          "name": "Phone"
-        }
-      },
-      "contents": {
-        "c1": {
-          "chunks": [
-            {
-              "text": "version 1"
-            }
-          ]
-        },
-        "c2": {
-          "chunks": [
-            {
-              "text": "version 2"
-            }
-          ]
-        },
-        "c3": {
-          "chunks": [
-            {
-              "text": "version 3"
-            }
-          ]
-        },
-        "c4": {
-          "chunks": [
-            {
-              "text": "version 4"
-            }
-          ]
-        }
-      },
-      "steps": [
-        {
-          "device": "a",
-          "at_ms": 1794268800000,
-          "commit": {
-            "base_seq": 0,
-            "ops": [
-              {
-                "create_dir": {
-                  "node": "d",
-                  "parent": "root",
-                  "name": "A",
-                  "intent": {
-                    "id": "i1",
-                    "author": "a"
-                  }
-                }
-              }
-            ]
-          },
-          "expect": {
-            "seq": 1,
-            "results": [
-              {
-                "code": "APPLIED"
-              }
-            ],
-            "changed": [
-              "d"
-            ]
-          }
-        },
-        {
-          "device": "b",
-          "at_ms": 1794268860000,
-          "commit": {
-            "base_seq": 1,
-            "ops": [
-              {
-                "delete": {
-                  "node": "d",
-                  "intent": {
-                    "id": "i3",
-                    "author": "b"
-                  }
-                }
-              }
-            ]
-          },
-          "expect": {
-            "seq": 2,
-            "results": [
-              {
-                "code": "APPLIED"
-              }
-            ],
-            "changed": [
-              "d"
-            ]
-          }
-        },
-        {
-          "device": "a",
-          "at_ms": 1794268920000,
-          "commit": {
-            "base_seq": 1,
-            "ops": [
-              {
-                "move": {
-                  "node": "d",
-                  "parent": "root",
-                  "name": "B",
-                  "intent": {
-                    "id": "i2",
-                    "author": "a",
-                    "replay": true,
-                    "over": "i1",
-                    "applied_at_ms": 1794268830000
-                  }
-                }
-              }
-            ]
-          },
-          "expect": {
-            "seq": 3,
-            "results": [
-              {
-                "code": "APPLIED"
-              }
-            ],
-            "changed": [
-              "d"
-            ]
-          }
-        },
-        {
-          "nodes": [
-            {
-              "node": "d",
-              "status": "LIVE",
-              "name": "B",
-              "trash_group": null,
-              "trash_held": [],
-              "intents": {
-                "place": {
-                  "id": "i2",
-                  "author": "a",
-                  "replay": false,
-                  "applied_at_ms": 1794268830000
-                },
-                "status": {
-                  "id": "i2",
-                  "author": "a",
-                  "replay": false,
-                  "applied_at_ms": 1794268830000
-                }
-              }
-            }
-          ],
-          "live": [
-            "d"
-          ]
         }
       ]
     },
@@ -16886,14 +16711,13 @@
       ]
     },
     {
-      "name": "rfc0029-an-authors-replay-of-a-value-the-field-holds-as-carried-changes-nothing-under-rule-a",
+      "name": "rfc0029-an-authors-replay-of-a-value-the-field-holds-as-carried-changes-nothing",
       "covers": [
         "RFC0029",
         "RFC0029-4",
         "RFC0029-3.1",
         "RFC0029-3.8"
       ],
-      "rule": "A",
       "devices": {
         "a": {
           "name": "Laptop"
@@ -17076,213 +16900,6 @@
                   "id": "ia",
                   "author": "a",
                   "replay": true,
-                  "applied_at_ms": 1794268830000
-                }
-              }
-            }
-          ]
-        },
-        {
-          "rebuild": {
-            "at_ms": 1794269340000
-          }
-        }
-      ]
-    },
-    {
-      "name": "rfc0029-an-authors-claim-of-a-carried-value-in-the-chain-clears-the-carried-flag-under-rule-b",
-      "covers": [
-        "RFC0029",
-        "RFC0029-4",
-        "RFC0029-3.1",
-        "RFC0029-3.8"
-      ],
-      "rule": "B",
-      "devices": {
-        "a": {
-          "name": "Laptop"
-        },
-        "b": {
-          "name": "Desk"
-        },
-        "c": {
-          "name": "Phone"
-        }
-      },
-      "contents": {
-        "c1": {
-          "chunks": [
-            {
-              "text": "version 1"
-            }
-          ]
-        },
-        "c2": {
-          "chunks": [
-            {
-              "text": "version 2"
-            }
-          ]
-        },
-        "c3": {
-          "chunks": [
-            {
-              "text": "version 3"
-            }
-          ]
-        },
-        "c4": {
-          "chunks": [
-            {
-              "text": "version 4"
-            }
-          ]
-        }
-      },
-      "steps": [
-        {
-          "device": "a",
-          "at_ms": 1794268800000,
-          "commit": {
-            "base_seq": 0,
-            "ops": [
-              {
-                "create_file": {
-                  "node": "f",
-                  "parent": "root",
-                  "name": "report.txt",
-                  "content": "c1",
-                  "intent": {
-                    "id": "i1",
-                    "author": "a"
-                  }
-                }
-              }
-            ]
-          },
-          "expect": {
-            "seq": 1,
-            "results": [
-              {
-                "code": "APPLIED"
-              }
-            ],
-            "changed": [
-              "f"
-            ]
-          }
-        },
-        {
-          "device": "b",
-          "at_ms": 1794268860000,
-          "commit": {
-            "base_seq": 1,
-            "ops": [
-              {
-                "update_content": {
-                  "node": "f",
-                  "content": "c2",
-                  "intent": {
-                    "id": "ia",
-                    "author": "a",
-                    "replay": true,
-                    "applied_at_ms": 1794268830000
-                  }
-                }
-              }
-            ]
-          },
-          "expect": {
-            "seq": 2,
-            "results": [
-              {
-                "code": "APPLIED"
-              }
-            ],
-            "changed": [
-              "f"
-            ]
-          }
-        },
-        {
-          "device": "a",
-          "at_ms": 1794268890000,
-          "list_versions": {
-            "node": "f"
-          },
-          "expect": {
-            "versions": [
-              {
-                "version": "v2"
-              },
-              {
-                "version": "v1"
-              }
-            ]
-          }
-        },
-        {
-          "nodes": [
-            {
-              "node": "f",
-              "content": "c2",
-              "content_rev": 2,
-              "intents": {
-                "content": {
-                  "id": "ia",
-                  "author": "a",
-                  "replay": true,
-                  "applied_at_ms": 1794268830000
-                }
-              }
-            }
-          ]
-        },
-        {
-          "device": "a",
-          "at_ms": 1794268920000,
-          "commit": {
-            "base_seq": 2,
-            "ops": [
-              {
-                "update_content": {
-                  "node": "f",
-                  "content": "c2",
-                  "source_version_id": "v2",
-                  "intent": {
-                    "id": "ia",
-                    "author": "a",
-                    "replay": true,
-                    "applied_at_ms": 1794268830000
-                  }
-                }
-              }
-            ]
-          },
-          "expect": {
-            "seq": 3,
-            "results": [
-              {
-                "code": "APPLIED"
-              }
-            ],
-            "changed": [
-              "f"
-            ]
-          }
-        },
-        {
-          "nodes": [
-            {
-              "node": "f",
-              "content": "c2",
-              "content_rev": 2,
-              "edit_rev": 3,
-              "intents": {
-                "content": {
-                  "id": "ia",
-                  "author": "a",
-                  "replay": false,
                   "applied_at_ms": 1794268830000
                 }
               }
@@ -19605,6 +19222,592 @@
           "rebuild": {
             "at_ms": 1794269340000
           }
+        }
+      ]
+    },
+    {
+      "name": "rfc0029-a-create-on-an-existing-id-whose-fields-do-not-all-hold-its-intents-and-values-is-rejected-id-exists",
+      "covers": [
+        "RFC0029",
+        "RFC0029-3.1"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        },
+        "b": {
+          "name": "Desk"
+        },
+        "c": {
+          "name": "Phone"
+        }
+      },
+      "contents": {
+        "c1": {
+          "chunks": [
+            {
+              "text": "version 1"
+            }
+          ]
+        },
+        "c2": {
+          "chunks": [
+            {
+              "text": "version 2"
+            }
+          ]
+        },
+        "c3": {
+          "chunks": [
+            {
+              "text": "version 3"
+            }
+          ]
+        },
+        "c4": {
+          "chunks": [
+            {
+              "text": "version 4"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "at_ms": 1794268800000,
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "d",
+                  "parent": "root",
+                  "name": "Docs",
+                  "intent": {
+                    "id": "id",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "d",
+                  "name": "a.txt",
+                  "content": "c1",
+                  "intent": {
+                    "id": "if",
+                    "author": "a"
+                  },
+                  "fields": {
+                    "content": {
+                      "id": "fc",
+                      "author": "a"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "d",
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794268860000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "d",
+                  "name": "a.txt",
+                  "content": "c1",
+                  "intent": {
+                    "id": "if",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "d",
+                  "name": "a.txt",
+                  "content": "c1",
+                  "intent": {
+                    "id": "if",
+                    "author": "a"
+                  },
+                  "fields": {
+                    "content": {
+                      "id": "fc",
+                      "author": "a"
+                    },
+                    "status": {
+                      "id": "fs",
+                      "author": "a"
+                    }
+                  }
+                }
+              },
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "d",
+                  "name": "a.txt",
+                  "content": "c2",
+                  "intent": {
+                    "id": "if",
+                    "author": "a"
+                  },
+                  "fields": {
+                    "content": {
+                      "id": "fc",
+                      "author": "a"
+                    }
+                  }
+                }
+              },
+              {
+                "create_dir": {
+                  "node": "d",
+                  "parent": "root",
+                  "name": "Docs",
+                  "intent": {
+                    "id": "id",
+                    "author": "a"
+                  },
+                  "fields": {
+                    "place": {
+                      "id": "dp",
+                      "author": "a"
+                    }
+                  }
+                }
+              },
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "d",
+                  "name": "a.txt",
+                  "content": "c1",
+                  "intent": {
+                    "id": "if",
+                    "author": "a"
+                  },
+                  "fields": {
+                    "content": {
+                      "id": "fc",
+                      "author": "a"
+                    }
+                  }
+                }
+              },
+              {
+                "create_dir": {
+                  "node": "d",
+                  "parent": "root",
+                  "name": "Docs",
+                  "intent": {
+                    "id": "id",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "REJECTED",
+                "reason": "ID_EXISTS"
+              },
+              {
+                "code": "REJECTED",
+                "reason": "ID_EXISTS"
+              },
+              {
+                "code": "REJECTED",
+                "reason": "ID_EXISTS"
+              },
+              {
+                "code": "REJECTED",
+                "reason": "ID_EXISTS"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": []
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "d",
+              "status": "LIVE",
+              "intents": {
+                "place": {
+                  "id": "id",
+                  "author": "a",
+                  "replay": false
+                },
+                "status": {
+                  "id": "id",
+                  "author": "a",
+                  "replay": false
+                }
+              }
+            },
+            {
+              "node": "f",
+              "status": "LIVE",
+              "parent": "d",
+              "content": "c1",
+              "intents": {
+                "place": {
+                  "id": "if",
+                  "author": "a",
+                  "replay": false
+                },
+                "content": {
+                  "id": "fc",
+                  "author": "a",
+                  "replay": false
+                },
+                "status": {
+                  "id": "if",
+                  "author": "a",
+                  "replay": false
+                }
+              }
+            }
+          ],
+          "live": [
+            "d",
+            "f"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc0029-a-replayed-folder-delete-keeps-a-create-made-after-a-restore-that-its-unseen-lists",
+      "covers": [
+        "RFC0029",
+        "RFC0029-3.3"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        },
+        "b": {
+          "name": "Desk"
+        },
+        "c": {
+          "name": "Phone"
+        }
+      },
+      "contents": {
+        "c1": {
+          "chunks": [
+            {
+              "text": "version 1"
+            }
+          ]
+        },
+        "c2": {
+          "chunks": [
+            {
+              "text": "version 2"
+            }
+          ]
+        },
+        "c3": {
+          "chunks": [
+            {
+              "text": "version 3"
+            }
+          ]
+        },
+        "c4": {
+          "chunks": [
+            {
+              "text": "version 4"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "at_ms": 1794268800000,
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_dir": {
+                  "node": "p",
+                  "parent": "root",
+                  "name": "P",
+                  "intent": {
+                    "id": "ip",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "p",
+                  "name": "a.txt",
+                  "content": "c1",
+                  "intent": {
+                    "id": "if",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "create_dir": {
+                  "node": "q",
+                  "parent": "root",
+                  "name": "Q",
+                  "intent": {
+                    "id": "iq",
+                    "author": "a"
+                  }
+                }
+              },
+              {
+                "create_file": {
+                  "node": "g",
+                  "parent": "q",
+                  "name": "b.txt",
+                  "content": "c1",
+                  "intent": {
+                    "id": "ig",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "p",
+              "f",
+              "q",
+              "g"
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794268860000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "delete": {
+                  "node": "p",
+                  "intent": {
+                    "id": "dp",
+                    "author": "b"
+                  }
+                }
+              },
+              {
+                "delete": {
+                  "node": "q",
+                  "intent": {
+                    "id": "dq",
+                    "author": "b"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              },
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "p",
+              "f",
+              "q",
+              "g"
+            ]
+          }
+        },
+        {
+          "restore_storage": {
+            "to_step": 1
+          }
+        },
+        {
+          "head": 1,
+          "live": [
+            "p",
+            "f",
+            "q",
+            "g"
+          ]
+        },
+        {
+          "device": "a",
+          "at_ms": 1794268920000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "create_file": {
+                  "node": "h",
+                  "parent": "p",
+                  "name": "c.txt",
+                  "content": "c2",
+                  "intent": {
+                    "id": "ih",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "h"
+            ]
+          }
+        },
+        {
+          "device": "c",
+          "at_ms": 1794268980000,
+          "commit": {
+            "base_seq": 2,
+            "ops": [
+              {
+                "delete": {
+                  "node": "p",
+                  "unseen": [
+                    "ih"
+                  ],
+                  "intent": {
+                    "id": "dp",
+                    "author": "b",
+                    "replay": true,
+                    "over": "ip",
+                    "applied_at_ms": 1794268860000
+                  }
+                }
+              },
+              {
+                "delete": {
+                  "node": "q",
+                  "unseen": [],
+                  "intent": {
+                    "id": "dq",
+                    "author": "b",
+                    "replay": true,
+                    "over": "iq",
+                    "applied_at_ms": 1794268860000
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 3,
+            "results": [
+              {
+                "code": "SUPERSEDED"
+              },
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f",
+              "q",
+              "g"
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "p",
+              "status": "LIVE"
+            },
+            {
+              "node": "f",
+              "status": "TRASHED"
+            },
+            {
+              "node": "h",
+              "status": "LIVE",
+              "parent": "p",
+              "content": "c2"
+            },
+            {
+              "node": "q",
+              "status": "TRASHED"
+            },
+            {
+              "node": "g",
+              "status": "TRASHED"
+            }
+          ],
+          "live": [
+            "p",
+            "h"
+          ]
         }
       ]
     }
