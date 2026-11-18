@@ -1603,5 +1603,8 @@ fn a_viewer_keeping_a_folder_reports_a_file_made_at_its_name() {
         b.settle();
     }
     let view = b.folder.view();
-    assert_eq!((view.state, view.problem.is_some()), (FolderState::UpToDate, true));
+    assert_eq!(
+        (view.state, view.problem.is_some()),
+        (FolderState::UpToDate, true)
+    );
 }
