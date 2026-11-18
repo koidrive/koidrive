@@ -35,6 +35,7 @@ pub(super) struct Deletion {
     pub(super) device: usize,
     at: u64,
     files: Vec<Deleted>,
+    unsent: BTreeSet<(usize, u128, u64)>,
     resendable: BTreeSet<i64>,
     pub(super) reached: bool,
     pub(super) gone: bool,
@@ -122,28 +123,29 @@ impl World {
         let server: BTreeMap<NodeId, RemoteNode> = (self.space.nodes().iter())
             .filter_map(|state| RemoteNode::from_state(state).ok())
             .collect();
-        let pending = |id: &NodeId| {
-            (0..self.devices.len())
-                .filter(|other| *other != d)
-                .any(|other| {
-                    (self.touched_nodes[other].get(id))
-                        .and_then(|ino| self.touches[other].get(ino))
-                        .is_some_and(|times| !times.is_empty())
-                })
-        };
+        let scope: Vec<_> = (synced.iter())
+            .filter(|(id, _)| {
+                target.is_some_and(|target| above(id).contains(target))
+                    || (files.iter()).any(|file| file.path.contains(id))
+            })
+            .collect();
+        let (touched, touches) = (&self.touched_nodes, &self.touches);
+        let unsent: BTreeSet<(usize, u128, u64)> = (0..self.devices.len())
+            .filter(|other| *other != d)
+            .flat_map(|other| {
+                (scope.iter())
+                    .filter_map(move |(id, _)| touched[other].get(*id))
+                    .flat_map(move |ino| {
+                        (touches[other].get(ino).into_iter().flatten())
+                            .map(move |at| (other, *ino, *at))
+                    })
+            })
+            .collect();
         let seen = target.is_some_and(|target| {
             synced.get(target).is_some()
-                && (synced.iter())
-                    .filter(|(id, _)| {
-                        above(id).contains(target)
-                            || (files.iter()).any(|file| file.path.contains(id))
-                    })
-                    .all(|(id, shape)| {
-                        !pending(id)
-                            && server
-                                .get(id)
-                                .is_some_and(|there| !there.trashed && there.shape.same(shape))
-                    })
+                && (scope.iter()).all(|(id, shape)| {
+                    (server.get(*id)).is_some_and(|there| !there.trashed && there.shape.same(shape))
+                })
         });
         let settled =
             (self.devices.iter()).all(|device| !device.rolled_back && !device.recovering());
@@ -156,6 +158,7 @@ impl World {
                     .filter(|write| self.exposed.contains_key(write) && !live.contains_key(write))
                     .collect(),
                 files,
+                unsent,
                 reached: false,
                 gone: false,
             };
@@ -189,15 +192,19 @@ impl World {
                         || (!at_node && self.copied.contains(&write))
                 })?;
                 let path: Vec<&NodeId> = std::iter::once(&node).chain(&file.path).collect();
-                let changed_since = (0..self.devices.len())
-                    .filter(|other| *other != deletion.device)
-                    .any(|other| {
-                        let inos: BTreeSet<u128> = (path.iter())
-                            .filter_map(|id| self.touched_nodes[other].get(*id).copied())
-                            .collect();
-                        (self.actions[other].range(deletion.at..))
-                            .any(|(_, (own, _))| inos.contains(own))
-                    });
+                let changed_since = (self.spent.iter()).any(|spent| {
+                    let owned = || {
+                        (self.actions[spent.device].get(&spent.at))
+                            .is_some_and(|(own, _)| *own == spent.ino)
+                    };
+                    let on_path = || {
+                        (path.iter())
+                            .any(|id| self.touched_nodes[spent.device].get(*id) == Some(&spent.ino))
+                    };
+                    spent.device != deletion.device
+                        && ((deletion.unsent).contains(&(spent.device, spent.ino, spent.at))
+                            || (spent.at >= deletion.at && owned() && on_path()))
+                });
                 (!changed_since).then_some((write, deletion.device))
             });
         match dropped {
