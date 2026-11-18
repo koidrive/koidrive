@@ -7,7 +7,7 @@ use crate::report::{AnsweredData, Decision, Done};
 use crate::{ipc, output};
 use koidrive_driver::{
     Answer, Credential, Driver, DriverError, FolderStatus, Limit, MAX_DELETIONS, Paths, Question,
-    QuestionKind, RecoveryGroup,
+    QuestionKind, RecoveryGroup, RestoreRequest,
 };
 use koidrive_ipc::{Request, Response};
 use serde_json::Value;
@@ -370,11 +370,12 @@ fn question_text_presented(question: &Question, presentation: QuestionPresentati
         return text;
     }
     for item in question.items.iter().take(ITEMS_SHOWN) {
-        text += &format!(
-            "  {} ({})\n",
-            printable(item.path.unquoted()),
-            count(item.files, "file")
-        );
+        let what = match item.restore {
+            Some(RestoreRequest::Version { .. }) => "an earlier version".to_owned(),
+            Some(RestoreRequest::FromTrash { .. }) => "from the trash".to_owned(),
+            None => count(item.files, "file"),
+        };
+        text += &format!("  {} ({what})\n", printable(item.path.unquoted()));
     }
     let more = question.items.len().saturating_sub(ITEMS_SHOWN);
     if more > 0 {

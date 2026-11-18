@@ -322,7 +322,14 @@ fn question(question: driver::Question) -> Option<Question> {
                     _ => NodeKind::Folder,
                 },
                 files: item.files,
-                detail: ItemDetail::Plain,
+                detail: match item.restore {
+                    Some(driver::RestoreRequest::FromTrash { .. }) => ItemDetail::RestoreFromTrash,
+                    Some(driver::RestoreRequest::Version {
+                        saved_at_ms: Some(version_at_ms),
+                        ..
+                    }) => ItemDetail::RestoreVersion { version_at_ms },
+                    _ => ItemDetail::Plain,
+                },
             })
             .collect(),
     })
@@ -898,6 +905,7 @@ mod tests {
                     device_name: None,
                     size: None,
                     modified_at_ms: None,
+                    restore: None,
                 },
                 driver::HeldItem {
                     node_id: "n2".into(),
@@ -907,6 +915,7 @@ mod tests {
                     device_name: None,
                     size: None,
                     modified_at_ms: None,
+                    restore: None,
                 },
             ],
         };

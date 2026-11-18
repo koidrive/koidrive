@@ -131,6 +131,7 @@ mod tests {
                 device_name: None,
                 size: None,
                 modified_at_ms: None,
+                restore: None,
             }],
             lineage: lineage.into(),
         }

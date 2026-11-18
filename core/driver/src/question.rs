@@ -84,6 +84,9 @@ pub struct HeldItem {
     /// For a file of a conflict, the modification time of its current version, in milliseconds since the epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modified_at_ms: Option<i64>,
+    /// For a restore asked for before recovery, what it brings back. The item's `node_id` is then the restore's ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<crate::RestoreRequest>,
 }
 
 impl HeldItem {
@@ -133,6 +136,7 @@ mod tests {
                 device_name: None,
                 size: None,
                 modified_at_ms: None,
+                restore: None,
             }],
             lineage: "q1".into(),
             recovery_cause: None,

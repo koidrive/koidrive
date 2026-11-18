@@ -510,6 +510,17 @@
         "path": {
           "type": "string"
         },
+        "restore": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestedData"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a restore asked for before recovery, what it brings back; `node_id` is then the restore's ID."
+        },
         "size": {
           "description": "For a file of a conflict, the size of its current version in bytes.",
           "format": "uint64",
@@ -777,6 +788,69 @@
         "unknown"
       ],
       "type": "string"
+    },
+    "RequestedData": {
+      "oneOf": [
+        {
+          "properties": {
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "parent_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "from_trash",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "node_id",
+            "parent_id",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "node_id": {
+              "type": "string"
+            },
+            "saved_at_ms": {
+              "description": "When the version was saved, in Unix milliseconds; null when the folder does not know it.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "version",
+              "type": "string"
+            },
+            "version_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "node_id",
+            "version_id",
+            "saved_at_ms"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "RevisionsData": {
       "properties": {

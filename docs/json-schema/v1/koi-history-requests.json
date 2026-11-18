@@ -490,6 +490,17 @@
         "path": {
           "type": "string"
         },
+        "restore": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestedData"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a restore asked for before recovery, what it brings back; `node_id` is then the restore's ID."
+        },
         "size": {
           "description": "For a file of a conflict, the size of its current version in bytes.",
           "format": "uint64",

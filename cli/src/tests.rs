@@ -1621,6 +1621,7 @@ fn held(
                 device_name: None,
                 size: None,
                 modified_at_ms: None,
+                restore: None,
             })
             .collect(),
     }
@@ -1649,6 +1650,7 @@ fn conflict(copy_path: &str) -> Question {
         device_name: Some(name.into()),
         size: None,
         modified_at_ms: None,
+        restore: None,
     };
     Question {
         kind: QuestionKind::Conflict {

@@ -696,6 +696,7 @@ fn the_app_claims_pairs_links_and_follows_the_daemon() {
             device_name: None,
             size: None,
             modified_at_ms: None,
+            restore: None,
         }],
     };
     let noticed = driver::Question {

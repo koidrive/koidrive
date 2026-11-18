@@ -408,6 +408,9 @@ pub struct Item {
     /// For a file of a conflict, the modification time of its current version, in milliseconds since the epoch.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modified_at_ms: Option<i64>,
+    /// For a restore asked for before recovery, what it brings back; `node_id` is then the restore's ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restore: Option<RequestedData>,
 }
 
 #[derive(Debug, PartialEq, Serialize, JsonSchema)]
@@ -527,6 +530,7 @@ impl Decision {
                     device_name: item.device_name.clone(),
                     size: item.size,
                     modified_at_ms: item.modified_at_ms,
+                    restore: item.restore.as_ref().map(RequestedData::from),
                 })
                 .collect(),
             answers: (crate::choices(question).into_iter())
@@ -1253,32 +1257,38 @@ pub enum RequestState {
     DoesNotFit,
 }
 
+impl From<&RestoreRequest> for RequestedData {
+    fn from(request: &RestoreRequest) -> Self {
+        match request {
+            RestoreRequest::FromTrash {
+                node_id,
+                parent_id,
+                name,
+            } => RequestedData::FromTrash {
+                node_id: node_id.clone(),
+                parent_id: parent_id.clone(),
+                name: name.clone(),
+            },
+            RestoreRequest::Version {
+                node_id,
+                version_id,
+                saved_at_ms,
+            } => RequestedData::Version {
+                node_id: node_id.clone(),
+                version_id: version_id.clone(),
+                saved_at_ms: *saved_at_ms,
+            },
+        }
+    }
+}
+
 impl RequestData {
     pub fn of(restore: &RestoreStatus) -> Self {
         RequestData {
             id: restore.id.clone(),
             path: restore.path.clone().map(String::from),
             asked_at_ms: restore.asked_at_ms,
-            request: match &restore.request {
-                RestoreRequest::FromTrash {
-                    node_id,
-                    parent_id,
-                    name,
-                } => RequestedData::FromTrash {
-                    node_id: node_id.clone(),
-                    parent_id: parent_id.clone(),
-                    name: name.clone(),
-                },
-                RestoreRequest::Version {
-                    node_id,
-                    version_id,
-                    saved_at_ms,
-                } => RequestedData::Version {
-                    node_id: node_id.clone(),
-                    version_id: version_id.clone(),
-                    saved_at_ms: *saved_at_ms,
-                },
-            },
+            request: RequestedData::from(&restore.request),
             state: match &restore.state {
                 RestoreState::Pending { waits_for } => RequestState::Pending {
                     waits_for: waits_for.map(|wait| match wait {
@@ -1589,6 +1599,7 @@ mod tests {
                     device_name: None,
                     size: None,
                     modified_at_ms: None,
+                    restore: None,
                 },
                 HeldItem {
                     node_id: "n2".into(),
@@ -1598,6 +1609,7 @@ mod tests {
                     device_name: None,
                     size: None,
                     modified_at_ms: None,
+                    restore: None,
                 },
             ],
         }
