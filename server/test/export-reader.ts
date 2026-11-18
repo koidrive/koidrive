@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { create, fromBinary } from "@bufbuild/protobuf";
-import { BinaryReader } from "@bufbuild/protobuf/wire";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { BinaryReader, BinaryWriter } from "@bufbuild/protobuf/wire";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { ExportHeaderSchema, NodeSnapshotSchema } from "../src/gen/koidrive/v1/export_pb";
@@ -50,17 +50,17 @@ export interface Restored {
   tombstones: Map<string, NodePurged>;
 }
 
-function legacyIntent(nodeId: string, field: Field, key: string): Intent {
-  return create(IntentSchema, { id: intentBytes(legacyIntentId(nodeId, field, key)) });
+function legacyIntent(nodeId: string, field: Field, key: string, appliedAtMs: bigint | undefined): Intent {
+  return create(IntentSchema, { id: intentBytes(legacyIntentId(nodeId, field, key)), appliedAtMs: appliedAtMs ?? 0n });
 }
 
-function withLegacyIntents(state: NodeState, liveSeq: bigint): NodeState {
+function withLegacyIntents(state: NodeState, liveSeq: bigint, committedAt: Map<bigint, bigint>): NodeState {
   if (state.intents) return state;
   const status = state.status === NodeStatus.LIVE ? `live:${liveSeq}` : `trashed:${state.trashGroup}`;
   const intents = create(FieldIntentsSchema, {
-    place: legacyIntent(state.nodeId, "place", legacyPlaceKey(Number(state.metaRev), state.parentId === "" ? null : state.parentId, state.name)),
-    content: state.current ? legacyIntent(state.nodeId, "content", state.current.versionId) : undefined,
-    status: legacyIntent(state.nodeId, "status", status),
+    place: legacyIntent(state.nodeId, "place", legacyPlaceKey(Number(state.metaRev), state.parentId === "" ? null : state.parentId, state.name), committedAt.get(state.metaRev)),
+    content: state.current ? legacyIntent(state.nodeId, "content", state.current.versionId, committedAt.get(state.contentRev)) : undefined,
+    status: legacyIntent(state.nodeId, "status", status, committedAt.get(state.status === NodeStatus.LIVE ? liveSeq : state.metaRev)),
   });
   return create(NodeStateSchema, { ...state, intents });
 }
@@ -90,6 +90,23 @@ async function json<T>(key: string): Promise<T | undefined> {
   return object ? ((await object.json()) as T) : undefined;
 }
 
+async function logSegments(prefix: string): Promise<{ key: string; first: number; last: number }[]> {
+  return (await keys(prefix + "log/"))
+    .map((key) => {
+      const [first, last] = key.slice(key.lastIndexOf("/") + 1, -".fblog".length).split("-").map(Number);
+      return { key, first: first!, last: last! };
+    })
+    .sort((a, b) => a.first - b.first);
+}
+
+async function historyRestoreSeq(prefix: string, descriptor: Record<string, unknown>, segments: { first: number }[]): Promise<number> {
+  if (Number(descriptor.rewind_number) === 0) return 0;
+  if (segments.length > 0) return segments[0]!.first - 1;
+  const starts = (await keys(prefix + "snap/")).filter((key) => key.endsWith("/manifest.json")).map((key) => Number(key.split("/").at(-2)));
+  if (starts.length === 0) throw new Error(`the history at ${prefix} has neither a log nor a snapshot`);
+  return Math.min(...starts);
+}
+
 async function keys(prefix: string): Promise<string[]> {
   const out: string[] = [];
   let cursor: string | undefined;
@@ -101,7 +118,7 @@ async function keys(prefix: string): Promise<string[]> {
   return out;
 }
 
-function replay(nodes: Map<string, RestoredNode>, tombstones: Map<string, NodePurged>, liveSince: Map<string, bigint>, record: CommitRecord): void {
+function replay(nodes: Map<string, RestoredNode>, tombstones: Map<string, NodePurged>, liveSince: Map<string, bigint>, committedAt: Map<bigint, bigint>, record: CommitRecord): void {
   for (const { change } of record.changes) {
     if (change.case === "purged") {
       nodes.delete(change.value.nodeId);
@@ -113,7 +130,7 @@ function replay(nodes: Map<string, RestoredNode>, tombstones: Map<string, NodePu
     const known = nodes.get(change.value.nodeId);
     const revived = change.value.status === NodeStatus.LIVE && known?.state.status !== NodeStatus.LIVE;
     if (revived) liveSince.set(change.value.nodeId, record.seq);
-    const incoming = withLegacyIntents(change.value, liveSince.get(change.value.nodeId) ?? 0n);
+    const incoming = withLegacyIntents(change.value, liveSince.get(change.value.nodeId) ?? 0n, committedAt);
     const version = incoming.current;
     const held = version && (known?.state.current?.versionId === version.versionId ? known.state.current : known?.previous.get(version.versionId)?.version);
     if (held && version) {
@@ -138,6 +155,28 @@ function replay(nodes: Map<string, RestoredNode>, tombstones: Map<string, NodePu
   }
 }
 
+export async function snapshotWithoutIntents(spaceId: string): Promise<void> {
+  const keys = (await env.BUCKET.list({ prefix: `spaces/${spaceId}/meta/` })).objects.map((object) => object.key);
+  const manifestKey = keys.filter((key) => key.endsWith("/manifest.json")).sort().at(-1)!;
+  const manifest = (await (await env.BUCKET.get(manifestKey))!.json()) as Manifest;
+  const pages = manifestKey.replace(/manifest\.json$/, "pages/");
+  for (const page of manifest.pages) {
+    const zipped = new Uint8Array(await (await env.BUCKET.get(pages + page.name))!.arrayBuffer());
+    const reader = new BinaryReader(new Uint8Array(await new Response(new Blob([zipped]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer()));
+    const writer = new BinaryWriter();
+    writer.bytes(reader.bytes());
+    while (reader.pos < reader.len) {
+      const record = fromBinary(NodeSnapshotSchema, reader.bytes());
+      if (record.node) record.node.intents = undefined;
+      writer.bytes(toBinary(NodeSnapshotSchema, record));
+    }
+    const file = new Uint8Array(await new Response(new Blob([writer.finish()]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
+    await env.BUCKET.put(pages + page.name, file);
+    Object.assign(page, { bytes: file.length, sha256: toHex(await sha256(file)) });
+  }
+  await env.BUCKET.put(manifestKey, JSON.stringify(manifest));
+}
+
 export async function restoreFromR2(spaceId: string): Promise<Restored> {
   const meta = `spaces/${spaceId}/meta/`;
   const descriptors: Record<string, unknown>[] = [];
@@ -147,7 +186,8 @@ export async function restoreFromR2(spaceId: string): Promise<Restored> {
     if (descriptor.format !== "koidrive.space" || descriptor.format_version !== 1) throw new Error(`unexpected descriptor ${key}`);
     descriptors.push(descriptor);
   }
-  const descriptor = descriptors.sort((a, b) => Number(b.rewind_number) - Number(a.rewind_number))[0];
+  descriptors.sort((a, b) => Number(b.rewind_number) - Number(a.rewind_number));
+  const descriptor = descriptors[0];
   if (!descriptor) throw new Error("no descriptor");
   const historyId = String(descriptor.history_id);
   const prefix = `${meta}${historyId}/`;
@@ -162,6 +202,7 @@ export async function restoreFromR2(spaceId: string): Promise<Restored> {
     const nodes = new Map<string, RestoredNode>();
     const tombstones = new Map<string, NodePurged>();
     const liveSince = new Map<string, bigint>();
+    const committedAt = new Map<bigint, bigint>();
     if (manifest) {
       if (manifest.format !== "koidrive.snapshot" || ![1, 2].includes(manifest.format_version) || manifest.history_id !== historyId) throw new Error("unexpected manifest");
       let missing = false;
@@ -193,29 +234,56 @@ export async function restoreFromR2(spaceId: string): Promise<Restored> {
       }
     } else {
       nodes.set(spaceId, {
-        state: withLegacyIntents(create(NodeStateSchema, { nodeId: spaceId, kind: NodeKind.DIR, status: NodeStatus.LIVE }), 0n),
+        state: withLegacyIntents(create(NodeStateSchema, { nodeId: spaceId, kind: NodeKind.DIR, status: NodeStatus.LIVE }), 0n, committedAt),
         previous: new Map(),
         trashedAtMs: 0n,
       });
     }
 
     const startSeq = manifest?.start_seq ?? 0;
-    const segments = (await keys(prefix + "log/"))
-      .map((key) => {
-        const [first, last] = key.slice(key.lastIndexOf("/") + 1, -".fblog".length).split("-").map(Number);
-        return { key, first: first!, last: last! };
-      })
-      .sort((a, b) => a.first - b.first)
-      .filter((segment) => segment.last > startSeq);
+    const segments = await logSegments(prefix);
+    const earlier: CommitRecord[] = [];
+    let limit = startSeq;
+    for (const history of descriptors) {
+      const historyPrefix = `${meta}${String(history.history_id)}/`;
+      const historySegments = history === descriptor ? segments : await logSegments(historyPrefix);
+      const restoreSeq = await historyRestoreSeq(historyPrefix, history, historySegments);
+      for (const segment of historySegments.filter((segment) => segment.first <= limit)) {
+        const bytes = new Uint8Array(await (await env.BUCKET.get(segment.key))!.arrayBuffer());
+        for (const frame of await frames(bytes, "koidrive.log", 1, spaceId, String(history.history_id))) {
+          const record = fromBinary(CommitRecordSchema, frame);
+          if (record.seq > BigInt(restoreSeq) && record.seq <= BigInt(limit)) earlier.push(record);
+        }
+      }
+      limit = Math.min(limit, restoreSeq);
+      if (limit === 0) break;
+    }
+    const wasLive = new Set<string>();
+    for (const record of earlier.sort((a, b) => Number(a.seq - b.seq))) {
+      committedAt.set(record.seq, record.committedAtMs);
+      for (const { change } of record.changes) {
+        if (change.case === "purged") wasLive.delete(change.value.nodeId);
+        if (change.case !== "node") continue;
+        const id = change.value.nodeId;
+        if (change.value.status !== NodeStatus.LIVE) wasLive.delete(id);
+        else if (!wasLive.has(id)) {
+          wasLive.add(id);
+          liveSince.set(id, record.seq);
+        }
+      }
+    }
+    for (const [id, node] of nodes) nodes.set(id, { ...node, state: withLegacyIntents(node.state, liveSince.get(id) ?? 0n, committedAt) });
     let next = startSeq + 1;
-    for (const [i, segment] of segments.entries()) {
+    for (const [i, segment] of segments.filter((segment) => segment.last > startSeq).entries()) {
       if (i === 0 ? segment.first > next : segment.first !== next) throw new Error(`the log does not chain at ${segment.key}`);
       const object = (await env.BUCKET.get(segment.key))!;
       let seq = segment.first;
       for (const frame of await frames(new Uint8Array(await object.arrayBuffer()), "koidrive.log", 1, spaceId, historyId)) {
         const record = fromBinary(CommitRecordSchema, frame);
         if (Number(record.seq) !== seq++) throw new Error(`${segment.key} skips a seq`);
-        if (record.seq > BigInt(startSeq)) replay(nodes, tombstones, liveSince, record);
+        if (record.seq <= BigInt(startSeq)) continue;
+        committedAt.set(record.seq, record.committedAtMs);
+        replay(nodes, tombstones, liveSince, committedAt, record);
       }
       if (seq !== segment.last + 1) throw new Error(`${segment.key} ends early`);
       next = seq;

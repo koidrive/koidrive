@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { create, fromBinary, type MessageInitShape, toBinary } from "@bufbuild/protobuf";
-import { runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { vi } from "vitest";
 import { type CommitResult, type Op, OpSchema, UploadReceiptSchema, type UploadReceipt } from "../src/gen/koidrive/v1/commit_pb";
@@ -11,6 +11,7 @@ import { ChunkPlan_Action, type Error as RpcError } from "../src/gen/koidrive/v1
 import { sha256, signChunkGrant } from "../src/crypto";
 import { toHex, uuidv7 } from "../src/ids";
 import type { Session, SpaceDO } from "../src/space-do";
+import { MIGRATIONS } from "../src/space/schema";
 import { chunkKey, encodeChunkList } from "../src/space/store";
 
 export const ORIGIN = "https://koidrive.test";
@@ -77,6 +78,17 @@ export function freezeClock(instance: SpaceDO, atMs: number): void {
   instance.sleep = async (ms) => {
     nowMs += ms;
   };
+}
+
+export async function revertIntentsMigration(stub: Stub): Promise<void> {
+  await runInDurableObject(stub, (_instance, state) => {
+    const sql = state.storage.sql;
+    for (const table of ["field_intents", "trash_held", "tombstones"]) sql.exec(`DROP TABLE ${table}`);
+    sql.exec("ALTER TABLE nodes DROP COLUMN status_before");
+    sql.exec("ALTER TABLE nodes DROP COLUMN copy_mark");
+    sql.exec("UPDATE meta SET value = ? WHERE key = 'schema_version'", MIGRATIONS.length - 1);
+  });
+  await evictDurableObject(stub);
 }
 
 export function runSpaceAlarm(
