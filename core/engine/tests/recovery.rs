@@ -4649,7 +4649,12 @@ fn a_folder_renamed_after_a_publish_answer_trashes_again_the_folder_whose_name_a
     }
     moved_here(&mut trees, "a", dir(ROOT, "new"));
     let sent = ops(&mut commits, &mut trees, &mut ids);
-    assert!(sent.contains(&("delete", "b".into())), "{sent:?}");
+    let move_c = sent.iter().position(|op| *op == ("move", "c".into()));
+    let delete_b = sent.iter().position(|op| *op == ("delete", "b".into()));
+    assert!(
+        matches!((move_c, delete_b), (Some(moved), Some(deleted)) if moved < deleted),
+        "{sent:?}"
+    );
     applied(
         &mut commits,
         &mut trees,
@@ -4942,13 +4947,21 @@ fn a_move_out_of_an_answers_trash_group_to_the_root_goes_there_directly() {
     moved_here(&mut trees, "b", dir(ROOT, "b"));
     trees.remove_local("p");
     trees.settle(commits.aliases());
-    assert_eq!(
-        ops(&mut commits, &mut trees, &mut ids),
-        [
-            ("move", "a".into()),
-            ("move", "b".into()),
-            ("move", "p".into()),
-            ("delete", "p".into())
-        ]
+    let commit = commits
+        .build(&mut trees, &mut ids, NOW, NEW, "me", 1)
+        .unwrap();
+    let sent: Vec<&op::Op> = (commit.ops.iter())
+        .filter_map(|op| op.op.as_ref())
+        .collect();
+    assert!(
+        matches!(&sent[..], [op::Op::Move(a), op::Op::Move(b), op::Op::Move(p), op::Op::Delete(deleted)]
+            if a.node_id == "a"
+                && b.node_id == "b"
+                && b.new_parent_id == ROOT
+                && b.new_name == "b"
+                && b.pending_for.is_empty()
+                && p.node_id == "p"
+                && deleted.node_id == "p"),
+        "{sent:?}"
     );
 }
