@@ -730,6 +730,10 @@ impl Journal {
         (self.history.get(&(node.to_owned(), field))).map_or(&[], Vec::as_slice)
     }
 
+    pub fn placed_under(&self, parent: &str) -> impl Iterator<Item = NodeId> {
+        self.rows.under(parent).into_iter().map(|(node, _)| node)
+    }
+
     pub fn seen(&self, node: &str) -> &[Seen] {
         self.seen.get(node).map_or(&[], Vec::as_slice)
     }
@@ -988,11 +992,14 @@ impl Journal {
             .map(|flight| flight.intent)
     }
 
-    pub fn merged_into(&mut self, node: &str, target: &str) {
+    pub fn merged_into(&mut self, node: &str, target: &str, children_moved: bool) {
         self.end(node, Field::Place);
         self.end(node, Field::Status);
         if let Some(row) = self.rows.remove(&(node.to_owned(), Field::Content)) {
             self.rows.insert((target.to_owned(), Field::Content), row);
+        }
+        if !children_moved {
+            return;
         }
         for key in self.rows.under(node) {
             self.rows.update(&key, |row| {
