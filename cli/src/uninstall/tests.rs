@@ -219,19 +219,20 @@ fn the_summary_names_what_stays_and_how_to_revoke_a_device_still_listed() {
 
 #[test]
 fn only_what_koidrive_writes_leaves_a_state_folder() {
-    assert!(Paths::STATE_ENTRIES.contains(&RECORD));
+    let entry = |name: &str| Paths::state_entry(Path::new(name));
+    assert_eq!(entry(RECORD), Some(StateEntry::File));
     for name in [
         "credential.json",
         "credential.next",
         "pending-claim.json",
         ".pending-claim.json.42.tmp",
-        "creates",
+        koidrive_state_file::MADE,
         ".credential.next.123.tmp",
         ".credential.json.9.tmp",
         "leaving.next",
         ".tmpA1b2C3",
     ] {
-        assert!(is_state_entry(name), "{name}");
+        assert_eq!(entry(name), Some(StateEntry::File), "{name}");
     }
     for name in [
         "wedding.jpg",
@@ -242,17 +243,165 @@ fn only_what_koidrive_writes_leaves_a_state_folder() {
         ".tmp-backup",
         ".tmpA1b2C3d",
     ] {
-        assert!(!is_state_entry(name), "{name}");
+        assert_eq!(entry(name), None, "{name}");
     }
 }
 
 #[test]
-fn an_abandoned_helper_stage_is_removed_before_state_inventory() {
+fn a_state_folder_the_service_unit_creates_goes_whole() {
     let dir = tempfile::tempdir().unwrap();
-    let staged = koidrive_state_file::AtomicFile::prepare(&dir.path().join(RECORD)).unwrap();
-    staged.as_file().write_all(b"unpublished state").unwrap();
-    rustix::fs::flock(staged.as_file(), rustix::fs::FlockOperation::Unlock).unwrap();
-    assert!(is_state(dir.path()));
-    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
-    assert!(!dir.path().join(RECORD).exists());
+    let paths = Paths::under(dir.path());
+    let service =
+        crate::service::Service::new(&paths, dir.path(), Path::new("/usr/local/bin/koi")).unwrap();
+
+    service.write_unit().unwrap();
+
+    assert!(is_state(&paths.state_dir));
+    let mut run = Run::default();
+    run.remove_dir(&paths.state_dir, Paths::state_entry);
+    assert!(!paths.state_dir.exists(), "{:?}", run.kept);
+}
+
+#[test]
+fn only_a_state_folder_koidrive_made_is_state_and_has_its_stages_recovered() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("koidrive");
+    koidrive_state_file::create_dir(&state, &state).unwrap();
+    let theirs = dir.path().join("Backup");
+    fs::create_dir(&theirs).unwrap();
+    let staged = [&state, &theirs].map(|folder| {
+        let staged = koidrive_state_file::AtomicFile::prepare(&folder.join(RECORD)).unwrap();
+        staged.as_file().write_all(b"unpublished state").unwrap();
+        rustix::fs::flock(staged.as_file(), rustix::fs::FlockOperation::Unlock).unwrap();
+        staged
+    });
+
+    assert!(is_state(&state));
+    assert!(!is_state(&theirs));
+    let mut run = Run::default();
+    run.remove_dir(&state, Paths::state_entry);
+
+    assert!(!state.exists(), "{:?}", run.kept);
+    assert_eq!(fs::read_dir(&theirs).unwrap().count(), 1);
+    drop(staged);
+}
+
+#[test]
+fn a_state_folder_koidrive_did_not_make_is_named_with_the_command_that_removes_it() {
+    assert_eq!(
+        kept_text(&[Kept::UnrecordedState {
+            path: "/srv/state/koidrive".into(),
+        }]),
+        "Kept /srv/state/koidrive, because Koidrive has no record of creating it. If it holds only Koidrive's files, delete it with: rm -rf /srv/state/koidrive\n"
+    );
+}
+
+#[test]
+fn a_state_folder_loses_only_entries_of_the_shape_koidrive_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("koidrive");
+    let space = "0190f0a0-0000-7000-8000-00000000000a";
+    let request = format!("requests/{}.json", "ab".repeat(32));
+    let write = |rel: &str| {
+        let path = state.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, rel).unwrap();
+    };
+    let ours = [
+        "credential.json".to_owned(),
+        ".credential.json.7.tmp".to_owned(),
+        format!("spaces/{space}/store.sqlite"),
+        format!("spaces/{space}/.tmpA1b2C3"),
+        "telemetry/send.lock".to_owned(),
+    ];
+    let theirs = [
+        "lock/keys.txt".to_owned(),
+        "systemd".to_owned(),
+        "spaces/Photos/.credential.json.7.tmp".to_owned(),
+        format!("{request}/draft.txt"),
+    ];
+    for rel in ours.iter().chain(&theirs) {
+        write(rel);
+    }
+
+    let mut run = Run::default();
+    run.remove_dir(&state, Paths::state_entry);
+
+    assert_eq!(run.problems, Vec::<String>::new());
+    for rel in &theirs {
+        assert_eq!(fs::read_to_string(state.join(rel)).unwrap(), *rel);
+    }
+    for rel in &ours {
+        assert!(!state.join(rel).exists(), "{rel}");
+    }
+    let shown = |rel: &str| match rel {
+        "" => state.display().to_string(),
+        rel => state.join(rel).display().to_string(),
+    };
+    let mut removed = run.removed.clone();
+    removed.sort_by_key(|removed| format!("{removed:?}"));
+    let mut expected: Vec<_> = [
+        "credential.json",
+        ".credential.json.7.tmp",
+        &format!("spaces/{space}"),
+        "telemetry",
+    ]
+    .into_iter()
+    .map(|rel| Removed::Files { path: shown(rel) })
+    .collect();
+    expected.sort_by_key(|removed| format!("{removed:?}"));
+    assert_eq!(removed, expected);
+    let mut kept = run.kept.clone();
+    kept.sort_by_key(|kept| format!("{kept:?}"));
+    let mut expected: Vec<_> = ["", "requests", "spaces"]
+        .into_iter()
+        .map(|rel| Kept::Unrecognized { path: shown(rel) })
+        .collect();
+    expected.sort_by_key(|kept| format!("{kept:?}"));
+    assert_eq!(kept, expected);
+}
+
+#[test]
+fn everything_koidrive_writes_in_a_state_folder_goes_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    let space = "0190f0a0-0000-7000-8000-00000000000a";
+    let store = paths.store(space).unwrap();
+    fs::create_dir_all(store.parent().unwrap()).unwrap();
+    let store = koidrive_store::Store::open(store).unwrap();
+    let telemetry = koidrive_telemetry::Store::new(&paths.state_dir);
+    telemetry.begin_prompt().unwrap();
+    let hold = telemetry.hold().unwrap();
+    let id = koidrive_ipc::RequestId::parse("r1").unwrap();
+    let key = koidrive_ipc::Key::new("folder link", serde_json::json!({}));
+    assert!(matches!(
+        crate::request::begin(&paths, &id, &key).unwrap(),
+        crate::request::Begun::Claimed(_)
+    ));
+    let service =
+        service::Service::new(&paths, dir.path(), Path::new("/usr/local/bin/koi")).unwrap();
+    let unit = service.file(service::ServiceManager::Systemd);
+    fs::create_dir_all(unit.parent().unwrap()).unwrap();
+    fs::write(&unit, service.unit()).unwrap();
+    let written = tree(&paths.state_dir);
+    drop((store, hold));
+
+    let mut run = Run::default();
+    run.remove_dir(&paths.state_dir, Paths::state_entry);
+
+    assert!(!paths.state_dir.exists(), "{written:#?}\n{:#?}", run.kept);
+    assert_eq!(run.kept, Vec::new());
+    assert_eq!(run.problems, Vec::<String>::new());
+}
+
+fn tree(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            found.extend(tree(&path));
+        }
+        found.push(path);
+    }
+    found
 }

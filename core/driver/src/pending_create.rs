@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::ffi::OsStr;
-use std::fs::{self, DirBuilder, File};
+use std::fs::{self, File};
 use std::future::Future;
 use std::io::{self, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use koidrive_net::{ApiError, Auth, Resend};
@@ -228,7 +228,7 @@ impl PendingCreate {
             .path
             .parent()
             .expect("a pending create has a directory");
-        DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        koidrive_state_file::create_dir(dir.parent().unwrap_or(dir), dir)?;
         let stage = AtomicFile::prepare(&self.path)?;
         stage
             .as_file()

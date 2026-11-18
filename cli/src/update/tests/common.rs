@@ -44,7 +44,7 @@ use super::reconcile::{
 #[cfg(target_os = "macos")]
 use super::reconcile::{discover_app_version, select_app_helper};
 
-use super::refuse_root;
+use super::{open_log, refuse_root};
 
 use super::release_source::RECONCILE;
 

@@ -716,6 +716,23 @@
           "type": "object"
         },
         {
+          "description": "A state folder that holds no record of Koidrive creating it, so uninstall left everything in it.",
+          "properties": {
+            "kind": {
+              "const": "unrecorded_state",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The file the removed `koi` command linked to.",
           "properties": {
             "kind": {

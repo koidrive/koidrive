@@ -14,7 +14,7 @@ pub struct Service {
     pub(super) suffix: Option<String>,
     pub(super) binary: String,
     pub(super) home: PathBuf,
-    pub(super) state_dir: PathBuf,
+    pub(super) paths: Paths,
     pub(super) env: Vec<(&'static str, Option<String>)>,
 }
 
@@ -42,7 +42,7 @@ impl Service {
             suffix,
             binary: text(&binary)?,
             home: home.to_path_buf(),
-            state_dir: paths.state_dir.clone(),
+            paths: paths.clone(),
             env: vec![
                 ("XDG_CONFIG_HOME", Some(text(&config_home)?)),
                 ("XDG_STATE_HOME", Some(text(&state_home)?)),
@@ -66,7 +66,15 @@ impl Service {
     }
 
     pub(super) fn unit_file(&self) -> PathBuf {
-        self.state_dir.join("systemd").join(self.unit_name())
+        self.paths.state_dir.join("systemd").join(self.unit_name())
+    }
+
+    pub(crate) fn write_unit(&self) -> Result<bool, String> {
+        let file = self.unit_file();
+        let dir = file.parent().expect("the unit file has a folder");
+        (self.paths.create_state_dir(dir))
+            .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
+        super::command::write(&file, &self.unit())
     }
 
     pub(super) fn plist_file(&self) -> PathBuf {

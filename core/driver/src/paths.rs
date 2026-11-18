@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 /// Where one profile keeps its files. A profile is one device credential and the stores it writes; the Linux CLI
@@ -27,29 +27,83 @@ pub enum PathsError {
     BadSpaceId(String),
 }
 
+/// What Koidrive writes at one path of a profile's state directory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StateEntry {
+    File,
+    Folder,
+}
+
 impl Paths {
-    /// The names Koidrive writes directly in a profile's state directory. Atomic writes add a temporary
-    /// `.<name>.<pid>.tmp` beside a file.
-    pub const STATE_ENTRIES: [&str; 18] = [
-        "credential.json",
-        "pending-claim.json",
-        "creates",
-        "credential.next",
-        "lock",
-        "service.lock",
-        "paused",
-        "update-check.json",
-        "update.log",
-        "setup-state.json",
-        "uninstall.json",
-        "leaving",
-        "leaving.next",
-        "spaces",
-        "requests",
-        "telemetry",
-        "systemd",
-        "daemon.sock",
-    ];
+    /// What Koidrive writes at `relative`, a path inside a profile's state directory, or none for a path it never
+    /// writes. A folder holds only the entries this names inside it. Older atomic writes left a temporary
+    /// `.<name>.<pid>.tmp` or `.tmpXXXXXX` beside a file.
+    pub fn state_entry(relative: &Path) -> Option<StateEntry> {
+        use StateEntry::{File, Folder};
+        let names: Vec<&str> = (relative.iter())
+            .map(OsStr::to_str)
+            .collect::<Option<_>>()?;
+        let entry = match names.as_slice() {
+            [
+                "credential.json"
+                | "pending-claim.json"
+                | "credential.next"
+                | "lock"
+                | "service.lock"
+                | "paused"
+                | "update-check.json"
+                | "update.log"
+                | "setup-state.json"
+                | "uninstall.json"
+                | "leaving"
+                | "leaving.next"
+                | "update-check.json.new"
+                | "daemon.sock",
+            ] => File,
+            [made] if *made == koidrive_state_file::MADE => File,
+            ["spaces" | "requests" | "creates" | "telemetry" | "systemd"]
+            | ["telemetry", "held"] => Folder,
+            ["creates", name] if is_create(name) => File,
+            ["spaces", id] if is_space_id(id) => Folder,
+            [
+                "spaces",
+                id,
+                "store.sqlite"
+                | "store.sqlite-wal"
+                | "store.sqlite-shm"
+                | "store.sqlite-journal"
+                | "lifecycle.json"
+                | "link.json"
+                | "unlinking"
+                | "first-sync",
+            ] if is_space_id(id) => File,
+            ["requests", name] if hex_named(name, ".json", 64) => File,
+            [
+                "telemetry",
+                "settings.json" | "prompt.json" | "queue-v2.json" | "queue.json" | "lock"
+                | "send.lock" | "settings.json.tmp" | "prompt.json.tmp" | "queue.json.tmp"
+                | "queue-v2.json.tmp",
+            ] => File,
+            ["telemetry", "held", name]
+                if [".json", ".lock", ".json.tmp"]
+                    .iter()
+                    .any(|end| hex_named(name, end, 32)) =>
+            {
+                File
+            }
+            ["systemd", "koidrive.service"] => File,
+            ["systemd", name]
+                if name
+                    .strip_prefix("koidrive-")
+                    .is_some_and(|name| hex_named(name, ".service", 8)) =>
+            {
+                File
+            }
+            [folder @ .., name] if is_temporary(folder, name) => File,
+            _ => return None,
+        };
+        Some(entry)
+    }
 
     /// The XDG base directories (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`) with their defaults under
     /// `HOME`. Relative values are ignored, as the XDG specification requires. Without `XDG_RUNTIME_DIR` the socket
@@ -152,10 +206,16 @@ impl Paths {
     /// The store of one space. Space ids come from the server, so only ids made of hex digits and dashes name a
     /// directory.
     pub fn store(&self, space_id: &str) -> Result<PathBuf, PathsError> {
-        if space_id.is_empty() || !space_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        if !is_space_id(space_id) {
             return Err(PathsError::BadSpaceId(space_id.to_owned()));
         }
         Ok(self.spaces().join(space_id).join("store.sqlite"))
+    }
+
+    /// Creates `dir`, the state folder or a folder inside it. When this call creates the state folder itself, it records
+    /// that Koidrive made it; see [`koidrive_state_file::made`].
+    pub fn create_state_dir(&self, dir: &Path) -> std::io::Result<()> {
+        koidrive_state_file::create_dir(&self.state_dir, dir)
     }
 
     pub fn private_dirs(&self) -> Vec<PathBuf> {
@@ -163,6 +223,46 @@ impl Paths {
         dirs.extend(self.config_file.parent().map(Path::to_path_buf));
         dirs
     }
+}
+
+fn is_space_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
+fn hex_named(name: &str, end: &str, len: usize) -> bool {
+    name.strip_suffix(end)
+        .is_some_and(|stem| stem.len() == len && stem.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+fn is_create(name: &str) -> bool {
+    ["claim-", "pair-", "space-", "share-link-"]
+        .iter()
+        .any(|kind| {
+            name.strip_prefix(kind)
+                .is_some_and(|name| hex_named(name, ".json", 64))
+        })
+}
+
+fn is_tempfile_random(text: &str) -> bool {
+    text.len() == 6 && text.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
+fn is_temporary(folder: &[&str], name: &str) -> bool {
+    let in_folder = folder.is_empty()
+        || Paths::state_entry(&folder.iter().collect::<PathBuf>()) == Some(StateEntry::Folder);
+    let beside_a_file = || {
+        name.strip_prefix('.')
+            .and_then(|name| name.strip_suffix(".tmp"))
+            .and_then(|name| name.rsplit_once('.'))
+            .is_some_and(|(file, pid)| {
+                !pid.is_empty()
+                    && pid.bytes().all(|byte| byte.is_ascii_digit())
+                    && Paths::state_entry(&folder.iter().chain([&file]).collect::<PathBuf>())
+                        == Some(StateEntry::File)
+            })
+    };
+    let tempfile = || name.strip_prefix(".tmp").is_some_and(is_tempfile_random);
+    in_folder && (beside_a_file() || tempfile())
 }
 
 #[cfg(test)]
@@ -256,5 +356,143 @@ mod tests {
         for bad in ["", "..", "a/b", "../etc", "space name"] {
             assert!(paths.store(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_state_layout_names_each_entry_koidrive_writes_by_its_shape() {
+        use StateEntry::{File, Folder};
+        let space = "0190f0a0-0000-7000-8000-00000000000a";
+        let request = format!("requests/{}.json", "ab".repeat(32));
+        let run = "cd".repeat(16);
+        for (path, entry) in [
+            ("credential.json", Some(File)),
+            (".credential.json.7.tmp", Some(File)),
+            (".tmpA1b2C3", Some(File)),
+            ("spaces", Some(Folder)),
+            (&format!("spaces/{space}"), Some(Folder)),
+            (&format!("spaces/{space}/store.sqlite-wal"), Some(File)),
+            (&format!("spaces/{space}/.store.sqlite.12.tmp"), Some(File)),
+            (&request, Some(File)),
+            (".koidrive-state", Some(File)),
+            ("update-check.json.new", Some(File)),
+            (&format!("spaces/{space}/lifecycle.json"), Some(File)),
+            (&format!("spaces/{space}/link.json"), Some(File)),
+            (&format!("spaces/{space}/unlinking"), Some(File)),
+            (&format!("spaces/{space}/first-sync"), Some(File)),
+            ("creates", Some(Folder)),
+            (
+                &format!("creates/space-{}.json", "ef".repeat(32)),
+                Some(File),
+            ),
+            ("telemetry/send.lock", Some(File)),
+            ("telemetry/held", Some(Folder)),
+            (&format!("telemetry/held/{run}.json.tmp"), Some(File)),
+            ("systemd/koidrive.service", Some(File)),
+            ("systemd/koidrive-0a1b2c3d.service", Some(File)),
+            ("plan.pdf", None),
+            (".notes.1.tmp", None),
+            (".credential.json.tmp", None),
+            ("spaces/plan.pdf", None),
+            ("spaces/Photos", None),
+            ("spaces/Photos/.credential.json.7.tmp", None),
+            (&format!("spaces/{space}/notes.txt"), None),
+            (&format!("{request}/draft.txt"), None),
+            ("requests/letter.docx", None),
+            ("requests/.DS_Store", None),
+            ("requests/.A1b2C3", None),
+            ("requests/.bashrc", None),
+            ("creates/notes.json", None),
+            (&format!("creates/backup-{}.json", "ef".repeat(32)), None),
+            ("telemetry/held/photo.jpg", None),
+            ("systemd/backup.service", None),
+            ("systemd/koidrive-backup.service", None),
+            ("credential.json/keys.txt", None),
+        ] {
+            assert_eq!(Paths::state_entry(Path::new(path)), entry, "{path}");
+        }
+    }
+
+    #[test]
+    fn every_file_a_linked_folder_writes_is_in_the_state_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let space = "0190f0a0-0000-7000-8000-00000000000a";
+        let store = paths.store(space).unwrap();
+        koidrive_state_file::create_dir(&paths.state_dir, store.parent().unwrap()).unwrap();
+        let link = koidrive_store::Link {
+            space_id: space.into(),
+            space_name: "Work".into(),
+            root: dir.path().join("Work"),
+            root_dev: 7,
+            root_volume: None,
+            server_url: "https://files.example.com/".into(),
+            device_id: "d1".into(),
+            linked_at_ms: 5,
+            found_marker: false,
+        };
+        let mut opened = koidrive_store::Store::open(&store).unwrap();
+        opened.transaction(|tx| tx.set_link(&link)).unwrap();
+        crate::link_copy::write(&store, &link).unwrap();
+        crate::timing::Timing::initialize(&store, 5, &koidrive_telemetry::Recorder::on());
+        let status = serde_json::from_value(serde_json::json!({
+            "space_id": space, "space_name": "Work", "path": "/Work",
+            "state": "stopped", "history_id": null, "last_seq": null,
+            "head_seq": null, "remote_nodes": 0, "local_entries": null,
+            "questions": 0, "problem": null,
+        }))
+        .unwrap();
+        let lifecycle =
+            crate::lifecycle::Lifecycle::open(&store, status, koidrive_telemetry::Recorder::off());
+        lifecycle.persist().unwrap();
+        lifecycle.begin_unlink().unwrap();
+        let create = crate::pending_create::PendingCreate::new(
+            &paths,
+            &"https://files.example.com/".parse().unwrap(),
+            crate::pending_create::Intent::Space {
+                user_id: "u1",
+                name: "Work",
+            },
+        );
+        let held = create.hold().unwrap();
+
+        let written = written(&paths.state_dir, Path::new(""));
+
+        drop((opened, held));
+        assert!(koidrive_state_file::made(&paths.state_dir));
+        for name in [
+            "lifecycle.json",
+            "link.json",
+            "unlinking",
+            "first-sync",
+            "store.sqlite",
+        ] {
+            let rel = Path::new("spaces").join(space).join(name);
+            assert!(written.contains(&rel), "{name}: {written:?}");
+        }
+        assert!(
+            written
+                .iter()
+                .any(|rel| rel.starts_with("creates") && rel != Path::new("creates"))
+        );
+        for rel in written {
+            let entry = match paths.state_dir.join(&rel).is_dir() {
+                true => StateEntry::Folder,
+                false => StateEntry::File,
+            };
+            assert_eq!(Paths::state_entry(&rel), Some(entry), "{}", rel.display());
+        }
+    }
+
+    fn written(state: &Path, rel: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(state.join(rel)).unwrap() {
+            let entry = entry.unwrap();
+            let rel = rel.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                found.extend(written(state, &rel));
+            }
+            found.push(rel);
+        }
+        found
     }
 }

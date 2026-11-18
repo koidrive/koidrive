@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use koidrive_driver::{Credential, Flock, Paths};
+use koidrive_driver::{Credential, Flock, Paths, StateEntry};
 use koidrive_ipc::{Request, Response};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -129,6 +129,10 @@ pub enum Kept {
     Unrecognized {
         path: String,
     },
+    /// A state folder that holds no record of Koidrive creating it, so uninstall left everything in it.
+    UnrecordedState {
+        path: String,
+    },
     /// The file the removed `koi` command linked to.
     LinkTarget {
         path: String,
@@ -248,7 +252,7 @@ impl Run {
         }
     }
 
-    fn remove_dir(&mut self, dir: &Path, ours: impl Fn(&str) -> bool) {
+    fn remove_dir(&mut self, dir: &Path, ours: impl Fn(&Path) -> Option<StateEntry>) {
         let shown = Removed::Files {
             path: dir.display().to_string(),
         };
@@ -268,40 +272,95 @@ impl Run {
                 path: dir.display().to_string(),
             });
         }
-        let mut gone = Vec::new();
-        let emptied = koidrive_state_file::recover(real)
-            .and_then(|_| fs::read_dir(real))
-            .and_then(|entries| {
-                let mut names = (entries.map(|entry| entry.map(|entry| entry.file_name())))
-                    .collect::<io::Result<Vec<_>>>()?;
-                names.sort_by_key(|name| name == RECORD);
-                for name in names {
-                    if name.to_str().is_some_and(&ours)
-                        && self.allowed(&real.join(&name))
-                        && remove_path(&real.join(&name))?
-                    {
-                        gone.push(dir.join(name));
-                    }
-                }
-                Ok(())
-            })
-            .and_then(|()| fs::remove_dir(real));
+        let mut left = Left {
+            own: koidrive_state_file::made(real),
+            ..Left::default()
+        };
+        let emptied =
+            self.empty(real, Path::new(""), &ours, &mut left)
+                .and_then(|empty| match empty {
+                    true => fs::remove_dir(real),
+                    false => Err(io::ErrorKind::DirectoryNotEmpty.into()),
+                });
+        let shown_at = |rel: &Path| match rel.as_os_str().is_empty() {
+            true => dir.display().to_string(),
+            false => dir.join(rel).display().to_string(),
+        };
         match emptied {
             Ok(()) if target.is_some() => self.remove(dir, shown),
             Ok(()) => self.removed.push(shown),
             Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => {
-                self.removed.extend(gone.iter().map(|path| Removed::Files {
-                    path: path.display().to_string(),
-                }));
-                self.kept.push(Kept::Unrecognized {
-                    path: dir.display().to_string(),
-                })
+                self.removed
+                    .extend(left.gone.iter().map(|rel| Removed::Files {
+                        path: shown_at(rel),
+                    }));
+                self.kept
+                    .extend(left.foreign.iter().map(|rel| Kept::Unrecognized {
+                        path: shown_at(rel),
+                    }));
             }
             Err(error) => self
                 .problems
                 .push(format!("cannot remove {}: {error}", shown_folder(dir))),
         }
     }
+
+    fn empty(
+        &mut self,
+        real: &Path,
+        rel: &Path,
+        ours: &dyn Fn(&Path) -> Option<StateEntry>,
+        left: &mut Left,
+    ) -> io::Result<bool> {
+        let dir = real.join(rel);
+        if left.own {
+            koidrive_state_file::recover(&dir)?;
+        }
+        let mut names = (fs::read_dir(&dir)?.map(|entry| entry.map(|entry| entry.file_name())))
+            .collect::<io::Result<Vec<_>>>()?;
+        names.sort_by_key(|name| (name == koidrive_state_file::MADE, name == RECORD));
+        let mut empty = true;
+        let mut foreign = false;
+        for name in names {
+            let rel = rel.join(name);
+            let path = real.join(&rel);
+            let folder = fs::symlink_metadata(&path)?.is_dir();
+            empty &= match ours(&rel) {
+                Some(_) if !self.allowed(&path) => false,
+                Some(StateEntry::Folder) if folder => {
+                    let mark = left.gone.len();
+                    let emptied = self.empty(real, &rel, ours, left)?;
+                    if emptied {
+                        fs::remove_dir(&path)?;
+                        left.gone.truncate(mark);
+                        left.gone.push(rel);
+                    }
+                    emptied
+                }
+                Some(StateEntry::File) if !folder => {
+                    if remove_path(&path)? {
+                        left.gone.push(rel);
+                    }
+                    true
+                }
+                _ => {
+                    foreign = true;
+                    false
+                }
+            };
+        }
+        if foreign {
+            left.foreign.push(rel.to_path_buf());
+        }
+        Ok(empty)
+    }
+}
+
+#[derive(Default)]
+struct Left {
+    own: bool,
+    gone: Vec<PathBuf>,
+    foreign: Vec<PathBuf>,
 }
 
 fn holds(outer: &Path, inner: &Path) -> bool {
@@ -321,30 +380,8 @@ fn holds(outer: &Path, inner: &Path) -> bool {
         .any(|dir| dir.dev() == outer.dev() && dir.ino() == outer.ino())
 }
 
-fn is_state_entry(name: &str) -> bool {
-    let known = |name: &str| Paths::STATE_ENTRIES.contains(&name);
-    known(name)
-        || name.strip_prefix(".tmp").is_some_and(|random| {
-            random.len() == 6 && random.chars().all(|c| c.is_ascii_alphanumeric())
-        })
-        || name
-            .strip_prefix('.')
-            .and_then(|name| name.strip_suffix(".tmp"))
-            .and_then(|name| name.rsplit_once('.'))
-            .is_some_and(|(name, pid)| known(name) && pid.chars().all(|c| c.is_ascii_digit()))
-}
-
 fn is_state(dir: &Path) -> bool {
-    if fs::symlink_metadata(dir.join(".koidrive")).is_ok() {
-        return false;
-    }
-    koidrive_state_file::recover(dir).is_ok_and(|recovered| recovered > 0)
-        || fs::read_dir(dir).is_ok_and(|entries| {
-            entries.flatten().any(|entry| {
-                entry.file_type().is_ok_and(|kind| !kind.is_dir())
-                    && entry.file_name().to_str().is_some_and(is_state_entry)
-            })
-        })
+    fs::symlink_metadata(dir.join(".koidrive")).is_err() && koidrive_state_file::made(dir)
 }
 
 fn dangling(path: &Path) -> bool {
@@ -412,11 +449,16 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
     }
     for file in &found.files {
         if *file == paths.state_dir {
-            run.remove_dir(file, |name| {
-                is_state_entry(name) || (found.config_in_state && name == "config.toml")
+            run.remove_dir(file, |rel| {
+                Paths::state_entry(rel).or_else(|| {
+                    (found.config_in_state && rel == Path::new("config.toml"))
+                        .then_some(StateEntry::File)
+                })
             });
         } else if Some(file.as_path()) == paths.config_file.parent() {
-            run.remove_dir(file, |name| name == "config.toml");
+            run.remove_dir(file, |rel| {
+                (rel == Path::new("config.toml")).then_some(StateEntry::File)
+            });
         } else {
             run.remove(
                 file,
@@ -450,7 +492,14 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
 }
 
 async fn find(paths: &Paths, home: &Path) -> Found {
-    let recorded = read_record(paths);
+    let state = is_state(&paths.state_dir);
+    let unrecorded = !koidrive_state_file::made(&paths.state_dir)
+        && fs::metadata(&paths.state_dir).is_ok_and(|meta| meta.is_dir())
+        && fs::symlink_metadata(paths.state_dir.join(".koidrive")).is_err();
+    let recorded = match state {
+        true => read_record(paths),
+        false => Record::default(),
+    };
     let credential = paths.credential();
     let paired = credential.exists();
     let owner = Credential::load(&credential)
@@ -462,7 +511,6 @@ async fn find(paths: &Paths, home: &Path) -> Found {
         })
         .or(recorded.owner);
     let mut folders = recorded.folders;
-    let state = is_state(&paths.state_dir);
     if state
         && let Ok(Ok(Response::Status { status })) =
             tokio::time::timeout(STATUS, ipc::run(paths, Request::Status)).await
@@ -506,6 +554,9 @@ async fn find(paths: &Paths, home: &Path) -> Found {
     let mut kept = Vec::new();
     match state || dangling(&paths.state_dir) {
         true => files.push(paths.state_dir.clone()),
+        false if unrecorded => kept.push(Kept::UnrecordedState {
+            path: paths.state_dir.display().to_string(),
+        }),
         false if fs::symlink_metadata(&paths.state_dir).is_ok() => kept.push(Kept::Unrecognized {
             path: paths.state_dir.display().to_string(),
         }),
@@ -1458,6 +1509,11 @@ fn kept_text(kept: &[Kept]) -> String {
             Kept::Unrecognized { path } => format!(
                 "Kept {}, which holds files Koidrive does not write.",
                 shown(path)
+            ),
+            Kept::UnrecordedState { path } => format!(
+                "Kept {}, because Koidrive has no record of creating it. If it holds only Koidrive's files, delete it with: rm -rf {}",
+                shown(path),
+                crate::pairing::shell_word(path)
             ),
             Kept::LinkTarget { path } => {
                 format!("Kept {}, which the koi command linked to.", shown(path))

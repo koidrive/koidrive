@@ -2,7 +2,6 @@
 
 use std::fs;
 use std::io;
-use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 
 use koidrive_state_file::Flock;
@@ -49,10 +48,7 @@ impl Store {
         }
         self.remove_unanswered()?;
         let run = InstallId::generate().as_str().to_owned();
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(self.dir.join(HELD))?;
+        self.create_dir(&self.dir.join(HELD))?;
         let lock = self.flock(&format!("{HELD}/{run}.lock"), false)?;
         let id = settings.install_id.unwrap_or_else(InstallId::generate);
         let held = Held {

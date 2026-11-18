@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fs::{self, DirBuilder};
+use std::fs;
 use std::io;
-use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 
 use koidrive_cloudflare::Jurisdiction;
@@ -65,12 +64,14 @@ pub enum UninstallProgress {
 }
 
 pub struct StateFile {
+    paths: Paths,
     path: PathBuf,
 }
 
 impl StateFile {
     pub fn new(paths: &Paths) -> Self {
         StateFile {
+            paths: paths.clone(),
             path: paths.state_dir.join("setup-state.json"),
         }
     }
@@ -95,8 +96,7 @@ impl StateFile {
 
     pub fn save(&self, state: &SetupState) -> Result<(), CliError> {
         let write = || -> io::Result<()> {
-            let dir = self.path.parent().expect("the state file has a directory");
-            DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+            self.paths.create_state_dir(&self.paths.state_dir)?;
             koidrive_state_file::write(
                 &self.path,
                 &serde_json::to_vec_pretty(state).expect("the state serializes"),
