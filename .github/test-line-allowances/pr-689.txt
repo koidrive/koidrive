@@ -1,0 +1,3 @@
+97
+# Each test pins one order in which a watcher's scans can see the two ends of a move: old place first, new place first, a destination renamed after the move in either order, a destination the scan may not read or may only search, a hard link beside the file, a move over an empty folder, and the poll-later hold on Linux and macOS with and without time left.
+# A move that keeps its node in one order and splits into a removal plus a creation in another is the bug this change fixes, so no single test covers another's order.
