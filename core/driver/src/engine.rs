@@ -966,7 +966,12 @@ impl Engine {
                         .filter(|node| !staying.contains(*node))
                         .filter(|node| same_volume(&self.trees, &self.mounts, node, path))
                         .find(takes)
-                        .or_else(|| self.trees.displaced_with_identity(&identity).filter(takes))
+                        .or_else(|| {
+                            (self
+                                .trees
+                                .displaced_with_identity(&identity, tree_kind(*kind)))
+                            .filter(takes)
+                        })
                         .cloned()
                         .or_else(|| {
                             (gone.get(path))
@@ -1335,10 +1340,7 @@ fn resolve(
             (trees.locals_with_identity(identity).rev())
                 .filter(|node| holds_kind(trees, node, kind))
                 .find(|node| same_volume(trees, mounts, node, path))
-                .or_else(|| {
-                    (trees.displaced_with_identity(identity))
-                        .filter(|node| holds_kind(trees, node, kind))
-                })
+                .or_else(|| trees.displaced_with_identity(identity, tree_kind(kind)))
                 .filter(|_| !linked)
                 .cloned()
         })
@@ -1346,13 +1348,14 @@ fn resolve(
 }
 
 fn holds_kind(trees: &Trees, node: &NodeId, kind: EntryKind) -> bool {
-    let kind = match kind {
+    (trees.local().get(node)).is_none_or(|held| held.shape.kind == tree_kind(kind))
+}
+
+fn tree_kind(kind: EntryKind) -> Kind {
+    match kind {
         EntryKind::File => Kind::File,
         EntryKind::Dir => Kind::Dir,
-    };
-    (trees.local().get(node).map(|held| held.shape.kind))
-        .or_else(|| trees.remote().get(node).map(|held| held.shape.kind))
-        .is_none_or(|held| held == kind)
+    }
 }
 
 fn same_volume(
@@ -3648,10 +3651,9 @@ mod tests {
             kind: EntryKind::Dir,
         };
         engine.observe(&[replaced, created("x", ino(1), false, 2)], 1);
-        assert_ne!(
-            holding(&engine, "x").map(|(node, _, _)| node),
-            Some(removed)
-        );
+        let (node, identity, _) = holding(&engine, "x").unwrap();
+        assert_ne!(node, removed);
+        assert_eq!(identity, file_identity(ino(1)));
     }
 
     /// Names that the edits of [`batches`] pick from, few enough that entries often take each other's names.
