@@ -24,7 +24,6 @@ import {
   type FieldIntent,
   holdersOf,
   type Incoming,
-  type LostChangeRule,
   mintIntentId,
   type OpIntents,
   readIntents,
@@ -77,7 +76,6 @@ export interface ApplyContext {
   baseSeq: number;
   nowMs: number;
   committer: Committer;
-  rule: LostChangeRule;
   authorize(op: Op, effect: OpEffect): boolean;
 }
 
@@ -108,6 +106,10 @@ function superseded(): OpResult {
   return result(OpResult_Code.SUPERSEDED);
 }
 
+function unchanged(node: NodeRow): OpResult {
+  return result(OpResult_Code.APPLIED, "", node.name);
+}
+
 export class CommitApplier {
   private readonly remap = new Map<string, string>();
   private readonly touched = new Set<string>();
@@ -127,7 +129,7 @@ export class CommitApplier {
       this.changed = new Set();
       this.created = new Set();
       this.parentBefore = new Map();
-      this.intents = resolveIntents(op, { deviceId: this.dev, seq: this.ctx.seq, nowMs: this.ctx.nowMs, rule: this.ctx.rule });
+      this.intents = resolveIntents(op, { deviceId: this.dev, seq: this.ctx.seq, nowMs: this.ctx.nowMs });
       const outcome = this.applyOp(op, index);
       if (!this.ctx.authorize(op, this.effect(op))) throw new CallFailure(Error_Code.FORBIDDEN, `op ${index} is not allowed for this device`);
       return outcome;
@@ -237,30 +239,9 @@ export class CommitApplier {
     return { id: mintIntentId(this.ctx.nowMs), author, carried, appliedAtMs: this.ctx.nowMs, seq: this.ctx.seq };
   }
 
-  private authorsReplayUnderB(intent: Incoming): boolean {
-    return this.client && this.ctx.rule === "B" && intent.replay && !intent.carried;
-  }
-
   private holdsIntents(node: NodeRow, fields: readonly Field[]): boolean {
     const held = readIntents(this.sql, node.node_id);
     return fields.every((field) => held[field]?.id === this.incoming(field).id);
-  }
-
-  private same(node: NodeRow, fields: readonly Field[]): OpResult {
-    if (this.ctx.rule === "B") this.claim(node, fields);
-    return result(OpResult_Code.APPLIED, "", node.name);
-  }
-
-  private claim(node: NodeRow, fields: readonly Field[]): void {
-    const held = readIntents(this.sql, node.node_id);
-    const claimed = fields.filter((field) => held[field]?.carried && this.incoming(field).author === this.dev);
-    if (claimed.length === 0) return;
-    for (const field of claimed) writeIntent(this.sql, node.node_id, field, { ...held[field]!, carried: false });
-    if (claimed.includes("content")) this.sql.exec("UPDATE nodes SET edit_rev = ?, edit_dev = ? WHERE node_id = ?", this.ctx.seq, this.dev, node.node_id);
-    if (claimed.some((field) => field !== "content")) {
-      this.sql.exec("UPDATE nodes SET meta_edit_rev = ?, meta_edit_dev = ? WHERE node_id = ?", this.ctx.seq, this.dev, node.node_id);
-    }
-    this.touch(node.node_id);
   }
 
   private heldElsewhere(nodeId: string, fields: readonly Field[]): boolean {
@@ -567,8 +548,6 @@ export class CommitApplier {
   private createIntoTrash(parent: NodeRow, name: string, content: { value: Content; madeOver: string[] } | undefined): OpResult | undefined {
     if (!this.client || parent.status !== NodeStatusValue.TRASHED) return undefined;
     const place = this.incoming("place");
-    const fields: Field[] = content ? ["place", "content", "status"] : ["place", "status"];
-    if (this.authorsReplayUnderB(place) && fields.some((field) => this.trashKnows(parent, this.incoming(field).id))) return superseded();
     if (!place.carried) return undefined;
     const intent = this.incoming("content");
     if (!content || this.trashKnows(parent, intent.id)) return superseded();
@@ -581,7 +560,7 @@ export class CommitApplier {
     const pendingFor = pendingName(op.pendingFor);
     if (pendingFor === undefined) return rejected("INVALID_NAME");
     const existing = getNode(this.sql, op.nodeId);
-    if (existing) return this.sameCreate(existing, op.parentId, name, undefined) ? this.same(existing, ["place", "status"]) : rejected("ID_EXISTS");
+    if (existing) return this.sameCreate(existing, op.parentId, name, undefined) ? unchanged(existing) : rejected("ID_EXISTS");
     if (this.purgedReplay(op.nodeId, true)) return superseded();
     if (this.heldElsewhere(op.nodeId, ["place", "status"])) return superseded();
     const found = this.parentRow(op.parentId);
@@ -607,7 +586,7 @@ export class CommitApplier {
     const name = normalizeName(op.name);
     if (!name) return rejected("INVALID_NAME");
     const existing = getNode(this.sql, op.nodeId);
-    if (existing) return this.sameCreate(existing, op.parentId, name, op.content!) ? this.same(existing, ["place", "content", "status"]) : rejected("ID_EXISTS");
+    if (existing) return this.sameCreate(existing, op.parentId, name, op.content!) ? unchanged(existing) : rejected("ID_EXISTS");
     const bases = expandMadeOver(this.sql, op.nodeId, op.madeOver);
     const madeOver = boundMadeOver(op.sourceVersionId ? [op.sourceVersionId, ...bases] : bases);
     const tombstone = this.purgedReplay(op.nodeId, true);
@@ -642,15 +621,15 @@ export class CommitApplier {
       return this.conflictCopy(parent, tombstone.name, content, chunks, boundMadeOver(ancestry?.madeOver ?? []), intent);
     }
     if (found.kind !== NodeKindValue.FILE) return rejected("NOT_FILE");
-    if (this.client && this.holdsIntents(found, ["content"]) && this.holds(found, content)) return this.same(found, ["content"]);
+    if (this.client && this.holdsIntents(found, ["content"]) && this.holds(found, content)) return unchanged(found);
     if (this.heldElsewhere(found.node_id, ["content"])) return superseded();
     const resend = ancestry?.resend ?? false;
     const replay = resend || (this.client && intent.replay);
     const yields = resend || (this.client && intent.carried);
     if (found.status === NodeStatusValue.TRASHED) {
-      if (this.client && (intent.carried || this.authorsReplayUnderB(intent))) {
+      if (this.client && intent.carried) {
         if (this.trashKnows(found, intent.id)) return superseded();
-        if (intent.carried) return this.conflictCopy(this.nearestLive(found.parent_id), found.name, content, chunks, boundMadeOver(ancestry?.madeOver ?? []), intent);
+        return this.conflictCopy(this.nearestLive(found.parent_id), found.name, content, chunks, boundMadeOver(ancestry?.madeOver ?? []), intent);
       }
       if (resend) return superseded();
     }
@@ -720,11 +699,11 @@ export class CommitApplier {
     const place = this.incoming("place");
     const live = found.status === NodeStatusValue.LIVE;
     if (this.client) {
-      if (found.parent_id === target.node_id && found.name === name && this.holdsIntents(found, ["place"])) return this.same(found, ["place"]);
+      if (found.parent_id === target.node_id && found.name === name && this.holdsIntents(found, ["place"])) return unchanged(found);
       if (this.heldElsewhere(found.node_id, ["place"])) return superseded();
       if (!this.overHeld(found, "place")) return superseded();
       const trash = !live ? found : target.status === NodeStatusValue.TRASHED ? target : undefined;
-      if (trash && (place.carried || (this.authorsReplayUnderB(place) && this.trashKnows(trash, place.id)))) return superseded();
+      if (trash && place.carried) return superseded();
     }
     if (op.from && !this.isAt(found, op.from, target)) return superseded();
     const yields = op.from !== undefined || (this.client && place.carried);
@@ -909,7 +888,7 @@ export class CommitApplier {
     if (this.client) {
       if (trashed && this.holdsIntents(node, ["status"])) {
         this.mergeHeld(node, held);
-        return this.same(node, ["status"]);
+        return unchanged(node);
       }
       if (trashed && this.intents.over !== undefined && node.status_before === this.intents.over) {
         this.mergeHeld(node, held);
@@ -958,7 +937,7 @@ export class CommitApplier {
     if (!node.parent_id) return rejected("ROOT");
     if (node.status !== NodeStatusValue.TRASHED) return result(OpResult_Code.APPLIED, "", node.name);
     const status = this.incoming("status");
-    if (this.client && (status.carried || (this.authorsReplayUnderB(status) && this.trashKnows(node, status.id)))) return superseded();
+    if (this.client && status.carried) return superseded();
     const name = op.name ? normalizeName(op.name) : node.name;
     if (!name) return rejected("INVALID_NAME");
     const target = this.node(op.targetParentId || node.parent_id);

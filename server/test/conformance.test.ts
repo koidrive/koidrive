@@ -213,10 +213,6 @@ interface SpaceUnderTest {
 
 type Stub = DurableObjectStub<SpaceDO>;
 
-type Rule = "A" | "B";
-
-type RuledSpace = SpaceDO & { lostChangeRule: Rule };
-
 interface Stored {
   dump: Dump;
   topSeq: bigint | undefined;
@@ -242,25 +238,20 @@ class Run {
   private readonly stored = new Map<string, Stored>();
   private reqId = 0n;
 
-  private readonly rule: Rule;
-
-  private constructor(nowMs: number, mtimeNs: bigint, rule: Rule) {
+  private constructor(nowMs: number, mtimeNs: bigint) {
     this.nowMs = nowMs;
     this.mtimeNs = mtimeNs;
-    this.rule = rule;
   }
 
   static async start(scenario: Obj, file: Obj): Promise<Run> {
-    keys(scenario, "a scenario", ["name", "covers", "reference_only", "rule", "devices", "spaces", "contents", "steps"]);
+    keys(scenario, "a scenario", ["name", "covers", "reference_only", "devices", "spaces", "contents", "steps"]);
     req(optStr(scenario, "name"), "name");
     optStr(scenario, "reference_only");
     optList(scenario, "covers");
-    const rule = optStr(scenario, "rule") ?? "A";
-    if (rule !== "A" && rule !== "B") fail(`rule must be A or B, got ${show(rule)}`);
     const nowMs = req(optInt(file, "now_ms"), "now_ms");
     const mtimeText = req(optStr(file, "mtime_ns"), "mtime_ns");
     if (!/^-?\d+$/.test(mtimeText) || BigInt.asIntN(64, BigInt(mtimeText)) !== BigInt(mtimeText)) fail("mtime_ns must be an int64 written as a string");
-    const run = new Run(nowMs, BigInt(mtimeText), rule);
+    const run = new Run(nowMs, BigInt(mtimeText));
     const names = "spaces" in scenario ? strings(req(optList(scenario, "spaces"), "spaces"), "spaces") : ["main"];
     for (const name of names) {
       const spaceId = uuidv7();
@@ -332,7 +323,6 @@ class Run {
   private enter(space: string, atMs: number): Promise<void> {
     return runInDurableObject(this.stub(space), (instance: SpaceDO) => {
       freezeClock(instance, atMs);
-      (instance as RuledSpace).lostChangeRule = this.rule;
     });
   }
 
@@ -1240,7 +1230,6 @@ describe("conformance runner self-tests", () => {
       (s) => void (object((s.steps[2]!.nodes as Json[])[0], "node").intents = { plcae: {} }),
       "step 3: f1.intents: unknown field plcae in intents",
     ],
-    ["a rule other than A or B fails", base, (s) => void ((s as unknown as Obj).rule = "C"), "rule must be A or B"],
     ["a rebuild before the export is due fails", base, (s) => void s.steps.push({ rebuild: { at_ms: doc.now_ms! } }), "rebuild at_ms must be five minutes or more"],
   ];
   for (const [name, scenario, edit, reason] of cases) {
