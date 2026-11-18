@@ -5918,7 +5918,9 @@ impl Trees {
                         && self.l.get(id).is_none()
                         && self.s.get(id).is_none()
                         && (self.r.live(id)).is_some_and(|remote| {
-                            self.vanished(&remote.parent) && !self.ignored(&remote.parent)
+                            self.vanished(&remote.parent)
+                                && !self.ignored(&remote.parent)
+                                && !self.below_unknown_rules(&remote.parent)
                         })
                 })
                 .cloned(),
