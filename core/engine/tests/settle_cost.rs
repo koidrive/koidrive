@@ -82,9 +82,9 @@ fn report(trees: &mut Trees, nodes: usize, label: &str) {
     let mut stderr = std::io::stderr();
     writeln!(
         stderr,
-        "BENCH nodes={nodes} {label} idle_settle_us={} one_file_settle_us={}",
-        idle.as_micros(),
-        one_file.as_micros()
+        "BENCH nodes={nodes} {label} idle_settle_ns={} one_file_settle_ns={}",
+        idle.as_nanos(),
+        one_file.as_nanos()
     )
     .unwrap();
 }
