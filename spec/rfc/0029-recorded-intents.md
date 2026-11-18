@@ -156,7 +156,7 @@ A device keeps a **journal** with one row per node and field whose value in L is
 | wire base | What the op sends as its base: RFC 0026's `made_over` and `source_version_id` for content, kept from the content's provenance; the place the user moved the node from. |
 | state | `local` (in no commit), `sent` (in the commit in flight, with its slot) or `held` (a result showed the server holding it). |
 | held_as | The intent the server's `NodeState` reported for the field in the result, and for content the version id. It differs from the row's intent when RFC 0016 made the op a no-op. |
-| time | The `applied_at_ms` that the row's result reports for the field and the row's intent (§3.1), which a replay keeps, never the replay commit's time. Before a result, R's head time when the op was built. |
+| time | The `applied_at_ms` that the row's result reports for the field and the row's `held_as` (§3.1): the row's own intent, or the intent the field kept when RFC 0016 made the op a no-op. A replay keeps it; it is never the replay commit's time. Before a result, R's head time when the op was built. |
 | replay | The row's intent was in a commit the server lost. |
 
 The device writes an own row in the same transaction as the scan that finds the change (design §5.1). A later change of the same field replaces the row with a new intent:
