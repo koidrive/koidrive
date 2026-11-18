@@ -577,15 +577,17 @@ export class CommitApplier {
     const deleted = this.deletedParent(parentId);
     if (!deleted) return undefined;
     const trash = deleted.trash;
-    if (trash && !content && this.depth(trash) < MAX_DEPTH) {
-      this.insertNode(nodeId, trash.node_id, name, NodeKindValue.DIR, null, this.dev);
-      this.sql.exec("UPDATE nodes SET status = 2, trash_group = ?, trashed_at_ms = ? WHERE node_id = ?", trash.trash_group, trash.trashed_at_ms, nodeId);
-      this.setIntent(nodeId, "place");
-      this.setIntent(nodeId, "status");
+    const intent = this.incoming("content");
+    const seen = !content || deleted.knows(intent.id);
+    if (trash && seen && this.depth(trash) < MAX_DEPTH) {
+      const versionId = content ? this.insertVersion(nodeId, content.value, content.value.chunks, content.madeOver) : null;
+      this.insertNode(nodeId, trash.node_id, name, content ? NodeKindValue.FILE : NodeKindValue.DIR, versionId, this.dev);
+      this.sql.exec("UPDATE nodes SET status = 2, trash_group = ?, trashed_at_ms = ? WHERE node_id = ?", trash.trash_group, this.ctx.nowMs, nodeId);
+      for (const field of content ? FIELDS : (["place", "status"] as const)) this.setIntent(nodeId, field);
       this.mark(nodeId, pendingFor);
       return superseded();
     }
-    if (!trash || !content) {
+    if (!trash || seen) {
       const held = trash ? trashHeld(this.sql, trash.trash_group) : deleted.held;
       const fields: Field[] = content ? ["place", "content", "status"] : ["place", "status"];
       const intents: NodeIntents = Object.fromEntries(fields.map((field) => [field, this.stored(this.incoming(field))]));
@@ -599,8 +601,7 @@ export class CommitApplier {
       );
       this.purged.push(create(ChangeRecordSchema, { change: { case: "purged", value: purgedRecord(nodeId, this.id(parentId), intents, held) } }));
     }
-    const intent = this.incoming("content");
-    if (!content || deleted.knows(intent.id)) return superseded();
+    if (seen) return superseded();
     return this.conflictCopy(this.nearestLive(this.id(parentId)), name, content.value, content.value.chunks, content.madeOver, intent);
   }
 
