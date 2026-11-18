@@ -321,21 +321,23 @@ def analyse(runs, properties, slow_seconds, few):
         return test in flaky or kind(test) == "property"
 
     merge_path = set(kills)
-    verdicts, covers, losses = {}, {}, {}
+    verdicts, lost, losses = {}, {}, {}
     fast = [test for test in kills if durations.get(test, 0.0) < slow_seconds and kills[test] and not protected(test)]
     for test in sorted(fast, key=lambda test: (-durations.get(test, 0.0), test)):
         if all(killers[key] & merge_path - {test} for key in kills[test]):
             merge_path.discard(test)
-            verdicts[test] = "delete or merge"
-            covers[test] = cover(kills, kills[test], merge_path, durations)
+            lost[test] = set()
+            verdicts[test] = f"redundant within {measured}"
     slow = [test for test in kills if durations.get(test, 0.0) >= slow_seconds and not protected(test)]
     for test in sorted(slow, key=lambda test: (-durations.get(test, 0.0), test)):
-        lost = {key for key in kills[test] if not killers[key] & merge_path - {test}}
-        losses[test] = len(lost)
-        if len(lost) <= few:
+        alone = {key for key in kills[test] if not killers[key] & merge_path - {test}}
+        losses[test] = len(alone)
+        if len(alone) <= few:
             merge_path.discard(test)
-            verdicts[test] = "move off the merge path"
-            covers[test] = cover(kills, kills[test] - lost, merge_path, durations)
+            lost[test] = alone
+            verdicts[test] = (f"slow, alone catches {len(alone)} within {measured}" if alone
+                              else f"slow, catches nothing else within {measured}")
+    covers = {test: cover(kills, kills[test] - lost[test], merge_path, durations) for test in lost}
     rows = []
     for test in sorted(kills):
         seconds = durations.get(test, 0.0)
@@ -346,7 +348,7 @@ def analyse(runs, properties, slow_seconds, few):
         elif test in verdicts:
             verdict = verdicts[test]
         elif not kills[test] and seconds < slow_seconds:
-            verdict = "no kills in the mutated code"
+            verdict = f"no kills within {measured}"
         else:
             verdict = "keep"
         if provisional:
@@ -365,7 +367,7 @@ def analyse(runs, properties, slow_seconds, few):
                             "slow_tier": bool(record and record.get("slow_tier")),
                             "killers": len(record["killers"]) if record else 0,
                             "killed_by": "; ".join(record["killers"][:5]) if record else ""})
-    return rows, mutant_rows, measured, provisional
+    return rows, mutant_rows, measured, provisional, sum(len(alone) for alone in lost.values())
 
 
 TEST_FIELDS = ["test", "kind", "seconds", "ran_on", "kills", "unique_kills", "merge_path_loses", "covered_by", "verdict",
@@ -392,7 +394,7 @@ def load_run(directory):
 def report(args):
     runs = [load_run(directory) for directory in args.runs]
     name = "-".join(planned["sample"] for planned, _, _ in runs)
-    rows, mutant_rows, measured, provisional = analyse(runs, property_tests(args.root), args.slow, args.few)
+    rows, mutant_rows, measured, provisional, lost = analyse(runs, property_tests(args.root), args.slow, args.few)
     args.out.mkdir(parents=True, exist_ok=True)
     write_csv(args.out / f"{name}-tests.csv", TEST_FIELDS, rows)
     write_csv(args.out / f"{name}-mutants.csv", MUTANT_FIELDS, mutant_rows)
@@ -411,6 +413,8 @@ def report(args):
                f"{len(mutant_rows)} mutants: " + ", ".join(f"{count} {status}" for status, count in sorted(statuses.items())),
                "",
                f"{len(rows)} tests: " + ", ".join(f"{count} {verdict}" for verdict, count in sorted(verdicts.items())),
+               "",
+               f"Killed mutants no test left on the merge path would catch, if every slow candidate moved: {lost}",
                "",
                f"Mutant runtime: {hours:.1f} runner-hours"]
     (args.out / f"{name}-summary.md").write_text("\n".join(summary) + "\n")
