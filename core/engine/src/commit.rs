@@ -2906,6 +2906,14 @@ pub(crate) fn rekey(trees: &mut Trees, from: &str, to: &str) {
     }
 }
 
+fn rekey_copy(trees: &mut Trees, from: &str, to: &str) {
+    let resend = trees.resends().contains(from);
+    rekey(trees, from, to);
+    if resend {
+        trees.resend_copy(to);
+    }
+}
+
 /// The rebase of section 2.4, before ops are planned. A reverted file that R no longer has but that
 /// holds an edit not uploaded yet becomes a new node, so the edit is uploaded as a create instead
 /// of being removed with the node. Nodes in `skip` are not rebased otherwise, though what they changed
@@ -2931,7 +2939,7 @@ fn rebase(
             && !trees.excluded(id)
             && !trees.held(id)
         {
-            rekey(trees, id, &ids.uuid_v7(now_ms));
+            rekey_copy(trees, id, &ids.uuid_v7(now_ms));
         }
     }
     for id in dirty.iter().filter(|id| !skip.contains(*id)) {
@@ -2948,7 +2956,7 @@ fn rebase(
             trees.take_local(id.clone());
             continue;
         }
-        rekey(trees, id, &ids.uuid_v7(now_ms));
+        rekey_copy(trees, id, &ids.uuid_v7(now_ms));
     }
     for id in &dirty {
         let (Some(local), Some(remote)) = (trees.local().get(id), trees.remote().live(id)) else {

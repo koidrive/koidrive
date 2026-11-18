@@ -86,3 +86,4 @@ An `UpdateContent` grows by two bytes when `resend` is set. Each node stores one
 
 - A lost rename has the same race in its `Move` resend, once a delete of such a file is sent at all.
 - The rule in §7 runs on log records only, not on listings.
+- A copy a device keeps of a resend beside the server's node is sent as a create. A create carries no `resend` and sets the edit revision (§2). `require_head` makes it yield to a delete the server takes first, but a delete that lands after it, built without it, keeps it under §4, and with it the folders between it and the deleted one, so a folder a user deleted after the loss comes back.
