@@ -161,6 +161,7 @@ async function watchUsage() {
 }
 
 function holdQuietWindows() {
+  UsageTally.quietMs = QUIET_MS;
   const settles: Promise<void>[] = [];
   let end!: () => void;
   const ended = new Promise<void>((resolve) => {
@@ -172,9 +173,13 @@ function holdQuietWindows() {
     settles.push(settled);
     return settled;
   });
-  restorers.push(end);
-  return async () => {
+  const release = () => {
+    UsageTally.quietMs = 0;
     end();
+  };
+  restorers.push(release);
+  return async () => {
+    release();
     await Promise.all(settles);
     return settles.length;
   };
