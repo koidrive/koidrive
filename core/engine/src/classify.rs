@@ -1348,22 +1348,28 @@ impl Trees {
         for id in changed.into_iter().chain(folders.iter().cloned()) {
             let mut below: Vec<NodeId> = self.synced_children(&id).cloned().collect();
             while let Some(child) = below.pop() {
+                let acknowledged = self.acknowledged(&child).cloned();
                 let moved_into = released.contains(&child)
                     && self.local_chain(&child).skip(1).any(|at| *at == id)
-                    && (self.l.live(&child).zip(self.s.live(&child)))
-                        .is_some_and(|(local, synced)| !local.same_position(synced));
-                let (Some(remote), Some(synced), true) =
-                    (self.r.live(&child), self.s.live(&child), moved_into)
-                else {
+                    && (self.l.live(&child).zip(acknowledged.as_ref()))
+                        .is_some_and(|(local, acknowledged)| !local.same_position(acknowledged));
+                let (Some(remote), Some(acknowledged), true) = (
+                    self.r.get(&child).map(|node| &node.shape),
+                    acknowledged,
+                    moved_into,
+                ) else {
                     below.extend(self.synced_children(&child).cloned());
                     continue;
                 };
                 let at = Shape {
                     parent: remote.parent.clone(),
                     name: remote.name.clone(),
-                    ..synced.clone()
+                    ..acknowledged
                 };
-                if !self.set_synced_if_valid(child.clone(), Some(at.clone())) {
+                if let Some(waiting) = self.waiting.get(&child) {
+                    let origin = waiting.origin;
+                    self.wait(child, Some(at), origin);
+                } else if !self.set_synced_if_valid(child.clone(), Some(at.clone())) {
                     self.wait(child, Some(at), Origin::Other);
                 }
             }

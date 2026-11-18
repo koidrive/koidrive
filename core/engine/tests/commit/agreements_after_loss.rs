@@ -634,6 +634,54 @@ fn a_folder_resent_for_a_file_the_user_moved_into_a_new_folder_in_it_is_created_
     assert!(matches!(&ops(&commit)[..], [op::Op::CreateDir(p), op::Op::CreateDir(q), moved] if p.node_id == "p" && q.node_id == "q" && *moved == mv("f", "q", "a")));
 }
 
+#[test]
+fn a_folder_resent_for_a_file_the_user_renamed_in_it_is_created_when_another_device_deleted_the_file() {
+    let mut trees = trees(&[
+        ("p", Some(dir(ROOT, "p")), Some(dir(ROOT, "p")), None),
+        ("f", Some(file("p", "a", 1)), Some(file("p", "a", 1)), Some(trashed(file(ROOT, "c", 1)))),
+    ]);
+    trees.set_local_changed("f".into(), local(file("p", "b", 1), 2));
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
+    assert!(matches!(commit.as_deref(), Some([op::Op::CreateDir(create), moved]) if create.node_id == "p" && *moved == mv("f", "p", "b")), "{commit:?}");
+}
+
+#[test]
+fn a_folder_resent_for_a_file_whose_s_update_waits_keeps_the_waiting_content_and_origin() {
+    let mut trees = trees(&[
+        ("p", Some(dir(ROOT, "p")), Some(dir(ROOT, "p")), Some(remote(dir(ROOT, "p")))),
+        ("h", Some(file("p", "x", 9)), Some(file("p", "x", 9)), Some(remote(file("p", "y", 9)))),
+        ("f", Some(file("p", "x", 1)), Some(file("p", "a", 0)), Some(remote(file("p", "a", 0)))),
+        synced("w", file(ROOT, "c", 5)),
+    ]);
+    trees.set_local("h".into(), LocalNode { parked: true, ..local(file("p", "x", 9), 2) });
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [mv("f", "p", "x"), update("f", 1)]);
+    trees.set_remote("f".into(), remote(file("p", "x", 1)));
+    acknowledge(&mut commits, &mut trees, vec![outcome(op_result::Code::Applied); 2]);
+    let waiting = |shape| Some(Waiting { shape: Some(shape), origin: Origin::Commit(1) });
+    assert_eq!(trees.waiting().get("f").cloned(), waiting(file("p", "x", 1)));
+    trees.remove_local("h");
+    trees.set_synced("h".into(), None);
+    trees.remove_remote("h");
+    trees.remove_remote("w");
+    trees.set_remote("f".into(), remote(file(ROOT, "c", 1)));
+    trees.remove_remote("p");
+    trees.set_local_changed("f".into(), local(file("p", "b", 1), 3));
+    trees.settle();
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    assert_eq!(trees.waiting().get("f").cloned(), waiting(file(ROOT, "c", 1)));
+    trees.set_local_changed("w".into(), local(file(ROOT, "d", 5), 4));
+    trees.settle();
+    let commit = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(commit.iter().any(|op| matches!(op, op::Op::CreateDir(create) if create.node_id == "p")), "{commit:?}");
+    assert!(commit.contains(&mv("f", "p", "b")), "{commit:?}");
+    assert!(!commit.iter().any(|op| matches!(op, op::Op::UpdateContent(_))), "{commit:?}");
+}
+
 fn held_elsewhere_in_a_lost_folder() -> Trees {
     trees(&[
         ("p", Some(dir(ROOT, "p")), Some(dir(ROOT, "p")), None),
