@@ -230,6 +230,12 @@ impl FolderTask {
             Ok(folder) => folder,
             Err(stop) => return stop.into(),
         };
+        if let Err(error) = self.status.opened() {
+            return Halt::Person(
+                Halted::Io,
+                format!("the folder's lifecycle cannot be saved: {error}"),
+            );
+        }
         if let Some(adopted) = adopted {
             let (proof, children) = match adopted {
                 Adopted::Volume => (RootProof::Volume, None),

@@ -1,7 +1,11 @@
-72
+209
 # koi folder relink must take exactly the folders that start halts as an older copy, and lose
 # nothing it held. The disk test changes the marker while an effect in flight is recovered, the
 # only way to reach the second check of start; no folder test can stop there. The store test
 # lists every table as kept or forgotten, so a new migration has to choose. The folder tests
 # extend existing relink tests with a restore queued while halted, a quarantined file and a
 # moved ancestor; each of those asserts on state no other test reaches.
+# The review follow-up adds a version restore whose result is lost before a relink (applied twice
+# without the hold), a relink checked against the disk identity the store holds, a halted relink
+# replayed under its request ID, and extensions of existing lifecycle, unlink, status and error
+# tests. Each reaches a path the earlier tests leave untouched.

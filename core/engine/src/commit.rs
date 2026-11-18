@@ -544,6 +544,32 @@ impl Commits {
         &self.restores
     }
 
+    /// Asks again about the restores `before` sent or held for an answer, once a reset of the sync state that
+    /// kept the restores dropped the commit in flight and the questions: the server may have applied them, so
+    /// none is sent again until the person answers. Restores `before` never sent stay queued.
+    pub fn ask_unsettled_restores(&mut self, before: &Commits, ids: &mut IdGen, now_ms: u64) {
+        let sent = (before.in_flight.as_ref())
+            .and_then(|flight| carried(&before.restores, &flight.commit.ops).ok())
+            .into_iter()
+            .flat_map(BTreeMap::into_values);
+        let held = (before.questions.iter())
+            .filter(|question| {
+                matches!(
+                    question.kind,
+                    QuestionKind::Recovery {
+                        group: RecoveryGroup::RequestedBeforeReset,
+                        ..
+                    }
+                )
+            })
+            .flat_map(|question| question.held.keys().cloned());
+        let unsettled: BTreeSet<RestoreId> = (sent.chain(held))
+            .filter(|id| self.restores.contains_key(id))
+            .collect();
+        let question = recovery::ask_intents(&unsettled, None, ids, now_ms);
+        self.questions.get_mut().extend(question);
+    }
+
     /// The queued restores that wait because their node is a problem
     /// ([`RestoreIntent::held_by`]), so a surface can say why they are pending.
     pub fn held_restores(&self) -> impl Iterator<Item = &RestoreId> {

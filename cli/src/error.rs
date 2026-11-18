@@ -571,8 +571,10 @@ fn driver_human(error: &DriverError) -> Option<String> {
         DriverError::NotACopy(_) => {
             "That folder did not halt as an older copy, so there is nothing to relink. Run koi status to see its current sync state."
         }
-        DriverError::NotRelinked { .. } => {
-            "The folder stays halted. Fix what the message names, then run koi folder relink again."
+        DriverError::NotRelinked { why, .. } => {
+            return Some(format!(
+                "The folder stays halted because {why}. Fix that, then run koi folder relink again."
+            ));
         }
         DriverError::RelativePath(_) => "Use the full path to the file or folder, starting with /.",
         DriverError::OutsideLinkedFolders(_) => {

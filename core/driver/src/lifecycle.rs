@@ -160,17 +160,35 @@ impl Lifecycle {
             return Err(io::Error::other("the folder's unlink is unfinished"));
         }
         self.forget_unlink()?;
-        if checkpoint.root != Some(root) || checkpoint.halt.is_some() {
+        let older = (checkpoint.halt.as_ref()).filter(|halt| halt.recovery == Recovery::Relink);
+        if checkpoint.root != Some(root) || checkpoint.halt.is_some() != older.is_some() {
             let next = Checkpoint {
                 root: Some(root),
-                halt: None,
+                halt: older.cloned(),
                 synced: checkpoint.synced,
             };
             self.save(&next)?;
-            self.cleared(checkpoint.halt.as_ref());
+            if older.is_none() {
+                self.cleared(checkpoint.halt.as_ref());
+            }
             *checkpoint = next;
-            self.status.lock().unwrap().relinkable = false;
         }
+        Ok(())
+    }
+
+    pub(crate) fn opened(&self) -> io::Result<()> {
+        let mut checkpoint = self.checkpoint.lock().unwrap();
+        if checkpoint.halt.is_none() {
+            return Ok(());
+        }
+        let next = Checkpoint {
+            halt: None,
+            ..checkpoint.clone()
+        };
+        self.save(&next)?;
+        self.cleared(checkpoint.halt.as_ref());
+        *checkpoint = next;
+        self.status.lock().unwrap().relinkable = false;
         Ok(())
     }
 
@@ -340,6 +358,11 @@ impl Lifecycle {
         status.state = FolderState::Halted;
         status.problem = Some(problem);
         status.relinkable = false;
+    }
+
+    pub(crate) fn unlinking(&self) -> bool {
+        (self.checkpoint.lock().unwrap().halt.as_ref())
+            .is_some_and(|halt| halt.recovery == Recovery::Unlink)
     }
 
     pub(crate) fn halted(&self) -> bool {
@@ -653,6 +676,11 @@ mod tests {
         lifecycle.halt(Halted::Root, "missing".into(), Recovery::Root);
         lifecycle.claimed(identity).unwrap();
         lifecycle.claimed(identity).unwrap();
+        lifecycle.halt(Halted::DiskBehind, "older".into(), Recovery::Relink);
+        lifecycle.claimed(identity).unwrap();
+        assert!(lifecycle.halted() && lifecycle.lock().unwrap().relinkable);
+        lifecycle.opened().unwrap();
+        lifecycle.opened().unwrap();
         let cleared: Vec<_> = (recorder.take().events.into_iter())
             .map(|event| serde_json::to_value(event).unwrap())
             .map(|event| (event["problem"].clone(), event["lasted"].clone()))
@@ -662,6 +690,7 @@ mod tests {
             [
                 (json!("halted.claim"), json!("under_1h")),
                 (json!("halted.root"), json!("under_1h")),
+                (json!("halted.disk_behind"), json!("under_1h")),
             ]
         );
     }

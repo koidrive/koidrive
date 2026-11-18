@@ -99,8 +99,16 @@ async fn relink_refuses_a_folder_that_syncs_and_takes_one_halted_as_an_older_cop
     write_marker(&root, &marker).unwrap();
     driver.start();
     eventually("the copy halts", || driver.status().folders[0].relinkable).await;
+    driver.stop().await;
+    for folder in driver.inner.folders.lock().unwrap().values() {
+        let mut status = folder.status.lock().unwrap();
+        (status.last_seq, status.remote_nodes, status.questions) = (Some(7), 3, 2);
+    }
     let relinked = driver.relink(&root).await.unwrap();
     assert!(!relinked.relinkable, "{relinked:?}");
+    let reset = (relinked.last_seq, relinked.remote_nodes, relinked.questions);
+    assert_eq!(reset, (None, 0, 0));
+    driver.start();
     eventually("the relinked folder is observed", || {
         entries(&driver) == Some(2)
     })

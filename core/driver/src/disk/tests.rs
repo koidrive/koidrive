@@ -1212,6 +1212,11 @@ fn a_marker_changed_while_an_effect_in_flight_is_recovered_halts_as_older_only_w
             (older, older),
             "{changed}: {stop}"
         );
+        if !older {
+            assert!(matches!(stop, Stop::Root(_)), "{stop}");
+            drop(lock);
+            assert_eq!(folder.start(no_hook()).unwrap().engine.effects.cleared(), 9);
+        }
     }
 }
 

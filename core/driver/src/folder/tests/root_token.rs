@@ -244,7 +244,13 @@ fn a_copy_made_before_a_change_from_the_server_was_applied_does_not_start() {
     assert_eq!(names(&site.root), ["before.txt"]);
     assert_eq!(remote.tree(), served);
 
-    relink(&site).unwrap();
+    let blocker = block_marker(&site);
+    assert!(matches!(
+        relink(&site),
+        Err(disk::RelinkError::Stop(Stop::Io(_)))
+    ));
+    fs::remove_dir_all(&blocker).unwrap();
+    assert!(matches!(relink(&site), Err(disk::RelinkError::NotACopy)));
     let mut a = restarted(&site, &mut remote);
     a.rest(&mut remote);
     assert_eq!(remote.tree(), served);
@@ -803,6 +809,58 @@ fn relink_refuses_a_folder_that_passes_its_check_and_takes_one_whose_store_was_r
     a.create(&mut remote, &site.root.join("two.txt"), b"two");
     assert_eq!(remote.names(), ["notes.txt", "one.txt", "two.txt"]);
     assert_eq!(names(&site.root), ["notes.txt", "one.txt", "two.txt"]);
+}
+
+#[test]
+fn relink_checks_the_folder_against_the_disk_identity_the_store_holds() {
+    let mut remote = Remote::new();
+    let site = a_copy_from_before_an_add_an_edit_and_a_delete(&mut remote);
+    let stale = Link {
+        root_dev: site.link.root_dev + 1,
+        root_volume: None,
+        ..site.link.clone()
+    };
+    let lock = claim::lock(&site.root).unwrap().unwrap();
+    disk::relink(&lock, &stale, &mut Store::open(&site.db).unwrap()).unwrap();
+}
+
+#[test]
+fn a_relink_holds_a_version_restore_whose_result_was_lost_until_the_person_answers() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let path = site.root.join("notes.txt");
+    a.create(&mut remote, &path, b"the first words");
+    fs::write(&path, b"and the second").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    let node = node_named(&a, "notes.txt");
+    let request = ListVersions {
+        node_id: node.clone(),
+        ..Default::default()
+    };
+    let first = remote.space.list_versions(&request).unwrap().versions[1]
+        .version_id
+        .clone();
+    let id = ask(&site, &RestoreIntent::version(node, first).unwrap());
+    let step = a.folder.requested();
+    a.take(step).unwrap();
+    let Some(Work::Send(commit)) = a.work.pop_front() else {
+        panic!("the restore is sent");
+    };
+    remote.commit(&a.caller, &commit).unwrap();
+    drop(a);
+    let head = remote.space.head_seq();
+    let mut marker = marker_of(&site);
+    marker.token = Some("0".repeat(32));
+    koidrive_fs::write_marker(&site.root, &marker).unwrap();
+
+    relink(&site).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert_eq!(remote.space.head_seq(), head);
+    let commits = &a.folder.engine.commits;
+    assert!(commits.restores().contains_key(&id));
+    assert!(commits.questions().iter().any(|asked| asked.holds().any(|held| *held == id)));
 }
 
 #[test]

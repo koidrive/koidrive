@@ -441,6 +441,16 @@ fn pairing_and_unlinking_presentations_keep_original_actions() {
         [Next::of(&["koi", "folder", "unlink", "/Documents"])]
     );
     assert!(unfinished.human.unwrap().contains("Its files stay"));
+    let not_relinked = CliError::from(DriverError::NotRelinked {
+        path: PathBuf::from("/Documents"),
+        why: "the root marker is missing".into(),
+    });
+    assert!(
+        not_relinked
+            .human
+            .unwrap()
+            .contains("the root marker is missing")
+    );
     let wrong = CliError::code_refused(DriverError::Api(refused_with(
         403,
         ServerCode::Forbidden,

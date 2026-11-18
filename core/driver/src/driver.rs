@@ -244,7 +244,7 @@ enum Fix {
     Relink,
 }
 
-fn relink(link: &Link, store: &Path) -> Result<(), DriverError> {
+fn relink(link: &Link, store: &Path) -> Result<u64, DriverError> {
     let root = &link.root;
     let lock = claim::lock(root)
         .map_err(io_error(root))?
@@ -267,7 +267,11 @@ fn relink(link: &Link, store: &Path) -> Result<(), DriverError> {
             path: root.clone(),
             why: stop.to_string(),
         },
-    })
+    })?;
+    let questions = opened
+        .transaction(|tx| Ok::<_, koidrive_store::Error>(tx.questions()?.len() as u64))
+        .map_err(store_error(store))?;
+    Ok(questions)
 }
 
 /// Lifts the policy halt the store at `path` holds (RFC 0006 section 1, point 5). No task may hold the store.
@@ -1987,9 +1991,17 @@ impl Driver {
         let _pausing = self.inner.pausing.lock().await;
         self.inner.startup_blocked.store(true, Ordering::SeqCst);
         let startup = BlockedStartup(self);
-        let link = find(&mut self.inner.folders.lock().unwrap(), folder)?
-            .link
-            .clone();
+        let (link, unlinking) = {
+            let mut folders = self.inner.folders.lock().unwrap();
+            let found = find(&mut folders, folder)?;
+            (
+                found.link.clone(),
+                found.unlink.is_some() || found.status.unlinking(),
+            )
+        };
+        if unlinking && matches!(fix, Some(Fix::Relink)) {
+            return Err(DriverError::UnlinkUnfinished(link.root));
+        }
         let space_id = link.space_id.clone();
         loop {
             let done = (self.inner.folders.lock().unwrap().get(&space_id))
@@ -2008,17 +2020,27 @@ impl Driver {
         let fixed = match fix {
             Some(Fix::Lift(lift)) => (self.inner.paths.store(&space_id))
                 .map_err(DriverError::from)
-                .and_then(|path| lift_halt(&path, lift)),
+                .and_then(|path| lift_halt(&path, lift))
+                .map(|()| None),
             Some(Fix::Relink) => (self.inner.paths.store(&space_id))
                 .map_err(DriverError::from)
-                .and_then(|path| relink(&link, &path)),
-            None => Ok(()),
+                .and_then(|path| relink(&link, &path))
+                .map(Some),
+            None => Ok(None),
         };
         let reset = {
             let mut folders = self.inner.folders.lock().unwrap();
             let folder = folders
                 .get_mut(&space_id)
                 .expect("only an unlink removes a folder, and it holds the lifecycle lock");
+            if let Ok(Some(questions)) = fixed {
+                let mut status = folder.status.lock().unwrap();
+                status.history_id = None;
+                status.last_seq = None;
+                status.remote_nodes = 0;
+                status.questions = questions;
+                status.recovery = None;
+            }
             if folder.run.as_ref().is_none_or(Running::ended) {
                 folder.run = None;
                 folder
@@ -2043,7 +2065,7 @@ impl Driver {
         let status = folder.status.lock().unwrap().clone();
         drop(folders);
         self.changed();
-        fixed.map(|()| status)
+        fixed.map(|_| status)
     }
 
     /// Starts the task of `folder` unless it is being unlinked or its task still runs. `all` are the roots of every
@@ -8235,7 +8257,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn linking_a_folder_whose_unlink_is_unfinished_is_refused() {
+    async fn linking_or_relinking_a_folder_whose_unlink_is_unfinished_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let base = fs::canonicalize(dir.path()).unwrap();
         let root = base.join("Koidrive");
@@ -8255,6 +8277,11 @@ mod tests {
         assert!(
             matches!(linked, Err(DriverError::UnlinkUnfinished(ref folder)) if *folder == root),
             "{linked:?}"
+        );
+        let relinked = driver.relink(&root).await;
+        assert!(
+            matches!(relinked, Err(DriverError::UnlinkUnfinished(ref folder)) if *folder == root),
+            "{relinked:?}"
         );
         driver.sign_out(true).await.unwrap();
         signed_out(&driver, &paths, &root);

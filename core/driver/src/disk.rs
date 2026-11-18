@@ -456,9 +456,9 @@ impl Disk {
             disk.finish_rotation(store)?;
             if let Standing::StoreOlder = standing(&disk.marker()?, &disk.tokens, &engine.effects)?
             {
-                return Err(Stop::Io(io::Error::other(
-                    "the folder's marker changed while its effects were recovered",
-                )));
+                return Err(Stop::Root(RootProblem::BadMarker(io::Error::other(
+                    "it changed while the folder's effects were recovered",
+                ))));
             }
             let scopes = (translated.iter().zip(&outcomes))
                 .flat_map(|((effect, _), (_, outcome))| scopes(&effect.action, outcome));
@@ -991,17 +991,21 @@ pub(crate) fn relink_with_hook(
     if !space.held().map_err(Stop::from)? {
         return Err(Stop::Withdrawn(link.root.clone()).into());
     }
-    link.root_at()
+    let (stored, before, tokens) = store.transaction(|tx| -> Result<_, Stop> {
+        Ok((
+            tx.link()?,
+            Engine::load(tx, &link.space_id)?,
+            tx.root_tokens()?,
+        ))
+    })?;
+    (stored.as_ref().unwrap_or(link).root_at())
         .admits(&space.root_at().map_err(Stop::from)?)
         .map_err(Stop::Root)?;
     let marker = marker_of(&space, &link.space_id)?;
-    let (engine, tokens) = store.transaction(|tx| -> Result<_, Stop> {
-        Ok((Engine::load(tx, &link.space_id)?, tx.root_tokens()?))
-    })?;
-    if standing(&marker, &tokens, &engine.effects).is_ok() {
+    if standing(&marker, &tokens, &before.effects).is_ok() {
         return Err(RelinkError::NotACopy);
     }
-    bring_back_all(&space, &engine.trees).map_err(Stop::from)?;
+    bring_back_all(&space, &before.trees).map_err(Stop::from)?;
     let next = koidrive_fs::new_token();
     store.transaction(|tx| -> Result<_, Stop> {
         let current = tx.root_tokens()?.current;
@@ -1014,6 +1018,10 @@ pub(crate) fn relink_with_hook(
         }
         let mut engine = Engine::load(tx, &link.space_id)?;
         engine.effects.catch_up(marker.effects);
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis() as u64);
+        (engine.commits).ask_unsettled_restores(&before.commits, &mut engine.ids, now_ms);
         engine.checkpoint(tx)?;
         tx.set_root_tokens(&RootTokens {
             current,
