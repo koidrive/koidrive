@@ -59,6 +59,7 @@ impl Paths {
                 | "leaving.next"
                 | "update-check.json.new"
                 | "unconfirmed-revocation.json"
+                | "unreported-set-aside.json"
                 | "daemon.sock",
             ] => File,
             [made] if *made == koidrive_state_file::MADE => File,
@@ -153,6 +154,11 @@ impl Paths {
 
     pub fn unconfirmed_revocation(&self) -> PathBuf {
         self.state_dir.join("unconfirmed-revocation.json")
+    }
+
+    /// What the folders of a lost credential had set aside, kept until a new credential is stored and reports it.
+    pub fn unreported_set_aside(&self) -> PathBuf {
+        self.state_dir.join("unreported-set-aside.json")
     }
 
     /// The creates this profile sent with a request ID and has not seen answered for good, one file each.
@@ -382,6 +388,7 @@ mod tests {
             (".koidrive-state", Some(File)),
             ("update-check.json.new", Some(File)),
             ("unconfirmed-revocation.json", Some(File)),
+            ("unreported-set-aside.json", Some(File)),
             (&format!("spaces/{space}/lifecycle.json"), Some(File)),
             (&format!("spaces/{space}/link.json"), Some(File)),
             (&format!("spaces/{space}/unlinking"), Some(File)),

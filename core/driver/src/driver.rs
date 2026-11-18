@@ -475,6 +475,57 @@ struct Folder {
 
 const UNLINK_BROUGHT_BACK: &str = "unlink-brought-back.json";
 
+#[derive(Default, Serialize, Deserialize)]
+struct Unreported {
+    brought_back: Vec<Vec<u8>>,
+    kept: Vec<Vec<u8>>,
+}
+
+fn unreported_set_aside(record: &Path) -> SetAside {
+    use rustix::fs::{Mode, OFlags};
+    use std::os::unix::ffi::OsStringExt;
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let recorded = (rustix::fs::open(record, flags, Mode::empty()).ok())
+        .and_then(|file| {
+            serde_json::from_reader::<_, Unreported>(io::BufReader::new(File::from(file))).ok()
+        })
+        .unwrap_or_default();
+    let paths = |paths: Vec<Vec<u8>>| {
+        (paths.into_iter())
+            .map(|path| PathBuf::from(std::ffi::OsString::from_vec(path)))
+            .collect()
+    };
+    SetAside {
+        brought_back: paths(recorded.brought_back),
+        kept: paths(recorded.kept),
+    }
+}
+
+fn record_unreported_set_aside(record: &Path, set_aside: &SetAside) {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = |paths: &[PathBuf]| {
+        (paths.iter())
+            .map(|path| path.as_os_str().as_bytes().to_vec())
+            .collect()
+    };
+    let unreported = Unreported {
+        brought_back: bytes(&set_aside.brought_back),
+        kept: bytes(&set_aside.kept),
+    };
+    let bytes = serde_json::to_vec(&unreported).expect("the record serializes");
+    if let Err(error) = koidrive_state_file::write(record, &bytes) {
+        tracing::warn!(%error, "what the folders of a lost credential set aside is reported only by this process");
+    }
+}
+
+fn forget_unreported_set_aside(paths: &Paths) {
+    if let Err(error) = fs::remove_file(paths.unreported_set_aside())
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        tracing::warn!(%error, "what the folders of a lost credential set aside could not be marked reported");
+    }
+}
+
 fn recorded_brought_back(store: &Path) -> Vec<PathBuf> {
     use rustix::fs::{Mode, OFlags};
     use std::os::unix::ffi::OsStringExt;
@@ -700,6 +751,9 @@ impl Driver {
             .as_ref()
             .and_then(|stored| rotating_auth(&paths, stored, &credential_writes).ok());
         let credential = stored.map(|stored| stored.credential);
+        if credential.is_some() {
+            forget_unreported_set_aside(&paths);
+        }
         let loaded = if blocked {
             Loaded::default()
         } else {
@@ -1331,7 +1385,15 @@ impl Driver {
     /// stay.
     async fn unlink_folders_of_lost_credential(&self) -> Result<SetAside, DriverError> {
         let state = &self.inner.paths.state_dir;
-        let mut set_aside = SetAside::default();
+        let record = self.inner.paths.unreported_set_aside();
+        let mut set_aside = unreported_set_aside(&record);
+        let mut add = |more: SetAside| {
+            if more != SetAside::default() {
+                set_aside.brought_back.extend(more.brought_back);
+                set_aside.kept.extend(more.kept);
+                record_unreported_set_aside(&record, &set_aside);
+            }
+        };
         if Leaving::load(state)
             .map_err(io_error(&state.join("leaving")))?
             .is_some()
@@ -1340,13 +1402,11 @@ impl Driver {
             if let Some(failure) = left.not_removed.into_iter().next() {
                 return Err(io_error(&failure.path)(io::Error::other(failure.error)));
             }
-            set_aside = left.set_aside;
+            add(left.set_aside);
         }
         let roots = roots(&self.inner.folders.lock().unwrap());
         for root in roots {
-            let (_, unlinked) = self.unlink_folder(&root).await?;
-            set_aside.brought_back.extend(unlinked.brought_back);
-            set_aside.kept.extend(unlinked.kept);
+            add(self.unlink_folder(&root).await?.1);
         }
         let unplaced: Vec<_> = self
             .inner
@@ -1440,6 +1500,7 @@ impl Driver {
         {
             tracing::warn!(%error, "a sign-out of an earlier device stays reported as unconfirmed");
         }
+        forget_unreported_set_aside(&self.inner.paths);
         let account = credential.account();
         let stored = StoredCredential {
             credential: credential.clone(),
@@ -6159,6 +6220,52 @@ mod tests {
         assert_eq!(ids.len(), 3);
         assert!(ids.iter().all(|id| *id == ids[0]), "{ids:?}");
         assert_eq!(crate::pending_create::saved(&paths), 0);
+    }
+
+    #[tokio::test]
+    async fn a_pairing_after_a_refused_code_reports_what_the_folders_of_the_lost_credential_had_set_aside()
+     {
+        use crate::pending_create::fake::{Answer, serve};
+        use koidrive_proto::v1::{Error as ProtoError, error::Code};
+        for reopened in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let base = fs::canonicalize(dir.path()).unwrap();
+            let paths = Paths::under(&base.join("profile"));
+            let root = base.join("Koidrive");
+            linked(&paths, &root, "d1");
+            parked_report(&paths, &root);
+            fs::remove_file(paths.credential()).unwrap();
+            let date = koidrive_fs::utc_date(SystemTime::now());
+            let mut driver = Driver::open(paths.clone()).unwrap();
+            let wrong = ProtoError {
+                code: Code::Forbidden as i32,
+                message: "invalid or expired pairing code".into(),
+                ..ProtoError::default()
+            };
+            let (server, _served) = serve(vec![
+                Answer::Refuse(403, wrong),
+                Answer::Reply(issued("d2")),
+            ])
+            .await;
+
+            assert!(driver.pair(&server, "ABCD-EFGH", "laptop").await.is_err());
+            if reopened {
+                drop(driver);
+                driver = Driver::open(paths.clone()).unwrap();
+            }
+            let (account, set_aside) = driver.pair(&server, "WXYZ-WXYZ", "laptop").await.unwrap();
+            if koidrive_fs::utc_date(SystemTime::now()) != date {
+                eprintln!("SKIPPED: the UTC date changed during the test");
+                return;
+            }
+
+            assert_eq!(account.device_id, "d2", "reopened: {reopened}");
+            assert_eq!(
+                set_aside.brought_back,
+                vec![root.join(format!("report (recovered {date}).docx"))],
+                "reopened: {reopened}"
+            );
+        }
     }
 
     #[tokio::test]
