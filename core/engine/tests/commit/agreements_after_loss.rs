@@ -836,6 +836,27 @@ fn a_resent_folder_the_server_loses_again_after_applying_its_create_is_created_a
 }
 
 #[test]
+#[ignore = "GUN-1012: a second loss before the ack queues the folder's removal from S, so nothing creates it again; RFC 0029 PR 5 turns this green"]
+fn a_resent_folder_lost_again_before_its_create_is_acknowledged_is_sent_again() {
+    let (mut trees, mut commits, mut ids) = renamed_in_a_resent_folder();
+    trees.set_remote("f".into(), trashed(file(ROOT, "c", 1)));
+    trees.settle(&Default::default());
+    commits.adopt(1);
+    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(matches!(&sent[..], [op::Op::CreateDir(create), moved] if create.node_id == "p" && *moved == mv("f", "p", "b")), "{sent:?}");
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    let records = trees.remote_records(|seq| commits.lost_here(seq));
+    let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
+    let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
+    let (deleted_here, edited, moved) = (trees.trashed_here(), trees.edited_here(), trees.moved_here());
+    trees.forget_lost(deleted_here, edited, synced, moved, untaken, records, commits.aliases(), commits.held_through(), commits.accepted());
+    commits.forget_lost_slots();
+    trees.settle(commits.aliases());
+    let next = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
+    assert!(matches!(next.as_deref(), Some([op::Op::CreateDir(create), moved]) if create.node_id == "p" && *moved == mv("f", "p", "b")), "{next:?} {:?}", trees.waiting());
+}
+
+#[test]
 fn a_resent_folder_keeps_its_create_across_a_restart() {
     let (mut trees, mut commits, mut ids) = renamed_in_a_resent_folder();
     build(&mut commits, &mut trees, &mut ids).unwrap();
