@@ -217,11 +217,7 @@ fn formats(disks: &koidrive_test_support::Disks) -> Vec<(&'static str, Formatted
     formats
 }
 
-fn swapped_for_a_bigger_stick_with_its_serial(
-    format: Formatted,
-    stopped: bool,
-    identical: bool,
-) {
+fn swapped_for_a_bigger_stick_with_its_serial(format: Formatted, stopped: bool, identical: bool) {
     let mut disks = koidrive_test_support::Disks::new().unwrap();
     let serial = serial_of(&disks);
     let first = format(&disks, "First", 16, serial);
@@ -231,7 +227,10 @@ fn swapped_for_a_bigger_stick_with_its_serial(
     let stage = |at: &Path, body: &str| {
         fs::write(at.join(shared), body).unwrap();
         if identical {
-            let file = fs::File::options().write(true).open(at.join(shared)).unwrap();
+            let file = fs::File::options()
+                .write(true)
+                .open(at.join(shared))
+                .unwrap();
             file.set_modified(stamp).unwrap();
         }
     };
@@ -314,12 +313,20 @@ fn a_stick_of_the_same_size_with_a_sticks_serial_puts_the_first_sticks_files_in_
             .map(|node| node.node_id)
             .collect();
         let missing = [&tree["Disk/report.docx"], &tree["Disk/Slides"]];
-        assert!(missing.iter().all(|id| trashed.contains(id)), "{kind}: {trashed:?}");
+        assert!(
+            missing.iter().all(|id| trashed.contains(id)),
+            "{kind}: {trashed:?}"
+        );
         drop(a);
         disks.detach(&at);
         let (site_b, mut b) = linked(&mut remote, "b");
         let asked: Vec<String> = (missing.iter())
-            .map(|id| ask(&site_b, &RestoreIntent::from_trash((*id).clone(), None, None).unwrap()))
+            .map(|id| {
+                ask(
+                    &site_b,
+                    &RestoreIntent::from_trash((*id).clone(), None, None).unwrap(),
+                )
+            })
             .collect();
         let step = b.folder.requested();
         b.take(step).unwrap();
@@ -336,8 +343,9 @@ fn a_stick_of_the_same_size_with_a_sticks_serial_puts_the_first_sticks_files_in_
             assert_eq!(on_b, name.as_bytes(), "{kind}");
         }
         let ended: BTreeMap<String, Outcome> = ended(&site_b).into_iter().collect();
-        let expected: BTreeMap<String, Outcome> =
-            (asked.into_iter()).map(|id| (id, Outcome::Restored)).collect();
+        let expected: BTreeMap<String, Outcome> = (asked.into_iter())
+            .map(|id| (id, Outcome::Restored))
+            .collect();
         assert_eq!(ended, expected, "{kind}");
     }
 }
@@ -355,7 +363,10 @@ fn a_stick_emptied_while_it_is_mounted_syncs_the_deletes() {
         disks.attach(&image, &at);
         on_the_disk(&at, &["report.docx", "Slides/deck.key"]);
         observed(&mut a, &mut remote);
-        assert!(user_files(&remote).contains_key("Disk/report.docx"), "{image:?}");
+        assert!(
+            user_files(&remote).contains_key("Disk/report.docx"),
+            "{image:?}"
+        );
         fs::remove_file(at.join("report.docx")).unwrap();
         fs::remove_dir_all(at.join("Slides")).unwrap();
         observed(&mut a, &mut remote);
@@ -382,7 +393,10 @@ fn a_fat_stick_mounted_at_another_folder_stays_held_where_it_was() {
     observed(&mut a, &mut remote);
     let after = user_files(&remote);
     disks.detach(&elsewhere);
-    assert!(before.iter().all(|(path, id)| after.get(path) == Some(id)), "{after:?}");
+    assert!(
+        before.iter().all(|(path, id)| after.get(path) == Some(id)),
+        "{after:?}"
+    );
     assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)]);
 }
 
@@ -396,11 +410,18 @@ fn an_exfat_stick_swapped_for_another_and_back_deletes_nothing() {
     }
     for stopped in [false, true] {
         let mut remote = Remote::new();
-        let (one, two) = (disks.exfat(&format!("One{stopped}")), disks.exfat(&format!("Two{stopped}")));
+        let (one, two) = (
+            disks.exfat(&format!("One{stopped}")),
+            disks.exfat(&format!("Two{stopped}")),
+        );
         let (site, mut a, one) = with_disk(&mut disks, &mut remote, "Disk", one);
         let at = site.root.join("Disk");
         let tree = user_files(&remote);
-        for (step, image) in [("swapped", Some(&two)), ("back", Some(&one)), ("ejected", None)] {
+        for (step, image) in [
+            ("swapped", Some(&two)),
+            ("back", Some(&one)),
+            ("ejected", None),
+        ] {
             if stopped {
                 drop(a);
                 disks.detach(&at);
@@ -495,7 +516,8 @@ fn a_stick_changed_on_another_computer_comes_back_with_the_change() {
 }
 
 #[test]
-fn a_stick_recorded_before_its_size_was_comes_back_and_is_told_from_a_bigger_stick_with_its_serial() {
+fn a_stick_recorded_before_its_size_was_comes_back_and_is_told_from_a_bigger_stick_with_its_serial()
+{
     let Some(mut disks) = koidrive_test_support::Disks::new() else {
         return;
     };
@@ -503,24 +525,42 @@ fn a_stick_recorded_before_its_size_was_comes_back_and_is_told_from_a_bigger_sti
     let cases = (formats(&disks).into_iter()).flat_map(|format| [(format, false), (format, true)]);
     for ((kind, format), unplugged) in cases {
         let (first, second) = (
-            format(&disks, &format!("Old{kind}{}", u8::from(unplugged)), 16, serial),
-            format(&disks, &format!("Big{kind}{}", u8::from(unplugged)), 32, serial),
+            format(
+                &disks,
+                &format!("Old{kind}{}", u8::from(unplugged)),
+                16,
+                serial,
+            ),
+            format(
+                &disks,
+                &format!("Big{kind}{}", u8::from(unplugged)),
+                32,
+                serial,
+            ),
         );
         let mut remote = Remote::new();
         let (site, a, _) = with_disk(&mut disks, &mut remote, "Disk", first.clone());
         let tree = user_files(&remote);
         drop(a);
         let at = site.root.join("Disk");
-        let (plain, sized) = (recorded_before_sizes(&at, serial), identified(&at).volume.unwrap());
+        let (plain, sized) = (
+            recorded_before_sizes(&at, serial),
+            identified(&at).volume.unwrap(),
+        );
         assert_ne!(plain, sized, "{kind}");
         let mounts = |site: &Site| {
             let mut store = Store::open(&site.db).unwrap();
             store.transaction(|tx| tx.volume_mounts()).unwrap()
         };
-        assert_eq!(mounts(&site)[Path::new("Disk")], koidrive_fs::Mount::Volume(sized));
+        assert_eq!(
+            mounts(&site)[Path::new("Disk")],
+            koidrive_fs::Mount::Volume(sized)
+        );
         let mut store = Store::open(&site.db).unwrap();
         let recorded = BTreeMap::from([("Disk".into(), koidrive_fs::Mount::Volume(plain))]);
-        store.transaction(|tx| tx.set_volume_mounts(&recorded)).unwrap();
+        store
+            .transaction(|tx| tx.set_volume_mounts(&recorded))
+            .unwrap();
         drop(store);
         if unplugged {
             disks.detach(&at);
@@ -535,9 +575,15 @@ fn a_stick_recorded_before_its_size_was_comes_back_and_is_told_from_a_bigger_sti
         }
         assert_eq!(held(&a), [], "{kind} {unplugged}");
         let back = user_files(&remote);
-        assert!(tree.iter().all(|(path, id)| back.get(path) == Some(id)), "{kind}: {back:?}");
+        assert!(
+            tree.iter().all(|(path, id)| back.get(path) == Some(id)),
+            "{kind}: {back:?}"
+        );
         assert_eq!(back.contains_key("Disk/new.txt"), unplugged, "{kind}");
-        assert_eq!(mounts(&site)[Path::new("Disk")], koidrive_fs::Mount::Volume(sized));
+        assert_eq!(
+            mounts(&site)[Path::new("Disk")],
+            koidrive_fs::Mount::Volume(sized)
+        );
         disks.detach(&at);
         observed(&mut a, &mut remote);
         disks.attach(&second, &at);
@@ -548,7 +594,11 @@ fn a_stick_recorded_before_its_size_was_comes_back_and_is_told_from_a_bigger_sti
         drop(a);
         disks.detach(&at);
         assert_eq!(after, back, "{kind} {unplugged}");
-        assert_eq!(held, [("Disk".to_owned(), HeldDiskKind::NotConnected)], "{kind}");
+        assert_eq!(
+            held,
+            [("Disk".to_owned(), HeldDiskKind::NotConnected)],
+            "{kind}"
+        );
     }
 }
 
@@ -690,7 +740,11 @@ fn a_disk_without_a_uuid_ejected_stays_held_until_another_disk_takes_its_place()
             observed(&mut a, &mut remote);
         }
         assert_eq!(user_files(&remote), tree, "{case}");
-        assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)], "{case}");
+        assert_eq!(
+            held(&a),
+            [("Disk".to_owned(), HeldDiskKind::NotConnected)],
+            "{case}"
+        );
         assert!(at.is_dir(), "{case}");
         assert_eq!(fs::read(site.root.join("notes.txt")).unwrap(), b"notes.txt");
         if stopped {
