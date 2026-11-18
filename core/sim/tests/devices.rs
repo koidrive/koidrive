@@ -11024,6 +11024,17 @@ fn live_node_at(world: &World, path: &[&str]) -> Option<String> {
     })
 }
 
+fn held_at(world: &World, device: usize, path: &[&str]) -> Option<String> {
+    let local = world.devices[device].engine.trees.local();
+    (path.iter()).try_fold(local.root.clone(), |parent, name| {
+        (local.iter())
+            .find(|(_, node)| {
+                !node.parked && node.shape.parent == parent && node.shape.name == *name
+            })
+            .map(|(id, _)| id.clone())
+    })
+}
+
 fn live_writes(world: &World) -> Vec<i64> {
     (world.space().nodes().into_iter())
         .filter(|node| node.status == NodeStatus::Live as i32)
@@ -11075,6 +11086,18 @@ fn moved_out_of_a_removed_folder(
         world
             .run(1, &[(0, scan), (0, COMMIT), (0, COMMIT), (0, DELIVER)])
             .unwrap();
+        assert_eq!(
+            held_at(&world, 0, &["a", "b"]),
+            None,
+            "after rescanning {folder} of {scans:?}"
+        );
+        for ((_, to), node) in kept.iter().zip(&nodes) {
+            assert_eq!(
+                held_at(&world, 0, to).as_ref(),
+                Some(node),
+                "{to:?} after rescanning {folder} of {scans:?}"
+            );
+        }
     }
     world.phase(1, &[]).unwrap();
     assert_eq!(
@@ -11141,8 +11164,46 @@ fn a_file_moved_out_of_a_removed_folder_into_a_new_folder_keeps_its_node_when_ea
         assert_eq!(live_writes(&world), [1], "after rescanning {scans:?}");
         assert_eq!(
             world.seen.contains_key("a rescan of a folder widens"),
-            scans[0] == "a",
+            scans[0] == "ß",
             "after rescanning {scans:?}"
         );
     }
+}
+
+#[test]
+fn a_rescan_of_a_folder_sees_new_and_gone_entries_beside_it() {
+    let mut world = world(2);
+    world.phase(0, &[(0, folder("a")), (0, file("b"))]).unwrap();
+    let gone = target(&world, 0, &["b"]);
+    world
+        .run(1, &[(0, delete(gone)), (0, file("c.txt"))])
+        .unwrap();
+    let scan = Step::ScanFolder(folder_number(&world, 0, &["a"]));
+    world.run(1, &[(0, scan)]).unwrap();
+    let local = world.devices[0].engine.trees.local();
+    let mut beside: Vec<&str> = (local.iter())
+        .filter(|(_, node)| node.shape.parent == local.root)
+        .map(|(_, node)| node.shape.name.as_str())
+        .collect();
+    beside.sort_unstable();
+    assert_eq!(beside, ["a", "c.txt"]);
+}
+
+#[test]
+fn a_rescan_of_a_folder_leaves_changes_inside_a_folder_beside_it_unseen() {
+    let mut world = world(2);
+    let setup = [
+        (0, folder("a")),
+        (0, folder("b")),
+        (0, user(1, 0, 2, "c.txt")),
+    ];
+    world.phase(0, &setup).unwrap();
+    let inside = target(&world, 0, &["b", "c.txt"]);
+    world.run(1, &[(0, delete(inside))]).unwrap();
+    let scan = Step::ScanFolder(folder_number(&world, 0, &["a"]));
+    world.run(1, &[(0, scan)]).unwrap();
+    assert!(held_at(&world, 0, &["b", "c.txt"]).is_some());
+    let scan = Step::ScanFolder(folder_number(&world, 0, &["b"]));
+    world.run(1, &[(0, scan)]).unwrap();
+    assert_eq!(held_at(&world, 0, &["b", "c.txt"]), None);
 }

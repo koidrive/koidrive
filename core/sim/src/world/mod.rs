@@ -652,9 +652,9 @@ pub struct World {
     touched_nodes: Vec<BTreeMap<NodeId, u128>>,
     merged: Vec<BTreeMap<NodeId, BTreeSet<u128>>>,
     actions: Vec<BTreeMap<u64, (u128, Change)>>,
-    scanned: Vec<u64>,
-    built: Vec<u64>,
-    built_copies: Vec<u64>,
+    scanned: Vec<Observed>,
+    built: Vec<Observed>,
+    built_copies: Vec<Observed>,
     spent: Vec<Spent>,
     republished: BTreeSet<i64>,
     kept: Vec<BTreeMap<i64, BTreeMap<NodeId, u128>>>,
@@ -690,6 +690,25 @@ impl Change {
                 _ => false,
             },
         }
+    }
+}
+
+#[derive(Clone, Default)]
+struct Observed {
+    all: u64,
+    inos: BTreeMap<u128, u64>,
+}
+
+impl Observed {
+    fn everything(at: u64) -> Self {
+        Observed {
+            all: at,
+            inos: BTreeMap::new(),
+        }
+    }
+
+    fn at(&self, ino: u128) -> u64 {
+        (self.inos.get(&ino)).map_or(self.all, |at| self.all.max(*at))
     }
 }
 
@@ -765,9 +784,9 @@ impl World {
             touched_nodes: vec![BTreeMap::new(); count],
             merged: vec![BTreeMap::new(); count],
             actions: vec![BTreeMap::new(); count],
-            scanned: vec![0; count],
-            built: vec![0; count],
-            built_copies: vec![0; count],
+            scanned: vec![Observed::default(); count],
+            built: vec![Observed::default(); count],
+            built_copies: vec![Observed::default(); count],
             spent: Vec::new(),
             republished: BTreeSet::new(),
             moved_since_rewind: BTreeSet::new(),
@@ -898,7 +917,7 @@ impl World {
             Step::CopyStore => {
                 let device = &mut self.devices[d];
                 device.store_copy = Some(device.store.clone());
-                self.built_copies[d] = self.built[d];
+                self.built_copies[d] = self.built[d].clone();
             }
             Step::RollBack => {
                 let device = &mut self.devices[d];
@@ -912,7 +931,7 @@ impl World {
                     }
                     let ids = device.engine.ids.clone();
                     device.store = Engine { ids, ..copy };
-                    self.built[d] = self.built_copies[d];
+                    self.built[d] = self.built_copies[d].clone();
                     device.rolled_back = true;
                     device.down = true;
                     device.link = None;
@@ -1461,6 +1480,7 @@ impl World {
                 "rescan lets a problem node be planned again",
             );
         }
+        self.scanned[d] = Observed::everything(self.clock);
         self.observed(d)
     }
 
@@ -1483,11 +1503,12 @@ impl World {
                 "a rescan of a folder follows an entry across its edge",
             );
         }
+        let at = self.clock;
+        (self.scanned[d].inos).extend(reached.observed.into_iter().map(|ino| (ino, at)));
         self.observed(d)
     }
 
     fn observed(&mut self, d: usize) -> Result<bool, Failure> {
-        self.scanned[d] = self.clock;
         let device = &mut self.devices[d];
         let changed = device.engine != device.store;
         device.persist()?;
@@ -1669,7 +1690,7 @@ impl World {
         }
         device.persist()?;
         device.engine.scan(&device.disk);
-        self.scanned[d] = self.clock;
+        self.scanned[d] = Observed::everything(self.clock);
         device.persist()?;
         Ok(true)
     }
@@ -1843,7 +1864,7 @@ impl World {
                 "rescan lets a problem node be planned again",
             );
         }
-        self.scanned[d] = self.clock;
+        self.scanned[d] = Observed::everything(self.clock);
         device.persist()
     }
 
@@ -2038,7 +2059,7 @@ impl World {
                     let device_seq = self.space.welcome(&self.devices[d].session).device_seq;
                     let device = &mut self.devices[d];
                     device.engine.scan(&device.disk);
-                    self.scanned[d] = self.clock;
+                    self.scanned[d] = Observed::everything(self.clock);
                     let Engine {
                         trees,
                         commits,
@@ -2160,7 +2181,7 @@ impl World {
                                 note(&mut self.seen, "commit abandoned, its bytes are gone");
                                 device.engine.commits.abandon();
                                 device.engine.scan(&device.disk);
-                                self.scanned[d] = self.clock;
+                                self.scanned[d] = Observed::everything(self.clock);
                             } else {
                                 note(&mut self.seen, "commit refused, sent again");
                             }
@@ -2243,7 +2264,7 @@ impl World {
                     .map(|(id, node)| (node.identity.ino, id.clone()))
                     .collect();
                 commits.build(trees, ids, NOW as u64, &history, device_id, cursor.clone());
-                self.built[d] = self.scanned[d];
+                self.built[d] = self.scanned[d].clone();
                 let bound = copy_bound(&self.held_commits[d], self.restored_to);
                 let ops = commits.in_flight().map(|flight| &flight.commit.ops);
                 for op in ops.into_iter().flatten() {
@@ -2423,7 +2444,7 @@ impl World {
                                     }),
                             );
                             self.held_commits[d].insert((record.seq, record.commit_id.clone()));
-                            let built = self.built[d];
+                            let built = self.built[d].clone();
                             let nodes = self.space.nodes();
                             let parents: BTreeMap<&str, &str> = (nodes.iter())
                                 .map(|node| (node.node_id.as_str(), node.parent_id.as_str()))
@@ -2457,9 +2478,10 @@ impl World {
                             let touched = |node: &str| {
                                 let merged = self.merged[d].get(node).into_iter().flatten();
                                 restored.contains(node)
-                                    || (ino(node).into_iter().chain(merged.copied()))
-                                        .filter_map(|ino| self.touches[d].get(&ino))
-                                        .any(|at| at.first().is_some_and(|at| *at <= built))
+                                    || (ino(node).into_iter().chain(merged.copied())).any(|ino| {
+                                        (self.touches[d].get(&ino).and_then(BTreeSet::first))
+                                            .is_some_and(|at| *at <= built.at(ino))
+                                    })
                             };
                             let asked = |node: &str| {
                                 touched(node)
@@ -2542,7 +2564,8 @@ impl World {
                             for (ino, _) in &changes {
                                 self.approved[d].remove(ino);
                             }
-                            let carried: BTreeSet<u64> = (self.actions[d].range(..=built))
+                            let carried: BTreeSet<u64> = (self.actions[d].iter())
+                                .filter(|(at, (own, _))| **at <= built.at(*own))
                                 .filter(|(_, (own, action))| {
                                     let settled = || {
                                         (local.iter()).any(|(id, here)| {
@@ -4635,5 +4658,50 @@ mod tests {
             "{:?}",
             world.touches[0]
         );
+    }
+
+    #[test]
+    fn a_folder_rescan_does_not_spend_an_unobserved_rename() {
+        let action = |kind, target, parent, name| {
+            Step::User(Action {
+                kind,
+                target,
+                parent,
+                name: NAMES.iter().position(|n| *n == name).unwrap(),
+                text: 0,
+            })
+        };
+        let mut world = World::new(2);
+        let setup = [
+            (0, action(0, 0, 0, "a")),
+            (0, action(0, 0, 0, "ß")),
+            (0, action(1, 0, 1, "c.txt")),
+        ];
+        world.phase(0, &setup).unwrap();
+        let steps = [
+            (0, action(3, 2, 1, "b")),
+            (0, Step::ScanFolder(1)),
+            (0, action(3, 2, 1, "C.TXT")),
+        ];
+        world.run(1, &steps).unwrap();
+        let second_rename = world.clock;
+        let ino = world.devices[0].disk.visible()[2];
+        assert!(world.touches[0][&ino].contains(&second_rename));
+        let steps = [
+            (0, Step::ScanFolder(2)),
+            (0, Step::Commit(Reply::Served)),
+            (0, Step::Commit(Reply::Served)),
+        ];
+        world.run(1, &steps).unwrap();
+        assert!(
+            (world.space.nodes().iter())
+                .any(|node| node.name == "b" && node.status == NodeStatus::Live as i32)
+        );
+        assert_eq!(world.devices[0].disk.entries()[&ino].name, "C.TXT");
+        assert!(
+            world.touches[0][&ino].contains(&second_rename),
+            "the commit for b spent the unobserved rename to C.TXT"
+        );
+        world.phase(1, &[]).unwrap();
     }
 }

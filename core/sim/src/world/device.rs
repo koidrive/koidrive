@@ -136,12 +136,13 @@ impl Engine {
     }
 
     /// A rescan of the folder at `scope`, as a watcher does for a folder its events name, which
-    /// takes the disk as [`Engine::scan`] does for every entry it reaches. It reaches what is at
-    /// and below the scope on the disk and in L, and both places of every entry whose identity
-    /// crosses the edge of what it reaches, so a move into or out of the scope stays one node. A
-    /// place whose parent folder on the disk is not the folder L holds there widens to that
-    /// parent, and a place in the parked directory widens to the whole disk. The rest of L keeps
-    /// its state, also where the disk changed.
+    /// takes the disk as [`Engine::scan`] does for every entry it reaches. Like
+    /// `koidrive_fs::Snapshot::rescan`, it widens a place to its parent until L holds the folder the
+    /// disk has at the parent, lists that parent, and reaches the place, every name L does not hold
+    /// there and every name L holds that the listing lacks, each with everything below it. It also
+    /// reaches both places of every entry whose identity crosses the edge of what it reaches, so a
+    /// move into or out of the scope stays one node, and it widens to the whole disk when one of
+    /// them is in the parked directory. The rest of L keeps its state, also where the disk changed.
     pub fn scan_at(&mut self, disk: &Disk, scope: &[String]) -> Reached {
         let Reach {
             places,
@@ -149,6 +150,13 @@ impl Engine {
             entries,
             nodes: reached,
         } = self.reach(disk, scope);
+        let observed: BTreeSet<u128> = (entries.iter().copied())
+            .chain(
+                (reached.iter())
+                    .filter_map(|id| self.trees.local().get(id))
+                    .map(|node| node.identity.ino),
+            )
+            .collect();
         let root = self.trees.local().root.clone();
         let known: BTreeMap<u128, NodeId> = (self.trees.local().iter())
             .map(|(id, node)| (node.identity.ino, id.clone()))
@@ -220,7 +228,11 @@ impl Engine {
         for id in gone {
             self.trees.remove_local(&id);
         }
-        Reached { places, widened }
+        Reached {
+            places,
+            widened,
+            observed,
+        }
     }
 
     fn reach(&self, disk: &Disk, scope: &[String]) -> Reach {
@@ -237,11 +249,12 @@ impl Engine {
                 disk.child(&place, name).map(Some)
             })?
         };
+        let held_in = |parent: NodeId| {
+            (local.iter()).filter(move |(_, node)| !node.parked && node.shape.parent == parent)
+        };
         let node_at = |path: &[String]| {
             path.iter().try_fold(&local.root, |parent, name| {
-                let child = local.iter().find(|(_, node)| {
-                    !node.parked && node.shape.parent == *parent && node.shape.name == *name
-                });
+                let child = held_in(parent.clone()).find(|(_, node)| node.shape.name == *name);
                 child.map(|(id, _)| id)
             })
         };
@@ -256,17 +269,28 @@ impl Engine {
             names.reverse();
             Some(names)
         };
-        let widen = |mut path: Vec<String>| {
-            while path.len() > 1 && entry_at(&path).is_some() {
-                let parent = &path[..path.len() - 1];
-                let held =
-                    (node_at(parent).and_then(|id| local.get(id))).map(|node| node.identity.ino);
-                if held.is_some() && held == entry_at(parent) {
-                    break;
-                }
-                path.pop();
-            }
-            path
+        let holds = |path: &[String]| {
+            path.is_empty()
+                || (node_at(path).and_then(|id| local.get(id))).is_some_and(|node| {
+                    node.shape.kind == Kind::Dir && Some(node.identity.ino) == entry_at(path)
+                })
+        };
+        let below_on_disk = |top: u128| {
+            (disk.entries().iter())
+                .filter(move |(ino, entry)| **ino == top || disk.inside(&entry.place, top))
+                .map(|(ino, _)| *ino)
+        };
+        let below_in_l = |top: &NodeId| {
+            (local.iter())
+                .filter(|(id, _)| {
+                    std::iter::successors(Some(*id), |id| {
+                        local.get(id).map(|node| &node.shape.parent)
+                    })
+                    .take(local.len() + 1)
+                    .any(|above| above == top)
+                })
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>()
         };
         let known: BTreeMap<u128, &NodeId> = (local.iter())
             .map(|(id, node)| (node.identity.ino, id))
@@ -274,33 +298,38 @@ impl Engine {
         let mut reach = Reach::default();
         let mut pending = vec![scope.to_vec()];
         while let Some(asked) = pending.pop() {
-            let place = widen(asked.clone());
-            reach.widened |= place != asked;
+            let mut place = asked.clone();
             if place.is_empty() {
                 return whole();
             }
+            while !holds(&place[..place.len() - 1]) {
+                place.pop();
+            }
+            reach.widened |= place != asked;
             if reach.places.contains(&place) {
                 continue;
             }
-            if let Some(top) = entry_at(&place) {
-                reach.entries.extend(
-                    (disk.entries().iter())
-                        .filter(|(ino, entry)| **ino == top || disk.inside(&entry.place, top))
-                        .map(|(ino, _)| *ino),
-                );
+            let (parent, focus) = place.split_at(place.len() - 1);
+            let listed = match entry_at(parent) {
+                Some(ino) => Place::In(ino),
+                None => Place::Root,
+            };
+            let parent = node_at(parent).expect("a folder L holds");
+            let names: BTreeSet<&String> = (disk.children(&listed))
+                .map(|ino| &disk.entries()[&ino].name)
+                .collect();
+            for ino in disk.children(&listed) {
+                let name = &disk.entries()[&ino].name;
+                if *name == focus[0]
+                    || held_in(parent.clone()).all(|(_, node)| node.shape.name != *name)
+                {
+                    reach.entries.extend(below_on_disk(ino));
+                }
             }
-            if let Some(top) = node_at(&place) {
-                reach.nodes.extend(
-                    (local.iter())
-                        .filter(|(id, _)| {
-                            std::iter::successors(Some(*id), |id| {
-                                local.get(id).map(|node| &node.shape.parent)
-                            })
-                            .take(local.len() + 1)
-                            .any(|above| above == top)
-                        })
-                        .map(|(id, _)| id.clone()),
-                );
+            for (id, node) in held_in(parent.clone()) {
+                if node.shape.name == focus[0] || !names.contains(&node.shape.name) {
+                    reach.nodes.extend(below_in_l(id));
+                }
             }
             reach.places.push(place);
             for id in &reach.nodes {
@@ -328,6 +357,7 @@ impl Engine {
 pub struct Reached {
     pub places: Vec<Vec<String>>,
     pub widened: bool,
+    pub observed: BTreeSet<u128>,
 }
 
 #[derive(Default)]
