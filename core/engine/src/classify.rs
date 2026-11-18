@@ -1262,7 +1262,7 @@ impl Trees {
     }
 
     fn hold_own_version(&mut self, id: &str, node: &RemoteNode) {
-        let Some(mut version) = ContentVersion::remote(node, true) else {
+        let Some(version) = ContentVersion::remote(node, true) else {
             return;
         };
         let Some(content) = node.shape.content.as_ref() else {
@@ -1285,15 +1285,6 @@ impl Trees {
         let provenance = self
             .content_provenance
             .get_or_insert_with(id.to_owned(), ContentProvenance::default);
-        let known: BTreeSet<&String> = provenance
-            .edit_bases
-            .iter()
-            .chain(provenance.local.iter().flat_map(|source| {
-                std::iter::once(&source.version_id)
-                    .chain(source.made_over.iter().filter(|_| source.own))
-            }))
-            .collect();
-        version.made_over.retain(|base| known.contains(base));
         if local_holds {
             provenance.local = Some(version);
             provenance.edit_bases.clear();

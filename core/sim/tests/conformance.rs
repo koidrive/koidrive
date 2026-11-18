@@ -790,6 +790,13 @@ fn check_error(error: &Error, code: &str) -> Outcome {
     }
 }
 
+#[derive(Clone)]
+struct Stored {
+    space: SpaceDo,
+    top_seq: Option<u64>,
+    slots: Vec<((String, String), u64)>,
+}
+
 struct Run {
     now_ms: i64,
     mtime_ns: i64,
@@ -800,6 +807,7 @@ struct Run {
     slots: HashMap<(String, String), u64>,
     sent_slots: HashMap<(String, String, String), u64>,
     top_seq: HashMap<String, u64>,
+    stored: HashMap<(u64, String), Stored>,
     last_missing: HashMap<(String, String), Vec<Vec<u8>>>,
     symbols: HashMap<String, String>,
     values: HashMap<String, String>,
@@ -895,6 +903,7 @@ impl Run {
             slots: HashMap::new(),
             sent_slots: HashMap::new(),
             top_seq: HashMap::new(),
+            stored: HashMap::new(),
             last_missing: HashMap::new(),
             symbols: HashMap::new(),
             values: HashMap::new(),
@@ -1019,12 +1028,41 @@ impl Run {
     }
 
     fn steps(&mut self, scenario: &Value) -> Outcome {
-        for (i, step) in req(opt_list(scenario, "steps"), "steps")?
-            .iter()
-            .enumerate()
-        {
+        let steps = req(opt_list(scenario, "steps"), "steps")?;
+        let mut kept = BTreeSet::new();
+        for (i, step) in steps.iter().enumerate() {
+            let Some(restore) = step.get("restore_storage") else {
+                continue;
+            };
+            keys(restore, "restore_storage", &["to_step"])?;
+            let to = req(opt_u64(restore, "to_step"), "to_step")?;
+            if to < 1 || to > i as u64 {
+                return Err(format!(
+                    "step {}: restore_storage must name an earlier step, got {to}",
+                    i + 1
+                ));
+            }
+            kept.insert(to);
+        }
+        for (i, step) in steps.iter().enumerate() {
             self.step(step)
                 .map_err(|e| format!("step {}: {e}", i + 1))?;
+            let done = i as u64 + 1;
+            if !kept.contains(&done) {
+                continue;
+            }
+            for (name, space) in &self.spaces {
+                let slots = (self.slots.iter())
+                    .filter(|((_, slot_space), _)| slot_space == name)
+                    .map(|(slot, device_seq)| (slot.clone(), *device_seq))
+                    .collect();
+                let stored = Stored {
+                    space: space.clone(),
+                    top_seq: self.top_seq.get(name).copied(),
+                    slots,
+                };
+                self.stored.insert((done, name.clone()), stored);
+            }
         }
         Ok(())
     }
@@ -1095,6 +1133,24 @@ impl Run {
         if step.get("list_versions").is_some() {
             keys(step, "a step", &with("list_versions"))?;
             return self.list_versions(&space, at_ms, step);
+        }
+        if let Some(restore) = step.get("restore_storage") {
+            keys(
+                step,
+                "a step",
+                &["space", "reference_only", "restore_storage"],
+            )?;
+            let to = req(opt_u64(restore, "to_step"), "to_step")?;
+            let stored = (self.stored.get(&(to, space.clone())).cloned())
+                .ok_or_else(|| format!("no storage was kept after step {to}"))?;
+            self.spaces.insert(space.clone(), stored.space);
+            match stored.top_seq {
+                Some(top_seq) => self.top_seq.insert(space.clone(), top_seq),
+                None => self.top_seq.remove(&space),
+            };
+            self.slots.retain(|(_, slot_space), _| *slot_space != space);
+            self.slots.extend(stored.slots);
+            return Ok(());
         }
         keys(
             step,
@@ -1225,8 +1281,21 @@ impl Run {
             let allowed: &[&str] = match kind.as_str() {
                 "create_dir" => &["node", "parent", "name", "pending_for"],
                 "move" => &["node", "parent", "name", "pending_for", "from"],
-                "create_file" => &["node", "parent", "name", "content"],
-                "update_content" => &["node", "content", "resend"],
+                "create_file" => &[
+                    "node",
+                    "parent",
+                    "name",
+                    "content",
+                    "made_over",
+                    "source_version_id",
+                ],
+                "update_content" => &[
+                    "node",
+                    "content",
+                    "resend",
+                    "made_over",
+                    "source_version_id",
+                ],
                 "delete" => &["node", "requires"],
                 "restore" => &["node", "version", "parent", "name"],
                 "empty" => &[],
@@ -1247,6 +1316,16 @@ impl Run {
             };
             let name = opt_str(body, "name")?.unwrap_or_default().to_owned();
             let pending_for = opt_str(body, "pending_for")?.unwrap_or_default().to_owned();
+            let made_over = match opt_list(body, "made_over")? {
+                Some(list) => (strings(list, "made_over")?.into_iter())
+                    .map(|symbol| self.id(space, symbol))
+                    .collect::<Result<_, _>>()?,
+                None => Vec::new(),
+            };
+            let source_version_id = match opt_str(body, "source_version_id")? {
+                Some(symbol) => self.id(space, symbol)?,
+                None => String::new(),
+            };
             let mut content = || -> Result<Option<Content>, String> {
                 let Some(symbol) = opt_str(body, "content")? else {
                     return Ok(None);
@@ -1262,8 +1341,8 @@ impl Run {
                     pending_for,
                 }),
                 "create_file" => op::Op::CreateFile(CreateFile {
-                    made_over: Vec::new(),
-                    source_version_id: String::new(),
+                    made_over,
+                    source_version_id,
                     node_id: node,
                     parent_id: parent,
                     name,
@@ -1271,8 +1350,8 @@ impl Run {
                     ..Default::default()
                 }),
                 "update_content" => op::Op::UpdateContent(UpdateContent {
-                    made_over: Vec::new(),
-                    source_version_id: String::new(),
+                    made_over,
+                    source_version_id,
                     node_id: node,
                     content: Some(req(content(), "content")?),
                     resend: opt_bool(body, "resend")?.unwrap_or(false),

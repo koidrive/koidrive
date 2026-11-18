@@ -77,14 +77,14 @@ fn ancestry_write(trees: &mut Trees, value: u8) {
 }
 
 #[test]
-fn ancestry_of_an_edit_stops_at_its_actual_foreign_base() {
+fn ancestry_of_an_edit_is_its_foreign_base_and_the_chain_r_reported_for_it() {
     let mut trees = ancestry_tree();
     trees.set_remote("f".into(), ancestry_remote(3, "unheld", &["unrelated"]));
     ancestry_write(&mut trees, 2);
-    assert_eq!(trees.edit_bases("f"), ["held"]);
+    assert_eq!(trees.edit_bases("f"), ["held", "foreign-base"]);
     assert_eq!(trees.source_version_id("f"), None);
     ancestry_write(&mut trees, 4);
-    assert_eq!(trees.edit_bases("f"), ["held"]);
+    assert_eq!(trees.edit_bases("f"), ["held", "foreign-base"]);
 }
 
 #[test]
@@ -254,15 +254,18 @@ fn ancestry_is_newest_first_deduplicated_and_bounded() {
 }
 
 #[test]
-fn ancestry_does_not_claim_unheld_transitive_foreign_values_as_own_bases() {
+fn ancestry_of_an_own_version_is_the_chain_r_reported_for_it() {
     let mut trees = ancestry_tree();
     ancestry_write(&mut trees, 2);
     trees.set_remote_edited_here(
         "f".into(),
-        ancestry_remote(2, "own-2", &["held", "foreign-base"]),
+        ancestry_remote(2, "own-2", &["held", "foreign-base", "expanded"]),
     );
     ancestry_write(&mut trees, 3);
-    assert_eq!(trees.edit_bases("f"), ["own-2", "held"]);
+    assert_eq!(
+        trees.edit_bases("f"),
+        ["own-2", "held", "foreign-base", "expanded"]
+    );
 }
 
 #[test]
