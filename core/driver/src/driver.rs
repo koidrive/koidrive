@@ -2581,10 +2581,8 @@ fn roots(folders: &BTreeMap<String, Folder>) -> Vec<PathBuf> {
 
 fn held_aside(root: &Path) -> Vec<PathBuf> {
     let private = root.join(koidrive_fs::PRIVATE_DIR);
-    match fs::symlink_metadata(&private) {
-        Ok(meta) if meta.is_dir() => {}
-        Ok(meta) if meta.is_symlink() => return vec![private],
-        _ => return Vec::new(),
+    if !fs::symlink_metadata(&private).is_ok_and(|meta| meta.is_dir()) {
+        return Vec::new();
     }
     let mut held = Vec::new();
     for dir in [koidrive_fs::PARKED_DIR, koidrive_fs::QUARANTINE_DIR].map(|dir| private.join(dir)) {
@@ -4351,7 +4349,7 @@ mod tests {
     }
 
     #[test]
-    fn a_symlinked_koidrive_folder_is_named_as_kept_and_nothing_is_listed_through_it() {
+    fn nothing_is_listed_through_a_symlinked_koidrive_folder() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("Koidrive");
         let elsewhere = dir.path().join("elsewhere");
@@ -4360,7 +4358,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         std::os::unix::fs::symlink(&elsewhere, root.join(".koidrive")).unwrap();
 
-        assert_eq!(held_aside(&root), [root.join(".koidrive")]);
+        assert_eq!(held_aside(&root), Vec::<PathBuf>::new());
     }
 
     #[tokio::test]
