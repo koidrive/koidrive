@@ -399,3 +399,23 @@ fn a_compact_row_that_leaves_and_ends_before_a_take_reaches_the_store_as_ended()
         );
     }
 }
+
+#[test]
+fn a_result_that_keeps_the_intent_it_was_sent_leaves_compact_rows_based_on_it_unchanged() {
+    let mut journal = Journal::default();
+    let sent = journal.user_change("n", content(1), WireBase::None, Some(id(5)));
+    journal.send("n", Field::Content, 0);
+    let kept = FieldIntent {
+        id: sent,
+        ..held(0, 100)
+    };
+    journal.applied("n", Field::Content, sent, &kept, None);
+    assert!(journal.compact(("n".to_owned(), Field::Content)));
+    let full = |_: &RowKey, held: &HeldRow| held.full(content(1), 100, None);
+    journal.take_changes(full);
+    let before = journal.state(full);
+    journal.applied("m", Field::Place, id(5), &held(5, 200), None);
+    let changes = journal.take_changes(full);
+    assert!(changes.rows.is_empty(), "{:?}", changes.rows);
+    assert_eq!(JournalChanges::between(&before, &journal.state(full)), changes);
+}
