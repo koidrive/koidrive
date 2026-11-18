@@ -250,6 +250,8 @@ pub struct Commits {
     granted: Unstored<Vec<NodeId>>,
     confirmed: Unstored<Option<u64>>,
     device_name: Unstored<String>,
+    field_intents: Unstored<bool>,
+    unrecorded: Unstored<usize>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -329,6 +331,8 @@ impl Commits {
             confirmed: _,
             device_name: _,
             unbuildable: _,
+            field_intents: _,
+            unrecorded: _,
         } = self;
         CommitsChanges {
             accepted: accepted.take_changed().copied(),
@@ -454,6 +458,8 @@ impl Commits {
             granted: Unstored::default(),
             confirmed: Unstored::default(),
             device_name: Unstored::default(),
+            field_intents: Unstored::default(),
+            unrecorded: Unstored::default(),
         })
     }
 
@@ -2083,6 +2089,12 @@ impl Commits {
             })
             .filter(|(_, removed)| !removed.is_empty())
             .collect();
+        self.unrecorded.0 += trees.stamp_intents(
+            &mut ops,
+            device_id,
+            base.committed_at_ms,
+            self.field_intents.0,
+        );
         let commit_id = ids.uuid_v7(now_ms);
         for (index, op) in ops.iter_mut().enumerate() {
             let Some(op::Op::Delete(delete)) = &mut op.op else {
@@ -3427,6 +3439,7 @@ impl Commits {
     /// (section 6.4). On a read-only device the restores no commit in flight carries end as
     /// rejected.
     pub fn connected(&mut self, welcome: &proto::Welcome) -> Reconnect {
+        self.field_intents.0 = (welcome.features.iter()).any(|feature| feature == "field_intents");
         let (a, w) = (*self.accepted, welcome.device_seq);
         let kept = (self.slots.get(&w))
             .filter(|slot| !slot.commit_id.is_empty() && !welcome.device_commit_id.is_empty());

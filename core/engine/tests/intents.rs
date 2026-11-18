@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use koidrive_engine::classify::Trees;
+use koidrive_engine::commit::{Base, Commits};
+use koidrive_engine::ids::IdGen;
 use koidrive_engine::journal::{
     Field, FieldIntent, HistoryEntry, IntentId, NodeIntents, Place, RowState, Value, WireBase,
 };
-use koidrive_engine::state::ContentValue;
+use koidrive_engine::state::{CommitsState, ContentValue};
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
+use koidrive_proto::v1::{self as proto, Welcome, op};
 
 const ROOT: &str = "root";
 
@@ -352,4 +355,139 @@ fn the_s_row_is_written_again_when_r_moves_on_from_the_value_s_holds() {
     trees.take_changed();
     trees.set_remote("f".into(), remote(file(ROOT, "a", 2), 2));
     assert!(trees.take_changed().synced.contains("f"));
+}
+
+fn build(trees: &mut Trees, features: &[&str], committed_at_ms: i64) -> proto::Commit {
+    let mut commits = Commits::from_state(CommitsState::default()).unwrap();
+    commits.connected(&Welcome {
+        features: features
+            .iter()
+            .map(|feature| (*feature).to_owned())
+            .collect(),
+        ..Default::default()
+    });
+    trees.rules_scanned();
+    trees.settle(&Default::default());
+    let base = Base {
+        seq: 0,
+        commit_id: String::new(),
+        committed_at_ms,
+    };
+    let commit = commits.build(trees, &mut IdGen::new(1), 0, "history", "me", base);
+    commit.cloned().unwrap()
+}
+
+fn intent_of(trees: &Trees, node: &str, field: Field) -> proto::Intent {
+    let row = trees.journal().row(node, field).unwrap();
+    proto::Intent {
+        id: row.intent.as_bytes().to_vec(),
+        author_device_id: "me".into(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_commit_names_its_intents_only_when_the_server_announces_them() {
+    for (features, named) in [(&[][..], false), (&["field_intents"][..], true)] {
+        let mut trees = Trees::new(ROOT);
+        trees.set_local_changed("f".into(), local(file(ROOT, "a", 1)));
+        let commit = build(&mut trees, features, 1_700);
+        let [create] = &commit.ops[..] else {
+            panic!("{commit:?}");
+        };
+        assert!(matches!(create.op, Some(op::Op::CreateFile(_))));
+        for field in Field::ALL {
+            let row = trees.journal().row("f", field).unwrap();
+            assert_eq!(row.state, RowState::Sent);
+            assert_eq!(row.time_ms, 1_700);
+        }
+        match named {
+            false => assert_eq!((&create.intent, &create.fields), (&None, &None)),
+            true => {
+                assert_eq!(create.intent, Some(intent_of(&trees, "f", Field::Place)));
+                assert_eq!(
+                    create.fields,
+                    Some(proto::FieldIntents {
+                        place: Some(intent_of(&trees, "f", Field::Place)),
+                        content: Some(intent_of(&trees, "f", Field::Content)),
+                        status: Some(intent_of(&trees, "f", Field::Status)),
+                    })
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn an_op_no_row_covers_gets_an_own_sent_row_over_r_s_intent() {
+    let mut trees = Trees::new(ROOT);
+    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    let seen = held(&trees, "f", Field::Place);
+    trees.set_local("f".into(), local(file(ROOT, "b", 1)));
+    assert!(trees.journal().row("f", Field::Place).is_none());
+    let commit = build(&mut trees, &["field_intents"], 9);
+    assert!(matches!(&commit.ops[..], [op] if matches!(op.op, Some(op::Op::Move(_)))));
+    let row = trees.journal().row("f", Field::Place).unwrap();
+    assert_eq!(
+        (row.base, &row.state, row.time_ms),
+        (Some(seen), &RowState::Sent, 9)
+    );
+    assert_eq!(
+        commit.ops[0].intent,
+        Some(intent_of(&trees, "f", Field::Place))
+    );
+}
+
+#[test]
+fn an_op_that_carries_another_devices_value_without_a_row_goes_without_an_intent() {
+    let mut trees = Trees::new(ROOT);
+    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    let mut ops = vec![proto::Op {
+        op: Some(op::Op::Move(proto::Move {
+            node_id: "f".into(),
+            new_parent_id: ROOT.into(),
+            new_name: "b".into(),
+            from: Some(proto::Place {
+                parent_id: ROOT.into(),
+                name: "a".into(),
+            }),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }];
+    assert_eq!(trees.stamp_intents(&mut ops, "me", 0, true), 1);
+    assert_eq!(ops[0].intent, None);
+    assert_eq!(trees.journal().rows().count(), 0);
+}
+
+#[test]
+fn a_delete_sends_what_r_holds_that_l_never_held_as_unseen() {
+    let mut trees = Trees::new(ROOT);
+    synced(&mut trees, "d", dir(ROOT, "d"), 1);
+    synced(&mut trees, "f", file("d", "a", 1), 1);
+    trees.remove_local_by_user("f");
+    trees.remove_local_by_user("d");
+    trees.set_remote("g".into(), remote(file("d", "g", 1), 2));
+    let mut ops = vec![proto::Op {
+        op: Some(op::Op::Delete(proto::Delete {
+            node_id: "d".into(),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }];
+    assert_eq!(trees.stamp_intents(&mut ops, "me", 0, true), 0);
+    let Some(op::Op::Delete(delete)) = &ops[0].op else {
+        unreachable!();
+    };
+    let mut unseen: Vec<IntentId> = (delete.unseen.iter())
+        .map(|id| IntentId::from_bytes(id).unwrap())
+        .collect();
+    unseen.sort();
+    let mut expected: Vec<IntentId> = (Field::ALL.into_iter())
+        .map(|field| held(&trees, "g", field))
+        .collect();
+    expected.sort();
+    assert_eq!(unseen, expected);
+    assert!(delete.held.is_empty());
+    assert_eq!(ops[0].intent, Some(intent_of(&trees, "d", Field::Status)));
 }
