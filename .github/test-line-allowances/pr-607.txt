@@ -1,4 +1,4 @@
-720
+798
 # About 230 lines are existing rules tests in engine, fs, driver and sim that now name the rules file they set, because set_rules and each scanned rules change carry its kind. They protect what they did before.
 # Ignore: the git oracle now checks that a .gitignore gives git's verdicts and the same verdicts as a .koiignore with the same lines. A .koiignore pattern decides before a .gitignore pattern in the same or a deeper folder, a .koiignore cannot include again a file below a folder a .gitignore leaves out, both kinds of rules file stay included whatever the patterns say, and rules file names are matched by key. The git oracle compares one kind at a time, so none of this mixes kinds there.
 # Ignore: a device that does not follow .gitignore files gets the same statuses as one without them, and every update reports exactly the statuses it changed with rules files of both kinds and the setting switched. The old properties had no rules file kind or setting.
@@ -8,3 +8,4 @@
 # Driver: Driver::set_gitignore keeps the rest of the configuration file and restarts each running folder once, Driver::gitignore_only counts only what .gitignore files alone leave out, and the configuration reads the setting with its default. These are new driver calls.
 # CLI, IPC and FFI: koi gitignore reads, sets and counts through the daemon and from the configuration file without sync state, needs --yes without a terminal and fits its JSON schemas, and the app reads the setting, saves it through koi and caches a folder's count. These are new commands and calls with no earlier tests.
 # Engine: a remote .gitignore is written before anything else below its folder, as a .koiignore is, so the rules are on disk before the entries they leave out.
+# Unreadable rules: a .gitignore file that cannot be read holds its folder only while the device follows them, Driver::gitignore_only fails when it cannot read a folder or a rules file in it, and koi gitignore off writes the setting when the daemon already follows false. No earlier test reads an unreadable rules file or an off setting the configuration lost.
