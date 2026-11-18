@@ -2607,8 +2607,12 @@ impl Trees {
         self.local_children(id).chain(self.l_parked.children(id))
     }
 
+    fn s_children<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a NodeId> + 'a {
+        self.synced_children(id).chain(self.waiting.children(id))
+    }
+
     fn keeps_the_synced_children<'a>(&'a self, id: &'a str, seen: &mut BTreeSet<&'a str>) -> bool {
-        (self.synced_children(id).chain(self.waiting.children(id))).all(|child| {
+        self.s_children(id).all(|child| {
             self.l.get(child).is_some()
                 || self
                     .removed_from
@@ -2752,7 +2756,7 @@ impl Trees {
             Kind::Dir => {
                 let children: Vec<&NodeId> = self.local_children_placed_or_parked(id).collect();
                 self.keeps_the_synced_children(id, &mut BTreeSet::new())
-                    && !(self.synced_children(id)).any(|child| self.removal_stands(child))
+                    && !(self.s_children(id)).any(|child| self.removal_stands(child))
                     && children.into_iter().all(|child| {
                         shown.contains_key(child)
                             || self.kept_as_discarded_in(child, id)
@@ -2761,7 +2765,7 @@ impl Trees {
             }
         };
         if copy {
-            let left_out = (self.synced_children(id).chain(self.waiting.children(id)))
+            let left_out = (self.s_children(id))
                 .filter(|child| {
                     self.l.get(child).is_none() && !self.removed_from.contains_key(*child)
                 })
