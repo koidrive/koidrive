@@ -2,7 +2,7 @@
 
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import type { SpaceUsage } from "../gen/koidrive/v1/auth_pb";
-import { type Commit, type CommitResult, CommitResultSchema, type Op, type UploadReceipt } from "../gen/koidrive/v1/commit_pb";
+import { type Commit, type CommitResult, CommitResultSchema, type UploadReceipt } from "../gen/koidrive/v1/commit_pb";
 import {
   CaughtUpSchema,
   ChangesSchema,
@@ -28,7 +28,6 @@ import {
   type ChunkRef,
   type CommitRecord,
   CommitRecordSchema,
-  type Content,
   NodeStateSchema,
   VersionInfoSchema,
 } from "../gen/koidrive/v1/model_pb";
@@ -56,8 +55,8 @@ import {
 } from "../gen/koidrive/v1/rpc_pb";
 import type { SessionCheck } from "../account/account";
 import type { AccountDO } from "../account-do";
-import { type Identity, verifyAccessToken } from "../auth";
-import { type ChunkObject, sha256, signChunkGrant, verifyChunkGrant } from "../crypto";
+import { verifyAccessToken } from "../auth";
+import { type ChunkObject, signChunkGrant, verifyChunkGrant } from "../crypto";
 import { errorText } from "../errors";
 import type { Database, ObjectState, ObjectStore, Socket, Sql } from "../host";
 import { fromHex, isUuidV7, toHex, uuidv7 } from "../ids";
@@ -75,14 +74,12 @@ import type { ShareOutcome } from "../share/links";
 import { checkFence, checkLinkRoot, type DownloadFence, type ShareFile, shareFile, shareInfo, shareListing } from "../share/space";
 import type { Pitr } from "./pitr";
 import { ChunkState } from "./schema";
-import { backfillLegacyIntents, intentsValid, readIntents, trashHeld } from "./intents";
+import { backfillLegacyIntents, readIntents, trashHeld } from "./intents";
 import { readUsage } from "./usage";
 import {
   chunkKey,
-  encodeChunkList,
   parseChunkKey,
   getMeta,
-  getNode,
   getVersion,
   type NodeRow,
   nodeState,
@@ -96,111 +93,59 @@ import {
   versionPageCount,
 } from "./store";
 import { PROTO_MAX, PROTO_MIN, SERVER_VERSION } from "../version";
-
-export const FORMAT_VERSION = 1;
-const HOUR_MS = 3_600_000;
-const DAY_MS = 24 * HOUR_MS;
-const PITR_WINDOW_MS = 30 * DAY_MS;
-const BOOKMARK_SAFETY_MS = HOUR_MS;
+import {
+  FORMAT_VERSION,
+  HOUR_MS,
+  DAY_MS,
+  PITR_WINDOW_MS,
+  BOOKMARK_SAFETY_MS,
+  HOLD_MS,
+  GRANT_MS,
+  MAX_OPS,
+  MAX_CHUNKS_PER_CALL,
+  MAX_HEAD_CHECKS,
+  MIN_CHUNK_GRACE_DAYS,
+  MAX_MISSING_LISTED,
+  MAX_SERVER_FRAME,
+  MAX_CLIENT_FRAME,
+  MAX_REQ_ID,
+  RETRY_LATER_MS,
+  CLOCK_WAIT_MS,
+  GC_BATCH,
+  PURGE_BYTES,
+  GC_RETRY_MS,
+  R2_DELETE_BATCH,
+  ORPHAN_SWEEP_MS,
+  CLOSED_RECHECK_MS,
+  EXPORT_RETRY_MS,
+  MAX_PARKED_BYTES,
+  USAGE_GRACE_MS,
+} from "./limits";
+import { type Role, closeReason, RETIRED_HISTORY, CheckFailed, TOKEN_GRACE_MS, Close, type Connect, type Attachment, type Session } from "./session";
+import {
+  fail,
+  sameBytes,
+  checkChunkRef,
+  checkContent,
+  checkIds,
+  opContent,
+  rpcRoute,
+  frameBytes,
+  reply,
+  fitPage,
+} from "./requests";
 
 function oldestUsableBookmarkMs(nowMs: number): number {
   return nowMs - PITR_WINDOW_MS + BOOKMARK_SAFETY_MS;
 }
-export const HOLD_MS = DAY_MS;
-export const GRANT_MS = HOUR_MS;
-const MAX_OPS = 1000;
-const MAX_CHUNKS_PER_CALL = 1000;
-/** A call stays well inside a Worker invocation's subrequest limit. */
-export const MAX_HEAD_CHECKS = 50;
-/** RFC 0003 section 5, rule 4. */
-const MIN_CHUNK_GRACE_DAYS = 30;
-export const MAX_MISSING_LISTED = MAX_CHUNKS_PER_CALL;
-export const MAX_CHUNK_BYTES = 16 * 1024 * 1024;
-const MAX_SERVER_FRAME = 1024 * 1024;
-export const MAX_CLIENT_FRAME = 8 * 1024 * 1024;
-const MAX_REQ_ID = 2n ** 64n - 1n;
-const RETRY_LATER_MS = 60_000;
-const CLOCK_WAIT_MS = 50;
 
 class ClockBehind extends Error {
   constructor(readonly waitMs: number) {
     super("the clock reads no later than the head's stamp");
   }
 }
-const PAGE_ENVELOPE_BYTES = 1024;
-const GC_BATCH = 1000;
-const PURGE_BYTES = MAX_SERVER_FRAME - 64 * 1024;
-const GC_RETRY_MS = 10 * 60_000;
-const R2_DELETE_BATCH = 1000;
-const ORPHAN_SWEEP_MS = 7 * DAY_MS;
-const CLOSED_RECHECK_MS = 10 * 60_000;
-const EXPORT_RETRY_MS = 60_000;
-const MAX_PARKED_BYTES = 8192;
-const USAGE_GRACE_MS = 60_000;
-
-export type Role = "owner" | "editor" | "viewer";
-
-const MAX_CLOSE_REASON_BYTES = 123;
-
-export function closeReason(reason: string): string {
-  const encoder = new TextEncoder();
-  let kept = "";
-  let bytes = 0;
-  for (const char of reason) {
-    bytes += encoder.encode(char).length;
-    if (bytes > MAX_CLOSE_REASON_BYTES) break;
-    kept += char;
-  }
-  return kept;
-}
-
-export const RETIRED_HISTORY =
-  "the space's storage holds a history that a rewind replaced, so it was restored outside a rewind; the server serves it again once its operator restores the storage the rewind left (RFC 0003 section 4)";
-
-export class CheckFailed {
-  constructor(readonly cause: Error_Cause) {}
-}
 
 const SHARE_CLOSED = { ok: false, code: Error_Code.RETRY_LATER, message: "this link is temporarily unavailable; retry later", status: 503 } as const;
-
-export const CONNECT_HEADER = "X-Koidrive-Connect";
-export const TOKEN_GRACE_MS = 60_000;
-
-export const Close = {
-  TRY_AGAIN_LATER: 1013,
-  PROTOCOL: 4000,
-  TOKEN_EXPIRED: 4001,
-  UNSUPPORTED_VERSION: 4002,
-  DEVICE_REVOKED: 4003,
-  SPACE_REWOUND: 4004,
-} as const;
-
-export interface Connect {
-  identity: Identity;
-  origin: string;
-}
-
-export interface Attachment {
-  connId: string;
-  identity: Identity;
-  origin: string;
-  role: Role;
-  maxFormat: number;
-  hello: boolean;
-  live: boolean;
-  usage?: UsageBatch;
-}
-
-export interface Session {
-  deviceId: string;
-  userId: string;
-  deviceName: string;
-  kind: string;
-  scope: string | null;
-  role: Role;
-  maxFormat: number;
-  origin: string;
-}
 
 export interface SpaceSettings {
   version_retention_days: number;
@@ -234,97 +179,6 @@ export interface GcReport {
   deletedChunks: number;
   sweptChunks: number;
   more: boolean;
-}
-
-function fail(code: Error_Code, message: string): never {
-  throw new CallFailure(code, message);
-}
-
-function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
-  return a.length === b.length && a.every((byte, i) => byte === b[i]);
-}
-
-function checkChunkRef(chunk: ChunkRef): void {
-  if (chunk.hash.length !== 32) fail(Error_Code.INVALID_ARGUMENT, "chunk hash must be 32 bytes");
-  if (chunk.size < 1 || chunk.size > MAX_CHUNK_BYTES) fail(Error_Code.INVALID_ARGUMENT, "chunk size out of range");
-  if (chunk.encoding !== 0) fail(Error_Code.INVALID_ARGUMENT, "unsupported chunk encoding");
-}
-
-async function checkContent(content: Content | undefined): Promise<Content> {
-  if (!content) fail(Error_Code.INVALID_ARGUMENT, "content is required");
-  if (content.chunks.length !== content.chunkCount) fail(Error_Code.INVALID_ARGUMENT, "commits must list every chunk inline");
-  content.chunks.forEach(checkChunkRef);
-  const total = content.chunks.reduce((sum, chunk) => sum + BigInt(chunk.size), 0n);
-  if (total !== content.size) fail(Error_Code.INVALID_ARGUMENT, "content size does not match its chunks");
-  if (!sameBytes(await sha256(encodeChunkList(content.chunks)), content.manifestDigest)) {
-    fail(Error_Code.INVALID_ARGUMENT, "manifest_digest does not match the chunk list");
-  }
-  return content;
-}
-
-function checkIds(op: Op, index: number): void {
-  const required: string[] = [];
-  const optional: string[] = [];
-  switch (op.op.case) {
-    case "createDir":
-      required.push(op.op.value.nodeId, op.op.value.parentId);
-      break;
-    case "createFile":
-      required.push(op.op.value.nodeId, op.op.value.parentId, ...op.op.value.madeOver);
-      optional.push(op.op.value.sourceVersionId);
-      break;
-    case "updateContent":
-      required.push(op.op.value.nodeId, ...op.op.value.madeOver);
-      optional.push(op.op.value.sourceVersionId);
-      break;
-    case "delete":
-      required.push(op.op.value.nodeId);
-      break;
-    case "move":
-      required.push(op.op.value.nodeId, op.op.value.newParentId);
-      break;
-    case "restore":
-      required.push(op.op.value.nodeId);
-      optional.push(op.op.value.versionId, op.op.value.targetParentId);
-      break;
-    default:
-      fail(Error_Code.INVALID_ARGUMENT, `op ${index} is empty`);
-  }
-  if (!intentsValid(op)) fail(Error_Code.INVALID_ARGUMENT, `op ${index} has a malformed intent`);
-  if (!required.every(isUuidV7) || !optional.every((id) => id === "" || isUuidV7(id))) {
-    fail(Error_Code.INVALID_ARGUMENT, `op ${index} has a malformed id`);
-  }
-}
-
-function opContent(op: Op): Content | undefined | null {
-  if (op.op.case === "createFile" || op.op.case === "updateContent") return op.op.value.content;
-  return null;
-}
-
-function rpcRoute(request: RpcRequest): string {
-  return "rpc_" + (request.call.case ?? "empty").replace(/[A-Z]/g, (letter) => "_" + letter.toLowerCase());
-}
-
-function frameBytes(response: RpcResponse): number {
-  return toBinary(ServerMessageSchema, create(ServerMessageSchema, { msg: { case: "rpc", value: response } })).length;
-}
-
-function reply(reqId: bigint, result: RpcResponse["result"]): { response: RpcResponse } {
-  const response = create(RpcResponseSchema, { reqId, result });
-  if (frameBytes(response) > MAX_SERVER_FRAME) fail(Error_Code.LIMIT_EXCEEDED, "the reply does not fit in one 1 MiB message");
-  return { response };
-}
-
-function fitPage<R, T>(rows: R[], build: (row: R) => T, encodedSize: (item: T) => number): T[] {
-  const page: T[] = [];
-  let bytes = PAGE_ENVELOPE_BYTES;
-  for (const row of rows) {
-    const item = build(row);
-    bytes += encodedSize(item) + 6;
-    if (page.length > 0 && bytes > MAX_SERVER_FRAME) break;
-    page.push(item);
-  }
-  return page;
 }
 
 export type Directory = Pick<AccountDO, "checkSessions" | "isSpaceClosed" | "recordUsage" | "retireChunks" | "serverKey" | "shareResolve">;

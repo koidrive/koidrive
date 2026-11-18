@@ -10,10 +10,12 @@ import { bootstrapExport, requestSnapshot } from "./space/export";
 import { backfillMigratedIntents } from "./space/intents";
 import { type Pitr, pitrBackend } from "./space/pitr";
 import { migrate } from "./space/schema";
-import { type Attachment, CheckFailed, CONNECT_HEADER, type Connect, RETIRED_HISTORY, spaceLogic, TOKEN_GRACE_MS } from "./space/space";
+import { type Attachment, CheckFailed, CONNECT_HEADER, type Connect, RETIRED_HISTORY, TOKEN_GRACE_MS } from "./space/session";
+import { spaceLogic } from "./space/space";
 
-export { Close, CONNECT_HEADER, GRANT_MS, HOLD_MS, MAX_HEAD_CHECKS } from "./space/space";
-export type { Role, Session } from "./space/space";
+export { GRANT_MS, HOLD_MS, MAX_HEAD_CHECKS } from "./space/limits";
+export { Close, CONNECT_HEADER } from "./space/session";
+export type { Role, Session } from "./space/session";
 
 export class SpaceDO extends spaceLogic(DurableObject<Env>) {
   protected readonly state: ObjectState;
