@@ -36,7 +36,7 @@ mod lifecycle;
 mod link_copy;
 mod observe;
 mod paths;
-mod pending_claim;
+mod pending_create;
 pub mod policy;
 mod progress;
 mod question;
@@ -62,7 +62,7 @@ pub use koidrive_engine::guard::MAX_DELETIONS;
 pub use koidrive_state_file::Flock;
 pub use observe::{FsObserver, Observation, Observed, Observer, Observing, RulesChange};
 pub use paths::{Paths, PathsError};
-pub use pending_claim::claim_pending;
+pub use pending_create::{CreatedSpace, claim_pending, create_space, space_create_pending};
 pub use question::{
     Answer, HeldItem, Limit, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
 };
