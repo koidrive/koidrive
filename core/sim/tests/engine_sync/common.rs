@@ -1865,6 +1865,16 @@ fn run_ignoring_answering_after(
                 Some(op::Op::UpdateContent(update)) => &update.node_id,
                 _ => continue,
             };
+            if let Some(op::Op::CreateDir(_)) = &op.op
+                && let Some(into) = merged_into.remove(id)
+            {
+                prop_assert!(
+                    !before.0.reverted().contains(id),
+                    "{} is sent as a new folder while it is still merged into {} and the user has not moved it out",
+                    id,
+                    into
+                );
+            }
             if let Some(op::Op::Move(moved)) = &op.op
                 && let Some(local) = device.trees.local().get(id).filter(|node| !node.parked)
             {
