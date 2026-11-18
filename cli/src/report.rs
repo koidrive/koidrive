@@ -227,7 +227,8 @@ pub enum SyncState {
 
 /// What lifts a halted folder's halt: a restart once the problem is fixed, putting the folder back where it was
 /// (Koidrive checks it again on its own), a relink, unlinking it again, a retry of the refused changes, the space's
-/// owner confirming them, setting the device up again, or the owner adding the device back to the space.
+/// owner confirming them, setting the device up again, or unlinking the folder when this device's account can no
+/// longer reach its space or the space is gone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RemedyData {
@@ -267,8 +268,8 @@ impl RemedyData {
         match self {
             RemedyData::Restart | RemedyData::Root | RemedyData::Owner => Some("restart"),
             RemedyData::Relink => Some("relink"),
-            RemedyData::Unlink => Some("unlink"),
-            RemedyData::Retry | RemedyData::SetUpAgain | RemedyData::Membership => None,
+            RemedyData::Unlink | RemedyData::Membership => Some("unlink"),
+            RemedyData::Retry | RemedyData::SetUpAgain => None,
         }
     }
 }

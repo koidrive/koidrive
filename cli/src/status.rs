@@ -120,7 +120,7 @@ pub(crate) fn status_summary(
                         text.push_str(&format!("  To finish, run koi folder unlink {path}\n"))
                     }
                     RemedyData::Membership => text.push_str(&format!(
-                        "  Ask the space's owner to add this device again. If the space is gone, run koi folder unlink {path}; its files stay where they are.\n"
+                        "  This device's account can't reach this space, or the space is gone. Run koi folder unlink {path}; its files stay where they are.\n"
                     )),
                     RemedyData::Owner => text.push_str(&format!(
                         "  To keep receiving other devices' changes while this device's changes wait for the owner, run koi folder restart {path}\n"

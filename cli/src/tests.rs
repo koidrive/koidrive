@@ -81,6 +81,13 @@ fn concise_halted_status_offers_a_restart_only_when_a_restart_lifts_the_halt() {
             remedy == "unlink",
             "{summary}"
         );
+        assert_eq!(
+            report::RemedyData::of(&status.folders[0]).and_then(report::RemedyData::command),
+            Some(match remedy {
+                "unlink" | "membership" => "unlink",
+                _ => "restart",
+            })
+        );
         let data = serde_json::to_value(report::FolderData::of(&status.folders[0])).unwrap();
         assert_eq!(data["remedy"], remedy);
     }

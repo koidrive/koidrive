@@ -815,7 +815,7 @@
       "type": "string"
     },
     "RemedyData": {
-      "description": "What lifts a halted folder's halt: a restart once the problem is fixed, putting the folder back where it was\n(Koidrive checks it again on its own), a relink, unlinking it again, a retry of the refused changes, the space's\nowner confirming them, setting the device up again, or the owner adding the device back to the space.",
+      "description": "What lifts a halted folder's halt: a restart once the problem is fixed, putting the folder back where it was\n(Koidrive checks it again on its own), a relink, unlinking it again, a retry of the refused changes, the space's\nowner confirming them, setting the device up again, or unlinking the folder when this device's account can no\nlonger reach its space or the space is gone.",
       "enum": [
         "restart",
         "root",

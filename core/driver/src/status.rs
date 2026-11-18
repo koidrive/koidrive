@@ -83,7 +83,7 @@ pub enum Remedy {
     Owner,
     /// Setting this device up again.
     SetUpAgain,
-    /// The space's owner adding this device back, or unlinking the folder when the space is gone.
+    /// Unlinking the folder, because this device's account can no longer reach the space or the space is gone.
     Membership,
 }
 
