@@ -1580,8 +1580,21 @@ fn settle(
                     .effects
                     .failed(&mut engine.trees, &record.effect_id)
                     .map_err(refused)?;
-                engine.effects.unblock(&record.node);
-                Settled::AwaitsScan("an entry left the folder before it was removed".into())
+                let why = "an entry left the folder before it was removed".to_owned();
+                match &record.effect {
+                    EngineEffect::RemoveDir {
+                        at:
+                            EngineLocation::At {
+                                base: EngineBase::Root,
+                                ..
+                            },
+                        ..
+                    } => {
+                        engine.effects.unblock(&record.node);
+                        Settled::AwaitsScan(why)
+                    }
+                    _ => Settled::Stuck(why),
+                }
             }
             Outcome::Done { identity } => {
                 let removal = (engine.effects)

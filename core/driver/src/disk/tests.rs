@@ -2146,6 +2146,83 @@ fn a_folder_removal_expects_each_file_it_takes_along_at_its_own_place() {
     );
 }
 
+#[test]
+fn a_parked_folder_removal_that_an_entry_left_first_stays_stuck_without_holding_the_folder() {
+    let kept = "0190f0a0-0000-7000-8000-0000000000a2";
+    let folder = Folder::new();
+    let parked = folder.private("parked").join(NODE);
+    fs::create_dir_all(&parked).unwrap();
+    let id = koidrive_fs::id_of(fs::File::open(&parked).unwrap().as_fd()).unwrap();
+    let mut store = Store::open(&folder.db).unwrap();
+    store
+        .transaction(|tx| {
+            for (node, parent, name) in [(NODE, SPACE, "app"), (kept, NODE, "node_modules")] {
+                tx.put_local_node(&koidrive_store::LocalNode {
+                    node_id: node.into(),
+                    shape: koidrive_store::Shape {
+                        parent_id: parent.into(),
+                        name: name.into(),
+                        kind: NodeKind::Dir as i32,
+                        content: None,
+                    },
+                    identity: match node == NODE {
+                        true => id,
+                        false => FileId {
+                            ino: 9,
+                            birth_ns: None,
+                        },
+                    },
+                    parked: node == NODE,
+                    left_out_when_placed: false,
+                    content_from_server: false,
+                })?;
+            }
+            tx.set_engine_state(&EngineState {
+                trees: TreesState {
+                    dirty: BTreeSet::from([NODE.into(), kept.into()]),
+                    kept_nodes: BTreeSet::from([kept.into()]),
+                    ..TreesState::default()
+                },
+                ..EngineState::default()
+            })
+        })
+        .unwrap();
+    let mut running = folder.start(no_hook()).unwrap();
+    let removal = record(EngineEffect::RemoveDir {
+        at: EngineLocation::Parked(NODE.into()),
+        identity: crate::engine::file_identity(id),
+        along: Vec::new(),
+    });
+    running.engine.effects = koidrive_engine::effects::Effects::from_state(EffectsState {
+        in_flight: vec![removal.clone()],
+        ..EffectsState::default()
+    })
+    .unwrap();
+    let (effect, contents) = translate(&removal).unwrap();
+    let pending = Pending {
+        timing_bytes: None,
+        credit: Credit::default(),
+        space: running.disk.space.clone(),
+        effects: vec![Planned {
+            record: removal,
+            effect,
+            contents,
+            version: None,
+        }],
+    };
+    let staged = ready(pending.stage(&Server::default())).unwrap();
+    let settled = (running.disk)
+        .apply(staged, &mut running.engine, &mut running.store)
+        .unwrap();
+    assert!(!parked.exists());
+    assert_eq!(
+        one(settled),
+        Settled::Stuck("an entry left the folder before it was removed".into())
+    );
+    assert!(running.engine.effects.blocked().contains_key(NODE));
+    assert!(!running.disk.awaits_scan());
+}
+
 /// Passes the resets the disk requested to the observer, and returns them.
 fn catch_up(watching: &mut FsObserver, sections: &Sections) -> Vec<Reset> {
     let (resets, _) = sections.take_resets();
