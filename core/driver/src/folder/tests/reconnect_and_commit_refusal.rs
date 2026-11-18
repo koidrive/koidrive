@@ -249,6 +249,9 @@ fn a_file_edited_while_a_move_the_server_undid_was_in_flight_keeps_its_name() {
 #[test]
 fn a_space_this_device_can_no_longer_reach_is_not_lifted_by_a_restart() {
     for reason in [StopReason::Forbidden, StopReason::NotFound] {
-        assert_eq!(Stop::Session(reason).remedy(), crate::status::Remedy::Membership);
+        assert_eq!(
+            Stop::Session(reason).remedy(),
+            crate::status::Remedy::Membership
+        );
     }
 }
