@@ -705,6 +705,10 @@ fn a_relinked_copy_loses_nothing_and_its_older_files_give_way_to_the_servers_onc
 
     relink(&site).unwrap();
     assert_rotated_from(&site, &[copied, stored]);
+    assert!(files(&private.join(koidrive_fs::QUARANTINE_DIR)).is_empty());
+    let back = (names(&site.root).into_iter())
+        .find(|name| name.starts_with("left (recovered "))
+        .expect("the quarantined file is back");
     let mut a = restarted(&site, &mut remote);
     a.rest(&mut remote);
     assert_ne!(a.state(), FolderState::Halted);
@@ -717,6 +721,7 @@ fn a_relinked_copy_loses_nothing_and_its_older_files_give_way_to_the_servers_onc
             file("edited.txt", "old"),
             file("gone.txt", "gone"),
             file("kept.txt", "kept"),
+            file(&back, "left"),
         ]
     );
     let [question] = &shown(&site)[..] else {
@@ -725,7 +730,7 @@ fn a_relinked_copy_loses_nothing_and_its_older_files_give_way_to_the_servers_onc
     let held: Vec<_> = (question.items.iter())
         .map(|item| item.path.unquoted())
         .collect();
-    assert_eq!(held, ["edited.txt", "gone.txt"]);
+    assert_eq!(held, ["edited.txt", "gone.txt", back.as_str()]);
     drop(a);
 
     answer(&site, Answer::Discard);
@@ -747,7 +752,7 @@ fn a_relinked_copy_loses_nothing_and_its_older_files_give_way_to_the_servers_onc
         .filter(|text| !text.starts_with('{'))
         .collect();
     trashed.sort();
-    assert_eq!(trashed, ["gone", "left", "old"]);
+    assert_eq!(trashed, ["gone", "left", "left", "old"]);
 }
 
 #[test]
@@ -772,6 +777,11 @@ fn relink_refuses_a_folder_that_passes_its_check_and_takes_one_whose_store_was_r
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site.root.join("one.txt"), b"one");
+    a.create(&mut remote, &site.root.join("notes.txt"), b"notes");
+    let node = node_named(&a, "notes.txt");
+    fs::remove_file(site.root.join("notes.txt")).unwrap();
+    a.rescan();
+    a.rest(&mut remote);
     drop(a);
     let (marker, tokens) = (marker_of(&site), tokens_of(&site));
     assert!(matches!(relink(&site), Err(disk::RelinkError::NotACopy)));
@@ -782,15 +792,17 @@ fn relink_refuses_a_folder_that_passes_its_check_and_takes_one_whose_store_was_r
     drop(restarted(&site, &mut remote));
     fs::copy(&saved, &site.db).unwrap();
     assert!(halts_as_a_copy(&site));
+    let id = ask(&site, &RestoreIntent::from_trash(node, None, None).unwrap());
 
     relink(&site).unwrap();
     let mut a = restarted(&site, &mut remote);
     a.rest(&mut remote);
     assert_ne!(a.state(), FolderState::Halted);
     assert_eq!(a.folder.view().questions, 0);
+    assert_eq!(ended(&site), [(id, Outcome::Restored)]);
     a.create(&mut remote, &site.root.join("two.txt"), b"two");
-    assert_eq!(remote.names(), ["one.txt", "two.txt"]);
-    assert_eq!(names(&site.root), ["one.txt", "two.txt"]);
+    assert_eq!(remote.names(), ["notes.txt", "one.txt", "two.txt"]);
+    assert_eq!(names(&site.root), ["notes.txt", "one.txt", "two.txt"]);
 }
 
 #[test]
@@ -824,10 +836,21 @@ fn a_crash_at_each_step_of_a_relink_leaves_the_copy_halted_or_relinked() {
 }
 
 #[test]
-fn a_relink_whose_marker_write_fails_keeps_the_folder_halted() {
+fn a_relink_of_a_moved_folder_or_one_whose_marker_write_fails_keeps_the_folder_halted() {
     let mut remote = Remote::new();
     let site = a_copy_from_before_an_add_an_edit_and_a_delete(&mut remote);
     let served = remote.tree();
+    let (marker, tokens) = (marker_of(&site), tokens_of(&site));
+    let lock = claim::lock(&site.root).unwrap().unwrap();
+    let parent = site.root.parent().unwrap();
+    let moved = parent.with_extension("moved");
+    fs::rename(parent, &moved).unwrap();
+    let mut store = Store::open(moved.join(site.db.file_name().unwrap())).unwrap();
+    let refused = disk::relink(&lock, &site.link, &mut store);
+    drop((store, lock));
+    fs::rename(&moved, parent).unwrap();
+    assert!(matches!(refused, Err(disk::RelinkError::Stop(Stop::Withdrawn(_)))));
+    assert_eq!((marker_of(&site), tokens_of(&site)), (marker, tokens));
     let blocker = block_marker(&site);
 
     assert!(matches!(

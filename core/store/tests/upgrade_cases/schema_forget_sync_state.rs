@@ -54,7 +54,29 @@ upgrade_case!(schema_forget_sync_state, |store| {
         Ok::<_, koidrive_store::Error>(())
     })
     .unwrap();
-    let kept = ["chunk_cache", "link", "migrations", "volume_mounts"];
+    let kept = [
+        "chunk_cache",
+        "link",
+        "migrations",
+        "restore_asked",
+        "restore_intents",
+        "restore_requests",
+        "volume_mounts",
+    ];
+    let forgotten = "commit_in_flight commit_in_flight_delete_members commit_in_flight_deletes \
+         commit_in_flight_restore_members commit_slots commit_state content_provenance cycle_reverted \
+         discarded_nodes dropped_edits edited_here effect_state effects_in_flight engine_state failed_effects \
+         forgotten_shapes guard_confirmed guard_confirmed_limits guard_confirmed_members guard_ledger \
+         guard_remote guard_remote_dismissed kept_entries kept_folders kept_nodes kept_originals local_changes local_nodes lost_creates \
+         lost_positions lost_shapes moved_here node_maps node_sets open_question_items open_question_members \
+         open_question_shapes open_questions past_positions pending_finishes published_nodes questions \
+         recorded_nodes remote_cursor remote_nodes removed_here replaced_versions resends synced_nodes \
+         taken_answers trashed_here unseen_changes unsent_edits unsent_marks unsent_moves waiting_updates \
+         watched_contents watched_positions";
+    let mut tables: Vec<&str> = kept.iter().copied().chain(forgotten.split_whitespace()).collect();
+    tables.sort();
+    let found: Vec<&str> = before.iter().map(|(table, _)| table.as_str()).collect();
+    assert_eq!(found, tables);
     let emptied = (before.iter()).filter(|(table, count)| *count > 0 && !kept.contains(&table.as_str()));
     assert!(emptied.count() > 10, "{before:?}");
     for ((table, was), (_, now)) in before.iter().zip(rows(&path)) {

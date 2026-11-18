@@ -1189,6 +1189,33 @@ fn a_marker_one_above_with_an_effect_in_flight_is_recovered() {
 }
 
 #[test]
+fn a_marker_changed_while_an_effect_in_flight_is_recovered_halts_as_older_only_where_relink_takes_it()
+ {
+    for (changed, older) in [(2, true), (9, false)] {
+        let (folder, _, _) = three_cleared_and_one_in_flight();
+        set_marker(&folder.root, 4);
+        let root = folder.root.clone();
+        let hook: Hook = Box::new(move |cut| {
+            if cut == Cut::AfterAck {
+                set_marker(&root, changed);
+            }
+        });
+        let stop = folder.start(Some(hook)).err().expect("the start stops");
+        let lock = claim::lock(&folder.root).unwrap().unwrap();
+        let relinked = relink(&lock, &folder.link, &mut folder.open().0);
+        let halted_older = matches!(
+            stop,
+            Stop::Root(RootProblem::Copy) | Stop::DiskBehind { .. }
+        );
+        assert_eq!(
+            (halted_older, relinked.is_ok()),
+            (older, older),
+            "{changed}: {stop}"
+        );
+    }
+}
+
+#[test]
 fn a_marker_above_what_the_store_accounts_for_continues_from_the_marker_and_recovers() {
     let (folder, _, effect_id) = three_cleared_and_one_in_flight();
     set_marker(&folder.root, 6);

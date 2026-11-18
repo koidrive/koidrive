@@ -53,7 +53,7 @@ A folder whose sync database can't be opened halts, and its files stay as they a
 
 ## Keep an older copy of the folder
 
-The folder halts when it holds an older copy of itself, such as a backup restored over it, so that files missing from the copy aren't deleted on the server. To keep the copy as it is:
+The folder halts when it holds an older copy of itself, such as a backup restored over it, so that files missing from the copy aren't deleted on the server. To sync this copy:
 
 ```sh
 koi folder relink ~/Koidrive
