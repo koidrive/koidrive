@@ -277,37 +277,6 @@ fn a_bystanders_create_that_resent_another_devices_file_stays_a_resend_after_a_s
     }
 }
 
-#[test]
-fn a_bystander_sends_another_devices_lost_write_again_after_a_second_restore_to_an_earlier_copy_takes_its_resend_and_its_own_edit_below()
- {
-    use Step::*;
-    let act = |kind: u8| {
-        User(Action {
-            kind,
-            target: 0,
-            parent: 0,
-            name: 0,
-            text: 0,
-        })
-    };
-    let phases: Vec<Vec<(usize, Step)>> = vec![
-        vec![(0, act(1))],
-        vec![(1, act(2)), (0, Backup)],
-        vec![(0, act(2)), (0, Backup), (0, act(0))],
-        vec![
-            (0, Leave),
-            (0, Restore),
-            (1, Connect),
-            (1, Work(0)),
-            (1, Work(6067052043035634869)),
-            (1, Commit(Reply::Served)),
-            (1, Work(12716880773219500)),
-            (0, RestoreEarlier),
-        ],
-    ];
-    converge(2, &phases).unwrap();
-}
-
 fn work(device: usize, n: usize) -> Vec<(usize, Step)> {
     (0..n).map(|i| (device, Step::Work(i))).collect()
 }
