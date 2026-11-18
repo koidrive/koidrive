@@ -2715,7 +2715,7 @@ impl Trees {
                 self.keeps_the_synced_children(id, &mut BTreeSet::new())
                     && children.into_iter().all(|child| {
                         shown.contains_key(child)
-                            || self.is_discarded(child)
+                            || self.kept_as_discarded_in(child, id)
                             || self.server_copy(child, shown, kept)
                     })
             }
