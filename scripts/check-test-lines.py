@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import argparse
 import fnmatch
+import json
 import os
 import posixpath
 import re
@@ -13,19 +14,9 @@ ALLOWANCE = 400
 RECORDS = ".github/test-line-allowances/"
 CATEGORIES = ("test", "implementation", "fixture", "regression", "snapshot")
 SCOPE_EXTRA = ("spec/testdata/", "spec/vectors/")
+FN_DOCS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fn-docs", "Cargo.toml")
 
-TOKEN = re.compile(r"""//[^\n]*|/\*|(?<![A-Za-z0-9_])[bc]?r(#*)"[\s\S]*?"\1|"(?:\\[\s\S]|[^"\\])*"|'(?:\\(?:u\{[0-9a-fA-F]*\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'""")
-CFG = re.compile(r"#(!?)\s*\[\s*cfg\s*\(")
-ATTRIBUTE = re.compile(r"#\s*\[")
-PATH_ATTRIBUTE = re.compile(r'#\s*\[\s*path\s*=\s*"([^"]*)"\s*\]')
-MOD_DECLARATION = re.compile(r"\b(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)\s*;")
-INLINE_MODULE = re.compile(r"\bmod\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)\s*\{")
 RECORD_NAME = re.compile(r"pr-([0-9]+)\.txt")
-VISIBILITY = re.compile(r"(?:pub(?:\s*\([^)]*\))?\s+)?")
-UNTIL_SEMICOLON = re.compile(r"(?:const|static|let|type)\b(?!\s+(?:fn|unsafe|async|extern)\b)")
-ITEM = re.compile(r"(?:(?:fn|impl|struct|enum|union|mod|use|trait|extern|unsafe|async)\b|[A-Za-z_][A-Za-z0-9_]*!)")
-EXPRESSION_CONTINUES = re.compile(r"\s*[,;.?)\]}]|\s*else\b|\s*as\b")
-FILE_ATTRIBUTES_ONLY = re.compile(r"\s*(?:#!\s*\[[^\]]*\]\s*)*")
 TEST_DIR = re.compile(r"(^|/)(tests|benches)/")
 TEST_CRATE = re.compile(r"(^|/)test-support/")
 CRATE_ROOT = re.compile(r"(^|/)((lib|main|mod|build)\.rs|(tests|benches|examples|bin)/[^/]+\.rs)$")
@@ -33,114 +24,52 @@ REGRESSION = re.compile(r"\.proptest-regressions$|(^|/)proptest-regressions/|\.c
 SNAPSHOT = re.compile(r"\.snap(\.new)?$|(^|/)(goldens|snapshots)/")
 FIXTURE = re.compile(r"(^|/)(tests|fixtures|testdata|test-data)/")
 RUST_FIXTURE = re.compile(r"(^|/)(fixtures|testdata|test-data)/")
-ANY_MODULE = re.compile(r"\bmod\b")
-GENERIC_BEFORE = re.compile(r"[A-Za-z0-9_:]")
-TEST_ATTRIBUTE = re.compile(r"#\s*\[\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*test\s*\]")
 
 
 def git(*args, input=None):
     return subprocess.run(["git", *args], check=True, capture_output=True, input=input).stdout
 
 
-def mask(src):
-    out = []
-    pos = 0
-    while True:
-        m = TOKEN.search(src, pos)
-        if not m:
-            out.append(src[pos:])
-            return "".join(out)
-        out.append(src[pos:m.start()])
-        end = m.end()
-        if m.group() == "/*":
-            depth = 1
-            while depth and end < len(src):
-                if src.startswith("/*", end):
-                    depth += 1
-                    end += 2
-                elif src.startswith("*/", end):
-                    depth -= 1
-                    end += 2
-                else:
-                    end += 1
-        out.append(re.sub(r"[^\n]", " ", src[m.start():end]))
-        pos = end
+def fn_docs():
+    if os.environ.get("FN_DOCS"):
+        return os.environ["FN_DOCS"]
+    build = subprocess.run(
+        ["cargo", "build", "--quiet", "--release", "--locked", "--message-format=json", "--manifest-path", FN_DOCS],
+        cwd=os.path.dirname(FN_DOCS), check=True, capture_output=True, text=True,
+    ).stdout
+    os.environ["FN_DOCS"] = next(
+        message["executable"]
+        for message in map(json.loads, build.splitlines())
+        if message.get("reason") == "compiler-artifact" and message.get("executable")
+    )
+    return os.environ["FN_DOCS"]
 
 
-def balanced(code, start, open_char, close_char):
-    depth = 0
-    for i in range(start, len(code)):
-        if code[i] == open_char:
-            depth += 1
-        elif code[i] == close_char:
-            depth -= 1
-            if depth == 0:
-                return i + 1
-    return len(code)
-
-
-def top_level_args(predicate):
-    args, depth, current = [], 0, ""
-    for c in predicate:
-        if c == "," and depth == 0:
-            args.append(current.strip())
-            current = ""
-            continue
-        depth += c == "("
-        depth -= c == ")"
-        current += c
-    return [*args, current.strip()]
-
-
-def test_only(predicate):
-    predicate = re.sub(r"\s+", "", predicate)
-    if predicate == "test":
-        return True
-    if predicate.startswith("all(") and predicate.endswith(")"):
-        return any(test_only(arg) for arg in top_level_args(predicate[4:-1]))
-    return False
-
-
-def item_end(code, start):
-    pos = start
-    while True:
-        while pos < len(code) and code[pos].isspace():
-            pos += 1
-        if not ATTRIBUTE.match(code, pos):
-            break
-        pos = balanced(code, code.index("[", pos), "[", "]")
-    keyword = VISIBILITY.match(code, pos).end()
-    until_semicolon = bool(UNTIL_SEMICOLON.match(code, keyword))
-    item = until_semicolon or bool(ITEM.match(code, keyword))
-    opening, closing = ("([", ")]") if item else ("([{", ")]}")
-    depth = angle = 0
-    while pos < len(code):
-        c = code[pos]
-        if c in "->" and code.startswith(("->", "=>"), pos - (c == ">")):
-            pass
-        elif not item and c == "<" and GENERIC_BEFORE.match(code[pos - 1]):
-            angle += 1
-        elif not item and c == ">" and angle:
-            angle -= 1
-        elif c in opening:
-            depth += 1
-        elif c in closing:
-            depth -= 1
-            if depth < 0:
-                return pos
-            if c == "}" and depth == 0 and not EXPRESSION_CONTINUES.match(code, pos + 1):
-                return pos + 1
-        elif c == ";" and depth == 0:
-            return pos + 1
-        elif c == "," and depth == 0 and angle == 0 and not item:
-            return pos + 1
-        elif c == "{" and depth == 0:
-            pos = balanced(code, pos, "{", "}")
-            if not until_semicolon:
-                return pos
-            continue
-        pos += 1
-    return pos
+def scan_rust(blobs):
+    if not blobs:
+        return {}
+    request = b"".join(b"%s %d\n%s" % (blob.encode(), len(data), data) for blob, data in blobs.items())
+    output = subprocess.run([fn_docs(), "test-spans"], input=request, check=True, capture_output=True).stdout.decode()
+    scans = {}
+    for row in output.splitlines():
+        kind, _, rest = row.partition("\t")
+        if kind == "file":
+            scan = scans[rest] = {"whole_file": False, "test_lines": 0, "modules": [], "test_modules": [], "error": None}
+            covered = set()
+        elif kind == "end":
+            scan["test_lines"] = len(covered)
+        elif kind == "whole":
+            scan["whole_file"] = True
+        elif kind == "range":
+            first, last = map(int, rest.split("\t"))
+            covered.update(range(first, last + 1))
+        elif kind == "mod":
+            test, name, explicit, inline = rest.split("\t")
+            declaration = (tuple(filter(None, inline.split("\x1f"))), name, None if explicit == "-" else explicit)
+            scan["test_modules" if test == "1" else "modules"].append(declaration)
+        elif kind == "error":
+            scan["error"] = rest
+    return scans
 
 
 def module_file(path, declaration, files):
@@ -157,57 +86,6 @@ def module_file(path, declaration, files):
     nested = posixpath.join(directory, name, "mod.rs")
     return nested if nested in files and flat not in files else flat
 
-
-def path_override(code, src, start):
-    end = start
-    while True:
-        close = code.rfind("]", 0, end)
-        if close < 0 or code[close + 1:end].strip():
-            return None
-        depth, opening = 0, close
-        while opening >= 0:
-            depth += {"]": 1, "[": -1}.get(code[opening], 0)
-            if depth == 0:
-                break
-            opening -= 1
-        hash_mark = code.rfind("#", 0, opening)
-        if hash_mark < 0 or code[hash_mark + 1:opening].strip():
-            return None
-        attribute = PATH_ATTRIBUTE.match(src, hash_mark)
-        if attribute:
-            return attribute.group(1)
-        end = hash_mark
-
-
-def scan_rust(src):
-    code = mask(src)
-    line_of = lambda offset: code.count("\n", 0, offset)
-    ranges = []
-    whole_file = False
-    for m in CFG.finditer(code):
-        close = balanced(code, m.end() - 1, "(", ")")
-        if not test_only(code[m.end():close - 1]):
-            continue
-        if m.group(1):
-            if FILE_ATTRIBUTES_ONLY.fullmatch(code, 0, m.start()):
-                whole_file = True
-            continue
-        ranges.append((m.start(), item_end(code, code.index("]", close) + 1)))
-    ranges.extend((m.start(), item_end(code, m.end())) for m in TEST_ATTRIBUTE.finditer(code))
-    blocks = [(m.start(), balanced(code, m.end() - 1, "{", "}"), path_override(code, src, m.start()) or m.group(1))
-              for m in INLINE_MODULE.finditer(code)]
-    declarations, test_declarations = [], []
-    for m in MOD_DECLARATION.finditer(code):
-        inline = tuple(name for start, end, name in blocks if start < m.start() < end)
-        in_test = any(start <= m.start() < end for start, end in ranges)
-        (test_declarations if in_test else declarations).append((inline, m.group(1), path_override(code, src, m.start())))
-    covered = set()
-    for start, end in ranges:
-        covered.update(range(line_of(start), line_of(end - 1) + 1))
-    return {"whole_file": whole_file, "test_lines": len(covered), "modules": declarations, "test_modules": test_declarations}
-
-
-EMPTY_SCAN = {"whole_file": False, "test_lines": 0, "modules": [], "test_modules": []}
 
 
 def line_count(data):
@@ -245,6 +123,7 @@ class Tree:
         self.rev = rev
         members = workspace_members(self.read("Cargo.toml").decode(), self.blobs) if "Cargo.toml" in self.blobs else ()
         self.scope = members + SCOPE_EXTRA
+        self.unparsed = set()
 
     def read(self, path):
         return self.contents([path])[path]
@@ -289,13 +168,12 @@ def count(tree):
     paths = [p for p in tree.blobs if p.startswith(tree.scope)]
     data = tree.contents(paths)
     rust = [p for p in paths if p.endswith(".rs")]
+    Tree.scans.update(scan_rust({tree.blobs[p]: data[p] for p in rust if tree.blobs[p] not in Tree.scans}))
     scans, modules, test_modules = {}, {}, {}
     for path in rust:
-        blob = tree.blobs[path]
-        if blob not in Tree.scans:
-            src = data[path].decode("utf-8", "replace")
-            Tree.scans[blob] = scan_rust(src) if "test" in src or ANY_MODULE.search(src) else EMPTY_SCAN
-        scans[path] = Tree.scans[blob]
+        scans[path] = Tree.scans[tree.blobs[path]]
+        if scans[path]["error"]:
+            tree.unparsed.add(f"{path}:{scans[path]['error']}")
         modules[path] = {module_file(path, d, tree.blobs) for d in scans[path]["modules"]}
         test_modules[path] = {module_file(path, d, tree.blobs) for d in scans[path]["test_modules"]}
     test_files = test_only_files(scans, modules, test_modules)
@@ -374,6 +252,8 @@ def report(base, head, allowance, pr=None):
         + ". Fixtures, proptest regressions and snapshots are listed but do not count against it.\n"
     )
     messages = list(problems)
+    for unparsed in sorted(head_tree.unparsed - base_tree.unparsed):
+        messages.append(f"{unparsed}. The file does not parse, so its lines count as implementation.")
     if over > 0:
         messages.append(
             f"This change adds {delta['test']} net test lines; the allowance is {allowance}"

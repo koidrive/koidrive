@@ -19,6 +19,10 @@ def load():
     return check
 
 
+def setUpModule():
+    load().fn_docs()
+
+
 class TestLines(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -258,6 +262,12 @@ class TestLines(unittest.TestCase):
             self.assertEqual(self.check.count(tree)["test"], 3)
         finally:
             os.chdir(cwd)
+
+    def test_a_file_that_does_not_parse_warns_and_counts_as_implementation(self):
+        warnings = self.run_check({}, {"core/a/src/lib.rs": "#[cfg(test)]\nfn broken( {\n"})
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("core/a/src/lib.rs:", warnings[0])
+        self.assertIn("does not parse, so its lines count as implementation", warnings[0])
 
     def test_rust_files_under_fixtures_are_fixture_data(self):
         counts = self.counts({"core/a/tests/fixtures/template.rs": self.lines(5), "core/a/tests/flow.rs": self.lines(2)})

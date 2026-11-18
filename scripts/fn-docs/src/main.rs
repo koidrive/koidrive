@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+mod test_spans;
+
 use std::io::Read;
 use std::process::ExitCode;
 
@@ -118,6 +120,12 @@ impl<'a> Visit<'a> for Fns {
 }
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("test-spans") {
+        return match test_spans::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => ExitCode::FAILURE,
+        };
+    }
     let mut src = String::new();
     if std::io::stdin().read_to_string(&mut src).is_err() {
         return ExitCode::FAILURE;
