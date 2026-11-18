@@ -494,17 +494,22 @@ struct Reds {
 impl Reds {
     fn new(test: &'static str, kind: &str) -> Self {
         let mut recorded: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+        let mode = if FIELD_INTENTS.get() { "on" } else { "off" };
         for line in RECORDED_REDS.lines() {
-            let fields: Vec<&str> = line.splitn(4, '\t').collect();
-            let [name, case, check, why] = fields[..] else {
+            let fields: Vec<&str> = line.splitn(5, '\t').collect();
+            let [name, case, modes, check, why] = fields[..] else {
                 panic!(
-                    "devices-oracle-reds.tsv: {line:?} is not a test, a case, a check and a message"
+                    "devices-oracle-reds.tsv: {line:?} is not a test, a case, the intents modes, a check and a message"
                 );
             };
+            assert!(
+                ["both", "on", "off"].contains(&modes),
+                "devices-oracle-reds.tsv: {line:?} names no intents mode"
+            );
             let Some(check) = (Check::ALL.into_iter()).find(|c| format!("{c:?}") == check) else {
                 panic!("devices-oracle-reds.tsv: {line:?} names no check");
             };
-            if name == test && case.starts_with(kind) {
+            if name == test && case.starts_with(kind) && [mode, "both"].contains(&modes) {
                 recorded
                     .entry(case)
                     .or_default()
@@ -3362,7 +3367,7 @@ fn a_revival_at_an_unasked_name_or_parent_is_rejected() {
 
 #[test]
 fn a_restore_that_loses_an_edit_leaves_its_file_deleted() {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7ea7-93f8-3d888a182e12 on device 0 came undone, and no change its user did not see brought the node back",
     );
@@ -5770,7 +5775,7 @@ fn no_device_holds_a_file(world: &World) -> bool {
 #[test]
 fn a_delete_whose_user_held_the_lost_edit_beats_the_authors_edit_sent_after_another_devices_resend()
 {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
     );
@@ -5786,7 +5791,7 @@ fn a_delete_whose_user_held_the_lost_edit_beats_the_authors_edit_sent_after_anot
 #[test]
 fn a_file_trashed_by_a_user_who_held_the_lost_edit_stays_trashed_when_the_author_sends_it_after_a_resend()
  {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
     );
@@ -5908,7 +5913,7 @@ fn an_unasked_delete_of_restored_content_is_rejected_after_an_older_overwrite() 
 
 #[test]
 fn a_delete_whose_user_held_the_lost_edit_beats_the_authors_resend() {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
     );
@@ -5949,7 +5954,7 @@ fn an_owed_rename_in_flight_while_another_device_changes_it(change: Step) -> Wor
 #[test]
 fn a_device_that_deleted_the_file_after_holding_the_lost_edit_keeps_it_deleted_past_a_resend_it_planned_against()
  {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
     );
@@ -5959,7 +5964,7 @@ fn a_device_that_deleted_the_file_after_holding_the_lost_edit_keeps_it_deleted_p
 #[test]
 fn a_device_that_deleted_the_file_after_holding_the_lost_edit_keeps_it_deleted_when_it_pulls_the_resend()
  {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
     );
@@ -6063,7 +6068,7 @@ fn the_authors_edit_after_two_losses(resend_first: bool) -> World {
 #[test]
 fn a_delete_whose_user_held_the_lost_edit_stays_across_a_second_loss_after_another_devices_resend()
 {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
     );
@@ -6072,7 +6077,7 @@ fn a_delete_whose_user_held_the_lost_edit_stays_across_a_second_loss_after_anoth
 
 #[test]
 fn a_delete_whose_user_held_the_lost_edit_stays_across_a_second_loss() {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
     );
