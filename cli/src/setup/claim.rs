@@ -271,7 +271,11 @@ pub async fn saved_device(paths: &Paths, server: &Url) -> Result<bool, CliError>
                         );
                         if let Some(unconfirmed) = &unconfirmed {
                             message.push_str(". ");
-                            message.push_str(crate::device::still_listed(unconfirmed).trim_end());
+                            message.push_str(
+                                &crate::device::still_listed(unconfirmed)
+                                    .trim_end()
+                                    .replace('\n', " "),
+                            );
                         }
                         return Err(CliError::new(koidrive_ipc::Code::Failed, message)
                             .then(&["koi", "device", "leave"]));
@@ -532,7 +536,7 @@ mod tests {
         assert!(
             error
                 .message
-                .ends_with("signed in to https://files.example.com/: koi device revoke d1")
+                .contains("signed in to https://files.example.com/: koi device revoke d1 If you have no other device, add one with koi server add-device")
         );
         assert_eq!(
             error.next,

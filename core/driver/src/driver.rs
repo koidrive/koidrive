@@ -100,7 +100,6 @@ impl Unconfirmed {
         let file = File::from(
             rustix::fs::open(paths.unconfirmed_revocation(), flags, Mode::empty()).ok()?,
         );
-        file.metadata().ok()?.is_file().then_some(())?;
         serde_json::from_reader(io::BufReader::new(file)).ok()
     }
 }

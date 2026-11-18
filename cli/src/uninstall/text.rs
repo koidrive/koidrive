@@ -74,6 +74,7 @@ pub(super) fn text(data: &UninstalledData) -> String {
                 printable(server),
                 crate::output::command_word(&unconfirmed.device_id)
             ));
+            lines.push("If you have no other device, add one with koi server add-device --interactive and run the command there.".to_owned());
         }
         DeviceOutcome::StillListed {
             server,

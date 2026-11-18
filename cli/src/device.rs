@@ -57,7 +57,7 @@ pub(crate) fn device_id(text: &str) -> Result<String, String> {
 
 pub(crate) fn still_listed(unconfirmed: &koidrive_driver::Unconfirmed) -> String {
     format!(
-        "The server did not confirm that it revoked this device, so it may still list it. To remove it, run this on another device signed in to {}: koi device revoke {}\n",
+        "The server did not confirm that it revoked this device, so it may still list it. To remove it, run this on another device signed in to {}: koi device revoke {}\nIf you have no other device, add one with koi server add-device --interactive and run the command there.\n",
         printable(&unconfirmed.server),
         crate::output::command_word(&unconfirmed.device_id)
     )
