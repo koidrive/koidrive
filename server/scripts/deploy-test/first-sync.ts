@@ -39,7 +39,7 @@ import {
 const SEED = 1;
 const DEFAULT_ENTRIES = 1_900_000;
 const KEY_WAIT_MS = (SETUP_MINUTES.disk + SETUP_MINUTES.tree + 55) * MINUTE_MS;
-const CODES_WAIT_MS = SETUP_MINUTES.pairing * MINUTE_MS;
+const CODES_WAIT_MS = (SETUP_MINUTES.pairing - 5) * MINUTE_MS;
 const DAEMON_START_MS = 60_000;
 const DAEMON_STOP_MS = 60_000;
 const STATUS_TIMEOUT_MS = 15_000;
@@ -482,7 +482,7 @@ const phases: Record<string, () => Promise<void>> = {
     const failures: string[] = [];
     for (const run of runs) {
       if (Date.now() + (minutes + RESET_MINUTES) * MINUTE_MS > deadline) {
-        console.log("::warning::Run " + (run.index + 1) + " of " + runs.length + " could not finish before " + new Date(deadline).toISOString() + ", so the runs stop here");
+        failures.push("runs " + (run.index + 1) + " to " + runs.length + " did not start, because they could not finish before " + new Date(deadline).toISOString());
         break;
       }
       const build = built[run.ref]!;
@@ -501,7 +501,7 @@ const phases: Record<string, () => Promise<void>> = {
       writeFileSync(work("results", label + ".json"), JSON.stringify(result, null, 2));
       console.log(JSON.stringify(result));
     }
-    if (failures.length) fail(failures.length + " of " + runs.length + " runs failed: " + failures.join("; "));
+    if (failures.length) fail("not every one of the " + runs.length + " runs synced: " + failures.join("; "));
   },
 
   async summarize() {

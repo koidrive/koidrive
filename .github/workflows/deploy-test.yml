@@ -541,7 +541,7 @@ jobs:
         run: echo "FIRST_SYNC_JOB_START=$(date +%s)" >> "$GITHUB_ENV"
       - name: Free disk space
         working-directory: .
-        timeout-minutes: 30
+        timeout-minutes: 15
         run: |
           df -h "$RUNNER_TEMP"
           selected="$(xcode-select -p)"
@@ -585,7 +585,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
       - name: Download the sealed pairing codes
-        timeout-minutes: 45
+        timeout-minutes: 40
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/deploy-test/first-sync.ts fetch-codes

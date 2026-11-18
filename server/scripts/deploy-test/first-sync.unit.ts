@@ -20,6 +20,7 @@ import {
   runOrder,
   runTable,
   type Sample,
+  SETUP_MINUTES,
   type Status,
   shapeOf,
   summary,
@@ -147,6 +148,23 @@ describe("Worker hold deadline", () => {
 
   it("names the sync job's limit when that one binds", () => {
     expect(holdReason(holdDeadline(deployStart, deployStart))).toBe("345 minutes after the sync job started, after which it starts no run");
+  });
+
+  it("fails the job when the Worker's hold ends before the planned runs could start", () => {
+    const dir = mkdtempSync(join(tmpdir(), "koidrive-first-sync-unit-"));
+    try {
+      mkdirSync(join(dir, "bin", "first-sync-koi-0"), { recursive: true });
+      writeFileSync(join(dir, "bin", "first-sync-koi-0", "build.json"), JSON.stringify({ index: 0, ref: "main", sha: "1111111111aaaa" }));
+      writeFileSync(join(dir, "bin", "first-sync-koi-0", "koi"), "", { mode: 0o755 });
+      writeFileSync(join(dir, "shape.json"), "{}");
+      writeFileSync(join(dir, "hold.json"), JSON.stringify({ until: Date.now() + 60_000, cap: "sync" }));
+      const flags = Number(process.versions.node.split(".")[0]) < 23 ? ["--experimental-strip-types", "--no-warnings"] : [];
+      const measure = spawnSync(process.execPath, [...flags, join(here, "first-sync.ts"), "measure"], { env: { PATH: process.env.PATH, FIRST_SYNC_WORK: dir, FIRST_SYNC_REFS: "main" }, encoding: "utf8" });
+      expect(measure.status).not.toBe(0);
+      expect(measure.stdout + measure.stderr).toContain("not every one of the 1 runs synced: runs 1 to 1 did not start");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("hands the sync job's start time to the deploy job with the public key", () => {
@@ -463,6 +481,13 @@ describe("deploy-test workflow", () => {
     expect(job).toBeDefined();
     expect(job).not.toMatch(/GH_TOKEN|GITHUB_TOKEN|secrets\.|github\.token|environment:|actions: /);
     expect(job).toContain("    permissions:\n      contents: read\n    strategy:");
+  });
+
+  it("gives each setup step of the sync job the minutes the input check reserves for it", () => {
+    const timeout = (name: string) => Number(/timeout-minutes: (\d+)\n/.exec(steps("first-sync-macos").find((step) => step.startsWith("name: " + name + "\n"))!)?.[1]);
+    expect(timeout("Free disk space")).toBe(SETUP_MINUTES.disk);
+    expect(timeout("Generate the tree")).toBe(SETUP_MINUTES.tree);
+    expect(timeout("Download the sealed pairing codes")).toBe(SETUP_MINUTES.pairing);
   });
 
   it("records each first-sync job's start in its first step and uploads the sync job's start with its key", () => {
