@@ -2482,7 +2482,8 @@ impl Driver {
 
     /// Counts the regular files in the linked folder at `folder` that its `.gitignore` files alone leave out: those
     /// the folder excludes while it follows `.gitignore` files and includes while it does not. It reads the disk as it
-    /// is now, as a scan does, whatever [`Driver::follows_gitignore`] says, and never follows a symbolic link.
+    /// is now, as a scan does, whatever [`Driver::follows_gitignore`] says, and never follows a symbolic link. It fails
+    /// when it cannot read a folder or a rules file in it.
     pub fn gitignore_only(&self, folder: &Path) -> Result<GitignoreOnly, DriverError> {
         let root = find(&mut self.inner.folders.lock().unwrap(), folder)?
             .link

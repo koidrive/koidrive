@@ -9,7 +9,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use koidrive_engine::ignore::{LocalRules, Matcher as Rules, RuleFile};
@@ -193,10 +193,19 @@ pub(crate) fn gitignore_only(root: &Path, local: LocalRules) -> io::Result<Gitig
         without: Rules::new(local.with_gitignore(false)),
     }));
     let mut rules = koidrive_fs::Rules::new(Box::new(Counted(both.clone())));
-    let snapshot = Snapshot::scan_with_rules(root, &mut rules).map_err(|error| match error {
-        koidrive_fs::Error::Io(error) => error,
-        other => io::Error::other(other),
-    })?;
+    let mut snapshot = Snapshot::default();
+    let rescan = snapshot
+        .rescan_with_rules(root, [PathBuf::new()], &mut rules)
+        .map_err(|error| match error {
+            koidrive_fs::Error::Io(error) => error,
+            other => io::Error::other(other),
+        })?;
+    if let Some(folder) = rescan.unreadable.first() {
+        return Err(io::Error::other(format!(
+            "cannot read {} or a rules file in it, so the files below it cannot be counted",
+            koidrive_fs::quoted(&root.join(folder).components().collect::<PathBuf>())
+        )));
+    }
     let both = both.lock().unwrap();
     Ok((snapshot.entries.iter())
         .filter(|(path, entry)| {
@@ -355,6 +364,27 @@ mod tests {
                 !follow,
                 "follow {follow}"
             );
+        }
+    }
+
+    #[test]
+    fn gitignore_only_fails_when_it_cannot_read_a_folder_or_its_gitignore_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+        for locked in ["private", "private/.gitignore"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            std::fs::create_dir(root.join("private")).unwrap();
+            std::fs::write(root.join("private/.gitignore"), "*.log\n").unwrap();
+            std::fs::write(root.join("private/a.log"), "abc").unwrap();
+            let locked = root.join(locked);
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let counted = gitignore_only(root, LocalRules::default());
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(counted.is_err(), "{locked:?}: {counted:?}");
         }
     }
 }
