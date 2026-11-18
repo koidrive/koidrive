@@ -14,7 +14,7 @@ import { commitDigest } from "../src/space/digest";
 import { type Field, legacyIntentId, legacyPlaceKey, type LostChangeRule } from "../src/space/intents";
 import { getNode, nodeState } from "../src/space/store";
 import legacyVectors from "../../spec/vectors/legacy-intents.json";
-import { pageWithoutIntents, restoreFromR2, serverState, snapshotWithoutIntents } from "./export-reader";
+import { logWithoutIntents, pageWithoutIntents, restoreFromR2, serverState, snapshotWithoutIntents } from "./export-reader";
 import { client, content, freezeClock, newSpace, op, revertIntentsMigration, runSpaceAlarm, type TestClient, unknownOutcome } from "./helpers";
 
 type Space = Awaited<ReturnType<typeof newSpace>>;
@@ -924,11 +924,13 @@ describe("RFC 0029 section 7.2: legacy intents", () => {
     expect(restored.nodes).toEqual((await serverState(space.stub)).nodes);
   });
 
-  it("rebuilds the status of a node that a fuzzy snapshot page holds from after the snapshot's start with the earliest meta_rev the log gives it", async () => {
+  it("rebuilds the intents of the nodes a fuzzy snapshot page holds from the log through the snapshot's end_seq", async () => {
     const { space, a, root } = await setup();
     const now = Date.now();
     await setClock(space, now);
-    for (const name of ["one", "two", "three", "four"]) await a.commit([op.mkdir(uuidv7(), root, name)]);
+    const moved = uuidv7();
+    await a.commit([op.mkdir(moved, root, "early")]);
+    for (const name of ["one", "two", "three"]) await a.commit([op.mkdir(uuidv7(), root, name)]);
     const exportAt = now + DAY_MS + 10 * 60_000;
     const pause = { reached: false, released: false };
     const until = async (flag: () => boolean) => {
@@ -946,16 +948,26 @@ describe("RFC 0029 section 7.2: legacy intents", () => {
     });
     await until(() => pause.reached);
     const late = uuidv7();
-    const { seq } = await a.commit([op.mkdir(late, root, "late")]);
-    await a.commit([op.move(late, root, "later")]);
+    const created = (await a.commit([op.mkdir(late, root, "late")])).seq;
+    const move = (await a.commit([op.move(moved, root, "later")])).seq;
     pause.released = true;
     await running;
     for (const minutes of [2, 3, 4, 5]) await runSpaceAlarm(space.stub, exportAt + minutes * 60_000, { pageNodes: 2 });
+    await setClock(space, exportAt + 6 * 60_000);
+    const last = (await a.commit([op.move(late, root, "last")])).seq;
+    for (const minutes of [16, 17, 18]) await runSpaceAlarm(space.stub, exportAt + minutes * 60_000, { pageNodes: 2 });
     await snapshotWithoutIntents(space.spaceId);
+    await logWithoutIntents(space.spaceId);
     const restored = await restoreFromR2(space.spaceId);
-    expect(restored.manifest!.start_seq).toBeLessThan(Number(seq));
-    const { status } = restored.nodes.get(late)!.state.intents!;
-    expect([idOf(status), status!.appliedAtMs]).toEqual([legacyIntentId(late, "status", `live:${seq}`), 0n]);
+    const committedAt = await runInDurableObject(space.stub, (_instance, state) =>
+      new Map(state.storage.sql.exec("SELECT seq, committed_at_ms FROM commits").toArray().map((row) => [BigInt(Number(row.seq)), BigInt(Number(row.committed_at_ms))])),
+    );
+    expect([restored.manifest!.start_seq < Number(created), restored.manifest!.end_seq >= Number(move), restored.manifest!.end_seq < Number(last), restored.headSeq]).toEqual([true, true, true, Number(last)]);
+    const status = restored.nodes.get(late)!.state.intents!.status!;
+    expect([idOf(status), status.appliedAtMs]).toEqual([legacyIntentId(late, "status", `live:${created}`), committedAt.get(created)]);
+    expect(committedAt.get(move)).toBeGreaterThan(0n);
+    expect(restored.nodes.get(moved)!.state.intents!.place!.appliedAtMs).toBe(committedAt.get(move));
+    expect([committedAt.get(last)! > committedAt.get(move)!, restored.nodes.get(late)!.state.intents!.place!.appliedAtMs]).toEqual([true, committedAt.get(last)]);
   });
 
   it("restarts a snapshot that was being written when the backfill ran, so no page from before the migration is published", async () => {
