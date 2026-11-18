@@ -17,6 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use koidrive_engine::effects::{Base, Displaced, Effect, EffectRecord, Location};
 use koidrive_engine::tree::{Content, FileIdentity, NodeId, same_content};
 
+use super::tag;
+
 /// Where an entry sits.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Place {
@@ -94,8 +96,32 @@ pub fn identity(ino: u128) -> FileIdentity {
     }
 }
 
+/// How finely a volume keeps file modification times. A FAT volume and a zip extraction keep 2 s,
+/// HFS+ keeps 1 s, and exFAT keeps 10 ms.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Precision {
+    #[default]
+    Fine,
+    Hundredths,
+    Seconds,
+    TwoSeconds,
+}
+
+impl Precision {
+    fn truncate(self, mtime_ns: i64) -> i64 {
+        let step = match self {
+            Precision::Fine => 1,
+            Precision::Hundredths => 10_000_000,
+            Precision::Seconds => 1_000_000_000,
+            Precision::TwoSeconds => 2_000_000_000,
+        };
+        mtime_ns - mtime_ns.rem_euclid(step)
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Disk {
+    precision: Precision,
     entries: BTreeMap<u128, Entry>,
     inos: u128,
     /// The effects in flight whose download is staged and has no name in the folder yet.
@@ -110,6 +136,20 @@ pub struct Disk {
 }
 
 impl Disk {
+    pub fn new(precision: Precision) -> Self {
+        Self {
+            precision,
+            ..Self::default()
+        }
+    }
+
+    fn stamped(&self, content: Content) -> Content {
+        Content {
+            mtime_ns: self.precision.truncate(content.mtime_ns),
+            ..content
+        }
+    }
+
     pub fn marker(&self) -> u64 {
         self.marker
     }
@@ -213,21 +253,20 @@ impl Disk {
     }
 
     pub fn shows(&self, write: i64) -> bool {
-        (self.entries.values())
-            .any(|entry| entry.content.as_ref().is_some_and(|c| c.mtime_ns == write))
+        (self.entries.values()).any(|entry| entry.content.as_ref().is_some_and(|c| tag(c) == write))
     }
 
     /// True when some file, parked, in quarantine or neither, holds the write with this tag.
     pub fn holds(&self, write: i64) -> bool {
         (self.entries.values())
             .chain(self.quarantine.values().map(|(_, entry)| entry))
-            .any(|entry| entry.content.as_ref().is_some_and(|c| c.mtime_ns == write))
+            .any(|entry| entry.content.as_ref().is_some_and(|c| tag(c) == write))
     }
 
     pub fn reads(&self, at: &Location, ino: u128, write: i64) -> bool {
         self.locate(at).is_ok_and(|(place, name)| {
             self.child(&place, &name) == Some(ino)
-                && (self.entries[&ino].content.as_ref()).is_some_and(|c| c.mtime_ns == write)
+                && (self.entries[&ino].content.as_ref()).is_some_and(|c| tag(c) == write)
         })
     }
 
@@ -237,6 +276,7 @@ impl Disk {
             return None;
         }
         self.inos += 1;
+        let content = content.map(|content| self.stamped(content));
         let held = content.iter().map(|c| c.manifest_digest.clone()).collect();
         let entry = Entry {
             place,
@@ -295,6 +335,7 @@ impl Disk {
 
     /// Replaces a file's content in place and returns the content it held.
     pub fn overwrite(&mut self, ino: u128, content: Content) -> Option<Content> {
+        let content = self.stamped(content);
         let entry = self.entries.get_mut(&ino)?;
         entry.held.push(content.manifest_digest.clone());
         entry.content.replace(content)
@@ -350,8 +391,7 @@ impl Disk {
         if until == Cut::Done && (outcome.is_ok() && removal || trashed.is_some()) {
             self.trash.insert(record.effect_id.clone());
         }
-        self.binned
-            .extend(trashed.as_ref().map(|content| content.mtime_ns));
+        self.binned.extend(trashed.as_ref().map(tag));
         Some(Applied { outcome, trashed })
     }
 
@@ -496,8 +536,7 @@ impl Disk {
             _ => Ok(None),
         };
         self.trash.insert(record.effect_id.clone());
-        self.binned
-            .extend(entry.content.as_ref().map(|content| content.mtime_ns));
+        self.binned.extend(entry.content.as_ref().map(tag));
         Applied {
             outcome,
             trashed: entry.content,

@@ -416,6 +416,7 @@ pub struct SpaceDo {
     log_floor_seq: u64,
     /// The commit token at `log_floor_seq` (RFC 0013), kept when the log is truncated past it.
     floor_token: Option<(String, i64)>,
+    copies_created_files: bool,
 }
 
 impl SpaceDo {
@@ -468,6 +469,7 @@ impl SpaceDo {
             restore_seq: 0,
             log_floor_seq: 0,
             floor_token: None,
+            copies_created_files: false,
         }
     }
 
@@ -611,7 +613,9 @@ impl SpaceDo {
         let ids = self.state.ids.clone();
         let objects = std::mem::take(&mut self.objects);
         let account_history = std::mem::take(&mut self.account_history);
+        let copies_created_files = self.copies_created_files;
         *self = backup.clone();
+        self.copies_created_files = copies_created_files;
         self.state.ids = ids;
         self.objects = objects;
         self.account_history = account_history;
@@ -622,6 +626,12 @@ impl SpaceDo {
         self.history_id = self.state.ids.uuid_v7(now_ms as u64);
         self.account_history = self.history_id.clone();
         self.restore_seq = self.head_seq;
+    }
+
+    /// Makes every later commit that creates a file also keep a conflict copy of it beside it,
+    /// as a server that duplicates creates would.
+    pub fn copy_each_created_file(&mut self) {
+        self.copies_created_files = true;
     }
 
     pub fn refuses(&self) -> bool {
@@ -901,6 +911,7 @@ impl SpaceDo {
             base_seq: commit.base_seq,
             now_ms,
             committer: session,
+            copies_created_files: self.copies_created_files,
         };
         let (results, changes) = Applier::new(&mut state, ctx).apply(&commit.ops)?;
         let record = CommitRecord {

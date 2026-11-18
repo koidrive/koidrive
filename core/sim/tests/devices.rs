@@ -15,9 +15,9 @@ use koidrive_engine::question::{Answer, QuestionKind};
 use koidrive_engine::restore::RestoreIntent;
 use koidrive_engine::tree::Content;
 use koidrive_proto::v1::{NodeStatus, error};
-use koidrive_sim::world::disk::Place;
+use koidrive_sim::world::disk::{Place, Precision};
 use koidrive_sim::world::{
-    Action, Cut, Failure, NAMES, Outcome, PENDING_NAME, Reply, Step, TEXTS, World,
+    Action, Cut, Failure, NAMES, Outcome, PENDING_NAME, Reply, Step, TEXTS, World, tag,
 };
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
@@ -132,6 +132,16 @@ fn step(losses: Losses) -> BoxedStrategy<Step> {
     }
 }
 
+fn volumes() -> impl Strategy<Value = Vec<Precision>> {
+    let precision = prop_oneof![
+        Just(Precision::Fine),
+        Just(Precision::Hundredths),
+        Just(Precision::Seconds),
+        Just(Precision::TwoSeconds),
+    ];
+    prop::collection::vec(precision, 2..=3)
+}
+
 fn phases(losses: Losses) -> impl Strategy<Value = Vec<Vec<(usize, Step)>>> {
     phases_of(step(losses))
 }
@@ -237,9 +247,13 @@ thread_local! {
     static TOKENLESS_WELCOME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Devices that print every step with the state it leaves when `KOIDRIVE_SIM_TRACE` is set.
 fn world(devices: usize) -> World {
-    let mut world = World::new(devices);
+    on(&vec![Precision::Fine; devices])
+}
+
+/// Devices that print every step with the state it leaves when `KOIDRIVE_SIM_TRACE` is set.
+fn on(volumes: &[Precision]) -> World {
+    let mut world = World::on(volumes);
     world.trace = std::env::var_os("KOIDRIVE_SIM_TRACE").is_some();
     world.tokenless_welcome = TOKENLESS_WELCOME.get();
     world
@@ -248,11 +262,11 @@ fn world(devices: usize) -> World {
 /// Runs every phase and stops at the first failure that `stops` names. A phase that fails in
 /// another way leaves the devices as they are for the next one.
 fn run(
-    devices: usize,
+    volumes: &[Precision],
     phases: &[Vec<(usize, Step)>],
     stops: fn(&Failure) -> bool,
 ) -> Result<World, Failure> {
-    let mut world = world(devices);
+    let mut world = on(volumes);
     for (phase, schedule) in phases.iter().enumerate() {
         match world.phase(phase, schedule) {
             Err(failure) if stops(&failure) => return Err(failure),
@@ -262,14 +276,22 @@ fn run(
     Ok(world)
 }
 
-/// Stops at the first failure of any kind.
 fn converge(devices: usize, phases: &[Vec<(usize, Step)>]) -> Result<World, Failure> {
-    run(devices, phases, |_| true)
+    converge_on(&vec![Precision::Fine; devices], phases)
+}
+
+/// Stops at the first failure of any kind.
+fn converge_on(volumes: &[Precision], phases: &[Vec<(usize, Step)>]) -> Result<World, Failure> {
+    run(volumes, phases, |_| true)
+}
+
+fn keep(devices: usize, phases: &[Vec<(usize, Step)>]) -> Result<World, Failure> {
+    keep_on(&vec![Precision::Fine; devices], phases)
 }
 
 /// Stops only when a write is lost or a state is refused.
-fn keep(devices: usize, phases: &[Vec<(usize, Step)>]) -> Result<World, Failure> {
-    run(devices, phases, |failure| {
+fn keep_on(volumes: &[Precision], phases: &[Vec<(usize, Step)>]) -> Result<World, Failure> {
+    run(volumes, phases, |failure| {
         matches!(failure, Failure::Broken(_))
     })
 }
@@ -401,6 +423,82 @@ proptest! {
     }
 }
 
+proptest! {
+    #![proptest_config(koidrive_test_support::battery_config(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/devices_on_coarse_volumes.proptest-regressions"),
+        256,
+    ))]
+
+    #[test]
+    fn devices_on_coarse_volumes_lose_no_write(volumes in volumes(), phases in phases(Losses::None)) {
+        keep_on(&volumes, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
+    }
+
+    #[test]
+    fn devices_on_coarse_volumes_converge_once_the_faults_stop(volumes in volumes(), phases in phases(Losses::None)) {
+        converge_on(&volumes, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
+    }
+
+    #[test]
+    fn devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds(volumes in volumes(), phases in phases(Losses::RestoresAndRewinds)) {
+        keep_on(&volumes, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
+    }
+
+    #[test]
+    fn devices_on_coarse_volumes_converge_across_restores_and_rewinds(volumes in volumes(), phases in phases(Losses::RestoresAndRewinds)) {
+        converge_on(&volumes, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
+    }
+}
+
+#[test]
+fn a_coarse_volume_rounds_the_times_it_keeps_while_the_server_keeps_the_time_it_was_sent() {
+    let mut world = on(&[Precision::Fine, Precision::TwoSeconds]);
+    let make = |name| {
+        Step::User(Action {
+            kind: 1,
+            target: 0,
+            parent: 0,
+            name,
+            text: 0,
+        })
+    };
+    world.phase(0, &[(0, make(0)), (1, make(2))]).unwrap();
+    let on_server = |name: &str| {
+        (world.space().nodes().into_iter())
+            .find(|node| node.name == name)
+            .and_then(|node| node.current?.content)
+            .unwrap()
+    };
+    let (fine, coarse) = (on_server("a"), on_server("b"));
+    assert_ne!(fine.mtime_ns % 10_000_000, 0);
+    assert_eq!(content_on(&world, 0, "a"), fine);
+    assert_eq!(
+        content_on(&world, 1, "a").mtime_ns,
+        fine.mtime_ns - fine.mtime_ns.rem_euclid(2_000_000_000)
+    );
+    assert_eq!(tag(&content_on(&world, 1, "a")), tag(&fine));
+    assert_eq!(coarse.mtime_ns % 2_000_000_000, 0);
+    assert_eq!(content_on(&world, 1, "b"), coarse);
+    assert_eq!(content_on(&world, 0, "b"), coarse);
+}
+
+#[test]
+fn the_coarse_volume_schedules_keep_downloads_at_coarser_times() {
+    let mut runner = TestRunner::deterministic();
+    let strategy = (volumes(), phases(Losses::None));
+    let reached = (0..256).any(|_| {
+        let (volumes, phases) = strategy.new_tree(&mut runner).unwrap().current();
+        let world = keep_on(&volumes, &phases).unwrap();
+        world
+            .seen
+            .contains_key("a download keeps a coarser time on disk")
+    });
+    assert!(
+        reached,
+        "no schedule of the sample kept a download at a coarser time"
+    );
+}
+
 #[test]
 fn rewinds_converge_from_seed_122() {
     converges_from(test_name!(rewinds_converge_from_seed_122), 122, 4096);
@@ -460,6 +558,34 @@ fn rewinds_converge_from_the_saved_gun_551_cases() {
             "/tests/gun-551.proptest-regressions"
         ),
     );
+}
+
+#[test]
+#[ignore = "after restores on coarse volumes, one write is in two files on the server (GUN-1012)"]
+fn coarse_volumes_converge_from_the_saved_gun_1012_cases() {
+    let mut runner = TestRunner::new(ProptestConfig {
+        test_name: Some(test_name!(
+            coarse_volumes_converge_from_the_saved_gun_1012_cases
+        )),
+        ..koidrive_test_support::regression_config(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/gun-1012.proptest-regressions"
+            ),
+            0,
+        )
+    });
+    let result = runner.run(
+        &(volumes(), phases(Losses::RestoresAndRewinds)),
+        |(volumes, phases)| {
+            converge_on(&volumes, &phases)
+                .map(drop)
+                .map_err(|failure| TestCaseError::fail(failure.to_string()))
+        },
+    );
+    if let Err(error) = result {
+        panic!("{error}");
+    }
 }
 
 fn two_rewinds_around_a_rolled_back_store() -> Vec<Vec<(usize, Step)>> {
@@ -1544,7 +1670,7 @@ fn an_owner_rewind_retires_a_write_both_devices_took_without_asking() {
         world.seen
     );
     let held: Vec<i64> = (world.space().nodes().into_iter())
-        .filter_map(|node| Some(node.current?.content?.mtime_ns))
+        .filter_map(|node| Some(tag(&node.current?.content?)))
         .collect();
     assert_eq!(held, [1]);
 }
@@ -1581,8 +1707,7 @@ fn an_edit_after_a_lost_create_reaches_the_server_after_a_second_restore() {
     ];
     let world = converge(2, &phases).unwrap();
     assert!((world.space().nodes().into_iter()).any(|node| {
-        (node.current.and_then(|current| current.content))
-            .is_some_and(|content| content.mtime_ns == 3)
+        (node.current.and_then(|current| current.content)).is_some_and(|content| tag(&content) == 3)
     }));
 }
 
@@ -2329,7 +2454,7 @@ fn an_edit_revives_a_file_at_the_conflict_name_the_server_already_holds() {
         (revived.parent_id, revived.name),
         (conflict.parent_id, conflict.name)
     );
-    assert_eq!(revived.current.unwrap().content.unwrap().mtime_ns, 4);
+    assert_eq!(tag(&revived.current.unwrap().content.unwrap()), 4);
 }
 
 #[test]
@@ -2524,12 +2649,8 @@ fn a_copy_of_a_rolled_back_write_after_the_recovery_is_refused() {
     });
     let mut world = converge(2, &[vec![(0, file("a"))], vec![(0, BACKUP), (0, edit)]]).unwrap();
     world.phase(2, &[(0, RESTORE)]).unwrap();
-    let lost = (world.devices[0].disk.entries().values()).find_map(|entry| {
-        entry
-            .content
-            .clone()
-            .filter(|content| content.mtime_ns == 2)
-    });
+    let lost = (world.devices[0].disk.entries().values())
+        .find_map(|entry| entry.content.clone().filter(|content| tag(content) == 2));
     world.devices[0]
         .disk
         .create(Place::Root, "b", lost)
@@ -2541,9 +2662,251 @@ fn a_copy_of_a_rolled_back_write_after_the_recovery_is_refused() {
     );
 }
 
+fn a_conflict_copy_of_the_write_at_a_beside_it(volumes: &[Precision]) -> Result<(), Failure> {
+    let mut world = converge_on(volumes, &[vec![(0, file("a"))]]).unwrap();
+    let written = content_on(&world, 1, "a");
+    world.devices[1]
+        .disk
+        .create(
+            Place::Root,
+            "a (conflict from device-1 2026-11-09)",
+            Some(written),
+        )
+        .unwrap();
+    world.phase(1, &[])
+}
+
+#[test]
+fn a_conflict_copy_of_a_write_whose_time_tells_it_apart_is_one_write_in_two_files() {
+    let failure = a_conflict_copy_of_the_write_at_a_beside_it(&[Precision::Fine, Precision::Fine])
+        .unwrap_err();
+    assert!(
+        failure.to_string().contains("is in more than one file"),
+        "{failure}"
+    );
+}
+
+fn a_restore_and_a_store_rollback_that_lose_track_of_a_coarse_download() -> Vec<Vec<(usize, Step)>>
+{
+    use Step::*;
+    let act = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    vec![
+        vec![
+            (0, CopyStore),
+            (2, Work(9803945457093778123)),
+            (1, Answer(2)),
+            (2, Work(8918304582049025136)),
+            (2, Work(2334593483455006461)),
+            (1, Commit(Reply::Served)),
+            (2, Deliver(17093425422840350787)),
+            (2, Deliver(4952958468317487781)),
+            (1, Commit(Reply::NoChunks)),
+            (0, Deliver(13899312395726236677)),
+            (0, act(1, 17018155047213836791, 14306188388235338329, 4, 0)),
+            (1, Commit(Reply::Served)),
+            (1, Work(17344159250367396394)),
+            (2, Work(7664627396348883811)),
+            (1, Rewind),
+            (1, Work(6264096991676606727)),
+            (0, Deliver(7845084579063926744)),
+            (1, Effect(Outcome::Run)),
+            (1, Deliver(166347736699837671)),
+            (1, Work(8345306495339778622)),
+            (1, Effect(Outcome::Crash(Cut::Done))),
+            (2, Backup),
+            (0, act(0, 6575913836940721334, 4300568312786835173, 1, 3)),
+            (1, Restore),
+            (2, act(3, 1167256439281579399, 17046472390829256667, 2, 1)),
+            (1, Drop),
+            (1, Commit(Reply::Served)),
+            (2, act(3, 17785797962557912573, 5511689788658304678, 8, 2)),
+            (0, Connect),
+            (2, Work(13707713607766819383)),
+            (2, Work(17059109337635097065)),
+            (1, Commit(Reply::Served)),
+        ],
+        vec![],
+        vec![
+            (2, CopyStore),
+            (2, Work(14049794346622777382)),
+            (2, act(1, 14899427340213394954, 16916399440933300498, 6, 3)),
+            (0, Work(8918231905168509987)),
+            (2, Backup),
+            (1, Work(11333650361172996232)),
+            (0, Work(9574402354798579704)),
+            (2, Commit(Reply::Served)),
+            (2, act(2, 9056899948842872040, 14456124772733369403, 6, 2)),
+            (1, Work(3733317957760983244)),
+            (0, Backup),
+            (0, Answer(2)),
+            (2, Crash),
+            (0, Answer(0)),
+            (2, Work(903027949205272679)),
+            (1, act(1, 3467699293071853499, 18019144745470247218, 8, 2)),
+            (2, RestoreEarlier),
+            (1, Deliver(12873537610785485382)),
+            (0, Effect(Outcome::Run)),
+            (2, RollBack),
+            (2, Drop),
+            (0, Commit(Reply::Refused(error::Code::RetryLater))),
+            (1, Scan),
+            (0, Deliver(8059452098995620841)),
+            (0, Effect(Outcome::Run)),
+            (1, act(1, 18379658368561425730, 3101976565380843284, 1, 0)),
+            (1, act(4, 5382336988220747481, 8695983045253140284, 6, 3)),
+            (0, Work(13436917317051465700)),
+            (2, Crash),
+            (1, Work(1675489799261318679)),
+            (1, Work(16676135055081029800)),
+            (2, act(1, 5785758124119545687, 4866823655781752424, 4, 0)),
+            (2, act(2, 1777367762062262940, 18092570649525465839, 2, 0)),
+        ],
+    ]
+}
+
+#[test]
+fn a_file_a_coarse_disk_keeps_through_a_loss_is_created_again_beside_the_servers_file() {
+    let world = converge_on(
+        &[Precision::Seconds, Precision::Seconds],
+        &a_restore_and_a_store_rollback_that_lose_track_of_a_coarse_download(),
+    )
+    .unwrap();
+    let names: Vec<String> = (world.space().nodes().into_iter())
+        .filter(|node| node.status == koidrive_proto::v1::NodeStatus::Live as i32)
+        .map(|node| node.name)
+        .collect();
+    assert!(
+        names.contains(&"ss (conflict from device-1 2026-11-09)".to_owned()),
+        "{names:?}"
+    );
+}
+
+#[test]
+fn a_file_created_again_beside_the_servers_file_stays_one_write_through_a_later_loss() {
+    let mut phases = a_restore_and_a_store_rollback_that_lose_track_of_a_coarse_download();
+    phases[2].extend([(0, Step::Backup), (0, Step::Restore)]);
+    let world = converge_on(&[Precision::Seconds, Precision::Seconds], &phases).unwrap();
+    let names: Vec<String> = (world.space().nodes().into_iter())
+        .filter(|node| node.status == koidrive_proto::v1::NodeStatus::Live as i32)
+        .map(|node| node.name)
+        .collect();
+    assert!(
+        names.contains(&"ss (conflict from device-1 2026-11-09)".to_owned()),
+        "{names:?}"
+    );
+}
+
+#[test]
+fn a_server_that_keeps_a_conflict_copy_of_a_file_created_after_a_loss_is_caught() {
+    for volumes in [
+        [Precision::Seconds, Precision::Seconds],
+        [Precision::TwoSeconds, Precision::Fine],
+    ] {
+        let mut world = on(&volumes);
+        world.phase(0, &[(0, file("a"))]).unwrap();
+        world
+            .phase(
+                1,
+                &[(0, Step::Backup), (1, file("c.txt")), (0, Step::Restore)],
+            )
+            .unwrap();
+        world.space_mut().copy_each_created_file();
+        let failure = world.phase(2, &[(0, file("b"))]).unwrap_err();
+        assert!(
+            failure
+                .to_string()
+                .contains("write 3 is in more than one file"),
+            "{volumes:?}: {failure}"
+        );
+    }
+}
+
+#[test]
+fn a_file_a_fine_disk_keeps_through_the_same_loss_is_linked_to_the_servers_file() {
+    converge_on(
+        &[Precision::Fine, Precision::Fine],
+        &a_restore_and_a_store_rollback_that_lose_track_of_a_coarse_download(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_server_that_keeps_a_conflict_copy_of_each_created_file_is_caught_without_a_loss() {
+    for volumes in [
+        [Precision::Seconds, Precision::Seconds],
+        [Precision::TwoSeconds, Precision::Fine],
+        [Precision::Fine, Precision::Fine],
+    ] {
+        let mut world = on(&volumes);
+        world.space_mut().copy_each_created_file();
+        let failure = world.phase(0, &[(0, file("a"))]).unwrap_err();
+        assert!(
+            failure
+                .to_string()
+                .contains("write 1 is in more than one file"),
+            "{volumes:?}: {failure}"
+        );
+    }
+}
+
+#[test]
+fn a_download_a_coarse_disk_cut_is_linked_by_its_old_place_after_a_store_rollback() {
+    for coarse in [
+        Precision::TwoSeconds,
+        Precision::Seconds,
+        Precision::Hundredths,
+    ] {
+        let unmarked = Step::Save {
+            target: 0,
+            keeps_mark: false,
+        };
+        let mut renamed = vec![(0, unmarked), (0, Step::RollBack), (1, rename(0, 0, "b"))];
+        renamed.extend(commit(1));
+        let phases = vec![vec![(0, Step::CopyStore), (1, file("a"))], renamed];
+        let world = converge_on(&[coarse, Precision::Fine], &phases)
+            .unwrap_or_else(|failure| panic!("{coarse:?}: {failure}"));
+        assert!(
+            world
+                .seen
+                .contains_key("recovery starts after a store rollback"),
+            "{coarse:?}"
+        );
+        assert_ne!(
+            content_on(&world, 0, "b").mtime_ns,
+            content_on(&world, 1, "b").mtime_ns,
+            "{coarse:?}"
+        );
+        assert!(
+            !(world.seen.keys()).any(|what| what.starts_with("recovery answer")),
+            "{coarse:?}: {:?}",
+            world.seen
+        );
+        let holders: Vec<String> = (world.space().nodes().into_iter())
+            .filter(|node| node.status == koidrive_proto::v1::NodeStatus::Live as i32)
+            .filter(|node| {
+                (node
+                    .current
+                    .as_ref()
+                    .and_then(|current| current.content.as_ref()))
+                .is_some_and(|content| tag(content) == 1)
+            })
+            .map(|node| node.name)
+            .collect();
+        assert_eq!(holders, ["b"], "{coarse:?}");
+    }
+}
+
 fn copies_of(world: &World, write: i64) -> usize {
     (files_on(world, 0).into_iter())
-        .filter(|(_, content)| content.as_ref().is_some_and(|c| c.mtime_ns == write))
+        .filter(|(_, content)| content.as_ref().is_some_and(|c| tag(c) == write))
         .count()
 }
 
@@ -2557,7 +2920,7 @@ fn version_of_write(world: &World, write: i64) -> koidrive_proto::v1::VersionInf
             current
                 .content
                 .as_ref()
-                .is_some_and(|content| content.mtime_ns == write)
+                .is_some_and(|content| tag(content) == write)
                 .then_some(current)
         })
         .unwrap()
@@ -2613,7 +2976,7 @@ fn a_write_continued_by_a_later_edit_needs_only_one_recovery_copy() {
 fn a_copy_beside_the_copies_of_a_write_a_restore_kept_is_refused() {
     let mut world = converge(3, &a_write_a_restore_kept_and_another_device_then_edited()).unwrap();
     let kept = (world.devices[0].disk.entries().values())
-        .find_map(|entry| (entry.content.clone()).filter(|content| content.mtime_ns == 3));
+        .find_map(|entry| (entry.content.clone()).filter(|content| tag(content) == 3));
     world.devices[0]
         .disk
         .create(Place::Root, "c.txt", kept)
@@ -2694,7 +3057,7 @@ fn a_write_a_restore_took_that_no_disk_keeps_is_still_reported_lost() {
     world.run(0, &a_restore_took_a_write_a_disk_held()).unwrap();
     for device in &mut world.devices {
         let held: Vec<u128> = (device.disk.entries().iter())
-            .filter(|(_, entry)| entry.content.as_ref().is_some_and(|c| c.mtime_ns == 1))
+            .filter(|(_, entry)| entry.content.as_ref().is_some_and(|c| tag(c) == 1))
             .map(|(ino, _)| *ino)
             .collect();
         for ino in held {
@@ -2989,7 +3352,7 @@ fn an_edit_back_to_the_bytes_a_restore_left_keeps_its_file_and_the_lost_edit_bes
     .unwrap();
     for device in &world.devices {
         let disk = &device.disk;
-        let write = |ino: u128| disk.entries()[&ino].content.as_ref().map(|c| c.mtime_ns);
+        let write = |ino: u128| disk.entries()[&ino].content.as_ref().map(tag);
         let a = disk.child(&Place::Root, "a").unwrap();
         assert_eq!(write(a), Some(3));
         let writes: BTreeSet<Option<i64>> = disk.entries().keys().map(|ino| write(*ino)).collect();
@@ -3023,7 +3386,7 @@ fn a_write_two_downloads_place_after_a_restore_is_replaced_by_the_edit_made_over
     assert!(version_of_write(&world, 2).made_over.contains(&source));
     for device in &world.devices {
         let disk = &device.disk;
-        let write = |ino: &u128| disk.entries()[ino].content.as_ref().map(|c| c.mtime_ns);
+        let write = |ino: &u128| disk.entries()[ino].content.as_ref().map(tag);
         let a = disk.child(&Place::Root, "a").unwrap();
         assert_eq!(write(&a), Some(2));
         let mut writes: Vec<Option<i64>> = disk.entries().keys().map(write).collect();
@@ -3236,10 +3599,7 @@ fn an_edit_of_a_lost_file_another_device_creates_again_and_deletes_first_revives
         let disk = &device.disk;
         let a = disk.child(&Place::Root, "a").unwrap();
         assert_eq!(disk.entries().len(), 1);
-        assert_eq!(
-            disk.entries()[&a].content.as_ref().map(|c| c.mtime_ns),
-            Some(2)
-        );
+        assert_eq!(disk.entries()[&a].content.as_ref().map(tag), Some(2));
     }
 }
 
@@ -4431,7 +4791,7 @@ fn a_copy_of_a_write_replaced_by_a_later_edit_can_be_deleted() {
     let lost = (world.devices[2].disk.entries().values())
         .find_map(|entry| entry.content.clone())
         .unwrap();
-    let source = version_of_write(&world, lost.mtime_ns).version_id;
+    let source = version_of_write(&world, tag(&lost)).version_id;
     let mut steps = vec![(0, RESTORE), (1, Step::Connect)];
     steps.extend([(1, DELIVER); 8]);
     steps.push(edit(1, 2));
@@ -4550,7 +4910,7 @@ fn the_authors_lost_edit_revives_a_file_deleted_at_the_restored_version() {
             .disk
             .entries()
             .values()
-            .filter_map(|entry| entry.content.as_ref().map(|content| content.mtime_ns))
+            .filter_map(|entry| entry.content.as_ref().map(tag))
             .collect();
         assert_eq!(contents, [2]);
     }
@@ -7374,7 +7734,7 @@ fn a_write_a_restore_took_and_a_disk_then_lost_stays_lost_once_a_rewind_follows(
     world.run(0, &a_restore_took_a_write_a_disk_held()).unwrap();
     for device in &mut world.devices {
         let held: Vec<u128> = (device.disk.entries().iter())
-            .filter(|(_, entry)| entry.content.as_ref().is_some_and(|c| c.mtime_ns == 1))
+            .filter(|(_, entry)| entry.content.as_ref().is_some_and(|c| tag(c) == 1))
             .map(|(ino, _)| *ino)
             .collect();
         for ino in held {
@@ -7447,7 +7807,7 @@ fn a_restore_across_a_rewind_no_device_saw_is_refused_and_sends_nothing_again() 
             .contains_key("server refuses a history a rewind replaced")
     );
     let written = (world.space().nodes().into_iter())
-        .filter_map(|node| Some(node.current?.content?.mtime_ns))
+        .filter_map(|node| Some(tag(&node.current?.content?)))
         .collect::<Vec<_>>();
     assert!(written.is_empty(), "{written:?}");
 }
@@ -9096,7 +9456,7 @@ fn entries_beside_the_folder(world: &World) -> Vec<(String, Option<i64>)> {
         .map(|node| {
             (
                 node.name.clone(),
-                node.current.and_then(|c| c.content).map(|c| c.mtime_ns),
+                node.current.and_then(|c| c.content).map(|c| tag(&c)),
             )
         })
         .collect()
@@ -10836,12 +11196,7 @@ fn a_rename_a_restore_lost_survives_a_resend_the_server_refuses_for_the_deleted_
     world.phase(2, &[]).unwrap();
     for device in &world.devices {
         let entries: Vec<(&str, Option<i64>)> = (device.disk.entries().values())
-            .map(|entry| {
-                (
-                    entry.name.as_str(),
-                    entry.content.as_ref().map(|c| c.mtime_ns),
-                )
-            })
+            .map(|entry| (entry.name.as_str(), entry.content.as_ref().map(tag)))
             .collect();
         assert_eq!(entries, [("A", Some(2))]);
     }
@@ -11045,7 +11400,7 @@ fn held_at(world: &World, device: usize, path: &[&str]) -> Option<String> {
 fn live_writes(world: &World) -> Vec<i64> {
     (world.space().nodes().into_iter())
         .filter(|node| node.status == NodeStatus::Live as i32)
-        .filter_map(|node| Some(node.current?.content?.mtime_ns))
+        .filter_map(|node| Some(tag(&node.current?.content?)))
         .collect()
 }
 
