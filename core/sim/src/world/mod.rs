@@ -2665,6 +2665,21 @@ impl World {
                 }
                 let bound = copy_bound(&self.held_commits[d], self.restored_to);
                 let ops = commits.in_flight().map(|flight| &flight.commit.ops);
+                for op in ops
+                    .into_iter()
+                    .flatten()
+                    .filter(|_| commits.field_intents())
+                {
+                    match &op.intent {
+                        None if op.fields.is_none() => {
+                            note(&mut self.seen, "an op built without an intent")
+                        }
+                        Some(intent) if intent.replay => {
+                            note(&mut self.seen, "an op built as a replay")
+                        }
+                        _ => {}
+                    }
+                }
                 for op in ops.into_iter().flatten() {
                     let Some(op::Op::CreateFile(create)) = &op.op else {
                         continue;
