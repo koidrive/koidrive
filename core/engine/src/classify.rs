@@ -3716,12 +3716,13 @@ impl Trees {
         let mut files = BTreeMap::new();
         let mut current = parent;
         for _ in 0..=self.l.len() {
-            for child in self.local_children(current) {
-                let content = (self.l.get(child.as_str()))
-                    .filter(|node| is_rules_file(&node.shape.name))
+            for file in self.local_holders(current, koidrive_ignore::RULES_FILE) {
+                let content = self
+                    .l
+                    .get(file)
                     .and_then(|node| node.shape.content.as_ref());
                 if let Some(content) = content {
-                    files.insert(child.clone(), content.into());
+                    files.insert(file.clone(), content.into());
                 }
             }
             match self.l.get(current) {
