@@ -149,6 +149,7 @@ upgrade_case!(schema_alpha6_baseline, |store| {
 include!("upgrade_cases/unseen_changes.rs");
 include!("upgrade_cases/root_identity.rs");
 include!("upgrade_cases/root_token.rs");
+include!("upgrade_cases/root_token_generation.rs");
 include!("upgrade_cases/volume_mounts.rs");
 include!("upgrade_cases/lost_shapes.rs");
 include!("upgrade_cases/content_provenance.rs");

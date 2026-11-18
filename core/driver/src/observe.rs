@@ -956,6 +956,7 @@ mod tests {
                 space_id: SPACE.into(),
                 effects: 0,
                 token: None,
+                generation: 0,
             },
         )
         .unwrap();

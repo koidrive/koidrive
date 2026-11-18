@@ -16,6 +16,7 @@ fn marker(space_id: &str, effects: u64) -> Marker {
         space_id: space_id.into(),
         effects,
         token: None,
+        generation: 0,
     }
 }
 
@@ -81,6 +82,7 @@ fn a_link_admits_the_token_it_wrote_or_is_writing_and_any_before_its_first() {
     let tokens = |current: Option<&str>, pending: Option<&str>| RootTokens {
         current: current.map(str::to_owned),
         pending: pending.map(str::to_owned),
+        generation: 0,
     };
     let cases = [
         (

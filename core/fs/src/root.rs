@@ -28,7 +28,7 @@ const PROBE: [&str; 3] = [
 
 /// The root marker `.koidrive/space.json`: the space the folder holds, the
 /// effect counter *m* of design §2.8, and the token of the folder's latest
-/// start.
+/// start with its generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Marker {
     pub space_id: String,
@@ -38,6 +38,14 @@ pub struct Marker {
     /// `None` in a marker from a build without tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// Grows each time the token is replaced. 0 in a marker from a build
+    /// without generations.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub generation: u64,
+}
+
+fn is_zero(generation: &u64) -> bool {
+    *generation == 0
 }
 
 /// A new marker token: 128 random bits in hex.
@@ -53,6 +61,8 @@ pub fn new_token() -> String {
 pub struct RootTokens {
     pub current: Option<String>,
     pub pending: Option<String>,
+    /// The generation of `current`; `pending` is the next one.
+    pub generation: u64,
 }
 
 impl RootTokens {
@@ -66,6 +76,11 @@ impl RootTokens {
             Some(token) if token == current || Some(token) == self.pending.as_ref() => Ok(()),
             _ => Err(RootProblem::Copy),
         }
+    }
+
+    /// Whether `marker` carries a later generation than `current`.
+    pub fn trails(&self, marker: &Marker) -> bool {
+        marker.generation > self.generation
     }
 }
 

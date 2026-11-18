@@ -26,7 +26,9 @@ fn tokens_of(site: &Site) -> koidrive_fs::RootTokens {
 }
 
 fn assert_rotated_from(site: &Site, earlier: &[Option<String>]) {
-    let token = marker_of(site).token;
+    let Marker {
+        token, generation, ..
+    } = marker_of(site);
     assert!(
         token
             .as_ref()
@@ -39,6 +41,7 @@ fn assert_rotated_from(site: &Site, earlier: &[Option<String>]) {
         koidrive_fs::RootTokens {
             current: token,
             pending: None,
+            generation,
         }
     );
 }
@@ -314,6 +317,7 @@ fn a_crash_between_a_rotation_and_the_send_starts_again_and_sends_the_commit() {
         koidrive_fs::RootTokens {
             current: rotated.clone(),
             pending: None,
+            generation: marker_of(&site).generation,
         }
     );
 
@@ -633,7 +637,10 @@ fn a_store_restored_from_before_a_start_or_an_upload_recovers_the_newer_folder()
         let kept: &[&str] = if upload { &["mine.txt"] } else { &[] };
         assert_eq!(names(&site.root), kept, "upload: {upload}");
         assert_eq!(remote.names(), kept, "upload: {upload}");
-        assert!(a.folder.engine.commits.halted().is_none(), "upload: {upload}");
+        assert!(
+            a.folder.engine.commits.halted().is_none(),
+            "upload: {upload}"
+        );
     }
 }
 
@@ -650,6 +657,7 @@ fn two_copies_of_one_disk_halt_when_the_older_one_is_at_the_folder() {
         space_id: site.link.space_id.clone(),
         effects: 0,
         token: None,
+        generation: 0,
     };
     write_marker(&site.root, &marker).unwrap();
     let found = found_root(&site.root);
@@ -810,8 +818,7 @@ fn a_file_the_newer_copy_deleted_reaches_the_server_only_once_the_question_is_an
 }
 
 #[test]
-fn relink_refuses_a_folder_that_passes_its_check_and_takes_one_whose_store_was_restored_on_its_own()
-{
+fn relink_refuses_a_healthy_folder_or_one_whose_store_was_restored_and_takes_an_older_copy() {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site.root.join("one.txt"), b"one");
@@ -827,8 +834,14 @@ fn relink_refuses_a_folder_that_passes_its_check_and_takes_one_whose_store_was_r
     assert!(site.stored().cursor.is_some());
     let saved = site.db.with_extension("saved");
     fs::copy(&site.db, &saved).unwrap();
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
     drop(restarted(&site, &mut remote));
     fs::copy(&saved, &site.db).unwrap();
+    assert!(!halts_as_a_copy(&site));
+    assert!(matches!(relink(&site), Err(disk::RelinkError::NotACopy)));
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
     assert!(halts_as_a_copy(&site));
     let id = ask(&site, &RestoreIntent::from_trash(node, None, None).unwrap());
 

@@ -21,6 +21,7 @@ async fn a_second_profile_neither_rotates_the_token_of_a_folder_another_holds_no
     let stale = koidrive_fs::RootTokens {
         current: Some("0".repeat(32)),
         pending: None,
+        generation: 0,
     };
     Store::open(&store_b)
         .unwrap()
@@ -48,13 +49,14 @@ async fn a_second_profile_neither_rotates_the_token_of_a_folder_another_holds_no
     assert_ne!(first.status().folders[0].state, FolderState::Halted);
     first.stop().await;
     assert_eq!(tokens(&store_b), stale);
-    let held = read_marker(&root).unwrap().unwrap().token;
-    assert!(held.is_some());
+    let held = read_marker(&root).unwrap().unwrap();
+    assert!(held.token.is_some());
     assert_eq!(
         tokens(&store_a),
         koidrive_fs::RootTokens {
-            current: held,
+            current: held.token,
             pending: None,
+            generation: held.generation,
         }
     );
 

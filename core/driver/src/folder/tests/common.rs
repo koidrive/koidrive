@@ -215,6 +215,7 @@ impl Site {
             space_id: space_id.clone(),
             effects: 0,
             token: None,
+            generation: 0,
         };
         write_marker(&root, &marker).unwrap();
         let db = dir.path().join("store.sqlite");
