@@ -303,6 +303,15 @@ class SplitTests(unittest.TestCase):
         with self.against({}):
             self.assertEqual(split.pending(self.executable, self.mapping, "base"), self.mapping)
 
+    def test_verify_refuses_a_split_this_change_makes_without_a_mapping(self):
+        self.generate()
+        with self.against({"tests.rs": self.source, "other.rs": b'include!("other/scenario.rs");\n'}):
+            with self.assertRaisesRegex(ValueError, r"this change splits \['tests\.rs'\] without a mapping"):
+                split.require_mapped_splits(self.executable, {}, "base", ["tests.rs"])
+            split.require_mapped_splits(self.executable, self.mapping, "base", ["tests.rs"])
+            (self.root / "other.rs").write_bytes(b'include!("other/scenario.rs");\n')
+            split.require_mapped_splits(self.executable, {}, "base", ["other.rs"])
+
     def test_map_drops_an_entry_whose_source_is_already_split_at_the_base(self):
         self.generate()
         (self.root / "other.rs").write_bytes(split.LICENSE + b"#[test]\nfn kept() {}\n")

@@ -162,6 +162,15 @@ def split_at(executable, path, revision):
         return False
 
 
+def require_mapped_splits(executable, mapping, revision, changed):
+    unmapped = [name for name in changed if name.endswith(".rs") and name not in mapping and (ROOT / name).exists()
+                and f'include!("{Path(name).stem}/'.encode() in (ROOT / name).read_bytes()
+                and includes(executable, (ROOT / name).read_bytes()) and not split_at(executable, name, revision)]
+    if unmapped:
+        raise ValueError(f"this change splits {unmapped} without a mapping; add each as an empty object to "
+                         f"{MAPPING.relative_to(ROOT)}, run `python3 scripts/split-tests.py map`, and commit the result")
+
+
 def pending(executable, mapping, revision):
     landed = [path for path in mapping if split_at(executable, path, revision)]
     for path in landed:
@@ -441,6 +450,9 @@ def main():
         port(executable, mapping, args.base_ref, args.branch_ref)
         MAPPING.write_text(json.dumps(mapping, indent=2) + "\n")
     else:
+        changed = subprocess.check_output(["git", "diff", "--name-only", "--diff-filter=M", args.source_ref, "--", "*.rs"],
+                                          cwd=ROOT, text=True).split()
+        require_mapped_splits(executable, mapping, args.source_ref, changed)
         verify(executable, pending(executable, mapping, args.source_ref), args.source_ref)
 
 
