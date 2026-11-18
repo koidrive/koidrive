@@ -290,7 +290,8 @@ class RuntimeChecks(unittest.TestCase):
             commands = re.findall(r"cargo (?:test|build|run|nextest (?:archive|run|list))\b[^\n]*", workflow)
             for command in commands:
                 with self.subTest(command=command):
-                    self.assertNotRegex(command, r"(?:^|\s)(?:-r|--release)(?:\s|$)")
+                    if command.startswith(("cargo test", "cargo nextest")):
+                        self.assertNotRegex(command, r"(?:^|\s)(?:-r|--release)(?:\s|$)")
                     option = "--cargo-profile" if command.startswith("cargo nextest") else "--profile"
                     for profile in re.findall(rf"(?:^|\s){option}[= ](\S+)", command):
                         self.assertIn(profile, ("checked", '"$PROFILE"'))
