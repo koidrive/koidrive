@@ -6,7 +6,8 @@ use koidrive_engine::tree::{Content, NodeId, RemoteNode};
 
 use koidrive_proto::v1::NodeStatus;
 
-use super::{Failure, SpaceDo, Spent, World, tag};
+use super::intents::{Check, Field, Intents, Server, Value, expected};
+use super::{Failure, SpaceDo, World, tag};
 
 pub(super) fn live_nodes(space: &SpaceDo) -> BTreeMap<i64, BTreeSet<NodeId>> {
     let mut live: BTreeMap<i64, BTreeSet<NodeId>> = BTreeMap::new();
@@ -31,17 +32,32 @@ pub(super) struct Deleted {
 }
 
 pub(super) struct Deletion {
+    intent: usize,
     pub(super) device: usize,
-    at: u64,
     files: Vec<Deleted>,
-    unsent: BTreeSet<(usize, u128, u64)>,
+    pub(super) unsent: BTreeSet<usize>,
     resendable: BTreeSet<i64>,
     around_restore: bool,
+    pub(super) watched: bool,
     pub(super) reached: bool,
     pub(super) gone: bool,
 }
 
 impl Deletion {
+    pub(super) fn unwatched(device: usize, intent: usize) -> Self {
+        Deletion {
+            intent,
+            device,
+            files: Vec::new(),
+            unsent: BTreeSet::new(),
+            resendable: BTreeSet::new(),
+            around_restore: false,
+            watched: false,
+            reached: false,
+            gone: false,
+        }
+    }
+
     pub(super) fn carried(
         &mut self,
         seq: u64,
@@ -90,6 +106,62 @@ impl Deletion {
                 .map(|(write, _, _)| write)
         })
     }
+
+    fn undone(
+        &self,
+        intents: &Intents,
+        server: &Server,
+        gone: impl Fn(usize) -> bool,
+    ) -> Vec<NodeId> {
+        let i = self.intent;
+        let delete = intents.intent(i);
+        let Value::Trashed {
+            subtree,
+            replaced_by,
+        } = &delete.value
+        else {
+            return Vec::new();
+        };
+        let author = delete.author;
+        if delete.dropped || delete.forgotten || gone(author) {
+            return Vec::new();
+        }
+        let roots: BTreeSet<&NodeId> = intents.nodes(i).collect();
+        let saved = (replaced_by.iter()).flat_map(|ino| intents.nodes_of(author, *ino));
+        if roots.is_empty() || saved.into_iter().any(|id| roots.contains(id)) {
+            return Vec::new();
+        }
+        let deleted: Vec<&NodeId> = (subtree.iter())
+            .flat_map(|ino| intents.nodes_of(author, *ino))
+            .collect();
+        let live = deleted.iter().filter(|id| server.live(id).is_some());
+        live.copied()
+            .filter_map(|node| {
+                let brings_back = |j: usize| {
+                    let other = intents.intent(j);
+                    let carries = other.value.field() != Field::Content && !other.answer;
+                    intents.nodes(j).any(|id| {
+                        id == node
+                            || server.live(id).is_some()
+                                && server.above(id).contains(&node.as_str())
+                            || carries
+                                && deleted.contains(&id)
+                                && server.above(node).contains(&id.as_str())
+                    })
+                };
+                let excused = (0..intents.len()).any(|j| {
+                    let other = intents.intent(j);
+                    j != i
+                        && !other.dropped
+                        && !matches!(other.value, Value::Trashed { .. })
+                        && (!other.answer || other.made > delete.made)
+                        && (intents.saw(j, i) || !intents.saw(i, j) && !other.lost)
+                        && brings_back(j)
+                });
+                (!excused).then(|| node.clone())
+            })
+            .collect()
+    }
 }
 
 impl World {
@@ -97,7 +169,7 @@ impl World {
         &mut self,
         d: usize,
         ino: u128,
-        gone: &BTreeSet<u128>,
+        gone: BTreeSet<u128>,
         deleted: &[Content],
     ) {
         let device = &self.devices[d];
@@ -159,64 +231,51 @@ impl World {
         let server: BTreeMap<NodeId, RemoteNode> = (self.space.nodes().iter())
             .filter_map(|state| RemoteNode::from_state(state).ok())
             .collect();
-        let scope: Vec<_> = (synced.iter())
-            .filter(|(id, _)| under_target(id) || (files.iter()).any(|file| file.path.contains(id)))
-            .collect();
-        let unsent: BTreeSet<(usize, u128, u64)> = (0..self.devices.len())
-            .filter(|other| *other != d)
-            .flat_map(|other| {
-                (self.touches[other].iter())
-                    .flat_map(move |(ino, times)| times.iter().map(move |at| (other, *ino, *at)))
+        let unsent = (0..self.intents.len())
+            .filter(|j| {
+                let other = self.intents.intent(*j);
+                other.author != d
+                    && other.carried.is_none()
+                    && !other.dropped
+                    && !self.intents.replaced(*j)
             })
             .collect();
         let seen = target.is_some_and(|target| {
             synced.get(target).is_some()
-                && (scope.iter()).all(|(id, shape)| {
-                    (server.get(*id)).is_some_and(|there| !there.trashed && there.shape.same(shape))
-                })
+                && (synced.iter())
+                    .filter(|(id, _)| {
+                        under_target(id) || (files.iter()).any(|file| file.path.contains(id))
+                    })
+                    .all(|(id, shape)| {
+                        (server.get(id))
+                            .is_some_and(|there| !there.trashed && there.shape.same(shape))
+                    })
         });
-        if seen
+        let watched = seen
             && !device.rolled_back
             && !device.recovering()
-            && device.engine.history == self.space.history_id()
-        {
-            let mut deletion = Deletion {
-                device: d,
-                at: self.clock,
-                resendable: (files.iter())
-                    .map(|file| file.write)
-                    .filter(|write| self.exposed.contains_key(write) && !live.contains_key(write))
-                    .collect(),
-                files,
-                unsent,
-                around_restore: self.restored_to.is_some(),
-                reached: false,
-                gone: false,
-            };
-            deletion.reached = deletion.held(&live, |_, _, _, _| false).is_none();
-            self.deletions.push(deletion);
-        }
-    }
-
-    fn inos_of(&self, d: usize, node: &NodeId) -> impl Iterator<Item = u128> {
-        let local = self.devices[d].engine.trees.local().get(node);
-        (local.map(|node| node.identity.ino)).into_iter().chain(
-            self.touched_nodes[d]
-                .get(node)
-                .into_iter()
-                .flatten()
-                .copied(),
-        )
-    }
-
-    pub(super) fn forget_unsent_deletes(&mut self, d: usize) {
-        self.deletions.retain_mut(|deletion| {
-            if deletion.reached || deletion.device != d {
-                return true;
-            }
-            (deletion.files).retain(|file| file.carried_at.is_some());
-            !deletion.files.is_empty()
-        });
+            && device.engine.history == self.space.history_id();
+        let resendable = (files.iter())
+            .map(|file| file.write)
+            .filter(|write| self.exposed.contains_key(write) && !live.contains_key(write))
+            .collect();
+        let value = Value::Trashed {
+            subtree: gone.into_iter().collect(),
+            replaced_by: None,
+        };
+        let mut deletion = Deletion {
+            intent: self.intents.record(d, self.moment, ino, "delete", value),
+            device: d,
+            files,
+            unsent,
+            resendable,
+            around_restore: self.restored_to.is_some(),
+            watched,
+            reached: false,
+            gone: false,
+        };
+        deletion.reached = deletion.held(&live, |_, _, _, _| false).is_none();
+        self.deletions.push(deletion);
     }
 
     pub(super) fn forget_restored_deletes<'a>(
@@ -225,12 +284,20 @@ impl World {
         restored: impl IntoIterator<Item = &'a NodeId>,
     ) {
         let restored: BTreeSet<&NodeId> = restored.into_iter().collect();
-        self.deletions.retain_mut(|deletion| {
-            if deletion.device == d {
-                (deletion.files).retain(|file| !restored.contains(&file.node));
+        for deletion in (self.deletions.iter_mut()).filter(|deletion| deletion.device == d) {
+            (deletion.files).retain(|file| !restored.contains(&file.node));
+            deletion.watched &= !deletion.files.is_empty();
+        }
+    }
+
+    pub(super) fn forget_unsent_deletes(&mut self, d: usize) {
+        for deletion in &mut self.deletions {
+            if deletion.reached || deletion.device != d {
+                continue;
             }
-            deletion.device != d || !deletion.files.is_empty()
-        });
+            (deletion.files).retain(|file| file.carried_at.is_some());
+            deletion.watched &= !deletion.files.is_empty();
+        }
     }
 
     pub(super) fn revived_delete(&self) -> Result<(), Failure> {
@@ -239,29 +306,31 @@ impl World {
         }
         let live = live_nodes(&self.space);
         let dropped = (self.deletions.iter())
-            .filter(|deletion| !deletion.reached && !deletion.gone)
+            .filter(|deletion| deletion.watched && !deletion.reached && !deletion.gone)
             .find_map(|deletion| {
+                let at = self.intents.intent(deletion.intent).made;
                 let write = deletion.held(&live, |write, node, file, at_node| {
-                    let changed_since = |spent: &Spent| {
-                        let is = |id: &NodeId| {
-                            self.inos_of(spent.device, id).any(|ino| ino == spent.ino)
+                    let changed_since = |j: usize| {
+                        let other = self.intents.intent(j);
+                        let Some(carried) = (other.carried.as_ref()).filter(|_| {
+                            other.author != deletion.device
+                                && !other.answer
+                                && (deletion.unsent.contains(&j) || other.made >= at)
+                        }) else {
+                            return false;
                         };
+                        let is = |id: &NodeId| self.intents.nodes(j).any(|there| there == id);
                         let itself = is(node) || is(&file.node);
                         let moved_between = (file.path.iter())
                             .skip(1)
-                            .any(|id| spent.reparented.contains(id) && is(id));
-                        let revived = spent.revived.contains(node) && (file.path.iter()).any(is);
-                        spent.device != deletion.device
-                            && (self.actions[spent.device].get(&spent.at))
-                                .is_some_and(|(own, _)| *own == spent.ino)
-                            && ((deletion.unsent).contains(&(spent.device, spent.ino, spent.at))
-                                || spent.at >= deletion.at)
-                            && (itself || moved_between || revived)
+                            .any(|id| carried.reparented.contains(id) && is(id));
+                        let revived = carried.revived.contains(node) && (file.path.iter()).any(is);
+                        itself || moved_between || revived
                     };
                     !deletion.around_restore
                         || deletion.resendable.contains(&write)
                         || (!at_node && self.copied.contains(&write))
-                        || self.spent.iter().any(changed_since)
+                        || (0..self.intents.len()).any(changed_since)
                 })?;
                 Some((write, deletion.device))
             });
@@ -272,5 +341,22 @@ impl World {
                  the server held it live from then on: the delete never reached the server"
             ))),
         }
+    }
+
+    pub(super) fn undone_delete(&self, server: &Server) -> Result<(), Failure> {
+        let gone = |d: usize| self.devices[d].left;
+        for deletion in &self.deletions {
+            let d = deletion.device;
+            for node in deletion.undone(&self.intents, server, gone) {
+                let why = format!(
+                    "the delete of node {node} on device {d} came undone, and no change its user \
+                     did not see brought the node back"
+                );
+                if !expected(Check::DeleteUndone, &why) {
+                    return Err(Failure::Diverged(why));
+                }
+            }
+        }
+        Ok(())
     }
 }

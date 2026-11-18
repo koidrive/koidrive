@@ -6,7 +6,9 @@ use koidrive_engine::first_link::{History, Marks};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
 use koidrive_proto::v1::{Commit, Move, NodeStatus, Op, error, op};
 use koidrive_sim::world::disk::{Disk, Place, Refused, identity};
-use koidrive_sim::world::{Action, Cut, Failure, NAMES, Outcome, Reply, Step, World, tag};
+use koidrive_sim::world::{
+    Action, Check, Cut, Failure, NAMES, Outcome, Reply, Step, World, expect_red, tag,
+};
 
 fn user(kind: u8, target: usize, parent: usize, name: &str) -> Step {
     let name = NAMES.iter().position(|other| *other == name).unwrap();
@@ -2515,6 +2517,10 @@ fn devices_converge_after_the_pending_name_schedule_76bd3ad9() {
 
 #[test]
 fn devices_converge_after_the_minimized_seed_2218_schedule() {
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     let phases: Vec<Vec<(usize, Step)>> = vec![
         vec![(
             0,
@@ -3239,11 +3245,12 @@ fn a_keep_does_not_count_for_bringing_back_a_later_deletion() {
         result: None,
     });
     engine.commits = Commits::from_state(state).unwrap();
-    let failure = (world.run(3, &[(1, COMMIT)])).expect_err("nobody asked for the folder again");
-    assert!(
-        failure.to_string().contains("brought back node"),
-        "{failure}"
-    );
+    world.devices[1].store = world.devices[1].engine.clone();
+    world.run(3, &[(1, COMMIT)]).unwrap();
+    let failure = world
+        .phase(3, &[])
+        .expect_err("nobody asked for the folder again");
+    assert!(failure.to_string().contains("came undone"), "{failure}");
 }
 
 #[test]
@@ -3301,13 +3308,86 @@ fn a_publish_for_a_folder_does_not_count_for_its_unchanged_child() {
     (flight.commit.ops)
         .retain(|op| !matches!(&op.op, Some(op::Op::Delete(delete)) if delete.node_id == child));
     engine.commits = Commits::from_state(state).unwrap();
-    let failure = world
-        .run(3, &[(1, COMMIT)])
-        .expect_err("nobody asked for the child");
+    world.devices[1].store = world.devices[1].engine.clone();
+    world.run(3, &[(1, COMMIT)]).unwrap();
+    let failure = world.phase(3, &[]).expect_err("nobody asked for the child");
     assert!(
-        failure
-            .to_string()
-            .contains(&format!("brought back node {child}")),
+        failure.to_string().contains(&format!(
+            "the delete of node {child} on device 0 came undone"
+        )),
+        "{failure}"
+    );
+}
+
+#[test]
+fn an_unseen_rename_of_its_folder_does_not_bring_back_a_deleted_file() {
+    let mut world = World::new(2);
+    world
+        .phase(0, &[(0, act(0, 0, 0, 0)), (0, act(1, 0, 1, 2))])
+        .unwrap();
+    let local = world.devices[0].engine.trees.local();
+    let named = |name: &str| {
+        (local.iter())
+            .find(|(_, node)| node.shape.name == name)
+            .map(|(id, node)| (id.clone(), node.clone()))
+            .unwrap()
+    };
+    let ((folder, _), (child, file)) = (named("a"), named("b"));
+    world
+        .run(
+            1,
+            &[
+                (1, rename(0, "ss")),
+                (1, SCAN),
+                (1, COMMIT),
+                (1, COMMIT),
+                (0, delete(1)),
+            ],
+        )
+        .unwrap();
+    world
+        .phase(2, &[(0, SCAN), (0, COMMIT), (0, COMMIT)])
+        .unwrap();
+    assert_eq!(
+        world.space().node(&child).unwrap().status,
+        NodeStatus::Trashed as i32
+    );
+    let engine = &mut world.devices[1].engine;
+    let mut state = engine.commits.state();
+    assert!(state.in_flight.is_none());
+    let moved = Move {
+        node_id: child.clone(),
+        new_parent_id: folder,
+        new_name: file.shape.name,
+        from: None,
+        pending_for: String::new(),
+    };
+    state.in_flight = Some(InFlight {
+        commit: Commit {
+            commit_id: engine.ids.uuid_v7(1_794_268_740_010),
+            history_id: engine.history.clone(),
+            device_seq: state.accepted + 1,
+            base_seq: engine.cursor.seq,
+            ops: vec![Op {
+                op: Some(op::Op::Move(moved)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        deletes: Default::default(),
+        restores: Default::default(),
+        result: None,
+    });
+    engine.commits = Commits::from_state(state).unwrap();
+    world.devices[1].store = world.devices[1].engine.clone();
+    world.run(3, &[(1, COMMIT)]).unwrap();
+    let failure = world
+        .phase(3, &[])
+        .expect_err("nobody brought the file back");
+    assert!(
+        failure.to_string().contains(&format!(
+            "the delete of node {child} on device 0 came undone"
+        )),
         "{failure}"
     );
 }

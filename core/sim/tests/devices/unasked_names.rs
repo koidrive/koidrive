@@ -15,6 +15,10 @@ fn u(kind: u8, target: usize, parent: usize, name: usize, text: u8) -> Step {
 #[test]
 fn a_device_that_missed_the_delete_of_a_folder_owing_its_name_brings_it_back_by_its_users_edit_and_finishes_the_name()
  {
+    let _red = expect_red(
+        Check::OwnerFinish,
+        "a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+    );
     use Step::*;
     let phases = vec![
         vec![(0, u(1, 0, 0, 0, 0))],

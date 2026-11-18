@@ -137,6 +137,10 @@ fn a_rename_made_while_a_conflicting_edit_is_in_flight_keeps_the_users_name_on_t
 
 #[test]
 fn a_conflict_copy_keeps_its_place_when_another_device_renamed_the_original_before_a_restore() {
+    let _red = expect_red(
+        Check::PlaceKept,
+        "the move on device 0 that puts node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 at \"b\" is not on the server, though its user saw the place the server holds and no rule for lost changes settles it",
+    );
     use Step::*;
     let phases = vec![
         vec![(1, u(1, 0, 0, 1, 3))],

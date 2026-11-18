@@ -1,9 +1,0 @@
-class = "B"
-issue = "GUN-984"
-tests = [
-  "devices_converge_when_a_folder_owing_its_name_is_deleted_and_brought_back",
-  "devices_converge_around_an_owed_rename",
-  "devices_converge_across_rewinds_and_rollbacks",
-]
-message = '''after phase <n>: node <id> keeps the pending name ".*", which no user gave to anything\.'''
-examples = ["after phase 1: node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 keeps the pending name \"A (pending)\", which no user gave to anything."]

@@ -1,5 +1,0 @@
-class = "A"
-issue = "GUN-1004"
-tests = ["devices_converge_across_restores_and_rewinds", "devices_converge_across_server_restores"]
-message = '''after phase <n>: a commit of device <n> took write <n> out of the server's tree\. The user of another device overwrote or deleted it, and the user of device <n> never did: \[Op \{ .* \}\]\.'''
-examples = ["after phase 2: a commit of device 0 took write 2 out of the server's tree. The user of another device overwrote or deleted it, and the user of device 0 never did: [Op { op: Some(Delete(Delete { node_id: \"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\" })) }]."]

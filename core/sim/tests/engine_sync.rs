@@ -2,6 +2,7 @@
 
 include!("engine_sync/common.rs");
 include!("engine_sync/first_link.rs");
+include!("engine_sync/held_renames_and_purged_folders.rs");
 include!("engine_sync/moves_and_deletes.rs");
 include!("engine_sync/parked_nodes.rs");
 include!("engine_sync/restores.rs");

@@ -1,0 +1,10 @@
+class = "X"
+issue = "GUN-1199"
+tests = [
+  "devices_lose_no_write_across_rewinds_and_rollbacks",
+]
+message = '''(after phase <n>: write <n> of the .* of node <id> on device <n> is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it\.|not recorded: devices::\S+ \S+ WriteKept write <n> of the (?:(?! not recorded: ).)* of node <id> on device <n> is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it( not recorded: devices::\S+ \S+ (WriteKept|IntentKept) (?:(?! not recorded: ).)+?settles it)*( devices::\S+ never ran case \S+)*)'''
+examples = [
+  "not recorded: devices::devices_lose_no_write_across_rewinds_and_rollbacks\tcc-2293e681b3bc09faeca001d034140fd95df720190105bcb9a754644310248df5\tWriteKept\twrite 4 of the create of node 01a1c2c0-39a0-7224-a2dd-41264c2feceb on device 1 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it\nnot recorded: devices::devices_lose_no_write_across_rewinds_and_rollbacks\tcc-2293e681b3bc09faeca001d034140fd95df720190105bcb9a754644310248df5\tIntentKept\tnode 01a1c2c0-39a0-7224-a2dd-41264c2feceb of the create on device 1 is not in the server's tree, and no delete that saw it and no rule for lost changes settles it\nnot recorded: devices::devices_lose_no_write_across_rewinds_and_rollbacks\tcc-2293e681b3bc09faeca001d034140fd95df720190105bcb9a754644310248df5\tIntentKept\tthe move on device 1 that puts node 01a1c2c0-39a0-7224-a2dd-41264c2feceb at \"E\\u{301}\" is not on the server, and no later change that saw it, no delete that saw it and no rule for lost changes settles it",
+]
+cases = ["2293e681b3bc"]
