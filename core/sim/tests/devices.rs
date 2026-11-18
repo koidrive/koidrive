@@ -2817,6 +2817,53 @@ fn a_server_that_keeps_a_conflict_copy_of_each_created_file_is_caught_without_a_
     }
 }
 
+#[test]
+fn a_download_a_coarse_disk_cut_is_linked_by_its_old_place_after_a_store_rollback() {
+    for coarse in [
+        Precision::TwoSeconds,
+        Precision::Seconds,
+        Precision::Hundredths,
+    ] {
+        let unmarked = Step::Save {
+            target: 0,
+            keeps_mark: false,
+        };
+        let mut renamed = vec![(0, unmarked), (0, Step::RollBack), (1, rename(0, 0, "b"))];
+        renamed.extend(commit(1));
+        let phases = vec![vec![(0, Step::CopyStore), (1, file("a"))], renamed];
+        let world = converge_on(&[coarse, Precision::Fine], &phases)
+            .unwrap_or_else(|failure| panic!("{coarse:?}: {failure}"));
+        assert!(
+            world
+                .seen
+                .contains_key("recovery starts after a store rollback"),
+            "{coarse:?}"
+        );
+        assert_ne!(
+            content_on(&world, 0, "b").mtime_ns,
+            content_on(&world, 1, "b").mtime_ns,
+            "{coarse:?}"
+        );
+        assert!(
+            !(world.seen.keys()).any(|what| what.starts_with("recovery answer")),
+            "{coarse:?}: {:?}",
+            world.seen
+        );
+        let holders: Vec<String> = (world.space().nodes().into_iter())
+            .filter(|node| node.status == koidrive_proto::v1::NodeStatus::Live as i32)
+            .filter(|node| {
+                (node
+                    .current
+                    .as_ref()
+                    .and_then(|current| current.content.as_ref()))
+                .is_some_and(|content| tag(content) == 1)
+            })
+            .map(|node| node.name)
+            .collect();
+        assert_eq!(holders, ["b"], "{coarse:?}");
+    }
+}
+
 fn copies_of(world: &World, write: i64) -> usize {
     (files_on(world, 0).into_iter())
         .filter(|(_, content)| content.as_ref().is_some_and(|c| tag(c) == write))
