@@ -28,7 +28,7 @@ pub const VARIABLE: &str = "KOIDRIVE_UPDATE_CHECK";
 pub const URL_VARIABLE: &str = "KOIDRIVE_UPDATE_CHECK_URL";
 
 const API: &str = "https://api.github.com/";
-const RELEASES: &str = "repos/koidrive/koidrive/releases?per_page=20";
+const RELEASES: &str = "repos/koidrive/koidrive/releases";
 const TIMEOUT: Duration = Duration::from_secs(10);
 const PAGE_LIMIT: usize = 10;
 const HOUR_MS: i64 = 3_600_000;
@@ -126,6 +126,8 @@ pub(crate) struct Checked {
     pub release: Option<Release>,
     #[serde(default)]
     pub retry_after: Option<i64>,
+    #[serde(default)]
+    pub retry_set_at: Option<i64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -142,16 +144,32 @@ pub(crate) enum Answer {
 }
 
 impl Checked {
-    pub fn due(&self) -> i64 {
-        let day = (self.checked_at).map_or(i64::MIN, |at| at.saturating_add(DAY_MS));
-        day.max(self.retry_after.unwrap_or(i64::MIN))
+    pub fn due(&self, now: i64) -> i64 {
+        let day = (self.checked_at)
+            .filter(|at| *at <= now)
+            .map_or(i64::MIN, |at| at.saturating_add(DAY_MS));
+        let retry = (self.retry_after)
+            .filter(|_| match self.retry_set_at {
+                Some(at) => at <= now,
+                None => self.checked_at.is_none_or(|at| at <= now),
+            })
+            .unwrap_or(i64::MIN);
+        day.max(retry)
+    }
+
+    fn answered_at(&self) -> Option<i64> {
+        self.successful_at
+            .or_else(|| self.release.as_ref().and(self.checked_at))
+    }
+
+    fn answered_within_a_day(&self, now: i64) -> bool {
+        self.answered_at()
+            .is_some_and(|at| at > now.saturating_sub(DAY_MS) && at <= now)
     }
 
     pub fn after(mut self, answer: Answer, now: i64) -> Checked {
         self.asset = Some(this_asset());
-        let successful_at = self
-            .successful_at
-            .or_else(|| self.release.as_ref().and(self.checked_at));
+        let successful_at = self.answered_at();
         match answer {
             Answer::Releases { etag, release } => Checked {
                 asset: self.asset,
@@ -160,22 +178,26 @@ impl Checked {
                 etag,
                 release,
                 retry_after: None,
+                retry_set_at: None,
             },
             Answer::NotModified => Checked {
                 checked_at: Some(now),
                 successful_at: successful_at.map(|_| now),
                 retry_after: None,
+                retry_set_at: None,
                 ..self
             },
             Answer::Refused { until } => Checked {
                 checked_at: Some(now),
                 successful_at,
                 retry_after: until.filter(|until| *until > now.saturating_add(DAY_MS)),
+                retry_set_at: Some(now),
                 ..self
             },
             Answer::Unreachable => Checked {
                 successful_at,
                 retry_after: Some(now.saturating_add(HOUR_MS)),
+                retry_set_at: Some(now),
                 ..self
             },
         }
@@ -185,10 +207,7 @@ impl Checked {
         if is_development_version(&runs.to_string()) {
             return Update::Off;
         }
-        let Some(checked_at_ms) = self
-            .successful_at
-            .or_else(|| self.release.as_ref().and(self.checked_at))
-        else {
+        let Some(checked_at_ms) = self.answered_at() else {
             return Update::Unknown;
         };
         let newer = (self.release.as_ref())
@@ -302,7 +321,9 @@ pub(crate) fn releases_url(base: Option<&str>) -> Option<(Url, bool)> {
         "http" if loopback => false,
         _ => return None,
     };
-    Some((base.join(RELEASES).ok()?, https))
+    let mut url = base.join(RELEASES).ok()?;
+    url.set_query(Some("per_page=100"));
+    Some((url, https))
 }
 
 pub(crate) async fn ask(
@@ -311,7 +332,8 @@ pub(crate) async fn ask(
     etag: Option<&str>,
     asset: &str,
 ) -> Answer {
-    tokio::time::timeout(TIMEOUT, async {
+    let mut answered = false;
+    let asked = tokio::time::timeout(TIMEOUT, async {
         let mut page = url.clone();
         let mut conditional = etag;
         let mut visited = HashSet::new();
@@ -333,12 +355,15 @@ pub(crate) async fn ask(
                 request = request.header(IF_NONE_MATCH, etag);
             }
             let response = match request.send().await {
-                Ok(response) => response,
-                Err(_) if visited.len() == 1 => return Answer::Unreachable,
+                Ok(response) => {
+                    answered = true;
+                    response
+                }
+                Err(_) if !answered => return Answer::Unreachable,
                 Err(_) => return Answer::Refused { until: None },
             };
             let (status, headers) = (response.status(), response.headers().clone());
-            let next = match next_page(&url, &headers) {
+            let next = match next_page(&url, &page, &headers) {
                 Ok(next) => next,
                 Err(()) => return Answer::Refused { until: None },
             };
@@ -380,11 +405,14 @@ pub(crate) async fn ask(
             conditional = None;
         }
     })
-    .await
-    .unwrap_or(Answer::Refused { until: None })
+    .await;
+    asked.unwrap_or(match answered {
+        true => Answer::Refused { until: None },
+        false => Answer::Unreachable,
+    })
 }
 
-fn next_page(endpoint: &Url, headers: &HeaderMap) -> Result<Option<Url>, ()> {
+fn next_page(endpoint: &Url, page: &Url, headers: &HeaderMap) -> Result<Option<Url>, ()> {
     let mut next = None;
     for header in headers.get_all("link") {
         for link in header.to_str().map_err(|_| ())?.split(',') {
@@ -407,9 +435,9 @@ fn next_page(endpoint: &Url, headers: &HeaderMap) -> Result<Option<Url>, ()> {
                 .strip_prefix('<')
                 .and_then(|target| target.strip_suffix('>'))
                 .ok_or(())?;
-            let url = endpoint.join(target).map_err(|_| ())?;
+            let url = page.join(target).map_err(|_| ())?;
             if url.origin() != endpoint.origin()
-                || url.path() != endpoint.path()
+                || !lists_releases(endpoint, &url)
                 || !url.username().is_empty()
                 || url.password().is_some()
                 || url.fragment().is_some()
@@ -421,6 +449,18 @@ fn next_page(endpoint: &Url, headers: &HeaderMap) -> Result<Option<Url>, ()> {
         }
     }
     Ok(next)
+}
+
+fn lists_releases(endpoint: &Url, url: &Url) -> bool {
+    let Some(base) = endpoint.path().strip_suffix(RELEASES) else {
+        return false;
+    };
+    let repository = (url.path().strip_prefix(base))
+        .and_then(|path| path.strip_prefix("repositories/"))
+        .and_then(|path| path.strip_suffix("/releases"));
+    url.path() == endpoint.path()
+        || repository
+            .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 pub(crate) fn client(https_only: bool) -> reqwest::Result<reqwest::Client> {
@@ -451,6 +491,7 @@ pub async fn check_now(paths: &Paths) -> Result<Option<Release>, CheckError> {
     match ask(&http, url, checked.etag.as_deref(), &this_asset()).await {
         Answer::Releases { release, .. } => Ok(release),
         Answer::NotModified => Ok(checked.release),
+        Answer::Refused { .. } if checked.answered_within_a_day(now_ms()) => Ok(checked.release),
         Answer::Refused { .. } => Err(CheckError::Refused),
         Answer::Unreachable => Err(CheckError::Unreachable),
     }
@@ -565,7 +606,8 @@ impl Updates {
     ) {
         loop {
             let checked = self.checked.lock().unwrap().clone().unwrap_or_default();
-            let wait = checked.due().saturating_sub(now_ms());
+            let now = now_ms();
+            let wait = checked.due(now).saturating_sub(now);
             if wait > 0 {
                 tokio::time::sleep(Duration::from_millis(wait.min(HOUR_MS) as u64)).await;
                 continue;
@@ -600,12 +642,15 @@ impl Updates {
             false => Checked::default(),
         };
         let answer = ask(http, url, checked.etag.as_deref(), &this_asset()).await;
+        let now = now_ms();
         let failure = match answer {
             Answer::Unreachable => Some(CheckError::Unreachable),
-            Answer::Refused { .. } => Some(CheckError::Refused),
-            Answer::Releases { .. } | Answer::NotModified => None,
+            Answer::Refused { .. } if !checked.answered_within_a_day(now) => {
+                Some(CheckError::Refused)
+            }
+            Answer::Refused { .. } | Answer::Releases { .. } | Answer::NotModified => None,
         };
-        let checked = checked.after(answer, now_ms());
+        let checked = checked.after(answer, now);
         if self.on {
             if let Err(error) = save(&self.path, &checked) {
                 tracing::warn!(%error, "the update check's answer cannot be saved");

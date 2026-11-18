@@ -45,6 +45,14 @@ fn http(body: String) -> GitHub {
 }
 
 fn http_before_reply(body: String, before_reply: impl Fn() + Send + 'static) -> GitHub {
+    let response = format!(
+        "HTTP/1.1 200 OK\r\netag: \"e1\"\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    serve(response, before_reply)
+}
+
+fn serve(response: String, before_reply: impl Fn() + Send + 'static) -> GitHub {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -63,10 +71,6 @@ fn http_before_reply(body: String, before_reply: impl Fn() + Send + 'static) -> 
             }
             seen.lock().unwrap().push(request);
             before_reply();
-            let response = format!(
-                "HTTP/1.1 200 OK\r\netag: \"e1\"\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
             let _ = stream.write_all(response.as_bytes());
         }
     });

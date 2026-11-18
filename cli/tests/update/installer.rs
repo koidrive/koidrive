@@ -82,7 +82,7 @@ fn koi_update_installs_a_release_and_hands_the_service_to_the_new_koi() {
     );
     let requests = github.requests.lock().unwrap();
     assert!(
-        requests[0].starts_with("GET /repos/koidrive/koidrive/releases?per_page=20 HTTP/1.1\r\n"),
+        requests[0].starts_with("GET /repos/koidrive/koidrive/releases?per_page=100 HTTP/1.1\r\n"),
         "{requests:?}"
     );
 }
@@ -224,6 +224,56 @@ fn koi_update_rechecks_foreign_and_legacy_caches_but_keeps_same_target_condition
         assert_eq!(
             installer.requests.lock().unwrap().len(),
             usize::from(same_target)
+        );
+    }
+}
+
+#[test]
+fn koi_update_uses_githubs_answer_from_the_last_day_when_github_refuses_the_list() {
+    let hour = 3_600_000_i64;
+    for (age, updates) in [(hour, true), (25 * hour, false), (-hour, false)] {
+        let home = tempfile::tempdir().unwrap();
+        let (binary, installer) = script_install(home.path(), "99.0.0", REPORT);
+        let state = home.path().join("state/koidrive");
+        std::fs::create_dir_all(&state).unwrap();
+        let now = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH))
+            .unwrap()
+            .as_millis() as i64;
+        let cached = serde_json::json!({
+            "asset": asset(),
+            "checked_at": now - age,
+            "successful_at": now - age,
+            "release": { "version": "99.0.0", "url": "https://example.com/v99.0.0" },
+        });
+        std::fs::write(state.join("update-check.json"), cached.to_string()).unwrap();
+        let github = serve(
+            "HTTP/1.1 403 Forbidden\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: 4102444800\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_owned(),
+            || {},
+        );
+        let output = koi_at(&binary, home.path(), &github, &["update", "--json"])
+            .env("KOIDRIVE_INSTALL_SCRIPT_URL", &installer.base)
+            .output()
+            .unwrap();
+        if development_update(&output, home.path(), &github) {
+            return;
+        }
+        let envelope = envelope(&output);
+        assert_eq!(output.status.success(), updates, "{age}: {envelope:#}");
+        match updates {
+            true => {
+                assert_eq!(envelope["data"]["to"], "99.0.0", "{envelope:#}");
+                assert_eq!(envelope["data"]["result"], "updated", "{envelope:#}");
+            }
+            false => assert_eq!(
+                envelope["error"]["message"],
+                "GitHub did not send the list of Koidrive releases; try again later",
+                "{envelope:#}"
+            ),
+        }
+        assert_eq!(github.requests.lock().unwrap().len(), 1);
+        assert_eq!(
+            installer.requests.lock().unwrap().len(),
+            usize::from(updates)
         );
     }
 }
