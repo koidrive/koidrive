@@ -543,6 +543,46 @@ fn a_file_another_device_adds_after_the_delete_leaves_the_deleted_file_checked()
 }
 
 #[test]
+fn a_copy_another_device_sends_after_the_delete_leaves_the_deleted_file_checked() {
+    let copy = Step::Copy(Action {
+        kind: 1,
+        target: 1,
+        parent: 0,
+        name: 6,
+        text: 0,
+    });
+    let world = checked(
+        2,
+        &[
+            vec![
+                (0, folder("b")),
+                (0, user(1, 0, 1, "a")),
+                (0, user(1, 0, 1, "c.txt")),
+            ],
+            vec![
+                (0, BACKUP),
+                (1, rename(2, 0, "c.txt")),
+                (1, copy),
+                (0, delete(0)),
+                (1, SCAN),
+                (1, COMMIT),
+                (1, COMMIT),
+                (1, user(1, 0, 1, "A")),
+                (0, SCAN),
+                (0, COMMIT),
+                (0, COMMIT),
+                (1, SCAN),
+                (1, COMMIT),
+                (1, COMMIT),
+            ],
+            vec![(0, RESTORE)],
+        ],
+    )
+    .unwrap();
+    assert!(held_files(&world, 1).contains(&("ss".to_owned(), 1)));
+}
+
+#[test]
 fn a_rename_of_a_folder_the_server_kept_leaves_the_deleted_file_checked() {
     let deleted = vec![
         (0, BACKUP),
