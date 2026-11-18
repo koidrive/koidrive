@@ -1877,48 +1877,18 @@ impl Commits {
             self.answer_moves.clear();
         }
         let (creates, ready) = (trees.dirty_creates(), trees.ready_creates());
-        let aliased: Vec<&NodeId> = (self.aliases.keys())
-            .flat_map(|alias| trees.local_children(alias))
-            .filter(|id| creates.contains(*id) && !ready.contains(*id))
-            .collect();
         let mut window = 2 * cap;
         let (
             (planned, deletes, deletions, reverts, cycle_reverts, given_up, retrashed, owners),
             unbuildable,
         ) = loop {
-            let mut seeds = ready.iter().peekable();
-            let mut next: BinaryHeap<Reverse<(usize, &NodeId)>> =
-                aliased.iter().map(|id| Reverse((1, *id))).collect();
-            let mut picked = Vec::new();
-            let mut bound = None;
-            loop {
-                let seeded = match (seeds.peek(), next.peek()) {
-                    (Some(id), Some(Reverse(top))) => (1, *id) < *top,
-                    (seed, _) => seed.is_some(),
-                };
-                let popped = match seeded {
-                    true => seeds.next().map(|id| (1, id)),
-                    false => next.pop().map(|Reverse(key)| key),
-                };
-                let Some((pass, id)) = popped else {
-                    break;
-                };
-                if trees.excluded(id) || trees.held(id) {
-                    continue;
-                }
-                if picked.len() == window {
-                    bound = Some((pass, id));
-                    break;
-                }
-                picked.push(id);
-                if !self.aliases.contains_key(id) {
-                    next.extend(
-                        (trees.local_children(id))
-                            .filter(|child| creates.contains(*child))
-                            .map(|child| Reverse((pass + usize::from(child < id), child))),
-                    );
-                }
-            }
+            let (picked, bound) = picked_creates(
+                trees,
+                &self.aliases,
+                ready.iter(),
+                |id| ready.contains(id),
+                window,
+            );
             let planned_from = |picked: Vec<&NodeId>, bound| {
                 let mut candidates: Vec<&NodeId> = (picked.into_iter())
                     .filter(|id| !trees.excluded(id) && !trees.held(id))
@@ -2259,6 +2229,51 @@ impl Commits {
         }
         self.questions.set(kept);
         ops
+    }
+
+    /// The files whose content the next builds would add, among the next `limit` nodes a build would take and in
+    /// the order it takes them. The nodes of the commit in flight are not among them.
+    pub fn upcoming(&self, trees: &Trees, limit: usize) -> Vec<(NodeId, Content)> {
+        let sent: BTreeSet<NodeId> = (self.in_flight().into_iter())
+            .flat_map(|flight| &flight.commit.ops)
+            .filter_map(|op| op.op.as_ref())
+            .map(op_node)
+            .collect();
+        let (creates, ready) = (trees.dirty_creates(), trees.ready_creates());
+        let freed: BTreeSet<&NodeId> = (sent.iter())
+            .flat_map(|id| trees.local_children(id))
+            .filter(|child| {
+                creates.contains(*child) && !ready.contains(*child) && !sent.contains(*child)
+            })
+            .collect();
+        let mut unsent = (ready.iter()).filter(|id| !sent.contains(*id)).peekable();
+        let mut unlocked = freed.iter().copied().peekable();
+        let seeds = std::iter::from_fn(|| match (unsent.peek(), unlocked.peek()) {
+            (Some(held), Some(next)) if next < held => unlocked.next(),
+            (Some(_), _) => unsent.next(),
+            (None, _) => unlocked.next(),
+        });
+        let is_ready =
+            |id: &NodeId| (ready.contains(id) && !sent.contains(id)) || freed.contains(id);
+        let (picked, _) = picked_creates(trees, &self.aliases, seeds, is_ready, limit);
+        let differs = |shape: Option<&Shape>, content: &ContentKey| {
+            (shape.and_then(|shape| shape.content.as_ref()))
+                .is_none_or(|other| !same_content(other, content))
+        };
+        let mut seen = BTreeSet::new();
+        (picked.into_iter().chain(trees.dirty_others()))
+            .filter(|id| seen.insert(*id) && !sent.contains(*id))
+            .filter(|id| !self.problems.contains(*id) && !trees.excluded(id) && !trees.held(id))
+            .take(limit)
+            .filter_map(|id| {
+                let local = trees.local().get(id)?;
+                let key =
+                    (local.shape.content.as_ref()).filter(|_| local.shape.kind == Kind::File)?;
+                let adds =
+                    differs(trees.acknowledged(id), key) && differs(trees.remote().live(id), key);
+                adds.then(|| (id.clone(), key.content(&local.chunks)))
+            })
+            .collect()
     }
 
     /// Whether a build has something to do: a node is dirty or its S update waits, a restore is
@@ -4723,6 +4738,50 @@ type Planned = (
     bool,
     BTreeMap<usize, RestoreId>,
 );
+
+fn picked_creates<'t>(
+    trees: &'t Trees,
+    aliases: &'t TrackedMap<NodeId, NodeId>,
+    ready: impl IntoIterator<Item = &'t NodeId>,
+    is_ready: impl Fn(&NodeId) -> bool,
+    window: usize,
+) -> (Vec<&'t NodeId>, Option<(usize, &'t NodeId)>) {
+    let creates = trees.dirty_creates();
+    let mut seeds = ready.into_iter().peekable();
+    let mut next: BinaryHeap<Reverse<(usize, &NodeId)>> = (aliases.keys())
+        .flat_map(|alias| trees.local_children(alias))
+        .filter(|id| creates.contains(*id) && !is_ready(id))
+        .map(|id| Reverse((1, id)))
+        .collect();
+    let mut picked = Vec::new();
+    loop {
+        let seeded = match (seeds.peek(), next.peek()) {
+            (Some(id), Some(Reverse(top))) => (1, *id) < *top,
+            (seed, _) => seed.is_some(),
+        };
+        let popped = match seeded {
+            true => seeds.next().map(|id| (1, id)),
+            false => next.pop().map(|Reverse(key)| key),
+        };
+        let Some((pass, id)) = popped else {
+            return (picked, None);
+        };
+        if trees.excluded(id) || trees.held(id) {
+            continue;
+        }
+        if picked.len() == window {
+            return (picked, Some((pass, id)));
+        }
+        picked.push(id);
+        if !aliases.contains_key(id) {
+            next.extend(
+                (trees.local_children(id))
+                    .filter(|child| creates.contains(*child))
+                    .map(|child| Reverse((pass + usize::from(child < id), child))),
+            );
+        }
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 fn plan(
