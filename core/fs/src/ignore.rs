@@ -689,7 +689,15 @@ impl<'r> Pending<'r> {
         paths: impl IntoIterator<Item = PathBuf>,
     ) {
         let postponed = &mut self.rules.search.postponed;
-        postponed.retain(|path| !scopes.iter().any(|scope| path.starts_with(scope)));
+        for scope in scopes {
+            let inside: Vec<PathBuf> = (postponed.range(scope.clone()..))
+                .take_while(|path| path.starts_with(scope))
+                .cloned()
+                .collect();
+            for path in inside {
+                postponed.remove(&path);
+            }
+        }
         postponed.extend(paths);
     }
 
