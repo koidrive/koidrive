@@ -643,14 +643,11 @@ impl Journal {
         (self.rows.iter()).filter(|(_, row)| matches!(row.state, RowState::Held { .. }))
     }
 
-    /// Keeps a `held` row compact while R gives it whole. `quiet` leaves it out of the changes the store takes, for
-    /// a row the store holds already.
-    pub(crate) fn compact(&mut self, key: RowKey, quiet: bool) -> bool {
+    pub(crate) fn compact(&mut self, key: RowKey) -> bool {
         let Some(held) = self.rows.get(&key).and_then(HeldRow::of) else {
             return false;
         };
-        self.rows.remove_quietly(&key);
-        if !quiet {
+        if let Some((_, true)) = self.rows.hand_off(&key) {
             self.held_changed.insert(key.clone());
         }
         self.held.insert(key, held);

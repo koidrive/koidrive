@@ -127,6 +127,11 @@ fn a_node_sent_without_intents_gets_legacy_ids_and_keeps_its_live_id_while_live(
         held(&trees, "f", Field::Status),
         IntentId::legacy_trashed("f", "6:0")
     );
+    trees.set_listed_remote("g".into(), remote(file(ROOT, "g", 1), 2));
+    assert_eq!(
+        held(&trees, "g", Field::Place),
+        IntentId::legacy_place("g", 2, ROOT, "g")
+    );
     trees.set_remote("d".into(), remote(dir(ROOT, "d"), 1));
     assert_eq!(
         trees
@@ -838,11 +843,11 @@ fn compact_edit(trees: &mut Trees) -> (Row, RemoteNode) {
 
 #[test]
 fn a_compact_row_is_written_out_unchanged_whenever_r_stops_giving_it() {
-    for trigger in ["earlier", "moved", "lost", "loss"] {
+    for trigger in ["earlier", "listed", "moved", "lost", "loss"] {
         let mut trees = Trees::new(ROOT);
         let (original, mut node) = compact_edit(&mut trees);
         match trigger {
-            "earlier" => {
+            "earlier" | "listed" => {
                 node.shape = file(ROOT, "a", 1);
                 node.version_id = "v1".into();
                 let first = trees.remote_history("f", Field::Content)[0].intent;
@@ -852,7 +857,10 @@ fn a_compact_row_is_written_out_unchanged_whenever_r_stops_giving_it() {
                     carried: false,
                     applied_at_ms: 1_000,
                 });
-                trees.set_remote("f".into(), node);
+                match trigger {
+                    "listed" => trees.set_listed_remote("f".into(), node),
+                    _ => trees.set_remote("f".into(), node),
+                }
             }
             "moved" => {
                 node.shape.name = "b".into();
@@ -1251,4 +1259,33 @@ fn the_first_listing_that_names_intents_replaces_the_ids_computed_for_the_values
         Some(id(5))
     );
     assert!(trees.journal().listed());
+}
+
+#[test]
+fn a_held_row_the_store_holds_is_not_written_again_when_r_catches_up_and_compacts_it() {
+    let mut trees = Trees::new(ROOT);
+    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    trees.set_local_changed("f".into(), local(file(ROOT, "a", 2)));
+    let commit = build(&mut trees, &["field_intents"], 1_700);
+    let reported = proto::FieldIntents {
+        place: Some(wire(held(&trees, "f", Field::Place), 1_000)),
+        content: Some(wire(sent(&trees, "f", Field::Content), 1_900)),
+        status: Some(wire(held(&trees, "f", Field::Status), 1_000)),
+    };
+    let state = node_state("f", &file(ROOT, "a", 2), 2, Some(reported));
+    trees.record_results(
+        &commit,
+        &answered(vec![outcome(op_result::Code::Applied)], vec![state.clone()]),
+    );
+    assert!(trees.journal().compact_row("f", Field::Content).is_none());
+    trees.take_changes();
+    let stored = trees.journal_row("f", Field::Content).unwrap().into_owned();
+    let (_, node) = RemoteNode::from_state(&state).unwrap();
+    trees.set_remote("f".into(), node);
+    assert!(trees.journal().compact_row("f", Field::Content).is_some());
+    assert_eq!(
+        trees.journal_row("f", Field::Content).unwrap().into_owned(),
+        stored
+    );
+    assert!(trees.take_changes().journal.rows.is_empty());
 }

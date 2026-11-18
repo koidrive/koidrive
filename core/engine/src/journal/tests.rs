@@ -443,7 +443,7 @@ fn a_compact_row_that_leaves_and_ends_before_a_take_reaches_the_store_as_ended()
         let key = ("n".to_owned(), Field::Content);
         let row = journal.row("n", Field::Content).cloned().unwrap();
         journal.take_changes(whole);
-        assert!(journal.compact(key.clone(), true));
+        assert!(journal.compact(key.clone()));
         match replaced {
             false => journal.write_out(key.clone(), row),
             true => {
