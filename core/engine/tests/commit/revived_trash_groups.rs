@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
+fn trashed_at(shape: Shape, seq: u64) -> RemoteNode {
+    RemoteNode {
+        trashed: true,
+        trash_group: format!("{seq}:2"),
+        ..remote_at(shape, seq)
+    }
+}
+
 #[test]
-fn a_move_out_of_the_trash_holds_a_create_onto_a_member_its_user_removed_until_its_delete() {
+fn a_move_out_of_the_trash_sends_a_create_onto_a_member_its_user_removed_after_trashing_it_again() {
     let mut trees = trees(&[
         ("p", None, Some(dir(ROOT, "p")), Some(trashed(dir(ROOT, "p")))),
         ("a", Some(dir(ROOT, "a")), Some(dir("p", "a")), Some(trashed(dir("p", "a")))),
@@ -10,15 +18,6 @@ fn a_move_out_of_the_trash_holds_a_create_onto_a_member_its_user_removed_until_i
     ]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&commit), [mv("a", ROOT, "a")]);
-
-    trees.set_remote_made_here("a".into(), remote_at(dir(ROOT, "a"), 2));
-    trees.set_remote_made_here("g".into(), remote_at(file("a", "g", 1), 2));
-    use op_result::Code;
-    commits.received(result(2, vec![outcome(Code::Applied)])).unwrap();
-    assert!(commits.acknowledge(&mut trees, 2));
-    trees.settle(commits.aliases());
-    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     let create = op::Op::CreateFile(proto::CreateFile { made_over: Vec::new(), source_version_id: String::new(),
         node_id: "h".into(),
         parent_id: "a".into(),
@@ -26,7 +25,21 @@ fn a_move_out_of_the_trash_holds_a_create_onto_a_member_its_user_removed_until_i
         content: Some(content(2)),
         ..Default::default()
     });
-    assert_eq!(ops(&commit), [delete("g"), create]);
+    assert_eq!(
+        ops(&commit),
+        [mv("a", ROOT, "a"), mv("g", "a", "g"), delete("g"), create]
+    );
+
+    trees.set_remote_made_here("a".into(), remote_at(dir(ROOT, "a"), 2));
+    trees.set_remote_made_here("g".into(), trashed_at(file("a", "g", 1), 2));
+    trees.set_remote_made_here("h".into(), remote_at(file("a", "g", 2), 2));
+    use op_result::Code;
+    commits
+        .received(result(2, vec![outcome(Code::Applied); 4]))
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 2));
+    trees.settle(commits.aliases());
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
 #[test]
@@ -91,22 +104,14 @@ fn a_member_another_device_edits_after_its_superseded_delete_is_downloaded() {
 }
 
 #[test]
-fn a_rename_out_of_the_trash_holds_a_create_onto_a_member_its_user_removed_until_its_delete() {
+fn a_rename_out_of_the_trash_sends_a_create_onto_a_member_its_user_removed_after_trashing_it_again()
+{
     let mut trees = trees(&[
         ("t", Some(dir(ROOT, "T2")), Some(dir(ROOT, "T")), Some(trashed(dir(ROOT, "T")))),
         ("g", None, Some(file("t", "g", 1)), Some(trashed(file("t", "g", 1)))),
         ("x", Some(file("t", "g", 2)), None, None),
     ]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
-    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&commit), [mv("t", ROOT, "T2")]);
-
-    trees.set_remote_made_here("t".into(), remote_at(dir(ROOT, "T2"), 2));
-    trees.set_remote_made_here("g".into(), remote_at(file("t", "g", 1), 2));
-    use op_result::Code;
-    commits.received(result(2, vec![outcome(Code::Applied)])).unwrap();
-    assert!(commits.acknowledge(&mut trees, 2));
-    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     let create = op::Op::CreateFile(proto::CreateFile { made_over: Vec::new(), source_version_id: String::new(),
         node_id: "x".into(),
@@ -115,76 +120,111 @@ fn a_rename_out_of_the_trash_holds_a_create_onto_a_member_its_user_removed_until
         content: Some(content(2)),
         ..Default::default()
     });
-    assert_eq!(ops(&commit), [delete("g"), create]);
+    assert_eq!(
+        ops(&commit),
+        [mv("t", ROOT, "T2"), mv("g", "t", "g"), delete("g"), create]
+    );
+
+    trees.set_remote_made_here("t".into(), remote_at(dir(ROOT, "T2"), 2));
+    trees.set_remote_made_here("g".into(), trashed_at(file("t", "g", 1), 2));
+    trees.set_remote_made_here("x".into(), remote_at(file("t", "g", 2), 2));
+    use op_result::Code;
+    commits
+        .received(result(2, vec![outcome(Code::Applied); 4]))
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 2));
+    trees.settle(commits.aliases());
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
-fn listed_while_renaming_out_of_the_trash(listed_rename: &str, results: Vec<OpResult>, result_seq: u64, answer_first: bool) -> Option<Vec<op::Op>> {
+fn listed_after_renaming_out_of_the_trash(
+    listed: [RemoteNode; 2],
+    results: Vec<OpResult>,
+    result_seq: u64,
+    answer_first: bool,
+) -> (Trees, Option<Vec<op::Op>>) {
     let mut trees = trees(&[
         ("t", Some(dir(ROOT, "T2")), Some(dir(ROOT, "T")), Some(trashed(dir(ROOT, "T")))),
         ("g", None, Some(file("t", "g", 1)), Some(trashed(file("t", "g", 1)))),
     ]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&commit), [mv("t", ROOT, "T2")]);
+    assert_eq!(
+        ops(&commit),
+        [mv("t", ROOT, "T2"), mv("g", "t", "g"), delete("g")]
+    );
     let mut answer = Some(result(result_seq, results));
     if answer_first {
         commits.received(answer.take().unwrap()).unwrap();
     }
     let removed = trees.removed_here();
-    trees.set_listed_remote("t".into(), remote_at(dir(ROOT, listed_rename), 2));
-    trees.set_listed_remote("g".into(), remote_at(file("t", "g", 1), 2));
+    let [t, g] = listed;
+    trees.set_listed_remote("t".into(), t);
+    trees.set_listed_remote("g".into(), g);
     trees.listed_removals(removed, |seq| commits.listed_here(seq));
     if let Some(answer) = answer {
         commits.received(answer).unwrap();
     }
     commits.acknowledge(&mut trees, result_seq);
     trees.settle(commits.aliases());
-    build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit))
+    let sent = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
+    (trees, sent)
 }
 
 #[test]
-fn a_listing_after_a_rename_out_of_the_trash_was_answered_deletes_the_member_its_user_removed_again() {
+fn a_listing_after_a_rename_out_of_the_trash_was_answered_keeps_the_member_its_user_removed_trashed()
+ {
     use op_result::Code;
-    let sent = listed_while_renaming_out_of_the_trash("T2", vec![outcome(Code::Applied)], 2, true);
-    assert_eq!(sent, Some(vec![delete("g")]));
+    let listed = [
+        remote_at(dir(ROOT, "T2"), 2),
+        trashed_at(file("t", "g", 1), 2),
+    ];
+    let (trees, sent) =
+        listed_after_renaming_out_of_the_trash(listed, vec![outcome(Code::Applied); 3], 2, true);
+    assert_eq!(sent, None);
+    assert_eq!(trees.class("g"), Class::InSync);
 }
 
 #[test]
 fn a_listing_of_another_devices_rename_out_of_the_trash_downloads_the_member() {
     use op_result::Code;
     for answer_first in [true, false] {
-        let sent = listed_while_renaming_out_of_the_trash("T3", vec![outcome(Code::Superseded)], 3, answer_first);
-        let deletes = (sent.as_deref().unwrap_or_default().iter())
-            .filter(|op| **op == delete("g"))
-            .count();
-        assert_eq!(deletes, 0, "answer first: {answer_first}");
+        let listed = [
+            remote_at(dir(ROOT, "T2"), 3),
+            remote_at(file("t", "g", 1), 2),
+        ];
+        let results = vec![
+            outcome(Code::Applied),
+            outcome(Code::Applied),
+            outcome(Code::Superseded),
+        ];
+        let (trees, sent) =
+            listed_after_renaming_out_of_the_trash(listed, results, 3, answer_first);
+        assert_eq!(
+            trees.class("g"),
+            Class::Remote,
+            "answer first: {answer_first}"
+        );
+        assert!(
+            !sent.unwrap_or_default().contains(&delete("g")),
+            "answer first: {answer_first}"
+        );
     }
 }
 
 #[test]
-fn a_listing_of_a_member_another_device_edited_after_this_devices_rename_downloads_it() {
+fn a_listing_of_a_member_another_device_restored_and_edited_after_this_devices_rename_downloads_it()
+{
     use op_result::Code;
-    let mut trees = trees(&[
-        ("t", Some(dir(ROOT, "T2")), Some(dir(ROOT, "T")), Some(trashed(dir(ROOT, "T")))),
-        ("g", None, Some(file("t", "g", 1)), Some(trashed(file("t", "g", 1)))),
-    ]);
-    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
-    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&commit), [mv("t", ROOT, "T2")]);
-    commits.received(result(2, vec![outcome(Code::Applied)])).unwrap();
-    let removed = trees.removed_here();
-    trees.set_listed_remote("t".into(), remote_at(dir(ROOT, "T2"), 2));
-    let edited = RemoteNode {
-        content_rev: 3,
-        edit_rev: 3,
-        ..remote_at(file("t", "g", 2), 2)
+    let restored = RemoteNode {
+        content_rev: 4,
+        edit_rev: 4,
+        ..remote_at(file("t", "g", 2), 3)
     };
-    trees.set_listed_remote("g".into(), edited);
-    trees.listed_removals(removed, |seq| commits.listed_here(seq));
-    commits.acknowledge(&mut trees, 3);
-    trees.settle(commits.aliases());
+    let listed = [remote_at(dir(ROOT, "T2"), 2), restored];
+    let (trees, sent) =
+        listed_after_renaming_out_of_the_trash(listed, vec![outcome(Code::Applied); 3], 2, true);
     assert_eq!(trees.class("g"), Class::Remote);
-    let sent = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
     assert!(!sent.unwrap_or_default().contains(&delete("g")));
 }
 
@@ -228,26 +268,241 @@ fn an_edit_another_device_made_before_the_revival_survives_the_superseded_delete
 #[test]
 fn a_listing_keeps_an_edit_another_device_made_before_this_devices_rename_out_of_the_trash() {
     use op_result::Code;
+    let edited = RemoteNode {
+        content_rev: 3,
+        edit_rev: 3,
+        ..remote_at(file("t", "g", 2), 2)
+    };
+    let listed = [remote_at(dir(ROOT, "T2"), 4), edited];
+    let results = vec![
+        outcome(Code::Applied),
+        outcome(Code::Applied),
+        outcome(Code::Superseded),
+    ];
+    let (trees, sent) = listed_after_renaming_out_of_the_trash(listed, results, 4, true);
+    assert_eq!(trees.class("g"), Class::Remote);
+    assert!(!sent.unwrap_or_default().contains(&delete("g")));
+}
+
+#[test]
+fn a_listing_after_a_rename_sent_before_another_devices_trash_deletes_the_member_removed_here_again()
+ {
+    use op_result::Code;
     let mut trees = trees(&[
-        ("t", Some(dir(ROOT, "T2")), Some(dir(ROOT, "T")), Some(trashed(dir(ROOT, "T")))),
-        ("g", None, Some(file("t", "g", 1)), Some(trashed(file("t", "g", 1)))),
+        (
+            "t",
+            Some(dir(ROOT, "T2")),
+            Some(dir(ROOT, "T")),
+            Some(remote(dir(ROOT, "T"))),
+        ),
+        (
+            "g",
+            Some(file("t", "g", 1)),
+            Some(file("t", "g", 1)),
+            Some(remote(file("t", "g", 1))),
+        ),
     ]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("t", ROOT, "T2")]);
-    commits.received(result(10, vec![outcome(Code::Applied)])).unwrap();
-    let removed = trees.removed_here();
-    trees.set_listed_remote("t".into(), remote_at(dir(ROOT, "T2"), 10));
-    let edited = RemoteNode {
-        content_rev: 8,
-        edit_rev: 8,
-        ..remote_at(file("t", "g", 2), 10)
-    };
-    trees.set_listed_remote("g".into(), edited);
-    trees.listed_removals(removed, |seq| commits.listed_here(seq));
-    assert!(commits.acknowledge(&mut trees, 10));
+    trees.set_remote("t".into(), trashed_at(dir(ROOT, "T"), 2));
+    trees.set_remote("g".into(), trashed_at(file("t", "g", 1), 2));
+    trees.remove_local("g");
     trees.settle(commits.aliases());
-    assert_eq!(trees.class("g"), Class::Remote);
-    let sent = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
-    assert!(!sent.unwrap_or_default().contains(&delete("g")));
+    assert_eq!(trees.removed_here(), BTreeMap::from([("g".to_owned(), 2)]));
+    commits
+        .received(result(3, vec![outcome(Code::Applied)]))
+        .unwrap();
+    let removed = trees.removed_here();
+    trees.set_listed_remote("t".into(), remote_at(dir(ROOT, "T2"), 3));
+    trees.set_listed_remote("g".into(), remote_at(file("t", "g", 1), 3));
+    trees.listed_removals(removed, |seq| commits.listed_here(seq));
+    assert!(commits.acknowledge(&mut trees, 3));
+    trees.settle(commits.aliases());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [delete("g")]);
+}
+
+#[test]
+fn a_move_out_of_the_trash_goes_even_while_a_member_it_carries_out_waits_for_its_folders_own_move()
+{
+    let mut trees = trees(&[
+        (
+            "a",
+            Some(dir(ROOT, "a1")),
+            Some(dir(ROOT, "a")),
+            Some(trashed(dir(ROOT, "a"))),
+        ),
+        (
+            "p",
+            Some(dir("a", "p2")),
+            Some(dir("a", "p")),
+            Some(trashed(dir("a", "p"))),
+        ),
+        ("b", None, Some(dir("p", "b")), Some(trashed(dir("p", "b")))),
+        (
+            "c",
+            Some(dir("n", "c")),
+            Some(dir("b", "c")),
+            Some(trashed(dir("b", "c"))),
+        ),
+        ("n", Some(dir("a", "n")), None, None),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let sent = ops(&commit);
+    assert!(sent.contains(&mv("a", ROOT, "a1")), "{sent:?}");
+    assert!(sent.contains(&delete("b")), "{sent:?}");
+    assert!(sent.contains(&mv("c", "n", "c")), "{sent:?}");
+}
+
+#[test]
+fn a_rename_out_of_the_trash_trashes_again_only_the_members_its_user_removed() {
+    let mut trees = trees(&[
+        (
+            "t",
+            Some(dir(ROOT, "T2")),
+            Some(dir(ROOT, "T")),
+            Some(trashed(dir(ROOT, "T"))),
+        ),
+        (
+            "g",
+            None,
+            Some(file("t", "g", 1)),
+            Some(trashed(file("t", "g", 1))),
+        ),
+        ("n", None, None, Some(trashed(file("t", "n", 3)))),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(
+        ops(&commit),
+        [mv("t", ROOT, "T2"), mv("g", "t", "g"), delete("g")]
+    );
+}
+
+#[test]
+fn a_rename_out_of_the_trash_leaves_a_member_another_device_restored_after_its_plan_where_it_was_put()
+ {
+    let mut trees = trees(&[
+        (
+            "t",
+            Some(dir(ROOT, "T2")),
+            Some(dir(ROOT, "T")),
+            Some(trashed(dir(ROOT, "T"))),
+        ),
+        (
+            "g",
+            None,
+            Some(file("t", "g", 1)),
+            Some(trashed(file("t", "g", 1))),
+        ),
+        (
+            "k",
+            Some(dir(ROOT, "K")),
+            Some(dir(ROOT, "K")),
+            Some(remote(dir(ROOT, "K"))),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(
+        ops(&commit),
+        [mv("t", ROOT, "T2"), mv("g", "t", "g"), delete("g")]
+    );
+    assert!(commit.require_head);
+
+    commits
+        .failed(&mut trees, &refusal(error::Code::HeadMoved, 0))
+        .unwrap();
+    trees.set_remote("g".into(), remote_at(file("k", "g", 1), 3));
+    trees.settle(commits.aliases());
+    let again = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&again), [mv("t", ROOT, "T2")]);
+}
+
+#[test]
+fn a_rename_out_of_the_trash_keeps_a_folder_its_user_removed_live_while_it_holds_a_member_another_device_edited()
+ {
+    let edited = RemoteNode {
+        content_rev: 2,
+        edit_rev: 2,
+        meta_rev: 3,
+        ..trashed(file("s", "g", 2))
+    };
+    let mut trees = trees(&[
+        (
+            "t",
+            Some(dir(ROOT, "T2")),
+            Some(dir(ROOT, "T")),
+            Some(trashed(dir(ROOT, "T"))),
+        ),
+        ("s", None, Some(dir("t", "s")), Some(trashed(dir("t", "s")))),
+        ("g", None, Some(file("s", "g", 1)), Some(edited)),
+        (
+            "h",
+            None,
+            Some(file("s", "h", 1)),
+            Some(trashed(file("s", "h", 1))),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(
+        ops(&commit),
+        [mv("t", ROOT, "T2"), mv("h", "s", "h"), delete("h")]
+    );
+}
+
+#[test]
+fn a_rename_out_of_the_trash_keeps_a_folder_its_user_removed_live_while_it_holds_a_member_this_device_never_held()
+ {
+    let mut trees = trees(&[
+        (
+            "t",
+            Some(dir(ROOT, "T2")),
+            Some(dir(ROOT, "T")),
+            Some(trashed(dir(ROOT, "T"))),
+        ),
+        ("s", None, Some(dir("t", "s")), Some(trashed(dir("t", "s")))),
+        (
+            "g",
+            None,
+            Some(file("s", "g", 1)),
+            Some(trashed(file("s", "g", 1))),
+        ),
+        ("n", None, None, Some(trashed(file("s", "n", 3)))),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(
+        ops(&commit),
+        [mv("t", ROOT, "T2"), mv("g", "s", "g"), delete("g")]
+    );
+}
+
+#[test]
+fn a_rename_out_of_the_trash_keeps_a_member_another_device_edited_before_trashing_it() {
+    let edited = RemoteNode {
+        content_rev: 2,
+        edit_rev: 2,
+        meta_rev: 3,
+        ..trashed(file("t", "g", 2))
+    };
+    let folder = RemoteNode {
+        meta_rev: 3,
+        ..trashed(dir(ROOT, "T"))
+    };
+    let mut trees = trees(&[
+        (
+            "t",
+            Some(dir(ROOT, "T2")),
+            Some(dir(ROOT, "T")),
+            Some(folder),
+        ),
+        ("g", None, Some(file("t", "g", 1)), Some(edited)),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [mv("t", ROOT, "T2")]);
 }

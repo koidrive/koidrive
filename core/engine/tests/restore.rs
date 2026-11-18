@@ -1350,7 +1350,7 @@ fn a_restore_of_a_folder_its_user_removed_downloads_the_files_in_it() {
 }
 
 #[test]
-fn a_restore_the_server_rejects_leaves_the_removal_a_later_move_out_of_the_trash_deletes_again() {
+fn a_restore_the_server_rejects_leaves_the_removal_a_later_move_out_of_the_trash_trashes_again() {
     let (a, g, missing) = (id(1), id(2), id(3));
     let folder = dir(&root(), "a");
     let inside = file(&a, "g", 1);
@@ -1387,35 +1387,34 @@ fn a_restore_the_server_rejects_leaves_the_removal_a_later_move_out_of_the_trash
     };
     trees.set_local(a.clone(), renamed);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    let moved = op::Op::Move(proto::Move {
-        node_id: a.clone(),
-        new_parent_id: root(),
-        new_name: "A".into(),
-        pending_for: String::new(),
-        from: None,
-    });
-    assert_eq!(ops(&commit), [moved]);
-    let at_2 = |shape: Shape| RemoteNode {
-        meta_rev: 2,
-        ..remote(shape)
-    };
-    trees.set_remote_made_here(a.clone(), at_2(dir(&root(), "A")));
-    trees.set_remote_made_here(g.clone(), at_2(inside));
-    let result = CommitResult {
-        seq: 2,
-        results: vec![outcome(op_result::Code::Applied)],
-        ..Default::default()
-    };
-    commits.received(result).unwrap();
-    assert!(commits.acknowledge(&mut trees, 2));
-    trees.settle(commits.aliases());
-    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     let delete = op::Op::Delete(proto::Delete {
         node_id: g.clone(),
         requires: None,
         ..Default::default()
     });
-    assert_eq!(ops(&commit), [delete]);
+    assert_eq!(
+        ops(&commit),
+        [moved(&a, &root(), "A"), moved(&g, &a, "g"), delete]
+    );
+    let at_2 = |node: RemoteNode| RemoteNode {
+        meta_rev: 2,
+        ..node
+    };
+    trees.set_remote_made_here(a.clone(), at_2(remote(dir(&root(), "A"))));
+    let trashed_again = RemoteNode {
+        trash_group: "2:2".into(),
+        ..trashed(inside)
+    };
+    trees.set_remote_made_here(g.clone(), at_2(trashed_again));
+    let result = CommitResult {
+        seq: 2,
+        results: vec![outcome(op_result::Code::Applied); 3],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(&mut trees, 2));
+    trees.settle(commits.aliases());
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
 fn renamed_out_of_the_trash(a: &str, g: &str) -> Trees {
