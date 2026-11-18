@@ -675,7 +675,7 @@ export class CommitApplier {
       if (!tombstone) return rejected("NOT_FOUND");
       if (tombstone.knows.has(intent.id) || this.heldElsewhere(this.id(nodeId), ["content"])) return superseded();
       const parent = this.nearestLive(tombstone.parent_id);
-      return this.conflictCopy(parent, tombstone.name, content, chunks, chain(source, ancestry?.madeOver ?? []), intent);
+      return this.conflictCopy(parent, tombstone.name, content, chunks, chain(this.client ? source : "", ancestry?.madeOver ?? []), intent);
     }
     if (found.kind !== NodeKindValue.FILE) return rejected("NOT_FILE");
     if (this.client && this.holdsIntents(found, ["content"]) && this.holds(found, content)) return unchanged(found);
