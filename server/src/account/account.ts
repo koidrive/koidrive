@@ -614,7 +614,9 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       const starts = !this.reportsWith(before) && this.reportsWith(votes);
       const startedMs = starts ? this.clock() : before.startedMs;
       this.sql.exec("INSERT INTO settings (key, value) VALUES ('report_votes', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", JSON.stringify({ ...votes, startedMs }));
-      if (starts || !this.reportsWith(votes)) this.sql.exec("DELETE FROM usage_hours");
+      if (!starts && this.reportsWith(votes)) return;
+      this.sql.exec("DELETE FROM usage_hours");
+      this.sql.exec("DELETE FROM object_usage");
     }
 
     private countVotes(): void {

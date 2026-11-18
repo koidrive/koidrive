@@ -1145,6 +1145,74 @@ describe("hourly server report", () => {
     await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("DELETE FROM usage_hours"));
   });
 
+  it.each(["an OFF vote", "a lapsed ON vote"])("sends no stored size from before reports stopped through %s in the first report after they start again, and sizes noted after the start", async (stop) => {
+    await ownerOnce();
+    const hour = Math.floor(Date.now() / HOUR_MS);
+    const sizes = (object: string, r2Bytes: number, r2Objects: number) => ({ object, sqlBytes: 1000, r2Bytes, r2Objects });
+    const counted = (atMs: number) => ({ [Math.floor(atMs / HOUR_MS)]: { counts: { "get_server.200": 1 }, latency: {}, billing: {} } });
+    const sent: { batch: { properties: Record<string, unknown> }[] }[] = [];
+    await runInDurableObject(account(), async (instance: AccountDO, state) => {
+      startReporting(instance, state, hour * HOUR_MS);
+      await instance.recordUsage({ openedMs: instance.clock(), hours: counted(instance.clock()), stored: [sizes("space-a", 5_000_000_000, 50), sizes("space-b", 7_000_000_000, 70)] });
+      let restartMs = hour * HOUR_MS + 30 * 60_000;
+      if (stop === "an OFF vote") {
+        instance.clock = () => restartMs;
+        state.storage.sql.exec("UPDATE devices SET telemetry = ? WHERE rowid = (SELECT MIN(rowid) FROM devices)", TokenRequest_Telemetry.OFF);
+        countVotes(instance);
+        expect(instance.reporting()).toBe(false);
+        state.storage.sql.exec("UPDATE devices SET telemetry = ?", TokenRequest_Telemetry.ON);
+      } else {
+        restartMs = hour * HOUR_MS + 26 * HOUR_MS + 30 * 60_000;
+        instance.clock = () => restartMs;
+        expect(instance.reporting()).toBe(false);
+        state.storage.sql.exec("UPDATE devices SET last_seen_ms = ?", restartMs);
+      }
+      countVotes(instance);
+      expect(instance.reporting()).toBe(true);
+      await instance.recordUsage({ openedMs: restartMs, hours: counted(restartMs), stored: [sizes("space-a", 2000, 1)] });
+      instance.clock = () => restartMs + 2 * HOUR_MS;
+      instance.sendReport = async (report) => {
+        sent.push(report as (typeof sent)[number]);
+        return true;
+      };
+    });
+    await runDurableObjectAlarm(account());
+    const events = sent.flatMap((report) => report.batch);
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) expect({ bytes: event.properties["b.r2_stored_bytes"], objects: event.properties["b.r2_objects"] }).toEqual({ bytes: 2000, objects: 1 });
+  });
+
+  it("notes a Space DO's sizes again in its first event of the next hour after reports restart, and sends none from before the stop", async () => {
+    const { stub } = await reportingSpace();
+    let nowMs = (Math.floor(Date.now() / HOUR_MS) - 2) * HOUR_MS;
+    await runInDurableObject(account(), (instance: AccountDO, state) => {
+      startReporting(instance, state, nowMs);
+      instance.reporting();
+    });
+    await useClock(stub, () => nowMs);
+    await runInDurableObject(stub, (instance: object) => (instance as unknown as { received(carried: Carried): void }).received({ reporting: true, startedMs: nowMs }));
+    const alarm = async () => {
+      await runInDurableObject(stub, (_instance, state) => state.storage.setAlarm(Date.now()));
+      expect(await runDurableObjectAlarm(stub)).toBe(true);
+    };
+    const noted = async () => (await storedObjects()).some((row) => row.object === stub.id.toString());
+    await alarm();
+    expect(await noted()).toBe(true);
+    nowMs += 5 * 60_000;
+    await runInDurableObject(account(), (instance: AccountDO, state) => {
+      state.storage.sql.exec("UPDATE devices SET telemetry = ? WHERE rowid = (SELECT MIN(rowid) FROM devices)", TokenRequest_Telemetry.OFF);
+      countVotes(instance);
+      state.storage.sql.exec("UPDATE devices SET telemetry = ?", TokenRequest_Telemetry.ON);
+      countVotes(instance);
+    });
+    nowMs += 5 * 60_000;
+    await alarm();
+    expect(await noted()).toBe(false);
+    nowMs = (Math.floor(nowMs / HOUR_MS) + 1) * HOUR_MS + 60_000;
+    await alarm();
+    expect(await noted()).toBe(true);
+  });
+
   it("drops what the Worker counted before reports stopped, even when they start again before its hand-over", async () => {
     UsageTally.quietMs = 1500;
     restorers.push(() => {
