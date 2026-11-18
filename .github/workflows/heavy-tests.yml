@@ -57,7 +57,7 @@ on:
         type: boolean
         default: false
       env:
-        description: Extra environment for the tests, as space-separated NAME=value pairs, such as MODEL_TABLE_SLOTS=1500000000
+        description: Extra environment for the tests, as space-separated NAME=value pairs, such as MODEL_TABLE_SLOTS=1500000000; PROPTEST_VERBOSE also turns off output capture
         type: string
         default: ''
       os:
@@ -126,7 +126,7 @@ jobs:
           fi
           [[ "$SEED" =~ ^(0|[1-9][0-9]{0,14})?$ ]] || errors+=("seed must be empty or a whole number of at most 15 digits without leading zeros, got '$SEED'.")
           [[ "$FEATURES" =~ ^[A-Za-z0-9_/,-]*$ ]] || errors+=("features must be comma-separated feature names, got '$FEATURES'.")
-          allowed='^((MODEL|GUARD_MODEL|KOIDRIVE|KOI)_[A-Z0-9_]+|RUST_BACKTRACE|RUST_LOG|RUST_TEST_THREADS|RUST_MIN_STACK)$'
+          allowed='^((MODEL|GUARD_MODEL|KOIDRIVE|KOI)_[A-Z0-9_]+|RUST_BACKTRACE|RUST_LOG|RUST_TEST_THREADS|RUST_MIN_STACK|PROPTEST_VERBOSE)$'
           reserved='^(KOIDRIVE_BATTERY_CASES|KOIDRIVE_PROPTEST_DETERMINISTIC)$'
           [[ "$EXTRA_ENV" != *$'\n'* ]] || errors+=("env must be one line of NAME=value pairs.")
           [[ "$MODE" == cargo && "$PARALLEL" == 1 ]] || [[ "$RELEASE" != true && -z "$EXTRA_ENV" ]] || errors+=("release and env apply only with mode cargo and parallel 1.")
@@ -135,7 +135,9 @@ jobs:
             if [[ ! "$pair" =~ ^([A-Z_][A-Z0-9_]*)=[^[:space:]]*$ ]]; then
               errors+=("env takes NAME=value pairs, not '$pair'.")
             elif [[ ! "${BASH_REMATCH[1]}" =~ $allowed || "${BASH_REMATCH[1]}" =~ $reserved ]]; then
-              errors+=("env can't set ${BASH_REMATCH[1]}: it takes MODEL_*, GUARD_MODEL_*, KOIDRIVE_*, KOI_* and RUST_BACKTRACE, RUST_LOG, RUST_TEST_THREADS or RUST_MIN_STACK, and the cases input sets the case budget.")
+              errors+=("env can't set ${BASH_REMATCH[1]}: it takes MODEL_*, GUARD_MODEL_*, KOIDRIVE_*, KOI_* and RUST_BACKTRACE, RUST_LOG, RUST_TEST_THREADS, RUST_MIN_STACK or PROPTEST_VERBOSE, and the cases input sets the case budget.")
+            elif [[ "$pair" == PROPTEST_VERBOSE=* && ! "$pair" =~ ^PROPTEST_VERBOSE=[0-9]$ ]]; then
+              errors+=("PROPTEST_VERBOSE takes a level from 0 to 9, such as 2, got '$pair'.")
             fi
           done
           for error in "${errors[@]}"; do echo "::error::$error"; done
@@ -252,6 +254,7 @@ jobs:
           test_args=()
           [ -z "$FILTER" ] || test_args+=("$FILTER")
           [ "$IGNORED" != "true" ] || test_args+=(--include-ignored)
+          [ "${PROPTEST_VERBOSE:-0}" = 0 ] || test_args+=(--nocapture)
           unset PROPTEST_CASES KOIDRIVE_BATTERY_CASES
           [ -z "$CASES" ] || export KOIDRIVE_BATTERY_CASES="$CASES"
           repro_args=$(printf ' %q' "${cargo_args[@]}")
@@ -284,7 +287,7 @@ jobs:
             read -r passed failed ignored < <(sed -nE 's/^test result: [A-Za-z]+\. ([0-9]+) passed; ([0-9]+) failed; ([0-9]+) ignored.*/\1 \2 \3/p' <<< "$plain" | awk '{ p += $1; f += $2; i += $3 } END { print p + 0, f + 0, i + 0 }')
             binaries=$(grep -cE '^ *(Running |Doc-tests )' <<< "$plain" || true)
             results=$(grep -cE '^test result: ' <<< "$plain" || true)
-            sed -nE 's/^test (.+) \.\.\. FAILED$/\1/p' <<< "$plain" >> "$out/failed-tests.txt"
+            awk '/^failures:$/ { list = 1; next } list && /^    [^ ]/ { print substr($0, 5); next } { list = 0 }' <<< "$plain" >> "$out/failed-tests.txt"
             git status --porcelain --untracked-files=all -- '*.proptest-regressions' '*/proptest-regressions/*.txt' '*.cases/*.txt' | cut -c4- | while read -r file; do
               mkdir -p "$out/regressions/run-$run/$(dirname "$file")"
               cp "$file" "$out/regressions/run-$run/$file"
