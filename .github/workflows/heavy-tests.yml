@@ -36,9 +36,9 @@ on:
         type: string
         default: '1'
       mode:
-        description: Cargo tests or fresh local Worker integration launchers
+        description: Cargo tests, fresh local Worker integration launchers, or the vitest suite of server/ (crate koidrive-server; test filters test files, filter test names)
         type: choice
-        options: [cargo, worker]
+        options: [cargo, worker, server]
         default: cargo
       seed:
         description: PROPTEST_RNG_SEED of the first run; run k uses seed + k - 1 (empty derives it from the run ID)
@@ -110,7 +110,8 @@ jobs:
           [[ "$CASES" =~ ^[0-9]{0,7}$ ]] || errors+=("cases must be empty or a whole number up to 9999999, got '$CASES'.")
           [[ "$REPEAT" =~ ^([1-9][0-9]?|100)$ ]] || errors+=("repeat must be a whole number from 1 to 100, got '$REPEAT'.")
           [[ "$PARALLEL" =~ ^[1-8]$ ]] || errors+=("parallel must be a whole number from 1 to 8, got '$PARALLEL'.")
-          [[ "$MODE" == cargo || "$MODE" == worker ]] || errors+=("mode must be cargo or worker.")
+          [[ "$MODE" == cargo || "$MODE" == worker || "$MODE" == server ]] || errors+=("mode must be cargo, worker or server.")
+          [[ "$MODE" != server ]] || [[ "$CRATE" == koidrive-server && "$PARALLEL" == 1 && -z "$FEATURES$CASES" && "$IGNORED" != true ]] || errors+=("server mode runs the vitest suite of server/: set crate to koidrive-server, and leave parallel at 1 and features, cases and ignored empty.")
           if [ "$MODE" = worker ]; then
             case "$CRATE" in
               koidrive-net) worker_test=server ;;
@@ -175,26 +176,29 @@ jobs:
           sparse-checkout: scripts
           persist-credentials: false
       - name: Install toolchain from rust-toolchain.toml
+        if: env.MODE != 'server'
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: env.MODE != 'server'
         with:
           shared-key: heavy-tests
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
-        if: env.MODE == 'worker'
+        if: env.MODE == 'worker' || env.MODE == 'server'
         with:
           package_json_file: server/package.json
           dest: ${{ runner.tool_cache }}/setup-pnpm
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
-        if: env.MODE == 'worker'
+        if: env.MODE == 'worker' || env.MODE == 'server'
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: server/pnpm-lock.yaml
       - name: Install the Worker dependencies
-        if: env.MODE == 'worker'
+        if: env.MODE == 'worker' || env.MODE == 'server'
         working-directory: server
         run: pnpm install --frozen-lockfile && pnpm build:web
       - name: Build the tests
+        if: env.MODE != 'server'
         run: |
           if ! cargo metadata --format-version 1 --locked --no-deps | jq -e --arg crate "$CRATE" 'any(.packages[]; .name == $crate)' > /dev/null; then
             echo "::error::$CRATE is not a package of the workspace at $SHA."
@@ -314,6 +318,74 @@ jobs:
               echo
               echo "Each run starts from the case files in the commit, so its seed reproduces it on a clean checkout. The heavy-tests-$RUNNER_OS artifact holds this summary, each run's log, and under regressions/run-<k>/ the proptest case files run k saved. To replay a saved case, copy its file to the same path in the checkout and run the command with PROPTEST_CASES=0."
             fi
+          } >> "$out/summary.md"
+          tee -a "$GITHUB_STEP_SUMMARY" < "$out/summary.md"
+          [ "$green" -eq "$REPEAT" ]
+      - name: Run the server tests
+        if: env.MODE == 'server'
+        working-directory: server
+        run: |
+          out="$RUNNER_TEMP/heavy-tests"
+          mkdir -p "$out/logs"
+          selection=()
+          [ -z "$TEST" ] || selection+=("$TEST")
+          [ -z "$FILTER" ] || selection+=(-t "$FILTER")
+          shown=$(printf ' %q' ${selection[@]+"${selection[@]}"})
+          repro="git checkout $SHA && cd server && pnpm install --frozen-lockfile && pnpm build:web && pnpm exec vitest run$shown"
+          {
+            echo "### $RUNNER_OS: vitest run$shown in server/"
+            echo
+            echo "Commit $SHA."
+            echo
+            echo "| Run | Result | Passed | Failed | Seconds |"
+            echo "|---|---|---|---|---|"
+          } >> "$out/summary.md"
+          green=0 red=0 broken=0
+          : > "$out/failed-tests.txt"
+          for run in $(seq 1 "$REPEAT"); do
+            log="$out/logs/run-$run.log"
+            report="$out/logs/run-$run.json"
+            echo "::group::Run $run of $REPEAT"
+            started=$SECONDS
+            set +e
+            pnpm exec vitest run --reporter=verbose --reporter=json --outputFile.json="$report" ${selection[@]+"${selection[@]}"} 2>&1 | tee "$log"
+            code=${PIPESTATUS[0]}
+            set -e
+            echo "::endgroup::"
+            read -r passed failed < <(jq -r '"\(.numPassedTests) \(.numFailedTests)"' "$report" 2>/dev/null || echo "0 0")
+            jq -r '.testResults[].assertionResults[] | select(.status == "failed") | .fullName' "$report" >> "$out/failed-tests.txt" 2>/dev/null || true
+            if [ "$code" -eq 0 ] && [ "$passed" -gt 0 ]; then
+              result=pass
+              green=$((green + 1))
+            elif [ "$failed" -gt 0 ]; then
+              result=fail
+              red=$((red + 1))
+            else
+              result="error: exit $code"
+              broken=$((broken + 1))
+            fi
+            echo "| $run | $result | $passed | $failed | $((SECONDS - started)) |" >> "$out/summary.md"
+            [ "$result" = pass ] || echo "::error title=Run $run: $result::Reproduce: $repro"
+          done
+          {
+            echo
+            echo "**$green of $REPEAT runs passed, $red failed, $broken did not finish cleanly.**"
+            if [ -s "$out/failed-tests.txt" ]; then
+              echo
+              echo "| Failed test | Runs it failed in |"
+              echo "|---|---|"
+              sort "$out/failed-tests.txt" | uniq -c | sort -rn | while read -r count name; do printf '| <code>%s</code> | %s |\n' "$name" "$count"; done
+            fi
+            echo
+            echo "Slowest tests across all runs:"
+            echo
+            echo "| Test | Median ms | Max ms |"
+            echo "|---|---|---|"
+            jq -rs '[.[].testResults[].assertionResults[] | select(.duration != null) | {name: .fullName, ms: .duration}] | group_by(.name) | map({name: .[0].name, median: (map(.ms) | sort | .[length / 2 | floor]), max: (map(.ms) | max)}) | sort_by(-.max) | .[:15][] | "| <code>\(.name)</code> | \(.median | round) | \(.max | round) |"' "$out"/logs/run-*.json || true
+            echo
+            echo "Reproduce a run with: $repro"
+            echo
+            echo "The heavy-tests-$RUNNER_OS artifact holds each run's log and vitest JSON report."
           } >> "$out/summary.md"
           tee -a "$GITHUB_STEP_SUMMARY" < "$out/summary.md"
           [ "$green" -eq "$REPEAT" ]
