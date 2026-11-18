@@ -12,20 +12,31 @@ test=(nice -n 10 cargo test -q --locked -p koidrive-engine --test trees -- --exa
 mutant='s/        self\.mark_left_out\(&changed\);\n/        let changed: Vec<NodeId> = (changed.into_iter())\n            .filter(|id| self.unobserved.contains(id) || self.left_out(id, &self.ignore, &mut HashMap::new()))\n            .collect();\n        self.mark_left_out(&changed);\n/'
 root_only='s/0usize\.\.5, 0usize\.\.3\),/0usize..5, 0usize..1),/'
 
+lock=$(git rev-parse --git-path trees-generator-proof.lock)
+if ! mkdir "$lock" 2>/dev/null; then
+  echo "another proof run in this checkout holds $lock" >&2
+  exit 2
+fi
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/trees-generator-proof.XXXXXX")
+restore() {
+  for kept in "$L:classify.rs" "$T:trees.rs"; do
+    if [ -f "$scratch/${kept#*:}" ]; then
+      cp "$scratch/${kept#*:}" "${kept%%:*}"
+      touch "${kept%%:*}"
+    fi
+  done
+  if [ -d "$scratch/cases" ]; then
+    rm -rf "$cases"
+    mv "$scratch/cases" "$cases"
+  fi
+  rm -rf "$scratch"
+  rmdir "$lock"
+}
+trap restore EXIT
 cp "$L" "$scratch/classify.rs"
 cp "$T" "$scratch/trees.rs"
 mv "$cases" "$scratch/cases"
 mkdir "$cases"
-restore() {
-  cp "$scratch/classify.rs" "$L"
-  cp "$scratch/trees.rs" "$T"
-  touch "$L" "$T"
-  rm -rf "$cases"
-  mv "$scratch/cases" "$cases"
-  rm -rf "$scratch"
-}
-trap restore EXIT
 
 apply() {
   perl -0pi -e "$2" "$1"
