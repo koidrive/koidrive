@@ -3,7 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use koidrive_driver::{Credential, DirectoryIdentity, DriverError, LinkApproval, Paths, api_for};
+use koidrive_driver::{
+    CreatedSpace, Credential, DirectoryIdentity, DriverError, LinkApproval, Paths, api_for,
+};
 use koidrive_ipc::{Code, Next, Reason, Request, Response};
 use koidrive_net::ApiError;
 use koidrive_proto::v1::SpaceInfo;
@@ -368,26 +370,30 @@ async fn onboard(paths: &Paths, terminal: &Terminal) -> Result<Done, CliError> {
                     }
                 }
             }
-            Target::New(name) => match koidrive_driver::create_space(paths, &auth, &name).await {
-                Ok(space) => break crate::Named::Created(space),
-                Err(DriverError::Api(error)) if error.status() == Some(409) => {
-                    let now = auth
-                        .api()
-                        .list_spaces(&auth)
-                        .await
-                        .map_err(CliError::api_retry_safe)?;
-                    if !now.spaces.iter().any(|space| space.name == name) {
-                        return Err(error.into());
-                    }
-                    drop(progress.take());
-                    terminal.message(&format!(
-                        "A shared folder named {} already exists. Choose another name.",
-                        printable(&name)
-                    ));
-                    target = new_shared_folder(terminal, &now.spaces).await?;
+            Target::New(name) => {
+                let taken = match koidrive_driver::create_space(paths, &auth, &name).await {
+                    Ok(CreatedSpace::Made(space)) => break crate::Named::Created(space),
+                    Ok(CreatedSpace::Joined(_)) => None,
+                    Err(DriverError::Api(error)) if error.status() == Some(409) => Some(error),
+                    Err(error) => return Err(error.into()),
+                };
+                let now = auth
+                    .api()
+                    .list_spaces(&auth)
+                    .await
+                    .map_err(CliError::api_retry_safe)?;
+                if let Some(error) = taken
+                    && !now.spaces.iter().any(|space| space.name == name)
+                {
+                    return Err(error.into());
                 }
-                Err(error) => return Err(error.into()),
-            },
+                drop(progress.take());
+                terminal.message(&format!(
+                    "A shared folder named {} already exists. Choose another name.",
+                    printable(&name)
+                ));
+                target = new_shared_folder(terminal, &now.spaces).await?;
+            }
         }
     };
     let SelectedFolder {

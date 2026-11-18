@@ -199,22 +199,24 @@ impl Driver {
             Expiry::After { ms } => since_ms.saturating_add_unsigned(ms),
             Expiry::Default | Expiry::Never => 0,
         };
-        let mut saved = pending.saved_or_new().map_err(io_error(pending.path()))?;
-        if expires_at_ms(saved.since_ms) != 0
-            && expires_at_ms(saved.since_ms) <= now + SHORTEST_EXPIRY_MS
-        {
+        let mut held = pending.hold().map_err(io_error(pending.path()))?;
+        let ended = |since_ms| {
+            expires_at_ms(since_ms) != 0 && expires_at_ms(since_ms) <= now + SHORTEST_EXPIRY_MS
+        };
+        if !held.joined() && ended(held.saved.since_ms) {
             pending.forget();
-            saved = pending.saved_or_new().map_err(io_error(pending.path()))?;
+            held = pending.hold().map_err(io_error(pending.path()))?;
         }
         let request = CreateShareLinkRequest {
             node_id,
-            expires_at_ms: expires_at_ms(saved.since_ms),
+            expires_at_ms: expires_at_ms(held.saved.since_ms),
             no_expiry: expiry == Expiry::Never,
             password: password.map(|password| password.0).unwrap_or_default(),
-            request_id: saved.request_id,
+            request_id: held.saved.request_id.clone(),
         };
         pending
             .send(
+                held,
                 || auth.api().create_share_link(auth, space_id, &request),
                 Ok,
             )

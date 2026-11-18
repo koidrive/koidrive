@@ -7,7 +7,7 @@ use crate::output;
 use crate::profile::signed_in;
 use crate::report::{Done, RefusedSpace, SpaceData, SpacesData, UsageData, UsagesData};
 use clap::Subcommand;
-use koidrive_driver::{DriverError, Paths};
+use koidrive_driver::{CreatedSpace, DriverError, Paths};
 use koidrive_ipc::Code;
 use koidrive_net::Auth;
 use koidrive_proto::v1::{SpaceInfo, SpaceUsage};
@@ -108,7 +108,8 @@ pub(crate) async fn named_space(
         return Ok(Named::Existing(space));
     }
     match koidrive_driver::create_space(paths, auth, name).await {
-        Ok(created) => Ok(Named::Created(created)),
+        Ok(CreatedSpace::Made(space)) => Ok(Named::Created(space)),
+        Ok(CreatedSpace::Joined(space)) => Ok(Named::Existing(space)),
         Err(DriverError::Api(error)) if error.status() == Some(409) => {
             let now = auth
                 .api()

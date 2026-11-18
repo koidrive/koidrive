@@ -723,16 +723,16 @@ impl Driver {
         self.unlink_folders_of_lost_credential().await?;
         let api = api_for(server)?;
         let pending = PendingCreate::new(&self.inner.paths, api.base(), Intent::Pair { code });
+        let held = pending.hold().map_err(io_error(pending.path()))?;
         let request = PairCompleteRequest {
             code: code.to_owned(),
             device_name: device_name.to_owned(),
             platform: std::env::consts::OS.to_owned(),
-            request_id: (pending.saved_or_new())
-                .map_err(io_error(pending.path()))?
-                .request_id,
+            request_id: held.saved.request_id.clone(),
         };
         let account = pending
             .send(
+                held,
                 || api.pair_complete(&request),
                 |issued| {
                     self.adopt(
@@ -773,18 +773,18 @@ impl Driver {
         self.unlink_folders_of_lost_credential().await?;
         let api = api_for(server)?;
         let pending = PendingCreate::new(&self.inner.paths, api.base(), Intent::Claim { code });
+        let held = pending.hold().map_err(io_error(pending.path()))?;
         let request = ClaimRequest {
             code: code.to_owned(),
             user_name: user_name.to_owned(),
             device_name: device_name.to_owned(),
             platform: std::env::consts::OS.to_owned(),
             setup_attempt: String::new(),
-            request_id: (pending.saved_or_new())
-                .map_err(io_error(pending.path()))?
-                .request_id,
+            request_id: held.saved.request_id.clone(),
         };
         let account = pending
             .send(
+                held,
                 || api.claim(&request),
                 |issued| {
                     let user_name = if issued.user_name.is_empty() {
