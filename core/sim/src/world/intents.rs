@@ -78,20 +78,12 @@ pub fn allow_red(check: Check) -> ExpectedRed {
 
 impl ExpectedRed {
     /// Ends the guard and returns the messages of the failures it kept quiet.
-    pub fn fired(self) -> BTreeSet<String> {
-        let expectation = EXPECTED.with(|expected| expected.borrow_mut().remove(&self.id));
-        expectation
-            .map(|expectation| expectation.fired)
-            .unwrap_or_default()
+    pub fn fired(mut self) -> BTreeSet<String> {
+        self.end().unwrap_or_default()
     }
-}
 
-impl Drop for ExpectedRed {
-    fn drop(&mut self) {
-        let expectation = EXPECTED.with(|expected| expected.borrow_mut().remove(&self.id));
-        let Some(expectation) = expectation else {
-            return;
-        };
+    fn end(&mut self) -> Option<BTreeSet<String>> {
+        let expectation = EXPECTED.with(|expected| expected.borrow_mut().remove(&self.id))?;
         if self.must_fire && !std::thread::panicking() {
             assert!(
                 !expectation.fired.is_empty(),
@@ -100,6 +92,13 @@ impl Drop for ExpectedRed {
                 expectation.why
             );
         }
+        Some(expectation.fired)
+    }
+}
+
+impl Drop for ExpectedRed {
+    fn drop(&mut self) {
+        self.end();
     }
 }
 

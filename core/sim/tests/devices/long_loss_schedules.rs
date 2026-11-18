@@ -80,8 +80,8 @@ fn a_delete_stays_across_server_restores_around_a_replaced_folder() {
 }
 
 #[test]
-#[ignore = "a delete comes undone across server restores and rewinds (GUN-917)"]
-fn a_delete_stays_across_server_restores_and_rewinds() {
+#[ignore = "a delete comes undone across server restores (GUN-917)"]
+fn a_delete_stays_across_server_restores() {
     use Reply::*;
     use Step::*;
     converge(

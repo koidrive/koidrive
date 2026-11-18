@@ -112,7 +112,7 @@ impl Deletion {
         intents: &Intents,
         server: &Server,
         gone: impl Fn(usize) -> bool,
-    ) -> Option<NodeId> {
+    ) -> Vec<NodeId> {
         let i = self.intent;
         let delete = intents.intent(i);
         let Value::Trashed {
@@ -120,44 +120,47 @@ impl Deletion {
             replaced_by,
         } = &delete.value
         else {
-            return None;
+            return Vec::new();
         };
         let author = delete.author;
         if delete.dropped || delete.forgotten || gone(author) {
-            return None;
+            return Vec::new();
         }
         let roots: BTreeSet<&NodeId> = intents.nodes(i).collect();
         let saved = (replaced_by.iter()).flat_map(|ino| intents.nodes_of(author, *ino));
         if roots.is_empty() || saved.into_iter().any(|id| roots.contains(id)) {
-            return None;
+            return Vec::new();
         }
         let deleted: Vec<&NodeId> = (subtree.iter())
             .flat_map(|ino| intents.nodes_of(author, *ino))
             .collect();
         let live = deleted.iter().filter(|id| server.live(id).is_some());
-        live.copied().find_map(|node| {
-            let brings_back = |j: usize| {
-                let other = intents.intent(j);
-                let carries = other.value.field() != Field::Content && !other.answer;
-                intents.nodes(j).any(|id| {
-                    id == node
-                        || server.live(id).is_some() && server.above(id).contains(&node.as_str())
-                        || carries
-                            && deleted.contains(&id)
-                            && server.above(node).contains(&id.as_str())
-                })
-            };
-            let excused = (0..intents.len()).any(|j| {
-                let other = intents.intent(j);
-                j != i
-                    && !other.dropped
-                    && !matches!(other.value, Value::Trashed { .. })
-                    && (!other.answer || other.made > delete.made)
-                    && (intents.saw(j, i) || !intents.saw(i, j) && !other.lost)
-                    && brings_back(j)
-            });
-            (!excused).then(|| node.clone())
-        })
+        live.copied()
+            .filter_map(|node| {
+                let brings_back = |j: usize| {
+                    let other = intents.intent(j);
+                    let carries = other.value.field() != Field::Content && !other.answer;
+                    intents.nodes(j).any(|id| {
+                        id == node
+                            || server.live(id).is_some()
+                                && server.above(id).contains(&node.as_str())
+                            || carries
+                                && deleted.contains(&id)
+                                && server.above(node).contains(&id.as_str())
+                    })
+                };
+                let excused = (0..intents.len()).any(|j| {
+                    let other = intents.intent(j);
+                    j != i
+                        && !other.dropped
+                        && !matches!(other.value, Value::Trashed { .. })
+                        && (!other.answer || other.made > delete.made)
+                        && (intents.saw(j, i) || !intents.saw(i, j) && !other.lost)
+                        && brings_back(j)
+                });
+                (!excused).then(|| node.clone())
+            })
+            .collect()
     }
 }
 
@@ -343,18 +346,16 @@ impl World {
     pub(super) fn undone_delete(&self, server: &Server) -> Result<(), Failure> {
         let gone = |d: usize| self.devices[d].left;
         for deletion in &self.deletions {
-            let Some(node) = deletion.undone(&self.intents, server, gone) else {
-                continue;
-            };
             let d = deletion.device;
-            let why = format!(
-                "the delete of node {node} on device {d} came undone, and no change its user did \
-                 not see brought the node back"
-            );
-            if expected(Check::DeleteUndone, &why) {
-                continue;
+            for node in deletion.undone(&self.intents, server, gone) {
+                let why = format!(
+                    "the delete of node {node} on device {d} came undone, and no change its user \
+                     did not see brought the node back"
+                );
+                if !expected(Check::DeleteUndone, &why) {
+                    return Err(Failure::Diverged(why));
+                }
             }
-            return Err(Failure::Diverged(why));
         }
         Ok(())
     }

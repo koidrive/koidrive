@@ -31,7 +31,7 @@ fn a_folder_renamed_back_to_its_pending_name(
 }
 
 #[test]
-#[ignore = "a folder renamed back to its pending name loses that name or is finished by a device that never gave it (GUN-639)"]
+#[ignore = "128 of the 160 schedules leave the folder at \"A\" on both devices instead of at its pending name"]
 fn a_folder_renamed_through_another_name_back_to_its_pending_name_keeps_it() {
     let mut bad = Vec::new();
     for drop in [false, true] {
@@ -80,7 +80,6 @@ fn u(kind: u8, target: usize, parent: usize, name: usize) -> Step {
 }
 
 #[test]
-#[ignore = "a device that never gave a folder its pending name finishes it after a commit refused for retry (GUN-808)"]
 fn only_the_namer_finishes_a_pending_name_after_its_commit_was_refused_for_retry() {
     let w = |n: usize| Step::Work(n);
     let phases = vec![
@@ -126,7 +125,7 @@ fn only_the_namer_finishes_a_pending_name_after_its_commit_was_refused_for_retry
 }
 
 #[test]
-#[ignore = "a device that never gave a folder its pending name finishes it after a commit over the limit (GUN-777)"]
+#[ignore = "device 1 finishes the folder's pending name \"A\" that its user never gave, and device 2 then moves the folder to \"A\", a place its user never gave it"]
 fn only_the_namer_finishes_a_pending_name_after_a_commit_over_the_limit_and_a_crash() {
     let w = |n: usize| Step::Work(n);
     let phases = vec![

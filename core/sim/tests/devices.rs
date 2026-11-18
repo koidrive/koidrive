@@ -2606,6 +2606,10 @@ fn a_rewind_to_a_copy_taken_mid_swap_ends_at_the_swapped_name() {
 
 #[test]
 fn a_pending_folder_the_user_deletes_during_a_recovery_stays_deleted() {
+    let _also = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let _red = expect_red(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",

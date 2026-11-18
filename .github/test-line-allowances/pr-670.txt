@@ -1,4 +1,4 @@
-3731
+3762
 # This is the test-only harness change that lands before the engine changes it checks, so it adds the oracle and its tests together.
 # The device sim test-support code (world/intents.rs, world/deletes.rs, world/mod.rs) records each user's intents and judges every device and the server against them: a write, rename, move or delete a user made stays until another user's change replaces it.
 # It also runs the revived-delete check on the commits that carried each change, apart from the intent oracle, so a delete brought back by a commit its user never saw is caught without the touch ledger.

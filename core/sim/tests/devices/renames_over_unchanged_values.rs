@@ -60,7 +60,7 @@ fn another_devices_edit_after_a_restore_to_an_earlier_backup_leaves_one_file_aft
             vec![
                 (0, Backup),
                 (0, RestoreEarlier),
-                (2, u(2, 4305928427121440511, 0, 0, 0)),
+                (1, u(2, 4305928427121440511, 0, 0, 0)),
             ],
             vec![(0, Rewind)],
         ],

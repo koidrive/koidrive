@@ -397,6 +397,10 @@ fn a_file_another_device_adds_to_the_deleted_folder_leaves_its_siblings_checked(
 
 #[test]
 fn a_rename_another_device_makes_to_a_folder_between_leaves_the_deleted_file_checked() {
+    let _also = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7735-80db-d7e668859a70 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let _red = expect_red(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
@@ -454,6 +458,10 @@ fn a_rename_another_device_sends_after_the_delete_brings_the_folder_back_with_it
 #[test]
 fn a_folder_another_device_puts_back_under_its_old_parent_keeps_the_file_the_deleting_device_added()
 {
+    let _also = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7504-af4d-4d6a531020af on device 1 came undone, and no change its user did not see brought the node back",
+    );
     let _red = expect_red(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 1 came undone, and no change its user did not see brought the node back",
@@ -486,6 +494,14 @@ fn a_folder_another_device_puts_back_under_its_old_parent_keeps_the_file_the_del
 
 #[test]
 fn a_folder_another_device_takes_back_out_of_the_deleted_folder_keeps_its_file() {
+    let _folder = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-796a-8df8-fb6da7904e2f on device 0 came undone, and no change its user did not see brought the node back",
+    );
+    let _also = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let _red = expect_red(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
@@ -532,6 +548,10 @@ fn held_files(world: &World, device: usize) -> Vec<(String, i64)> {
 
 #[test]
 fn a_file_another_device_adds_after_the_delete_leaves_the_deleted_file_checked() {
+    let _also = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let _red = expect_red(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
@@ -568,6 +588,10 @@ fn a_file_another_device_adds_after_the_delete_leaves_the_deleted_file_checked()
 
 #[test]
 fn a_copy_another_device_sends_after_the_delete_leaves_the_deleted_file_checked() {
+    let _also = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let _red = expect_red(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
@@ -641,6 +665,10 @@ fn a_file_another_device_adds_to_the_deleted_folder_brings_back_only_the_folder(
 
 #[test]
 fn a_rename_of_a_folder_the_server_kept_leaves_the_deleted_file_checked() {
+    let _also = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let _red = expect_red(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",

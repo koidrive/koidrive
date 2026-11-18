@@ -332,7 +332,7 @@ fn upload(
 fn trashed_under(nodes: &[NodeState], write: i64, folders: &BTreeSet<&str>) -> bool {
     let Some(file) = nodes.iter().find(|node| {
         let content = (node.current.as_ref()).and_then(|version| version.content.as_ref());
-        node.status != NodeStatus::Live as i32 && content.is_some_and(|c| c.mtime_ns == write)
+        node.status != NodeStatus::Live as i32 && content.is_some_and(|c| tag(c) == write)
     }) else {
         return false;
     };
