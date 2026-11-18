@@ -446,13 +446,7 @@ async fn reauth_replaces_the_token_without_dropping_the_connection() {
     );
     let (session, mut events) = start(refreshing, &space);
     connected(&mut events).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let before = proxy.websocket_client_bytes();
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    assert!(
-        proxy.websocket_client_bytes() > before,
-        "Reauth frames went out; nothing else was sent"
-    );
+    proxy.reauthed().await;
     session.list_tree("", 1).await.unwrap();
     session.close().await;
     while let Some(event) = events.next().await {
