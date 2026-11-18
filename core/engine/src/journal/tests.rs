@@ -229,7 +229,7 @@ fn results_visit_the_rows_they_answer_however_many_the_journal_holds() {
                 0 => journal.applied(&file, Field::Content, sent, &held(7, 100), None),
                 _ => journal.superseded(&file, Field::Content, sent, Some(id(8))),
             }
-            journal.merged_into(&format!("d{n}"), "target");
+            journal.merged_into(&format!("d{n}"), "target", true);
         }
         let visited = rows::VISITED.with(std::cell::Cell::get);
         for n in 0..nodes {

@@ -858,12 +858,16 @@ impl Trees {
         }
     }
 
-    /// Takes a node its user deleted out of L. A node R or S holds gets a status row with the seen list of what L
-    /// held for it and the nodes below it (RFC 0029 §5.1); the rows of a node neither holds end, since no server
-    /// ever held it.
+    /// Takes a node its user deleted out of L. A node R or S holds, or one a sent or held row may have put on the
+    /// server, gets a status row with the seen list of what L held for it and the nodes below it (RFC 0029 §5.1);
+    /// the rows of any other node end, since no server ever held it.
     pub fn remove_local_by_user(&mut self, id: &str) {
         if self.l.get(id).is_some() {
-            if self.r.get(id).is_none() && self.s.get(id).is_none() {
+            let sent = Field::ALL.into_iter().any(|field| {
+                (self.journal_row(id, field))
+                    .is_some_and(|row| !matches!(row.state, RowState::Local { .. }))
+            });
+            if self.r.get(id).is_none() && self.s.get(id).is_none() && !sent {
                 for field in Field::ALL {
                     self.journal.end(id, field);
                 }
@@ -887,12 +891,13 @@ impl Trees {
             if self.l.get(&node).is_none() {
                 continue;
             }
-            let deleted = (self.r_names.children(&node)).filter(|child| {
-                self.l.get(child).is_none() && !self.journal.seen(child).is_empty()
-            });
-            let children: Vec<NodeId> = (self.l_names.children(&node))
+            let deleted: BTreeSet<NodeId> = (self.r_names.children(&node).cloned())
+                .chain(self.r_trashed.get(&node).into_iter().flatten().cloned())
+                .chain(self.journal.placed_under(&node))
+                .filter(|child| self.l.get(child).is_none() && !self.journal.seen(child).is_empty())
+                .collect();
+            let children: Vec<NodeId> = (self.l_names.children(&node).cloned())
                 .chain(deleted)
-                .cloned()
                 .collect();
             nodes.extend(children);
         }
@@ -915,6 +920,18 @@ impl Trees {
                             value: None,
                         }),
                 );
+                if let Some(row) = self.journal_row(node, field)
+                    && let RowState::Local {
+                        flight: Some(flight),
+                    } = &row.state
+                {
+                    seen.push(Seen {
+                        node: node.clone(),
+                        field,
+                        intent: flight.intent,
+                        value: None,
+                    });
+                }
                 if let Some(intent) = current {
                     seen.push(Seen {
                         node: node.clone(),
@@ -1096,7 +1113,9 @@ impl Trees {
             let node = node.to_owned();
             let code = Code::try_from(outcome.code).unwrap_or(Code::Unspecified);
             if code == Code::MergedInto {
-                self.journal.merged_into(&node, &outcome.node_id);
+                let into = &outcome.node_id;
+                self.journal
+                    .merged_into(&node, into, self.l.get(into).is_none());
                 continue;
             }
             for (field, value) in fields {

@@ -272,6 +272,199 @@ fn a_create_writes_a_row_for_each_of_its_fields_and_a_delete_before_any_send_end
 }
 
 #[test]
+fn a_delete_of_a_folder_whose_create_is_in_flight_sees_the_create() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    trees.set_local_changed("d".into(), local(dir(ROOT, "d")));
+    build(&mut trees, &["field_intents"], 1_700);
+    let reported = proto::FieldIntents {
+        place: Some(wire(sent(&trees, "d", Field::Place), 1_700)),
+        content: None,
+        status: Some(wire(sent(&trees, "d", Field::Status), 1_700)),
+    };
+    trees.remove_local_by_user("d");
+    let state = node_state("d", &dir(ROOT, "d"), 1, Some(reported));
+    trees.set_remote("d".into(), RemoteNode::from_state(&state).unwrap().1);
+    let mut ops = vec![proto::Op {
+        op: Some(op::Op::Delete(proto::Delete {
+            node_id: "d".into(),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }];
+    trees.stamp_intents(&mut ops, "me", 0, Wire::WithIntents);
+    let Some(op::Op::Delete(delete)) = &ops[0].op else {
+        unreachable!();
+    };
+    assert!(delete.unseen.is_empty(), "{:?}", delete.unseen);
+}
+
+#[test]
+fn a_delete_sees_its_files_create_that_a_rename_replaced_in_flight() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    trees.set_local_changed("f".into(), local(file(ROOT, "a", 1)));
+    build(&mut trees, &["field_intents"], 1_700);
+    let created = sent(&trees, "f", Field::Place);
+    trees.set_local_changed("f".into(), local(file(ROOT, "b", 1)));
+    trees.settle(&Default::default());
+    trees.remove_local_by_user("f");
+    let reported = proto::FieldIntents {
+        place: Some(wire(created, 1_700)),
+        content: Some(wire(sent(&trees, "f", Field::Content), 1_700)),
+        status: None,
+    };
+    let state = node_state("f", &file(ROOT, "a", 1), 1, Some(reported));
+    trees.set_remote("f".into(), RemoteNode::from_state(&state).unwrap().1);
+    let mut ops = vec![proto::Op {
+        op: Some(op::Op::Delete(proto::Delete {
+            node_id: "f".into(),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }];
+    trees.stamp_intents(&mut ops, "me", 0, Wire::WithIntents);
+    let Some(op::Op::Delete(delete)) = &ops[0].op else {
+        unreachable!();
+    };
+    assert!(delete.unseen.is_empty(), "{:?}", delete.unseen);
+}
+
+#[test]
+fn a_delete_sees_its_files_create_sent_into_the_folder_l_holds_that_its_folder_was_merged_into() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut trees, "t", dir(ROOT, "t"), 1);
+    trees.set_local_changed("d".into(), local(dir(ROOT, "d")));
+    let mut commits = Commits::from_state(CommitsState::default()).unwrap();
+    commits.connected(&Welcome {
+        features: vec!["field_intents".into()],
+        ..Default::default()
+    });
+    trees.rules_scanned();
+    let mut ids = IdGen::new(1);
+    let base = |seq| Base {
+        seq,
+        commit_id: String::new(),
+        committed_at_ms: 1_700,
+    };
+    trees.settle(commits.aliases());
+    commits.build(&mut trees, &mut ids, 0, "history", "me", base(0));
+    trees.set_local_changed("c".into(), local(file("d", "c", 1)));
+    let merged = proto::OpResult {
+        node_id: "t".into(),
+        ..outcome(op_result::Code::MergedInto)
+    };
+    (commits.received(proto::CommitResult {
+        seq: 1,
+        results: vec![merged],
+        ..Default::default()
+    }))
+    .unwrap();
+    assert!(commits.acknowledge(&mut trees, 1));
+    trees.settle(commits.aliases());
+    let commit = (commits
+        .build(&mut trees, &mut ids, 0, "history", "me", base(1))
+        .cloned())
+    .unwrap();
+    let [
+        proto::Op {
+            op: Some(op::Op::CreateFile(create)),
+            ..
+        },
+    ] = &commit.ops[..]
+    else {
+        panic!("{:?}", commit.ops);
+    };
+    assert_eq!(create.parent_id, "t");
+    trees.remove_local_by_user("c");
+    let reported = proto::FieldIntents {
+        place: Some(wire(sent(&trees, "c", Field::Place), 1_700)),
+        content: Some(wire(sent(&trees, "c", Field::Content), 1_700)),
+        status: Some(wire(sent(&trees, "c", Field::Status), 1_700)),
+    };
+    let state = node_state("c", &file("t", "c", 1), 1, Some(reported));
+    trees.set_remote("c".into(), RemoteNode::from_state(&state).unwrap().1);
+    let mut ops = vec![proto::Op {
+        op: Some(op::Op::Delete(proto::Delete {
+            node_id: "c".into(),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }];
+    trees.stamp_intents(&mut ops, "me", 0, Wire::WithIntents);
+    let Some(op::Op::Delete(delete)) = &ops[0].op else {
+        unreachable!();
+    };
+    assert!(delete.unseen.is_empty(), "{:?}", delete.unseen);
+}
+
+#[test]
+fn a_folders_delete_sees_a_child_created_in_flight_and_not_a_child_another_user_added() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut trees, "d", dir(ROOT, "d"), 1);
+    trees.set_local_changed("f".into(), local(file("d", "a", 1)));
+    build(&mut trees, &["field_intents"], 1_700);
+    let reported = proto::FieldIntents {
+        place: Some(wire(sent(&trees, "f", Field::Place), 1_700)),
+        content: Some(wire(sent(&trees, "f", Field::Content), 1_700)),
+        status: Some(wire(sent(&trees, "f", Field::Status), 1_700)),
+    };
+    trees.remove_local_by_user("f");
+    trees.remove_local_by_user("d");
+    let state = node_state("f", &file("d", "a", 1), 2, Some(reported));
+    trees.set_remote("f".into(), RemoteNode::from_state(&state).unwrap().1);
+    trees.set_remote("g".into(), remote(file("d", "g", 1), 2));
+    let mut ops = vec![proto::Op {
+        op: Some(op::Op::Delete(proto::Delete {
+            node_id: "d".into(),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }];
+    trees.stamp_intents(&mut ops, "me", 0, Wire::WithIntents);
+    let Some(op::Op::Delete(delete)) = &ops[0].op else {
+        unreachable!();
+    };
+    let mut unseen: Vec<IntentId> = (delete.unseen.iter())
+        .map(|id| IntentId::from_bytes(id).unwrap())
+        .collect();
+    unseen.sort();
+    let mut expected: Vec<IntentId> = (Field::ALL.into_iter())
+        .map(|field| held(&trees, "g", field))
+        .collect();
+    expected.sort();
+    assert_eq!(unseen, expected);
+}
+
+#[test]
+fn a_folders_delete_sees_a_child_its_user_deleted_before_a_restore_brings_it_back() {
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    synced(&mut trees, "d", dir(ROOT, "d"), 1);
+    synced(&mut trees, "f", file("d", "a", 1), 1);
+    trees.remove_local_by_user("f");
+    let live = trees.remote().get("f").unwrap().clone();
+    trees.set_remote(
+        "f".into(),
+        RemoteNode {
+            trashed: true,
+            ..live.clone()
+        },
+    );
+    trees.remove_local_by_user("d");
+    trees.set_remote("f".into(), live);
+    let mut ops = vec![proto::Op {
+        op: Some(op::Op::Delete(proto::Delete {
+            node_id: "d".into(),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }];
+    trees.stamp_intents(&mut ops, "me", 0, Wire::WithIntents);
+    let Some(op::Op::Delete(delete)) = &ops[0].op else {
+        unreachable!();
+    };
+    assert!(delete.unseen.is_empty(), "{:?}", delete.unseen);
+}
+
+#[test]
 fn a_delete_lists_what_l_held_for_the_node_and_below_it() {
     let mut trees = Trees::new(ROOT, &IdGen::new(0));
     synced(&mut trees, "d", dir(ROOT, "d"), 1);
