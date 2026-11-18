@@ -56,6 +56,8 @@ pub(crate) struct GitignoreFolderData {
     path: String,
     files: u64,
     bytes: u64,
+    /// Folders the count leaves out because Koidrive can't read them or their rules file, as absolute paths.
+    unreadable: Vec<String>,
 }
 
 pub(crate) async fn run(
@@ -133,11 +135,18 @@ async fn counted(paths: &Paths, only: Option<&Path>) -> Result<Vec<GitignoreFold
             folder: PathBuf::from(&folder.path),
         };
         match ipc::run(paths, request).await? {
-            Response::GitignoreOnly { files, bytes } => counted.push(GitignoreFolderData {
+            Response::GitignoreOnly {
+                files,
+                bytes,
+                unreadable,
+            } => counted.push(GitignoreFolderData {
                 space_id: folder.space_id,
                 path: folder.path,
                 files,
                 bytes,
+                unreadable: (unreadable.iter())
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect(),
             }),
             other => return Err(unexpected(other)),
         }
@@ -157,6 +166,9 @@ fn status(follows: bool, folders: Vec<GitignoreFolderData>) -> Done {
             for line in rows(&folders, shown) {
                 text.push_str(&format!("{line}\n"));
             }
+        }
+        for line in unreadable(&folders, shown) {
+            text.push_str(&format!("{line}\n"));
         }
         text.push_str(match follows {
             true => "Turn off: koi gitignore off\n",
@@ -187,6 +199,17 @@ fn rows(folders: &[GitignoreFolderData], shown: &dyn Fn(&str) -> String) -> Vec<
         .collect()
 }
 
+fn unreadable(folders: &[GitignoreFolderData], shown: &dyn Fn(&str) -> String) -> Vec<String> {
+    let mut lines: Vec<String> = (folders.iter())
+        .flat_map(|folder| &folder.unreadable)
+        .map(|path| format!("  {}", shown(path)))
+        .collect();
+    if !lines.is_empty() {
+        lines.insert(0, "Not counted, because Koidrive can't read them:".into());
+    }
+    lines
+}
+
 async fn confirm(paths: &Paths, terminal: &Terminal) -> Result<(), CliError> {
     if !terminal.guided() {
         return Err(CliError::usage(
@@ -203,12 +226,14 @@ async fn confirm(paths: &Paths, terminal: &Terminal) -> Result<(), CliError> {
         }
     };
     drop(progress);
-    if folders.iter().all(|folder| folder.files == 0) {
+    let shown = |path: &str| output::path(Path::new(path));
+    let unreadable = unreadable(&folders, &shown);
+    if unreadable.is_empty() && folders.iter().all(|folder| folder.files == 0) {
         return Ok(());
     }
     terminal.message("These files start syncing:");
-    for line in rows(&folders, &|path| output::path(Path::new(path))) {
-        terminal.message(&line);
+    for line in rows(&folders, &shown).iter().chain(&unreadable) {
+        terminal.message(line);
     }
     match terminal
         .confirm("Sync what .gitignore files exclude?", false)

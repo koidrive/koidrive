@@ -836,7 +836,7 @@ fn a_folders_gitignore_count_is_koi_gitignore_status_of_that_folder() {
         "gitignore-status",
         ok(json!({
             "follows": true,
-            "folders": [{ "space_id": "s1", "path": "/Users/ada/Documents", "files": 18342, "bytes": 412000000 }],
+            "folders": [{ "space_id": "s1", "path": "/Users/ada/Documents", "files": 18342, "bytes": 412000000, "unreadable": ["/Users/ada/Documents/pgdata"] }],
         })),
     );
     let before = SystemTime::now()
@@ -845,6 +845,7 @@ fn a_folders_gitignore_count_is_koi_gitignore_status_of_that_folder() {
         .as_millis() as u64;
     let only = koi.core.gitignore_only("s1").unwrap();
     assert_eq!((only.files, only.bytes), (18_342, 412_000_000));
+    assert_eq!(only.unreadable, ["/Users/ada/Documents/pgdata"]);
     assert!(only.counted_at_ms >= before);
     assert_eq!(
         koi.calls_of("gitignore"),

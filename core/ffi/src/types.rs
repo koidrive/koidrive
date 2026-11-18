@@ -771,10 +771,12 @@ pub struct TelemetrySetting {
 
 /// The regular files of a linked folder that only its `.gitignore` files exclude: what syncs once this device stops
 /// following them. Counted on this device's disk, whatever the setting is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct GitignoreOnly {
     pub files: u64,
     pub bytes: u64,
+    /// The folders whose files the count leaves out because they cannot be read, as absolute paths.
+    pub unreadable: Vec<String>,
     /// When the folder was counted, in Unix milliseconds.
     pub counted_at_ms: u64,
 }

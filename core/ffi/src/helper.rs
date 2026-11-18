@@ -698,6 +698,8 @@ struct GitignoreFolderData {
     space_id: String,
     files: u64,
     bytes: u64,
+    #[serde(default)]
+    unreadable: Vec<String>,
 }
 
 impl GitignoreStatusData {
@@ -711,6 +713,7 @@ impl GitignoreStatusData {
             .map(|folder| GitignoreOnly {
                 files: folder.files,
                 bytes: folder.bytes,
+                unreadable: folder.unreadable,
                 counted_at_ms,
             })
             .ok_or(SessionError::FolderNotLinked)

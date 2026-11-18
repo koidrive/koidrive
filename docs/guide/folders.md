@@ -60,7 +60,7 @@ Each device has its own setting. To sync what `.gitignore` files exclude on this
 koi gitignore off
 ```
 
-On a terminal, the command shows how many files would start syncing in each folder and asks first. Without a terminal, add `--yes`. The command writes `gitignore = false` under `[sync]` in `config.toml`. `koi gitignore status` shows the setting and counts the files, and `koi gitignore on` turns it back on. Switching it either way deletes nothing. Files that a `.gitignore` file starts to exclude stay on this device's disk, on the server and on the other devices.
+On a terminal, the command shows how many files would start syncing in each folder, names any folder it can't read, and asks first. Without a terminal, add `--yes`. The command writes `gitignore = false` under `[sync]` in `config.toml`. `koi gitignore status` shows the setting and counts the files, and `koi gitignore on` turns it back on. Switching it either way deletes nothing. Files that a `.gitignore` file starts to exclude stay on this device's disk, on the server and on the other devices.
 
 ## Sync only part of a space on this device
 

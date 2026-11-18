@@ -2482,8 +2482,9 @@ impl Driver {
 
     /// Counts the regular files in the linked folder at `folder` that its `.gitignore` files alone leave out: those
     /// the folder excludes while it follows `.gitignore` files and includes while it does not. It reads the disk as it
-    /// is now, as a scan does, whatever [`Driver::follows_gitignore`] says, and never follows a symbolic link. It fails
-    /// when it cannot read a folder or a rules file in it.
+    /// is now, as a scan does, whatever [`Driver::follows_gitignore`] says, and never follows a symbolic link. What it
+    /// holds below a folder it cannot list, or whose rules file it cannot read, is left out of the count, and the folder
+    /// is in [`GitignoreOnly::unreadable`].
     pub fn gitignore_only(&self, folder: &Path) -> Result<GitignoreOnly, DriverError> {
         let root = find(&mut self.inner.folders.lock().unwrap(), folder)?
             .link
@@ -10809,6 +10810,7 @@ mod tests {
         let only = GitignoreOnly {
             files: 5,
             bytes: 18,
+            unreadable: Vec::new(),
         };
         assert_eq!(driver.gitignore_only(&root).unwrap(), only);
         driver.set_gitignore(false).await.unwrap();

@@ -265,6 +265,9 @@ pub enum Response {
     GitignoreOnly {
         files: u64,
         bytes: u64,
+        /// The folders whose files the count leaves out because they cannot be read.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unreadable: Vec<PathBuf>,
     },
     /// A failed request. An older daemon sends only `message`, which reads as [`Code::Failed`].
     Error {
@@ -1040,8 +1043,17 @@ mod tests {
             Response::GitignoreOnly {
                 files: 18_342,
                 bytes: 412_000_000,
+                unreadable: Vec::new(),
             },
             r#"{"response":"gitignore_only","files":18342,"bytes":412000000}"#,
+        );
+        pinned(
+            Response::GitignoreOnly {
+                files: 1,
+                bytes: 2,
+                unreadable: vec!["/home/ada/Code/pgdata".into()],
+            },
+            r#"{"response":"gitignore_only","files":1,"bytes":2,"unreadable":["/home/ada/Code/pgdata"]}"#,
         );
         pinned(
             Request::Leave {

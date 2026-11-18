@@ -986,7 +986,7 @@ async fn gitignore_off_without_a_terminal_needs_yes_and_each_result_fits_its_sch
         status.data,
         serde_json::json!({
             "follows": true,
-            "folders": [{ "space_id": ipc::tests::SPACE, "path": root.display().to_string(), "files": 1, "bytes": 2 }],
+            "folders": [{ "space_id": ipc::tests::SPACE, "path": root.display().to_string(), "files": 1, "bytes": 2, "unreadable": [] }],
         })
     );
     assert_eq!(
@@ -1080,6 +1080,60 @@ async fn gitignore_off_on_a_daemon_already_off_writes_the_setting_the_configurat
     let config = koidrive_driver::Config::load(&paths.config_file).unwrap();
     assert!(!config.sync.gitignore);
     server.abort();
+}
+
+#[tokio::test]
+async fn gitignore_status_and_off_name_a_folder_they_cannot_read_and_count_the_rest() {
+    use crate::gitignore::GitignoreAction;
+    use std::os::unix::fs::PermissionsExt;
+
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let (_dir, paths, root) = ipc::tests::linked_profile();
+    std::fs::write(root.join(".gitignore"), "pgdata/\n*.log\n").unwrap();
+    std::fs::write(root.join("x.log"), "12").unwrap();
+    std::fs::create_dir(root.join("pgdata")).unwrap();
+    std::fs::write(root.join("pgdata/base"), "db").unwrap();
+    let lock = |mode| {
+        let mode = std::fs::Permissions::from_mode(mode);
+        std::fs::set_permissions(root.join("pgdata"), mode).unwrap();
+    };
+    let terminal = Arc::new(terminal::Terminal::new(true, true));
+    let go = |action| {
+        run(
+            paths.clone(),
+            Command::Gitignore { action },
+            true,
+            false,
+            terminal.clone(),
+        )
+    };
+    lock(0o000);
+    let status = go(GitignoreAction::Status { folder: None }).await;
+    let off = go(GitignoreAction::Off { yes: false }).await;
+    lock(0o755);
+
+    let status = status.unwrap();
+    let pgdata = root.join("pgdata").to_string_lossy().into_owned();
+    let folder = &status.data["folders"][0];
+    assert_eq!((&folder["files"], &folder["bytes"]), (&1.into(), &2.into()));
+    assert_eq!(folder["unreadable"], serde_json::json!([pgdata]));
+    let named = format!("Not counted, because Koidrive can't read them:\n  {pgdata}\n");
+    assert!(status.text.contains(&named), "{}", status.text);
+    let schema = schema::envelope("gitignore status").unwrap();
+    let envelope = serde_json::to_value(Envelope::of("gitignore status", status)).unwrap();
+    assert!(
+        jsonschema::validator_for(&schema)
+            .unwrap()
+            .is_valid(&envelope)
+    );
+    let error = off.unwrap_err();
+    assert!(
+        error.message.contains("needs a terminal"),
+        "{}",
+        error.message
+    );
 }
 
 #[test]

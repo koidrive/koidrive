@@ -430,13 +430,21 @@
         },
         "space_id": {
           "type": "string"
+        },
+        "unreadable": {
+          "description": "Folders the count leaves out because Koidrive can't read them or their rules file, as absolute paths.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [
         "space_id",
         "path",
         "files",
-        "bytes"
+        "bytes",
+        "unreadable"
       ],
       "type": "object"
     },

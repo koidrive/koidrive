@@ -262,6 +262,7 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
                 Ok(counted) => counted.map(|only| Response::GitignoreOnly {
                     files: only.files,
                     bytes: only.bytes,
+                    unreadable: only.unreadable,
                 }),
                 Err(error) => {
                     return Response::from(CliError::from(format!(
@@ -613,7 +614,11 @@ pub(crate) mod tests {
         let driver = Driver::open(paths.clone()).unwrap();
         let server = tokio::spawn(serve(bind(&paths.socket()).unwrap(), driver.clone()));
         let ask = |request| run(&paths, request);
-        let counted = Response::GitignoreOnly { files: 1, bytes: 3 };
+        let counted = Response::GitignoreOnly {
+            files: 1,
+            bytes: 3,
+            unreadable: Vec::new(),
+        };
 
         assert_eq!(
             ask(Request::Gitignore).await.unwrap(),

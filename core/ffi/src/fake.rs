@@ -1288,6 +1288,7 @@ impl Core for FakeCore {
         Ok(GitignoreOnly {
             files: 18_342 * n,
             bytes: 412_000_000 * n,
+            unreadable: Vec::new(),
             counted_at_ms: now_ms() as u64,
         })
     }

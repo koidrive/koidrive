@@ -147,10 +147,12 @@ pub(crate) fn scan_rules(device: &Arc<dyn Matcher>) -> koidrive_fs::Rules {
 }
 
 /// The files of a folder that only its `.gitignore` files leave out, and their size in bytes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GitignoreOnly {
     pub files: u64,
     pub bytes: u64,
+    /// The folders whose files the count leaves out, because the scan cannot list them or read their rules file.
+    pub unreadable: Vec<PathBuf>,
 }
 
 struct Both {
@@ -200,23 +202,19 @@ pub(crate) fn gitignore_only(root: &Path, local: LocalRules) -> io::Result<Gitig
             koidrive_fs::Error::Io(error) => error,
             other => io::Error::other(other),
         })?;
-    if let Some(folder) = rescan.unreadable.first() {
-        return Err(io::Error::other(format!(
-            "cannot read {} or a rules file in it, so the files below it cannot be counted",
-            koidrive_fs::quoted(&root.join(folder).components().collect::<PathBuf>())
-        )));
-    }
     let both = both.lock().unwrap();
-    Ok((snapshot.entries.iter())
+    let only = (snapshot.entries.iter())
         .filter(|(path, entry)| {
             entry.kind == EntryKind::File && status(&both.with, path, false) != Status::Included
         })
-        .fold(GitignoreOnly::default(), |found, (_, entry)| {
-            GitignoreOnly {
-                files: found.files + 1,
-                bytes: found.bytes + entry.size,
-            }
-        }))
+        .map(|(_, entry)| entry.size);
+    Ok(GitignoreOnly {
+        files: only.clone().count() as u64,
+        bytes: only.sum(),
+        unreadable: (rescan.unreadable.iter())
+            .map(|folder| root.join(folder).components().collect())
+            .collect(),
+    })
 }
 
 #[cfg(test)]
@@ -368,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn gitignore_only_fails_when_it_cannot_read_a_folder_or_its_gitignore_file() {
+    fn gitignore_only_names_the_folders_it_cannot_read_and_counts_the_rest() {
         use std::os::unix::fs::PermissionsExt;
 
         if rustix::process::geteuid().is_root() {
@@ -380,11 +378,18 @@ mod tests {
             std::fs::create_dir(root.join("private")).unwrap();
             std::fs::write(root.join("private/.gitignore"), "*.log\n").unwrap();
             std::fs::write(root.join("private/a.log"), "abc").unwrap();
+            std::fs::write(root.join(".gitignore"), "*.tmp\n").unwrap();
+            std::fs::write(root.join("b.tmp"), "12").unwrap();
             let locked = root.join(locked);
             std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
             let counted = gitignore_only(root, LocalRules::default());
             std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
-            assert!(counted.is_err(), "{locked:?}: {counted:?}");
+            let only = GitignoreOnly {
+                files: 1,
+                bytes: 2,
+                unreadable: vec![root.join("private")],
+            };
+            assert_eq!(counted.unwrap(), only, "{locked:?}");
         }
     }
 }
