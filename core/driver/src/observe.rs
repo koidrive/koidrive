@@ -836,6 +836,11 @@ fn walking(progress: &Arc<dyn Fn(Observing) + Send + Sync>) -> impl Fn(u64) + Se
     move |files| progress(Observing::Walking { files })
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static READS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// The content of the file at `path` under `root`, or `None` when it is not the file the scan saw or changed while
 /// it was read. Fails with [`io::ErrorKind::Interrupted`] at the first chunk after `stopped` holds. Passes the size of
 /// each chunk to `chunked` once it is read.
@@ -847,6 +852,8 @@ pub(crate) fn read_content(
     chunked: &mut dyn FnMut(u64),
 ) -> io::Result<Option<Content>> {
     let file = open_beneath(root, path)?;
+    #[cfg(test)]
+    READS.with_borrow_mut(|reads| reads.push(path.to_path_buf()));
     let before = file.metadata()?;
     let same_file = before.is_file() && koidrive_fs::id_of(file.as_fd())? == entry.id;
     if !same_file || !same_version(&before, entry) {

@@ -1013,83 +1013,82 @@ fn with_four_uploads_at_once_a_file_that_changed_after_it_was_chunked_abandons_t
 fn a_restart_reads_nothing_after_any_change_the_observer_accepted() {
     use std::os::unix::fs::PermissionsExt;
 
-    let reads = |a: &Device| {
-        (a.reports.lock().unwrap().iter())
-            .filter(|report| matches!(report, Observing::Reading { bytes, .. } if *bytes > 0))
-            .count()
-    };
+    let reads = || crate::observe::READS.take();
     type Change = fn(&Site, &mut Device, &mut Remote);
-    let rows: [(&str, usize, Change); 6] = [
-        ("an edit", 1, |site, a, remote| {
+    let rows: [(&str, &[&str], &[&str], Change); 6] = [
+        ("an edit", &["notes.txt"], &[], |site, a, remote| {
             fs::write(site.root.join("notes.txt"), b"edited on a!").unwrap();
             a.rest(remote);
         }),
-        ("a mark during a poll", 1, |site, a, remote| {
-            fs::write(site.root.join("marked.txt"), b"marked on a").unwrap();
-            a.scan_until(|a| !a.work.is_empty());
-            assert_eq!(a.run(remote), ["upload", "send"]);
-            let stamp = a.folder.sections().stamp();
-            let observed = Observer::observe(&mut a.observer, Duration::from_millis(500)).unwrap();
-            if let Some(observation) = observed {
-                let unread = a.observer.unread();
-                let batch = crate::disk::Batch {
-                    stamp,
-                    answered: None,
-                    observation,
-                    unread,
-                };
-                let entries = a.observer.snapshot().entries.len() as u64;
-                let step = a.folder.observed(batch, entries);
-                a.take(step).unwrap();
-            }
-        }),
-        ("a rename", 0, |site, _, _| {
+        (
+            "a mark the next poll sees",
+            &["marked.txt"],
+            &[],
+            |site, a, remote| {
+                fs::write(site.root.join("marked.txt"), b"marked on a").unwrap();
+                a.scan_until(|a| !a.work.is_empty());
+                assert_eq!(a.run(remote), ["upload", "send"]);
+                let stamp = a.folder.sections().stamp();
+                let observed =
+                    Observer::observe(&mut a.observer, Duration::from_millis(500)).unwrap();
+                if let Some(observation) = observed {
+                    let unread = a.observer.unread();
+                    let batch = crate::disk::Batch {
+                        stamp,
+                        answered: None,
+                        observation,
+                        unread,
+                    };
+                    let entries = a.observer.snapshot().entries.len() as u64;
+                    let step = a.folder.observed(batch, entries);
+                    a.take(step).unwrap();
+                }
+            },
+        ),
+        ("a rename", &[], &[], |site, _, _| {
             fs::rename(site.root.join("notes.txt"), site.root.join("renamed.txt")).unwrap();
         }),
-        ("a chmod", 0, |site, _, _| {
-            fs::set_permissions(
-                site.root.join("notes.txt"),
-                fs::Permissions::from_mode(0o600),
-            )
-            .unwrap();
+        ("a chmod", &[], &[], |site, _, _| {
+            let path = site.root.join("notes.txt");
+            let mode = fs::metadata(&path).unwrap().permissions().mode() ^ 0o020;
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
         }),
-        ("a link added", 0, |site, _, _| {
+        ("a link added", &[], &[], |site, _, _| {
             fs::hard_link(
                 site.root.join("notes.txt"),
                 site.root.with_file_name("outside.txt"),
             )
             .unwrap();
         }),
-        ("a link removed", 1, |site, a, remote| {
+        ("a link removed", &["link.txt"], &[], |site, a, remote| {
             fs::hard_link(site.root.join("notes.txt"), site.root.join("link.txt")).unwrap();
             a.rest(remote);
             fs::remove_file(site.root.join("link.txt")).unwrap();
         }),
     ];
     let mut wrong = Vec::new();
-    for (row, read, change) in rows {
+    for (row, read, read_again, change) in rows {
         let mut remote = Remote::new();
         let (site, mut a) = linked(&mut remote, "a");
         a.create(&mut remote, &site.root.join("notes.txt"), b"written on a");
         a.settle();
-        let before = reads(&a);
+        reads();
         change(&site, &mut a, &mut remote);
         a.rest(&mut remote);
-        let live = reads(&a) - before;
+        let live = reads();
         drop(a);
 
         let mut a = site.start();
         a.connect(&remote);
-        let mut seen = Vec::new();
         let mut polls = 0;
-        while !a.folder.scanned || polls < 5 {
+        while !a.folder.scanned || polls < 5 || !a.observer.racy_reads().is_empty() {
+            assert!(polls < 600, "{row}: the restarted observer never settles");
             polls += 1;
             let sections = a.folder.sections();
             if let Some(batch) = sections
                 .observe(&mut a.observer, Duration::from_millis(100))
                 .unwrap()
             {
-                seen.extend(batch.observation.changes.iter().cloned());
                 let entries = a.observer.snapshot().entries.len() as u64;
                 let step = a.folder.observed(batch, entries);
                 a.take(step).unwrap();
@@ -1099,24 +1098,11 @@ fn a_restart_reads_nothing_after_any_change_the_observer_accepted() {
                 a.take(step).unwrap();
             }
         }
-        let seen: Vec<PathBuf> = (seen.into_iter())
-            .filter_map(|change| match change {
-                Observed::Modified {
-                    path,
-                    content: Some(_),
-                    ..
-                }
-                | Observed::Created {
-                    path,
-                    content: Some(_),
-                    ..
-                } => Some(path),
-                _ => None,
-            })
-            .collect();
-        if live != read || !seen.is_empty() {
+        let seen = reads();
+        let paths = |read: &[&str]| read.iter().map(PathBuf::from).collect::<Vec<_>>();
+        if (&live, &seen) != (&paths(read), &paths(read_again)) {
             wrong.push(format!(
-                "{row}: {live} reads, {read} expected; after a restart {seen:?}"
+                "{row}: read {live:?} then {seen:?} after a restart, {read:?} then {read_again:?} expected"
             ));
         }
     }
