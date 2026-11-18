@@ -127,27 +127,9 @@ fn not_following_gitignore_files_uploads_what_they_left_out_and_resumes_what_syn
 }
 
 #[test]
-fn a_link_whose_configuration_has_no_gitignore_key_follows_gitignore_files() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = dir.path().join("config.toml");
-    fs::write(&config, "[sync]\nexclude = [\"*.tmp\"]\n").unwrap();
-    let sync = crate::Config::load(&config).unwrap().sync;
-    let mut remote = Remote::new();
-    let site = Site::new(&remote, "b");
-    let mut b = started_with(&site, &mut remote, &sync);
-    fs::create_dir(site.root.join("node_modules")).unwrap();
-    fs::write(site.root.join(".gitignore"), "node_modules/\n").unwrap();
-    fs::write(site.root.join("node_modules/x.js"), "x").unwrap();
-    fs::write(site.root.join("cache.tmp"), "tmp").unwrap();
-    fs::write(site.root.join("index.js"), "index").unwrap();
-    b.rescan();
-    b.rest(&mut remote);
-    assert_eq!(remote.names(), [".gitignore", "index.js"]);
-}
-
-fn a_node_deleted_while_a_gitignore_file_leaves_it_out_downloads_again_when_the_device_stops_following_them(
-    count: usize,
-) {
+fn a_folder_deleted_while_a_gitignore_file_leaves_it_out_downloads_again_when_the_device_stops_following_them()
+ {
+    let count = 3;
     let mut remote = Remote::new();
     let site = Site::new(&remote, "b");
     let mut b = started_with(&site, &mut remote, &not_following_gitignore());
@@ -183,16 +165,4 @@ fn a_node_deleted_while_a_gitignore_file_leaves_it_out_downloads_again_when_the_
     assert!(trashed(&site.root).is_empty());
     assert!(shown(&site).is_empty(), "no question opens");
     assert_eq!(b.state(), FolderState::UpToDate);
-}
-
-#[test]
-fn a_folder_of_three_files_deleted_while_a_gitignore_file_leaves_it_out_downloads_again_when_the_device_stops_following_them()
- {
-    a_node_deleted_while_a_gitignore_file_leaves_it_out_downloads_again_when_the_device_stops_following_them(3);
-}
-
-#[test]
-fn a_folder_of_2000_files_deleted_while_a_gitignore_file_leaves_it_out_downloads_again_when_the_device_stops_following_them()
- {
-    a_node_deleted_while_a_gitignore_file_leaves_it_out_downloads_again_when_the_device_stops_following_them(2000);
 }

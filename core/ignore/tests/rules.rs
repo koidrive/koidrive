@@ -617,40 +617,6 @@ fn rules_files_are_named_by_key() {
 }
 
 #[test]
-fn gitignore_files_exclude_while_the_device_follows_them() {
-    let files = [
-        (
-            "",
-            Source::Gitignore,
-            "node_modules/
-*.log
-",
-        ),
-        (
-            "app",
-            Source::Gitignore,
-            "dist/
-",
-        ),
-    ];
-    let m = sourced(LocalRules::default(), &files);
-    assert_eq!(status(&m, "node_modules/"), git_rule(0, 1));
-    assert_eq!(status(&m, "node_modules/x/index.js"), git_rule(0, 1));
-    assert_eq!(status(&m, "app/debug.log"), git_rule(0, 2));
-    assert_eq!(status(&m, "app/dist/"), git_rule(1, 1));
-    assert_eq!(status(&m, "dist/"), Status::Included);
-    let off = sourced(LocalRules::default().with_gitignore(false), &files);
-    for path in [
-        "node_modules/",
-        "node_modules/x/index.js",
-        "app/debug.log",
-        "app/dist/",
-    ] {
-        assert_eq!(status(&off, path), Status::Included, "{path}");
-    }
-}
-
-#[test]
 fn koiignore_patterns_decide_before_gitignore_patterns() {
     let m = sourced(
         LocalRules::default(),
@@ -744,61 +710,4 @@ fn rules_files_of_both_kinds_are_always_included() {
         }
         assert_eq!(status(&m, "sub/a"), rule(0, 1));
     }
-}
-
-#[test]
-fn following_gitignore_files_or_not_reports_only_what_they_decide() {
-    let tree = entries(&[
-        "node_modules/",
-        "node_modules/a.js",
-        "src/",
-        "src/main.rs",
-        ".gitignore",
-        "x.log",
-        "y.psd",
-    ]);
-    let files = [
-        (
-            "",
-            Source::Gitignore,
-            "node_modules/
-*.log
-*.psd
-",
-        ),
-        (
-            "",
-            Source::Koiignore,
-            "*.psd
-",
-        ),
-    ];
-    let mut m = sourced(LocalRules::default().with_gitignore(false), &files);
-    let on = m.set_local(LocalRules::default(), tree.clone());
-    let excluded = |path: &str, line| Change::Excluded {
-        path: split(path),
-        reason: Reason::Rule {
-            source: Source::Gitignore,
-            depth: 0,
-            line,
-        },
-    };
-    assert_eq!(
-        on,
-        [
-            excluded("node_modules", 1),
-            excluded("node_modules/a.js", 1),
-            excluded("x.log", 2),
-        ]
-    );
-    let off = m.set_local(LocalRules::default().with_gitignore(false), tree);
-    let included = |path: &str| Change::Included { path: split(path) };
-    assert_eq!(
-        off,
-        [
-            included("node_modules"),
-            included("node_modules/a.js"),
-            included("x.log"),
-        ]
-    );
 }

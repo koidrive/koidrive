@@ -26,8 +26,6 @@ const WAIT: Duration = Duration::from_secs(10);
 
 const KOIIGNORE: &str = Source::Koiignore.file_name();
 
-const GITIGNORE: &str = Source::Gitignore.file_name();
-
 struct Folded;
 
 impl NameKey for Folded {
