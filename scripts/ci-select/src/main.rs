@@ -462,8 +462,12 @@ fn run(args: &[String]) -> Result<BTreeMap<String, Option<String>>, String> {
         let selection = shadow::select(
             &config,
             settings,
-            &analysis.paths,
-            &analysis.reads,
+            &analysis,
+            &shadow::changes(
+                Utf8Path::new(base_dir),
+                Utf8Path::new(head_dir),
+                &analysis.paths,
+            )?,
             &shadow::random(Utf8Path::new(head_dir), &head)?,
             map.as_ref(),
             now,
@@ -762,7 +766,10 @@ mod tests {
             r#"{
                 "sha": "main",
                 "created": 1000000,
-                "files": ["core/engine/src/commit.rs", "core/engine/src/effects.rs"],
+                "files": [
+                    {"path": "core/engine/src/commit.rs", "blob": "b0", "functions": [[10, 40], [50, 60]]},
+                    {"path": "core/engine/src/effects.rs", "blob": "b1", "functions": [[1, 90]]}
+                ],
                 "tests": {
                     "koidrive-engine::commit edits_are_sent": [0, 1],
                     "koidrive-engine::guard a_move_is_guarded": [1],
@@ -775,21 +782,97 @@ mod tests {
         .unwrap()
     }
 
+    type Change = (String, Option<String>, Vec<[u32; 2]>);
+
     fn tests_for(
         changed: &[&str],
         map: Option<&shadow::CoverageMap>,
         now: u64,
     ) -> shadow::TestSelection {
+        let changes = changed
+            .iter()
+            .map(|path| {
+                let blob = map
+                    .and_then(|map| map.files.iter().find(|file| file.path == *path))
+                    .map(|file| file.blob.clone());
+                (path.to_string(), blob, vec![[12, 14]])
+            })
+            .collect::<Vec<_>>();
+        tests_with(changed, map, now, &changes)
+    }
+
+    fn tests_with(
+        changed: &[&str],
+        map: Option<&shadow::CoverageMap>,
+        now: u64,
+        changes: &[Change],
+    ) -> shadow::TestSelection {
         let analysis = compute(&CONFIG, &GRAPH, &GRAPH, changed).unwrap();
+        let changes = changes
+            .iter()
+            .map(|(path, base_blob, hunks)| {
+                (
+                    path.clone(),
+                    shadow::FileChange {
+                        base_blob: base_blob.clone(),
+                        deleted: false,
+                        hunks: hunks.clone(),
+                    },
+                )
+            })
+            .collect();
         shadow::select(
             &CONFIG,
             CONFIG.tests.as_ref().unwrap(),
-            &analysis.paths,
-            &analysis.reads,
+            &analysis,
+            &changes,
             &shadow::random(Utf8Path::new(ROOT), &GRAPH).unwrap(),
             map,
             now,
         )
+    }
+
+    #[test]
+    fn a_change_outside_a_function_body_or_to_a_newer_file_keeps_every_test() {
+        let map = map();
+        let path = "core/engine/src/commit.rs".to_string();
+        let blob = Some("b0".to_string());
+        for (base_blob, hunks, because) in [
+            (blob.clone(), vec![[3, 3]], "outside the function bodies"),
+            (blob.clone(), vec![[39, 41]], "outside the function bodies"),
+            (
+                blob.clone(),
+                vec![[12, 12], [45, 46]],
+                "outside the function bodies",
+            ),
+            (
+                Some("newer".to_string()),
+                vec![[12, 12]],
+                "changed on main after",
+            ),
+        ] {
+            let selection = tests_with(
+                &["core/engine/src/commit.rs"],
+                Some(&map),
+                1000000,
+                &[(path.clone(), base_blob, hunks.clone())],
+            );
+            let reason = selection.everything.unwrap_or_default();
+            assert!(reason.contains(because), "{hunks:?}: {reason:?}");
+            assert!(selection.skipped.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_lockfile_change_keeps_every_test() {
+        let selection = tests_for(&["Cargo.lock"], Some(&map()), 1000000);
+        assert!(
+            selection
+                .everything
+                .unwrap_or_default()
+                .contains("Cargo.lock"),
+        );
+        assert!(selection.skipped.is_empty());
     }
 
     #[test]

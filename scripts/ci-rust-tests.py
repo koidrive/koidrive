@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 import argparse
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import json
 import math
@@ -153,27 +154,6 @@ def command_report(args):
     return 0
 
 
-def term(text):
-    binary, _, test = text.partition("=")
-    return binary, test
-
-
-def command_filter(args):
-    clauses = []
-    for binary, test in map(term, args.terms):
-        clauses.append(f"(binary_id(={binary}) & test({test}))" if test else f"binary_id(={binary})")
-    print(" | ".join(clauses))
-    return 0
-
-
-def command_matched(args):
-    ran = [(binary, name) for binary, name, _ in cases(args.junit)]
-    unmatched = [text for text in args.terms
-                 if not any(binary == term(text)[0] and term(text)[1] in name for binary, name in ran)]
-    for text in unmatched:
-        print(f"::error::The filter term {text} matched no test, so a test it should run was renamed or moved. Update the term.")
-    return 1 if unmatched else 0
-
 def failed(case):
     return any(case.find(tag) is not None for tag in ("failure", "error", "flakyFailure", "flakyError"))
 
@@ -212,10 +192,28 @@ def covered_files(report, root):
             if entry["filename"].startswith(prefix) and entry["summary"]["lines"]["covered"] > 0}
 
 
-def coverage_map(tests, sha, created):
+def function_spans(report, root):
+    prefix = root.rstrip("/") + "/"
+    spans = {}
+    for data in report["data"]:
+        for function in data["functions"]:
+            filename = function["filenames"][0]
+            lines = [(region[0], region[2]) for region in function["regions"] if region[5] == 0]
+            if filename.startswith(prefix) and lines:
+                spans.setdefault(filename[len(prefix):], set()).add((min(start for start, _ in lines), max(end for _, end in lines)))
+    return spans
+
+
+def blob(path):
+    data = path.read_bytes()
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def coverage_map(tests, spans, blobs, sha, created):
     files = sorted(set().union(*tests.values()))
     index = {file: number for number, file in enumerate(files)}
-    return {"sha": sha, "created": created, "files": files,
+    return {"sha": sha, "created": created,
+            "files": [{"path": file, "blob": blobs[file], "functions": sorted(map(list, spans.get(file, ())))} for file in files],
             "tests": {test: sorted(index[file] for file in covered) for test, covered in sorted(tests.items())}}
 
 
@@ -237,17 +235,55 @@ def command_coverage_map(args):
         report = subprocess.run([f"{args.llvm}/llvm-cov", "export", "-summary-only", f"-instr-profile={merged}", binary,
                                  *(f"-object={item}" for item in objects if item != binary)],
                                 check=True, capture_output=True, text=True).stdout
-        merged.unlink()
-        return test, covered_files(json.loads(report), args.root)
+        return test, binary, merged, covered_files(json.loads(report), args.root)
 
     folders = sorted(folder for folder in Path(args.profiles).iterdir() if (folder / "test").exists())
     with ThreadPoolExecutor(os.cpu_count()) as pool:
-        tests = dict(result for result in pool.map(measure, folders) if result)
-    Path(args.out).write_text(json.dumps(coverage_map(tests, args.sha, args.created)) + "\n")
+        results = [result for result in pool.map(measure, folders) if result]
+    tests = {test: covered for test, _, _, covered in results}
+    total = Path(args.profiles) / "total.profdata"
+    listing = Path(args.profiles) / "profiles.txt"
+    listing.write_text("".join(f"{merged}\n" for _, _, merged, _ in results))
+    subprocess.run([f"{args.llvm}/llvm-profdata", "merge", "-sparse", "-o", str(total), "-f", str(listing)], check=True)
+
+    def spans_of(binary):
+        report = subprocess.run([f"{args.llvm}/llvm-cov", "export", "-skip-expansions", f"-instr-profile={total}", binary],
+                                check=True, capture_output=True, text=True).stdout
+        return function_spans(json.loads(report), args.root)
+
+    spans = {}
+    with ThreadPoolExecutor(os.cpu_count()) as pool:
+        for found in pool.map(spans_of, sorted({binary for _, binary, _, _ in results} | set(objects))):
+            for file, functions in found.items():
+                spans.setdefault(file, set()).update(functions)
+    files = set().union(*tests.values())
+    blobs = {file: blob(Path(args.root) / file) for file in files}
+    Path(args.out).write_text(json.dumps(coverage_map(tests, spans, blobs, args.sha, args.created)) + "\n")
     print(f"The coverage map of {args.sha} records the files each of {len(tests)} tests ran. "
           f"It leaves out {len(failures)} tests that failed or were flaky and {len(passed - tests.keys())} passing tests with no profile, "
           f"so pull requests never skip them.")
     return 0
+
+def term(text):
+    binary, _, test = text.partition("=")
+    return binary, test
+
+
+def command_filter(args):
+    clauses = []
+    for binary, test in map(term, args.terms):
+        clauses.append(f"(binary_id(={binary}) & test({test}))" if test else f"binary_id(={binary})")
+    print(" | ".join(clauses))
+    return 0
+
+
+def command_matched(args):
+    ran = [(binary, name) for binary, name, _ in cases(args.junit)]
+    unmatched = [text for text in args.terms
+                 if not any(binary == term(text)[0] and term(text)[1] in name for binary, name in ran)]
+    for text in unmatched:
+        print(f"::error::The filter term {text} matched no test, so a test it should run was renamed or moved. Update the term.")
+    return 1 if unmatched else 0
 
 
 def main(argv):
@@ -265,12 +301,6 @@ def main(argv):
     report.add_argument("--list", action="append", required=True)
     report.add_argument("--junit", required=True)
     report.add_argument("--out", required=True)
-    terms_help = "BINARY_ID, or BINARY_ID=SUBSTRING to select that binary's tests whose names contain SUBSTRING"
-    filters = commands.add_parser("filter", help="Print the nextest filter expression that runs every term.")
-    filters.add_argument("terms", nargs="+", help=terms_help)
-    matched = commands.add_parser("matched", help="Fail unless every term matched at least one test in a nextest JUnit file.")
-    matched.add_argument("--junit", required=True)
-    matched.add_argument("terms", nargs="+", help=terms_help)
     shadow = commands.add_parser("shadow", help="Count the failed tests that the shadow test selection would have skipped.")
     shadow.add_argument("--selection", required=True)
     shadow.add_argument("--junit", action="append", required=True)
@@ -284,6 +314,12 @@ def main(argv):
     maps.add_argument("--sha", required=True)
     maps.add_argument("--created", type=int, required=True)
     maps.add_argument("--out", required=True)
+    terms_help = "BINARY_ID, or BINARY_ID=SUBSTRING to select that binary's tests whose names contain SUBSTRING"
+    filters = commands.add_parser("filter", help="Print the nextest filter expression that runs every term.")
+    filters.add_argument("terms", nargs="+", help=terms_help)
+    matched = commands.add_parser("matched", help="Fail unless every term matched at least one test in a nextest JUnit file.")
+    matched.add_argument("--junit", required=True)
+    matched.add_argument("terms", nargs="+", help=terms_help)
     args = parser.parse_args(argv)
     if args.command == "filter":
         return command_filter(args)

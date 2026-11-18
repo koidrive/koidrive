@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{Config, Jobs, PathOutcome, ReadMatch};
+use crate::{Analysis, Config, Jobs, PathOutcome};
 use camino::{Utf8Path, Utf8PathBuf};
 use guppy::graph::PackageGraph;
 use serde::{Deserialize, Serialize};
@@ -19,8 +19,93 @@ pub struct Tests {
 pub struct CoverageMap {
     pub sha: String,
     pub created: u64,
-    pub files: Vec<String>,
+    pub files: Vec<MapFile>,
     pub tests: BTreeMap<String, Vec<usize>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MapFile {
+    pub path: String,
+    pub blob: String,
+    pub functions: Vec<[u32; 2]>,
+}
+
+pub struct FileChange {
+    pub base_blob: Option<String>,
+    pub deleted: bool,
+    pub hunks: Vec<[u32; 2]>,
+}
+
+fn git(args: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .output()
+        .map_err(|error| format!("git {args:?}: {error}"))?;
+    if !matches!(output.status.code(), Some(0 | 1)) {
+        return Err(format!(
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    String::from_utf8(output.stdout).map_err(|error| format!("git {args:?}: {error}"))
+}
+
+fn hunks(diff: &str) -> Vec<[u32; 2]> {
+    diff.lines()
+        .filter_map(|line| line.strip_prefix("@@ -")?.split(' ').next())
+        .filter_map(|old| {
+            let (start, count) = old.split_once(',').unwrap_or((old, "1"));
+            let (start, count): (u32, u32) = (start.parse().ok()?, count.parse().ok()?);
+            Some(match count {
+                0 => [start, start + 1],
+                _ => [start, start + count - 1],
+            })
+        })
+        .collect()
+}
+
+pub fn changes(
+    base: &Utf8Path,
+    head: &Utf8Path,
+    paths: &[(String, PathOutcome)],
+) -> Result<BTreeMap<String, FileChange>, String> {
+    let mut found = BTreeMap::new();
+    for (path, outcome) in paths {
+        if *outcome != PathOutcome::Package || !path.ends_with(".rs") {
+            continue;
+        }
+        let (old, new) = (base.join(path), head.join(path));
+        let base_blob = match old.exists() {
+            true => Some(
+                git(&["hash-object", "--no-filters", old.as_str()])?
+                    .trim()
+                    .to_string(),
+            ),
+            false => None,
+        };
+        let hunks = match old.exists() && new.exists() {
+            true => hunks(&git(&[
+                "diff",
+                "--no-index",
+                "--no-color",
+                "-U0",
+                "--",
+                old.as_str(),
+                new.as_str(),
+            ])?),
+            false => Vec::new(),
+        };
+        found.insert(
+            path.clone(),
+            FileChange {
+                base_blob,
+                deleted: !new.exists(),
+                hunks,
+            },
+        );
+    }
+    Ok(found)
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -110,8 +195,8 @@ pub fn random(root: &Utf8Path, graph: &PackageGraph) -> Result<Random, String> {
 pub fn select(
     config: &Config,
     tests: &Tests,
-    paths: &[(String, PathOutcome)],
-    reads: &[ReadMatch],
+    analysis: &Analysis,
+    changes: &BTreeMap<String, FileChange>,
     random: &Random,
     map: Option<&CoverageMap>,
     now: u64,
@@ -129,15 +214,24 @@ pub fn select(
     if age > tests.max_map_age_days {
         return everything(format!("the coverage map of {} is {age} days old", map.sha));
     }
-    let readers: BTreeSet<&str> = reads.iter().map(|read| read.package.as_str()).collect();
+    let readers: BTreeSet<&str> = analysis
+        .reads
+        .iter()
+        .map(|read| read.package.as_str())
+        .collect();
     let known: BTreeMap<&str, usize> = map
         .files
         .iter()
         .enumerate()
-        .map(|(index, file)| (file.as_str(), index))
+        .map(|(index, file)| (file.path.as_str(), index))
         .collect();
     let mut changed = BTreeSet::new();
-    for (path, outcome) in paths {
+    for (path, outcome) in &analysis.paths {
+        if path == "Cargo.lock" {
+            return everything(
+                "`Cargo.lock` changes, and the coverage map cannot see dependency code".to_string(),
+            );
+        }
         match outcome {
             PathOutcome::Unknown | PathOutcome::EveryJob => {
                 return everything(format!("`{path}` runs every job"));
@@ -152,17 +246,39 @@ pub fn select(
                     return everything(format!("`{path}` matches the path rule {:?}", entry.globs));
                 }
             }
-            PathOutcome::Package => match known.get(path.as_str()) {
-                Some(index) if path.ends_with(".rs") => {
-                    changed.insert(*index);
-                }
-                _ => {
+            PathOutcome::Package => {
+                let Some(index) = known.get(path.as_str()).filter(|_| path.ends_with(".rs")) else {
                     return everything(format!(
                         "the coverage map of {} has no record of `{path}`",
                         map.sha
                     ));
+                };
+                let file = &map.files[*index];
+                let Some(change) = changes.get(path) else {
+                    return everything(format!("the change to `{path}` was not read"));
+                };
+                if change.base_blob.as_deref() != Some(file.blob.as_str()) {
+                    return everything(format!(
+                        "`{path}` changed on main after the coverage map of {}",
+                        map.sha
+                    ));
                 }
-            },
+                if change.deleted {
+                    return everything(format!("`{path}` is deleted"));
+                }
+                let inside = |hunk: &[u32; 2]| {
+                    file.functions
+                        .iter()
+                        .any(|function| function[0] <= hunk[0] && hunk[1] <= function[1])
+                };
+                if let Some(hunk) = change.hunks.iter().find(|hunk| !inside(hunk)) {
+                    return everything(format!(
+                        "`{path}` changes lines {}-{} outside the function bodies the coverage map records, where code runs without coverage (constants, macros, derives, types)",
+                        hunk[0], hunk[1]
+                    ));
+                }
+                changed.insert(*index);
+            }
             PathOutcome::Ignored => {}
         }
     }
@@ -171,7 +287,7 @@ pub fn select(
         everything: None,
         changed: changed
             .iter()
-            .map(|index| map.files[*index].clone())
+            .map(|index| map.files[*index].path.clone())
             .collect(),
         skipped: map
             .tests
@@ -184,5 +300,40 @@ pub fn select(
             })
             .map(|(test, _)| test.clone())
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_change_reads_the_base_blob_and_the_base_lines_of_each_hunk() {
+        let root = Utf8PathBuf::from_path_buf(
+            std::env::temp_dir().join(format!("ci-select-changes-{}", std::process::id())),
+        )
+        .unwrap();
+        let (base, head) = (root.join("base"), root.join("head"));
+        for dir in [&base, &head] {
+            fs::create_dir_all(dir.join("src")).unwrap();
+        }
+        fs::write(base.join("src/a.rs"), "a\n").unwrap();
+        fs::write(head.join("src/a.rs"), "b\n").unwrap();
+        fs::write(base.join("src/b.rs"), "1\n2\n3\n4\n5\n").unwrap();
+        fs::write(head.join("src/b.rs"), "1\n2\nnew\n3\n4\n").unwrap();
+        fs::write(base.join("src/gone.rs"), "x\n").unwrap();
+        let paths: Vec<_> = ["src/a.rs", "src/b.rs", "src/gone.rs"]
+            .iter()
+            .map(|path| (path.to_string(), PathOutcome::Package))
+            .collect();
+        let found = changes(&base, &head, &paths).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            found["src/a.rs"].base_blob.as_deref(),
+            Some("78981922613b2afb6025042ff6bd878ac1994e85")
+        );
+        assert_eq!(found["src/a.rs"].hunks, [[1, 1]]);
+        assert_eq!(found["src/b.rs"].hunks, [[2, 3], [5, 5]]);
+        assert!(found["src/gone.rs"].deleted && !found["src/a.rs"].deleted);
     }
 }

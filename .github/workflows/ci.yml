@@ -173,24 +173,27 @@ jobs:
             decide "$job" "ci.yml did not change" "$(grep -Fx '.github/workflows/ci.yml' <<<"$changed" || true)"
           done
       - name: Record the tests a coverage map would skip (shadow mode, every test still runs)
-        if: steps.selector.outcome == 'success' && steps.paths.outputs.site_only != 'true'
+        if: steps.selector.outcome == 'success' && steps.paths.outputs.site_only != 'true' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
         continue-on-error: true
+        timeout-minutes: 3
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p "$RUNNER_TEMP/coverage-map" "$RUNNER_TEMP/test-selection"
           if ! run="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow coverage-map.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')"; then
-            run=
+            echo "::warning::Looking up the newest coverage map failed (see the error above), so the shadow selection keeps every test."
+            jq -n '{map: null, everything: "looking up the newest coverage map failed", changed: [], skipped: []}' > "$RUNNER_TEMP/test-selection/selection.json"
+            exit 0
           fi
           if [ -n "$run" ]; then
             gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern 'coverage-map-*' --dir "$RUNNER_TEMP/coverage-map"
           fi
           map="$(find "$RUNNER_TEMP/coverage-map" -name coverage-map.json | head -n 1)"
-          scripts/ci-select/target/debug/ci-select .github/ci-select.toml "$RUNNER_TEMP/base" . "$RUNNER_TEMP/changed" \
+          env -u GITHUB_STEP_SUMMARY scripts/ci-select/target/debug/ci-select .github/ci-select.toml "$RUNNER_TEMP/base" . "$RUNNER_TEMP/changed" \
             --tests "${map:-$RUNNER_TEMP/coverage-map/none.json}" "$RUNNER_TEMP/test-selection/selection.json" > /dev/null
           jq -r '"Shadow test selection: " + (if .everything then "every test kept, because " + .everything else "\(.skipped | length) tests would be skipped against the coverage map of \(.map)" end) + "."' \
             "$RUNNER_TEMP/test-selection/selection.json"
-      - if: steps.selector.outcome == 'success' && steps.paths.outputs.site_only != 'true'
+      - if: steps.selector.outcome == 'success' && steps.paths.outputs.site_only != 'true' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rust-test-selection
