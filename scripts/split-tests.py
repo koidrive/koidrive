@@ -3,6 +3,7 @@
 
 import argparse
 from collections import Counter
+import difflib
 import json
 from pathlib import Path
 import re
@@ -154,6 +155,51 @@ def property_files(executable, path, revision=None):
     return files
 
 
+def base_blocks(executable, mapping, revision):
+    try:
+        retired = json.loads(read_source(revision, MAPPING.relative_to(ROOT).as_posix()))
+    except subprocess.CalledProcessError:
+        retired = {}
+    blocks = Counter()
+    for path in mapping.keys() | retired.keys():
+        try:
+            root = read_source(revision, path)
+        except subprocess.CalledProcessError:
+            continue
+        sources = [(Path(path), root, False)] + [
+            (scenario, read_source(revision, str(scenario)), True)
+            for scenario in (include_path(path, included["name"].removeprefix("include:"))
+                             for included in includes(executable, root))]
+        for held, source, fragment in sources:
+            blocks.update((item["name"], held) for item in items(executable, source, fragment=fragment)
+                          if item["kind"] == "property")
+    return blocks
+
+
+def tree_blocks(executable, mapping):
+    return Counter((item["name"], moved.relative_to(ROOT)) for path in mapping
+                   for moved, scenario in scenario_files(path)
+                   for item in items(executable, moved.read_bytes(), fragment=scenario != "root")
+                   if item["kind"] == "property")
+
+
+def require_properties_unmoved(base, tree):
+    def functions(name):
+        return set(name.removeprefix("proptest:").split(","))
+
+    old, new = list((base - tree).elements()), list((tree - base).elements())
+    for block in list(new):
+        edited = next((previous for previous in old if previous[1] == block[1]
+                       and functions(previous[0]) & functions(block[0])), None)
+        if edited:
+            old.remove(edited)
+            new.remove(block)
+    for name, held in new:
+        for previous, was in old:
+            if functions(name) & functions(previous):
+                raise ValueError(f"{name} must stay in {was}: a proptest block never changes file")
+
+
 def require_properties_in_place(path, assignments, files):
     for name, held in files.items():
         if name not in assignments:
@@ -222,20 +268,93 @@ def port(executable, mapping, base_ref, branch_ref):
     write(executable, render(executable, mapping, sources))
 
 
-def require_assigned(path, assignments, found):
+def require_assigned(path, assignments, found, fix=""):
     unknown = [item["name"] for item in found if item["name"] not in assignments]
     if unknown:
-        raise ValueError(f"assign these items in {MAPPING.relative_to(ROOT)} for {path}: {unknown}")
+        raise ValueError(f"assign these items in {MAPPING.relative_to(ROOT)} for {path}: {unknown}{fix}")
 
 
-def verify(executable, mapping, revision):
+MAP_FIX = "; run `python3 scripts/split-tests.py map` to assign each one to the file that holds it, then commit mapping.json"
+
+
+def scenario_files(path):
+    directory = output_path(path, "common").parent
+    return [(ROOT / path, "root")] + [(moved, moved.relative_to(directory).with_suffix("").as_posix())
+                                      for moved in sorted(directory.rglob("*.rs"))]
+
+
+def unformatted_lines(name, source):
+    result = subprocess.run(["rustfmt", "--edition", "2024", "--emit", "stdout"], input=source, capture_output=True)
+    if result.returncode:
+        raise ValueError(f"rustfmt cannot format {name}: {result.stderr.decode().strip()}")
+    def records(text):
+        return re.findall(rb"[^\n]*\n|[^\n]+$", text)
+
+    lines = set()
+    matcher = difflib.SequenceMatcher(None, records(source), records(result.stdout), autojunk=False)
+    for tag, start, end, _, _ in matcher.get_opcodes():
+        if tag != "equal":
+            lines.update(range(start + 1, max(end, start + 1) + 1))
+    return lines
+
+
+def changed_lines(diff):
+    changed, current, header = {}, None, False
+    for line in diff.split("\n"):
+        if line.startswith("diff --git "):
+            current, header = None, True
+        elif header and line.startswith("+++ b/"):
+            current = changed.setdefault(line.removeprefix("+++ b/"), set())
+        elif line.startswith("@@") and current is not None:
+            header = False
+            start, _, count = re.search(r"\+(\d+)(,(\d+))?", line).groups()
+            current.update(range(int(start), int(start) + int(count if count is not None else 1)))
+    return changed
+
+
+def check_format(mapping, changed, revision):
+    directories = [output_path(path, "common").parent.relative_to(ROOT) for path in mapping]
+    checked = sorted(name for name in changed
+                     if name.endswith(".rs") and any(Path(name).is_relative_to(directory) for directory in directories))
+    problems = [f"{name} lines {lines}" for name in checked
+                if (lines := sorted(unformatted_lines(name, read_source(revision, name)) & changed[name]))]
+    if problems:
+        raise ValueError(f"cargo fmt does not reach include! fragments, and these lines this change wrote are not formatted: "
+                         f"{'; '.join(problems)}; `rustfmt --edition 2024 --emit stdout < FILE | diff FILE -` "
+                         f"shows the formatting, so apply its hunks at those lines")
+    print(f"PASS rustfmt: changed lines in {len(checked)} fragments")
+
+
+def map_items(executable, mapping, base_ref):
+    require_properties_unmoved(base_blocks(executable, mapping, base_ref), tree_blocks(executable, mapping))
+    for path, assignments in mapping.items():
+        found = {}
+        for moved, scenario in scenario_files(path):
+            for item in items(executable, moved.read_bytes(), fragment=scenario != "root"):
+                found[item["name"]] = scenario
+        modules = [name for name in found if name.startswith("mod:") and found[name] != "root"]
+        if modules:
+            raise ValueError(f"{path}: move {modules} back to {path}: modules stay in root to preserve relative paths")
+        gone = [name for name in assignments if name not in found]
+        for name in gone:
+            del assignments[name]
+        placed = [name for name in found if assignments.get(name) != found[name]]
+        for name in placed:
+            assignments[name] = found[name]
+        print(f"{path}: assigned {len(placed)} items, dropped {len(gone)}")
+    MAPPING.write_text(json.dumps(mapping, indent=2) + "\n")
+
+
+def verify(executable, mapping, revision, base_ref=None):
+    if base_ref:
+        require_properties_unmoved(base_blocks(executable, mapping, base_ref), tree_blocks(executable, mapping))
     total = 0
     for path, assignments in mapping.items():
         original = load_source(executable, path, revision)
         root = (ROOT / path).read_bytes()
         root_items = parsed(executable, root)
         original_items = items(executable, original)
-        require_assigned(path, assignments, original_items)
+        require_assigned(path, assignments, original_items, MAP_FIX)
         reference_files = property_files(executable, path, revision)
         require_properties_in_place(path, assignments, reference_files)
         scenarios = {assignments[item["name"]] for item in original_items} - {"root"}
@@ -254,7 +373,7 @@ def verify(executable, mapping, revision):
         if set(paths[1:]) != {output_path(path, scenario) for scenario in scenarios}:
             raise ValueError(f"{path}: scenario file set differs from the mapping")
         found = {moved: items(executable, moved.read_bytes(), fragment=moved != ROOT / path) for moved in paths}
-        require_assigned(path, assignments, [item for moved_items in found.values() for item in moved_items])
+        require_assigned(path, assignments, [item for moved_items in found.values() for item in moved_items], MAP_FIX)
         for moved, moved_items in found.items():
             source = moved.read_bytes()
             for item in moved_items:
@@ -263,8 +382,10 @@ def verify(executable, mapping, revision):
                     raise ValueError(f"duplicated item in {path}: {name}")
                 if name in reference_files and moved.relative_to(ROOT) != reference_files[name]:
                     raise ValueError(f"{name} must stay in {reference_files[name]}: a proptest block never changes file")
+                if item["kind"] == "module" and moved != ROOT / path:
+                    raise ValueError(f"{name} must stay in {path}: modules stay in root to preserve relative paths")
                 if moved != scenario_file(path, assignments[name]):
-                    raise ValueError(f"wrong scenario for {name}: {moved}")
+                    raise ValueError(f"wrong scenario for {name}: {moved}{MAP_FIX}")
                 after[name] = source[item["start"]:item["end"]]
         if before != after:
             missing = set(before) - set(after)
@@ -294,10 +415,14 @@ def main():
     apply.add_argument("--source-ref")
     check = commands.add_parser("verify")
     check.add_argument("--source-ref", required=True)
+    check.add_argument("--base-ref")
     replay = commands.add_parser("port")
     replay.add_argument("--base-ref", required=True)
     replay.add_argument("--branch-ref", required=True)
     replay.add_argument("--assign", action="append", default=[], metavar="PATH::ITEM=SCENARIO")
+    commands.add_parser("map")
+    formatting = commands.add_parser("check-format")
+    formatting.add_argument("--base-ref", required=True)
     listing = commands.add_parser("compare-lists")
     listing.add_argument("before")
     listing.add_argument("after")
@@ -305,10 +430,28 @@ def main():
     if args.command == "compare-lists":
         compare_lists(args.before, args.after)
         return
+    if args.command == "check-format":
+        diff = subprocess.check_output(["git", "diff", "-U0", "--inter-hunk-context=0", "--text", "--no-color", "--no-ext-diff", "--src-prefix=a/",
+                                        "--dst-prefix=b/", "--diff-filter=d", args.base_ref, "HEAD"], cwd=ROOT)
+        mapping = json.loads(read_source("HEAD", MAPPING.relative_to(ROOT).as_posix()))
+        check_format(mapping, changed_lines(diff.decode(errors="replace")), "HEAD")
+        return
     executable = parser()
     mapping = json.loads(MAPPING.read_text())
+    base_ref = getattr(args, "base_ref", None)
+    if args.command == "map":
+        found = subprocess.run(["git", "merge-base", "origin/main", "HEAD"], cwd=ROOT, capture_output=True, text=True)
+        if found.returncode:
+            raise ValueError("map compares proptest blocks with `git merge-base origin/main HEAD`, which failed; "
+                             "run `git fetch origin main` and retry")
+        base_ref = found.stdout.strip()
+    if base_ref and subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{base_ref}^{{commit}}"],
+                                   cwd=ROOT, capture_output=True).returncode:
+        raise ValueError(f"base ref {base_ref} is not a commit in this repository")
     if args.command == "split":
         split(executable, mapping, args.source_ref)
+    elif args.command == "map":
+        map_items(executable, mapping, base_ref)
     elif args.command == "port":
         for assignment in args.assign:
             key, scenario = assignment.rsplit("=", 1)
@@ -317,8 +460,11 @@ def main():
         port(executable, mapping, args.base_ref, args.branch_ref)
         MAPPING.write_text(json.dumps(mapping, indent=2) + "\n")
     else:
-        verify(executable, mapping, args.source_ref)
+        verify(executable, mapping, args.source_ref, base_ref)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except ValueError as error:
+        raise SystemExit(f"error: {error}")
