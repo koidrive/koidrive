@@ -343,6 +343,36 @@ fn replacing_a_file_reports_a_modification() {
 }
 
 #[test]
+fn an_entry_made_on_an_inode_another_entry_just_freed_is_not_its_move() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join("a")).unwrap();
+    fs::create_dir(root.join("b")).unwrap();
+    for round in 0..200 {
+        fs::write(root.join("a/old.txt"), "old").unwrap();
+        fs::create_dir(root.join("a/old")).unwrap();
+        let mut snapshot = Snapshot::scan(root).unwrap();
+        fs::remove_file(root.join("a/old.txt")).unwrap();
+        fs::write(root.join("b/new.txt"), "new").unwrap();
+        fs::remove_dir(root.join("a/old")).unwrap();
+        fs::create_dir(root.join("b/new")).unwrap();
+        let changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
+        assert_eq!(
+            changes,
+            [
+                removed("a/old", Dir),
+                removed("a/old.txt", File),
+                created("b/new", Dir),
+                created("b/new.txt", File),
+            ],
+            "round {round}"
+        );
+        fs::remove_file(root.join("b/new.txt")).unwrap();
+        fs::remove_dir(root.join("b/new")).unwrap();
+    }
+}
+
+#[test]
 fn rescan_refuses_a_missing_root() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("space");
