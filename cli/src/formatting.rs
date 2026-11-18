@@ -13,6 +13,30 @@ pub(crate) fn ago(ms: i64, now_ms: i64) -> String {
     }
 }
 
+pub(crate) fn local_time(ms: i64, now_ms: i64) -> String {
+    let local = |ms: i64| {
+        let seconds = ms.div_euclid(1000) as libc::time_t;
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        let converted = unsafe { libc::localtime_r(&seconds, &mut tm) };
+        (!converted.is_null()).then_some(tm)
+    };
+    let (Some(at), Some(now)) = (local(ms), local(now_ms)) else {
+        return ago(ms, now_ms);
+    };
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month = MONTHS[at.tm_mon.clamp(0, 11) as usize];
+    let year = match at.tm_year == now.tm_year {
+        true => String::new(),
+        false => format!(" {}", at.tm_year + 1900),
+    };
+    format!(
+        "{month} {}{year}, {:02}:{:02}",
+        at.tm_mday, at.tm_hour, at.tm_min
+    )
+}
+
 pub(crate) fn count(n: u64, noun: &str) -> String {
     format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
 }

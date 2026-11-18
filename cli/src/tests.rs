@@ -8,7 +8,7 @@ use crate::device::{
 };
 use crate::error::CliError;
 use crate::folder::restarted;
-use crate::formatting::{ago, now_ms, size};
+use crate::formatting::{ago, local_time, now_ms, size};
 use crate::lifecycle::{finish_lifecycle, finish_setup, run};
 use crate::logging::log_ansi;
 use crate::options::RequestArg;
@@ -2587,6 +2587,13 @@ fn a_restore_asked_for_before_recovery_is_listed_by_its_file_and_what_it_brings_
                 }
             },
             {
+                "node_id": "restore-3", "path": "docs/draft.txt", "files": 1,
+                "restore": {
+                    "type": "version", "node_id": "draft", "version_id": "draft-1",
+                    "saved_at_ms": 1_737_004_020_000_i64
+                }
+            },
+            {
                 "node_id": "restore-2", "path": "notes.txt", "files": 1,
                 "restore": { "type": "from_trash", "node_id": "notes" }
             }
@@ -2595,11 +2602,23 @@ fn a_restore_asked_for_before_recovery_is_listed_by_its_file_and_what_it_brings_
     .unwrap();
     let text = question_text(&question);
     let lines: Vec<&str> = text.lines().collect();
+    let (first, second) = (
+        local_time(1_737_000_000_000, now_ms()),
+        local_time(1_737_004_020_000, now_ms()),
+    );
+    assert_ne!(first, second);
+    for saved in [&first, &second] {
+        let (day, time) = saved.split_once(", ").unwrap();
+        let (month, _) = day.split_once(' ').unwrap();
+        assert!(["Jan", "Feb"].contains(&month), "{saved}");
+        assert_eq!(time.len(), "14:02".len(), "{saved}");
+    }
     assert_eq!(
-        lines[lines.len() - 2..],
+        lines[lines.len() - 3..],
         [
-            "  docs/draft.txt (an earlier version)",
-            "  notes.txt (from the trash)"
+            format!("  docs/draft.txt (an earlier version from {first})"),
+            format!("  docs/draft.txt (an earlier version from {second})"),
+            "  notes.txt (from the trash)".to_owned(),
         ],
         "{text}"
     );
@@ -2612,6 +2631,13 @@ fn a_restore_asked_for_before_recovery_is_listed_by_its_file_and_what_it_brings_
                 "restore": {
                     "type": "version", "node_id": "draft", "version_id": "draft-0",
                     "saved_at_ms": 1_737_000_000_000_i64
+                }
+            },
+            {
+                "node_id": "restore-3", "path": "docs/draft.txt", "files": 1,
+                "restore": {
+                    "type": "version", "node_id": "draft", "version_id": "draft-1",
+                    "saved_at_ms": 1_737_004_020_000_i64
                 }
             },
             {

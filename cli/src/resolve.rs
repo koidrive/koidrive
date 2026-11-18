@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::error::CliError;
-use crate::formatting::{count, need_you, printable};
+use crate::formatting::{count, local_time, need_you, now_ms, printable};
 use crate::profile::unexpected;
 use crate::report::{AnsweredData, Decision, Done};
 use crate::{ipc, output};
@@ -371,6 +371,13 @@ fn question_text_presented(question: &Question, presentation: QuestionPresentati
     }
     for item in question.items.iter().take(ITEMS_SHOWN) {
         let what = match item.restore {
+            Some(RestoreRequest::Version {
+                saved_at_ms: Some(saved_at_ms),
+                ..
+            }) => format!(
+                "an earlier version from {}",
+                local_time(saved_at_ms, now_ms())
+            ),
             Some(RestoreRequest::Version { .. }) => "an earlier version".to_owned(),
             Some(RestoreRequest::FromTrash { .. }) => "from the trash".to_owned(),
             None => count(item.files, "file"),
