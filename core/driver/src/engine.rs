@@ -3551,6 +3551,49 @@ mod tests {
         assert_eq!(holding(&engine, "four"), Some(two));
     }
 
+    #[test]
+    fn an_identity_reused_by_an_entry_of_another_kind_never_takes_the_old_entrys_node() {
+        let folder = |path: &str, id: u64| Observed::Created {
+            path: path.into(),
+            kind: EntryKind::Dir,
+            id: ino(id),
+            linked: false,
+            content: None,
+            marked_node: None,
+        };
+        let reidentified = |path: &str, id: u64| Observed::Reidentified {
+            path: path.into(),
+            id: ino(id),
+        };
+        let check = |first: &[Observed], second: &[Observed], held: &[(&str, Kind)]| {
+            let (_dir, mut engine) = mapper();
+            engine.observe(first, 0);
+            engine.observe(second, 1);
+            assert_eq!(engine.trees.check(), Ok(()), "after {second:?}");
+            let kinds: BTreeMap<PathBuf, Kind> = (engine.trees.local().iter())
+                .filter_map(|(id, node)| Some((engine.path_of(id)?, node.shape.kind)))
+                .collect();
+            let held = (held.iter())
+                .map(|&(path, kind)| (PathBuf::from(path), kind))
+                .collect();
+            assert_eq!(kinds, held, "after {second:?}");
+        };
+        check(
+            &[folder("ß", 1), created("a", ino(2), false, 1)],
+            &[
+                renamed("a", "ß/a", ino(2), false),
+                created("ß/ß", ino(1), false, 2),
+                reidentified("ß", 3),
+            ],
+            &[("ß", Kind::Dir), ("ß/a", Kind::File), ("ß/ß", Kind::File)],
+        );
+        check(
+            &[folder("a", 1)],
+            &[created("ß", ino(1), false, 2), reidentified("a", 3)],
+            &[("a", Kind::Dir), ("ß", Kind::File)],
+        );
+    }
+
     /// Names that the edits of [`batches`] pick from, few enough that entries often take each other's names.
     const EDITED: [&str; 3] = ["a", "b", "ß"];
 
