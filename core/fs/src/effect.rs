@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
@@ -27,6 +27,8 @@ pub const STAGING_DIR: &str = "staging";
 /// The folder inside the private folder that holds displaced entries until
 /// they are compared. It is never swept.
 pub const QUARANTINE_DIR: &str = "quarantine";
+type Held = [(Folder, BTreeSet<OsString>); 2];
+
 const BROUGHT_BACK: &str = "brought-back.json";
 const BROUGHT_BACK_TEMP: &str = "brought-back.json.tmp";
 
@@ -510,6 +512,52 @@ impl Space {
         name: impl Fn(&OsStr, FileId) -> OsString,
         now: SystemTime,
     ) -> io::Result<Vec<PathBuf>> {
+        let Some((root, held)) = self.set_aside()? else {
+            return Ok(Vec::new());
+        };
+        let mut moved = Vec::new();
+        for (private, entries) in &held {
+            for entry in entries {
+                moved.push(self.bring_back_entry(&root, private, entry, &name, now)?);
+            }
+        }
+        Ok(moved)
+    }
+
+    /// Moves every entry back as [`Space::bring_back_all`] does, but goes on past an entry it cannot move, and hands
+    /// `moved` the path each one took, or why it stayed, before it moves the next.
+    pub fn bring_back_each(
+        &self,
+        name: impl Fn(&OsStr, FileId) -> OsString,
+        now: SystemTime,
+        mut moved: impl FnMut(io::Result<PathBuf>),
+    ) -> io::Result<()> {
+        let Some((root, held)) = self.set_aside()? else {
+            return Ok(());
+        };
+        for (private, entries) in &held {
+            for entry in entries {
+                moved(self.bring_back_entry(&root, private, entry, &name, now));
+            }
+        }
+        Ok(())
+    }
+
+    fn bring_back_entry(
+        &self,
+        root: &Folder,
+        private: &Folder,
+        entry: &OsStr,
+        name: &impl Fn(&OsStr, FileId) -> OsString,
+        now: SystemTime,
+    ) -> io::Result<PathBuf> {
+        let stat = stat_at(private.fd(), entry)?;
+        let original = name(entry, stat.id);
+        let folder = stat.file_type == FileType::Directory;
+        self.move_to_recovered_name(private, entry, root, &original, folder, now)
+    }
+
+    fn set_aside(&self) -> io::Result<Option<(Folder, Held)>> {
         let root = self.root_folder()?;
         let held = [PARKED_DIR, QUARANTINE_DIR].map(|dir| self.private(&[dir]));
         let [parked, quarantine] = held.map(|private| -> io::Result<_> {
@@ -519,7 +567,7 @@ impl Space {
         });
         let held = [parked?, quarantine?];
         if held.iter().all(|(_, entries)| entries.is_empty()) {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         if let BroughtBack::Entries(mut brought_back) = self.brought_back()? {
             for (private, entries) in &held {
@@ -538,18 +586,7 @@ impl Space {
                 Flush::Barrier,
             )?;
         }
-        let mut moved = Vec::new();
-        for (private, entries) in &held {
-            for entry in entries {
-                let stat = stat_at(private.fd(), entry)?;
-                let original = name(entry, stat.id);
-                let folder = stat.file_type == FileType::Directory;
-                moved.push(
-                    self.move_to_recovered_name(private, entry, &root, &original, folder, now)?,
-                );
-            }
-        }
-        Ok(moved)
+        Ok(Some((root, held)))
     }
 
     /// The identities of the entries [`Space::bring_back_all`] moved. The record is never pruned,

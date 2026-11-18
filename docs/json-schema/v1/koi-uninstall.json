@@ -619,6 +619,23 @@
           "type": "object"
         },
         {
+          "description": "A version of a file that syncing set aside in a synced folder's `.koidrive` and that could not be brought back.",
+          "properties": {
+            "kind": {
+              "const": "set_aside",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The `.koidrive` folder of a synced folder that another device or profile links.",
           "properties": {
             "kind": {
@@ -1235,6 +1252,13 @@
     },
     "UninstalledData": {
       "properties": {
+        "brought_back": {
+          "description": "Each version of a file that syncing had set aside in a synced folder's `.koidrive`, now back in its folder under\na recovered name.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "device": {
           "$ref": "#/$defs/DeviceOutcome"
         },

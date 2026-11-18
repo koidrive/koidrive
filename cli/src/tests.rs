@@ -720,6 +720,7 @@ async fn leave_cleanup_quotes_terminal_controls_but_preserves_json_data() {
                     error: error.into(),
                 }],
                 unconfirmed: None,
+                set_aside: Default::default(),
             },
         )
         .await
@@ -744,6 +745,30 @@ async fn leave_cleanup_quotes_terminal_controls_but_preserves_json_data() {
 }
 
 #[test]
+fn leave_names_each_version_it_brought_back_and_each_it_could_not() {
+    let set_aside = koidrive_driver::SetAside {
+        brought_back: vec![PathBuf::from("/Docs/report (recovered 2026-11-18).docx")],
+        kept: vec![PathBuf::from("/Docs/.koidrive/parked/n\u{1b}1")],
+    };
+    let done = left(Vec::new(), None, &set_aside);
+
+    assert!(done.text.contains("Brought back /Docs/report (recovered 2026-11-18).docx, which Koidrive had set aside while syncing.\n"), "{}", done.text);
+    assert!(done.text.contains("Could not bring back /Docs/.koidrive/parked/n\\u{1b}1, which Koidrive had set aside while syncing. Move it out of .koidrive to keep it.\n"), "{}", done.text);
+    assert!(matches!(done.tone, crate::output::Tone::Attention));
+    assert_eq!(
+        done.data["brought_back"][0],
+        "/Docs/report (recovered 2026-11-18).docx"
+    );
+    assert_eq!(done.data["kept"][0], "/Docs/.koidrive/parked/n\u{1b}1");
+    assert!(
+        left(Vec::new(), None, &Default::default())
+            .data
+            .get("kept")
+            .is_none()
+    );
+}
+
+#[test]
 fn leave_cleanup_accepts_non_utf8_paths_and_emits_lossy_json_without_panicking() {
     use std::os::unix::ffi::OsStringExt;
 
@@ -753,6 +778,7 @@ fn leave_cleanup_accepts_non_utf8_paths_and_emits_lossy_json_without_panicking()
             error: "denied\n\u{1b}".into(),
         }],
         None,
+        &Default::default(),
     );
 
     assert!(done.text.contains("\"/cleanup/bad\\xFF\\n\\u{1b}\""));

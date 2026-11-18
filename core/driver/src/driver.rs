@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -76,12 +77,36 @@ fn cleanup_path<S: serde::Serializer>(path: &Path, serializer: S) -> Result<S::O
     path.to_string_lossy().serialize(serializer)
 }
 
-/// What a sign-out left undone: each file or directory it could not remove, and, when the server did not confirm that
+/// The local versions that a folder's syncing had set aside in its `.koidrive` folder, after an unlink or a sign-out
+/// removed its sync records: each one brought back into the folder under a recovered name, and each one that stayed
+/// where it was because it could not be.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetAside {
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        serialize_with = "lossy_paths"
+    )]
+    pub brought_back: Vec<PathBuf>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        serialize_with = "lossy_paths"
+    )]
+    pub kept: Vec<PathBuf>,
+}
+
+fn lossy_paths<S: serde::Serializer>(paths: &[PathBuf], serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(paths.iter().map(|path| path.to_string_lossy()))
+}
+
+/// What a sign-out left undone: each file or directory it could not remove, the versions syncing had set aside, and, when the server did not confirm that
 /// it revoked this device, why not. Such a device can stay on the server's list until another device revokes it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SignedOut {
     pub not_removed: Vec<CleanupFailure>,
     pub unconfirmed: Option<Unconfirmed>,
+    pub set_aside: SetAside,
 }
 
 /// A sign-out that went ahead without the server confirming that it revoked the device. The profile keeps this record
@@ -198,6 +223,14 @@ pub enum DriverError {
         koidrive_fs::quoted(.0)
     )]
     UnlinkUnfinished(PathBuf),
+    #[error(
+        "{error}; the versions syncing had set aside are back in the folder as {}",
+        brought_back.iter().map(|path| koidrive_fs::quoted(path).to_string()).collect::<Vec<_>>().join(", ")
+    )]
+    UnlinkFailedAfterBringingBack {
+        error: Box<DriverError>,
+        brought_back: Vec<PathBuf>,
+    },
     #[error(
         "this device was not signed out, because {} cannot be unlinked: {error}",
         koidrive_fs::quoted(.path)
@@ -437,6 +470,19 @@ struct Folder {
     store: Arc<RwLock<()>>,
     progress: Arc<Mutex<crate::progress::Tracker>>,
     observing: Arc<Mutex<Option<crate::observe::Observing>>>,
+    brought_back: Vec<PathBuf>,
+}
+
+const UNLINK_BROUGHT_BACK: &str = "unlink-brought-back.json";
+
+fn recorded_brought_back(store: &Path) -> Vec<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    (fs::read(store.with_file_name(UNLINK_BROUGHT_BACK)).ok())
+        .and_then(|bytes| serde_json::from_slice::<Vec<Vec<u8>>>(&bytes).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| PathBuf::from(std::ffi::OsString::from_vec(path)))
+        .collect()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1083,25 +1129,32 @@ impl Driver {
             }
         }
         failed.extend(self.forget_credential());
+        let mut set_aside = SetAside::default();
         for link in &leaving.intent.links {
-            let (done, store) = {
+            let (done, store, earlier) = {
                 let mut folders = self.inner.folders.lock().unwrap();
                 folders
                     .get_mut(&link.space_id)
-                    .map_or((None, None), |folder| {
+                    .map_or((None, None, Vec::new()), |folder| {
                         folder.unlink = Some(Unlink::Running);
                         (
                             folder.run.as_ref().map(Running::stop),
                             Some(folder.store.clone()),
+                            std::mem::take(&mut folder.brought_back),
                         )
                     })
             };
+            set_aside.brought_back.extend(earlier);
             if let Some(done) = done {
                 ended(done).await;
             }
             let _readers_gone = store
                 .as_ref()
                 .map(|store| store.write().unwrap_or_else(PoisonError::into_inner));
+            let kept = self.bring_back(&link.root, &link.owner, &link.space_id, |path| {
+                set_aside.brought_back.push(path);
+            });
+            set_aside.kept.extend(kept);
             if let Err(error) = claim::release(&link.root, &link.owner)
                 && error.kind() != io::ErrorKind::NotFound
             {
@@ -1136,6 +1189,7 @@ impl Driver {
                 true => unconfirmed,
                 false => Unconfirmed::recorded(&self.inner.paths),
             },
+            set_aside,
         })
     }
 
@@ -1549,6 +1603,7 @@ impl Driver {
             store: Arc::default(),
             progress: Arc::default(),
             observing: Arc::default(),
+            brought_back: Vec::new(),
         };
         drop(lock);
         if self.syncs() && !folder.status.needs_restart() {
@@ -1562,15 +1617,17 @@ impl Driver {
     }
 
     /// Stops syncing the folder at `folder` and forgets its sync state. The files stay, and so does the folder's
-    /// `.koidrive` directory, whose local trash may hold displaced files. If the owner record or the store cannot be
-    /// removed, the folder stays linked and halted with the error, so unlinking it again finishes the job.
-    pub async fn unlink(&self, folder: &Path) -> Result<Link, DriverError> {
+    /// `.koidrive` directory with its local trash. Local versions that syncing set aside there are first brought back
+    /// into the folder under recovered names, as recovery names them; the ones that cannot be stay and are returned as
+    /// kept. If the owner record or the store cannot be removed, the folder stays linked and halted with the error, so
+    /// unlinking it again finishes the job.
+    pub async fn unlink(&self, folder: &Path) -> Result<(Link, SetAside), DriverError> {
         let _lifecycle = self.inner.lifecycle.lock().await;
         self.unlink_folder(folder).await
     }
 
-    async fn unlink_folder(&self, folder: &Path) -> Result<Link, DriverError> {
-        let (link, done, store) = {
+    async fn unlink_folder(&self, folder: &Path) -> Result<(Link, SetAside), DriverError> {
+        let (link, done, store, earlier) = {
             let mut folders = self.inner.folders.lock().unwrap();
             let found = find(&mut folders, folder)?;
             if let Err(error) = found.status.begin_unlink() {
@@ -1588,7 +1645,12 @@ impl Driver {
             }
             found.unlink = Some(Unlink::Running);
             let done = found.run.as_ref().map(Running::stop);
-            (found.link.clone(), done, found.store.clone())
+            (
+                found.link.clone(),
+                done,
+                found.store.clone(),
+                std::mem::take(&mut found.brought_back),
+            )
         };
         let _unlinking = Unlinking {
             driver: self,
@@ -1597,9 +1659,9 @@ impl Driver {
         if let Some(done) = done {
             ended(done).await;
         }
-        let forgotten = {
+        let (set_aside, forgotten) = {
             let _readers_gone = store.write().unwrap_or_else(PoisonError::into_inner);
-            self.forget(&link)
+            self.forget(&link, earlier)
         };
         let mut folders = self.inner.folders.lock().unwrap();
         match forgotten {
@@ -1611,6 +1673,7 @@ impl Driver {
             }
             Err(ref error) => {
                 if let Some(folder) = folders.get_mut(&link.space_id) {
+                    folder.brought_back.clone_from(&set_aside.brought_back);
                     folder.run = None;
                     folder.unlink = None;
                     halt(
@@ -1623,13 +1686,23 @@ impl Driver {
         }
         drop(folders);
         self.changed();
-        forgotten.map(|()| link)
+        match forgotten {
+            Ok(()) => Ok((link, set_aside)),
+            Err(error) if set_aside.brought_back.is_empty() => Err(error),
+            Err(error) => Err(DriverError::UnlinkFailedAfterBringingBack {
+                error: Box::new(error),
+                brought_back: set_aside.brought_back,
+            }),
+        }
     }
 
     /// Unlinks the folder that syncs `space_id` as [`Driver::unlink`] does, and returns its link. A folder whose sync
     /// database and copy of its link can't be read has no known path: only its state on this device is removed, and
     /// this returns `None`.
-    pub async fn unlink_space(&self, space_id: &str) -> Result<Option<Link>, DriverError> {
+    pub async fn unlink_space(
+        &self,
+        space_id: &str,
+    ) -> Result<Option<(Link, SetAside)>, DriverError> {
         let _lifecycle = self.inner.lifecycle.lock().await;
         self.inner.paths.store(space_id)?;
         let root = (self.inner.folders.lock().unwrap().get(space_id))
@@ -1653,18 +1726,44 @@ impl Driver {
         Ok(())
     }
 
-    /// Removes the folder's owner record, then its store. The store records the link, so it goes last: until both are
-    /// gone, the folder is found again to finish unlinking it. Either one already missing counts as removed.
-    fn forget(&self, link: &Link) -> Result<(), DriverError> {
+    fn forget(
+        &self,
+        link: &Link,
+        mut brought_back: Vec<PathBuf>,
+    ) -> (SetAside, Result<(), DriverError>) {
         let owner = Owner {
             server: link.server_url.clone(),
             device_id: link.device_id.clone(),
         };
-        match claim::release(&link.root, &owner) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(io_error(&link.root)(error)),
-        }
+        let store = self
+            .inner
+            .paths
+            .store(&link.space_id)
+            .map_err(io::Error::other);
+        let kept = self.bring_back(&link.root, &owner, &link.space_id, |path| {
+            brought_back.push(path);
+            let recorded = match &store {
+                Ok(store) => {
+                    use std::os::unix::ffi::OsStrExt;
+                    let bytes: Vec<&[u8]> =
+                        (brought_back.iter()).map(|path| path.as_os_str().as_bytes()).collect();
+                    serde_json::to_vec(&bytes)
+                }
+                .map_err(io::Error::other)
+                    .and_then(|bytes| {
+                        koidrive_state_file::write(&store.with_file_name(UNLINK_BROUGHT_BACK), &bytes)
+                    }),
+                Err(error) => Err(io::Error::other(error.to_string())),
+            };
+            if let Err(error) = recorded {
+                tracing::warn!(space_id = link.space_id, %error, "a version brought back into the folder could not be recorded");
+            }
+        });
+        let set_aside = SetAside { brought_back, kept };
+        (set_aside, self.release_and_remove(link, &owner))
+    }
+
+    fn release_and_remove(&self, link: &Link, owner: &Owner) -> Result<(), DriverError> {
         let store_dir = self
             .inner
             .paths
@@ -1672,11 +1771,80 @@ impl Driver {
             .parent()
             .expect("a store path has a parent")
             .to_path_buf();
+        let spaces = self.inner.paths.spaces();
+        rustix::fs::accessat(
+            rustix::fs::CWD,
+            &spaces,
+            rustix::fs::Access::WRITE_OK | rustix::fs::Access::EXEC_OK,
+            rustix::fs::AtFlags::EACCESS,
+        )
+        .map_err(|error| io_error(&spaces)(error.into()))?;
+        match claim::release(&link.root, owner) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_error(&link.root)(error)),
+        }
         match fs::remove_dir_all(&store_dir) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(io_error(&store_dir)(error)),
         }
+    }
+
+    fn bring_back(
+        &self,
+        root: &Path,
+        owner: &Owner,
+        space_id: &str,
+        mut moved: impl FnMut(PathBuf),
+    ) -> Vec<PathBuf> {
+        if held_aside(root).is_empty() {
+            return Vec::new();
+        }
+        match self.bring_back_held(root, owner, space_id, &mut moved) {
+            Ok(true) => {}
+            Ok(false) => return Vec::new(),
+            Err(error) => {
+                tracing::warn!(space_id, %error, "what the folder set aside stays in its .koidrive folder");
+            }
+        }
+        held_aside(root)
+    }
+
+    fn bring_back_held(
+        &self,
+        root: &Path,
+        owner: &Owner,
+        space_id: &str,
+        moved: &mut impl FnMut(PathBuf),
+    ) -> io::Result<bool> {
+        let other = || Ok::<_, io::Error>(claim::owner(root)?.is_some_and(|found| found != *owner));
+        if other()? {
+            return Ok(false);
+        }
+        let lock = claim::lock(root)?
+            .ok_or_else(|| io::Error::other("another Koidrive process syncs the folder"))?;
+        if other()? {
+            return Ok(false);
+        }
+        let store = self.inner.paths.store(space_id).map_err(io::Error::other)?;
+        let (link, engine) = Store::open_existing(&store)
+            .and_then(|mut store| {
+                store.transaction(|tx| Ok((tx.link()?, crate::engine::Engine::load(tx, space_id)?)))
+            })
+            .map_err(io::Error::other)?;
+        let link =
+            link.ok_or_else(|| io::Error::other("the folder's sync records name no folder"))?;
+        let space = koidrive_fs::Space::bind(OwnedFd::from(lock.try_clone()?), root)?;
+        (link.root_at().admits(&space.root_at()?)).map_err(io::Error::other)?;
+        let name = |held: &OsStr, found| crate::disk::held_name(&engine.trees, held, found);
+        space.bring_back_each(name, SystemTime::now(), |result| match result {
+            Ok(path) => moved(root.join(path)),
+            Err(error) => {
+                tracing::warn!(space_id, %error, "a version the folder set aside stays in its .koidrive folder");
+            }
+        })?;
+        Ok(true)
     }
 
     /// Unanswered questions of every linked folder, oldest first per folder. Both files of a conflict show their
@@ -2402,6 +2570,24 @@ fn roots(folders: &BTreeMap<String, Folder>) -> Vec<PathBuf> {
         .collect()
 }
 
+fn held_aside(root: &Path) -> Vec<PathBuf> {
+    let private = root.join(koidrive_fs::PRIVATE_DIR);
+    let mut held = Vec::new();
+    for dir in [koidrive_fs::PARKED_DIR, koidrive_fs::QUARANTINE_DIR].map(|dir| private.join(dir)) {
+        let listed = fs::symlink_metadata(&dir).and_then(|meta| match meta.is_dir() {
+            true => fs::read_dir(&dir)?.map(|entry| Ok(entry?.path())).collect(),
+            false => Ok(vec![dir.clone()]),
+        });
+        match listed {
+            Ok(entries) => held.extend(entries),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => held.push(dir),
+        }
+    }
+    held.sort();
+    held
+}
+
 /// Refuses a folder that holds or sits inside one of the profile's private directories or another linked folder.
 /// Folders are compared by the identity of each folder and its ancestors as well as by path, so a symbolic link or a
 /// bind mount does not hide an overlap. Linking checks this, and so does each folder task before it observes the
@@ -2546,6 +2732,7 @@ fn load_folders(
                 store: Arc::default(),
                 progress: Arc::default(),
                 observing: Arc::default(),
+                brought_back: recorded_brought_back(&found.store),
             },
         );
     }
@@ -3976,6 +4163,245 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_version_that_cannot_move_leaves_the_others_brought_back_and_named() {
+        use std::os::unix::fs::PermissionsExt;
+        if rustix::process::geteuid().is_root() {
+            eprintln!("SKIPPED: running as root, so permissions do not block moves");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        let private = root.join(".koidrive");
+        fs::create_dir_all(private.join("parked")).unwrap();
+        fs::create_dir_all(private.join("quarantine")).unwrap();
+        fs::write(private.join("parked/n1"), b"parked").unwrap();
+        fs::write(private.join("quarantine/e7"), b"quarantined").unwrap();
+        fs::set_permissions(private.join("parked"), fs::Permissions::from_mode(0o555)).unwrap();
+        let driver = Driver::open(paths).unwrap();
+
+        let unlinked = driver.unlink(&root).await;
+        fs::set_permissions(private.join("parked"), fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (_, set_aside) = unlinked.unwrap();
+        assert_eq!(set_aside.kept, [private.join("parked/n1")]);
+        let [back] = &set_aside.brought_back[..] else {
+            panic!("one version comes back: {set_aside:?}");
+        };
+        assert_eq!(back.parent(), Some(root.as_path()));
+        assert_eq!(fs::read(back).unwrap(), b"quarantined");
+    }
+
+    #[tokio::test]
+    async fn a_failed_unlink_names_the_versions_it_brought_back_and_so_does_its_retry_in_a_new_process()
+     {
+        use std::os::unix::fs::PermissionsExt;
+        if rustix::process::geteuid().is_root() {
+            eprintln!("SKIPPED: running as root, so permissions do not block moves");
+            return;
+        }
+        for reopen in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let base = fs::canonicalize(dir.path()).unwrap();
+            let paths = Paths::under(&base.join("profile"));
+            let root = base.join("Koidrive");
+            linked(&paths, &root, "d1");
+            fs::create_dir_all(root.join(".koidrive/parked")).unwrap();
+            fs::write(root.join(".koidrive/parked/n1"), b"parked").unwrap();
+            let spaces = paths.spaces();
+            fs::set_permissions(&spaces, fs::Permissions::from_mode(0o555)).unwrap();
+            let driver = Driver::open(paths.clone()).unwrap();
+
+            let failed = driver.unlink(&root).await.err();
+            fs::set_permissions(&spaces, fs::Permissions::from_mode(0o755)).unwrap();
+            let driver = match reopen {
+                true => {
+                    drop(driver);
+                    Driver::open(paths.clone()).unwrap()
+                }
+                false => driver,
+            };
+            let (_, set_aside) = driver.unlink(&root).await.unwrap();
+
+            let [back] = &set_aside.brought_back[..] else {
+                panic!("the finished unlink names the version: {set_aside:?}");
+            };
+            assert_eq!(fs::read(back).unwrap(), b"parked");
+            assert!(
+                matches!(&failed, Some(DriverError::UnlinkFailedAfterBringingBack { brought_back, .. }) if *brought_back == set_aside.brought_back),
+                "{failed:?}"
+            );
+            assert_eq!(fs::read_dir(&spaces).unwrap().count(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unlink_names_a_folder_of_set_aside_versions_it_cannot_read_as_kept() {
+        use std::os::unix::fs::PermissionsExt;
+        if rustix::process::geteuid().is_root() {
+            eprintln!("SKIPPED: running as root, so permissions do not block reads");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        let parked = root.join(".koidrive/parked");
+        fs::create_dir_all(&parked).unwrap();
+        fs::write(parked.join("n1"), b"parked").unwrap();
+        fs::set_permissions(&parked, fs::Permissions::from_mode(0o000)).unwrap();
+        let driver = Driver::open(paths).unwrap();
+
+        let unlinked = driver.unlink(&root).await;
+        fs::set_permissions(&parked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (_, set_aside) = unlinked.unwrap();
+        assert_eq!(set_aside.kept, std::slice::from_ref(&parked));
+        assert_eq!(fs::read(parked.join("n1")).unwrap(), b"parked");
+    }
+
+    #[tokio::test]
+    async fn an_unlink_reports_nothing_of_versions_another_device_set_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        let other = Owner {
+            server: "https://other.example.com/".into(),
+            device_id: "d9".into(),
+        };
+        claim::set_owner(&root, &other).unwrap();
+        fs::create_dir_all(root.join(".koidrive/parked")).unwrap();
+        fs::write(root.join(".koidrive/parked/n1"), b"theirs").unwrap();
+        let driver = Driver::open(paths).unwrap();
+
+        let (_, set_aside) = driver.unlink(&root).await.unwrap();
+
+        assert_eq!(set_aside, SetAside::default());
+        assert_eq!(
+            fs::read(root.join(".koidrive/parked/n1")).unwrap(),
+            b"theirs"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unlink_reports_nothing_of_versions_another_device_set_aside_while_it_syncs() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        let other = Owner {
+            server: "https://other.example.com/".into(),
+            device_id: "d9".into(),
+        };
+        claim::set_owner(&root, &other).unwrap();
+        fs::create_dir_all(root.join(".koidrive/parked")).unwrap();
+        fs::write(root.join(".koidrive/parked/n1"), b"theirs").unwrap();
+        let _syncing = claim::lock(&root).unwrap().unwrap();
+        let driver = Driver::open(paths).unwrap();
+
+        let (_, set_aside) = driver.unlink(&root).await.unwrap();
+
+        assert_eq!(set_aside, SetAside::default());
+    }
+
+    #[tokio::test]
+    async fn an_unlink_names_a_symlinked_folder_of_set_aside_versions_as_kept_and_reads_nothing_through_it()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        let elsewhere = base.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("mine"), b"mine").unwrap();
+        let parked = root.join(".koidrive/parked");
+        fs::create_dir_all(root.join(".koidrive")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &parked).unwrap();
+        let driver = Driver::open(paths).unwrap();
+
+        let (_, set_aside) = driver.unlink(&root).await.unwrap();
+
+        assert_eq!(set_aside.kept, std::slice::from_ref(&parked));
+        assert_eq!(fs::read(elsewhere.join("mine")).unwrap(), b"mine");
+    }
+
+    #[tokio::test]
+    async fn an_unlink_brings_displaced_versions_back_under_recovered_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        let private = root.join(".koidrive");
+        fs::create_dir_all(private.join("parked")).unwrap();
+        fs::create_dir_all(private.join("quarantine/e7")).unwrap();
+        fs::write(private.join("parked/n1"), b"parked").unwrap();
+        fs::write(private.join("quarantine/e7/notes.txt"), b"quarantined").unwrap();
+        let identity = fs::metadata(private.join("parked/n1")).unwrap();
+        Store::open(paths.store(SPACE).unwrap())
+            .unwrap()
+            .transaction(|tx| {
+                tx.put_local_node(&koidrive_store::LocalNode {
+                    node_id: "n1".into(),
+                    shape: koidrive_store::Shape {
+                        parent_id: SPACE.into(),
+                        name: "report.docx".into(),
+                        kind: koidrive_proto::v1::NodeKind::File as i32,
+                        content: None,
+                    },
+                    identity: koidrive_fs::FileId {
+                        ino: u128::from(identity.ino()),
+                        birth_ns: None,
+                    },
+                    parked: true,
+                    left_out_when_placed: false,
+                    content_from_server: false,
+                })?;
+                tx.set_engine_state(&EngineState {
+                    trees: koidrive_engine::state::TreesState {
+                        dirty: ["n1".into()].into(),
+                        ..Default::default()
+                    },
+                    ..EngineState::default()
+                })
+            })
+            .unwrap();
+        let date = koidrive_fs::utc_date(SystemTime::now());
+        let taken = root.join(format!("report (recovered {date}).docx"));
+        fs::write(&taken, b"the user's").unwrap();
+
+        let driver = Driver::open(paths).unwrap();
+        let (_, set_aside) = driver.unlink(&root).await.unwrap();
+        if koidrive_fs::utc_date(SystemTime::now()) != date {
+            eprintln!("SKIPPED: the UTC date changed during the test");
+            return;
+        }
+
+        let parked = root.join(format!("report (recovered {date} 2).docx"));
+        let quarantined = root.join(format!("e7 (recovered {date})"));
+        assert_eq!(
+            set_aside,
+            SetAside {
+                brought_back: vec![parked.clone(), quarantined.clone()],
+                kept: Vec::new(),
+            }
+        );
+        assert_eq!(fs::read(&taken).unwrap(), b"the user's");
+        assert_eq!(fs::read(parked).unwrap(), b"parked");
+        assert_eq!(
+            fs::read(quarantined.join("notes.txt")).unwrap(),
+            b"quarantined"
+        );
+    }
+
+    #[tokio::test]
     async fn a_failed_unlink_leaves_no_marker_to_block_a_later_restart() {
         let dir = tempfile::tempdir().unwrap();
         let base = fs::canonicalize(dir.path()).unwrap();
@@ -4620,14 +5046,20 @@ mod tests {
             driver.stop().await;
             drop(driver);
             fs::write(root.join("notes.txt"), b"kept").unwrap();
+            let parked = root.join(".koidrive/parked/n1");
+            fs::create_dir_all(parked.parent().unwrap()).unwrap();
+            fs::write(&parked, b"parked").unwrap();
             garble(&paths, SPACE);
 
             let driver = Driver::open(paths.clone()).unwrap();
-            let unlinked = match by_space {
+            let (unlinked, set_aside) = match by_space {
                 true => driver.unlink_space(SPACE).await.unwrap().unwrap(),
                 false => driver.unlink(&root).await.unwrap(),
             };
             assert_eq!(unlinked.root, root);
+            assert_eq!(set_aside.kept, std::slice::from_ref(&parked));
+            assert!(set_aside.brought_back.is_empty());
+            assert_eq!(fs::read(&parked).unwrap(), b"parked");
             assert!(driver.status().folders.is_empty());
             assert!(!paths.store(SPACE).unwrap().parent().unwrap().exists());
             assert!(claim::owner(&root).unwrap().is_none());
@@ -6335,6 +6767,8 @@ mod tests {
         let paths = Paths::under(&base.join("profile"));
         linked(&paths, &root, "d1");
         fs::write(root.join("keep.txt"), b"mine").unwrap();
+        fs::create_dir_all(root.join(".koidrive/quarantine")).unwrap();
+        fs::write(root.join(".koidrive/quarantine/e1"), b"held").unwrap();
         let driver = Driver::open(paths.clone()).unwrap();
         driver.start();
         eventually("the folder is claimed", || {
@@ -6344,7 +6778,15 @@ mod tests {
         let mut watch = driver.watch();
         watch.borrow_and_update();
 
-        driver.sign_out(true).await.unwrap();
+        let date = koidrive_fs::utc_date(SystemTime::now());
+        let left = driver.sign_out(true).await.unwrap();
+        if koidrive_fs::utc_date(SystemTime::now()) != date {
+            eprintln!("SKIPPED: the UTC date changed during the test");
+            return;
+        }
+        let held = root.join(format!("e1 (recovered {date})"));
+        assert_eq!(left.set_aside.brought_back, std::slice::from_ref(&held));
+        assert_eq!(fs::read(held).unwrap(), b"held");
         let status = driver.status();
         assert_eq!(status.account, None);
         assert!(!status.running);
@@ -9253,7 +9695,7 @@ mod tests {
             driver.unlink(&root.join("elsewhere")).await,
             Err(DriverError::NotLinked(_))
         ));
-        let link = driver.unlink(&root).await.unwrap();
+        let (link, _) = driver.unlink(&root).await.unwrap();
         assert_eq!(link.space_id, SPACE);
         assert!(driver.status().folders.is_empty());
         assert!(!paths.store(SPACE).unwrap().parent().unwrap().exists());

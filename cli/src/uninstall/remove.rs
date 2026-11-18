@@ -1,17 +1,50 @@
 use super::*;
 
+async fn ask(paths: &Paths, found: &Found, request: Request) -> Result<Response, CliError> {
+    match found.state {
+        true => ipc::run(paths, request).await,
+        false => match ipc::ask(paths, &request).await? {
+            Some(response) => ipc::answered(response),
+            None => Err(CliError::from("background sync did not answer".to_owned())),
+        },
+    }
+}
+
+pub(super) async fn unlink(paths: &Paths, found: &Found, run: &mut Run) -> SetAside {
+    let mut all = SetAside::default();
+    for folder in &found.folders {
+        let request = Request::Unlink {
+            folder: folder.clone(),
+        };
+        match ask(paths, found, request).await {
+            Ok(Response::Unlinked { set_aside, .. }) => {
+                all.brought_back.extend(set_aside.brought_back);
+                all.kept.extend(set_aside.kept);
+            }
+            Ok(_) => {}
+            Err(error) => run.problems.push(format!(
+                "cannot unlink {}: {}",
+                shown_folder(folder),
+                error.message
+            )),
+        }
+    }
+    all
+}
+
 pub(super) async fn sign_out(
     paths: &Paths,
     found: &Found,
     options: &Options,
     terminal: &Terminal,
-) -> DeviceOutcome {
-    let still_listed = |problem| listed(found, problem);
+) -> (DeviceOutcome, Option<SetAside>) {
+    let still_listed = |problem| (listed(found, problem), None);
     if !found.paired {
-        return match koidrive_driver::Unconfirmed::recorded(paths) {
+        let device = match koidrive_driver::Unconfirmed::recorded(paths) {
             Some(unconfirmed) => signed_out_unconfirmed(unconfirmed),
             None => DeviceOutcome::NotPaired,
         };
+        return (device, None);
     }
     if options.keep_signed_in {
         return still_listed(None);
@@ -22,17 +55,14 @@ pub(super) async fn sign_out(
             shown_folder(&paths.state_dir)
         )));
     }
-    let leave = |confirm_last_device| async move {
-        let request = Request::Leave {
-            confirm_last_device,
-        };
-        match found.state {
-            true => ipc::run(paths, request).await,
-            false => match ipc::ask(paths, &request).await? {
-                Some(response) => ipc::answered(response),
-                None => Err(CliError::from("background sync did not answer".to_owned())),
+    let leave = |confirm_last_device| {
+        ask(
+            paths,
+            found,
+            Request::Leave {
+                confirm_last_device,
             },
-        }
+        )
     };
     let mut answer = leave(options.last_device).await;
     if let Err(error) = &answer
@@ -56,14 +86,21 @@ pub(super) async fn sign_out(
     match answer {
         Ok(Response::SignedOut {
             unconfirmed: Some(unconfirmed),
+            set_aside,
             ..
-        }) => signed_out_unconfirmed(unconfirmed),
-        Ok(Response::SignedOut { .. }) => match &found.owner {
-            Some(owner) => DeviceOutcome::SignedOut {
-                server: owner.server.clone(),
-                unconfirmed: None,
-            },
-            None => still_listed(Some("the server's address is unknown".into())),
+        }) => (signed_out_unconfirmed(unconfirmed), Some(set_aside)),
+        Ok(Response::SignedOut { set_aside, .. }) => match &found.owner {
+            Some(owner) => (
+                DeviceOutcome::SignedOut {
+                    server: owner.server.clone(),
+                    unconfirmed: None,
+                },
+                Some(set_aside),
+            ),
+            None => (
+                listed(found, Some("the server's address is unknown".into())),
+                Some(set_aside),
+            ),
         },
         Ok(other) => still_listed(Some(format!("the daemon answered {other:?}"))),
         Err(error) => still_listed(Some(error.message)),
@@ -165,10 +202,33 @@ pub(super) fn clean_folder(root: &Path, owner: Option<&Owner>, run: &mut Run) {
             path: private.display().to_string(),
         }),
         Ok(Cleaned::Kept(paths)) => {
-            run.kept
-                .extend(paths.into_iter().map(|path| Kept::FolderData {
-                    path: path.display().to_string(),
-                }))
+            for path in paths {
+                let held = [koidrive_fs::PARKED_DIR, koidrive_fs::QUARANTINE_DIR]
+                    .iter()
+                    .any(|dir| path == private.join(dir))
+                    && fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir());
+                let listed = held.then(|| {
+                    fs::read_dir(&path).and_then(|entries| {
+                        entries
+                            .map(|entry| Ok(entry?.path()))
+                            .collect::<io::Result<Vec<PathBuf>>>()
+                    })
+                });
+                let mut entries = match listed {
+                    Some(Ok(entries)) => entries,
+                    _ => {
+                        run.kept.push(Kept::FolderData {
+                            path: path.display().to_string(),
+                        });
+                        continue;
+                    }
+                };
+                entries.sort();
+                run.kept
+                    .extend(entries.into_iter().map(|path| Kept::SetAside {
+                        path: path.display().to_string(),
+                    }));
+            }
         }
         Err(error) => run.problems.push(format!(
             "cannot clean up {}: {error}",
@@ -204,6 +264,12 @@ pub(super) fn folder_data(private: &Path, owner: Option<&Owner>) -> io::Result<C
     }
     for name in FOLDER_RECORDS {
         remove_path(&private.join(name))?;
+    }
+    for name in RECOVERY_RECORDS {
+        let record = private.join(name);
+        if fs::symlink_metadata(&record).is_ok_and(|meta| !meta.is_dir()) {
+            remove_path(&record)?;
+        }
     }
     let trash = private.join("trash");
     if fs::symlink_metadata(&trash).is_err() || prune_empty(&trash)? {

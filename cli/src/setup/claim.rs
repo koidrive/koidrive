@@ -257,6 +257,7 @@ pub async fn saved_device(paths: &Paths, server: &Url) -> Result<bool, CliError>
                 Response::SignedOut {
                     not_removed,
                     unconfirmed,
+                    set_aside,
                 } => {
                     if !not_removed.is_empty() {
                         let failures = not_removed
@@ -283,6 +284,7 @@ pub async fn saved_device(paths: &Paths, server: &Url) -> Result<bool, CliError>
                     println!(
                         "The server no longer accepts this device's saved credential, so it was removed."
                     );
+                    print!("{}", crate::report::SetAsideData::of(&set_aside).lines());
                     if let Some(unconfirmed) = &unconfirmed {
                         print!("{}", crate::device::still_listed(unconfirmed));
                     }
@@ -496,6 +498,7 @@ mod tests {
                         device_id: "d1".into(),
                         reason: "no answer within 10 seconds".into(),
                     }),
+                    set_aside: Default::default(),
                 },
             )
             .await

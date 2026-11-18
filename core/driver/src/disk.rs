@@ -936,20 +936,7 @@ fn standing(found: &Marker, tokens: &RootTokens, effects: &Effects) -> Result<St
 }
 
 fn bring_back_all(space: &Space, trees: &Trees) -> io::Result<()> {
-    let name = |held: &OsStr, found: FileId| {
-        let id = held.to_string_lossy();
-        let same = |node: &&LocalNode| {
-            let identity = &node.identity;
-            (identity.ino, identity.birth_ns) == (found.ino, found.birth_ns)
-        };
-        (trees.local().iter().map(|(_, node)| node))
-            .find(same)
-            .or_else(|| trees.local().get(&id))
-            .map(|node| node.shape.name.clone())
-            .or_else(|| trees.synced().live(&id).map(|shape| shape.name.clone()))
-            .or_else(|| trees.remote().get(&id).map(|node| node.shape.name.clone()))
-            .map_or_else(|| held.to_owned(), OsString::from)
-    };
+    let name = |held: &OsStr, found: FileId| held_name(trees, held, found);
     space.bring_back_all(name, SystemTime::now())?;
     Ok(())
 }
@@ -1050,6 +1037,21 @@ pub(crate) fn relink_with_hook(
     commit_token(next, store)?;
     hook(Cut::TokenCommitted);
     Ok(questions)
+}
+
+pub(crate) fn held_name(trees: &Trees, held: &OsStr, found: FileId) -> OsString {
+    let id = held.to_string_lossy();
+    let same = |node: &&LocalNode| {
+        let identity = &node.identity;
+        (identity.ino, identity.birth_ns) == (found.ino, found.birth_ns)
+    };
+    (trees.local().iter().map(|(_, node)| node))
+        .find(same)
+        .or_else(|| trees.local().get(&id))
+        .map(|node| node.shape.name.clone())
+        .or_else(|| trees.synced().live(&id).map(|shape| shape.name.clone()))
+        .or_else(|| trees.remote().get(&id).map(|node| node.shape.name.clone()))
+        .map_or_else(|| held.to_owned(), OsString::from)
 }
 
 fn rotate_token(space: &Space, marker: Marker, store: &mut Store) -> Result<RootTokens, Stop> {

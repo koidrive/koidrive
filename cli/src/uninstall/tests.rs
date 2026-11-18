@@ -149,6 +149,26 @@ fn files_in_the_local_trash_and_other_holding_folders_stay() {
 }
 
 #[test]
+fn a_directory_in_place_of_a_recovery_record_stays() {
+    let dir = tempfile::tempdir().unwrap();
+    let ours = owner("d1");
+    let private = linked(dir.path(), &ours);
+    fs::create_dir_all(private.join("brought-back.json")).unwrap();
+    fs::write(private.join("brought-back.json/notes"), b"mine").unwrap();
+
+    let cleaned = folder_data(&private, Some(&ours)).unwrap();
+
+    assert_eq!(
+        cleaned,
+        Cleaned::Kept(vec![private.join("brought-back.json")])
+    );
+    assert_eq!(
+        fs::read(private.join("brought-back.json/notes")).unwrap(),
+        b"mine"
+    );
+}
+
+#[test]
 fn a_folder_another_device_links_is_left_alone() {
     let dir = tempfile::tempdir().unwrap();
     let private = linked(dir.path(), &owner("d2"));
@@ -199,6 +219,7 @@ fn the_summary_names_what_stays_and_how_to_revoke_a_device_still_listed() {
         removed: vec![Removed::Service {
             name: "dev.koidrive.koi".into(),
         }],
+        brought_back: Vec::new(),
         kept: vec![
             Kept::Folder {
                 path: "/srv/Koidrive".into(),
@@ -242,6 +263,7 @@ fn a_device_id_with_control_characters_reaches_the_terminal_escaped() {
         let shown = text(&UninstalledData {
             device,
             removed: Vec::new(),
+            brought_back: Vec::new(),
             kept: Vec::new(),
         });
         assert!(shown.contains(escaped), "{shown}");

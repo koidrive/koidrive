@@ -116,6 +116,7 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
                 .map(|left| Response::SignedOut {
                     not_removed: left.not_removed,
                     unconfirmed: left.unconfirmed,
+                    set_aside: left.set_aside,
                 })
         }
         Request::Leave {
@@ -126,6 +127,7 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
             .map(|left| Response::SignedOut {
                 not_removed: left.not_removed,
                 unconfirmed: left.unconfirmed,
+                set_aside: left.set_aside,
             }),
         Request::Link { folder, space } => {
             driver
@@ -148,18 +150,20 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
                 Linked::Already(folder) => Response::AlreadyLinked { folder },
             }),
         Request::Unlink { folder } => match driver.unlink(&folder).await {
-            Ok(link) => Ok(Response::Unlinked {
+            Ok((link, set_aside)) => Ok(Response::Unlinked {
                 space_id: link.space_id,
                 path: link.root,
+                set_aside,
             }),
             Err(DriverError::NotLinked(path)) => Ok(Response::NotLinked { path }),
             Err(error) => Err(error),
         },
         Request::UnlinkSpace { space_id } => {
             (driver.unlink_space(&space_id).await).map(|link| match link {
-                Some(link) => Response::Unlinked {
+                Some((link, set_aside)) => Response::Unlinked {
                     space_id: link.space_id,
                     path: link.root,
+                    set_aside,
                 },
                 None => Response::UnlinkedSpace { space_id },
             })
@@ -967,11 +971,13 @@ pub(crate) mod tests {
         let Response::SignedOut {
             not_removed,
             unconfirmed: Some(_),
+            set_aside,
         } = leave(true).await
         else {
             panic!("a leave without the server must say the revocation is unconfirmed");
         };
         assert_eq!(not_removed, []);
+        assert_eq!(set_aside, koidrive_driver::SetAside::default());
         assert!(!paths.credential().exists());
         let status = driver.status();
         assert!(

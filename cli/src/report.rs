@@ -882,6 +882,49 @@ pub struct UnlinkedData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub space_id: Option<String>,
     pub path: String,
+    #[serde(flatten)]
+    pub set_aside: SetAsideData,
+}
+
+/// The local versions of files that syncing had set aside in a folder's `.koidrive` folder.
+#[derive(Debug, Default, PartialEq, Serialize, JsonSchema)]
+pub struct SetAsideData {
+    /// Each one that Koidrive moved back into its folder, under a recovered name.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub brought_back: Vec<String>,
+    /// Each one that stays in `.koidrive`, because Koidrive could not bring it back.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<String>,
+}
+
+impl SetAsideData {
+    pub fn of(set_aside: &koidrive_driver::SetAside) -> Self {
+        let shown = |paths: &[std::path::PathBuf]| {
+            (paths.iter())
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect()
+        };
+        SetAsideData {
+            brought_back: shown(&set_aside.brought_back),
+            kept: shown(&set_aside.kept),
+        }
+    }
+
+    pub fn lines(&self) -> String {
+        let brought_back = (self.brought_back.iter()).map(|path| {
+            format!(
+                "Brought back {}, which Koidrive had set aside while syncing.\n",
+                crate::output::path(std::path::Path::new(path))
+            )
+        });
+        let kept = (self.kept.iter()).map(|path| {
+            format!(
+                "Could not bring back {}, which Koidrive had set aside while syncing. Move it out of .koidrive to keep it.\n",
+                crate::output::path(std::path::Path::new(path))
+            )
+        });
+        brought_back.chain(kept).collect()
+    }
 }
 
 #[derive(Debug, PartialEq, Serialize, JsonSchema)]
@@ -1323,6 +1366,8 @@ pub struct LeftData {
     /// Such a device can stay on the server's list until another device runs `koi device revoke` with its `device_id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unconfirmed: Option<UnconfirmedData>,
+    #[serde(flatten)]
+    pub set_aside: SetAsideData,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]

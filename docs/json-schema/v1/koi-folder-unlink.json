@@ -886,6 +886,20 @@
     "WithService_UnlinkedData": {
       "description": "The data of a command that brings the background service in line with the profile, with the service's report.",
       "properties": {
+        "brought_back": {
+          "description": "Each one that Koidrive moved back into its folder, under a recovered name.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kept": {
+          "description": "Each one that stays in `.koidrive`, because Koidrive could not bring it back.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "path": {
           "type": "string"
         },

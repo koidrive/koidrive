@@ -4,7 +4,7 @@ use crate::error::CliError;
 use crate::formatting::printable;
 use crate::options::RequestArg;
 use crate::profile::unexpected;
-use crate::report::{Done, FolderData, UnlinkedData};
+use crate::report::{Done, FolderData, SetAsideData, UnlinkedData};
 use crate::{ipc, output, report, service};
 use clap::Subcommand;
 use koidrive_driver::{FolderState, FolderStatus, Paths};
@@ -111,21 +111,36 @@ pub(crate) async fn folder(paths: &Paths, action: FolderAction) -> Result<Done, 
         }
     };
     match ipc::run(paths, request).await? {
-        Response::Unlinked { space_id, path } => {
+        Response::Unlinked {
+            space_id,
+            path,
+            set_aside,
+        } => {
+            let set_aside = SetAsideData::of(&set_aside);
             let summary = format!(
-                "Unlinked {}. Its files and .koidrive folder stay on this device.\n",
-                output::path(&path)
+                "Unlinked {}. Its files and .koidrive folder stay on this device.\n{}",
+                output::path(&path),
+                set_aside.lines()
             );
             let text = format!(
-                "Unlinked {} from space {}. Its files and its .koidrive folder stay.\n",
+                "Unlinked {} from space {}. Its files and its .koidrive folder stay.\n{}",
                 printable(&path.display().to_string()),
-                printable(&space_id)
+                printable(&space_id),
+                set_aside.lines()
             );
+            let tone = match set_aside.kept.is_empty() {
+                true => output::Tone::Completed,
+                false => output::Tone::Attention,
+            };
             let data = UnlinkedData {
                 space_id: Some(space_id),
                 path: path.display().to_string(),
+                set_aside,
             };
-            Ok(Done::ok(data, text).human(summary, "").completed())
+            Ok(Done {
+                tone,
+                ..Done::ok(data, text).human(summary, "")
+            })
         }
         Response::UnlinkedSpace { space_id } => {
             let text = format!(
@@ -135,6 +150,7 @@ pub(crate) async fn folder(paths: &Paths, action: FolderAction) -> Result<Done, 
             let data = UnlinkedData {
                 space_id: Some(space_id),
                 path: String::new(),
+                set_aside: SetAsideData::default(),
             };
             Ok(Done::ok(data, text.clone()).human(text, "").completed())
         }
@@ -148,6 +164,7 @@ pub(crate) async fn folder(paths: &Paths, action: FolderAction) -> Result<Done, 
             let data = UnlinkedData {
                 space_id: None,
                 path,
+                set_aside: SetAsideData::default(),
             };
             Ok(Done::ok(data, text).human(summary, "").unchanged())
         }
