@@ -121,6 +121,10 @@ export const MIGRATIONS: readonly Migration[] = [
     if (!columns.includes("copy_mark")) sql.exec("ALTER TABLE nodes ADD COLUMN copy_mark TEXT");
     sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('${LEGACY_INTENTS_DUE}', 1)`);
   },
+  (sql) => {
+    const columns = sql.exec("SELECT name FROM pragma_table_info('versions')").toArray().map((row) => row.name);
+    if (!columns.includes("source_version_id")) sql.exec("ALTER TABLE versions ADD COLUMN source_version_id TEXT NOT NULL DEFAULT ''");
+  },
 ];
 
 export const LEGACY_INTENTS_DUE = "legacy_intents_due";

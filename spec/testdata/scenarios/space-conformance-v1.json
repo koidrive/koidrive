@@ -16004,6 +16004,1568 @@
       ]
     },
     {
+      "name": "rfc0029-a-replayed-edit-back-to-the-restored-bytes-keeps-the-version-it-reverted-so-the-reverted-edits-replay-is-superseded",
+      "covers": [
+        "RFC0029",
+        "RFC0029-3.8"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        },
+        "b": {
+          "name": "Desk"
+        },
+        "c": {
+          "name": "Phone"
+        }
+      },
+      "contents": {
+        "w1": {
+          "chunks": [
+            {
+              "text": "report written"
+            }
+          ]
+        },
+        "w3": {
+          "chunks": [
+            {
+              "text": "report rewritten"
+            }
+          ]
+        },
+        "w4": {
+          "chunks": [
+            {
+              "text": "report edited"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "at_ms": 1794268800000,
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "root",
+                  "name": "report.txt",
+                  "content": "w1",
+                  "intent": {
+                    "id": "i1",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794268860000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794268920000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w3",
+                  "made_over": [
+                    "v0"
+                  ],
+                  "intent": {
+                    "id": "i2",
+                    "author": "b"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794268980000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v1"
+              },
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794269040000,
+          "commit": {
+            "base_seq": 2,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w1",
+                  "made_over": [
+                    "v1"
+                  ],
+                  "intent": {
+                    "id": "i3",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 3,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794269100000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v2"
+              },
+              {
+                "version": "v1"
+              },
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "restore_storage": {
+            "to_step": 2
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794269400000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w1",
+                  "made_over": [
+                    "v1"
+                  ],
+                  "intent": {
+                    "id": "i3",
+                    "author": "a",
+                    "replay": true,
+                    "applied_at_ms": 1794269040000
+                  },
+                  "source_version_id": "v2"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794269460000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v3",
+                "content": "w1",
+                "made_over": [
+                  "v2",
+                  "v1",
+                  "v0"
+                ],
+                "source_version_id": "v2"
+              },
+              {
+                "version": "v0",
+                "made_over": []
+              }
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794269520000,
+          "commit": {
+            "base_seq": 2,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w3",
+                  "made_over": [
+                    "v0"
+                  ],
+                  "intent": {
+                    "id": "i2",
+                    "author": "b",
+                    "replay": true,
+                    "applied_at_ms": 1794268920000
+                  },
+                  "source_version_id": "v1"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 3,
+            "results": [
+              {
+                "code": "SUPERSEDED"
+              }
+            ],
+            "changed": []
+          }
+        },
+        {
+          "device": "c",
+          "at_ms": 1794269580000,
+          "commit": {
+            "base_seq": 3,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w1",
+                  "made_over": [
+                    "v0"
+                  ],
+                  "intent": {
+                    "id": "i5",
+                    "author": "c"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 4,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "c",
+          "at_ms": 1794269640000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v3"
+              },
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "rebuild": {
+            "at_ms": 1794270600000
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "f",
+              "content": "w1",
+              "intents": {
+                "content": {
+                  "id": "i3",
+                  "author": "a",
+                  "replay": true
+                }
+              }
+            }
+          ],
+          "live": [
+            "f"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc0029-an-edit-made-over-the-value-a-replay-carries-replaces-that-replay-without-a-conflict-copy",
+      "covers": [
+        "RFC0029",
+        "RFC0029-3.8"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        },
+        "b": {
+          "name": "Desk"
+        },
+        "c": {
+          "name": "Phone"
+        }
+      },
+      "contents": {
+        "w1": {
+          "chunks": [
+            {
+              "text": "report written"
+            }
+          ]
+        },
+        "w3": {
+          "chunks": [
+            {
+              "text": "report rewritten"
+            }
+          ]
+        },
+        "w4": {
+          "chunks": [
+            {
+              "text": "report edited"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "at_ms": 1794268800000,
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "root",
+                  "name": "report.txt",
+                  "content": "w1",
+                  "intent": {
+                    "id": "i1",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794268860000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794268920000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w3",
+                  "made_over": [
+                    "v0"
+                  ],
+                  "intent": {
+                    "id": "i2",
+                    "author": "b"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794268980000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v1"
+              },
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794269040000,
+          "commit": {
+            "base_seq": 2,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w1",
+                  "made_over": [
+                    "v1"
+                  ],
+                  "intent": {
+                    "id": "i3",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 3,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794269100000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v2"
+              },
+              {
+                "version": "v1"
+              },
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "restore_storage": {
+            "to_step": 2
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794269400000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w3",
+                  "made_over": [
+                    "v0"
+                  ],
+                  "intent": {
+                    "id": "i2",
+                    "author": "b",
+                    "replay": true,
+                    "applied_at_ms": 1794268920000
+                  },
+                  "source_version_id": "v1"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794269460000,
+          "commit": {
+            "base_seq": 2,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w1",
+                  "made_over": [
+                    "v1"
+                  ],
+                  "intent": {
+                    "id": "i3",
+                    "author": "a",
+                    "replay": true,
+                    "applied_at_ms": 1794269040000
+                  },
+                  "source_version_id": "v2"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 3,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794269520000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v4",
+                "content": "w1",
+                "made_over": [
+                  "v2",
+                  "v1",
+                  "v3",
+                  "v0"
+                ],
+                "source_version_id": "v2"
+              },
+              {
+                "version": "v3",
+                "content": "w3",
+                "made_over": [
+                  "v1",
+                  "v0"
+                ],
+                "source_version_id": "v1"
+              },
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "rebuild": {
+            "at_ms": 1794270600000
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "f",
+              "content": "w1",
+              "intents": {
+                "content": {
+                  "id": "i3",
+                  "author": "a",
+                  "replay": true
+                }
+              }
+            }
+          ],
+          "live": [
+            "f"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc0029-a-replay-without-a-source-after-a-replayed-edit-back-to-the-restored-bytes-lands-as-a-conflict-copy",
+      "covers": [
+        "RFC0029",
+        "RFC0029-3.8"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        },
+        "b": {
+          "name": "Desk"
+        },
+        "c": {
+          "name": "Phone"
+        }
+      },
+      "contents": {
+        "w1": {
+          "chunks": [
+            {
+              "text": "report written"
+            }
+          ]
+        },
+        "w3": {
+          "chunks": [
+            {
+              "text": "report rewritten"
+            }
+          ]
+        },
+        "w4": {
+          "chunks": [
+            {
+              "text": "report edited"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "at_ms": 1794268800000,
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "root",
+                  "name": "report.txt",
+                  "content": "w1",
+                  "intent": {
+                    "id": "i1",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794268860000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794268920000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w3",
+                  "made_over": [
+                    "v0"
+                  ],
+                  "intent": {
+                    "id": "i2",
+                    "author": "b"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794268980000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v1"
+              },
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794269040000,
+          "commit": {
+            "base_seq": 2,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w1",
+                  "made_over": [
+                    "v1"
+                  ],
+                  "intent": {
+                    "id": "i3",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 3,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794269100000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v2"
+              },
+              {
+                "version": "v1"
+              },
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "restore_storage": {
+            "to_step": 2
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794269400000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w1",
+                  "made_over": [
+                    "v1"
+                  ],
+                  "intent": {
+                    "id": "i3",
+                    "author": "a",
+                    "replay": true,
+                    "applied_at_ms": 1794269040000
+                  },
+                  "source_version_id": "v2"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794269460000,
+          "commit": {
+            "base_seq": 2,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w3",
+                  "made_over": [
+                    "v0"
+                  ],
+                  "intent": {
+                    "id": "i2",
+                    "author": "b",
+                    "replay": true,
+                    "applied_at_ms": 1794268920000
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 3,
+            "results": [
+              {
+                "code": "CONFLICT_COPY",
+                "node": "y"
+              }
+            ],
+            "changed": [
+              "y"
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "f",
+              "content": "w1"
+            },
+            {
+              "node": "y",
+              "status": "LIVE",
+              "parent": "root",
+              "content": "w3"
+            }
+          ],
+          "live": [
+            "f",
+            "y"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc0029-an-edit-made-over-a-sourceless-replays-base-lands-as-a-conflict-copy-since-a-chains-first-id-is-not-an-alias",
+      "covers": [
+        "RFC0029",
+        "RFC0029-3.8"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        },
+        "b": {
+          "name": "Desk"
+        },
+        "c": {
+          "name": "Phone"
+        }
+      },
+      "contents": {
+        "w1": {
+          "chunks": [
+            {
+              "text": "report written"
+            }
+          ]
+        },
+        "w3": {
+          "chunks": [
+            {
+              "text": "report rewritten"
+            }
+          ]
+        },
+        "w4": {
+          "chunks": [
+            {
+              "text": "report edited"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "at_ms": 1794268800000,
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "root",
+                  "name": "report.txt",
+                  "content": "w1",
+                  "intent": {
+                    "id": "i1",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794268860000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794268920000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w3",
+                  "made_over": [
+                    "v0"
+                  ],
+                  "intent": {
+                    "id": "i2",
+                    "author": "b",
+                    "replay": true,
+                    "applied_at_ms": 1794268860000
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794268980000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v1",
+                "made_over": [
+                  "v0"
+                ],
+                "source_version_id": ""
+              },
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "device": "c",
+          "at_ms": 1794269040000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w4",
+                  "made_over": [
+                    "v0"
+                  ],
+                  "intent": {
+                    "id": "i4",
+                    "author": "c"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 3,
+            "results": [
+              {
+                "code": "CONFLICT_COPY",
+                "node": "y"
+              }
+            ],
+            "changed": [
+              "y"
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "f",
+              "content": "w3"
+            },
+            {
+              "node": "y",
+              "status": "LIVE",
+              "parent": "root",
+              "content": "w4"
+            }
+          ],
+          "live": [
+            "f",
+            "y"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rfc0029-a-late-resend-of-an-edit-under-a-later-edit-made-over-a-replays-alias-is-superseded",
+      "covers": [
+        "RFC0029",
+        "RFC0029-3.8"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        },
+        "b": {
+          "name": "Desk"
+        },
+        "c": {
+          "name": "Phone"
+        }
+      },
+      "contents": {
+        "w1": {
+          "chunks": [
+            {
+              "text": "report written"
+            }
+          ]
+        },
+        "w3": {
+          "chunks": [
+            {
+              "text": "report rewritten"
+            }
+          ]
+        },
+        "w4": {
+          "chunks": [
+            {
+              "text": "report edited"
+            }
+          ]
+        },
+        "w5": {
+          "chunks": [
+            {
+              "text": "report fifth"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "at_ms": 1794268860000,
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "root",
+                  "name": "report.txt",
+                  "content": "w1",
+                  "intent": {
+                    "id": "i1",
+                    "author": "a"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794268920000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794268980000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w3",
+                  "made_over": [
+                    "v0"
+                  ],
+                  "intent": {
+                    "id": "i2",
+                    "author": "b"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "seq": 2
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794269040000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v1"
+              },
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "device": "c",
+          "at_ms": 1794269100000,
+          "commit": {
+            "base_seq": 2,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w4",
+                  "made_over": [
+                    "v1"
+                  ],
+                  "intent": {
+                    "id": "i3",
+                    "author": "c"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "seq": 3
+          }
+        },
+        {
+          "device": "c",
+          "at_ms": 1794269160000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v2"
+              },
+              {
+                "version": "v1"
+              },
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794269220000,
+          "commit": {
+            "base_seq": 3,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w5",
+                  "made_over": [
+                    "v2"
+                  ],
+                  "intent": {
+                    "id": "i4",
+                    "author": "b"
+                  }
+                }
+              }
+            ]
+          },
+          "expect": {
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "seq": 4
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794269280000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v3"
+              },
+              {
+                "version": "v2"
+              },
+              {
+                "version": "v1"
+              },
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "restore_storage": {
+            "to_step": 2
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794269340000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w3",
+                  "made_over": [
+                    "v0"
+                  ],
+                  "intent": {
+                    "id": "i2",
+                    "author": "b",
+                    "replay": true,
+                    "applied_at_ms": 1794268980000
+                  },
+                  "source_version_id": "v1"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ]
+          }
+        },
+        {
+          "device": "c",
+          "at_ms": 1794269400000,
+          "commit": {
+            "base_seq": 2,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w4",
+                  "made_over": [
+                    "v1"
+                  ],
+                  "intent": {
+                    "id": "i3",
+                    "author": "c",
+                    "replay": true,
+                    "applied_at_ms": 1794269100000
+                  },
+                  "source_version_id": "v2"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1794269460000,
+          "commit": {
+            "base_seq": 3,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w5",
+                  "made_over": [
+                    "v2"
+                  ],
+                  "intent": {
+                    "id": "i4",
+                    "author": "b",
+                    "replay": true,
+                    "applied_at_ms": 1794269220000
+                  },
+                  "source_version_id": "v3"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794269520000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "w3",
+                  "made_over": [
+                    "v0"
+                  ],
+                  "intent": {
+                    "id": "i2",
+                    "author": "b",
+                    "replay": true,
+                    "applied_at_ms": 1794268980000
+                  },
+                  "source_version_id": "v1"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "results": [
+              {
+                "code": "SUPERSEDED"
+              }
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "f",
+              "content": "w5"
+            }
+          ],
+          "live": [
+            "f"
+          ]
+        }
+      ]
+    },
+    {
       "name": "rfc0029-a-delete-sent-to-a-folder-another-delete-trashed-with-over-the-replaced-status-adds-its-held-to-the-group",
       "covers": [
         "RFC0029",

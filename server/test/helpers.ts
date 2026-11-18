@@ -86,7 +86,7 @@ export async function revertIntentsMigration(stub: Stub): Promise<void> {
     for (const table of ["field_intents", "trash_held", "tombstones"]) sql.exec(`DROP TABLE ${table}`);
     sql.exec("ALTER TABLE nodes DROP COLUMN status_before");
     sql.exec("ALTER TABLE nodes DROP COLUMN copy_mark");
-    sql.exec("UPDATE meta SET value = ? WHERE key = 'schema_version'", MIGRATIONS.length - 1);
+    sql.exec("UPDATE meta SET value = ? WHERE key = 'schema_version'", MIGRATIONS.findIndex((step) => step.toString().includes("field_intents")));
   });
   await evictDurableObject(stub);
 }

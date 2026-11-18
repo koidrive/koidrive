@@ -136,7 +136,11 @@ The request digest (RFC 0006 §8) becomes digest v5: v4's projection (RFC 0026 �
 
 For an `UpdateContent` with an intent, R3 compares versions, not seqs: the op lands as a conflict copy when its expanded `made_over` (RFC 0026 §3) lacks the file's current version, whatever its `base_seq`. A device that listed a version does not thereby overwrite it; only a user's edit made over that version does. An op without an intent, or with an empty `made_over`, keeps R3's seq test.
 
-RFC 0026 §3's checks for a resend apply to every replay, after §3.1's same-intent check. A replay whose `source_version_id` is in the target's current chain, and whose intent the field does not hold, is `SUPERSEDED`.
+An `UpdateContent` with an intent whose content equals the file's current content, and whose expanded `made_over` lacks the current version, is RFC 0016 §1's no-op only when its expanded `made_over` holds no version that the current version's chain lacks. Otherwise it is a user's edit back to those bytes, made over versions the current version does not include: the server makes a new version with the same content, whose chain is the op's expanded `made_over` followed by the current version and its chain, deduplicated and bounded to 64 as RFC 0026 §2 says, and the field takes the op's intent. The equal version's chain stays as RFC 0026 §3 requires, since the bases go on the new version.
+
+The ancestry test counts the current version's `source_version_id` (RFC 0026 §2) as the current version, since a replay holds the value its source names: an edit made over that value is made over the replay. An incoming op's own source alias still does not count (RFC 0026 §3). When the alias makes an op count as made over the current version, the new version's chain is the op's expanded `made_over` followed by the current version and its chain, as for an edit back to equal bytes.
+
+RFC 0026 §3's checks for a resend apply to every replay, after §3.1's same-intent check. A replay whose `source_version_id` is in the target's current chain, and whose intent the field does not hold, is `SUPERSEDED`. A replay prepends its `source_version_id` to the version it creates and stores it as that version's alias, as RFC 0026 §2 says for a resend, even when the op has no `resend`.
 
 ## 4. A lost change against a later delete
 
@@ -305,6 +309,8 @@ UUIDv5 is RFC 9562 §5.5. `field` is `place`, `content` or `status`. The key is:
 - an owner's finish with the marking intent and `over` applies, and is `SUPERSEDED` after a user's same-place mark clear;
 - a `Move` or `Delete` whose `over` the field does not hold is `SUPERSEDED`; a `Delete` whose `over` is the status the trash replaced merges its `held` and is `APPLIED`;
 - an `UpdateContent` with an intent whose `made_over` lacks the current version makes a conflict copy, even when its `base_seq` covers that version;
+- an `UpdateContent` with an intent, content equal to the file's, and a `made_over` holding a version the current chain lacks makes a new version with the merged chain and the op's intent, and a later replay whose `source_version_id` is one of those bases is `SUPERSEDED`; with no new bases it is `APPLIED` and changes nothing;
+- an `UpdateContent` whose `made_over` holds the current version's source alias replaces it without a conflict copy.
 - a `Delete` sent to a node another delete trashed, with `over` set to the status that trash replaced, adds its `held` to the trash;
 - a second delete of a trashed node adds its `held` to the first one's, and a carried replay that either lists is `SUPERSEDED`;
 - a carried `CreateFile` whose place intent the trash's `held` lists and whose content intent it does not makes a conflict copy;

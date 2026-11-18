@@ -853,13 +853,11 @@ class Run {
   }
 
   private checkCurrent(space: string, wanted: Json, got: VersionInfo): void {
-    const want = keys(wanted, "a current version", [...CURRENT_FIELDS, "made_over"]);
+    const want = keys(wanted, "a current version", [...CURRENT_FIELDS, "made_over", "source_version_id"]);
     every(want, CURRENT_FIELDS);
-    covered(VersionInfoSchema, ["versionId", "seq", "content", "deviceId", "userId", "createdAtMs", "madeOver"]);
+    covered(VersionInfoSchema, ["versionId", "seq", "content", "deviceId", "userId", "createdAtMs", "madeOver", "sourceVersionId"]);
     within("version", () => this.expectId(space, req(optStr(want, "version"), "version"), got.versionId));
-    const madeOver = strings(optList(want, "made_over") ?? [], "made_over");
-    if (madeOver.length !== got.madeOver.length) fail(`made_over has ${got.madeOver.length} IDs, expected ${madeOver.length}`);
-    for (const [index, id] of madeOver.entries()) within(`made_over ${index + 1}`, () => this.expectId(space, id, got.madeOver[index]!));
+    this.checkLineage(space, want, got, true);
     const seq = req(optUint(want, "seq"), "seq");
     if (got.seq !== BigInt(seq)) fail(`seq ${got.seq}, expected ${seq}`);
     const at = req(optInt(want, "created_at_ms"), "created_at_ms");
@@ -909,8 +907,24 @@ class Run {
     if (!same) fail(`content differs from ${symbol}`);
   }
 
+  private checkLineage(space: string, want: Obj, got: VersionInfo, always: boolean): void {
+    const madeOver = optList(want, "made_over");
+    if (always || madeOver !== undefined) {
+      const ids = strings(madeOver ?? [], "made_over");
+      if (ids.length !== got.madeOver.length) fail(`made_over has ${got.madeOver.length} IDs, expected ${ids.length}`);
+      for (const [index, id] of ids.entries()) within(`made_over ${index + 1}`, () => this.expectId(space, id, got.madeOver[index]!));
+    }
+    const source = optStr(want, "source_version_id");
+    if (source) {
+      if (got.sourceVersionId === "") fail(`no source_version_id, expected ${source}`);
+      within("source_version_id", () => this.expectId(space, source, got.sourceVersionId));
+    }
+    else if ((always || source === "") && got.sourceVersionId !== "") fail(`source_version_id ${show(got.sourceVersionId)}, expected none`);
+  }
+
   private checkVersion(space: string, got: VersionInfo, wanted: Json): void {
-    const want = keys(wanted, "a version", ["version", "seq", "content"]);
+    const want = keys(wanted, "a version", ["version", "seq", "content", "made_over", "source_version_id"]);
+    this.checkLineage(space, want, got, false);
     const seq = optUint(want, "seq");
     if (seq !== undefined && got.seq !== BigInt(seq)) fail(`version seq ${got.seq}, expected ${seq}`);
     const version = optStr(want, "version");

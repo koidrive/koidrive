@@ -107,6 +107,7 @@ pub(crate) struct Version {
     user_id: String,
     created_at_ms: i64,
     made_over: Vec<String>,
+    source_version_id: String,
 }
 
 /// Everything one commit can change, cloned per commit so that a failing commit leaves no trace.
@@ -145,6 +146,7 @@ impl State {
             user_id: version.user_id.clone(),
             created_at_ms: version.created_at_ms,
             made_over: version.made_over.clone(),
+            source_version_id: version.source_version_id.clone(),
         }
     }
 

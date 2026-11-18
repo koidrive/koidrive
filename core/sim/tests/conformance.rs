@@ -1568,6 +1568,7 @@ impl Run {
     fn recorded_current(&mut self, space: &str, version: &VersionInfo) -> Result<Value, String> {
         let VersionInfo {
             made_over: _,
+            source_version_id: _,
             version_id,
             seq,
             content,
@@ -2129,6 +2130,7 @@ impl Run {
         every(want, CURRENT_FIELDS)?;
         let VersionInfo {
             made_over: _,
+            source_version_id: _,
             version_id,
             seq,
             content,
