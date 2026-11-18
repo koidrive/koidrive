@@ -85,9 +85,9 @@ import {
   getVersion,
   type NodeRow,
   nodeState,
+  purgedRecord,
   rows,
   setMeta,
-  tombstoneRecord,
   type VersionRow,
   versionChunkPage,
   versionChunks,
@@ -128,6 +128,7 @@ class ClockBehind extends Error {
 }
 const PAGE_ENVELOPE_BYTES = 1024;
 const GC_BATCH = 1000;
+const PURGE_BYTES = MAX_SERVER_FRAME - 64 * 1024;
 const GC_RETRY_MS = 10 * 60_000;
 const R2_DELETE_BATCH = 1000;
 const ORPHAN_SWEEP_MS = 7 * DAY_MS;
@@ -1374,7 +1375,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         for (const version of expired) this.dropVersion(version, nowMs);
 
         const changes: ChangeRecord[] = [];
-        for (let budget = GC_BATCH; budget > 0; ) {
+        let bytes = 0;
+        batch: for (let budget = GC_BATCH; budget > 0; ) {
           const due = rows<NodeRow>(
             this.sql.exec(
               `SELECT * FROM nodes n WHERE status = 2 AND trashed_at_ms < ?
@@ -1384,13 +1386,16 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
             ),
           );
           if (due.length === 0) break;
-          budget -= due.length;
           for (const node of due) {
+            const intents = readIntents(this.sql, node.node_id);
+            const held = trashHeld(this.sql, node.trash_group);
+            const change = create(ChangeRecordSchema, { change: { case: "purged", value: purgedRecord(node.node_id, node.parent_id, intents, held) } });
+            bytes += toBinary(ChangeRecordSchema, change).length;
+            if (changes.length > 0 && bytes > PURGE_BYTES) break batch;
+            budget--;
             for (const version of rows<VersionRow>(this.sql.exec("SELECT * FROM versions WHERE node_id = ?", node.node_id))) {
               this.dropVersion(version, nowMs);
             }
-            const intents = readIntents(this.sql, node.node_id);
-            const held = trashHeld(this.sql, node.trash_group);
             this.sql.exec(
               "INSERT OR REPLACE INTO tombstones (node_id, parent_id, name, intents, held) VALUES (?, ?, ?, ?, ?)",
               node.node_id,
@@ -1401,7 +1406,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
             );
             this.sql.exec("DELETE FROM field_intents WHERE node_id = ?", node.node_id);
             this.sql.exec("DELETE FROM nodes WHERE node_id = ?", node.node_id);
-            changes.push(create(ChangeRecordSchema, { change: { case: "purged", value: tombstoneRecord(this.sql, node.node_id)! } }));
+            changes.push(change);
           }
         }
         this.sql.exec("DELETE FROM trash_held WHERE trash_group NOT IN (SELECT trash_group FROM nodes WHERE trash_group IS NOT NULL)");

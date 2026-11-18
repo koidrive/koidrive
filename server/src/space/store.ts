@@ -133,15 +133,14 @@ export function tombstoneOf(sql: Sql, nodeId: string): Tombstone | undefined {
   };
 }
 
+export function purgedRecord(nodeId: string, parentId: string | null, intents: NodeIntents, held: readonly string[]): NodePurged {
+  return create(NodePurgedSchema, { nodeId, lastParentId: parentId ?? "", intents: wireIntents(intents), held: held.map(intentBytes) });
+}
+
 export function tombstoneRecord(sql: Sql, nodeId: string): NodePurged | undefined {
   const row = sql.exec("SELECT parent_id, intents, held FROM tombstones WHERE node_id = ?", nodeId).toArray()[0];
   if (!row) return undefined;
-  return create(NodePurgedSchema, {
-    nodeId,
-    lastParentId: row.parent_id === null ? "" : String(row.parent_id),
-    intents: wireIntents(JSON.parse(String(row.intents)) as NodeIntents),
-    held: (JSON.parse(String(row.held)) as string[]).map(intentBytes),
-  });
+  return purgedRecord(nodeId, row.parent_id === null ? null : String(row.parent_id), JSON.parse(String(row.intents)) as NodeIntents, JSON.parse(String(row.held)) as string[]);
 }
 
 export function getVersion(sql: Sql, versionId: string): VersionRow | undefined {

@@ -25,7 +25,6 @@ import {
   ChangeRecordSchema,
   type ChunkRef,
   ChunkRefSchema,
-  CommitRecordSchema,
   type Content,
   ContentSchema,
   type FieldIntents,
@@ -33,7 +32,6 @@ import {
   type Intent,
   IntentSchema,
   NodeKind,
-  type NodePurged,
   NodePurgedSchema,
   type NodeState,
   NodeStateSchema,
@@ -242,7 +240,6 @@ class Run {
   private readonly sentSlots = new Map<string, bigint>();
   private readonly topSeq = new Map<string, bigint>();
   private readonly stored = new Map<string, Stored>();
-  private readonly tombstones = new Map<string, Map<string, NodePurged>>();
   private reqId = 0n;
 
   private readonly rule: Rule;
@@ -358,17 +355,7 @@ class Run {
 
   private async purge(space: string, atMs: number): Promise<void> {
     await this.enter(space, atMs);
-    const records = await runInDurableObject(this.stub(space), async (instance: SpaceDO, state) => {
-      const before = Number(getMeta(state.storage.sql, "head_seq"));
-      await instance.collectGarbage(atMs);
-      return state.storage.sql
-        .exec("SELECT record FROM commits WHERE seq > ? ORDER BY seq", before)
-        .toArray()
-        .map((row) => fromBinary(CommitRecordSchema, new Uint8Array(row.record as ArrayBuffer)));
-    });
-    const tombstones = this.tombstones.get(space) ?? new Map<string, NodePurged>();
-    for (const { change } of records.flatMap((record) => record.changes)) if (change.case === "purged") tombstones.set(change.value.nodeId, change.value);
-    this.tombstones.set(space, tombstones);
+    await runInDurableObject(this.stub(space), (instance: SpaceDO) => instance.collectGarbage(atMs));
   }
 
   private async rebuild(space: string, atMs: number): Promise<void> {
@@ -398,10 +385,11 @@ class Run {
         }
       }
     }
-    for (const [id, tombstone] of this.tombstones.get(space) ?? []) {
+    for (const id of new Set([...rebuilt.tombstones.keys(), ...live.tombstones.keys()])) {
       const name = this.values.get(id) ?? id;
       const exported = rebuilt.tombstones.get(id) ?? fail(`the export holds no tombstone of ${name}`);
-      if (!equals(NodePurgedSchema, exported, tombstone)) fail(`the exported tombstone of ${name} differs from the one the purge wrote`);
+      const kept = live.tombstones.get(id) ?? fail(`the export holds a tombstone of ${name}, which the server does not`);
+      if (!equals(NodePurgedSchema, exported, kept)) fail(`the exported tombstone of ${name} differs from the server's`);
     }
   }
 

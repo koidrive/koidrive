@@ -522,10 +522,11 @@ export class CommitApplier {
   }
 
   private conflictCopy(parent: NodeRow, original: string, content: Content, chunks: readonly ChunkRef[], madeOver: readonly string[], intent: FieldIntent): OpResult {
+    const home = this.depth(parent) < MAX_DEPTH ? parent : getNode(this.sql, parent.parent_id!)!;
     const copyId = uuidv7(this.ctx.nowMs);
-    const name = this.pickConflictCopyName(parent.node_id, original);
+    const name = this.pickConflictCopyName(home.node_id, original);
     const versionId = this.insertVersion(copyId, content, chunks, madeOver);
-    this.insertNode(copyId, parent.node_id, name, NodeKindValue.FILE, versionId, "");
+    this.insertNode(copyId, home.node_id, name, NodeKindValue.FILE, versionId, "");
     const [place, status] = intent.carried ? [this.minted(intent.author, true), this.minted(intent.author, true)] : [this.minted(this.dev, false), this.minted(this.dev, false)];
     this.setIntent(copyId, "content", intent);
     this.setIntent(copyId, "place", place);
@@ -612,7 +613,7 @@ export class CommitApplier {
     const tombstone = this.purgedReplay(op.nodeId, true);
     if (tombstone) {
       const intent = this.incoming("content");
-      if (tombstone.knows.has(intent.id)) return superseded();
+      if (tombstone.knows.has(intent.id) || this.heldElsewhere(op.nodeId, ["content"])) return superseded();
       return this.conflictCopy(this.nearestLive(tombstone.parent_id), name, op.content!, op.content!.chunks, madeOver, intent);
     }
     if (this.heldElsewhere(op.nodeId, ["place", "content", "status"])) return superseded();
@@ -636,7 +637,7 @@ export class CommitApplier {
     if (!found) {
       const tombstone = this.purgedReplay(this.id(nodeId));
       if (!tombstone) return rejected("NOT_FOUND");
-      if (tombstone.knows.has(intent.id)) return superseded();
+      if (tombstone.knows.has(intent.id) || this.heldElsewhere(this.id(nodeId), ["content"])) return superseded();
       const parent = this.nearestLive(tombstone.parent_id);
       return this.conflictCopy(parent, tombstone.name, content, chunks, boundMadeOver(ancestry?.madeOver ?? []), intent);
     }
