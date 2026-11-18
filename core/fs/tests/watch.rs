@@ -1607,3 +1607,34 @@ fn a_file_moved_from_a_renamed_folder_into_a_folder_the_scan_may_not_read_stays_
     assert_eq!(rescan.changes, vec![renamed("b/g.txt", "e/g.txt", File)]);
     assert_eq!(snapshot, Snapshot::scan(&root).unwrap());
 }
+
+#[test]
+fn a_file_moved_back_into_the_unreadable_folder_its_folder_left_is_not_removed() {
+    let (_dir, root) = moved_and_removed();
+    fs::create_dir(root.join("x/d/sub")).unwrap();
+    fs::write(root.join("x/d/sub/s.txt"), "s").unwrap();
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    fs::rename(root.join("x/d/sub"), root.join("e/sub")).unwrap();
+    fs::rename(root.join("e/sub/s.txt"), root.join("x/d/s.txt")).unwrap();
+    fs::set_permissions(root.join("x/d"), fs::Permissions::from_mode(0o000)).unwrap();
+    let blocked = blocks_reads(
+        "a_file_moved_back_into_the_unreadable_folder_its_folder_left_is_not_removed",
+        fs::read_dir(root.join("x/d")),
+    );
+    let while_blocked = blocked.then(|| snapshot.rescan(&root, [PathBuf::new()]));
+    fs::set_permissions(root.join("x/d"), fs::Permissions::from_mode(0o755)).unwrap();
+    let Some(while_blocked) = while_blocked else {
+        return;
+    };
+    let changes = while_blocked.unwrap().changes;
+    assert!(
+        !changes
+            .iter()
+            .any(|change| matches!(change, Change::Removed { .. })),
+        "{changes:?}"
+    );
+    assert!(
+        snapshot.entries.contains_key(Path::new("x/d/sub/s.txt")),
+        "{changes:?}"
+    );
+}

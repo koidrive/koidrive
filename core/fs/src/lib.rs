@@ -658,8 +658,9 @@ pub struct Rescan {
     /// or a disk the user ejected never reads as emptied, and nothing a rules
     /// file may leave out is reported as new. An entry below such a folder
     /// whose identity the scan found at a readable path as its only link is
-    /// reported as moved there, with what was below it. Report them, and
-    /// rescan them once they can be read.
+    /// reported as moved there, when everything that was below it is found
+    /// there, below a folder there the scan cannot read, or elsewhere. Report
+    /// them, and rescan them once they can be read.
     pub unreadable: Vec<PathBuf>,
     /// The identity of the root folder the scan opened. A scan that reached
     /// another folder than the caller's root has already applied that folder
@@ -1210,18 +1211,36 @@ impl Snapshot {
                 }
             }
         }
-        let elsewhere = |entry: &Entry, volume: Option<PathBuf>| {
-            (arrivals.get(&(entry.id, entry.kind))).is_some_and(|now| {
-                now.iter().any(|(to, at)| {
+        let elsewhere = |path: &Path,
+                         entry: &Entry,
+                         volume: Option<PathBuf>,
+                         tree: &BTreeMap<PathBuf, Entry>,
+                         new: &BTreeMap<PathBuf, Entry>| {
+            let Some(to) = (arrivals.get(&(entry.id, entry.kind)))
+                .into_iter()
+                .flatten()
+                .find(|(to, at)| {
                     *at == volume
-                        && (stat_rel(again.as_fd(), to)
-                            .ok()
-                            .and_then(|stat| stat.entry()))
-                        .is_some_and(|now| {
-                            (now.id, now.kind, now.linked) == (entry.id, entry.kind, false)
-                        })
+                        && (stat_rel(again.as_fd(), to).ok())
+                            .and_then(|stat| stat.entry())
+                            .is_some_and(|now| {
+                                (now.id, now.kind, now.linked) == (entry.id, entry.kind, false)
+                            })
                 })
-            })
+                .map(|(to, _)| to)
+            else {
+                return false;
+            };
+            (tree.range(path.to_path_buf()..))
+                .skip(1)
+                .take_while(|(inside, _)| inside.starts_with(path))
+                .all(|(inside, before)| {
+                    let at = to.join(inside.strip_prefix(path).expect("taken below the folder"));
+                    (new.get(&at)).is_some_and(|now| (now.id, now.kind) == (before.id, before.kind))
+                        || (unreadable.iter())
+                            .any(|blocked| at.starts_with(blocked) && at != *blocked)
+                        || arrivals.contains_key(&(before.id, before.kind))
+                })
         };
         let mut departed = BTreeSet::new();
         for blocked in &unreadable {
@@ -1234,8 +1253,11 @@ impl Snapshot {
                 if path.ancestors().any(|above| departed.contains(above)) {
                     old.insert(path, entry);
                 } else if elsewhere(
+                    &path,
                     &entry,
                     volume_now(&path, &self.entries, &scan.new, &self.entries),
+                    &self.entries,
+                    &scan.new,
                 ) {
                     old.insert(path.clone(), entry);
                     departed.insert(path);
@@ -1276,7 +1298,13 @@ impl Snapshot {
                 {
                     continue;
                 }
-                if elsewhere(&entry, volume_now(&path, &old, &scan.new, &self.entries)) {
+                if elsewhere(
+                    &path,
+                    &entry,
+                    volume_now(&path, &old, &scan.new, &self.entries),
+                    &old,
+                    &scan.new,
+                ) {
                     departed.insert(path);
                     continue;
                 }
