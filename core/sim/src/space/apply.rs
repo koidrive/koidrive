@@ -1083,7 +1083,7 @@ impl<'a> Applier<'a> {
                 &tombstone.name,
                 content,
                 chunks,
-                chain(if self.client() { source } else { "" }, made_over),
+                chain(source, made_over),
                 intent,
             ));
         };
