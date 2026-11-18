@@ -3,29 +3,33 @@
 //! An in-memory Space DO written from spec v0 sections 6 to 8 and checked against the TypeScript
 //! server (koidrive#6): commit idempotency and the commit checks of RFC 0002 section 3 (history fence,
 //! device counter, `base_seq`, `require_head`), chunk presence and receipts, rules R1 to R11, trash
-//! groups, revisions and post-image change records, resume and the paged listings.
-//! Garbage collection and retention are not modelled.
+//! groups, revisions and post-image change records, resume and the paged listings, and the recorded
+//! intents of RFC 0029 apart from its section 6. Version retention and chunk garbage collection are not
+//! modelled.
 
 mod apply;
+mod intents;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use koidrive_engine::ids::{IdGen, is_uuid_v7};
 use koidrive_proto::v1::{
     ChangeRecord, Changes, ChunkPlan, ChunkRef, ChunkTarget, Commit, CommitRecord, CommitResult,
-    Content, DownloadTargets, Error, FieldIntents, GetDownloadTargets, GetVersionChunks, Intent,
-    ListTrash, ListTree, ListVersions, NodeKind, NodePurged, NodeState, NodeStatus, Op,
-    PrepareUpload, PrepareUploadResult, Resume, ResyncRequired, RpcRequest, RpcResponse,
-    ServerMessage, Target, TrashPage, TreePage, UploadReceipt, VersionChunks, VersionInfo,
-    VersionList, Welcome, change_record, chunk_plan, error, op, resync_required, rpc_request,
-    rpc_response, server_message,
+    Content, DownloadTargets, Error, GetDownloadTargets, GetVersionChunks, ListTrash, ListTree,
+    ListVersions, NodeKind, NodePurged, NodeState, NodeStatus, Op, PrepareUpload,
+    PrepareUploadResult, Resume, ResyncRequired, RpcRequest, RpcResponse, ServerMessage, Target,
+    TrashPage, TreePage, UploadReceipt, VersionChunks, VersionInfo, VersionList, Welcome,
+    change_record, chunk_plan, error, op, resync_required, rpc_request, rpc_response,
+    server_message,
 };
 use prost::Message;
 use sha2::{Digest, Sha256};
 
 use apply::{Applier, Context};
+use intents::{IntentId, NodeIntents, Tombstone, intents_valid, legacy_intents};
 
 pub use apply::MAX_DEPTH;
+pub use intents::legacy_intent_id;
 
 pub const FORMAT_VERSION: u32 = 1;
 pub const MAX_OPS: usize = 1000;
@@ -39,6 +43,7 @@ pub const PAGE_CHUNKS: usize = 4096;
 const GRANT_MS: i64 = 3_600_000;
 const MAX_HEAD_CHECKS: usize = 50;
 const PAGE_BYTES: usize = 1024 * 1024;
+const TRASH_RETENTION_MS: i64 = 30 * 24 * 3_600_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -73,7 +78,6 @@ pub(crate) struct ChunkRow {
 #[derive(Clone, Debug)]
 pub(crate) struct Node {
     node_id: String,
-    place_id: Option<[u8; 16]>,
     parent_id: Option<String>,
     name: String,
     name_key: String,
@@ -95,6 +99,10 @@ pub(crate) struct Node {
     trash_group: Option<String>,
     pending_for: Option<String>,
     pending_by: Option<String>,
+    intents: NodeIntents,
+    status_before: Option<IntentId>,
+    copy_mark: Option<(IntentId, IntentId)>,
+    trashed_at_ms: Option<i64>,
     /// Insertion order, standing in for SQLite's rowid where the server reads rows without ORDER BY.
     row: u64,
 }
@@ -121,7 +129,9 @@ pub(crate) struct State {
     chunks: BTreeMap<Vec<u8>, ChunkRow>,
     rows: u64,
     ids: IdGen,
-    place_ids: IdGen,
+    intent_ids: IdGen,
+    trash_held: BTreeMap<String, BTreeSet<IntentId>>,
+    tombstones: BTreeMap<String, Tombstone>,
 }
 
 impl State {
@@ -139,6 +149,27 @@ impl State {
             .collect();
         children.sort_by_key(|n| n.row);
         children
+    }
+
+    fn holders(&self, id: IntentId) -> Vec<(String, intents::Field)> {
+        let mut nodes: Vec<&Node> = self.nodes.values().collect();
+        nodes.sort_by_key(|n| n.row);
+        nodes
+            .into_iter()
+            .flat_map(|n| {
+                intents::FIELDS
+                    .into_iter()
+                    .filter(move |&field| n.intents.id(field) == Some(id))
+                    .map(move |field| (n.node_id.clone(), field))
+            })
+            .collect()
+    }
+
+    fn trash_held_of(&self, group: Option<&str>) -> Vec<IntentId> {
+        group
+            .and_then(|group| self.trash_held.get(group))
+            .map(|held| held.iter().copied().collect())
+            .unwrap_or_default()
     }
 
     fn version_info(&self, version: &Version) -> VersionInfo {
@@ -168,17 +199,22 @@ impl State {
             trash_group: node.trash_group.clone().unwrap_or_default(),
             pending_for: node.pending_for.clone().unwrap_or_default(),
             pending_by: node.pending_by.clone().unwrap_or_default(),
-            intents: node.place_id.map(|id| FieldIntents {
-                place: Some(Intent {
-                    id: id.to_vec(),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
             current: node
                 .cur_version_id
                 .as_ref()
                 .map(|id| self.version_info(&self.versions[id])),
+            intents: node.intents.wire(
+                node.status_before
+                    .filter(|_| node.status == NodeStatus::Trashed),
+            ),
+            trash_held: match node.status {
+                NodeStatus::Trashed => self
+                    .trash_held_of(node.trash_group.as_deref())
+                    .into_iter()
+                    .map(IntentId::wire)
+                    .collect(),
+                _ => Vec::new(),
+            },
             ..Default::default()
         }
     }
@@ -294,6 +330,12 @@ fn check_ids(op: &Op, index: usize) -> Result<(), Error> {
             ));
         }
     };
+    if !intents_valid(op) {
+        return Err(fail(
+            error::Code::InvalidArgument,
+            format!("op {index} has a malformed intent"),
+        ));
+    }
     if !required.iter().all(|id| is_uuid_v7(id))
         || !optional.iter().all(|id| id.is_empty() || is_uuid_v7(id))
     {
@@ -442,7 +484,6 @@ impl SpaceDo {
         let history_id = ids.uuid_v7(now_ms as u64);
         let root = Node {
             node_id: space_id.clone(),
-            place_id: None,
             parent_id: None,
             name: String::new(),
             name_key: String::new(),
@@ -462,6 +503,10 @@ impl SpaceDo {
             trash_group: None,
             pending_for: None,
             pending_by: None,
+            intents: legacy_intents(&space_id, 0, None, "", 0),
+            status_before: None,
+            copy_mark: None,
+            trashed_at_ms: None,
             row: 1,
         };
         Self {
@@ -474,7 +519,9 @@ impl SpaceDo {
                 chunks: BTreeMap::new(),
                 rows: 1,
                 ids,
-                place_ids: IdGen::new(seed ^ (1 << 63)),
+                intent_ids: IdGen::new(!seed),
+                trash_held: BTreeMap::new(),
+                tombstones: BTreeMap::new(),
             },
             space_id,
             log: Vec::new(),
@@ -634,14 +681,14 @@ impl SpaceDo {
     /// minted again, and the chunk objects stay in the bucket.
     pub fn restore(&mut self, backup: &SpaceDo) {
         let ids = self.state.ids.clone();
-        let place_ids = self.state.place_ids.clone();
+        let intent_ids = self.state.intent_ids.clone();
         let objects = std::mem::take(&mut self.objects);
         let account_history = std::mem::take(&mut self.account_history);
         let copies_created_files = self.copies_created_files;
         *self = backup.clone();
         self.copies_created_files = copies_created_files;
         self.state.ids = ids;
-        self.state.place_ids = place_ids;
+        self.state.intent_ids = intent_ids;
         self.objects = objects;
         self.account_history = account_history;
     }
@@ -696,27 +743,95 @@ impl SpaceDo {
         {
             return false;
         }
-        self.state.nodes.remove(node_id);
+        let purged = self.purge_node(node_id);
+        self.append_purges(vec![purged], now_ms);
+        true
+    }
+
+    /// The server's garbage collection of the trash at `now_ms`: every trashed node whose retention
+    /// has ended leaves the space, leaves first, in one record. Returns how many nodes left.
+    pub fn collect_garbage(&mut self, now_ms: i64) -> usize {
+        let mut purged = Vec::new();
+        loop {
+            let nodes = &self.state.nodes;
+            let mut due: Vec<&Node> = nodes
+                .values()
+                .filter(|node| {
+                    node.trashed_at_ms
+                        .is_some_and(|at| at < now_ms - TRASH_RETENTION_MS)
+                        && !nodes
+                            .values()
+                            .any(|child| child.parent_id.as_ref() == Some(&node.node_id))
+                })
+                .collect();
+            if due.is_empty() {
+                break;
+            }
+            due.sort_by_key(|node| node.row);
+            let due: Vec<String> = due.into_iter().map(|node| node.node_id.clone()).collect();
+            for node_id in due {
+                purged.push(self.purge_node(&node_id));
+            }
+        }
+        let count = purged.len();
+        self.append_purges(purged, now_ms);
+        count
+    }
+
+    fn purge_node(&mut self, node_id: &str) -> ChangeRecord {
+        let node = self
+            .state
+            .nodes
+            .remove(node_id)
+            .expect("a purged node exists");
         self.state
             .versions
             .retain(|_, version| version.node_id != node_id);
+        let held = self.state.trash_held_of(node.trash_group.as_deref());
         let purged = NodePurged {
             node_id: node_id.to_owned(),
-            ..Default::default()
+            last_parent_id: node.parent_id.clone().unwrap_or_default(),
+            intents: node.intents.wire(None),
+            held: held.iter().map(|id| id.wire()).collect(),
         };
+        self.state.tombstones.insert(
+            node_id.to_owned(),
+            Tombstone {
+                parent_id: node.parent_id,
+                name: node.name,
+                intents: node.intents,
+                held: held.into_iter().collect(),
+            },
+        );
+        ChangeRecord {
+            change: Some(change_record::Change::Purged(purged)),
+        }
+    }
+
+    fn append_purges(&mut self, changes: Vec<ChangeRecord>, now_ms: i64) {
+        let groups: BTreeSet<&String> = (self.state.nodes.values())
+            .filter_map(|node| node.trash_group.as_ref())
+            .collect();
+        let gone: Vec<String> = (self.state.trash_held.keys())
+            .filter(|group| !groups.contains(group))
+            .cloned()
+            .collect();
+        for group in gone {
+            self.state.trash_held.remove(&group);
+        }
+        if changes.is_empty() {
+            return;
+        }
         let seq = self.head_seq + 1;
         let now_ms = self.commit_time(now_ms);
         self.log.push(CommitRecord {
             seq,
             commit_id: self.state.ids.uuid_v7(now_ms as u64),
             committed_at_ms: now_ms,
-            changes: vec![ChangeRecord {
-                change: Some(change_record::Change::Purged(purged)),
-            }],
+            changes,
             ..Default::default()
         });
         self.head_seq = seq;
-        true
     }
 
     /// Answers one RPC the way the server's `call` does. A new commit also returns its record.
