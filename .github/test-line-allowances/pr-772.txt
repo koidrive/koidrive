@@ -1,0 +1,3 @@
+38
+# Engine: each excluded node keeps S while its old place is pending, across a rename to an excluded name, a rename to an included name, the whole tree pending, and a folder whose pending child would be dropped with it.
+# Engine and driver: an excluded file the server moves keeps S while its place in R is pending, resolved through R for a folder only R holds and for a folder S holds elsewhere, and a poll whose only change is a newly pending scope is delivered.

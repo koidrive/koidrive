@@ -67,6 +67,12 @@ pub struct Observation {
     /// reports a `Modified` with the content once a read succeeds, unless a later change to the path replaces it
     /// (design §5.8).
     pub busy: Vec<PathBuf>,
+    /// The scopes the scans could not settle, as a removal they could not confirm or the search below left-out
+    /// entries has not decided. Every batch lists all of them.
+    pub pending: Vec<PathBuf>,
+    /// The files that started (`true`) or stopped (`false`) waiting for their content to be read since the
+    /// previous batch.
+    pub waiting: BTreeMap<PathBuf, bool>,
     /// The folders whose `.koiignore` file the scans of this batch found changed, each with the rules it holds now.
     /// The engine takes them before the changes of the batch. The first batch of an observer follows its scan of the
     /// whole tree and lists every rules file there is, also when nothing else changed.
@@ -160,6 +166,7 @@ pub struct FsObserver {
     /// Whether no poll of the current watcher has settled every scope yet. Until one has, a folder still pending may
     /// be one whose rules no scan of this watcher has read.
     settling: bool,
+    delivered: Vec<PathBuf>,
     /// Whether a reset still waits for the batch of a scan made after it.
     reset: bool,
     /// Files whose content could not be read, or that an observation left to a later one, with when to read them.
@@ -189,13 +196,19 @@ struct Unread {
     files: BTreeMap<PathBuf, (Retry, u64)>,
     due: BTreeSet<(Instant, PathBuf)>,
     bytes: u64,
+    waiting: BTreeMap<PathBuf, bool>,
 }
 
 impl Unread {
     fn insert(&mut self, path: PathBuf, retry: Retry, size: u64) {
-        if let Some((old, old_size)) = self.files.insert(path.clone(), (retry, size)) {
-            self.due.remove(&(old.due, path.clone()));
-            self.bytes -= old_size;
+        match self.files.insert(path.clone(), (retry, size)) {
+            Some((old, old_size)) => {
+                self.due.remove(&(old.due, path.clone()));
+                self.bytes -= old_size;
+            }
+            None => {
+                self.waiting.insert(path.clone(), true);
+            }
         }
         self.bytes += size;
         self.due.insert((retry.due, path));
@@ -205,6 +218,7 @@ impl Unread {
         let (old, size) = self.files.remove(path)?;
         self.due.remove(&(old.due, path.to_path_buf()));
         self.bytes -= size;
+        self.waiting.insert(path.to_path_buf(), false);
         Some(old)
     }
 
@@ -366,6 +380,7 @@ impl FsObserver {
             scanned: None,
             first: true,
             settling: true,
+            delivered: Vec::new(),
             reset: false,
             unread: Unread::default(),
             stopped,
@@ -774,9 +789,12 @@ impl Observer for FsObserver {
             && poll.read.is_empty()
             && poll.settled.is_empty()
             && rules.is_empty()
+            && self.unread.waiting.is_empty()
+            && poll.pending == self.delivered
         {
             return Ok(None);
         }
+        self.delivered.clone_from(&poll.pending);
         self.first &= !first;
         self.reset &= !answers;
         let root = check_root(&self.root, &self.space_id, &self.linked).map(|_| ());
@@ -810,6 +828,8 @@ impl Observer for FsObserver {
             read: poll.read,
             scanned: self.scanned,
             busy: reads.busy,
+            pending: poll.pending,
+            waiting: std::mem::take(&mut self.unread.waiting),
             rules,
             all_rules: first,
             mounts: (self.watcher.snapshot().entries.iter())
@@ -2012,7 +2032,10 @@ mod tests {
             (observer.observe(Duration::ZERO).unwrap()).expect("the scan that read the folder");
         assert!(settled.unreadable.is_empty());
         assert_eq!(settled.read, [proj]);
-        assert!(observer.observe(Duration::ZERO).unwrap().is_none());
+        let again = (observer.observe(Duration::ZERO).unwrap())
+            .expect("the poll that found the folder pending again");
+        assert_eq!(again.pending, [PathBuf::from("proj")]);
+        assert!(again.unreadable.is_empty());
     }
 
     /// The platform watcher fails after the user deleted a rules file it had not reported. The rescanning watcher that

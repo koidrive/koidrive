@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::hash::BuildHasher;
 use std::path::{Component, Path, PathBuf};
 
-use koidrive_engine::classify::Trees;
+use koidrive_engine::classify::{Pending, Trees};
 use koidrive_engine::commit::{Base, Commits, Halt};
 use koidrive_engine::effects::Effects;
 use koidrive_engine::first_link::History;
@@ -739,12 +739,13 @@ impl Engine {
         }
     }
 
-    /// Gives the trees the folders a scan listed, each at the path where it listed it.
-    pub fn listed(&mut self, listed: &[PathBuf]) {
+    /// Gives the trees the folders a scan listed, each at the path where it listed it, and the paths where the disk
+    /// may hold what no scan has reported yet ([`Pending`]).
+    pub fn listed(&mut self, listed: &[PathBuf], pending: Pending) {
         let listed: Vec<NodeId> = (listed.iter())
             .filter_map(|dir| local_at(&self.trees, dir))
             .collect();
-        self.trees.listed(&listed);
+        self.trees.listed(&listed, pending);
     }
 
     /// The paths of the folders a scan saw moved here that a scan must list again ([`Trees::take_relist`]).
@@ -754,8 +755,11 @@ impl Engine {
     }
 
     /// Whether [`Engine::listed`] would change what the trees hold.
-    pub fn sees_unobserved(&self, listed: &[PathBuf]) -> bool {
-        (self.trees).sees_unobserved(listed.iter().filter_map(|dir| local_at(&self.trees, dir)))
+    pub fn sees_unobserved(&self, listed: &[PathBuf], pending: &Pending) -> bool {
+        (self.trees).sees_unobserved(
+            listed.iter().filter_map(|dir| local_at(&self.trees, dir)),
+            pending,
+        )
     }
 
     /// Puts `changes` into L and returns the nodes whose L entry changed. Paths a change names in the previous state
@@ -1378,6 +1382,19 @@ fn path<N: Node>(tree: &Tree<N>, id: &str) -> String {
     }
     names.reverse();
     names.join("/")
+}
+
+/// The [`Pending`] of the scopes no scan has settled and of the files that started or stopped waiting to be read.
+pub(crate) fn pending(scopes: &[PathBuf], waiting: &BTreeMap<PathBuf, bool>) -> Pending {
+    Pending::new(
+        scopes
+            .iter()
+            .map(|path| path.iter().map(|name| name.to_string_lossy())),
+    )
+    .waiting(
+        (waiting.iter())
+            .map(|(path, waits)| (path.iter().map(|name| name.to_string_lossy()), *waits)),
+    )
 }
 
 /// The placed node of L at `path`, or the root for the empty path.
@@ -4298,5 +4315,86 @@ mod tests {
             written, 0,
             "the ack changed no node of L, so it writes no row of L"
         );
+    }
+
+    #[test]
+    fn a_removal_a_search_holds_back_stays_unobserved_while_its_folder_is_listed() {
+        fn scan(
+            engine: &mut Engine,
+            snapshot: &mut Snapshot,
+            root: &Path,
+            rules: &mut koidrive_fs::Rules,
+        ) -> Vec<PathBuf> {
+            let rescan = snapshot
+                .rescan_with_rules(root, [PathBuf::new()], rules)
+                .unwrap();
+            let changes = (rescan.rules.iter())
+                .map(|(dir, text)| RulesChange {
+                    dir: dir.clone(),
+                    rules: text
+                        .as_deref()
+                        .map(koidrive_engine::ignore::RuleFile::parse),
+                })
+                .collect();
+            engine.rules(changes, false);
+            let batch: Vec<Observed> = (rescan.changes.into_iter())
+                .filter_map(|change| match change {
+                    Change::Removed { path, kind } => Some(Observed::Removed { path, kind }),
+                    Change::Modified { path } => Some(Observed::Modified {
+                        marked_node: None,
+                        content: Some(bytes(snapshot.entries[&path].size)),
+                        id: snapshot.entries[&path].id,
+                        linked: snapshot.entries[&path].linked,
+                        path,
+                    }),
+                    _ => None,
+                })
+                .collect();
+            engine.observe(&batch, 0);
+            engine.read(&rescan.read, &rescan.unreadable);
+            engine.listed(&rescan.read, pending(&rescan.unsettled, &BTreeMap::new()));
+            engine.trees.settle(&Default::default());
+            rescan.unsettled
+        }
+        let (_outer, root) = tree_with_a_large_ignored_folder();
+        let mut rules = search_rules(100);
+        let mut snapshot = Snapshot::default();
+        let (_dir, mut engine) = mapper();
+        let ignored = Some(koidrive_engine::ignore::RuleFile::parse(b"ig/\n"));
+        engine.rules(
+            vec![RulesChange {
+                dir: PathBuf::new(),
+                rules: ignored,
+            }],
+            true,
+        );
+        observe_rescan(&mut engine, &mut snapshot, &root, &mut rules);
+        synced_everywhere(&mut engine);
+        let (x, _, _) = holding(&engine, "d/x.txt").unwrap();
+        fs::write(root.join(koidrive_fs::RULES_FILE), "ig/\nd/x.txt\n").unwrap();
+        scan(&mut engine, &mut snapshot, &root, &mut rules);
+        assert!(engine.trees.unobserved(&x));
+        fs::remove_file(root.join("d/x.txt")).unwrap();
+        fs::write(root.join(koidrive_fs::RULES_FILE), "ig/\n").unwrap();
+        let mut held = 0;
+        while !scan(&mut engine, &mut snapshot, &root, &mut rules).is_empty() {
+            held += 1;
+            assert!(held < 30, "the search decides the removal");
+            assert!(
+                engine.trees.unobserved(&x),
+                "a listing of d leaves x unobserved"
+            );
+        }
+        assert!(held > 0, "the search held the removal of x back");
+        let commit = Commits::default()
+            .build(&mut engine.trees, &mut IdGen::new(1), 1, "history", "me", 7)
+            .cloned();
+        let ops = commit.map(|commit| commit.ops).unwrap_or_default();
+        assert!(
+            !(ops.iter())
+                .any(|op| matches!(&op.op, Some(op::Op::Delete(delete)) if delete.node_id == x)),
+            "ops {ops:?}"
+        );
+        assert!(engine.trees.synced().get(&x).is_none(), "x downloads again");
     }
 }

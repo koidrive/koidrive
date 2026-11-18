@@ -65,7 +65,7 @@ use koidrive_store::{Link, Store, Tx};
 use prost::Message;
 use rustix::fs::{Mode, OFlags};
 
-use crate::engine::{Engine, file_id, file_identity};
+use crate::engine::{Engine, file_id, file_identity, pending};
 use crate::failures::{self, Failure};
 use crate::observe::{FsObserver, Observation, Observed, Observer, Reset};
 use crate::policy::{self, Disposition};
@@ -247,6 +247,23 @@ impl Sections {
     }
 }
 
+#[derive(Debug, Default)]
+struct Unscanned {
+    batch: Vec<PathBuf>,
+    effects: BTreeSet<PathBuf>,
+    dropped: BTreeSet<PathBuf>,
+}
+
+impl Unscanned {
+    fn all(&self) -> Vec<PathBuf> {
+        (self.batch.iter())
+            .chain(&self.effects)
+            .chain(&self.dropped)
+            .cloned()
+            .collect()
+    }
+}
+
 /// One observation with the stamp taken before it was scanned.
 #[derive(Debug)]
 pub(crate) struct Batch {
@@ -294,6 +311,8 @@ pub(crate) struct Disk {
     /// or it removed a folder that an entry L places in it had left. Set until a batch answers that request, and so
     /// has passed a scan of the section's paths and the rules it read.
     scan_after: Option<Requests>,
+    unscanned: Unscanned,
+    drop_after: Option<Requests>,
     rescan_after: Option<Requests>,
     /// The most each batch of effects holds: [`BATCH`] outside tests.
     batch: BatchLimit,
@@ -422,6 +441,8 @@ impl Disk {
             spans: VecDeque::new(),
             forgotten: 0,
             scan_after: None,
+            unscanned: Unscanned::default(),
+            drop_after: None,
             rescan_after: None,
             batch: BATCH,
             hook,
@@ -484,7 +505,15 @@ impl Disk {
             let outcomes: Vec<_> = (records.iter().zip(section.finish()?))
                 .map(|(record, outcome)| (record, confirmed(outcome, record, engine)))
                 .collect();
-            acknowledge(&outcomes, true, &link.space_id, engine, store, hook)?;
+            acknowledge(
+                &outcomes,
+                true,
+                &link.space_id,
+                pending(&disk.unscanned.all(), &BTreeMap::new()),
+                engine,
+                store,
+                hook,
+            )?;
             disk.finish_rotation(store)?;
             if let Standing::StoreOlder = standing(&disk.marker()?, &disk.tokens, &engine.effects)?
             {
@@ -626,9 +655,6 @@ impl Disk {
                 false => (&planned.record, confirmed(outcome, &planned.record, engine)),
             })
             .collect();
-        let settled = acknowledge(&outcomes, false, &self.space_id, engine, store, hook)?;
-        self.finish_rotation(store)?;
-        let end = self.sections.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let rules_file = |scope: &PathBuf| {
             (scope.file_name()).is_some_and(|name| is_rules_file(&name.to_string_lossy()))
         };
@@ -642,6 +668,23 @@ impl Disk {
             rules_changed |= !scopes.is_empty() && (moved_folder || scopes.iter().any(rules_file));
             scopes_of_batch.extend(scopes);
         }
+        if rules_changed {
+            self.unscanned
+                .effects
+                .extend(scopes_of_batch.iter().cloned());
+        }
+        let pending = pending(&self.unscanned.all(), &BTreeMap::new());
+        let settled = acknowledge(
+            &outcomes,
+            false,
+            &self.space_id,
+            pending,
+            engine,
+            store,
+            hook,
+        )?;
+        self.finish_rotation(store)?;
+        let end = self.sections.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let requested = (self.sections).request(engine.resets(scopes_of_batch.iter().cloned()));
         if rules_changed
             || (settled.iter()).any(|settled| matches!(settled, Settled::AwaitsScan(_)))
@@ -696,9 +739,14 @@ impl Disk {
         engine.rules(observation.rules, observation.all_rules);
         if (self.scan_after).is_some_and(|requested| answered >= Some(requested)) {
             self.scan_after = None;
+            self.unscanned.effects.clear();
         }
         if (self.rescan_after).is_some_and(|requested| answered >= Some(requested)) {
             self.rescan_after = None;
+        }
+        if (self.drop_after).is_some_and(|requested| answered >= Some(requested)) {
+            self.drop_after = None;
+            self.unscanned.dropped.clear();
         }
         if stamp.0 < self.forgotten {
             tracing::debug!(
@@ -707,7 +755,9 @@ impl Disk {
                 "dropped an observation older than the effects the folder remembers, and reset the whole folder"
             );
             engine.read(&observation.read, &observation.unreadable);
-            self.sections.request(engine.resets([PathBuf::new()]));
+            self.unscanned.dropped.insert(PathBuf::new());
+            engine.listed(&[], pending(&self.unscanned.all(), &observation.waiting));
+            self.drop_after = Some(self.sections.request(engine.resets([PathBuf::new()])));
             return Ok(());
         }
         let mut scopes: BTreeSet<PathBuf> = (self.spans.iter())
@@ -750,10 +800,13 @@ impl Disk {
         let mounts = (observation.mounts != engine.mounts).then_some(observation.mounts);
         let mut ctimes = observation.ctimes;
         ctimes.retain(|path, _| !dropped.contains(path));
+        self.unscanned.batch = observation.pending;
+        self.unscanned.dropped.extend(dropped.iter().cloned());
+        let pending = pending(&self.unscanned.all(), &observation.waiting);
         if !changes.is_empty()
             || mounts.is_some()
             || !ctimes.is_empty()
-            || engine.sees_unobserved(&listed)
+            || engine.sees_unobserved(&listed, &pending)
         {
             let now_ms = crate::clock::unix_ms();
             store.transaction(|tx| -> Result<(), Stop> {
@@ -763,7 +816,7 @@ impl Disk {
                 }
                 engine.observe(&changes, now_ms);
                 engine.read(&read, &observation.unreadable);
-                engine.listed(&listed);
+                engine.listed(&listed, pending);
                 engine.read_ctimes(ctimes);
                 Ok(engine.checkpoint(tx)?)
             })?;
@@ -780,7 +833,7 @@ impl Disk {
                 ?dropped,
                 "dropped the changes an effect made after the observation began, and reset their paths"
             );
-            self.sections.request(engine.resets(dropped));
+            self.drop_after = Some(self.sections.request(engine.resets(dropped)));
         }
         Ok(())
     }
@@ -1588,6 +1641,7 @@ fn acknowledge(
     outcomes: &[(&EffectRecord, Outcome)],
     retry: bool,
     space_id: &str,
+    pending: koidrive_engine::classify::Pending,
     engine: &mut Engine,
     store: &mut Store,
     hook: &mut Hook,
@@ -1597,6 +1651,7 @@ fn acknowledge(
             .map(|(record, outcome)| settle(record, outcome, retry, engine))
             .collect::<Result<Vec<_>, Stop>>()?;
         engine.ask(tx, space_id)?;
+        engine.listed(&[], pending);
         engine.checkpoint(tx)?;
         hook(Cut::BeforeAck);
         Ok(settled)

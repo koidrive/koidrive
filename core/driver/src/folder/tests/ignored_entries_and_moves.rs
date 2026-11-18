@@ -46,6 +46,8 @@ fn a_file_moved_into_an_ignored_folder_stays_on_the_server_when_its_folder_is_re
                 read: vec![PathBuf::new()],
                 scanned: a.observer.scanned(),
                 busy: Vec::new(),
+                pending: Vec::new(),
+                waiting: Default::default(),
                 rules: Vec::new(),
                 all_rules: false,
                 mounts: BTreeMap::new(),

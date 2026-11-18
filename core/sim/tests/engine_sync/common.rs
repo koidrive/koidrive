@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use koidrive_engine::classify::Trees;
+use koidrive_engine::classify::{Pending, Trees};
 
 use koidrive_engine::commit::{Commits, Failure, Halt, MAX_OPS, Reconnect};
 
@@ -628,14 +628,14 @@ impl Device {
                     .map(|(id, _)| id.clone()),
             )
             .collect();
-        self.trees.listed(&folders);
+        self.trees.listed(&folders, Pending::default());
     }
 
     fn list_moved(&mut self) {
         let moved: Vec<String> = (self.trees.take_relist().into_iter())
             .filter(|id| visible(&self.trees, id))
             .collect();
-        self.trees.listed(&moved);
+        self.trees.listed(&moved, Pending::default());
     }
 
     /// One change the user makes on disk, as the next rescan reports it. The user sees no parked
