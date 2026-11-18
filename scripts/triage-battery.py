@@ -118,8 +118,16 @@ def classify(rows, entries):
     return ambiguous
 
 
-def shard_number(directory):
-    return int(directory.name.rsplit("-", 1)[1])
+def shards(failures):
+    nested = [path for path in failures.glob("failure-shard-*") if path.is_dir()]
+    if nested:
+        return sorted((int(path.name.rsplit("-", 1)[1]), path) for path in nested)
+    if not ((failures / "logs").is_dir() or (failures / "regressions").is_dir()):
+        raise ValueError(f"{failures} holds no failure-shard artifact.")
+    results = sorted(failures.glob("result-*.json"))
+    if len(results) != 1:
+        raise ValueError(f"{failures} holds one shard's files but {len(results)} result-*.json files name its shard.")
+    return [(int(results[0].stem.rsplit("-", 1)[1]), failures)]
 
 
 def collect(failures):
@@ -141,8 +149,7 @@ def collect(failures):
         if shard not in case["shards"]:
             case["shards"].append(shard)
 
-    for shard_dir in sorted((path for path in failures.glob("failure-shard-*") if path.is_dir()), key=shard_number):
-        shard = shard_number(shard_dir)
+    for shard, shard_dir in shards(failures):
         regressions = shard_dir / "regressions"
         files = {path.relative_to(regressions).as_posix(): path
                  for path in regressions.rglob("cc-*.txt") if path.parent.suffix == ".cases"}
@@ -488,7 +495,7 @@ masked, and for an entry that lists cases, only by those cases, which come befor
 def main():
     parser = argparse.ArgumentParser(description="Replay a red property battery's new cases on its head and base.")
     commands = parser.add_subparsers(dest="command", required=True)
-    collect_parser = commands.add_parser("collect", help="map the cases in failure-shard-* artifacts to their tests")
+    collect_parser = commands.add_parser("collect", help="map the cases in failure-shard-* artifacts, or one artifact's files, to their tests")
     collect_parser.add_argument("--failures", type=Path, required=True)
     collect_parser.add_argument("--run", required=True)
     collect_parser.add_argument("--head", required=True)
@@ -511,7 +518,10 @@ def main():
     arguments = parser.parse_args()
 
     if arguments.command == "collect":
-        cases, others = collect(arguments.failures)
+        try:
+            cases, others = collect(arguments.failures)
+        except ValueError as error:
+            sys.exit(f"::error::{error}")
         profile = (checked_profile(arguments.head_manifest.read_text())
                    or checked_profile(arguments.fallback_manifest.read_text()))
         if profile is None:

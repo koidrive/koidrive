@@ -610,6 +610,27 @@ class Triage(unittest.TestCase):
         self.assertEqual(others, [{"binary": "devices", "test": "devices_lose_no_write", "shards": [4, 10],
                                    "cases": [cases[0]["path"], cases[2]["path"]]}])
 
+    def test_collect_reads_a_single_artifact_extracted_without_its_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.shard(root, 3, ["a" * 64, "b" * 64])
+            (root / "failure-shard-3/result-3.json").write_text(json.dumps({"shard": 3}))
+            nested = triage.collect(root)
+            flat = triage.collect(root / "failure-shard-3")
+        self.assertEqual(flat, nested)
+        self.assertEqual([(case["case"][0], case["test"], case["shards"]) for case in flat[0]],
+                         [("a", "devices_converge", [3]), ("a", "devices_lose_no_write", [3]),
+                          ("b", "devices_converge", [3]), ("b", "devices_lose_no_write", [3])])
+
+    def test_collect_refuses_a_download_it_cannot_read_as_shards(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(ValueError, "holds no failure-shard artifact"):
+                triage.collect(root)
+            self.shard(root, 5, ["a" * 64])
+            with self.assertRaisesRegex(ValueError, "0 result-\\*.json files name its shard"):
+                triage.collect(root / "failure-shard-5")
+
     def test_a_test_that_saved_nothing_gets_rows_for_its_shards_cases_that_fail_it(self):
         path = "core/sim/tests/devices.cases/cc-" + "a" * 64 + ".txt"
         spec = {"run": "7", "head": "h" * 40, "base": "b" * 40,
