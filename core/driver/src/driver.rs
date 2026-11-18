@@ -2498,6 +2498,7 @@ impl Driver {
             linked_started: folder.linked_started,
             telemetry: self.inner.telemetry.clone(),
             link: folder.link.clone(),
+            device_name: credential.device_name.clone(),
             store,
             auth,
             status: folder.status.clone(),

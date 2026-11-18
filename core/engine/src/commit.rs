@@ -16,7 +16,7 @@ use crate::effects;
 use crate::first_link::{self, History, Marks, PriorSync};
 use crate::guard::{self, Guard, RemoteRemoval};
 use crate::ids::{IdGen, unix_ms};
-use crate::names::{MAX_NAME_BYTES, name_key, nfc};
+use crate::names::{MAX_NAME_BYTES, conflict_name, name_key, nfc};
 use crate::question::{
     Answer, ConflictFile, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
     Revisions,
@@ -45,6 +45,7 @@ pub const MAX_COMMIT_BYTES: usize = 512 * 1024;
 /// What one change record costs besides the node's name and content: its IDs, revisions, version
 /// and framing.
 const RECORD_BYTES: usize = 256;
+const MAX_CONFLICT_ATTEMPTS: u32 = 100;
 
 const MAX_ANCESTRY_BYTES: usize = CONTENT_ANCESTRY_LIMIT * (1 + 1 + 36);
 
@@ -212,6 +213,7 @@ pub struct Commits {
     guard: Guard,
     granted: Unstored<Vec<NodeId>>,
     confirmed: Unstored<Option<u64>>,
+    device_name: Unstored<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -224,6 +226,24 @@ impl<T> PartialEq for Unstored<T> {
 }
 
 impl Commits {
+    /// Names this device in the conflict names its commits give (RFC 0001 §5).
+    pub fn set_device_name(&mut self, name: &str) {
+        self.device_name = Unstored(name.to_owned());
+    }
+
+    /// The nodes a build renames to a conflict name because a folder this device keeps out of sync
+    /// holds their name (RFC 0001 §5).
+    pub fn renaming(&self, trees: &Trees, now_ms: u64) -> BTreeSet<NodeId> {
+        if self.halted.is_some() || !trees.rules_known() {
+            return BTreeSet::new();
+        }
+        (effects::displaced_by_excluded(trees).into_keys())
+            .filter(|id| !self.problems.contains(id))
+            .filter(|id| !(self.questions.iter()).any(|q| q.holds().any(|held| held == id)))
+            .filter(|id| conflict_rename(trees, id, &self.device_name.0, now_ms).is_some())
+            .collect()
+    }
+
     /// What the store keeps of the commit side.
     pub fn state(&self) -> CommitsState {
         CommitsState {
@@ -267,6 +287,7 @@ impl Commits {
             guard,
             granted: _,
             confirmed: _,
+            device_name: _,
         } = self;
         CommitsChanges {
             accepted: accepted.take_changed().copied(),
@@ -373,6 +394,7 @@ impl Commits {
             guard: guard.into(),
             granted: Unstored::default(),
             confirmed: Unstored::default(),
+            device_name: Unstored::default(),
         })
     }
 
@@ -1522,6 +1544,9 @@ impl Commits {
                     ..Default::default()
                 });
             }
+        }
+        if ops.is_empty() && released.is_empty() {
+            ops.extend(displaced_renames(trees, &skip, &self.device_name.0, now_ms).take(cap));
         }
         if ops.is_empty() {
             self.keep_unsent(trees, released);
@@ -3311,6 +3336,49 @@ fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
             }
         }
     }
+}
+
+fn displaced_renames<'a>(
+    trees: &'a Trees,
+    skip: &'a BTreeSet<NodeId>,
+    device_name: &'a str,
+    now_ms: u64,
+) -> impl Iterator<Item = proto::Op> + 'a {
+    (effects::displaced_by_excluded(trees).into_keys())
+        .filter(|id| !skip.contains(id))
+        .filter_map(move |id| {
+            let shape = trees.remote().live(&id)?;
+            let name = conflict_rename(trees, &id, device_name, now_ms)?;
+            Some(proto::Op {
+                op: Some(op::Op::Move(proto::Move {
+                    from: Some(proto::Place {
+                        parent_id: shape.parent.clone(),
+                        name: shape.name.clone(),
+                    }),
+                    node_id: id,
+                    new_parent_id: shape.parent.clone(),
+                    new_name: name,
+                    pending_for: String::new(),
+                })),
+                ..Default::default()
+            })
+        })
+}
+
+fn conflict_rename(trees: &Trees, id: &NodeId, device_name: &str, now_ms: u64) -> Option<String> {
+    let shape = trees.remote().live(id)?;
+    let (names, kind) = path(trees.remote(), id)?;
+    let mut names: Vec<String> = names.into_iter().map(str::to_owned).collect();
+    (1..=MAX_CONFLICT_ATTEMPTS)
+        .map(|attempt| conflict_name(&shape.name, device_name, now_ms as i64, attempt))
+        .find(|name| {
+            let key = name_key(name);
+            *names.last_mut().expect("a path names the node") = name.clone();
+            trees.local_holders(&shape.parent, name).next().is_none()
+                && (trees.remote_holders_of_key(&shape.parent, &key))
+                    .all(|other| trees.remote().live(other).is_none())
+                && !trees.ignores(&names, kind)
+        })
 }
 
 fn twin(trees: &Trees, shape: &Shape, same: bool) -> Option<NodeId> {

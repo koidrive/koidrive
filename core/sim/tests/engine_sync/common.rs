@@ -2119,7 +2119,9 @@ fn run_ignoring_answering_after(
     prop_assert_eq!(unsettled, Vec::<&String>::new());
     prop_assert!(commits.problems().is_empty(), "{:?}", commits.problems());
     prop_assert!(effects.blocked().is_empty(), "{:?}", effects.blocked());
-    let reported = koidrive_engine::effects::stuck(&device.trees, &effects, commits.in_flight());
+    let renaming = commits.renaming(&device.trees, NOW as u64);
+    let reported =
+        koidrive_engine::effects::stuck(&device.trees, &effects, commits.in_flight(), &renaming);
     let local = device.trees.local();
     let unreachable = |id: &str, shape: &koidrive_engine::tree::Shape| {
         let folder = shape.parent == local.root

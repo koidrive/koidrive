@@ -51,6 +51,7 @@ pub(crate) struct FolderTask {
     pub linked_started: Option<Time>,
     pub telemetry: koidrive_telemetry::Recorder,
     pub link: Link,
+    pub device_name: String,
     pub store: PathBuf,
     pub auth: Arc<Auth>,
     pub status: Arc<crate::lifecycle::Lifecycle>,
@@ -233,6 +234,7 @@ impl FolderTask {
                 Remedy::Restart,
             );
         }
+        folder.engine.commits.set_device_name(&self.device_name);
         if let Some(adopted) = adopted {
             let (proof, children) = match adopted {
                 Adopted::Volume => (RootProof::Volume, None),

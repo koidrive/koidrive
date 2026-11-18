@@ -1767,7 +1767,7 @@ fn a_file_parked_for_a_name_swap_is_not_reported_while_the_swap_goes_on() {
         .unwrap();
     trees.settle(&Default::default());
     assert_eq!(
-        koidrive_engine::effects::stuck(&trees, &effects, None),
+        koidrive_engine::effects::stuck(&trees, &effects, None, &Default::default()),
         BTreeMap::new()
     );
 }
@@ -1958,7 +1958,12 @@ fn a_reverted_parked_folder_whose_local_name_another_node_took_goes_to_its_exclu
         let x = trees.local().get("x").unwrap();
         if taken {
             assert!(x.parked);
-            let reported = koidrive_engine::effects::stuck(&trees, &Effects::default(), None);
+            let reported = koidrive_engine::effects::stuck(
+                &trees,
+                &Effects::default(),
+                None,
+                &Default::default(),
+            );
             assert!(reported.contains_key("x"), "{reported:?}");
         } else {
             assert!(!x.parked);
@@ -1997,7 +2002,8 @@ fn two_reverted_parked_folders_where_one_was_refused_the_others_r_name_both_go_t
         disk.matches(&trees).unwrap();
         assert!(trees.ignored(x) && trees.ignored(y) && !trees.excluded("h"));
         converge(&mut trees, &mut disk, 10).unwrap();
-        let reported = koidrive_engine::effects::stuck(&trees, &Effects::default(), None);
+        let reported =
+            koidrive_engine::effects::stuck(&trees, &Effects::default(), None, &Default::default());
         let parked: Vec<_> = (trees.local().iter())
             .filter(|(_, node)| node.parked)
             .map(|(id, _)| id.clone())
@@ -2047,7 +2053,7 @@ fn a_parked_node_that_can_go_nowhere_is_reported_beside_a_failed_effect() {
             .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
             .is_empty()
     );
-    let reported = koidrive_engine::effects::stuck(&trees, &effects, None);
+    let reported = koidrive_engine::effects::stuck(&trees, &effects, None, &Default::default());
     assert!(reported.contains_key("f"), "{reported:?}");
 }
 

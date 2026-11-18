@@ -318,7 +318,12 @@ impl Folder {
             self.engine.effects.in_flight(),
             self.engine.commits.in_flight(),
         ) {
-            ([], None) => effects::stuck(&self.engine.trees, &self.engine.effects, None),
+            ([], None) => {
+                let now_ms = (SystemTime::now().duration_since(UNIX_EPOCH))
+                    .map_or(0, |since| since.as_millis() as u64);
+                let renaming = self.engine.commits.renaming(&self.engine.trees, now_ms);
+                effects::stuck(&self.engine.trees, &self.engine.effects, None, &renaming)
+            }
             _ => BTreeMap::new(),
         }
     }

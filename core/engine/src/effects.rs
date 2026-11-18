@@ -824,6 +824,35 @@ pub(crate) fn kept_out(trees: &Trees, id: &str) -> bool {
         && matches!(view.step(id), Step::Blocked(Some(holder)) if !view.parkable(&holder))
 }
 
+pub(crate) fn displaced_by_excluded(trees: &Trees) -> BTreeMap<NodeId, NodeId> {
+    let view = View::new(trees);
+    (trees.dirty_others().iter())
+        .filter(|id| candidate(trees, id) && !trees.held(id) && !trees.ignored(id))
+        .filter(|id| {
+            trees.local().get(id).is_none()
+                && !trees.waiting().contains_key(*id)
+                && !trees.pending_finishes().contains_key(*id)
+        })
+        .filter_map(|id| {
+            let remote = trees
+                .remote()
+                .get(id)
+                .filter(|node| node.pending_for.is_none())?;
+            let Some(Step::Blocked(Some(holder))) = view.blocked(id, trees.remote().live(id)?)
+            else {
+                return None;
+            };
+            let folder =
+                (trees.local().get(&holder)).is_some_and(|node| node.shape.kind == Kind::Dir);
+            (folder
+                && remote.shape.kind != Kind::Dir
+                && trees.excluded(&holder)
+                && !trees.discarded_here(&holder))
+            .then(|| (id.clone(), holder))
+        })
+        .collect()
+}
+
 /// A node the planner considers: one whose only change is remote, one that is parked, one whose
 /// local position is reverted, or one whose S update waits and that R no longer has. A reverted or
 /// waiting node that R no longer has is removed only when it holds no unuploaded edit; otherwise
@@ -872,15 +901,17 @@ pub enum Stuck {
 
 /// The nodes section 5.10 reports as problems: each node the planner considers whose place is held
 /// by the local copy of an excluded node, each node whose S update waits behind one of them, and
-/// each node that cannot be put into its folder in R because that folder is one of them.
+/// each node that cannot be put into its folder in R because that folder is one of them. A node in
+/// `renaming` ([`crate::commit::Commits::renaming`]) is not reported.
 pub fn stuck(
     trees: &Trees,
     effects: &Effects,
     in_flight: Option<&InFlight>,
+    renaming: &BTreeSet<NodeId>,
 ) -> BTreeMap<NodeId, Stuck> {
     let view = View::new(trees);
     let planned: Vec<&NodeId> = (trees.dirty_others().iter())
-        .filter(|id| candidate(trees, id) && !trees.held(id))
+        .filter(|id| candidate(trees, id) && !trees.held(id) && !renaming.contains(*id))
         .collect();
     let unplaced: Vec<(&NodeId, &str)> = (planned.iter())
         .filter(|id| matches!(view.step(id), Step::Blocked(None)))

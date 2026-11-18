@@ -2151,6 +2151,10 @@ impl Trees {
         self.discard_state(id) == Some(Discard::Reclaimed)
     }
 
+    pub(crate) fn discarded_here(&self, id: &str) -> bool {
+        self.discard_state(id).is_some()
+    }
+
     fn discard_state(&self, id: &str) -> Option<Discard> {
         let (Some(local), Some(discarded)) = (self.l.get(id), self.discarded.get(id)) else {
             return None;

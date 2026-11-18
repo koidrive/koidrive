@@ -233,24 +233,142 @@ fn a_kept_folder_whose_node_the_server_purges_stays_kept() {
 }
 
 #[test]
-fn a_file_another_device_makes_at_a_kept_folders_place_is_reported_and_the_folder_stays() {
-    let ignored = [".env"];
-    let (mut remote, site_a, mut a, site, mut b, _) =
-        deleted_with_ignored_entries(&["README.md"], &ignored);
+fn a_file_another_device_makes_at_a_kept_folders_place_downloads_beside_it_under_a_conflict_name() {
+    for name in ["app", "APP"] {
+        let ignored = [".env"];
+        let (mut remote, site_a, mut a, site, mut b, _) =
+            deleted_with_ignored_entries(&["README.md"], &ignored);
+
+        a.create(&mut remote, &site_a.root.join(name), b"a file now");
+        for _ in 0..3 {
+            b.pull(&remote);
+            b.run(&mut remote);
+            b.settle();
+        }
+
+        let names = remote.names();
+        let [copy] = names.as_slice() else {
+            panic!("{names:?}");
+        };
+        assert!(
+            copy.starts_with(&format!("{name} (conflict from ")),
+            "{copy}"
+        );
+        assert_eq!(fs::read(site.root.join(copy)).unwrap(), b"a file now");
+        let env = site.root.join("app/.env");
+        assert_eq!(fs::read_to_string(&env).unwrap(), local_only(&env));
+        assert!(
+            !remote.tree().keys().any(|path| path.ends_with(".env")),
+            "{:?}",
+            remote.tree()
+        );
+        let view = b.folder.view();
+        assert_eq!(view.state, FolderState::UpToDate);
+        assert_eq!(view.problem, None);
+    }
+}
+
+#[test]
+fn two_devices_that_keep_a_folder_rename_a_file_made_at_its_name_once() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"synced");
+    let keepers: Vec<(Site, Device)> = ["b", "c"]
+        .into_iter()
+        .map(|name| {
+            let site = Site::new(&remote, name);
+            let mut device = site.start_with(&ignore_rules());
+            device.connect(&remote);
+            device.scan_until(|device| device.folder.scanned);
+            device.rest(&mut remote);
+            let env = site.root.join("app/.env");
+            fs::write(&env, local_only(&env)).unwrap();
+            device.settle();
+            (site, device)
+        })
+        .collect();
+    let [(site_b, mut b), (site_c, mut c)] = <[_; 2]>::try_from(keepers).ok().unwrap();
+    fs::remove_dir_all(site_a.root.join("app")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    for device in [&mut b, &mut c] {
+        device.pull(&remote);
+        device.rest(&mut remote);
+    }
 
     a.create(&mut remote, &site_a.root.join("app"), b"a file now");
     b.pull(&remote);
-    b.run(&mut remote);
+    c.pull(&remote);
     b.settle();
+    c.settle();
     b.run(&mut remote);
+    c.run(&mut remote);
+    for device in [&b, &c] {
+        let renames = (device.sent.iter().flat_map(|commit| &commit.ops))
+            .filter(|op| matches!(&op.op, Some(op::Op::Move(moved)) if moved.from.is_some()))
+            .count();
+        assert_eq!(renames, 1);
+    }
+    for _ in 0..3 {
+        for device in [&mut a, &mut b, &mut c] {
+            device.pull(&remote);
+            device.rest(&mut remote);
+        }
+    }
 
-    assert!(b.sent.is_empty(), "{:?}", b.sent);
-    assert_eq!(remote.names(), ["app"]);
-    let env = site.root.join("app/.env");
-    assert_eq!(fs::read_to_string(&env).unwrap(), local_only(&env));
-    let view = b.folder.view();
-    assert_eq!(view.state, FolderState::UpToDate);
-    assert!(view.problem.is_some_and(|problem| problem.contains("\"app\"")));
+    let names = remote.names();
+    let [copy] = names.as_slice() else {
+        panic!("{names:?}");
+    };
+    assert!(copy.starts_with("app (conflict from "), "{copy}");
+    for (site, device) in [(&site_a, &a), (&site_b, &b), (&site_c, &c)] {
+        assert_eq!(fs::read(site.root.join(copy)).unwrap(), b"a file now");
+        let view = device.folder.view();
+        assert_eq!((view.state, view.problem), (FolderState::UpToDate, None));
+    }
+    for site in [&site_b, &site_c] {
+        let env = site.root.join("app/.env");
+        assert_eq!(fs::read_to_string(&env).unwrap(), local_only(&env));
+    }
+    assert!(!site_a.root.join("app").exists());
+    assert!(
+        !remote.tree().keys().any(|path| path.ends_with(".env")),
+        "{:?}",
+        remote.tree()
+    );
+}
+
+#[test]
+fn a_restart_after_renaming_a_file_made_at_a_kept_folders_name_downloads_it_without_renaming_again()
+{
+    let ignored = [".env"];
+    let (mut remote, site_a, mut a, site, mut b, _) =
+        deleted_with_ignored_entries(&["README.md"], &ignored);
+    a.create(&mut remote, &site_a.root.join("app"), b"a file now");
+    b.pull(&remote);
+    b.settle();
+    let Some(Work::Send(commit)) = b.work.pop_front() else {
+        panic!("b sends the rename first");
+    };
+    remote.commit(&b.caller, &commit).unwrap();
+    let names = remote.names();
+    let [copy] = names.as_slice() else {
+        panic!("{names:?}");
+    };
+    drop(b);
+
+    let mut b = site.start_with(&ignore_rules());
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.rest(&mut remote);
+    }
+
+    assert_eq!(remote.names(), names);
+    assert_eq!(fs::read(site.root.join(copy)).unwrap(), b"a file now");
+    assert_kept(&site, &b, &ignored);
 }
 
 #[test]
@@ -1466,5 +1584,27 @@ fn a_kept_entry_another_devices_negation_let_in_stays_kept_when_the_person_edits
         !remote.tree().contains_key("app/.env"),
         "{:?}",
         remote.tree()
+    );
+}
+
+#[test]
+fn a_viewer_keeping_a_folder_reports_a_file_made_at_its_name() {
+    let (mut remote, site_a, mut a, _site, mut b, _) =
+        deleted_with_ignored_entries(&["README.md"], &[".env"]);
+    b.caller.role = Role::Viewer;
+    b.connect(&remote);
+    b.pull(&remote);
+    assert_eq!(b.folder.engine.commits.halted(), Some(CommitHalt::ReadOnly));
+
+    a.create(&mut remote, &site_a.root.join("app"), b"a file now");
+    for _ in 0..8 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    let view = b.folder.view();
+    assert_eq!(
+        (view.state, view.problem.is_some()),
+        (FolderState::UpToDate, true)
     );
 }
