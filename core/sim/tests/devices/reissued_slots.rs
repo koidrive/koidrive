@@ -534,3 +534,35 @@ fn a_rolled_back_store_enters_recovery_when_a_commit_after_the_restore_took_its_
     )
     .unwrap();
 }
+
+#[test]
+fn a_commit_resent_across_a_restore_is_not_another_commit_when_a_later_restore_brings_back_its_first_application()
+ {
+    let act = |kind: u8, target: usize, parent: usize, name: usize| {
+        Step::User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text: 0,
+        })
+    };
+    converge(
+        2,
+        &[
+            vec![
+                (2, act(0, 0, 0, 3)),
+                (2, Step::Work(0)),
+                (0, Step::Backup),
+                (2, Step::Work(0)),
+                (2, act(3, 0, 5495008244535768158, 0)),
+                (0, act(0, 0, 0, 0)),
+                (2, Step::Work(12012490443824171944)),
+                (0, Step::Backup),
+                (0, Step::RestoreEarlier),
+            ],
+            vec![(0, Step::Restore)],
+        ],
+    )
+    .unwrap();
+}

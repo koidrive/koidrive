@@ -2540,7 +2540,7 @@ impl Commits {
     /// server sent that result, and *w* = *a* + 1 while it is held and the `Welcome` carries
     /// another application for that slot, since the server gave the slot to another commit or
     /// applied this one again there. Either way *a* takes *w*, unless the `Welcome` names for slot
-    /// *w* < *a* another commit or another application than the one this device kept for it: the server holds there
+    /// *w* < *a* another `commit_id` than the one this device kept for it: the server holds there
     /// a commit of this device that the store does not know, so the store is behind the server
     /// and recovery starts, as when it keeps no result of slot *w* at all. Otherwise the commit in flight is dropped, its
     /// restores staying queued, so that its changes are planned again once R is listed again. Any other *w*, or a commit
@@ -2569,8 +2569,7 @@ impl Commits {
         let (a, w) = (*self.accepted, welcome.device_seq);
         let kept = (self.slots.get(&w))
             .filter(|slot| !slot.commit_id.is_empty() && !welcome.device_commit_id.is_empty());
-        let another_commit = kept
-            .is_some_and(|slot| !same_application(welcome, &slot.commit_id, slot.committed_at_ms));
+        let another_commit = kept.is_some_and(|slot| slot.commit_id != welcome.device_commit_id);
         self.confirmed.0 = kept.map(|slot| {
             if same_application(welcome, &slot.commit_id, slot.committed_at_ms) {
                 w

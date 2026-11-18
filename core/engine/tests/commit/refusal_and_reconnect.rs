@@ -884,7 +884,7 @@ fn a_server_count_below_the_accepted_one_starts_recovery_when_its_token_names_an
         (kept("one"), at_slot_1("", 0), Reconnect::AheadOfServer),
         (kept(""), at_slot_1("another", 30), Reconnect::AheadOfServer),
         (kept("one"), at_slot_1("another", 30), Reconnect::Recovery),
-        (kept("one"), at_slot_1("one", 31), Reconnect::Recovery),
+        (kept("one"), at_slot_1("one", 31), Reconnect::AheadOfServer),
     ];
     for (slot_1, welcome, reconnect) in cases {
         let mut commits = Commits::from_state(CommitsState {
