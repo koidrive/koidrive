@@ -305,7 +305,6 @@ fn configured(mut world: World) -> World {
         .announce_field_intents(FIELD_INTENTS.get());
     world.trace = std::env::var_os("KOIDRIVE_SIM_TRACE").is_some();
     world.tokenless_welcome = TOKENLESS_WELCOME.get();
-    world.revived_deletes = std::env::var_os("KOIDRIVE_SIM_REVIVED_DELETES").is_some();
     world
 }
 

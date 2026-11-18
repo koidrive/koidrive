@@ -47,14 +47,7 @@
 //!   its user made it again.
 //! - Only the device whose user gave a folder its owed name finishes the pending name (RFC 0017).
 //! - No node a user deleted is live on the server, unless a change whose user did not see the
-//!   delete brought it back. With [`World::revived_deletes`] set, such a delete is reported as one
-//!   that never reached the server when the user made it while the server held the deleted file,
-//!   a restore of the server came before or after it in the same history, and the server holds
-//!   the deleted write or one it was made over live, unless the last restore since the delete took
-//!   them from the server, the author resent a write the server lacked at the delete, the delete
-//!   was only in a store that rolled back or on a device that left before sending it, or a server
-//!   commit carried another device's change, unseen by the deleting user, to the file or to a
-//!   folder above it that the delete removed.
+//!   delete brought it back.
 //! - No write is in two live nodes of the server, unless a user copied it (RFC 0029 section 3.6).
 //!   A restore or a replay excuses none.
 //! - A recovery copy whose device's own retained commit shows the server kept the write holds it
@@ -88,7 +81,7 @@ use koidrive_proto::v1::{
 };
 use sha2::{Digest, Sha256};
 
-use self::deletes::{Deletion, live_nodes};
+use self::deletes::Deletion;
 use self::device::{Device, Engine, Link, Message, Rules};
 pub use self::disk::Cut;
 use self::disk::{Applied, Disk, Place, Precision, Refused};
@@ -614,9 +607,6 @@ pub struct World {
     /// Sends each `Welcome` without the commit token of the device's commit at its count, as a
     /// server from before RFC 0002's `device_commit_id` does.
     pub tokenless_welcome: bool,
-    /// Fails a phase when a file a user deleted before or after a restore of the server is live on
-    /// the server again with no restore that took the delete.
-    pub revived_deletes: bool,
     /// The tag of the last write.
     writes: i64,
     /// The device whose user made each write.
@@ -724,7 +714,6 @@ impl World {
             seen: BTreeMap::new(),
             trace: false,
             tokenless_welcome: false,
-            revived_deletes: false,
             writes: 0,
             writers: BTreeMap::new(),
             published: BTreeSet::new(),
@@ -867,7 +856,6 @@ impl World {
                 let device = &mut self.devices[d];
                 device.left = true;
                 device.link = None;
-                self.forget_unsent_deletes(d);
             }
             Step::User(action) => self.act(d, action, Act::of(action.kind)),
             Step::Copy(action) => self.act(d, action, Act::Copy),
@@ -910,7 +898,6 @@ impl World {
                     device.down = true;
                     device.link = None;
                     self.intents.rolled_back(d, self.moment);
-                    self.forget_unsent_deletes(d);
                 }
             }
             _ if self.devices[d].down => self.restart(d)?,
@@ -1095,7 +1082,7 @@ impl World {
                     .collect();
                 let deleted = disk.delete(ino);
                 self.removed[d].extend(deleted.iter().map(tag));
-                self.record_delete(d, ino, (gone, under), &deleted, unsynced);
+                self.record_delete(d, ino, (gone, under), unsynced);
                 return;
             }
             (Act::Copy, Some(ino)) => {
@@ -1132,7 +1119,11 @@ impl World {
             let trashed = matches!(value, Value::Trashed { .. });
             let intent = self.intents.record(d, self.moment, ino, kind, value);
             if trashed {
-                self.deletions.push(Deletion::unwatched(d, intent));
+                self.deletions.push(Deletion {
+                    intent,
+                    device: d,
+                    left_out: BTreeSet::new(),
+                });
             }
         }
     }
@@ -1320,9 +1311,6 @@ impl World {
             .copied()
             .collect();
         self.space.rewind(&backup.space, self.server_now());
-        for deletion in &mut self.deletions {
-            deletion.watched &= deletion.reached;
-        }
         self.restored_to = None;
         self.held_commits = backup.held_commits.clone();
         self.in_history = backup.in_history.clone();
@@ -1562,7 +1550,11 @@ impl World {
                 for id in &ids {
                     if let Some(ino) = self.intents.ino_of(d, id) {
                         let intent = self.intents.answered_delete(d, self.moment, ino, id);
-                        self.deletions.push(Deletion::unwatched(d, intent));
+                        self.deletions.push(Deletion {
+                            intent,
+                            device: d,
+                            left_out: BTreeSet::new(),
+                        });
                     }
                 }
             }
@@ -1588,7 +1580,6 @@ impl World {
                     (self.intents).record(d, self.moment, ino, RESTORE_ANSWER, Value::Live);
                 }
             }
-            self.forget_restored_deletes(d);
         }
         Ok(true)
     }
@@ -1665,11 +1656,6 @@ impl World {
         }
         self.restored_to = Some(backup.space.head_seq());
         self.space.restore(&backup.space);
-        let live = live_nodes(&self.space);
-        for deletion in &mut self.deletions {
-            deletion.gone = deletion.held(&live, |_, _, _, _| false).is_none();
-            deletion.restored(backup.space.head_seq());
-        }
         self.intents.carried_until(backup.space.head_seq());
         self.held_commits = backup.held_commits.clone();
         self.in_history = backup.in_history.clone();
@@ -2965,32 +2951,6 @@ impl World {
                                     sent.ops
                                 )));
                             }
-                            let live = live_nodes(&self.space);
-                            let deleted: BTreeSet<NodeId> = (sent.ops.iter())
-                                .zip(&committed.result.results)
-                                .filter(|(_, outcome)| {
-                                    outcome.code != op_result::Code::Rejected as i32
-                                })
-                                .filter_map(|(op, _)| match &op.op {
-                                    Some(op::Op::Delete(op)) => Some(NodeId::from(&op.node_id)),
-                                    _ => None,
-                                })
-                                .collect();
-                            let parents_before: BTreeMap<NodeId, NodeId> = (held.iter())
-                                .map(|node| {
-                                    (NodeId::from(&node.node_id), NodeId::from(&node.parent_id))
-                                })
-                                .collect();
-                            for deletion in &mut self.deletions {
-                                if deletion.device == d {
-                                    deletion.carried(record.seq, &deleted, &parents_before);
-                                }
-                                deletion.reached |= deletion
-                                    .held(&live, |write, _, _, at_node| {
-                                        !at_node && self.copied.contains_key(&write)
-                                    })
-                                    .is_none();
-                            }
                             self.published.extend(after.into_keys());
                             for node in self.space.nodes() {
                                 if let Some(content) = node.current.and_then(|v| v.content) {
@@ -3025,27 +2985,7 @@ impl World {
                             }
                             let server = Server::of(self.space.space_id(), self.space.nodes());
                             self.intents.sync(&server, self.moment, None);
-                            let after_commit = self.space.nodes();
-                            let revived: BTreeSet<NodeId> = (after_commit.iter())
-                                .filter(|node| {
-                                    node.status == NodeStatus::Live as i32 && trashed(&node.node_id)
-                                })
-                                .map(|node| NodeId::from(&node.node_id))
-                                .collect();
-                            let reparented: BTreeSet<NodeId> = (after_commit.iter())
-                                .filter(|node| {
-                                    (parents_before.get(&NodeId::from(&node.node_id)))
-                                        .is_some_and(|parent| *parent != node.parent_id)
-                                })
-                                .map(|node| NodeId::from(&node.node_id))
-                                .collect();
-                            (self.intents).carried_by(
-                                d,
-                                &server,
-                                record.seq,
-                                &revived,
-                                &reparented,
-                            );
+                            (self.intents).carried_by(d, &server, record.seq);
                             note(&mut self.seen, "commit applied");
                             for outcome in &committed.result.results {
                                 use op_result::Code;
@@ -3721,7 +3661,6 @@ impl World {
         }
         let held = Server::of(self.space.space_id(), self.space.nodes());
         let live = live_writes(&self.space);
-        self.revived_delete()?;
         self.undone_delete(&held)?;
         let gone = |d: usize| self.devices[d].left;
         let left_out = |d: usize, ino: u128| unsynced[d].inos.contains(&ino);
@@ -4251,36 +4190,6 @@ mod tests {
             ),
             Err(Failure::Broken(_))
         ));
-    }
-
-    #[test]
-    fn a_delete_keeps_only_the_latest_unsent_change_of_another_device() {
-        let mut world = World::new(2);
-        let user = |kind: u8| {
-            Step::User(Action {
-                kind,
-                target: 0,
-                parent: 0,
-                name: 0,
-                text: 0,
-            })
-        };
-        world.phase(0, &[(1, user(1))]).unwrap();
-        world
-            .run(1, &[(1, user(2)), (1, user(2)), (0, user(4))])
-            .unwrap();
-        let edits: Vec<usize> = (0..world.intents.len())
-            .filter(|i| {
-                let intent = world.intents.intent(*i);
-                intent.author == 1
-                    && intent.carried.is_none()
-                    && matches!(intent.value, Value::Content { .. })
-            })
-            .collect();
-        assert_eq!(edits.len(), 2);
-        let deletion = world.deletions.last().unwrap();
-        assert_eq!(deletion.device, 0);
-        assert_eq!(deletion.unsent, BTreeSet::from([edits[1]]));
     }
 
     #[test]
