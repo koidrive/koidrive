@@ -368,8 +368,15 @@ struct Keeping {
 
 #[derive(Clone, Debug)]
 enum Kept {
-    Node(NodeId),
-    Name { folder: NodeId, name: String },
+    Node {
+        id: NodeId,
+        path: Vec<String>,
+        kind: Kind,
+    },
+    Name {
+        folder: NodeId,
+        name: String,
+    },
 }
 
 /// R, L and S of one space, and the nodes whose entries changed since they were last found in sync.
@@ -3049,10 +3056,15 @@ impl Trees {
         let Some((above, _)) = path(&self.l, folder) else {
             return;
         };
-        let held: BTreeSet<String> = (self.local_children_placed_or_parked(folder))
-            .filter_map(|child| self.l.get(child).map(|node| name_key(&node.shape.name)))
+        let entries: Vec<(String, Option<Kind>)> = entries.into_iter().collect();
+        let held: Vec<&str> = (self.local_children_placed_or_parked(folder))
+            .filter_map(|child| Some(self.l.get(child)?.shape.name.as_str()))
             .collect();
-        let names: BTreeSet<String> = (entries.into_iter())
+        let respelled: BTreeSet<String> = (held.iter())
+            .filter(|name| entries.iter().all(|(listed, _)| listed != *name))
+            .map(|name| name_key(name))
+            .collect();
+        let names: BTreeSet<String> = (entries.iter())
             .filter(|(name, kind)| {
                 let mut entry = above.clone();
                 entry.push(name);
@@ -3060,11 +3072,12 @@ impl Trees {
                     Kind::Dir => koidrive_ignore::Kind::Dir,
                     Kind::File => koidrive_ignore::Kind::File,
                 };
-                !held.contains(&name_key(name))
+                !held.contains(&name.as_str())
+                    && !respelled.contains(&name_key(name))
                     && self.ignore.status(&entry, kind)
                         != Status::Excluded(koidrive_ignore::Reason::BuiltIn)
             })
-            .map(|(name, _)| name)
+            .map(|(name, _)| name.clone())
             .collect();
         let mut kept = self.kept_entries.get(folder).cloned().unwrap_or_default();
         kept.names.extend(names);
@@ -3137,7 +3150,12 @@ impl Trees {
                 continue;
             };
             if let Some(cause) = self.ruled_out_by(&node.shape.parent, &names, &[kind]) {
-                ruled.push((Kept::Node(id.clone()), cause));
+                let kept = Kept::Node {
+                    id: id.clone(),
+                    path: names.iter().map(|name| name.to_string()).collect(),
+                    kind,
+                };
+                ruled.push((kept, cause));
             }
         }
         for (folder, kept) in self.kept_entries.iter() {
@@ -3216,9 +3234,8 @@ impl Trees {
                 continue;
             }
             match kept {
-                Kept::Node(id) => {
-                    let let_in = (path(&self.l, &id))
-                        .is_some_and(|(names, kind)| !self.ignores(&names, kind));
+                Kept::Node { id, path, kind } => {
+                    let let_in = !self.ignores(&path, kind) && self.l.get(&id).is_some();
                     if let_in && self.kept_nodes.contains(&id) {
                         self.release_kept_entry(&id);
                         self.kept_nodes.remove(&id);

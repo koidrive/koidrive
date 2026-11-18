@@ -1095,3 +1095,43 @@ fn a_synced_node_moved_onto_a_reserved_name_stays_synced() {
     assert!(!trees.ignored("notes"));
     assert!(!trees.kept_nodes.contains("notes"));
 }
+
+#[test]
+fn a_kept_node_renamed_to_an_included_name_while_an_unrelated_rule_changes_stays_kept() {
+    let mut trees = with_a_kept_env();
+    let none: [&str; 0] = [];
+    trees.set_local_rules(LocalRules::new(&none, &[".env", "*.tmp"]).unwrap());
+    trees.settle(&BTreeMap::new());
+
+    trees.set_local_rules(LocalRules::new(&none, &[".env", "*.log"]).unwrap());
+    trees.set_local(
+        "env".into(),
+        kept_local("app", "settings.txt", Kind::File, 2),
+    );
+    trees.settle(&BTreeMap::new());
+
+    assert!(trees.kept_nodes.contains("env"));
+    assert!(trees.ignored("env"));
+}
+
+#[test]
+fn a_listing_reserves_an_entry_whose_name_differs_from_a_held_one_only_in_case() {
+    let mut trees = Trees::new("root");
+    trees.set_local("app".into(), kept_local("root", "app", Kind::Dir, 1));
+    trees.set_local("foo".into(), kept_local("app", "foo", Kind::File, 2));
+    trees.set_local("cafe".into(), kept_local("app", "caf\u{e9}", Kind::File, 3));
+
+    trees.list_kept_folder(
+        "app",
+        [
+            ("foo".to_owned(), Some(Kind::File)),
+            ("FOO".to_owned(), Some(Kind::File)),
+            ("cafe\u{301}".to_owned(), Some(Kind::File)),
+        ],
+    );
+
+    assert_eq!(
+        trees.kept_entries.get("app").unwrap().names,
+        BTreeSet::from(["FOO".to_owned()])
+    );
+}
