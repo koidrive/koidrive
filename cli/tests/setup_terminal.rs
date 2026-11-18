@@ -255,7 +255,7 @@ impl Home {
     fn daemon(&self, paired: bool) -> Daemon {
         let socket = self.path().join("state/koidrive/daemon.sock");
         let _ = fs::remove_file(&socket);
-        let listener = UnixListener::bind(socket).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
         listener.set_nonblocking(true).unwrap();
         let (stop, stopped) = std::sync::mpsc::channel();
         let (paths, server) = (self.paths(), self.server.clone());
@@ -402,6 +402,7 @@ impl Home {
             }
         });
         Daemon {
+            socket,
             stop,
             thread: Some(thread),
         }
@@ -466,6 +467,7 @@ impl Home {
 }
 
 struct Daemon {
+    socket: std::path::PathBuf,
     stop: std::sync::mpsc::Sender<()>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -474,6 +476,7 @@ impl Daemon {
     fn finish(mut self) {
         let _ = self.stop.send(());
         self.thread.take().unwrap().join().unwrap();
+        let _ = fs::remove_file(&self.socket);
     }
 }
 
