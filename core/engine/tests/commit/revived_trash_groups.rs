@@ -324,6 +324,39 @@ fn a_listing_after_a_rename_sent_before_another_devices_trash_deletes_the_member
 }
 
 #[test]
+fn a_move_out_of_the_trash_goes_even_while_a_member_it_carries_out_waits_for_its_folders_own_move()
+{
+    let mut trees = trees(&[
+        (
+            "a",
+            Some(dir(ROOT, "a1")),
+            Some(dir(ROOT, "a")),
+            Some(trashed(dir(ROOT, "a"))),
+        ),
+        (
+            "p",
+            Some(dir("a", "p2")),
+            Some(dir("a", "p")),
+            Some(trashed(dir("a", "p"))),
+        ),
+        ("b", None, Some(dir("p", "b")), Some(trashed(dir("p", "b")))),
+        (
+            "c",
+            Some(dir("n", "c")),
+            Some(dir("b", "c")),
+            Some(trashed(dir("b", "c"))),
+        ),
+        ("n", Some(dir("a", "n")), None, None),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let sent = ops(&commit);
+    assert!(sent.contains(&mv("a", ROOT, "a1")), "{sent:?}");
+    assert!(sent.contains(&delete("b")), "{sent:?}");
+    assert!(sent.contains(&mv("c", "n", "c")), "{sent:?}");
+}
+
+#[test]
 fn a_rename_out_of_the_trash_trashes_again_only_the_members_its_user_removed() {
     let mut trees = trees(&[
         (
