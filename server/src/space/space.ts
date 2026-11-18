@@ -65,7 +65,8 @@ import { policy } from "../policy";
 import { causeOf } from "../cause";
 import { platformFailure, quotaRefusal } from "../quota";
 import { refusalOutcome } from "../http";
-import { batchDue, type Counted, mergeBatch, nextHourMs, type UsageBatch, UsageTally } from "../report/usage";
+import type { MeteredCall } from "../report/meter";
+import { batchDue, type Carried, type Counted, mergeBatch, nextHourMs, type UsageBatch, UsageTally } from "../report/usage";
 import { type ApplyContext, CallFailure, CommitApplier } from "./commit";
 import { DIGEST_VERSION, type DigestVersion, type Digests, commitDigests } from "./digest";
 import { descriptorDurable, Exporter, noteCommitted, startExport } from "./export";
@@ -335,13 +336,14 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     protected abstract readonly pitr: Pitr;
     protected abstract readonly state: ObjectState;
     protected abstract readonly objects: ObjectStore;
-    protected abstract account(): Directory;
+    protected abstract account(call?: MeteredCall): Directory;
     private spaceKeyCache: Uint8Array | undefined;
     clock: () => number = () => Date.now();
     sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     snapshotPageNodes = 1000;
-    private readonly traffic = new UsageTally();
+    protected readonly traffic = new UsageTally(() => this.clock(), "do_space_active_ms");
     private usageArmed = false;
+    private storedHour: number | undefined;
     private exporting: Promise<void> | undefined;
     private alarmStale = false;
     private bookmarking: Promise<void> = Promise.resolve();
@@ -352,7 +354,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     private renewing: { atMs: number; forMs: number } | undefined;
     private gathering: { deviceIds: Set<string>; answers: Promise<Record<string, SessionCheck> | CheckFailed> } | undefined;
 
-    async init(args: { spaceId: string; name: string; ownerUserId: string; spaceKey: Uint8Array }): Promise<void> {
+    async init(args: { spaceId: string; name: string; ownerUserId: string; spaceKey: Uint8Array; reporting?: boolean; startedMs?: number }): Promise<void> {
+      if (args.reporting !== undefined) this.learn(args.reporting, args.startedMs);
       const existing = getMeta(this.sql, "space_id");
       if (existing !== undefined) {
         if (existing !== args.spaceId) throw new Error("this Space DO already holds another space");
@@ -386,7 +389,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
 
     async rpc(session: Session, request: Uint8Array): Promise<Uint8Array> {
       const { response, counted } = await this.call(session, fromBinary(RpcRequestSchema, request));
-      await this.settleUsage(counted);
+      this.traffic.count(counted.route, counted.outcome, counted.latencyMs, this.clock());
       return toBinary(RpcResponseSchema, response);
     }
 
@@ -448,12 +451,12 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (msg.case === "rpc") {
         const { response, record, counted } = await this.call(this.sessionOf(attachment, attachment.role, attachment.maxFormat, check), msg.value);
         if (response.result.case === "error" && this.revoked(attachment.identity.deviceId)) {
-          await this.settleUsage(counted);
+          this.traffic.count(counted.route, counted.outcome, counted.latencyMs, this.clock());
           return this.goodbye(ws, Close.DEVICE_REVOKED, "device revoked");
         }
         this.send(ws, { case: "rpc", value: response });
         if (record) await this.broadcast(record, attachment.connId);
-        return this.settleUsage(counted, ws);
+        return this.traffic.count(counted.route, counted.outcome, counted.latencyMs, this.clock());
       }
       return this.goodbye(ws, Close.PROTOCOL, "empty ClientMessage");
     }
@@ -493,9 +496,6 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (check.historyId === undefined) return;
       if ((this.leases.get(deviceId)?.askedAtMs ?? -Infinity) > askedAtMs) return;
       this.leases.set(deviceId, { check, askedAtMs, untilMs: askedAtMs + check.leaseMs });
-      const stopped = check.reporting === false && this.traffic.reporting !== false;
-      this.traffic.reporting = check.reporting;
-      if (stopped) this.dropParked();
     }
 
     private renewLeases(): void {
@@ -512,7 +512,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const generation = this.leaseGeneration;
       const renewal = { atMs: askedAtMs, forMs: Math.max(...due.map(({ leaseMs }) => leaseMs)) };
       this.renewing = renewal;
-      this.account()
+      void this.account({ keep: !this.state.getWebSockets().some((ws) => ws.readyState === WebSocket.OPEN) })
         .checkSessions(deviceIds, String(getMeta(this.sql, "space_id")))
         .then((answers) => {
           if (generation !== this.leaseGeneration) return;
@@ -772,25 +772,68 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         if (code === 1000 || (code >= 3000 && code <= 4999)) ws.close(code, reason);
         else ws.close();
       }
-      await this.releaseUsage(ws);
+      this.releaseUsage(ws);
     }
 
     async webSocketError(ws: Socket): Promise<void> {
-      await this.releaseUsage(ws);
+      this.releaseUsage(ws);
     }
 
-    private async settleUsage(counted: Counted, carrier?: Socket): Promise<void> {
+    private releaseUsage(ws: Socket): void {
+      const usage = this.unpark(ws);
+      if (usage) this.traffic.put(usage);
+    }
+
+    protected received(carried: Carried): void {
+      if (carried.reporting !== undefined) this.learn(carried.reporting, carried.startedMs);
+      if (!carried.usage) return;
+      this.traffic.put(carried.usage);
+      if (this.traffic.idle) this.rest();
+    }
+
+    protected loadFlag(): void {
+      const flag = getMeta(this.sql, "reporting");
+      const { on, startedMs } = flag === undefined ? {} : (JSON.parse(String(flag)) as { on?: boolean; startedMs?: number });
+      this.traffic.reporting = on === true;
+      this.traffic.restart(startedMs);
+      if (on === true) this.storedHour = (JSON.parse(String(getMeta(this.sql, "r2_stored") ?? "{}")) as { hour?: number }).hour;
+    }
+
+    private learn(on: boolean, startedMs: number | undefined): void {
+      const changed = this.traffic.reporting !== on;
+      this.traffic.reporting = on;
+      const restarted = this.traffic.restart(startedMs);
+      if (!changed && !restarted) return;
+      this.db.transactionSync(() => {
+        setMeta(this.sql, "reporting", JSON.stringify({ on, startedMs: this.traffic.startedMs }));
+        this.sql.exec("DELETE FROM meta WHERE key = 'r2_stored'");
+      });
+      this.storedHour = undefined;
+      if (!on && changed) this.dropParked();
+      else if (on && restarted) this.dropParked(this.traffic.startedMs);
+    }
+
+    protected async ended(event: string, args: unknown[], replying: boolean): Promise<void> {
+      if (this.traffic.reporting !== true) return;
+      this.traffic.lapse();
+      if (replying) return;
+      this.noteStored();
       const nowMs = this.clock();
-      this.traffic.count(counted.route, counted.outcome, counted.latencyMs, nowMs);
-      if (this.traffic.reporting === false) return this.dropParked();
-      const batch = this.traffic.reporting === true ? this.traffic.take() : undefined;
-      if (!batch) return;
       const open = this.state.getWebSockets().filter((ws) => ws.readyState === WebSocket.OPEN);
+      const carrier = event.startsWith("webSocket") ? (args[0] as Socket) : undefined;
       const target = carrier?.readyState === WebSocket.OPEN ? carrier : open[0];
-      const due = [batch, ...open.flatMap((ws) => (ws.deserializeAttachment() as Attachment).usage ?? [])].some((one) => batchDue(one, nowMs));
-      if (target && !due && this.park(target, batch)) return this.armUsage();
-      this.traffic.put(batch);
+      const due = this.traffic.due(nowMs) || open.some((ws) => batchDue((ws.deserializeAttachment() as Attachment).usage ?? { openedMs: nowMs, hours: {} }, nowMs));
+      if (target && !due && (await this.parkOn(target))) return;
       await this.handOverUsage();
+    }
+
+    private async parkOn(target: Socket): Promise<boolean> {
+      await this.armUsage();
+      this.traffic.lapse();
+      const batch = this.traffic.take();
+      if (!batch || this.park(target, batch)) return true;
+      this.traffic.put(batch);
+      return false;
     }
 
     private park(ws: Socket, batch: UsageBatch): boolean {
@@ -810,8 +853,10 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       return usage;
     }
 
-    private dropParked(): void {
-      for (const ws of this.state.getWebSockets()) this.unpark(ws);
+    private dropParked(openedBeforeMs = Infinity): void {
+      for (const ws of this.state.getWebSockets()) {
+        if (((ws.deserializeAttachment() as Attachment).usage?.openedMs ?? Infinity) < openedBeforeMs) this.unpark(ws);
+      }
     }
 
     private async armUsage(): Promise<void> {
@@ -821,31 +866,39 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       await this.schedule("usage", nextHourMs(this.clock()) + USAGE_GRACE_MS);
     }
 
-    private async releaseUsage(ws: Socket): Promise<void> {
-      const usage = this.unpark(ws);
-      if (!usage || this.traffic.reporting === false) return;
-      const { connId } = ws.deserializeAttachment() as Attachment;
-      const target = this.state.getWebSockets().find((other) => other.readyState === WebSocket.OPEN && (other.deserializeAttachment() as Attachment).connId !== connId);
-      if (target && this.park(target, usage)) return this.armUsage();
-      this.traffic.put(usage);
-      await this.handOverUsage();
-    }
-
     private async handOverUsage(): Promise<void> {
       for (const ws of this.state.getWebSockets()) {
         const usage = this.unpark(ws);
         if (usage) this.traffic.put(usage);
       }
       await this.traffic.handOver((batch) => this.account().recordUsage(batch));
-      if (this.traffic.reporting === false) return this.dropParked();
-      const kept = this.traffic.take();
-      if (!kept) return;
-      const target = this.state.getWebSockets().find((ws) => ws.readyState === WebSocket.OPEN);
-      if (target && this.park(target, kept)) return this.armUsage();
-      this.traffic.put(kept);
+      this.rest();
     }
 
-    private async answer(session: Session, request: RpcRequest): Promise<{ response: RpcResponse; record?: CommitRecord }> {
+    private rest(): void {
+      const target = this.traffic.reporting === true ? this.state.getWebSockets().find((ws) => ws.readyState === WebSocket.OPEN) : undefined;
+      this.traffic.lapse();
+      const batch = this.traffic.take();
+      if (batch && target && !this.park(target, batch)) this.traffic.put(batch);
+    }
+
+    private noteStored(): void {
+      const nowMs = this.clock();
+      const hour = Math.floor(nowMs / HOUR_MS);
+      if (this.storedHour === hour) return;
+      this.storedHour = hour;
+      const day = Math.floor(nowMs / DAY_MS);
+      const cached = getMeta(this.sql, "r2_stored");
+      let counted = cached === undefined ? undefined : (JSON.parse(String(cached)) as { day: number; bytes: number; objects: number });
+      if (counted?.day !== day) {
+        const row = this.sql.exec("SELECT COUNT(*) AS objects, COALESCE(SUM(size), 0) AS bytes FROM chunks WHERE state != ?", ChunkState.PENDING).one();
+        counted = { day, bytes: Number(row.bytes), objects: Number(row.objects) };
+      }
+      setMeta(this.sql, "r2_stored", JSON.stringify({ day: counted.day, bytes: counted.bytes, objects: counted.objects, hour }));
+      this.traffic.note({ object: this.state.id.toString(), sqlBytes: this.sql.databaseSize, r2Bytes: counted.bytes, r2Objects: counted.objects });
+    }
+
+        private async answer(session: Session, request: RpcRequest): Promise<{ response: RpcResponse; record?: CommitRecord }> {
       const reqId = request.reqId;
       try {
         this.checkOpen();
@@ -1681,7 +1734,6 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         if (task === "usage") {
           this.usageArmed = false;
           this.sql.exec("DELETE FROM schedule WHERE task = 'usage'");
-          await this.handOverUsage();
         }
         if (task === "tokens") {
           const next = this.closeExpired(nowMs);

@@ -22,9 +22,10 @@ export async function readMessage<S extends DescMessage>(request: Request, schem
 const refusals = new WeakMap<Response, { code: Error_Code; cause: Error_Cause }>();
 
 export function reply<S extends DescMessage>(request: Request, schema: S, message: MessageShape<S>, status = 200): Response {
-  const response = wantsJson(request)
-    ? Response.json(toJson(schema, message), { status })
-    : new Response(toBinary(schema, message), { status, headers: { "Content-Type": "application/x-protobuf" } });
+  const json = wantsJson(request);
+  const body = json ? new TextEncoder().encode(JSON.stringify(toJson(schema, message))) : toBinary(schema, message);
+  const headers = { "Content-Type": json ? "application/json" : "application/x-protobuf", "Content-Length": String(body.byteLength) };
+  const response = new Response(body, { status, headers });
   if (schema.typeName === ErrorSchema.typeName) {
     const { code, cause } = message as MessageShape<typeof ErrorSchema>;
     refusals.set(response, { code, cause });

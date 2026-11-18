@@ -89,6 +89,9 @@ export const MIGRATIONS: readonly Migration[] = [
     if (!columns.includes("telemetry")) sql.exec("ALTER TABLE devices ADD COLUMN telemetry INTEGER");
     sql.exec("CREATE TABLE IF NOT EXISTS usage_hours (hour INTEGER PRIMARY KEY, report_id TEXT NOT NULL, usage TEXT NOT NULL, tried_at_ms INTEGER)");
   },
+  `
+  CREATE TABLE IF NOT EXISTS object_usage (object TEXT PRIMARY KEY, sql_bytes INTEGER NOT NULL, r2_bytes INTEGER NOT NULL, r2_objects INTEGER NOT NULL);
+  `,
 ];
 
 export function migrate(sql: Sql): void {

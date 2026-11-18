@@ -31,7 +31,7 @@ import { isUuidV7, uuidv7 } from "../ids";
 import { knownPrincipal } from "../policy";
 import { FORMAT_VERSION } from "../space/space";
 import { REPORT_URL, reportBatch } from "../report/payload";
-import { mergeUsage, type UsageBatch } from "../report/usage";
+import { type Carried, mergeBatch, mergeUsage, type ObjectStored, type Stored, storedUsage, type UsageBatch, UsageTally } from "../report/usage";
 import { PROTO_MAX, PROTO_MIN, SERVER_VERSION } from "../version";
 import { MAX_REQUEST_ID_LENGTH, type Outcome, type ResolvedLink, type ShareOutcome, ShareLinks } from "../share/links";
 
@@ -185,6 +185,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
     private readonly creating = new Set<string>();
     private readonly creatingRequests = new Map<string, string>();
     private readonly admitting = new Set<string>();
+    protected readonly tally = new UsageTally(() => this.clock(), "do_account_active_ms");
     sessionLeaseMs = SESSION_LEASE_MS;
     clock: () => number = () => Date.now();
     sendReport = async (body: unknown): Promise<boolean> => {
@@ -415,16 +416,18 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       const serverTimeMs = Math.max(nowMs, device.rotation_clock_ms);
       const rotated = proposal !== undefined && serverTimeMs <= rotateBeforeMs;
       const vote = args.telemetry ?? TokenRequest_Telemetry.UNSPECIFIED;
-      this.sql.exec(
-        "UPDATE devices SET last_seen_ms = ?, rotation_clock_ms = ?, refresh_hash = ?, telemetry = ? WHERE device_id = ?",
-        nowMs,
-        args.rotation ? serverTimeMs : device.rotation_clock_ms,
-        rotated ? proposal : device.refresh_hash,
-        vote,
-        device.device_id,
-      );
-      if (vote !== (device.telemetry ?? TokenRequest_Telemetry.UNSPECIFIED)) this.countVotes();
-      else if (vote === TokenRequest_Telemetry.ON && onVoteEndMs(nowMs) > this.votes().onUntilMs) this.storeVotes({ ...this.votes(), onUntilMs: onVoteEndMs(nowMs) });
+      this.db.transactionSync(() => {
+        this.sql.exec(
+          "UPDATE devices SET last_seen_ms = ?, rotation_clock_ms = ?, refresh_hash = ?, telemetry = ? WHERE device_id = ?",
+          nowMs,
+          args.rotation ? serverTimeMs : device.rotation_clock_ms,
+          rotated ? proposal : device.refresh_hash,
+          vote,
+          device.device_id,
+        );
+        if (vote !== (device.telemetry ?? TokenRequest_Telemetry.UNSPECIFIED)) this.countVotes();
+        else if (vote === TokenRequest_Telemetry.ON && onVoteEndMs(nowMs) > this.votes().onUntilMs) this.storeVotes({ ...this.votes(), onUntilMs: onVoteEndMs(nowMs) });
+      });
       const token = await this.accessToken(device, nowMs);
       if (args.rotation) {
         token.serverTimeMs = BigInt(serverTimeMs);
@@ -539,7 +542,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       if (requestId) this.creatingRequests.set(request, name);
       try {
         const spaceKey = await deriveSpaceKey((await this.serverKey()).secret, spaceId);
-        await this.spaceStub(spaceId).init({ spaceId, name, ownerUserId: args.userId, spaceKey });
+        await this.spaceStub(spaceId).init({ spaceId, name, ownerUserId: args.userId, spaceKey, reporting: this.reporting(), startedMs: this.tally.startedMs });
         this.sql.exec(
           "INSERT INTO spaces (space_id, name, owner_id, created_at_ms, format_version, list_seq, request_id) VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(list_seq), 0) + 1 FROM spaces), ?)",
           spaceId,
@@ -594,7 +597,9 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
 
     reporting(): boolean {
       const votes = this.votes();
-      return this.reportsWith(votes);
+      this.tally.reporting = this.reportsWith(votes);
+      this.tally.restart(votes.startedMs);
+      return this.tally.reporting;
     }
 
     private reportsWith(votes: ReportVotes): boolean {
@@ -607,10 +612,15 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
     }
 
     private storeVotes(votes: ReportVotes): void {
-      const before = this.votes();
-      const startedMs = !this.reportsWith(before) && this.reportsWith(votes) ? this.clock() : before.startedMs;
-      this.sql.exec("INSERT INTO settings (key, value) VALUES ('report_votes', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", JSON.stringify({ ...votes, startedMs }));
-      if (!this.reportsWith(votes)) this.sql.exec("DELETE FROM usage_hours");
+      this.db.transactionSync(() => {
+        const before = this.votes();
+        const starts = !this.reportsWith(before) && this.reportsWith(votes);
+        const startedMs = starts ? this.clock() : before.startedMs;
+        this.sql.exec("INSERT INTO settings (key, value) VALUES ('report_votes', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", JSON.stringify({ ...votes, startedMs }));
+        if (!starts && this.reportsWith(votes)) return;
+        this.sql.exec("DELETE FROM usage_hours");
+        this.sql.exec("DELETE FROM object_usage");
+      });
     }
 
     private countVotes(): void {
@@ -625,28 +635,19 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       this.storeVotes({ onUntilMs: onSeenMs === 0 ? 0 : onVoteEndMs(onSeenMs), off: Number(counted.off) === 1 });
     }
 
-    async recordUsage({ openedMs, hours }: UsageBatch): Promise<boolean> {
+    async recordUsage({ openedMs, hours, stored }: UsageBatch): Promise<boolean> {
       const votes = this.votes();
-      if (!this.reportsWith(votes)) {
+      this.tally.reporting = this.reportsWith(votes);
+      if (!this.tally.reporting) {
         this.sql.exec("DELETE FROM usage_hours");
+        this.sql.exec("DELETE FROM object_usage");
         return false;
       }
       if (openedMs < (votes.startedMs ?? 0)) return true;
-      const nowHour = Math.floor(this.clock() / HOUR_MS);
-      let added = false;
-      this.db.transactionSync(() => {
-        for (const [key, usage] of Object.entries(hours)) {
-          const hour = Number(key);
-          if (!Number.isInteger(hour) || (hour + 1) * HOUR_MS + REPORT_DELAY_MS <= this.clock() || hour > nowHour) continue;
-          const stored = this.sql.exec("SELECT usage FROM usage_hours WHERE hour = ?", hour).toArray()[0];
-          if (stored) {
-            this.sql.exec("UPDATE usage_hours SET usage = ? WHERE hour = ?", JSON.stringify(mergeUsage(JSON.parse(String(stored.usage)), usage)), hour);
-          } else {
-            this.sql.exec("INSERT INTO usage_hours (hour, report_id, usage) VALUES (?, ?, ?)", hour, crypto.randomUUID(), JSON.stringify(usage));
-            added = true;
-          }
-        }
-      });
+      this.tally.lapse();
+      const own = this.tally.takeAll();
+      const incoming = { openedMs, hours, stored };
+      const added = this.writeOwn(own, () => this.writeUsage(own ? mergeBatch(mergeBatch(undefined, own), incoming) : incoming));
       const unarmed = this.sql.exec("SELECT 1 FROM settings WHERE key = 'usage_alarm_unarmed'").toArray().length > 0;
       if (!added && !unarmed) return true;
       try {
@@ -659,6 +660,69 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       return true;
     }
 
+    protected received(carried: Carried): void {
+      if (carried.usage) this.tally.put(carried.usage);
+      if (this.tally.idle) this.tally.take();
+    }
+
+    protected ended(replying: boolean): void {
+      if (!replying) this.tally.take();
+    }
+
+    private storeOwn(): void {
+      this.tally.lapse();
+      const own = this.tally.takeAll();
+      if (own) this.writeOwn(own, () => this.writeUsage(own));
+    }
+
+    private writeOwn(own: UsageBatch | undefined, write: () => boolean): boolean {
+      try {
+        return write();
+      } catch (error) {
+        if (own) {
+          this.tally.put(own);
+          this.tally.keep();
+        }
+        throw error;
+      }
+    }
+
+    private writeUsage(batch: UsageBatch): boolean {
+      const nowHour = Math.floor(this.clock() / HOUR_MS);
+      let added = false;
+      this.db.transactionSync(() => {
+        for (const object of batch.stored ?? []) this.noteStored(object);
+        for (const [key, usage] of Object.entries(batch.hours)) {
+          const hour = Number(key);
+          if (!Number.isInteger(hour) || (hour + 1) * HOUR_MS + REPORT_DELAY_MS <= this.clock() || hour > nowHour) continue;
+          const stored = this.sql.exec("SELECT usage FROM usage_hours WHERE hour = ?", hour).toArray()[0];
+          if (stored) {
+            this.sql.exec("UPDATE usage_hours SET usage = ? WHERE hour = ?", JSON.stringify(mergeUsage(storedUsage(String(stored.usage)), usage)), hour);
+          } else {
+            this.sql.exec("INSERT INTO usage_hours (hour, report_id, usage) VALUES (?, ?, ?)", hour, crypto.randomUUID(), JSON.stringify(usage));
+            added = true;
+          }
+        }
+      });
+      return added;
+    }
+
+    private noteStored(stored: ObjectStored): void {
+      this.sql.exec(
+        "INSERT INTO object_usage (object, sql_bytes, r2_bytes, r2_objects) VALUES (?, ?, ?, ?) ON CONFLICT (object) DO UPDATE SET sql_bytes = excluded.sql_bytes, r2_bytes = excluded.r2_bytes, r2_objects = excluded.r2_objects",
+        stored.object,
+        stored.sqlBytes,
+        stored.r2Bytes,
+        stored.r2Objects,
+      );
+    }
+
+    private storedTotals(): Stored {
+      this.noteStored({ object: "account", sqlBytes: this.sql.databaseSize, r2Bytes: 0, r2Objects: 0 });
+      const totals = this.sql.exec("SELECT SUM(sql_bytes) AS sql, SUM(r2_bytes) AS r2, SUM(r2_objects) AS objects FROM object_usage").one();
+      return { do_stored_bytes: Number(totals.sql), r2_stored_bytes: Number(totals.r2), r2_objects: Number(totals.objects) };
+    }
+
     private async sendUsage(): Promise<void> {
       const nowMs = this.clock();
       const oldest = Math.floor(nowMs / HOUR_MS) - REPORT_KEEP_HOURS;
@@ -668,10 +732,12 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
         .toArray()
         .filter((row) => row.tried_at_ms === null || Number(row.tried_at_ms) + HOUR_MS <= nowMs);
       if (ended.length === 0) return;
-      const sent = this.reporting()
+      const stored = this.reporting() ? this.storedTotals() : undefined;
+      if (!stored) this.sql.exec("DELETE FROM object_usage");
+      const sent = stored
         ? await this.sendReport(
             reportBatch(
-              ended.map((row) => ({ hour: Number(row.hour), id: String(row.report_id), usage: JSON.parse(String(row.usage)) })),
+              ended.map((row) => ({ hour: Number(row.hour), id: String(row.report_id), usage: storedUsage(String(row.usage)), stored })),
               { version: SERVER_VERSION, protoMin: PROTO_MIN, protoMax: PROTO_MAX },
             ),
           ).catch((error: unknown) => {
@@ -898,6 +964,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       for (const { rewind_id } of due) await this.drive(String(rewind_id));
       await this.deliverNotices();
       await this.sendUsage();
+      this.storeOwn();
       await this.armAlarm();
     }
 

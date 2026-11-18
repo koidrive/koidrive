@@ -9,6 +9,7 @@ export type SqlRow = Record<string, SqlValue>;
 export interface SqlCursor<T extends SqlRow> extends Iterable<T> {
   toArray(): T[];
   one(): T;
+  readonly rowsRead: number;
   /** Rows the statement wrote, read after the cursor is consumed. */
   readonly rowsWritten: number;
 }
@@ -16,6 +17,7 @@ export interface SqlCursor<T extends SqlRow> extends Iterable<T> {
 /** A synchronous SQLite connection: every statement runs to completion before exec returns. */
 export interface Sql {
   exec<T extends SqlRow = SqlRow>(query: string, ...bindings: SqlBinding[]): SqlCursor<T>;
+  readonly databaseSize: number;
 }
 
 export interface Database {
@@ -69,6 +71,7 @@ export interface ObjectStorage extends Database {
 }
 
 export interface ObjectState {
+  readonly id: { toString(): string };
   readonly storage: ObjectStorage;
   getWebSockets(tag?: string): Socket[];
   blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;

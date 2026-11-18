@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { Usage } from "./usage";
+import type { Stored, Usage } from "./usage";
 
 export const REPORT_URL = "https://tel.koidrive.com/batch/";
 export const PROJECT_TOKEN = "phc_zS5sUnZrgWmsxoiodya3UeRdNfBkk5Pvdpsqiii4XqZ8";
@@ -17,13 +17,14 @@ export interface ReportHour {
   hour: number;
   id: string;
   usage: Usage;
+  stored: Stored;
 }
 
 export function reportBatch(hours: ReportHour[], build: ServerBuild): unknown {
   return {
     api_key: PROJECT_TOKEN,
     historical_migration: false,
-    batch: hours.map(({ hour, id, usage }) => {
+    batch: hours.map(({ hour, id, usage, stored }) => {
       const properties: Record<string, unknown> = {
         distinct_id: id,
         $process_person_profile: false,
@@ -35,6 +36,7 @@ export function reportBatch(hours: ReportHour[], build: ServerBuild): unknown {
       };
       for (const [key, count] of Object.entries(usage.counts)) properties["c." + key] = count;
       for (const [route, buckets] of Object.entries(usage.latency)) properties["h." + route] = buckets;
+      for (const [name, amount] of Object.entries({ ...usage.billing, ...stored })) properties["b." + name] = amount;
       return { event: "server_report", uuid: id, timestamp: new Date(hour * HOUR_MS).toISOString(), properties };
     }),
   };

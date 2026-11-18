@@ -9,6 +9,7 @@ import { CreateShareLinkRequestSchema, ShareInfoSchema, ShareLinkListSchema, Sha
 import { BadRequest, errorReply, readMessage, reply } from "../http";
 import type { ObjectStore } from "../host";
 import { isUuidV7, toHex } from "../ids";
+import { account, space } from "../stubs";
 import { clientKey } from "./limiter";
 import { LINK_ID, SESSION_MS, type ShareOutcome } from "./links";
 import type { ShareFile } from "./space";
@@ -34,14 +35,6 @@ export const VIEWER_HEADERS: Record<string, string> = {
 const SESSION_COOKIE = "fb_share";
 
 type Failure = Extract<ShareOutcome<unknown>, { ok: false }>;
-
-function account(env: Env) {
-  return env.ACCOUNT.get(env.ACCOUNT.idFromName("account"));
-}
-
-function space(env: Env, spaceId: string) {
-  return env.SPACE.get(env.SPACE.idFromName(spaceId));
-}
 
 export function withHeaders(response: Response, headers: Record<string, string>): Response {
   for (const [name, value] of Object.entries(headers)) response.headers.set(name, value);
