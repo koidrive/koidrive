@@ -274,6 +274,9 @@ pub(crate) struct Disk {
     tokens: RootTokens,
     fresh: bool,
     unwritable: Option<String>,
+    flushed: bool,
+    #[cfg(test)]
+    flush_fails: bool,
 }
 
 /// A planned batch of effects the store holds, in the order they were planned.
@@ -394,6 +397,9 @@ impl Disk {
             tokens: RootTokens::default(),
             fresh: false,
             unwritable: None,
+            flushed: false,
+            #[cfg(test)]
+            flush_fails: false,
         };
         if !disk.space.held()? {
             return Err(Stop::Withdrawn(disk.path));
@@ -864,23 +870,25 @@ impl Disk {
                 pending: Some(next),
             };
             self.fresh = true;
+            self.flushed = false;
         }
         let Some(pending) = self.tokens.pending.clone() else {
             self.unwritable = None;
             return Ok(Some(self.tokens.clone()));
         };
-        if marker.token.as_ref() != Some(&pending) {
+        if !self.flushed {
             let rotated = Marker {
                 token: Some(pending.clone()),
                 ..marker
             };
-            if let Err(error) = self.space.write_marker(&rotated) {
+            if let Err(error) = self.write_rotated(&rotated) {
                 if self.unwritable.is_none() {
                     tracing::warn!(space_id = self.space_id, %error, "nothing is uploaded until the folder's marker can be written");
                 }
                 self.unwritable = Some(error.to_string());
                 return Ok(None);
             }
+            self.flushed = true;
             (self.hook)(Cut::TokenWritten);
         }
         self.unwritable = None;
@@ -894,6 +902,20 @@ impl Disk {
         self.fresh = false;
         self.tokens = tokens;
         (self.hook)(Cut::TokenCommitted);
+    }
+
+    fn write_rotated(&self, marker: &Marker) -> io::Result<()> {
+        self.space.write_marker(marker)?;
+        #[cfg(test)]
+        if self.flush_fails {
+            return Err(io::Error::other("the test failed the marker's flush"));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_marker_flush(&mut self, fails: bool) {
+        self.flush_fails = fails;
     }
 
     pub fn unwritable(&self) -> Option<&str> {

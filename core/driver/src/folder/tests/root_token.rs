@@ -397,6 +397,33 @@ fn an_upload_held_by_a_failed_rotation_is_sent_once_a_later_rotation_succeeds() 
 }
 
 #[test]
+fn an_upload_waits_for_a_marker_write_whose_flush_succeeded() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("before.txt"), b"before");
+    let before = marker_of(&site).token;
+    a.folder.disk.fail_marker_flush(true);
+
+    hold(&mut a, &site.root.join("after.txt"));
+    let tokens = tokens_of(&site);
+    assert_eq!(tokens.current, before);
+    assert!(tokens.pending.is_some());
+    assert_eq!(marker_of(&site).token, tokens.pending);
+    for _ in 0..2 {
+        let retry = a.work.pop_front().unwrap();
+        a.perform(retry, &mut remote).unwrap();
+        assert_retries_the_build(&a);
+        assert_eq!(remote.names(), ["before.txt"]);
+        assert_eq!(tokens_of(&site).current, before);
+    }
+
+    a.folder.disk.fail_marker_flush(false);
+    a.run(&mut remote);
+    assert_eq!(remote.names(), ["after.txt", "before.txt"]);
+    assert_rotated_from(&site, &[before]);
+}
+
+#[test]
 fn a_copy_restored_after_a_failed_rotation_loses_nothing_and_the_server_keeps_its_files() {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
