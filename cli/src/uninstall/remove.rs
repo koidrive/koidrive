@@ -241,6 +241,7 @@ fn prune_empty(path: &Path) -> io::Result<bool> {
 }
 
 pub(super) fn remove_path(path: &Path) -> io::Result<bool> {
+    crate::lifeline::confine(path)?;
     let removed = match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error),
@@ -260,6 +261,7 @@ pub(super) fn prune_runtime(paths: &Paths) {
 }
 
 pub(super) fn strip_path_line(profile: &Path) -> io::Result<bool> {
+    crate::lifeline::confine(profile)?;
     let text = match fs::read_to_string(profile) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         other => other?,
@@ -277,6 +279,7 @@ pub(super) fn strip_path_line(profile: &Path) -> io::Result<bool> {
         return Ok(true);
     }
     let target = fs::canonicalize(profile)?;
+    crate::lifeline::confine(&target)?;
     let staged = koidrive_state_file::AtomicFile::prepare(&target)?;
     staged.as_file().write_all(rest.as_bytes())?;
     if !rest.is_empty() && text.ends_with('\n') {

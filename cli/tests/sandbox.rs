@@ -155,7 +155,11 @@ fn a_test_cannot_run_koi_outside_its_sandbox() {
     }
     let decoy = tempfile::tempdir().unwrap();
     let app = decoy.path().join("Applications/Koidrive.app");
-    std::fs::create_dir_all(&app).unwrap();
+    for dir in ["Contents/Helpers", "Contents/MacOS"] {
+        std::fs::create_dir_all(app.join(dir)).unwrap();
+    }
+    std::fs::copy(process::KOI, app.join("Contents/Helpers/koi")).unwrap();
+    std::fs::write(app.join("Contents/MacOS/Koidrive"), "x").unwrap();
     let linked = |name: &str, to: &Path| {
         let link = sandbox.path().join(name);
         std::os::unix::fs::symlink(to, &link).unwrap();
@@ -208,6 +212,9 @@ fn a_test_cannot_run_koi_outside_its_sandbox() {
         format!("{inventory}={}", escaped.display()),
     );
     assert!(app.exists());
+    linked("Applications", &decoy.path().join("Applications"));
+    let output = run(&uninstall, inventory, sandbox.path());
+    assert!(app.exists(), "{}", String::from_utf8_lossy(&output.stdout));
     let state = sandbox.path().join("state");
     assert!(
         run(&["help", "--json"], "XDG_STATE_HOME", &state)

@@ -10,6 +10,7 @@ pub(super) fn write(path: &Path, text: &str) -> Result<bool, String> {
         return Ok(false);
     }
     let failed = |error: io::Error| format!("cannot write {}: {error}", path.display());
+    crate::lifeline::confine(path).map_err(failed)?;
     let dir = path.parent().unwrap_or(Path::new("/"));
     fs::create_dir_all(dir).map_err(failed)?;
     koidrive_state_file::write(path, text.as_bytes()).map_err(failed)?;
@@ -17,7 +18,7 @@ pub(super) fn write(path: &Path, text: &str) -> Result<bool, String> {
 }
 
 pub(super) fn remove_file(path: &Path) -> Result<(), String> {
-    match fs::remove_file(path) {
+    match crate::lifeline::confine(path).and_then(|()| fs::remove_file(path)) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => {
             Err(format!("cannot remove {}: {error}", path.display()))
         }

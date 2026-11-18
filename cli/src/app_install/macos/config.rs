@@ -29,10 +29,17 @@ impl Config {
                 "HOME is not absolute",
             ));
         }
+        let system = PathBuf::from("/Applications");
+        let user = home.join("Applications");
+        let work = home.join("Library/Caches/dev.koidrive.app-install");
+        for path in [&system, &user, &work] {
+            crate::lifeline::confine(path)
+                .map_err(|error| failure(AppInstallFailure::UnsafePath, error))?;
+        }
         Ok(Self {
-            system: PathBuf::from("/Applications"),
-            user: home.join("Applications"),
-            work: home.join("Library/Caches/dev.koidrive.app-install"),
+            system,
+            user,
+            work,
             release: "https://github.com/koidrive/koidrive/releases/download".into(),
             codesign: "/usr/bin/codesign".into(),
             spctl: "/usr/sbin/spctl".into(),

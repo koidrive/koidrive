@@ -708,11 +708,18 @@ fn the_service_a_test_installs_stops_with_the_test() {
     };
     let definition = std::fs::read_to_string(&definition)
         .unwrap_or_else(|error| panic!("{}: {error}: {envelope:#}", definition.display()));
-    for (name, value) in profile.home.vars() {
-        let value = value.to_str().unwrap();
-        assert!(
-            definition.contains(name) && definition.contains(value),
-            "{definition}"
-        );
+    let vars = profile
+        .home
+        .vars()
+        .map(|(name, value)| (name, value.to_str().unwrap()));
+    for (name, value) in [("HOME", profile.home.path().to_str().unwrap())]
+        .into_iter()
+        .chain(vars)
+    {
+        let set = match cfg!(target_os = "macos") {
+            true => format!("<key>{name}</key>\n\t\t<string>{value}</string>"),
+            false => format!("Environment=\"{name}={value}\""),
+        };
+        assert!(definition.contains(&set), "{set}: {definition}");
     }
 }

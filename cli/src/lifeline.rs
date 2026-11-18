@@ -2,10 +2,11 @@
 
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::ErrorKind;
+use std::io::{self, ErrorKind};
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::OnceLock;
 
 use koidrive_driver::Paths;
 use rustix::fs::{FlockOperation, flock};
@@ -14,6 +15,8 @@ use rustix::process::{Signal, getpid, kill_process};
 
 pub(crate) const LIFELINE: &str = "KOIDRIVE_TEST_LIFELINE";
 pub(crate) const INVENTORY: &str = "KOIDRIVE_TEST_INSTALL_INVENTORY";
+
+static SANDBOX: OnceLock<PathBuf> = OnceLock::new();
 
 enum Refusal {
     Ended,
@@ -71,7 +74,27 @@ fn tie(dir: &Path) -> Result<(File, File), Refusal> {
             root.display()
         )));
     }
+    let _ = SANDBOX.set(root);
     Ok((alive, held))
+}
+
+pub(crate) fn confine(path: &Path) -> io::Result<()> {
+    let Some(root) = SANDBOX.get() else {
+        return Ok(());
+    };
+    let entry = (path.parent().zip(path.file_name()))
+        .and_then(|(parent, name)| Some(resolved(parent)?.join(name)));
+    match path.is_absolute() && entry.is_some_and(|entry| entry.starts_with(root)) {
+        true => Ok(()),
+        false => Err(io::Error::new(
+            ErrorKind::PermissionDenied,
+            format!(
+                "a test must not change {}, which is outside its sandbox {}",
+                path.display(),
+                root.display()
+            ),
+        )),
+    }
 }
 
 fn inside(root: &Path, path: &Path) -> bool {

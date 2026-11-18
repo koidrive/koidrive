@@ -66,6 +66,13 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
         Method::AppDownload => return download(paths, &install).await,
         _ => {}
     }
+    let brew = match &install.method {
+        Method::Formula { brew } | Method::CaskElsewhere { brew } => Some(brew.as_path()),
+        _ => None,
+    };
+    for path in [Some(install.binary.as_path()), brew].into_iter().flatten() {
+        crate::lifeline::confine(path).map_err(|error| failed(error.to_string()))?;
+    }
     let mut echo = open_log(paths, &update::log_path(paths), json, verbose);
     let steps = Steps::new(json, verbose);
     let updated = match &install.method {

@@ -184,7 +184,7 @@ pub fn this_service(paths: &Paths) -> Result<Service, String> {
     let mut service = Service::new(paths, &home, &binary)?;
     if std::env::var_os(LIFELINE).is_some() {
         service.suffix = Some(paths.state_key());
-        for name in [LIFELINE, INVENTORY] {
+        for name in ["HOME", LIFELINE, INVENTORY] {
             let value = std::env::var_os(name).and_then(|value| value.into_string().ok());
             service.env.push((name, value));
         }
