@@ -4491,6 +4491,7 @@ impl<'a> Scratch<'a> {
                     && !self.unsent.contains_key(node)
                     && self.parent(node) != Some(target.as_str())
                     && self.inside(node, id)
+                    && (self.group(node) == self.group(id) || !self.inside(target, id))
             })
     }
 
@@ -4550,7 +4551,10 @@ impl<'a> Scratch<'a> {
                     held |= moving.contains(folder);
                     up = self.parent(folder);
                 }
-                !(elsewhere && (together && held || self.inside(&op.node_id, node)))
+                let target_inside = self.inside(&op.target_parent_id, node);
+                !(elsewhere
+                    && (together && held
+                        || self.inside(&op.node_id, node) && (together || !target_inside)))
             }),
             _ => awaited,
         }

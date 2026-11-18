@@ -3252,6 +3252,84 @@ fn known_stories() -> Vec<(&'static str, World, Story)> {
     ]
 }
 
+fn known_restores() -> Vec<(&'static str, World, Story)> {
+    use Local::{Into as To, Kept};
+    use Spot::{In, Root};
+    let (kept, trashed) = (Remote::Kept, Remote::Trashed);
+    let synced = [Root, In(0), In(1), In(1)];
+    let story = Story::Restore(3, Some(In(2)));
+    vec![
+        (
+            "a restore from its own trash group into a folder whose trashed ancestor moves out",
+            world(
+                &synced,
+                &[trashed, kept, kept, trashed],
+                &[Kept, To(Root), Kept, Kept],
+                &[],
+            ),
+            story,
+        ),
+        (
+            "a restore from its own trash group into a renamed folder whose trashed ancestor moves out",
+            world(
+                &synced,
+                &[trashed, kept, kept, trashed],
+                &[Kept, To(Root), To(In(1)), Kept],
+                &[],
+            ),
+            story,
+        ),
+    ]
+}
+
+#[test]
+fn the_full_sweep_restores_from_a_trash_group_below_another() {
+    let (name, world, story) = known_restores().pop().expect("a known restore");
+    assert!(world.admits(&FULL), "{name}: {}", world.describe());
+    assert!(remotes(&world.synced).contains(&world.remote), "{name}");
+    assert!(restores(&world).contains(&(world.clone(), story)), "{name}");
+}
+
+#[test]
+fn the_known_restores_bring_back_only_what_they_restore() {
+    let mut failed = Vec::new();
+    for (name, world, story) in known_restores() {
+        let report = tell(&world, &server(&world), story)
+            .expect("the story changes a node no question holds");
+        println!("{name}: {:?}\n  {}", report.classes, report.text);
+        if report.hard {
+            failed.push(name);
+        }
+    }
+    assert!(failed.is_empty(), "{failed:?}");
+}
+
+#[test]
+fn a_restore_the_move_of_its_trashed_folder_would_bring_back_in_place_goes_first() {
+    use Local::{Into as To, Kept};
+    use Spot::{In, Root};
+    let world = world(
+        &[Root, In(0), In(1), In(1)],
+        &[Remote::Trashed, Remote::Kept, Remote::Kept, Remote::Kept],
+        &[Kept, To(Root), Kept, Kept],
+        &[],
+    );
+    let space = server(&world);
+    let mut planner = Planner::new(&world, &space);
+    let intent = RestoreIntent::from_trash(world.id(3), Some(world.id(2)), None).unwrap();
+    assert!(planner.commits.restore(IdGen::new(16).uuid_v7(NOW), intent));
+    let commit = planner.build().expect("a commit");
+    let sent: Vec<(&str, &str)> = (commit.ops.iter())
+        .map(|op| match op.op.as_ref().expect("ops are set") {
+            op::Op::Restore(o) => ("restore", o.node_id.as_str()),
+            op::Op::Move(o) => ("move", o.node_id.as_str()),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    let (b, d) = (world.id(1), world.id(3));
+    assert_eq!(sent, [("restore", d.as_str()), ("move", b.as_str())]);
+}
+
 #[test]
 fn the_known_stories_are_stories_of_the_slice() {
     for (name, world, story) in known_stories() {
