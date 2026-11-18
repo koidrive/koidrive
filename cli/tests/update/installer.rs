@@ -232,7 +232,7 @@ fn koi_update_rechecks_foreign_and_legacy_caches_but_keeps_same_target_condition
 fn koi_update_uses_githubs_answer_from_the_last_day_when_github_refuses_the_list() {
     let hour = 3_600_000_i64;
     for (age, updates) in [(hour, true), (25 * hour, false), (-hour, false)] {
-        let home = tempfile::tempdir().unwrap();
+        let home = Sandbox::new();
         let (binary, installer) = script_install(home.path(), "99.0.0", REPORT);
         let state = home.path().join("state/koidrive");
         std::fs::create_dir_all(&state).unwrap();
