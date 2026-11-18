@@ -428,12 +428,24 @@ impl Disks {
         let index = self
             .mounted
             .iter()
-            .position(|mounted| mounted.at == at)
+            .rposition(|mounted| mounted.at == at)
             .unwrap_or_else(|| panic!("no image owned at {}", at.display()));
         if let Err(failure) = unmount(&self.mounted[index]) {
             panic!("{failure}");
         }
         self.mounted.remove(index);
+    }
+
+    /// Unmounts the folder `at` and keeps its image attached, so no image attached later takes its device number.
+    #[cfg(target_os = "macos")]
+    pub fn unmount(&mut self, at: &Path) {
+        let mounted = self
+            .mounted
+            .iter_mut()
+            .rfind(|mounted| mounted.at == at)
+            .unwrap_or_else(|| panic!("no image owned at {}", at.display()));
+        run("/sbin/umount", &["-f".as_ref(), mounted.at.as_os_str()]);
+        mounted.at = self.dir.path().join("unmounted");
     }
 
     /// Records that the image mounted at `from` is at `to` now, after a folder above it moved.
@@ -749,6 +761,35 @@ mod tests {
             .collect();
         files.sort();
         assert_eq!(files, ["copy.dmg", "source.dmg"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unmount_leaves_a_folder_it_does_not_own_mounted() {
+        let mut theirs = Disks::new().unwrap();
+        let at = theirs.base().join("theirs");
+        fs::create_dir(&at).unwrap();
+        let image = theirs.image("theirs");
+        theirs.attach(&image, &at);
+        let ours = std::panic::catch_unwind(|| Disks::new().unwrap().unmount(&at));
+        assert!(ours.is_err());
+        assert_eq!(is_mount_point(&at), Ok(true));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_unmounted_image_leaves_the_folder_to_the_image_mounted_there_later() {
+        let mut ours = Disks::new().unwrap();
+        let at = ours.base().join("shared");
+        fs::create_dir(&at).unwrap();
+        let image = ours.image("ours");
+        ours.attach(&image, &at);
+        ours.unmount(&at);
+        let mut theirs = Disks::new().unwrap();
+        let image = theirs.image("theirs");
+        theirs.attach(&image, &at);
+        drop(ours);
+        assert_eq!(is_mount_point(&at), Ok(true));
     }
 
     #[cfg(target_os = "macos")]

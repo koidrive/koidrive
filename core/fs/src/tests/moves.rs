@@ -82,8 +82,7 @@ fn a_folder_swapped_for_another_volume_while_it_opens_is_not_published() {
     let mut swapped = false;
     let result = snapshot.rescan_with(&root, [PathBuf::new()], None, &mut |cut| {
         if matches!(cut, Cut::OpeningDir(path) if path == Path::new("nested")) && !swapped {
-            disks.detach(&nested);
-            disks.attach(&a, &elsewhere);
+            disks.unmount(&nested);
             disks.attach(&b, &nested);
             swapped = true;
         }
