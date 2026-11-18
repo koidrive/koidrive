@@ -116,6 +116,7 @@ globs = [
   "scripts/test-install.sh",
   "scripts/test-install-journey.py",
   "scripts/test-ci-workflow.py",
+  "scripts/ci-cache-prune.py",
   "scripts/coverage-runner.sh",
   "scripts/homebrew-*.sh",
   "scripts/test-homebrew-*.sh",

@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: Cache prune
+
+on:
+  workflow_run:
+    workflows: [CI, coverage map, Deploy test, Heavy tests, Load test, Property battery, CLI distribution, macOS release, Test value]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: cache-prune
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: prune superseded caches
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Delete main caches that a newer cache of the same job replaced
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/caches?ref=refs/heads/main&per_page=100" --jq '.actions_caches[]' | jq -s . > "$RUNNER_TEMP/caches.json"
+          python3 scripts/ci-cache-prune.py < "$RUNNER_TEMP/caches.json" > "$RUNNER_TEMP/prune.tsv"
+          freed=0
+          while IFS=$'\t' read -r id size key; do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/caches/$id" > /dev/null
+            echo "Deleted $key ($size bytes)."
+            freed=$((freed + size))
+          done < "$RUNNER_TEMP/prune.tsv"
+          echo "Deleted $(wc -l < "$RUNNER_TEMP/prune.tsv") main caches that a newer cache of the same job replaced, freeing $((freed / 1000000)) MB." | tee -a "$GITHUB_STEP_SUMMARY"

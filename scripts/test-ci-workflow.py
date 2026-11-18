@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+import importlib.util
 import itertools
 import json
 import os
@@ -344,6 +345,44 @@ class CiReport(unittest.TestCase):
                 with self.subTest(job=name):
                     self.assertIn("github.event_name != 'push' &&", expression)
                     self.assertIn("|| 'not-needed'", expression)
+
+
+PRUNE = importlib.util.spec_from_file_location("ci_cache_prune", ROOT / "scripts/ci-cache-prune.py")
+prune = importlib.util.module_from_spec(PRUNE)
+PRUNE.loader.exec_module(prune)
+
+
+class CachePrune(unittest.TestCase):
+    def cache(self, id, key, created, ref="refs/heads/main"):
+        return {"id": id, "key": key, "created_at": created, "ref": ref, "size_in_bytes": 1}
+
+    def test_only_the_newest_main_cache_of_each_job_survives(self):
+        toml, other = "a" * 64, "b" * 64
+        caches = [
+            self.cache(1, f"v0-rust-{toml}-macos-app-Darwin-arm64-b937e1e0-2e14a3ba", "2026-11-18T05:00:00Z"),
+            self.cache(2, f"v0-rust-{toml}-macos-app-Darwin-arm64-b937e1e0-812bd052", "2026-11-18T15:00:00Z"),
+            self.cache(3, f"v0-rust-{toml}-macos-app-Darwin-arm64-0446f1d4-812bd052", "2026-11-18T10:00:00Z"),
+            self.cache(4, f"v0-rust-{toml}-rust-build-linux-Linux-x64-17add8f6-2e14a3ba", "2026-11-18T05:00:00Z"),
+            self.cache(5, f"v0-rust-property-battery-{toml}-Linux-x64-17add8f6-2e14a3ba", "2026-11-18T05:00:00Z"),
+            self.cache(6, f"v0-rust-property-battery-{other}-Linux-x64-17add8f6-2e14a3ba", "2026-11-18T06:00:00Z"),
+            self.cache(7, f"pnpm-store-Linux-X64-{toml}", "2026-11-18T05:00:00Z"),
+            self.cache(8, f"pnpm-store-Linux-X64-{other}", "2026-11-18T07:00:00Z"),
+            self.cache(9, f"pnpm-store-Linux-X64-{toml}", "2026-11-18T01:00:00Z", ref="refs/pull/1/merge"),
+        ]
+        self.assertEqual(sorted(c["id"] for c in prune.superseded(caches)), [1, 3, 7])
+
+    def test_every_workflow_that_saves_caches_on_main_triggers_the_prune(self):
+        text = (ROOT / ".github/workflows/cache-prune.yml").read_text()
+        triggers = re.search(r"(?m)^    workflows: \[(.*)\]$", text)[1].split(", ")
+        self.assertIn("branches: [main]", text)
+        saves = f"save-if: ${{{{ {Caches.FROM_MAIN} }}}}"
+        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            steps = Caches().steps(path.read_text())
+            if not any(saves in body or action.endswith("/.github/actions/pnpm-store") or cond == Caches.FROM_MAIN
+                       for _, cond, action, body in steps):
+                continue
+            with self.subTest(workflow=path.name):
+                self.assertIn(re.search(r"(?m)^name: (.*)$", path.read_text())[1], triggers)
 
 
 class Runners(unittest.TestCase):
