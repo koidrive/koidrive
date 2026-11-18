@@ -496,3 +496,51 @@ fn a_change_time_on_a_whole_second_or_on_another_volume_than_its_folder_waits_ou
     assert_eq!(tick_of(2_000_000_000, Some(COARSE_TICK)), COARSE_TICK);
     assert_eq!(tick_of(1_500_000_001, None), COARSE_TICK);
 }
+
+#[test]
+fn a_swap_seen_halfway_through_a_scan_publishes_nothing_and_the_next_scan_reads_it_as_renames() {
+    let swap = [("a.txt", "t.tmp"), ("b.txt", "a.txt"), ("t.tmp", "b.txt")];
+    let interleavings = [(&swap[..0], &swap[..]), (&swap[..1], &swap[1..])];
+    for ((at_a, at_b), scope) in interleavings
+        .into_iter()
+        .flat_map(|steps| [(steps, ""), (steps, "a.txt")])
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.txt"), "a").unwrap();
+        fs::write(root.join("b.txt"), "b").unwrap();
+        let mut snapshot = Snapshot::scan(root).unwrap();
+        let before = snapshot.clone();
+        let (mut at_a, mut at_b) = (Some(at_a), Some(at_b));
+        let paths = [PathBuf::from(scope), PathBuf::from("b.txt")];
+        let result = snapshot.rescan_with(root, paths, None, &mut |cut| {
+            let renames = match cut {
+                Cut::Stating(path) if path == Path::new("a.txt") => at_a.take(),
+                Cut::Stating(path) if path == Path::new("b.txt") => at_b.take(),
+                _ => None,
+            };
+            for (from, to) in renames.into_iter().flatten() {
+                fs::rename(root.join(from), root.join(to)).unwrap();
+            }
+        });
+        assert!(matches!(result, Err(Error::Changed)), "{scope:?}: {result:?}");
+        assert_eq!(snapshot, before);
+        let changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
+        assert_eq!(
+            changes,
+            [
+                Change::Renamed {
+                    from: "a.txt".into(),
+                    to: "b.txt".into(),
+                    kind: EntryKind::File
+                },
+                Change::Renamed {
+                    from: "b.txt".into(),
+                    to: "a.txt".into(),
+                    kind: EntryKind::File
+                },
+            ],
+            "{scope:?}"
+        );
+    }
+}
