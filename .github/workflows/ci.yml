@@ -1023,9 +1023,7 @@ jobs:
         with:
           workspaces: scripts/test-split
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Fail when mapping.json does not assign every item of a split test source
-        run: python3 scripts/split-tests.py verify --source-ref HEAD
-      - name: Fail when a changed include! fragment is not rustfmt-formatted
+      - name: Fetch the base this change is compared with
         env:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.merge_group.base_sha }}
@@ -1039,7 +1037,11 @@ jobs:
           else
             BASE=$(git rev-parse HEAD^1)
           fi
-          python3 scripts/split-tests.py check-format --base-ref "$BASE"
+          echo "BASE=$BASE" >> "$GITHUB_ENV"
+      - name: Fail when mapping.json does not assign every item of a split test source, or a proptest block changed file
+        run: python3 scripts/split-tests.py verify --source-ref HEAD --base-ref "$BASE"
+      - name: Fail when a changed include! fragment is not rustfmt-formatted
+        run: python3 scripts/split-tests.py check-format --base-ref "$BASE"
 
   store-upgrade:
     if: github.event_name != 'push'

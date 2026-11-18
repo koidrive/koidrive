@@ -4,6 +4,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -201,6 +202,25 @@ class SplitTests(unittest.TestCase):
     def property_source(self, base, path=b"proptest", config=b""):
         return base + path + b"! {\n" + config + b"    #[test]\n    fn holds(x in 0..4u8) { assert!(x < 4); }\n}\n"
 
+    def block(self, *functions):
+        config = b'    #![proptest_config(koidrive_test_support::battery_config(concat!(file!(), ".regressions.txt"), 1))]\n'
+        return b"proptest::proptest! {\n" + config + b"".join(
+            b"    #[test]\n    fn " + name + b"(x in 0..4u8) { assert!(x < 4); }\n" for name in functions) + b"}\n"
+
+    def against(self, base):
+        def source(ref, path):
+            if path not in base:
+                raise subprocess.CalledProcessError(128, ["git", "show", f"{ref}:{path}"])
+            return base[path]
+        return patch.object(split, "git_source", side_effect=source)
+
+    def layout(self):
+        return {path.relative_to(self.root).as_posix(): path.read_bytes() for path in self.root.rglob("*.rs")}
+
+    def map_against(self, base):
+        with self.against(base):
+            split.map_items(self.executable, self.mapping, "base")
+
     def test_proptest_blocks_split_port_and_verify_in_root(self):
         original = self.source
         for path in [b"proptest", b"proptest::proptest"]:
@@ -239,7 +259,7 @@ class SplitTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"fn:added.*split-tests\.py map"):
             split.verify(self.executable, self.mapping, None)
         self.mapping["tests.rs"]["fn:removed"] = "scenario"
-        split.map_items(self.executable, self.mapping)
+        self.map_against({})
         written = json.loads(split.MAPPING.read_text())["tests.rs"]
         self.assertEqual(written["fn:added"], "scenario")
         self.assertNotIn("fn:removed", written)
@@ -271,37 +291,50 @@ class SplitTests(unittest.TestCase):
             split.check_format(self.mapping, {"tests/scenario.rs": {1}}, None)
 
     def test_map_refuses_a_proptest_block_moved_to_a_file_not_yet_included(self):
-        original = self.source
         self.generate()
-        config = b'    #![proptest_config(koidrive_test_support::battery_config(concat!(file!(), ".regressions.txt"), 1))]\n'
-        source = self.property_source(original, b"proptest::proptest", config)
-        self.mapping["tests.rs"]["proptest:holds"] = "root"
-        (self.root / "tests/props.rs").write_bytes(source[len(original):])
+        base = self.layout() | {"tests.rs": self.path.read_bytes() + b"\n" + self.block(b"holds")}
+        (self.root / "tests/props.rs").write_bytes(self.block(b"holds"))
         with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests.rs"):
-            split.map_items(self.executable, self.mapping)
+            self.map_against(base)
         self.assertFalse(split.MAPPING.exists())
 
-    def test_map_refuses_a_proptest_block_whose_key_changed_in_another_file(self):
-        original = self.source
+    def test_map_refuses_a_proptest_block_moved_with_a_new_key(self):
         self.generate()
-        config = b'    #![proptest_config(koidrive_test_support::battery_config(concat!(file!(), ".regressions.txt"), 1))]\n'
-        source = self.property_source(original, b"proptest::proptest", config)
-        self.mapping["tests.rs"]["proptest:holds,also_holds"] = "root"
-        (self.root / "tests/props.rs").write_bytes(source[len(original):])
-        with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests.rs"):
-            split.map_items(self.executable, self.mapping)
+        base = self.layout() | {"tests.rs": self.path.read_bytes() + b"\n" + self.block(b"holds")}
+        (self.root / "tests/props.rs").write_bytes(self.block(b"holds", b"also_holds"))
+        with self.assertRaisesRegex(ValueError, "proptest:holds,also_holds must stay in tests.rs"):
+            self.map_against(base)
         self.assertFalse(split.MAPPING.exists())
+
+    def test_map_refuses_a_move_a_same_named_block_hides(self):
+        self.mapping["tests.rs"]["proptest:holds"] = "root"
+        self.generate()
+        scenario = self.root / "tests/scenario.rs"
+        root = self.path.read_bytes() + b"\n" + self.block(b"holds")
+        base = self.layout() | {"tests.rs": root, "tests/scenario.rs": scenario.read_bytes() + b"\n" + self.block(b"holds")}
+        self.path.write_bytes(root)
+        (self.root / "tests/props.rs").write_bytes(self.block(b"holds", b"also_holds"))
+        with self.assertRaisesRegex(ValueError, r"proptest:holds,also_holds must stay in tests\.rs, tests/scenario\.rs"):
+            self.map_against(base)
+        self.assertFalse(split.MAPPING.exists())
+
+    def test_verify_with_a_base_refuses_a_proptest_block_that_changed_file(self):
+        self.mapping["tests.rs"]["proptest:holds,also_holds"] = "scenario"
+        base = {"tests.rs": self.source + b"\n" + self.block(b"holds")}
+        self.source += b"\n" + self.block(b"holds", b"also_holds")
+        self.generate()
+        split.verify(self.executable, self.mapping, None)
+        with self.against(base):
+            with self.assertRaisesRegex(ValueError, "proptest:holds,also_holds must stay in tests.rs"):
+                split.verify(self.executable, self.mapping, None, "base")
 
     def test_map_keeps_proptest_blocks_that_share_a_function_in_their_own_files(self):
         self.generate()
-        config = b'    #![proptest_config(koidrive_test_support::battery_config(concat!(file!(), ".regressions.txt"), 1))]\n'
-        (self.root / "tests/props.rs").write_bytes(self.property_source(b"", b"proptest::proptest", config))
         scenario = self.root / "tests/scenario.rs"
-        scenario.write_bytes(scenario.read_bytes() + b"\n" + self.property_source(b"", b"proptest::proptest", config).replace(
-            b"}\n}\n", b"}\n    #[test]\n    fn also_holds(x in 0..4u8) { assert!(x < 4); }\n}\n"))
-        self.mapping["tests.rs"]["proptest:holds"] = "props"
-        self.mapping["tests.rs"]["proptest:holds,also_holds"] = "scenario"
-        split.map_items(self.executable, self.mapping)
+        scenario.write_bytes(scenario.read_bytes() + b"\n" + self.block(b"holds", b"also_holds"))
+        (self.root / "tests/props.rs").write_bytes(self.block(b"holds"))
+        self.path.write_bytes(self.path.read_bytes().replace(b'include!("tests/scenario.rs");', b'include!("tests/props.rs");\ninclude!("tests/scenario.rs");'))
+        self.map_against(self.layout())
         written = json.loads(split.MAPPING.read_text())["tests.rs"]
         self.assertEqual((written["proptest:holds"], written["proptest:holds,also_holds"]), ("props", "scenario"))
 
@@ -311,7 +344,7 @@ class SplitTests(unittest.TestCase):
         scenario = self.root / "tests/scenario.rs"
         scenario.write_bytes(scenario.read_bytes() + b"\n" + module)
         with self.assertRaisesRegex(ValueError, r"move \['mod:telemetry'\] back to tests\.rs"):
-            split.map_items(self.executable, self.mapping)
+            self.map_against({})
         self.assertFalse(split.MAPPING.exists())
         self.mapping["tests.rs"]["mod:telemetry"] = "scenario"
         with patch.object(split, "git_source", return_value=self.source + b"\n" + module):
@@ -342,7 +375,7 @@ class SplitTests(unittest.TestCase):
         scenario.write_bytes(scenario.read_bytes() + b"\n" + helper)
         with self.assertRaisesRegex(ValueError, r"wrong scenario for fn:helper.*split-tests\.py map"):
             split.verify(self.executable, self.mapping, None)
-        split.map_items(self.executable, self.mapping)
+        self.map_against({})
         self.assertEqual(json.loads(split.MAPPING.read_text())["tests.rs"]["fn:helper"], "scenario")
         split.verify(self.executable, self.mapping, None)
 
