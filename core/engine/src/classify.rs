@@ -404,7 +404,7 @@ pub struct Trees {
     cycle_reverted: TrackedSet<NodeId>,
     unobserved: TrackedSet<NodeId>,
     rules_changed: BTreeSet<Vec<String>>,
-    relist: Vec<NodeId>,
+    relist: BTreeSet<NodeId>,
     released: Vec<NodeId>,
     cycles_may_end: bool,
     parked_as: TrackedMap<NodeId, NodeId>,
@@ -535,7 +535,7 @@ impl Trees {
             cycle_reverted: TrackedSet::default(),
             unobserved: TrackedSet::default(),
             rules_changed: BTreeSet::new(),
-            relist: Vec::new(),
+            relist: BTreeSet::new(),
             released: Vec::new(),
             cycles_may_end: false,
             parked_as: TrackedMap::default(),
@@ -1897,7 +1897,7 @@ impl Trees {
             && (self.l.get(&id))
                 .is_some_and(|old| !old.parked && !old.shape.same_position(&node.shape));
         if relist {
-            self.relist.push(id.clone());
+            self.relist.insert(id.clone());
         }
         let edit = self.l.get(&id).filter(|old| {
             matches!((&old.shape.content, &node.shape.content),
@@ -3058,13 +3058,13 @@ impl Trees {
     /// Takes the folders a scan saw moved here while nodes were unobserved. Each waits for a scan
     /// to list it ([`Trees::listed`]), since it may carry entries the rules left out that L never held.
     pub fn take_relist(&mut self) -> Vec<NodeId> {
-        std::mem::take(&mut self.relist)
+        std::mem::take(&mut self.relist).into_iter().collect()
     }
 
     fn awaits_relisting(&self, folder: &str) -> bool {
         let mut at = folder;
         for _ in 0..=self.l.len() {
-            if self.relist.iter().any(|moved| moved == at) {
+            if self.relist.contains(at) {
                 return true;
             }
             match self.l.get(at).filter(|_| at != self.l.root) {
