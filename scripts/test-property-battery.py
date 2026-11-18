@@ -260,7 +260,9 @@ class RuntimeChecks(unittest.TestCase):
         self.assertIn('scripts/require-runtime-checks.sh "$RUNNER_TEMP/build.json"', battery)
         ci = CI_WORKFLOW.read_text()
         self.assertIn('scripts/require-runtime-checks.sh "$RUNNER_TEMP/build.json" "$RUNNER_TEMP/probe.json"', ci)
-        self.assertIn('cargo test --locked --profile "$PROFILE" -p koidrive-test-support --lib --no-run', ci)
+        self.assertIn("cargo test --locked -p koidrive-test-support --lib --no-run", ci)
+        self.assertIn("cargo test --locked --profile checked -p koidrive-test-support --lib --no-run", ci)
+        self.assertIn('cargo nextest archive --locked "$@" --archive-file "$out/archive.tar.zst" --cargo-message-format json-render-diagnostics > "$RUNNER_TEMP/build.json"', ci)
 
     def test_battery_builds_and_reproduces_with_the_checked_profile(self):
         workflow = WORKFLOW.read_text()
@@ -271,12 +273,11 @@ class RuntimeChecks(unittest.TestCase):
 
     def test_ci_selects_only_dev_or_checked(self):
         for workflow in (WORKFLOW.read_text(), CI_WORKFLOW.read_text()):
-            for profile in re.findall(r"--profile (\S+)", workflow):
+            cargo = re.findall(r"cargo (?:test|build|run)\b[^\n]*?--profile (\S+)", workflow)
+            nextest = re.findall(r"cargo nextest (?:archive|run|list)\b[^\n]*?--cargo-profile (\S+)", workflow)
+            for profile in cargo + nextest:
                 self.assertIn(profile, ("checked", '"$PROFILE"'))
-        expressions = re.findall(r"(?m)^ +PROFILE: (.+)$", CI_WORKFLOW.read_text())
-        self.assertTrue(expressions)
-        for expression in expressions:
-            self.assertEqual(set(re.findall(r"'([^']*)'", expression)) - {"sim"}, {"checked", "dev"})
+        self.assertIn("cargo nextest archive", CI_WORKFLOW.read_text())
 
 
 class HeavyTests(unittest.TestCase):
