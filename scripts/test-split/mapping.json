@@ -1754,7 +1754,6 @@
     "use:super :: process :: { Child , Echo }": "common",
     "use:super :: reconcile :: { ReconcileError , UpdateBinary , app_not_updated , finish_reconciliation , reconcile_updated , update_problem , updated , }": "common",
     "use:super :: reconcile :: { discover_app_version , select_app_helper }": "common",
-    "use:super :: refuse_root": "common",
     "use:super :: release_source :: RECONCILE": "common",
     "use:std :: os :: unix :: process :: CommandExt": "common",
     "use:tokio :: io :: { AsyncReadExt , AsyncWriteExt }": "common",
@@ -1805,7 +1804,10 @@
     "fn:another_install_never_changes_the_running_binarys_installation_method": "inventory",
     "fn:formula_ownership_survives_a_linked_cellar_and_invocation_alias": "inventory",
     "fn:invocation_hints_must_resolve_to_the_running_binary": "inventory",
-    "fn:a_homebrew_receipt_blocks_installer_fallback_without_an_owning_prefix": "inventory"
+    "fn:a_homebrew_receipt_blocks_installer_fallback_without_an_owning_prefix": "inventory",
+    "use:super :: { open_log , refuse_root }": "common",
+    "fn:the_update_log_records_the_state_folder_it_creates_and_nothing_beside_another_log": "process",
+    "use:super :: refuse_root": "common"
   },
   "core/net/src/chunks/tests.rs": {
     "use:std :: net :: SocketAddr": "common",
