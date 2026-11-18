@@ -61,6 +61,32 @@ mod unknown_path {
     }
 }
 
+/// What lifts a halt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Remedy {
+    /// Fixing the problem, then restarting the folder.
+    #[serde(alias = "Restart")]
+    Restart,
+    /// Putting the folder back where it was. Koidrive checks it again on its own.
+    #[serde(alias = "Root")]
+    Root,
+    /// Relinking the folder, which keeps this copy.
+    #[serde(alias = "Relink")]
+    Relink,
+    /// Unlinking the folder again, which finishes the unlink that stopped.
+    #[serde(alias = "Unlink")]
+    Unlink,
+    /// Fixing the cause, then sending the refused changes again or planning them again.
+    Retry,
+    /// The space's owner confirming the refused changes.
+    Owner,
+    /// Setting this device up again.
+    SetUpAgain,
+    /// Unlinking the folder, because this device's account can no longer reach the space or the space is gone.
+    Membership,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FolderStatus {
     pub space_id: String,
@@ -86,6 +112,9 @@ pub struct FolderStatus {
     /// Whether `Driver::relink` resolves the halt.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub relinkable: bool,
+    /// What lifts the halt, while the folder is halted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remedy: Option<Remedy>,
     /// The call the folder puts off, as soon as it waits: why and until when. `problem` shows a wait only once it is
     /// long or keeps failing.
     #[serde(default, skip_serializing_if = "Option::is_none")]

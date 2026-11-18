@@ -37,6 +37,63 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[test]
+fn concise_halted_status_offers_a_restart_only_when_a_restart_lifts_the_halt() {
+    for (problem, remedy, restart) in [
+        (
+            "the server refused this device's changes: refused; the space's owner must confirm them, which Koidrive cannot ask for yet",
+            "owner",
+            true,
+        ),
+        (
+            "unlinking the folder did not finish; unlink it again to finish",
+            "unlink",
+            false,
+        ),
+        (
+            "/home/ada/koi notes/plan.key cannot be read",
+            "restart",
+            true,
+        ),
+        (
+            "this device is not a member of the space",
+            "membership",
+            false,
+        ),
+    ] {
+        let status: Status = serde_json::from_value(serde_json::json!({
+            "account":null, "running":true, "folders":[{
+                "space_id":"s1", "space_name":"Work", "path":"/home/ada/Work", "state":"halted",
+                "history_id":null,"last_seq":null,"head_seq":null,"remote_nodes":0,"local_entries":null,"questions":0,
+                "problem":problem, "remedy":remedy
+            }]
+        })).unwrap();
+        let service: service::Report = serde_json::from_value(
+            serde_json::json!({"manager":"launchd", "name":"fixture", "state":"off"}),
+        )
+        .unwrap();
+        let notice = UpdateNoticeData::of(&status.update, "0.1.0", None);
+
+        let summary = status_summary(&status, &[], &service, &notice);
+
+        assert_eq!(summary.contains("koi folder restart"), restart, "{summary}");
+        assert_eq!(
+            summary.contains("To finish, run koi folder unlink /home/ada/Work"),
+            remedy == "unlink",
+            "{summary}"
+        );
+        assert_eq!(
+            report::RemedyData::of(&status.folders[0]).and_then(report::RemedyData::command),
+            Some(match remedy {
+                "unlink" | "membership" => "unlink",
+                _ => "restart",
+            })
+        );
+        let data = serde_json::to_value(report::FolderData::of(&status.folders[0])).unwrap();
+        assert_eq!(data["remedy"], remedy);
+    }
+}
+
+#[test]
 fn a_halted_folder_whose_place_is_unknown_gets_no_command_for_a_path() {
     let status: Status = serde_json::from_value(serde_json::json!({
         "account":null, "running":true, "folders":[{
@@ -461,6 +518,7 @@ fn the_status_text_escapes_every_name_path_and_problem() {
         questions: 0,
         problem: Some("cannot read \u{1b}[31mred\u{9b}31m".into()),
         relinkable: false,
+        remedy: None,
         progress: None,
         activity: None,
         bytes_moved: 0,
@@ -510,6 +568,7 @@ fn the_status_text_names_each_disk_whose_files_the_folder_holds() {
         questions: 0,
         problem: None,
         relinkable: false,
+        remedy: None,
         progress: None,
         activity: None,
         bytes_moved: 0,
@@ -559,6 +618,7 @@ fn the_status_text_names_the_entries_kept_from_a_deleted_folder() {
         questions: 0,
         problem: None,
         relinkable: false,
+        remedy: None,
         progress: None,
         activity: None,
         bytes_moved: 0,
@@ -606,6 +666,7 @@ fn the_status_text_names_the_rewind_a_folder_recovers_from() {
         questions: 1,
         problem: None,
         relinkable: false,
+        remedy: None,
         wait: None,
     };
     assert!(
@@ -640,6 +701,7 @@ fn the_status_text_names_the_rewind_beside_a_problem_and_only_once() {
         questions: 1,
         problem: Some(problem.into()),
         relinkable: false,
+        remedy: None,
         wait: None,
     };
     let text = folder_text(&folder("a.txt waits to be read again"));
@@ -675,6 +737,7 @@ fn the_restart_report_escapes_the_folder_and_its_problem() {
         questions: 0,
         problem: problem.map(str::to_owned),
         relinkable: false,
+        remedy: None,
         progress: None,
         activity: None,
         bytes_moved: 0,

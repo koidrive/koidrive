@@ -14,22 +14,14 @@ use serde::{Deserialize, Serialize};
 use crate::claim::Identity;
 use crate::failures::{self, Failure, Halted};
 use crate::health::{Halting, Health};
-use crate::status::{FolderState, FolderStatus};
+use crate::status::{FolderState, FolderStatus, Remedy};
 
 const SYNCED_STEP_SECONDS: u64 = 600;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum Recovery {
-    Restart,
-    Root,
-    Relink,
-    Unlink,
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Halt {
     problem: String,
-    recovery: Recovery,
+    recovery: Remedy,
     #[serde(default, deserialize_with = "lenient")]
     why: Option<Halted>,
     #[serde(default = "koidrive_telemetry::now", deserialize_with = "since")]
@@ -49,7 +41,7 @@ fn unreadable(path: &Path, error: &io::Error) -> Checkpoint {
     let halt = match path.with_file_name(UNLINKING).exists() {
         true => Halt {
             problem: UNFINISHED_UNLINK.into(),
-            recovery: Recovery::Unlink,
+            recovery: Remedy::Unlink,
             why: Some(Halted::Unlink),
             since,
         },
@@ -58,7 +50,7 @@ fn unreadable(path: &Path, error: &io::Error) -> Checkpoint {
                 "the folder's sync record {} can't be read ({error}); run koi folder restart to check the folder and sync it again",
                 koidrive_fs::quoted(path)
             ),
-            recovery: Recovery::Restart,
+            recovery: Remedy::Restart,
             why: Some(Halted::Store),
             since,
         },
@@ -121,7 +113,8 @@ impl Lifecycle {
         if let Some(halt) = &checkpoint.halt {
             status.state = FolderState::Halted;
             status.problem = Some(halt.problem.clone());
-            status.relinkable = halt.recovery == Recovery::Relink;
+            status.relinkable = halt.recovery == Remedy::Relink;
+            status.remedy = Some(halt.recovery);
         }
         Self {
             path,
@@ -143,7 +136,7 @@ impl Lifecycle {
             .unwrap()
             .halt
             .as_ref()
-            .is_some_and(|halt| !matches!(halt.recovery, Recovery::Root | Recovery::Relink))
+            .is_some_and(|halt| !matches!(halt.recovery, Remedy::Root | Remedy::Relink))
     }
 
     pub(crate) fn root(&self) -> Option<Identity> {
@@ -155,12 +148,12 @@ impl Lifecycle {
         if checkpoint
             .halt
             .as_ref()
-            .is_some_and(|halt| halt.recovery == Recovery::Unlink)
+            .is_some_and(|halt| halt.recovery == Remedy::Unlink)
         {
             return Err(io::Error::other("the folder's unlink is unfinished"));
         }
         self.forget_unlink()?;
-        let older = (checkpoint.halt.as_ref()).filter(|halt| halt.recovery == Recovery::Relink);
+        let older = (checkpoint.halt.as_ref()).filter(|halt| halt.recovery == Remedy::Relink);
         if checkpoint.root != Some(root) || checkpoint.halt.is_some() != older.is_some() {
             let next = Checkpoint {
                 root: Some(root),
@@ -170,6 +163,7 @@ impl Lifecycle {
             self.save(&next)?;
             if older.is_none() {
                 self.cleared(checkpoint.halt.as_ref());
+                self.status.lock().unwrap().remedy = None;
             }
             *checkpoint = next;
         }
@@ -188,7 +182,9 @@ impl Lifecycle {
         self.save(&next)?;
         self.cleared(checkpoint.halt.as_ref());
         *checkpoint = next;
-        self.status.lock().unwrap().relinkable = false;
+        let mut status = self.status.lock().unwrap();
+        status.relinkable = false;
+        status.remedy = None;
         Ok(())
     }
 
@@ -197,7 +193,7 @@ impl Lifecycle {
         if checkpoint
             .halt
             .as_ref()
-            .is_some_and(|halt| halt.recovery == Recovery::Unlink)
+            .is_some_and(|halt| halt.recovery == Remedy::Unlink)
         {
             return Ok(());
         }
@@ -213,6 +209,7 @@ impl Lifecycle {
         status.state = FolderState::Stopped;
         status.problem = None;
         status.relinkable = false;
+        status.remedy = None;
         status.wait = None;
         Ok(())
     }
@@ -223,10 +220,10 @@ impl Lifecycle {
             root: checkpoint.root,
             halt: Some(Halt {
                 problem: UNFINISHED_UNLINK.into(),
-                recovery: Recovery::Unlink,
+                recovery: Remedy::Unlink,
                 why: Some(Halted::Unlink),
                 since: (checkpoint.halt.as_ref())
-                    .filter(|halt| halt.recovery == Recovery::Unlink)
+                    .filter(|halt| halt.recovery == Remedy::Unlink)
                     .map_or_else(koidrive_telemetry::now, |halt| halt.since),
             }),
             synced: checkpoint.synced,
@@ -278,13 +275,13 @@ impl Lifecycle {
         &self.path
     }
 
-    pub(crate) fn halt(&self, why: Halted, problem: String, recovery: Recovery) {
+    pub(crate) fn halt(&self, why: Halted, problem: String, recovery: Remedy) {
         let mut checkpoint = self.checkpoint.lock().unwrap();
-        if recovery != Recovery::Unlink
+        if recovery != Remedy::Unlink
             && checkpoint
                 .halt
                 .as_ref()
-                .is_some_and(|halt| halt.recovery == Recovery::Unlink)
+                .is_some_and(|halt| halt.recovery == Remedy::Unlink)
         {
             return;
         }
@@ -309,7 +306,8 @@ impl Lifecycle {
         }
         status.state = FolderState::Halted;
         status.problem = Some(problem);
-        status.relinkable = recovery == Recovery::Relink;
+        status.relinkable = recovery == Remedy::Relink;
+        status.remedy = Some(recovery);
         status.wait = None;
     }
 
@@ -336,7 +334,7 @@ impl Lifecycle {
     pub(crate) fn store_unopened(&self, problem: String) {
         let mut checkpoint = self.checkpoint.lock().unwrap();
         if let Some(halt) = &checkpoint.halt
-            && halt.recovery == Recovery::Unlink
+            && halt.recovery == Remedy::Unlink
         {
             return;
         }
@@ -347,7 +345,7 @@ impl Lifecycle {
             (checkpoint.halt.as_ref()).map_or_else(koidrive_telemetry::now, |halt| halt.since);
         checkpoint.halt = Some(Halt {
             problem: problem.clone(),
-            recovery: Recovery::Restart,
+            recovery: Remedy::Restart,
             why: Some(Halted::Store),
             since,
         });
@@ -358,11 +356,12 @@ impl Lifecycle {
         status.state = FolderState::Halted;
         status.problem = Some(problem);
         status.relinkable = false;
+        status.remedy = Some(Remedy::Restart);
     }
 
     pub(crate) fn unlinking(&self) -> bool {
         (self.checkpoint.lock().unwrap().halt.as_ref())
-            .is_some_and(|halt| halt.recovery == Recovery::Unlink)
+            .is_some_and(|halt| halt.recovery == Remedy::Unlink)
     }
 
     pub(crate) fn halted(&self) -> bool {
@@ -444,7 +443,7 @@ mod tests {
 
     #[test]
     fn unlink_authority_survives_task_halts_and_claims_in_either_order() {
-        for recovery in [Recovery::Root, Recovery::Restart] {
+        for recovery in [Remedy::Root, Remedy::Restart] {
             for claim_first in [false, true] {
                 let dir = tempfile::tempdir().unwrap();
                 let store = dir.path().join("store.sqlite");
@@ -461,7 +460,7 @@ mod tests {
                 lifecycle.halt(
                     Halted::Unlink,
                     "unlink owns recovery".into(),
-                    Recovery::Unlink,
+                    Remedy::Unlink,
                 );
                 if claim_first {
                     assert!(lifecycle.claimed(identity).is_err());
@@ -474,13 +473,14 @@ mod tests {
                 drop(lifecycle);
                 let reopened = Lifecycle::open(&store, status, Recorder::off());
                 let checkpoint = reopened.checkpoint.lock().unwrap();
-                assert_eq!(checkpoint.halt.as_ref().unwrap().recovery, Recovery::Unlink);
+                assert_eq!(checkpoint.halt.as_ref().unwrap().recovery, Remedy::Unlink);
                 assert_eq!(checkpoint.root, Some(identity));
                 drop(checkpoint);
                 assert!(reopened.needs_restart());
                 let status = reopened.lock().unwrap();
                 assert_eq!(status.state, FolderState::Halted);
                 assert_eq!(status.problem.as_deref(), Some("unlink owns recovery"));
+                assert_eq!(status.remedy, Some(Remedy::Unlink));
             }
         }
     }
@@ -500,7 +500,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("store.sqlite");
         let lifecycle = Lifecycle::open(&store, status(), Recorder::off());
-        lifecycle.halt(Halted::Withdrawn, "moved away".into(), Recovery::Root);
+        lifecycle.halt(Halted::Withdrawn, "moved away".into(), Remedy::Root);
         let began = lifecycle
             .checkpoint
             .lock()
@@ -509,7 +509,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .since;
-        lifecycle.halt(Halted::Root, "missing".into(), Recovery::Root);
+        lifecycle.halt(Halted::Root, "missing".into(), Remedy::Root);
         drop(lifecycle);
         let reopened = Lifecycle::open(&store, status(), Recorder::off());
         let health = reopened.health(began + 7_200);
@@ -569,6 +569,7 @@ mod tests {
         assert_eq!(halt.why, Some(Halted::Store));
         let problem = lifecycle.lock().unwrap().problem.clone().unwrap();
         assert!(problem.contains("koi folder restart"), "{problem}");
+        assert_eq!(lifecycle.lock().unwrap().remedy, Some(Remedy::Restart));
         lifecycle.restart().unwrap();
         assert!(!lifecycle.needs_restart());
         drop(lifecycle);
@@ -605,7 +606,7 @@ mod tests {
         lifecycle.halt(
             Halted::Io,
             "the folder could not be unlinked".into(),
-            Recovery::Restart,
+            Remedy::Restart,
         );
         lifecycle.restart().unwrap();
         assert!(!store.with_file_name(UNLINKING).exists());
@@ -656,6 +657,7 @@ mod tests {
         fs::write(store.with_file_name("lifecycle.json"), record.to_string()).unwrap();
         let recorder = Recorder::on();
         let lifecycle = Lifecycle::open(&store, status(), recorder.clone());
+        assert_eq!(lifecycle.lock().unwrap().remedy, Some(Remedy::Root));
         let halt = lifecycle.health(koidrive_telemetry::now()).halt.unwrap();
         assert_eq!(halt.why, None);
         lifecycle.restart().unwrap();
@@ -670,13 +672,14 @@ mod tests {
         let lifecycle = Lifecycle::open(&store, status(), recorder.clone());
         let identity = Identity::of(&fs::metadata(dir.path()).unwrap());
         lifecycle.claimed(identity).unwrap();
-        lifecycle.halt(Halted::Claim, "another device".into(), Recovery::Restart);
+        lifecycle.halt(Halted::Claim, "another device".into(), Remedy::Restart);
         lifecycle.restart().unwrap();
         lifecycle.restart().unwrap();
-        lifecycle.halt(Halted::Root, "missing".into(), Recovery::Root);
+        lifecycle.halt(Halted::Root, "missing".into(), Remedy::Root);
         lifecycle.claimed(identity).unwrap();
+        assert_eq!(lifecycle.lock().unwrap().remedy, None);
         lifecycle.claimed(identity).unwrap();
-        lifecycle.halt(Halted::DiskBehind, "older".into(), Recovery::Relink);
+        lifecycle.halt(Halted::DiskBehind, "older".into(), Remedy::Relink);
         lifecycle.claimed(identity).unwrap();
         assert!(lifecycle.halted() && lifecycle.lock().unwrap().relinkable);
         lifecycle.opened().unwrap();
@@ -713,7 +716,7 @@ mod unreachable_tests {
         }))
         .unwrap();
         let lifecycle = Lifecycle::open(&store, status, Recorder::off());
-        lifecycle.halt(Halted::Io, "the folder is missing".into(), Recovery::Root);
+        lifecycle.halt(Halted::Io, "the folder is missing".into(), Remedy::Root);
         {
             let status = lifecycle.lock().unwrap();
             assert_eq!(status.state, FolderState::Halted);

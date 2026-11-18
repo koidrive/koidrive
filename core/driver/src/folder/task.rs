@@ -8,9 +8,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use koidrive_engine::ignore::LocalRules;
-use koidrive_fs::{RootProblem, Snapshot};
+use koidrive_fs::Snapshot;
 use koidrive_net::{
-    Auth, Backoff, CallError, ChunkError, Session, SessionConfig, StopReason, Transfer, UploadGate,
+    Auth, Backoff, CallError, ChunkError, Session, SessionConfig, Transfer, UploadGate,
 };
 use koidrive_proto::v1::{CommitResult, UploadReceipt};
 use koidrive_state_file::Flock;
@@ -27,6 +27,7 @@ use crate::failures::{self, Halted};
 use crate::ignore::Matcher;
 use crate::observe::{FsObserver, Observer, Observing};
 use crate::progress::Tracker;
+use crate::status::Remedy;
 use crate::timing::Time;
 
 use super::commit::sent_in_order;
@@ -101,7 +102,7 @@ enum Halt {
     Root(Halted, String),
     /// Only a person can fix it. The task waits for a restart.
     #[error("{1}")]
-    Person(Halted, String),
+    Person(Halted, String, Remedy),
     #[error("{1}")]
     Older(Halted, String),
     #[error("reconnecting")]
@@ -111,17 +112,13 @@ enum Halt {
 impl From<Stop> for Halt {
     fn from(stop: Stop) -> Self {
         let why = failures::halted(&stop);
-        match stop {
-            Stop::Root(RootProblem::Copy) | Stop::DiskBehind { .. } => {
-                Halt::Older(why, stop.to_string())
+        match stop.remedy() {
+            Remedy::Relink => Halt::Older(why, stop.to_string()),
+            Remedy::Root => Halt::Root(why, stop.to_string()),
+            Remedy::SetUpAgain => {
+                Halt::Person(why, format!("{stop}; {SET_UP_AGAIN}"), Remedy::SetUpAgain)
             }
-            Stop::Withdrawn(_) | Stop::Root(_) | Stop::OtherRoot => {
-                Halt::Root(why, stop.to_string())
-            }
-            Stop::Session(StopReason::CredentialsRefused | StopReason::DeviceRevoked) => {
-                Halt::Person(why, format!("{stop}; {SET_UP_AGAIN}"))
-            }
-            stop => Halt::Person(why, stop.to_string()),
+            remedy => Halt::Person(why, stop.to_string(), remedy),
         }
     }
 }
@@ -160,15 +157,13 @@ impl FolderTask {
                 Halt::Root(why, problem) => (
                     *why,
                     format!("{problem}; checking the folder again"),
-                    crate::lifecycle::Recovery::Root,
+                    crate::status::Remedy::Root,
                 ),
-                Halt::Person(why, problem) => {
-                    (*why, problem.clone(), crate::lifecycle::Recovery::Restart)
-                }
+                Halt::Person(why, problem, remedy) => (*why, problem.clone(), *remedy),
                 Halt::Older(why, problem) => (
                     *why,
                     format!("{problem}; checking the folder again"),
-                    crate::lifecycle::Recovery::Relink,
+                    crate::status::Remedy::Relink,
                 ),
                 Halt::Reconnect => unreachable!("handled above"),
             };
@@ -206,11 +201,11 @@ impl FolderTask {
             Err(halt) => return halt,
         };
         if let Err(error) = check_placement(&self.link.root, &self.private_dirs, &self.linked) {
-            return Halt::Person(Halted::Placement, error.to_string());
+            return Halt::Person(Halted::Placement, error.to_string(), Remedy::Restart);
         }
         let lock = match self.claim(locked) {
             Ok(lock) => Arc::new(lock),
-            Err(problem) => return Halt::Person(Halted::Claim, problem),
+            Err(problem) => return Halt::Person(Halted::Claim, problem, Remedy::Restart),
         };
         if let Err(error) = self
             .status
@@ -219,6 +214,7 @@ impl FolderTask {
             return Halt::Person(
                 Halted::Io,
                 format!("the folder's lifecycle cannot be saved: {error}"),
+                Remedy::Restart,
             );
         }
         #[cfg(test)]
@@ -234,6 +230,7 @@ impl FolderTask {
             return Halt::Person(
                 Halted::Io,
                 format!("the folder's lifecycle cannot be saved: {error}"),
+                Remedy::Restart,
             );
         }
         if let Some(adopted) = adopted {
@@ -276,7 +273,11 @@ impl FolderTask {
         let (session, mut events) = match Session::start(self.auth.clone(), config) {
             Ok(started) => started,
             Err(reason) => {
-                return Halt::Person(failures::session_ended(&reason), reason.to_string());
+                return Halt::Person(
+                    failures::session_ended(&reason),
+                    reason.to_string(),
+                    Remedy::Restart,
+                );
             }
         };
         let transfer = self.transfer();
@@ -409,7 +410,7 @@ impl FolderTask {
                     self.status.halt(
                         Halted::Root,
                         format!("{problem}; checking again in 30 seconds"),
-                        crate::lifecycle::Recovery::Root,
+                        crate::status::Remedy::Root,
                     );
                     self.changed.send_replace(());
                     tokio::time::sleep(ROOT_RECHECK).await;
@@ -418,6 +419,7 @@ impl FolderTask {
                     return Err(Halt::Person(
                         Halted::Store,
                         crate::lifecycle::unopened(&self.store, &error),
+                        Remedy::Restart,
                     ));
                 }
                 Err(stop) => return Err(stop.into()),

@@ -761,6 +761,7 @@ mod tests {
             questions: 0,
             problem: None,
             relinkable: false,
+            remedy: None,
             wait: None,
             recovery: None,
             progress: None,

@@ -149,7 +149,7 @@ pub(crate) fn halted(stop: &Stop) -> Halted {
         Stop::Store(_) => Halted::Store,
         Stop::Io(_) => Halted::Io,
         Stop::Session(reason) => session_ended(reason),
-        Stop::Refused(_) => Halted::Refused,
+        Stop::Refused(_) | Stop::Policy { .. } => Halted::Refused,
         Stop::Protocol(_) => Halted::Protocol,
     }
 }

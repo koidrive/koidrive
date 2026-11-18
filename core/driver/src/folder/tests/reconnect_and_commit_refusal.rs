@@ -139,7 +139,8 @@ fn a_read_only_device_keeps_downloading() {
 fn a_refused_commit_lifted_to_resend_goes_out_unchanged() {
     let mut remote = Remote::new();
     let (site, refused, halt) = refused_first_commit(&mut remote, Code::Forbidden);
-    assert!(halt.contains("koi folder retry"), "{halt}");
+    assert!(halt.to_string().contains("koi folder retry"), "{halt}");
+    assert_eq!(halt.remedy(), crate::status::Remedy::Retry);
     let a = restarted(&site, &mut remote);
     assert!(a.sent.is_empty(), "a restart lifts nothing");
     let problem = a.folder.view().problem.unwrap();
@@ -177,7 +178,8 @@ fn a_refused_commit_lifted_to_replan_goes_out_as_a_new_commit_in_its_slot() {
 fn a_commit_that_waits_for_the_owners_confirmation_is_not_lifted() {
     let mut remote = Remote::new();
     let (site, refused, halt) = refused_first_commit(&mut remote, Code::ConfirmationRequired);
-    assert!(halt.contains("owner must confirm"), "{halt}");
+    assert!(halt.to_string().contains("owner must confirm"), "{halt}");
+    assert_eq!(halt.remedy(), crate::status::Remedy::Owner);
     for lift in [Lift::Resend, Lift::Replan] {
         let lifted = lift_halt(&site.db, lift);
         assert!(
@@ -185,7 +187,23 @@ fn a_commit_that_waits_for_the_owners_confirmation_is_not_lifted() {
             "{lifted:?}"
         );
     }
-    let a = restarted(&site, &mut remote);
+    let mut a = restarted(&site, &mut remote);
+    assert!(a.sent.is_empty());
+
+    let (site_b, mut b) = linked(&mut remote, "b");
+    b.create(
+        &mut remote,
+        &site_b.root.join("theirs.txt"),
+        b"written on b",
+    );
+    a.pull(&remote);
+    a.run(&mut remote);
+    a.settle();
+    assert!(
+        files(&site.root).contains(&("theirs.txt".to_owned(), "written on b".to_owned())),
+        "{:?}",
+        files(&site.root)
+    );
     assert!(a.sent.is_empty());
     let flight = a.folder.engine.commits.in_flight().unwrap();
     assert_eq!(flight.commit.commit_id, refused.commit_id);
@@ -226,4 +244,14 @@ fn a_file_edited_while_a_move_the_server_undid_was_in_flight_keeps_its_name() {
     );
     assert_eq!(remote.names(), ["old.txt"]);
     assert_eq!(b.state(), FolderState::UpToDate);
+}
+
+#[test]
+fn a_space_this_device_can_no_longer_reach_is_not_lifted_by_a_restart() {
+    for reason in [StopReason::Forbidden, StopReason::NotFound] {
+        assert_eq!(
+            Stop::Session(reason).remedy(),
+            crate::status::Remedy::Membership
+        );
+    }
 }

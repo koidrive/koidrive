@@ -293,10 +293,13 @@ impl Folder {
                 work.push(Work::Reconnect);
             }
             Failure::Halted(CommitHalt::Policy { code }) => {
-                return Err(Stop::Refused(format!(
-                    "the server refused this device's changes: {described}{}",
-                    lift_hint(code)
-                )));
+                return Err(Stop::Policy {
+                    problem: format!(
+                        "the server refused this device's changes: {described}{}",
+                        lift_hint(code)
+                    ),
+                    needs_owner: code == Code::ConfirmationRequired as i32,
+                });
             }
         }
         Ok(())
