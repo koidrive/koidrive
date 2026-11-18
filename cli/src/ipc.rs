@@ -473,6 +473,10 @@ pub async fn run(paths: &Paths, request: Request) -> Result<Response, CliError> 
             Reached::Profile(driver) => handle(&driver, request).await,
         },
     };
+    answered(response)
+}
+
+pub(crate) fn answered(response: Response) -> Result<Response, CliError> {
     match response {
         Response::Error {
             message,

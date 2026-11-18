@@ -361,6 +361,9 @@ impl From<DriverError> for CliError {
             DriverError::NotRevoked(_) => {
                 CliError::new(Code::Unavailable, message).then(&LEAVE_LAST_DEVICE)
             }
+            DriverError::PausedUnsaved { .. } => {
+                CliError::new(Code::Failed, message).then(&["koi", "pause"])
+            }
             DriverError::QuestionNotFound(_) | DriverError::AnsweredOtherwise { .. } => {
                 CliError::new(
                     Code::StaleDecision,
@@ -611,6 +614,13 @@ fn driver_human(error: &DriverError) -> Option<String> {
             }
             koidrive_store::Error::Sqlite(_) => return None,
         },
+        DriverError::PausedUnsaved { error, .. } => {
+            let unsaved = "Sync is paused, but Koidrive could not finish saving the pause, so it may not survive a crash.";
+            return Some(match local_io_human(error) {
+                Some(cause) => format!("{unsaved} {cause} Then run koi pause again to save it."),
+                None => format!("{unsaved} Run koi pause again to save it."),
+            });
+        }
         DriverError::Io { error, .. } => return local_io_human(error).map(str::to_owned),
     };
     Some(human.into())

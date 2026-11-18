@@ -208,6 +208,11 @@ pub enum DriverError {
         path: PathBuf,
         error: koidrive_store::Error,
     },
+    #[error(
+        "sync is paused, but {} could not be saved completely: {error}",
+        koidrive_fs::quoted(.path)
+    )]
+    PausedUnsaved { path: PathBuf, error: io::Error },
     #[error("{}: {error}", koidrive_fs::quoted(.path))]
     Io { path: PathBuf, error: io::Error },
 }
@@ -1842,18 +1847,28 @@ impl Driver {
         let paused = tokio::spawn(async move {
             let _pausing = pausing;
             let path = driver.inner.paths.paused();
-            koidrive_state_file::write(&path, b"paused\n").map_err(io_error(&path))?;
+            let written = match koidrive_state_file::write(&path, b"paused\n") {
+                Err(error) if !path.is_file() => return Err(io_error(&path)(error)),
+                written => written,
+            };
             let changed = !driver.inner.paused.swap(true, Ordering::SeqCst);
             if changed {
                 driver.stop_folders().await;
             }
-            for folder in driver.inner.folders.lock().unwrap().values() {
-                folder
-                    .status
-                    .persist()
-                    .map_err(io_error(folder.status.path()))?;
+            let persisted =
+                (driver.inner.folders.lock().unwrap().values()).try_for_each(|folder| {
+                    folder
+                        .status
+                        .persist()
+                        .map_err(io_error(folder.status.path()))
+                });
+            if let Err(error) = written {
+                if let Err(folder) = &persisted {
+                    tracing::warn!(%folder, "a folder's paused state could not be saved either");
+                }
+                return Err(DriverError::PausedUnsaved { path, error });
             }
-            Ok(changed)
+            persisted.map(|()| changed)
         });
         paused
             .await
@@ -5943,6 +5958,39 @@ mod tests {
         assert!(!driver.resume().await.unwrap());
         assert!(matches!(driver.pause().await, Err(DriverError::Io { .. })));
         assert!(!driver.status().paused);
+    }
+
+    #[tokio::test]
+    async fn a_pause_whose_write_fails_with_the_paused_file_in_place_still_pauses() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if rustix::process::geteuid().is_root() {
+            eprintln!("SKIPPED: running as root, so permissions do not block writes");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        linked(&paths, &base.join("Koidrive"), "d1");
+        let driver = Driver::open(paths.clone()).unwrap();
+        driver.start();
+        assert_ne!(driver.status().folders[0].state, FolderState::Stopped);
+        fs::write(paths.paused(), b"paused\n").unwrap();
+        fs::set_permissions(&paths.state_dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let paused = driver.pause().await;
+        fs::set_permissions(&paths.state_dir, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let error = paused.unwrap_err();
+        assert!(
+            matches!(error, DriverError::PausedUnsaved { .. }),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().starts_with("sync is paused, but "),
+            "{error}"
+        );
+        assert!(driver.status().paused);
+        assert_eq!(driver.status().folders[0].state, FolderState::Stopped);
     }
 
     #[tokio::test]
