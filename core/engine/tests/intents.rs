@@ -470,6 +470,50 @@ fn an_op_that_carries_another_devices_value_without_a_row_goes_without_an_intent
 }
 
 #[test]
+fn a_finish_names_the_marks_intent_and_leaves_a_later_rename_to_send() {
+    let mut trees = Trees::new(ROOT);
+    let mark = FieldIntent {
+        id: id(5),
+        author: "me".into(),
+        carried: false,
+        applied_at_ms: 0,
+    };
+    let marked = RemoteNode {
+        pending_for: Some("d".into()),
+        intents: Some(NodeIntents {
+            place: Some(mark),
+            content: None,
+            status: Some(FieldIntent::legacy(id(6))),
+        }),
+        ..remote(dir(ROOT, "d (pending)"), 1)
+    };
+    trees.set_remote("d".into(), marked);
+    trees.set_synced("d".into(), Some(dir(ROOT, "d (pending)")));
+    trees.set_local("d".into(), local(dir(ROOT, "d (pending)")));
+    trees.set_local_changed("d".into(), local(dir(ROOT, "x")));
+    let mut ops = vec![proto::Op {
+        op: Some(op::Op::Move(proto::Move {
+            node_id: "d".into(),
+            new_parent_id: ROOT.into(),
+            new_name: "d".into(),
+            from: Some(proto::Place {
+                parent_id: ROOT.into(),
+                name: "d (pending)".into(),
+            }),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }];
+    assert_eq!(trees.stamp_intents(&mut ops, "me", 0, true), 0);
+    assert_eq!(
+        ops[0].intent.as_ref().unwrap().id,
+        id(5).as_bytes().to_vec()
+    );
+    let row = trees.journal_row("d", Field::Place).unwrap();
+    assert!(matches!(row.state, RowState::Local { .. }));
+}
+
+#[test]
 fn a_delete_sends_what_r_holds_that_l_never_held_as_unseen() {
     let mut trees = Trees::new(ROOT);
     synced(&mut trees, "d", dir(ROOT, "d"), 1);
