@@ -29,6 +29,7 @@ pub(super) struct Deleted {
     before: BTreeSet<i64>,
     path: Vec<NodeId>,
     elsewhere: BTreeSet<NodeId>,
+    carried_at: Option<u64>,
 }
 
 pub(super) struct Deletion {
@@ -39,15 +40,33 @@ pub(super) struct Deletion {
     resendable: BTreeSet<i64>,
     pub(super) reached: bool,
     pub(super) gone: bool,
-    pub(super) carried_at: Option<u64>,
 }
 
 impl Deletion {
-    pub(super) fn carried(&mut self, seq: u64, deleted: &BTreeSet<&str>) {
-        if (self.files.iter())
-            .any(|file| (file.path.last()).is_some_and(|root| deleted.contains(root.as_str())))
-        {
-            self.carried_at.get_or_insert(seq);
+    pub(super) fn carried(
+        &mut self,
+        seq: u64,
+        deleted: &BTreeSet<&str>,
+        parents: &BTreeMap<&str, &str>,
+    ) {
+        for file in &mut self.files {
+            let above = (file.path.last()).into_iter().flat_map(|root| {
+                std::iter::successors(Some(root.as_str()), |id| {
+                    parents.get(id).copied().filter(|parent| parent != id)
+                })
+            });
+            if (file.path.iter().map(|id| id.as_str()))
+                .chain(above)
+                .any(|id| deleted.contains(id))
+            {
+                file.carried_at.get_or_insert(seq);
+            }
+        }
+    }
+
+    pub(super) fn restored(&mut self, head: u64) {
+        for file in &mut self.files {
+            file.carried_at = file.carried_at.filter(|seq| *seq <= head);
         }
     }
 
@@ -134,6 +153,7 @@ impl World {
                         .filter(|there| *there != node && !under_target(there))
                         .cloned()
                         .collect(),
+                    carried_at: None,
                 })
             })
             .collect();
@@ -177,11 +197,20 @@ impl World {
                 unsent,
                 reached: false,
                 gone: false,
-                carried_at: None,
             };
             deletion.reached = deletion.held(&live, |_, _, _, _| false).is_none();
             self.deletions.push(deletion);
         }
+    }
+
+    pub(super) fn forget_unsent_deletes(&mut self, d: usize) {
+        self.deletions.retain_mut(|deletion| {
+            if deletion.reached || deletion.device != d {
+                return true;
+            }
+            (deletion.files).retain(|file| file.carried_at.is_some());
+            !deletion.files.is_empty()
+        });
     }
 
     pub(super) fn forget_restored_deletes<'a>(

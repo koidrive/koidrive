@@ -935,9 +935,7 @@ impl World {
                 let device = &mut self.devices[d];
                 device.left = true;
                 device.link = None;
-                self.deletions.retain(|deletion| {
-                    deletion.reached || deletion.device != d || deletion.carried_at.is_some()
-                });
+                self.forget_unsent_deletes(d);
             }
             Step::User(action) => self.act(d, action, Act::of(action.kind)),
             Step::Copy(action) => self.act(d, action, Act::Copy),
@@ -979,8 +977,7 @@ impl World {
                     device.rolled_back = true;
                     device.down = true;
                     device.link = None;
-                    self.deletions
-                        .retain(|deletion| deletion.reached || deletion.device != d);
+                    self.forget_unsent_deletes(d);
                 }
             }
             _ if self.devices[d].down => self.restart(d)?,
@@ -1463,8 +1460,7 @@ impl World {
         let live = live_nodes(&self.space);
         for deletion in &mut self.deletions {
             deletion.gone = deletion.held(&live, |_, _, _, _| false).is_none();
-            deletion.carried_at =
-                (deletion.carried_at).filter(|seq| *seq <= backup.space.head_seq());
+            deletion.restored(backup.space.head_seq());
         }
         self.held_commits = backup.held_commits.clone();
         self.in_history = backup.in_history.clone();
@@ -2868,9 +2864,12 @@ impl World {
                                     _ => None,
                                 })
                                 .collect();
+                            let parents: BTreeMap<&str, &str> = (held.iter())
+                                .map(|node| (node.node_id.as_str(), node.parent_id.as_str()))
+                                .collect();
                             for deletion in &mut self.deletions {
                                 if deletion.device == d {
-                                    deletion.carried(record.seq, &deleted);
+                                    deletion.carried(record.seq, &deleted, &parents);
                                 }
                                 deletion.reached |=
                                     deletion.held(&live, |_, _, _, _| false).is_none();

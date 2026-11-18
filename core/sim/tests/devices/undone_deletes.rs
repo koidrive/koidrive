@@ -226,6 +226,25 @@ fn a_file_deleted_before_its_folder_stays_deleted_when_another_device_moves_the_
 }
 
 #[test]
+#[ignore = "a file deleted before its folder comes back when another device moves the folder first (GUN-1054)"]
+fn a_file_deleted_before_its_folder_stays_deleted_after_its_device_leaves() {
+    let mut deleted = vec![
+        (0, delete(1)),
+        (0, delete(0)),
+        (1, folder("C.TXT")),
+        (1, rename(0, 2, "A")),
+    ];
+    deleted.extend(commit(1));
+    deleted.extend(commit(0));
+    deleted.push((0, Step::Leave));
+    checked(
+        2,
+        &[vec![(0, folder("b")), (0, user(1, 0, 1, "a"))], deleted],
+    )
+    .unwrap();
+}
+
+#[test]
 fn a_bystanders_store_rollback_leaves_another_devices_delete_checked() {
     let failure = checked(
         3,
@@ -722,6 +741,51 @@ fn an_unsent_edit_of_the_file_leaves_the_delete_checked_after_the_deleting_devic
     checked(
         2,
         &[vec![(0, folder("a")), (0, user(1, 0, 1, "b"))], renamed],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_file_delete_sent_without_its_folder_stays_checked_after_the_deleting_device_leaves() {
+    let mut deleted = vec![(1, user(1, 0, 1, "c.txt"))];
+    deleted.extend(commit(1));
+    deleted.extend([
+        (0, Step::Deliver(0)),
+        (0, delete(0)),
+        (1, rename(0, 0, "ss")),
+    ]);
+    deleted.extend(commit(1));
+    deleted.extend(commit(0));
+    deleted.push((0, Step::Leave));
+    checked(
+        2,
+        &[vec![(0, folder("b")), (0, user(1, 0, 1, "a"))], deleted],
+    )
+    .unwrap();
+}
+
+#[test]
+fn file_deletes_sent_one_by_one_stay_checked_after_the_deleting_device_leaves() {
+    let mut deleted = vec![(1, user(1, 0, 1, "ss"))];
+    deleted.extend(commit(1));
+    deleted.extend([
+        (0, Step::Deliver(0)),
+        (0, delete(0)),
+        (1, rename(0, 0, "A")),
+    ]);
+    deleted.extend(commit(1));
+    deleted.extend(commit(0));
+    deleted.push((0, Step::Leave));
+    checked(
+        2,
+        &[
+            vec![
+                (0, folder("b")),
+                (0, user(1, 0, 1, "a")),
+                (0, user(1, 0, 1, "c.txt")),
+            ],
+            deleted,
+        ],
     )
     .unwrap();
 }
