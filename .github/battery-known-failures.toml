@@ -272,13 +272,3 @@ examples = ["phase 2, step 27 (Crash on device 0): WriteFile { at: At { base: Ro
 cases = [
   "d93bc61897d1",
 ]
-
-[[failure]]
-class = "L"
-issue = "GUN-1032"
-tests = ["devices_converge_across_rewinds_and_rollbacks"]
-message = '''after phase <n>: device <n> is quiet, but it still sends nodes again: \{"<id>"\}, at \{\}, lost creates \{\}\.'''
-examples = ["after phase 2: device 0 is quiet, but it still sends nodes again: {\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"}, at {}, lost creates {}."]
-cases = [
-  "45aeea4283ba",
-]
