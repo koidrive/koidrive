@@ -247,6 +247,7 @@ jobs:
         if: inputs.mode == 'e2e'
         with:
           key: e2e
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build koi
         if: inputs.mode == 'e2e'
         working-directory: .
@@ -460,6 +461,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: e2e
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build koi
         working-directory: .
         run: cargo build -p koidrive-cli --locked

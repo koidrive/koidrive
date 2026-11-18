@@ -7,12 +7,14 @@ on:
   pull_request:
   merge_group:
   workflow_dispatch:
+  schedule:
+    - cron: '23 16 * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-cli-${{ github.ref }}
+  group: release-cli-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -151,6 +153,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: cli-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Linux cross-build tools and ShellCheck
         if: runner.os == 'Linux'
         run: |

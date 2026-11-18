@@ -101,6 +101,16 @@ class ChangesJob(unittest.TestCase):
         for job in ("rust_macos", "server_macos", "spec_macos", "macos_app"):
             self.assertEqual(outputs[job], "true", job)
 
+    def test_scheduled_and_manual_runs_run_every_job_on_both_systems(self):
+        for event in ("schedule", "workflow_dispatch"):
+            with self.subTest(event=event):
+                result, outputs = self.run_script(inline_script("changes"), {"EVENT": event})
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                for job in (*SELECTED, "rust_macos", "server_macos", "spec_macos", "macos_app"):
+                    self.assertEqual(outputs[job], "true", job)
+                self.assertEqual(json.loads(outputs["rust_suites"]), ["driver", "engine", "sim"])
+                self.assertEqual(outputs["site_only"], "false")
+
     def run_changes(self, changed, selected=(), event="pull_request", selector_fails=False, selector_build="success"):
         self.write_executable("git", """
             import os
@@ -182,6 +192,30 @@ class ChangesJob(unittest.TestCase):
         self.assertIn("id: selector\n", build)
         self.assertIn("continue-on-error: true\n", build)
         self.assertIn("SELECTOR_BUILD: ${{ steps.selector.outcome }}", body)
+
+
+class RustCaches(unittest.TestCase):
+    SAVE_FROM_MAIN = "save-if: ${{ github.ref == 'refs/heads/main' }}"
+
+    def cache_steps(self, text):
+        return re.findall(r"(?m)^( *)- uses: Swatinem/rust-cache@.*\n((?:\1  .*\n)*)", text)
+
+    def test_only_runs_on_main_save_rust_caches(self):
+        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            for _, body in self.cache_steps(path.read_text()):
+                with self.subTest(workflow=path.name, step=body):
+                    saves = re.findall(r"(?m)^ *save-if: .*$", body)
+                    self.assertEqual(len(saves), 1)
+                    self.assertIn(saves[0].strip(), (self.SAVE_FROM_MAIN, "save-if: false"))
+
+    def test_workflows_that_restore_on_pull_requests_run_on_main_every_day(self):
+        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            text = path.read_text()
+            triggers = text.split("\non:\n", 1)[1].split("\n\n", 1)[0]
+            if not self.cache_steps(text) or "  pull_request:" not in triggers:
+                continue
+            with self.subTest(workflow=path.name):
+                self.assertRegex(triggers, r"\n  schedule:\n    - cron: '\d+ \d+ \* \* \*'")
 
 
 class Runners(unittest.TestCase):
