@@ -238,35 +238,38 @@ def scenario_files(path):
                                       for moved in sorted(directory.rglob("*.rs"))]
 
 
-def unformatted_lines(source):
-    formatted = subprocess.run(["rustfmt", "--edition", "2024", "--emit", "stdout"],
-                               input=source, capture_output=True, check=True).stdout
+def unformatted_lines(name, source):
+    result = subprocess.run(["rustfmt", "--edition", "2024", "--emit", "stdout"], input=source, capture_output=True)
+    if result.returncode:
+        raise ValueError(f"rustfmt cannot format {name}: {result.stderr.decode().strip()}")
     lines = set()
-    matcher = difflib.SequenceMatcher(None, source.decode().splitlines(), formatted.decode().splitlines(), autojunk=False)
+    matcher = difflib.SequenceMatcher(None, source.split(b"\n"), result.stdout.split(b"\n"), autojunk=False)
     for tag, start, end, _, _ in matcher.get_opcodes():
         if tag != "equal":
             lines.update(range(start + 1, max(end, start + 1) + 1))
     return lines
 
 
-def changed_lines(base):
-    diff = subprocess.check_output(["git", "diff", "-U0", "--diff-filter=d", base, "HEAD"], cwd=ROOT, text=True)
-    changed, current = {}, None
-    for line in diff.splitlines():
-        if line.startswith("+++ "):
+def changed_lines(diff):
+    changed, current, header = {}, None, False
+    for line in diff.split("\n"):
+        if line.startswith("diff --git "):
+            current, header = None, True
+        elif header and line.startswith("+++ b/"):
             current = changed.setdefault(line.removeprefix("+++ b/"), set())
         elif line.startswith("@@") and current is not None:
+            header = False
             start, _, count = re.search(r"\+(\d+)(,(\d+))?", line).groups()
             current.update(range(int(start), int(start) + int(count if count is not None else 1)))
     return changed
 
 
-def check_format(mapping, changed):
+def check_format(mapping, changed, revision):
     fragments = {moved.relative_to(ROOT).as_posix() for path in mapping for moved, scenario in scenario_files(path)
                  if scenario != "root"}
     checked = sorted(fragments & changed.keys())
     problems = [f"{name} lines {lines}" for name in checked
-                if (lines := sorted(unformatted_lines((ROOT / name).read_bytes()) & changed[name]))]
+                if (lines := sorted(unformatted_lines(name, read_source(revision, name)) & changed[name]))]
     if problems:
         raise ValueError(f"cargo fmt does not reach include! fragments, and these lines this change wrote are not formatted: "
                          f"{'; '.join(problems)}; `rustfmt --edition 2024 --emit stdout < FILE | diff FILE -` "
@@ -276,10 +279,16 @@ def check_format(mapping, changed):
 
 def map_items(executable, mapping):
     for path, assignments in mapping.items():
-        found = {item["name"]: scenario for moved, scenario in scenario_files(path)
-                 for item in items(executable, moved.read_bytes(), fragment=scenario != "root")}
-        require_properties_in_place(path, {name: assignments[name] for name in found if name in assignments},
-                                    property_files(executable, path))
+        found, properties = {}, []
+        for moved, scenario in scenario_files(path):
+            for item in items(executable, moved.read_bytes(), fragment=scenario != "root"):
+                found[item["name"]] = scenario
+                if item["kind"] == "property":
+                    properties.append(item["name"])
+        for name in properties:
+            if name in assignments and assignments[name] != found[name]:
+                held = scenario_file(path, assignments[name]).relative_to(ROOT)
+                raise ValueError(f"{name} must stay in {held}: a proptest block never changes file")
         gone = [name for name in assignments if name not in found]
         for name in gone:
             del assignments[name]
@@ -371,7 +380,8 @@ def main():
         compare_lists(args.before, args.after)
         return
     if args.command == "check-format":
-        check_format(json.loads(MAPPING.read_text()), changed_lines(args.base_ref))
+        diff = subprocess.check_output(["git", "diff", "-U0", "--diff-filter=d", args.base_ref, "HEAD"], cwd=ROOT, text=True)
+        check_format(json.loads(MAPPING.read_text()), changed_lines(diff), "HEAD")
         return
     executable = parser()
     mapping = json.loads(MAPPING.read_text())

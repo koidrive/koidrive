@@ -1029,8 +1029,12 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.merge_group.base_sha }}
+          BEFORE: ${{ github.event.before }}
         run: |
           if [ "$EVENT" = merge_group ]; then
+            git fetch --no-tags --depth=1 origin "$BASE"
+          elif [ "$EVENT" = push ]; then
+            BASE="$BEFORE"
             git fetch --no-tags --depth=1 origin "$BASE"
           else
             BASE=$(git rev-parse HEAD^1)

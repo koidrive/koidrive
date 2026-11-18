@@ -248,15 +248,38 @@ class SplitTests(unittest.TestCase):
     def test_check_format_covers_only_the_lines_a_change_wrote(self):
         self.generate()
         common = self.root / "tests/common.rs"
-        self.assertTrue(split.unformatted_lines(common.read_bytes()))
+        self.assertTrue(split.unformatted_lines("tests/common.rs", common.read_bytes()))
         common.write_bytes(common.read_bytes() + b"\nfn added() {}\n")
-        split.check_format(self.mapping, {"tests/common.rs": {len(common.read_bytes().splitlines())}})
+        split.check_format(self.mapping, {"tests/common.rs": {len(common.read_bytes().splitlines())}}, None)
         scenario = self.root / "tests/scenario.rs"
         scenario.write_bytes(scenario.read_bytes() + b"\nfn  spaced(){}\n")
         spaced = len(scenario.read_bytes().splitlines())
-        split.check_format(self.mapping, {"tests.rs": {1}, "tests/scenario.rs": {1}})
+        split.check_format(self.mapping, {"tests.rs": {1}, "tests/scenario.rs": {1}}, None)
         with self.assertRaisesRegex(ValueError, rf"tests/scenario\.rs lines \[{spaced}\].*rustfmt --edition 2024 --emit stdout"):
-            split.check_format(self.mapping, {"tests/scenario.rs": {spaced}})
+            split.check_format(self.mapping, {"tests/scenario.rs": {spaced}}, None)
+
+    def test_changed_lines_reads_file_headers_only_outside_hunks(self):
+        diff = ("diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -0,0 +1,2 @@\n+a\n+++ expected\n"
+                "@@ -5 +7 @@\n+fn  spaced(){}\n")
+        self.assertEqual(split.changed_lines(diff), {"x.rs": {1, 2, 7}})
+
+    def test_check_format_names_a_fragment_rustfmt_cannot_parse(self):
+        self.generate()
+        scenario = self.root / "tests/scenario.rs"
+        scenario.write_bytes(scenario.read_bytes() + b"\nfn broken( {\n")
+        with self.assertRaisesRegex(ValueError, r"rustfmt cannot format tests/scenario\.rs"):
+            split.check_format(self.mapping, {"tests/scenario.rs": {1}}, None)
+
+    def test_map_refuses_a_proptest_block_moved_to_a_file_not_yet_included(self):
+        original = self.source
+        self.generate()
+        config = b'    #![proptest_config(koidrive_test_support::battery_config(concat!(file!(), ".regressions.txt"), 1))]\n'
+        source = self.property_source(original, b"proptest::proptest", config)
+        self.mapping["tests.rs"]["proptest:holds"] = "root"
+        (self.root / "tests/props.rs").write_bytes(source[len(original):])
+        with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests.rs"):
+            split.map_items(self.executable, self.mapping)
+        self.assertFalse(split.MAPPING.exists())
 
     def test_map_follows_a_test_moved_between_scenarios(self):
         self.generate()
