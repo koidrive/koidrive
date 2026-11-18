@@ -156,7 +156,7 @@ A device keeps a **journal** with one row per node and field whose value in L is
 | wire base | What the op sends as its base: RFC 0026's `made_over` and `source_version_id` for content, kept from the content's provenance; the place the user moved the node from. |
 | state | `local` (in no commit), `sent` (in the commit in flight, with its slot) or `held` (a result showed the server holding it). |
 | held_as | The intent the server's `NodeState` reported for the field in the result, and for content the version id. It differs from the row's intent when RFC 0016 made the op a no-op. |
-| time | The `applied_at_ms` that the row's result reports for the field (§3.1), which a replay keeps, never the replay commit's time. Before a result, R's head time when the op was built. |
+| time | The `applied_at_ms` that the row's result reports for the field and the row's intent (§3.1), which a replay keeps, never the replay commit's time. Before a result, R's head time when the op was built. |
 | replay | The row's intent was in a commit the server lost. |
 
 The device writes an own row in the same transaction as the scan that finds the change (design §5.1). A later change of the same field replaces the row with a new intent:
@@ -211,7 +211,7 @@ The device detects a loss as before: `AHEAD_OF_SERVER`, or a `Welcome` whose dev
    - the history places O before X, O's applied time is earlier than X's, or the new R lacks the node;
    - for content, O's `made_over` chain lacks X's version, even when O's applied time is later: nobody who changed the field saw X, so the carried replay lands as a conflict copy (§3.8, §3.5).
 
-   The row's value is X's value in the old R. For place and status, L takes it as a remote change once R holds it again, even when L had not yet taken it. A content row is written only when L holds X's bytes; otherwise this device writes no content row, and the author or another device that holds the bytes carries X. The row has X's author, `replay`, X's applied time from the history as its time, and X's predecessor in the history as its base. A carried status row for a trash sends no `unseen` and sends as `held` every intent that the old R's trash held: the field intents of the trashed node and the nodes below it, and its `trash_held`. That is the view the lost delete left on the server. The row is sent as in case 2, and S takes the new R's value.
+   The row's value is X's value in the old R. For place and status, L takes it as a remote change once R holds it again, even when L had not yet taken it. A content row is written only when L holds X's bytes; otherwise this device writes no content row, and the author or another device that holds the bytes carries X. The row has X's author, `replay`, X's applied time from the history as its time, and X's predecessor in the history as its base. A carried status row for a trash takes as its seen list every intent that the old R's trash held: the field intents of the trashed node and the nodes below it, and its `trash_held`. It sends `held` and `unseen` from that seen list as §5.3 says, so a value that reached the new R after the loss, such as a file created in the folder after a restore, is `unseen` and R7 keeps it. The server's view is then the one the lost delete had. The row is sent as in case 2, and S takes the new R's value.
 5. **Anything else.** R's value reaches L as a remote change.
 
 A node that the new R lacks is created again by its rows, or by carried rows, in one create that names each field's intent. Its parents come first, by the same cases. A server-made conflict copy whose content intent the new R holds on another node is not created again. A node that the new R lacks and that no row covers is a value nobody can show the server lost: S forgets it and it is not sent.
@@ -298,6 +298,7 @@ UUIDv5 is RFC 9562 §5.5. `field` is `place`, `content` or `status`. The key is:
 - a carried `UpdateContent` on a trashed file makes a conflict copy, and one whose intent is in the trash's `held` is `SUPERSEDED`;
 - an author's replayed `Move` on a trashed node is `SUPERSEDED`;
 - a `Delete` listing an unseen user intent keeps the node; one listing an unseen carried content intent trashes the node and makes a conflict copy;
+- a carried `Delete` of a folder, replayed with `base_seq` past a create made in that folder after a restore and `unseen` listing that create's intents, keeps the created node and the folder (R7);
 - a replay of an intent the index holds on another node is `SUPERSEDED`;
 - a carried `CreateDir` with a mark keeps its author as `pending_by`, and stores no mark when that author is revoked;
 - a `Move` without `pending_for` to a marked node's own place clears the mark and sets a new place intent;
