@@ -2021,3 +2021,25 @@ fn a_folder_removed_while_left_out_comes_back_whole_with_a_removed_folder_the_se
     assert_eq!(left, Vec::<String>::new());
     assert_eq!(trees.check(), Ok(()));
 }
+
+#[test]
+fn a_released_file_moved_into_a_folder_whose_release_waits_on_unknown_rules_keeps_the_trees_consistent()
+ {
+    let mut trees = trees(&[
+        synced("u", dir(ROOT, "u")),
+        synced("v", dir("u", "v")),
+        synced("f", file(ROOT, "f.docx", 1)),
+    ]);
+    trees.set_rules(&AT_ROOT, rules("v/\nf.docx\n"));
+    assert_eq!(ops(&mut trees), []);
+    trees.remove_local("f");
+    trees.remove_local("v");
+    assert_eq!(ops(&mut trees), []);
+    trees.set_rules_unknown("u");
+    trees.set_rules(&AT_ROOT, None);
+    ops(&mut trees);
+    assert!(trees.synced().get("f").is_none() && trees.synced().get("v").is_some());
+    trees.set_remote("f".into(), remote(file("v", "f.docx", 1)));
+    trees.settle(&Default::default());
+    assert_eq!(trees.check(), Ok(()));
+}
