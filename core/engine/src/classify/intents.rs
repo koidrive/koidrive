@@ -923,12 +923,29 @@ impl Trees {
             };
             let (node, fields, carried) = op_fields(kind);
             let node = node.to_owned();
-            let mut rows: Vec<(Field, Row)> = Vec::new();
+            let mut intents: Vec<(Field, proto::Intent)> = Vec::new();
             for (field, value) in fields {
+                let local = |row: &Row| matches!(row.state, RowState::Local { .. });
                 let row = match self.journal_row(&node, field) {
-                    Some(row) if matches!(row.state, RowState::Local { .. }) => {
-                        self.journal.send(&node, field, time_ms).cloned()
+                    Some(row)
+                        if local(&row) && carried && !same(Some(&row.value), value.as_ref()) =>
+                    {
+                        let own = (self.r.get(&node))
+                            .and_then(|remote| remote_intent_of(remote, field))
+                            .filter(|intent| intent.author == device_id);
+                        if let Some(own) = own {
+                            intents.push((
+                                field,
+                                proto::Intent {
+                                    id: own.id.as_bytes().to_vec(),
+                                    author_device_id: device_id.to_owned(),
+                                    ..Default::default()
+                                },
+                            ));
+                        }
+                        None
                     }
+                    Some(row) if local(&row) => self.journal.send(&node, field, time_ms).cloned(),
                     Some(row) => Some(row.into_owned()),
                     None if carried => None,
                     None => value.map(|value| {
@@ -946,19 +963,16 @@ impl Trees {
                     }),
                 };
                 if let Some(row) = row {
-                    rows.push((field, row));
+                    intents.push((field, wire_intent(&row, device_id)));
                 }
             }
-            if rows.is_empty() {
+            if intents.is_empty() {
                 unrecorded += 1;
                 continue;
             }
             if !wire {
                 continue;
             }
-            let intents: Vec<(Field, proto::Intent)> = (rows.iter())
-                .map(|(field, row)| (*field, wire_intent(row, device_id)))
-                .collect();
             op.intent = Some(intents[0].1.clone());
             if matches!(kind, op::Op::CreateDir(_) | op::Op::CreateFile(_))
                 && intents.iter().any(|(_, intent)| *intent != intents[0].1)
