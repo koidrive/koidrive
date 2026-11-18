@@ -350,6 +350,7 @@ jobs:
         env:
           SHARDS: ${{ env.OS == 'macos' && needs.changes.outputs.rust_shards_macos || needs.changes.outputs.rust_shards_linux }}
         run: |
+          set -o pipefail
           python3 scripts/ci-rust-tests.py plan --os "$OS" --shards "$(jq --arg os "$OS" '[.include[] | select(.os == $os)] | length' <<<"$SHARDS")" \
             --list "$RUNNER_TEMP/test-inventory/list.json" --out "$RUNNER_TEMP/rust-tests/shards.toml" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -568,17 +569,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - id: junit
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
         with:
           pattern: rust-junit-*
           path: ${{ runner.temp }}/junit
           merge-multiple: true
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - id: inventory_linux
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
           name: rust-test-inventory-ubuntu-latest
           path: ${{ runner.temp }}/inventory/rust-test-inventory-ubuntu-latest
-      - if: needs.changes.outputs.rust_macos == 'true'
+      - id: inventory_macos
+        if: needs.changes.outputs.rust_macos == 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
@@ -587,13 +592,22 @@ jobs:
       - name: Check that the shards ran every test once, and report timings and flaky tests
         env:
           RUST_MACOS: ${{ needs.changes.outputs.rust_macos }}
+          JUNIT_DOWNLOAD: ${{ steps.junit.outcome }}
+          INVENTORY_LINUX: ${{ steps.inventory_linux.outcome }}
+          INVENTORY_MACOS: ${{ steps.inventory_macos.outcome }}
         run: |
           status=0
+          if [ "$JUNIT_DOWNLOAD" != success ]; then
+            echo "::error::Downloading the shard results failed (see that step), so tests in the results it missed count as not run."
+            status=1
+          fi
           oses=ubuntu-latest
           if [ "$RUST_MACOS" = true ]; then oses="$oses macos"; fi
           for os in $oses; do
-            if [ ! -f "$RUNNER_TEMP/inventory/rust-test-inventory-$os/list.json" ]; then
-              echo "::error::rust build ($os) uploaded no test inventory, so its shards cannot be checked."
+            downloaded=$INVENTORY_LINUX
+            if [ "$os" = macos ]; then downloaded=$INVENTORY_MACOS; fi
+            if [ "$downloaded" != success ]; then
+              echo "::error::The test inventory of rust build ($os) did not download ($downloaded), so its shards cannot be checked."
               status=1
               continue
             fi
