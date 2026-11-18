@@ -314,9 +314,39 @@ class SplitTests(unittest.TestCase):
         base = self.layout() | {"tests.rs": root, "tests/scenario.rs": scenario.read_bytes() + b"\n" + self.block(b"holds")}
         self.path.write_bytes(root)
         (self.root / "tests/props.rs").write_bytes(self.block(b"holds", b"also_holds"))
-        with self.assertRaisesRegex(ValueError, r"proptest:holds,also_holds must stay in tests\.rs, tests/scenario\.rs"):
+        with self.assertRaisesRegex(ValueError, r"proptest:holds,also_holds must stay in tests/scenario\.rs"):
             self.map_against(base)
         self.assertFalse(split.MAPPING.exists())
+
+    def test_map_refuses_a_proptest_block_moved_to_another_mapped_source(self):
+        self.generate()
+        scenario = self.root / "tests/scenario.rs"
+        other = self.root / "other.rs"
+        other.write_bytes(split.LICENSE + b"fn other() {}\n")
+        self.mapping["other.rs"] = {"fn:other": "root"}
+        base = self.layout() | {"tests/scenario.rs": scenario.read_bytes() + b"\n" + self.block(b"holds")}
+        other.write_bytes(other.read_bytes() + b"\n" + self.block(b"holds"))
+        with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests/scenario.rs"):
+            self.map_against(base)
+
+    def test_map_refuses_an_exact_key_move_next_to_a_block_sharing_its_function(self):
+        self.generate()
+        scenario = self.root / "tests/scenario.rs"
+        shared = scenario.read_bytes() + b"\n" + self.block(b"holds", b"also_holds")
+        base = self.layout() | {"tests.rs": self.path.read_bytes() + b"\n" + self.block(b"holds"), "tests/scenario.rs": shared}
+        scenario.write_bytes(shared + b"\n" + self.block(b"holds"))
+        with self.assertRaisesRegex(ValueError, "proptest:holds must stay in tests.rs"):
+            self.map_against(base)
+
+    def test_map_accepts_a_new_block_sharing_a_function_with_one_that_stayed(self):
+        self.generate()
+        root = self.path.read_bytes() + b"\n" + self.block(b"holds")
+        self.path.write_bytes(root)
+        base = self.layout()
+        scenario = self.root / "tests/scenario.rs"
+        scenario.write_bytes(scenario.read_bytes() + b"\n" + self.block(b"holds", b"also_holds"))
+        self.map_against(base)
+        self.assertEqual(json.loads(split.MAPPING.read_text())["tests.rs"]["proptest:holds,also_holds"], "scenario")
 
     def test_verify_with_a_base_refuses_a_proptest_block_that_changed_file(self):
         self.mapping["tests.rs"]["proptest:holds,also_holds"] = "scenario"

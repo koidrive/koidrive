@@ -155,29 +155,39 @@ def property_files(executable, path, revision=None):
     return files
 
 
-def property_functions(executable, path, revision):
-    try:
-        root = read_source(revision, path)
-    except subprocess.CalledProcessError:
-        return {}
-    sources = [(Path(path), root, False)] + [
-        (scenario, read_source(revision, str(scenario)), True)
-        for scenario in (include_path(path, included["name"].removeprefix("include:"))
-                         for included in includes(executable, root))]
-    functions = {}
-    for held, source, fragment in sources:
-        for item in items(executable, source, fragment=fragment):
-            if item["kind"] == "property":
-                for function in item["name"].removeprefix("proptest:").split(","):
-                    functions.setdefault(function, set()).add(held)
-    return functions
+def base_blocks(executable, mapping, revision):
+    blocks = Counter()
+    for path in mapping:
+        try:
+            root = read_source(revision, path)
+        except subprocess.CalledProcessError:
+            continue
+        sources = [(Path(path), root, False)] + [
+            (scenario, read_source(revision, str(scenario)), True)
+            for scenario in (include_path(path, included["name"].removeprefix("include:"))
+                             for included in includes(executable, root))]
+        for held, source, fragment in sources:
+            blocks.update((item["name"], held) for item in items(executable, source, fragment=fragment)
+                          if item["kind"] == "property")
+    return blocks
 
 
-def require_property_unmoved(base, name, held):
-    for function in name.removeprefix("proptest:").split(","):
-        if function in base and held not in base[function]:
-            raise ValueError(f"{name} must stay in {', '.join(sorted(map(str, base[function])))}: "
-                             "a proptest block never changes file")
+def tree_blocks(executable, mapping):
+    return Counter((item["name"], moved.relative_to(ROOT)) for path in mapping
+                   for moved, scenario in scenario_files(path)
+                   for item in items(executable, moved.read_bytes(), fragment=scenario != "root")
+                   if item["kind"] == "property")
+
+
+def require_properties_unmoved(base, tree):
+    def functions(name):
+        return set(name.removeprefix("proptest:").split(","))
+
+    old, new = base - tree, tree - base
+    for name, held in new:
+        for previous, was in old:
+            if was != held and functions(name) & functions(previous):
+                raise ValueError(f"{name} must stay in {was}: a proptest block never changes file")
 
 
 def require_properties_in_place(path, assignments, files):
@@ -306,14 +316,12 @@ def check_format(mapping, changed, revision):
 
 
 def map_items(executable, mapping, base_ref):
+    require_properties_unmoved(base_blocks(executable, mapping, base_ref), tree_blocks(executable, mapping))
     for path, assignments in mapping.items():
-        base = property_functions(executable, path, base_ref)
         found = {}
         for moved, scenario in scenario_files(path):
             for item in items(executable, moved.read_bytes(), fragment=scenario != "root"):
                 found[item["name"]] = scenario
-                if item["kind"] == "property":
-                    require_property_unmoved(base, item["name"], moved.relative_to(ROOT))
         modules = [name for name in found if name.startswith("mod:") and found[name] != "root"]
         if modules:
             raise ValueError(f"{path}: move {modules} back to {path}: modules stay in root to preserve relative paths")
@@ -328,9 +336,10 @@ def map_items(executable, mapping, base_ref):
 
 
 def verify(executable, mapping, revision, base_ref=None):
+    if base_ref:
+        require_properties_unmoved(base_blocks(executable, mapping, base_ref), tree_blocks(executable, mapping))
     total = 0
     for path, assignments in mapping.items():
-        base = property_functions(executable, path, base_ref) if base_ref else {}
         original = load_source(executable, path, revision)
         root = (ROOT / path).read_bytes()
         root_items = parsed(executable, root)
@@ -361,8 +370,6 @@ def verify(executable, mapping, revision, base_ref=None):
                 name = item["name"]
                 if name in after:
                     raise ValueError(f"duplicated item in {path}: {name}")
-                if item["kind"] == "property":
-                    require_property_unmoved(base, name, moved.relative_to(ROOT))
                 if name in reference_files and moved.relative_to(ROOT) != reference_files[name]:
                     raise ValueError(f"{name} must stay in {reference_files[name]}: a proptest block never changes file")
                 if item["kind"] == "module" and moved != ROOT / path:
@@ -421,10 +428,15 @@ def main():
         return
     executable = parser()
     mapping = json.loads(MAPPING.read_text())
+    base_ref = getattr(args, "base_ref", None)
+    if args.command == "map":
+        base_ref = subprocess.check_output(["git", "merge-base", "origin/main", "HEAD"], cwd=ROOT, text=True).strip()
+    if base_ref and subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{base_ref}^{{commit}}"],
+                                   cwd=ROOT, capture_output=True).returncode:
+        raise ValueError(f"base ref {base_ref} is not a commit in this repository")
     if args.command == "split":
         split(executable, mapping, args.source_ref)
     elif args.command == "map":
-        base_ref = subprocess.check_output(["git", "merge-base", "origin/main", "HEAD"], cwd=ROOT, text=True).strip()
         map_items(executable, mapping, base_ref)
     elif args.command == "port":
         for assignment in args.assign:
@@ -434,7 +446,7 @@ def main():
         port(executable, mapping, args.base_ref, args.branch_ref)
         MAPPING.write_text(json.dumps(mapping, indent=2) + "\n")
     else:
-        verify(executable, mapping, args.source_ref, args.base_ref)
+        verify(executable, mapping, args.source_ref, base_ref)
 
 
 if __name__ == "__main__":
