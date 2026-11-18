@@ -915,7 +915,10 @@ class Run {
       for (const [index, id] of ids.entries()) within(`made_over ${index + 1}`, () => this.expectId(space, id, got.madeOver[index]!));
     }
     const source = optStr(want, "source_version_id");
-    if (source) within("source_version_id", () => this.expectId(space, source, got.sourceVersionId));
+    if (source) {
+      if (got.sourceVersionId === "") fail(`no source_version_id, expected ${source}`);
+      within("source_version_id", () => this.expectId(space, source, got.sourceVersionId));
+    }
     else if ((always || source === "") && got.sourceVersionId !== "") fail(`source_version_id ${show(got.sourceVersionId)}, expected none`);
   }
 
