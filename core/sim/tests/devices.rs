@@ -11360,7 +11360,7 @@ fn held_at(world: &World, device: usize, path: &[&str]) -> Option<String> {
 fn live_writes(world: &World) -> Vec<i64> {
     (world.space().nodes().into_iter())
         .filter(|node| node.status == NodeStatus::Live as i32)
-        .filter_map(|node| Some(node.current?.content?.mtime_ns))
+        .filter_map(|node| Some(tag(&node.current?.content?)))
         .collect()
 }
 
