@@ -2110,3 +2110,21 @@ fn a_create_removed_while_excluded_leaves_no_mark_once_no_commit_sends_it() {
     trees.settle(&Default::default());
     assert_eq!(trees.check(), Ok(()));
 }
+
+#[test]
+fn a_file_waiting_under_a_name_that_differs_only_in_case_keeps_its_place_pending() {
+    let mut trees = trees(&[synced("x", file(ROOT, "x.log", 1))]);
+    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    assert_eq!(ops(&mut trees), []);
+    trees.remove_local("x");
+    trees.set_rules(&AT_ROOT, None);
+    let renamed =
+        Pending::new(Vec::<Vec<&str>>::new()).waiting([(["X.log"], true), (["x.log"], false)]);
+    trees.listed(&[], renamed);
+    trees.settle(&Default::default());
+    assert!(trees.synced().live("x").is_some());
+    trees.listed(&[], Pending::default().waiting([(["X.log"], false)]));
+    trees.settle(&Default::default());
+    assert_eq!(trees.synced().live("x"), None);
+    assert_eq!(trees.check(), Ok(()));
+}

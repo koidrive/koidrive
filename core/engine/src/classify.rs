@@ -405,7 +405,10 @@ impl Pending {
         S: AsRef<str>,
     {
         self.files = (files.into_iter())
-            .map(|(path, waits)| (keys(path), waits))
+            .map(|(path, waits)| {
+                let path = path.into_iter().map(|name| name.as_ref().to_owned());
+                (path.collect(), waits)
+            })
             .collect();
         self
     }
@@ -420,23 +423,32 @@ fn keys<S: AsRef<str>>(path: impl IntoIterator<Item = S>) -> Vec<String> {
 #[derive(Clone, Debug, Default)]
 struct Unsettled {
     scopes: BTreeSet<Vec<String>>,
-    files: BTreeSet<Vec<String>>,
+    files: BTreeMap<Vec<String>, BTreeSet<Vec<String>>>,
 }
 
 impl Unsettled {
+    fn waits(&self, file: &[String]) -> bool {
+        (self.files.get(&keys(file))).is_some_and(|files| files.contains(file))
+    }
+
     fn changed_by(&self, pending: &Pending) -> bool {
         self.scopes != pending.scopes
-            || (pending.files.iter()).any(|(file, waits)| self.files.contains(file) != *waits)
+            || (pending.files.iter()).any(|(file, waits)| self.waits(file) != *waits)
     }
 
     fn take(&mut self, pending: Pending) -> bool {
         let changed = self.changed_by(&pending);
         self.scopes = pending.scopes;
         for (file, waits) in pending.files {
+            let key = keys(&file);
+            let files = self.files.entry(key.clone()).or_default();
             match waits {
-                true => self.files.insert(file),
-                false => self.files.remove(&file),
+                true => files.insert(file),
+                false => files.remove(&file),
             };
+            if files.is_empty() {
+                self.files.remove(&key);
+            }
         }
         changed
     }
@@ -447,7 +459,7 @@ impl Unsettled {
             return false;
         };
         let mut keys = Vec::with_capacity(names.len());
-        let held = |keys: &Vec<String>| self.scopes.contains(keys) || self.files.contains(keys);
+        let held = |keys: &Vec<String>| self.scopes.contains(keys) || self.files.contains_key(keys);
         if held(&keys) {
             return true;
         }
