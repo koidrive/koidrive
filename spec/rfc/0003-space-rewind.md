@@ -93,7 +93,7 @@ An Account DO alarm drives the phases with backoff from one second up to ten min
    - the bookmark B for P.
 
    It then checks §1 and §2. Any failure refuses the request, records nothing, and reopens the space within one lease (RFC 0014 §3). Otherwise it records the rewind as `admitted`, with B, the new `history_id` and the rewind number. From then on the space is closed (§4).
-2. **Preparing attempt k.** The Account DO selects B for P (§2) and records it. If no bookmark for P remains, the rewind fails (step 6). The Space DO then:
+2. **Preparing attempt k.** If P has left the PITR window, the rewind fails (step 6) without asking PITR. Otherwise the Account DO selects B for P (§2) and records it, and the rewind fails if no bookmark for P remains. The Space DO then:
    - closes every WebSocket after sending `Goodbye` with close code 4004 (space rewound);
    - writes a marker row for the rewind and attempt k, and reads its current bookmark M;
    - returns its `history_id` and `head_seq`, and whether B is earlier than M.
@@ -101,7 +101,7 @@ An Account DO alarm drives the phases with backoff from one second up to ten min
    If B is not earlier than M, the restored state could contain the marker, and the rewind fails (step 5). Otherwise the Account DO records the phase `prepared`, and, on the first attempt, the returned history and head as the previous history and head. All of this happens before any restore can be armed. Preparing is idempotent: repeating it for the same attempt leaves one marker.
 3. **Arming attempt k.** The Account DO records the phase `arming`. Then the Space DO calls `onNextSessionRestoreBookmark(B)` and restarts with `ctx.abort()`.
 4. **Settling.** After an arming call, whether it answered, failed or has an unknown outcome, the Account DO first restarts the Space DO once more. A restore that is pending applies when the object starts, so after this restart none can still be pending. The Account DO then asks the Space DO to complete the rewind:
-   - **Marker of attempt k present.** No restore happened and none is pending. The Account DO goes back to step 2 with attempt k + 1, or ends in step 6 if P has left the PITR window.
+   - **Marker of attempt k present.** No restore happened and none is pending. The Account DO goes back to step 2 with attempt k + 1.
    - **No marker, but a completion receipt for this rewind in `meta`.** Completion already ran, and the Space DO returns that receipt again.
    - **Neither.** The storage was restored to B, which predates every marker of this rewind. The Space DO reads the space's retired incarnations from the Account DO (§5, rule 9). It then completes the rewind in one transaction:
      - sets the new `history_id` and the rewind number, plus `restore_seq` (its `head_seq`) and `restore_point_ms` in `meta` (RFC 0002 §8);
@@ -115,7 +115,7 @@ An Account DO alarm drives the phases with backoff from one second up to ten min
 
    An Account DO that restarts in the phase `arming` resumes at this step. So it never arms again before it has settled the earlier attempt.
 5. **Reopening.** The Account DO stores the `RewindResult` and records the phase `completed`, which reopens the space.
-6. **Failure.** A rewind ends as `failed` only when no restore can have happened or be pending. That is the case when step 2 finds no bookmark for P or B is not earlier than M, or after step 4 has proved that the marker is still present and P has left the PITR window. The Account DO then removes the markers, records the error, and reopens the space unchanged.
+6. **Failure.** A rewind ends as `failed` only when no restore can have happened or be pending. That is the case in step 2, when P has left the PITR window, no bookmark for P remains, or B is not earlier than M. Step 2 runs only before the first arming or after step 4 has proved that the marker of the previous attempt is still present. The Account DO then removes the markers, records the error, and reopens the space unchanged.
 
    Once step 4 has found the marker gone, the rewind can only complete. If completion keeps failing, the space stays closed: reopening a restored database under its old history would let devices treat it as that history. This can only happen through a server bug. A retried request with the same `rewind_id` reports `RETRY_LATER` and the last error.
 

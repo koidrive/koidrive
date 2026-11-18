@@ -584,6 +584,30 @@ describe("space rewind (RFC 0003)", () => {
     expect((await rpc(token, spaceId, { case: "listTree", value: {} })).status).toBe(200);
   });
 
+  it("fails a retry whose restore point left the PITR window without asking PITR for a bookmark", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const token = creds.access!.token;
+    const a = device();
+    await createFile(a, spaceId, "a.txt", "a");
+    const point = createdAtMs + MINUTE;
+    await snapshot(spaceId, point);
+    const history = await a.history();
+    await setAccountClock(createdAtMs + 5 * MINUTE);
+
+    simulatedPitr.dropArms = true;
+    const rewindId = uuidv7();
+    const args = { restorePointMs: point, expectedHistoryId: history, rewindId };
+    expect((await rewind(token, spaceId, args)).status).toBe(503);
+    await setAccountClock(point + 30 * DAY + 1);
+    simulatedPitr.bookmarkFor = () => {
+      throw new Error("timestamp is outside the PITR window");
+    };
+    const expired = await rewind(token, spaceId, args);
+    expect([expired.status, expired.error?.message]).toEqual([400, "the restore point left the PITR window before the restore ran"]);
+    expect(await spaceRows(spaceId, "SELECT * FROM rewind_markers")).toEqual([]);
+    expect((await rpc(token, spaceId, { case: "listTree", value: {} })).status).toBe(200);
+  });
+
   it("applies the chunk rules and the revocations at completion, and replays the receipt on a repeated completion", async () => {
     const { spaceId, createdAtMs, creds, device } = await newSpace();
     const token = creds.access!.token;
