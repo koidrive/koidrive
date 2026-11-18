@@ -69,14 +69,14 @@ async fn a_service_that_spawns_a_moment_after_it_starts_reads_as_running() {
     assert!(!report.text().contains("not running"), "{}", report.text());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_service_spawn_wait_can_be_cancelled_without_waiting_for_its_deadline() {
     let fake = Fake {
         spawning: Cell::new(u32::MAX),
         ..Fake::default()
     };
     let service = service(&[]);
-    let started = Instant::now();
+    let started = tokio::time::Instant::now();
     let result = tokio::time::timeout(Duration::from_millis(250), async {
         converge(&fake, &service, 1, false, false, &Daemon::Absent).await
     })

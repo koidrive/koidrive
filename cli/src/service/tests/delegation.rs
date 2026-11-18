@@ -299,7 +299,7 @@ echo '{"data":{"service":{"manager":"systemd","name":"koidrive.service","state":
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_newer_koi_that_does_not_finish_is_killed_and_reported_after_the_deadline() {
     let dir = tempfile::tempdir().unwrap();
     let pid = dir.path().join("pid");
@@ -314,16 +314,24 @@ async fn a_newer_koi_that_does_not_finish_is_killed_and_reported_after_the_deadl
         std::os::unix::fs::PermissionsExt::from_mode(0o755),
     )
     .unwrap();
-    let began = Instant::now();
-    let report = delegated(
-        &Fake::default(),
-        &service(&[]),
-        &stalled,
-        true,
-        Duration::from_secs(1),
-    )
-    .await;
-    assert!(began.elapsed() < Duration::from_secs(3));
+    let (fake, service) = (Fake::default(), service(&[]));
+    let began = tokio::time::Instant::now();
+    let returned = Cell::new(false);
+    let (report, ()) = tokio::join!(
+        async {
+            let report = delegated(&fake, &service, &stalled, true, Duration::from_secs(1)).await;
+            returned.set(true);
+            report
+        },
+        async {
+            while !returned.get()
+                && !fs::read_to_string(&pid).is_ok_and(|written| written.ends_with('\n'))
+            {
+                tokio::task::yield_now().await;
+            }
+        },
+    );
+    assert!(began.elapsed() < Duration::from_secs(2));
     let problem = report.problem.unwrap();
     assert!(
         problem.contains("stalled-koi service start did not finish within 1 seconds"),
