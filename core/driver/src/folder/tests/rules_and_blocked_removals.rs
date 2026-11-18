@@ -1491,6 +1491,41 @@ fn a_file_removed_while_left_out_below_a_folder_the_first_scan_after_a_restart_c
 }
 
 #[test]
+fn a_file_removed_while_left_out_below_a_folder_a_restart_cannot_read_downloads_once_a_scan_reads_the_folder() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let folder = site.root.join("private");
+    fs::create_dir(&folder).unwrap();
+    a.create(&mut remote, &folder.join("a.log"), b"log");
+    a.create(&mut remote, &site.root.join(".koiignore"), b"*.log\n");
+    a.rest(&mut remote);
+    fs::remove_file(folder.join("a.log")).unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    drop(a);
+
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(&folder).is_ok() {
+        assert!(rustix::process::geteuid().is_root());
+        eprintln!("SKIPPED: running as root, so permissions do not block reads");
+        return;
+    }
+    fs::write(site.root.join(".koiignore"), b"other.txt\n").unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!folder.join("a.log").exists());
+    a.rescan();
+    a.rest(&mut remote);
+    assert_eq!(fs::read(folder.join("a.log")).unwrap(), b"log");
+    let sent: Vec<&str> = a.sent.iter().flat_map(kinds).collect();
+    assert!(!sent.contains(&"delete"), "{sent:?}");
+    assert!(shown(&site).is_empty());
+}
+
+#[test]
 fn a_file_deleted_where_the_rules_leave_it_out_downloads_again_once_another_device_moves_its_folder_into_the_rules()
  {
     let mut remote = Remote::new();

@@ -718,11 +718,13 @@ impl Disk {
                     engine.mounts = mounts;
                 }
                 engine.observe(&changes, now_ms);
+                engine.read(&read, &observation.unreadable);
                 engine.listed(&read);
                 Ok(engine.checkpoint(tx)?)
             })?;
+        } else {
+            engine.read(&read, &observation.unreadable);
         }
-        engine.read(&read, &observation.unreadable);
         let relist = engine.relist();
         if !relist.is_empty() {
             self.sections.request(engine.resets(relist));
