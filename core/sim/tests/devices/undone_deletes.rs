@@ -144,12 +144,16 @@ fn a_write_its_user_replaces_before_it_reaches_the_server_needs_no_file() {
     }
 }
 
-fn deletes_reach_the_server_in(test: &'static str, file: &'static str, losses: Losses) {
+fn deletes_reach_the_server_in(
+    test: &'static str,
+    file: &'static str,
+    cases: impl Strategy<Value = (usize, Vec<Vec<(usize, Step)>>)>,
+) {
     let mut runner = TestRunner::new(ProptestConfig {
         test_name: Some(test),
         ..koidrive_test_support::regression_config(file, 0)
     });
-    let result = runner.run(&(2..=3usize, phases(losses)), |(devices, phases)| {
+    let result = runner.run(&cases, |(devices, phases)| {
         checked(devices, &phases)
             .map(drop)
             .map_err(|failure| TestCaseError::fail(failure.to_string()))
@@ -171,7 +175,7 @@ fn deletes_reach_the_server_in_the_saved_gun_864_cases_across_restores_and_rewin
             env!("CARGO_MANIFEST_DIR"),
             "/tests/gun-864-restores-and-rewinds.proptest-regressions"
         ),
-        Losses::RestoresAndRewinds,
+        (2..=3usize, phases(Losses::RestoresAndRewinds)),
     );
 }
 
@@ -187,8 +191,38 @@ fn deletes_reach_the_server_in_the_saved_gun_864_cases_across_server_restores() 
             env!("CARGO_MANIFEST_DIR"),
             "/tests/gun-864-server-restores.proptest-regressions"
         ),
-        Losses::Restores,
+        (2..=3usize, phases(Losses::Restores)),
     );
+}
+
+#[test]
+#[ignore = "a file deleted before its folder comes back when another device moves the folder first (GUN-1054)"]
+fn deletes_reach_the_server_in_the_saved_gun_1054_cases_around_a_folder_another_device_replaces() {
+    deletes_reach_the_server_in(
+        concat!(
+            module_path!(),
+            "::deletes_reach_the_server_in_the_saved_gun_1054_cases_around_a_folder_another_device_replaces"
+        ),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/gun-1054-folder-another-device-replaces.proptest-regressions"
+        ),
+        replaced_folder(),
+    );
+}
+
+#[test]
+#[ignore = "a file deleted before its folder comes back when another device moves the folder first (GUN-1054)"]
+fn a_file_deleted_before_its_folder_stays_deleted_when_another_device_moves_the_folder_first() {
+    let mut moved = vec![
+        (0, delete(1)),
+        (0, delete(0)),
+        (1, folder("C.TXT")),
+        (1, rename(0, 2, "A")),
+    ];
+    moved.extend(commit(1));
+    moved.extend(commit(0));
+    checked(2, &[vec![(0, folder("b")), (0, user(1, 0, 1, "a"))], moved]).unwrap();
 }
 
 #[test]
