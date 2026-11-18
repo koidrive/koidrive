@@ -147,7 +147,7 @@ Becoming ignored never deletes anything, on either side. An ignored path is outs
 
 ### Following `.gitignore` files
 
-- Each device follows `.gitignore` files unless its configuration sets `gitignore = false` under `[sync]`. The setting belongs to the device and is never synced. A device that does not follow them still syncs the `.gitignore` files themselves.
+- Each device follows `.gitignore` files unless its configuration sets `gitignore = false` under `[sync]`. The setting belongs to the device and is never synced. A device that does not follow them still syncs the `.gitignore` files themselves, and its scans do not read them.
 - Changing the setting is a rule change on that device, and the Transitions table below applies: what it starts excluding stays on disk and on the server, and what it includes again syncs. Nothing is deleted on either side.
 - The driver writes the setting to the configuration file before it restarts the running folders with the new rules, so a driver that starts after a crash applies it.
 

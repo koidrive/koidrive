@@ -43,6 +43,11 @@ pub trait Ignore {
     /// the folder's path, and a file whose name has the key of a
     /// [`Source::file_name`] is a rules file of that kind.
     fn key(&self, name: &OsStr) -> OsString;
+
+    /// Whether rules files of kind `source` apply. Scans read only those.
+    fn follows(&self, _source: Source) -> bool {
+        true
+    }
 }
 
 type Held = (PathBuf, Vec<u8>);
@@ -53,7 +58,7 @@ type Held = (PathBuf, Vec<u8>);
 /// folder it lists, so scan the whole tree before any part of it.
 pub struct Rules {
     ignore: Box<dyn Ignore + Send>,
-    rules_files: [(Source, OsString); Source::ALL.len()],
+    rules_files: Vec<(Source, OsString)>,
     files: BTreeMap<(PathBuf, Source), Held>,
     ignored: BTreeMap<PathBuf, BTreeSet<OsString>>,
     budget: usize,
@@ -150,8 +155,10 @@ const SEARCH_BUDGET: usize = 20_000;
 impl Rules {
     pub fn new(ignore: Box<dyn Ignore + Send>) -> Self {
         Self {
-            rules_files: Source::ALL
-                .map(|source| (source, ignore.key(source.file_name().as_ref()))),
+            rules_files: (Source::ALL.into_iter())
+                .filter(|source| ignore.follows(*source))
+                .map(|source| (source, ignore.key(source.file_name().as_ref())))
+                .collect(),
             ignore,
             files: BTreeMap::new(),
             ignored: BTreeMap::new(),

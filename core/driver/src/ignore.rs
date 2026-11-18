@@ -131,6 +131,10 @@ impl Ignore for Scanned {
     fn key(&self, name: &OsStr) -> OsString {
         name_key(&name.to_string_lossy()).into()
     }
+
+    fn follows(&self, source: Source) -> bool {
+        source == Source::Koiignore || self.device.follows_gitignore()
+    }
 }
 
 /// The rules a new watcher of a folder scans with: `device`, the built-in exclusions, and the rules files, of which it
@@ -323,5 +327,34 @@ mod tests {
         assert_eq!(status(&scanned, "b.log", EntryKind::File), Ignored::No);
         scanned.set_rules(Path::new("a"), Source::Koiignore, None);
         assert_eq!(status(&scanned, "a/b.log", EntryKind::File), Ignored::No);
+    }
+
+    #[test]
+    fn a_gitignore_file_that_cannot_be_read_holds_its_folder_only_while_the_device_follows_them() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+        for follow in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            std::fs::create_dir(root.join("sub")).unwrap();
+            std::fs::write(root.join("sub/x.txt"), "x").unwrap();
+            let file = root.join("sub/.gitignore");
+            std::fs::write(&file, "x.txt\n").unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let mut rules = scan_rules(&device(LocalRules::default().with_gitignore(follow)));
+            let mut snapshot = Snapshot::default();
+            let rescan = snapshot.rescan_with_rules(root, [std::path::PathBuf::new()], &mut rules);
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let rescan = rescan.unwrap();
+            assert_eq!(rescan.unreadable.is_empty(), !follow, "follow {follow}");
+            assert_eq!(
+                snapshot.entries.contains_key(Path::new("sub/x.txt")),
+                !follow,
+                "follow {follow}"
+            );
+        }
     }
 }
