@@ -27,11 +27,11 @@ export class AccountDO extends accountLogic(DurableObject<Env>) {
       serverSecret: async () => (await this.serverKey()).secret,
       spaceClosed: (spaceId) => this.spaceClosed(spaceId),
     });
-    return meteredObject(this, "account", this.tally, (_event, _args, replying) => this.ended(replying));
+    return meteredObject(this, "account", this.tally, (_event, _args, waited) => this.ended(waited));
   }
 
-  metered(method: string, args: unknown[]): Promise<Reply<unknown>> {
-    return meteredReply(this, "account", this.tally, (_event, _args, replying) => this.ended(replying), method, args);
+  metered(method: string, args: unknown[], returnCounts = true): Promise<Reply<unknown>> {
+    return meteredReply(this, "account", this.tally, (_event, _args, replying) => this.ended(replying), method, args, returnCounts);
   }
 
   protected spaceStub(spaceId: string) {

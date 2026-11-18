@@ -335,7 +335,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     protected abstract readonly pitr: Pitr;
     protected abstract readonly state: ObjectState;
     protected abstract readonly objects: ObjectStore;
-    protected abstract account(): Directory;
+    protected abstract account(call?: { returnCounts: boolean }): Directory;
     private spaceKeyCache: Uint8Array | undefined;
     clock: () => number = () => Date.now();
     sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -351,7 +351,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     private readonly leases = new Map<string, { check: SessionCheck; askedAtMs: number; untilMs: number }>();
     private leaseGeneration = 0;
     private readonly renewalsDue = new Set<string>();
-    private renewing: { atMs: number; forMs: number; answered?: Promise<void> } | undefined;
+    private renewing: { atMs: number; forMs: number } | undefined;
     private gathering: { deviceIds: Set<string>; answers: Promise<Record<string, SessionCheck> | CheckFailed> } | undefined;
 
     async init(args: { spaceId: string; name: string; ownerUserId: string; spaceKey: Uint8Array; reporting?: boolean; startedMs?: number }): Promise<void> {
@@ -510,9 +510,9 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (due.length === 0) return;
       const deviceIds = due.map(({ deviceId }) => deviceId);
       const generation = this.leaseGeneration;
-      const renewal: { atMs: number; forMs: number; answered?: Promise<void> } = { atMs: askedAtMs, forMs: Math.max(...due.map(({ leaseMs }) => leaseMs)) };
+      const renewal = { atMs: askedAtMs, forMs: Math.max(...due.map(({ leaseMs }) => leaseMs)) };
       this.renewing = renewal;
-      renewal.answered = this.account()
+      void this.account({ returnCounts: this.state.getWebSockets().some((ws) => ws.readyState === WebSocket.OPEN) })
         .checkSessions(deviceIds, String(getMeta(this.sql, "space_id")))
         .then((answers) => {
           if (generation !== this.leaseGeneration) return;
@@ -786,7 +786,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
 
     protected received(carried: Carried): void {
       if (carried.reporting !== undefined) this.learn(carried.reporting, carried.startedMs);
-      if (carried.usage) this.traffic.put(carried.usage);
+      if (!carried.usage) return;
+      this.traffic.put(carried.usage);
       if (this.traffic.idle) this.rest();
     }
 
@@ -807,12 +808,11 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       else if (restarted) this.dropParked(this.traffic.startedMs);
     }
 
-    protected async ended(event: string, args: unknown[], replying: boolean): Promise<void> {
+    protected async ended(event: string, args: unknown[], waited: boolean): Promise<void> {
       if (this.traffic.reporting !== true) return;
-      await this.renewing?.answered;
       this.traffic.lapse();
       this.noteStored();
-      if (replying) return;
+      if (waited) return;
       const nowMs = this.clock();
       const open = this.state.getWebSockets().filter((ws) => ws.readyState === WebSocket.OPEN);
       const carrier = event.startsWith("webSocket") ? (args[0] as Socket) : undefined;

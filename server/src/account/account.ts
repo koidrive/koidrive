@@ -638,7 +638,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       }
       if (openedMs < (votes.startedMs ?? 0)) return true;
       this.tally.lapse();
-      const added = this.writeUsage(mergeBatch(this.tally.take(), { openedMs, hours, stored }));
+      const added = this.writeUsage(mergeBatch(this.tally.takeAll(), { openedMs, hours, stored }));
       const unarmed = this.sql.exec("SELECT 1 FROM settings WHERE key = 'usage_alarm_unarmed'").toArray().length > 0;
       if (!added && !unarmed) return true;
       try {
@@ -656,13 +656,13 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       if (this.tally.idle) this.tally.take();
     }
 
-    protected ended(replying: boolean): void {
-      if (!replying) this.tally.take();
+    protected ended(waited: boolean): void {
+      if (!waited) this.tally.take();
     }
 
     private storeOwn(): void {
       this.tally.lapse();
-      const own = this.tally.take();
+      const own = this.tally.takeAll();
       if (own) this.writeUsage(own);
     }
 

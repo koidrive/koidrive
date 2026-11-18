@@ -130,27 +130,25 @@ export interface Reply<T> extends Carried {
   value: T;
 }
 
-export type Ended = (event: string, args: unknown[], replying: boolean) => Promise<void> | void;
+export type Ended = (event: string, args: unknown[], waited: boolean) => Promise<void> | void;
 
 const HANDLERS = new Set(["fetch", "alarm", "webSocketMessage", "webSocketClose", "webSocketError"]);
 
-export async function meteredReply(object: object, kind: ObjectKind, tally: UsageTally, ended: Ended, method: string, args: unknown[]): Promise<Reply<unknown>> {
+export async function meteredReply(object: object, kind: ObjectKind, tally: UsageTally, ended: Ended, method: string, args: unknown[], returnCounts = true): Promise<Reply<unknown>> {
   const value: unknown = Reflect.get(object, method);
   if (typeof value !== "function" || method === "constructor" || method === "metered" || HANDLERS.has(method) || Object.hasOwn(object, method)) throw new Error(`no method ${method}`);
   tally.enter();
   tally.add(`do_${kind}_requests`, 1);
+  let result: unknown;
   try {
-    const result: unknown = await value.apply(object, args);
+    result = await value.apply(object, args);
+  } finally {
     tally.lapse();
     await ended(method, args, true);
-    return { value: result, usage: tally.take(), reporting: tally.reporting, startedMs: tally.startedMs };
-  } catch (error) {
-    tally.lapse();
-    await ended(method, args, false);
-    throw error;
-  } finally {
+    if (!returnCounts) tally.keep();
     tally.leave();
   }
+  return { value: result, usage: tally.take(), reporting: tally.reporting, startedMs: tally.startedMs };
 }
 
 export function meteredObject<T extends object>(object: T, kind: ObjectKind, tally: UsageTally, ended: Ended): T {
@@ -166,7 +164,7 @@ export function meteredObject<T extends object>(object: T, kind: ObjectKind, tal
           return await value.apply(target, args);
         } finally {
           tally.lapse();
-          await ended(name, args, false);
+          await ended(name, args, name === "fetch");
           tally.leave();
         }
       };
@@ -176,7 +174,7 @@ export function meteredObject<T extends object>(object: T, kind: ObjectKind, tal
 
 const PASSED = new Set<string | symbol>(["fetch", "then", "id", "name", "connect", "dup"]);
 
-export function meteredStub<T extends object>(stub: T, receive: (carried: Carried) => void): T {
+export function meteredStub<T extends object>(stub: T, receive: (carried: Carried) => void, returnCounts = true): T {
   return new Proxy(stub, {
     get(target, name) {
       if (typeof name !== "string" || PASSED.has(name)) {
@@ -184,7 +182,7 @@ export function meteredStub<T extends object>(stub: T, receive: (carried: Carrie
         return typeof value === "function" ? value.bind(target) : value;
       }
       return async (...args: unknown[]) => {
-        const { value, ...carried } = await (target as unknown as { metered(method: string, args: unknown[]): Promise<Reply<unknown>> }).metered(name, args);
+        const { value, ...carried } = await (target as unknown as { metered(method: string, args: unknown[], returnCounts: boolean): Promise<Reply<unknown>> }).metered(name, args, returnCounts);
         receive(carried);
         return value;
       };

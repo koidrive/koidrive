@@ -26,6 +26,7 @@ import { uuidv7 } from "../src/ids";
 import { client, content, newSpace, op } from "./helpers";
 import { CreateShareLinkRequestSchema, ShareLinkSchema } from "../src/gen/koidrive/v1/share_pb";
 import {
+  BATCH_MS,
   type Carried,
   COUNTERS,
   emptyUsage,
@@ -453,7 +454,7 @@ describe("billing meters", () => {
     expect(billing).toEqual({ do_rows_read: expected.read, do_rows_written: expected.written });
   });
 
-  it("counts each call into an object once, WebSocket messages apart, returns a call's counts and active time in its reply, and gives each other event's counts to the object", async () => {
+  it("counts each call into an object once, WebSocket messages apart, returns a call's counts and active time in its reply, gives each event nobody waits on its counts, and sends a failed call's or a fetch's counts with the next reply", async () => {
     class Probe {
       async rpc(gate: Promise<void>): Promise<string> {
         await gate;
@@ -463,6 +464,9 @@ describe("billing meters", () => {
         return "done";
       }
       async alarm(): Promise<void> {}
+      async fetch(): Promise<Response> {
+        return new Response(null, { status: 204 });
+      }
       async webSocketMessage(): Promise<void> {}
       async webSocketClose(): Promise<void> {}
       fail(): never {
@@ -472,8 +476,8 @@ describe("billing meters", () => {
     const tally = new UsageTally(() => 10 * HOUR_MS, "do_space_active_ms");
     tally.reporting = true;
     const ended: [string, boolean, UsageHours][] = [];
-    const settle = (event: string, _args: unknown[], replying: boolean) => {
-      ended.push([event, replying, replying ? {} : (tally.take()?.hours ?? {})]);
+    const settle = (event: string, _args: unknown[], waited: boolean) => {
+      ended.push([event, waited, waited ? {} : (tally.take()?.hours ?? {})]);
     };
     const probe = meteredObject(new Probe(), "space", tally, settle);
     const call = (method: string, args: unknown[] = []) => meteredReply(probe, "space", tally, settle, method, args);
@@ -491,18 +495,21 @@ describe("billing meters", () => {
     await probe.webSocketMessage();
     await probe.webSocketClose();
     await expect(call("fail")).rejects.toThrow("refused");
-    expect((await call("helper")).value).toBe("done");
+    expect((await probe.fetch()).status).toBe(204);
+    const after = await call("helper");
+    expect({ value: after.value, billing: billingOf(after.usage!.hours) }).toEqual({ value: "done", billing: { do_space_requests: 3 } });
     await expect(call("alarm")).rejects.toThrow("no method alarm");
     await expect(call("constructor")).rejects.toThrow("no method constructor");
     expect(probe.helper()).toBe("done");
     expect(tally.take()).toBeUndefined();
-    expect(ended.map(([event, replying, hours]) => [event, replying, billingOf(hours)])).toEqual([
+    expect(ended.map(([event, waited, hours]) => [event, waited, billingOf(hours)])).toEqual([
       ["rpc", true, {}],
       ["rpc", true, {}],
       ["alarm", false, { do_space_requests: 1 }],
       ["webSocketMessage", false, { do_ws_messages: 1 }],
       ["webSocketClose", false, {}],
-      ["fail", false, { do_space_requests: 1 }],
+      ["fail", true, {}],
+      ["fetch", true, {}],
       ["helper", true, {}],
     ]);
   });
@@ -1384,30 +1391,128 @@ describe("billing counts across evictions", () => {
   });
 });
 
-describe("lease renewals", () => {
-  it("holds an HTTP RPC for the lease renewal it started, so the Account DO's answer leaves in the RPC's reply", async () => {
-    const { owner, spaceId, stub } = await reportingSpace();
-    const listTree = (reqId: bigint) => post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId, call: { case: "listTree", value: {} } }), owner.access!.token);
-    expect((await listTree(1n)).status).toBe(200);
-    const prototype = await runInDurableObject(account(), (instance: AccountDO) => Object.getPrototypeOf(instance) as AccountDO);
-    const original = prototype.checkSessions;
-    const answered: boolean[] = [];
-    prototype.checkSessions = async function (this: AccountDO, ...args: Parameters<AccountDO["checkSessions"]>) {
-      await scheduler.wait(200);
-      const answer = await original.apply(this, args);
-      answered.push(true);
-      return answer;
+describe("reply latency", () => {
+  const listTree = (owner: DeviceCredentials, spaceId: string, reqId: bigint) =>
+    post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId, call: { case: "listTree", value: {} } }), owner.access!.token);
+  const timed = async (call: () => Promise<unknown>) => {
+    const startedMs = performance.now();
+    await call();
+    return performance.now() - startedMs;
+  };
+  const dropKept = () => runInDurableObject(account(), (instance: object) => (instance as unknown as { tally: UsageTally }).tally.takeAll());
+
+  async function slowAccount(method: "checkSessions" | "recordUsage", delayMs: number) {
+    const prototype = (await runInDurableObject(account(), (instance: AccountDO) => Object.getPrototypeOf(instance))) as Record<string, (...args: unknown[]) => Promise<unknown>>;
+    const original = prototype[method]!;
+    const calls = { started: 0, answered: 0 };
+    prototype[method] = async function (this: AccountDO, ...args: unknown[]) {
+      calls.started++;
+      await scheduler.wait(delayMs);
+      try {
+        return await original.apply(this, args);
+      } finally {
+        calls.answered++;
+      }
     };
+    const restore = () => {
+      prototype[method] = original;
+    };
+    restorers.push(restore);
+    return { calls, restore };
+  }
+
+  it("answers an HTTP RPC as fast with reports on as with reports off while the Account DO takes 2 s to renew the RPC's lease", { timeout: 30_000 }, async () => {
+    restorers.push(dropKept);
+    const tookMs: number[] = [];
+    for (const telemetry of [TokenRequest_Telemetry.OFF, TokenRequest_Telemetry.ON]) {
+      const { owner, spaceId, stub } = await reportingSpace(telemetry);
+      expect((await listTree(owner, spaceId, 1n)).status).toBe(200);
+      const slow = await slowAccount("checkSessions", 2_000);
+      await runInDurableObject(stub, (instance: SpaceDO) => {
+        instance.clock = () => Date.now() + 3_000;
+      });
+      tookMs.push(await timed(async () => expect((await listTree(owner, spaceId, 2n)).status).toBe(200)));
+      await vi.waitFor(() => expect(slow.calls).toEqual({ started: 1, answered: 1 }), { timeout: 5_000 });
+      slow.restore();
+    }
+    const [off, on] = tookMs;
+    expect(off).toBeLessThan(1_000);
+    expect(on).toBeLessThan(1_000);
+  });
+
+  it("answers a failed HTTP RPC and a WebSocket upgrade as fast with reports on as with reports off while the Account DO takes 2 s to record usage", { timeout: 30_000 }, async () => {
+    UsageTally.batchMs = 0;
     restorers.push(() => {
-      prototype.checkSessions = original;
+      UsageTally.batchMs = BATCH_MS;
     });
+    const tookMs: { failed: number; upgrade: number }[] = [];
+    for (const telemetry of [TokenRequest_Telemetry.OFF, TokenRequest_Telemetry.ON]) {
+      const { owner, spaceId, stub } = await reportingSpace(telemetry);
+      expect((await listTree(owner, spaceId, 1n)).status).toBe(200);
+      const prototype = (await runInDurableObject(stub, (instance: SpaceDO) => Object.getPrototypeOf(instance))) as SpaceDO;
+      const httpRpc = prototype.httpRpc;
+      prototype.httpRpc = async () => {
+        throw new Error("space failed");
+      };
+      restorers.push(() => {
+        prototype.httpRpc = httpRpc;
+      });
+      const slow = await slowAccount("recordUsage", 2_000);
+      const failed = await timed(async () => expect((await listTree(owner, spaceId, 2n)).status).toBeGreaterThanOrEqual(500));
+      prototype.httpRpc = httpRpc;
+      const upgrade = await timed(async () => {
+        const response = await exports.default.fetch(`${BASE}/v1/spaces/${spaceId}/ws`, { headers: { Upgrade: "websocket", Authorization: "Bearer " + owner.access!.token } });
+        expect(response.status).toBe(101);
+        response.webSocket!.accept();
+        response.webSocket!.close(1000, "done");
+      });
+      tookMs.push({ failed, upgrade });
+      await vi.waitFor(async () => expect(await runInDurableObject(stub, (_instance, state) => state.getWebSockets().length)).toBe(0), { timeout: 5_000 });
+      await vi.waitFor(() => expect(slow.calls.answered).toBe(slow.calls.started), { timeout: 10_000 });
+      slow.restore();
+    }
+    const [off, on] = tookMs;
+    expect(off!.failed).toBeLessThan(1_000);
+    expect(on!.failed).toBeLessThan(1_000);
+    expect(off!.upgrade).toBeLessThan(1_000);
+    expect(on!.upgrade).toBeLessThan(1_000);
+  });
+
+  it("keeps the counts of an Account DO call nobody waits on out of its reply, and stores them with the next batch it records and at its alarm", async () => {
+    const { owner, spaceId } = await reportingSpace();
+    restorers.push(dropKept);
+    const hour = Math.floor(Date.now() / HOUR_MS);
+    await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("DELETE FROM usage_hours"));
+    const replies: Carried[] = [];
+    const kept = meteredStub(account(), (carried) => replies.push(carried), false);
+    await kept.checkSessions([owner.deviceId], spaceId);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]!.usage).toBeUndefined();
+    expect(replies[0]!.reporting).toBe(true);
+    expect(await storedHours()).toEqual([]);
+    expect(await meteredStub(account(), () => {}).recordUsage({ openedMs: Date.now(), hours: { [hour]: emptyUsage() } })).toBe(true);
+    expect((await storedTotal()).billing.do_account_requests).toBe(2);
+    await kept.checkSessions([owner.deviceId], spaceId);
+    expect(replies[1]!.usage).toBeUndefined();
+    expect(await runDurableObjectAlarm(account())).toBe(true);
+    expect((await storedTotal()).billing.do_account_requests).toBe(4);
+  });
+
+  it("parks a background lease renewal's counts on an open socket when the answer comes after the event ended", { timeout: 30_000 }, async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    restorers.push(dropKept);
+    const socket = await connect(spaceId, owner, stub);
+    await socket.listTree();
+    const parkedActiveMs = async () => billingOf(((await attachments(stub))[0]!.usage as { hours: UsageHours } | undefined)?.hours ?? {}).do_account_active_ms ?? 0;
+    const before = await parkedActiveMs();
+    const slow = await slowAccount("checkSessions", 500);
     await runInDurableObject(stub, (instance: SpaceDO) => {
       instance.clock = () => Date.now() + 3_000;
     });
-    expect((await listTree(2n)).status).toBe(200);
-    expect(answered).toEqual([true]);
-    await vi.waitFor(async () => expect((await storedCounts())["rpc_list_tree.ok"]).toBe(2));
-    expect(await runInDurableObject(stub, (instance: object) => (instance as unknown as { traffic: UsageTally }).traffic.take() ?? null)).toBeNull();
+    await socket.listTree();
+    await vi.waitFor(() => expect(slow.calls).toEqual({ started: 1, answered: 1 }), { timeout: 5_000 });
+    await vi.waitFor(async () => expect(await parkedActiveMs()).toBeGreaterThanOrEqual(before + 500));
+    socket.ws.close(1000, "done");
   });
 });
 

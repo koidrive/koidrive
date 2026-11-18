@@ -106,6 +106,7 @@ export class UsageTally {
   static quietMs = QUIET_MS;
   static batchMs = BATCH_MS;
   private batch: UsageBatch | undefined;
+  private kept: UsageBatch | undefined;
   private lastMs = 0;
   private reportingNow: boolean | undefined;
   private stops = 0;
@@ -126,6 +127,7 @@ export class UsageTally {
     this.reportingNow = on;
     if (on !== false) return;
     this.batch = undefined;
+    this.kept = undefined;
     this.stops++;
   }
 
@@ -137,6 +139,7 @@ export class UsageTally {
     if (startedMs === undefined || startedMs === this.startedAtMs) return false;
     this.startedAtMs = startedMs;
     if (this.batch && this.batch.openedMs < startedMs) this.batch = undefined;
+    if (this.kept && this.kept.openedMs < startedMs) this.kept = undefined;
     return true;
   }
 
@@ -209,6 +212,18 @@ export class UsageTally {
     const batch = this.batch;
     this.batch = undefined;
     return batch;
+  }
+
+  keep(): void {
+    const batch = this.take();
+    if (batch) this.kept = mergeBatch(this.kept, batch);
+  }
+
+  takeAll(): UsageBatch | undefined {
+    const kept = this.kept;
+    this.kept = undefined;
+    const batch = this.take();
+    return kept && batch ? mergeBatch(kept, batch) : (kept ?? batch);
   }
 
   put(batch: UsageBatch): void {
