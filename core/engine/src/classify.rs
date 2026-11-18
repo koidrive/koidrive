@@ -405,6 +405,7 @@ pub struct Trees {
     unobserved: TrackedSet<NodeId>,
     rules_changed: BTreeSet<Vec<String>>,
     relist: Vec<NodeId>,
+    released: Vec<NodeId>,
     cycles_may_end: bool,
     parked_as: TrackedMap<NodeId, NodeId>,
     waiting: ByParent<Waiting>,
@@ -535,6 +536,7 @@ impl Trees {
             unobserved: TrackedSet::default(),
             rules_changed: BTreeSet::new(),
             relist: Vec::new(),
+            released: Vec::new(),
             cycles_may_end: false,
             parked_as: TrackedMap::default(),
             waiting: ByParent::default(),
@@ -2983,6 +2985,10 @@ impl Trees {
     /// drop it. Only the topmost nodes whose copies went are looked at, so a settle costs nothing per node below
     /// them, nor per node that is unobserved with its copy in place.
     fn release_vanished(&mut self) -> bool {
+        self.released.retain(|id| {
+            self.l.get(id).is_none() && self.s.get(id).is_none() && self.r.live(id).is_some()
+        });
+        let before = self.released.len();
         if !self.rules_known || self.gone_tops.is_empty() {
             return false;
         }
@@ -3037,8 +3043,9 @@ impl Trees {
         drop(kept);
         for id in groups.iter().flat_map(|group| group.iter().rev()) {
             self.set_synced(id.clone(), None);
+            self.released.push(id.clone());
         }
-        !groups.is_empty()
+        self.released.len() > before
     }
 
     /// Whether [`Trees::listed`] would observe a node in one of `folders`.
@@ -5905,6 +5912,20 @@ impl Trees {
             "a lost shape of a node that S holds or that R holds under its ID"
         );
         debug_assert_eq!(
+            (self.released.iter())
+                .find(|id| {
+                    !self.release_due
+                        && self.l.get(id).is_none()
+                        && self.s.get(id).is_none()
+                        && (self.r.live(id)).is_some_and(|remote| {
+                            self.vanished(&remote.parent) && !self.ignored(&remote.parent)
+                        })
+                })
+                .cloned(),
+            None,
+            "a node a release took from S while the folder it is in stays there with its copy gone"
+        );
+        debug_assert_eq!(
             self.copies_gone,
             (self.unobserved.iter())
                 .filter(|id| self.l.get(id).is_none())
@@ -5984,6 +6005,7 @@ impl Trees {
             unobserved,
             rules_changed: _,
             relist: _,
+            released: _,
             cycles_may_end: _,
             parked_as,
             waiting,
