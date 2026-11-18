@@ -1332,9 +1332,7 @@ impl Trees {
 
     pub(crate) fn resend_folders_of_changes(&mut self) {
         let lacking = |id: &NodeId| {
-            self.r.get(id).is_none()
-                && self.acknowledged(id).is_some()
-                && !self.lost_creates.contains(id)
+            self.r.get(id).is_none() && (self.acknowledged(id).is_some() || self.queued_removal(id))
         };
         if !self.others.iter().any(lacking) {
             self.yield_resends();
@@ -1354,10 +1352,18 @@ impl Trees {
             .collect();
         folders.sort_by_key(|id| std::cmp::Reverse(self.local_chain(id).count()));
         for id in changed.into_iter().chain(folders.iter().cloned()) {
+            if self.queued_removal(&id) {
+                self.waiting.remove(&id);
+                self.mark(&id);
+            }
             if self.unsent_creates.insert(id.clone()) {
                 self.mark(&id);
             }
         }
+        debug_assert!(
+            !(self.unsent_creates.iter()).any(|id| self.lost_positions.contains_key(id)),
+            "a node marked in unsent_creates never has a lost position"
+        );
         self.resends.extend(folders);
         self.yield_resends();
     }
@@ -1366,22 +1372,6 @@ impl Trees {
         self.s.get(id).is_some()
             && (self.waiting.get(id))
                 .is_some_and(|waiting| waiting.shape.is_none() && waiting.origin == Origin::Other)
-    }
-
-    fn carry_create(&mut self, id: &NodeId) -> bool {
-        let owed = self.lost_creates.contains(id)
-            || self.unsent_creates.contains(id)
-            || self.resends.contains(id);
-        if !owed || self.r.get(id).is_some() || self.l.get(id).is_none() {
-            return false;
-        }
-        if self.lost_creates.contains(id) {
-            self.unsent_creates.remove(id);
-        } else {
-            self.unsent_creates.insert(id.clone());
-        }
-        self.mark(id);
-        true
     }
 
     pub(crate) fn take_forgotten_shape(&mut self, id: &str) -> bool {
@@ -3844,12 +3834,7 @@ impl Trees {
                 .is_some_and(|local| (self.s.get(&id)).is_some_and(|s| s.same(&local.shape)));
             let resent =
                 synced.contains(&id) || taken_late.contains(&id) || self.resends.contains(&id);
-            if unchanged
-                && !resent
-                && !moved_here.contains(&id)
-                && self.r.get(&id).is_none()
-                && !self.unsent_creates.contains(&id)
-            {
+            if unchanged && !resent && !moved_here.contains(&id) && self.r.get(&id).is_none() {
                 self.lost_creates.insert(id.clone());
             }
             if unchanged && resent {
@@ -3890,9 +3875,9 @@ impl Trees {
             {
                 self.forgotten_shapes.insert(id.clone(), shape);
             }
-            if waits && !self.carry_create(&id) {
+            if waits {
                 self.wait(id, None, Origin::Other);
-            } else if !waits {
+            } else {
                 self.remember_lost_shape(&id);
                 self.set_synced(id, None);
             }
@@ -3952,9 +3937,7 @@ impl Trees {
     /// same bytes.
     pub fn class_against(&self, id: &str, synced: Option<&Shape>) -> Class {
         let class = classify(self.l.live(id), synced, self.r.live(id));
-        if class == Class::Remote
-            && (self.unsent_creates.contains(id) || self.lost_creates.contains(id))
-        {
+        if class == Class::Remote && self.unsent_creates.contains(id) {
             return Class::Concurrent;
         }
         if !self.unsent_edits.contains(id) && !self.unsent_moves.contains(id) {
@@ -4817,12 +4800,7 @@ impl Trees {
         if (shape.as_ref())
             .is_some_and(|shape| (self.l.get(id)).is_some_and(|local| local.shape.same(shape)))
         {
-            if !(self.s.get(id))
-                .zip(shape.as_ref())
-                .is_some_and(|(old, new)| old.same(new))
-            {
-                self.lost_creates.remove(id);
-            }
+            self.lost_creates.remove(id);
             self.resends.remove(id);
             self.local_changes.remove(id);
         }
@@ -4934,17 +4912,6 @@ impl Trees {
                 .cloned(),
             None,
             "an unsent create of a node L does not hold or that R holds"
-        );
-        debug_assert_eq!(
-            (self.unsent_creates.iter())
-                .chain(self.lost_creates.iter())
-                .find(|id| {
-                    self.queued_removal(id)
-                        || self.unsent_creates.contains(*id) && self.lost_creates.contains(*id)
-                })
-                .cloned(),
-            None,
-            "a create owed again by both unsent_creates and lost_creates, or whose removal from S is queued"
         );
         debug_assert_eq!(
             (self.lost_shapes.keys())
@@ -5283,16 +5250,6 @@ impl Trees {
         self.kept_originals = kept_originals.into();
         self.unsent_marks = unsent_marks.into();
         self.pending_finishes = pending_finishes.into();
-        let queued: Vec<NodeId> = (self.waiting.keys())
-            .filter(|id| self.queued_removal(id) && self.r.get(id).is_none())
-            .filter(|id| self.l.get(id).is_some())
-            .cloned()
-            .collect();
-        for id in queued {
-            self.waiting.remove(&id);
-            self.carry_create(&id);
-            self.mark(&id);
-        }
         self.rules_known = false;
         self.unknown_rules.clear();
         Ok(())
