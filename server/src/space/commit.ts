@@ -694,7 +694,8 @@ export class CommitApplier {
     }
     const bases = expandMadeOver(this.sql, found.node_id, ancestry?.madeOver ?? []);
     const alias = this.client ? current?.source_version_id : "";
-    const overCurrent = current !== undefined && (bases.includes(current.version_id) || (!!alias && bases.includes(alias)));
+    const viaAlias = current !== undefined && !!alias && !bases.includes(current.version_id) && bases.includes(alias);
+    const overCurrent = current !== undefined && (bases.includes(current.version_id) || viaAlias);
     const byAncestry = this.client && bases.length > 0;
     const known = current ? [current.version_id, ...versionMadeOver(current)] : [];
     const merges = byAncestry && current !== undefined && !overCurrent && this.holds(found, content) && bases.some((id) => !known.includes(id));
@@ -714,7 +715,7 @@ export class CommitApplier {
       this.touch(node.node_id);
       return result(renamed ? OpResult_Code.APPLIED_RENAMED : OpResult_Code.APPLIED, "", node.name);
     }
-    const lineage = chain(replay ? sourceVersionId : "", merges ? [...bases, ...known] : bases);
+    const lineage = chain(replay ? sourceVersionId : "", merges || viaAlias ? [...bases, ...known] : bases);
     const { node, renamed } = this.reviveTarget(found);
     if (stale(node)) return this.conflictCopy(getNode(this.sql, node.parent_id!)!, node.name, content, chunks, lineage, intent);
     this.sql.exec("UPDATE versions SET superseded_at_ms = ? WHERE version_id = ?", this.ctx.nowMs, node.cur_version_id);
