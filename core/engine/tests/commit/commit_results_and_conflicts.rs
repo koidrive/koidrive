@@ -289,6 +289,37 @@ fn a_conflict_copy_of_a_file_whose_synced_shape_a_restore_dropped_in_flight_send
     assert_eq!(ops(&next), vec![mv("y", ROOT, "g")]);
 }
 
+#[test]
+fn a_conflict_copy_of_a_file_whose_synced_shape_a_restore_dropped_in_flight_keeps_the_servers_name_when_another_device_moved_the_original() {
+    let mut trees = trees(&[
+        (
+            "f",
+            Some(file(ROOT, "f", 2)),
+            Some(file(ROOT, "f", 1)),
+            Some(remote(file(ROOT, "f", 1))),
+        ),
+        (
+            "d",
+            Some(dir(ROOT, "d")),
+            Some(dir(ROOT, "d")),
+            Some(remote(dir(ROOT, "d"))),
+        ),
+    ]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    trees.set_synced("f".into(), None);
+    trees.set_remote("f".into(), remote_at(file("d", "f", 3), 8));
+    trees.set_remote("y".into(), remote(file(ROOT, "f (conflict)", 2)));
+    let copy = OpResult {
+        node_id: "y".into(),
+        ..outcome(op_result::Code::ConflictCopy)
+    };
+    acknowledge(&mut commits, &mut trees, vec![copy]);
+    assert_eq!(trees.synced().live("y"), Some(&file(ROOT, "f", 2)));
+    let next = build(&mut commits, &mut trees, &mut ids);
+    assert!(next.is_none(), "{:?}", next.as_ref().map(ops));
+}
+
 /// The device's own commit makes the conflict copy y, and its answer is lost. A log replay after
 /// the reconnect brings y into R before the stored result arrives, and the effects download y.
 /// The result then finds y on disk already: that entry stays y's, f takes the server's content,

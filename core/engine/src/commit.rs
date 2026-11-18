@@ -1984,7 +1984,16 @@ impl Commits {
                                     kind: Kind::File,
                                     content: None,
                                 })
-                                .or_else(|| trees.remote().live(id).cloned())
+                                .or_else(|| {
+                                    let (parent, name) =
+                                        trees.remote_position_at(id, flight.commit.base_seq)?;
+                                    Some(Shape {
+                                        parent,
+                                        name,
+                                        kind: Kind::File,
+                                        content: None,
+                                    })
+                                })
                                 .map(|shape| Shape {
                                     kind: Kind::File,
                                     content: update.content.clone(),
