@@ -1945,13 +1945,13 @@ impl Commits {
                     )
                 }
                 Some(op::Op::CreateFile(create)) => {
+                    let shape = Shape {
+                        parent: parent(&create.parent_id),
+                        name: name(&create.name),
+                        kind: Kind::File,
+                        content: create.content.clone(),
+                    };
                     if applied {
-                        let shape = Shape {
-                            parent: parent(&create.parent_id),
-                            name: name(&create.name),
-                            kind: Kind::File,
-                            content: create.content.clone(),
-                        };
                         let shape = created(trees, &synced, &create.node_id, shape);
                         if trees.lost_position(&create.node_id).is_some() {
                             trees.take_lost_position(
@@ -1972,9 +1972,21 @@ impl Commits {
                             );
                         }
                         trees.sent_edit(&create.node_id, create.content.as_ref());
+                    } else if code == Code::ConflictCopy
+                        && trees.local().get(&outcome.node_id).is_some()
+                    {
+                        trees.revert(create.node_id.clone());
+                    } else if code == Code::ConflictCopy {
+                        synced.set(&outcome.node_id, Some(shape));
+                        synced.set(&create.node_id, None);
+                        rekey(trees, &create.node_id, &outcome.node_id);
+                        trees.sent_edit(&outcome.node_id, create.content.as_ref());
                     }
                     let exists = taken && trees.remote().get(&create.node_id).is_some();
-                    (&create.node_id, applied || exists)
+                    (
+                        &create.node_id,
+                        applied || exists || code == Code::ConflictCopy,
+                    )
                 }
                 Some(op::Op::UpdateContent(update)) => {
                     let id = &update.node_id;
@@ -2871,7 +2883,7 @@ fn holder(trees: &Trees, parent: &str, name: &str, other: &str) -> Option<NodeId
 
 /// The entries `result` gives a node, each as the ID `commit` sent for it and the node's ID: a
 /// create the server applied, a folder create it merged into another folder, and a content update
-/// it kept as a conflict copy.
+/// or file create it kept as a conflict copy.
 pub fn given_nodes(commit: &proto::Commit, result: &proto::CommitResult) -> Vec<(NodeId, NodeId)> {
     use op_result::Code;
     (commit.ops.iter().zip(&result.results))
@@ -2889,6 +2901,9 @@ pub fn given_nodes(commit: &proto::Commit, result: &proto::CommitResult) -> Vec<
                 }
                 (op::Op::UpdateContent(update), Code::ConflictCopy) => {
                     (&update.node_id, &outcome.node_id)
+                }
+                (op::Op::CreateFile(create), Code::ConflictCopy) => {
+                    (&create.node_id, &outcome.node_id)
                 }
                 _ => return None,
             };

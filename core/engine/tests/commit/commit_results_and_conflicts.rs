@@ -180,6 +180,89 @@ fn a_conflict_copy_takes_the_local_file_and_the_original_is_downloaded_again() {
 }
 
 #[test]
+fn a_file_create_kept_as_a_conflict_copy_settles_as_the_copy() {
+    let mut trees = trees(&[("f", Some(file(ROOT, "f", 2)), None, None)]);
+    let ino = trees.local().get("f").unwrap().identity.ino;
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert!(
+        (ops(&sent).iter()).any(|op| matches!(op, op::Op::CreateFile(_))),
+        "{:?}",
+        ops(&sent)
+    );
+    trees.set_remote("y".into(), remote(file(ROOT, "f (conflict)", 2)));
+    let copy = OpResult {
+        node_id: "y".into(),
+        ..outcome(op_result::Code::ConflictCopy)
+    };
+    acknowledge(&mut commits, &mut trees, vec![copy]);
+    assert_eq!(trees.local().get("y").unwrap().identity.ino, ino);
+    assert_eq!(trees.synced().live("y"), Some(&file(ROOT, "f", 2)));
+    assert_eq!(trees.class("y"), Class::Remote);
+    assert_eq!(trees.local().get("f"), None);
+    assert!(build(&mut commits, &mut trees, &mut ids).is_none());
+}
+
+#[test]
+fn a_file_create_whose_conflict_copy_was_downloaded_before_its_result_keeps_both_files() {
+    let mut trees = trees(&[("f", Some(file(ROOT, "f", 2)), None, None)]);
+    let ino = trees.local().get("f").unwrap().identity.ino;
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    trees.set_remote("y".into(), remote(file(ROOT, "f (conflict)", 2)));
+    trees.settle(commits.aliases());
+    let mut effects = Effects::default();
+    let identity = |ino| FileIdentity {
+        ino,
+        birth_ns: Some(0),
+    };
+    let download = effects
+        .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
+        .first()
+        .cloned()
+        .unwrap();
+    assert_eq!(download.node, "y");
+    effects
+        .done(
+            &mut trees,
+            commits.in_flight(),
+            &download.effect_id,
+            Some(identity(9)),
+        )
+        .unwrap();
+    trees.settle(commits.aliases());
+    let copy = OpResult {
+        node_id: "y".into(),
+        ..outcome(op_result::Code::ConflictCopy)
+    };
+    acknowledge(&mut commits, &mut trees, vec![copy]);
+    let planned = effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE);
+    assert!(planned.is_empty(), "{planned:?}");
+    let y = trees.local().get("y").unwrap();
+    assert_eq!(
+        (&y.shape, y.identity.ino),
+        (&file(ROOT, "f (conflict)", 2), 9)
+    );
+    let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let created: Vec<_> = (ops(&sent).iter())
+        .filter_map(|op| match op {
+            op::Op::CreateFile(create) => Some(create.node_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(created.len(), 1, "{:?}", ops(&sent));
+    assert!(!["f", "y"].contains(&created[0].as_str()), "{created:?}");
+    let again = trees.local().get(&created[0]).unwrap();
+    assert_eq!(
+        (&again.shape, again.identity.ino),
+        (&file(ROOT, "f", 2), ino)
+    );
+    assert_eq!(trees.local().iter().count(), 2);
+    let planned = effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE);
+    assert!(planned.is_empty(), "{planned:?}");
+}
+
+#[test]
 fn a_conflict_copy_keeps_s_s_position_when_another_device_wrote_s_s_bytes_back_before_the_result() {
     let mut trees = trees(&[(
         "f",
