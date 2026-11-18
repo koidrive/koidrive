@@ -123,9 +123,23 @@ impl Disks {
         if cfg!(target_os = "macos") {
             return self.formatted(name, "APFS");
         }
+        self.ext4(name, &["mkfs.ext4"])
+    }
+
+    /// Creates an empty ext4 image of 16 MB named `name` with the UUID `uuid`, formatted while the clock read
+    /// `formatted_at` seconds since the epoch, so its root folder has that birth time.
+    #[cfg(target_os = "linux")]
+    pub fn ext4_with_uuid(&self, name: &str, uuid: &str, formatted_at: u64) -> PathBuf {
+        let clock = format!("E2FSPROGS_FAKE_TIME={formatted_at}");
+        self.ext4(name, &[&clock, "mkfs.ext4", "-U", uuid])
+    }
+
+    fn ext4(&self, name: &str, mkfs: &[&str]) -> PathBuf {
         let image = self.base().join(format!("{name}.img"));
         run("truncate", &["-s".as_ref(), "16M".as_ref(), image.as_ref()]);
-        run("mkfs.ext4", &["-q".as_ref(), "-F".as_ref(), image.as_ref()]);
+        let options = ["-q".as_ref(), "-F".as_ref(), image.as_os_str()];
+        let args: Vec<&OsStr> = mkfs.iter().map(OsStr::new).chain(options).collect();
+        run("env", &args);
         let at = self.base().join(format!("{name}.mkfs"));
         fs::create_dir(&at).unwrap();
         sudo(&[
@@ -167,6 +181,25 @@ impl Disks {
         image.to_path_buf()
     }
 
+    /// Whether exFAT volumes have IDs here. On Linux only udev reads an exFAT volume's serial number, so that takes
+    /// `/dev/disk/by-diskseq` links and `mkfs.exfat` from exfatprogs.
+    pub fn exfat_has_ids(&self) -> bool {
+        if cfg!(target_os = "macos") {
+            return true;
+        }
+        if !Path::new("/dev/disk/by-diskseq").is_dir() {
+            eprintln!(
+                "SKIPPED: udev keeps no /dev/disk/by-diskseq links here, so exFAT volumes have no ID"
+            );
+            return false;
+        }
+        if Command::new("mkfs.exfat").arg("-V").output().is_err() {
+            eprintln!("SKIPPED: mkfs.exfat from exfatprogs is not installed");
+            return false;
+        }
+        true
+    }
+
     /// Creates an empty exFAT image of 16 MB named `name`. On Linux it takes `mkfs.exfat` from exfatprogs.
     pub fn exfat(&self, name: &str) -> PathBuf {
         if cfg!(target_os = "macos") {
@@ -200,6 +233,33 @@ impl Disks {
         }
         args.push(image.clone().into());
         hdiutil(&args.iter().map(OsString::as_os_str).collect::<Vec<_>>());
+        image
+    }
+
+    /// A disk image next to the file system image `volume` whose one partition holds a copy of it, the way USB sticks
+    /// are laid out. [`Disks::attach`] mounts that partition.
+    #[cfg(target_os = "linux")]
+    pub fn partitioned(&self, volume: &Path) -> PathBuf {
+        let image = volume.with_extension("disk");
+        let size = fs::metadata(volume).unwrap().len() + (1 << 20);
+        run(
+            "truncate",
+            &["-s".as_ref(), size.to_string().as_ref(), image.as_ref()],
+        );
+        run(
+            "sh",
+            &[
+                "-c".as_ref(),
+                "echo 'start=2048, type=7' | sfdisk -q \"$0\"".as_ref(),
+                image.as_ref(),
+            ],
+        );
+        let (from, to) = (
+            format!("if={}", volume.display()),
+            format!("of={}", image.display()),
+        );
+        let copy = [&from, &to, "bs=1M", "seek=1", "conv=notrunc", "status=none"];
+        run("dd", &copy.map(OsStr::new));
         image
     }
 
@@ -242,6 +302,43 @@ impl Disks {
                 image: fs::canonicalize(image).unwrap(),
             });
             if image
+                .extension()
+                .is_some_and(|extension| extension == "disk")
+            {
+                let device = run(
+                    "sudo",
+                    &[
+                        "-n".as_ref(),
+                        "losetup".as_ref(),
+                        "--partscan".as_ref(),
+                        "--find".as_ref(),
+                        "--show".as_ref(),
+                        image.as_ref(),
+                    ],
+                );
+                let partition = format!("{device}p1");
+                let started = std::time::Instant::now();
+                while !Path::new(&partition).exists() {
+                    assert!(
+                        started.elapsed() < std::time::Duration::from_secs(10),
+                        "{partition} never appeared"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                let options = format!(
+                    "uid={},gid={}",
+                    run("id", &["-u".as_ref()]),
+                    run("id", &["-g".as_ref()])
+                );
+                sudo(&[
+                    "mount".as_ref(),
+                    "-o".as_ref(),
+                    options.as_ref(),
+                    partition.as_ref(),
+                    at.as_ref(),
+                ]);
+                sudo(&["losetup".as_ref(), "-d".as_ref(), device.as_ref()]);
+            } else if image
                 .extension()
                 .is_some_and(|extension| extension == "fat" || extension == "exfat")
             {
