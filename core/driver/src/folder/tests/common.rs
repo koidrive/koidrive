@@ -46,9 +46,12 @@ const NOW: i64 = 1_700_000_000_000;
 const WAIT: Duration = Duration::from_secs(60);
 
 fn eventually(what: &str, mut done: impl FnMut() -> bool) {
-    let started = Instant::now();
+    let started = clock::instant();
     while !done() {
-        assert!(started.elapsed() < WAIT, "{what} within {WAIT:?}");
+        assert!(
+            clock::instant().saturating_duration_since(started) < WAIT,
+            "{what} within {WAIT:?}"
+        );
     }
 }
 
@@ -483,7 +486,12 @@ impl Device {
                 self.folder.sent(result)
             }
             Work::ResendAfter(_) => self.folder.resend(),
-            Work::RetryAfter(_) => self.folder.retry(),
+            Work::RetryAfter(_) => {
+                if let Some(at) = self.folder.retry_at {
+                    clock::advance_to(at);
+                }
+                self.folder.retry()
+            }
             Work::Reconnect => {
                 let welcome = remote.space.welcome(&self.caller);
                 self.folder.event(Event::Connected(welcome))
@@ -495,10 +503,10 @@ impl Device {
     /// Runs the work the folder asked for and the work that follows from it, until none is left. Returns what ran.
     fn try_run(&mut self, remote: &mut Remote) -> Result<Vec<&'static str>, Stop> {
         let mut ran = Vec::new();
-        let started = Instant::now();
+        let started = clock::instant();
         while let Some(work) = self.work.pop_front() {
             assert!(
-                started.elapsed() < WAIT,
+                clock::instant().saturating_duration_since(started) < WAIT,
                 "the folder stops asking for work within {WAIT:?}"
             );
             ran.push(match &work {

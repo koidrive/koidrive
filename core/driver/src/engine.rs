@@ -3579,7 +3579,7 @@ mod tests {
         fn batches_leave_l_a_tree_that_holds_the_disk(
             rounds in prop::collection::vec(prop::collection::vec(edit(), 1..8), 1..5),
         ) {
-            let (_dir, mut engine) = mapper();
+            let mut engine = empty_engine();
             let folder = tempfile::tempdir().unwrap();
             let mut snapshot = Snapshot::default();
             for edits in rounds {
@@ -3592,6 +3592,13 @@ mod tests {
                 prop_assert_eq!(in_l(&engine), on_disk(&snapshot), "after {:?}", batch);
             }
         }
+    }
+
+    fn empty_engine() -> Engine {
+        thread_local! {
+            static EMPTY: std::cell::RefCell<(tempfile::TempDir, Store)> = std::cell::RefCell::new(store());
+        }
+        EMPTY.with_borrow_mut(|(_, store)| store.transaction(|tx| Engine::load(tx, ROOT)).unwrap())
     }
 
     fn on_disk(snapshot: &Snapshot) -> BTreeMap<PathBuf, (EntryKind, FileIdentity)> {
