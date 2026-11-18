@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::Arc;
 
 use koidrive_proto::v1 as proto;
 use sha1::{Digest, Sha1};
@@ -146,7 +147,7 @@ impl fmt::Debug for IntentId {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FieldIntent {
     pub id: IntentId,
-    pub author: String,
+    pub author: Arc<str>,
     pub replay: bool,
     pub applied_at_ms: i64,
 }
@@ -155,7 +156,7 @@ impl FieldIntent {
     pub fn legacy(id: IntentId) -> Self {
         Self {
             id,
-            author: String::new(),
+            author: "".into(),
             replay: false,
             applied_at_ms: 0,
         }
@@ -164,7 +165,7 @@ impl FieldIntent {
     pub fn from_proto(intent: &proto::Intent) -> Option<Self> {
         Some(Self {
             id: IntentId::from_bytes(&intent.id)?,
-            author: intent.author_device_id.clone(),
+            author: intent.author_device_id.as_str().into(),
             replay: intent.replay,
             applied_at_ms: intent.applied_at_ms,
         })
@@ -173,7 +174,7 @@ impl FieldIntent {
     pub fn to_proto(&self) -> proto::Intent {
         proto::Intent {
             id: self.id.0.to_vec(),
-            author_device_id: self.author.clone(),
+            author_device_id: self.author.to_string(),
             replay: self.replay,
             over: Vec::new(),
             applied_at_ms: self.applied_at_ms,
@@ -579,7 +580,10 @@ impl Journal {
         let mut rows: BTreeMap<RowKey, Row> = (self.rows.iter())
             .map(|(key, row)| (key.clone(), row.clone()))
             .collect();
-        rows.extend((self.rows.iter_compact()).map(|(key, held)| (key.clone(), full(key, held))));
+        rows.extend((self.rows.iter_compact()).map(|(key, held)| {
+            let row = full(&key, &held);
+            (key, row)
+        }));
         JournalState {
             rows,
             history: (*self.history).clone(),
@@ -595,7 +599,7 @@ impl Journal {
         let rows = (keys.into_iter())
             .map(|key| {
                 let row = (self.rows.get(&key).cloned())
-                    .or_else(|| self.rows.get_compact(&key).map(|held| full(&key, held)));
+                    .or_else(|| self.rows.get_compact(&key).map(|held| full(&key, &held)));
                 (key, row)
             })
             .collect();
@@ -637,11 +641,11 @@ impl Journal {
         self.rows.iter()
     }
 
-    pub fn compact_row(&self, node: &str, field: Field) -> Option<&HeldRow> {
+    pub fn compact_row(&self, node: &str, field: Field) -> Option<HeldRow> {
         self.rows.get_compact(&(node.to_owned(), field))
     }
 
-    pub(crate) fn compact_rows(&self) -> impl Iterator<Item = (&RowKey, &HeldRow)> {
+    pub(crate) fn compact_rows(&self) -> impl Iterator<Item = (RowKey, HeldRow)> {
         self.rows.iter_compact()
     }
 
@@ -1117,9 +1121,7 @@ impl Journal {
                 self.rows.insert(key, row);
             }
         }
-        let keys: Vec<RowKey> = (self.rows.iter_compact())
-            .map(|(key, _)| key.clone())
-            .collect();
+        let keys: Vec<RowKey> = (self.rows.iter_compact()).map(|(key, _)| key).collect();
         for key in keys {
             let changed = self.rows.update_compact(&key, |held| {
                 let before = held.clone();

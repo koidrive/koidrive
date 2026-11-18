@@ -262,7 +262,7 @@ fn a_create_writes_a_row_for_each_of_its_fields_and_a_delete_before_any_send_end
     let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_local_changed("f".into(), local(file(ROOT, "a", 1)));
     let fields: Vec<Field> = (trees.journal_rows())
-        .map(|((_, field), _)| *field)
+        .map(|((_, field), _)| field)
         .collect();
     assert_eq!(fields, [Field::Place, Field::Content, Field::Status]);
     assert!(trees.journal_rows().all(|(_, row)| row.base.is_none()));
@@ -1130,7 +1130,7 @@ fn backfilled(table: &str, waiting: Option<Waiting>) -> Trees {
 fn rows_of(trees: &Trees, node: &str) -> Vec<(Field, Row)> {
     (trees.journal_rows())
         .filter(|((id, _), _)| id == node)
-        .map(|((_, field), row)| (*field, row.into_owned()))
+        .map(|((_, field), row)| (field, row.into_owned()))
         .collect()
 }
 

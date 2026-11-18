@@ -5307,7 +5307,7 @@ mod tests {
             .unwrap();
         let rows = |engine: &Engine| {
             (engine.trees.journal_rows())
-                .map(|(key, row)| (key.clone(), row.into_owned()))
+                .map(|(key, row)| (key, row.into_owned()))
                 .collect::<Vec<_>>()
         };
         let backfilled = store
