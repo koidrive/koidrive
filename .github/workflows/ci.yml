@@ -425,8 +425,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+      - uses: ./.github/actions/pnpm-store
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test --reporter=verbose
@@ -449,8 +448,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+      - uses: ./.github/actions/pnpm-store
       - name: Check Worker launchers and deploy startup without a deployment
         run: |
           nice -n 10 python3 scripts/test-worker-launchers.py -v
@@ -494,8 +492,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+      - uses: ./.github/actions/pnpm-store
       - run: pnpm install --frozen-lockfile
         working-directory: server
       - name: Test koidrive-net against the Worker under wrangler dev
@@ -521,8 +518,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+      - uses: ./.github/actions/pnpm-store
       - run: pnpm install --frozen-lockfile
         working-directory: server
       - name: Test two drivers against the Worker under wrangler dev
@@ -548,8 +544,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+      - uses: ./.github/actions/pnpm-store
       - run: pnpm install --frozen-lockfile
         working-directory: server
       - name: Start a systemd user instance for the runner user
@@ -586,8 +581,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+      - uses: ./.github/actions/pnpm-store
       - run: pnpm install --frozen-lockfile
         working-directory: server
       - name: Test the app's session against the Worker under wrangler dev

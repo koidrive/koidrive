@@ -189,8 +189,8 @@ jobs:
         if: env.MODE == 'worker'
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+      - uses: ./.github/actions/pnpm-store
+        if: env.MODE == 'worker'
       - name: Install the Worker dependencies
         if: env.MODE == 'worker'
         working-directory: server

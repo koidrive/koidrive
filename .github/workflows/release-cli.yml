@@ -132,8 +132,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: server/pnpm-lock.yaml
+      - uses: ./.github/actions/pnpm-store
       - name: Set the validation version
         if: github.event_name != 'push'
         run: python3 scripts/stamp-release-version.py v0.0.0-rc.0
