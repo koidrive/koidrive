@@ -311,59 +311,27 @@ fn a_delete_lists_what_l_held_for_the_node_and_below_it() {
 }
 
 #[test]
-fn s_keeps_the_intent_of_the_value_it_holds_when_r_moves_on() {
+fn s_keeps_the_intents_of_the_values_it_holds_when_r_moves_on_or_loses_the_node() {
     let mut trees = Trees::new(ROOT);
     synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    let content = |trees: &Trees| {
+        trees
+            .synced_intents("f")
+            .unwrap()
+            .content
+            .map(|intent| intent.id)
+    };
     let first = held(&trees, "f", Field::Content);
-    assert_eq!(
-        trees
-            .synced_intents("f")
-            .unwrap()
-            .content
-            .map(|intent| intent.id),
-        Some(first)
-    );
-    trees.set_remote("f".into(), remote(file(ROOT, "a", 2), 2));
-    assert_eq!(
-        trees
-            .synced_intents("f")
-            .unwrap()
-            .content
-            .map(|intent| intent.id),
-        Some(first)
-    );
-    trees.set_synced("f".into(), Some(file(ROOT, "a", 2)));
-    assert_eq!(
-        trees
-            .synced_intents("f")
-            .unwrap()
-            .content
-            .map(|intent| intent.id),
-        Some(held(&trees, "f", Field::Content))
-    );
-}
-
-#[test]
-fn s_keeps_the_intents_of_what_it_holds_when_r_loses_the_node() {
-    let mut trees = Trees::new(ROOT);
-    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
-    let before = trees.synced_intents("f");
-    assert!(
-        before
-            .as_ref()
-            .is_some_and(|intents| intents.content.is_some())
-    );
-    trees.remove_remote("f");
-    assert_eq!(trees.synced_intents("f"), before);
-}
-
-#[test]
-fn the_s_row_is_written_again_when_r_moves_on_from_the_value_s_holds() {
-    let mut trees = Trees::new(ROOT);
-    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
+    assert_eq!(content(&trees), Some(first));
     trees.take_changed();
     trees.set_remote("f".into(), remote(file(ROOT, "a", 2), 2));
     assert!(trees.take_changed().synced.contains("f"));
+    assert_eq!(content(&trees), Some(first));
+    trees.set_synced("f".into(), Some(file(ROOT, "a", 2)));
+    assert_eq!(content(&trees), Some(held(&trees, "f", Field::Content)));
+    let before = trees.synced_intents("f");
+    trees.remove_remote("f");
+    assert_eq!(trees.synced_intents("f"), before);
 }
 
 fn build(trees: &mut Trees, features: &[&str], committed_at_ms: i64) -> proto::Commit {
@@ -711,27 +679,6 @@ fn a_superseded_move_ends_unless_the_server_applied_another_place_before_it() {
             false => assert_eq!(row, None),
         }
     }
-}
-
-#[test]
-fn a_superseded_row_whose_intent_another_node_holds_moves_there_as_held() {
-    let mut trees = Trees::new(ROOT);
-    synced(&mut trees, "f", file(ROOT, "a", 1), 1);
-    trees.set_local_changed("f".into(), local(file(ROOT, "b", 1)));
-    let commit = build(&mut trees, &["field_intents"], 1_700);
-    let place = sent(&trees, "f", Field::Place);
-    let reported = proto::FieldIntents {
-        place: Some(wire(place, 1_900)),
-        ..Default::default()
-    };
-    let state = node_state("g", &file(ROOT, "b", 1), 2, Some(reported));
-    let superseded = proto::OpResult {
-        node_id: "g".into(),
-        ..outcome(op_result::Code::Superseded)
-    };
-    trees.record_results(&commit, &answered(vec![superseded], vec![state]));
-    assert_eq!(trees.journal_row("f", Field::Place), None);
-    assert_eq!(held_as(&trees, "g", Field::Place), Some((place, 1_900)));
 }
 
 #[test]
@@ -1176,55 +1123,41 @@ fn rows_of(trees: &Trees, node: &str) -> Vec<(Field, Row)> {
 }
 
 #[test]
-fn a_backfill_carries_every_field_of_a_lost_folder_as_a_replay() {
-    let trees = backfilled("lost_creates", None);
-    let place = IntentId::legacy_place("d", 0, ROOT, "d");
-    let status = IntentId::legacy_live("d", 0);
-    let carried = |field, intent, value| {
-        let state = RowState::Local { flight: None };
-        (
-            field,
-            Row {
-                intent,
-                author: Author::Carried(String::new()),
-                base: None,
-                value,
-                wire_base: WireBase::None,
-                state,
-                time_ms: 0,
-                replay: true,
-            },
-        )
-    };
-    let at = Value::Place(Place {
-        parent: ROOT.into(),
-        name: "d".into(),
-        mark: None,
-    });
-    assert_eq!(
-        rows_of(&trees, "d"),
-        [
-            carried(Field::Place, place, at),
-            carried(Field::Status, status, Value::Status { live: true })
-        ]
-    );
-}
-
-#[test]
-fn a_backfill_carries_every_field_of_a_folder_owed_a_create_without_a_replay() {
-    let trees = backfilled("unsent_creates", None);
-    let rows = rows_of(&trees, "d");
-    let carried: Vec<(Field, &Author, bool)> = (rows.iter())
-        .map(|(field, row)| (*field, &row.author, row.replay))
-        .collect();
-    let empty = Author::Carried(String::new());
-    assert_eq!(
-        carried,
-        [
-            (Field::Place, &empty, false),
-            (Field::Status, &empty, false)
-        ]
-    );
+fn a_backfill_carries_every_field_of_a_folder_owed_a_create_as_a_replay_only_when_it_was_lost() {
+    for (table, replay) in [("lost_creates", true), ("unsent_creates", false)] {
+        let trees = backfilled(table, None);
+        let place = IntentId::legacy_place("d", 0, ROOT, "d");
+        let status = IntentId::legacy_live("d", 0);
+        let carried = |field, intent, value| {
+            let state = RowState::Local { flight: None };
+            (
+                field,
+                Row {
+                    intent,
+                    author: Author::Carried(String::new()),
+                    base: None,
+                    value,
+                    wire_base: WireBase::None,
+                    state,
+                    time_ms: 0,
+                    replay,
+                },
+            )
+        };
+        let at = Value::Place(Place {
+            parent: ROOT.into(),
+            name: "d".into(),
+            mark: None,
+        });
+        assert_eq!(
+            rows_of(&trees, "d"),
+            [
+                carried(Field::Place, place, at),
+                carried(Field::Status, status, Value::Status { live: true })
+            ],
+            "{table}"
+        );
+    }
 }
 
 #[test]

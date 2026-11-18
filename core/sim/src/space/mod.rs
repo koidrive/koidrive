@@ -29,7 +29,6 @@ use apply::{Applier, Context};
 use intents::{IntentId, NodeIntents, Tombstone, intents_valid, legacy_intents};
 
 pub use apply::MAX_DEPTH;
-pub use intents::legacy_intent_id;
 
 pub const FORMAT_VERSION: u32 = 1;
 pub const MAX_OPS: usize = 1000;

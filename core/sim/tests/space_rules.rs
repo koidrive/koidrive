@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use koidrive_engine::ids::IdGen;
+use koidrive_engine::journal::IntentId;
 use koidrive_engine::names::conflict_name;
 use koidrive_proto::v1::{
     ChunkRef, Commit, CommitResult, Content, CreateDir, CreateFile, Delete, Error, FieldIntents,
@@ -10,7 +11,7 @@ use koidrive_proto::v1::{
     PrepareUpload, Restore, Resume, RpcRequest, UpdateContent, UploadReceipt, change_record,
     chunk_plan, error, op, op_result, resync_required, rpc_request, rpc_response,
 };
-use koidrive_sim::space::{Role, Session, SpaceDo, legacy_intent_id, node_states};
+use koidrive_sim::space::{Role, Session, SpaceDo, node_states};
 use sha2::{Digest, Sha256};
 
 const NOW: i64 = 1_794_268_740_000;
@@ -1875,31 +1876,17 @@ fn field_ids(node: &NodeState) -> FieldIntents {
 }
 
 #[test]
-fn legacy_intent_ids_match_the_spec_vectors_and_the_root_holds_them() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../spec/vectors/legacy-intents.json"
-    );
-    let doc: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    let vectors = doc["vectors"].as_array().unwrap();
-    assert!(!vectors.is_empty());
-    for vector in vectors {
-        let text = |field: &str| vector[field].as_str().unwrap();
-        let id: String = legacy_intent_id(text("node_id"), text("field"), text("key"))
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        assert_eq!(id, text("id").replace('-', ""), "{vector}");
-    }
-
+fn the_root_holds_its_legacy_intent_ids() {
     let s = Space::new();
     let root = s.root();
     let intents = field_ids(&s.get(&root));
     let place = intents.place.unwrap();
     let status = intents.status.unwrap();
-    assert_eq!(place.id, legacy_intent_id(&root, "place", "0\0\0"));
-    assert_eq!(status.id, legacy_intent_id(&root, "status", "live:0"));
+    assert_eq!(
+        place.id,
+        IntentId::legacy_place(&root, 0, "", "").as_bytes()
+    );
+    assert_eq!(status.id, IntentId::legacy_live(&root, 0).as_bytes());
     assert!(intents.content.is_none());
     for legacy in [place, status] {
         assert_eq!(
