@@ -523,7 +523,10 @@ fn a_swap_seen_halfway_through_a_scan_publishes_nothing_and_the_next_scan_reads_
                 fs::rename(root.join(from), root.join(to)).unwrap();
             }
         });
-        assert!(matches!(result, Err(Error::Changed)), "{scope:?}: {result:?}");
+        assert!(
+            matches!(result, Err(Error::Changed)),
+            "{scope:?}: {result:?}"
+        );
         assert_eq!(snapshot, before);
         let changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
         assert_eq!(
