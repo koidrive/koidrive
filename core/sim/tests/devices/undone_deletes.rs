@@ -226,6 +226,10 @@ fn a_restore_the_deleting_user_chooses_after_a_rewind_brings_the_file_back() {
 
 #[test]
 fn a_rename_another_device_owes_on_a_file_moved_into_the_deleted_folder_brings_it_back() {
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-76b6-8f17-7744bb83aba9 on device 1 came undone, and no change its user did not see brought the node back",
+    );
     checked(
         2,
         &[
@@ -373,6 +377,10 @@ fn another_devices_change_that_never_reaches_the_server_leaves_the_delete_checke
 
 #[test]
 fn a_file_another_device_adds_to_the_deleted_folder_leaves_its_siblings_checked() {
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let mut deleted = vec![(0, BACKUP), (1, user(1, 0, 1, "c.txt")), (0, delete(0))];
     deleted.extend(commit(1));
     deleted.extend(commit(0));
@@ -389,6 +397,10 @@ fn a_file_another_device_adds_to_the_deleted_folder_leaves_its_siblings_checked(
 
 #[test]
 fn a_rename_another_device_makes_to_a_folder_between_leaves_the_deleted_file_checked() {
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let mut deleted = vec![(0, BACKUP), (1, rename(1, 1, "A")), (0, delete(0))];
     deleted.extend(commit(1));
     deleted.extend(commit(0));
@@ -442,6 +454,10 @@ fn a_rename_another_device_sends_after_the_delete_brings_the_folder_back_with_it
 #[test]
 fn a_folder_another_device_puts_back_under_its_old_parent_keeps_the_file_the_deleting_device_added()
 {
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 1 came undone, and no change its user did not see brought the node back",
+    );
     let mut moved = vec![
         (1, folder("C.TXT")),
         (1, rename(0, 2, "ss")),
@@ -470,6 +486,10 @@ fn a_folder_another_device_puts_back_under_its_old_parent_keeps_the_file_the_del
 
 #[test]
 fn a_folder_another_device_takes_back_out_of_the_deleted_folder_keeps_its_file() {
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let mut deleted = vec![
         (1, rename(0, 0, "A")),
         (0, rename(1, 1, "A")),
@@ -512,6 +532,10 @@ fn held_files(world: &World, device: usize) -> Vec<(String, i64)> {
 
 #[test]
 fn a_file_another_device_adds_after_the_delete_leaves_the_deleted_file_checked() {
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let deleted = vec![
         (0, BACKUP),
         (1, rename(2, 0, "c.txt")),
@@ -613,6 +637,10 @@ fn a_file_another_device_adds_to_the_deleted_folder_brings_back_only_the_folder(
 
 #[test]
 fn a_rename_of_a_folder_the_server_kept_leaves_the_deleted_file_checked() {
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let deleted = vec![
         (0, BACKUP),
         (1, overwrite(2)),
@@ -739,6 +767,10 @@ fn a_rename_and_back_the_deleting_device_never_saw_keeps_the_file() {
 
 #[test]
 fn a_rename_the_deleting_device_received_but_never_applied_keeps_the_file() {
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 1 came undone, and no change its user did not see brought the node back",
+    );
     let mut deleted = vec![(0, BACKUP), (0, rename(0, 0, "C.TXT"))];
     deleted.extend([(0, Step::Work(0)); 3]);
     deleted.extend([(1, DELIVER), (0, RESTORE), (1, delete(0))]);

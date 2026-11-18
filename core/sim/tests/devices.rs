@@ -544,8 +544,18 @@ fn holds<S: Strategy>(
     strategy: S,
     run: impl Fn(S::Value) -> Result<(), Failure>,
 ) {
-    let mut wrong = replays(test, SAVED_CASES, &strategy, &run);
-    let mut config = koidrive_test_support::battery_config(DEVICES_CASES, 256);
+    holds_in(test, (SAVED_CASES, DEVICES_CASES), seed, strategy, run);
+}
+
+fn holds_in<S: Strategy>(
+    test: &'static str,
+    (saved_cases, legacy): (&str, &'static str),
+    seed: Option<u64>,
+    strategy: S,
+    run: impl Fn(S::Value) -> Result<(), Failure>,
+) {
+    let mut wrong = replays(test, saved_cases, &strategy, &run);
+    let mut config = koidrive_test_support::battery_config(legacy, 256);
     let saved = config.failure_persistence.take();
     let battery = std::env::var_os("KOIDRIVE_BATTERY_CASES").is_some();
     if !battery {
@@ -856,31 +866,59 @@ proptest! {
     }
 }
 
-proptest! {
-    #![proptest_config(koidrive_test_support::battery_config(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/devices_on_coarse_volumes.proptest-regressions"),
-        256,
-    ))]
+const COARSE_CASES: (&str, &str) = (
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/devices_on_coarse_volumes.cases"
+    ),
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/devices_on_coarse_volumes.proptest-regressions"
+    ),
+);
 
-    #[test]
-    fn devices_on_coarse_volumes_lose_no_write(volumes in volumes(), phases in phases(Losses::None)) {
-        keep_on(&volumes, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
-    }
+#[test]
+fn devices_on_coarse_volumes_lose_no_write() {
+    holds_in(
+        test_name!(devices_on_coarse_volumes_lose_no_write),
+        COARSE_CASES,
+        None,
+        (volumes(), phases(Losses::None)),
+        |(volumes, phases)| keep_on(&volumes, &phases).map(drop),
+    );
+}
 
-    #[test]
-    fn devices_on_coarse_volumes_converge_once_the_faults_stop(volumes in volumes(), phases in phases(Losses::None)) {
-        converge_on(&volumes, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
-    }
+#[test]
+fn devices_on_coarse_volumes_converge_once_the_faults_stop() {
+    holds_in(
+        test_name!(devices_on_coarse_volumes_converge_once_the_faults_stop),
+        COARSE_CASES,
+        None,
+        (volumes(), phases(Losses::None)),
+        |(volumes, phases)| converge_on(&volumes, &phases).map(drop),
+    );
+}
 
-    #[test]
-    fn devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds(volumes in volumes(), phases in phases(Losses::RestoresAndRewinds)) {
-        keep_on(&volumes, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
-    }
+#[test]
+fn devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds() {
+    holds_in(
+        test_name!(devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds),
+        COARSE_CASES,
+        None,
+        (volumes(), phases(Losses::RestoresAndRewinds)),
+        |(volumes, phases)| keep_on(&volumes, &phases).map(drop),
+    );
+}
 
-    #[test]
-    fn devices_on_coarse_volumes_converge_across_restores_and_rewinds(volumes in volumes(), phases in phases(Losses::RestoresAndRewinds)) {
-        converge_on(&volumes, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
-    }
+#[test]
+fn devices_on_coarse_volumes_converge_across_restores_and_rewinds() {
+    holds_in(
+        test_name!(devices_on_coarse_volumes_converge_across_restores_and_rewinds),
+        COARSE_CASES,
+        None,
+        (volumes(), phases(Losses::RestoresAndRewinds)),
+        |(volumes, phases)| converge_on(&volumes, &phases).map(drop),
+    );
 }
 
 #[test]
@@ -1136,10 +1174,6 @@ fn the_rewind_schedules_reach_every_recovery() {
 
 #[test]
 fn the_mixed_schedules_restore_across_a_rewind() {
-    let _red = expect_red(
-        Check::WriteKept,
-        "write 3 of the write of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 2 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it",
-    );
     reaches(
         phases(Losses::RestoresAndRewinds),
         &[
