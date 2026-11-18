@@ -295,10 +295,16 @@ impl Transfer {
                                         }
                                         loaded.push(Member { index, chunk, target, bytes, tries: 0 });
                                     }
-                                    match url {
+                                    let began = std::time::Instant::now();
+                                    let members = loaded.len();
+                                    let bytes: usize = loaded.iter().map(|member| member.bytes.len()).sum();
+                                    let bundle = url.is_some();
+                                    let result = match url {
                                         Some(url) => self.send_bundle(session, url, loaded, out).await,
                                         None => self.put_each(loaded, out).await,
-                                    }
+                                    };
+                                    tracing::info!(bundle, members, bytes, ms = began.elapsed().as_millis() as u64, ok = result.is_ok(), "measure unit");
+                                    result
                                 }
                                 .await;
                                 (probe, sent, result)
