@@ -431,7 +431,8 @@ export class CommitApplier {
     const parent = this.node(parentId);
     if (parent) return parent;
     const tombstone = tombstoneOf(this.sql, this.id(parentId));
-    return tombstone && this.nearestLive(tombstone.parent_id);
+    const live = tombstone && this.nearestLive(tombstone.parent_id);
+    return live && this.depth(live) >= MAX_DEPTH ? getNode(this.sql, live.parent_id!)! : live;
   }
 
   private parentRow(parentId: string): NodeRow | Reject {
