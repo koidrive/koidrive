@@ -4,3 +4,4 @@
 # a_server_folder_the_user_removed_an_entry_from_before_the_rules_left_it_out_is_not_taken_along pins cc 9f7f: a removal made before the rules exclude the entry, also across a restart. The existing excluded-entry tests only remove an entry the rules already exclude.
 # a_file_removed_while_stopped_is_recorded_as_the_users_removal_by_the_scan_at_start proves the driver's scan at start records an offline removal; engine tests can't reach the driver's scan.
 # a_store_from_before_removals_were_recorded_opens_with_none_recorded and the removed_from upgrade case cover the new migration, which the store's existing upgrade tests don't know.
+# Net, this PR adds +575 Rust test lines: 400 from the budget and 180 from this record.

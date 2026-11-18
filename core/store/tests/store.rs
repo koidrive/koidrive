@@ -1677,7 +1677,7 @@ fn engine_state_survives_a_reopen() {
 }
 
 /// The tables of the engine state besides the nodes of R, L and S.
-const ENGINE_TABLES: [&str; 52] = [
+const ENGINE_TABLES: &[&str] = &[
     "node_sets",
     "node_maps",
     "waiting_updates",
@@ -1739,7 +1739,7 @@ fn count_engine_writes(path: &Path) {
     let conn = Connection::open(path).unwrap();
     conn.execute_batch("CREATE TABLE writes (n INTEGER NOT NULL); INSERT INTO writes VALUES (0);")
         .unwrap();
-    for table in ENGINE_TABLES {
+    for &table in ENGINE_TABLES {
         for event in ["INSERT", "UPDATE", "DELETE"] {
             conn.execute_batch(&format!(
                 "CREATE TRIGGER {table}_{event} AFTER {event} ON {table}
