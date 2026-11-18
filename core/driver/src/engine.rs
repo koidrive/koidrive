@@ -3774,6 +3774,7 @@ mod tests {
             let mut engine = empty_engine();
             let folder = tempfile::tempdir().unwrap();
             let mut snapshot = Snapshot::default();
+            let mut kinds = BTreeMap::new();
             for edits in rounds {
                 for edit in &edits {
                     make(folder.path(), edit);
@@ -3782,6 +3783,10 @@ mod tests {
                 engine.observe(&batch, 0);
                 prop_assert_eq!(engine.trees.check(), Ok(()), "after {:?}", batch);
                 prop_assert_eq!(in_l(&engine), on_disk(&snapshot), "after {:?}", batch);
+                for (id, node) in engine.trees.local().iter() {
+                    let kind = *kinds.entry(id.clone()).or_insert(node.shape.kind);
+                    prop_assert_eq!(kind, node.shape.kind, "{} after {:?}", id, batch);
+                }
             }
         }
     }
