@@ -3,7 +3,7 @@
 #[path = "attribution/authors.rs"]
 mod authors;
 
-#[path = "attribution/model.rs"]
+#[path = "attribution/model/mod.rs"]
 mod model;
 
 use model::Action::{
