@@ -326,6 +326,125 @@ fn a_restored_value_no_ancestry_names_is_followed() {
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
 
+fn server_version(shape: Shape, version_id: &str, made_over: &[&str], rev: u64) -> RemoteNode {
+    RemoteNode {
+        made_over: made_over.iter().map(|id| (*id).into()).collect(),
+        shape,
+        trashed: false,
+        content_rev: rev,
+        edit_rev: rev,
+        meta_rev: rev,
+        meta_edit_rev: rev,
+        trash_group: String::new(),
+        version_id: version_id.into(),
+        pending_for: None,
+        pending_by: None,
+    }
+}
+
+fn held_under_a_later_edit(
+    local: &[(&str, Shape)],
+    group: RecoveryGroup,
+) -> (Trees, Commits, IdGen) {
+    let mut trees = trees(local, &[], &[]);
+    trees.set_remote("n".into(), server_version(file(ROOT, "a", 4), "v4", &[], 1));
+    trees.set_synced("n".into(), Some(file(ROOT, "a", 4)));
+    trees.settle();
+    let cause = RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk);
+    let (mut commits, mut ids) = recovered_after(&mut trees, 0, cause);
+    let before = asked(&commits, group, &["n"]);
+    trees.set_remote(
+        "n".into(),
+        server_version(file(ROOT, "a", 5), "v5", &["v4"], 2),
+    );
+    trees.settle();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let after = asked(&commits, group, &["n"]);
+    assert_ne!(after.id, before.id);
+    (trees, commits, ids)
+}
+
+fn apply(commits: &mut Commits, trees: &mut Trees, ops: usize, listed: &[(&str, RemoteNode)]) {
+    let applied = OpResult {
+        code: op_result::Code::Applied as i32,
+        ..Default::default()
+    };
+    let result = CommitResult {
+        seq: 3,
+        results: vec![applied; ops],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    for (id, node) in listed {
+        trees.set_remote((*id).into(), node.clone());
+    }
+    assert!(commits.acknowledge(trees, 3));
+}
+
+#[test]
+fn a_published_rename_after_a_store_rollback_keeps_another_devices_later_edit() {
+    let (mut trees, mut commits, mut ids) = held_under_a_later_edit(
+        &[("n", file(ROOT, "b", 4))],
+        RecoveryGroup::ChangedOnThisDevice,
+    );
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "n".into())]
+    );
+    let moved = server_version(file(ROOT, "b", 5), "v5", &["v4"], 3);
+    apply(&mut commits, &mut trees, 1, &[("n", moved)]);
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(node, Effect::WriteFile { content: written, .. })] if node == "n" && *written == content(5)),
+        "{done:?}"
+    );
+    assert_eq!(trees.local().get("n").unwrap().shape, file(ROOT, "b", 5));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_published_offline_edit_after_a_store_rollback_keeps_the_other_devices_later_edit_beside_it() {
+    let (mut trees, mut commits, mut ids) = held_under_a_later_edit(
+        &[("n", file(ROOT, "a", 6))],
+        RecoveryGroup::ChangedOnThisDevice,
+    );
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    let [("create file", copy)] = &sent[..] else {
+        panic!("{sent:?}");
+    };
+    let copy = copy.clone();
+    let renamed = server_version(file(ROOT, "a (conflict)", 6), "v6", &[], 3);
+    apply(&mut commits, &mut trees, 1, &[(&copy, renamed)]);
+    effects(&mut trees, &mut ids);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    effects(&mut trees, &mut ids);
+    let mut held: Vec<Option<Content>> = (trees.local().iter())
+        .map(|(_, node)| node.shape.content.clone())
+        .collect();
+    held.sort_by_key(|content| content.as_ref().map(|c| c.manifest_digest.clone()));
+    assert_eq!(held, [Some(content(5)), Some(content(6))]);
+    assert_eq!(trees.local().get("n").unwrap().shape, file(ROOT, "a", 5));
+}
+
+#[test]
+fn a_delete_answered_after_a_store_rollback_keeps_another_devices_later_edit() {
+    let (mut trees, mut commits, mut ids) =
+        held_under_a_later_edit(&[], RecoveryGroup::DeletedOnThisDevice);
+    let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Delete));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(node, Effect::WriteFile { content: written, .. })] if node == "n" && *written == content(5)),
+        "{done:?}"
+    );
+    assert_eq!(trees.local().get("n").unwrap().shape, file(ROOT, "a", 5));
+}
+
 #[test]
 fn an_answer_whose_commit_finds_the_head_moved_is_asked_again() {
     let mut trees = trees(
