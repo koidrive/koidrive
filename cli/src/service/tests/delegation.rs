@@ -316,10 +316,17 @@ async fn a_newer_koi_that_does_not_finish_is_killed_and_reported_after_the_deadl
     .unwrap();
     let (fake, service) = (Fake::default(), service(&[]));
     let began = tokio::time::Instant::now();
+    let returned = Cell::new(false);
     let (report, ()) = tokio::join!(
-        delegated(&fake, &service, &stalled, true, Duration::from_secs(1)),
         async {
-            while !fs::read_to_string(&pid).is_ok_and(|written| written.ends_with('\n')) {
+            let report = delegated(&fake, &service, &stalled, true, Duration::from_secs(1)).await;
+            returned.set(true);
+            report
+        },
+        async {
+            while !returned.get()
+                && !fs::read_to_string(&pid).is_ok_and(|written| written.ends_with('\n'))
+            {
                 tokio::task::yield_now().await;
             }
         },
