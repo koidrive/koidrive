@@ -292,6 +292,19 @@ class SplitTests(unittest.TestCase):
             split.map_items(self.executable, self.mapping)
         self.assertFalse(split.MAPPING.exists())
 
+    def test_map_keeps_proptest_blocks_that_share_a_function_in_their_own_files(self):
+        self.generate()
+        config = b'    #![proptest_config(koidrive_test_support::battery_config(concat!(file!(), ".regressions.txt"), 1))]\n'
+        (self.root / "tests/props.rs").write_bytes(self.property_source(b"", b"proptest::proptest", config))
+        scenario = self.root / "tests/scenario.rs"
+        scenario.write_bytes(scenario.read_bytes() + b"\n" + self.property_source(b"", b"proptest::proptest", config).replace(
+            b"}\n}\n", b"}\n    #[test]\n    fn also_holds(x in 0..4u8) { assert!(x < 4); }\n}\n"))
+        self.mapping["tests.rs"]["proptest:holds"] = "props"
+        self.mapping["tests.rs"]["proptest:holds,also_holds"] = "scenario"
+        split.map_items(self.executable, self.mapping)
+        written = json.loads(split.MAPPING.read_text())["tests.rs"]
+        self.assertEqual((written["proptest:holds"], written["proptest:holds,also_holds"]), ("props", "scenario"))
+
     def test_a_module_moved_into_a_scenario_is_refused(self):
         self.generate()
         module = b"mod telemetry {\n    #[test]\n    fn nested() {}\n}\n"

@@ -290,10 +290,12 @@ def map_items(executable, mapping):
                     properties.append(item["name"])
         for name in properties:
             functions = set(name.removeprefix("proptest:").split(","))
-            for key, scenario in assignments.items():
-                if (key.startswith("proptest:") and scenario != found[name]
-                        and functions & set(key.removeprefix("proptest:").split(","))):
-                    held = scenario_file(path, scenario).relative_to(ROOT)
+            previous = [name] if name in assignments else [
+                key for key in assignments if key.startswith("proptest:") and key not in found
+                and functions & set(key.removeprefix("proptest:").split(","))]
+            for key in previous:
+                if assignments[key] != found[name]:
+                    held = scenario_file(path, assignments[key]).relative_to(ROOT)
                     raise ValueError(f"{name} must stay in {held}: a proptest block never changes file")
         modules = [name for name in found if name.startswith("mod:") and found[name] != "root"]
         if modules:
@@ -391,7 +393,7 @@ def main():
         compare_lists(args.before, args.after)
         return
     if args.command == "check-format":
-        diff = subprocess.check_output(["git", "diff", "-U0", "--no-color", "--no-ext-diff", "--src-prefix=a/",
+        diff = subprocess.check_output(["git", "diff", "-U0", "--inter-hunk-context=0", "--text", "--no-color", "--no-ext-diff", "--src-prefix=a/",
                                         "--dst-prefix=b/", "--diff-filter=d", args.base_ref, "HEAD"], cwd=ROOT)
         mapping = json.loads(read_source("HEAD", MAPPING.relative_to(ROOT).as_posix()))
         check_format(mapping, changed_lines(diff.decode(errors="replace")), "HEAD")
