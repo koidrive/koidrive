@@ -93,7 +93,6 @@ pub struct Disks {
 
 struct Mounted {
     at: PathBuf,
-    #[cfg(target_os = "macos")]
     image: PathBuf,
     #[cfg(target_os = "macos")]
     device: String,
@@ -224,6 +223,7 @@ impl Disks {
         {
             self.mounted.push(Mounted {
                 at: at.to_path_buf(),
+                image: fs::canonicalize(image).unwrap(),
             });
             if image
                 .extension()
@@ -434,9 +434,36 @@ fn unmount(mounted: &Mounted) -> Result<(), String> {
 fn unmount(mounted: &Mounted) -> Result<(), String> {
     output(
         "sudo",
-        &["-n".as_ref(), "umount".as_ref(), mounted.at.as_ref()],
-    )
-    .map(drop)
+        &[
+            "-n".as_ref(),
+            "umount".as_ref(),
+            "--lazy".as_ref(),
+            mounted.at.as_ref(),
+        ],
+    )?;
+    let started = std::time::Instant::now();
+    loop {
+        let loops = output(
+            "sudo",
+            &[
+                "-n".as_ref(),
+                "losetup".as_ref(),
+                "--associated".as_ref(),
+                mounted.image.as_ref(),
+            ],
+        )?;
+        if loops.is_empty() {
+            return Ok(());
+        }
+        if started.elapsed() >= std::time::Duration::from_secs(30) {
+            return Err(format!(
+                "{} left {} but a file on it is still open: {loops}",
+                mounted.image.display(),
+                mounted.at.display()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 impl Drop for Disks {
@@ -454,7 +481,6 @@ mod tests {
             .into_iter()
             .map(|name| Mounted {
                 at: dir.path().join(name),
-                #[cfg(target_os = "macos")]
                 image: dir.path().join(format!("{name}.dmg")),
                 #[cfg(target_os = "macos")]
                 device: String::new(),
@@ -560,6 +586,32 @@ mod tests {
         );
         assert_eq!(image_on(&info, "/dev/disk7"), Ok(None));
         assert!(image_on(&plist::Value::String("bad".into()), "/dev/disk5").is_err());
+    }
+
+    #[test]
+    fn a_disk_with_a_file_open_on_it_is_ejected_and_mounts_again_with_its_files() {
+        use std::os::unix::fs::MetadataExt;
+        let Some(mut disks) = Disks::new() else {
+            return;
+        };
+        let image = disks.image("Held");
+        let at = disks.base().join("at");
+        fs::create_dir(&at).unwrap();
+        disks.attach(&image, &at);
+        fs::write(at.join("open.txt"), b"held").unwrap();
+        let held = fs::File::open(at.join("open.txt")).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            drop(held);
+        });
+        disks.detach(&at);
+        release.join().unwrap();
+        assert_eq!(
+            fs::metadata(&at).unwrap().dev(),
+            fs::metadata(disks.base()).unwrap().dev()
+        );
+        disks.attach(&image, &at);
+        assert_eq!(fs::read(at.join("open.txt")).unwrap(), b"held");
     }
 
     #[cfg(target_os = "macos")]

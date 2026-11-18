@@ -283,6 +283,7 @@ jobs:
             sudo apt-get install -y -qq dosfstools
           fi
           cargo test --locked -p koidrive-fs --test volumes -- --show-output
+          cargo test --locked -p koidrive-test-support --lib disks -- --show-output
       - name: Test the regression-case splitter
         run: |
           python3 scripts/test-split-proptest-regressions.py -v
