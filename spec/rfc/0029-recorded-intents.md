@@ -179,9 +179,10 @@ A row ends when:
 - for a `held` row, R holds an intent for the field that the history places after the row's `held_as`. A record that reaches R while the row is `local` or `sent` does not end it: the row's op is still sent, and the server decides between the two (R3, or the later place);
 - the row's op is answered `SUPERSEDED`;
 - the user changes the field again, which replaces the row;
-- for a status row, the user creates or restores the node again, or R has lacked the node for 30 days.
+- for a status row, the user creates or restores the node again;
+- R has lacked the node for 30 days in a row, counted from the first listing or record that showed R without it, and R has not held it since: the node's status rows, and its other rows in state `held`, end, and the node's history ends with its last row. A `local` or `sent` place or content row never ends this way, since it holds a change the server has not taken.
 
-A row in state `held`, own or carried, stays until one of these, because a later restore can take back any commit.
+A row in state `held`, own or carried, stays until one of these, because a later restore can take back any commit. For a node R no longer holds, the 30-day end bounds that: a restore from before it brings the node back as a remote change (§5.4 case 5).
 
 ### 5.2 Sending and acknowledging
 
