@@ -583,6 +583,35 @@ fn a_copy_another_device_sends_after_the_delete_leaves_the_deleted_file_checked(
 }
 
 #[test]
+fn a_file_another_device_adds_to_the_deleted_folder_brings_back_only_the_folder() {
+    let world = checked(
+        2,
+        &[
+            vec![
+                (0, folder("b")),
+                (0, user(1, 0, 1, "a")),
+                (0, user(1, 0, 1, "c.txt")),
+            ],
+            vec![
+                (1, rename(2, 0, "c.txt")),
+                (0, delete(0)),
+                (0, SCAN),
+                (0, COMMIT),
+                (0, COMMIT),
+                (1, user(1, 0, 1, "A")),
+                (1, SCAN),
+                (1, COMMIT),
+                (1, COMMIT),
+            ],
+        ],
+    )
+    .unwrap();
+    for device in 0..2 {
+        assert!(!held_files(&world, device).contains(&("a".to_owned(), 1)));
+    }
+}
+
+#[test]
 fn a_rename_of_a_folder_the_server_kept_leaves_the_deleted_file_checked() {
     let deleted = vec![
         (0, BACKUP),

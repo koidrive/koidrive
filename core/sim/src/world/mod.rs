@@ -2620,6 +2620,18 @@ impl World {
                                             .is_some_and(|at| *at <= built.at(ino))
                                     })
                             };
+                            let acted_on = |node: &str| {
+                                restored.contains(node)
+                                    || ino(node).is_some_and(|ino| {
+                                        (self.touches[d].get(&ino).into_iter().flatten()).any(
+                                            |at| {
+                                                *at <= built.at(ino)
+                                                    && (self.actions[d].get(at))
+                                                        .is_some_and(|(own, _)| *own == ino)
+                                            },
+                                        )
+                                    })
+                            };
                             let asked = |node: &str| {
                                 touched(node)
                                     || ino(node).is_some_and(|ino| self.approved[d].contains(&ino))
@@ -2638,7 +2650,7 @@ impl World {
                                     && !asked(id)
                                     && !(chain(&parents, id).into_iter().skip(1))
                                         .take_while(|id| trashed.contains(*id))
-                                        .any(touched)
+                                        .any(acted_on)
                                     && !(nodes.iter()).any(|other| {
                                         asked(&other.node_id)
                                             && chain(&parents, &other.node_id)
