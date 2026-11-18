@@ -1133,3 +1133,97 @@ fn this_targets_tarball_is_named_like_the_release_assets() {
         "{asset}"
     );
 }
+
+#[test]
+fn next_links_follow_githubs_repository_pages_on_the_same_origin() {
+    for base in [API, "http://127.0.0.1:8080/api/"] {
+        let (url, _) = releases_url(Some(base)).unwrap();
+        let base = Url::parse(base).unwrap();
+        let next = |target: &Url| {
+            let link = format!("<{target}>; rel=\"next\"");
+            next_page(&url, &headers(&[("link", &link)]))
+        };
+        let page = base
+            .join("repositories/123/releases?per_page=20&page=2")
+            .unwrap();
+        assert_eq!(next(&page), Ok(Some(page.clone())), "{base}");
+        for wrong in [
+            "repositories/abc/releases",
+            "repositories//releases",
+            "repositories/123/releases/assets",
+            "repositories/123/tags",
+            "/elsewhere/repositories/123/releases",
+        ] {
+            assert_eq!(next(&base.join(wrong).unwrap()), Err(()), "{base} {wrong}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn pagination_follows_githubs_repository_id_links() {
+    let (listener, http, url) = stub_github().await;
+    let next = format!(
+        "http://{}/repositories/1/releases?per_page=20&page=2",
+        listener.local_addr().unwrap()
+    );
+    let first = page(
+        serde_json::json!([listed("v0.1.3", false, &[ASSET])]),
+        Some(&next),
+        "\"first\"",
+    );
+    let second = page(
+        serde_json::json!([listed("v0.2.0", false, &[ASSET])]),
+        None,
+        "\"second\"",
+    );
+    let server = async {
+        served(&listener, &first).await;
+        served(&listener, &second).await
+    };
+    let (request, answer) = tokio::join!(server, ask(&http, url, None, ASSET));
+    assert!(
+        request.starts_with("GET /repositories/1/releases?per_page=20&page=2 HTTP/1.1\r\n"),
+        "{request}"
+    );
+    assert_eq!(
+        answer,
+        Answer::Releases {
+            etag: None,
+            release: release("0.2.0")
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_refused_check_answers_with_githubs_answer_from_the_last_day() {
+    let rate_limited = "HTTP/1.1 403 Forbidden\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: 4102444800\r\ncontent-length: 0\r\n\r\n";
+    for (age, answered) in [(HOUR_MS, true), (DAY_MS + HOUR_MS, false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update-check.json");
+        let at = now_ms() - age;
+        let cached = Checked {
+            asset: Some(this_asset()),
+            checked_at: Some(at),
+            successful_at: Some(at),
+            release: release("0.2.0"),
+            ..Checked::default()
+        };
+        save(&path, &cached).unwrap();
+        let (listener, http, url) = stub_github().await;
+        let updates = release_updates(true, path);
+        let changed = watch::Sender::new(());
+        let (_, update) = tokio::join!(
+            served(&listener, rate_limited),
+            updates.ask_once(&http, url, &changed)
+        );
+        let available = Update::Available {
+            latest: "0.2.0".into(),
+            url: release("0.2.0").unwrap().url,
+            checked_at_ms: at,
+        };
+        match answered {
+            true => assert_eq!(update, Ok(available), "{age}"),
+            false => assert_eq!(update, Err(CheckError::Refused), "{age}"),
+        }
+    }
+}
