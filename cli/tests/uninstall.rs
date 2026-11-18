@@ -244,7 +244,7 @@ fn a_signed_in_state_folder_koidrive_did_not_make_stays_signed_in_and_says_why()
         envelope["data"]["device"],
         json!({
             "state": "still_listed",
-            "problem": "Koidrive has no record of creating ~/state/koidrive and no background sync answered, so uninstall did not sign this device out",
+            "problem": "Koidrive has no record of creating ~/state/koidrive, and no running background sync took the sign-out",
         }),
         "{envelope:#}"
     );

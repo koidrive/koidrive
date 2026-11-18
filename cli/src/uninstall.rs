@@ -932,7 +932,7 @@ async fn sign_out(
     }
     if !found.signs_out {
         return still_listed(Some(format!(
-            "Koidrive has no record of creating {} and no background sync answered, so uninstall did not sign this device out",
+            "Koidrive has no record of creating {}, and no running background sync took the sign-out",
             shown_folder(&paths.state_dir)
         )));
     }

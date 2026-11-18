@@ -1862,7 +1862,12 @@ impl Driver {
                         .persist()
                         .map_err(io_error(folder.status.path()))
                 });
-            written.map_err(|error| DriverError::PausedUnsaved { path, error })?;
+            if let Err(error) = written {
+                if let Err(folder) = &persisted {
+                    tracing::warn!(%folder, "a folder's paused state could not be saved either");
+                }
+                return Err(DriverError::PausedUnsaved { path, error });
+            }
             persisted.map(|()| changed)
         });
         paused
