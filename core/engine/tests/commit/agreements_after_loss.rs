@@ -712,6 +712,21 @@ fn a_folder_resent_for_a_file_the_user_renamed_in_it_is_created_when_another_dev
     assert!(matches!(commit.as_deref(), Some([op::Op::CreateDir(create), moved]) if create.node_id == "p" && *moved == mv("f", "p", "b")), "{commit:?}");
 }
 
+#[test]
+fn a_folder_resent_for_a_folder_the_user_renamed_in_it_is_created_when_another_device_moved_it_into_its_own_subfolder() {
+    let mut trees = trees(&[
+        ("p", Some(dir(ROOT, "p")), Some(dir(ROOT, "p")), None),
+        ("d", Some(dir("p", "d")), Some(dir("p", "d")), Some(remote(dir("e", "d")))),
+        ("e", Some(dir("d", "e")), Some(dir("d", "e")), Some(remote(dir(ROOT, "e")))),
+    ]);
+    trees.set_local_changed("d".into(), local(dir("p", "d2"), 2));
+    trees.set_local_changed("e".into(), local(dir("d", "e2"), 3));
+    trees.settle();
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
+    assert!(matches!(commit.as_deref(), Some([op::Op::CreateDir(create), first, second]) if create.node_id == "p" && *first == mv("d", "p", "d2") && *second == mv("e", "d", "e2")), "{commit:?}");
+}
+
 fn held_elsewhere_in_a_lost_folder() -> Trees {
     trees(&[
         ("p", Some(dir(ROOT, "p")), Some(dir(ROOT, "p")), None),
