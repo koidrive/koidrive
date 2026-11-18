@@ -310,7 +310,7 @@ impl Trees {
             };
             if self.l.get(&id).is_none() {
                 if self.journal_row(&id, Field::Status).is_none() {
-                    let seen_list = self.seen_list(&id);
+                    let seen_list = self.acknowledged_seen_list(&id);
                     let base = self.acknowledged_intent(&id, Field::Status);
                     self.journal.user_delete(&id, seen_list, base);
                 }
@@ -422,14 +422,43 @@ impl Trees {
             .collect()
     }
 
-    fn acknowledged_intent(&self, id: &str, field: Field) -> Option<IntentId> {
+    fn acknowledged_value(&self, id: &str, field: Field) -> Option<Value> {
         let shape = self.acknowledged(id)?;
-        let value = match field {
-            Field::Place => place(shape, self.synced_mark(id)),
-            Field::Content => content(shape, None)?,
-            Field::Status => Value::Status { live: true },
-        };
+        match field {
+            Field::Place => Some(place(shape, self.synced_mark(id))),
+            Field::Content => content(shape, None),
+            Field::Status => Some(Value::Status { live: true }),
+        }
+    }
+
+    fn acknowledged_intent(&self, id: &str, field: Field) -> Option<IntentId> {
+        let value = self.acknowledged_value(id, field)?;
         Some(self.legacy_intent(id, field, &value))
+    }
+
+    fn acknowledged_seen_list(&self, id: &str) -> Vec<Seen> {
+        let mut nodes: Vec<NodeId> = vec![id.to_owned()];
+        let mut next = 0;
+        while let Some(node) = nodes.get(next).cloned() {
+            next += 1;
+            let lacked = (self.s_names.children(&node)).filter(|child| self.l.get(child).is_none());
+            nodes.extend(lacked.cloned());
+        }
+        let mut seen = Vec::new();
+        for node in &nodes {
+            for field in Field::ALL {
+                let Some(value) = self.acknowledged_value(node, field) else {
+                    continue;
+                };
+                seen.push(Seen {
+                    node: node.clone(),
+                    field,
+                    intent: self.legacy_intent(node, field, &value),
+                    value: Some(value),
+                });
+            }
+        }
+        seen
     }
 
     fn legacy_intent(&self, id: &str, field: Field, value: &Value) -> IntentId {
