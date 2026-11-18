@@ -159,13 +159,13 @@ pub(super) async fn open_browser(url: &Url) -> bool {
     } else {
         "xdg-open"
     };
-    let opened = crate::program::system_async(opener)
-        .arg(url.as_str())
+    let mut open = crate::program::system_async(opener);
+    open.arg(url.as_str())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .status();
+        .kill_on_drop(true);
+    let opened = open.status();
     tokio::time::timeout(Duration::from_secs(5), opened)
         .await
         .is_ok_and(|result| result.is_ok_and(|status| status.success()))

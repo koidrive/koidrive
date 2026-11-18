@@ -1,15 +1,15 @@
 use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
 use crate::app_install::macos::config::Config;
 use crate::app_install::macos::constants::{BUNDLE, INSPECT_RUNNING, QUIESCE};
-use crate::app_install::macos::control::{Control, args, io_error, process};
+use crate::app_install::macos::control::{Control, io_error, passed, process};
 use crate::app_install::macos::filesystem::observed;
 use crate::app_install::macos::state::{
     Lifecycle, OwnedPath, Receipt, Replay, RunningApp, Transfer, UiIntent, VerifiedBundle,
 };
 use crate::app_install::macos::verification::{current, inventory, verify};
 use crate::app_install::outcome::AppLaunchResult;
+use crate::program::Arg;
 use semver::Version;
-use std::ffi::OsStr;
 use std::path::Path;
 
 pub(super) async fn installed_for(
@@ -84,13 +84,13 @@ pub(super) async fn capture_ui(
     for app in installed {
         let output = process(
             &config.osascript,
-            &args(&[
-                OsStr::new("-l"),
-                OsStr::new("JavaScript"),
-                OsStr::new("-e"),
-                OsStr::new(INSPECT_RUNNING),
-                app.path.as_os_str(),
-            ]),
+            &[
+                Arg::from("-l"),
+                Arg::from("JavaScript"),
+                Arg::from("-e"),
+                Arg::from(INSPECT_RUNNING),
+                passed(&app.path)?,
+            ],
             control,
         )
         .await?;
@@ -260,13 +260,15 @@ pub(super) async fn quiesce(
     paths: &[&Path],
     control: &Control,
 ) -> Result<bool, AppInstallError> {
-    let mut parameters = args(&[
-        OsStr::new("-l"),
-        OsStr::new("JavaScript"),
-        OsStr::new("-e"),
-        OsStr::new(QUIESCE),
-    ]);
-    parameters.extend(paths.iter().map(|path| path.as_os_str().to_owned()));
+    let mut parameters = vec![
+        Arg::from("-l"),
+        Arg::from("JavaScript"),
+        Arg::from("-e"),
+        Arg::from(QUIESCE),
+    ];
+    for path in paths {
+        parameters.push(passed(path)?);
+    }
     let output = process(&config.osascript, &parameters, control)
         .await
         .map_err(|error| {
@@ -294,13 +296,11 @@ pub(super) async fn open(
     if !requested {
         return AppLaunchResult::NotRequested;
     }
-    match process(
-        &config.open,
-        &args(&[OsStr::new("-a"), path.as_os_str()]),
-        control,
-    )
-    .await
-    {
+    let launched = match passed(path) {
+        Ok(path) => process(&config.open, &[Arg::from("-a"), path], control).await,
+        Err(error) => Err(error),
+    };
+    match launched {
         Ok(_) => AppLaunchResult::Requested,
         Err(error) => AppLaunchResult::Failed(error.to_string()),
     }

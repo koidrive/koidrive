@@ -1,9 +1,9 @@
 use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
 use crate::app_install::macos::config::Config;
-use crate::app_install::macos::control::{Control, args, io_error, process};
+use crate::app_install::macos::control::{Control, io_error, passed, process};
 use crate::app_install::macos::filesystem::{directory, identity, regular_at};
 use crate::app_install::macos::state::{Identity, MountState, OwnedMount};
-use std::ffi::OsStr;
+use crate::program::Arg;
 use std::path::Path;
 
 impl OwnedMount {
@@ -38,16 +38,16 @@ impl OwnedMount {
         self.check_image(expected)?;
         process(
             &config.hdiutil,
-            &args(&[
-                OsStr::new("attach"),
-                OsStr::new("-readonly"),
-                OsStr::new("-nobrowse"),
-                OsStr::new("-noautoopen"),
-                OsStr::new("-mountpoint"),
-                self.point.as_os_str(),
-                OsStr::new("-plist"),
-                self.image.as_os_str(),
-            ]),
+            &[
+                Arg::from("attach"),
+                Arg::from("-readonly"),
+                Arg::from("-nobrowse"),
+                Arg::from("-noautoopen"),
+                Arg::from("-mountpoint"),
+                passed(&self.point)?,
+                Arg::from("-plist"),
+                passed(&self.image)?,
+            ],
             control,
         )
         .await?;
@@ -67,7 +67,7 @@ impl OwnedMount {
     ) -> Result<MountState, AppInstallError> {
         let info = process(
             &config.hdiutil,
-            &args(&[OsStr::new("info"), OsStr::new("-plist")]),
+            &[Arg::from("info"), Arg::from("-plist")],
             control,
         )
         .await?;
@@ -128,7 +128,7 @@ impl OwnedMount {
         self.check_image(expected)?;
         process(
             &config.hdiutil,
-            &args(&[OsStr::new("detach"), self.point.as_os_str()]),
+            &[Arg::from("detach"), passed(&self.point)?],
             control,
         )
         .await?;

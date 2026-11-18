@@ -907,3 +907,55 @@ fn koi_update_never_runs_a_homebrew_koi_outside_its_sandbox() {
     let calls = std::fs::read_to_string(&ran).unwrap_or_default();
     assert!(calls.is_empty(), "outside koi ran: {calls:?}");
 }
+
+#[test]
+fn koi_update_never_pulls_a_homebrew_tap_outside_its_sandbox() {
+    let home = Sandbox::new();
+    let github = github("v99.0.0");
+    let link = homebrew_binary(home.path(), false);
+    let koi = std::fs::canonicalize(&link).unwrap();
+    let prefix = std::fs::canonicalize(home.path().join("brew")).unwrap();
+    upgrading_brew(&prefix, &koi, "99.0.0", 0);
+    std::fs::remove_file(prefix.join("bin/git")).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let upstream = outside.path().join("upstream");
+    let tap = outside.path().join("tap");
+    let ran = outside.path().join("ran");
+    let sh = |script: &str| {
+        let output = sandboxed("/bin/sh", home.path())
+            .args(["-c", script])
+            .env("HOME", outside.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{script}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let commit = "git -c user.name=a -c user.email=a@a commit -q --allow-empty";
+    let hook = tap.join(".git/hooks/post-merge");
+    sh(&format!(
+        "set -e; git init -q '{u}'; cd '{u}'; {commit} -m one; git clone -q '{u}' '{t}'; {commit} -m two; printf '#!/bin/sh\\ntouch \"%s\"\\n' '{r}' > '{h}'; chmod +x '{h}'",
+        u = upstream.display(),
+        t = tap.display(),
+        r = ran.display(),
+        h = hook.display(),
+    ));
+    let head = || sh(&format!("git -C '{}' rev-parse HEAD", tap.display()));
+    let before = head();
+    let brew = prefix.join("bin/brew");
+    let script = std::fs::read_to_string(&brew).unwrap().replace(
+        &prefix
+            .join("Library/Taps/koidrive/homebrew-tap")
+            .display()
+            .to_string(),
+        &tap.display().to_string(),
+    );
+    std::fs::write(&brew, script).unwrap();
+    let output = koi_at(&link, home.path(), &github, &["update", "--json"])
+        .output()
+        .unwrap();
+    if development_update(&output, home.path(), &github) {
+        return;
+    }
+    assert!(!ran.exists(), "{:#}", envelope(&output));
+    assert_eq!(head(), before);
+}

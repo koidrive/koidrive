@@ -5,7 +5,7 @@ use crate::app_install::macos::config::Config;
 use crate::app_install::macos::constants::{
     BUNDLE, CLEANUP, IDENTIFIER, INSPECT_RUNNING, REQUIREMENT, SIGNER,
 };
-use crate::app_install::macos::control::{Control, Registry, active, args, process};
+use crate::app_install::macos::control::{Control, Registry, active, passed, process};
 use crate::app_install::macos::filesystem::{directory, lock, observed, private_work, regular_at};
 use crate::app_install::macos::lifecycle::quiesce;
 use crate::app_install::macos::receipt::begin_receipt;
@@ -20,6 +20,7 @@ use crate::app_install::macos::verification::{
 };
 use crate::app_install::outcome::{AppChange, AppInstall, AppLaunchResult, AppSkip, RetiredApp};
 use crate::app_install::{cancel_active, skip_reason};
+use crate::program::Arg;
 use rustix::fs::FlockOperation;
 use semver::Version;
 use sha2::{Digest, Sha256};

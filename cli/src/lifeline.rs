@@ -96,7 +96,15 @@ pub(crate) fn confine(path: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn confine_program(path: &Path) -> io::Result<()> {
-    refuse_outside("run", path, |root| {
+    confine_resolved("run", path)
+}
+
+pub(crate) fn confine_passed(path: &Path) -> io::Result<()> {
+    confine_resolved("pass", path)
+}
+
+fn confine_resolved(act: &str, path: &Path) -> io::Result<()> {
+    refuse_outside(act, path, |root| {
         resolved(path).is_some_and(|real| real.starts_with(root) || ITSELF.get() == Some(&real))
     })
 }

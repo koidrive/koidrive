@@ -172,8 +172,9 @@ async fn refresh_tap(brew: &Path, echo: &mut Echo) -> Result<(), String> {
         true => crate::program::found_async(&homebrew_git).map_err(|error| error.to_string())?,
         false => crate::program::system_async("/usr/bin/git"),
     };
+    let checkout = crate::program::Confined::new(&tap).map_err(|error| error.to_string())?;
     pull.arg("-C")
-        .arg(&tap)
+        .arg(checkout)
         .args(["pull", "--ff-only", "--quiet"])
         .env("GIT_TERMINAL_PROMPT", "0");
     for variable in [

@@ -67,13 +67,13 @@ async fn quiescing_quits_the_app_running_from_the_bundle_and_says_it_was_running
     let inspect = async || {
         process(
             &config.osascript,
-            &args(&[
-                OsStr::new("-l"),
-                OsStr::new("JavaScript"),
-                OsStr::new("-e"),
-                OsStr::new(INSPECT_RUNNING),
-                app.as_os_str(),
-            ]),
+            &[
+                Arg::from("-l"),
+                Arg::from("JavaScript"),
+                Arg::from("-e"),
+                Arg::from(INSPECT_RUNNING),
+                passed(&app).unwrap(),
+            ],
             &control,
         )
         .await

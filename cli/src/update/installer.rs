@@ -54,10 +54,14 @@ pub(super) async fn installer(
         .tempfile()
         .and_then(|mut file| file.write_all(&script).map(|()| file))
         .map_err(|error| failed(format!("install.sh cannot be saved: {error}")))?;
+    let passed = |path| {
+        crate::program::Confined::new(path)
+            .map_err(|error| failed(format!("install.sh did not run: {error}")))
+    };
     let mut command = crate::program::system_async("/bin/sh");
     command
-        .arg(file.path())
-        .env("KOIDRIVE_INSTALL_DIR", dir)
+        .arg(passed(file.path())?)
+        .env("KOIDRIVE_INSTALL_DIR", passed(dir)?)
         .env("KOIDRIVE_VERSION", format!("v{version}"));
     let (status, _, _) = (echo.run(command, INSTALLER, Child::Progress).await)
         .map_err(|error| failed(format!("install.sh did not run: {error}")))?

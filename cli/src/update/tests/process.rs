@@ -55,8 +55,8 @@ fn reconcile_subprocess() {
     let mode = std::env::var("KOI_RECONCILE_TEST_MODE").unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
-        let mut command = Command::new(dir.join("koi"));
-        command.arg(&dir);
+        let mut command = crate::program::found_async(&dir.join("koi")).unwrap();
+        command.arg(crate::program::Confined::new(&dir).unwrap());
         let mut echo = echo(&dir);
         if mode == "cancel" {
             assert!(
@@ -154,11 +154,11 @@ fn reconciliation_survives_foreground_wait_cancellation() {
 #[tokio::test]
 async fn cancellable_children_are_killed_when_the_wait_times_out() {
     let dir = tempfile::tempdir().unwrap();
-    let mut command = Command::new("/bin/sh");
+    let mut command = crate::program::system_async("/bin/sh");
     let pid_file = dir.path().join("pid");
     command
         .args(["-c", "echo $$ > \"$1\"; exec sleep 30", "sh"])
-        .arg(&pid_file);
+        .arg(crate::program::Confined::new(&pid_file).unwrap());
     let result = echo(dir.path())
         .run(command, Duration::from_millis(100), Child::Progress)
         .await

@@ -6,7 +6,6 @@ use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 
 use crate::terminal::{Progress, Terminal};
 
@@ -86,11 +85,11 @@ impl Echo {
 
     pub(super) async fn run(
         &mut self,
-        mut command: Command,
+        mut command: crate::program::Tokio,
         within: Duration,
         kind: Child,
     ) -> io::Result<Option<(ExitStatus, Vec<u8>, String)>> {
-        let shown = format!("{:?}", command.as_std());
+        let shown = format!("{command:?}");
         if let Some(log) = &mut self.log {
             let _ = writeln!(log, "$ {shown}");
         }

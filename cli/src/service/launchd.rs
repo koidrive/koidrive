@@ -8,6 +8,7 @@ use super::command::{ok, remove_file, run, write};
 use super::definition::plist_binary;
 use super::report::SWITCHED_OFF;
 use super::{Manager, Service, ServiceManager, State};
+use crate::program::{Arg, Confined};
 
 pub struct Launchd {
     pub(super) uid: u32,
@@ -23,12 +24,15 @@ impl Launchd {
     }
 
     fn disabled(&self, service: &Service) -> Result<bool, String> {
-        let disabled = ok("launchctl", &["print-disabled", &self.domain()])?;
+        let disabled = ok(
+            "launchctl",
+            &["print-disabled".into(), self.domain().into()],
+        )?;
         Ok(launchd_disabled(&disabled, &service.label()))
     }
 
     fn loaded(&self, service: &Service) -> Result<Option<String>, String> {
-        let output = run("launchctl", &["print", &self.target(service)])?;
+        let output = run("launchctl", &["print".into(), self.target(service).into()])?;
         Ok((output.status.success()).then(|| String::from_utf8_lossy(&output.stdout).into_owned()))
     }
 }
@@ -43,7 +47,7 @@ impl Manager for Launchd {
     }
 
     fn state(&self, service: &Service) -> Result<State, String> {
-        ok("launchctl", &["print", &self.domain()]).map_err(|_| {
+        ok("launchctl", &["print".into(), self.domain().into()]).map_err(|_| {
             "this user is not logged in to the Mac's desktop, so launchd has no session to start it in"
                 .to_owned()
         })?;
@@ -75,19 +79,22 @@ impl Manager for Launchd {
         let target = self.target(service);
         let loaded = self.loaded(service)?.is_some();
         if loaded && !changed {
-            let args: &[&str] = match restart {
-                true => &["kickstart", "-k", &target],
-                false => &["kickstart", &target],
+            let args: Vec<Arg> = match restart {
+                true => vec!["kickstart".into(), "-k".into(), (&target).into()],
+                false => vec!["kickstart".into(), (&target).into()],
             };
-            return ok("launchctl", args).map(drop);
+            return ok("launchctl", &args).map(drop);
         }
         if loaded {
-            ok("launchctl", &["bootout", &target])?;
+            ok("launchctl", &["bootout".into(), (&target).into()])?;
         }
-        let path = plist.display().to_string();
+        let path = Confined::new(&plist).map_err(|error| error.to_string())?;
         let mut attempts = 0;
         loop {
-            match ok("launchctl", &["bootstrap", &self.domain(), &path]) {
+            match ok(
+                "launchctl",
+                &["bootstrap".into(), self.domain().into(), (&path).into()],
+            ) {
                 Ok(_) => return Ok(()),
                 Err(_) if attempts < 3 => {
                     attempts += 1;
@@ -107,7 +114,10 @@ impl Manager for Launchd {
 
     fn remove(&self, service: &Service) -> Result<(), String> {
         if self.loaded(service)?.is_some() {
-            ok("launchctl", &["bootout", &self.target(service)])?;
+            ok(
+                "launchctl",
+                &["bootout".into(), self.target(service).into()],
+            )?;
         }
         remove_file(&service.plist_file())
     }

@@ -5,13 +5,17 @@ use std::fs;
 use super::command::{ok, remove_file, run};
 use super::definition::unit_binary;
 use super::{Manager, Service, ServiceManager, State};
+use crate::program::{Arg, Confined};
 
 pub struct Systemd {
     pub(super) uid: u32,
 }
 
-pub(super) fn systemctl(args: &[&str]) -> Result<String, String> {
-    let args: Vec<&str> = ["--user"].iter().chain(args).copied().collect();
+pub(super) fn systemctl(args: &[Arg]) -> Result<String, String> {
+    let args: Vec<Arg> = [Arg::from("--user")]
+        .into_iter()
+        .chain(args.iter().cloned())
+        .collect();
     ok("systemctl", &args)
 }
 
@@ -25,12 +29,17 @@ impl Manager for Systemd {
     }
 
     fn state(&self, service: &Service) -> Result<State, String> {
-        systemctl(&["show-environment"]).map_err(|error| {
+        systemctl(&["show-environment".into()]).map_err(|error| {
             format!("there is no systemd user session to start it in ({error})")
         })?;
         let active = run(
             "systemctl",
-            &["--user", "is-active", "--quiet", &service.unit_name()],
+            &[
+                "--user".into(),
+                "is-active".into(),
+                "--quiet".into(),
+                service.unit_name().into(),
+            ],
         )?;
         Ok(match active.status.success() {
             true => State::Running,
@@ -46,33 +55,42 @@ impl Manager for Systemd {
     fn start(&self, service: &Service, restart: bool) -> Result<(), String> {
         let file = service.unit_file();
         let changed = service.write_unit()?;
-        systemctl(&["enable", &file.display().to_string()])?;
-        systemctl(&["daemon-reload"])?;
+        let file = Confined::new(&file).map_err(|error| error.to_string())?;
+        systemctl(&["enable".into(), file.into()])?;
+        systemctl(&["daemon-reload".into()])?;
         let verb = if changed || restart {
             "restart"
         } else {
             "start"
         };
-        systemctl(&[verb, &service.unit_name()]).map(drop)
+        systemctl(&[verb.into(), service.unit_name().into()]).map(drop)
     }
 
     fn remove(&self, service: &Service) -> Result<(), String> {
         let name = service.unit_name();
-        if run("systemctl", &["--user", "cat", &name])?
-            .status
-            .success()
+        if run(
+            "systemctl",
+            &["--user".into(), "cat".into(), (&name).into()],
+        )?
+        .status
+        .success()
         {
-            systemctl(&["disable", "--now", &name])?;
+            systemctl(&["disable".into(), "--now".into(), name.into()])?;
         }
         remove_file(&service.unit_file())?;
-        systemctl(&["daemon-reload"]).map(drop)
+        systemctl(&["daemon-reload".into()]).map(drop)
     }
 
     fn lingers(&self) -> Option<bool> {
         let uid = self.uid.to_string();
         let linger = ok(
             "loginctl",
-            &["show-user", &uid, "--property=Linger", "--value"],
+            &[
+                "show-user".into(),
+                uid.into(),
+                "--property=Linger".into(),
+                "--value".into(),
+            ],
         )
         .ok()?;
         match linger.as_str() {
@@ -84,6 +102,10 @@ impl Manager for Systemd {
 
     /// Turns lingering on where polkit allows it without a password, as it does by default in a local session.
     fn linger(&self) -> Result<(), String> {
-        ok("loginctl", &["--no-ask-password", "enable-linger"]).map(drop)
+        ok(
+            "loginctl",
+            &["--no-ask-password".into(), "enable-linger".into()],
+        )
+        .map(drop)
     }
 }

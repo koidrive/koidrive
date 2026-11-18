@@ -1,6 +1,6 @@
 use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
 use crate::app_install::macos::constants::MAX_OUTPUT;
-use std::ffi::{OsStr, OsString};
+use crate::program::{Arg, Confined};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -122,12 +122,12 @@ pub(super) fn io_error(error: impl ToString) -> AppInstallError {
 }
 pub(super) async fn process(
     program: &Path,
-    args: &[OsString],
+    args: &[Arg],
     control: &Control,
 ) -> Result<Vec<u8>, AppInstallError> {
     control.check()?;
     let mut child = crate::program::configured_async(program)
-        .args(args)
+        .args(args.iter().cloned())
         .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -198,6 +198,6 @@ pub(super) async fn process(
     }
     result
 }
-pub(super) fn args(parts: &[&OsStr]) -> Vec<OsString> {
-    parts.iter().map(|part| part.to_os_string()).collect()
+pub(super) fn passed(path: &Path) -> Result<Arg, AppInstallError> {
+    Confined::new(path).map(Arg::from).map_err(io_error)
 }

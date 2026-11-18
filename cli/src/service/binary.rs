@@ -3,7 +3,7 @@
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use semver::Version;
@@ -41,7 +41,7 @@ pub(super) fn target(installed: Option<&Version>, caller: &Version, daemon: &Dae
 }
 
 fn output_within(
-    command: &mut Command,
+    command: &mut crate::program::Blocking,
     within: Duration,
 ) -> io::Result<Option<(ExitStatus, Vec<u8>)>> {
     let mut child = command
@@ -129,7 +129,7 @@ pub(super) async fn delegated(
 }
 
 async fn delegated_output(
-    command: &mut tokio::process::Command,
+    command: &mut crate::program::Tokio,
     within: Duration,
 ) -> io::Result<Option<(ExitStatus, Vec<u8>)>> {
     use tokio::io::AsyncReadExt;

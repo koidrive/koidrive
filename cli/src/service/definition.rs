@@ -265,7 +265,11 @@ pub fn installed_services(manager: ServiceManager, home: &Path) -> Result<Vec<In
             }
         }
         ServiceManager::Systemd => {
-            match systemctl(&["list-unit-files", "--no-legend", "koidrive*.service"]) {
+            match systemctl(&[
+                "list-unit-files".into(),
+                "--no-legend".into(),
+                "koidrive*.service".into(),
+            ]) {
                 Ok(units) => {
                     for name in units
                         .lines()
@@ -274,7 +278,7 @@ pub fn installed_services(manager: ServiceManager, home: &Path) -> Result<Vec<In
                         if !suffixed(name, "koidrive", ".service") {
                             continue;
                         }
-                        let text = systemctl(&["cat", name])?;
+                        let text = systemctl(&["cat".into(), name.into()])?;
                         found.push(Installed {
                             name: name.to_owned(),
                             binary: unit_binary(&text),
