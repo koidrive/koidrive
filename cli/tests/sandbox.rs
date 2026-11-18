@@ -2,7 +2,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -358,21 +358,22 @@ fn another_test_process_leaves_a_sandbox_whole_while_it_ends() {
 #[test]
 fn a_sweep_removes_only_an_abandoned_tree_a_sandbox_made() {
     let parent = tempfile::tempdir().unwrap();
-    let elsewhere = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let private = |path: PathBuf| {
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&path)
+            .unwrap();
+        path
+    };
+    let elsewhere = private(other.path().join("koi-elsewhere"));
     let tree = |name: &str| {
-        let lifeline = parent.path().join(format!("koi-lifeline-{name}"));
-        std::fs::create_dir(&lifeline).unwrap();
+        let lifeline = private(parent.path().join(format!("koi-lifeline-{name}")));
         std::fs::write(lifeline.join("owner"), "").unwrap();
-        let root = parent.path().join(format!("koi-{name}"));
-        std::fs::create_dir(&root).unwrap();
-        (lifeline, root)
+        (lifeline, private(parent.path().join(format!("koi-{name}"))))
     };
     let (outside, _) = tree("outside");
-    std::fs::write(
-        outside.join("root"),
-        elsewhere.path().as_os_str().as_bytes(),
-    )
-    .unwrap();
+    std::fs::write(outside.join("root"), elsewhere.as_os_str().as_bytes()).unwrap();
     let (shared, kept) = tree("shared");
     std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
     let (living, running) = tree("living");
@@ -385,7 +386,7 @@ fn a_sweep_removes_only_an_abandoned_tree_a_sandbox_made() {
 
     drop(Sandbox::in_dir(parent.path()));
 
-    assert!(elsewhere.path().exists());
+    assert!(elsewhere.exists());
     assert!(kept.exists());
     assert!(running.exists() && living.exists());
     assert!(!stale.exists() && !abandoned.exists());

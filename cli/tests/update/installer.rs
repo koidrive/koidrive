@@ -40,6 +40,31 @@ fn development_update_never_contacts_github_or_runs_an_installer() {
 }
 
 #[test]
+fn koi_update_never_runs_an_installed_koi_outside_its_sandbox() {
+    let home = Sandbox::new();
+    let github = github("v99.0.0");
+    let (binary, _) = script_install(home.path(), "99.0.0", REPORT);
+    let outside = tempfile::tempdir().unwrap();
+    let ran = outside.path().join("ran");
+    let koi = outside.path().join("koi");
+    executable(&koi, &format!("#!/bin/sh\ntouch '{}'\necho 'koi 99.0.0'\n", ran.display()));
+    let installer = http(format!("ln -sf '{}' \"$KOIDRIVE_INSTALL_DIR/koi\"\n", koi.display()));
+    let output = koi_at(&binary, home.path(), &github, &["update", "--json"])
+        .env("KOIDRIVE_INSTALL_SCRIPT_URL", &installer.base)
+        .output()
+        .unwrap();
+    if development_update(&output, home.path(), &github) {
+        return;
+    }
+    let envelope = envelope(&output);
+    assert!(!ran.exists(), "{envelope:#}");
+    assert!(
+        (envelope["error"]["message"].as_str()).is_some_and(|message| message.contains("outside its sandbox")),
+        "{envelope:#}"
+    );
+}
+
+#[test]
 fn koi_update_installs_a_release_and_hands_the_service_to_the_new_koi() {
     let home = Sandbox::new();
     let github = github("v99.0.0");

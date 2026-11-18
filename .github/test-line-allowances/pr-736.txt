@@ -1,4 +1,4 @@
-427
+461
 # core/test-support Sandbox (about 180 lines) is the harness these tests pin: every koi a test starts holds the sandbox's lifeline, stops when the test ends or its process dies, and must stay inside the sandbox root.
 # sandbox.rs a_koi_stops_when_its_sandbox_drops_after_its_test_passes_or_panics: a daemon a test starts is gone when its Sandbox drops, after a pass and after a panic.
 # sandbox.rs a_koi_stops_when_the_test_process_that_started_it_is_killed: a daemon outlives no SIGKILLed test process.
@@ -6,6 +6,7 @@
 # sandbox.rs a_koi_outside_a_sandbox_cannot_start: process::koi refuses a directory that no Sandbox owns.
 # sandbox.rs every_program_a_test_runs_that_could_start_koi_is_sandboxed: a lint over cli/tests and the ffi daemon tests that rejects any koi spawn not routed through sandboxed().
 # sandbox.rs a_sweep_removes_only_an_abandoned_tree_a_sandbox_made: a sweep leaves a tree named by a lifeline outside its parent directory, by a lifeline other accounts can write, or by a lifeline whose koi still runs, and removes an abandoned one.
+# update/installer.rs koi_update_never_runs_an_installed_koi_outside_its_sandbox: after the installer runs, a test koi's update refuses to probe an installed koi that resolves outside the sandbox.
 # uninstall.rs a_test_koi_never_runs_a_brew_outside_its_sandbox: a test koi's uninstall never runs a Homebrew whose bin/brew resolves outside the sandbox.
 # sandbox.rs another_test_process_leaves_a_sandbox_whole_while_it_ends: one test process's sweep of abandoned lifelines never removes another live process's sandbox.
 # daemon_status.rs a_test_profile_in_the_default_layout_never_takes_the_account_s_service_name: a koi under the lifeline takes a suffixed launchd label or systemd unit, never the account's own.

@@ -266,6 +266,10 @@ async fn release(
             let step = steps.start(&format!("Downloading Koidrive {to}"));
             let installed = installer(source, dir, &to, echo)
                 .await
+                .and_then(|()| {
+                    crate::lifeline::confine_program(&install.binary)
+                        .map_err(|error| failed(error.to_string()))
+                })
                 .and_then(|()| reached(&install.binary, service::version_of(&install.binary), &to));
             if let Err(error) = installed {
                 echo.fail(step);

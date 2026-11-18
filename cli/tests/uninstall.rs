@@ -1196,8 +1196,16 @@ fn a_test_koi_never_runs_a_brew_outside_its_sandbox() {
     );
     std::os::unix::fs::symlink(&brew, machine.path("brew/bin/brew")).unwrap();
 
-    let (_, envelope) = machine.uninstall(&link);
+    let (output, envelope) = machine.uninstall(&link);
 
+    assert!(output.status.success(), "{envelope:#}");
+    assert!(!machine.path("state/koidrive").exists(), "{envelope:#}");
+    assert!(
+        (envelope["data"]["removed"].as_array().unwrap())
+            .iter()
+            .all(|removed| removed["kind"] == "files"),
+        "{envelope:#}"
+    );
     assert!(!ran.exists(), "{envelope:#}");
     assert!(cellar.exists());
 }
