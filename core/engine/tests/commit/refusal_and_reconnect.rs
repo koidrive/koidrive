@@ -966,3 +966,28 @@ fn at_slot_1(loss: usize) -> Welcome {
         ..welcome(1)
     }
 }
+
+#[test]
+fn a_recovery_forgets_the_commits_its_slots_were_given_before_a_loss() {
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 1,
+        slots: [(1, given(0))].into(),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    commits.forget_lost_slots();
+    assert!(!commits.state().given_up.is_empty());
+    let cause = RecoveryCause::of(RecoveryTrigger::SpaceRewound);
+    commits.enter_recovery(cause);
+    let (mut trees, mut ids) = (trees(&[]), IdGen::new(1));
+    commits.recover(&mut trees, 0, &cause, &History::new(), &Marks::new(), &mut ids, NOW);
+    assert!(commits.state().given_up.is_empty());
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 2,
+        slots: [(1, given(1)), (2, slot(7))].into(),
+        ..commits.state()
+    })
+    .unwrap();
+    assert_eq!(commits.connected(&at_slot_1(0)), Reconnect::Recovery);
+}

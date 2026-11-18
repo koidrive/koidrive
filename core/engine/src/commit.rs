@@ -678,6 +678,7 @@ impl Commits {
         self.in_flight.set(None);
         self.accepted.set(device_seq);
         self.slots.clear();
+        self.given_up.clear();
         self.problems.clear();
         self.cap.set(None);
         self.split.clear();
