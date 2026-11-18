@@ -20377,6 +20377,194 @@
       ]
     },
     {
+      "name": "rfc0026-a-resend-to-a-purged-file-stores-its-source-alias-on-the-conflict-copy",
+      "covers": [
+        "RFC 0026",
+        "RFC0029",
+        "RFC0029-3.3"
+      ],
+      "devices": {
+        "a": {
+          "name": "Laptop"
+        },
+        "b": {
+          "name": "Desk"
+        }
+      },
+      "contents": {
+        "c1": {
+          "chunks": [
+            {
+              "text": "notes"
+            }
+          ]
+        },
+        "c2": {
+          "chunks": [
+            {
+              "text": "notes edited"
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "device": "a",
+          "at_ms": 1794268800000,
+          "commit": {
+            "base_seq": 0,
+            "ops": [
+              {
+                "create_file": {
+                  "node": "f",
+                  "parent": "root",
+                  "name": "a.txt",
+                  "content": "c1"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 1,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794268860000,
+          "list_versions": {
+            "node": "f"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "v0"
+              }
+            ]
+          }
+        },
+        {
+          "device": "a",
+          "at_ms": 1794268920000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "delete": {
+                  "node": "f"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "seq": 2,
+            "results": [
+              {
+                "code": "APPLIED"
+              }
+            ],
+            "changed": [
+              "f"
+            ]
+          }
+        },
+        {
+          "purge": {
+            "at_ms": 1796947320000
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "f",
+              "absent": true
+            }
+          ],
+          "live": []
+        },
+        {
+          "device": "b",
+          "at_ms": 1796947380000,
+          "commit": {
+            "base_seq": 1,
+            "ops": [
+              {
+                "update_content": {
+                  "node": "f",
+                  "content": "c2",
+                  "resend": true,
+                  "made_over": [
+                    "v0"
+                  ],
+                  "source_version_id": "vs"
+                }
+              }
+            ]
+          },
+          "expect": {
+            "results": [
+              {
+                "code": "CONFLICT_COPY",
+                "node": "y"
+              }
+            ],
+            "changed": [
+              "y"
+            ]
+          }
+        },
+        {
+          "device": "b",
+          "at_ms": 1796947440000,
+          "list_versions": {
+            "node": "y"
+          },
+          "expect": {
+            "versions": [
+              {
+                "version": "vy",
+                "content": "c2",
+                "made_over": [
+                  "vs",
+                  "v0"
+                ],
+                "source_version_id": "vs"
+              }
+            ]
+          }
+        },
+        {
+          "nodes": [
+            {
+              "node": "f",
+              "absent": true
+            },
+            {
+              "node": "y",
+              "status": "LIVE",
+              "parent": "root",
+              "content": "c2"
+            }
+          ],
+          "live": [
+            "y"
+          ]
+        },
+        {
+          "rebuild": {
+            "at_ms": 1796948460000
+          }
+        }
+      ]
+    },
+    {
       "name": "rfc0029-trash-held-is-reported-on-every-node-of-the-trash-group-and-a-rebuild-keeps-it",
       "covers": [
         "RFC0029",
