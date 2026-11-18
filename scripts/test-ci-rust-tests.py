@@ -139,5 +139,38 @@ class Report(unittest.TestCase):
         self.assertIn("a x ran in more than one shard", out)
 
 
+
+class FilterTerms(unittest.TestCase):
+    TERMS = ["koidrive-fs::volumes", "koidrive-driver=disk_ejected"]
+
+    def run_tool(self, *argv):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            status = tool.main(list(argv))
+        return status, out.getvalue()
+
+    def matched(self, rows):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        junit = Path(temp.name) / "junit.xml"
+        body = "".join(f'<testcase classname="{b}" name="{n}" time="0.1"/>' for b, n in rows)
+        junit.write_text(f"<testsuites><testsuite>{body}</testsuite></testsuites>")
+        return self.run_tool("matched", "--junit", str(junit), *self.TERMS)
+
+    def test_terms_become_one_filter_expression(self):
+        status, out = self.run_tool("filter", *self.TERMS)
+        self.assertEqual(status, 0)
+        self.assertEqual(out.strip(), "binary_id(=koidrive-fs::volumes) | (binary_id(=koidrive-driver) & test(disk_ejected))")
+
+    def test_every_term_that_matched_a_test_passes(self):
+        status, out = self.matched([("koidrive-fs::volumes", "a_volume"), ("koidrive-driver", "folder::tests::a_disk_ejected_while_open")])
+        self.assertEqual((status, out), (0, ""))
+
+    def test_a_term_that_matched_nothing_fails_and_names_the_term(self):
+        status, out = self.matched([("koidrive-fs::volumes", "a_volume"), ("koidrive-engine", "a_disk_ejected_while_open")])
+        self.assertEqual(status, 1)
+        self.assertIn("The filter term koidrive-driver=disk_ejected matched no test", out)
+        self.assertNotIn("koidrive-fs::volumes matched", out)
+
+
 if __name__ == "__main__":
     unittest.main()

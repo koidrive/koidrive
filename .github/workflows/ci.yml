@@ -488,15 +488,18 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Linux' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.rust_driver == 'true') }}
         env:
           KOIDRIVE_TEST_MOUNTS: '1'
-          FILTERS: >-
-            ${{ needs.changes.outputs.rust == 'true' && 'binary_id(=koidrive-fs::volumes) | (binary_id(=koidrive-test-support) & test(disks)) |' || '' }}
-            ${{ needs.changes.outputs.rust_driver == 'true' && '(binary_id(=koidrive-driver) & (test(disk_ejected) | test(another_disk_mounted) | test(two_copies_of_one_disk) | test(mounted_over_synced) | test(disk_without_a_uuid) | test(before_an_upgrade))) |' || '' }}
+          TERMS: >-
+            ${{ needs.changes.outputs.rust == 'true' && 'koidrive-fs::volumes koidrive-test-support=disks' || '' }}
+            ${{ needs.changes.outputs.rust_driver == 'true' && 'koidrive-driver=disk_ejected koidrive-driver=another_disk_mounted koidrive-driver=two_copies_of_one_disk koidrive-driver=mounted_over_synced koidrive-driver=disk_without_a_uuid koidrive-driver=before_an_upgrade' || '' }}
         run: |
           if ! command -v mkfs.vfat > /dev/null; then
             sudo apt-get update -qq
             sudo apt-get install -y -qq dosfstools
           fi
-          cargo nextest run --archive-file "$RUNNER_TEMP/rust-tests/archive.tar.zst" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite --profile ci --success-output final -E "$(sed -E 's/[ |]+$//' <<<"$FILTERS")"
+          read -ra terms <<<"$TERMS"
+          cargo nextest run --archive-file "$RUNNER_TEMP/rust-tests/archive.tar.zst" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite --profile ci --success-output final \
+            -E "$(python3 scripts/ci-rust-tests.py filter "${terms[@]}")"
+          python3 scripts/ci-rust-tests.py matched --junit target/nextest/ci/junit.xml "${terms[@]}"
       - name: Test that the app installer refuses an app signed by a forged Developer ID
         if: ${{ !cancelled() && env.OS == 'macos' && needs.changes.outputs.rust_driver == 'true' }}
         run: |
