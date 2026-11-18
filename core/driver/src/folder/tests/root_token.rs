@@ -640,6 +640,89 @@ fn a_store_restored_from_before_a_start_or_an_upload_recovers_the_newer_folder()
     }
 }
 
+#[test]
+fn a_store_restored_from_before_130_starts_recovers_a_folder_with_more_effects() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    drop(a);
+    for _ in 0..koidrive_fs::EARLIER_TOKENS + 2 {
+        drop(site.start());
+    }
+    fs::copy(&saved, &site.db).unwrap();
+
+    let mut a = site.start();
+    assert!(matches!(
+        a.folder.engine.commits.halted(),
+        Some(CommitHalt::Recovery(_))
+    ));
+    a.connect(&remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(names(&site.root), ["two.txt"]);
+    assert_eq!(remote.names(), ["two.txt"]);
+    assert!(a.folder.engine.commits.halted().is_none());
+}
+
+fn recovers(site: &Site) -> bool {
+    opened(site).is_ok_and(|folder| folder.engine.commits.halted().is_some())
+}
+
+#[test]
+fn two_clones_of_one_store_taking_turns_on_one_folder_recover_at_most_once() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("store.sqlite");
+    fs::copy(&site.db, &db).unwrap();
+    let clone = Site {
+        _dir: dir,
+        root: site.root.clone(),
+        db,
+        link: site.link.clone(),
+        caller: site.caller.clone(),
+    };
+    let mut recovered = 0;
+    for _ in 0..3 {
+        for s in [&site, &clone] {
+            recovered += usize::from(recovers(s));
+            if !matches!(opened(s), Err(Stop::Root(RootProblem::Copy))) {
+                drop(restarted(s, &mut remote));
+            }
+        }
+    }
+    assert!(recovered <= 1, "{recovered} store-older recoveries");
+}
+
+#[test]
+fn a_store_restored_from_before_130_starts_and_a_later_download_recovers() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    for _ in 0..130 {
+        drop(site.start());
+    }
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    a.rest(&mut remote);
+    drop(a);
+    fs::copy(&saved, &site.db).unwrap();
+    assert!(recovers(&site));
+}
+
 fn from_before_tokens(site: &Site) {
     let marker = marker_of(site);
     fs::write(
