@@ -453,7 +453,8 @@ fn a_folder_deleted_here_that_another_device_renamed_comes_back_once_nothing_exc
 }
 
 #[test]
-fn a_file_deleted_here_with_its_kept_folder_comes_back_after_another_device_renames_the_folder_and_the_rules_let_it_in() {
+fn a_file_deleted_here_with_its_kept_folder_comes_back_after_another_device_renames_the_folder_and_the_rules_let_it_in()
+ {
     let seed = [act(0, 0, 0, 6, 0), act(1, 0, 1, 3, 0)];
     let local = [act(4, 0, 0, 0, 0)];
     let during = [
@@ -475,7 +476,11 @@ fn a_file_deleted_here_with_its_kept_folder_comes_back_after_another_device_rena
             .map(|n| n.name)
             .collect();
         live.sort();
-        assert_eq!((ran.deletes, live), (0, vec!["b".to_owned(), "c.txt".to_owned()]), "{cut:?}");
+        assert_eq!(
+            (ran.deletes, live),
+            (0, vec!["b".to_owned(), "c.txt".to_owned()]),
+            "{cut:?}"
+        );
     }
 }
 

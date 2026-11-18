@@ -538,7 +538,9 @@ impl Device {
                 return;
             }
         }
-        panic!("the folder comes to rest within {REST_ROUNDS} rounds of running its work and settling");
+        panic!(
+            "the folder comes to rest within {REST_ROUNDS} rounds of running its work and settling"
+        );
     }
 
     /// Writes a file and syncs it to the space.

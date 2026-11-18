@@ -1028,7 +1028,11 @@ fn excluded_dist(count: usize) -> (Remote, Site, Vec<(String, String)>) {
     fs::create_dir_all(site.root.join("dist/sub")).unwrap();
     for n in 0..count {
         let dir = if n % 2 == 0 { "dist" } else { "dist/sub" };
-        fs::write(site.root.join(format!("{dir}/f{n}.docx")), format!("report {n}")).unwrap();
+        fs::write(
+            site.root.join(format!("{dir}/f{n}.docx")),
+            format!("report {n}"),
+        )
+        .unwrap();
     }
     b.rescan();
     b.rest(&mut remote);
@@ -1080,7 +1084,8 @@ fn a_folder_of_2000_files_deleted_while_excluded_downloads_again_when_the_rules_
 }
 
 #[test]
-fn a_node_deleted_after_the_rules_let_it_in_again_is_deleted_and_an_edit_made_while_excluded_is_uploaded() {
+fn a_node_deleted_after_the_rules_let_it_in_again_is_deleted_and_an_edit_made_while_excluded_is_uploaded()
+ {
     let (mut remote, site, _) = excluded_dist(3);
     let mut b = started(&site, &mut remote, &dist_left_out());
     fs::write(site.root.join("dist/f0.docx"), "edited while left out").unwrap();
@@ -1092,7 +1097,10 @@ fn a_node_deleted_after_the_rules_let_it_in_again_is_deleted_and_an_edit_made_wh
     let mut b = started(&site, &mut remote, &SyncRules::default());
     let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
     assert_eq!(sent, ["update content"]);
-    assert_eq!(remote.names(), ["dist", "f0.docx", "f1.docx", "f2.docx", "sub"]);
+    assert_eq!(
+        remote.names(),
+        ["dist", "f0.docx", "f1.docx", "f2.docx", "sub"]
+    );
 
     fs::remove_dir_all(site.root.join("dist")).unwrap();
     b.rescan();
@@ -1125,7 +1133,11 @@ fn changed_while_left_out(
     let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
     assert!(!sent.contains(&"delete"), "sent {sent:?}");
     assert!(shown(&site).is_empty(), "no question opens");
-    assert_eq!(remote.tree(), server, "every node keeps its place on the server");
+    assert_eq!(
+        remote.tree(),
+        server,
+        "every node keeps its place on the server"
+    );
     assert_eq!(b.state(), FolderState::UpToDate);
     (b, site, synced)
 }
@@ -1183,20 +1195,24 @@ fn an_excluded_folder_cleaned_and_partly_rebuilt_uploads_the_rebuilt_file_and_do
 
 #[test]
 fn a_build_folder_rebuilt_while_excluded_replaces_the_server_copy_when_the_rules_let_it_in() {
-    let (b, site, _) = changed_while_left_out(|site| rebuild_dist(site, |n| format!("rebuilt {n}")), false);
+    let (b, site, _) =
+        changed_while_left_out(|site| rebuild_dist(site, |n| format!("rebuilt {n}")), false);
     let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
     assert_eq!(sent, ["update content"; 3]);
     let local = files(&site.root);
     assert_eq!(local.len(), 3);
     assert!(
-        (local.iter()).all(|(path, text)| !path.contains("conflict") && text.starts_with("rebuilt")),
+        (local.iter())
+            .all(|(path, text)| !path.contains("conflict") && text.starts_with("rebuilt")),
         "{local:?}"
     );
 }
 
 #[test]
-fn a_build_folder_rebuilt_with_the_same_files_while_excluded_sends_nothing_when_the_rules_let_it_in() {
-    let (b, site, synced) = changed_while_left_out(|site| rebuild_dist(site, |n| format!("report {n}")), false);
+fn a_build_folder_rebuilt_with_the_same_files_while_excluded_sends_nothing_when_the_rules_let_it_in()
+ {
+    let (b, site, synced) =
+        changed_while_left_out(|site| rebuild_dist(site, |n| format!("report {n}")), false);
     assert!(b.sent.is_empty(), "sent {:?}", b.sent);
     assert_eq!(files(&site.root), synced);
 }
@@ -1267,7 +1283,10 @@ fn relinked(site: &Site, remote: &Remote) -> Site {
         found_marker,
         ..site.link.clone()
     };
-    Store::open(&db).unwrap().transaction(|tx| tx.set_link(&link)).unwrap();
+    Store::open(&db)
+        .unwrap()
+        .transaction(|tx| tx.set_link(&link))
+        .unwrap();
     Site {
         _dir: dir,
         root: site.root.clone(),
@@ -1293,7 +1312,10 @@ fn a_folder_linked_again_keeps_no_mark_from_its_old_link() {
         let again = relinked(&site, target);
         let c = started(&again, target, &SyncRules::default());
         let stored = again.stored();
-        assert!(stored.trees.state().unobserved.is_empty(), "same_space={same_space}");
+        assert!(
+            stored.trees.state().unobserved.is_empty(),
+            "same_space={same_space}"
+        );
         assert!(c.sent.is_empty(), "same_space={same_space}: {:?}", c.sent);
         assert!(shown(&again).is_empty(), "same_space={same_space}");
         assert!(
@@ -1316,9 +1338,8 @@ fn a_rescan_that_finds_nothing_new_writes_nothing_to_the_store_while_nodes_are_u
     let mut b = started(&site, &mut remote, &dist_left_out());
     assert_eq!(site.stored().trees.state().unobserved.len(), 5);
     let watcher = rusqlite::Connection::open(&site.db).unwrap();
-    let version = || -> i64 {
-        (watcher.query_row("PRAGMA data_version", [], |row| row.get(0))).unwrap()
-    };
+    let version =
+        || -> i64 { (watcher.query_row("PRAGMA data_version", [], |row| row.get(0))).unwrap() };
     let before = version();
     b.rescan();
     b.rest(&mut remote);
@@ -1327,7 +1348,8 @@ fn a_rescan_that_finds_nothing_new_writes_nothing_to_the_store_while_nodes_are_u
 }
 
 #[test]
-fn a_synced_file_moved_into_an_ignored_folder_and_deleted_there_stays_on_the_server_and_away_from_here() {
+fn a_synced_file_moved_into_an_ignored_folder_and_deleted_there_stays_on_the_server_and_away_from_here()
+ {
     let mut remote = Remote::new();
     let (site, mut b) = linked(&mut remote, "b");
     fs::write(site.root.join("report.docx"), "report").unwrap();
@@ -1336,7 +1358,11 @@ fn a_synced_file_moved_into_an_ignored_folder_and_deleted_there_stays_on_the_ser
     drop(b);
     let mut b = started(&site, &mut remote, &dist_left_out());
     fs::create_dir(site.root.join("dist")).unwrap();
-    fs::rename(site.root.join("report.docx"), site.root.join("dist/report.docx")).unwrap();
+    fs::rename(
+        site.root.join("report.docx"),
+        site.root.join("dist/report.docx"),
+    )
+    .unwrap();
     b.rescan();
     b.rest(&mut remote);
     fs::remove_file(site.root.join("dist/report.docx")).unwrap();
@@ -1358,7 +1384,10 @@ fn a_file_deleted_after_its_folder_moved_out_of_the_rules_is_deleted(rules: &str
     for victim in ["f0.docx", "sub/f1.docx"] {
         let (mut remote, site, _) = excluded_dist(3);
         let mut b = started(&site, &mut remote, &SyncRules::default());
-        if let Some(parent) = Path::new(to).parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        if let Some(parent) = Path::new(to)
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
             fs::create_dir_all(site.root.join(parent)).unwrap();
         }
         fs::write(site.root.join(".koiignore"), rules).unwrap();
@@ -1372,7 +1401,11 @@ fn a_file_deleted_after_its_folder_moved_out_of_the_rules_is_deleted(rules: &str
         let sent: Vec<&str> = b.sent[before..].iter().flat_map(kinds).collect();
         assert_eq!(sent, ["delete"], "{path}");
         assert!(!site.root.join(&path).exists(), "{path}");
-        assert!(!remote.tree().contains_key(&path), "{path}: {:?}", remote.tree());
+        assert!(
+            !remote.tree().contains_key(&path),
+            "{path}: {:?}",
+            remote.tree()
+        );
     }
 }
 
@@ -1402,7 +1435,10 @@ fn a_file_deleted_while_its_folder_was_excluded_downloads_again_when_the_folder_
     fs::rename(site.root.join("dist"), site.root.join("shipped")).unwrap();
     b.rest(&mut remote);
     let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
-    assert!(!sent.contains(&"delete") && !sent.contains(&"create file"), "{sent:?}");
+    assert!(
+        !sent.contains(&"delete") && !sent.contains(&"create file"),
+        "{sent:?}"
+    );
     let local: Vec<(String, String)> = (files(&site.root).into_iter())
         .filter(|(path, _)| path != ".koiignore")
         .collect();
@@ -1414,7 +1450,8 @@ fn a_file_deleted_while_its_folder_was_excluded_downloads_again_when_the_folder_
 }
 
 #[test]
-fn a_file_removed_while_stopped_with_a_rules_file_written_to_exclude_it_downloads_again_when_the_rule_is_lifted() {
+fn a_file_removed_while_stopped_with_a_rules_file_written_to_exclude_it_downloads_again_when_the_rule_is_lifted()
+ {
     let mut remote = Remote::new();
     let (site, mut b) = linked(&mut remote, "b");
     b.create(&mut remote, &site.root.join("report.docx"), b"report");
@@ -1438,9 +1475,9 @@ fn a_file_removed_while_stopped_with_a_rules_file_written_to_exclude_it_download
     assert_eq!(b.state(), FolderState::UpToDate);
 }
 
-
 #[test]
-fn a_file_removed_while_left_out_below_a_folder_the_first_scan_after_a_restart_cannot_read_stays_the_server_file() {
+fn a_file_removed_while_left_out_below_a_folder_the_first_scan_after_a_restart_cannot_read_stays_the_server_file()
+ {
     use std::os::unix::fs::PermissionsExt;
 
     let mut remote = Remote::new();
@@ -1478,7 +1515,10 @@ fn a_file_removed_while_left_out_below_a_folder_the_first_scan_after_a_restart_c
     let sent: Vec<&str> = a.sent[before..].iter().flat_map(kinds).collect();
     assert_eq!(sent, ["update content", "update content"]);
     assert_eq!(node_named(&a, "report.docx"), id);
-    assert_eq!(remote.names(), [".koiignore", "notes.txt", "private", "report.docx"]);
+    assert_eq!(
+        remote.names(),
+        [".koiignore", "notes.txt", "private", "report.docx"]
+    );
     assert_eq!(
         files(&site.root),
         [
@@ -1491,7 +1531,8 @@ fn a_file_removed_while_left_out_below_a_folder_the_first_scan_after_a_restart_c
 }
 
 #[test]
-fn a_file_removed_while_left_out_below_a_folder_a_restart_cannot_read_downloads_once_a_scan_reads_the_folder() {
+fn a_file_removed_while_left_out_below_a_folder_a_restart_cannot_read_downloads_once_a_scan_reads_the_folder()
+ {
     use std::os::unix::fs::PermissionsExt;
 
     let mut remote = Remote::new();
@@ -1585,7 +1626,11 @@ fn a_file_deleted_while_another_device_kept_it_in_an_excluded_folder_comes_back_
     fs::write(site.root.join("keep/\u{df}"), "eszett").unwrap();
     b.rescan();
     b.rest(&mut remote);
-    assert!(remote.tree().contains_key("keep/\u{df}"), "{:?}", remote.tree());
+    assert!(
+        remote.tree().contains_key("keep/\u{df}"),
+        "{:?}",
+        remote.tree()
+    );
 
     fs::rename(site_a.root.join("dist/ss"), site_a.root.join("keep/ss")).unwrap();
     a.rescan();
@@ -1596,7 +1641,10 @@ fn a_file_deleted_while_another_device_kept_it_in_an_excluded_folder_comes_back_
     let mut texts: Vec<&str> = local.iter().map(|(_, text)| text.as_str()).collect();
     texts.sort();
     assert_eq!(texts, ["eszett", "ss"], "{local:?}");
-    assert!(local.iter().any(|(path, _)| path.contains("conflict")), "{local:?}");
+    assert!(
+        local.iter().any(|(path, _)| path.contains("conflict")),
+        "{local:?}"
+    );
     let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
     assert!(!sent.contains(&"delete"), "sent {sent:?}");
     assert!(shown(&site).is_empty());

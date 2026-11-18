@@ -355,7 +355,11 @@ fn a_new_folder_says_it_scans_and_counts_the_files_its_first_scan_finds() {
 
     let sections = a.folder.sections();
     let batch = (0..SCANS)
-        .find_map(|_| sections.observe(&mut a.observer, Duration::from_millis(100)).unwrap())
+        .find_map(|_| {
+            sections
+                .observe(&mut a.observer, Duration::from_millis(100))
+                .unwrap()
+        })
         .unwrap_or_else(|| panic!("the first scan brings a batch within {SCANS} scans"));
     let walked = (a.reports.lock().unwrap().iter())
         .filter_map(|report| match report {
@@ -505,7 +509,11 @@ fn a_large_first_file_shows_its_bytes_fall_once_the_walk_is_done() {
     a.connect(&remote);
     let sections = a.folder.sections();
     let batch = (0..SCANS)
-        .find_map(|_| sections.observe(&mut a.observer, Duration::from_millis(100)).unwrap())
+        .find_map(|_| {
+            sections
+                .observe(&mut a.observer, Duration::from_millis(100))
+                .unwrap()
+        })
         .unwrap_or_else(|| panic!("the first scan brings a batch within {SCANS} scans"));
     let reports = a.reports.lock().unwrap().clone();
     let walk_ends = reports.iter().position(|report| matches!(report, Observing::Reading { .. }));
