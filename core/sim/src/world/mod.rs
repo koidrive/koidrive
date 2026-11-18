@@ -2772,6 +2772,25 @@ impl World {
                 let held = self.space.nodes();
                 match self.space.commit(&session, now_ms, &sent) {
                     Ok(committed) => {
+                        let copies = (sent.ops.iter())
+                            .zip(&committed.result.results)
+                            .filter(|(_, outcome)| {
+                                outcome.code == op_result::Code::ConflictCopy as i32
+                            })
+                            .filter_map(|(op, outcome)| match &op.op {
+                                Some(op::Op::UpdateContent(op)) => {
+                                    Some((&op.node_id, tag(op.content.as_ref()?), &outcome.node_id))
+                                }
+                                _ => None,
+                            });
+                        for (from, write, copy) in copies {
+                            let kept = self.kept[d].get_mut(&write);
+                            if let Some(nodes) = kept
+                                && let Some(ino) = nodes.get(from).copied()
+                            {
+                                nodes.insert(copy.clone(), ino);
+                            }
+                        }
                         if let Some(record) = committed.record {
                             self.held_commits[d].insert((record.seq, record.commit_id.clone()));
                             let trashed = |id: &str| {
@@ -2824,27 +2843,12 @@ impl World {
                             }
                             let local = self.devices[d].engine.trees.local();
                             let after = live_writes(&self.space);
-                            let copied_from: BTreeMap<&str, &str> = (sent.ops.iter())
-                                .zip(&committed.result.results)
-                                .filter(|(_, outcome)| {
-                                    outcome.code == op_result::Code::ConflictCopy as i32
-                                })
-                                .filter_map(|(op, outcome)| match &op.op {
-                                    Some(op::Op::UpdateContent(op)) => {
-                                        Some((outcome.node_id.as_str(), op.node_id.as_str()))
-                                    }
-                                    _ => None,
-                                })
-                                .collect();
                             let answered: Vec<i64> = (self.rewound.keys())
                                 .filter(|write| !before.contains_key(write))
                                 .filter(|write| {
                                     let kept = self.kept[d].get(*write);
-                                    let ino = |node: &str| Some(local.get(node)?.identity.ino);
-                                    let after = (after.get(*write)).map(|node| {
-                                        copied_from.get(node.as_str()).copied().unwrap_or(node)
-                                    });
-                                    after.is_some_and(|node| {
+                                    let ino = |node: &NodeId| Some(local.get(node)?.identity.ino);
+                                    after.get(*write).is_some_and(|node| {
                                         kept.is_some_and(|nodes| {
                                             nodes.contains_key(node)
                                                 || ino(node).is_some_and(|ino| {
