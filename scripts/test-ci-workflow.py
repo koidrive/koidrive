@@ -71,25 +71,46 @@ class ChangesJob(unittest.TestCase):
         )
         return result, dict(line.split("=", 1) for line in output.read_text().splitlines())
 
-    def test_push_reuses_rust_only_when_all_macos_shards_pass(self):
-        names = ("rust build (macos)", "rust lint (macos)", "rust special (macos)", "rust tests (macos, sim)",
-                 *(f"rust tests (macos, {shard}/6)" for shard in range(1, 7)))
-        for missing in (None, *names):
-            with self.subTest(missing=missing):
-                fixtures = {
-                    "workflows/ci.yml/runs?event=merge_group&head_sha=fixture-sha&status=success&per_page=1": {
-                        "workflow_runs": [{"id": 1, "html_url": "https://fixture.invalid/run"}]},
-                    "runs/1/jobs?filter=latest&per_page=100": {
-                        "jobs": [{"name": name, "conclusion": "success"} for name in names if name != missing]},
-                }
-                (self.dir / "fixtures").write_text(json.dumps(fixtures))
-                (self.dir / "requests").write_text("")
-                result, outputs = self.run_script(inline_script("changes"), {
-                    "EVENT": "push", "GITHUB_SHA": "fixture-sha", "GITHUB_REPOSITORY": "koidrive/koidrive",
-                    "REQUESTS": str(self.dir / "requests"), "FIXTURES": str(self.dir / "fixtures"),
-                })
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual(outputs["rust_macos"], "covered" if missing is None else "true")
+    def push_with_runs(self, runs):
+        (self.dir / "fixtures").write_text(json.dumps({
+            "workflows/ci.yml/runs?event=merge_group&head_sha=fixture-sha&status=success&per_page=1": {"workflow_runs": runs},
+        }))
+        (self.dir / "requests").write_text("")
+        result, outputs = self.run_script(inline_script("changes"), {
+            "EVENT": "push", "GITHUB_SHA": "fixture-sha", "GITHUB_REPOSITORY": "koidrive/koidrive",
+            "REQUESTS": str(self.dir / "requests"), "FIXTURES": str(self.dir / "fixtures"),
+        })
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return outputs
+
+    def test_push_skips_every_macos_job_a_green_merge_queue_run_ran_or_did_not_need(self):
+        outputs = self.push_with_runs([{"id": 1, "html_url": "https://fixture.invalid/run", "head_sha": "fixture-sha",
+                                        "event": "merge_group", "conclusion": "success"}])
+        for job in SELECTED:
+            self.assertEqual(outputs[job], "true", job)
+        for job in ("rust_macos", "server_macos", "spec_macos", "macos_app"):
+            self.assertEqual(outputs[job], "covered", job)
+
+    def test_push_runs_every_macos_job_when_the_returned_run_is_not_a_green_queue_run_of_this_commit(self):
+        green = {"id": 1, "html_url": "https://fixture.invalid/run", "head_sha": "fixture-sha", "event": "merge_group", "conclusion": "success"}
+        for field, value in (("head_sha", "other-sha"), ("event", "push"), ("conclusion", "failure")):
+            with self.subTest(field=field):
+                outputs = self.push_with_runs([{**green, field: value}])
+                for job in ("rust_macos", "server_macos", "spec_macos", "macos_app"):
+                    self.assertEqual(outputs[job], "true", job)
+
+    def test_push_runs_every_macos_job_when_the_merge_queue_lookup_fails(self):
+        (self.dir / "fixtures").write_text(json.dumps({
+            "workflows/ci.yml/runs?event=merge_group&head_sha=fixture-sha&status=success&per_page=1": None,
+        }))
+        (self.dir / "requests").write_text("")
+        result, outputs = self.run_script(inline_script("changes"), {
+            "EVENT": "push", "GITHUB_SHA": "fixture-sha", "GITHUB_REPOSITORY": "koidrive/koidrive",
+            "REQUESTS": str(self.dir / "requests"), "FIXTURES": str(self.dir / "fixtures"),
+        })
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for job in ("rust_macos", "server_macos", "spec_macos", "macos_app"):
+            self.assertEqual(outputs[job], "true", job)
 
     def test_push_runs_every_linux_job(self):
         (self.dir / "fixtures").write_text(json.dumps({
@@ -294,17 +315,6 @@ class RustShards(unittest.TestCase):
         self.assertIn('cp "target/nextest/shard-$SHARD/junit.xml" "$RUNNER_TEMP/junit/rust-junit-$OS-$SHARD/"', workflow)
         self.assertIn("name: rust-junit-${{ env.OS }}-${{ matrix.shard }}\n          path: ${{ runner.temp }}/junit\n", workflow)
         self.assertIn("pattern: rust-junit-*\n          path: ${{ runner.temp }}/junit\n          merge-multiple: true\n", workflow)
-
-    def test_every_macos_rust_job_is_a_coverage_condition_on_push(self):
-        workflow = WORKFLOW.read_text()
-        shards = json.loads(self.run_step(RUST="true", RUST_DRIVER="true", RUST_ENGINE="true")["rust_shards_macos"])["include"]
-        names = [f"rust tests (macos, {s['shard']}/{s['of']})" for s in shards]
-        loop = re.search(r'for job in (.*); do\n +if ! grep -Fxq "\$job"', inline_script("changes"))[1]
-        expanded = subprocess.run(["bash", "-c", f"for job in {loop}; do echo \"$job\"; done"], capture_output=True, text=True).stdout.splitlines()
-        for name in (*names, "rust lint (macos)", "rust special (macos)", "rust tests (macos, sim)"):
-            self.assertIn(name, expanded)
-        self.assertIn('"rust_macos:rust build (macos)"', workflow)
-
 
 class CiReport(unittest.TestCase):
     def test_a_job_that_skips_on_push_is_not_needed_on_push(self):

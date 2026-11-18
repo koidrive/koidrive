@@ -94,33 +94,17 @@ jobs:
             api() {
               curl -fsS --max-time 15 -H "Authorization: Bearer $GITHUB_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/$1"
             }
-            passed=""
-            if ! runs="$(api "workflows/ci.yml/runs?event=merge_group&head_sha=$GITHUB_SHA&status=success&per_page=1")" || ! run="$(jq -ec '.workflow_runs | if type == "array" then .[0] // {} else error("no workflow_runs") end' <<<"$runs")"; then
+            macos=true
+            if ! runs="$(api "workflows/ci.yml/runs?event=merge_group&head_sha=$GITHUB_SHA&status=success&per_page=1")" || ! run="$(jq -ec '.workflow_runs | if type == "array" then map(select(.head_sha == env.GITHUB_SHA and .event == "merge_group" and .conclusion == "success")) | .[0] // {} else error("no workflow_runs") end' <<<"$runs")"; then
               echo "::warning::Looking up the merge queue run of $GITHUB_SHA failed (see the error above), so every macOS job runs."
             elif [ "$run" = '{}' ]; then
               echo "No successful merge queue run of ci.yml tested $GITHUB_SHA, so every macOS job runs."
-            elif ! jobs="$(api "runs/$(jq -r .id <<<"$run")/jobs?filter=latest&per_page=100")" || ! passed="$(jq -er '.jobs | if type == "array" then map(select(.conclusion == "success") | .name) | join("\n") else error("no jobs") end' <<<"$jobs")"; then
-              passed=""
-              echo "::warning::Listing the jobs of merge queue run $(jq -r .html_url <<<"$run") failed (see the error above), so every macOS job runs."
             else
-              echo "Merge queue run $(jq -r .html_url <<<"$run") passed CI on $GITHUB_SHA."
-              echo "Merge queue run $(jq -r .html_url <<<"$run") tested this commit. macOS jobs it passed are skipped here." >> "$GITHUB_STEP_SUMMARY"
+              macos=covered
+              echo "Merge queue run $(jq -r .html_url <<<"$run") passed CI on $GITHUB_SHA, so the macOS jobs it ran or did not need are skipped here."
+              echo "Merge queue run $(jq -r .html_url <<<"$run") tested this commit, so its macOS jobs are skipped here." >> "$GITHUB_STEP_SUMMARY"
             fi
-            for pair in "rust_macos:rust build (macos)" "server_macos:server (macos)" "spec_macos:spec (macos)" "macos_app:macos app"; do
-              covered=true
-              if [ "${pair%%:*}" = rust_macos ]; then
-                for job in "rust lint (macos)" "rust special (macos)" "rust tests (macos, sim)" "rust tests (macos, "{1,2,3,4,5,6}/6")"; do
-                  if ! grep -Fxq "$job" <<<"$passed"; then covered=false; fi
-                done
-              fi
-              if [ "$covered" = true ] && grep -Fxq "${pair#*:}" <<<"$passed"; then
-                echo "${pair%%:*}: covered, because the merge queue run passed ${pair#*:} on this commit"
-                echo "${pair%%:*}=covered" >> "$GITHUB_OUTPUT"
-              else
-                echo "${pair%%:*}: runs, because no merge queue run passed ${pair#*:} on this commit"
-                echo "${pair%%:*}=true" >> "$GITHUB_OUTPUT"
-              fi
-            done
+            printf "%s=$macos\n" rust_macos server_macos spec_macos macos_app >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ "$EVENT" = merge_group ]; then
@@ -1133,16 +1117,16 @@ jobs:
               exit 1
             fi
           done
-      - name: Fail unless every macOS job ran on this push or passed in the merge queue on the same commit
+      - name: Fail unless every macOS job ran on this push or a merge queue run passed CI on the same commit
         if: github.event_name == 'push'
         env:
           WANTED: rust=${{ needs.changes.outputs.rust_macos }} server=${{ needs.changes.outputs.server_macos }} spec=${{ needs.changes.outputs.spec_macos }} macos-app=${{ needs.changes.outputs.macos_app }}
           MACOS_APP: ${{ needs.macos-app.result }}
         run: |
-          echo "macOS jobs on this push (true runs here, covered passed in the merge queue on this commit): $WANTED, macos app result $MACOS_APP"
+          echo "macOS jobs on this push (true runs here, covered: a merge queue run passed CI on this commit): $WANTED, macos app result $MACOS_APP"
           for w in $WANTED; do
             if [ "${w#*=}" != true ] && [ "${w#*=}" != covered ]; then
-              echo "::error::A push to main must run every macOS job that no merge queue run passed on the same commit, but ${w%%=*} is ${w#*=}. The changes job log says why."
+              echo "::error::A push to main must run every macOS job unless a merge queue run passed CI on the same commit, but ${w%%=*} is ${w#*=}. The changes job log says why."
               exit 1
             fi
           done
