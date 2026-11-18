@@ -7,10 +7,10 @@ use crate::output;
 use crate::profile::signed_in;
 use crate::report::{Done, RefusedSpace, SpaceData, SpacesData, UsageData, UsagesData};
 use clap::Subcommand;
-use koidrive_driver::Paths;
+use koidrive_driver::{DriverError, Paths};
 use koidrive_ipc::Code;
-use koidrive_net::{ApiError, Auth};
-use koidrive_proto::v1::{CreateSpaceRequest, SpaceInfo, SpaceUsage};
+use koidrive_net::Auth;
+use koidrive_proto::v1::{SpaceInfo, SpaceUsage};
 
 #[derive(Subcommand)]
 pub(crate) enum SpaceAction {
@@ -49,7 +49,7 @@ pub(crate) async fn space(paths: Paths, action: SpaceAction) -> Result<Done, Cli
             if name.is_empty() {
                 return Err(CliError::usage("a space needs a name"));
             }
-            let named = named_space(&auth, &spaces, name).await?;
+            let named = named_space(&paths, &auth, &spaces, name).await?;
             let space = named.space();
             let id = printable(&space.space_id);
             let shown = format!("{} ({id})", printable(&space.name));
@@ -97,16 +97,19 @@ impl Named {
 }
 
 pub(crate) async fn named_space(
+    paths: &Paths,
     auth: &Auth,
     spaces: &[SpaceInfo],
     name: &str,
 ) -> Result<Named, CliError> {
-    if let Some(space) = existing_space(spaces, name)? {
+    if let Some(space) = existing_space(spaces, name)?
+        && !koidrive_driver::space_create_pending(paths, auth, name)
+    {
         return Ok(Named::Existing(space));
     }
-    match create_space(auth, name).await {
+    match koidrive_driver::create_space(paths, auth, name).await {
         Ok(created) => Ok(Named::Created(created)),
-        Err(error) if error.status() == Some(409) => {
+        Err(DriverError::Api(error)) if error.status() == Some(409) => {
             let now = auth
                 .api()
                 .list_spaces(auth)
@@ -119,14 +122,6 @@ pub(crate) async fn named_space(
         }
         Err(error) => Err(error.into()),
     }
-}
-
-pub(crate) async fn create_space(auth: &Auth, name: &str) -> Result<SpaceInfo, ApiError> {
-    let request = CreateSpaceRequest {
-        name: name.to_owned(),
-        request_id: koidrive_net::request_id(),
-    };
-    koidrive_net::resend_lost(|| auth.api().create_space(auth, &request)).await
 }
 
 fn existing_space(spaces: &[SpaceInfo], name: &str) -> Result<Option<SpaceInfo>, CliError> {

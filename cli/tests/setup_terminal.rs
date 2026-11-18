@@ -124,6 +124,8 @@ struct Home {
     requests: Arc<Mutex<Vec<String>>>,
     lose_create: Arc<AtomicBool>,
     collide_create: Arc<AtomicBool>,
+    refuse_create: Arc<AtomicBool>,
+    create_ids: Arc<Mutex<Vec<String>>>,
     created_by: Arc<Mutex<HashMap<String, SpaceInfo>>>,
     request_hook: RequestHook,
     claimed: Arc<AtomicBool>,
@@ -155,6 +157,8 @@ impl Home {
             requests: Arc::new(Mutex::new(Vec::new())),
             lose_create: Arc::new(AtomicBool::new(false)),
             collide_create: Arc::new(AtomicBool::new(false)),
+            refuse_create: Arc::new(AtomicBool::new(false)),
+            create_ids: Arc::new(Mutex::new(Vec::new())),
             created_by: Arc::new(Mutex::new(HashMap::new())),
             request_hook: Arc::new(Mutex::new(None)),
             claimed: Arc::new(AtomicBool::new(false)),
@@ -166,12 +170,15 @@ impl Home {
             home.collide_create.clone(),
             home.created_by.clone(),
         );
+        let (refuse, ids) = (home.refuse_create.clone(), home.create_ids.clone());
         let (hook, claimed) = (home.request_hook.clone(), home.claimed.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let creates = Creates {
                     lose: &lose,
                     collide: &collide,
+                    refuse: &refuse,
+                    ids: &ids,
                     created_by: &created_by,
                 };
                 serve(
@@ -514,6 +521,8 @@ fn folder_status(folder: &Path, space: &SpaceInfo) -> FolderStatus {
 struct Creates<'a> {
     lose: &'a AtomicBool,
     collide: &'a AtomicBool,
+    refuse: &'a AtomicBool,
+    ids: &'a Mutex<Vec<String>>,
     created_by: &'a Mutex<HashMap<String, SpaceInfo>>,
 }
 
@@ -573,8 +582,18 @@ fn serve(
         .encode_to_vec(),
         ("POST", "/v1/spaces") => {
             let request = CreateSpaceRequest::decode(body.as_slice()).unwrap();
+            creates.ids.lock().unwrap().push(request.request_id.clone());
             let mut spaces = spaces.lock().unwrap();
-            if creates.collide.swap(false, Ordering::Relaxed) {
+            if creates.refuse.load(Ordering::Relaxed) && !creates.lose.load(Ordering::Relaxed) {
+                status = "429 Too Many Requests";
+                ProtoError {
+                    code: error::Code::QuotaExceeded.into(),
+                    message: "daily limit".into(),
+                    retry_after_ms: 6 * 3_600_000,
+                    ..Default::default()
+                }
+                .encode_to_vec()
+            } else if creates.collide.swap(false, Ordering::Relaxed) {
                 let taken = space(spaces.len(), &request.name);
                 spaces.push(taken);
                 status = "409 Conflict";
@@ -1616,22 +1635,24 @@ fn an_address_without_a_server_is_asked_again() {
     assert_eq!(home.links().len(), 1);
 }
 
+fn save_pending_claim(home: &Home) -> std::path::PathBuf {
+    let dir = home.paths().creates();
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("claim-earlier.json");
+    let saved = serde_json::json!({"server": home.server, "request_id": "r", "since_ms": 0});
+    fs::write(&path, saved.to_string()).unwrap();
+    path
+}
+
 #[test]
 fn a_pending_claim_does_not_prevent_pairing_to_an_owned_server() {
     let home = Home::new(&[]);
     home.claimed.store(true, Ordering::Relaxed);
-    fs::write(
-        home.paths().pending_claim(),
-        serde_json::json!([{
-            "server": home.server, "code_sha256": "0".repeat(64), "request_id": "old"
-        }])
-        .to_string(),
-    )
-    .unwrap();
+    let pending = save_pending_claim(&home);
     let old = std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60);
     fs::File::options()
         .write(true)
-        .open(home.paths().pending_claim())
+        .open(pending)
         .unwrap()
         .set_times(fs::FileTimes::new().set_modified(old))
         .unwrap();
@@ -1666,12 +1687,7 @@ fn a_pending_claim_does_not_prevent_pairing_to_an_owned_server() {
 fn a_claim_that_did_not_finish_is_finished_with_its_code() {
     let home = Home::new(&[]);
     home.claimed.store(true, Ordering::Relaxed);
-    fs::write(
-        home.paths().pending_claim(),
-        serde_json::json!([{"server": home.server, "code_sha256": "", "request_id": "r"}])
-            .to_string(),
-    )
-    .unwrap();
+    save_pending_claim(&home);
     let steps = [
         step(ROUTE, choose(false, 1)),
         step(ADDRESS, line(&home.server)),
@@ -1700,12 +1716,7 @@ fn a_claim_that_did_not_finish_is_finished_with_its_code() {
 fn another_code_for_a_claim_that_did_not_finish_is_asked_again() {
     let home = Home::new(&[]);
     home.claimed.store(true, Ordering::Relaxed);
-    fs::write(
-        home.paths().pending_claim(),
-        serde_json::json!([{"server": home.server, "code_sha256": "", "request_id": "r"}])
-            .to_string(),
-    )
-    .unwrap();
+    save_pending_claim(&home);
     let steps = [
         step(ROUTE, choose(false, 1)),
         step(ADDRESS, line(&home.server)),
@@ -1730,12 +1741,7 @@ fn another_code_for_a_claim_that_did_not_finish_is_asked_again() {
 fn a_server_failure_during_a_claim_that_did_not_finish_shows_its_own_error() {
     let home = Home::new(&[]);
     home.claimed.store(true, Ordering::Relaxed);
-    fs::write(
-        home.paths().pending_claim(),
-        serde_json::json!([{"server": home.server, "code_sha256": "", "request_id": "r"}])
-            .to_string(),
-    )
-    .unwrap();
+    save_pending_claim(&home);
     let steps = [
         step(ROUTE, choose(false, 1)),
         step(ADDRESS, line(&home.server)),
@@ -2081,6 +2087,52 @@ fn a_new_shared_folder_takes_the_name_typed() {
         );
         assert!(text.contains("~/Koidrive is linked to Photos"), "{text}");
     }
+}
+
+#[test]
+fn a_space_create_whose_answer_is_lost_is_sent_again_with_its_first_request_id() {
+    let home = Home::new(&[]);
+    home.connect();
+    home.lose_create.store(true, Ordering::Relaxed);
+    home.refuse_create.store(true, Ordering::Relaxed);
+    let create = || {
+        let output = (koi(home.path()).args(["--json", "space", "create", "Notes"]))
+            .output()
+            .unwrap();
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+
+    let refused = create();
+    assert_eq!(refused["outcome"], "error", "{refused:#}");
+    assert_eq!(saved_creates(&home), 1);
+    home.refuse_create.store(false, Ordering::Relaxed);
+    let created = create();
+
+    assert_eq!(created["outcome"], "ok", "{created:#}");
+    let ids = home.create_ids.lock().unwrap().clone();
+    assert_eq!(ids.len(), 3, "{ids:?}");
+    assert!(ids.iter().all(|id| *id == ids[0]), "{ids:?}");
+    assert_eq!(home.spaces.lock().unwrap().len(), 1);
+    assert_eq!(saved_creates(&home), 0);
+}
+
+#[test]
+fn a_space_create_refused_for_good_forgets_its_request_id() {
+    let home = Home::new(&[]);
+    home.connect();
+    home.collide_create.store(true, Ordering::Relaxed);
+
+    let output = (koi(home.path()).args(["--json", "space", "create", "Notes"]))
+        .output()
+        .unwrap();
+
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["outcome"], "unchanged", "{envelope:#}");
+    assert_eq!(saved_creates(&home), 0);
+}
+
+fn saved_creates(home: &Home) -> usize {
+    fs::read_dir(home.paths().creates()).map_or(0, |entries| entries.count())
 }
 
 #[test]

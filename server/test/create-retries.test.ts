@@ -148,7 +148,7 @@ describe("RFC 0024 create retries", () => {
     const token = owner.access!.token;
     const space = await call("/v1/spaces", { token, body: body(CreateSpaceRequestSchema, { name: "Shared", requestId: "space-4" }) }, SpaceInfoSchema);
     const spaceId = space.message!.spaceId;
-    const share = (nodeId: string, requestId: string, init: { password?: string; noExpiry?: boolean } = {}) =>
+    const share = (nodeId: string, requestId: string, init: { password?: string; noExpiry?: boolean; expiresAtMs?: bigint } = {}) =>
       call(`/v1/spaces/${spaceId}/links`, { token, body: body(CreateShareLinkRequestSchema, { nodeId, requestId, ...init }) }, ShareLinkSchema);
     const first = await share(spaceId, "link-1");
     const again = await share(spaceId, "link-1");
@@ -163,8 +163,13 @@ describe("RFC 0024 create retries", () => {
     expect((await share(spaceId, "link-2", { password: "correct horse" })).message!.url).toBe(locked.message!.url);
     expect(await share(spaceId, "link-2", { password: "wrong horse!" })).toMatchObject({ status: 400, code: Error_Code.INVALID_ARGUMENT });
     expect(await share(spaceId, "link-2")).toMatchObject({ status: 400, code: Error_Code.INVALID_ARGUMENT });
+
+    const expiresAtMs = BigInt(Date.now() + 86_400_000);
+    const dated = await share(spaceId, "link-3", { expiresAtMs });
+    expect((await share(spaceId, "link-3", { expiresAtMs })).message!.url).toBe(dated.message!.url);
+    expect(await share(spaceId, "link-3", { expiresAtMs: expiresAtMs + 1000n })).toMatchObject({ status: 400, code: Error_Code.INVALID_ARGUMENT });
     const links = await call(`/v1/spaces/${spaceId}/links`, { method: "GET", token }, ShareLinkListSchema);
-    expect(links.message!.links).toHaveLength(2);
+    expect(links.message!.links).toHaveLength(3);
   });
 
   it("refuses a request_id longer than 64 characters", async () => {

@@ -18,15 +18,17 @@ use koidrive_store::Store;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::driver::{now_ms, store_error};
+use crate::driver::{io_error, now_ms, store_error};
 use crate::engine::{Engine, file_id};
 use crate::observe::{open_beneath, read_content};
+use crate::pending_create::{Intent, PendingCreate};
 use crate::{Driver, DriverError, FolderState, FolderStatus};
 
 const TREE_PAGE: u32 = 1000;
 const SHORT_ID_DIGITS: usize = 10;
 const LINK_ID_CHARS: usize = 22;
 const PASSWORD_CHARS: std::ops::RangeInclusive<usize> = 8..=256;
+const SHORTEST_EXPIRY_MS: i64 = 60_000;
 
 /// A value that grants access, such as a link's URL or password. `Debug` shows `Secret(..)`.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,33 +157,68 @@ impl Driver {
             error: std::io::Error::other(error),
         })??;
         let tree = Tree::new(&folder.space_id, &nodes);
-        let now = now_ms();
-        let request = CreateShareLinkRequest {
-            node_id,
-            expires_at_ms: match expiry {
-                Expiry::After { ms } => now.saturating_add_unsigned(ms),
-                Expiry::Default | Expiry::Never => 0,
-            },
-            no_expiry: expiry == Expiry::Never,
-            password: password.map(|password| password.0).unwrap_or_default(),
-            request_id: koidrive_net::request_id(),
-        };
-        let link = koidrive_net::resend_lost(|| {
-            (auth.api()).create_share_link(&auth, &folder.space_id, &request)
-        })
-        .await
-        .map_err(|error| match error.server().map(ServerError::code) {
-            Some(ServerCode::LimitExceeded) => DriverError::ShareLinkLimit,
-            Some(ServerCode::NotFound) => DriverError::NotOnServer(path.to_owned()),
-            _ => DriverError::Api(error),
-        })?;
+        let link = (self.create_link(&auth, &folder.space_id, node_id, expiry, password))
+            .await
+            .map_err(|error| match error {
+                DriverError::Api(error) => match error.server().map(ServerError::code) {
+                    Some(ServerCode::LimitExceeded) => DriverError::ShareLinkLimit,
+                    Some(ServerCode::NotFound) => DriverError::NotOnServer(path.to_owned()),
+                    _ => DriverError::Api(error),
+                },
+                error => error,
+            })?;
         Ok(described(
             link,
             &folder.space_name,
             Some(folder),
             &tree,
-            now,
+            now_ms(),
         ))
+    }
+
+    async fn create_link(
+        &self,
+        auth: &Auth,
+        space_id: &str,
+        node_id: String,
+        expiry: Expiry,
+        password: Option<Secret>,
+    ) -> Result<ShareLink, DriverError> {
+        let now = now_ms();
+        let pending = PendingCreate::new(
+            self.paths(),
+            auth.api().base(),
+            Intent::ShareLink {
+                space_id,
+                node_id: &node_id,
+                expiry,
+                password: password.as_ref().map(|password| password.0.as_str()),
+            },
+        );
+        let expires_at_ms = |since_ms: i64| match expiry {
+            Expiry::After { ms } => since_ms.saturating_add_unsigned(ms),
+            Expiry::Default | Expiry::Never => 0,
+        };
+        let mut saved = pending.saved_or_new().map_err(io_error(pending.path()))?;
+        if expires_at_ms(saved.since_ms) != 0
+            && expires_at_ms(saved.since_ms) <= now + SHORTEST_EXPIRY_MS
+        {
+            pending.forget();
+            saved = pending.saved_or_new().map_err(io_error(pending.path()))?;
+        }
+        let request = CreateShareLinkRequest {
+            node_id,
+            expires_at_ms: expires_at_ms(saved.since_ms),
+            no_expiry: expiry == Expiry::Never,
+            password: password.map(|password| password.0).unwrap_or_default(),
+            request_id: saved.request_id,
+        };
+        pending
+            .send(
+                || auth.api().create_share_link(auth, space_id, &request),
+                Ok,
+            )
+            .await
     }
 
     /// Every link of the spaces this device's user owns, ended ones included, newest first.
@@ -1554,6 +1591,99 @@ mod tests {
                 served.await.unwrap();
             }
         }
+    }
+
+    #[tokio::test]
+    async fn a_link_whose_resends_end_without_an_answer_is_made_again_with_its_first_request() {
+        use crate::pending_create::fake::{Answer, long_wait, serve};
+        use koidrive_proto::v1::{Error as ProtoError, error::Code};
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let driver = Driver::open(paths.clone()).unwrap();
+        let used = ProtoError {
+            code: Code::InvalidArgument as i32,
+            message: "this request_id was used with other fields".into(),
+            ..ProtoError::default()
+        };
+        let made = link("AAAAAAAAAAAAAAAAAAAAAA", "n1").encode_to_vec();
+        let (server, served) = serve(vec![
+            Answer::Refuse(400, used),
+            Answer::Lose,
+            long_wait(),
+            Answer::Reply(made),
+        ])
+        .await;
+        let auth = auth(&server);
+        let create = || {
+            driver.create_link(
+                &auth,
+                SPACE,
+                "n1".into(),
+                Expiry::After { ms: 86_400_000 },
+                Some(Secret("correct horse".into())),
+            )
+        };
+
+        let refused = create().await;
+        assert!(matches!(refused, Err(DriverError::Api(_))), "{refused:?}");
+        assert_eq!(crate::pending_create::saved(&paths), 0);
+        assert!(create().await.is_err());
+        assert_eq!(crate::pending_create::saved(&paths), 1);
+        let link = create().await.unwrap();
+
+        assert_eq!(link.node_id, "n1");
+        let requests: Vec<CreateShareLinkRequest> = (served.await.unwrap().iter())
+            .map(|body| CreateShareLinkRequest::decode(body.as_slice()).unwrap())
+            .collect();
+        assert_ne!(requests[0].request_id, requests[1].request_id);
+        for resent in &requests[2..] {
+            assert_eq!(resent, &requests[1]);
+        }
+        assert_eq!(requests[1].password, "correct horse");
+        assert_eq!(crate::pending_create::saved(&paths), 0);
+    }
+
+    #[tokio::test]
+    async fn a_saved_link_whose_expiry_has_passed_is_asked_for_again_with_a_new_request() {
+        use crate::pending_create::fake::{Answer, serve};
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let driver = Driver::open(paths.clone()).unwrap();
+        let (server, served) = serve(vec![
+            Answer::Lose,
+            crate::pending_create::fake::long_wait(),
+            Answer::Reply(link("AAAAAAAAAAAAAAAAAAAAAA", "n1").encode_to_vec()),
+        ])
+        .await;
+        let auth = auth(&server);
+        let create = || {
+            driver.create_link(
+                &auth,
+                SPACE,
+                "n1".into(),
+                Expiry::After { ms: 3_600_000 },
+                None,
+            )
+        };
+        assert!(create().await.is_err());
+        for entry in std::fs::read_dir(paths.creates()).unwrap() {
+            let path = entry.unwrap().path();
+            let mut saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            saved["since_ms"] = (now_ms() - 3_600_000).into();
+            std::fs::write(&path, saved.to_string()).unwrap();
+        }
+
+        create().await.unwrap();
+
+        let requests: Vec<CreateShareLinkRequest> = (served.await.unwrap().iter())
+            .map(|body| CreateShareLinkRequest::decode(body.as_slice()).unwrap())
+            .collect();
+        assert_eq!(requests[0].request_id, requests[1].request_id);
+        assert_ne!(requests[2].request_id, requests[0].request_id);
+        assert!(requests[2].expires_at_ms > now_ms() + 3_500_000);
     }
 
     #[tokio::test]

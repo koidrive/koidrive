@@ -351,25 +351,26 @@ async fn onboard(paths: &Paths, terminal: &Terminal) -> Result<Done, CliError> {
         }
         match target {
             Target::Existing(space) => break crate::Named::Existing(space),
-            Target::Default => match crate::named_space(&auth, &spaces, DEFAULT_FOLDER).await? {
-                crate::Named::Created(space) => break crate::Named::Created(space),
-                crate::Named::Existing(_) => {
-                    drop(progress.take());
-                    terminal.message(&format!(
+            Target::Default => {
+                match crate::named_space(paths, &auth, &spaces, DEFAULT_FOLDER).await? {
+                    crate::Named::Created(space) => break crate::Named::Created(space),
+                    crate::Named::Existing(_) => {
+                        drop(progress.take());
+                        terminal.message(&format!(
                         "A shared folder named {DEFAULT_FOLDER} is available. Choose which folder to sync."
                     ));
-                    let now = auth
-                        .api()
-                        .list_spaces(&auth)
-                        .await
-                        .map_err(CliError::api_retry_safe)?;
-                    target = shared_folder(terminal, &now.spaces).await?;
+                        let now = auth
+                            .api()
+                            .list_spaces(&auth)
+                            .await
+                            .map_err(CliError::api_retry_safe)?;
+                        target = shared_folder(terminal, &now.spaces).await?;
+                    }
                 }
-            },
-            Target::New(name) => match crate::create_space(&auth, &name).await {
+            }
+            Target::New(name) => match koidrive_driver::create_space(paths, &auth, &name).await {
                 Ok(space) => break crate::Named::Created(space),
-                Err(error) if error.status() != Some(409) => return Err(error.into()),
-                Err(error) => {
+                Err(DriverError::Api(error)) if error.status() == Some(409) => {
                     let now = auth
                         .api()
                         .list_spaces(&auth)
@@ -385,6 +386,7 @@ async fn onboard(paths: &Paths, terminal: &Terminal) -> Result<Done, CliError> {
                     ));
                     target = new_shared_folder(terminal, &now.spaces).await?;
                 }
+                Err(error) => return Err(error.into()),
             },
         }
     };

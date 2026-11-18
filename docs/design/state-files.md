@@ -10,7 +10,7 @@ Dropping a stage removes it. A killed process cannot run cleanup, so the next `p
 
 Recovery opens read-only or write-only stages. Permission errors when opening or removing an obsolete stage leave that stage untouched without blocking other writes. A destination cannot use the helper's reserved staging namespace. `finish_with_legacy` and `write_with_legacy` remove explicitly named obsolete siblings after publication, under the directory lock. They reject names that escape the directory, name the destination, or overlap the helper's stages. Required destination removal still returns permission errors. The caller must hold the ownership lock shared with historical writers.
 
-Pending-claim mutations borrow the Driver's profile lease. Their legacy selector recognizes only canonical positive PID names in `.pending-claim.json.<pid>.tmp`. `finish_with_legacy_matching` selects siblings through the prepared directory descriptor, so an ancestor move cannot redirect cleanup. `remove_with_legacy_matching` selects and removes state through one directory descriptor, then syncs it without creating a stage. Claim status reads do not recover or rewrite files.
+A create sent with a request ID (claim, pairing, space, share link) keeps that ID in its own file under `creates/` until the server answers it for good. The file name is the create's kind and a SHA-256 of what identifies it, so the daemon and a `koi` command never share a file. `Publish::Create` makes the first writer's ID the one every later run reads, without a lock. `remove_with_legacy_matching` with no legacy names forgets a create and syncs the directory. Claim status reads do not recover or rewrite files.
 
 ## Checks
 

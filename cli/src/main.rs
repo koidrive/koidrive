@@ -60,7 +60,7 @@ use crate::report::{Done, HelpData, VersionInfoData};
 #[cfg(test)]
 use crate::resolve::resolve;
 use crate::resolve::{RESOLVE, choices, pending_questions, question_notice};
-use crate::space::{Named, create_space, named_space, total_bytes};
+use crate::space::{Named, named_space, total_bytes};
 use crate::status::status;
 #[cfg(test)]
 use crate::sync_control::resume;

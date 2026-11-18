@@ -15,7 +15,7 @@ use koidrive_engine::guard::Window;
 use koidrive_engine::ignore::LocalRules;
 use koidrive_fs::{Marker, probe_no_replace, read_marker, root_at, write_marker};
 use koidrive_ignore::LocalRulesError;
-use koidrive_net::{ApiError, Auth, ROTATION_PERIOD, Resend, ServerError, UploadGate};
+use koidrive_net::{ApiError, Auth, ROTATION_PERIOD, ServerError, UploadGate};
 use koidrive_proto::v1::{ClaimRequest, DeviceCredentials, PairCompleteRequest, SpaceInfo};
 use koidrive_state_file::Flock;
 use koidrive_store::{AskedRestore, EngineState, GivenAnswer, Link, Store, StoredQuestion};
@@ -33,7 +33,7 @@ use crate::folder::FolderTask;
 use crate::ignore::{Matcher, has_sync_entries, local_rules, matcher};
 use crate::leave::{Leaving, Phase};
 use crate::paths::{Paths, PathsError};
-use crate::pending_claim;
+use crate::pending_create::{self, Intent, PendingCreate};
 use crate::question::{Answer, Limit, Question, QuestionKind};
 use crate::restore::{self, RestoreRequest, RestoreStatus};
 use crate::status::{Account, Activity, FolderState, FolderStatus, Status};
@@ -212,7 +212,7 @@ pub enum DriverError {
     Io { path: PathBuf, error: io::Error },
 }
 
-fn io_error(path: &Path) -> impl FnOnce(io::Error) -> DriverError + '_ {
+pub(crate) fn io_error(path: &Path) -> impl FnOnce(io::Error) -> DriverError + '_ {
     move |error| DriverError::Io {
         path: path.to_path_buf(),
         error,
@@ -705,7 +705,9 @@ impl Driver {
     }
 
     /// Pairs this profile with a server, using a code from a device that is already paired (`POST
-    /// /v1/pair/complete`), and stores the credential. A profile is paired once.
+    /// /v1/pair/complete`), and stores the credential. A profile is paired once. A pairing whose answer was lost is sent
+    /// again with its first request ID when the same code is given, so the server answers it for the device it already
+    /// paired.
     pub async fn pair(
         &self,
         server: &str,
@@ -720,21 +722,32 @@ impl Driver {
         let file = NewCredentialFile::create(&self.inner.paths.credential())?;
         self.unlink_folders_of_lost_credential().await?;
         let api = api_for(server)?;
+        let pending = PendingCreate::new(&self.inner.paths, api.base(), Intent::Pair { code });
         let request = PairCompleteRequest {
             code: code.to_owned(),
             device_name: device_name.to_owned(),
             platform: std::env::consts::OS.to_owned(),
-            request_id: koidrive_net::request_id(),
+            request_id: (pending.saved_or_new())
+                .map_err(io_error(pending.path()))?
+                .request_id,
         };
-        let issued = koidrive_net::resend_lost(|| api.pair_complete(&request)).await?;
-        self.adopt(
-            file,
-            api.base().to_string(),
-            issued,
-            None,
-            device_name,
-            "paired this device",
-        )
+        let account = pending
+            .send(
+                || api.pair_complete(&request),
+                |issued| {
+                    self.adopt(
+                        file,
+                        api.base().to_string(),
+                        issued,
+                        None,
+                        device_name,
+                        "paired this device",
+                    )
+                },
+            )
+            .await?;
+        pending_create::forget_sign_ins(&self.inner.paths);
+        Ok(account)
     }
 
     /// Claims a new server as its first device (`POST /v1/claim`), with the one-time code from the server's log,
@@ -759,44 +772,38 @@ impl Driver {
         let file = NewCredentialFile::create(&self.inner.paths.credential())?;
         self.unlink_folders_of_lost_credential().await?;
         let api = api_for(server)?;
-        let pending = self.inner.paths.pending_claim();
+        let pending = PendingCreate::new(&self.inner.paths, api.base(), Intent::Claim { code });
         let request = ClaimRequest {
             code: code.to_owned(),
             user_name: user_name.to_owned(),
             device_name: device_name.to_owned(),
             platform: std::env::consts::OS.to_owned(),
             setup_attempt: String::new(),
-            request_id: pending_claim::request_id(&self.inner._lock, &pending, api.base(), code)
-                .map_err(io_error(&pending))?,
+            request_id: (pending.saved_or_new())
+                .map_err(io_error(pending.path()))?
+                .request_id,
         };
-        let issued = match koidrive_net::resend_lost(|| api.claim(&request)).await {
-            Ok(issued) => issued,
-            Err(error) => {
-                if matches!(&error, ApiError::Server { status, error }
-                    if (400..500).contains(status) && *status != 429 && error.resend() != Resend::Allowed)
-                {
-                    pending_claim::forget(&self.inner._lock, &pending, api.base(), code)
-                        .map_err(io_error(&pending))?;
-                }
-                return Err(error.into());
-            }
-        };
-        let user_name = if issued.user_name.is_empty() {
-            user_name.to_owned()
-        } else {
-            issued.user_name.clone()
-        };
-        let account = self.adopt(
-            file,
-            api.base().to_string(),
-            issued,
-            Some(user_name),
-            device_name,
-            "claimed the server",
-        )?;
-        if let Err(error) = pending_claim::clear(&self.inner._lock, &pending) {
-            tracing::warn!(%error, "could not remove the finished claim's record");
-        }
+        let account = pending
+            .send(
+                || api.claim(&request),
+                |issued| {
+                    let user_name = if issued.user_name.is_empty() {
+                        user_name.to_owned()
+                    } else {
+                        issued.user_name.clone()
+                    };
+                    self.adopt(
+                        file,
+                        api.base().to_string(),
+                        issued,
+                        Some(user_name),
+                        device_name,
+                        "claimed the server",
+                    )
+                },
+            )
+            .await?;
+        pending_create::forget_sign_ins(&self.inner.paths);
         Ok(account)
     }
 
@@ -5259,7 +5266,84 @@ mod tests {
         assert!(!lost.request_id.is_empty());
         assert_eq!(resent.request_id, lost.request_id);
         assert!(!crate::claim_pending(&paths, &url));
-        assert!(!paths.pending_claim().exists());
+        assert_eq!(crate::pending_create::saved(&paths), 0);
+    }
+
+    fn request_ids<R: prost::Message + Default>(
+        bodies: &[Vec<u8>],
+        id: impl Fn(R) -> String,
+    ) -> Vec<String> {
+        (bodies.iter())
+            .map(|body| id(R::decode(body.as_slice()).unwrap()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_claim_whose_resends_end_without_an_answer_is_sent_again_with_its_first_request_id() {
+        use crate::pending_create::fake::{Answer, long_wait, serve};
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let driver = Driver::open(paths.clone()).unwrap();
+        let (server, served) =
+            serve(vec![Answer::Lose, long_wait(), Answer::Reply(issued("d1"))]).await;
+
+        let failed = driver.claim(&server, "claim-code", "Ada", "laptop").await;
+        assert!(matches!(failed, Err(DriverError::Api(_))), "{failed:?}");
+        assert!(crate::claim_pending(
+            &paths,
+            &url::Url::parse(&server).unwrap()
+        ));
+        let account = driver
+            .claim(&server, "claim-code", "Ada", "laptop")
+            .await
+            .unwrap();
+
+        assert_eq!(account.device_id, "d1");
+        let ids = request_ids(&served.await.unwrap(), |r: ClaimRequest| r.request_id);
+        assert_eq!(ids.len(), 3);
+        assert!(ids.iter().all(|id| *id == ids[0]), "{ids:?}");
+        assert_eq!(crate::pending_create::saved(&paths), 0);
+    }
+
+    #[tokio::test]
+    async fn a_pairing_whose_resends_end_without_an_answer_is_sent_again_with_its_first_request_id()
+    {
+        use crate::pending_create::fake::{Answer, long_wait, serve};
+        use koidrive_proto::v1::{Error as ProtoError, error::Code};
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let driver = Driver::open(paths.clone()).unwrap();
+        let wrong = ProtoError {
+            code: Code::Forbidden as i32,
+            message: "invalid or expired pairing code".into(),
+            ..ProtoError::default()
+        };
+        let (server, served) = serve(vec![
+            Answer::Refuse(403, wrong),
+            Answer::Lose,
+            long_wait(),
+            Answer::Reply(issued("d1")),
+        ])
+        .await;
+
+        let refused = driver.pair(&server, "ABCD-EFGH", "laptop").await;
+        assert!(matches!(refused, Err(DriverError::Api(_))), "{refused:?}");
+        assert_eq!(crate::pending_create::saved(&paths), 0);
+        let failed = driver.pair(&server, "ABCD-EFGH", "laptop").await;
+        assert!(matches!(failed, Err(DriverError::Api(_))), "{failed:?}");
+        assert_eq!(crate::pending_create::saved(&paths), 1);
+        let account = driver.pair(&server, "abcd efgh", "laptop").await.unwrap();
+
+        assert_eq!(account.device_id, "d1");
+        let ids = request_ids(&served.await.unwrap(), |r: PairCompleteRequest| {
+            r.request_id
+        });
+        assert_eq!(ids.len(), 4);
+        assert_ne!(ids[0], ids[1]);
+        assert!(ids[1..].iter().all(|id| *id == ids[1]), "{ids:?}");
+        assert_eq!(crate::pending_create::saved(&paths), 0);
     }
 
     #[tokio::test]
@@ -5314,7 +5398,7 @@ mod tests {
         let lost: ClaimRequest = prost::Message::decode(lost.as_slice()).unwrap();
         let resent: ClaimRequest = prost::Message::decode(resent.as_slice()).unwrap();
         assert_eq!(resent.request_id, lost.request_id);
-        assert!(!paths.pending_claim().exists());
+        assert_eq!(crate::pending_create::saved(&paths), 0);
     }
 
     #[tokio::test]
@@ -5353,7 +5437,7 @@ mod tests {
 
         let refused = driver.claim(&server, "claim-code", "Ada", "laptop").await;
         assert!(matches!(refused, Err(DriverError::Api(_))), "{refused:?}");
-        assert!(!paths.pending_claim().exists());
+        assert_eq!(crate::pending_create::saved(&paths), 0);
         driver
             .claim(&server, "claim-code", "Ada", "laptop")
             .await
