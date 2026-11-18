@@ -19,6 +19,7 @@ pub(super) struct Context<'a> {
     pub base_seq: u64,
     pub now_ms: i64,
     pub committer: &'a Session,
+    pub copies_created_files: bool,
 }
 
 type Reject = &'static str;
@@ -504,6 +505,19 @@ impl<'a> Applier<'a> {
             Some(version_id),
             &dev,
         );
+        if self.ctx.copies_created_files {
+            let copy = self.st.ids.uuid_v7(self.ctx.now_ms as u64);
+            let copy_name = self.pick_conflict_copy_name(&parent.node_id, &name);
+            let version_id = self.insert_version(&copy, content, &content.chunks);
+            self.insert_node(
+                &copy,
+                &parent.node_id,
+                &copy_name,
+                NodeKind::File,
+                Some(version_id),
+                &dev,
+            );
+        }
         Ok(applied(renamed, &name))
     }
 

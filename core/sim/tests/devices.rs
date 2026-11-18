@@ -2703,9 +2703,135 @@ fn a_conflict_copy_of_a_write_whose_time_tells_it_apart_is_one_write_in_two_file
     );
 }
 
+fn a_restore_and_a_store_rollback_that_lose_track_of_a_coarse_download() -> Vec<Vec<(usize, Step)>>
+{
+    use Step::*;
+    let act = |kind, target, parent, name, text| {
+        User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    vec![
+        vec![
+            (0, CopyStore),
+            (2, Work(9803945457093778123)),
+            (1, Answer(2)),
+            (2, Work(8918304582049025136)),
+            (2, Work(2334593483455006461)),
+            (1, Commit(Reply::Served)),
+            (2, Deliver(17093425422840350787)),
+            (2, Deliver(4952958468317487781)),
+            (1, Commit(Reply::NoChunks)),
+            (0, Deliver(13899312395726236677)),
+            (0, act(1, 17018155047213836791, 14306188388235338329, 4, 0)),
+            (1, Commit(Reply::Served)),
+            (1, Work(17344159250367396394)),
+            (2, Work(7664627396348883811)),
+            (1, Rewind),
+            (1, Work(6264096991676606727)),
+            (0, Deliver(7845084579063926744)),
+            (1, Effect(Outcome::Run)),
+            (1, Deliver(166347736699837671)),
+            (1, Work(8345306495339778622)),
+            (1, Effect(Outcome::Crash(Cut::Done))),
+            (2, Backup),
+            (0, act(0, 6575913836940721334, 4300568312786835173, 1, 3)),
+            (1, Restore),
+            (2, act(3, 1167256439281579399, 17046472390829256667, 2, 1)),
+            (1, Drop),
+            (1, Commit(Reply::Served)),
+            (2, act(3, 17785797962557912573, 5511689788658304678, 8, 2)),
+            (0, Connect),
+            (2, Work(13707713607766819383)),
+            (2, Work(17059109337635097065)),
+            (1, Commit(Reply::Served)),
+        ],
+        vec![],
+        vec![
+            (2, CopyStore),
+            (2, Work(14049794346622777382)),
+            (2, act(1, 14899427340213394954, 16916399440933300498, 6, 3)),
+            (0, Work(8918231905168509987)),
+            (2, Backup),
+            (1, Work(11333650361172996232)),
+            (0, Work(9574402354798579704)),
+            (2, Commit(Reply::Served)),
+            (2, act(2, 9056899948842872040, 14456124772733369403, 6, 2)),
+            (1, Work(3733317957760983244)),
+            (0, Backup),
+            (0, Answer(2)),
+            (2, Crash),
+            (0, Answer(0)),
+            (2, Work(903027949205272679)),
+            (1, act(1, 3467699293071853499, 18019144745470247218, 8, 2)),
+            (2, RestoreEarlier),
+            (1, Deliver(12873537610785485382)),
+            (0, Effect(Outcome::Run)),
+            (2, RollBack),
+            (2, Drop),
+            (0, Commit(Reply::Refused(error::Code::RetryLater))),
+            (1, Scan),
+            (0, Deliver(8059452098995620841)),
+            (0, Effect(Outcome::Run)),
+            (1, act(1, 18379658368561425730, 3101976565380843284, 1, 0)),
+            (1, act(4, 5382336988220747481, 8695983045253140284, 6, 3)),
+            (0, Work(13436917317051465700)),
+            (2, Crash),
+            (1, Work(1675489799261318679)),
+            (1, Work(16676135055081029800)),
+            (2, act(1, 5785758124119545687, 4866823655781752424, 4, 0)),
+            (2, act(2, 1777367762062262940, 18092570649525465839, 2, 0)),
+        ],
+    ]
+}
+
 #[test]
-fn a_conflict_copy_of_a_write_whose_time_a_coarse_disk_kept_is_the_copy_the_server_keeps() {
-    a_conflict_copy_of_the_write_at_a_beside_it(&[Precision::Seconds, Precision::Seconds]).unwrap();
+fn a_file_a_coarse_disk_keeps_through_a_loss_is_created_again_beside_the_servers_file() {
+    let world = converge_on(
+        &[Precision::Seconds, Precision::Seconds],
+        &a_restore_and_a_store_rollback_that_lose_track_of_a_coarse_download(),
+    )
+    .unwrap();
+    let names: Vec<String> = (world.space().nodes().into_iter())
+        .filter(|node| node.status == koidrive_proto::v1::NodeStatus::Live as i32)
+        .map(|node| node.name)
+        .collect();
+    assert!(
+        names.contains(&"ss (conflict from device-1 2026-11-09)".to_owned()),
+        "{names:?}"
+    );
+}
+
+#[test]
+fn a_file_a_fine_disk_keeps_through_the_same_loss_is_linked_to_the_servers_file() {
+    converge_on(
+        &[Precision::Fine, Precision::Fine],
+        &a_restore_and_a_store_rollback_that_lose_track_of_a_coarse_download(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_server_that_keeps_a_conflict_copy_of_each_created_file_is_caught_without_a_loss() {
+    for volumes in [
+        [Precision::Seconds, Precision::Seconds],
+        [Precision::TwoSeconds, Precision::Fine],
+        [Precision::Fine, Precision::Fine],
+    ] {
+        let mut world = on(&volumes);
+        world.space_mut().copy_each_created_file();
+        let failure = world.phase(0, &[(0, file("a"))]).unwrap_err();
+        assert!(
+            failure
+                .to_string()
+                .contains("write 1 is in more than one file"),
+            "{volumes:?}: {failure}"
+        );
+    }
 }
 
 fn copies_of(world: &World, write: i64) -> usize {

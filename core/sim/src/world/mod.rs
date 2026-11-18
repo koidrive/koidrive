@@ -655,6 +655,7 @@ pub struct World {
     /// again.
     rolled_back: BTreeMap<NodeId, Vec<u8>>,
     rewound: BTreeMap<i64, BTreeSet<usize>>,
+    held_before_a_loss: Vec<BTreeMap<NodeId, u128>>,
     clock: u64,
     touches: Vec<BTreeMap<u128, BTreeSet<u64>>>,
     touched_nodes: Vec<BTreeMap<NodeId, u128>>,
@@ -796,6 +797,7 @@ impl World {
             clock: 0,
             touches: vec![BTreeMap::new(); count],
             touched_nodes: vec![BTreeMap::new(); count],
+            held_before_a_loss: vec![BTreeMap::new(); count],
             merged: vec![BTreeMap::new(); count],
             actions: vec![BTreeMap::new(); count],
             scanned: vec![Observed::default(); count],
@@ -809,6 +811,10 @@ impl World {
             binned_copies: BTreeSet::new(),
             answers: 0,
         }
+    }
+
+    pub fn space_mut(&mut self) -> &mut SpaceDo {
+        &mut self.space
     }
 
     pub fn space(&self) -> &SpaceDo {
@@ -934,6 +940,9 @@ impl World {
                 self.built_copies[d] = self.built[d].clone();
             }
             Step::RollBack => {
+                if self.devices[d].store_copy.is_some() {
+                    self.hold_before_a_loss(d);
+                }
                 let device = &mut self.devices[d];
                 if let Some(copy) = device.store_copy.clone() {
                     note(&mut self.seen, "store rolled back");
@@ -1119,7 +1128,22 @@ impl World {
         }
     }
 
+    fn hold_before_a_loss(&mut self, d: usize) {
+        let local = self.devices[d].engine.trees.local();
+        self.held_before_a_loss[d].extend(
+            local
+                .iter()
+                .map(|(id, node)| (id.clone(), node.identity.ino)),
+        );
+    }
+
     fn rewind(&mut self) {
+        if self.backup.is_none() {
+            return;
+        }
+        for d in 0..self.devices.len() {
+            self.hold_before_a_loss(d);
+        }
         let Some(backup) = &self.backup else {
             return;
         };
@@ -1335,6 +1359,17 @@ impl World {
     /// held it only after the copy, or when a file of the server held it before the restore and
     /// no longer holds it after: it is exposed, and retired as well when no disk holds it.
     fn restore(&mut self, earlier: bool) {
+        if (if earlier {
+            &self.earlier_backup
+        } else {
+            &self.backup
+        })
+        .is_some()
+        {
+            for d in 0..self.devices.len() {
+                self.hold_before_a_loss(d);
+            }
+        }
         let backup = if earlier {
             &self.earlier_backup
         } else {
@@ -3290,14 +3325,62 @@ impl World {
             });
             (exposure.loose + files.sum::<usize>()).max(1)
         };
+        let now_ms = self.server_now();
+        let conflict_of = |copy: &str, original: &str, holders: usize| {
+            (0..self.devices.len()).any(|d| {
+                (1..=holders as u32).any(|attempt| {
+                    let name = conflict_name(original, &format!("device-{d}"), now_ms, attempt);
+                    same_name(copy, &name)
+                })
+            })
+        };
+        let made_again_after_a_loss = |made_id: &NodeId,
+                                       made: &RemoteNode,
+                                       lost_id: &NodeId,
+                                       lost: &RemoteNode,
+                                       holders: usize| {
+            made.shape.parent == lost.shape.parent
+                && (lost.shape.content.as_ref())
+                    .is_some_and(|content| !first_link::time_tells_writes_apart(content.mtime_ns))
+                && (conflict_of(&made.shape.name, &lost.shape.name, holders)
+                    || conflict_of(&lost.shape.name, &made.shape.name, holders))
+                && (self.devices.iter().enumerate()).any(|(d, device)| {
+                    let ino =
+                        (device.engine.trees.local().get(made_id)).map(|node| node.identity.ino);
+                    ino.is_some()
+                        && self.held_before_a_loss[d].get(lost_id).copied() == ino
+                        && !self.held_before_a_loss[d].contains_key(made_id)
+                        && (self.placements[d].iter()).any(|placement| placement.node == *made_id)
+                })
+        };
         let lineages = |write: i64, paths: usize| {
+            let holders: Vec<(&NodeId, &RemoteNode)> = (nodes.iter())
+                .filter(|(_, node)| !node.trashed)
+                .filter(|(_, node)| (node.shape.content.as_ref()).is_some_and(|c| tag(c) == write))
+                .map(|(id, node)| (id, node))
+                .collect();
+            let made_again: BTreeSet<&NodeId> = (holders.iter())
+                .filter(|(copy_id, copy)| {
+                    (holders.iter()).any(|(original_id, original)| {
+                        copy_id != original_id
+                            && made_again_after_a_loss(
+                                copy_id,
+                                copy,
+                                original_id,
+                                original,
+                                holders.len(),
+                            )
+                    })
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            let paths = paths.saturating_sub(made_again.len());
             if self.exposed.contains_key(&write) {
                 return paths;
             }
-            let holders: BTreeSet<&NodeId> = (nodes.iter())
-                .filter(|(_, node)| !node.trashed)
-                .filter(|(_, node)| (node.shape.content.as_ref()).is_some_and(|c| tag(c) == write))
-                .map(|(id, _)| id)
+            let holders: BTreeSet<&NodeId> = (holders.iter())
+                .map(|(id, _)| *id)
+                .filter(|id| !made_again.contains(id))
                 .collect();
             let roots: BTreeSet<&NodeId> = (holders.iter())
                 .map(|&holder| match self.recovery_copies.get(holder) {
@@ -3313,36 +3396,8 @@ impl World {
                 .collect();
             paths.saturating_sub(holders.len() - roots.len())
         };
-        let now_ms = self.server_now();
-        let kept_beside_a_coarse_original = |paths: &Vec<&Vec<String>>| {
-            let conflict_of = |copy: &str, original: &str| {
-                (0..self.devices.len()).any(|d| {
-                    (1..=paths.len() as u32).any(|attempt| {
-                        let name = conflict_name(original, &format!("device-{d}"), now_ms, attempt);
-                        same_name(copy, &name)
-                    })
-                })
-            };
-            (paths.iter())
-                .filter(|copy| {
-                    paths.iter().any(|original| {
-                        let (Some((name, parent)), Some((copy_name, copy_parent))) =
-                            (original.split_last(), copy.split_last())
-                        else {
-                            return false;
-                        };
-                        parent == copy_parent
-                            && (server[*original].as_ref()).is_some_and(|content| {
-                                !first_link::time_tells_writes_apart(content.mtime_ns)
-                            })
-                            && conflict_of(copy_name, name)
-                    })
-                })
-                .count()
-        };
         let twice = |(write, paths): &(&i64, &Vec<_>)| {
-            let files = paths.len() - kept_beside_a_coarse_original(paths);
-            lineages(**write, files) > allowed(**write) && !self.copied.contains(*write)
+            lineages(**write, paths.len()) > allowed(**write) && !self.copied.contains(*write)
         };
         if let Some((write, paths)) = files.iter().find(twice) {
             return Err(Failure::Diverged(format!(
