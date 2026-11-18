@@ -1,4 +1,4 @@
-209
+260
 # koi folder relink must take exactly the folders that start halts as an older copy, and lose
 # nothing it held. The disk test changes the marker while an effect in flight is recovered, the
 # only way to reach the second check of start; no folder test can stop there. The store test
@@ -9,3 +9,6 @@
 # without the hold), a relink checked against the disk identity the store holds, a halted relink
 # replayed under its request ID, and extensions of existing lifecycle, unlink, status and error
 # tests. Each reaches a path the earlier tests leave untouched.
+# The second follow-up answers the relink's restore question through the store as koi resolve does,
+# relinks a copy of a device that only downloaded, keeps a read-only device's asked restores, and
+# fails a lifecycle save after a refused relink; each covers a fix no earlier test reaches.

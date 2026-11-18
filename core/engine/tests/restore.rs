@@ -899,6 +899,11 @@ fn a_read_only_device_rejects_the_restores_it_cannot_send() {
     let mut commits = Commits::default();
     commits.restore(id(100), first.clone());
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
+    let mut reset = Commits::default();
+    reset.restore(id(100), first.clone());
+    reset.ask_unsettled_restores(&commits, &mut ids, 0);
+    assert_eq!(reset.connected(&read_only), Reconnect::Idle);
+    assert_eq!(reset.resolved(), []);
     commits.restore(id(101), second.clone());
     let read_only = Welcome {
         device_seq: 1,

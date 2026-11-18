@@ -552,22 +552,19 @@ impl Commits {
             .and_then(|flight| carried(&before.restores, &flight.commit.ops).ok())
             .into_iter()
             .flat_map(BTreeMap::into_values);
-        let held = (before.questions.iter())
-            .filter(|question| {
-                matches!(
-                    question.kind,
-                    QuestionKind::Recovery {
-                        group: RecoveryGroup::RequestedBeforeReset,
-                        ..
-                    }
-                )
-            })
-            .flat_map(|question| question.held.keys().cloned());
+        let held = before.asked_again().cloned();
         let unsettled: BTreeSet<RestoreId> = (sent.chain(held))
             .filter(|id| self.restores.contains_key(id))
             .collect();
         let question = recovery::ask_intents(&unsettled, None, ids, now_ms);
         self.questions.get_mut().extend(question);
+    }
+
+    fn asked_again(&self) -> impl Iterator<Item = &RestoreId> {
+        let intents = RecoveryGroup::RequestedBeforeReset;
+        (self.questions.iter())
+            .filter(move |question| matches!(question.kind, QuestionKind::Recovery { group, .. } if group == intents))
+            .flat_map(|question| question.held.keys())
     }
 
     /// The queued restores that wait because their node is a problem
@@ -1057,8 +1054,9 @@ impl Commits {
             .expect("a Restore op in flight is queued")
             .into_values()
             .collect();
+        let asked: BTreeSet<&RestoreId> = self.asked_again().collect();
         let unsent: Vec<RestoreId> = (self.restores.keys())
-            .filter(|id| !sent.contains(*id))
+            .filter(|id| !sent.contains(*id) && !asked.contains(id))
             .cloned()
             .collect();
         for id in unsent {
@@ -1232,11 +1230,7 @@ impl Commits {
         self.split.retain(|id| trees.synced().live(id).is_some());
         self.published.retain(|id| trees.local().get(id).is_some());
         self.aliases.retain(|id, _| trees.holds_merge(id));
-        let intents = RecoveryGroup::RequestedBeforeReset;
-        let held_restores: BTreeSet<&RestoreId> = (self.questions.iter())
-            .filter(|question| matches!(question.kind, QuestionKind::Recovery { group, .. } if group == intents))
-            .flat_map(|question| question.held.keys())
-            .collect();
+        let held_restores: BTreeSet<&RestoreId> = self.asked_again().collect();
         let held_ops: Vec<&proto::Restore> = (self.restores.iter())
             .filter(|(id, _)| held_restores.contains(id))
             .map(|(_, intent)| intent.op())

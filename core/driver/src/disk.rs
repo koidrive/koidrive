@@ -973,7 +973,7 @@ pub(crate) enum RelinkError {
     Stop(#[from] Stop),
 }
 
-pub(crate) fn relink(lock: &File, link: &Link, store: &mut Store) -> Result<(), RelinkError> {
+pub(crate) fn relink(lock: &File, link: &Link, store: &mut Store) -> Result<u64, RelinkError> {
     relink_with_hook(lock, link, store, Box::new(|_| {}))
 }
 
@@ -982,7 +982,7 @@ pub(crate) fn relink_with_hook(
     link: &Link,
     store: &mut Store,
     mut hook: Hook,
-) -> Result<(), RelinkError> {
+) -> Result<u64, RelinkError> {
     let space = Space::bind(
         OwnedFd::from(lock.try_clone().map_err(Stop::from)?),
         &link.root,
@@ -1007,7 +1007,7 @@ pub(crate) fn relink_with_hook(
     }
     bring_back_all(&space, &before.trees).map_err(Stop::from)?;
     let next = koidrive_fs::new_token();
-    store.transaction(|tx| -> Result<_, Stop> {
+    let questions = store.transaction(|tx| -> Result<_, Stop> {
         let current = tx.root_tokens()?.current;
         tx.forget_sync_state()?;
         if let Some(stored) = tx.link()? {
@@ -1022,12 +1022,13 @@ pub(crate) fn relink_with_hook(
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since| since.as_millis() as u64);
         (engine.commits).ask_unsettled_restores(&before.commits, &mut engine.ids, now_ms);
+        engine.ask(tx, &link.space_id)?;
         engine.checkpoint(tx)?;
         tx.set_root_tokens(&RootTokens {
             current,
             pending: Some(next.clone()),
         })?;
-        Ok(())
+        Ok(tx.questions()?.len() as u64)
     })?;
     hook(Cut::TokenPended);
     let relinked = Marker {
@@ -1038,7 +1039,7 @@ pub(crate) fn relink_with_hook(
     hook(Cut::TokenWritten);
     commit_token(next, store)?;
     hook(Cut::TokenCommitted);
-    Ok(())
+    Ok(questions)
 }
 
 fn rotate_token(space: &Space, marker: Marker, store: &mut Store) -> Result<RootTokens, Stop> {
@@ -1336,6 +1337,7 @@ pub(crate) fn admit_root(link: &mut Link, store: &mut Store) -> Result<Option<Ad
     if let Some(stored) = store.transaction(|tx| tx.link())? {
         link.root_dev = stored.root_dev;
         link.root_volume = stored.root_volume;
+        link.found_marker = stored.found_marker;
     }
     let unreadable = |error| Stop::Root(RootProblem::Unreadable(error));
     let dir = open_root_folder(&link.root).map_err(Stop::Root)?;

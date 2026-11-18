@@ -658,14 +658,14 @@ fn two_copies_of_one_disk_halt_when_the_older_one_is_at_the_folder() {
 
 
 
-fn relink(site: &Site) -> Result<(), disk::RelinkError> {
+fn relink(site: &Site) -> Result<u64, disk::RelinkError> {
     relink_until(site, Box::new(|_| {}))
 }
 
 fn relink_until(
     site: &Site,
     hook: Box<dyn FnMut(disk::Cut) + Send>,
-) -> Result<(), disk::RelinkError> {
+) -> Result<u64, disk::RelinkError> {
     let lock = claim::lock(&site.root)
         .unwrap()
         .expect("the folder is not locked");
@@ -825,6 +825,30 @@ fn relink_checks_the_folder_against_the_disk_identity_the_store_holds() {
 }
 
 #[test]
+fn a_relinked_copy_of_a_device_that_only_downloaded_holds_its_own_new_files() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("kept.txt"), b"kept");
+    let (other, mut b) = linked(&mut remote, "b");
+    b.pull(&remote);
+    b.rest(&mut remote);
+    drop(b);
+    let copy = other.root.with_file_name("copy");
+    copy_folder(&other.root, &copy);
+    drop(other.start());
+    fs::rename(&other.root, other.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &other.root).unwrap();
+    fs::write(other.root.join("mine.txt"), b"mine").unwrap();
+    assert!(halts_as_a_copy(&other));
+
+    relink(&other).unwrap();
+    let mut b = restarted(&other, &mut remote);
+    b.rest(&mut remote);
+    assert_eq!(remote.names(), ["kept.txt"]);
+    assert_eq!(b.folder.view().questions, 1);
+}
+
+#[test]
 fn a_relink_holds_a_version_restore_whose_result_was_lost_until_the_person_answers() {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
@@ -854,13 +878,28 @@ fn a_relink_holds_a_version_restore_whose_result_was_lost_until_the_person_answe
     marker.token = Some("0".repeat(32));
     koidrive_fs::write_marker(&site.root, &marker).unwrap();
 
-    relink(&site).unwrap();
+    assert_eq!(relink(&site).unwrap(), 1);
     let mut a = restarted(&site, &mut remote);
     a.rest(&mut remote);
     assert_eq!(remote.space.head_seq(), head);
-    let commits = &a.folder.engine.commits;
-    assert!(commits.restores().contains_key(&id));
-    assert!(commits.questions().iter().any(|asked| asked.holds().any(|held| *held == id)));
+    assert!(a.folder.engine.commits.restores().contains_key(&id));
+    drop(a);
+
+    let held = (shown(&site).into_iter())
+        .find(|question| question.items.iter().any(|item| item.node_id == id))
+        .expect("a question holds the restore");
+    let given = koidrive_store::GivenAnswer {
+        answer: Answer::Cancel.as_str().into(),
+        answered_at_ms: NOW,
+    };
+    (Store::open(&site.db).unwrap())
+        .transaction(|tx| tx.answer_question(&held.id, &given))
+        .unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert_eq!(remote.space.head_seq(), head);
+    let cancelled = Outcome::Rejected(koidrive_engine::restore::Rejection::Cancelled);
+    assert_eq!(ended(&site), [(id, cancelled)]);
 }
 
 #[test]

@@ -267,11 +267,7 @@ fn relink(link: &Link, store: &Path) -> Result<u64, DriverError> {
             path: root.clone(),
             why: stop.to_string(),
         },
-    })?;
-    let questions = opened
-        .transaction(|tx| Ok::<_, koidrive_store::Error>(tx.questions()?.len() as u64))
-        .map_err(store_error(store))?;
-    Ok(questions)
+    })
 }
 
 /// Lifts the policy halt the store at `path` holds (RFC 0006 section 1, point 5). No task may hold the store.
@@ -2051,7 +2047,13 @@ impl Driver {
                 Ok(())
             }
         };
-        reset?;
+        if let Err(error) = reset {
+            if let Err(unfixed) = fixed {
+                tracing::warn!(%error, "the folder's lifecycle was not saved after its fix failed");
+                return Err(unfixed);
+            }
+            return Err(error);
+        }
         drop(startup);
         let credential = self.inner.credential.lock().unwrap().clone();
         let mut folders = self.inner.folders.lock().unwrap();

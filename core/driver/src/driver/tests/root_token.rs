@@ -81,11 +81,18 @@ async fn relink_refuses_a_folder_that_syncs_and_takes_one_halted_as_an_older_cop
     driver.start();
     eventually("the folder is observed", || entries(&driver) == Some(1)).await;
 
+    let lifecycle = (driver.inner.folders.lock().unwrap().values())
+        .map(|folder| folder.status.path().with_extension("json.tmp"))
+        .next()
+        .unwrap();
+    fs::create_dir(&lifecycle).unwrap();
     let refused = driver.relink(&root).await;
     assert!(
         matches!(refused, Err(DriverError::NotACopy(_))),
         "{refused:?}"
     );
+    fs::remove_dir(&lifecycle).unwrap();
+    driver.restart(&root).await.unwrap();
     fs::write(root.join("two"), b"2").unwrap();
     eventually("the folder is observed again", || {
         entries(&driver) == Some(2)
