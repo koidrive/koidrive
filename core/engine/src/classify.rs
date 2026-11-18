@@ -2130,6 +2130,7 @@ impl Trees {
     /// Sets L. A reverted node that L now holds at a position other than its old one and R's was
     /// moved by the user, and is no longer reverted: that move is committed instead.
     pub fn set_local(&mut self, id: NodeId, mut node: LocalNode) {
+        self.note_local_leaves(&id, &node.shape);
         let content_changed = !matches!(
             (self.l.get(&id).and_then(|old| old.shape.content.as_ref()), node.shape.content.as_ref()),
             (Some(old), Some(new)) if same_content(old, new)

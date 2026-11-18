@@ -501,6 +501,26 @@ fn a_delete_sends_what_r_holds_that_l_never_held_as_unseen() {
     assert_eq!(ops[0].intent, Some(intent_of(&trees, "d", Field::Status)));
 }
 
+#[test]
+fn a_delete_sees_the_place_r_holds_that_l_held_before_a_move_no_user_made() {
+    let mut trees = Trees::new(ROOT);
+    synced(&mut trees, "d", dir(ROOT, "d"), 1);
+    trees.set_local("d".into(), local(dir(ROOT, "e")));
+    trees.remove_local_by_user("d");
+    let mut ops = vec![proto::Op {
+        op: Some(op::Op::Delete(proto::Delete {
+            node_id: "d".into(),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }];
+    assert_eq!(trees.stamp_intents(&mut ops, "me", 0, true), 0);
+    let Some(op::Op::Delete(delete)) = &ops[0].op else {
+        unreachable!();
+    };
+    assert!(delete.unseen.is_empty(), "{:?}", delete.unseen);
+}
+
 fn wire(id: IntentId, applied_at_ms: i64) -> proto::Intent {
     proto::Intent {
         id: id.as_bytes().to_vec(),

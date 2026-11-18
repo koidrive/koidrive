@@ -732,6 +732,25 @@ impl Trees {
         }
     }
 
+    pub(super) fn note_local_leaves(&mut self, id: &str, shape: &Shape) {
+        let Some(remote) = self.r.get(id) else {
+            return;
+        };
+        let left: Vec<(Field, FieldIntent)> = (Field::ALL.into_iter())
+            .filter(|&field| {
+                self.local_holds_remote(id, remote, field)
+                    && !same(
+                        remote_value(remote, field).as_ref(),
+                        self.local_value(id, shape, field).as_ref(),
+                    )
+            })
+            .filter_map(|field| Some((field, remote_intent_of(remote, field)?.clone())))
+            .collect();
+        for (field, intent) in left {
+            self.journal.remote_holds(id, field, &intent, true);
+        }
+    }
+
     pub(super) fn record_user_change(&mut self, id: &str, node: &LocalNode) {
         let old = self.l.get(id).map(|old| old.shape.clone());
         let fields: &[Field] = match node.shape.kind {
