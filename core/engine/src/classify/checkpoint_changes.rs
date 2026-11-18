@@ -4,10 +4,17 @@ use super::*;
 use crate::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
 use proptest::prelude::*;
 
+#[derive(Debug, Clone, Copy)]
+struct Placed {
+    version: u8,
+    inode: u8,
+    parked: bool,
+}
+
 #[derive(Debug, Clone)]
 enum Op {
-    Local(u8, u8, bool, bool),
-    LocalChanged(u8, u8),
+    Local(u8, Placed, bool, bool),
+    LocalChanged(u8, Placed),
     RemoveLocal(u8),
     Synced(u8, Option<u8>),
     Mark(u8, Option<u8>),
@@ -34,14 +41,14 @@ fn shape(i: u8, v: u8) -> Shape {
     }
 }
 
-fn local(i: u8, v: u8, left_out: bool, from_server: bool) -> LocalNode {
+fn local(i: u8, placed: Placed, left_out: bool, from_server: bool) -> LocalNode {
     LocalNode {
-        shape: shape(i, v),
+        shape: shape(i, placed.version),
         identity: FileIdentity {
-            ino: u128::from(i) + 1,
+            ino: u128::from(i) + 1 + 100 * u128::from(placed.inode),
             birth_ns: Some(1),
         },
-        parked: false,
+        parked: placed.parked,
         left_out_when_placed: left_out,
         content_from_server: from_server,
     }
@@ -67,10 +74,15 @@ fn op() -> impl Strategy<Value = Op> {
     let i = 0u8..4;
     let v = 0u8..6;
     let m = proptest::option::of(0u8..2);
+    let placed = (v.clone(), 0u8..2, any::<bool>()).prop_map(|(version, inode, parked)| Placed {
+        version,
+        inode,
+        parked,
+    });
     prop_oneof![
-        (i.clone(), v.clone(), any::<bool>(), any::<bool>())
-            .prop_map(|(i, v, a, b)| Op::Local(i, v, a, b)),
-        (i.clone(), v.clone()).prop_map(|(i, v)| Op::LocalChanged(i, v)),
+        (i.clone(), placed.clone(), any::<bool>(), any::<bool>())
+            .prop_map(|(i, p, a, b)| Op::Local(i, p, a, b)),
+        (i.clone(), placed).prop_map(|(i, p)| Op::LocalChanged(i, p)),
         i.clone().prop_map(Op::RemoveLocal),
         (i.clone(), proptest::option::of(v.clone())).prop_map(|(i, v)| Op::Synced(i, v)),
         (i.clone(), m.clone()).prop_map(|(i, m)| Op::Mark(i, m)),
@@ -84,8 +96,8 @@ fn op() -> impl Strategy<Value = Op> {
 
 fn apply(trees: &mut Trees, op: &Op) {
     match *op {
-        Op::Local(i, v, a, b) => trees.set_local(id(i), local(i, v, a, b)),
-        Op::LocalChanged(i, v) => trees.set_local_changed(id(i), local(i, v, false, false)),
+        Op::Local(i, p, a, b) => trees.set_local(id(i), local(i, p, a, b)),
+        Op::LocalChanged(i, p) => trees.set_local_changed(id(i), local(i, p, false, false)),
         Op::RemoveLocal(i) => trees.remove_local(&id(i)),
         Op::Synced(i, v) => trees.set_synced(id(i), v.map(|v| shape(i, v))),
         Op::Mark(i, m) => trees.set_synced_mark(id(i), m.map(|m| format!("m{m}"))),
