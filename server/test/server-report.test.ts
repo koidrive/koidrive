@@ -1276,6 +1276,88 @@ describe("hourly server report", () => {
     for (const event of events) expect({ bytes: event.properties["b.r2_stored_bytes"], objects: event.properties["b.r2_objects"] }).toEqual({ bytes: 1234, objects: 1 });
   });
 
+  describe("a vote change whose delete fails", () => {
+    const failOnce = (instance: AccountDO) => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const sql = (instance as unknown as { sql: { exec(query: string, ...bindings: unknown[]): unknown } }).sql;
+      const exec = sql.exec;
+      let failed = false;
+      vi.spyOn(sql, "exec").mockImplementation((query: string, ...bindings: unknown[]) => {
+        if (!failed && query === "DELETE FROM object_usage") {
+          failed = true;
+          throw new Error("storage busy");
+        }
+        return exec(query, ...bindings);
+      });
+    };
+    const seedOld = () =>
+      runInDurableObject(account(), (_instance, state) => {
+        state.storage.sql.exec("INSERT INTO object_usage (object, sql_bytes, r2_bytes, r2_objects) VALUES ('space-before', 1, 7000000000, 70) ON CONFLICT DO NOTHING");
+      });
+    const token = (device: DeviceCredentials, telemetry: TokenRequest_Telemetry) => post("/v1/token", body(TokenRequestSchema, { deviceId: device.deviceId, refreshCredential: device.refreshCredential, telemetry }));
+    const resetVotes = () =>
+      runInDurableObject(account(), (instance: AccountDO, state) => {
+        state.storage.sql.exec("UPDATE devices SET telemetry = ?", TokenRequest_Telemetry.UNSPECIFIED);
+        countVotes(instance);
+      });
+
+    it("rolls the whole change back when a refresh renews a lapsed ON vote, so the retry starts the period and drops sizes from before", async () => {
+      const owner = await ownerOnce();
+      await resetVotes();
+      const hourMs = (Math.floor(Date.now() / HOUR_MS) + 1) * HOUR_MS;
+      const at = (clockMs: number, step: (instance: AccountDO) => void = () => {}) =>
+        runInDurableObject(account(), (instance: AccountDO) => {
+          instance.clock = () => clockMs;
+          step(instance);
+        });
+      await at(hourMs);
+      expect((await token(owner, TokenRequest_Telemetry.ON)).status).toBe(200);
+      await seedOld();
+      const lapsedMs = hourMs + 26 * HOUR_MS;
+      await at(lapsedMs, failOnce);
+      expect((await token(owner, TokenRequest_Telemetry.ON)).status).not.toBe(200);
+      expect((await token(owner, TokenRequest_Telemetry.ON)).status).toBe(200);
+      expect({ reporting: await reporting(), stored: await storedObjects() }).toEqual({ reporting: true, stored: [] });
+    });
+
+    it("rolls a refresh's own vote back with the rest, so a retried OFF vote still stops reports and drops sizes from before", async () => {
+      const owner = await ownerOnce();
+      await resetVotes();
+      await runInDurableObject(account(), (instance: AccountDO) => {
+        instance.clock = () => Date.now();
+      });
+      expect((await token(owner, TokenRequest_Telemetry.ON)).status).toBe(200);
+      await seedOld();
+      await runInDurableObject(account(), failOnce);
+      expect((await token(owner, TokenRequest_Telemetry.OFF)).status).not.toBe(200);
+      expect((await token(owner, TokenRequest_Telemetry.OFF)).status).toBe(200);
+      expect({ reporting: await reporting(), stored: await storedObjects() }).toEqual({ reporting: false, stored: [] });
+      expect((await token(owner, TokenRequest_Telemetry.ON)).status).toBe(200);
+    });
+
+    it("rolls a revocation back with the vote change, so the retried revocation starts the period and drops sizes from before", async () => {
+      const owner = await ownerOnce();
+      await resetVotes();
+      const second = await pair(owner);
+      await runInDurableObject(account(), (instance: AccountDO) => {
+        instance.clock = () => Date.now();
+      });
+      expect((await token(owner, TokenRequest_Telemetry.ON)).status).toBe(200);
+      expect((await token(second, TokenRequest_Telemetry.OFF)).status).toBe(200);
+      expect(await reporting()).toBe(false);
+      await seedOld();
+      await expect(
+        runInDurableObject(account(), (instance: AccountDO) => {
+          failOnce(instance);
+          return instance.revokeDevice(second.deviceId);
+        }),
+      ).rejects.toThrow("storage busy");
+      expect(await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("SELECT revoked_at_ms FROM devices WHERE device_id = ?", second.deviceId).one().revoked_at_ms)).toBeNull();
+      await runInDurableObject(account(), (instance: AccountDO) => instance.revokeDevice(second.deviceId));
+      expect({ reporting: await reporting(), stored: await storedObjects() }).toEqual({ reporting: true, stored: [] });
+    });
+  });
+
   it("drops what the Worker counted before reports stopped, even when they start again before its hand-over", async () => {
     UsageTally.quietMs = 1500;
     restorers.push(() => {

@@ -416,16 +416,18 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       const serverTimeMs = Math.max(nowMs, device.rotation_clock_ms);
       const rotated = proposal !== undefined && serverTimeMs <= rotateBeforeMs;
       const vote = args.telemetry ?? TokenRequest_Telemetry.UNSPECIFIED;
-      this.sql.exec(
-        "UPDATE devices SET last_seen_ms = ?, rotation_clock_ms = ?, refresh_hash = ?, telemetry = ? WHERE device_id = ?",
-        nowMs,
-        args.rotation ? serverTimeMs : device.rotation_clock_ms,
-        rotated ? proposal : device.refresh_hash,
-        vote,
-        device.device_id,
-      );
-      if (vote !== (device.telemetry ?? TokenRequest_Telemetry.UNSPECIFIED)) this.countVotes();
-      else if (vote === TokenRequest_Telemetry.ON && onVoteEndMs(nowMs) > this.votes().onUntilMs) this.storeVotes({ ...this.votes(), onUntilMs: onVoteEndMs(nowMs) });
+      this.db.transactionSync(() => {
+        this.sql.exec(
+          "UPDATE devices SET last_seen_ms = ?, rotation_clock_ms = ?, refresh_hash = ?, telemetry = ? WHERE device_id = ?",
+          nowMs,
+          args.rotation ? serverTimeMs : device.rotation_clock_ms,
+          rotated ? proposal : device.refresh_hash,
+          vote,
+          device.device_id,
+        );
+        if (vote !== (device.telemetry ?? TokenRequest_Telemetry.UNSPECIFIED)) this.countVotes();
+        else if (vote === TokenRequest_Telemetry.ON && onVoteEndMs(nowMs) > this.votes().onUntilMs) this.storeVotes({ ...this.votes(), onUntilMs: onVoteEndMs(nowMs) });
+      });
       const token = await this.accessToken(device, nowMs);
       if (args.rotation) {
         token.serverTimeMs = BigInt(serverTimeMs);
@@ -610,13 +612,15 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
     }
 
     private storeVotes(votes: ReportVotes): void {
-      const before = this.votes();
-      const starts = !this.reportsWith(before) && this.reportsWith(votes);
-      const startedMs = starts ? this.clock() : before.startedMs;
-      this.sql.exec("INSERT INTO settings (key, value) VALUES ('report_votes', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", JSON.stringify({ ...votes, startedMs }));
-      if (!starts && this.reportsWith(votes)) return;
-      this.sql.exec("DELETE FROM usage_hours");
-      this.sql.exec("DELETE FROM object_usage");
+      this.db.transactionSync(() => {
+        const before = this.votes();
+        const starts = !this.reportsWith(before) && this.reportsWith(votes);
+        const startedMs = starts ? this.clock() : before.startedMs;
+        this.sql.exec("INSERT INTO settings (key, value) VALUES ('report_votes', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", JSON.stringify({ ...votes, startedMs }));
+        if (!starts && this.reportsWith(votes)) return;
+        this.sql.exec("DELETE FROM usage_hours");
+        this.sql.exec("DELETE FROM object_usage");
+      });
     }
 
     private countVotes(): void {
