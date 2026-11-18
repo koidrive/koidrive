@@ -580,6 +580,7 @@ cases = ["{1:064}"]
         server_restores = "devices_converge_across_server_restores"
         rewinds_and_rollbacks = "devices_converge_across_rewinds_and_rollbacks"
         a7b0 = "a7b0eabd2b85c630555e19125c650ce2d64fba476e043a43b9729f368183f7bf"
+        c96d = "0c96dc79dd54604004d89c1bd0230b2e6865bd96dab99890aed5feedfb9088db"
         cd97 = "cd970b7805c3" + "0" * 52
         ae45 = "45aeea4283bad112a4dfb008e7c67a75c58dea15306a57cb165f8b6cbd33238c"
         e0a5 = "5e0a61643769" + "0" * 52
@@ -602,6 +603,7 @@ cases = ["{1:064}"]
             (rewinds_and_rollbacks, not_displaced, d93b, []),
             (restores_and_rewinds, example(a7b0) + " Then write 7 is lost too.", a7b0, []),
             (restores_and_rewinds, left, a7b0, [("J", "GUN-1012", ["a7b0eabd2b85"])]),
+            (restores_and_rewinds, left, c96d, [("J", "GUN-1012", ["0c96dc79dd54"])]),
             (restores_and_rewinds, left, cd97, []),
             (restores_and_rewinds, left, other, []),
             (server_restores, left, cd97, [("J", "GUN-1012", ["cd970b7805c3"])]),
