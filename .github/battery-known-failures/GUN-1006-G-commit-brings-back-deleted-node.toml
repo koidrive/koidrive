@@ -7,6 +7,8 @@ tests = [
   "devices_lose_no_write_across_restores_and_rewinds",
   "devices_converge_around_an_owed_rename",
   "devices_converge_around_a_folder_another_device_replaces",
+  "devices_on_coarse_volumes_converge_across_restores_and_rewinds",
+  "devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds",
 ]
 message = '''(after phase <n>: after the faults stopped, on device <n>|phase <n>, step <n> \(Work\(<n>\) on device <n>\)): a commit of device <n> brought back node <id> as ".*", which a user deleted, and the user of device <n> never changed it or put anything in it since: \[Op \{ .* \}\]\.'''
 examples = [
