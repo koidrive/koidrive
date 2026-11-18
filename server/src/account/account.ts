@@ -540,7 +540,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       if (requestId) this.creatingRequests.set(request, name);
       try {
         const spaceKey = await deriveSpaceKey((await this.serverKey()).secret, spaceId);
-        await this.spaceStub(spaceId).init({ spaceId, name, ownerUserId: args.userId, spaceKey, reporting: this.reporting() });
+        await this.spaceStub(spaceId).init({ spaceId, name, ownerUserId: args.userId, spaceKey, reporting: this.reporting(), startedMs: this.tally.startedMs });
         this.sql.exec(
           "INSERT INTO spaces (space_id, name, owner_id, created_at_ms, format_version, list_seq, request_id) VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(list_seq), 0) + 1 FROM spaces), ?)",
           spaceId,
@@ -596,6 +596,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
     reporting(): boolean {
       const votes = this.votes();
       this.tally.reporting = this.reportsWith(votes);
+      this.tally.restart(votes.startedMs);
       return this.tally.reporting;
     }
 

@@ -10,7 +10,6 @@ import { bootstrapExport, requestSnapshot } from "./space/export";
 import { backfillMigratedIntents } from "./space/intents";
 import { type Pitr, pitrBackend } from "./space/pitr";
 import { migrate } from "./space/schema";
-import { getMeta } from "./space/store";
 import { type Attachment, CheckFailed, CONNECT_HEADER, type Connect, RETIRED_HISTORY, spaceLogic, TOKEN_GRACE_MS } from "./space/space";
 
 export { Close, CONNECT_HEADER, GRANT_MS, HOLD_MS, MAX_HEAD_CHECKS } from "./space/space";
@@ -33,7 +32,7 @@ export class SpaceDO extends spaceLogic(DurableObject<Env>) {
       if (backfillMigratedIntents(this.sql)) requestSnapshot(this.sql, this.clock());
       bootstrapExport(this.sql, this.clock());
     });
-    this.traffic.reporting = getMeta(this.sql, "reporting") === 1;
+    this.loadFlag();
     void ctx.blockConcurrencyWhile(() => this.armAlarm());
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     return meteredObject(this, "space", this.traffic, (event, args, replying) => this.ended(event, args, replying));

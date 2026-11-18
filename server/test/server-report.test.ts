@@ -1410,3 +1410,71 @@ describe("lease renewals", () => {
     expect(await runInDurableObject(stub, (instance: object) => (instance as unknown as { traffic: UsageTally }).traffic.take() ?? null)).toBeNull();
   });
 });
+
+describe("reporting restarts", () => {
+  it("drops a batch opened before reporting last started once it learns the start, and counts after it in a fresh batch", async () => {
+    const tally = new UsageTally();
+    tally.reporting = true;
+    const handed: UsageBatch[] = [];
+    tally.count("get_server", "200", 3, 10 * HOUR_MS);
+    tally.count("get_server", "200", 3, 10 * HOUR_MS + 5);
+    tally.receive({ reporting: true, startedMs: 10 * HOUR_MS + 10 }, false);
+    tally.count("get_server", "201", 3, 10 * HOUR_MS + 20);
+    tally.put({ openedMs: 10 * HOUR_MS + 1, hours: { 10: { counts: { "get_server.202": 1 }, latency: {}, billing: {} } } });
+    tally.receive({ reporting: true, startedMs: 10 * HOUR_MS }, false);
+    await tally.handOver(async (batch) => {
+      handed.push(batch);
+      return true;
+    });
+    expect(handed.map((batch) => [batch.openedMs, batch.hours[10]!.counts])).toEqual([[10 * HOUR_MS + 20, { "get_server.201": 1 }]]);
+    expect(tally.startedMs).toBe(10 * HOUR_MS + 10);
+  });
+
+  it("counts what a Worker isolate counts after reporting restarts, even when it missed the stop", async () => {
+    UsageTally.quietMs = 1500;
+    restorers.push(() => {
+      UsageTally.quietMs = QUIET_MS;
+    });
+    const owner = await ownerOnce();
+    await runInDurableObject(account(), (instance: AccountDO, state) => {
+      instance.clock = () => Date.now();
+      state.storage.sql.exec("DELETE FROM usage_hours");
+    });
+    await refresh(owner, TokenRequest_Telemetry.ON);
+    const list = async () => {
+      const listed = await exports.default.fetch(BASE + "/v1/spaces", { headers: { Authorization: "Bearer " + owner.access!.token } });
+      await listed.arrayBuffer();
+      return listed.status;
+    };
+    expect(await list()).toBe(200);
+    const flip = (telemetry: TokenRequest_Telemetry) =>
+      runInDurableObject(account(), (instance: AccountDO, state) => {
+        state.storage.sql.exec("UPDATE devices SET telemetry = ?", telemetry);
+        countVotes(instance);
+      });
+    await flip(TokenRequest_Telemetry.OFF);
+    await scheduler.wait(20);
+    await flip(TokenRequest_Telemetry.ON);
+    await scheduler.wait(20);
+    expect(await list()).toBe(200);
+    expect(await list()).toBe(200);
+    await scheduler.wait(4000);
+    expect((await storedCounts())["get_spaces.200"]).toBe(2);
+  });
+
+  it("drops what a Space DO parked before reporting restarted once an Account DO answer says so, keeps what it parks after, and remembers the start across eviction", async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    const socket = await connect(spaceId, owner, stub);
+    await socket.listTree();
+    expect(await parkedCounts(stub)).toEqual([1]);
+    const startedMs = Date.now() + 1;
+    await runInDurableObject(stub, (instance: object) => (instance as unknown as { received(carried: Carried): void }).received({ reporting: true, startedMs }));
+    expect(await parkedCounts(stub)).toEqual([0]);
+    await socket.listTree();
+    expect(await parkedCounts(stub)).toEqual([1]);
+    await evictDurableObject(stub);
+    expect(await runInDurableObject(stub, (instance: object) => (instance as unknown as { traffic: UsageTally }).traffic.startedMs)).toBe(startedMs);
+    await runInDurableObject(stub, (instance: object) => (instance as unknown as { received(carried: Carried): void }).received({ reporting: true, startedMs }));
+    expect(await parkedCounts(stub)).toEqual([1]);
+  });
+});

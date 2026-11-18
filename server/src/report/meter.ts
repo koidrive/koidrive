@@ -143,7 +143,7 @@ export async function meteredReply(object: object, kind: ObjectKind, tally: Usag
     const result: unknown = await value.apply(object, args);
     tally.lapse();
     await ended(method, args, true);
-    return { value: result, usage: tally.take(), reporting: tally.reporting };
+    return { value: result, usage: tally.take(), reporting: tally.reporting, startedMs: tally.startedMs };
   } catch (error) {
     tally.lapse();
     await ended(method, args, false);

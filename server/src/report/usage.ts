@@ -50,6 +50,7 @@ export interface UsageBatch {
 export interface Carried {
   usage?: UsageBatch;
   reporting?: boolean;
+  startedMs?: number;
 }
 
 export interface Counted {
@@ -108,6 +109,7 @@ export class UsageTally {
   private lastMs = 0;
   private reportingNow: boolean | undefined;
   private stops = 0;
+  private startedAtMs: number | undefined;
   private busy = 0;
   private sinceMs = 0;
 
@@ -125,6 +127,17 @@ export class UsageTally {
     if (on !== false) return;
     this.batch = undefined;
     this.stops++;
+  }
+
+  get startedMs(): number | undefined {
+    return this.startedAtMs;
+  }
+
+  restart(startedMs: number | undefined): boolean {
+    if (startedMs === undefined || startedMs === this.startedAtMs) return false;
+    this.startedAtMs = startedMs;
+    if (this.batch && this.batch.openedMs < startedMs) this.batch = undefined;
+    return true;
   }
 
   get idle(): boolean {
@@ -174,6 +187,7 @@ export class UsageTally {
 
   receive(carried: Carried, authoritative: boolean): void {
     if (carried.reporting !== undefined && (authoritative || this.reporting === undefined)) this.reporting = carried.reporting;
+    if (authoritative || this.startedAtMs === undefined) this.restart(carried.startedMs);
     if (carried.usage) this.put(carried.usage);
   }
 
@@ -198,7 +212,7 @@ export class UsageTally {
   }
 
   put(batch: UsageBatch): void {
-    if (this.reporting === false) return;
+    if (this.reporting === false || batch.openedMs < (this.startedAtMs ?? -Infinity)) return;
     this.batch = mergeBatch(this.batch, batch);
   }
 

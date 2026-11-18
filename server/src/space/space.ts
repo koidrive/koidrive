@@ -354,8 +354,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     private renewing: { atMs: number; forMs: number; answered?: Promise<void> } | undefined;
     private gathering: { deviceIds: Set<string>; answers: Promise<Record<string, SessionCheck> | CheckFailed> } | undefined;
 
-    async init(args: { spaceId: string; name: string; ownerUserId: string; spaceKey: Uint8Array; reporting?: boolean }): Promise<void> {
-      if (args.reporting !== undefined) this.learn(args.reporting);
+    async init(args: { spaceId: string; name: string; ownerUserId: string; spaceKey: Uint8Array; reporting?: boolean; startedMs?: number }): Promise<void> {
+      if (args.reporting !== undefined) this.learn(args.reporting, args.startedMs);
       const existing = getMeta(this.sql, "space_id");
       if (existing !== undefined) {
         if (existing !== args.spaceId) throw new Error("this Space DO already holds another space");
@@ -785,16 +785,26 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     }
 
     protected received(carried: Carried): void {
-      if (carried.reporting !== undefined) this.learn(carried.reporting);
+      if (carried.reporting !== undefined) this.learn(carried.reporting, carried.startedMs);
       if (carried.usage) this.traffic.put(carried.usage);
       if (this.traffic.idle) this.rest();
     }
 
-    private learn(on: boolean): void {
-      if (this.traffic.reporting === on) return;
+    protected loadFlag(): void {
+      const flag = getMeta(this.sql, "reporting");
+      const { on, startedMs } = flag === undefined ? {} : (JSON.parse(String(flag)) as { on?: boolean; startedMs?: number });
+      this.traffic.reporting = on === true;
+      this.traffic.restart(startedMs);
+    }
+
+    private learn(on: boolean, startedMs: number | undefined): void {
+      const changed = this.traffic.reporting !== on;
       this.traffic.reporting = on;
-      setMeta(this.sql, "reporting", on ? 1 : 0);
+      const restarted = this.traffic.restart(startedMs);
+      if (!changed && !restarted) return;
+      setMeta(this.sql, "reporting", JSON.stringify({ on, startedMs: this.traffic.startedMs }));
       if (!on) this.dropParked();
+      else if (restarted) this.dropParked(this.traffic.startedMs);
     }
 
     protected async ended(event: string, args: unknown[], replying: boolean): Promise<void> {
@@ -838,8 +848,10 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       return usage;
     }
 
-    private dropParked(): void {
-      for (const ws of this.state.getWebSockets()) this.unpark(ws);
+    private dropParked(openedBeforeMs = Infinity): void {
+      for (const ws of this.state.getWebSockets()) {
+        if (((ws.deserializeAttachment() as Attachment).usage?.openedMs ?? Infinity) < openedBeforeMs) this.unpark(ws);
+      }
     }
 
     private async armUsage(): Promise<void> {
