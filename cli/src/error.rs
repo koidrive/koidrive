@@ -573,7 +573,7 @@ fn driver_human(error: &DriverError) -> Option<String> {
         }
         DriverError::NotRelinked { why, .. } => {
             return Some(format!(
-                "The folder stays halted because {why}. Fix that, then run koi folder relink again."
+                "The folder could not be relinked because {why}. Fix that, then run koi folder relink again."
             ));
         }
         DriverError::RelativePath(_) => "Use the full path to the file or folder, starting with /.",

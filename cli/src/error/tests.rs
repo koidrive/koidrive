@@ -449,7 +449,7 @@ fn pairing_and_unlinking_presentations_keep_original_actions() {
         not_relinked
             .human
             .unwrap()
-            .contains("the root marker is missing")
+            .contains("could not be relinked because the root marker is missing")
     );
     let wrong = CliError::code_refused(DriverError::Api(refused_with(
         403,
