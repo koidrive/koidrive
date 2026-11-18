@@ -5615,7 +5615,12 @@ impl<'a> Scratch<'a> {
                     guarded: *guarded,
                 });
                 match &aside {
-                    Some(Want::Move { parent, name, .. }) => scratch.place(id, parent, name, kind),
+                    Some(aside @ Want::Move { parent, name, .. }) => {
+                        if scratch.fit(aside, &BTreeSet::new()) != Fit::Valid {
+                            return None;
+                        }
+                        scratch.place(id, parent, name, kind);
+                    }
                     _ => scratch.place(id, parent, name, kind),
                 }
                 carried.push((at, aside));
