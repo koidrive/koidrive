@@ -160,3 +160,7 @@ scripts/mutations.sh --shard 0/4   # every fourth mutation, starting with the fi
 ```
 
 `MUTATION_CASES` sets the property case count. `MUTATION_SEED` sets one unsigned 64-bit seed for the baseline and every mutation, defaulting to `0`. The hosted mutation jobs use seed `0` too. Shard numbers do not change it.
+
+## Test value
+
+The `Test value` workflow (`.github/workflows/test-value.yml`, run by hand) measures what each test catches against what it costs. `scripts/test-value.py` defines three samples: `driver` (the driver lib tests against mutants of `core/driver/src`), `guard` (the engine tests against mutants of `core/engine/src/guard.rs`) and `commit` (the engine tests and the sim `engine_sync` and `devices` tests against mutants of `core/engine/src/commit.rs`, plus the hand-written set from `scripts/engine-mutations.sh`). cargo-mutants generates the mutants. The plan job runs the sample's tests three times under nextest without mutations, to time each test and set aside any test that does not pass every time. Each shard then applies its mutants one at a time and records which tests fail. Tests that took 10 seconds or more in the baseline (the `slow` input) run only on the mutants the faster tests miss. The report job writes three CSV files: one row per test, with its time, kills, unique kills (mutants no other test catches) and the cheapest tests that catch everything it catches; one row per mutant; and the surviving mutants. To pool several samples, download their runs and pass each run's directory to `scripts/test-value.py report --runs`.
