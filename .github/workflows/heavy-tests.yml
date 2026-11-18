@@ -381,7 +381,7 @@ jobs:
             echo
             echo "| Test | Median ms | Max ms |"
             echo "|---|---|---|"
-            jq -rs '[.[].testResults[].assertionResults[] | select(.duration != null) | {name: .fullName, ms: .duration}] | group_by(.name) | map({name: .[0].name, median: (map(.ms) | sort | .[length / 2 | floor]), max: (map(.ms) | max)}) | sort_by(-.max) | .[:15][] | "| <code>\(.name)</code> | \(.median | round) | \(.max | round) |"' "$out"/logs/run-*.json || true
+            jq -rs '[.[].testResults[].assertionResults[] | select(.duration != null) | {name: .fullName, ms: .duration}] | group_by(.name) | map({name: .[0].name, median: (map(.ms) | sort | if length % 2 == 1 then .[length / 2 | floor] else (.[length / 2 - 1] + .[length / 2]) / 2 end), max: (map(.ms) | max)}) | sort_by(-.max) | .[:15][] | "| <code>\(.name)</code> | \(.median | round) | \(.max | round) |"' "$out"/logs/run-*.json || true
             echo
             echo "Reproduce a run with: $repro"
             echo
