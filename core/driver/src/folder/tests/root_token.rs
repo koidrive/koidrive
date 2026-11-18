@@ -43,6 +43,14 @@ fn assert_rotated_from(site: &Site, earlier: &[Option<String>]) {
     );
 }
 
+fn crash_at(cut: disk::Cut) -> Box<dyn FnMut(disk::Cut) + Send> {
+    Box::new(move |reached| {
+        if reached == cut {
+            std::panic::resume_unwind(Box::new(()));
+        }
+    })
+}
+
 fn copy_folder(from: &Path, to: &Path) {
     let status = std::process::Command::new("cp")
         .arg("-a")
@@ -51,6 +59,271 @@ fn copy_folder(from: &Path, to: &Path) {
         .status()
         .unwrap();
     assert!(status.success());
+}
+
+#[test]
+fn a_retry_after_a_store_recovery_stopped_at_the_probe_admits_the_folder() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(names(&site.root), ["two.txt"]);
+    drop(a);
+    fs::copy(&saved, &site.db).unwrap();
+    let marker = marker_of(&site);
+    assert!(marker.effects > site.stored().effects.cleared());
+    assert_ne!(tokens_of(&site).current, marker.token);
+    let blocker = site
+        .root
+        .join(koidrive_fs::PRIVATE_DIR)
+        .join("no-replace-probe-a");
+    fs::create_dir(&blocker).unwrap();
+    assert!(matches!(opened(&site), Err(Stop::Io(_))));
+    assert_eq!(site.stored().effects.cleared(), marker.effects);
+    assert_eq!(marker_of(&site), marker);
+    assert_eq!(tokens_of(&site).current, marker.token);
+
+    fs::remove_dir(&blocker).unwrap();
+    assert!(opened(&site).is_ok());
+    assert_rotated_from(&site, &[marker.token]);
+}
+
+#[test]
+fn a_marker_write_that_failed_at_the_start_takes_the_new_token_at_the_next_effect() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("before.txt"), b"before");
+    drop(a);
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    let before = marker_of(&site);
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let blocker = site
+        .root
+        .join(koidrive_fs::PRIVATE_DIR)
+        .join("space.json.tmp");
+    fs::create_dir(&blocker).unwrap();
+
+    let mut a = site.start();
+    assert_eq!(marker_of(&site), before);
+    let pending = tokens_of(&site).pending;
+    assert!(pending.is_some());
+    fs::remove_dir(&blocker).unwrap();
+    a.connect(&remote);
+    a.scan_until(|a| a.folder.scanned);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(names(&site.root), ["before.txt", "two.txt"]);
+    assert_eq!(marker_of(&site).token, pending);
+    assert_rotated_from(&site, &[before.token]);
+    drop(a);
+
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    assert!(halts_as_a_copy(&site));
+}
+
+#[test]
+fn a_copy_made_before_an_upload_halts_and_the_server_keeps_the_upload() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("before.txt"), b"before");
+    a.create(&mut remote, &site.root.join("edited.txt"), b"old");
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    a.create(&mut remote, &site.root.join("after.txt"), b"after");
+    a.create(&mut remote, &site.root.join("edited.txt"), b"new");
+    drop(a);
+    let served = remote.tree();
+
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    assert!(halts_as_a_copy(&site));
+    assert_eq!(names(&site.root), ["before.txt", "edited.txt"]);
+    assert_eq!(remote.tree(), served);
+}
+
+#[test]
+fn a_copy_made_before_a_build_halts_once_the_server_accepted_the_commit_whose_result_never_came() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("before.txt"), b"before");
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    fs::write(site.root.join("after.txt"), b"after").unwrap();
+    a.rescan();
+    a.scan_until(|a| !a.work.is_empty());
+    let upload = a.work.pop_front().unwrap();
+    a.perform(upload, &mut remote).unwrap();
+    let Some(Work::Send(commit)) = a.work.pop_front() else {
+        panic!("the commit is sent after its upload");
+    };
+    remote.commit(&a.caller, &commit).unwrap();
+    drop(a);
+    let served = remote.tree();
+    assert_eq!(remote.names(), ["after.txt", "before.txt"]);
+
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    assert!(halts_as_a_copy(&site));
+    assert_eq!(names(&site.root), ["before.txt"]);
+    assert_eq!(remote.tree(), served);
+}
+
+#[test]
+fn a_copy_made_after_the_latest_upload_starts_and_loses_nothing() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("before.txt"), b"before");
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    drop(a);
+    let served = remote.tree();
+
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert_ne!(a.state(), FolderState::Halted);
+    assert_eq!(names(&site.root), ["before.txt"]);
+    assert_eq!(remote.tree(), served);
+}
+
+#[test]
+fn a_copy_made_before_a_change_from_the_server_was_applied_does_not_start() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("before.txt"), b"before");
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    a.pull(&remote);
+    a.rest(&mut remote);
+    assert_eq!(names(&site.root), ["before.txt", "two.txt"]);
+    drop(a);
+    let served = remote.tree();
+
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    assert!(matches!(opened(&site), Err(Stop::DiskBehind { .. })));
+    assert_eq!(names(&site.root), ["before.txt"]);
+    assert_eq!(remote.tree(), served);
+}
+
+#[test]
+fn a_crash_at_each_step_of_a_rotation_before_a_build_starts_again_without_a_halt() {
+    for cut in [disk::Cut::TokenPended, disk::Cut::TokenWritten] {
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        let copy = site.root.with_file_name("copy");
+        copy_folder(&site.root, &copy);
+        let before = marker_of(&site).token;
+        a.folder.disk.set_hook(crash_at(cut));
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            a.create(&mut remote, &site.root.join("after.txt"), b"after")
+        }));
+        assert!(crashed.is_err(), "{cut:?}");
+        drop(a);
+        assert_eq!(remote.names(), Vec::<String>::new(), "{cut:?}");
+        let tokens = tokens_of(&site);
+        assert_eq!(tokens.current, before, "{cut:?}");
+        let written = (cut == disk::Cut::TokenWritten).then(|| tokens.pending.clone());
+        assert_eq!(marker_of(&site).token, written.unwrap_or(before.clone()), "{cut:?}");
+
+        let mut a = restarted(&site, &mut remote);
+        a.rest(&mut remote);
+        assert_ne!(a.state(), FolderState::Halted, "{cut:?}");
+        assert_rotated_from(&site, &[before.clone(), tokens.pending]);
+        assert_eq!(remote.names(), ["after.txt"], "{cut:?}");
+        a.create(&mut remote, &site.root.join("second.txt"), b"second");
+        assert_eq!(remote.names(), ["after.txt", "second.txt"], "{cut:?}");
+        assert_eq!(names(&site.root), ["after.txt", "second.txt"], "{cut:?}");
+        drop(a);
+
+        fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+        fs::rename(&copy, &site.root).unwrap();
+        assert!(halts_as_a_copy(&site), "{cut:?}");
+    }
+}
+
+#[test]
+fn a_crash_between_a_rotation_and_the_send_starts_again_and_sends_the_commit() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    let before = marker_of(&site).token;
+    a.folder.disk.set_hook(crash_at(disk::Cut::TokenCommitted));
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        a.create(&mut remote, &site.root.join("after.txt"), b"after")
+    }));
+    assert!(crashed.is_err());
+    drop(a);
+    assert_eq!(remote.names(), Vec::<String>::new());
+    let rotated = marker_of(&site).token;
+    assert_ne!(rotated, before);
+    assert_eq!(
+        tokens_of(&site),
+        koidrive_fs::RootTokens {
+            current: rotated.clone(),
+            pending: None,
+        }
+    );
+
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    assert_ne!(a.state(), FolderState::Halted);
+    assert_rotated_from(&site, &[before, rotated]);
+    assert_eq!(remote.names(), ["after.txt"]);
+    assert_eq!(names(&site.root), ["after.txt"]);
+    drop(a);
+
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    assert!(halts_as_a_copy(&site));
+    assert_eq!(remote.names(), ["after.txt"]);
+}
+
+#[test]
+fn a_marker_write_that_fails_before_a_build_still_sends_the_commit_and_takes_the_new_token_at_the_next_build() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let before = marker_of(&site).token;
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    let blocker = site
+        .root
+        .join(koidrive_fs::PRIVATE_DIR)
+        .join("space.json.tmp");
+    fs::create_dir(&blocker).unwrap();
+    fs::write(blocker.join("held"), b"").unwrap();
+
+    a.create(&mut remote, &site.root.join("after.txt"), b"after");
+    assert_ne!(a.state(), FolderState::Halted);
+    assert_eq!(remote.names(), ["after.txt"]);
+    assert_eq!(marker_of(&site).token, before);
+    let tokens = tokens_of(&site);
+    assert_eq!(tokens.current, before);
+    assert!(tokens.pending.is_some());
+
+    fs::remove_dir_all(&blocker).unwrap();
+    a.create(&mut remote, &site.root.join("second.txt"), b"second");
+    assert_rotated_from(&site, &[before, tokens.pending]);
+    drop(a);
+
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    assert!(halts_as_a_copy(&site));
+    assert_eq!(remote.names(), ["after.txt", "second.txt"]);
 }
 
 #[test]
@@ -246,3 +519,6 @@ fn two_copies_of_one_disk_halt_when_the_older_one_is_at_the_folder() {
     drop(a);
     disks.detach(&site.root);
 }
+
+
+
