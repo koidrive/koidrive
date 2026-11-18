@@ -2130,3 +2130,17 @@ fn a_storage_restore_mints_new_intents_for_ops_without_one() {
     let after = field_ids(&s.get(&dir)).place.unwrap().id;
     assert_ne!(before, after);
 }
+
+#[test]
+fn welcome_announces_field_intents_only_when_asked_and_keeps_it_across_a_restore() {
+    let mut s = Space::new();
+    let a = s.client("A");
+    assert!(s.space.welcome(&a.session).features.is_empty());
+    let backup = s.space.clone();
+    s.space.announce_field_intents(true);
+    assert_eq!(s.space.welcome(&a.session).features, ["field_intents"]);
+    s.space.restore(&backup);
+    assert_eq!(s.space.welcome(&a.session).features, ["field_intents"]);
+    s.space.announce_field_intents(false);
+    assert!(s.space.welcome(&a.session).features.is_empty());
+}
