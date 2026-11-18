@@ -141,22 +141,41 @@ impl Disks {
         image
     }
 
-    /// Creates an empty FAT image of 16 MB named `name`, the file system most USB sticks ship with. Linux reports no
-    /// UUID for it; macOS derives one from its serial number.
+    /// Creates an empty FAT image of 16 MB named `name`, the file system most USB sticks ship with, with a serial
+    /// number of its own.
     pub fn fat(&self, name: &str) -> PathBuf {
         if cfg!(target_os = "macos") {
             return self.formatted(name, "MS-DOS");
         }
         let image = self.base().join(format!("{name}.fat"));
-        run("truncate", &["-s".as_ref(), "16M".as_ref(), image.as_ref()]);
-        run("mkfs.vfat", &[image.as_ref()]);
-        image
+        self.linux_fat(&image, serial(&image))
     }
 
-    /// Creates an empty exFAT image of 16 MB named `name`.
-    #[cfg(target_os = "macos")]
+    /// Creates an empty FAT image of 16 MB named `name` whose serial number is 0, which no system reports as an ID.
+    #[cfg(target_os = "linux")]
+    pub fn fat_without_serial(&self, name: &str) -> PathBuf {
+        self.linux_fat(&self.base().join(format!("{name}.fat")), 0)
+    }
+
+    fn linux_fat(&self, image: &Path, serial: u32) -> PathBuf {
+        let serial = format!("{serial:08x}");
+        run("truncate", &["-s".as_ref(), "16M".as_ref(), image.as_ref()]);
+        run(
+            "mkfs.vfat",
+            &["-i".as_ref(), serial.as_ref(), image.as_ref()],
+        );
+        image.to_path_buf()
+    }
+
+    /// Creates an empty exFAT image of 16 MB named `name`. On Linux it takes `mkfs.exfat` from exfatprogs.
     pub fn exfat(&self, name: &str) -> PathBuf {
-        self.formatted(name, "ExFAT")
+        if cfg!(target_os = "macos") {
+            return self.formatted(name, "ExFAT");
+        }
+        let image = self.base().join(format!("{name}.exfat"));
+        run("truncate", &["-s".as_ref(), "16M".as_ref(), image.as_ref()]);
+        run("mkfs.exfat", &[image.as_ref()]);
+        image
     }
 
     fn formatted(&self, name: &str, file_system: &str) -> PathBuf {
@@ -176,10 +195,8 @@ impl Disks {
         .map(OsString::from)
         .collect();
         if file_system != "APFS" {
-            let mut serial = DefaultHasher::new();
-            image.hash(&mut serial);
             args.push("-fsargs".into());
-            args.push(format!("-I {:#x}", serial.finish() as u32).into());
+            args.push(format!("-I {:#x}", serial(&image)).into());
         }
         args.push(image.clone().into());
         hdiutil(&args.iter().map(OsString::as_os_str).collect::<Vec<_>>());
@@ -226,7 +243,7 @@ impl Disks {
             });
             if image
                 .extension()
-                .is_some_and(|extension| extension == "fat")
+                .is_some_and(|extension| extension == "fat" || extension == "exfat")
             {
                 let options = format!(
                     "loop,uid={},gid={}",
@@ -296,6 +313,12 @@ impl Disks {
             );
         }
     }
+}
+
+fn serial(image: &Path) -> u32 {
+    let mut serial = DefaultHasher::new();
+    image.hash(&mut serial);
+    serial.finish() as u32
 }
 
 fn sudo(args: &[&OsStr]) {

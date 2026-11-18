@@ -248,7 +248,7 @@ fn a_volume_without_a_uuid_is_never_read() {
         return;
     };
     let root = disks.base().join("Sync");
-    let fat = disks.fat("Fat");
+    let fat = disks.fat_without_serial("Fat");
     fs::create_dir_all(root.join("Disk")).unwrap();
     disks.attach(&fat, &root.join("Disk"));
     fill(&root.join("Disk"));
@@ -266,6 +266,110 @@ fn a_volume_without_a_uuid_is_never_read() {
     let found = rescan(&mut snapshot, &root, &["", "Disk"]);
     assert_eq!(found.changes, []);
     assert_eq!(found.unreadable, [PathBuf::from("Disk")]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_volume_without_a_uuid_gives_way_to_one_with_a_uuid_but_not_to_its_empty_mount_point() {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    let root = disks.base().join("Sync");
+    let (unknown, stick) = (disks.fat_without_serial("Unknown"), disks.fat("Stick"));
+    fs::create_dir_all(root.join("Disk")).unwrap();
+    disks.attach(&unknown, &root.join("Disk"));
+    fill(&root.join("Disk"));
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    disks.detach(&root.join("Disk"));
+    let found = rescan(&mut snapshot, &root, &["", "Disk"]);
+    assert_eq!(found.changes, []);
+    assert_eq!(away(&snapshot), ["Disk"]);
+
+    disks.attach(&stick, &root.join("Disk"));
+    fill(&root.join("Disk"));
+    let found = rescan(&mut snapshot, &root, &[""]);
+    assert_eq!(removals(&found.changes), Vec::<&Change>::new());
+    assert_eq!(away(&snapshot), Vec::<&str>::new());
+    holds(
+        &snapshot,
+        &below("Disk").iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    disks.detach(&root.join("Disk"));
+}
+
+#[cfg(target_os = "linux")]
+fn sticks_mounted_in_turn_have_volume_ids_of_their_own(disks: &mut Disks, one: &Path, two: &Path) {
+    use std::os::fd::AsFd;
+    let at = disks.base().join("Stick");
+    let elsewhere = disks.base().join("Elsewhere");
+    fs::create_dir_all(&at).unwrap();
+    fs::create_dir_all(&elsewhere).unwrap();
+    let found = |at: &Path| {
+        let started = Instant::now();
+        loop {
+            let found = koidrive_fs::root_at(fs::File::open(at).unwrap().as_fd()).unwrap();
+            if found.volume.is_some() || started.elapsed() > Duration::from_secs(10) {
+                return found;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    disks.attach(one, &at);
+    let first = found(&at);
+    disks.detach(&at);
+    disks.attach(two, &at);
+    let second = found(&at);
+    disks.attach(one, &elsewhere);
+    let again = found(&elsewhere);
+    disks.detach(&elsewhere);
+    disks.detach(&at);
+    let context = format!("{one:?} {first:?} {second:?} {again:?}");
+    assert!(first.volume.is_some(), "{context}");
+    assert!(second.volume.is_some(), "{context}");
+    assert_ne!(second.volume, first.volume, "{context}");
+    assert_eq!(again.volume, first.volume, "{context}");
+    assert!(first.admits(&again).is_ok(), "{context}");
+    assert!(
+        matches!(
+            first.admits(&second),
+            Err(koidrive_fs::RootProblem::OtherDisk)
+        ),
+        "{context}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn fat_sticks_mounted_in_turn_at_one_folder_have_volume_ids_of_their_own() {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    let (one, two) = (disks.fat("One"), disks.fat("Two"));
+    sticks_mounted_in_turn_have_volume_ids_of_their_own(&mut disks, &one, &two);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn exfat_sticks_mounted_in_turn_at_one_folder_have_volume_ids_of_their_own_where_udev_runs() {
+    let Some(mut disks) = Disks::new() else {
+        return;
+    };
+    if !Path::new("/dev/disk/by-diskseq").is_dir() {
+        eprintln!(
+            "SKIPPED: udev keeps no /dev/disk/by-diskseq links here, so exFAT volumes have no ID"
+        );
+        return;
+    }
+    if std::process::Command::new("mkfs.exfat")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        eprintln!("SKIPPED: mkfs.exfat from exfatprogs is not installed");
+        return;
+    }
+    let (one, two) = (disks.exfat("One"), disks.exfat("Two"));
+    sticks_mounted_in_turn_have_volume_ids_of_their_own(&mut disks, &one, &two);
 }
 
 fn clones(disks: &mut Disks) -> (PathBuf, PathBuf) {
@@ -735,7 +839,6 @@ fn a_scan_of_paths_inside_a_mount_point_reads_nothing_from_another_disk_there() 
     };
     let pairs = vec![
         (disks.image("First"), disks.image("Second")),
-        #[cfg(target_os = "macos")]
         (disks.fat("FATONE"), disks.fat("FATTWO")),
         #[cfg(target_os = "macos")]
         (disks.exfat("EXONE"), disks.exfat("EXTWO")),

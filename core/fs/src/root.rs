@@ -101,6 +101,10 @@ pub enum RootProblem {
 /// its UUID, on btrfs the UUID of the subvolume, or on ext2, ext3 and ext4 the
 /// file system ID that Linux derives from the UUID. The kinds have different
 /// lengths, so [`as_bytes`](Self::as_bytes) names its kind.
+///
+/// A volume ID shorter than a UUID, such as the 32-bit serial number of a FAT
+/// or exFAT volume, is a `Uuid` that holds the ID's bytes as the volume stores
+/// them, then zeros, and the ID's length in the last byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VolumeId {
     Uuid([u8; 16]),
@@ -197,6 +201,21 @@ pub(crate) fn volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
     btrfs_subvolume_id(dir)
         .or_else(|| ext_file_system_id(dir))
         .or_else(|| file_system_id(dir))
+        .or_else(|| fat_volume_id(dir))
+        .or_else(|| udev_volume_id(dir))
+}
+
+#[cfg(target_os = "linux")]
+fn volume_id_of(id: &[u8]) -> Option<VolumeId> {
+    if id.len() > 16 || id.iter().all(|&byte| byte == 0) {
+        return None;
+    }
+    let mut uuid = [0; 16];
+    uuid[..id.len()].copy_from_slice(id);
+    if id.len() < 16 {
+        uuid[15] = id.len() as u8;
+    }
+    Some(VolumeId::Uuid(uuid))
 }
 
 #[cfg(target_os = "linux")]
@@ -248,7 +267,89 @@ fn file_system_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
         uuid: [0; 16],
     };
     let done = unsafe { libc::ioctl(dir.as_raw_fd(), FS_IOC_GETFSUUID as _, &raw mut reply) };
-    (done == 0 && reply.len == 16 && reply.uuid != [0; 16]).then_some(VolumeId::Uuid(reply.uuid))
+    if done != 0 {
+        return None;
+    }
+    volume_id_of(reply.uuid.get(..usize::from(reply.len))?)
+}
+
+#[cfg(target_os = "linux")]
+fn fat_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+    use std::os::fd::AsRawFd;
+    const MSDOS_SUPER_MAGIC: u64 = 0x4d44;
+    const FAT_IOCTL_GET_VOLUME_ID: libc::c_ulong = 0x8004_7213;
+    if rustix::fs::fstatfs(dir).ok()?.f_type as u64 != MSDOS_SUPER_MAGIC {
+        return None;
+    }
+    let mut serial: u32 = 0;
+    let done = unsafe {
+        libc::ioctl(
+            dir.as_raw_fd(),
+            FAT_IOCTL_GET_VOLUME_ID as _,
+            &raw mut serial,
+        )
+    };
+    if done != 0 {
+        return None;
+    }
+    volume_id_of(&serial.to_le_bytes())
+}
+
+/// udev keeps a `/dev/disk/by-uuid` link until it handles the event that
+/// removes its device, so a disk that reuses a device number can find the link
+/// of the disk before it. Linux raises a disk's `diskseq` for each new disk and
+/// media change, and udev links `/dev/disk/by-diskseq` only once it has handled
+/// the disk (<https://www.kernel.org/doc/Documentation/ABI/stable/sysfs-block>).
+#[cfg(target_os = "linux")]
+fn udev_volume_id(dir: BorrowedFd<'_>) -> Option<VolumeId> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let dev = stat_fd(dir).ok()?.dev;
+    let is_this_device = |path: &Path| {
+        std::fs::metadata(path)
+            .is_ok_and(|meta| meta.file_type().is_block_device() && meta.rdev() == dev)
+    };
+    let sys = Path::new("/sys/dev/block").join(format!(
+        "{}:{}",
+        rustix::fs::major(dev),
+        rustix::fs::minor(dev)
+    ));
+    let read = |path: &Path| Some(std::fs::read_to_string(path).ok()?.trim().to_owned());
+    let partition = read(&sys.join("partition"));
+    let disk = if partition.is_some() {
+        sys.join("..")
+    } else {
+        sys
+    };
+    let mut seq = read(&disk.join("diskseq"))?;
+    if let Some(number) = partition {
+        seq = format!("{seq}-part{number}");
+    }
+    if !is_this_device(&Path::new("/dev/disk/by-diskseq").join(seq)) {
+        return None;
+    }
+    std::fs::read_dir("/dev/disk/by-uuid")
+        .ok()?
+        .flatten()
+        .find(|link| is_this_device(&link.path()))
+        .and_then(|link| udev_id(link.file_name().to_str()?))
+}
+
+/// libblkid prints a serial shorter than a UUID as the number, so its bytes are the reverse of the little-endian ones on disk.
+#[cfg(target_os = "linux")]
+fn udev_id(name: &str) -> Option<VolumeId> {
+    let digits: String = name.chars().filter(|&c| c != '-').collect();
+    if !digits.len().is_multiple_of(2) || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut id: Vec<u8> = (0..digits.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&digits[at..at + 2], 16))
+        .collect::<Result<_, _>>()
+        .ok()?;
+    if id.len() < 16 {
+        id.reverse();
+    }
+    volume_id_of(&id)
 }
 
 #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
@@ -527,5 +628,48 @@ fn barrier(fd: BorrowedFd<'_>) -> io::Result<()> {
     match unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_BARRIERFSYNC) } {
         -1 => Err(io::Error::last_os_error()),
         _ => Ok(()),
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn udev_names_a_volume_by_the_id_the_kernel_reports() {
+        assert_eq!(
+            udev_id("ABCD-1234"),
+            volume_id_of(&0xABCD_1234_u32.to_le_bytes())
+        );
+        assert_eq!(
+            udev_id("0123456789ABCDEF"),
+            volume_id_of(&0x0123_4567_89AB_CDEF_u64.to_le_bytes())
+        );
+        assert_eq!(
+            udev_id("4d5a2860-ff6d-4f32-bf61-5f40c3a1e33a"),
+            Some(VolumeId::Uuid([
+                0x4d, 0x5a, 0x28, 0x60, 0xff, 0x6d, 0x4f, 0x32, 0xbf, 0x61, 0x5f, 0x40, 0xc3, 0xa1,
+                0xe3, 0x3a
+            ]))
+        );
+        for name in [
+            "",
+            "0000-0000",
+            "ABC",
+            "+1+2-3456",
+            "C12A-244G",
+            "0123456789abcdef0123456789abcdef01",
+        ] {
+            assert_eq!(udev_id(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn short_volume_ids_of_other_lengths_differ() {
+        let fat = volume_id_of(&[1, 2, 3, 4]).unwrap();
+        let ntfs = volume_id_of(&[1, 2, 3, 4, 0, 0, 0, 0]).unwrap();
+        assert_ne!(fat, ntfs);
+        assert_eq!(VolumeId::from_bytes(fat.as_bytes()), Some(fat));
+        assert_eq!(volume_id_of(&[0; 4]), None);
     }
 }

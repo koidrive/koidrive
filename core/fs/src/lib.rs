@@ -204,7 +204,7 @@ impl Entry {
             Some(Mount::Volume(known)) => {
                 now.mount == Some(Mount::Volume(known)) && self.id == now.id
             }
-            Some(Mount::Unidentified) => false,
+            Some(Mount::Unidentified) => matches!(now.mount, Some(Mount::Volume(_))),
             None => now.mount.is_none(),
         }
     }
