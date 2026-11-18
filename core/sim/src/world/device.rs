@@ -188,12 +188,7 @@ impl Engine {
                 identity: identity(ino),
                 parked: false,
             };
-            let seen = (self.trees.local().get(&id)).is_some_and(|known| {
-                known.shape == node.shape && known.identity == node.identity && !known.parked
-            });
-            if !seen {
-                self.trees.set_local_changed(id, node);
-            }
+            self.trees.set_local_changed(id, node);
         }
         let on_disk: BTreeSet<&NodeId> = nodes.values().collect();
         let gone: Vec<NodeId> = (self.trees.local().iter())

@@ -1851,6 +1851,12 @@ impl Trees {
     /// when it ends at the bytes S holds, unless it keeps the content of the shape S forgot for it
     /// ([`TreesState::forgotten_shapes`]).
     pub fn set_local_changed(&mut self, id: NodeId, node: LocalNode) {
+        let repeated = (self.l.get(&id)).is_some_and(|old| {
+            old.shape == node.shape && old.identity == node.identity && old.parked == node.parked
+        });
+        if repeated && !self.outside.contains(&id) && !self.lost.contains(&id) {
+            return;
+        }
         let edit = self.l.get(&id).filter(|old| {
             matches!((&old.shape.content, &node.shape.content),
                 (Some(old), Some(new)) if !same_content(old, new))
