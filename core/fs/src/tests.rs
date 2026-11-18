@@ -9,6 +9,122 @@ use super::*;
 
 const WAIT: Duration = Duration::from_secs(10);
 
+#[test]
+fn a_root_replaced_while_a_rescan_widens_publishes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    let replacement = dir.path().join("replacement");
+    for path in [&root, &replacement] {
+        fs::create_dir(path).unwrap();
+        fs::write(path.join("a"), "a").unwrap();
+        fs::write(path.join("b"), "b").unwrap();
+    }
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    let before = snapshot.clone();
+    for (from, to) in [("a", "tmp"), ("b", "a"), ("tmp", "b")] {
+        fs::rename(root.join(from), root.join(to)).unwrap();
+    }
+    let mut replaced = false;
+    let result = snapshot.rescan_with(&root, [PathBuf::from("a")], None, &mut |cut| {
+        if matches!(cut, Cut::RootOpened) && !replaced {
+            replaced = true;
+            fs::rename(&root, dir.path().join("previous")).unwrap();
+            fs::rename(&replacement, &root).unwrap();
+        }
+    });
+    assert!(matches!(result, Err(Error::RootReplaced)), "{result:?}");
+    assert_eq!(snapshot, before);
+}
+
+#[test]
+fn a_rotation_seen_from_one_path_takes_at_most_three_scans() {
+    const FILES: u64 = 64;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for i in 0..FILES {
+        fs::write(root.join(i.to_string()), i.to_string()).unwrap();
+    }
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    let mut whole = snapshot.clone();
+    fs::rename(root.join("0"), root.join("tmp")).unwrap();
+    for i in 1..FILES {
+        fs::rename(root.join(i.to_string()), root.join((i - 1).to_string())).unwrap();
+    }
+    fs::rename(root.join("tmp"), root.join((FILES - 1).to_string())).unwrap();
+    let found = std::cell::Cell::new(0);
+    let mut scans = 0;
+    let rescan = snapshot
+        .rescan_under(
+            root,
+            [PathBuf::from("0")],
+            &BTreeSet::new(),
+            None,
+            None,
+            &|| false,
+            &|_| found.set(found.get() + 1),
+            &mut |cut| scans += u64::from(matches!(cut, Cut::RootOpened)),
+        )
+        .unwrap();
+    assert_eq!(
+        rescan.changes,
+        whole.rescan(root, [PathBuf::new()]).unwrap().changes
+    );
+    assert_eq!(rescan.changes.len() as u64, FILES);
+    assert_eq!(snapshot, whole);
+    assert!(scans <= 3, "{scans} scans");
+    assert!(found.get() <= FILES + 3, "{} files found", found.get());
+}
+
+#[test]
+fn an_arrival_whose_identity_is_still_known_in_an_unreadable_folder_waits_for_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let locked = root.join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::create_dir(root.join("open")).unwrap();
+    fs::write(root.join("open/a"), "a").unwrap();
+    fs::write(locked.join("b"), "b").unwrap();
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    let before = snapshot.clone();
+    for (from, to) in [
+        ("open/a", "tmp"),
+        ("locked/b", "open/a"),
+        ("tmp", "locked/b"),
+    ] {
+        fs::rename(root.join(from), root.join(to)).unwrap();
+    }
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let probe = fs::read_dir(&locked).map(|_| ());
+    if !blocks_reads(
+        "an_arrival_whose_identity_is_still_known_in_an_unreadable_folder_waits_for_it",
+        probe,
+    ) {
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+    let rescan = snapshot.rescan(root, [PathBuf::from("open/a")]);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+    let rescan = rescan.unwrap();
+    assert_eq!(rescan.changes, []);
+    assert_eq!(rescan.unreadable, [PathBuf::from("locked")]);
+    assert_eq!(rescan.unsettled, [PathBuf::from("open/a")]);
+    assert_eq!(snapshot, before);
+
+    let changes = snapshot.rescan(root, rescan.unsettled).unwrap().changes;
+    let renamed = |from: &str, to: &str| Change::Renamed {
+        from: from.into(),
+        to: to.into(),
+        kind: EntryKind::File,
+    };
+    assert_eq!(
+        changes,
+        [renamed("locked/b", "open/a"), renamed("open/a", "locked/b")]
+    );
+    assert_eq!(snapshot, Snapshot::scan(root).unwrap());
+}
+
 fn blocks_reads<T: std::fmt::Debug>(test: &str, probe: std::io::Result<T>) -> bool {
     use std::io::Write;
 

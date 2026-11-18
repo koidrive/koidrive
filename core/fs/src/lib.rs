@@ -837,6 +837,8 @@ impl Snapshot {
         cut: &mut dyn FnMut(Cut<'_>),
     ) -> Result<Rescan> {
         let mut paths: Vec<PathBuf> = paths.into_iter().collect();
+        let mut bound = None;
+        let mut widened = false;
         loop {
             let mut scan = Scan {
                 new: BTreeMap::new(),
@@ -858,45 +860,89 @@ impl Snapshot {
                 files: 0,
                 found,
             };
-            let scanned = self.scan_scopes(root, &paths, listed, expected, &mut scan);
-            let elsewhere = match scanned {
+            let scanned =
+                (self.scan_scopes(root, &paths, listed, expected, &mut scan)).and_then(|stat| {
+                    match bound {
+                        Some((dev, id)) if !stat.is_at(dev, &id) => Err(Error::RootReplaced),
+                        _ => Ok(stat),
+                    }
+                });
+            let elsewhere = match &scanned {
                 Ok(_) => self.known_elsewhere(&scan, &paths),
                 Err(_) => Vec::new(),
             };
-            if !elsewhere.is_empty() {
+            let unscanned: Vec<PathBuf> = (elsewhere.iter())
+                .filter(|(_, known)| {
+                    !(scan.replaced.iter().chain(&paths)).any(|scope| known.starts_with(scope))
+                })
+                .map(|(_, known)| known.clone())
+                .collect();
+            let whole = paths.iter().any(|path| path.as_os_str().is_empty());
+            if let Ok(stat) = &scanned
+                && !unscanned.is_empty()
+                && !whole
+            {
+                bound = Some((stat.dev, stat.id));
                 if let Some(rules) = scan.rules {
                     rules.undo();
                 }
-                paths.extend(elsewhere);
+                paths = if widened {
+                    vec![PathBuf::new()]
+                } else {
+                    [paths, unscanned].concat()
+                };
+                widened = true;
                 continue;
             }
-            let result = scanned.and_then(|root_stat| self.publish(root, &root_stat, &mut scan));
+            let deferred: BTreeSet<PathBuf> = elsewhere.into_iter().map(|(at, _)| at).collect();
+            for at in &deferred {
+                scan.new.retain(|path, _| !path.starts_with(at));
+                scan.new.extend(
+                    (self.entries.range(at.clone()..))
+                        .take_while(|(path, _)| path.starts_with(at))
+                        .map(|(path, entry)| (path.clone(), *entry)),
+                );
+            }
+            let result = scanned.and_then(|stat| self.publish(root, &stat, &mut scan));
             if result.is_err()
                 && let Some(rules) = scan.rules
             {
                 rules.undo();
             }
-            return result;
+            return result.map(|mut rescan| {
+                rescan.unsettled.extend(deferred);
+                rescan.unsettled.sort();
+                rescan.unsettled.dedup();
+                rescan
+            });
         }
     }
 
-    fn known_elsewhere(&self, scan: &Scan<'_>, scopes: &[PathBuf]) -> Vec<PathBuf> {
-        let arrived: HashSet<(FileId, EntryKind)> = (scan.new.iter())
-            .filter(|(path, now)| {
-                (self.entries.get(*path))
-                    .is_none_or(|before| (before.id, before.kind) != (now.id, now.kind))
-            })
-            .map(|(_, now)| (now.id, now.kind))
-            .collect();
+    fn known_elsewhere(&self, scan: &Scan<'_>, scopes: &[PathBuf]) -> Vec<(PathBuf, PathBuf)> {
+        let mut arrived: HashMap<(FileId, EntryKind), Vec<&PathBuf>> = HashMap::new();
+        for (path, now) in &scan.new {
+            if (self.entries.get(path))
+                .is_none_or(|before| (before.id, before.kind) != (now.id, now.kind))
+            {
+                arrived.entry((now.id, now.kind)).or_default().push(path);
+            }
+        }
         if arrived.is_empty() {
             return Vec::new();
         }
+        let read = |path: &Path| {
+            (scan.replaced.iter().chain(scopes)).any(|scope| path.starts_with(scope))
+                && !(scan.unreadable.iter()).any(|blocked| path.starts_with(blocked))
+        };
         (self.entries.iter())
-            .filter(|(_, known)| arrived.contains(&(known.id, known.kind)))
-            .filter(|(path, _)| {
-                !(scan.replaced.iter().chain(scopes)).any(|scope| path.starts_with(scope))
+            .filter(|(known, _)| !read(known))
+            .filter_map(|(known, entry)| Some((known, arrived.get(&(entry.id, entry.kind))?)))
+            .flat_map(|(known, at)| at.iter().map(move |at| (*at, known)))
+            .filter(|(at, known)| {
+                volume_of(at, &scan.new, &self.entries)
+                    == volume_of(known, &self.entries, &self.entries)
             })
-            .map(|(path, _)| path.clone())
+            .map(|(at, known)| (at.clone(), known.clone()))
             .collect()
     }
 
