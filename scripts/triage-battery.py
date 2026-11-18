@@ -99,7 +99,7 @@ def known_failures(text):
 
 def matches(entries, test, message, case=""):
     text = normalized(message)
-    found = [entry for entry in entries if test in entry["tests"] and entry["pattern"].match(text)
+    found = [entry for entry in entries if test in entry["tests"] and entry["pattern"].fullmatch(text)
              and case.startswith(tuple(entry.get("cases", [""])))]
     return [entry for entry in found if "cases" in entry] or found
 
@@ -465,7 +465,7 @@ anything of its own, so the two failures can't be compared. "
         "",
         f"No row has a class: {problem}" if problem else
         f"Class and issue name the known failure on main, from `.github/battery-known-failures.toml`, \
-that a row which {SAME} matches by its test name and its message with ids, numbers and `file.rs:line` positions \
+that a row which {SAME} matches by its test name and its whole message with ids, numbers and `file.rs:line` positions \
 masked, and for an entry that lists cases, only by those cases, which come before the entries that list none. \
 {len(same) - unclassified} of the {len(same)} such rows match one; {unclassified} {UNCLASSIFIED} match none.",
         "",

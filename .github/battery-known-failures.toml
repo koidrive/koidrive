@@ -2,7 +2,7 @@
 class = "A"
 issue = "GUN-1004"
 tests = ["devices_converge_across_restores_and_rewinds", "devices_converge_across_server_restores"]
-message = '''after phase <n>: a commit of device <n> took write <n> out of the server's tree\. The user of another device overwrote or deleted it, and the user of device <n> never did:'''
+message = '''after phase <n>: a commit of device <n> took write <n> out of the server's tree\. The user of another device overwrote or deleted it, and the user of device <n> never did: \[Op \{ .* \}\]\.'''
 examples = ["after phase 2: a commit of device 0 took write 2 out of the server's tree. The user of another device overwrote or deleted it, and the user of device 0 never did: [Op { op: Some(Delete(Delete { node_id: \"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\" })) }]."]
 
 [[failure]]
@@ -45,7 +45,7 @@ tests = [
   "devices_converge_across_server_restores",
   "devices_lose_no_write_across_restores_and_rewinds",
 ]
-message = '''after phase <n>: write <n> is in more than one file on the server, and no user copied it:'''
+message = '''after phase <n>: write <n> is in more than one file on the server, and no user copied it: \[\[.*\]\]\.'''
 examples = [
   "after phase 2: write 3 is in more than one file on the server, and no user copied it: [[\"b\"], [\"b (conflict from device-2 2026-11-09)\"]].",
   "after phase 2: write 2 is in more than one file on the server, and no user copied it: [[\"C (conflict from device-0 2026-11-09 2).TXT\"], [\"C.TXT\"]].",
@@ -70,7 +70,7 @@ tests = [
   "devices_converge_across_server_restores",
   "devices_lose_no_write_across_restores_and_rewinds",
 ]
-message = '''after phase <n>: write <n> is in the recovery copy ".*" of node <id>, but device <n>'s own commit <n> shows the server kept it at'''
+message = '''after phase <n>: write <n> is in the recovery copy ".*" of node <id>, but device <n>'s own commit <n> shows the server kept it at \[(<n>(, <n>)*)?\]\.'''
 examples = ["after phase 1: write 1 is in the recovery copy \"ß\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, but device 1's own commit 1 shows the server kept it at [1]."]
 
 [[failure]]
@@ -81,7 +81,7 @@ tests = [
   "devices_converge_across_server_restores",
   "devices_lose_no_write_across_restores_and_rewinds",
 ]
-message = '''after phase <n>: device <n> is quiet, but (it still sends nodes again|node <id> is parked)'''
+message = '''after phase <n>: device <n> is quiet, but (it still sends nodes again: \{.*\}, at \{.*\}, lost creates \{.*\}|node <id> is parked)\.'''
 examples = [
   "after phase 2: device 0 is quiet, but node 01a1c2c0-39a0-7ea7-93f8-3d888a182e12 is parked.",
   "after phase 2: device 1 is quiet, but it still sends nodes again: {01a1c2c0-39a0-7ea7-93f8-3d888a182e12}, at {}, lost creates {}.",
@@ -97,7 +97,7 @@ tests = [
   "a_first_link_sends_nothing_the_rules_leave_out_for_a_while_until_the_person_publishes_it",
   "a_device_whose_rules_change_deletes_nothing_on_either_side",
 ]
-message = '''<id> was held and sent before the person said so'''
+message = '''<id> was held and sent before the person said so at \S+\.rs:<line>\.'''
 examples = ["01a1c2c0-39a0-780a-953a-eb70673e29cb was held and sent before the person said so at core/sim/tests/engine_sync/common.rs:1869."]
 
 [[failure]]
@@ -110,7 +110,7 @@ tests = [
   "a_first_link_sends_nothing_the_rules_leave_out_for_a_while_until_the_person_publishes_it",
   "a_device_whose_rules_change_deletes_nothing_on_either_side",
 ]
-message = '''<id> is where the user put it in a folder that is the user's again, but the effects move it out'''
+message = '''<id> is where the user put it in a folder that is the user's again, but the effects move it out at \S+\.rs:<line>\.'''
 examples = ["01a1c2c0-39a0-7c9f-92dd-37ded7172a70 is where the user put it in a folder that is the user's again, but the effects move it out at core/sim/tests/engine_sync/common.rs:1291."]
 
 [[failure]]
@@ -121,7 +121,7 @@ tests = [
   "a_first_link_sends_nothing_the_rules_leave_out_for_a_while_until_the_person_publishes_it",
   "a_device_whose_rules_change_deletes_nothing_on_either_side",
 ]
-message = '''assertion failed: `\(left == right\)` left: `\("<id>", ".*"\)`, right: `\("<id>", ".*"\)`: <id> is sent to a place the disk does not hold it at'''
+message = '''assertion failed: `\(left == right\)` left: `\("<id>", ".*"\)`, right: `\("<id>", ".*"\)`: <id> is sent to a place the disk does not hold it at at \S+\.rs:<line>\.'''
 examples = ["assertion failed: `(left == right)` \n  left: `(\"01a1c2c0-39a0-7d6b-8097-314d939736f8\", \"ß\")`, \n right: `(\"01a1c2c0-39a0-7d6b-8097-314d939736f8\", \"ß (pending)\")`: 01a1c2c0-39a0-775c-844c-3cd7f43c661c is sent to a place the disk does not hold it at at core/sim/tests/engine_sync/common.rs:1262."]
 
 [[failure]]
@@ -134,7 +134,7 @@ tests = [
   "a_first_link_sends_nothing_the_rules_leave_out_for_a_while_until_the_person_publishes_it",
   "a_device_whose_rules_change_deletes_nothing_on_either_side",
 ]
-message = '''assertion failed: `\(left == right\)` left: `\["<id>"(, "<id>")*\]`, right: `\[\]` at '''
+message = '''assertion failed: `\(left == right\)` left: `\["<id>"(, "<id>")*\]`, right: `\[\]` at \S+\.rs:<line>\.'''
 examples = ["assertion failed: `(left == right)` \n  left: `[\"01a1c2c0-39a0-7c9f-92dd-37ded7172a70\"]`,\n right: `[]` at core/sim/tests/engine_sync/common.rs:2008."]
 
 [[failure]]
@@ -147,7 +147,7 @@ tests = [
   "a_first_link_sends_nothing_the_rules_leave_out_for_a_while_until_the_person_publishes_it",
   "a_device_whose_rules_change_deletes_nothing_on_either_side",
 ]
-message = '''no convergence within <n> steps'''
+message = '''no convergence within <n> steps at \S+\.rs:<line>\.'''
 examples = ["no convergence within 400 steps at core/sim/tests/engine_sync/common.rs:1599."]
 
 [[failure]]
@@ -168,7 +168,7 @@ tests = [
   "devices_converge_around_an_owed_rename",
   "devices_converge_around_a_folder_another_device_replaces",
 ]
-message = '''(after phase <n>: after the faults stopped, on device <n>|phase <n>, step <n> \(Work\(<n>\) on device <n>\)): a commit of device <n> brought back node <id> as ".*", which a user deleted, and the user of device <n> never changed it or put anything in it since:'''
+message = '''(after phase <n>: after the faults stopped, on device <n>|phase <n>, step <n> \(Work\(<n>\) on device <n>\)): a commit of device <n> brought back node <id> as ".*", which a user deleted, and the user of device <n> never changed it or put anything in it since: \[Op \{ .* \}\]\.'''
 examples = [
   "after phase 2: after the faults stopped, on device 1: a commit of device 1 brought back node 01a1c2c0-39a0-7224-a2dd-41264c2feceb as \"a (pending)\", which a user deleted, and the user of device 1 never changed it or put anything in it since: [Op { op: Some(Move(Move { node_id: \"01a1c2c0-39a0-7224-a2dd-41264c2feceb\" })) }].",
   "phase 2, step 31 (Work(2768391254195023849) on device 1): a commit of device 1 brought back node 01a1c2c0-39a0-7224-a2dd-41264c2feceb as \"a\", which a user deleted, and the user of device 1 never changed it or put anything in it since: [Op { op: Some(Move(Move { node_id: \"01a1c2c0-39a0-7224-a2dd-41264c2feceb\" })) }].",
@@ -178,14 +178,14 @@ examples = [
 class = "H"
 issue = "GUN-865"
 tests = ["a_device_with_local_changes_converges_with_the_server_and_keeps_every_write"]
-message = '''no convergence within <n> steps'''
+message = '''no convergence within <n> steps at \S+\.rs:<line>\.'''
 examples = ["no convergence within 400 steps at core/sim/tests/engine_sync/common.rs:1599."]
 
 [[failure]]
 class = "J"
 issue = "GUN-1012"
 tests = ["devices_converge_across_restores_and_rewinds"]
-message = '''after phase <n>: write <n> is in more than one file on the server, and no user copied it:'''
+message = '''after phase <n>: write <n> is in more than one file on the server, and no user copied it: \[\[.*\]\]\.'''
 examples = [
   "after phase 2: write 3 is in more than one file on the server, and no user copied it: [[\"b\"], [\"ß (conflict from device-1 2026-11-09)\"]].",
   "after phase 2: write 3 is in more than one file on the server, and no user copied it: [[\"ß\"], [\"é (conflict from device-1 2026-11-09)\", \"É\"]].",
@@ -217,7 +217,7 @@ cases = [
 class = "J"
 issue = "GUN-1012"
 tests = ["devices_converge_across_server_restores"]
-message = '''after phase <n>: device <n> is quiet, but it still sends nodes again:'''
+message = '''after phase <n>: device <n> is quiet, but it still sends nodes again: \{.*\}, at \{.*\}, lost creates \{.*\}\.'''
 examples = ["after phase 2: device 1 is quiet, but it still sends nodes again: {\"01a1c2c0-39a0-7ea7-93f8-3d888a182e12\"}, at {}, lost creates {\"01a1c2c0-39a0-7224-a2dd-41264c2feceb\"}."]
 cases = [
   "5e0a61643769",
@@ -227,7 +227,7 @@ cases = [
 class = "J"
 issue = "GUN-1012"
 tests = ["devices_converge_across_server_restores"]
-message = '''after phase <n>: write <n> is in the recovery copy ".*" of node <id>, but device <n>'s own commit <n> shows the server kept it at'''
+message = '''after phase <n>: write <n> is in the recovery copy ".*" of node <id>, but device <n>'s own commit <n> shows the server kept it at \[(<n>(, <n>)*)?\]\.'''
 examples = ["after phase 1: write 1 is in the recovery copy \"ß\" of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3, but device 1's own commit 1 shows the server kept it at [1]."]
 cases = [
   "8c10769408c5",
@@ -237,7 +237,7 @@ cases = [
 class = "J"
 issue = "GUN-1012"
 tests = ["devices_converge_across_server_restores"]
-message = '''after phase <n>: device <n> is quiet, but committing has problems \{.*\} or has stopped:'''
+message = '''after phase <n>: device <n> is quiet, but committing has problems \{.*\} or has stopped: (None|Some\(.*\))\.'''
 examples = ["after phase 2: device 1 is quiet, but committing has problems {\"01a1c2c0-39a0-7cb2-989b-810659c5a8bc\"} or has stopped: None."]
 cases = [
   "de9c5cde7dfc",
@@ -260,5 +260,45 @@ tests = [
   "restore_lost_copy::a_discarded_overwrite_across_a_rewind_keeps_the_rewound_write_in_one_file",
   "restore_lost_copy::a_same_bytes_rewrite_across_a_rewind_keeps_the_rewound_write_in_one_file",
 ]
-message = '''called `Result::unwrap\(\)` on an `Err` value: Diverged\("after phase <n>: write <n> is in more than one file on the server, and no user copied it:'''
+message = '''called `Result::unwrap\(\)` on an `Err` value: Diverged\("after phase <n>: write <n> is in more than one file on the server, and no user copied it: \[\[.*\]\]"\)'''
 examples = ["called `Result::unwrap()` on an `Err` value: Diverged(\"after phase 2: write 2 is in more than one file on the server, and no user copied it: [[\\\"a\\\"], [\\\"a (conflict from device-2 2026-11-09)\\\"]]\")"]
+
+[[failure]]
+class = "J"
+issue = "GUN-1012"
+tests = ["devices_converge_across_restores_and_rewinds", "devices_lose_no_write_across_restores_and_rewinds"]
+message = '''after phase <n>: after the faults stopped, on device <n>: a commit of device <n> took write <n> out of the server's tree, and no user overwrote or deleted it: \[Op \{ intent: None, fields: None, op: Some\(Move\(Move \{ node_id: "<id>", new_parent_id: "<id>", new_name: "A", pending_for: "", from: None \}\)\) \}, Op \{ intent: None, fields: None, op: Some\(UpdateContent\(UpdateContent \{ node_id: "<id>", content: Some\(Content \{ size: <n>, mtime_ns: <n>, executable: false, chunks: \[ChunkRef \{ hash: \[(<n>, ){31}<n>\], size: <n>, encoding: <n> \}\], chunk_count: <n>, manifest_digest: \[(<n>, ){31}<n>\], chunker: "" \}\), resend: false, made_over: \[\], source_version_id: "<id>" \}\)\) \}\]\.'''
+examples = ["after phase 2: after the faults stopped, on device 1: a commit of device 1 took write 6 out of the server's tree, and no user overwrote or deleted it: [Op { intent: None, fields: None, op: Some(Move(Move { node_id: \"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\", new_parent_id: \"01a1c2c0-39a0-7d6b-8097-314d939736f8\", new_name: \"A\", pending_for: \"\", from: None })) }, Op { intent: None, fields: None, op: Some(UpdateContent(UpdateContent { node_id: \"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\", content: Some(Content { size: 3, mtime_ns: 2, executable: false, chunks: [ChunkRef { hash: [251, 181, 158, 209, 14, 156, 212, 255, 69, 161, 44, 91, 185, 44, 189, 128, 223, 152, 75, 161, 254, 96, 242, 106, 48, 254, 191, 33, 142, 47, 15, 94], size: 3, encoding: 0 }], chunk_count: 1, manifest_digest: [162, 28, 33, 41, 184, 152, 108, 131, 108, 143, 183, 226, 22, 181, 56, 186, 56, 118, 252, 113, 223, 125, 239, 139, 150, 72, 235, 20, 14, 43, 241, 139], chunker: \"\" }), resend: false, made_over: [], source_version_id: \"01a1c2c0-39c1-7715-a16f-9630b0074044\" })) }]."]
+cases = [
+  "1d7f5cc9bb86",
+]
+
+[[failure]]
+class = "J"
+issue = "GUN-1012"
+tests = ["devices_converge_across_restores_and_rewinds", "devices_lose_no_write_across_restores_and_rewinds"]
+message = '''after phase <n>: write <n> left the disk of device <n>: the server never held it, and its user never overwrote or deleted it\.'''
+examples = ["after phase 2: write 6 left the disk of device 2: the server never held it, and its user never overwrote or deleted it."]
+cases = [
+  "a7b0eabd2b85",
+]
+
+[[failure]]
+class = "K"
+issue = "GUN-1031"
+tests = ["devices_converge_across_rewinds_and_rollbacks", "devices_lose_no_write_across_rewinds_and_rollbacks"]
+message = '''phase <n>, step <n> \(Crash on device <n>\): WriteFile \{ at: At \{ base: Root, dirs: \[\], name: "a" \}, content: Content \{ size: <n>, mtime_ns: <n>, executable: false, chunks: \[ChunkRef \{ hash: \[(<n>, ){31}<n>\], size: <n>, encoding: <n> \}\], chunk_count: <n>, manifest_digest: \[(<n>, ){31}<n>\], chunker: "" \}, replaces: Some\(Displaced \{ at: At \{ base: Root, dirs: \[\], name: "a" \}, identity: FileIdentity \{ ino: <n>, birth_ns: Some\(<n>\) \}, content: Content \{ size: <n>, mtime_ns: <n>, executable: false, chunks: \[ChunkRef \{ hash: \[(<n>, ){31}<n>\], size: <n>, encoding: <n> \}\], chunk_count: <n>, manifest_digest: \[(<n>, ){31}<n>\], chunker: "" \} \}\) \} removed write <n> from the disk of device <n>, and the server never held that write\.'''
+examples = ["phase 2, step 27 (Crash on device 0): WriteFile { at: At { base: Root, dirs: [], name: \"a\" }, content: Content { size: 3, mtime_ns: 3, executable: false, chunks: [ChunkRef { hash: [251, 80, 220, 7, 23, 255, 38, 108, 249, 186, 248, 43, 28, 231, 161, 194, 239, 109, 146, 71, 133, 150, 128, 177, 26, 25, 251, 112, 119, 245, 242, 34], size: 3, encoding: 0 }], chunk_count: 1, manifest_digest: [130, 159, 23, 85, 83, 23, 83, 113, 44, 197, 41, 127, 22, 251, 222, 68, 205, 158, 130, 240, 26, 147, 67, 244, 158, 15, 114, 185, 107, 73, 2, 59], chunker: \"\" }, replaces: Some(Displaced { at: At { base: Root, dirs: [], name: \"a\" }, identity: FileIdentity { ino: 3, birth_ns: Some(1700000000000000000) }, content: Content { size: 3, mtime_ns: 4, executable: false, chunks: [ChunkRef { hash: [101, 253, 225, 60, 241, 228, 234, 66, 6, 194, 147, 8, 38, 87, 3, 118, 132, 238, 69, 110, 64, 4, 28, 129, 101, 9, 182, 62, 27, 137, 211, 135], size: 3, encoding: 0 }], chunk_count: 1, manifest_digest: [35, 0, 6, 202, 39, 114, 182, 183, 226, 166, 230, 211, 72, 196, 77, 116, 177, 223, 157, 212, 96, 198, 253, 220, 220, 111, 67, 9, 10, 14, 240, 221], chunker: \"\" } }) } removed write 4 from the disk of device 0, and the server never held that write."]
+cases = [
+  "d93bc61897d1",
+]
+
+[[failure]]
+class = "L"
+issue = "GUN-1032"
+tests = ["devices_converge_across_rewinds_and_rollbacks"]
+message = '''after phase <n>: device <n> is quiet, but it still sends nodes again: \{"<id>"\}, at \{\}, lost creates \{\}\.'''
+examples = ["after phase 2: device 0 is quiet, but it still sends nodes again: {\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"}, at {}, lost creates {}."]
+cases = [
+  "45aeea4283ba",
+]

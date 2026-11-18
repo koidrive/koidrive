@@ -406,15 +406,16 @@ class KnownFailures(unittest.TestCase):
             "device-<n> <n>-<n>-<n> is lost at core/sim/tests/engine_sync/common.rs:<line> and core/x.rs:<line>."
             .replace("§", chr(96)))
 
-    def test_a_message_matches_from_its_start_and_only_for_the_entry_tests(self):
+    def test_a_message_matches_whole_and_only_for_the_entry_tests(self):
         entries = triage.known_failures(KNOWN)
         def classes(test, message):
             return [entry["class"] for entry in triage.matches(entries, test, message)]
-        self.assertEqual(classes("devices_converge", "write 3 is lost: [Op { id: 9 }]"), ["A"])
+        self.assertEqual(classes("devices_converge", "write 3 is lost"), ["A"])
+        self.assertEqual(classes("devices_converge", "write 3 is lost: [Op { id: 9 }]"), [])
         self.assertEqual(classes("devices_converge", "after phase 1: write 3 is lost"), [])
         self.assertEqual(classes("devices_plain", "write 3 is lost"), [])
-        self.assertEqual(classes("devices_converge", "no convergence within 400 steps at a.rs:1"), ["B"])
-        self.assertEqual(classes("devices_lose_no_write", "no convergence within 400 steps at a.rs:1"), ["C"])
+        self.assertEqual(classes("devices_converge", "no convergence within 400 steps"), ["B"])
+        self.assertEqual(classes("devices_lose_no_write", "no convergence within 400 steps"), ["C"])
 
     def test_the_report_labels_only_rows_that_fail_on_base_with_the_same_message(self):
         run, rows, text = self.report(KNOWN, [
@@ -479,6 +480,57 @@ cases = ["{1:064}"]
                         for case in entry.get("cases", [""]):
                             found = triage.matches(entries, test, example, case)
                             self.assertEqual([entries.index(other) for other in found], [index], (test, example, case))
+
+    def test_registry_entries_that_share_a_message_label_only_their_own_tests_and_cases(self):
+        entries = triage.known_failures(triage.KNOWN_FAILURES.read_text())
+        left = "after phase 2: write 6 left the disk of device 2: the server never held it, and its user never overwrote or deleted it."
+        quiet = ("after phase 2: device 0 is quiet, but it still sends nodes again: "
+                 "{\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"}, at {}, lost creates {}.")
+        restores_and_rewinds = "devices_converge_across_restores_and_rewinds"
+        server_restores = "devices_converge_across_server_restores"
+        rewinds_and_rollbacks = "devices_converge_across_rewinds_and_rollbacks"
+        a7b0 = "a7b0eabd2b85c630555e19125c650ce2d64fba476e043a43b9729f368183f7bf"
+        cd97 = "cd970b7805c3" + "0" * 52
+        ae45 = "45aeea4283bad112a4dfb008e7c67a75c58dea15306a57cb165f8b6cbd33238c"
+        e0a5 = "5e0a61643769" + "0" * 52
+        d1f7 = "1d7f5cc9bb86920e85aebe47883949e98f8768e54f859425dbef30cbbb41919a"
+        d93b = "d93bc61897d139c24ba2b9cf1da1cf8a696676689896335347e9f41fabe4c95e"
+        other = "0" * 64
+        def example(case):
+            return next(entry for entry in entries if case.startswith(tuple(entry.get("cases", ["-"]))))["examples"][0]
+        update = "}, Op { intent: None, fields: None, op: Some(UpdateContent"
+        three_ops = example(d1f7).replace(
+            update, "}, Op { intent: None, fields: None, op: Some(Delete(Delete { node_id: \"x\" })) " + update, 1)
+        written = example(d93b)
+        not_displaced = written[:written.index(", replaces:")] + ", replaces: None }" + written[written.index(" removed write"):]
+        for test, message, case, labels in [
+            (restores_and_rewinds, three_ops, d1f7, []),
+            (rewinds_and_rollbacks, not_displaced, d93b, []),
+            (restores_and_rewinds, example(a7b0) + " Then write 7 is lost too.", a7b0, []),
+            (restores_and_rewinds, left, a7b0, [("J", "GUN-1012", ["a7b0eabd2b85"])]),
+            (restores_and_rewinds, left, cd97, []),
+            (restores_and_rewinds, left, other, []),
+            (server_restores, left, cd97, [("J", "GUN-1012", ["cd970b7805c3"])]),
+            (server_restores, left, a7b0, []),
+            (rewinds_and_rollbacks, quiet, ae45, [("L", "GUN-1032", ["45aeea4283ba"])]),
+            (rewinds_and_rollbacks, quiet, other, []),
+            ("devices_lose_no_write_across_rewinds_and_rollbacks", quiet, ae45, []),
+            (restores_and_rewinds, quiet, ae45, [("D", "GUN-984", None)]),
+            (server_restores, quiet, ae45, [("D", "GUN-984", None)]),
+            (server_restores, quiet, e0a5, [("J", "GUN-1012", ["5e0a61643769"])]),
+        ]:
+            with self.subTest(test=test, message=message[:40], case=case[:12]):
+                found = triage.matches(entries, test, message, case)
+                self.assertEqual([(entry["class"], entry["issue"], entry.get("cases")) for entry in found], labels)
+
+    def test_no_registry_entry_labels_its_example_with_text_after_it(self):
+        entries = triage.known_failures(triage.KNOWN_FAILURES.read_text())
+        for index, entry in enumerate(entries):
+            for example in entry["examples"]:
+                for test in entry["tests"]:
+                    for case in entry.get("cases", [""]):
+                        with self.subTest(entry=index, failure=entry["class"], test=test, case=case):
+                            self.assertEqual(triage.matches(entries, test, example + " Then write 7 is lost too.", case), [])
 
     def test_every_registry_test_name_is_a_test_in_core(self):
         files = subprocess.run(["git", "ls-files", "-z", "core/*.rs"], cwd=ROOT, check=True,
