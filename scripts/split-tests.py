@@ -101,6 +101,8 @@ def render(executable, mapping, sources):
             scenario = assignments[item["name"]]
             if not re.fullmatch(r"[a-z][a-z0-9_]*", scenario):
                 raise ValueError(f"invalid scenario: {scenario}")
+            if item["anchored"] and scenario != "root":
+                raise ValueError(f"keep {item['name']} in root: its regression file path depends on the source file")
             if item["kind"] == "module" and scenario != "root":
                 raise ValueError("keep modules in root to preserve relative paths")
             prefix = source[previous:item["start"]].strip(b"\n")
@@ -189,6 +191,12 @@ def port(executable, mapping, base_ref, branch_ref):
     write(executable, render(executable, mapping, sources))
 
 
+def require_assigned(path, assignments, found):
+    unknown = [item["name"] for item in found if item["name"] not in assignments]
+    if unknown:
+        raise ValueError(f"assign these items in {MAPPING.relative_to(ROOT)} for {path}: {unknown}")
+
+
 def verify(executable, mapping, revision):
     total = 0
     for path, assignments in mapping.items():
@@ -196,9 +204,7 @@ def verify(executable, mapping, revision):
         root = (ROOT / path).read_bytes()
         root_items = parsed(executable, root)
         original_items = items(executable, original)
-        unknown = [item["name"] for item in original_items if item["name"] not in assignments]
-        if unknown:
-            raise ValueError(f"assign these items in {MAPPING.relative_to(ROOT)} for {path}: {unknown}")
+        require_assigned(path, assignments, original_items)
         scenarios = {assignments[item["name"]] for item in original_items} - {"root"}
         expected_includes = Counter(f'{Path(path).stem}/{scenario}.rs' for scenario in scenarios)
         actual_includes = Counter(item["name"].removeprefix("include:")
@@ -214,12 +220,16 @@ def verify(executable, mapping, revision):
         paths = [ROOT / path] + sorted(output_path(path, "common").parent.rglob("*.rs"))
         if set(paths[1:]) != {output_path(path, scenario) for scenario in scenarios}:
             raise ValueError(f"{path}: scenario file set differs from the mapping")
-        for moved in paths:
+        found = {moved: items(executable, moved.read_bytes(), fragment=moved != ROOT / path) for moved in paths}
+        require_assigned(path, assignments, [item for moved_items in found.values() for item in moved_items])
+        for moved, moved_items in found.items():
             source = moved.read_bytes()
-            for item in items(executable, source, fragment=moved != ROOT / path):
+            for item in moved_items:
                 name = item["name"]
                 if name in after:
                     raise ValueError(f"duplicated item in {path}: {name}")
+                if item["anchored"] and moved != ROOT / path:
+                    raise ValueError(f"keep {name} in {path}: its regression file path depends on the source file")
                 expected = ROOT / path if assignments[name] == "root" else output_path(path, assignments[name])
                 if moved != expected:
                     raise ValueError(f"wrong scenario for {name}: {moved}")

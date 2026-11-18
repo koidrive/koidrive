@@ -223,6 +223,67 @@ class SplitTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, r"assign these items.*fn:one"):
                 split.verify(self.executable, self.mapping, "base")
 
+    def test_verify_names_items_a_scenario_adds_without_a_mapping(self):
+        self.generate()
+        scenario = self.root / "tests/scenario.rs"
+        scenario.write_bytes(scenario.read_bytes() + b"\n#[test]\nfn added() {}\n")
+        with patch.object(split, "git_source", return_value=self.source):
+            with self.assertRaisesRegex(ValueError, r"assign these items.*fn:added"):
+                split.verify(self.executable, self.mapping, "base")
+
+    def property_source(self, base, config):
+        return base + b"proptest::proptest! {\n" + config + (
+            b"    #[test]\n    fn holds(x in 0..4u8) { assert!(x < 4); }\n}\n"
+        )
+
+    def test_a_proptest_whose_regression_path_depends_on_its_file_stays_in_root(self):
+        original = self.source
+        for config in [
+            b'    #![proptest_config(koidrive_test_support::battery_config(concat!(file!(), ".regressions.txt"), 1))]\n',
+            b'    #![proptest_config(koidrive_test_support::battery_config(concat!(module_path!(), ".txt"), 1))]\n',
+            b'    #![proptest_config(koidrive_test_support::battery_config(concat!("cases", line!()), 1))]\n',
+            b'    #![proptest_config(koidrive_test_support::battery_config(REGRESSIONS, 1))]\n',
+            b'    #![proptest_config(koidrive_test_support::battery_config(concat!("tests/", "cases.txt"), 1))]\n',
+            b'    #![proptest_config(ProptestConfig::with_cases(4))]\n',
+            b'    #![proptest_config(ProptestConfig { failure_persistence: None, ..koidrive_test_support::battery_config("cases.txt", 1) })]\n',
+            b"",
+        ]:
+            with self.subTest(config=config):
+                self.source = original
+                self.mapping["tests.rs"].pop("proptest:holds", None)
+                self.generate()
+                anchored = self.property_source(original, config)
+                self.mapping["tests.rs"]["proptest:holds"] = "scenario"
+                with self.assertRaisesRegex(ValueError, "keep proptest:holds in root"):
+                    split.render(self.executable, self.mapping, {"tests.rs": anchored})
+                with patch.object(split, "git_source", side_effect=lambda ref, path: original if ref == "base" else anchored):
+                    with self.assertRaisesRegex(ValueError, "keep proptest:holds in root"):
+                        split.port(self.executable, self.mapping, "base", "branch")
+                self.mapping["tests.rs"]["proptest:holds"] = "root"
+                self.source = anchored
+                self.generate()
+                block = anchored[anchored.index(b"proptest::proptest!"):]
+                self.path.write_bytes(self.path.read_bytes().replace(block, b""))
+                scenario = self.root / "tests/scenario.rs"
+                scenario.write_bytes(scenario.read_bytes() + b"\n" + block)
+                self.mapping["tests.rs"]["proptest:holds"] = "scenario"
+                with patch.object(split, "git_source", return_value=anchored):
+                    with self.assertRaisesRegex(ValueError, "keep proptest:holds in tests.rs"):
+                        split.verify(self.executable, self.mapping, "base")
+
+    def test_a_proptest_whose_regression_path_ignores_its_file_moves(self):
+        original = self.source
+        for config in [
+            b'    #![proptest_config(koidrive_test_support::battery_config(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/", "cases.txt"), 1))]\n',
+            b'    #![proptest_config(ProptestConfig { max_shrink_iters: 4, ..koidrive_test_support::regression_config("cases.txt", 8) })]\n',
+        ]:
+            with self.subTest(config=config):
+                self.source = self.property_source(original, config)
+                self.mapping["tests.rs"]["proptest:holds"] = "scenario"
+                self.generate()
+                with patch.object(split, "git_source", return_value=self.source):
+                    split.verify(self.executable, self.mapping, "base")
+
 
 if __name__ == "__main__":
     unittest.main()
