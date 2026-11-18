@@ -11,6 +11,11 @@ mod schema;
 #[path = "support/executable.rs"]
 mod fixture;
 
+#[path = "support/terminal.rs"]
+mod terminal;
+
+use terminal::Terminal;
+
 const PATH_LINE: &str = "; : 'koidrive PATH'";
 
 struct Machine {
@@ -886,73 +891,29 @@ fn an_app_in_applications_is_unregistered_and_removed() {
 }
 
 fn on_terminal(machine: &Machine, koi: &Path, args: &[&str], answer: &str) -> (i32, String) {
-    use std::io::{Read, Write};
-
-    let master = rustix::pty::openpt(rustix::pty::OpenptFlags::RDWR).unwrap();
-    rustix::pty::grantpt(&master).unwrap();
-    rustix::pty::unlockpt(&master).unwrap();
-    let name = rustix::pty::ptsname(&master, Vec::new()).unwrap();
-    let slave = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(name.to_str().unwrap())
-        .unwrap();
-    let flags = rustix::fs::fcntl_getfl(&master).unwrap();
-    rustix::fs::fcntl_setfl(&master, flags | rustix::fs::OFlags::NONBLOCK).unwrap();
-    let size = rustix::termios::Winsize {
-        ws_row: 40,
-        ws_col: 160,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    rustix::termios::tcsetwinsize(&master, size).unwrap();
-    let mut terminal = fs::File::from(master);
+    let mut terminal = Terminal::open(160, 40);
     let mut child = machine
         .command(koi, args)
         .env_remove("CI")
         .env("TERM", "xterm-256color")
-        .stdin(slave.try_clone().unwrap())
-        .stdout(slave.try_clone().unwrap())
-        .stderr(slave)
+        .stdin(terminal.slave())
+        .stdout(terminal.slave())
+        .stderr(terminal.slave())
         .spawn()
         .unwrap();
-    let mut raw = Vec::new();
     let mut answered = false;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        let mut bytes = [0; 4096];
-        match terminal.read(&mut bytes) {
-            Ok(0) => break,
-            Ok(count) => {
-                raw.extend_from_slice(&bytes[..count]);
-                let text = String::from_utf8_lossy(&raw);
-                if !answered
-                    && console::strip_ansi_codes(&text)
-                        .contains("Remove Koidrive from this computer?")
-                {
-                    terminal.write_all(answer.as_bytes()).unwrap();
-                    answered = true;
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if child.try_wait().unwrap().is_some() {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            Err(error) if error.raw_os_error() == Some(5) => break,
-            Err(error) => panic!("terminal read failed: {error}"),
-        }
-        if std::time::Instant::now() > deadline {
-            child.kill().unwrap();
-            panic!(
-                "koi uninstall did not finish: {}",
-                String::from_utf8_lossy(&raw)
-            );
+    while terminal.read(&mut child, deadline) {
+        if !answered
+            && console::strip_ansi_codes(&terminal.text())
+                .contains("Remove Koidrive from this computer?")
+        {
+            terminal.write(answer.as_bytes());
+            answered = true;
         }
     }
     let status = child.wait().unwrap();
-    let text = console::strip_ansi_codes(&String::from_utf8_lossy(&raw)).replace("\r\n", "\n");
+    let text = console::strip_ansi_codes(&terminal.text()).into_owned();
     assert!(answered, "no question: {text}");
     (status.code().unwrap(), text)
 }

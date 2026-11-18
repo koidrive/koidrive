@@ -22,6 +22,11 @@ use prost::Message;
 
 mod schema;
 
+#[path = "support/terminal.rs"]
+mod terminal;
+
+use terminal::Terminal;
+
 const ROUTE: &str = "How do you want to connect?";
 const ADDRESS: &str = "Server address";
 const CLAIM: &str = "Claim code";
@@ -667,31 +672,6 @@ fn koi(home: &Path) -> Command {
     command
 }
 
-fn terminal_pair() -> (File, File) {
-    let master = rustix::pty::openpt(rustix::pty::OpenptFlags::RDWR).unwrap();
-    rustix::pty::grantpt(&master).unwrap();
-    rustix::pty::unlockpt(&master).unwrap();
-    let name = rustix::pty::ptsname(&master, Vec::new()).unwrap();
-    let slave = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(name.to_str().unwrap())
-        .unwrap();
-    let flags = rustix::fs::fcntl_getfl(&master).unwrap();
-    rustix::fs::fcntl_setfl(&master, flags | rustix::fs::OFlags::NONBLOCK).unwrap();
-    rustix::termios::tcsetwinsize(
-        &master,
-        rustix::termios::Winsize {
-            ws_row: 30,
-            ws_col: 100,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        },
-    )
-    .unwrap();
-    (File::from(master), slave)
-}
-
 enum TerminalInput {
     Direct,
     RedirectedStdout,
@@ -711,9 +691,10 @@ fn terminal_run(
     input: TerminalInput,
 ) -> Output {
     let queued_enter = matches!(input, TerminalInput::QueuedEnter);
-    let (mut terminal, slave) = terminal_pair();
-    let mut other = matches!(input, TerminalInput::DifferentTerminal).then(terminal_pair);
-    let original = rustix::termios::tcgetattr(&slave).unwrap();
+    let mut terminal = Terminal::open(100, 30);
+    let mut other =
+        matches!(input, TerminalInput::DifferentTerminal).then(|| Terminal::open(100, 30));
+    let original = terminal.attributes();
     let mut command = koi(home);
     command.args(args).env("TERM", "xterm-256color");
     if args.first() == Some(&"setup") {
@@ -754,124 +735,79 @@ fn terminal_run(
         }
         command = wrapper;
     }
-    command
-        .stdin(slave.try_clone().unwrap())
-        .stdout(slave.try_clone().unwrap());
+    command.stdin(terminal.slave()).stdout(terminal.slave());
     if matches!(input, TerminalInput::RedirectedStdout) {
         command.stdout(File::create(home.join("stdout.txt")).unwrap());
     }
-    match &other {
-        Some((_, output)) => {
-            command.stderr(output.try_clone().unwrap());
-        }
-        None => {
-            command.stderr(slave);
-        }
-    }
+    command.stderr(other.as_ref().unwrap_or(&terminal).slave());
     if queued_enter {
-        terminal.write_all(b"\r").unwrap();
+        terminal.write(b"\r");
     }
     let mut child = command.spawn().unwrap();
-    let mut text = String::new();
-    let mut raw = Vec::new();
     let mut answered = 0;
     let mut seen = 0;
     let mut signalled = false;
     let mut helpers = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let mut bytes = [0; 4096];
-        match terminal.read(&mut bytes) {
-            Ok(0) => break,
-            Ok(count) => {
-                raw.extend_from_slice(&bytes[..count]);
-                text = String::from_utf8_lossy(&raw).into_owned();
-                let visible = console::strip_ansi_codes(&text);
-                let reached = (!signalled)
-                    .then(|| steps.get(answered))
-                    .flatten()
-                    .and_then(|step| {
-                        step.wait.iter().try_fold(seen, |from, wait| {
-                            let at = visible.get(from..)?.find(wait)?;
-                            Some(from + at + wait.len())
-                        })
-                    });
-                if let Some(end) = reached {
-                    seen = end;
-                    if queued_enter {
-                        std::thread::sleep(Duration::from_millis(250));
-                        let state = home.join("state/koidrive/telemetry");
-                        assert!(!state.join("settings.json").exists(), "{text}");
-                        assert!(state.join("prompt.json").exists());
-                    }
-                    if let Some((stage, signal)) = interrupt.filter(|(stage, _)| *stage == answered)
-                    {
-                        let children = Command::new("pgrep")
-                            .args(["-P", &child.id().to_string()])
-                            .output()
-                            .unwrap();
-                        helpers = String::from_utf8(children.stdout)
-                            .unwrap()
-                            .lines()
-                            .map(|pid| {
-                                rustix::process::Pid::from_raw(pid.trim().parse().unwrap()).unwrap()
-                            })
-                            .collect();
-                        assert!(!helpers.is_empty(), "no helper at prompt {stage}: {text}");
-                        rustix::process::kill_process(
-                            rustix::process::Pid::from_child(&child),
-                            signal,
-                        )
-                        .unwrap();
-                        signalled = true;
-                    } else {
-                        if let Some(before_answer) = &steps[answered].before_answer {
-                            before_answer();
-                        }
-                        terminal
-                            .write_all(steps[answered].input.as_bytes())
-                            .unwrap();
-                        answered += 1;
-                    }
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if child.try_wait().unwrap().is_some() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(error) if error.raw_os_error() == Some(5) => break,
-            Err(error) => panic!("terminal read failed: {error}"),
+    while terminal.read(&mut child, deadline) {
+        if let Some(other) = &mut other {
+            other.read(&mut child, deadline);
         }
-        if Instant::now() > deadline {
-            child.kill().unwrap();
-            panic!("setup did not finish: {text}");
+        let text = String::from_utf8_lossy(terminal.output()).into_owned();
+        let visible = console::strip_ansi_codes(&text);
+        let reached = (!signalled)
+            .then(|| steps.get(answered))
+            .flatten()
+            .and_then(|step| {
+                step.wait.iter().try_fold(seen, |from, wait| {
+                    let at = visible.get(from..)?.find(wait)?;
+                    Some(from + at + wait.len())
+                })
+            });
+        let Some(end) = reached else {
+            continue;
+        };
+        seen = end;
+        if queued_enter {
+            std::thread::sleep(Duration::from_millis(250));
+            let state = home.join("state/koidrive/telemetry");
+            assert!(!state.join("settings.json").exists(), "{text}");
+            assert!(state.join("prompt.json").exists());
+        }
+        if let Some((stage, signal)) = interrupt.filter(|(stage, _)| *stage == answered) {
+            let children = Command::new("pgrep")
+                .args(["-P", &child.id().to_string()])
+                .output()
+                .unwrap();
+            helpers = String::from_utf8(children.stdout)
+                .unwrap()
+                .lines()
+                .map(|pid| rustix::process::Pid::from_raw(pid.trim().parse().unwrap()).unwrap())
+                .collect();
+            assert!(!helpers.is_empty(), "no helper at prompt {stage}: {text}");
+            rustix::process::kill_process(rustix::process::Pid::from_child(&child), signal)
+                .unwrap();
+            signalled = true;
+        } else {
+            if let Some(before_answer) = &steps[answered].before_answer {
+                before_answer();
+            }
+            terminal.write(steps[answered].input.as_bytes());
+            answered += 1;
         }
     }
     let status = child.wait().unwrap();
-    if let Some((output, _)) = &mut other {
-        let mut bytes = [0; 4096];
-        loop {
-            match output.read(&mut bytes) {
-                Ok(0) => break,
-                Ok(count) => raw.extend_from_slice(&bytes[..count]),
-                Err(error)
-                    if error.kind() == io::ErrorKind::WouldBlock
-                        || error.raw_os_error() == Some(5) =>
-                {
-                    break;
-                }
-                Err(error) => panic!("other terminal read failed: {error}"),
-            }
-        }
+    let mut raw = terminal.output().to_vec();
+    if let Some(other) = &mut other {
+        other.read(&mut child, deadline);
+        raw.extend_from_slice(other.output());
     }
     let output = Output {
         status,
         stdout: raw,
         stderr: Vec::new(),
     };
-    let restored = rustix::termios::tcgetattr(&terminal).unwrap();
+    let restored = terminal.attributes();
     let restored_modes = restored.local_modes;
     let original_modes = original.local_modes;
     #[cfg(target_os = "macos")]

@@ -264,29 +264,11 @@ fn update_text(said: &str, args: &[&str], report: &str) -> Option<(Output, Strin
 }
 
 fn on_a_terminal(mut command: Command, typed: Option<(Duration, &[u8])>) -> String {
-    use std::io::Read;
-    let master =
-        rustix::pty::openpt(rustix::pty::OpenptFlags::RDWR | rustix::pty::OpenptFlags::NOCTTY)
-            .unwrap();
-    rustix::pty::grantpt(&master).unwrap();
-    rustix::pty::unlockpt(&master).unwrap();
-    let name = rustix::pty::ptsname(&master, Vec::new()).unwrap();
-    let slave = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(name.to_str().unwrap())
-        .unwrap();
-    let size = rustix::termios::Winsize {
-        ws_row: 32,
-        ws_col: 100,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    rustix::termios::tcsetwinsize(&slave, size).unwrap();
+    let mut terminal = Terminal::open(100, 32);
     command
-        .stdin(slave.try_clone().unwrap())
-        .stdout(slave.try_clone().unwrap())
-        .stderr(slave);
+        .stdin(terminal.slave())
+        .stdout(terminal.slave())
+        .stderr(terminal.slave());
     unsafe {
         command.pre_exec(|| {
             rustix::process::setsid()?;
@@ -295,32 +277,14 @@ fn on_a_terminal(mut command: Command, typed: Option<(Duration, &[u8])>) -> Stri
         });
     }
     let mut child = command.spawn().unwrap();
-    drop(command);
-    let master = std::fs::File::from(master);
-    let mut reading = master.try_clone().unwrap();
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let mut buffer = [0; 4096];
-        loop {
-            match reading.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(count) => bytes.extend_from_slice(&buffer[..count]),
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => break,
-            }
-        }
-        String::from_utf8_lossy(&bytes).replace("\r\n", "\n")
-    });
-    if let Some((after, bytes)) = typed {
-        std::thread::sleep(after);
-        (&master).write_all(bytes).unwrap();
-    }
     let deadline = Instant::now() + Duration::from_secs(60);
-    while child.try_wait().unwrap().is_none() {
-        assert!(Instant::now() < deadline, "koi update did not exit");
-        std::thread::sleep(Duration::from_millis(10));
+    if let Some((after, bytes)) = typed {
+        let typing = Instant::now() + after;
+        while Instant::now() < typing && terminal.read(&mut child, deadline) {}
+        terminal.write(bytes);
     }
-    reader.join().unwrap()
+    while terminal.read(&mut child, deadline) {}
+    terminal.text()
 }
 
 const STOPPED: &str = r#"{"schema_version":1,"command":"_reconcile","outcome":"ok","data":{"service":{"manager":"launchd","name":"dev.koidrive.koi","state":"stopped"}}}"#;
