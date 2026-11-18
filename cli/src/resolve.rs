@@ -13,7 +13,6 @@ use koidrive_ipc::{Request, Response};
 use serde_json::Value;
 use std::path::Path;
 
-/// The decisions waiting in the profile.
 pub(crate) async fn questions(paths: &Paths) -> Result<Vec<Question>, CliError> {
     match ipc::run(paths, Request::Questions).await? {
         Response::Questions { questions } => Ok(questions),
@@ -120,13 +119,10 @@ fn questions_text(questions: &[Question]) -> String {
     questions.iter().map(question_text).collect()
 }
 
-/// The command that lists and answers decisions, as every message names it.
 pub(crate) const RESOLVE: &str = "koi resolve";
 
-/// The most items `koi resolve` lists for one decision.
 pub(crate) const ITEMS_SHOWN: usize = 20;
 
-/// What a decision is about, in one line.
 fn question_summary(question: &Question) -> String {
     let why = |exceeded: &[Limit]| {
         let limits: Vec<String> = (exceeded.iter())
@@ -188,8 +184,6 @@ fn question_summary(question: &Question) -> String {
     }
 }
 
-/// The first path a decision holds, after its summary, or nothing for a decision that holds none or a conflict, whose
-/// summary names its file.
 fn first_path(question: &Question) -> String {
     if let QuestionKind::Conflict { .. } = question.kind {
         return String::new();
@@ -199,8 +193,6 @@ fn first_path(question: &Question) -> String {
         .unwrap_or_default()
 }
 
-/// A file of a conflict as a shell word with its control characters escaped, or its node ID if the decision does not
-/// list it.
 fn conflict_path(question: &Question, node_id: &str) -> String {
     (question.items.iter())
         .find(|item| item.node_id == node_id)
@@ -236,11 +228,8 @@ fn conflict_files(question: &Question, indent: &str, this_device: Option<&str>) 
         .collect()
 }
 
-/// The word `koi resolve` takes for a conflict's answer that keeps both files.
 const KEEP_BOTH: &str = "keep-both";
 
-/// One answer as `koi resolve` offers it: the word that gives it, what it does, and the engine's answer it stands
-/// for.
 pub(crate) struct Choice {
     pub(crate) word: String,
     pub(crate) effect: String,
@@ -283,7 +272,6 @@ pub(crate) fn choices(question: &Question) -> Vec<Choice> {
     ]
 }
 
-/// The engine's answer that `word` gives `question`, or an error that lists the words it takes.
 pub(crate) fn answer_to(question: &Question, word: &str) -> Result<Answer, String> {
     let choices = choices(question);
     if let Some(choice) = choices.iter().find(|choice| choice.word == word) {
@@ -300,7 +288,6 @@ pub(crate) fn answer_to(question: &Question, word: &str) -> Result<Answer, Strin
     ))
 }
 
-/// Each answer of a decision: what it does, and under it the full command that gives it.
 fn resolve_commands(question: &Question, indent: &str) -> String {
     let id = printable(&question.id);
     (choices(question).iter())
@@ -314,7 +301,6 @@ fn resolve_commands(question: &Question, indent: &str) -> String {
         .collect()
 }
 
-/// What an answer to a decision other than a conflict does.
 fn answer_effect(answer: Answer) -> &'static str {
     match answer {
         Answer::Delete => "Delete these files on the server and other devices",
@@ -331,7 +317,6 @@ fn answer_effect(answer: Answer) -> &'static str {
     }
 }
 
-/// How `koi status` shows a decision under its folder: what it is about, its first path, and how to make it.
 pub(crate) fn question_brief(question: &Question, this_device: Option<&str>) -> String {
     format!(
         "  {}: {}{}\n{}{}",
@@ -343,7 +328,6 @@ pub(crate) fn question_brief(question: &Question, this_device: Option<&str>) -> 
     )
 }
 
-/// How `koi resolve` shows a decision: what it is about, how to make it, and its first [`ITEMS_SHOWN`] items.
 pub(crate) fn question_text(question: &Question) -> String {
     question_text_presented(question, QuestionPresentation::Detailed)
 }
@@ -400,7 +384,6 @@ fn question_text_presented(question: &Question, presentation: QuestionPresentati
     text
 }
 
-/// The text of a desktop notification for a decision: what it is about, its first path, and the command to run.
 pub(crate) fn question_notice(question: &Question) -> String {
     format!(
         "{}{}. Run {RESOLVE}.",

@@ -358,7 +358,6 @@ fn a_deploy_names_its_bucket_with_a_random_suffix() {
     assert_ne!(first, new_bucket_name("koidrive"));
 }
 
-/// The bucket names of the creates `fake` received.
 fn created(fake: &Fake) -> Vec<String> {
     fake.seen()
         .iter()

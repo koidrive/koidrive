@@ -36,7 +36,6 @@ pub(super) async fn server_info(url: &Url) -> Option<ServerInfo> {
         .ok()
 }
 
-/// Polls `GET /v1/server` until it answers, and until it reports `version` when one is given.
 pub(super) async fn wait_until_serving(
     url: &Url,
     version: Option<&str>,
