@@ -1543,7 +1543,12 @@ describe("RFC 0014 session leases", () => {
     const fresh = await createSpace(owner);
     const agent = await Socket.connect(fresh, expiring);
     await agent.start();
-    await new Promise((resolve) => setTimeout(resolve, 2500));
+    await runInDurableObject(account(), (_instance, state) => {
+      state.storage.sql.exec("UPDATE devices SET expires_at_ms = ? WHERE device_id = ?", Date.now() - 1, expiring.deviceId);
+    });
+    await runInDurableObject(env.SPACE.get(env.SPACE.idFromName(fresh)), (instance: SpaceDO) => {
+      instance.clock = () => Date.now() + 2500;
+    });
     expect(await listTree(agent)).toMatchObject({ case: "goodbye", value: { code: Close.DEVICE_REVOKED } });
   }, 30_000);
 

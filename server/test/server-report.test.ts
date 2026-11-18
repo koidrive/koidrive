@@ -160,6 +160,31 @@ async function watchUsage() {
   return { calls, failures, stored, delay, hooks };
 }
 
+function holdQuietWindows() {
+  UsageTally.quietMs = QUIET_MS;
+  const settles: Promise<void>[] = [];
+  let end!: () => void;
+  const ended = new Promise<void>((resolve) => {
+    end = resolve;
+  });
+  const settle = UsageTally.prototype.settle;
+  vi.spyOn(UsageTally.prototype, "settle").mockImplementation(function (this: UsageTally, record, now) {
+    const settled = settle.call(this, record, now, () => ended);
+    settles.push(settled);
+    return settled;
+  });
+  const release = () => {
+    UsageTally.quietMs = 0;
+    end();
+  };
+  restorers.push(release);
+  return async () => {
+    release();
+    await Promise.all(settles);
+    return settles.length;
+  };
+}
+
 async function watchScans(stub: SpaceStub) {
   const scans: string[] = [];
   await runInDurableObject(stub, (instance: SpaceDO, state) => {
@@ -1359,10 +1384,7 @@ describe("hourly server report", () => {
   });
 
   it("drops what the Worker counted before reports stopped, even when they start again before its hand-over", async () => {
-    UsageTally.quietMs = 1500;
-    restorers.push(() => {
-      UsageTally.quietMs = QUIET_MS;
-    });
+    const endQuiet = holdQuietWindows();
     const owner = await ownerOnce();
     await runInDurableObject(account(), (instance: AccountDO, state) => {
       instance.clock = () => Date.now();
@@ -1374,15 +1396,12 @@ describe("hourly server report", () => {
     expect(listed.status).toBe(200);
     await refresh(owner, TokenRequest_Telemetry.OFF);
     await refresh(owner, TokenRequest_Telemetry.ON);
-    await new Promise((resolve) => setTimeout(resolve, 4000));
+    expect(await endQuiet()).toBeGreaterThan(0);
     expect(Object.keys(await storedCounts()).filter((key) => key.startsWith("get_spaces"))).toEqual([]);
   });
 
   it("drops the Worker's counts at the refresh that turns reports off, with no hand-over after it", async () => {
-    UsageTally.quietMs = 1500;
-    restorers.push(() => {
-      UsageTally.quietMs = QUIET_MS;
-    });
+    const endQuiet = holdQuietWindows();
     const owner = await ownerOnce();
     await runInDurableObject(account(), (instance: AccountDO) => {
       instance.clock = () => Date.now();
@@ -1392,7 +1411,7 @@ describe("hourly server report", () => {
     const listed = await exports.default.fetch(BASE + "/v1/spaces", { headers: { Accept: "application/x-protobuf", Authorization: "Bearer " + owner.access!.token } });
     await listed.arrayBuffer();
     await refresh(owner, TokenRequest_Telemetry.OFF);
-    await new Promise((resolve) => setTimeout(resolve, 4000));
+    expect(await endQuiet()).toBeGreaterThan(0);
     expect(usage.calls).toEqual([]);
   });
 
@@ -2031,10 +2050,7 @@ describe("reporting restarts", () => {
   });
 
   it("counts what a Worker isolate counts after reporting restarts, even when it missed the stop", async () => {
-    UsageTally.quietMs = 1500;
-    restorers.push(() => {
-      UsageTally.quietMs = QUIET_MS;
-    });
+    const endQuiet = holdQuietWindows();
     const owner = await ownerOnce();
     await runInDurableObject(account(), (instance: AccountDO, state) => {
       instance.clock = () => Date.now();
@@ -2058,7 +2074,7 @@ describe("reporting restarts", () => {
     await scheduler.wait(20);
     expect(await list()).toBe(200);
     expect(await list()).toBe(200);
-    await scheduler.wait(4000);
+    expect(await endQuiet()).toBeGreaterThan(0);
     expect((await storedCounts())["get_spaces.200"]).toBe(2);
   });
 
