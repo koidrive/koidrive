@@ -509,9 +509,8 @@ cases = ["{1:064}"]
         other = "0" * 64
         folder = "devices_converge_around_a_folder_another_device_replaces"
         c0222 = "0222b6cd557b" + "0" * 52
-        def listed(label):
-            return next(entry for entry in entries if (entry["class"], entry["issue"]) == label)["cases"]
-        restored = listed(("I", "GUN-864"))
+        restored = next(entry for entry in entries
+                        if entry["file"] == "GUN-864-I-delete-never-reached-server-across-server-restores.toml")["cases"]
         def example(case):
             return next(entry for entry in entries if case.startswith(tuple(entry.get("cases", ["-"]))))["examples"][0]
         update = "}, Op { intent: None, fields: None, op: Some(UpdateContent"
@@ -536,6 +535,8 @@ cases = ["{1:064}"]
             (rewinds_and_rollbacks, example(c0222), c0222, []),
             (server_restores, example(c0222), other, []),
             (server_restores, example(c0222), c0222, [("I", "GUN-864", restored)]),
+            (restores_and_rewinds, example(c0222), c0222, []),
+            ("devices_on_coarse_volumes_converge_across_restores_and_rewinds", example(c0222), c0222, []),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):
                 found = triage.matches(entries, test, message, case)

@@ -9,8 +9,8 @@
 # a restore its user chose, and a folder another device moves back under the server's last-writer-wins rule.
 # Ten of them restore the server around the delete, so the check judges the revived file, and each goes red when the
 # rule clause that excuses its revive is removed. Two of them check the file survives on both devices.
-# Three negative tests pin what the check excuses: a copy the engine made after the delete that is left on the server
-# when the deleting device leaves, every inode another device's node had before that device leaves, and a copy the
+# Three negative tests pin what the check excuses: a user copy another device made after the delete that is left on the
+# server when the deleting device leaves, every inode another device's node had before that device leaves, and a copy the
 # engine makes after a store rollback.
 # One false-negative test pins that a delete made before its device hears of a restore is judged: the engine
 # downloads the file again, and without the check at the delete that restore would leave it unjudged.
