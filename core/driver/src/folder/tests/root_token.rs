@@ -604,6 +604,40 @@ fn a_store_older_than_the_folder_recovers_whatever_token_the_folder_carries() {
 }
 
 #[test]
+fn a_store_restored_from_before_a_start_or_an_upload_recovers_the_newer_folder() {
+    for upload in [false, true] {
+        let mut remote = Remote::new();
+        let (site, a) = linked(&mut remote, "a");
+        drop(a);
+        let saved = site.db.with_extension("saved");
+        fs::copy(&site.db, &saved).unwrap();
+        let mut a = restarted(&site, &mut remote);
+        if upload {
+            a.create(&mut remote, &site.root.join("mine.txt"), b"mine");
+        }
+        drop(a);
+        fs::copy(&saved, &site.db).unwrap();
+
+        let mut a = site.start();
+        assert!(
+            matches!(
+                a.folder.engine.commits.halted(),
+                Some(CommitHalt::Recovery(_))
+            ),
+            "upload: {upload}"
+        );
+        assert_rotated_from(&site, &[]);
+        a.connect(&remote);
+        a.settle();
+        a.run(&mut remote);
+        let kept: &[&str] = if upload { &["mine.txt"] } else { &[] };
+        assert_eq!(names(&site.root), kept, "upload: {upload}");
+        assert_eq!(remote.names(), kept, "upload: {upload}");
+        assert!(a.folder.engine.commits.halted().is_none(), "upload: {upload}");
+    }
+}
+
+#[test]
 fn two_copies_of_one_disk_halt_when_the_older_one_is_at_the_folder() {
     let Some(mut disks) = koidrive_test_support::Disks::new() else {
         return;
