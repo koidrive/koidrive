@@ -1489,3 +1489,80 @@ fn a_file_removed_while_left_out_below_a_folder_the_first_scan_after_a_restart_c
     );
     assert!(shown(&site).is_empty());
 }
+
+#[test]
+fn a_file_deleted_where_the_rules_leave_it_out_downloads_again_once_another_device_moves_its_folder_into_the_rules()
+ {
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    fs::create_dir(site.root.join("dist")).unwrap();
+    fs::write(site.root.join("dist/report.docx"), "report").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    drop(b);
+    let sync = SyncRules {
+        include: Vec::new(),
+        exclude: vec!["dist/report.docx".to_owned()],
+    };
+    let mut b = started(&site, &mut remote, &sync);
+    fs::remove_file(site.root.join("dist/report.docx")).unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+
+    let (site_a, mut a) = linked(&mut remote, "a");
+    a.rest(&mut remote);
+    fs::rename(site_a.root.join("dist"), site_a.root.join("out")).unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    b.pull(&remote);
+    b.rest(&mut remote);
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert!(shown(&site).is_empty());
+    assert_eq!(
+        files(&site.root),
+        [("out/report.docx".to_owned(), "report".to_owned())]
+    );
+}
+
+#[test]
+fn a_file_deleted_while_another_device_kept_it_in_an_excluded_folder_comes_back_beside_a_name_sharing_its_key()
+ {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("keep")).unwrap();
+    a.create(&mut remote, &site_a.root.join("keep/ss"), b"ss");
+    let site = Site::new(&remote, "b");
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    assert_eq!(files(&site.root), [("keep/ss".to_owned(), "ss".to_owned())]);
+
+    fs::create_dir(site_a.root.join("dist")).unwrap();
+    fs::rename(site_a.root.join("keep/ss"), site_a.root.join("dist/ss")).unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    b.pull(&remote);
+    b.rest(&mut remote);
+    for left in ["keep/ss", "dist/ss"] {
+        if site.root.join(left).exists() {
+            fs::remove_file(site.root.join(left)).unwrap();
+        }
+    }
+    fs::write(site.root.join("keep/\u{df}"), "eszett").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    assert!(remote.tree().contains_key("keep/\u{df}"), "{:?}", remote.tree());
+
+    fs::rename(site_a.root.join("dist/ss"), site_a.root.join("keep/ss")).unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    b.pull(&remote);
+    b.rest(&mut remote);
+    let local = files(&site.root);
+    let mut texts: Vec<&str> = local.iter().map(|(_, text)| text.as_str()).collect();
+    texts.sort();
+    assert_eq!(texts, ["eszett", "ss"], "{local:?}");
+    assert!(local.iter().any(|(path, _)| path.contains("conflict")), "{local:?}");
+    let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+    assert!(!sent.contains(&"delete"), "sent {sent:?}");
+    assert!(shown(&site).is_empty());
+}
