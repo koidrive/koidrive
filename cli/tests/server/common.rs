@@ -132,9 +132,6 @@ fn uuidv7() -> String {
 /// off, so that the tests run the daemon themselves and never touch the service manager of the machine running them.
 struct Machine {
     home: Sandbox,
-    /// The background service is on, and the device uses the machine's own runtime directory, where its service
-    /// manager listens.
-    service: bool,
     koi: PathBuf,
 }
 
@@ -142,7 +139,6 @@ impl Machine {
     fn new() -> Self {
         let machine = Machine {
             home: Sandbox::new(),
-            service: false,
             koi: PathBuf::from(process::KOI),
         };
         machine.configure("");
@@ -151,11 +147,18 @@ impl Machine {
 
     #[cfg(target_os = "linux")]
     fn with_service() -> Self {
-        Machine {
+        let machine = Machine {
             home: Sandbox::new(),
-            service: true,
             koi: PathBuf::from(process::KOI),
-        }
+        };
+        let manager = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap());
+        fs::create_dir_all(machine.path("run/systemd")).unwrap();
+        std::os::unix::fs::symlink(
+            manager.join("systemd/private"),
+            machine.path("run/systemd/private"),
+        )
+        .unwrap();
+        machine
     }
 
     /// Writes config.toml: `rules`, and the switch that keeps the background service off.
@@ -203,10 +206,8 @@ impl Machine {
             .env("XDG_CONFIG_HOME", self.path("config"))
             .env("XDG_STATE_HOME", self.path("state"))
             .env_remove("KOIDRIVE_LOG")
+            .env("XDG_RUNTIME_DIR", self.path("run"))
             .env("KOIDRIVE_UPDATE_CHECK", "0");
-        if !self.service {
-            command.env("XDG_RUNTIME_DIR", self.path("run"));
-        }
         command
     }
 
