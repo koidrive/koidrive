@@ -341,6 +341,7 @@ impl FolderTask {
             let mut list: Slot<'_, Result<Listed, Stop>> = None;
             let mut stage: Slot<'_, (Pending, Result<Staged, Stall>)> = None;
             let mut upload: Slot<'_, Result<Vec<UploadReceipt>, ChunkError>> = None;
+            let mut ahead = tokio::task::JoinSet::new();
             let mut send: Slot<'_, Result<CommitResult, CallError>> = None;
             let mut wait: Slot<'_, ()> = None;
             let mut retry: Slot<'_, ()> = None;
@@ -367,6 +368,10 @@ impl FolderTask {
                     pages = finished(&mut list) => in_place(|| folder.listed(pages)),
                     (pending, staged) = finished(&mut stage) => in_place(|| folder.staged(pending, staged)),
                     receipts = finished(&mut upload) => in_place(|| folder.uploaded(receipts)),
+                    Some(ended) = ahead.join_next(), if !ahead.is_empty() => {
+                        let (id, receipts) = ended.unwrap_or_else(|error| std::panic::resume_unwind(error.into_panic()));
+                        in_place(|| folder.uploaded_ahead(id, receipts))
+                    }
                     result = finished(&mut send) => {
                         in_place(|| sent_in_order(&mut folder, std::iter::from_fn(|| events.try_next()), result))
                     }
@@ -428,6 +433,12 @@ impl FolderTask {
                         Work::Upload(chunks) => {
                             upload =
                                 spawned(upload_chunks(session.clone(), transfer.clone(), chunks));
+                        }
+                        Work::UploadAhead(id, chunks) => {
+                            let (session, transfer) = (session.clone(), transfer.clone());
+                            ahead.spawn(async move {
+                                (id, upload_chunks(session, transfer, chunks).await)
+                            });
                         }
                         Work::Send(commit) => {
                             let session = session.clone();
