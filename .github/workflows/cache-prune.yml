@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Delete main caches that a newer cache of the same job replaced and nothing restored for 6 hours
+      - name: Delete main caches that a newer cache of the same job replaced and nothing restored for an hour
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -43,4 +43,4 @@ jobs:
               echo "Could not delete $key; another run may have deleted it already."
             fi
           done < "$RUNNER_TEMP/prune.tsv"
-          echo "Deleted $(wc -l < "$RUNNER_TEMP/prune.tsv") main caches that a newer cache of the same job replaced and nothing restored for 6 hours, freeing $((freed / 1000000)) MB." | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "Deleted $(wc -l < "$RUNNER_TEMP/prune.tsv") main caches that a newer cache of the same job replaced and nothing restored for an hour, freeing $((freed / 1000000)) MB." | tee -a "$GITHUB_STEP_SUMMARY"

@@ -6,7 +6,7 @@ import re
 import sys
 
 HASHES = re.compile(r"-(?:[0-9a-f]{8}|[0-9a-f]{64})(?=-|$)")
-IDLE = timedelta(hours=6)
+IDLE = timedelta(hours=1)
 
 
 def when(stamp):

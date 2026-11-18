@@ -359,14 +359,14 @@ class CachePrune(unittest.TestCase):
         return {"id": id, "key": key, "created_at": created, "last_accessed_at": accessed or created, "ref": ref,
                 "version": version, "size_in_bytes": 1}
 
-    def test_a_newer_cache_of_the_same_job_replaces_one_nothing_restored_for_six_hours(self):
+    def test_a_newer_cache_of_the_same_job_replaces_one_nothing_restored_for_an_hour(self):
         toml, other = "a" * 64, "b" * 64
         app = "macos-app-Darwin-arm64"
         caches = [
             self.cache(1, f"v0-rust-{toml}-{app}-b937e1e0-2e14a3ba", "2026-11-18T05:00:00Z"),
             self.cache(2, f"v0-rust-{toml}-{app}-b937e1e0-812bd052", "2026-11-19T10:00:00Z"),
             self.cache(3, f"v0-rust-{other}-{app}-b937e1e0-812bd052", "2026-11-18T09:00:00Z"),
-            self.cache(4, f"v0-rust-{toml}-{app}-0446f1d4-812bd052", "2026-11-18T08:00:00Z", "2026-11-19T07:00:00Z"),
+            self.cache(4, f"v0-rust-{toml}-{app}-0446f1d4-812bd052", "2026-11-18T08:00:00Z", "2026-11-19T11:30:00Z"),
             self.cache(5, f"v0-rust-{toml}-rust-build-linux-Linux-x64-17add8f6-2e14a3ba", "2026-11-18T05:00:00Z"),
             self.cache(6, f"pnpm-store-Linux-X64-{toml}", "2026-11-18T05:00:00Z", version="v1"),
             self.cache(7, f"pnpm-store-Linux-X64-{toml}", "2026-11-18T06:00:00Z", version="v2"),
@@ -374,6 +374,13 @@ class CachePrune(unittest.TestCase):
             self.cache(9, f"pnpm-store-Linux-X64-{toml}", "2026-11-18T01:00:00Z", ref="refs/pull/1/merge"),
         ]
         self.assertEqual(sorted(c["id"] for c in prune.superseded(caches, self.NOW)), [1, 3, 7])
+
+    def test_a_cache_restored_within_the_last_hour_survives(self):
+        key = "v0-rust-" + "a" * 64 + "-rust-lint-Linux-x64-17add8f6-"
+        caches = [self.cache(1, key + "2e14a3ba", "2026-11-18T05:00:00Z", "2026-11-19T11:00:00Z"),
+                  self.cache(2, key + "2e14a3bb", "2026-11-18T06:00:00Z", "2026-11-19T10:59:59Z"),
+                  self.cache(3, key + "812bd052", "2026-11-19T11:55:00Z")]
+        self.assertEqual([c["id"] for c in prune.superseded(caches, self.NOW)], [2])
 
     def test_the_prune_ignores_runs_from_forks(self):
         text = (ROOT / ".github/workflows/cache-prune.yml").read_text()
