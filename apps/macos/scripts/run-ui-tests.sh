@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
-#
-# Runs the UI tests against the fake core.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
