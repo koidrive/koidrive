@@ -353,6 +353,22 @@ fn an_exfat_stick_udev_has_no_record_of_is_held_until_it_has() {
     if !disks.exfat_has_ids() {
         return;
     }
+    let writable = ["test", "-w", "/run/udev/data"].map(std::ffi::OsStr::new);
+    if !std::process::Command::new("sudo")
+        .arg("-n")
+        .args(writable)
+        .status()
+        .unwrap()
+        .success()
+    {
+        let missing = "the test rewrites udev's records, so /run/udev must be mounted read-write";
+        assert!(
+            std::env::var_os("KOIDRIVE_TEST_EXFAT").is_none(),
+            "{missing}"
+        );
+        eprintln!("SKIPPED: {missing}");
+        return;
+    }
     let root = disks.base().join("Sync");
     let at = root.join("Disk");
     fs::create_dir_all(&at).unwrap();

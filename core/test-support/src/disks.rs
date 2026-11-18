@@ -188,12 +188,20 @@ impl Disks {
     }
 
     /// Whether exFAT volumes have IDs here. On Linux only udev reads an exFAT volume's serial number, so that takes
-    /// udev's device records, an exFAT driver, and `mkfs.exfat` and `tune.exfat` from exfatprogs.
+    /// udev's device records with their `/dev/disk/by-diskseq` links, an exFAT driver, and `mkfs.exfat` and
+    /// `tune.exfat` from exfatprogs.
     pub fn exfat_has_ids(&self) -> bool {
         if cfg!(target_os = "macos") {
             return true;
         }
         let tools = ["mkfs.exfat", "tune.exfat"];
+        let diskseq = std::fs::read_dir("/run/udev/data").is_ok_and(|records| {
+            records.flatten().any(|record| {
+                let text = std::fs::read_to_string(record.path()).unwrap_or_default();
+                text.lines()
+                    .any(|line| line.starts_with("S:disk/by-diskseq/"))
+            })
+        });
         let driver = std::fs::read_to_string("/proc/filesystems")
             .is_ok_and(|known| known.split_whitespace().any(|name| name == "exfat"))
             || (Command::new("modprobe")
@@ -204,8 +212,9 @@ impl Disks {
             .iter()
             .find(|tool| Command::new(tool).arg("-V").output().is_err())
         {
-            _ if !Path::new("/run/udev/data").is_dir() => {
-                "udev keeps no device records here, so exFAT volumes have no ID".to_owned()
+            _ if !diskseq => {
+                "udev records no /dev/disk/by-diskseq links here, so exFAT volumes have no ID"
+                    .to_owned()
             }
             Some(tool) => format!("{tool} from exfatprogs is not installed"),
             None if !driver => "this kernel has no exFAT driver".to_owned(),

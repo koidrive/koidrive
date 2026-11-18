@@ -896,8 +896,10 @@ mod tests {
                 let replacement = match sudo(&["umount".as_ref(), mount.as_os_str()]).0 {
                     true => {
                         assert!(sudo(&["losetup", "-d", &device].map(OsStr::new)).0);
+                        attached.0.retain(|held| *held != device);
                         let rebind = ["losetup", &device].map(OsStr::new);
                         assert!(sudo(&[&rebind[..], &[second.as_os_str()]].concat()).0);
+                        attached.0.push(device.clone());
                         device
                     }
                     false => {

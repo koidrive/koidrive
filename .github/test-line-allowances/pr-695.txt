@@ -1,4 +1,4 @@
-908
+937
 # The tests protect how a FAT or exFAT stick is identified on Linux and macOS, which no earlier test reached:
 # volume IDs per file system on both systems (the serial with the file system and size, Disk Arbitration on
 # macOS 15, udev records for exFAT on Linux), a record made before sizes were in the ID that the first scan
@@ -7,4 +7,5 @@
 # over FAT, exFAT, live and stopped; the rest differ in their order of mounts, ejects and restarts, so
 # merging them further drops a case. Fixture guards detach loop devices and mounts when a test fails, and
 # the review cases cover a rescan of one file across a stick change, ext4 roots born on one side, two sticks
-# with one serial mounted at once, and an ignored mount point that cannot be opened. rustfmt's wrapping of the ejected_volumes fragment adds 54.
+# with one serial mounted at once, and an ignored mount point that cannot be opened. rustfmt's wrapping of the ejected_volumes fragment adds 54. The exFAT probe and the udev record test skip where udev cannot record
+# /dev/disk/by-diskseq links or be rewritten, and the UUID-less disk test rescans one of its files.
