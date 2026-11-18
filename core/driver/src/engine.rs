@@ -18,6 +18,7 @@ use koidrive_engine::commit::{Base, Commits, Halt};
 use koidrive_engine::effects::Effects;
 use koidrive_engine::first_link::Log;
 use koidrive_engine::ids::{IdGen, unix_ms};
+use koidrive_engine::journal::NodeIntents;
 use koidrive_engine::question as engine;
 use koidrive_engine::restore::RestoreIntent;
 use koidrive_engine::tree::{
@@ -137,14 +138,24 @@ impl Engine {
         self.stored_owed.clone_from(&self.owed);
         for id in &changed.synced {
             match self.trees.synced().get(id) {
-                Some(shape) => tx.put_synced_node(&SyncedNode {
-                    node_id: id.clone(),
-                    shape: stored_shape(shape, &[]),
-                    pending_for: self.trees.synced_mark(id).unwrap_or_default().to_owned(),
-                })?,
+                Some(shape) => {
+                    tx.put_synced_node(&SyncedNode {
+                        node_id: id.clone(),
+                        shape: stored_shape(shape, &[]),
+                        pending_for: self.trees.synced_mark(id).unwrap_or_default().to_owned(),
+                    })?;
+                    let intents = (self.trees.synced_intents_apart_from_remote(id))
+                        .map(NodeIntents::to_proto);
+                    tx.set_synced_intents(id, intents.as_ref())?;
+                }
                 None => {
                     tx.remove_synced_node(&id.to_string())?;
                 }
+            }
+            if let Some(intents) =
+                (self.trees.remote().get(id)).and_then(|node| node.intents.as_ref())
+            {
+                tx.set_remote_intents(id, Some(&intents.to_proto()))?;
             }
         }
         let changes = EngineChanges {
@@ -937,6 +948,7 @@ impl Engine {
     /// when its folder is in L or arrives in the batch, and keeps its entry otherwise ([`Trees::ignore_local`]); an
     /// entry L never held stays out.
     pub fn observe(&mut self, changes: &[Observed], now_ms: u64) -> BTreeSet<NodeId> {
+        self.trees.journal_mut().set_clock(now_ms);
         let unscanned = self.unscanned.take();
         let wait = 2 * DELETE_WAIT_MS;
         (self.renamed_away).retain(|_, (_, _, at)| now_ms < at.saturating_add(wait));
@@ -1808,7 +1820,7 @@ impl Engine {
                     self.trees.displace_local(&id, created)
                 }
                 (false, true) => self.trees.miss_local(&id),
-                (false, false) => self.trees.remove_local(&id),
+                (false, false) => self.trees.remove_local_by_user(&id),
             }
             touched.insert(id);
         }
@@ -1894,6 +1906,9 @@ impl Stored {
         })?;
         if let Some(stopped) = stopped {
             return stopped;
+        }
+        for (id, intents) in tx.synced_intents()? {
+            trees.set_synced_intents(&id, NodeIntents::from_proto(&intents));
         }
         if abandoned() {
             return Ok(false);
@@ -1983,6 +1998,7 @@ impl Stored {
                     .hash_one(std::time::SystemTime::now()),
             ),
         };
+        trees.journal_mut().seed(ids.state);
         Ok(Some(Engine {
             trees,
             effects,
@@ -2889,6 +2905,7 @@ mod tests {
                     pending_for: None,
                     pending_by: None,
                     chunks: Box::default(),
+                    intents: None,
                 };
                 trees.set_remote((*id).into(), node);
             }
@@ -3204,6 +3221,7 @@ mod tests {
                         pending_for: None,
                         pending_by: None,
                         chunks: Box::default(),
+                        intents: None,
                     };
                     trees.set_remote("d".into(), node);
                 },
@@ -3570,6 +3588,7 @@ mod tests {
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             };
             engine.trees.set_remote(id, node);
         }
@@ -5113,6 +5132,7 @@ mod tests {
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             };
             engine
                 .trees

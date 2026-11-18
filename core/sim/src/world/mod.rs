@@ -4480,6 +4480,7 @@ mod tests {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         engine.trees.set_remote("d".into(), folder);
         engine.trees.settle(engine.commits.aliases());

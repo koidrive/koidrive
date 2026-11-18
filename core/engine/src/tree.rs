@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use koidrive_proto::v1::{self as proto, ChunkRef, NodeKind, NodeStatus};
 
+use crate::journal::NodeIntents;
 use crate::names::{name_key, same_name};
 use crate::node_id::{intern, interned};
 
@@ -457,6 +458,9 @@ pub struct RemoteNode {
     pub pending_for: Option<String>,
     pub pending_by: Option<String>,
     pub chunks: Box<[ChunkRef]>,
+    /// The intents that set the node's fields. R holds them for every node: a node the server sent without
+    /// intents gets the §7.2 legacy ids of RFC 0029 when R takes it.
+    pub intents: Option<NodeIntents>,
 }
 
 impl Node for RemoteNode {
@@ -542,6 +546,7 @@ impl RemoteNode {
             pending_for: Some(state.pending_for.clone()).filter(|name| !name.is_empty()),
             pending_by: Some(state.pending_by.clone()).filter(|device| !device.is_empty()),
             chunks,
+            intents: state.intents.as_ref().map(NodeIntents::from_proto),
         };
         Ok((NodeId::from(&state.node_id), node))
     }

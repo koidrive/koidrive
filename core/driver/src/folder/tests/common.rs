@@ -368,6 +368,9 @@ impl Device {
         assert_eq!(stored.trees.local(), held.trees.local(), "L");
         assert_eq!(stored.trees.synced(), held.trees.synced(), "S");
         assert_eq!(stored.trees.remote(), held.trees.remote(), "R");
+        for (id, _) in held.trees.synced().iter() {
+            assert_eq!(stored.trees.synced_intents(id), held.trees.synced_intents(id), "S intents of {id}");
+        }
         assert_eq!(stored.trees.state(), held.trees.state());
         assert_eq!(stored.commits.state(), held.commits.state());
         assert_eq!(stored.effects.state(), held.effects.state());

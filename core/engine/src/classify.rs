@@ -12,7 +12,7 @@ use siphasher::sip::SipHasher13;
 
 use crate::first_link;
 use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
-use crate::journal::Journal;
+use crate::journal::{Journal, NodeIntents};
 use crate::names::{name_key, nfc, same_name};
 use crate::provenance::Provenances;
 use crate::question::Frozen;
@@ -680,6 +680,7 @@ pub struct Trees {
     unsent_marks: TrackedMap<NodeId, String>,
     pending_finishes: TrackedMap<NodeId, PendingFinish>,
     journal: Journal,
+    synced_intents: BTreeMap<NodeId, NodeIntents>,
     ignore: Matcher,
     /// Nodes whose local copy the user moved into an ignored folder that is no node. L keeps the
     /// entry each had before the move.
@@ -810,6 +811,7 @@ impl Trees {
             unsent_marks: TrackedMap::default(),
             pending_finishes: TrackedMap::default(),
             journal: Journal::default(),
+            synced_intents: BTreeMap::new(),
             ignore: Matcher::new(LocalRules::default()),
             outside: TrackedSet::default(),
             lost: TrackedSet::default(),
@@ -1217,7 +1219,8 @@ impl Trees {
         }
     }
 
-    fn apply_remote(&mut self, id: NodeId, node: RemoteNode, made: Made) {
+    fn apply_remote(&mut self, id: NodeId, mut node: RemoteNode, made: Made) {
+        self.take_remote_intents(&id, &mut node);
         let made_here = made != Made::Elsewhere;
         let edit = matches!(made, Made::Edit | Made::Answer);
         if edit {
@@ -1313,6 +1316,7 @@ impl Trees {
             self.unseen_changes.insert(id.clone());
         }
         self.place_remote(id.clone(), node, made_here);
+        self.settle_synced_intents(&id);
         if let Some(sent) = sent
             && !self.set_synced_if_valid(id.clone(), Some(sent.clone()))
         {
@@ -1819,6 +1823,7 @@ impl Trees {
         self.synced_positions.remove(id);
         self.content_provenance.remote_changing(id, &self.r, None);
         self.discard_members.remove(id);
+        self.write_out_synced_intents(id);
         if let Some(old) = self.r.remove(id) {
             self.index_remote(id, Some(&old));
             self.mark(id);
@@ -2225,6 +2230,7 @@ impl Trees {
         if self.unobserved.contains(&id) && !self.parked(&id) && !self.excluded(&id) {
             self.clear_unobserved(&id);
         }
+        self.note_local_holds(&id);
         if let Some((folder, name)) = left_kept_name {
             self.kept_nodes.get_or_insert_with(id.clone(), || None);
             if let Some(mut kept) = self.kept_entries.get(&folder).cloned() {
@@ -2308,6 +2314,7 @@ impl Trees {
                 self.local_changes.insert(id.clone());
             }
         }
+        self.record_user_change(&id, &node);
         self.set_local(id.clone(), node);
         if let Some(provenance) = provenance {
             self.content_provenance
@@ -7510,6 +7517,7 @@ impl Trees {
         self.release_links(id, old.as_ref());
         let file = |shape: Option<&Shape>| u64::from(shape.is_some_and(|s| s.kind == Kind::File));
         self.s_files = self.s_files - file(old.as_ref()) + file(self.s.get(id));
+        self.note_synced_intents(id);
         if let Some(changed) = self.watched.get_mut(id) {
             let before = old.as_ref().and_then(|shape| shape.content.as_ref());
             let after = self.s.get(id).and_then(|shape| shape.content.as_ref());
@@ -7792,6 +7800,7 @@ impl Trees {
             unsent_marks,
             pending_finishes,
             journal,
+            synced_intents: _,
             ignore: _,
             outside,
             lost,
@@ -8262,6 +8271,7 @@ mod release {
         }
     }
 }
+mod intents;
 
 #[cfg(test)]
 mod checkpoint_changes;

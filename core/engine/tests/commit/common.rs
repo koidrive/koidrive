@@ -75,6 +75,7 @@ fn remote(shape: Shape) -> RemoteNode {
         edit_rev: 1,
         pending_for: None,
         pending_by: None,
+        intents: None,
     }
 }
 

@@ -215,6 +215,7 @@ fn first_upload(upload: Upload) -> u64 {
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             };
             trees.set_remote_made_here(NodeId::from(id), node);
         }
@@ -296,6 +297,7 @@ fn remote(parent: String, name: String, kind: Kind) -> RemoteNode {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     }
 }
 
