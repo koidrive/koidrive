@@ -6,8 +6,8 @@ use serde_json::{Map, Value, json};
 
 use crate::manifest::file_name;
 use crate::report::{
-    AccountData, AnsweredData, ChoicesData, DaemonLine, DevicesData, DiagnosticsData, Empty,
-    Envelope, FolderData, HelpData, InvitationData, LeftData, RequestsData, RestoreAskedData,
+    AnsweredData, ChoicesData, DaemonLine, DevicesData, DiagnosticsData, Empty, Envelope,
+    FolderData, HelpData, InvitationData, LeftData, PairedData, RequestsData, RestoreAskedData,
     RevokedData, SCHEMA_VERSION, SetupData, ShareLinkData, ShareLinksData, SharedData, SpaceData,
     SpacesData, StatusData, TrashData, UnlinkedData, UpdateCheckData, UpdatedData, UsagesData,
     VersionInfoData, VersionsData, WithApp, WithService,
@@ -31,9 +31,10 @@ fn data(command: &str) -> Option<&'static [Data]> {
         "setup" => &[
             of::<WithApp<WithService<ChoicesData>>>,
             of::<WithApp<WithService<SetupData>>>,
+            of::<PairedData>,
             of::<WithApp<WithService<Empty>>>,
         ],
-        "join" | "server claim" => &[of::<WithService<AccountData>>],
+        "join" | "server claim" => &[of::<WithService<PairedData>>],
         "server deploy" | "server add-device" | "service start" => &[of::<WithService<Empty>>],
         "_reconcile" => &[of::<WithApp<WithService<Empty>>>],
         "pause" => &[of::<Empty>],

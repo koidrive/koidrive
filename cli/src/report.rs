@@ -567,12 +567,23 @@ impl AccountData {
     }
 }
 
+/// The device this computer is now connected as, and what the folders of the credential it replaced had set aside.
+#[derive(Debug, PartialEq, Serialize, JsonSchema)]
+pub struct PairedData {
+    #[serde(flatten)]
+    pub account: AccountData,
+    #[serde(flatten)]
+    pub set_aside: SetAsideData,
+}
+
 #[derive(Debug, PartialEq, Serialize, JsonSchema)]
 pub struct SetupData {
     /// The device this computer is connected as.
     pub account: AccountData,
     /// The linked folder, with the ID and name of the space it syncs with.
     pub folder: FolderData,
+    #[serde(flatten)]
+    pub set_aside: SetAsideData,
 }
 
 #[derive(Debug, PartialEq, Serialize, JsonSchema)]

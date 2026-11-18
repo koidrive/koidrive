@@ -2,7 +2,8 @@
 
 use crate::error::CliError;
 use crate::formatting::printable;
-use crate::report::{AccountData, Done};
+use crate::output::Tone;
+use crate::report::{AccountData, Done, PairedData, SetAsideData};
 use koidrive_driver::{Credential, DriverError, Paths};
 use koidrive_ipc::Response;
 use koidrive_net::{Auth, Reload};
@@ -15,23 +16,35 @@ pub(crate) fn unexpected(response: Response) -> CliError {
 }
 
 pub(crate) fn paired(paths: &Paths, response: Response) -> Result<Done, CliError> {
-    let Response::Paired { account } = response else {
+    let Response::Paired { account, set_aside } = response else {
         return Err(unexpected(response));
     };
+    let set_aside = SetAsideData::of(&set_aside);
     let text = format!(
-        "Paired as {} ({}) with {}.\nThe credential is in {}.\n",
+        "Paired as {} ({}) with {}.\nThe credential is in {}.\n{}",
         printable(&account.device_name),
         printable(&account.device_id),
         printable(&account.server),
-        printable(&paths.credential().display().to_string())
+        printable(&paths.credential().display().to_string()),
+        set_aside.lines()
     );
-    Ok(Done::ok(AccountData::of(&account), text).human(
-        format!(
-            "Connected this device as {}.\n",
-            printable(&account.device_name)
-        ),
-        "",
-    ))
+    let summary = format!(
+        "Connected this device as {}.\n{}",
+        printable(&account.device_name),
+        set_aside.lines()
+    );
+    let tone = match set_aside.kept.is_empty() {
+        true => Tone::Neutral,
+        false => Tone::Attention,
+    };
+    let data = PairedData {
+        account: AccountData::of(&account),
+        set_aside,
+    };
+    Ok(Done {
+        tone,
+        ..Done::ok(data, text).human(summary, "")
+    })
 }
 
 /// This profile's credential, for the commands that talk to the server directly. They write nothing to the profile, so

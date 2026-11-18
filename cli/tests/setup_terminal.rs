@@ -304,10 +304,17 @@ impl Home {
                             request["code"].as_str().unwrap()
                         ));
                         let _ = credential(&server).save_new(&paths.credential());
-                        serde_json::json!({"response":"paired", "account":{
+                        let mut paired = serde_json::json!({"response":"paired", "account":{
                             "server":"https://files.example.com/", "user_id":"owner",
                             "device_id":"0190a0b0-0000-7000-8000-000000000001", "device_name":"Laptop"
-                        }})
+                        }});
+                        if request["code"] == "SET-ASIDE" {
+                            let home = paths.state_dir.ancestors().nth(2).unwrap();
+                            paired["brought_back"] = serde_json::json!([
+                                home.join("Work/report (recovered 2026-11-18).docx")
+                            ]);
+                        }
+                        paired
                     }
                     "pair" => {
                         serde_json::json!({"response":"error", "code":"wrong_code", "message":"this pairing code is not valid"})
@@ -2802,6 +2809,52 @@ fn scripted_setup_checks_its_input_before_redeeming_the_code() {
         assert!(!empty.exists());
         assert!(!under_file.exists());
     }
+}
+
+#[test]
+fn scripted_setup_that_fails_after_pairing_still_names_what_it_brought_back() {
+    let home = Home::new(&["Work"]);
+    let folder = home.path().join("Work");
+    let args = [
+        "--pairing-code-stdin",
+        "--folder",
+        folder.to_str().unwrap(),
+        "--space",
+        "Missing",
+    ];
+    let recovered = folder.join("report (recovered 2026-11-18).docx");
+
+    let (exit, envelope) = home.scripted("SET-ASIDE@files.example.com\n", &args);
+
+    assert_ne!(exit, 0, "{envelope:#}");
+    assert_eq!(envelope["outcome"], "error", "{envelope:#}");
+    let data = &envelope["data"];
+    assert_eq!(data["device_id"], "0190a0b0-0000-7000-8000-000000000001");
+    assert_eq!(
+        data["brought_back"],
+        serde_json::json!([recovered]),
+        "{envelope:#}"
+    );
+
+    let home = Home::new(&["Work"]);
+    let daemon = home.daemon(true);
+    let mut child = (koi(home.path()).arg("setup").args(args))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _ = (child.stdin.take().unwrap()).write_all(b"SET-ASIDE@files.example.com\n");
+    let output = child.wait_with_output().unwrap();
+    daemon.finish();
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert_ne!(output.status.code(), Some(0), "{text}");
+    assert!(
+        text.contains("Brought back ~/Work/report (recovered 2026-11-18).docx, which Koidrive had set aside while syncing.\n"),
+        "{text}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]

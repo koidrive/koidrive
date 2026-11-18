@@ -233,7 +233,8 @@ fn the_summary_names_what_stays_and_how_to_revoke_a_device_still_listed() {
     assert_eq!(
         text(&data),
         "Could not sign this device out: the server did not answer.\n\
-         https://koidrive.ada.workers.dev still lists this device. To remove it, run this on another device: koi device revoke d1\n\
+         https://koidrive.ada.workers.dev may still list this device. To remove it, run this on another device signed in to https://koidrive.ada.workers.dev: koi device revoke d1\n\
+         If you have no other device, add one with koi server add-device --interactive and run the command there.\n\
          Removed the background service dev.koidrive.koi.\n\
          Kept /srv/Koidrive and every file in it.\n\
          Kept /srv/Koidrive/.koidrive/trash, which still holds files. Delete it when you no longer need them.\n"

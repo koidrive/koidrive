@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use koidrive_driver::{Credential, Flock, Paths, SetAside, StateEntry};
+use koidrive_driver::{Credential, CredentialError, Flock, Paths, SetAside, StateEntry};
 use koidrive_ipc::{Request, Response};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -203,6 +203,7 @@ enum Program {
 
 struct Found {
     paired: bool,
+    unusable: Option<String>,
     signs_out: bool,
     state: bool,
     owner: Option<Owner>,
@@ -241,6 +242,7 @@ struct Run {
     problems: Vec<String>,
     next: Vec<Vec<String>>,
     folders: Vec<PathBuf>,
+    sign_out_failed: bool,
 }
 
 impl Run {
@@ -458,7 +460,7 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
     if !shared {
         quit_apps(&found.programs, &mut run).await;
     }
-    let (device, set_aside) = sign_out(paths, &found, &options, terminal).await;
+    let (device, set_aside) = sign_out(paths, &found, &options, terminal, &mut run).await;
     let set_aside = match set_aside {
         Some(set_aside) => set_aside,
         None => unlink(paths, &found, &mut run).await,

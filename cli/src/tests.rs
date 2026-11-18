@@ -2534,3 +2534,39 @@ async fn an_update_check_names_the_version_the_daemon_compared_the_release_with(
         "Koidrive 0.1.1 is out (this device runs 0.1.0).\n"
     );
 }
+
+#[test]
+fn pairing_names_the_versions_the_folders_of_a_lost_credential_had_set_aside() {
+    let dir = tempfile::tempdir().unwrap();
+    let paired = Response::Paired {
+        account: koidrive_driver::Account {
+            server: "https://files.example.com/".into(),
+            user_id: "u1".into(),
+            user_name: None,
+            device_id: "d2".into(),
+            device_name: "Mac".into(),
+        },
+        set_aside: koidrive_driver::SetAside {
+            brought_back: vec!["/Docs/report (recovered 2026-11-18).docx".into()],
+            kept: vec!["/Docs/.koidrive/parked/n2".into()],
+        },
+    };
+
+    let done = crate::profile::paired(&Paths::under(dir.path()), paired).unwrap();
+
+    assert_eq!(done.data["device_id"], "d2");
+    assert_eq!(
+        done.data["brought_back"],
+        serde_json::json!(["/Docs/report (recovered 2026-11-18).docx"])
+    );
+    assert_eq!(
+        done.data["kept"],
+        serde_json::json!(["/Docs/.koidrive/parked/n2"])
+    );
+    let recovered = "Brought back /Docs/report (recovered 2026-11-18).docx, which Koidrive had set aside while syncing.
+Could not bring back /Docs/.koidrive/parked/n2, which Koidrive had set aside while syncing. Move it out of .koidrive to keep it.
+";
+    assert!(done.text.ends_with(recovered), "{}", done.text);
+    assert!(done.output(true).0.ends_with(recovered), "{:?}", done.human);
+    assert!(matches!(done.tone, crate::output::Tone::Attention));
+}

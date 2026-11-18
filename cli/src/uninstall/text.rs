@@ -7,8 +7,19 @@ pub(super) fn finish(device: DeviceOutcome, run: Run) -> Result<Done, CliError> 
         kept,
         problems,
         next,
+        sign_out_failed,
         ..
     } = run;
+    let still_listed = match &device {
+        DeviceOutcome::StillListed {
+            device_id: Some(id),
+            ..
+        } => format!(
+            "the server may still list this device; to remove it, run koi device revoke {} on another device",
+            crate::output::command_word(id)
+        ),
+        _ => "the server may still list this device; to remove it, revoke it from another device with koi device revoke".to_owned(),
+    };
     let data = UninstalledData {
         device,
         removed,
@@ -36,14 +47,17 @@ pub(super) fn finish(device: DeviceOutcome, run: Run) -> Result<Done, CliError> 
         let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
         done = done.then(&argv);
     }
-    if problems.is_empty() {
-        done.text.insert_str(0, header);
-        done.tone = Tone::Completed;
-        return Ok(done);
-    }
-    let message = match next.is_empty() {
-        true => format!("{}; run koi uninstall again to finish", problems.join("; ")),
-        false => problems.join("; "),
+    let message = match (problems.is_empty(), next.is_empty()) {
+        (false, true) => format!("{}; run koi uninstall again to finish", problems.join("; ")),
+        (false, false) => problems.join("; "),
+        (true, _) => {
+            done.text.insert_str(0, header);
+            if !sign_out_failed {
+                done.tone = Tone::Completed;
+                return Ok(done);
+            }
+            still_listed
+        }
     };
     Err(CliError {
         next: done.next.clone(),
@@ -81,17 +95,35 @@ pub(super) fn text(data: &UninstalledData) -> String {
         DeviceOutcome::StillListed {
             server,
             device_id,
-            problem,
+            problem: Some(problem),
+        } => {
+            lines.push(format!(
+                "Could not sign this device out: {}.",
+                printable(problem)
+            ));
+            let (listing, signed_in) = match server {
+                Some(server) => (printable(server), printable(server)),
+                None => ("Its server".to_owned(), "that server".to_owned()),
+            };
+            lines.push(match device_id {
+                Some(id) => format!(
+                    "{listing} may still list this device. To remove it, run this on another device signed in to {signed_in}: koi device revoke {}",
+                    crate::output::command_word(id)
+                ),
+                None => format!(
+                    "{listing} may still list this device. To remove it, revoke it from another device signed in to {signed_in} with koi device revoke."
+                ),
+            });
+            lines.push("If you have no other device, add one with koi server add-device --interactive and run the command there.".to_owned());
+        }
+        DeviceOutcome::StillListed {
+            server,
+            device_id,
+            problem: None,
         } => {
             let server = server
                 .as_deref()
                 .map_or_else(|| "Its server".to_owned(), printable);
-            if let Some(problem) = problem {
-                lines.push(format!(
-                    "Could not sign this device out: {}.",
-                    printable(problem)
-                ));
-            }
             lines.push(match device_id {
                 Some(id) => format!(
                     "{server} still lists this device. To remove it, run this on another device: koi device revoke {}",

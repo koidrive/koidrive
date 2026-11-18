@@ -38,6 +38,7 @@ pub(super) async fn sign_out(
     found: &Found,
     options: &Options,
     terminal: &Terminal,
+    run: &mut Run,
 ) -> (DeviceOutcome, Option<SetAside>) {
     let still_listed = |problem| (listed(found, problem), None);
     if !found.paired {
@@ -103,8 +104,18 @@ pub(super) async fn sign_out(
                 Some(set_aside),
             ),
         },
-        Ok(other) => still_listed(Some(format!("the daemon answered {other:?}"))),
-        Err(error) => still_listed(Some(error.message)),
+        failed => {
+            run.sign_out_failed = true;
+            still_listed(Some(match (failed, &found.unusable) {
+                (Err(_), Some(unusable)) => {
+                    format!(
+                        "Koidrive could not use this device's saved sign-in, because {unusable}"
+                    )
+                }
+                (Err(error), None) => error.message,
+                (Ok(other), _) => format!("the daemon answered {other:?}"),
+            }))
+        }
     }
 }
 

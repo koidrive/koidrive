@@ -18,9 +18,13 @@ use super::state::StateFile;
 use super::{DeployArgs, Mode, ScriptArgs, this_mode};
 use crate::error::CliError;
 use crate::ipc;
+use crate::output::Tone;
 use crate::pairing::Invitation;
 use crate::printable;
-use crate::report::{AccountData, Choice, ChoicesData, Done, FolderData, Outcome, SetupData};
+use crate::report::{
+    AccountData, Choice, ChoicesData, Done, FolderData, Outcome, PairedData, SetAsideData,
+    SetupData,
+};
 use crate::terminal::{Progress, Terminal, read_line};
 
 const DEFAULT_FOLDER: &str = "Koidrive";
@@ -432,6 +436,7 @@ async fn onboard(paths: &Paths, terminal: &Terminal) -> Result<Done, CliError> {
     let data = SetupData {
         account: AccountData::of(&credential.account()),
         folder: FolderData::of(&status),
+        set_aside: SetAsideData::default(),
     };
     Ok(Done {
         note: ending(&folder),
@@ -761,7 +766,7 @@ async fn scripted(
         true => Some(read_invitation().await?),
         false => None,
     };
-    let (account, paired) = match (credential, code) {
+    let (account, set_aside, paired) = match (credential, code) {
         (Some(credential), Some(code)) if !same_server(&credential.server, &code.server) => {
             return Err(CliError::usage(format!(
                 "this computer is already connected to {}, and the pairing code is for {}",
@@ -769,14 +774,12 @@ async fn scripted(
                 printable(&code.server)
             )));
         }
-        (Some(credential), _) => (credential.account(), false),
+        (Some(credential), _) => (credential.account(), SetAsideData::default(), false),
         (None, Some(code)) => {
             crate::telemetry::set_flow(SetupFlow::Pairing);
             let joining = pair(paths, code, device_name);
-            (
-                crate::telemetry::step(SetupStep::Pair, joining).await?,
-                true,
-            )
+            let (account, set_aside) = crate::telemetry::step(SetupStep::Pair, joining).await?;
+            (account, set_aside, true)
         }
         (None, None) => {
             return Err(CliError::new(
@@ -785,31 +788,54 @@ async fn scripted(
             ));
         }
     };
-    if local == Local::Missing {
-        create(&folder)?;
-    }
-    let directory = directory
-        .map(Ok)
-        .unwrap_or_else(|| directory_identity(&folder))?;
-    let approval = LinkApproval {
-        directory,
-        accept_existing_files: script.accept_existing_files,
+    let linking = async {
+        if local == Local::Missing {
+            create(&folder)?;
+        }
+        let directory = directory
+            .map(Ok)
+            .unwrap_or_else(|| directory_identity(&folder))?;
+        let approval = LinkApproval {
+            directory,
+            accept_existing_files: script.accept_existing_files,
+        };
+        crate::link(paths, folder.clone(), space.to_owned(), Some(approval)).await
     };
-    let (status, outcome) =
-        crate::link(paths, folder.clone(), space.to_owned(), Some(approval)).await?;
+    let (status, outcome) = match linking.await {
+        Ok(linked) => linked,
+        Err(mut error) if error.partial.is_none() && set_aside != SetAsideData::default() => {
+            let recovered = set_aside.lines();
+            let data = PairedData {
+                account: AccountData::of(&account),
+                set_aside,
+            };
+            error.partial = Some(Box::new(
+                Done::ok(data, recovered.clone()).human(recovered, ""),
+            ));
+            return Err(error);
+        }
+        Err(error) => return Err(error),
+    };
+    let recovered = set_aside.lines();
+    let tone = match set_aside.kept.is_empty() {
+        true => Tone::Neutral,
+        false => Tone::Attention,
+    };
     let data = SetupData {
         account: AccountData::of(&account),
         folder: FolderData::of(&status),
+        set_aside,
     };
     let done = Done {
         note: format!(
             "Add files to {} to sync them.\nCheck sync: koi status\n",
             printable(&folder.display().to_string())
         ),
-        ..Done::ok(data, crate::linked(&status, outcome))
+        tone,
+        ..Done::ok(data, crate::linked(&status, outcome) + &recovered)
     }
     .human(
-        crate::linked_summary(&status, outcome),
+        crate::linked_summary(&status, outcome) + &recovered,
         format!(
             "Add files to {} to sync them.\nCheck sync: koi status\n",
             crate::output::path(&folder)
@@ -847,14 +873,14 @@ async fn pair(
     paths: &Paths,
     code: Invitation,
     name: &str,
-) -> Result<koidrive_driver::Account, CliError> {
+) -> Result<(koidrive_driver::Account, SetAsideData), CliError> {
     let request = Request::Pair {
         server: code.server,
         code: code.code,
         name: name.to_owned(),
     };
     match ipc::run(paths, request).await? {
-        Response::Paired { account } => Ok(account),
+        Response::Paired { account, set_aside } => Ok((account, SetAsideData::of(&set_aside))),
         other => Err(crate::unexpected(other)),
     }
 }
@@ -882,8 +908,10 @@ pub(super) fn report_paired(
     terminal: &Terminal,
 ) -> Result<(), CliError> {
     match response {
-        Response::Paired { account } => {
+        Response::Paired { account, set_aside } => {
+            let recovered = SetAsideData::of(&set_aside).lines();
             if terminal.setup_guided() {
+                recovered.lines().for_each(|line| terminal.message(line));
                 return Ok(());
             }
             println!(
@@ -893,6 +921,7 @@ pub(super) fn report_paired(
                 printable(&account.server),
                 paths.credential().display()
             );
+            print!("{recovered}");
             Ok(())
         }
         other => Err(crate::unexpected(other)),

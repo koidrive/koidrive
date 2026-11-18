@@ -858,6 +858,50 @@
         }
       ]
     },
+    "PairedData": {
+      "description": "The device this computer is now connected as, and what the folders of the credential it replaced had set aside.",
+      "properties": {
+        "brought_back": {
+          "description": "Each one that Koidrive moved back into its folder, under a recovered name.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "device_id": {
+          "type": "string"
+        },
+        "device_name": {
+          "type": "string"
+        },
+        "kept": {
+          "description": "Each one that stays in `.koidrive`, because Koidrive could not bring it back.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "server": {
+          "type": "string"
+        },
+        "user_id": {
+          "type": "string"
+        },
+        "user_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "server",
+        "user_id",
+        "device_id",
+        "device_name"
+      ],
+      "type": "object"
+    },
     "ProgressData": {
       "description": "The files the folder still sends to the server or fetches from it, while it syncs. The bytes are those of every\nfile counted since the folder last had none left, the synced ones included, so `bytes_done` never decreases.\n`current` is the file whose content moved last, relative to the folder.",
       "properties": {
@@ -1333,9 +1377,23 @@
             }
           ]
         },
+        "brought_back": {
+          "description": "Each one that Koidrive moved back into its folder, under a recovered name.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "folder": {
           "$ref": "#/$defs/FolderData",
           "description": "The linked folder, with the ID and name of the space it syncs with."
+        },
+        "kept": {
+          "description": "Each one that stays in `.koidrive`, because Koidrive could not bring it back.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "service": {
           "$ref": "#/$defs/Report"
@@ -1403,6 +1461,9 @@
         },
         {
           "$ref": "#/$defs/WithApp2"
+        },
+        {
+          "$ref": "#/$defs/PairedData"
         },
         {
           "$ref": "#/$defs/WithApp3"
