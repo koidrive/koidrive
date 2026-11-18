@@ -1059,6 +1059,67 @@ fn entries_swapped_through_a_third_name_are_renamed() {
     assert_eq!(snapshot, Snapshot::scan(root).unwrap());
 }
 
+/// FSEvents can deliver the paths of one rename cycle in two batches, and a poll rescans only the paths of the first.
+fn rescanned_in_two_batches(renames: &[(&str, &str)], first: &[&str], later: &[&str]) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for file in ["one", "two", "a", "b", "c"] {
+        fs::write(root.join(file), file).unwrap();
+    }
+    for folder in ["x", "y"] {
+        fs::create_dir(root.join(folder)).unwrap();
+        fs::write(root.join(folder).join("note"), folder).unwrap();
+    }
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    let mut whole = snapshot.clone();
+    for (from, to) in renames {
+        fs::rename(root.join(from), root.join(to)).unwrap();
+    }
+    let expected = whole.rescan(root, [PathBuf::new()]).unwrap().changes;
+    let scopes = first.iter().map(PathBuf::from);
+    assert_eq!(snapshot.rescan(root, scopes).unwrap().changes, expected);
+    assert_eq!(snapshot, whole);
+    let scopes = later.iter().map(PathBuf::from);
+    assert_eq!(snapshot.rescan(root, scopes).unwrap().changes, []);
+}
+
+#[test]
+fn two_files_swapped_in_two_event_batches_are_renamed() {
+    rescanned_in_two_batches(
+        &[("one", "tmp"), ("two", "one"), ("tmp", "two")],
+        &["one", "tmp"],
+        &["two"],
+    );
+}
+
+#[test]
+fn two_folders_swapped_in_two_event_batches_are_renamed() {
+    rescanned_in_two_batches(
+        &[("x", "tmp"), ("y", "x"), ("tmp", "y")],
+        &["x", "tmp"],
+        &["y"],
+    );
+}
+
+#[test]
+fn three_files_rotated_in_two_event_batches_are_renamed() {
+    rescanned_in_two_batches(
+        &[("a", "tmp"), ("c", "a"), ("b", "c"), ("tmp", "b")],
+        &["a", "tmp"],
+        &["b", "c"],
+    );
+}
+
+#[test]
+fn a_file_moved_over_another_in_two_event_batches_reads_as_in_one_batch() {
+    rescanned_in_two_batches(&[("x/note", "one")], &["one"], &["x/note"]);
+}
+
+#[test]
+fn a_file_moved_into_another_folder_in_two_event_batches_is_renamed() {
+    rescanned_in_two_batches(&[("x/note", "y/moved")], &["y/moved"], &["x/note"]);
+}
+
 #[test]
 fn files_moved_back_to_their_paths_after_their_folders_swap_are_renamed() {
     let dir = tempfile::tempdir().unwrap();
