@@ -147,18 +147,30 @@ pub(crate) fn path<'a, N: Node>(tree: &'a Tree<N>, id: &str) -> Option<(Vec<&'a 
     None
 }
 
+#[cfg(test)]
+thread_local! {
+    static ENTRIES_READ: Cell<u64> = const { Cell::new(0) };
+}
+
+fn read_entry() {
+    #[cfg(test)]
+    ENTRIES_READ.with(|read| read.set(read.get() + 1));
+}
+
 trait Placed {
     fn parent(&self) -> Option<&NodeId>;
 }
 
 impl Placed for Shape {
     fn parent(&self) -> Option<&NodeId> {
+        read_entry();
         Some(&self.parent)
     }
 }
 
 impl Placed for Waiting {
     fn parent(&self) -> Option<&NodeId> {
+        read_entry();
         self.shape.as_ref().map(|shape| &shape.parent)
     }
 }
@@ -180,7 +192,11 @@ impl<V> Default for ByParent<V> {
 
 impl<V: Placed + Clone + PartialEq> ByParent<V> {
     fn children(&self, id: &str) -> impl Iterator<Item = &NodeId> {
-        self.below.get(id).into_iter().flatten()
+        self.below
+            .get(id)
+            .into_iter()
+            .flatten()
+            .inspect(|_| read_entry())
     }
 
     fn insert(&mut self, id: NodeId, entry: V) {
