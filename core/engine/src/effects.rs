@@ -636,9 +636,6 @@ impl Effects {
         if matches!(record.effect, Effect::WriteFile { .. }) {
             trees.set_content_from_server(&record.node, true);
         }
-        if matches!(record.effect, Effect::CreateDir { .. }) {
-            trees.created_dir(&record.node);
-        }
         if finished {
             trees.start_finish(&record.node);
         }

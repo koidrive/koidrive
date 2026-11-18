@@ -1412,3 +1412,29 @@ fn a_file_deleted_while_its_folder_was_excluded_downloads_again_when_the_folder_
     assert_eq!(local, moved);
     assert!(shown(&site).is_empty());
 }
+
+#[test]
+fn a_file_removed_while_stopped_with_a_rules_file_written_to_exclude_it_downloads_again_when_the_rule_is_lifted() {
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &site.root.join("report.docx"), b"report");
+    b.create(&mut remote, &site.root.join(".koiignore"), b"other.txt\n");
+    drop(b);
+    fs::remove_file(site.root.join("report.docx")).unwrap();
+    fs::write(site.root.join(".koiignore"), b"report.docx\n").unwrap();
+
+    let mut b = started(&site, &mut remote, &SyncRules::default());
+    let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+    assert_eq!(sent, ["update content"]);
+    assert_eq!(remote.names(), [".koiignore", "report.docx"]);
+
+    fs::write(site.root.join(".koiignore"), b"other.txt\n").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+    assert_eq!(sent, ["update content", "update content"]);
+    assert_eq!(fs::read(site.root.join("report.docx")).unwrap(), b"report");
+    assert_eq!(remote.names(), [".koiignore", "report.docx"]);
+    assert_eq!(b.state(), FolderState::UpToDate);
+}
+

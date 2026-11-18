@@ -696,16 +696,19 @@ impl Disk {
                 }
             }
         }
+        let (read, stale_read): (Vec<PathBuf>, Vec<PathBuf>) = (observation.read.into_iter())
+            .partition(|path| !path.ancestors().any(|at| scopes.contains(at)));
         let dropped: BTreeSet<PathBuf> = (observation.changes.iter().zip(&stale))
             .filter(|(_, stale)| **stale)
             .flat_map(|(change, _)| paths(change).map(Path::to_path_buf))
+            .chain(stale_read)
             .collect();
         let changes: Vec<Observed> = (observation.changes.into_iter().zip(stale))
             .filter(|(_, stale)| !stale)
             .map(|(change, _)| change)
             .collect();
         let mounts = (observation.mounts != engine.mounts).then_some(observation.mounts);
-        if !changes.is_empty() || mounts.is_some() || engine.sees_unobserved(&observation.read) {
+        if !changes.is_empty() || mounts.is_some() || engine.sees_unobserved(&read) {
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_millis() as u64);
@@ -715,11 +718,11 @@ impl Disk {
                     engine.mounts = mounts;
                 }
                 engine.observe(&changes, now_ms);
-                engine.listed(&observation.read);
+                engine.listed(&read);
                 Ok(engine.checkpoint(tx)?)
             })?;
         }
-        engine.read(&observation.read, &observation.unreadable);
+        engine.read(&read, &observation.unreadable);
         let relist = engine.relist();
         if !relist.is_empty() {
             self.sections.request(engine.resets(relist));

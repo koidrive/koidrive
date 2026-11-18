@@ -3,7 +3,7 @@
 //! Classifying a node (docs/design/sync-engine.md section 2.3) and the dirty set the planner reads.
 
 use std::cell::{Cell, OnceCell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use koidrive_ignore::{Scope, Status};
 
@@ -403,8 +403,7 @@ pub struct Trees {
     reverted: TrackedSet<NodeId>,
     cycle_reverted: TrackedSet<NodeId>,
     unobserved: TrackedSet<NodeId>,
-    rules_changed: bool,
-    created_dirs: Vec<NodeId>,
+    rules_changed: BTreeSet<Vec<String>>,
     relist: Vec<NodeId>,
     cycles_may_end: bool,
     parked_as: TrackedMap<NodeId, NodeId>,
@@ -495,6 +494,12 @@ pub struct Trees {
     /// The live files of R that are rules files.
     remote_rules_files: BTreeSet<NodeId>,
     marked: BTreeSet<NodeId>,
+    /// The unobserved nodes L does not hold, where [`Trees::settle`] looks for the copies that vanished.
+    copies_gone: BTreeSet<NodeId>,
+    /// The nodes of [`Trees::copies_gone`] whose folder in S is not one of them, where a release starts.
+    gone_tops: BTreeSet<NodeId>,
+    /// Whether anything changed since the last settle looked for vanished copies.
+    release_due: bool,
 }
 
 /// Equal when R, L, S and the state the store keeps are equal. What the trees track only until the
@@ -528,8 +533,7 @@ impl Trees {
             reverted: TrackedSet::default(),
             cycle_reverted: TrackedSet::default(),
             unobserved: TrackedSet::default(),
-            rules_changed: false,
-            created_dirs: Vec::new(),
+            rules_changed: BTreeSet::new(),
             relist: Vec::new(),
             cycles_may_end: false,
             parked_as: TrackedMap::default(),
@@ -593,6 +597,9 @@ impl Trees {
             orphaned: BTreeSet::new(),
             remote_rules_files: BTreeSet::new(),
             marked: BTreeSet::new(),
+            copies_gone: BTreeSet::new(),
+            gone_tops: BTreeSet::new(),
+            release_due: true,
         }
     }
 
@@ -1844,12 +1851,13 @@ impl Trees {
         self.mark(&id);
         self.count_held_trash(&id, false);
         self.l.insert(id.clone(), node);
+        self.copy_back(&id);
         self.count_held_trash(&id, true);
         self.note_position(&id);
         self.record_edit_in_trash(&id);
         self.end_change_all_trees_hold(&id);
         if self.unobserved.contains(&id) && !self.parked(&id) && !self.excluded(&id) {
-            self.unobserved.remove(&id);
+            self.clear_unobserved(&id);
         }
         if let Some((folder, name)) = left_kept_name {
             self.kept_nodes.insert(id.clone());
@@ -1988,7 +1996,14 @@ impl Trees {
             provenance.unversioned_bases.clear();
         }
         self.prune_content_provenance(id);
-        self.note_unobserved();
+        let left_out = self.rules_known
+            && !self.rules_changed.is_empty()
+            && !self.unobserved.contains(id)
+            && self.l.get(id).is_some()
+            && self.left_out(id, &self.ignore, &mut HashMap::new());
+        if left_out {
+            self.set_unobserved(id.to_owned());
+        }
         self.observe_removal_in_held_folder(id);
         self.parked_as.remove(id);
         self.unknown_rules.remove(id);
@@ -2005,6 +2020,9 @@ impl Trees {
         self.kept_folders.remove(id);
         self.kept_entries.remove(id);
         if let Some(old) = self.l.remove(id) {
+            if self.unobserved.contains(id) {
+                self.copy_gone(id);
+            }
             match old.parked {
                 false => self.l_names.remove(id, &old.shape),
                 true => self.l_parked.remove(id, &old.shape),
@@ -2013,7 +2031,7 @@ impl Trees {
             self.mark(id);
         }
         if self.s.get(id).is_none() {
-            self.unobserved.remove(id);
+            self.clear_unobserved(id);
         }
     }
 
@@ -2051,7 +2069,7 @@ impl Trees {
         self.note_kept_rules();
         self.ignore.set_local(local, std::iter::empty());
         self.relink = true;
-        self.rules_changed = true;
+        self.rules_changed.insert(Vec::new());
     }
 
     /// Sets the rules of the `.koiignore` file in the folder at `dir`, the names from the root to
@@ -2061,7 +2079,7 @@ impl Trees {
         self.note_kept_rules();
         self.ignore.set_rules(dir, rules, std::iter::empty());
         self.relink = true;
-        self.rules_changed = true;
+        (self.rules_changed).insert(dir.iter().map(|name| name.as_ref().to_owned()).collect());
     }
 
     /// Forgets the rules of every `.koiignore` file, for a caller about to pass all of them again.
@@ -2069,7 +2087,7 @@ impl Trees {
         self.note_kept_rules();
         self.ignore.clear_rules();
         self.relink = true;
-        self.rules_changed = true;
+        self.rules_changed.insert(Vec::new());
     }
 
     /// Records that a scan could not read the folder `id` of L, or the root, so the rules below it are unknown until
@@ -2104,12 +2122,14 @@ impl Trees {
     /// places it below a folder whose rules are unknown ([`Trees::set_rules_unknown`]). Neither an effect nor a
     /// commit is planned for it, and no effect parks it to make room for another node.
     pub fn held(&self, id: &str) -> bool {
-        self.asked.contains(id)
-            || self.vanished(id)
-            || !self.unknown_rules.is_empty()
-                && (below(&self.l, id, &self.unknown_rules)
-                    || below(&self.s, id, &self.unknown_rules)
-                    || below(&self.r, id, &self.unknown_rules))
+        self.asked.contains(id) || self.vanished(id) || self.below_unknown_rules(id)
+    }
+
+    fn below_unknown_rules(&self, id: &str) -> bool {
+        !self.unknown_rules.is_empty()
+            && (below(&self.l, id, &self.unknown_rules)
+                || below(&self.s, id, &self.unknown_rules)
+                || below(&self.r, id, &self.unknown_rules))
     }
 
     /// Whether `id` is an entry the person discarded on a first link (section 6.4), that R does not
@@ -2261,6 +2281,7 @@ impl Trees {
     }
 
     fn forget_reclaims(&mut self) {
+        self.release_due = true;
         if let Some(pass) = self.reclaimed_this_pass.get_mut() {
             pass.clear();
         }
@@ -2718,7 +2739,7 @@ impl Trees {
             let mut below = vec![id.to_owned()];
             while let Some(node) = below.pop() {
                 below.extend(self.l_names.children(&node).cloned());
-                self.unobserved.insert(node);
+                self.set_unobserved(node);
             }
         }
     }
@@ -2799,6 +2820,46 @@ impl Trees {
         !held(placed) && !held(self.r.live(id))
     }
 
+    fn set_unobserved(&mut self, id: NodeId) {
+        if self.l.get(&id).is_none() {
+            self.copy_gone(&id);
+        }
+        self.unobserved.insert(id);
+    }
+
+    fn clear_unobserved(&mut self, id: &str) {
+        self.copy_back(id);
+        self.unobserved.remove(id);
+    }
+
+    fn copy_gone(&mut self, id: &str) {
+        if !self.copies_gone.insert(id.to_owned()) {
+            return;
+        }
+        if self.gone_top(id) {
+            self.gone_tops.insert(id.to_owned());
+        }
+        for child in self.s_names.children(id) {
+            self.gone_tops.remove(child);
+        }
+    }
+
+    fn copy_back(&mut self, id: &str) {
+        if !self.copies_gone.remove(id) {
+            return;
+        }
+        self.gone_tops.remove(id);
+        for child in self.s_names.children(id) {
+            if self.copies_gone.contains(child) {
+                self.gone_tops.insert(child.clone());
+            }
+        }
+    }
+
+    fn gone_top(&self, id: &str) -> bool {
+        !(self.s.get(id)).is_some_and(|synced| self.copies_gone.contains(&synced.parent))
+    }
+
     fn vanished(&self, id: &str) -> bool {
         self.unobserved.contains(id)
             && self.l.get(id).is_none()
@@ -2829,7 +2890,7 @@ impl Trees {
         let mut below = vec![id.to_owned()];
         while let Some(node) = below.pop() {
             below.extend(self.l_names.children(&node).cloned());
-            self.unobserved.remove(&node);
+            self.clear_unobserved(&node);
         }
     }
 
@@ -2893,56 +2954,94 @@ impl Trees {
         false
     }
 
-    /// Records that a scan listed each of `folders`, the root or folders L holds, or that an effect created
-    /// one: what L holds in them at an included position is observed. A node there whose local copy
-    /// disappeared while it was unobserved leaves S with what S holds below it, so it is downloaded
-    /// again and no deletion is sent (section 5.10).
+    /// Records that a scan listed each of `folders`, the root or folders L holds: what L holds in them at an
+    /// included position is observed (section 5.10).
     pub fn listed(&mut self, folders: &[NodeId]) {
         if self.unobserved.is_empty() {
             return;
         }
-        let folders: Vec<NodeId> = (folders.iter())
-            .filter(|folder| !self.awaits_relisting(folder))
-            .cloned()
-            .collect();
-        for folder in &folders {
+        for folder in folders {
+            if self.awaits_relisting(folder) {
+                continue;
+            }
             for id in self.seen_in(folder) {
-                self.unobserved.remove(&id);
-            }
-            let mut gone: Vec<NodeId> = self.lost_in(folder).cloned().collect();
-            let mut next = 0;
-            while let Some(id) = gone.get(next).cloned() {
-                next += 1;
-                let below: Vec<NodeId> = self.lost_in(&id).cloned().collect();
-                gone.extend(below);
-            }
-            for id in gone.iter().rev() {
-                if self.vanished(id) && !self.ignored(id) && self.fits_synced(id, None) {
-                    self.set_synced(id.clone(), None);
-                }
+                self.clear_unobserved(&id);
             }
         }
     }
 
-    pub(crate) fn created_dir(&mut self, id: &str) {
-        self.created_dirs.push(id.to_owned());
+    /// Ends a settle: each topmost node whose local copy disappeared while it was unobserved and that the rules
+    /// let in leaves S in one group with every node below it whose copy went too, excluded ones included, and the
+    /// folders below it the server keeps only for an excluded file, so the group downloads again and no deletion
+    /// is sent (section 5.10). A group leaves whole or stays, and one that stays is tried again at the next
+    /// settle that changes anything: while the rules are not scanned since a restore, while the rules leave out its
+    /// top where S or R holds it, while the rules of a folder above one of its nodes are unknown, or while S cannot
+    /// drop it. Only the topmost nodes whose copies went are looked at, so a settle costs nothing per node below
+    /// them, nor per node that is unobserved with its copy in place.
+    fn release_vanished(&mut self) -> bool {
+        if !self.rules_known || self.gone_tops.is_empty() {
+            return false;
+        }
+        let kept = self.kept_for_excluded();
+        let goes = |id: &str| self.vanished(id) || self.l.get(id).is_none() && kept(id);
+        let whole = |folder: &str| {
+            self.vanished(folder) || (self.s_names.children(folder)).all(|child| goes(child))
+        };
+        let tops: BTreeSet<NodeId> = (self.gone_tops.iter())
+            .filter(|id| self.vanished(id) && !self.ignored(id))
+            .filter_map(|id| {
+                let mut top = id;
+                for _ in 0..=self.s.len() {
+                    let synced = self.s.live(top)?;
+                    if synced.parent != self.s.root && goes(&synced.parent) && whole(&synced.parent)
+                    {
+                        top = &synced.parent;
+                        continue;
+                    }
+                    let placed = synced.parent == self.s.root
+                        || self.l.get(&synced.parent).is_some()
+                        || kept(&synced.parent);
+                    return placed.then(|| top.clone());
+                }
+                None
+            })
+            .collect();
+        let groups: Vec<Vec<NodeId>> = (tops.into_iter())
+            .filter(|top| !self.ignored(top))
+            .map(|top| {
+                let mut group = vec![top];
+                let mut next = 0;
+                while let Some(id) = group.get(next).cloned() {
+                    next += 1;
+                    group.extend(
+                        (self.s_names.children(&id))
+                            .filter(|child| goes(child))
+                            .cloned(),
+                    );
+                }
+                group
+            })
+            .filter(|group| {
+                !group.iter().any(|id| self.below_unknown_rules(id))
+                    && self.fits_synced_together(
+                        &(group.iter())
+                            .map(|id| (id.clone(), None))
+                            .collect::<Vec<_>>(),
+                    )
+            })
+            .collect();
+        drop(kept);
+        for id in groups.iter().flat_map(|group| group.iter().rev()) {
+            self.set_synced(id.clone(), None);
+        }
+        !groups.is_empty()
     }
 
-    /// Whether [`Trees::listed`] would change what the trees hold for one of `folders`.
+    /// Whether [`Trees::listed`] would observe a node in one of `folders`.
     pub fn sees_unobserved(&self, folders: impl IntoIterator<Item = NodeId>) -> bool {
         !self.unobserved.is_empty()
             && (folders.into_iter())
-                .filter(|folder| !self.awaits_relisting(folder))
-                .any(|folder| {
-                    let mut lost: Vec<&NodeId> = self.lost_in(&folder).collect();
-                    while let Some(id) = lost.pop() {
-                        if self.vanished(id) && !self.ignored(id) {
-                            return true;
-                        }
-                        lost.extend(self.lost_in(id));
-                    }
-                    !self.seen_in(&folder).is_empty()
-                })
+                .any(|folder| !self.awaits_relisting(&folder) && !self.seen_in(&folder).is_empty())
     }
 
     /// Takes the folders a scan saw moved here while nodes were unobserved. Each waits for a scan
@@ -2998,30 +3097,95 @@ impl Trees {
         )
     }
 
-    fn lost_in<'a>(&'a self, folder: &'a str) -> impl Iterator<Item = &'a NodeId> + 'a {
-        (self.s_names.children(folder)).filter(|id| self.l.get(id).is_none())
-    }
-
     fn note_unobserved(&mut self) {
-        if !self.rules_known || !std::mem::take(&mut self.rules_changed) {
+        if !self.rules_known || self.rules_changed.is_empty() {
             return;
         }
+        let changed = std::mem::take(&mut self.rules_changed);
+        let below: Option<BTreeSet<NodeId>> = (!changed.contains(&Vec::new())).then(|| {
+            (changed.iter())
+                .flat_map(|dir| self.below_rules(dir))
+                .collect()
+        });
+        let tops: Vec<NodeId> = match below {
+            None => vec![self.l.root.clone()],
+            Some(below) => (below.into_iter())
+                .filter(|id| self.l.get(id).is_some())
+                .collect(),
+        };
+        self.mark_left_out(&tops);
+    }
+
+    fn mark_left_out(&mut self, tops: &[NodeId]) {
         let mut scopes = HashMap::new();
-        let left_out: Vec<NodeId> = (self.l.iter().map(|(id, _)| id))
-            .filter(|id| {
-                !self.unobserved.contains(*id) && self.left_out(id, &self.ignore, &mut scopes)
-            })
-            .cloned()
-            .collect();
-        for id in left_out {
-            self.unobserved.insert(id);
+        let mut seen = HashSet::new();
+        let mut below: Vec<&str> = tops.iter().map(String::as_str).collect();
+        let mut marked = Vec::new();
+        while let Some(node) = below.pop() {
+            if !seen.insert(node) {
+                continue;
+            }
+            for names in [&self.l_names, &self.l_parked, &self.s_names, &self.r_names] {
+                below.extend(names.children(node).map(String::as_str));
+            }
+            if self.l.get(node).is_some()
+                && !self.unobserved.contains(node)
+                && self.left_out(node, &self.ignore, &mut scopes)
+            {
+                marked.push(node.to_owned());
+            }
         }
+        for node in marked {
+            self.set_unobserved(node);
+        }
+    }
+
+    fn below_rules(&self, dir: &[String]) -> BTreeSet<NodeId> {
+        type Holds = fn(&Trees, &str) -> bool;
+        let trees: [(&ByName, Option<&ByName>, &str, Holds); 3] = [
+            (
+                &self.l_names,
+                Some(&self.l_parked),
+                self.l.root.as_str(),
+                |trees, id| trees.l.get(id).is_some(),
+            ),
+            (&self.s_names, None, self.s.root.as_str(), |trees, id| {
+                trees.s.live(id).is_some()
+            }),
+            (&self.r_names, None, self.r.root.as_str(), |trees, id| {
+                trees.r.live(id).is_some()
+            }),
+        ];
+        let mut below = BTreeSet::new();
+        for (names, parked, root, holds) in trees {
+            let mut tops = vec![root.to_owned()];
+            for part in dir {
+                tops = (tops.iter())
+                    .flat_map(|top| names.holders(top, part))
+                    .filter(|id| holds(self, id))
+                    .cloned()
+                    .collect();
+            }
+            while let Some(id) = tops.pop() {
+                tops.extend(names.children(&id).cloned());
+                tops.extend(
+                    parked
+                        .into_iter()
+                        .flat_map(|parked| parked.children(&id))
+                        .cloned(),
+                );
+                below.insert(id);
+            }
+        }
+        below
     }
 
     /// [`Trees::excluded`] of a node L holds, decided by the rules at its position in L when they
     /// exclude it, or when L, S and R hold it and every folder above it at the same position, which
-    /// leaves no other position the rules could exclude. `scopes` keeps the rules of each folder
-    /// of L read so far, so a pass over many nodes evaluates each folder once.
+    /// leaves no other position the rules could exclude. A node at an included position in L is not
+    /// left out when L holds it, or a folder above it, at another position than S: a scan reports
+    /// its copy there. `scopes` keeps the rules of each folder of L read so far, so a pass over
+    /// many nodes evaluates each folder once.
     fn left_out<'m>(
         &self,
         id: &str,
@@ -3040,9 +3204,23 @@ impl Trees {
             Some(Some(scope)) if scope.status(&node.shape.name, kind) != Status::Included => {
                 !node.parked
             }
-            Some(Some(_)) if self.placed_alike(id) => false,
+            Some(Some(_)) if self.placed_alike(id) || self.moved_from_s(id) => false,
             _ => self.excluded(id),
         }
+    }
+
+    fn moved_from_s(&self, id: &str) -> bool {
+        let mut at = id;
+        for _ in 0..=self.l.len() {
+            let Some(local) = self.l.get(at).filter(|_| at != self.l.root) else {
+                return false;
+            };
+            if (self.s.live(at)).is_some_and(|synced| !local.shape.same_position(synced)) {
+                return true;
+            }
+            at = &local.shape.parent;
+        }
+        false
     }
 
     fn local_scope<'s, 'm>(
@@ -4918,11 +5096,11 @@ impl Trees {
         for id in carried {
             self.keep_rules_file(&id);
         }
+        self.release_due |= self.relink || !self.rules_changed.is_empty();
         self.check_finishes();
         if std::mem::take(&mut self.cycles_may_end) {
             self.release_cycle_reverts(merged);
         }
-        self.note_unobserved();
         if self.rules_known {
             let unwatched = std::mem::take(&mut self.unwatched);
             let changed = match std::mem::take(&mut self.relink) {
@@ -4945,12 +5123,11 @@ impl Trees {
             self.wait_to_link(unfit);
         }
         self.settle_marked();
+        self.note_unobserved();
         while self.link_due() {
             self.settle_marked();
         }
-        let created = std::mem::take(&mut self.created_dirs);
-        if !created.is_empty() {
-            self.listed(&created);
+        if std::mem::take(&mut self.release_due) && self.release_vanished() {
             self.settle_marked();
         }
     }
@@ -5016,8 +5193,7 @@ impl Trees {
         );
         let mut queue: Vec<NodeId> = unsettled.into_iter().collect();
         let mut next = 0;
-        let ignore = self.ignore.clone();
-        let mut scopes = HashMap::new();
+        let mut changed = Vec::new();
         while let Some(id) = queue.get(next).cloned() {
             next += 1;
             let released: Vec<Option<Shape>> = self.released(&id).into_iter().flatten().collect();
@@ -5038,18 +5214,7 @@ impl Trees {
             } else {
                 self.orphaned.remove(&id);
             }
-            if self.l.get(&id).is_some()
-                && !self.unobserved.contains(&id)
-                && self.left_out(&id, &ignore, &mut scopes)
-            {
-                let mut below = vec![id.clone()];
-                while let Some(node) = below.pop() {
-                    below.extend(self.l_names.children(&node).cloned());
-                    if self.left_out(&node, &ignore, &mut scopes) {
-                        self.unobserved.insert(node);
-                    }
-                }
-            }
+            changed.push(id.clone());
             pending.remove(&id);
             match self.class(&id) {
                 Class::InSync if !self.parked(&id) => {
@@ -5136,6 +5301,7 @@ impl Trees {
                 }
             }
         }
+        self.mark_left_out(&changed);
         self.same = pending;
         self.reverted
             .retain(|id| match (self.l.get(id), self.r.live(id)) {
@@ -5592,7 +5758,7 @@ impl Trees {
         }
         self.prune_content_provenance(id);
         if shape.is_none() && self.l.get(id).is_none() {
-            self.unobserved.remove(id);
+            self.clear_unobserved(id);
         }
         self.forget_reclaims();
         let waited = (self.waiting.remove(id)).is_some_and(|waiting| waiting.shape == shape);
@@ -5617,6 +5783,12 @@ impl Trees {
             }
             None => self.s.remove(id),
         };
+        if self.copies_gone.contains(id) {
+            match self.gone_top(id) {
+                true => self.gone_tops.insert(id.to_owned()),
+                false => self.gone_tops.remove(id),
+            };
+        }
         self.release_links(id, old.as_ref());
         let file = |shape: Option<&Shape>| u64::from(shape.is_some_and(|s| s.kind == Kind::File));
         self.s_files = self.s_files - file(old.as_ref()) + file(self.s.get(id));
@@ -5728,6 +5900,22 @@ impl Trees {
             None,
             "a lost shape of a node that S holds or that R holds under its ID"
         );
+        debug_assert_eq!(
+            self.copies_gone,
+            (self.unobserved.iter())
+                .filter(|id| self.l.get(id).is_none())
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            "the index of the unobserved nodes L does not hold"
+        );
+        debug_assert_eq!(
+            self.gone_tops,
+            (self.copies_gone.iter())
+                .filter(|id| self.gone_top(id))
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            "the nodes of that index whose folder in S is not in it"
+        );
         self.r.check(Names::ByKey).map_err(|e| ('R', e))?;
         self.s.check(Names::ByKey).map_err(|e| ('S', e))?;
         self.l.check(Names::Exact).map_err(|e| ('L', e))
@@ -5791,7 +5979,6 @@ impl Trees {
             cycle_reverted,
             unobserved,
             rules_changed: _,
-            created_dirs: _,
             relist: _,
             cycles_may_end: _,
             parked_as,
@@ -5845,6 +6032,9 @@ impl Trees {
             s_names: _,
             s_marks: _,
             marked: _,
+            copies_gone: _,
+            gone_tops: _,
+            release_due: _,
             r_names: _,
             r_trashed: _,
             creates: _,
@@ -6049,6 +6239,15 @@ impl Trees {
         self.reverted = reverted.into();
         self.cycle_reverted = cycle_reverted.into();
         self.unobserved = unobserved.into();
+        self.copies_gone = (self.unobserved.iter())
+            .filter(|id| self.l.get(id).is_none())
+            .cloned()
+            .collect();
+        self.gone_tops = (self.copies_gone.iter())
+            .filter(|id| self.gone_top(id))
+            .cloned()
+            .collect();
+        self.release_due = true;
         self.parked_as = parked_as.into();
         self.waiting = waiting.into();
         self.watched = watched.into();
