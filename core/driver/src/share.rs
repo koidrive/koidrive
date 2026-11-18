@@ -578,6 +578,11 @@ fn locate<'a>(
         return Err(DriverError::RelativePath(path.to_owned()));
     }
     let outside = || DriverError::OutsideLinkedFolders(path.to_owned());
+    let placed = || {
+        folders
+            .iter()
+            .filter(|folder| Path::new(&folder.path).is_absolute())
+    };
     let mut components: VecDeque<_> = path
         .components()
         .map(|component| component.as_os_str().to_owned())
@@ -588,9 +593,7 @@ fn locate<'a>(
         match Path::new(&component).components().next().unwrap() {
             Component::CurDir => {}
             Component::ParentDir => {
-                if folders
-                    .iter()
-                    .any(|folder| prefix.starts_with(&folder.path))
+                if placed().any(|folder| prefix.starts_with(&folder.path))
                     && !std::fs::symlink_metadata(&prefix).is_ok_and(|metadata| metadata.is_dir())
                 {
                     return Err(DriverError::NotOnServer(path.to_owned()));
@@ -598,9 +601,7 @@ fn locate<'a>(
                 prefix.pop();
             }
             Component::Normal(name) => {
-                let inside = folders
-                    .iter()
-                    .any(|folder| prefix.starts_with(&folder.path));
+                let inside = placed().any(|folder| prefix.starts_with(&folder.path));
                 prefix.push(name);
                 let metadata = std::fs::symlink_metadata(&prefix);
                 if inside {
@@ -632,8 +633,7 @@ fn locate<'a>(
             other => prefix.push(other),
         }
     }
-    folders
-        .iter()
+    placed()
         .filter_map(|folder| Some((folder, below(Path::new(&folder.path), &prefix)?)))
         .max_by_key(|(folder, _)| folder.path.len())
         .ok_or_else(outside)
@@ -1265,6 +1265,25 @@ mod tests {
                 locate(&folders, &root.join(alias).join("../server-only/note.txt")).unwrap();
             assert_eq!(found, names("server-only/note.txt"));
         }
+    }
+
+    #[test]
+    fn an_unplaced_folder_does_not_stop_a_path_through_a_symlink_from_resolving() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let linked = root.join("Sync");
+        std::fs::create_dir_all(linked.join("Docs")).unwrap();
+        symlink(linked.join("Docs"), root.join("shortcut")).unwrap();
+        let unplaced = FolderStatus {
+            path: String::new(),
+            ..folder(&linked)
+        };
+        let folders = [unplaced, folder(&linked)];
+
+        let (found, names) = locate(&folders, &root.join("shortcut/a.txt")).unwrap();
+
+        assert_eq!(found.path, linked.to_str().unwrap());
+        assert_eq!(names, vec!["Docs", "a.txt"]);
     }
 
     #[test]
