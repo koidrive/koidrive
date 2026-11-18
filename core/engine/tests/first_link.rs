@@ -5091,6 +5091,7 @@ fn drive_until_quiet(
                             let mut n = trees.remote().get(&id).unwrap().clone();
                             n.trashed = true;
                             n.trash_group = format!("{seq}:0");
+                            (n.meta_rev, n.meta_edit_rev) = (seq, seq);
                             trees.set_remote(id, n);
                         }
                     }
@@ -5105,6 +5106,7 @@ fn drive_until_quiet(
                         let mut n = trees.remote().get(&m.node_id).unwrap().clone();
                         n.shape.parent = m.new_parent_id.clone();
                         n.shape.name = m.new_name.clone();
+                        (n.meta_rev, n.meta_edit_rev) = (seq, seq);
                         trees.set_remote(m.node_id.clone(), n);
                     }
                     other => panic!("unexpected op {other:?}"),
