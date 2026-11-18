@@ -35,6 +35,24 @@ pub fn path(path: &Path) -> String {
     crate::printable(&crate::setup::shown_folder(path))
 }
 
+pub fn folder(folder: &koidrive_driver::FolderStatus) -> String {
+    match &folder.path {
+        Some(root) => path(Path::new(root)),
+        None => unplaced(folder),
+    }
+}
+
+pub fn folder_path(folder: &koidrive_driver::FolderStatus) -> String {
+    match &folder.path {
+        Some(root) => crate::printable(root),
+        None => unplaced(folder),
+    }
+}
+
+fn unplaced(folder: &koidrive_driver::FolderStatus) -> String {
+    format!("the folder of space {}", crate::printable(&folder.space_id))
+}
+
 pub fn command_word(word: &str) -> String {
     crate::printable(&crate::pairing::shell_word(word))
 }

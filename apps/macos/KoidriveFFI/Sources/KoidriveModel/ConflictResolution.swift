@@ -68,7 +68,7 @@ public final class ConflictResolution: Identifiable {
         let question = question
         guard case .conflict(let original, let copy) = question.kind else { preconditionFailure("a conflict") }
         let side = role == .original ? original : copy
-        let folder = model.folder(spaceID: question.spaceId).map { URL(filePath: $0.path, directoryHint: .isDirectory) }
+        let folder = model.folder(spaceID: question.spaceId)?.url
         return ConflictFile(role: role, side: side, url: folder?.appending(path: side.path))
     }
 

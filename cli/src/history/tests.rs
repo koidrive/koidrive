@@ -382,7 +382,7 @@ async fn a_path_is_placed_by_the_real_file_it_leads_to() {
         async move {
             locate(&paths, &path)
                 .await
-                .map(|(folder, names)| (folder.space_id, names.join("/")))
+                .map(|located| (located.folder.space_id, located.below.join("/")))
                 .map_err(|error| error.reason)
         }
     };
@@ -1029,7 +1029,7 @@ fn the_trash_lists_each_deletion_once_with_what_it_held() {
     );
     let linked = FolderStatus {
         recovery: None,
-        path: "/home/ada/Koidrive".into(),
+        path: Some("/home/ada/Koidrive".into()),
         ..serde_json::from_value(serde_json::json!({
             "space_id": SPACE, "space_name": "Home", "path": "", "state": "up_to_date",
             "history_id": null, "last_seq": null, "head_seq": null, "remote_nodes": 0,
@@ -1047,7 +1047,7 @@ fn the_trash_lists_each_deletion_once_with_what_it_held() {
     );
     let forged = FolderStatus {
         recovery: None,
-        path: "/home/ada/Docs\u{1b}[31m\nFORGED".into(),
+        path: Some("/home/ada/Docs\u{1b}[31m\nFORGED".into()),
         ..linked
     };
     assert_eq!(
@@ -1112,7 +1112,7 @@ fn a_restore_picks_the_deletion_that_had_the_path() {
 
     let several = trashed_at(&live, &trash, SPACE, &names("docs/old.txt"), None).unwrap_err();
     assert_eq!(
-        several.message("docs/old.txt", &linked()),
+        several.message("docs/old.txt", "/home/ada/Koidrive"),
         "2 deletions had the path docs/old.txt; pick one with --node: old-a (file, 7 B), old-b (file, 12 B)"
     );
 }
@@ -1120,7 +1120,7 @@ fn a_restore_picks_the_deletion_that_had_the_path() {
 fn linked() -> FolderStatus {
     FolderStatus {
         recovery: None,
-        path: "/home/ada/Koidrive".into(),
+        path: Some("/home/ada/Koidrive".into()),
         ..serde_json::from_value(serde_json::json!({
             "space_id": SPACE, "space_name": "Home", "path": "", "state": "up_to_date",
             "history_id": null, "last_seq": null, "head_seq": null, "remote_nodes": 0,

@@ -384,7 +384,7 @@ impl FolderData {
             recovery: None,
             space_id: self.space_id,
             space_name: self.space_name,
-            path: self.path,
+            path: Some(self.path).filter(|path| !path.is_empty()),
             state: self.state,
             history_id: None,
             last_seq: None,

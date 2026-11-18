@@ -2680,7 +2680,7 @@ fn folder_status(
 ) -> FolderStatus {
     FolderStatus {
         space_name: link.space_name.clone(),
-        path: link.root.to_string_lossy().into_owned(),
+        path: Some(link.root.to_string_lossy().into_owned()),
         history_id: cursor.as_ref().map(|cursor| cursor.history_id.clone()),
         last_seq: cursor.map(|cursor| cursor.last_seq),
         remote_nodes: nodes,
@@ -2694,7 +2694,7 @@ fn stopped_status(space_id: &str) -> FolderStatus {
         recovery: None,
         space_id: space_id.to_owned(),
         space_name: String::new(),
-        path: String::new(),
+        path: None,
         state: FolderState::Stopped,
         history_id: None,
         last_seq: None,
@@ -3190,7 +3190,7 @@ mod tests {
         assert_eq!(status.folders.len(), 1);
         let folder = &status.folders[0];
         assert_eq!(folder.space_id, SPACE);
-        assert_eq!(folder.path, root.display().to_string());
+        assert_eq!(folder.path, Some(root.display().to_string()));
         assert_eq!(folder.state, FolderState::Stopped);
         assert_eq!(folder.questions, 1);
     }
@@ -4977,7 +4977,7 @@ mod tests {
         for (space_id, root) in [(GARBLED, &roots[0]), (EMPTIED, &roots[3])] {
             let broken = folder(&listed, space_id);
             assert_eq!(broken.state, FolderState::Halted);
-            assert_eq!(broken.path, root.display().to_string());
+            assert_eq!(broken.path, Some(root.display().to_string()));
             let problem = broken.problem.unwrap();
             assert!(
                 problem.starts_with("the folder's sync database \"")
@@ -5133,8 +5133,8 @@ mod tests {
         let listed = Driver::linked_folders(&paths).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(
-            (listed[0].space_id.as_str(), listed[0].path.as_str()),
-            (SPACE, "")
+            (listed[0].space_id.as_str(), listed[0].path.as_deref()),
+            (SPACE, None)
         );
         assert_eq!(listed[0].state, FolderState::Halted);
         let problem = listed[0].problem.clone().unwrap();
@@ -6962,7 +6962,7 @@ mod tests {
 
         assert_eq!(folders.len(), 1);
         assert_eq!(folders[0].space_id, SPACE);
-        assert_eq!(folders[0].path, root.display().to_string());
+        assert_eq!(folders[0].path, Some(root.display().to_string()));
         assert_eq!(snapshot(&base.join("profile")), before);
 
         let held = Driver::open(paths.clone()).unwrap();

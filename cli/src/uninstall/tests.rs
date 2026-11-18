@@ -479,3 +479,34 @@ fn tree(dir: &Path) -> Vec<PathBuf> {
     }
     found
 }
+
+#[tokio::test]
+async fn a_folder_whose_place_is_unknown_gets_no_cleanup() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    koidrive_state_file::create_dir(&paths.state_dir, &paths.state_dir).unwrap();
+    let folder = dir.path().join("Koidrive");
+    fs::create_dir(&folder).unwrap();
+    let status: koidrive_driver::Status = serde_json::from_value(serde_json::json!({
+        "account": null, "running": true,
+        "folders": ([folder.to_str().unwrap(), ""].map(|path| serde_json::json!({
+            "space_id": "s1", "space_name": "Home", "path": path, "state": "halted",
+            "history_id": null, "last_seq": null, "head_seq": null, "remote_nodes": 0,
+            "local_entries": null, "questions": 0
+        })))
+    }))
+    .unwrap();
+    let listener = koidrive_ipc::bind(&paths.socket()).unwrap();
+    let served = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        koidrive_ipc::read_line(&mut stream).await.unwrap();
+        koidrive_ipc::write_line(&mut stream, &Response::Status { status })
+            .await
+            .unwrap();
+    });
+
+    let found = find::find(&paths, dir.path()).await;
+    served.await.unwrap();
+
+    assert_eq!(found.folders, [folder]);
+}

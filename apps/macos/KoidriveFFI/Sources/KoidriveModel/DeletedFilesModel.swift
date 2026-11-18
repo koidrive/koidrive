@@ -94,8 +94,9 @@ public final class DeletedFilesModel {
             do {
                 var histories: [FolderHistory] = []
                 for folder in app.state.folders {
-                    let requests = try await app.restoreRequests(in: folder.url)
-                    let trash = try await app.trash(in: folder.url)
+                    guard let url = folder.url else { continue }
+                    let requests = try await app.restoreRequests(in: url)
+                    let trash = try await app.trash(in: url)
                     histories.append(FolderHistory(folder: folder, trash: trash, requests: requests))
                 }
                 let linked = Set(histories.map(\.folder.spaceId))
@@ -116,12 +117,12 @@ public final class DeletedFilesModel {
             guard case .loaded(var histories) = content else { return }
             for index in histories.indices {
                 let history = histories[index]
-                guard let requests = try? await app.restoreRequests(in: history.folder.url) else { continue }
+                guard let url = history.folder.url, let requests = try? await app.restoreRequests(in: url) else { continue }
                 let waited = Set(history.requests.filter(\.state.isPending).map(\.id)).union(unlisted.keys)
                 if requests.contains(where: { waited.contains($0.id) && !$0.state.isPending }) {
                     staleTrash.insert(history.folder.spaceId)
                 }
-                if staleTrash.contains(history.folder.spaceId), let trash = try? await app.trash(in: history.folder.url) {
+                if staleTrash.contains(history.folder.spaceId), let trash = try? await app.trash(in: url) {
                     histories[index].trash = trash
                     staleTrash.remove(history.folder.spaceId)
                 }

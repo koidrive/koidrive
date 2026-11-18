@@ -549,7 +549,7 @@ mod tests {
             recovery: None,
             space_id: "0190a5b0-0000-7000-8000-000000000001".into(),
             space_name: "Documents".into(),
-            path: "/Users/ada/Documents".into(),
+            path: Some("/Users/ada/Documents".into()),
             wait: None,
             state,
             history_id: None,
@@ -661,7 +661,7 @@ mod tests {
             driver::FolderStatus {
                 space_id: "0190a5b0-0000-7000-8000-000000000002".into(),
                 space_name: "Codes".into(),
-                path: "/Users/ada/Codes".into(),
+                path: Some("/Users/ada/Codes".into()),
                 activity: Some(driver::Activity::Scanning { files: 12_345 }),
                 ..folder_in(DriverFolderState::Bootstrapping, None)
             },
@@ -1018,7 +1018,7 @@ mod unreachable_tests {
             folders: vec![driver::FolderStatus {
                 space_id: "abc".into(),
                 space_name: "Documents".into(),
-                path: "/Users/ada/Documents".into(),
+                path: Some("/Users/ada/Documents".into()),
                 state: DriverFolderState::Offline,
                 history_id: None,
                 last_seq: None,
@@ -1067,7 +1067,7 @@ mod unreachable_tests {
                 folders: vec![driver::FolderStatus {
                     space_id: "abc".into(),
                     space_name: "Documents".into(),
-                    path: "/Users/ada/Documents".into(),
+                    path: Some("/Users/ada/Documents".into()),
                     state,
                     history_id: None,
                     last_seq: None,

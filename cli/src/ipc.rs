@@ -265,17 +265,18 @@ static READING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 async fn unreadable(folders: Vec<FolderStatus>) -> Vec<Blocked> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     let reads: Vec<_> = (folders.into_iter())
-        .map(|folder| {
+        .filter_map(|folder| folder.path)
+        .map(|path| {
             let (send, receive) = tokio::sync::oneshot::channel();
-            if READING.lock().unwrap().insert(folder.path.clone()) {
-                let path = folder.path.clone();
+            if READING.lock().unwrap().insert(path.clone()) {
+                let reading = path.clone();
                 std::thread::spawn(move || {
-                    let read = fs::read_dir(&path).map(drop);
-                    READING.lock().unwrap().remove(&path);
+                    let read = fs::read_dir(&reading).map(drop);
+                    READING.lock().unwrap().remove(&reading);
                     send.send(read)
                 });
             }
-            (folder.path, receive)
+            (path, receive)
         })
         .collect();
     let mut blocked = Vec::new();

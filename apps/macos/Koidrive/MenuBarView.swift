@@ -308,9 +308,9 @@ struct MenuContent: View {
 
     private var actions: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(model.state.folders, id: \.spaceId) { folder in
+            ForEach(model.state.folders.filter { $0.url != nil }, id: \.spaceId) { folder in
                 MenuButton(title: "Open \(folder.spaceName)", systemImage: "folder") {
-                    NSWorkspace.shared.open(URL(filePath: folder.path, directoryHint: .isDirectory))
+                    if let url = folder.url { NSWorkspace.shared.open(url) }
                 }
             }
             if model.needsSetup {
@@ -600,8 +600,8 @@ private struct RecentChangeRow: View {
         .padding(.vertical, 5)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {
-            guard let folder, change.change != .deleted else { return }
-            NSWorkspace.shared.activateFileViewerSelecting([URL(filePath: folder.path).appending(path: change.path)])
+            guard let url = folder?.url, change.change != .deleted else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([url.appending(path: change.path)])
         }
     }
 }

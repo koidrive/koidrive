@@ -59,8 +59,11 @@ pub(crate) async fn status(paths: &Paths, check: bool) -> Result<Done, CliError>
     if status.paused {
         done = done.then(&["koi", "resume"]);
     }
-    for folder in (status.folders.iter()).filter(|folder| folder.relinkable) {
-        done = done.then(&["koi", "folder", "relink", &folder.path]);
+    for path in (status.folders.iter())
+        .filter(|folder| folder.relinkable)
+        .filter_map(|folder| folder.path.as_deref())
+    {
+        done = done.then(&["koi", "folder", "relink", path]);
     }
     Ok(done)
 }
@@ -93,9 +96,9 @@ pub(crate) fn status_summary(
             FolderState::Offline => "Offline. Check your connection",
             FolderState::Halted => "Sync stopped",
         };
-        let name = match folder.path.is_empty() {
-            true => format!("The folder of space {}", printable(&folder.space_id)),
-            false => output::path(Path::new(&folder.path)),
+        let name = match &folder.path {
+            Some(root) => output::path(Path::new(root)),
+            None => format!("The folder of space {}", printable(&folder.space_id)),
         };
         text.push_str(&format!("{name}: {state}.\n"));
         if let Some(progress) = &folder.progress {
@@ -103,23 +106,25 @@ pub(crate) fn status_summary(
         }
         if let Some(problem) = &folder.problem {
             text.push_str(&format!("  {}\n", printable(problem)));
-            let path = output::command_path(Path::new(&folder.path));
-            if folder.state == FolderState::Halted && folder.relinkable {
-                text.push_str(&format!(
-                    "  If this copy is the one to keep, run koi folder relink {path}. Nothing it lacks is deleted on the server.\n"
-                ));
-            } else if folder.state == FolderState::Halted && !problem.contains("koi ") {
-                text.push_str(&format!(
-                    "  Fix the problem above, then run koi folder restart {path}\n"
-                ));
+            let halted = folder
+                .path
+                .as_deref()
+                .filter(|_| folder.state == FolderState::Halted);
+            if let Some(root) = halted {
+                let path = output::command_path(Path::new(root));
+                if folder.relinkable {
+                    text.push_str(&format!(
+                        "  If this copy is the one to keep, run koi folder relink {path}. Nothing it lacks is deleted on the server.\n"
+                    ));
+                } else if !problem.contains("koi ") {
+                    text.push_str(&format!(
+                        "  Fix the problem above, then run koi folder restart {path}\n"
+                    ));
+                }
             }
         }
-        for disk in &folder.held_disks {
-            text.push_str(&format!("  {}\n", printable(&disk.describe(&folder.path))));
-        }
-        if !folder.kept_entries.is_empty() {
-            let kept = koidrive_driver::describe_kept(&folder.path, &folder.kept_entries);
-            text.push_str(&format!("  {}\n", printable(&kept)));
+        if let Some(root) = &folder.path {
+            text.push_str(&held(folder, root));
         }
         if let Some(wait) = &folder.wait {
             text.push_str(&format!("  {}\n", output::wait_cause(wait, now_ms())));
@@ -240,9 +245,9 @@ pub(crate) fn folder_text(folder: &FolderStatus) -> String {
         FolderState::Offline => "Offline",
         FolderState::Halted => "Halted",
     };
-    let path = match folder.path.is_empty() {
-        true => "(path unknown)".to_owned(),
-        false => printable(&folder.path),
+    let path = match &folder.path {
+        Some(root) => printable(root),
+        None => "(path unknown)".to_owned(),
     };
     let mut text = format!(
         "{path}  space {} ({})  {state}  {seq}, {} remote nodes{}, {}\n",
@@ -261,12 +266,8 @@ pub(crate) fn folder_text(folder: &FolderStatus) -> String {
     if let Some(problem) = &folder.problem {
         text.push_str(&format!("  {}\n", printable(problem)));
     }
-    for disk in &folder.held_disks {
-        text.push_str(&format!("  {}\n", printable(&disk.describe(&folder.path))));
-    }
-    if !folder.kept_entries.is_empty() {
-        let kept = koidrive_driver::describe_kept(&folder.path, &folder.kept_entries);
-        text.push_str(&format!("  {}\n", printable(&kept)));
+    if let Some(root) = &folder.path {
+        text.push_str(&held(folder, root));
     }
     if let Some(cause) = &folder.recovery {
         let described = koidrive_driver::describe(cause);
@@ -299,4 +300,16 @@ fn progress_text(progress: &Progress) -> String {
         parts.push(format!("now {}", printable(current)));
     }
     parts.join("; ")
+}
+
+fn held(folder: &FolderStatus, root: &str) -> String {
+    let mut text = String::new();
+    for disk in &folder.held_disks {
+        text.push_str(&format!("  {}\n", printable(&disk.describe(root))));
+    }
+    if !folder.kept_entries.is_empty() {
+        let kept = koidrive_driver::describe_kept(root, &folder.kept_entries);
+        text.push_str(&format!("  {}\n", printable(&kept)));
+    }
+    text
 }

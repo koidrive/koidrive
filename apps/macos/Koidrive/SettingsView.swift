@@ -129,7 +129,7 @@ private struct FolderRow: View {
                 .foregroundStyle(Color.text)
                 .lineLimit(1)
                 .frame(width: 76, alignment: .leading)
-            Text(verbatim: abbreviatingHome(folder.path))
+            Text(verbatim: folder.path.map(abbreviatingHome) ?? "")
                 .foregroundStyle(Color.text2)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -138,8 +138,9 @@ private struct FolderRow: View {
                 .frame(width: 104, alignment: .leading)
             HStack(spacing: 6) {
                 Button("Show in Finder") {
-                    NSWorkspace.shared.open(URL(filePath: folder.path, directoryHint: .isDirectory))
+                    if let url = folder.url { NSWorkspace.shared.open(url) }
                 }
+                .disabled(folder.url == nil)
                 Button("Unlink…", action: unlink)
             }
             .controlSize(.small)
@@ -595,8 +596,8 @@ private struct ProblemRow: View {
                         .font(.system(size: 12))
                         .foregroundStyle(Color.text2)
                         .textSelection(.enabled)
-                } else if let folder, problem.kind.concernsTheFolder {
-                    Text(verbatim: abbreviatingHome(folder.path))
+                } else if let folder, problem.kind.concernsTheFolder, let path = folder.path {
+                    Text(verbatim: abbreviatingHome(path))
                         .font(.system(size: 12))
                         .foregroundStyle(Color.text2)
                         .textSelection(.enabled)
@@ -610,12 +611,11 @@ private struct ProblemRow: View {
                     .foregroundStyle(Color.text3)
             }
             Spacer()
-            if let folder {
+            if let url = folder?.url {
                 Button("Show in Finder") {
-                    let url = URL(filePath: folder.path)
                     if let path = problem.path {
                         NSWorkspace.shared.activateFileViewerSelecting([url.appending(path: path)])
-                    } else if FileManager.default.fileExists(atPath: folder.path) {
+                    } else if FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) {
                         NSWorkspace.shared.open(url)
                     } else {
                         var parent = url.deletingLastPathComponent()

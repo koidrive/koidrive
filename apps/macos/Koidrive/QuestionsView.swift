@@ -355,8 +355,8 @@ struct QuestionDetail: View {
     }
 
     private func fullPath(_ item: HeldItem) -> String {
-        guard let folder else { return item.path }
-        return abbreviatingHome(URL(filePath: folder.path).appending(path: item.path).path(percentEncoded: false))
+        guard let url = folder?.url else { return item.path }
+        return abbreviatingHome(url.appending(path: item.path).path(percentEncoded: false))
     }
 
     private func copy(_ path: String) {

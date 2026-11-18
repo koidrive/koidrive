@@ -11,7 +11,6 @@ use koidrive_driver::{
 };
 use koidrive_ipc::{Request, Response};
 use serde_json::Value;
-use std::path::Path;
 
 pub(crate) async fn questions(paths: &Paths) -> Result<Vec<Question>, CliError> {
     match ipc::run(paths, Request::Questions).await? {
@@ -349,7 +348,7 @@ fn question_text_presented(question: &Question, presentation: QuestionPresentati
         ),
         QuestionPresentation::Standalone { folder, device } => (
             match folder {
-                Some(folder) => format!("  folder {}", output::path(Path::new(&folder.path))),
+                Some(folder) => format!("  folder {}", output::folder(folder)),
                 None => format!("  space {}", printable(&question.space_id)),
             },
             device,

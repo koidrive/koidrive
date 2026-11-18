@@ -142,7 +142,7 @@ pub async fn setup(
             for folder in &folders {
                 terminal.complete(&format!(
                     "{} is linked to {}",
-                    shown_folder(Path::new(&folder.path)),
+                    crate::output::folder(folder),
                     folder.space_name
                 ));
             }
@@ -426,7 +426,7 @@ async fn onboard(paths: &Paths, terminal: &Terminal) -> Result<Done, CliError> {
     .await?;
     linking.finish(&format!(
         "{} is linked to {}",
-        shown_folder(Path::new(&status.path)),
+        crate::output::folder(&status),
         status.space_name
     ));
     let data = SetupData {
@@ -739,10 +739,12 @@ async fn scripted(
                 ))
             })?;
             match ipc::run(paths, Request::Status).await? {
-                Response::Status { status } => status
-                    .folders
-                    .iter()
-                    .any(|folder| Path::new(&folder.path) == root),
+                Response::Status { status } => status.folders.iter().any(|folder| {
+                    folder
+                        .path
+                        .as_deref()
+                        .is_some_and(|path| Path::new(path) == root)
+                }),
                 other => return Err(crate::unexpected(other)),
             }
         } else {

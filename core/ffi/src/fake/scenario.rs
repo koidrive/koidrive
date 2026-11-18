@@ -82,7 +82,7 @@ fn signed_in() -> Saved {
     let linked = |space_id: &str, name: &str| LinkedFolder {
         space_id: space_id.to_owned(),
         space_name: name.to_owned(),
-        path: format!("{home}/Koidrive/{name}"),
+        path: Some(format!("{home}/Koidrive/{name}")),
         state: FolderState::UpToDate,
         activity: None,
         bytes_moved: 0,
@@ -426,7 +426,7 @@ fn share_links(saved: &mut Saved, now: i64) {
     let folder = |space_id: &str| {
         (saved.folders.iter())
             .find(|folder| folder.space_id == space_id)
-            .map(|folder| folder.path.clone())
+            .and_then(|folder| folder.path.clone())
     };
     let link = |id: &str, folder: Option<String>, target: Option<(&str, NodeKind)>| ShareLink {
         id: id.to_owned(),

@@ -125,8 +125,8 @@ public final class VersionHistoryModel {
 
     /// Reads how the requested restore went. Once it ended as restored, the versions load again.
     public func refreshRestore() async {
-        guard case .requested(let version, let id) = restore, let folder,
-              let requests = try? await app.restoreRequests(in: folder.url),
+        guard case .requested(let version, let id) = restore, let url = folder?.url,
+              let requests = try? await app.restoreRequests(in: url),
               case .requested(_, id) = restore,
               let request = requests.first(where: { $0.id == id }) else { return }
         switch request.state {

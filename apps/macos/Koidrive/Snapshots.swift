@@ -157,7 +157,7 @@ enum Snapshots {
         let (restores, restoresFiles) = make()
         await restoresFiles.load()
         if let fake = restores.session.fakeCore(), let documents = restores.state.folders.first {
-            let plan = documents.url.appending(path: "Launch plan.key")
+            let plan = (documents.url ?? URL(filePath: "/")).appending(path: "Launch plan.key")
             _ = try? fake.setVersions(spaceId: documents.spaceId, versions: FileVersions(path: "Launch plan.key", nodeId: "node-plan", versions: [
                 FileVersion(versionId: "v2", size: 6_400_000, savedAtMs: day(0, 9, 41), deviceId: "device-1", deviceName: "Ada's Mac mini", current: true),
                 FileVersion(versionId: "v1", size: 5_900_000, savedAtMs: day(-3, 9, 6), deviceId: "device-1", deviceName: "Ada's Mac mini", current: false),

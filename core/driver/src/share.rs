@@ -132,7 +132,7 @@ impl Driver {
         };
         let node_id = node_id.to_owned();
         let store = self.paths().store(&folder.space_id)?;
-        let root = PathBuf::from(&folder.path);
+        let root = PathBuf::from(folder.path.as_deref().expect("a located folder has a path"));
         let requested = path.to_owned();
         let space_id = folder.space_id.clone();
         let selected = node_id.clone();
@@ -500,7 +500,7 @@ fn described(
         url: Secret(link.url),
         space_id: link.space_id,
         space_name: space_name.to_owned(),
-        folder: folder.map(|folder| folder.path.clone()),
+        folder: folder.and_then(|folder| folder.path.clone()),
         node_id: link.node_id,
         created_at_ms: link.created_at_ms,
         expires_at_ms,
@@ -578,11 +578,8 @@ fn locate<'a>(
         return Err(DriverError::RelativePath(path.to_owned()));
     }
     let outside = || DriverError::OutsideLinkedFolders(path.to_owned());
-    let placed = || {
-        folders
-            .iter()
-            .filter(|folder| Path::new(&folder.path).is_absolute())
-    };
+    let placed =
+        || (folders.iter()).filter_map(|folder| Some((folder, Path::new(folder.path.as_deref()?))));
     let mut components: VecDeque<_> = path
         .components()
         .map(|component| component.as_os_str().to_owned())
@@ -593,7 +590,7 @@ fn locate<'a>(
         match Path::new(&component).components().next().unwrap() {
             Component::CurDir => {}
             Component::ParentDir => {
-                if placed().any(|folder| prefix.starts_with(&folder.path))
+                if placed().any(|(_, root)| prefix.starts_with(root))
                     && !std::fs::symlink_metadata(&prefix).is_ok_and(|metadata| metadata.is_dir())
                 {
                     return Err(DriverError::NotOnServer(path.to_owned()));
@@ -601,7 +598,7 @@ fn locate<'a>(
                 prefix.pop();
             }
             Component::Normal(name) => {
-                let inside = placed().any(|folder| prefix.starts_with(&folder.path));
+                let inside = placed().any(|(_, root)| prefix.starts_with(root));
                 prefix.push(name);
                 let metadata = std::fs::symlink_metadata(&prefix);
                 if inside {
@@ -634,8 +631,9 @@ fn locate<'a>(
         }
     }
     placed()
-        .filter_map(|folder| Some((folder, below(Path::new(&folder.path), &prefix)?)))
-        .max_by_key(|(folder, _)| folder.path.len())
+        .filter_map(|(folder, root)| Some((folder, root, below(root, &prefix)?)))
+        .max_by_key(|(_, root, _)| root.as_os_str().len())
+        .map(|(folder, _, names)| (folder, names))
         .ok_or_else(outside)
 }
 
@@ -753,7 +751,7 @@ mod tests {
         FolderStatus {
             space_id: SPACE.into(),
             space_name: "Team".into(),
-            path: path.to_str().unwrap().into(),
+            path: Some(path.to_str().unwrap().into()),
             state: FolderState::UpToDate,
             history_id: None,
             last_seq: None,
@@ -1232,7 +1230,7 @@ mod tests {
                 continue;
             }
             let (found, path) = locate(&folders, &path).unwrap();
-            assert_eq!(found.path, linked.to_str().unwrap());
+            assert_eq!(found.path.as_deref(), linked.to_str());
             assert_eq!(path, names("Docs/plan.txt"));
             assert_eq!(
                 locate(&folders, &typed.join("Docs/../server-only.txt"))
@@ -1275,14 +1273,14 @@ mod tests {
         std::fs::create_dir_all(linked.join("Docs")).unwrap();
         symlink(linked.join("Docs"), root.join("shortcut")).unwrap();
         let unplaced = FolderStatus {
-            path: String::new(),
+            path: None,
             ..folder(&linked)
         };
         let folders = [unplaced, folder(&linked)];
 
         let (found, names) = locate(&folders, &root.join("shortcut/a.txt")).unwrap();
 
-        assert_eq!(found.path, linked.to_str().unwrap());
+        assert_eq!(found.path.as_deref(), linked.to_str());
         assert_eq!(names, vec!["Docs", "a.txt"]);
     }
 
@@ -1304,11 +1302,11 @@ mod tests {
             linked.join("Docs/../../shortcut/../Sync"),
         ] {
             let (found, names) = locate(&folders, &path).unwrap();
-            assert_eq!(found.path, linked.to_str().unwrap());
+            assert_eq!(found.path.as_deref(), linked.to_str());
             assert_eq!(names, vec!["Sync"]);
         }
         let (found, names) = locate(&folders, &linked.join("../Other/Docs/../file")).unwrap();
-        assert_eq!(found.path, other.to_str().unwrap());
+        assert_eq!(found.path.as_deref(), other.to_str());
         assert_eq!(names, vec!["file"]);
         for path in [
             "server-only/..",

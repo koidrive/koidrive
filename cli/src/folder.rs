@@ -198,7 +198,7 @@ pub(crate) async fn link(
 }
 
 pub(crate) fn linked(folder: &FolderStatus, outcome: report::Outcome) -> String {
-    let path = printable(&folder.path);
+    let path = output::folder_path(folder);
     let space = format!(
         "space {} ({})",
         printable(&folder.space_name),
@@ -211,7 +211,7 @@ pub(crate) fn linked(folder: &FolderStatus, outcome: report::Outcome) -> String 
 }
 
 pub(crate) fn linked_summary(folder: &FolderStatus, outcome: report::Outcome) -> String {
-    let path = output::path(Path::new(&folder.path));
+    let path = output::folder(folder);
     let space = printable(&folder.space_name);
     match outcome {
         report::Outcome::Unchanged => format!("{path} is already linked to {space}.\n"),
@@ -221,7 +221,7 @@ pub(crate) fn linked_summary(folder: &FolderStatus, outcome: report::Outcome) ->
 
 /// What `folder restart` reports for the folder as the restart left it.
 pub(crate) fn restarted(folder: FolderStatus) -> Result<Done, CliError> {
-    let path = printable(&folder.path);
+    let path = output::folder_path(&folder);
     let text = match folder.state {
         FolderState::Halted => {
             let problem = printable(folder.problem.as_deref().unwrap_or_default());
@@ -232,7 +232,7 @@ pub(crate) fn restarted(folder: FolderStatus) -> Result<Done, CliError> {
         }
         _ => format!("Syncing {path} again.\n"),
     };
-    let summary = format!("Syncing {} again.\n", output::path(Path::new(&folder.path)));
+    let summary = format!("Syncing {} again.\n", output::folder(&folder));
     Ok(Done::ok(FolderData::of(&folder), text).human(summary, ""))
 }
 

@@ -107,14 +107,14 @@ async fn folder_states(
     folders: Vec<FolderStatus>,
 ) {
     let mut shown: std::collections::HashMap<String, FolderState> = (folders.into_iter())
-        .map(|folder| (folder.path, folder.state))
+        .map(|folder| (folder.space_id, folder.state))
         .collect();
     while watch.changed().await.is_ok() {
         for folder in driver.status().folders {
-            if shown.get(&folder.path) == Some(&folder.state) {
+            if shown.get(&folder.space_id) == Some(&folder.state) {
                 continue;
             }
-            shown.insert(folder.path.clone(), folder.state);
+            shown.insert(folder.space_id.clone(), folder.state);
             let data = FolderData::of(&folder);
             let event = Lifecycle::FolderState {
                 folder: data.path,

@@ -378,18 +378,19 @@ fn this_device(account: &Account) -> Device {
 fn located<'a>(
     folders: &'a [LinkedFolder],
     path: &str,
-) -> Result<(&'a LinkedFolder, String), SessionError> {
+) -> Result<(&'a LinkedFolder, &'a str, String), SessionError> {
     let path = Path::new(path);
     folders
         .iter()
         .find_map(|folder| {
-            let names: Option<Vec<&str>> = (path.strip_prefix(&folder.path).ok()?.components())
+            let root = folder.path.as_deref()?;
+            let names: Option<Vec<&str>> = (path.strip_prefix(root).ok()?.components())
                 .map(|component| match component {
                     Component::Normal(name) => name.to_str(),
                     _ => None,
                 })
                 .collect();
-            Some((folder, names?.join("/")))
+            Some((folder, root, names?.join("/")))
         })
         .ok_or_else(|| SessionError::PathNotInLinkedFolder {
             path: path.to_string_lossy().into_owned(),
@@ -399,11 +400,11 @@ fn located<'a>(
 fn located_inside<'a>(
     folders: &'a [LinkedFolder],
     path: &str,
-) -> Result<(&'a LinkedFolder, String), SessionError> {
-    let (folder, below) = located(folders, path)?;
+) -> Result<(&'a LinkedFolder, &'a str, String), SessionError> {
+    let (folder, root, below) = located(folders, path)?;
     match below.is_empty() {
         true => Err(SessionError::PathIsLinkedFolder),
-        false => Ok((folder, below)),
+        false => Ok((folder, root, below)),
     }
 }
 
@@ -961,18 +962,18 @@ impl Core for FakeCore {
             if saved.folders.iter().any(|f| f.space_id == space_id) {
                 return Err(SessionError::SpaceAlreadyLinked);
             }
-            if let Some(other) = saved.folders.iter().find(|f| {
-                let other = Path::new(&f.path);
-                folder.starts_with(other) || other.starts_with(folder)
-            }) {
+            if let Some(other) = (saved.folders.iter())
+                .filter_map(|f| f.path.as_deref())
+                .find(|other| folder.starts_with(other) || Path::new(other).starts_with(folder))
+            {
                 return Err(SessionError::FolderOverlaps {
-                    other: other.path.clone(),
+                    other: other.to_owned(),
                 });
             }
             let linked = LinkedFolder {
                 space_id: space.space_id,
                 space_name: space.name,
-                path: folder.to_string_lossy().into_owned(),
+                path: Some(folder.to_string_lossy().into_owned()),
                 state: FolderState::UpToDate,
                 activity: None,
                 bytes_moved: 0,
@@ -1010,13 +1011,13 @@ impl Core for FakeCore {
         let mut state = self.lock();
         state.take_failure()?;
         state.saved.account()?;
-        let (folder, below) = located(&state.saved.folders, path)?;
+        let (folder, root, below) = located(&state.saved.folders, path)?;
         let inside = |item: &&DeletedItem| Path::new(&item.path).starts_with(&below);
         let items = (state.saved.history.get(&folder.space_id))
             .map(|history| history.trash.iter().filter(inside).cloned().collect())
             .unwrap_or_default();
         Ok(Trash {
-            folder: folder.path.clone(),
+            folder: root.to_owned(),
             items,
         })
     }
@@ -1025,7 +1026,7 @@ impl Core for FakeCore {
         let mut state = self.lock();
         state.take_failure()?;
         state.saved.account()?;
-        let (folder, below) = located_inside(&state.saved.folders, path)?;
+        let (folder, _, below) = located_inside(&state.saved.folders, path)?;
         (state.saved.history.get(&folder.space_id))
             .and_then(|history| history.versions.iter().find(|file| file.path == below))
             .cloned()
@@ -1037,8 +1038,8 @@ impl Core for FakeCore {
         state.take_failure()?;
         self.change(&mut state, &[], |saved| {
             saved.account()?;
-            let (folder, below) = located_inside(&saved.folders, path)?;
-            let (space_id, folder) = (folder.space_id.clone(), folder.path.clone());
+            let (folder, root, below) = located_inside(&saved.folders, path)?;
+            let (space_id, folder) = (folder.space_id.clone(), root.to_owned());
             let deleted = (saved.history.get(&space_id).into_iter())
                 .flat_map(|history| &history.trash)
                 .any(|item| item.node_id == node_id && item.path == below);
@@ -1057,8 +1058,8 @@ impl Core for FakeCore {
         state.take_failure()?;
         self.change(&mut state, &[], |saved| {
             saved.account()?;
-            let (folder, below) = located_inside(&saved.folders, path)?;
-            let (space_id, folder) = (folder.space_id.clone(), folder.path.clone());
+            let (folder, root, below) = located_inside(&saved.folders, path)?;
+            let (space_id, folder) = (folder.space_id.clone(), root.to_owned());
             let file = (saved.history.get(&space_id))
                 .and_then(|history| history.versions.iter().find(|file| file.path == below))
                 .ok_or(SessionError::NothingAtPath)?;
@@ -1080,7 +1081,7 @@ impl Core for FakeCore {
     fn restore_requests(&self, path: &str) -> Result<Vec<RestoreRequest>, SessionError> {
         let mut state = self.lock();
         state.take_failure()?;
-        let (folder, _) = located(&state.saved.folders, path)?;
+        let (folder, _, _) = located(&state.saved.folders, path)?;
         Ok((state.saved.history.get(&folder.space_id))
             .map(|history| history.requests.clone())
             .unwrap_or_default())
@@ -1091,7 +1092,12 @@ impl Core for FakeCore {
         state.take_failure()?;
         let saved = &state.saved;
         saved.account()?;
-        let linked = |folder: &String| saved.folders.iter().any(|linked| &linked.path == folder);
+        let linked = |folder: &String| {
+            saved
+                .folders
+                .iter()
+                .any(|linked| linked.path.as_ref() == Some(folder))
+        };
         Ok((saved.share_links.iter().cloned())
             .map(|link| ShareLink {
                 folder: link.folder.filter(linked),
@@ -1118,8 +1124,8 @@ impl Core for FakeCore {
         }
         self.change(&mut state, &[], |saved| {
             let server = saved.account()?.server_url.clone();
-            let (folder, below) = located(&saved.folders, path)?;
-            let (space_id, folder) = (folder.space_id.clone(), folder.path.clone());
+            let (folder, root, below) = located(&saved.folders, path)?;
+            let (space_id, folder) = (folder.space_id.clone(), root.to_owned());
             let deleted = (saved.history.get(&space_id).into_iter())
                 .flat_map(|history| &history.trash)
                 .any(|item| Path::new(&below).starts_with(&item.path));
@@ -1871,7 +1877,7 @@ mod tests {
                     answer,
                 }]
             );
-            let documents = folder_of(&h.core, DOCUMENTS).path;
+            let documents = folder_of(&h.core, DOCUMENTS).path.unwrap();
             let trash = h.core.trash(&documents).unwrap().items;
             let trashed_copy: Vec<_> = (trash.iter())
                 .map(|item| {
@@ -2328,7 +2334,7 @@ mod tests {
     fn history_needs_a_path_in_a_linked_folder() {
         let h = Harness::new();
         h.core.load_scenario(FakeScenario::UpToDate).unwrap();
-        let documents = folder_of(&h.core, DOCUMENTS).path;
+        let documents = folder_of(&h.core, DOCUMENTS).path.unwrap();
         let at = |below: &str| format!("{documents}/{below}");
         let report = at("Reports/Annual Report.docx");
         let outside = |path: &str| {
@@ -2389,7 +2395,7 @@ mod tests {
     fn a_restore_waits_until_it_is_finished_and_a_restored_item_leaves_the_trash() {
         let h = Harness::new();
         h.core.load_scenario(FakeScenario::UpToDate).unwrap();
-        let documents = folder_of(&h.core, DOCUMENTS).path;
+        let documents = folder_of(&h.core, DOCUMENTS).path.unwrap();
         let at = |below: &str| format!("{documents}/{below}");
         let in_trash = |node: &str| {
             (h.core.trash(&documents).unwrap().items.iter()).any(|item| item.node_id == node)
@@ -2495,7 +2501,7 @@ mod tests {
         let documents = folder_of(&h.core, DOCUMENTS);
         let in_documents = |links: &[ShareLink]| {
             (links.iter())
-                .filter(|link| link.folder.as_deref() == Some(documents.path.as_str()))
+                .filter(|link| link.folder == documents.path)
                 .count()
         };
         let before = h.core.share_links().unwrap();
@@ -2511,7 +2517,7 @@ mod tests {
     fn a_new_link_needs_a_path_in_a_linked_folder_and_a_password_of_8_to_256_characters() {
         let h = Harness::new();
         h.core.load_scenario(FakeScenario::UpToDate).unwrap();
-        let documents = folder_of(&h.core, DOCUMENTS).path;
+        let documents = folder_of(&h.core, DOCUMENTS).path.unwrap();
         let at = |below: &str| format!("{documents}/{below}");
         let share = |path: &str, password: Option<&str>| {
             (h.core).create_share_link(path, ShareExpiry::Week, password.map(str::to_owned))
@@ -2612,7 +2618,7 @@ mod tests {
     fn a_scripted_failure_reaches_every_share_call_and_links_can_be_staged() {
         let h = Harness::new();
         h.core.load_scenario(FakeScenario::UpToDate).unwrap();
-        let documents = folder_of(&h.core, DOCUMENTS).path;
+        let documents = folder_of(&h.core, DOCUMENTS).path.unwrap();
         let offline = || SessionError::ServerUnreachable {
             reason: "offline".into(),
         };

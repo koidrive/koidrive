@@ -35,7 +35,7 @@ mod server;
 
 #[cfg(test)]
 use locate::below;
-use locate::{lexical, linked_folders, locate, starts_with};
+use locate::{Located, lexical, linked_folders, locate, starts_with};
 use server::{
     Deleted, content_size, deletions, device_names, find, kind, names_of, trash_nodes, tree,
     versions_and_current,
@@ -94,7 +94,11 @@ pub async fn run(paths: &Paths, action: HistoryAction) -> Result<Done, CliError>
 /// when it is a folder inside a linked one.
 async fn trash(paths: &Paths, folder: &Path) -> Result<Done, CliError> {
     let auth = signed_in(paths)?;
-    let (linked, below) = locate(paths, folder).await?;
+    let Located {
+        folder: linked,
+        root,
+        below,
+    } = locate(paths, folder).await?;
     let space = linked.space_id.as_str();
     let live = tree(&auth, space).await?;
     let (trashed, deletions_of) = trash_nodes(&auth, space).await?;
@@ -105,7 +109,7 @@ async fn trash(paths: &Paths, folder: &Path) -> Result<Done, CliError> {
         false => HashMap::new(),
     };
     let data = TrashData {
-        folder: linked.path.clone(),
+        folder: root.clone(),
         entries: found.iter().map(|deleted| deleted.entry(&names)).collect(),
     };
     Ok(Done::ok(
@@ -117,11 +121,15 @@ async fn trash(paths: &Paths, folder: &Path) -> Result<Done, CliError> {
 /// `koi history versions <file>`: the versions the server keeps of a live file, newest first.
 async fn versions(paths: &Paths, file: &Path) -> Result<Done, CliError> {
     let auth = signed_in(paths)?;
-    let (linked, below) = locate(paths, file).await?;
+    let Located {
+        folder: linked,
+        root,
+        below,
+    } = locate(paths, file).await?;
     if below.is_empty() {
         return Err(CliError::usage(format!(
             "{} is the linked folder itself; name a file in it",
-            linked.path
+            root
         ))
         .because(Reason::LinkedFolderItself));
     }
@@ -131,7 +139,7 @@ async fn versions(paths: &Paths, file: &Path) -> Result<Done, CliError> {
         CliError::usage(format!(
             "the server has no file at {} in {}; koi history trash lists deleted ones",
             printable(&below.join("/")),
-            linked.path
+            root
         ))
         .because(Reason::NotFound)
     })?;
@@ -187,7 +195,14 @@ async fn restore(
     {
         return replayed(paths, id, recorded).await;
     }
-    let (linked, below, restore) = match checked(paths, path, version, node).await {
+    let (
+        Located {
+            folder: linked,
+            root,
+            below,
+        },
+        restore,
+    ) = match checked(paths, path, version, node).await {
         Ok(checked) => checked,
         Err(error) => {
             let Some(id) = &request_id else {
@@ -202,14 +217,14 @@ async fn restore(
     let request = Request::Restore {
         space_id: linked.space_id.clone(),
         restore,
-        folder: linked.path.clone(),
+        folder: root.clone(),
         path: below.join("/"),
     };
     match ipc::run(paths, request.once(request_id, key)).await? {
         Response::Restore {
             id, folder, path, ..
         } => {
-            let state = (folder == linked.path).then_some(linked.state);
+            let state = (folder == root).then_some(linked.state);
             Ok(asked(&folder, &path, id, state))
         }
         other => Err(unexpected(other)),
@@ -233,7 +248,7 @@ async fn replayed(
         return Err(format!("the record of the request {id} is not a restore").into());
     };
     let state = (linked_folders(paths).await.ok().into_iter().flatten())
-        .find(|linked| linked.path == folder && linked.space_id == space_id)
+        .find(|linked| linked.path.as_ref() == Some(&folder) && linked.space_id == space_id)
         .map(|linked| linked.state);
     Ok(asked(&folder, &path, restore_id, state))
 }
@@ -245,13 +260,17 @@ async fn checked(
     path: &Path,
     version: Option<String>,
     node: Option<String>,
-) -> Result<(FolderStatus, Vec<String>, RestoreRequest), CliError> {
+) -> Result<(Located, RestoreRequest), CliError> {
     let auth = signed_in(paths)?;
-    let (linked, below) = locate(paths, path).await?;
+    let Located {
+        folder: linked,
+        root,
+        below,
+    } = locate(paths, path).await?;
     if below.is_empty() {
         return Err(CliError::usage(format!(
             "{} is the linked folder itself; name a file or folder in it",
-            linked.path
+            root
         ))
         .because(Reason::LinkedFolderItself));
     }
@@ -263,7 +282,7 @@ async fn checked(
             let file = find(&live, space, &below).ok_or_else(|| {
                 CliError::usage(format!(
                     "the server has no file at {shown} in {}; koi history trash lists deleted ones",
-                    linked.path
+                    root
                 ))
                 .because(Reason::NotFound)
             })?;
@@ -297,10 +316,8 @@ async fn checked(
         }
         None => {
             let (trashed, _) = trash_nodes(&auth, space).await?;
-            let deleted =
-                trashed_at(&live, &trashed, space, &below, node.as_deref()).map_err(|why| {
-                    CliError::usage(why.message(&shown, &linked)).because(why.reason())
-                })?;
+            let deleted = trashed_at(&live, &trashed, space, &below, node.as_deref())
+                .map_err(|why| CliError::usage(why.message(&shown, &root)).because(why.reason()))?;
             RestoreRequest::FromTrash {
                 node_id: deleted.node_id.clone(),
                 parent_id: None,
@@ -308,7 +325,14 @@ async fn checked(
             }
         }
     };
-    Ok((linked, below, request))
+    Ok((
+        Located {
+            folder: linked,
+            root,
+            below,
+        },
+        request,
+    ))
 }
 
 /// What `koi history restore` reports for the restore `id` of `path` in `folder`. `state` is the folder's state while it is
@@ -372,7 +396,11 @@ fn asked(folder: &str, path: &str, id: String, state: Option<FolderState>) -> Do
 
 /// `koi history requests [folder]`: the restores asked for in the folder's space, those that ended first.
 async fn requests(paths: &Paths, folder: &Path) -> Result<Done, CliError> {
-    let (linked, _) = locate(paths, folder).await?;
+    let Located {
+        folder: linked,
+        root,
+        ..
+    } = locate(paths, folder).await?;
     let request = Request::Restores {
         space_id: linked.space_id.clone(),
     };
@@ -381,7 +409,7 @@ async fn requests(paths: &Paths, folder: &Path) -> Result<Done, CliError> {
         other => return Err(unexpected(other)),
     };
     let data = RequestsData {
-        folder: linked.path.clone(),
+        folder: root.clone(),
         requests: restores.iter().map(RequestData::of).collect(),
     };
     let pending = restores
@@ -433,14 +461,14 @@ impl NotPicked<'_> {
         }
     }
 
-    fn message(&self, shown: &str, linked: &FolderStatus) -> String {
+    fn message(&self, shown: &str, root: &str) -> String {
         match self {
             Self::None { live: true } => {
                 format!("{shown} is not deleted; koi history versions lists the versions of a file")
             }
             Self::None { live: false } => format!(
                 "nothing deleted at {shown} is in the trash of {}; koi history trash lists what is",
-                linked.path
+                root
             ),
             Self::Several(found) => {
                 let candidates: Vec<String> = (found.iter())
@@ -517,7 +545,7 @@ fn trash_report(
     if found.is_empty() {
         return format!(
             "Nothing from {} is in the trash.\n",
-            printable(&linked.path)
+            crate::output::folder_path(linked)
         );
     }
     let mut report = String::new();
@@ -544,7 +572,7 @@ fn restores_summary(restores: &[RestoreStatus], linked: &FolderStatus) -> String
     if restores.is_empty() {
         return format!(
             "No restore requests for {}.\n",
-            crate::output::path(Path::new(&linked.path))
+            crate::output::folder(linked)
         );
     }
     let mut report = String::new();
@@ -601,7 +629,10 @@ fn restores_summary(restores: &[RestoreStatus], linked: &FolderStatus) -> String
 
 fn restores_report(restores: &[RestoreStatus], linked: &FolderStatus) -> String {
     if restores.is_empty() {
-        return format!("No restore was asked for in {}.\n", printable(&linked.path));
+        return format!(
+            "No restore was asked for in {}.\n",
+            crate::output::folder_path(linked)
+        );
     }
     let mut report = String::new();
     for restore in restores {

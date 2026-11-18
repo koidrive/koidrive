@@ -513,7 +513,7 @@ fn folder_status(folder: &Path, space: &SpaceInfo) -> FolderStatus {
     FolderStatus {
         space_id: space.space_id.clone(),
         space_name: space.name.clone(),
-        path: folder.display().to_string(),
+        path: Some(folder.display().to_string()),
         state: FolderState::Connecting,
         history_id: None,
         last_seq: None,
@@ -2877,7 +2877,7 @@ fn scripted_setup_replays_a_linked_folder_after_files_arrive() {
     let folders = driver.status().folders;
     assert_eq!(folders.len(), 1);
     assert_eq!(
-        Path::new(&folders[0].path),
+        Path::new(folders[0].path.as_deref().unwrap()),
         fs::canonicalize(&folder).unwrap()
     );
     assert_eq!(
@@ -3197,7 +3197,7 @@ esac"#,
         assert_eq!(linked.len(), 1);
         assert_eq!(linked[0].space_id, home.space_id("Koidrive"));
         assert_eq!(
-            Path::new(&linked[0].path),
+            Path::new(linked[0].path.as_deref().unwrap()),
             fs::canonicalize(&folder).unwrap()
         );
         assert!(!text.contains("Setup complete"), "{text}");
