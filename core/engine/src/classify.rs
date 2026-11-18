@@ -432,7 +432,6 @@ pub struct Trees {
     displaced: TrackedMap<NodeId, FileIdentity>,
     /// False from a restore until the rules of a full scan are in force.
     rules_known: bool,
-    carry_after_restore: bool,
     /// The folders whose rules the last scan of each could not read, by node: a folder renamed is the same folder,
     /// and two folders whose names differ only in case are two folders.
     unknown_rules: BTreeSet<NodeId>,
@@ -536,7 +535,6 @@ impl Trees {
             lost: TrackedSet::default(),
             displaced: TrackedMap::default(),
             rules_known: true,
-            carry_after_restore: false,
             unknown_rules: BTreeSet::new(),
             asked: BTreeSet::new(),
             unsettled: BTreeSet::new(),
@@ -1332,34 +1330,12 @@ impl Trees {
         }
     }
 
-    fn carry_kept_creates(&mut self, after_restore: bool) {
-        let stuck: Vec<NodeId> = (self.waiting.keys())
-            .filter(|id| self.queued_removal(id) && self.r.get(id).is_none())
-            .filter(|id| self.l.get(id).is_some())
-            .filter(|id| after_restore || self.lost_creates.contains(*id))
-            .filter(|id| {
-                after_restore && self.unsent_creates.contains(*id) || self.kept_by_a_change(id)
-            })
-            .cloned()
-            .collect();
-        for id in stuck {
-            self.waiting.remove(&id);
-            self.carry_create(&id, true);
-        }
-        if !after_restore {
-            return;
-        }
-        let kept: Vec<NodeId> = (self.lost_creates.iter())
-            .filter(|id| self.s.get(id).is_some() && !self.queued_removal(id))
-            .cloned()
-            .collect();
-        for id in kept {
-            self.carry_create(&id, true);
-        }
-    }
-
     pub(crate) fn resend_folders_of_changes(&mut self) {
-        let lacking = |id: &NodeId| self.r.get(id).is_none() && self.acknowledged(id).is_some();
+        let lacking = |id: &NodeId| {
+            self.r.get(id).is_none()
+                && self.acknowledged(id).is_some()
+                && !self.lost_creates.contains(id)
+        };
         if !self.others.iter().any(lacking) {
             self.yield_resends();
             return;
@@ -1392,27 +1368,18 @@ impl Trees {
                 .is_some_and(|waiting| waiting.shape.is_none() && waiting.origin == Origin::Other)
     }
 
-    fn kept_by_a_change(&self, id: &str) -> bool {
-        let synced_parent = |at: &str| self.s.get(at).map(|synced| synced.parent.as_str());
-        (self.changes().into_iter()).any(|change| {
-            self.local_chain(change).skip(1).any(|at| at == id)
-                && std::iter::successors(synced_parent(change), |at| synced_parent(at))
-                    .take(self.s.len())
-                    .any(|at| at == id)
-        })
-    }
-
-    fn carry_create(&mut self, id: &NodeId, owed: bool) -> bool {
-        let owed = owed
-            || self.lost_creates.contains(id)
+    fn carry_create(&mut self, id: &NodeId) -> bool {
+        let owed = self.lost_creates.contains(id)
             || self.unsent_creates.contains(id)
             || self.resends.contains(id);
-        if !owed || self.s.get(id).is_none() || self.r.get(id).is_some() || self.l.get(id).is_none()
-        {
+        if !owed || self.r.get(id).is_some() || self.l.get(id).is_none() {
             return false;
         }
-        self.lost_creates.remove(id);
-        self.unsent_creates.insert(id.clone());
+        if self.lost_creates.contains(id) {
+            self.unsent_creates.remove(id);
+        } else {
+            self.unsent_creates.insert(id.clone());
+        }
         self.mark(id);
         true
     }
@@ -3877,11 +3844,14 @@ impl Trees {
                 .is_some_and(|local| (self.s.get(&id)).is_some_and(|s| s.same(&local.shape)));
             let resent =
                 synced.contains(&id) || taken_late.contains(&id) || self.resends.contains(&id);
-            let created_here = unchanged
+            if unchanged
                 && !resent
                 && !moved_here.contains(&id)
                 && self.r.get(&id).is_none()
-                && !self.unsent_creates.contains(&id);
+                && !self.unsent_creates.contains(&id)
+            {
+                self.lost_creates.insert(id.clone());
+            }
             if unchanged && resent {
                 self.resends.insert(id.clone());
             }
@@ -3920,15 +3890,7 @@ impl Trees {
             {
                 self.forgotten_shapes.insert(id.clone(), shape);
             }
-            let owed =
-                created_here || self.resends.contains(&id) || self.lost_creates.contains(&id);
-            let carried = waits
-                && (self.unsent_creates.contains(&id) || owed && self.kept_by_a_change(&id))
-                && self.carry_create(&id, true);
-            if created_here && !carried {
-                self.lost_creates.insert(id.clone());
-            }
-            if waits && !carried {
+            if waits && !self.carry_create(&id) {
                 self.wait(id, None, Origin::Other);
             } else if !waits {
                 self.remember_lost_shape(&id);
@@ -3990,7 +3952,9 @@ impl Trees {
     /// same bytes.
     pub fn class_against(&self, id: &str, synced: Option<&Shape>) -> Class {
         let class = classify(self.l.live(id), synced, self.r.live(id));
-        if class == Class::Remote && self.unsent_creates.contains(id) {
+        if class == Class::Remote
+            && (self.unsent_creates.contains(id) || self.lost_creates.contains(id))
+        {
             return Class::Concurrent;
         }
         if !self.unsent_edits.contains(id) && !self.unsent_moves.contains(id) {
@@ -4193,10 +4157,6 @@ impl Trees {
             self.release_cycle_reverts(merged);
         }
         if self.rules_known {
-            let after_restore = std::mem::take(&mut self.carry_after_restore);
-            if after_restore || !self.lost_creates.is_empty() {
-                self.carry_kept_creates(after_restore);
-            }
             let unwatched = std::mem::take(&mut self.unwatched);
             let changed = match std::mem::take(&mut self.relink) {
                 true => self.dirty.iter().cloned().collect(),
@@ -4857,7 +4817,12 @@ impl Trees {
         if (shape.as_ref())
             .is_some_and(|shape| (self.l.get(id)).is_some_and(|local| local.shape.same(shape)))
         {
-            self.lost_creates.remove(id);
+            if !(self.s.get(id))
+                .zip(shape.as_ref())
+                .is_some_and(|(old, new)| old.same(new))
+            {
+                self.lost_creates.remove(id);
+            }
             self.resends.remove(id);
             self.local_changes.remove(id);
         }
@@ -4972,14 +4937,14 @@ impl Trees {
         );
         debug_assert_eq!(
             (self.unsent_creates.iter())
-                .find(|id| self.lost_creates.contains(*id) || self.queued_removal(id))
-                .or_else(|| {
-                    (self.lost_creates.iter())
-                        .find(|id| self.s.get(id).is_some() && !self.queued_removal(id))
+                .chain(self.lost_creates.iter())
+                .find(|id| {
+                    self.queued_removal(id)
+                        || self.unsent_creates.contains(*id) && self.lost_creates.contains(*id)
                 })
                 .cloned(),
             None,
-            "a create owed again in both unsent_creates and lost_creates, one whose removal from S is queued, or a lost create S keeps without queuing its removal"
+            "a create owed again by both unsent_creates and lost_creates, or whose removal from S is queued"
         );
         debug_assert_eq!(
             (self.lost_shapes.keys())
@@ -5079,7 +5044,6 @@ impl Trees {
             lost,
             displaced,
             rules_known: _,
-            carry_after_restore: _,
             unknown_rules: _,
             asked: _,
             unsettled: _,
@@ -5319,8 +5283,17 @@ impl Trees {
         self.kept_originals = kept_originals.into();
         self.unsent_marks = unsent_marks.into();
         self.pending_finishes = pending_finishes.into();
+        let queued: Vec<NodeId> = (self.waiting.keys())
+            .filter(|id| self.queued_removal(id) && self.r.get(id).is_none())
+            .filter(|id| self.l.get(id).is_some())
+            .cloned()
+            .collect();
+        for id in queued {
+            self.waiting.remove(&id);
+            self.carry_create(&id);
+            self.mark(&id);
+        }
         self.rules_known = false;
-        self.carry_after_restore = true;
         self.unknown_rules.clear();
         Ok(())
     }

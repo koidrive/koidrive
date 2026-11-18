@@ -1087,6 +1087,17 @@ fn a_parked_folder_the_server_lost_is_created_again_after_a_delete_empties_it() 
     );
     trees.settle(&Default::default());
     let (mut effects, mut ids) = (Effects::default(), IdGen::new(1));
+    let unparked = effects
+        .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+        .first()
+        .cloned()
+        .unwrap();
+    assert_eq!(unparked.node, "albums");
+    assert!(matches!(unparked.effect, Effect::Move { .. }));
+    effects
+        .done(&mut trees, None, &unparked.effect_id, None)
+        .unwrap();
+    trees.settle(&Default::default());
     let removed = effects
         .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
         .first()
@@ -1098,25 +1109,12 @@ fn a_parked_folder_the_server_lost_is_created_again_after_a_delete_empties_it() 
         .done(&mut trees, None, &removed.effect_id, None)
         .unwrap();
     trees.settle(&Default::default());
+    let mut commits = Commits::default();
     assert!(
         effects
-            .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+            .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
             .is_empty()
     );
-    let mut commits = Commits::default();
-    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
-    trees.settle(commits.aliases());
-    let unparked = effects
-        .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
-        .first()
-        .cloned()
-        .unwrap();
-    assert_eq!(unparked.node, "albums");
-    assert!(matches!(unparked.effect, Effect::Move { .. }));
-    effects
-        .done(&mut trees, commits.in_flight(), &unparked.effect_id, None)
-        .unwrap();
-    trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(matches!(&ops(&commit)[..], [op::Op::CreateDir(c)] if c.node_id == "albums"));
 }

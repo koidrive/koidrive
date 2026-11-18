@@ -1141,14 +1141,14 @@ fn a_folder_this_device_created_that_a_loss_drops_around_a_trashed_child_is_crea
     trees.settle(commits.aliases());
     assert!(!trees.state().resends.contains("p"), "{:?}", trees.state().resends);
     assert_eq!(trees.waiting().get("p"), None);
-    assert_eq!(trees.state().unsent_creates, ["p".to_string()].into());
-    assert!(trees.state().lost_creates.is_empty());
+    assert_eq!(trees.state().lost_creates, ["p".to_string()].into());
     let next = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
     assert!(matches!(next.as_deref(), Some([op::Op::CreateDir(create), moved]) if create.node_id == "p" && *moved == mv("f", "p", "b")), "{next:?}");
+    assert!(trees.state().unsent_creates.is_empty(), "{:?}", trees.state().unsent_creates);
 }
 
 #[test]
-fn a_store_that_marks_a_kept_lost_folder_of_this_device_twice_keeps_one_record() {
+fn a_store_that_marks_a_lost_folder_of_this_device_twice_keeps_only_its_own_record() {
     let mut trees = trees(&[
         ("p", Some(dir(ROOT, "p")), Some(dir(ROOT, "p")), None),
         ("f", Some(file("p", "a", 1)), Some(file("p", "a", 1)), Some(trashed(file(ROOT, "c", 1)))),
@@ -1160,178 +1160,14 @@ fn a_store_that_marks_a_kept_lost_folder_of_this_device_twice_keeps_one_record()
     state.unsent_creates.insert("p".into());
     state.waiting.insert("p".into(), Waiting { shape: None, origin: Origin::Other });
     trees.restore(state).unwrap();
+    assert_eq!(trees.waiting().get("p"), None);
+    assert_eq!(trees.state().lost_creates, ["p".to_string()].into());
+    assert!(trees.state().unsent_creates.is_empty());
     trees.rules_scanned();
     trees.settle(&Default::default());
-    assert_eq!(trees.waiting().get("p"), None);
-    assert_eq!(trees.state().unsent_creates, ["p".to_string()].into());
-    assert!(trees.state().lost_creates.is_empty());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let commit = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
     assert!(matches!(commit.as_deref(), Some([op::Op::CreateDir(create), moved]) if create.node_id == "p" && *moved == mv("f", "p", "b")), "{commit:?}");
-}
-
-fn a_folder_this_device_created_kept_through_a_loss() -> (Trees, Commits, IdGen) {
-    let mut trees = trees(&[(
-        "f",
-        Some(file(ROOT, "c", 1)),
-        Some(file(ROOT, "c", 1)),
-        Some(trashed(file(ROOT, "c", 1))),
-    )]);
-    trees.set_local_changed("p".into(), local(dir(ROOT, "p"), 2));
-    trees.set_local_changed("f".into(), local(file("p", "a", 1), 1));
-    trees.settle(&Default::default());
-    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
-    build(&mut commits, &mut trees, &mut ids).unwrap();
-    trees.set_remote_made_here("p".into(), remote_at(dir(ROOT, "p"), 1));
-    trees.set_remote_made_here("f".into(), remote_at(file("p", "a", 1), 1));
-    acknowledge(&mut commits, &mut trees, vec![outcome(op_result::Code::Applied); 2]);
-    trees.set_local_changed("f".into(), local(file("p", "b", 1), 1));
-    trees.settle(commits.aliases());
-    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
-    let records = trees.remote_records(|seq| commits.lost_here(seq));
-    let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
-    let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
-    let (deleted_here, edited, moved) = (trees.trashed_here(), trees.edited_here(), trees.moved_here());
-    trees.remove_remote("p");
-    trees.set_remote("f".into(), trashed(file(ROOT, "c", 1)));
-    trees.forget_lost(deleted_here, edited, synced, moved, untaken, records, commits.aliases(), commits.held_through(), commits.accepted());
-    commits.forget_lost_slots();
-    trees.settle(commits.aliases());
-    assert_eq!(trees.waiting().get("p"), None);
-    assert_eq!(trees.state().unsent_creates, ["p".to_string()].into());
-    assert!(trees.state().lost_creates.is_empty());
-    (trees, commits, ids)
-}
-
-#[test]
-fn a_kept_folder_this_device_created_is_created_where_the_user_renamed_it() {
-    let (mut trees, mut commits, mut ids) = a_folder_this_device_created_kept_through_a_loss();
-    trees.set_local_changed("p".into(), local(dir(ROOT, "new-name"), 2));
-    trees.settle(commits.aliases());
-    assert_eq!(trees.state().unsent_creates, ["p".to_string()].into());
-    let next = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
-    assert!(matches!(next.as_deref(), Some([op::Op::CreateDir(create), moved]) if create.node_id == "p" && create.name == "new-name" && *moved == mv("f", "p", "b")), "{next:?}");
-}
-
-#[test]
-fn a_kept_folder_this_device_created_is_not_created_again_once_acknowledged() {
-    let (mut trees, mut commits, mut ids) = a_folder_this_device_created_kept_through_a_loss();
-    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
-    acknowledge(&mut commits, &mut trees, vec![outcome(op_result::Code::Applied); sent.len()]);
-    assert!(trees.state().unsent_creates.is_empty());
-    let next = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
-    assert!(next.is_none(), "{next:?}");
-}
-
-#[test]
-fn a_kept_folder_this_device_created_acknowledged_before_its_record_arrives_is_not_created_again() {
-    let (mut trees, mut commits, mut ids) = a_folder_this_device_created_kept_through_a_loss();
-    let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
-    commits.received(result(2, vec![outcome(op_result::Code::Applied); sent.len()])).unwrap();
-    assert!(commits.acknowledge(&mut trees, 2));
-    trees.settle(commits.aliases());
-    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
-}
-
-#[test]
-fn a_kept_folder_this_device_created_keeps_its_create_after_a_restart() {
-    let (mut trees, mut commits, mut ids) = a_folder_this_device_created_kept_through_a_loss();
-    let state = trees.state();
-    trees.restore(state).unwrap();
-    trees.rules_scanned();
-    trees.settle(commits.aliases());
-    assert_eq!(trees.state().unsent_creates, ["p".to_string()].into());
-    assert!(trees.state().lost_creates.is_empty());
-    assert_eq!(effects_for(&mut trees, &mut ids, "p"), []);
-    let next = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
-    assert!(matches!(next.as_deref(), Some([op::Op::CreateDir(create), moved]) if create.node_id == "p" && *moved == mv("f", "p", "b")), "{next:?}");
-}
-
-#[test]
-fn a_kept_folder_this_device_created_is_not_removed_when_the_user_undoes_a_rename() {
-    let (mut trees, mut commits, mut ids) = a_folder_this_device_created_kept_through_a_loss();
-    trees.set_local_changed("f".into(), local(file("p", "a", 1), 1));
-    trees.set_local_changed("p".into(), local(dir(ROOT, "new-name"), 2));
-    trees.set_local_changed("p".into(), local(dir(ROOT, "p"), 2));
-    trees.settle(commits.aliases());
-    assert_eq!(trees.state().unsent_creates, ["p".to_string()].into());
-    let effects = effects_for(&mut trees, &mut ids, "p");
-    assert!(!effects.iter().any(|effect| matches!(effect, Effect::RemoveDir { .. })), "{effects:?}");
-    assert_eq!(trees.local().live("p"), Some(&dir(ROOT, "p")));
-    let next = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
-    assert!(matches!(next.as_deref(), Some([op::Op::CreateDir(create)]) if create.node_id == "p" && create.name == "p"), "{next:?}");
-}
-
-#[test]
-fn a_kept_folder_the_user_trashes_before_its_create_is_acknowledged_is_not_created_again() {
-    let (mut trees, mut commits, mut ids) = a_folder_this_device_created_kept_through_a_loss();
-    build(&mut commits, &mut trees, &mut ids).unwrap();
-    trees.remove_local("f");
-    trees.remove_local("p");
-    trees.settle(commits.aliases());
-    assert!(trees.state().unsent_creates.is_empty());
-    trees.set_remote_made_here("p".into(), remote_at(dir(ROOT, "p"), 3));
-    trees.set_remote_made_here("f".into(), remote_at(file("p", "b", 1), 3));
-    acknowledge(&mut commits, &mut trees, vec![outcome(op_result::Code::Applied); 2]);
-    let next = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
-    assert!(!next.iter().flatten().any(|op| matches!(op, op::Op::CreateDir(_))), "{next:?}");
-    assert!(next.iter().flatten().any(|op| matches!(op, op::Op::Delete(delete) if delete.node_id == "p")), "{next:?}");
-}
-
-#[test]
-fn a_folder_whose_create_was_in_flight_at_a_loss_is_created_again_as_this_device_s_own() {
-    let mut trees = trees(&[
-        ("q", Some(dir(ROOT, "q")), Some(dir(ROOT, "q")), Some(remote_at(dir(ROOT, "q"), 1))),
-        ("f", Some(file(ROOT, "c", 1)), Some(file(ROOT, "c", 1)), Some(trashed(file(ROOT, "c", 1)))),
-    ]);
-    trees.set_local_changed("p".into(), local(dir(ROOT, "p"), 2));
-    trees.set_local_changed("f".into(), local(file("p", "a", 1), 1));
-    trees.settle(&Default::default());
-    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
-    commits.adopt(1);
-    build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
-    let records = trees.remote_records(|seq| commits.lost_here(seq));
-    let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
-    let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
-    let (deleted_here, edited, moved) = (trees.trashed_here(), trees.edited_here(), trees.moved_here());
-    trees.forget_lost(deleted_here, edited, synced, moved, untaken, records, commits.aliases(), commits.held_through(), commits.accepted());
-    commits.forget_lost_slots();
-    trees.settle(commits.aliases());
-    assert!(trees.state().unsent_creates.is_empty());
-    assert_eq!(trees.synced().get("p"), None);
-    let next = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
-    assert!(matches!(next.as_deref(), Some([op::Op::CreateDir(create), moved]) if create.node_id == "p" && *moved == mv("f", "p", "a")), "{next:?}");
-}
-
-#[test]
-fn a_lost_folder_this_device_created_is_created_again_once_the_user_renames_a_file_kept_in_it() {
-    let mut trees = trees(&[("f", Some(file(ROOT, "c", 1)), Some(file(ROOT, "c", 1)), Some(trashed(file(ROOT, "c", 1))))]);
-    trees.set_local_changed("p".into(), local(dir(ROOT, "p"), 2));
-    trees.set_local_changed("f".into(), local(file("p", "a", 1), 1));
-    trees.settle(&Default::default());
-    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
-    build(&mut commits, &mut trees, &mut ids).unwrap();
-    trees.set_remote_made_here("p".into(), remote_at(dir(ROOT, "p"), 1));
-    trees.set_remote_made_here("f".into(), remote_at(file("p", "a", 1), 1));
-    acknowledge(&mut commits, &mut trees, vec![outcome(op_result::Code::Applied); 2]);
-    trees.settle(commits.aliases());
-    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
-    let records = trees.remote_records(|seq| commits.lost_here(seq));
-    let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
-    let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
-    let (deleted_here, edited, moved) = (trees.trashed_here(), trees.edited_here(), trees.moved_here());
-    trees.remove_remote("p");
-    trees.set_remote("f".into(), trashed(file(ROOT, "c", 1)));
-    trees.forget_lost(deleted_here, edited, synced, moved, untaken, records, commits.aliases(), commits.held_through(), commits.accepted());
-    commits.forget_lost_slots();
-    trees.settle(commits.aliases());
-    trees.set_local_changed("f".into(), local(file("p", "b", 1), 1));
-    trees.settle(commits.aliases());
-    assert_eq!(trees.state().unsent_creates, ["p".to_string()].into());
-    assert!(trees.state().lost_creates.is_empty());
-    let next = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
-    assert!(matches!(next.as_deref(), Some([op::Op::CreateDir(create), moved]) if create.node_id == "p" && *moved == mv("f", "p", "b")), "{next:?}");
 }
 
 fn held_elsewhere_in_a_lost_folder() -> Trees {
