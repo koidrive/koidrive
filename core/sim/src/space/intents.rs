@@ -242,7 +242,7 @@ pub(crate) fn intents_valid(op: &Op) -> bool {
 /// `content` or `status`.
 pub fn legacy_intent_id(node_id: &str, field: &str, key: &str) -> [u8; 16] {
     let field = journal::Field::parse(field).expect("a field of RFC 0029");
-    *journal::IntentId::legacy(node_id, field, key).as_bytes()
+    *journal::IntentId::legacy(node_id, field, &[key]).as_bytes()
 }
 
 pub(crate) fn legacy_intents(

@@ -50,7 +50,7 @@ fn legacy_ids_match_the_spec_vectors() {
         let got = IntentId::legacy(
             text("node_id"),
             Field::parse(text("field")).unwrap(),
-            text("key"),
+            &[text("key")],
         );
         assert_eq!(got.to_string(), text("id"), "{vector}");
     }
