@@ -270,7 +270,8 @@ impl Site {
             .unwrap()
             .expect("the folder is not locked");
         let local = local_rules(sync).unwrap();
-        let folder = Folder::open(link, &lock, &self.db, local).unwrap();
+        let mut folder = Folder::open(link, &lock, &self.db, local).unwrap();
+        folder.engine.commits.set_device_name(&self.link.device_id);
         let reports: Arc<Mutex<Vec<Observing>>> = Arc::default();
         let reported = reports.clone();
         let observer = FsObserver::start(

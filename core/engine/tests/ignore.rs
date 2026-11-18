@@ -437,6 +437,43 @@ fn a_file_moved_into_an_ignored_folder_that_is_no_node_stays_on_the_server_as_it
     );
 }
 
+fn holding_an_excluded_folders_name(incoming: RemoteNode) -> Trees {
+    let mut trees = trees(&[("kept", Some(dir(ROOT, "ig")), None, None)]);
+    trees.set_remote("f".into(), incoming);
+    trees.set_rules(&AT_ROOT, rules("/ig/\n"));
+    assert!(trees.excluded("kept"));
+    trees
+}
+
+#[test]
+fn a_server_file_at_an_excluded_folders_name_is_renamed_from_its_place_to_a_conflict_name() {
+    let mut trees = holding_an_excluded_folders_name(remote(file(ROOT, "ig", 1)));
+    let ops = ops(&mut trees);
+    let [op::Op::Move(moved)] = &ops[..] else {
+        panic!("one rename: {ops:?}");
+    };
+    let from = proto::Place {
+        parent_id: ROOT.into(),
+        name: "ig".into(),
+    };
+    assert_eq!((moved.node_id.as_str(), &moved.from), ("f", &Some(from)));
+    assert!(
+        moved.new_name.starts_with("ig (conflict from "),
+        "{}",
+        moved.new_name
+    );
+}
+
+#[test]
+fn a_server_file_under_a_pending_name_at_an_excluded_folders_name_is_not_renamed() {
+    let incoming = RemoteNode {
+        pending_for: Some("device".into()),
+        ..remote(file(ROOT, "ig", 1))
+    };
+    let mut trees = holding_an_excluded_folders_name(incoming);
+    assert_eq!(ops(&mut trees), []);
+}
+
 #[test]
 fn a_node_the_user_moves_out_of_an_ignored_path_is_moved_on_the_server() {
     let mut trees = trees(&[synced("a", file(ROOT, "a.log", 1))]);
