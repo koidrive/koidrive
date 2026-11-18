@@ -21,6 +21,8 @@ use crate::tree::{
     Tree, TreeError, same, same_content,
 };
 
+use release::Released;
+
 type Pair = (NodeId, NodeId);
 
 /// The nodes whose rows the store must write: [`Changed::local`] for L, [`Changed::synced`] for S.
@@ -3016,9 +3018,6 @@ impl Trees {
         {
             return None;
         }
-        if local.is_none() && self.pending_at(id) {
-            return None;
-        }
         let at = |shape: &Shape| {
             Some(Shape {
                 parent: shape.parent.clone(),
@@ -3122,7 +3121,7 @@ impl Trees {
             })
             .collect();
         let mut held_for_scan = BTreeSet::new();
-        let groups: Vec<Vec<NodeId>> = (tops.into_iter())
+        let groups: Vec<Released> = (tops.into_iter())
             .filter(|top| !self.ignored(top))
             .map(|top| {
                 let mut group = vec![top];
@@ -3137,24 +3136,25 @@ impl Trees {
                 }
                 group
             })
-            .filter(|group| {
-                if group.iter().any(|id| self.pending_at(id)) {
-                    held_for_scan.extend(group.iter().cloned());
-                    return false;
-                }
-                !group.iter().any(|id| self.below_unknown_rules(id))
-                    && self.fits_synced_together(
-                        &(group.iter())
-                            .map(|id| (id.clone(), None))
-                            .collect::<Vec<_>>(),
-                    )
+            .filter_map(|group| {
+                let Some(released) =
+                    self.release(group.iter().map(|id| (id.clone(), None)).collect())
+                else {
+                    held_for_scan.extend(group);
+                    return None;
+                };
+                (!group.iter().any(|id| self.below_unknown_rules(id))
+                    && self.fits_synced_together(released.nodes()))
+                .then_some(released)
             })
             .collect();
         drop(kept);
         self.held_for_scan = held_for_scan;
-        for id in groups.iter().flat_map(|group| group.iter().rev()) {
-            self.set_synced(id.clone(), None);
-            self.released.push(id.clone());
+        for released in groups {
+            for id in self.take_released(released).into_iter().rev() {
+                self.mark(&id);
+                self.released.push(id);
+            }
         }
         self.released.len() > before
     }
@@ -5410,18 +5410,19 @@ impl Trees {
         let mut changed = Vec::new();
         while let Some(id) = queue.get(next).cloned() {
             next += 1;
-            let released: Vec<Option<Shape>> = self.released(&id).into_iter().flatten().collect();
-            let fitting = (released.iter()).find(|next| self.fits_synced(&id, next.as_ref()));
-            match fitting {
-                Some(next) => self.set_synced_unmarked(&id, next.clone()),
-                None if !released.is_empty() => {
-                    for node in self.release_subtree(&id) {
-                        if !queue[next..].contains(&node) {
-                            queue.push(node);
-                        }
+            let options = self.released(&id).unwrap_or_default();
+            let fitting = (options.iter()).find(|next| self.fits_synced(&id, next.as_ref()));
+            let released = match fitting {
+                Some(next) => self.release(vec![(id.clone(), next.clone())]),
+                None if !options.is_empty() => self.release_subtree(&id),
+                None => None,
+            };
+            if let Some(released) = released {
+                for node in self.take_released(released).into_iter().skip(1) {
+                    if !queue[next..].contains(&node) {
+                        queue.push(node);
                     }
                 }
-                None => {}
             }
             if self.orphaned_in_s(&id) {
                 self.orphaned.insert(id.clone());
@@ -5650,27 +5651,35 @@ impl Trees {
             .map(|id| (id.as_str(), self.r.live(id)))
             .collect();
         let (mut taken, mut unsearched) = self.search_together(&targets);
+        let mut drops = BTreeMap::new();
         if taken.is_empty() {
             let mut released = Vec::new();
             for shape in pending.iter().filter_map(|id| self.r.live(id)) {
                 for holder in self.s_names.holders(&shape.parent, &shape.name) {
                     if !targets.contains_key(holder.as_str())
                         && let Some(options) = self.released(holder)
+                        && let Some(dropped) = self.release(vec![(holder.clone(), None)])
                     {
-                        released.push((holder, options));
+                        released.push((holder, options, dropped));
                     }
                 }
             }
-            let fitting = (released.iter()).find_map(|(holder, options)| {
+            let fitting = (released.iter()).find_map(|(holder, options, _)| {
                 let next = (options.iter()).find(|next| self.fits_synced(holder, next.as_ref()))?;
-                Some(((*holder).clone(), next.clone()))
+                self.release(vec![((*holder).clone(), next.clone())])
             });
-            if let Some((holder, next)) = fitting {
-                self.set_synced_unmarked(&holder, next);
-                return BTreeSet::from([holder]);
+            if let Some(fitting) = fitting {
+                return self.take_released(fitting).into_iter().collect();
             }
-            targets.extend(released.iter().map(|(holder, _)| (holder.as_str(), None)));
+            targets.extend(
+                released
+                    .iter()
+                    .map(|(holder, _, _)| (holder.as_str(), None)),
+            );
             (taken, unsearched) = self.search_together(&targets);
+            drops = (released.into_iter())
+                .map(|(holder, _, dropped)| (holder.clone(), dropped))
+                .collect();
         }
         let updates: Vec<(NodeId, Option<Shape>)> = (taken.iter())
             .map(|id| (id.clone(), targets[id.as_str()].cloned()))
@@ -5678,7 +5687,12 @@ impl Trees {
         self.unsearched.clear();
         self.unsearched.extend(unsearched);
         for (id, next) in updates {
-            self.set_synced_unmarked(&id, next);
+            match drops.remove(&id) {
+                Some(dropped) => {
+                    self.take_released(dropped);
+                }
+                None => self.set_synced_unmarked(&id, next),
+            }
         }
         debug_assert_eq!(self.s.check(Names::ByKey), Ok(()));
         taken
@@ -5892,7 +5906,7 @@ impl Trees {
     /// every one of those nodes is ignored too ([`Trees::released`]). Their S entries keep the folder's from
     /// being dropped, and none of them is ever planned, so without this the folder would keep its name in S for good.
     /// A node below that is not ignored keeps the whole subtree in S. Returns the nodes below that it dropped.
-    fn release_subtree(&mut self, id: &str) -> Vec<NodeId> {
+    fn release_subtree(&self, id: &str) -> Option<Released> {
         let mut below = vec![id.to_owned()];
         let mut next = 0;
         while let Some(folder) = below.get(next).cloned() {
@@ -5900,12 +5914,9 @@ impl Trees {
             below.extend(self.s_names.children(&folder).cloned());
         }
         if !(below.iter()).all(|node| self.ignored(node) && !self.trashed_while_parked(node)) {
-            return Vec::new();
+            return None;
         }
-        for node in below.iter().rev() {
-            self.set_synced_unmarked(node, None);
-        }
-        below.split_off(1)
+        self.release(below.into_iter().map(|node| (node, None)).collect())
     }
 
     /// Records, for a node whose position is watched, R's position and the revision of its record
@@ -6563,6 +6574,32 @@ enum Made {
     Here,
     Edit,
     Answer,
+}
+
+mod release {
+    use super::{NodeId, Shape, Trees};
+
+    pub(super) struct Released(Vec<(NodeId, Option<Shape>)>);
+
+    impl Released {
+        pub(super) fn nodes(&self) -> &[(NodeId, Option<Shape>)] {
+            &self.0
+        }
+    }
+
+    impl Trees {
+        pub(super) fn release(&self, group: Vec<(NodeId, Option<Shape>)>) -> Option<Released> {
+            let held = |id: &str| self.l.get(id).is_none() && self.pending_at(id);
+            (!group.iter().any(|(id, _)| held(id))).then_some(Released(group))
+        }
+
+        pub(super) fn take_released(&mut self, Released(group): Released) -> Vec<NodeId> {
+            for (id, next) in group.iter().rev() {
+                self.set_synced_unmarked(id, next.clone());
+            }
+            group.into_iter().map(|(id, _)| id).collect()
+        }
+    }
 }
 
 #[cfg(test)]

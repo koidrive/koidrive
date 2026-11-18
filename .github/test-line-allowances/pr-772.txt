@@ -1,0 +1,2 @@
+1
+# Engine: each excluded node keeps S while its old place is pending, across a rename to an excluded name, a rename to an included name, the whole tree pending, and a folder whose pending child would be dropped with it.

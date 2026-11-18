@@ -2130,29 +2130,35 @@ fn a_file_waiting_under_a_name_that_differs_only_in_case_keeps_its_place_pending
 }
 
 #[test]
-fn an_excluded_file_the_server_renames_keeps_its_synced_entry_while_its_old_place_is_pending() {
-    for (to, pending) in [
-        ("y.log", vec!["x.log"]),
-        ("y.txt", vec!["x.log"]),
-        ("y.log", vec![]),
+fn an_excluded_node_the_server_renames_keeps_its_synced_entries_while_their_old_place_is_pending() {
+    for (renamed, to, pending) in [
+        ("x", "y.log", vec!["x.log"]),
+        ("x", "y.txt", vec!["x.log"]),
+        ("x", "y.log", vec![]),
+        ("p", "r.log", vec!["p.log", "x.log"]),
     ] {
-        let mut trees = trees(&[synced("x", file(ROOT, "x.log", 1))]);
+        let parent = if renamed == "p" { "p" } else { ROOT };
+        let mut trees = trees(&[
+            synced("p", dir(ROOT, "p.log")),
+            synced("x", file(parent, "x.log", 1)),
+        ]);
         trees.set_rules(&AT_ROOT, rules("*.log\n"));
         assert_eq!(ops(&mut trees), []);
         trees.remove_local("x");
+        trees.remove_local(renamed);
         trees.settle(&Default::default());
-        let mut node = trees.remote().get("x").unwrap().clone();
+        let mut node = trees.remote().get(renamed).unwrap().clone();
         node.shape.name = to.into();
-        trees.set_remote("x".into(), node);
+        trees.set_remote(renamed.into(), node);
         trees.listed(&[], Pending::new([pending.clone()]));
         for _ in 0..3 {
             trees.settle(&Default::default());
             assert_eq!(trees.check(), Ok(()));
         }
-        assert!(trees.synced().live("x").is_some(), "{to} {pending:?}");
+        assert_ne!(trees.synced().live("x"), None, "{renamed} {to} {pending:?}");
         trees.listed(&[], Pending::default());
         trees.settle(&Default::default());
-        assert_eq!(trees.synced().live("x"), None, "{to} {pending:?}");
+        assert_eq!(trees.synced().live("x"), None, "{renamed} {to} {pending:?}");
         assert_eq!(trees.check(), Ok(()));
     }
 }
