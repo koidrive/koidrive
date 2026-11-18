@@ -1293,3 +1293,147 @@ fn probe_r6c_takeover_alone() {
     probe_r6b_pull(&mut b, &mut remote);
     assert!(!remote.tree().contains_key("docs/.env"), "{:?}", remote.tree());
 }
+
+
+fn r8_report(site: &Site, b: &Device, remote: &Remote) -> String {
+    format!(
+        "remote={:?}\ndisk={:?}\nkept_entries={:?}\nstate={:?}\nview={:?}/{:?}",
+        remote.tree().keys().collect::<Vec<_>>(),
+        files(&site.root),
+        b.folder.engine.trees.kept_entry_paths(),
+        (b.folder.engine.trees.state().kept_nodes.len(), b.folder.engine.trees.state().kept_entries.clone()),
+        b.folder.view().state,
+        b.folder.view().problem,
+    )
+}
+
+fn r8_round(b: &mut Device, remote: &mut Remote) {
+    for _ in 0..3 {
+        b.pull(remote);
+        b.run(remote);
+        b.settle();
+    }
+}
+
+fn r8_env_stays_out(site: &Site, b: &mut Device, remote: &mut Remote, env: &str, tag: &str) {
+    fs::write(site.root.join(env), b"SECRET=edited").unwrap();
+    r8_round(b, remote);
+    let report = r8_report(site, b, remote);
+    assert!(!remote.tree().keys().any(|k| k.ends_with(".env")), "{tag}: the kept .env uploads\n{report}");
+}
+
+#[test]
+fn attack_r8_person_edited_kept_rules_then_takeover_with_rules_that_omit_env() {
+    let (mut remote, site_a, mut a, site, mut b, _) =
+        deleted_with_rules_files(&[(".koiignore", ".env\n")], &["README.md"], &[".env"]);
+    fs::write(site.root.join("app/.koiignore"), b".env\n*.log\n").unwrap();
+    b.settle();
+    b.run(&mut remote);
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/.koiignore"), b"*.log\n");
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    r8_round(&mut b, &mut remote);
+    assert!(!remote.tree().keys().any(|k| k.ends_with(".env")), "{}", r8_report(&site, &b, &remote));
+    r8_env_stays_out(&site, &mut b, &mut remote, "app/.env", "edited-kept-rules");
+}
+
+#[test]
+fn attack_r8_takeover_with_rules_that_omit_env_then_restart() {
+    let (mut remote, site_a, mut a, site, mut b, _) =
+        deleted_with_rules_files(&[(".koiignore", ".env\n")], &["README.md"], &[".env"]);
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/.koiignore"), b"*.log\n");
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    r8_round(&mut b, &mut remote);
+    r8_env_stays_out(&site, &mut b, &mut remote, "app/.env", "omit-env");
+    drop(b);
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    r8_env_stays_out(&site, &mut b, &mut remote, "app/.env", "omit-env-restart");
+}
+
+#[test]
+fn attack_r8_concurrent_rules_edits_conflict_on_a_kept_entry() {
+    let (mut remote, site_a, mut a, site, mut b) = taken_over_with_rules(b".env\n");
+    for _ in 0..2 { a.pull(&remote); a.run(&mut remote); a.settle(); }
+    fs::write(site_a.root.join("app/.koiignore"), b"*.log\n").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    fs::write(site.root.join("app/.koiignore"), b".env\n*.tmp\n").unwrap();
+    b.settle();
+    r8_round(&mut b, &mut remote);
+    r8_env_stays_out(&site, &mut b, &mut remote, "app/.env", "conflict-kept");
+}
+
+#[test]
+fn attack_r8_another_device_deletes_the_rules_file() {
+    let (mut remote, site_a, mut a, site, mut b) = taken_over_with_rules(b".env\n");
+    for _ in 0..2 { a.pull(&remote); a.run(&mut remote); a.settle(); }
+    fs::remove_file(site_a.root.join("app/.koiignore")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    r8_round(&mut b, &mut remote);
+    assert!(!site.root.join("app/.koiignore").exists(), "{}", r8_report(&site, &b, &remote));
+    r8_env_stays_out(&site, &mut b, &mut remote, "app/.env", "rules-deleted");
+    drop(b);
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    r8_env_stays_out(&site, &mut b, &mut remote, "app/.env", "rules-deleted-restart");
+}
+
+#[test]
+fn attack_r8_another_device_renames_the_rules_file() {
+    let (mut remote, site_a, mut a, site, mut b) = taken_over_with_rules(b".env\n");
+    for _ in 0..2 { a.pull(&remote); a.run(&mut remote); a.settle(); }
+    fs::rename(site_a.root.join("app/.koiignore"), site_a.root.join("app/rules.txt")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    r8_round(&mut b, &mut remote);
+    assert!(site.root.join("app/rules.txt").exists(), "{}", r8_report(&site, &b, &remote));
+    r8_env_stays_out(&site, &mut b, &mut remote, "app/.env", "rules-renamed");
+}
+
+#[test]
+fn attack_r8_another_device_edits_the_rules_while_stopped() {
+    let (mut remote, site_a, mut a, site, b) = taken_over_with_rules(b".env\n");
+    drop(b);
+    for _ in 0..2 { a.pull(&remote); a.run(&mut remote); a.settle(); }
+    fs::write(site_a.root.join("app/.koiignore"), b"*.log\n").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    fs::write(site.root.join("app/.env"), b"SECRET=while stopped").unwrap();
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    r8_round(&mut b, &mut remote);
+    assert_eq!(fs::read(site.root.join("app/.koiignore")).unwrap(), b"*.log\n", "{}", r8_report(&site, &b, &remote));
+    r8_env_stays_out(&site, &mut b, &mut remote, "app/.env", "edited-while-stopped");
+}
+
+#[test]
+fn attack_r8_person_edits_other_rules_after_a_takeover_without_rules() {
+    let (mut remote, site_a, mut a, site, mut b, _) =
+        deleted_with_rules_files(&[(".koiignore", ".env\n")], &["README.md"], &[".env"]);
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"cloned again");
+    r8_round(&mut b, &mut remote);
+    fs::write(site.root.join(".koiignore"), b"*.tmp\n").unwrap();
+    fs::write(site.root.join("app/.koiignore"), b"*.log\n").unwrap();
+    r8_round(&mut b, &mut remote);
+    r8_env_stays_out(&site, &mut b, &mut remote, "app/.env", "other-rules");
+    fs::remove_file(site.root.join("app/.koiignore")).unwrap();
+    r8_round(&mut b, &mut remote);
+    r8_env_stays_out(&site, &mut b, &mut remote, "app/.env", "other-rules-deleted");
+}
+
+#[test]
+fn attack_r8_atomic_save_of_the_rules_with_the_same_content() {
+    let (mut remote, _sa, _a, site, mut b) = taken_over_with_rules(b".env\n");
+    let tmp = site.root.join("app/.koiignore.tmp~");
+    fs::write(&tmp, b".env\n").unwrap();
+    fs::rename(&tmp, site.root.join("app/.koiignore")).unwrap();
+    r8_round(&mut b, &mut remote);
+    r8_env_stays_out(&site, &mut b, &mut remote, "app/.env", "atomic-rules");
+}
