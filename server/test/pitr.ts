@@ -72,6 +72,7 @@ function simulated(state: DurableObjectState): Simulated {
 
 export const simulatedPitr = {
   dropArms: false,
+  failCurrentBookmark: false,
   bookmarkFor: undefined as ((timestampMs: number) => string | undefined) | undefined,
 
   install(): void {
@@ -83,7 +84,10 @@ export const simulatedPitr = {
         state.storage.transactionSync(() => load(state.storage.sql, target.dump));
       }
       return {
-        currentBookmark: async () => simulatedPitr.snapshot(state),
+        currentBookmark: async () => {
+          if (simulatedPitr.failCurrentBookmark) throw new Error("current bookmark unavailable");
+          return simulatedPitr.snapshot(state);
+        },
         bookmarkForTime: async (timestampMs) => {
           if (simulatedPitr.bookmarkFor) return simulatedPitr.bookmarkFor(timestampMs);
           const earlier = object.snapshots.filter((snapshot) => snapshot.atMs !== undefined && snapshot.atMs <= timestampMs);

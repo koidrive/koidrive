@@ -45,6 +45,7 @@ const DAY = 24 * 3_600_000;
 afterEach(() => {
   vi.restoreAllMocks();
   simulatedPitr.dropArms = false;
+  simulatedPitr.failCurrentBookmark = false;
   simulatedPitr.bookmarkFor = undefined;
 });
 
@@ -293,16 +294,20 @@ describe("space rewind (RFC 0003)", () => {
     expect(await spaceRows(spaceId, "SELECT * FROM commit_bookmarks")).toEqual([]);
   });
 
-  it("restores PITR's bookmark for the restore point when the last commit before it has no recorded bookmark", async () => {
+  it("takes a commit whose bookmark cannot be read, and restores PITR's bookmark for a restore point after it", async () => {
     const { spaceId, createdAtMs, creds, device } = await newSpace();
     const a = device();
     await a.commit([op.mkdir(uuidv7(), spaceId, "one")]);
     const early = await snapshot(spaceId, createdAtMs + MINUTE);
+    simulatedPitr.failCurrentBookmark = true;
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     await a.commit([op.mkdir(uuidv7(), spaceId, "two")]);
+    expect(logged).toHaveBeenCalledWith("commit bookmark read failed", expect.stringContaining("current bookmark unavailable"));
+    simulatedPitr.failCurrentBookmark = false;
     const point = createdAtMs + 2 * MINUTE;
     await setSpaceClock(spaceId, point + 1);
     await a.commit([op.mkdir(uuidv7(), spaceId, "three")]);
-    await spaceRows(spaceId, "DELETE FROM commit_bookmarks WHERE seq = 2");
+    expect((await spaceRows(spaceId, "SELECT seq FROM commit_bookmarks")).map((row) => row.seq)).toEqual([1, 3]);
     simulatedPitr.bookmarkFor = () => early;
     await setAccountClock(createdAtMs + 5 * MINUTE);
 
