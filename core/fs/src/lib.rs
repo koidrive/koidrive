@@ -1240,7 +1240,7 @@ impl Snapshot {
         if found.is_empty() {
             return;
         }
-        for entry in self.entries.values_mut() {
+        for entry in (self.entries.values_mut()).chain(self.left_out.values_mut()) {
             if entry.id.handle.is_none()
                 && let Some(&handle) = found.get(&(entry.id, entry.kind))
             {
