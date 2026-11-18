@@ -1,0 +1,6 @@
+class = "E"
+issue = "GUN-984"
+tests = ["a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it"]
+message = '''<id> was held and sent before the person said so at \S+\.rs:<line>\.'''
+examples = ["01a1c2c0-39a0-7768-bfda-be86cbbeaa11 was held and sent before the person said so at core/sim/tests/engine_sync/common.rs:1947."]
+cases = ["5ba0dbd084ce", "6a1b8dd3a724", "8657b2c31ea9", "d38ea785040d"]
