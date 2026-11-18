@@ -2243,7 +2243,7 @@ fn a_parked_folder_removal_that_an_entry_left_first_stays_stuck_without_holding_
             tx.set_engine_state(&EngineState {
                 trees: TreesState {
                     dirty: BTreeSet::from([NODE.into(), kept.into()]),
-                    kept_nodes: BTreeSet::from([kept.into()]),
+                    kept_nodes: BTreeMap::from([(kept.into(), None)]),
                     ..TreesState::default()
                 },
                 ..EngineState::default()

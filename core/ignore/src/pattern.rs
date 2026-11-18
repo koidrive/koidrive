@@ -30,6 +30,7 @@ pub struct InvalidLine {
 pub struct RuleFile<K> {
     rules: Vec<Rule>,
     invalid: Vec<InvalidLine>,
+    source: Vec<u8>,
     key: PhantomData<fn() -> K>,
 }
 
@@ -38,6 +39,7 @@ impl<K> Clone for RuleFile<K> {
         Self {
             rules: self.rules.clone(),
             invalid: self.invalid.clone(),
+            source: self.source.clone(),
             key: PhantomData,
         }
     }
@@ -63,6 +65,7 @@ impl<K> Default for RuleFile<K> {
         Self {
             rules: Vec::new(),
             invalid: Vec::new(),
+            source: Vec::new(),
             key: PhantomData,
         }
     }
@@ -75,13 +78,16 @@ impl<K: NameKey> RuleFile<K> {
     /// A UTF-8 byte order mark at the start is skipped. Lines end at `\n`, with a `\r` before it
     /// removed. Blank lines and lines starting with `#` are skipped. Trailing spaces are removed
     /// unless escaped with `\`.
-    pub fn parse(bytes: &[u8]) -> Self {
-        let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    pub fn parse(original: &[u8]) -> Self {
+        let bytes = original.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(original);
         let mut lines: Vec<&[u8]> = bytes.split(|&b| b == b'\n').collect();
         if lines.last().is_some_and(|last| last.is_empty()) {
             lines.pop();
         }
-        let mut file = Self::default();
+        let mut file = Self {
+            source: original.to_vec(),
+            ..Self::default()
+        };
         for (index, line) in lines.into_iter().enumerate() {
             let number = u32::try_from(index + 1).unwrap_or(u32::MAX);
             if line.is_empty() || line[0] == b'#' {
@@ -103,6 +109,11 @@ impl<K: NameKey> RuleFile<K> {
     /// The lines that are not used, in file order.
     pub fn invalid_lines(&self) -> &[InvalidLine] {
         &self.invalid
+    }
+
+    /// The bytes the rules were parsed from.
+    pub fn source(&self) -> &[u8] {
+        &self.source
     }
 
     pub(crate) fn last_match(

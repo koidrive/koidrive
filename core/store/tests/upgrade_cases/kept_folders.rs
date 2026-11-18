@@ -17,16 +17,17 @@ upgrade_case!(kept_folders, |store| {
                 names: [".env".into()].into(),
                 moved: Default::default(),
                 listed: true,
+                causes: Default::default(),
             };
             state.trees.kept_entries.insert(report.node_id.clone(), kept.clone());
-            state.trees.kept_nodes.insert(report.node_id.clone());
+            state.trees.kept_nodes.insert(report.node_id.clone(), None);
             tx.set_engine_state(&state)?;
             let stored = tx.engine_state()?.trees;
             let report = std::collections::BTreeSet::from([report.node_id]);
             assert_eq!(stored.kept_folders, report);
             assert_eq!(stored.kept_entries.keys().cloned().collect::<std::collections::BTreeSet<_>>(), report);
             assert_eq!(stored.kept_entries.values().collect::<Vec<_>>(), [&kept]);
-            assert_eq!(stored.kept_nodes, report);
+            assert_eq!(stored.kept_nodes, report.iter().map(|node| (node.clone(), None)).collect());
             Ok::<_, koidrive_store::Error>(())
         })
         .unwrap();

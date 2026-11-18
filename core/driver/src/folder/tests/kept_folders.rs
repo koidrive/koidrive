@@ -1193,6 +1193,114 @@ fn a_kept_entry_stays_out_of_sync_when_the_rules_change_without_the_person() {
 }
 
 #[test]
+fn a_downloaded_negation_does_not_release_a_kept_entry_beside_an_unsent_edit_of_the_rules_that_left_it_out()
+ {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site_a.root.join(".koiignore"), b".env\n");
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"synced");
+    let site = Site::new(&remote, "b");
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    settled(&mut b, &mut remote);
+    fs::write(site.root.join("app/.env"), b"SECRET=b").unwrap();
+    settled(&mut b, &mut remote);
+    fs::remove_dir_all(site_a.root.join("app")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/.koiignore"), b"*.tmp\n");
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    assert_eq!(
+        b.folder.view().kept_entries,
+        [koidrive_fs::ItemPath::from("app/.env")]
+    );
+
+    fs::write(site_a.root.join("app/.koiignore"), b"*.tmp\n!.env\n").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    fs::write(site.root.join(".koiignore"), b".env\n*.bak\n").unwrap();
+    b.pull(&remote);
+    for _ in 0..4 {
+        b.run(&mut remote);
+        b.settle();
+    }
+    assert!(
+        !remote.tree().contains_key("app/.env"),
+        "{:?}",
+        remote.tree()
+    );
+}
+
+#[test]
+fn a_kept_entry_syncs_once_the_person_lets_it_in_with_a_rules_edit_made_while_stopped() {
+    let (mut remote, _, _, site, b) = taken_over_with_rules(b".env\n");
+    drop(b);
+    fs::write(site.root.join("app/.koiignore"), b"*.log\n").unwrap();
+
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    settled(&mut b, &mut remote);
+    assert!(
+        remote.tree().contains_key("app/.env"),
+        "{:?}",
+        remote.tree()
+    );
+    assert!(
+        b.folder.view().kept_entries.is_empty(),
+        "{:?}",
+        b.folder.view().kept_entries
+    );
+}
+
+#[test]
+fn a_kept_entry_syncs_once_the_person_lets_it_in_with_local_lists_changed_while_stopped() {
+    let (mut remote, site_a, mut a, site, mut b, _) =
+        deleted_with_ignored_entries(&["README.md"], &[".env"]);
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(
+        &mut remote,
+        &site_a.root.join("app/README.md"),
+        b"cloned again",
+    );
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    assert_eq!(
+        b.folder.view().kept_entries,
+        [koidrive_fs::ItemPath::from("app/.env")]
+    );
+    drop(b);
+
+    let mut b = site.start_with(&SyncRules {
+        include: Vec::new(),
+        exclude: vec!["*.log".into()],
+    });
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    settled(&mut b, &mut remote);
+    assert!(
+        remote.tree().contains_key("app/.env"),
+        "{:?}",
+        remote.tree()
+    );
+    assert!(
+        b.folder.view().kept_entries.is_empty(),
+        "{:?}",
+        b.folder.view().kept_entries
+    );
+}
+
+#[test]
 fn another_devices_file_at_a_kept_entrys_name_is_reported_and_the_kept_entry_stays_here() {
     let (mut remote, site_a, mut a, site, mut b, _) =
         deleted_with_rules_files(&[(".koiignore", ".env\n")], &["README.md"], &[".env"]);
@@ -1246,4 +1354,117 @@ fn a_kept_folder_inside_a_kept_folder_takes_the_folder_another_device_makes_at_i
     assert!(!tree.keys().any(|k| k.contains("conflict") || k.ends_with(".env")), "{tree:?} {:?}", files(&site.root));
     assert_eq!(fs::read(site.root.join("app/sub/lib.rs")).unwrap(), b"made again");
     assert!(site.root.join("app/sub/.env").exists(), "{:?}", files(&site.root));
+}
+
+#[test]
+fn a_kept_entry_syncs_once_the_person_lets_it_in_while_another_devices_new_rules_file_lands() {
+    let (mut remote, site_a, mut a, site, mut b) = taken_over_with_rules(b".env\n");
+    a.create(&mut remote, &site_a.root.join(".koiignore"), b"*.tmp\n");
+    b.pull(&remote);
+    b.run(&mut remote);
+    fs::write(site.root.join("app/.koiignore"), b"*.log\n").unwrap();
+    settled(&mut b, &mut remote);
+    assert!(
+        remote.tree().contains_key("app/.env"),
+        "{:?}",
+        remote.tree()
+    );
+}
+
+#[test]
+fn a_kept_entry_syncs_once_the_person_renames_the_rules_that_left_it_out_away() {
+    let (mut remote, _, _, site, mut b) = taken_over_with_rules(b".env\n");
+    fs::rename(
+        site.root.join("app/.koiignore"),
+        site.root.join("app/koiignore.off"),
+    )
+    .unwrap();
+    settled(&mut b, &mut remote);
+    assert!(
+        remote.tree().contains_key("app/.env"),
+        "{:?}",
+        remote.tree()
+    );
+}
+
+fn kept_by_root_rules() -> (Remote, Site, Device, Site, Device) {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site_a.root.join(".koiignore"), b".env\n");
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"synced");
+    let site = Site::new(&remote, "b");
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    settled(&mut b, &mut remote);
+    fs::write(site.root.join("app/.env"), b"SECRET=b").unwrap();
+    settled(&mut b, &mut remote);
+    fs::remove_dir_all(site_a.root.join("app")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"again");
+    pulled(&mut b, &mut remote);
+    assert_eq!(
+        b.folder.view().kept_entries,
+        [koidrive_fs::ItemPath::from("app/.env")]
+    );
+    (remote, site_a, a, site, b)
+}
+
+fn pulled(b: &mut Device, remote: &mut Remote) {
+    for _ in 0..3 {
+        b.pull(remote);
+        b.run(remote);
+        b.settle();
+    }
+}
+
+#[test]
+fn a_kept_entry_stays_kept_when_the_person_edits_rules_another_device_changed_back_and_forth() {
+    let (mut remote, site_a, mut a, site, mut b) = kept_by_root_rules();
+    for rules in [b"*.tmp\n".as_slice(), b".env\n", b"*.tmp\n"] {
+        fs::write(site_a.root.join(".koiignore"), rules).unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        a.run(&mut remote);
+        pulled(&mut b, &mut remote);
+    }
+    assert!(
+        !remote.tree().contains_key("app/.env"),
+        "{:?}",
+        remote.tree()
+    );
+
+    fs::write(site.root.join(".koiignore"), b"*.tmp\n*.bak\n").unwrap();
+    settled(&mut b, &mut remote);
+    settled(&mut b, &mut remote);
+
+    assert!(
+        !remote.tree().contains_key("app/.env"),
+        "{:?}",
+        remote.tree()
+    );
+}
+
+#[test]
+fn a_kept_entry_another_devices_negation_let_in_stays_kept_when_the_person_edits_that_rules_file() {
+    let (mut remote, site_a, mut a, site, mut b) = kept_by_root_rules();
+    a.create(&mut remote, &site_a.root.join("app/.koiignore"), b"!.env\n");
+    pulled(&mut b, &mut remote);
+    assert!(
+        !remote.tree().contains_key("app/.env"),
+        "{:?}",
+        remote.tree()
+    );
+
+    fs::write(site.root.join("app/.koiignore"), b"!.env\n*.bak\n").unwrap();
+    settled(&mut b, &mut remote);
+    settled(&mut b, &mut remote);
+
+    assert!(
+        !remote.tree().contains_key("app/.env"),
+        "{:?}",
+        remote.tree()
+    );
 }

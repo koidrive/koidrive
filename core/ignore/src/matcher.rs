@@ -293,6 +293,11 @@ impl<K: NameKey> Matcher<K> {
         changes(below, before, after)
     }
 
+    /// The rules file of `dir`, the names from the root to it, if one is known.
+    pub fn rules_file<S: AsRef<str>>(&self, dir: &[S]) -> Option<&RuleFile<K>> {
+        self.files.get(&keys::<K, S>(dir))
+    }
+
     /// Removes every rules file.
     pub fn clear_rules(&mut self) {
         self.files.clear();

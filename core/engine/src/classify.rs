@@ -11,8 +11,9 @@ use crate::first_link;
 use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
 use crate::names::{name_key, nfc, same_name};
 use crate::state::{
-    Agreed, ContentProvenance, ContentValue, ContentVersion, FinishOrigin, KeptEntries,
-    LostPosition, MovedHere, PendingFinish, StateError, TreesChanges, TreesState, made_over,
+    Agreed, ContentProvenance, ContentValue, ContentVersion, FinishOrigin, KeptCause, KeptEntries,
+    KeptRules, KeptRulesFile, LostPosition, MovedHere, PendingFinish, StateError, TreesChanges,
+    TreesState, made_over,
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
@@ -117,6 +118,16 @@ fn below<N: Node>(tree: &Tree<N>, id: &str, folders: &BTreeSet<NodeId>) -> bool 
         }
     }
     false
+}
+
+fn excluded(matcher: &Matcher, path: &[&str], kinds: &[Kind]) -> bool {
+    kinds.iter().any(|kind| {
+        let kind = match kind {
+            Kind::Dir => koidrive_ignore::Kind::Dir,
+            Kind::File => koidrive_ignore::Kind::File,
+        };
+        matcher.status(path, kind) != Status::Included
+    })
 }
 
 pub(crate) fn path<'a, N: Node>(tree: &'a Tree<N>, id: &str) -> Option<(Vec<&'a str>, Kind)> {
@@ -366,19 +377,6 @@ struct Keeping {
     cut: bool,
 }
 
-#[derive(Clone, Debug)]
-enum Kept {
-    Node {
-        id: NodeId,
-        path: Vec<String>,
-        kind: Kind,
-    },
-    Name {
-        folder: NodeId,
-        name: String,
-    },
-}
-
 /// R, L and S of one space, and the nodes whose entries changed since they were last found in sync.
 /// Every mutation goes through these methods, so a change in any tree marks its node dirty, and
 /// [`Trees::settle`] and the planner look only at what changed.
@@ -438,7 +436,7 @@ pub struct Trees {
     unsent_creates: TrackedSet<NodeId>,
     kept_folders: TrackedSet<NodeId>,
     kept_entries: TrackedMap<NodeId, KeptEntries>,
-    kept_nodes: TrackedSet<NodeId>,
+    kept_nodes: TrackedMap<NodeId, Option<KeptCause>>,
     unseen_changes: TrackedSet<NodeId>,
     replaced_versions: TrackedMap<NodeId, Vec<String>>,
     content_provenance: TrackedMap<NodeId, ContentProvenance>,
@@ -467,7 +465,6 @@ pub struct Trees {
     /// Dirty nodes marked since the last settle, the only ones whose class can have changed.
     unsettled: BTreeSet<NodeId>,
     relink: bool,
-    kept_rules: Option<Vec<(Kept, Option<NodeId>)>>,
     unwatched: BTreeSet<NodeId>,
     unlinked: BTreeMap<(NodeId, Option<String>), BTreeSet<Pair>>,
     link_due: BTreeSet<Pair>,
@@ -558,7 +555,7 @@ impl Trees {
             unsent_creates: TrackedSet::default(),
             kept_folders: TrackedSet::default(),
             kept_entries: TrackedMap::default(),
-            kept_nodes: TrackedSet::default(),
+            kept_nodes: TrackedMap::default(),
             unseen_changes: TrackedSet::default(),
             replaced_versions: TrackedMap::default(),
             content_provenance: TrackedMap::default(),
@@ -578,7 +575,6 @@ impl Trees {
             asked: BTreeSet::new(),
             unsettled: BTreeSet::new(),
             relink: false,
-            kept_rules: None,
             unwatched: BTreeSet::new(),
             unlinked: BTreeMap::new(),
             link_due: BTreeSet::new(),
@@ -1862,14 +1858,14 @@ impl Trees {
             self.clear_unobserved(&id);
         }
         if let Some((folder, name)) = left_kept_name {
-            self.kept_nodes.insert(id.clone());
+            self.kept_nodes.get_or_insert_with(id.clone(), || None);
             if let Some(mut kept) = self.kept_entries.get(&folder).cloned() {
                 kept.moved.insert(name);
                 self.kept_entries.insert(folder, kept);
             }
         }
         if self.kept_at_name(&id).is_some() {
-            self.kept_nodes.insert(id);
+            self.kept_nodes.get_or_insert_with(id, || None);
         }
     }
 
@@ -2046,8 +2042,8 @@ impl Trees {
         let kept = self.kept_nodes.remove(from);
         self.forget_local(from);
         self.set_local_changed(to.to_owned(), node);
-        if kept {
-            self.kept_nodes.insert(to.to_owned());
+        if let Some(cause) = kept {
+            self.kept_nodes.insert(to.to_owned(), cause);
         }
         if let Some(mut provenance) = provenance {
             provenance.synced = self
@@ -2072,7 +2068,6 @@ impl Trees {
 
     /// Replaces this device's include and exclude lists, which are never synced.
     pub fn set_local_rules(&mut self, local: LocalRules) {
-        self.note_kept_rules();
         self.ignore.set_local(local, std::iter::empty());
         self.relink = true;
         self.rules_changed.insert(Vec::new());
@@ -2082,7 +2077,6 @@ impl Trees {
     /// it, or removes them with `None`. The driver parses each rules file it observes on this
     /// device's disk and passes the rules here with the observation.
     pub fn set_rules<S: AsRef<str>>(&mut self, dir: &[S], rules: Option<RuleFile>) {
-        self.note_kept_rules();
         self.ignore.set_rules(dir, rules, std::iter::empty());
         self.relink = true;
         (self.rules_changed).insert(dir.iter().map(|name| name.as_ref().to_owned()).collect());
@@ -2090,7 +2084,6 @@ impl Trees {
 
     /// Forgets the rules of every `.koiignore` file, for a caller about to pass all of them again.
     pub fn clear_rules(&mut self) {
-        self.note_kept_rules();
         self.ignore.clear_rules();
         self.relink = true;
         self.rules_changed.insert(Vec::new());
@@ -3590,7 +3583,7 @@ impl Trees {
     }
 
     fn kept_entry(&self, id: &str) -> bool {
-        self.kept_nodes.contains(id) || self.kept_at_name(id).is_some()
+        self.kept_nodes.contains_key(id) || self.kept_at_name(id).is_some()
     }
 
     fn kept_at_name(&self, id: &str) -> Option<&NodeId> {
@@ -3629,69 +3622,84 @@ impl Trees {
         };
         kept.names.remove(&name);
         kept.moved.remove(&name);
+        kept.causes.remove(&name);
         match kept.names.is_empty() {
             true => self.kept_entries.remove(&folder),
             false => self.kept_entries.insert(folder, kept),
         };
     }
 
-    fn note_kept_rules(&mut self) {
-        if !self.rules_known || self.kept_rules.is_some() {
+    fn note_kept_causes(&mut self) {
+        if !self.rules_known {
             return;
         }
-        let mut ruled = Vec::new();
-        for id in self.kept_nodes.iter() {
-            let (Some((names, kind)), Some(node)) = (path(&self.l, id), self.l.get(id)) else {
+        let ids: Vec<NodeId> = self.kept_nodes.keys().cloned().collect();
+        for id in ids {
+            let (Some((names, kind)), Some(node)) = (path(&self.l, &id), self.l.get(&id)) else {
                 continue;
             };
-            if let Some(cause) = self.ruled_out_by(&node.shape.parent, &names, &[kind]) {
-                let kept = Kept::Node {
-                    id: id.clone(),
-                    path: names.iter().map(|name| name.to_string()).collect(),
-                    kind,
+            if self.held(&id) {
+                continue;
+            }
+            let cause = self.kept_cause(&node.shape.parent, &names, &[kind]);
+            if self.kept_nodes.get(&id) != Some(&cause) {
+                self.kept_nodes.insert(id, cause);
+            }
+        }
+        let folders: Vec<NodeId> = self.kept_entries.keys().cloned().collect();
+        for folder in folders {
+            let (Some(above), Some(kept)) =
+                (self.folder_path(&folder), self.kept_entries.get(&folder))
+            else {
+                continue;
+            };
+            if self.held(&folder) {
+                continue;
+            }
+            let causes: BTreeMap<String, KeptCause> = (kept.names.iter())
+                .filter(|name| self.local_holders(&folder, name).next().is_none())
+                .filter_map(|name| {
+                    let mut entry = above.clone();
+                    entry.push(name.as_str());
+                    let cause = self.kept_cause(&folder, &entry, &[Kind::File, Kind::Dir])?;
+                    Some((name.clone(), cause))
+                })
+                .collect();
+            if causes != kept.causes {
+                let kept = KeptEntries {
+                    causes,
+                    ..kept.clone()
                 };
-                ruled.push((kept, cause));
+                self.kept_entries.insert(folder, kept);
             }
         }
-        for (folder, kept) in self.kept_entries.iter() {
-            let Some(above) = (match folder == &self.l.root {
-                true => Some(Vec::new()),
-                false => path(&self.l, folder).map(|(names, _)| names),
-            }) else {
-                continue;
-            };
-            for name in &kept.names {
-                if self.local_holders(folder, name).next().is_some() {
-                    continue;
-                }
-                let mut entry = above.clone();
-                entry.push(name.as_str());
-                if let Some(cause) = self.ruled_out_by(folder, &entry, &[Kind::File, Kind::Dir]) {
-                    let kept = Kept::Name {
-                        folder: folder.clone(),
-                        name: name.clone(),
-                    };
-                    ruled.push((kept, cause));
-                }
-            }
-        }
-        self.kept_rules = Some(ruled);
     }
 
-    fn ruled_out_by(&self, parent: &str, path: &[&str], kinds: &[Kind]) -> Option<Option<NodeId>> {
-        kinds.iter().find_map(|kind| {
-            let kind = match kind {
-                Kind::Dir => koidrive_ignore::Kind::Dir,
-                Kind::File => koidrive_ignore::Kind::File,
-            };
-            match self.ignore.status(path, kind) {
-                Status::Excluded(koidrive_ignore::Reason::Local) => Some(None),
-                Status::Excluded(koidrive_ignore::Reason::Rule { depth, .. }) => {
-                    Some(Some(self.rules_file_above(parent, depth)?))
-                }
-                _ => None,
-            }
+    fn folder_path(&self, folder: &str) -> Option<Vec<&str>> {
+        match folder == self.l.root {
+            true => Some(Vec::new()),
+            false => path(&self.l, folder).map(|(names, _)| names),
+        }
+    }
+
+    fn kept_cause(&self, parent: &str, path: &[&str], kinds: &[Kind]) -> Option<KeptCause> {
+        excluded(&self.ignore, path, kinds).then(|| KeptCause {
+            path: path.iter().map(|name| name.to_string()).collect(),
+            rules: self.kept_rules(parent, path),
         })
+    }
+
+    fn kept_rules(&self, parent: &str, path: &[&str]) -> Vec<KeptRules> {
+        (0..path.len())
+            .map(|depth| KeptRules {
+                file: (self.rules_file_above(parent, depth)).map(|id| KeptRulesFile {
+                    on_server: self.r.get(&id).is_some(),
+                    id,
+                }),
+                rules: (self.ignore.rules_file(&path[..depth]))
+                    .map(|rules| rules.source().to_vec()),
+            })
+            .collect()
     }
 
     fn rules_file_above(&self, parent: &str, depth: usize) -> Option<NodeId> {
@@ -3706,69 +3714,97 @@ impl Trees {
         }
         folders.reverse();
         let folder = *folders.get(depth)?;
-        (self.local_children(folder))
-            .find(|child| {
-                (self.l.get(child.as_str())).is_some_and(|node| is_rules_file(&node.shape.name))
-            })
+        (self.local_holders(folder, koidrive_ignore::RULES_FILE))
+            .find(|id| (self.l.get(id)).is_some_and(|node| node.shape.kind == Kind::File))
             .cloned()
     }
 
-    fn release_kept_entries_the_person_let_in(&mut self) {
-        let Some(ruled) = self.kept_rules.take().filter(|_| self.rules_known) else {
-            return;
-        };
-        for (kept, cause) in ruled {
-            let by_the_person = match &cause {
-                None => true,
-                Some(file) => match self.l.get(file) {
-                    Some(_) => self.edited(file),
-                    None => self.r.live(file).is_some(),
-                },
-            };
-            if !by_the_person {
+    fn let_in_by_the_person(&self, cause: &KeptCause, parent: &str, kinds: &[Kind]) -> bool {
+        let path: Vec<&str> = cause.path.iter().map(String::as_str).collect();
+        let now = self.kept_rules(parent, &path);
+        if now.len() != cause.rules.len() || excluded(&self.ignore, &path, kinds) {
+            return false;
+        }
+        let mut without_others = self.ignore.clone();
+        for (depth, (now, then)) in now.iter().zip(&cause.rules).enumerate() {
+            if now.rules == then.rules || self.changed_by_the_person(now, then) {
                 continue;
             }
-            match kept {
-                Kept::Node { id, path, kind } => {
-                    let let_in = !self.ignores(&path, kind) && self.l.get(&id).is_some();
-                    if let_in && self.kept_nodes.contains(&id) {
-                        self.release_kept_entry(&id);
-                        self.kept_nodes.remove(&id);
-                        self.mark(&id);
-                    }
-                }
-                Kept::Name { folder, name } => {
-                    let above = match folder == self.l.root {
-                        true => Some(Vec::new()),
-                        false => path(&self.l, &folder).map(|(names, _)| names),
-                    };
-                    let let_in = above.is_some_and(|mut entry| {
-                        entry.push(name.as_str());
-                        [Kind::File, Kind::Dir]
-                            .iter()
-                            .all(|kind| !self.ignores(&entry, *kind))
-                    });
-                    if !let_in {
-                        continue;
-                    }
-                    let held: Vec<NodeId> = (self.local_holders(&folder, &name))
-                        .filter(|id| self.kept_at_name(id).is_some())
-                        .cloned()
-                        .collect();
-                    for id in held {
-                        self.kept_nodes.remove(&id);
-                        self.mark(&id);
-                    }
-                    if let Some(mut kept) = self.kept_entries.get(&folder).cloned() {
-                        kept.names.remove(&name);
-                        kept.moved.remove(&name);
-                        match kept.names.is_empty() {
-                            true => self.kept_entries.remove(&folder),
-                            false => self.kept_entries.insert(folder.clone(), kept),
-                        };
-                        self.mark(&folder);
-                    }
-                }
+            let rules = then.rules.as_deref().map(RuleFile::parse);
+            without_others.set_rules(&path[..depth], rules, std::iter::empty());
+        }
+        !excluded(&without_others, &path, kinds)
+    }
+
+    fn changed_by_the_person(&self, now: &KeptRules, then: &KeptRules) -> bool {
+        match (&now.file, &then.file) {
+            (Some(file), _) => self.edited(&file.id) || self.local_changes.contains(&file.id),
+            (None, Some(file)) if self.l.get(&file.id).is_some() => {
+                self.local_changes.contains(&file.id)
+            }
+            (None, Some(file)) => match self.r.get(&file.id) {
+                Some(_) => self.r.live(&file.id).is_some(),
+                None => !file.on_server,
+            },
+            (None, None) => false,
+        }
+    }
+
+    fn release_kept_entries_the_person_let_in(&mut self) {
+        if !self.rules_known {
+            return;
+        }
+        let nodes: Vec<(NodeId, KeptCause)> = (self.kept_nodes.iter())
+            .filter_map(|(id, cause)| Some((id.clone(), cause.clone()?)))
+            .collect();
+        for (id, cause) in nodes {
+            let (Some((names, kind)), Some(node)) = (path(&self.l, &id), self.l.get(&id)) else {
+                continue;
+            };
+            if names != cause.path
+                || self.held(&id)
+                || !self.let_in_by_the_person(&cause, &node.shape.parent, &[kind])
+            {
+                continue;
+            }
+            self.release_kept_entry(&id);
+            self.kept_nodes.remove(&id);
+            self.mark(&id);
+        }
+        let names: Vec<(NodeId, String, KeptCause)> = (self.kept_entries.iter())
+            .flat_map(|(folder, kept)| {
+                (kept.causes.iter())
+                    .map(|(name, cause)| (folder.clone(), name.clone(), cause.clone()))
+            })
+            .collect();
+        for (folder, name, cause) in names {
+            let at_its_place = self.folder_path(&folder).is_some_and(|mut entry| {
+                entry.push(name.as_str());
+                entry == cause.path
+            });
+            if !at_its_place
+                || self.held(&folder)
+                || !self.let_in_by_the_person(&cause, &folder, &[Kind::File, Kind::Dir])
+            {
+                continue;
+            }
+            let held: Vec<NodeId> = (self.local_holders(&folder, &name))
+                .filter(|id| self.kept_at_name(id).is_some())
+                .cloned()
+                .collect();
+            for id in held {
+                self.kept_nodes.remove(&id);
+                self.mark(&id);
+            }
+            if let Some(mut kept) = self.kept_entries.get(&folder).cloned() {
+                kept.names.remove(&name);
+                kept.moved.remove(&name);
+                kept.causes.remove(&name);
+                match kept.names.is_empty() {
+                    true => self.kept_entries.remove(&folder),
+                    false => self.kept_entries.insert(folder.clone(), kept),
+                };
+                self.mark(&folder);
             }
         }
     }
@@ -3776,7 +3812,7 @@ impl Trees {
     /// The paths of the entries this device keeps out of sync after the rules of a deleted folder they were in stopped
     /// applying ([`TreesState::kept_nodes`], [`TreesState::kept_entries`]), each where it is now.
     pub fn kept_entry_paths(&self) -> Vec<Vec<&str>> {
-        let mut paths: BTreeSet<Vec<&str>> = (self.kept_nodes.iter())
+        let mut paths: BTreeSet<Vec<&str>> = (self.kept_nodes.keys())
             .filter_map(|node| Some(path(&self.l, node)?.0))
             .collect();
         for (folder, kept) in self.kept_entries.iter() {
@@ -5106,6 +5142,7 @@ impl Trees {
     /// with the content both sides already hold. [`Trees::work`] gives the dirty nodes that are left.
     pub fn settle(&mut self, merged: &BTreeMap<NodeId, NodeId>) {
         self.release_kept_entries_the_person_let_in();
+        self.note_kept_causes();
         let carried: Vec<NodeId> = (self.unsettled.iter())
             .filter(|id| self.carried(id))
             .cloned()
@@ -6055,7 +6092,6 @@ impl Trees {
             asked: _,
             unsettled: _,
             relink: _,
-            kept_rules: _,
             unwatched: _,
             unlinked: _,
             link_due: _,

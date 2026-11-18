@@ -15,8 +15,8 @@ use koidrive_engine::question::{
 };
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 use koidrive_engine::state::{
-    Agreed, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptEntries, LostPosition,
-    MovedHere, PendingFinish, TreesState,
+    Agreed, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptCause, KeptEntries, KeptRules,
+    KeptRulesFile, LostPosition, MovedHere, PendingFinish, TreesState,
 };
 use koidrive_engine::tree::{
     FileIdentity, Kind, LocalNode as EngineLocalNode, RemoteNode, Shape as EngineShape,
@@ -1199,6 +1199,25 @@ fn unknown(no_later_than: u64) -> Trash {
     Trash::Unknown { no_later_than }
 }
 
+fn kept_cause(rules: &[u8]) -> KeptCause {
+    KeptCause {
+        path: vec!["e".into(), ".env".into()],
+        rules: vec![
+            KeptRules {
+                file: Some(KeptRulesFile {
+                    id: "r".into(),
+                    on_server: true,
+                }),
+                rules: Some(rules.to_vec()),
+            },
+            KeptRules {
+                file: None,
+                rules: None,
+            },
+        ],
+    }
+}
+
 fn nodes<const N: usize>(ids: [&str; N]) -> BTreeSet<String> {
     ids.into_iter().map(String::from).collect()
 }
@@ -1394,6 +1413,7 @@ fn engine_state() -> EngineState {
                         names: [".env".into(), "node_modules".into()].into(),
                         moved: [".env.local".into()].into(),
                         listed: true,
+                        causes: BTreeMap::from([(".env".into(), kept_cause(b".env\n"))]),
                     },
                 ),
                 (
@@ -1402,10 +1422,14 @@ fn engine_state() -> EngineState {
                         names: [".env".into()].into(),
                         moved: Default::default(),
                         listed: false,
+                        causes: Default::default(),
                     },
                 ),
             ]),
-            kept_nodes: nodes(["n1"]),
+            kept_nodes: BTreeMap::from([
+                ("n1".into(), None),
+                ("n2".into(), Some(kept_cause(b"*.env\n"))),
+            ]),
             unseen_changes: nodes(["u"]),
             resends: nodes(["u"]),
             local_changes: nodes(["u"]),
@@ -5172,4 +5196,33 @@ fn a_missing_database_is_refused_and_not_created() {
     let path = dir.path().join("state.db");
     assert!(Store::open_existing(&path).is_err());
     assert!(!path.exists());
+}
+
+#[test]
+fn a_kept_cause_the_store_cannot_read_loads_as_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut store = Store::open(&path).unwrap();
+    store
+        .transaction(|tx| {
+            let mut state = tx.engine_state()?;
+            state
+                .trees
+                .kept_nodes
+                .insert("n".into(), Some(kept_cause(b".env\n")));
+            tx.set_engine_state(&state)
+        })
+        .unwrap();
+    drop(store);
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE kept_nodes SET cause = x'7b7d' WHERE node_id = 'n'",
+            [],
+        )
+        .unwrap();
+
+    let mut store = Store::open(&path).unwrap();
+    let state = store.transaction(|tx| tx.engine_state()).unwrap();
+    assert_eq!(state.trees.kept_nodes, BTreeMap::from([("n".into(), None)]));
 }
