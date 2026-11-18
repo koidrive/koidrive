@@ -700,8 +700,6 @@ impl Engine {
         self.trees.rules_scanned();
     }
 
-    /// Moves the change time stored for each node from `before` to `after`, when the stored one is not earlier than
-    /// `before`: the file was as L knows it until its node mark moved its change time.
     pub fn restamp(
         &mut self,
         tx: &Tx<'_>,

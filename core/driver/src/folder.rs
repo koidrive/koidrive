@@ -974,7 +974,6 @@ impl Folder {
         self.mark(entries)
     }
 
-    /// Writes the node marks of `entries` and keeps the change time of each file whose mark was all that moved it.
     fn mark(&mut self, entries: Vec<(NodeId, NodeId)>) -> Result<(), Stop> {
         let stamped = self.disk.mark(&self.engine.trees, entries);
         if stamped.is_empty() {

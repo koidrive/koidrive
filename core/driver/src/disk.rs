@@ -164,7 +164,6 @@ pub(crate) struct Sections {
     /// Scopes the observer resets to L's view and scans again before its next batch, in the order requested, and
     /// how many requests there have been.
     resets: Mutex<(Vec<Reset>, u64)>,
-    /// Files the effect sections wrote a node mark on since the observer last took them.
     marked: Mutex<Vec<Marked>>,
 }
 
@@ -799,8 +798,6 @@ impl Disk {
             .collect()
     }
 
-    /// Marks the entry of each node with the node it names, and returns the change time each entry had before and after
-    /// its mark. The observer learns them too, so a mark is not taken for an edit.
     pub fn mark(
         &self,
         trees: &Trees,

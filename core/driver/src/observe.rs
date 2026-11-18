@@ -135,7 +135,6 @@ pub struct Reset {
     pub known: BTreeMap<PathBuf, Known>,
 }
 
-/// A file a node mark was written on, with its change time before and after the mark.
 #[derive(Debug)]
 pub struct Marked {
     pub path: PathBuf,
@@ -285,8 +284,7 @@ struct Reads {
     bytes: u64,
     /// Files that changed while they were read, or could not be read.
     busy: Vec<PathBuf>,
-    /// Files left to a later observation because this one read all it may, or because their change time has not
-    /// settled.
+    /// Files left to a later observation because this one read all it may.
     deferred: Vec<PathBuf>,
     /// Folders the changes of this observation removed or renamed into place. A file created under one may be a node
     /// that the batch takes out of L with the folder, which the engine keeps only for a created file with content, so
@@ -381,7 +379,6 @@ impl FsObserver {
         self.unread.totals()
     }
 
-    /// The files still to be read whose change time has not settled. The next poll scans them again.
     pub fn racy_reads(&self) -> Vec<PathBuf> {
         let entries = &self.watcher.snapshot().entries;
         (self.unread.files.keys())
@@ -406,7 +403,6 @@ impl FsObserver {
         self.scanned
     }
 
-    /// [`koidrive_fs::Snapshot::restamp`] for each file a node mark was written on.
     pub fn restamp(&mut self, marked: Vec<Marked>) {
         for Marked {
             path,
