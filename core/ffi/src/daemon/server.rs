@@ -165,16 +165,18 @@ impl Device {
 
     fn env(&self) -> Vec<(&'static str, Option<OsString>)> {
         let dir = |name: &str| Some(self.path(name).into_os_string());
-        vec![
+        let mut env = vec![
             ("HOME", dir("home")),
             ("XDG_CONFIG_HOME", dir("config")),
             ("XDG_STATE_HOME", dir("state")),
             ("XDG_RUNTIME_DIR", None),
-            (
-                koidrive_test_support::LIFELINE,
-                Some(self.home.lifeline().into()),
-            ),
-        ]
+        ];
+        env.extend(
+            self.home
+                .vars()
+                .map(|(name, path)| (name, Some(path.into()))),
+        );
+        env
     }
 
     fn paths(&self) -> driver::Paths {

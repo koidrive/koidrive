@@ -81,7 +81,7 @@ impl Machine {
     }
 
     fn command(&self, koi: &Path, args: &[&str]) -> Command {
-        let mut command = koidrive_test_support::sandboxed(koi, &self.home);
+        let mut command = koidrive_test_support::sandboxed(koi, self.sandbox.path());
         command
             .args(args)
             .current_dir(&self.home)
@@ -1334,9 +1334,9 @@ fn the_launch_agent_of_a_temporary_profile_is_stopped_and_removed() {
         ("XDG_CONFIG_HOME", machine.path("config")),
         ("XDG_STATE_HOME", machine.path("state")),
         ("XDG_RUNTIME_DIR", machine.path("run")),
-        (koidrive_test_support::LIFELINE, machine.sandbox.lifeline().to_path_buf()),
     ]
-    .iter()
+    .into_iter()
+    .chain((machine.sandbox.vars()).map(|(key, value)| (key, value.to_path_buf())))
     .map(|(key, value)| format!("<key>{key}</key><string>{}</string>", value.display()))
     .chain(["<key>KOIDRIVE_TELEMETRY</key><string>off</string><key>KOIDRIVE_UPDATE_CHECK</key><string>0</string>".to_owned()])
     .collect();

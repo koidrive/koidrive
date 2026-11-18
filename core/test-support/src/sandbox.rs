@@ -14,6 +14,8 @@ use rustix::fs::{FlockOperation, flock};
 /// The variable koi reads its lifeline from; `koidrive-cli` holds the other end of this protocol.
 pub const LIFELINE: &str = "KOIDRIVE_TEST_LIFELINE";
 
+const INVENTORY: &str = "KOIDRIVE_TEST_INSTALL_INVENTORY";
+
 const LIFELINE_PREFIX: &str = "koi-lifeline-";
 const ENDING: Duration = Duration::from_secs(30);
 
@@ -52,7 +54,7 @@ impl Sandbox {
         let lifeline = made(LIFELINE_PREFIX);
         let owner = locked(&lifeline, "owner");
         let root = made("koi-");
-        fs::write(lifeline.join("root"), root.as_os_str().as_bytes()).unwrap();
+        koidrive_state_file::write(&lifeline.join("root"), root.as_os_str().as_bytes()).unwrap();
         File::create(lifeline.join("alive")).unwrap();
         let held = locked(&lifeline, "held");
         OPEN.lock().unwrap().push(Open {
@@ -73,6 +75,12 @@ impl Sandbox {
 
     pub fn lifeline(&self) -> &Path {
         &self.lifeline
+    }
+
+    /// The variables [`sandboxed`] sets, for a koi started with an environment the test writes out, such as a
+    /// service definition's.
+    pub fn vars(&self) -> [(&'static str, &Path); 2] {
+        [(LIFELINE, &self.lifeline), (INVENTORY, &self.root)]
     }
 }
 
@@ -109,10 +117,8 @@ impl Drop for Sandbox {
 }
 
 fn locked(lifeline: &Path, name: &str) -> File {
-    let new = lifeline.join(format!("{name}.new"));
-    let file = File::create(&new).unwrap();
+    let file = File::create(lifeline.join(name)).unwrap();
     flock(&file, FlockOperation::LockExclusive).unwrap();
-    fs::rename(new, lifeline.join(name)).unwrap();
     file
 }
 
@@ -143,7 +149,7 @@ pub fn sandboxed(program: impl AsRef<OsStr>, within: &Path) -> Command {
     let mut command = Command::new(program);
     command
         .env(LIFELINE, lifeline)
-        .env("KOIDRIVE_TEST_INSTALL_INVENTORY", root)
+        .env(INVENTORY, root)
         .env_remove("HOMEBREW_PREFIX")
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_STATE_HOME")
@@ -168,9 +174,10 @@ fn sweep(parent: &Path) {
         if flock(&owner, FlockOperation::NonBlockingLockExclusive).is_err() {
             continue;
         }
-        if let Ok(root) = fs::read(lifeline.join("root")) {
-            let _ = fs::remove_dir_all(Path::new(OsStr::from_bytes(&root)));
-        }
+        let Ok(root) = fs::read(lifeline.join("root")) else {
+            continue;
+        };
+        let _ = fs::remove_dir_all(Path::new(OsStr::from_bytes(&root)));
         let _ = fs::remove_dir_all(&lifeline);
     }
 }
