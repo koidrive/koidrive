@@ -1566,3 +1566,124 @@ fn attack_r9_v1_first_delete_with_a_nested_ignored_entry_then_the_subfolder_made
     assert_eq!(fs::read(site.root.join("app/sub/lib.rs")).unwrap(), b"third", "{report}");
 }
 
+
+fn r10_takeover_report(site: &Site, b: &Device, remote: &Remote) -> String {
+    format!(
+        "remote={:?}\ndisk={:?}\nkept={:?}\nview={:?}/{:?}",
+        remote.tree().keys().collect::<Vec<_>>(),
+        files(&site.root),
+        b.folder.engine.trees.kept_entry_paths(),
+        b.folder.view().state,
+        b.folder.view().problem,
+    )
+}
+
+fn r10_round(b: &mut Device, remote: &mut Remote) {
+    for _ in 0..4 {
+        b.pull(remote);
+        b.run(remote);
+        b.settle();
+    }
+}
+
+fn r10_clean(site: &Site, b: &Device, remote: &Remote, envs: &[&str]) {
+    let report = r10_takeover_report(site, b, remote);
+    let tree = remote.tree();
+    assert!(!tree.keys().any(|k| k.contains("conflict") || k.ends_with(".env")), "{report}");
+    for env in envs {
+        assert!(site.root.join(env).exists(), "{env} missing\n{report}");
+    }
+    assert!(nothing_parked(site), "{report}");
+    assert_eq!(b.folder.view().problem, None, "{report}");
+}
+
+#[test]
+fn attack_r10_three_levels_made_again_from_the_bottom() {
+    let (mut remote, site_a, mut a, site, mut b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env\n")],
+        &["README.md", "sub/lib.rs", "sub/deep/mod.rs"],
+        &["sub/deep/.env"],
+    );
+    assert!(site.root.join("app/sub/deep/.env").exists());
+    fs::create_dir_all(site_a.root.join("app/sub/deep")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/sub/deep/mod.rs"), b"made again");
+    r10_round(&mut b, &mut remote);
+    r10_clean(&site, &b, &remote, &["app/sub/deep/.env"]);
+    assert_eq!(fs::read(site.root.join("app/sub/deep/mod.rs")).unwrap(), b"made again");
+}
+
+#[test]
+fn attack_r10_siblings_one_made_again() {
+    let (mut remote, site_a, mut a, site, mut b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env\n")],
+        &["README.md", "one/lib.rs", "two/lib.rs"],
+        &["one/.env", "two/.env"],
+    );
+    fs::create_dir_all(site_a.root.join("app/one")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/one/lib.rs"), b"made again");
+    r10_round(&mut b, &mut remote);
+    r10_clean(&site, &b, &remote, &["app/one/.env", "app/two/.env"]);
+    assert!(!remote.tree().contains_key("app/two"), "{}", r10_takeover_report(&site, &b, &remote));
+}
+
+#[test]
+fn attack_r10_inner_folder_made_again_in_another_case() {
+    let (mut remote, site_a, mut a, site, mut b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env\n")],
+        &["README.md", "sub/lib.rs"],
+        &["sub/.env"],
+    );
+    fs::create_dir_all(site_a.root.join("app/Sub")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/Sub/lib.rs"), b"made again");
+    r10_round(&mut b, &mut remote);
+    let report = r10_takeover_report(&site, &b, &remote);
+    assert!(!remote.tree().keys().any(|k| k.contains("conflict") || k.ends_with(".env")), "{report}");
+    assert!(files(&site.root).iter().any(|(k, _)| k.to_lowercase() == "app/sub/.env"), "{report}");
+    assert!(nothing_parked(&site), "{report}");
+}
+
+#[test]
+fn attack_r10_inner_place_made_again_as_a_file() {
+    let (mut remote, site_a, mut a, site, mut b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env\n")],
+        &["README.md", "sub/lib.rs"],
+        &["sub/.env"],
+    );
+    fs::create_dir_all(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/sub"), b"a file now");
+    r10_round(&mut b, &mut remote);
+    let report = r10_takeover_report(&site, &b, &remote);
+    assert!(!remote.tree().keys().any(|k| k.ends_with(".env") || k.contains("lib.rs")), "{report}");
+    assert!(files(&site.root).iter().any(|(_, v)| v.starts_with("local only")), "the kept .env is gone\n{report}");
+}
+
+#[test]
+fn attack_r10_inner_folder_with_its_own_rules_made_again() {
+    let (mut remote, site_a, mut a, site, mut b, _) = deleted_with_rules_files(
+        &[(".koiignore", "*.log\n"), ("sub/.koiignore", ".env\n")],
+        &["README.md", "sub/lib.rs"],
+        &["sub/.env"],
+    );
+    assert!(site.root.join("app/sub/.env").exists(), "{}", r10_takeover_report(&site, &b, &remote));
+    fs::create_dir_all(site_a.root.join("app/sub")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/sub/lib.rs"), b"made again");
+    r10_round(&mut b, &mut remote);
+    r10_clean(&site, &b, &remote, &["app/sub/.env"]);
+}
+
+#[test]
+fn attack_r10_inner_folder_made_again_while_stopped() {
+    let (mut remote, site_a, mut a, site, b, _) = deleted_with_rules_files(
+        &[(".koiignore", ".env\n")],
+        &["README.md", "sub/lib.rs"],
+        &["sub/.env"],
+    );
+    drop(b);
+    fs::create_dir_all(site_a.root.join("app/sub")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/sub/lib.rs"), b"made again");
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    r10_round(&mut b, &mut remote);
+    r10_clean(&site, &b, &remote, &["app/sub/.env"]);
+}
