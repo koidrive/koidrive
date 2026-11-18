@@ -1625,6 +1625,7 @@ fn attack_r10_siblings_one_made_again() {
     a.create(&mut remote, &site_a.root.join("app/one/lib.rs"), b"made again");
     r10_round(&mut b, &mut remote);
     r10_clean(&site, &b, &remote, &["app/one/.env", "app/two/.env"]);
+    assert_eq!(fs::read(site.root.join("app/one/lib.rs")).unwrap(), b"made again");
     assert!(!remote.tree().contains_key("app/two"), "{}", r10_takeover_report(&site, &b, &remote));
 }
 
@@ -1641,6 +1642,7 @@ fn attack_r10_inner_folder_made_again_in_another_case() {
     let report = r10_takeover_report(&site, &b, &remote);
     assert!(!remote.tree().keys().any(|k| k.contains("conflict") || k.ends_with(".env")), "{report}");
     assert!(files(&site.root).iter().any(|(k, _)| k.to_lowercase() == "app/sub/.env"), "{report}");
+    assert!(files(&site.root).iter().any(|(k, _)| k.to_lowercase() == "app/sub/lib.rs"), "{report}");
     assert!(nothing_parked(&site), "{report}");
 }
 

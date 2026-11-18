@@ -665,8 +665,7 @@ fn a_kept_folder_taken_over_by_a_folder_without_rules_uploads_none_of_its_entrie
     }
 
     let tree = remote.tree();
-    assert!(!tree.contains_key("app/.env"), "{tree:?}");
-    assert!(!tree.contains_key("app/node_modules"), "{tree:?}");
+    assert_eq!(tree.keys().collect::<Vec<_>>(), ["app", "app/README.md"], "{tree:?}");
 }
 
 #[test]
@@ -1037,6 +1036,7 @@ fn a_kept_entry_moved_out_of_its_folder_stays_out_of_sync_after_the_folder_is_de
         }
 
         assert!(!site.root.join("app").exists(), "{deleted_by}");
+        assert!(!remote.tree().contains_key("app"), "{deleted_by}: {:?}", remote.tree());
         assert!(!remote.tree().contains_key(".env"), "{deleted_by}: {:?}", remote.tree());
         assert_eq!(b.folder.view().kept_entries, [koidrive_fs::ItemPath::from(".env")], "{deleted_by}");
     }
@@ -1124,7 +1124,10 @@ fn a_kept_entry_moved_into_a_folder_another_device_deletes_and_makes_again_stays
 }
 
 fn nothing_parked(site: &Site) -> bool {
-    fs::read_dir(site.root.join(".koidrive/parked")).map_or(true, |mut entries| entries.next().is_none())
+    match fs::read_dir(site.root.join(".koidrive/parked")) {
+        Ok(mut entries) => entries.next().is_none(),
+        Err(err) => err.kind() == std::io::ErrorKind::NotFound || panic!("{err}"),
+    }
 }
 
 fn taken_over_with_rules(rules: &[u8]) -> (Remote, Site, Device, Site, Device) {
