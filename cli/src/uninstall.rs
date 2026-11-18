@@ -180,6 +180,7 @@ enum Program {
 
 struct Found {
     paired: bool,
+    signs_out: bool,
     state: bool,
     owner: Option<Owner>,
     folders: Vec<PathBuf>,
@@ -502,6 +503,12 @@ async fn find(paths: &Paths, home: &Path) -> Found {
     };
     let credential = paths.credential();
     let paired = credential.exists();
+    let signs_out = paired
+        && (state
+            || matches!(
+                tokio::time::timeout(STATUS, ipc::ask(paths, &Request::Status)).await,
+                Ok(Ok(Some(_)))
+            ));
     let owner = Credential::load(&credential)
         .ok()
         .flatten()
@@ -606,6 +613,7 @@ async fn find(paths: &Paths, home: &Path) -> Found {
     app_files.retain(|path| fs::symlink_metadata(path).is_ok());
     Found {
         paired,
+        signs_out,
         state,
         owner,
         folders,
@@ -799,7 +807,7 @@ async fn confirm(found: &Found, options: &Options, terminal: &Terminal) -> Resul
 
 fn plan(found: &Found, options: &Options) -> Vec<String> {
     let mut lines = vec!["This removes:".to_owned()];
-    if found.paired && !options.keep_signed_in {
+    if found.signs_out && !options.keep_signed_in {
         lines.push(match &found.owner {
             Some(owner) => format!("  this device from {}", printable(&owner.server)),
             None => "  this device from its server".to_owned(),
@@ -851,12 +859,26 @@ fn plan(found: &Found, options: &Options) -> Vec<String> {
         }
     }
     for kept in &found.kept {
-        if let Kept::Unrecognized { path } = kept {
-            lines.push(format!(
+        match kept {
+            Kept::Unrecognized { path } => lines.push(format!(
                 "It keeps {}, which holds files Koidrive does not write.",
                 shown_folder(Path::new(path))
-            ));
+            )),
+            Kept::UnrecordedState { path } => lines.push(format!(
+                "It keeps {}, which Koidrive did not create.",
+                shown_folder(Path::new(path))
+            )),
+            _ => {}
         }
+    }
+    if found.paired && !found.signs_out && !options.keep_signed_in {
+        lines.push(match &found.owner {
+            Some(owner) => format!(
+                "This device stays signed in to {}.",
+                printable(&owner.server)
+            ),
+            None => "This device stays signed in to its server.".to_owned(),
+        });
     }
     lines
 }
@@ -908,19 +930,22 @@ async fn sign_out(
     if options.keep_signed_in {
         return still_listed(None);
     }
-    if !found.state {
+    if !found.signs_out {
         return still_listed(Some(format!(
-            "Koidrive has no record of creating {}, so uninstall did not open it",
-            paths.state_dir.display()
+            "Koidrive did not create {}, so uninstall left it as it was",
+            shown_folder(&paths.state_dir)
         )));
     }
-    let leave = |confirm_last_device| {
-        ipc::run(
-            paths,
-            Request::Leave {
-                confirm_last_device,
-            },
-        )
+    let leave = |confirm_last_device| async move {
+        let request = Request::Leave {
+            confirm_last_device,
+        };
+        match found.state {
+            true => ipc::run(paths, request).await,
+            false => ipc::ask(paths, &request)
+                .await?
+                .ok_or_else(|| CliError::from("background sync did not answer".to_owned())),
+        }
     };
     let mut answer = leave(options.last_device).await;
     if let Err(error) = &answer

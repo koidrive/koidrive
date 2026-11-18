@@ -208,6 +208,11 @@ pub enum DriverError {
         path: PathBuf,
         error: koidrive_store::Error,
     },
+    #[error(
+        "sync is paused, but {} could not be saved, so a restart may resume sync: {error}",
+        koidrive_fs::quoted(.path)
+    )]
+    PausedUnsaved { path: PathBuf, error: io::Error },
     #[error("{}: {error}", koidrive_fs::quoted(.path))]
     Io { path: PathBuf, error: io::Error },
 }
@@ -1842,10 +1847,10 @@ impl Driver {
         let paused = tokio::spawn(async move {
             let _pausing = pausing;
             let path = driver.inner.paths.paused();
-            let written = koidrive_state_file::write(&path, b"paused\n").map_err(io_error(&path));
-            if written.is_err() && !path.is_file() {
-                return written.map(|()| false);
-            }
+            let written = match koidrive_state_file::write(&path, b"paused\n") {
+                Err(error) if !path.is_file() => return Err(io_error(&path)(error)),
+                written => written,
+            };
             let changed = !driver.inner.paused.swap(true, Ordering::SeqCst);
             if changed {
                 driver.stop_folders().await;
@@ -1856,7 +1861,9 @@ impl Driver {
                     .persist()
                     .map_err(io_error(folder.status.path()))?;
             }
-            written.map(|()| changed)
+            written
+                .map(|()| changed)
+                .map_err(|error| DriverError::PausedUnsaved { path, error })
         });
         paused
             .await
@@ -5968,7 +5975,15 @@ mod tests {
         let paused = driver.pause().await;
         fs::set_permissions(&paths.state_dir, fs::Permissions::from_mode(0o700)).unwrap();
 
-        assert!(matches!(paused, Err(DriverError::Io { .. })), "{paused:?}");
+        let error = paused.unwrap_err();
+        assert!(
+            matches!(error, DriverError::PausedUnsaved { .. }),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().starts_with("sync is paused, but "),
+            "{error}"
+        );
         assert!(driver.status().paused);
         assert_eq!(driver.status().folders[0].state, FolderState::Stopped);
     }

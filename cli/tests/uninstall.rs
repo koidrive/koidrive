@@ -219,6 +219,80 @@ fn a_profile_folder_that_lands_on_a_synced_folder_keeps_every_file() {
 }
 
 #[test]
+fn a_signed_in_state_folder_koidrive_did_not_make_stays_signed_in_and_says_why() {
+    let machine = Machine::new();
+    let koi = machine.copy_koi(".local/bin/koi");
+    fs::create_dir_all(machine.path("state/koidrive")).unwrap();
+    fs::write(machine.path("state/koidrive/credential.json"), "{}").unwrap();
+
+    let (code, text) = on_terminal(&machine, &koi, &["uninstall", "--plain"], "n\n");
+
+    assert_ne!(code, 0, "{text}");
+    assert!(!text.contains("this device from"), "{text}");
+    assert!(
+        text.contains("It keeps ~/state/koidrive, which Koidrive did not create."),
+        "{text}"
+    );
+    assert!(
+        text.contains("This device stays signed in to its server."),
+        "{text}"
+    );
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert_eq!(
+        envelope["data"]["device"],
+        json!({
+            "state": "still_listed",
+            "problem": "Koidrive did not create ~/state/koidrive, so uninstall left it as it was",
+        }),
+        "{envelope:#}"
+    );
+}
+
+#[test]
+fn an_older_release_whose_daemon_runs_signs_out_through_the_daemon() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let machine = Machine::new();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let credential = machine.path("state/koidrive/credential.json");
+    for dir in ["state/koidrive", "run"] {
+        fs::create_dir_all(machine.path(dir)).unwrap();
+        fs::set_permissions(machine.path(dir), fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    fs::write(
+        &credential,
+        r#"{"server":"http://127.0.0.1:9/","user_id":"u1","device_id":"d1","device_name":"Mac","refresh_credential":"x"}"#,
+    )
+    .unwrap();
+    fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
+    let mut daemon = machine
+        .command(&koi, &["_daemon"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let socket = machine.paths().socket();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !socket.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    let (_, envelope) =
+        machine.envelope(machine.command(&koi, &["uninstall", "--yes", "--last-device", "--json"]));
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+
+    assert_eq!(
+        envelope["data"]["device"]["state"], "signed_out",
+        "{envelope:#}"
+    );
+    assert!(!credential.exists(), "{envelope:#}");
+}
+
+#[test]
 fn a_linked_state_folder_koidrive_did_not_make_keeps_the_users_files() {
     let machine = Machine::new();
     let koi = Path::new(env!("CARGO_BIN_EXE_koi"));
