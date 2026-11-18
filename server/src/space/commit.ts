@@ -123,6 +123,7 @@ export class CommitApplier {
   private created = new Set<string>();
   private parentBefore = new Map<string, string | null>();
   private readonly trashed = new Set<string>();
+  private readonly madeCopies = new Set<string>();
   private readonly purged: ChangeRecord[] = [];
   private intents!: OpIntents;
 
@@ -138,6 +139,7 @@ export class CommitApplier {
       this.parentBefore = new Map();
       this.intents = resolveIntents(op, { deviceId: this.dev, seq: this.ctx.seq, nowMs: this.ctx.nowMs });
       const outcome = this.applyOp(op, index);
+      if (outcome.code === OpResult_Code.CONFLICT_COPY && !this.incoming("content").carried) this.madeCopies.add(outcome.nodeId);
       if (!this.ctx.authorize(op, this.effect(op))) throw new CallFailure(Error_Code.FORBIDDEN, `op ${index} is not allowed for this device`);
       return outcome;
     });
@@ -871,6 +873,7 @@ export class CommitApplier {
   private trashByView(target: NodeRow, group: string, view: DeleteView): boolean {
     const lost: LostContent[] = [];
     const walk = (node: NodeRow): boolean => {
+      if (this.madeCopies.has(node.node_id)) return true;
       const held = readIntents(this.sql, node.node_id);
       if (this.unseenBy(view, held.place) && node.parent_rev >= held.place!.seq) return true;
       let keep = FIELDS.some((field) => this.unseenBy(view, held[field]));
