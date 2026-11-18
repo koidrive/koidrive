@@ -96,3 +96,36 @@ fn the_restore_cases_hold_when_the_server_sends_no_commit_token() {
     a_later_edit_made_over_a_kept_write_does_not_need_a_recovery_copy();
     a_lost_move_and_edit_sent_again_after_a_restore_keep_the_write_in_one_file();
 }
+
+#[test]
+#[ignore = "GUN-1012: one slot token cannot tell a commit that replaced this store's lost commit from one a rolled-back copy never saw, so the copy sends its edit again over a later delete (RFC 0029)"]
+fn a_rolled_back_copy_sends_no_edit_again_that_the_server_holds_through_its_resend() {
+    let u = |kind| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name: 0,
+            text: 0,
+        })
+    };
+    converge(
+        2,
+        &[
+            vec![(0, u(1)), (0, Step::Backup)],
+            vec![(1, u(2))],
+            vec![
+                (0, Step::Restore),
+                (1, Step::Connect),
+                (1, Step::CopyStore),
+                (1, Step::Work(0)),
+                (1, Step::Commit(Reply::Served)),
+                (1, Step::Work(4555966414081959077)),
+                (1, Step::RollBack),
+                (0, u(0)),
+                (0, u(4)),
+            ],
+        ],
+    )
+    .unwrap();
+}

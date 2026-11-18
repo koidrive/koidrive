@@ -783,3 +783,67 @@ fn a_server_that_gave_every_kept_slot_out_again_holds_none_of_them() {
         "held_through counts slot 1, which the server gave out again too"
     );
 }
+
+#[test]
+#[ignore = "GUN-1012: one slot token cannot tell a commit that replaced this store's lost commit from one a rolled-back copy never saw, so the copy bounds below the slot the server holds its edit at (RFC 0029)"]
+fn a_copy_rolled_back_past_its_resend_does_not_send_its_edit_again() {
+    let mut trees = trees(&[synced("n", file(ROOT, "n", 1))]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    trees.set_local("n".into(), local(file(ROOT, "n", 2), 1));
+    trees.settle();
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    let edited = RemoteNode {
+        content_rev: 2,
+        edit_rev: 2,
+        ..remote(file(ROOT, "n", 2))
+    };
+    trees.set_remote_edited_here("n".into(), edited);
+    commits
+        .received(result(2, vec![outcome(op_result::Code::Applied)]))
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 2));
+    trees.settle();
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+
+    let resent = Welcome {
+        device_commit_id: "resent".into(),
+        ..welcome(1)
+    };
+    assert_eq!(commits.connected(&resent), Reconnect::AheadOfServer);
+    let (trashed_here, edited, moved) = (
+        trees.trashed_here(),
+        trees.edited_here(),
+        trees.moved_here(),
+    );
+    let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
+    let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
+    let records = trees.remote_records(|seq| commits.lost_here(seq));
+    let deleted = RemoteNode {
+        content_rev: 2,
+        edit_rev: 2,
+        meta_rev: 3,
+        meta_edit_rev: 3,
+        trash_group: "3:0".into(),
+        ..trashed(file(ROOT, "n", 2))
+    };
+    trees.set_listed_remote("n".into(), deleted);
+    trees.forget_lost(
+        trashed_here,
+        edited,
+        synced,
+        moved,
+        untaken,
+        records,
+        &Default::default(),
+        commits.held_through(),
+        commits.accepted(),
+    );
+    commits.forget_lost_slots();
+    trees.settle();
+    let sent = build(&mut commits, &mut trees, &mut ids).map_or_else(Vec::new, |commit| ops(&commit));
+    assert_eq!(
+        sent_for(&sent, "n"),
+        Vec::<&op::Op>::new(),
+        "the copy sends the edit of n again over the delete"
+    );
+}
