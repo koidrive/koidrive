@@ -213,6 +213,36 @@ fn quiet_watcher(root: &Path, dirty: &[&str]) -> NativeWatcher {
 }
 
 #[test]
+fn a_watcher_rescans_a_kept_removal_with_the_paths_of_later_events() {
+    let (_dir, root, _) = one_file();
+    fs::create_dir(root.join("y")).unwrap();
+    let mut watcher = quiet_watcher(&root, &["x/g.txt"]);
+    let old = fs::File::open(root.join("x/g.txt")).unwrap();
+    fs::remove_file(root.join("x/g.txt")).unwrap();
+    let kept = watcher.poll(Duration::ZERO).unwrap();
+    assert_eq!(kept.changes, []);
+    assert_eq!(kept.pending, [PathBuf::from("x/g.txt")]);
+
+    fs::write(root.join("y/h.txt"), "h").unwrap();
+    watcher.dirty.insert(PathBuf::from("y/h.txt"));
+    drop(old);
+    let changes = watcher.poll(Duration::ZERO).unwrap().changes;
+    assert_eq!(
+        changes,
+        [
+            Change::Removed {
+                path: "x/g.txt".into(),
+                kind: EntryKind::File
+            },
+            Change::Created {
+                path: "y/h.txt".into(),
+                kind: EntryKind::File
+            }
+        ]
+    );
+}
+
+#[test]
 fn a_removal_during_every_poll_holds_back_neither_other_changes_nor_earlier_removals() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();

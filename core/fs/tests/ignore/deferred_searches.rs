@@ -493,6 +493,38 @@ fn a_file_moved_over_another_out_of_a_deferred_folder_leaves_with_the_folder() {
 }
 
 #[test]
+fn a_file_moved_over_another_out_of_a_deferred_folder_stays_unsettled_until_rescanned() {
+    let dir = large_ignored_tree();
+    let root = dir.path();
+    write(root, "b/c/2.txt", "2");
+    write(root, "top.txt", "top");
+    let mut bounded = rules().with_search_budget(100);
+    let mut snapshot = Snapshot::scan_with_rules(root, &mut bounded).unwrap();
+    fs::rename(root.join("top.txt"), root.join("ig/zz/deep/top.txt")).unwrap();
+    fs::rename(root.join("b/c/2.txt"), root.join("top.txt")).unwrap();
+    fs::rename(root.join("b/c"), root.join("ig/zz/deep/c")).unwrap();
+
+    let mut rescan = snapshot
+        .rescan_with_rules(root, whole(), &mut bounded)
+        .unwrap();
+    while rescan.changes.is_empty() {
+        assert!(rescan.unsettled.contains(&PathBuf::from("top.txt")));
+        rescan = (snapshot)
+            .rescan_with_rules(root, [PathBuf::from("b/c")], &mut bounded)
+            .unwrap();
+    }
+    assert_eq!(rescan.unsettled, [PathBuf::from("top.txt")]);
+
+    let rescan = (snapshot)
+        .rescan_with_rules(root, rescan.unsettled, &mut bounded)
+        .unwrap();
+    assert_ne!(rescan.changes, []);
+    assert_eq!(rescan.unsettled, [] as [PathBuf; 0]);
+    let disk = Snapshot::scan_with_rules(root, &mut rules()).unwrap();
+    assert_eq!(identities(&snapshot), identities(&disk));
+}
+
+#[test]
 fn a_bounded_search_ends_where_an_unbounded_one_does() {
     for seed in 1..=200u64 {
         let dir = small_tree();
