@@ -68,6 +68,9 @@ fn a_commit_result_is_acknowledged_once_whether_the_call_or_the_stream_brings_it
     }
 }
 
+/// RFC 0013 §6: a server from before commit tokens sends results with no time. The cursor then
+/// holds no token at the result's seq instead of a commit ID paired with time 0, which a server
+/// that checks tokens would take for another commit.
 #[test]
 fn a_result_without_a_time_leaves_the_cursor_token_unknown() {
     for legacy in [false, true] {
@@ -112,6 +115,8 @@ fn a_remote_file_becomes_one_effect_and_its_observation_changes_nothing() {
         fs::read(site.root.join("notes.txt")).unwrap(),
         b"written on a"
     );
+    // The effect's acknowledgement settled the trees in its own transaction, so S holds the file as L does before
+    // anything is observed or arrives from the log. Otherwise the next change of the file would count as concurrent.
     let folder = &mut b.folder;
     let (id, local) = (folder.engine.trees.local().iter().next()).expect("L holds the file");
     assert_eq!(folder.engine.trees.synced().get(id), Some(&local.shape));
@@ -552,6 +557,8 @@ fn an_edit_after_a_restart_is_an_edit_of_the_synced_file() {
     assert_eq!(a.state(), FolderState::UpToDate);
 }
 
+/// Design §2.7 leaves a node the server refused an op for out of commits until the next rescan. The first whole scan
+/// of a start is that rescan (GUN-345). Nothing cleared the node before, so it never synced again.
 #[test]
 fn a_node_the_server_refused_is_committed_again_after_the_scan_of_the_next_start() {
     let mut remote = Remote::new();
@@ -597,6 +604,7 @@ fn an_effect_that_failed_at_a_name_taken_for_a_moment_is_planned_again_after_a_w
     let (site, mut b, first) = failed_at_a_taken_name(&mut remote);
     assert!(first <= Duration::from_secs(1), "{first:?}");
 
+    // The user's file is gone before the observer saw it, so L is as it was and the engine plans the same effect.
     fs::remove_file(site.root.join("notes.txt")).unwrap();
     b.settle();
     assert!(b.work.is_empty(), "the node waits");
@@ -624,6 +632,7 @@ fn an_effect_that_failed_at_a_name_taken_for_a_moment_is_planned_again_after_a_w
     assert_eq!(b.state(), FolderState::UpToDate);
 }
 
+/// The block was stored, so it outlived the process. A start plans the effect of every blocked node again.
 #[test]
 fn a_start_plans_an_effect_that_failed_before_it_again() {
     let mut remote = Remote::new();

@@ -70,6 +70,7 @@ fn a_restore_is_applied_once_wherever_the_folder_stops() {
         assert!(a.work.is_empty(), "{cut}");
         assert_eq!(files(&site.root), notes(), "{cut}");
         assert_eq!(ended(&site), [(id, Outcome::Restored)], "{cut}");
+        // The create, the delete and one restore.
         assert_eq!(remote.space.head_seq(), 3, "{cut}");
         assert_eq!(a.state(), FolderState::UpToDate, "{cut}");
     }

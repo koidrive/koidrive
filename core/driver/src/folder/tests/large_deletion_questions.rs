@@ -94,6 +94,8 @@ fn dismissing_the_notice_while_the_folder_is_removed_opens_no_new_one() {
     assert_eq!(store.transaction(|tx| tx.questions()).unwrap(), vec![]);
 }
 
+/// GUN-384 review: a bootstrap right after the dismissal leaves R with no record of the trashed folder. The rest of
+/// the folder is still the deletion the person dismissed.
 #[test]
 fn a_dismissed_folder_stays_dismissed_after_a_bootstrap() {
     let mut remote = Remote::new();
@@ -135,6 +137,11 @@ fn a_dismissed_folder_stays_dismissed_after_a_bootstrap() {
     assert_eq!(store.transaction(|tx| tx.questions()).unwrap(), vec![]);
 }
 
+/// GUN-384 review: the server truncates its log after device a deletes the folder `d`, so device b reads a tree that
+/// does not list the trash, and R holds no record of `d`. The person dismisses the notice while b still removes the
+/// folder. The server is then rolled back to a backup taken after the deletion, and b reads the tree again with the
+/// trash. R learns that `d` was trashed at a seq it already held, so the rest of the folder is still the deletion
+/// the person dismissed.
 #[test]
 fn a_dismissed_folder_stays_dismissed_after_a_truncated_log_and_a_rollback() {
     let mut remote = Remote::new();
@@ -186,6 +193,9 @@ fn a_dismissed_folder_stays_dismissed_after_a_truncated_log_and_a_rollback() {
     assert_eq!(store.transaction(|tx| tx.questions()).unwrap(), vec![]);
 }
 
+/// GUN-384 review: as above without the rollback, and device a then restores the folder and deletes it again while b
+/// misses the log a second time. The bootstrap lists the trash because b's guard holds the dismissed deletion, so R
+/// learns that `d` was trashed after that deletion, and the rest of the folder opens a new notice.
 #[test]
 fn a_folder_restored_and_deleted_again_while_the_log_was_truncated_is_noticed() {
     let mut remote = Remote::new();
@@ -245,6 +255,8 @@ fn a_folder_restored_and_deleted_again_while_the_log_was_truncated_is_noticed() 
     assert_eq!(questions.len(), 1, "the later deletion is noticed");
 }
 
+/// GUN-384 review: while device b's notice is open, device a deletes two more files. The notice keeps its id and its
+/// counts grow, so the number of questions stays 1, and the folder still marks the questions changed for the status.
 #[test]
 fn a_notice_whose_counts_grow_marks_the_questions_changed() {
     use crate::question::QuestionKind;
@@ -440,6 +452,9 @@ fn a_taken_answer_survives_a_second_restart_before_it_is_applied() {
     assert_eq!(a.folder.view().questions, 1);
 }
 
+/// The guard holds 11 of the 20 files in `d`, then the person deletes the rest of `d`. The
+/// guard asks again under a new id about `d` alone, and the new question continues the first one's lineage, so the
+/// daemon does not tell it again.
 #[test]
 fn a_held_folder_that_takes_the_place_of_its_held_children_continues_their_question() {
     let mut remote = Remote::new();
@@ -478,6 +493,9 @@ fn a_held_folder_that_takes_the_place_of_its_held_children_continues_their_quest
     assert_eq!(second.lineage, first.id);
 }
 
+/// The person answers restore, the files come back, and the same 11 files are deleted again.
+/// The new question holds the same files but starts its own lineage, so the daemon tells it even when it never saw
+/// the first one close.
 #[test]
 fn a_question_asked_again_about_the_same_files_after_an_answer_starts_its_own_lineage() {
     let mut remote = Remote::new();
@@ -523,6 +541,10 @@ fn a_question_asked_again_about_the_same_files_after_an_answer_starts_its_own_li
     assert_eq!(second.lineage, second.id);
 }
 
+/// GUN-423: the server loses `two.txt`'s commit, and c commits `three.txt` to the restored server, so its
+/// head is back at b's cursor when b reconnects. b's Resume names the commit it saw at that seq, which the server no
+/// longer has, so b lists the tree again instead of resuming on a fork: it gets `three.txt`, and `two.txt`,
+/// which b still holds, is created again.
 #[test]
 fn a_cursor_the_restored_head_caught_up_with_lists_the_tree_again() {
     let mut remote = Remote::new();

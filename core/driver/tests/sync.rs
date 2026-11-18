@@ -626,6 +626,8 @@ async fn two_edits_of_one_file_keep_both_contents() {
     b.stop().await;
 }
 
+/// Moves the file `name` at the root of a stopped device's folder into its local trash as `entry`, as an effect
+/// trashed at `when` records it.
 fn put_in_trash(device: &Device, name: &str, entry: &str, when: std::time::SystemTime) {
     let root = device.folder();
     let space = koidrive_fs::Space::bind(fs::File::open(&root).unwrap().into(), &root).unwrap();

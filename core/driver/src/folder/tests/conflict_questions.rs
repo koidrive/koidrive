@@ -99,6 +99,8 @@ fn keeping_the_original_of_a_conflict_moves_the_copy_to_the_trash() {
     assert_eq!(shown(&site_b), []);
 }
 
+/// Keep the copy gives the original the copy's content, so the original's own content stays in its version history,
+/// and then moves the copy to the server's trash. Each step is a commit of one op.
 #[test]
 fn keeping_the_copy_of_a_conflict_gives_the_original_its_content_and_moves_the_copy_to_the_trash() {
     let mut remote = Remote::new();
@@ -294,6 +296,8 @@ fn a_conflict_shows_its_files_at_their_new_paths_after_their_folder_is_renamed()
     );
 }
 
+/// Device `a` edits the original, and its observer has not seen the edit when `b`'s answer to keep the copy
+/// reaches it. The edit is kept in a file the person sees, on both devices, and both come to rest.
 #[test]
 fn an_edit_of_the_original_on_another_device_is_kept_when_the_copy_is_kept() {
     let mut remote = Remote::new();
@@ -420,6 +424,8 @@ fn a_file_created_under_a_name_another_device_took_is_asked_about() {
     assert_eq!(shown(&site_a), []);
 }
 
+/// The person edits the copy on `b`, and the observer has not seen it when the answer to delete the copy is
+/// carried out. The edit is kept on both devices.
 #[test]
 fn an_edit_of_the_copy_the_answer_would_delete_is_kept() {
     let mut remote = Remote::new();
@@ -470,6 +476,8 @@ fn an_edit_of_the_original_sent_before_the_answer_asks_again() {
     assert_ne!(second.id, first.id);
 }
 
+/// Two conflict copies share one original. Keeping the first copy changes the original, so the other conflict is
+/// asked again under a new ID instead of taking an answer meant for the original as it was.
 #[test]
 fn keeping_one_of_two_copies_of_an_original_asks_about_the_other_again() {
     use crate::question::QuestionKind;
