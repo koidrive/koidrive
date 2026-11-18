@@ -843,7 +843,7 @@ fn a_resent_folder_lost_again_before_its_create_is_acknowledged_is_sent_again() 
     trees.settle(&Default::default());
     commits.adopt(1);
     let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
-    assert!(matches!(&sent[..], [op::Op::CreateDir(create), moved] if create.node_id == "p" && *moved == mv("f", "p", "b")), "{sent:?}");
+    assert!(matches!(&sent[..], [op::Op::CreateDir(create), moved] if create.node_id == "p" && create.parent_id == ROOT && create.name == "p" && *moved == mv("f", "p", "b")), "{sent:?}");
     assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
     let records = trees.remote_records(|seq| commits.lost_here(seq));
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
@@ -853,7 +853,7 @@ fn a_resent_folder_lost_again_before_its_create_is_acknowledged_is_sent_again() 
     commits.forget_lost_slots();
     trees.settle(commits.aliases());
     let next = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
-    assert!(matches!(next.as_deref(), Some([op::Op::CreateDir(create), moved]) if create.node_id == "p" && *moved == mv("f", "p", "b")), "{next:?} {:?}", trees.waiting());
+    assert!(matches!(next.as_deref(), Some([op::Op::CreateDir(create), moved]) if create.node_id == "p" && create.parent_id == ROOT && create.name == "p" && *moved == mv("f", "p", "b")), "{next:?} {:?}", trees.waiting());
 }
 
 #[test]
