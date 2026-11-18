@@ -217,9 +217,9 @@ pub struct TreesState {
     /// of it. The bootstrap after the loss takes each whose content in L still differs from S's
     /// as a lost edit (section 4.4).
     pub dropped_edits: BTreeSet<NodeId>,
-    /// The nodes R holds trashed that a move of this device's user put back at the position S
-    /// holds, when the new folder it moved them into merged there. A move revives each, as the
-    /// move into the folder would have. The server's ack of it ends the record, and so does R
+    /// The nodes R holds trashed or does not hold that a move of this device's user put back at
+    /// the position S holds, when the new folder it moved them into merged there. A move revives
+    /// each, or a create brings it back, as the move into the folder would have. The server's ack of it ends the record, and so does R
     /// holding the node live or L dropping it.
     pub unsent_moves: BTreeSet<NodeId>,
     /// The nodes S holds and R lacks after a server loss that a change of this device's user in or

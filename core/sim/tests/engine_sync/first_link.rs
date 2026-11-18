@@ -243,6 +243,58 @@ fn a_rename_from_a_pending_name_another_device_set_fails_the_sent_move_check() {
     assert!(owed_rename_check_after(|_, state| state.pending_by = "other".into()).is_err());
 }
 
+fn finish_check_of(to: &str, from: &str, name: &str, mark: &str) -> Result<(), TestCaseError> {
+    let (_, held) = RemoteNode::from_state(&NodeState {
+        node_id: "x".into(),
+        parent_id: "home".into(),
+        name: "a (pending)".into(),
+        kind: 1,
+        status: 1,
+        pending_for: mark.into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let moved = Move {
+        node_id: "x".into(),
+        new_parent_id: to.into(),
+        new_name: name.into(),
+        from: Some(koidrive_proto::v1::Place {
+            parent_id: "home".into(),
+            name: from.into(),
+        }),
+        ..Default::default()
+    };
+    sent_move_check(
+        &moved,
+        &held.shape,
+        None,
+        Some(&held),
+        "me",
+        &BTreeMap::new(),
+    )
+}
+
+#[test]
+fn a_finish_of_the_mark_from_the_place_the_disk_holds_passes_the_sent_move_check() {
+    assert!(finish_check_of("home", "a (pending)", "a", "a").is_ok());
+}
+
+#[test]
+fn a_finish_to_a_name_the_mark_does_not_hold_fails_the_sent_move_check() {
+    assert!(finish_check_of("home", "a (pending)", "a x", "a").is_err());
+    assert!(finish_check_of("home", "a (pending)", "a", "").is_err());
+}
+
+#[test]
+fn a_finish_from_a_place_the_disk_does_not_hold_fails_the_sent_move_check() {
+    assert!(finish_check_of("home", "b (pending)", "a", "a").is_err());
+}
+
+#[test]
+fn a_finish_of_the_mark_into_another_parent_fails_the_sent_move_check() {
+    assert!(finish_check_of("away", "a (pending)", "a", "a").is_err());
+}
+
 #[test]
 fn a_move_to_the_place_the_disk_holds_passes_the_sent_move_check() {
     assert!(sent_move_check_of("home", "a", "").is_ok());

@@ -1295,6 +1295,14 @@ fn sent_move_check(
         return Ok(());
     }
     let parent = (merged_into.get(&local.parent)).unwrap_or(&local.parent);
+    let finishes_mark = remote.is_some_and(|remote| {
+        remote.shape.parent == moved.new_parent_id
+            && remote.pending_for.as_ref() == Some(&moved.new_name)
+    });
+    let from = (moved.from.as_ref()).map(|from| (&from.parent_id, &from.name));
+    if finishes_mark && from == Some((parent, &local.name)) {
+        return Ok(());
+    }
     let name = Some(&moved.pending_for)
         .filter(|name| !name.is_empty())
         .unwrap_or(&moved.new_name);

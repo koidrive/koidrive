@@ -1899,7 +1899,7 @@ fn a_child_an_answer_trashes_again_leaves_the_disk_and_is_not_sent_again() {
 }
 
 #[test]
-fn an_edit_sent_before_its_folder_is_published_is_not_trashed_again() {
+fn an_edit_sent_after_its_folder_is_published_is_not_trashed_again() {
     let mut trees = trees(
         &[("d", dir(ROOT, "new")), ("c", file("d", "child", 1))],
         &[("d", dir(ROOT, "old")), ("c", file("d", "child", 1))],
@@ -1917,7 +1917,7 @@ fn an_edit_sent_before_its_folder_is_published_is_not_trashed_again() {
     trees.settle(commits.aliases());
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
-        [("update", "c".into()), ("move", "d".into())]
+        [("move", "d".into()), ("update", "c".into())]
     );
 }
 
@@ -4253,4 +4253,203 @@ fn a_new_file_with_the_bytes_of_a_file_this_device_deleted_is_created_beside_the
             "{history:?}"
         );
     }
+}
+
+#[test]
+fn an_edit_below_an_unchanged_folder_of_a_published_trash_group_keeps_the_folders_above_it() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "new")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+        ],
+        &[
+            ("a", dir(ROOT, "old")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+        ],
+        &[
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("c", dir("a", "c"), true, 1),
+            Remote("b", file("c", "child", 1), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    let mut edited = trees.local().get("b").unwrap().clone();
+    edited.shape = file("c", "child", 2);
+    trees.set_local("b".into(), edited);
+    trees.settle(&Default::default());
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "a".into()), ("update", "b".into())]
+    );
+}
+
+#[test]
+fn a_move_out_of_a_published_trash_group_trashes_its_old_folder_again() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "new")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+        ],
+        &[
+            ("a", dir(ROOT, "old")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+        ],
+        &[
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("c", dir("a", "c"), true, 1),
+            Remote("b", file("c", "child", 1), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    let mut moved = trees.local().get("b").unwrap().clone();
+    moved.shape = file(ROOT, "child", 1);
+    trees.set_local("b".into(), moved);
+    trees.settle(&Default::default());
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    assert!(sent.contains(&("delete", "c".into())), "{sent:?}");
+}
+
+#[test]
+fn a_move_into_the_answered_folder_out_of_its_trash_group_still_goes() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "new")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+        ],
+        &[
+            ("a", dir(ROOT, "old")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+        ],
+        &[
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("c", dir("a", "c"), true, 1),
+            Remote("b", file("c", "child", 1), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    let mut moved = trees.local().get("b").unwrap().clone();
+    moved.shape = file("a", "child", 1);
+    trees.set_local("b".into(), moved);
+    trees.settle(&Default::default());
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    for op in [("move", "a"), ("move", "b"), ("delete", "c")] {
+        assert!(sent.contains(&(op.0, op.1.into())), "{sent:?}");
+    }
+}
+
+#[test]
+fn publishing_a_renamed_folder_and_a_folder_moved_into_it_out_of_its_subfolder_sends_both_and_trashes_the_subfolder()
+ {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "new")),
+            ("b", dir("a", "b")),
+            ("c", dir("a", "c")),
+        ],
+        &[
+            ("a", dir(ROOT, "old")),
+            ("b", dir("a", "b")),
+            ("c", dir("b", "c")),
+        ],
+        &[
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("b", dir("a", "b"), true, 1),
+            Remote("c", dir("b", "c"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "c"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [
+            ("move", "a".into()),
+            ("move", "c".into()),
+            ("move", "b".into()),
+            ("delete", "b".into())
+        ]
+    );
+}
+
+#[test]
+fn publishing_a_folder_that_takes_the_name_of_the_folder_moving_into_it_sends_the_swap() {
+    let mut trees = trees(
+        &[
+            ("a", dir("b", "a")),
+            ("b", dir(ROOT, "a")),
+            ("c", dir("b", "c")),
+            ("f", file("a", "f", 1)),
+        ],
+        &[
+            ("a", dir(ROOT, "a")),
+            ("b", dir("a", "b")),
+            ("c", dir("b", "c")),
+        ],
+        &[
+            live("a", dir(ROOT, "a")),
+            Remote("b", dir("a", "b"), true, 1),
+            Remote("c", dir("b", "c"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "b"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [
+            ("move", "b".into()),
+            ("move", "c".into()),
+            ("delete", "c".into()),
+            ("move", "a".into()),
+            ("move", "b".into())
+        ]
+    );
+}
+
+#[test]
+fn publishing_a_folder_whose_subfolder_a_move_leaves_for_a_new_folder_inside_it_sends_every_change()
+{
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "a1")),
+            ("b", dir("a", "b")),
+            ("c", dir("n", "c")),
+            ("n", dir("a", "n")),
+        ],
+        &[
+            ("a", dir(ROOT, "a")),
+            ("b", dir("a", "b")),
+            ("c", dir("b", "c")),
+        ],
+        &[
+            Remote("a", dir(ROOT, "a"), true, 1),
+            Remote("b", dir("a", "b"), true, 1),
+            Remote("c", dir("b", "c"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let created = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["n"]);
+    assert!(commits.decide(&created.id, Answer::Publish));
+    let changed = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "c"]);
+    assert!(commits.decide(&changed.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [
+            ("create dir", "n".into()),
+            ("move", "a".into()),
+            ("move", "c".into())
+        ]
+    );
 }
