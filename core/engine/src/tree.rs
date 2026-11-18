@@ -343,3 +343,64 @@ impl<N: Node> Tree<N> {
         false
     }
 }
+
+#[derive(Clone, Debug)]
+pub(crate) struct TrackedTree<N> {
+    tree: Tree<N>,
+    changed: BTreeSet<NodeId>,
+}
+
+impl<N: Node + PartialEq + Clone> TrackedTree<N> {
+    pub(crate) fn new(root: impl Into<NodeId>) -> Self {
+        Self {
+            tree: Tree::new(root),
+            changed: BTreeSet::new(),
+        }
+    }
+
+    pub(crate) fn insert(&mut self, id: NodeId, node: N) -> Option<N> {
+        if self.tree.get(&id) != Some(&node) {
+            self.changed.insert(id.clone());
+        }
+        self.tree.insert(id, node)
+    }
+
+    pub(crate) fn remove(&mut self, id: &str) -> Option<N> {
+        let old = self.tree.remove(id)?;
+        self.changed.insert(id.to_owned());
+        Some(old)
+    }
+
+    pub(crate) fn update(&mut self, id: &str, change: impl FnOnce(&mut N)) {
+        let Some(node) = self.tree.get_mut(id) else {
+            return;
+        };
+        let before = node.clone();
+        change(node);
+        if *node != before {
+            self.changed.insert(id.to_owned());
+        }
+    }
+
+    pub(crate) fn touch(&mut self, id: &str) {
+        self.changed.insert(id.to_owned());
+    }
+
+    pub(crate) fn take_changed(&mut self) -> BTreeSet<NodeId> {
+        std::mem::take(&mut self.changed)
+    }
+}
+
+impl<N> std::ops::Deref for TrackedTree<N> {
+    type Target = Tree<N>;
+
+    fn deref(&self) -> &Tree<N> {
+        &self.tree
+    }
+}
+
+impl<N: PartialEq> PartialEq for TrackedTree<N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.tree == other.tree
+    }
+}

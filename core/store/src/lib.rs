@@ -497,14 +497,20 @@ impl Tx<'_> {
         .collect()
     }
 
-    /// Inserts or replaces the remote node with `node.node_id`.
+    /// Inserts the remote node with `node.node_id`, or updates its row in place.
     pub fn put_remote_node(&self, node: &NodeState) -> Result<()> {
         self.0
             .prepare_cached(
-                "INSERT OR REPLACE INTO remote_nodes
+                "INSERT INTO remote_nodes
                  (node_id, parent_id, name, kind, status, content_rev, meta_rev, trash_group, current,
                   edit_rev, meta_edit_rev, pending_for, pending_by)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                 ON CONFLICT (node_id) DO UPDATE SET parent_id = excluded.parent_id,
+                  name = excluded.name, kind = excluded.kind, status = excluded.status,
+                  content_rev = excluded.content_rev, meta_rev = excluded.meta_rev,
+                  trash_group = excluded.trash_group, current = excluded.current,
+                  edit_rev = excluded.edit_rev, meta_edit_rev = excluded.meta_edit_rev,
+                  pending_for = excluded.pending_for, pending_by = excluded.pending_by",
             )?
             .execute(params![
                 node.node_id,
@@ -584,9 +590,11 @@ impl Tx<'_> {
         let shape = &node.shape;
         self.0
             .prepare_cached(
-                "INSERT OR REPLACE INTO synced_nodes (node_id, parent_id, name, kind, content,
-                 pending_for)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO synced_nodes (node_id, parent_id, name, kind, content, pending_for)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (node_id) DO UPDATE SET parent_id = excluded.parent_id,
+                  name = excluded.name, kind = excluded.kind, content = excluded.content,
+                  pending_for = excluded.pending_for",
             )?
             .execute(params![
                 node.node_id,
@@ -639,16 +647,21 @@ impl Tx<'_> {
         .collect()
     }
 
-    /// Inserts or replaces the local node. `ino` is stored as the bit patterns of its low and high 64
+    /// Inserts the local node, or updates its row in place. `ino` is stored as the bit patterns of its low and high 64
     /// bits, so every value round-trips.
     pub fn put_local_node(&self, node: &LocalNode) -> Result<()> {
         let shape = &node.shape;
         self.0
             .prepare_cached(
-                "INSERT OR REPLACE INTO local_nodes
+                "INSERT INTO local_nodes
                  (node_id, parent_id, name, kind, content, ino, ino_high, birth_ns, parked,
                   left_out_when_placed, content_from_server)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ON CONFLICT (node_id) DO UPDATE SET parent_id = excluded.parent_id,
+                  name = excluded.name, kind = excluded.kind, content = excluded.content,
+                  ino = excluded.ino, ino_high = excluded.ino_high, birth_ns = excluded.birth_ns,
+                  parked = excluded.parked, left_out_when_placed = excluded.left_out_when_placed,
+                  content_from_server = excluded.content_from_server",
             )?
             .execute(params![
                 node.node_id,

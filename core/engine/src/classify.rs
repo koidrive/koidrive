@@ -16,11 +16,18 @@ use crate::state::{
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
-    Content, FileIdentity, Kind, LocalNode, Names, Node, NodeId, RemoteNode, Shape, Tree,
-    TreeError, same, same_content,
+    Content, FileIdentity, Kind, LocalNode, Names, Node, NodeId, RemoteNode, Shape, TrackedTree,
+    Tree, TreeError, same, same_content,
 };
 
 type Pair = (NodeId, NodeId);
+
+/// The nodes whose rows the store must write: [`Changed::local`] for L, [`Changed::synced`] for S.
+#[derive(Debug, Default)]
+pub struct Changed {
+    pub local: BTreeSet<NodeId>,
+    pub synced: BTreeSet<NodeId>,
+}
 
 /// The most mutually dependent [`Class::Same`] updates [`Trees::settle`] searches as one group.
 /// Every subset of a group is tried, so the search costs up to 2^n checks of n nodes.
@@ -370,8 +377,8 @@ struct Keeping {
 #[derive(Clone, Debug)]
 pub struct Trees {
     r: Tree<RemoteNode>,
-    l: Tree<LocalNode>,
-    s: Tree<Shape>,
+    l: TrackedTree<LocalNode>,
+    s: TrackedTree<Shape>,
     /// The files S holds.
     s_files: u64,
     /// The nodes L holds that R holds trashed, counted by trash group.
@@ -444,8 +451,6 @@ pub struct Trees {
     link_due: BTreeSet<Pair>,
     /// Dirty nodes the last settle left as [`Class::Same`], which the next one tries again.
     same: BTreeSet<NodeId>,
-    /// Nodes whose entry in R, L or S changed since [`Trees::take_changed`].
-    changed: BTreeSet<NodeId>,
     /// The placed nodes of L.
     l_names: ByName,
     l_parked: ByName,
@@ -491,8 +496,8 @@ impl Trees {
         let root = root.into();
         Self {
             r: Tree::new(root.clone()),
-            l: Tree::new(root.clone()),
-            s: Tree::new(root),
+            l: TrackedTree::new(root.clone()),
+            s: TrackedTree::new(root),
             s_files: 0,
             held_trash: BTreeMap::new(),
             trashed: BTreeMap::new(),
@@ -541,7 +546,6 @@ impl Trees {
             unlinked: BTreeMap::new(),
             link_due: BTreeSet::new(),
             same: BTreeSet::new(),
-            changed: BTreeSet::new(),
             l_names: ByName::default(),
             l_parked: ByName::default(),
             l_identities: HashMap::new(),
@@ -590,11 +594,13 @@ impl Trees {
 
     /// Sets the mark S keeps for a node it holds, as the store recorded it.
     pub fn set_synced_mark(&mut self, id: NodeId, mark: Option<String>) {
-        self.changed.insert(id.clone());
-        match mark.filter(|_| self.s.get(&id).is_some()) {
-            Some(mark) => self.s_marks.insert(id, mark),
+        let before = match mark.filter(|_| self.s.get(&id).is_some()) {
+            Some(mark) => self.s_marks.insert(id.clone(), mark),
             None => self.s_marks.remove(&id),
         };
+        if before.as_ref() != self.s_marks.get(&id) {
+            self.s.touch(&id);
+        }
     }
 
     /// The number of files S holds, kept as S changes.
@@ -717,10 +723,12 @@ impl Trees {
         &self.others
     }
 
-    /// The nodes whose entry in R, L or S changed since the last call, which empties the set. Each
-    /// mutation adds its node, and so does [`Trees::settle`] for each node whose S it updates.
-    pub fn take_changed(&mut self) -> BTreeSet<NodeId> {
-        std::mem::take(&mut self.changed)
+    /// The nodes whose L entry or S entry changed since the last call, which empties both sets.
+    pub fn take_changed(&mut self) -> Changed {
+        Changed {
+            local: self.l.take_changed(),
+            synced: self.s.take_changed(),
+        }
     }
 
     /// The placed nodes of L under `parent`, by the `name_key` of their names.
@@ -858,7 +866,6 @@ impl Trees {
         self.uncreate(id);
         self.others.insert(id.to_owned());
         self.unsettled.insert(id.to_owned());
-        self.changed.insert(id.to_owned());
     }
 
     pub fn set_remote(&mut self, id: NodeId, node: RemoteNode) {
@@ -1932,15 +1939,13 @@ impl Trees {
                 provenance.unversioned_bases.clear();
             }
         }
-        if let Some(node) = self.l.get_mut(id) {
-            node.content_from_server = from_server;
-        }
+        self.l
+            .update(id, |node| node.content_from_server = from_server);
     }
 
     pub(crate) fn set_left_out_when_placed(&mut self, id: &str, left_out: bool) {
-        if let Some(node) = self.l.get_mut(id) {
-            node.left_out_when_placed = left_out;
-        }
+        self.l
+            .update(id, |node| node.left_out_when_placed = left_out);
     }
 
     pub(crate) fn sent_shape(&mut self, id: &str, shape: &Shape) {
@@ -4823,7 +4828,6 @@ impl Trees {
             self.resends.remove(id);
             self.local_changes.remove(id);
         }
-        self.changed.insert(id.to_owned());
         let old = match shape {
             Some(shape) => {
                 self.s_names.insert(id, &shape);
@@ -4861,10 +4865,13 @@ impl Trees {
                     .cloned(),
             }
         });
-        match mark {
+        let before = match mark {
             Some(mark) => self.s_marks.insert(id.to_owned(), mark),
             None => self.s_marks.remove(id),
         };
+        if before.as_ref() != self.s_marks.get(id) {
+            self.s.touch(id);
+        }
         if let Some(old) = old {
             let kept = self.s.get(id).is_some_and(|new| {
                 new.parent == old.parent && name_key(&new.name) == name_key(&old.name)
@@ -5029,7 +5036,6 @@ impl Trees {
             unlinked: _,
             link_due: _,
             same: _,
-            changed: _,
             l_names: _,
             l_parked: _,
             l_identities: _,
