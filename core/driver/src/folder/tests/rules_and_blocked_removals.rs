@@ -1655,3 +1655,38 @@ fn a_file_deleted_while_another_device_kept_it_in_an_excluded_folder_comes_back_
     assert!(!sent.contains(&"delete"), "sent {sent:?}");
     assert!(shown(&site).is_empty());
 }
+
+#[test]
+fn a_renamed_folder_removed_while_stopped_with_a_rule_that_leaves_it_out_downloads_again() {
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    fs::create_dir(site.root.join("old")).unwrap();
+    b.create(&mut remote, &site.root.join("old/f.docx"), b"report");
+    b.rest(&mut remote);
+    let id = node_named(&b, "f.docx");
+    fs::rename(site.root.join("old"), site.root.join("new")).unwrap();
+    b.scan_until(|b| {
+        (b.folder.engine.trees.local().iter()).any(|(_, node)| node.shape.name == "new")
+    });
+    drop(b);
+    fs::write(site.root.join(".koiignore"), "/new/\n").unwrap();
+    fs::remove_dir_all(site.root.join("new")).unwrap();
+    let mut b = restarted(&site, &mut remote);
+    b.scan_until(|b| b.folder.engine.trees.local().get(&id).is_none());
+    b.rest(&mut remote);
+    fs::write(site.root.join(".koiignore"), "").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    let deletes: Vec<&Op> = (b.sent.iter())
+        .flat_map(|commit| &commit.ops)
+        .filter(|op| matches!(op.op, Some(op::Op::Delete(_))))
+        .collect();
+    assert!(deletes.is_empty(), "sent {deletes:?}");
+    assert_eq!(
+        files(&site.root),
+        [
+            (".koiignore".into(), "".into()),
+            ("new/f.docx".into(), "report".into())
+        ]
+    );
+}
