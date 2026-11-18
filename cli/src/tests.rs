@@ -2570,3 +2570,52 @@ Could not bring back /Docs/.koidrive/parked/n2, which Koidrive had set aside whi
     assert!(done.output(true).0.ends_with(recovered), "{:?}", done.human);
     assert!(matches!(done.tone, crate::output::Tone::Attention));
 }
+
+#[test]
+fn a_restore_asked_for_before_recovery_is_listed_by_its_file_and_what_it_brings_back() {
+    let question: Question = serde_json::from_value(serde_json::json!({
+        "id": "q1", "space_id": "s1", "asked_at_ms": 1, "lineage": "q1",
+        "kind": { "type": "recovery", "group": "requested_before_reset" },
+        "items": [
+            {
+                "node_id": "restore-1", "path": "docs/draft.txt", "files": 1,
+                "restore": {
+                    "type": "version", "node_id": "draft", "version_id": "draft-0",
+                    "saved_at_ms": 1_737_000_000_000_i64
+                }
+            },
+            {
+                "node_id": "restore-2", "path": "notes.txt", "files": 1,
+                "restore": { "type": "from_trash", "node_id": "notes" }
+            }
+        ]
+    }))
+    .unwrap();
+    let text = question_text(&question);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[lines.len() - 2..],
+        [
+            "  docs/draft.txt (an earlier version)",
+            "  notes.txt (from the trash)"
+        ],
+        "{text}"
+    );
+    let items = serde_json::to_value(crate::report::Decision::of(&question).items).unwrap();
+    assert_eq!(
+        items,
+        serde_json::json!([
+            {
+                "node_id": "restore-1", "path": "docs/draft.txt", "files": 1,
+                "restore": {
+                    "type": "version", "node_id": "draft", "version_id": "draft-0",
+                    "saved_at_ms": 1_737_000_000_000_i64
+                }
+            },
+            {
+                "node_id": "restore-2", "path": "notes.txt", "files": 1,
+                "restore": { "type": "from_trash", "node_id": "notes", "parent_id": null, "name": null }
+            }
+        ])
+    );
+}

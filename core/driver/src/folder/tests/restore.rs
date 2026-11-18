@@ -124,3 +124,116 @@ fn a_folder_with_a_queued_restore_is_not_up_to_date() {
     assert!(commits.restore(crate::restore::new_id(NOW as u64), intent));
     assert_eq!(a.state(), FolderState::CatchingUp);
 }
+
+#[test]
+fn a_restore_asked_for_before_a_rewind_is_shown_by_its_file_and_answered_by_its_request() {
+    let mut remote = Remote::new();
+    let (site, mut a, trashed) = with_a_trashed_file(&mut remote);
+    let path = site.root.join("draft.txt");
+    a.create(&mut remote, &path, b"the first words");
+    fs::write(&path, b"and the second").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    let node = node_named(&a, "draft.txt");
+    let request = ListVersions {
+        node_id: node.clone(),
+        ..Default::default()
+    };
+    let first = remote.space.list_versions(&request).unwrap().versions[1]
+        .version_id
+        .clone();
+    let backup = remote.space.clone();
+    drop(a);
+    let unknown = || crate::restore::new_id(NOW as u64);
+    let asked = [
+        (
+            RestoreIntent::version(node, first).unwrap(),
+            Some("draft.txt"),
+        ),
+        (
+            RestoreIntent::from_trash(trashed, None, None).unwrap(),
+            Some("notes.txt"),
+        ),
+        (
+            RestoreIntent::from_trash(unknown(), None, Some("gone.txt".into())).unwrap(),
+            Some("gone.txt"),
+        ),
+        (
+            RestoreIntent::from_trash(unknown(), None, None).unwrap(),
+            None,
+        ),
+    ];
+    let mut expected: Vec<(String, String, u64)> = (asked.iter())
+        .map(|(intent, path)| {
+            let id = ask(&site, intent);
+            (id.clone(), path.map_or(id, str::to_owned), 1)
+        })
+        .collect();
+    expected.sort_by(|a, b| a.1.cmp(&b.1));
+    remote.space.rewind(&backup, NOW);
+
+    let requested = |site: &Site| {
+        (shown(site).into_iter())
+            .find(|question| {
+                matches!(
+                    question.kind,
+                    crate::question::QuestionKind::Recovery {
+                        group: crate::question::RecoveryGroup::RequestedBeforeReset,
+                        ..
+                    }
+                )
+            })
+            .expect("a question holds the restores")
+    };
+    let items = |question: &crate::question::Question| -> Vec<(String, String, u64)> {
+        (question.items.iter())
+            .map(|item| {
+                (
+                    item.node_id.clone(),
+                    item.path.unquoted().to_owned(),
+                    item.files,
+                )
+            })
+            .collect()
+    };
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    drop(a);
+    let held = requested(&site);
+    assert_eq!(items(&held), expected);
+
+    let mut blank = held.clone();
+    for item in &mut blank.items {
+        item.path = "".into();
+        item.files = 0;
+    }
+    (Store::open(&site.db).unwrap())
+        .transaction(|tx| tx.reshow_question(&held.id, &serde_json::to_vec(&blank).unwrap()))
+        .unwrap();
+    restarted(&site, &mut remote).rest(&mut remote);
+    assert_eq!(
+        items(&requested(&site)),
+        expected,
+        "a row an older build stored"
+    );
+
+    let given = koidrive_store::GivenAnswer {
+        answer: Answer::Cancel.as_str().into(),
+        answered_at_ms: NOW,
+    };
+    (Store::open(&site.db).unwrap())
+        .transaction(|tx| tx.answer_question(&held.id, &given))
+        .unwrap();
+    restarted(&site, &mut remote).rest(&mut remote);
+    let cancelled = Outcome::Rejected(koidrive_engine::restore::Rejection::Cancelled);
+    let mut ended = ended(&site);
+    ended.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut ids: Vec<String> = expected.into_iter().map(|(id, _, _)| id).collect();
+    ids.sort();
+    assert_eq!(
+        ended,
+        ids.into_iter()
+            .map(|id| (id, cancelled.clone()))
+            .collect::<Vec<_>>()
+    );
+}

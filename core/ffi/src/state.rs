@@ -1007,6 +1007,58 @@ mod tests {
             assert_eq!(word(answer, Some(&conflict)).as_deref(), Some(expected));
         }
     }
+
+    #[test]
+    fn a_restore_asked_for_before_recovery_shows_as_a_file_with_what_it_brings_back() {
+        let asked: driver::Question = serde_json::from_value(serde_json::json!({
+            "id": "q-restores", "space_id": "s1", "asked_at_ms": 7,
+            "kind": { "type": "recovery", "group": "requested_before_reset" },
+            "items": [
+                {
+                    "node_id": "restore-1", "path": "docs/draft.txt", "files": 1,
+                    "restore": {
+                        "type": "version", "node_id": "draft", "version_id": "draft-0",
+                        "saved_at_ms": 1_737_000_000_000_i64
+                    }
+                },
+                {
+                    "node_id": "restore-2", "path": "notes.txt", "files": 1,
+                    "restore": { "type": "from_trash", "node_id": "notes" }
+                }
+            ]
+        }))
+        .unwrap();
+        let shown = question(asked).unwrap();
+        let items: Vec<(&str, &str, NodeKind, u64, &ItemDetail)> = (shown.items.iter())
+            .map(|item| {
+                let path = item.path.as_str();
+                (
+                    item.node_id.as_str(),
+                    path,
+                    item.kind,
+                    item.files,
+                    &item.detail,
+                )
+            })
+            .collect();
+        let version = ItemDetail::RestoreVersion {
+            version_at_ms: 1_737_000_000_000,
+        };
+        assert_eq!(
+            items,
+            [
+                ("restore-1", "docs/draft.txt", NodeKind::File, 1, &version),
+                (
+                    "restore-2",
+                    "notes.txt",
+                    NodeKind::File,
+                    1,
+                    &ItemDetail::RestoreFromTrash
+                ),
+            ]
+        );
+        assert_eq!(shown.answers, [Answer::Repeat, Answer::Cancel]);
+    }
 }
 
 #[cfg(test)]
