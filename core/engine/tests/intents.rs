@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use koidrive_engine::classify::Trees;
+use koidrive_engine::classify::{Origin, Trees, Waiting};
 use koidrive_engine::commit::{Base, Commits};
 use koidrive_engine::effects::{BatchLimit, Effects};
 use koidrive_engine::ids::IdGen;
@@ -1059,4 +1059,142 @@ fn a_create_into_a_purged_folder_takes_the_place_the_server_reports_and_never_se
         })
         .collect();
     assert_eq!(sent, ["w"]);
+}
+
+fn backfilled(table: &str, waiting: Option<Waiting>) -> Trees {
+    let mut trees = Trees::new(ROOT);
+    trees.set_synced("d".into(), Some(dir(ROOT, "d")));
+    trees.set_local("d".into(), local(dir(ROOT, "d")));
+    let mut state = trees.state();
+    match table {
+        "lost_creates" => state.lost_creates.insert("d".into()),
+        _ => state.unsent_creates.insert("d".into()),
+    };
+    state
+        .waiting
+        .extend(waiting.map(|waiting| ("d".into(), waiting)));
+    trees.restore(state).unwrap();
+    trees.backfill(None, false);
+    trees
+}
+
+fn rows_of(trees: &Trees, node: &str) -> Vec<(Field, Row)> {
+    (trees.journal_rows())
+        .filter(|((id, _), _)| id == node)
+        .map(|((_, field), row)| (*field, row.into_owned()))
+        .collect()
+}
+
+#[test]
+fn a_backfill_carries_every_field_of_a_lost_folder_as_a_replay() {
+    let trees = backfilled("lost_creates", None);
+    let place = IntentId::legacy_place("d", 0, ROOT, "d");
+    let status = IntentId::legacy_live("d", 0);
+    let carried = |field, intent, value| {
+        let state = RowState::Local { flight: None };
+        (
+            field,
+            Row {
+                intent,
+                author: Author::Carried(String::new()),
+                base: None,
+                value,
+                wire_base: WireBase::None,
+                state,
+                time_ms: 0,
+                replay: true,
+            },
+        )
+    };
+    let at = Value::Place(Place {
+        parent: ROOT.into(),
+        name: "d".into(),
+        mark: None,
+    });
+    assert_eq!(
+        rows_of(&trees, "d"),
+        [
+            carried(Field::Place, place, at),
+            carried(Field::Status, status, Value::Status { live: true })
+        ]
+    );
+}
+
+#[test]
+fn a_backfill_carries_every_field_of_a_folder_owed_a_create_without_a_replay() {
+    let trees = backfilled("unsent_creates", None);
+    let rows = rows_of(&trees, "d");
+    let carried: Vec<(Field, &Author, bool)> = (rows.iter())
+        .map(|(field, row)| (*field, &row.author, row.replay))
+        .collect();
+    let empty = Author::Carried(String::new());
+    assert_eq!(
+        carried,
+        [
+            (Field::Place, &empty, false),
+            (Field::Status, &empty, false)
+        ]
+    );
+}
+
+#[test]
+fn a_backfilled_lost_folder_whose_queued_removal_finishes_keeps_no_rows() {
+    let removal = Waiting {
+        shape: None,
+        origin: Origin::Other,
+    };
+    let mut trees = backfilled("lost_creates", Some(removal));
+    assert_eq!(rows_of(&trees, "d").len(), 2);
+    trees.remove_local("d");
+    trees.settle(&Default::default());
+    assert_eq!(rows_of(&trees, "d"), []);
+    let mut sending = backfilled("unsent_creates", None);
+    build(&mut sending, &["field_intents"], 1_700);
+    sending.remove_local("d");
+    sending.settle(&Default::default());
+    let states: Vec<RowState> = (rows_of(&sending, "d").into_iter())
+        .map(|(_, row)| row.state)
+        .collect();
+    assert_eq!(states, [RowState::Sent, RowState::Sent]);
+}
+
+#[test]
+fn a_backfilled_folder_whose_create_the_server_applies_keeps_its_rows_held() {
+    let mut trees = backfilled("unsent_creates", None);
+    let mut commits = Commits::from_state(CommitsState::default()).unwrap();
+    commits.connected(&Welcome {
+        features: vec!["field_intents".into()],
+        ..Default::default()
+    });
+    trees.rules_scanned();
+    trees.settle(&Default::default());
+    let base = Base {
+        seq: 0,
+        commit_id: String::new(),
+        committed_at_ms: 1_700,
+    };
+    let commit = (commits
+        .build(&mut trees, &mut IdGen::new(1), 0, "history", "me", base)
+        .cloned())
+    .unwrap();
+    let place = sent(&trees, "d", Field::Place);
+    let reported = proto::FieldIntents {
+        place: Some(wire(place, 1_800)),
+        content: None,
+        status: Some(wire(sent(&trees, "d", Field::Status), 1_800)),
+    };
+    let state = node_state("d", &dir(ROOT, "d"), 2, Some(reported));
+    let (_, node) = RemoteNode::from_state(&state).unwrap();
+    trees.set_remote_made_here("d".into(), node);
+    let results = commit
+        .ops
+        .iter()
+        .map(|_| outcome(op_result::Code::Applied))
+        .collect();
+    commits.received(answered(results, vec![state])).unwrap();
+    assert!(commits.acknowledge(&mut trees, 1));
+    trees.settle(commits.aliases());
+    assert!(trees.state().unsent_creates.is_empty());
+    assert_eq!(held_as(&trees, "d", Field::Place), Some((place, 1_800)));
+    assert_eq!(rows_of(&trees, "d").len(), 2);
 }

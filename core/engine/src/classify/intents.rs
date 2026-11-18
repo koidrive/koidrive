@@ -19,6 +19,12 @@ use crate::tree::{Kind, LocalNode, NodeId, RemoteNode, Shape, Tree};
 
 use super::Trees;
 
+pub(super) enum Carrier {
+    LostCreate,
+    UnsentCreate,
+    Resend,
+}
+
 fn place(shape: &Shape, mark: Option<&str>) -> Value {
     Value::Place(Place {
         parent: shape.parent.clone(),
@@ -231,6 +237,242 @@ impl Trees {
             self.write_out_journal(&node);
         }
         self.journal.lose();
+    }
+
+    /// Fills the journal of a store from an earlier release out of its legacy tables, in the order of RFC 0029 §7.1;
+    /// a later step never replaces a row an earlier one wrote. `in_flight` is the commit in flight and `lost` whether
+    /// the store records a loss.
+    pub fn backfill(&mut self, in_flight: Option<&proto::Commit>, lost: bool) {
+        let row = |intent, author, base, value, state, replay| Row {
+            intent,
+            author,
+            base,
+            value,
+            wire_base: WireBase::None,
+            state,
+            time_ms: 0,
+            replay,
+        };
+        let carriers: BTreeSet<NodeId> = (self.lost_creates.iter())
+            .chain(self.unsent_creates.iter())
+            .chain(self.resends.iter())
+            .cloned()
+            .collect();
+        for id in carriers {
+            let replay = self.lost_creates.contains(&id) || self.resends.contains(&id);
+            for (field, value) in self.local_values(&id) {
+                if self.remote_intent(&id, field, &value).is_some() {
+                    continue;
+                }
+                let intent = self.legacy_intent(&id, field, &value);
+                let carried = Author::Carried(String::new());
+                let local = RowState::Local { flight: None };
+                (self.journal)
+                    .insert_if_absent(&id, row(intent, carried, None, value, local, replay));
+            }
+        }
+        for op in in_flight.into_iter().flat_map(|commit| &commit.ops) {
+            let Some(kind) = &op.op else {
+                continue;
+            };
+            let (node, fields, carried) = op_fields(kind);
+            let own = !carried
+                && (self.local_changes.contains(node)
+                    || self.edited_here.contains_key(node)
+                    || self.moved_here.contains_key(node));
+            for (field, value) in fields {
+                let Some(value) = value else {
+                    continue;
+                };
+                let author = match own {
+                    true => Author::Own,
+                    false => Author::Carried(String::new()),
+                };
+                let base = self.acknowledged_intent(node, field);
+                let intent = self.journal.mint();
+                (self.journal)
+                    .insert_if_absent(node, row(intent, author, base, value, RowState::Sent, lost));
+            }
+        }
+        let unsent_edits: Vec<NodeId> = self.unsent_edits.iter().cloned().collect();
+        let changed: Vec<NodeId> = (self.l.iter().map(|(id, _)| id))
+            .chain(self.s.iter().map(|(id, _)| id))
+            .chain(self.waiting.keys())
+            .filter(|id| !unsent_edits.contains(*id))
+            .cloned()
+            .collect::<BTreeSet<NodeId>>()
+            .into_iter()
+            .collect();
+        for id in unsent_edits.into_iter().chain(changed) {
+            let Some(acknowledged) = self.acknowledged(&id).cloned() else {
+                continue;
+            };
+            if self.l.get(&id).is_none() {
+                if self.journal_row(&id, Field::Status).is_none() {
+                    let seen_list = self.seen_list(&id);
+                    let base = self.acknowledged_intent(&id, Field::Status);
+                    self.journal.user_delete(&id, seen_list, base);
+                }
+                continue;
+            }
+            for (field, value) in self.local_values(&id) {
+                let seen = match field {
+                    Field::Place => Some(place(&acknowledged, self.synced_mark(&id))),
+                    Field::Content => content(&acknowledged, None),
+                    Field::Status => Some(Value::Status { live: true }),
+                };
+                let from_flight = self
+                    .journal_row(&id, field)
+                    .map(|row| row.state == RowState::Sent);
+                if same(seen.as_ref(), Some(&value)) || from_flight == Some(false) {
+                    continue;
+                }
+                let base = self.acknowledged_intent(&id, field);
+                self.journal.user_change(&id, value, WireBase::None, base);
+            }
+        }
+        let held: Vec<(NodeId, Field, Option<IntentId>)> = (self.edited_here.keys())
+            .map(|id| {
+                let base = (self.replaced_versions.get(id))
+                    .and_then(|versions| versions.last())
+                    .map(|version| IntentId::legacy_content(id, version));
+                (id.clone(), Field::Content, base)
+            })
+            .chain(self.moved_here.keys().map(|id| {
+                let base = (self.past_positions.get(id))
+                    .and_then(|positions| positions.last())
+                    .map(|at| IntentId::legacy_place(id, at.rev, &at.parent, &at.name));
+                (id.clone(), Field::Place, base)
+            }))
+            .chain(self.trashed_here.keys().map(|id| {
+                let rev = self.r.get(id).map_or(0, |remote| remote.meta_rev);
+                (
+                    id.clone(),
+                    Field::Status,
+                    Some(IntentId::legacy_live(id, rev)),
+                )
+            }))
+            .collect();
+        for (id, field, base) in held {
+            let Some(remote) = self.r.get(&id) else {
+                continue;
+            };
+            let (Some(value), Some(intent)) =
+                (remote_value(remote, field), remote_intent_of(remote, field))
+            else {
+                continue;
+            };
+            let version_id = (field == Field::Content && !remote.version_id.is_empty())
+                .then(|| remote.version_id.clone());
+            let state = RowState::Held {
+                held_as: intent.id,
+                version_id,
+            };
+            let mut held = row(intent.id, Author::Own, base, value, state, lost);
+            held.time_ms = intent.applied_at_ms;
+            self.journal.insert_if_absent(&id, held);
+        }
+        let past: Vec<(NodeId, Field, IntentId)> = (self.replaced_versions.iter())
+            .flat_map(|(id, versions)| {
+                (versions.iter()).map(|version| {
+                    (
+                        id.clone(),
+                        Field::Content,
+                        IntentId::legacy_content(id, version),
+                    )
+                })
+            })
+            .chain(self.past_positions.iter().flat_map(|(id, positions)| {
+                (positions.iter()).map(|at| {
+                    (
+                        id.clone(),
+                        Field::Place,
+                        IntentId::legacy_place(id, at.rev, &at.parent, &at.name),
+                    )
+                })
+            }))
+            .collect();
+        for (id, field, intent) in past {
+            self.journal
+                .remote_holds(&id, field, &FieldIntent::legacy(intent), false);
+        }
+        let nodes: Vec<NodeId> = self.r.iter().map(|(id, _)| id.clone()).collect();
+        for id in nodes {
+            self.compact_journal(&id, false);
+        }
+    }
+
+    fn local_values(&self, id: &str) -> Vec<(Field, Value)> {
+        let Some(local) = self.l.get(id) else {
+            return Vec::new();
+        };
+        (Field::ALL.into_iter())
+            .filter_map(|field| Some((field, self.local_value(id, &local.shape, field)?)))
+            .collect()
+    }
+
+    fn acknowledged_intent(&self, id: &str, field: Field) -> Option<IntentId> {
+        let shape = self.acknowledged(id)?;
+        let value = match field {
+            Field::Place => place(shape, self.synced_mark(id)),
+            Field::Content => content(shape, None)?,
+            Field::Status => Value::Status { live: true },
+        };
+        Some(self.legacy_intent(id, field, &value))
+    }
+
+    fn legacy_intent(&self, id: &str, field: Field, value: &Value) -> IntentId {
+        if let Some(intent) = self.remote_intent(id, field, value) {
+            return intent;
+        }
+        let remote = self.r.get(id);
+        let rev = remote.map_or(0, |remote| remote.meta_rev);
+        match value {
+            Value::Place(place) => IntentId::legacy_place(id, rev, &place.parent, &place.name),
+            Value::Content { version_id, .. } => {
+                let version = (version_id.clone())
+                    .or_else(|| {
+                        Some(
+                            self.content_provenance
+                                .get(id, &self.r)?
+                                .local
+                                .as_ref()?
+                                .version_id
+                                .clone(),
+                        )
+                    })
+                    .unwrap_or_default();
+                IntentId::legacy_content(id, &version)
+            }
+            Value::Status { live: true } => IntentId::legacy_live(id, rev),
+            Value::Status { live: false } => IntentId::legacy_trashed(
+                id,
+                remote.map_or("", |remote| remote.trash_group.as_str()),
+            ),
+        }
+    }
+
+    pub(super) fn end_carrier(&mut self, carrier: Carrier, id: &str) -> bool {
+        let ended = match carrier {
+            Carrier::LostCreate => self.lost_creates.remove(id),
+            Carrier::UnsentCreate => self.unsent_creates.remove(id),
+            Carrier::Resend => self.resends.remove(id),
+        };
+        if ended {
+            self.ended_carriers.insert(id.to_owned());
+        }
+        ended
+    }
+
+    pub(super) fn end_carried_rows(&mut self) {
+        for id in std::mem::take(&mut self.ended_carriers) {
+            let carried = self.lost_creates.contains(&id)
+                || self.unsent_creates.contains(&id)
+                || self.resends.contains(&id);
+            if !carried {
+                self.journal.end_unsent_carried(&id);
+            }
+        }
     }
 
     /// The intents S holds for the node: for each field, the intent of the value S took.
