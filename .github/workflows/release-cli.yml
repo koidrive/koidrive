@@ -151,7 +151,7 @@ jobs:
           rustup target add "$TARGET"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: cli-${{ matrix.target }}
+          key: cli-${{ matrix.target }}-${{ hashFiles('Cargo.toml') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Linux cross-build tools and ShellCheck
         if: runner.os == 'Linux'
