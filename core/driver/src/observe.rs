@@ -787,6 +787,7 @@ impl Observer for FsObserver {
             && poll.read.is_empty()
             && poll.settled.is_empty()
             && rules.is_empty()
+            && self.unread.waiting.is_empty()
         {
             return Ok(None);
         }
