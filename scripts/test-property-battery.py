@@ -592,8 +592,11 @@ cases = ["{1:064}"]
         lose_coarse = "devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds"
         x2293 = "2293e681b3bc09faeca001d034140fd95df720190105bcb9a754644310248df5"
         w74e3 = "74e37aa2bf801d15aab9bf0f584dddf33f51a77e14d48566c299c6ec6b7b18e4"
+        lose_restores = "devices_lose_no_write_across_restores_and_rewinds"
+        g3a0d = "3a0d2e9f93add5bd8adc686860704064f6142131917fe4203d878de80082695b"
         never_reached = next(entry for entry in entries
                              if entry["file"] == "GUN-864-I-delete-never-reached-server-across-server-restores.toml")["examples"][0]
+        undone = next(entry for entry in entries if entry["file"] == "GUN-864-I-delete-came-undone.toml")["examples"][1]
         def example(case):
             return next(entry for entry in entries if case.startswith(tuple(entry.get("cases", ["-"]))))["examples"][0]
         update = "}, Op { intent: None, fields: None, op: Some(UpdateContent"
@@ -621,10 +624,13 @@ cases = ["{1:064}"]
             (restores_and_rewinds, never_reached, other, [("I", "GUN-864", None)]),
             ("devices_on_coarse_volumes_converge_across_restores_and_rewinds", never_reached, other, [("I", "GUN-864", None)]),
             (lose_rollbacks, example(x2293), x2293, [("X", "GUN-1199", ["2293e681b3bc"])]),
-            (lose_rollbacks, example(x2293), other, [("A", "GUN-1004", None)]),
+            (lose_rollbacks, example(x2293), other, []),
             (lose_coarse, example(w74e3), w74e3, [("W", "GUN-1200", ["74e37aa2bf80"])]),
             (lose_coarse, example(w74e3), other, []),
             (lose_rollbacks, example(w74e3), w74e3, [("A", "GUN-1004", None)]),
+            ("devices_on_coarse_volumes_converge_once_the_faults_stop", undone + "\n" + example(w74e3), other, []),
+            (lose_restores, example(g3a0d), g3a0d, [("G", "GUN-1203", ["3a0d2e9f93ad"])]),
+            (lose_restores, example(g3a0d), other, []),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):
                 found = triage.matches(entries, test, message, case)

@@ -13,7 +13,7 @@ tests = [
   "devices_on_coarse_volumes_converge_across_restores_and_rewinds",
   "devices_on_coarse_volumes_converge_once_the_faults_stop",
 ]
-message = '''(after phase <n>: the delete of node <id> on device <n> came undone, and no change its user did not see brought the node back\.|not recorded: devices::\S+ \S+ DeleteUndone the delete of node <id> on device <n> came undone, and no change its user did not see brought the node back( not recorded: devices::\S+ \S+ [A-Za-z]+ .+?(settles it|brought the node back|never gave it))*( devices::\S+ never ran case \S+)*)'''
+message = '''(after phase <n>: the delete of node <id> on device <n> came undone, and no change its user did not see brought the node back\.|not recorded: devices::\S+ \S+ DeleteUndone the delete of node <id> on device <n> came undone, and no change its user did not see brought the node back( not recorded: devices::\S+ \S+ DeleteUndone (?:(?! not recorded: ).)+?brought the node back)*( devices::\S+ never ran case \S+)*)'''
 examples = [
   "after phase 2: the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 1 came undone, and no change its user did not see brought the node back.",
   "not recorded: devices::devices_on_coarse_volumes_converge_once_the_faults_stop\tcc-6c2eb08c5602e7d92f988f7a862875bdd57aa6cebf2b35ea8fe613014f36dc75\tDeleteUndone\tthe delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 0 came undone, and no change its user did not see brought the node back",
