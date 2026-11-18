@@ -9,6 +9,25 @@ use std::time::{Duration, Instant};
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
+pub trait Program {
+    fn exited(&mut self) -> bool;
+    fn stop(&mut self);
+}
+
+impl Program for Child {
+    fn exited(&mut self) -> bool {
+        self.try_wait().unwrap().is_some()
+    }
+
+    fn stop(&mut self) {
+        let leader = rustix::process::Pid::from_child(self);
+        if rustix::process::kill_process_group(leader, rustix::process::Signal::KILL).is_err() {
+            let _ = self.kill();
+        }
+        let _ = self.wait();
+    }
+}
+
 pub struct Terminal {
     master: File,
     slave: File,
@@ -64,32 +83,20 @@ impl Terminal {
         &self.output
     }
 
-    pub fn text(&self) -> String {
-        String::from_utf8_lossy(&self.output).replace("\r\n", "\n")
-    }
-
-    pub fn read(&mut self, child: &mut Child, deadline: Instant) -> bool {
-        let exited = child.try_wait().unwrap().is_some();
+    pub fn read(&mut self, program: &mut impl Program, deadline: Instant) -> bool {
+        let exited = program.exited();
         let before = self.output.len();
-        self.drain();
+        self.drain(program, deadline);
         if exited {
             return false;
         }
-        if Instant::now() > deadline {
-            let leader = rustix::process::Pid::from_child(child);
-            if rustix::process::kill_process_group(leader, rustix::process::Signal::KILL).is_err() {
-                let _ = child.kill();
-            }
-            let _ = child.wait();
-            panic!(
-                "the program on the terminal did not exit: {}",
-                String::from_utf8_lossy(&self.output)
-            );
-        }
         if self.output.len() == before {
+            self.stop_after(program, deadline);
+            let interval = deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(10));
             let mut ready = [PollFd::new(&self.master, PollFlags::IN)];
-            let interval = Timespec::try_from(Duration::from_millis(10)).unwrap();
-            let _ = poll(&mut ready, Some(&interval));
+            let _ = poll(&mut ready, Some(&Timespec::try_from(interval).unwrap()));
         }
         true
     }
@@ -100,9 +107,10 @@ impl Terminal {
         child.wait().unwrap()
     }
 
-    fn drain(&mut self) {
+    fn drain(&mut self, program: &mut impl Program, deadline: Instant) {
         let mut buffer = [0; 8192];
         loop {
+            self.stop_after(program, deadline);
             match self.master.read(&mut buffer) {
                 Ok(0) => return,
                 Ok(count) => self.output.extend_from_slice(&buffer[..count]),
@@ -117,30 +125,60 @@ impl Terminal {
             }
         }
     }
+
+    fn stop_after(&self, program: &mut impl Program, deadline: Instant) {
+        if Instant::now() <= deadline {
+            return;
+        }
+        program.stop();
+        panic!(
+            "the program on the terminal did not exit: {}",
+            String::from_utf8_lossy(&self.output)
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
+    use std::io::Write;
+    use std::process::{Child, ChildStdin, Command, Stdio};
     use std::time::{Duration, Instant};
 
-    use super::Terminal;
+    use super::{Program, Terminal};
+
+    struct FinishesWhenChecked {
+        child: Child,
+        answer: Option<ChildStdin>,
+    }
+
+    impl Program for FinishesWhenChecked {
+        fn exited(&mut self) -> bool {
+            if let Some(mut answer) = self.answer.take() {
+                answer.write_all(b"\n").unwrap();
+            }
+            self.child.wait().unwrap();
+            true
+        }
+
+        fn stop(&mut self) {
+            self.child.stop();
+        }
+    }
 
     #[test]
-    fn output_written_after_the_last_read_by_a_child_that_then_exits_is_kept() {
+    fn a_line_written_just_before_the_exit_check_is_read() {
         let mut terminal = Terminal::open(80, 24);
         let mut child = Command::new("/bin/sh")
             .args(["-c", "read answer; printf 'last line'"])
-            .stdin(terminal.slave())
+            .stdin(Stdio::piped())
             .stdout(terminal.slave())
             .stderr(terminal.slave())
             .spawn()
             .unwrap();
+        let answer = child.stdin.take();
+        let mut program = FinishesWhenChecked { child, answer };
         let deadline = Instant::now() + Duration::from_secs(10);
-        assert!(terminal.read(&mut child, deadline));
-        terminal.write(b"n\n");
-        assert!(child.wait().unwrap().success());
-        assert!(!terminal.read(&mut child, deadline));
-        assert_eq!(terminal.text(), "n\nlast line");
+        assert!(!terminal.read(&mut program, deadline));
+        assert_eq!(terminal.output(), b"last line");
     }
 }

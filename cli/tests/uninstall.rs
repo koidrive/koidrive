@@ -905,7 +905,7 @@ fn on_terminal(machine: &Machine, koi: &Path, args: &[&str], answer: &str) -> (i
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while terminal.read(&mut child, deadline) {
         if !answered
-            && console::strip_ansi_codes(&terminal.text())
+            && console::strip_ansi_codes(&String::from_utf8_lossy(terminal.output()))
                 .contains("Remove Koidrive from this computer?")
         {
             terminal.write(answer.as_bytes());
@@ -913,7 +913,8 @@ fn on_terminal(machine: &Machine, koi: &Path, args: &[&str], answer: &str) -> (i
         }
     }
     let status = child.wait().unwrap();
-    let text = console::strip_ansi_codes(&terminal.text()).into_owned();
+    let text = console::strip_ansi_codes(&String::from_utf8_lossy(terminal.output()))
+        .replace("\r\n", "\n");
     assert!(answered, "no question: {text}");
     (status.code().unwrap(), text)
 }

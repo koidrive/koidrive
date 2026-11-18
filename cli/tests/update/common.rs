@@ -284,7 +284,7 @@ fn on_a_terminal(mut command: Command, typed: Option<(Duration, &[u8])>) -> Stri
         terminal.write(bytes);
     }
     while terminal.read(&mut child, deadline) {}
-    terminal.text()
+    String::from_utf8_lossy(terminal.output()).replace("\r\n", "\n")
 }
 
 const STOPPED: &str = r#"{"schema_version":1,"command":"_reconcile","outcome":"ok","data":{"service":{"manager":"launchd","name":"dev.koidrive.koi","state":"stopped"}}}"#;
