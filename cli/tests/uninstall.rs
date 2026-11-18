@@ -892,15 +892,15 @@ fn an_app_in_applications_is_unregistered_and_removed() {
 
 fn on_terminal(machine: &Machine, koi: &Path, args: &[&str], answer: &str) -> (i32, String) {
     let mut terminal = Terminal::open(160, 40);
-    let mut child = machine
-        .command(koi, args)
-        .env_remove("CI")
-        .env("TERM", "xterm-256color")
-        .stdin(terminal.slave())
-        .stdout(terminal.slave())
-        .stderr(terminal.slave())
-        .spawn()
-        .unwrap();
+    let mut child = terminal::spawn(
+        machine
+            .command(koi, args)
+            .env_remove("CI")
+            .env("TERM", "xterm-256color")
+            .stdin(terminal.slave())
+            .stdout(terminal.slave())
+            .stderr(terminal.slave()),
+    );
     let mut answered = false;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while terminal.read(&mut child, deadline) {

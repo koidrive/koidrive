@@ -160,7 +160,7 @@ impl Profile {
                 command.stdout(terminal.slave());
             }
         }
-        let mut child = command.spawn().unwrap();
+        let mut child = terminal::spawn(&mut command);
         let deadline = Instant::now() + Duration::from_secs(15);
         match &mut terminal {
             Some(terminal) => while terminal.read(&mut child, deadline) {},

@@ -4,10 +4,15 @@
 
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
-use std::process::{Child, ExitStatus};
+use std::os::unix::process::CommandExt;
+use std::process::{Child, Command, ExitStatus};
 use std::time::{Duration, Instant};
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
+
+pub fn spawn(command: &mut Command) -> Child {
+    command.process_group(0).spawn().unwrap()
+}
 
 pub trait Program {
     fn exited(&mut self) -> bool;
@@ -140,9 +145,11 @@ impl Terminal {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::process::{Child, ChildStdin, Command, Stdio};
     use std::time::{Duration, Instant};
+
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
     use super::{Program, Terminal};
 
@@ -180,5 +187,39 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         assert!(!terminal.read(&mut program, deadline));
         assert_eq!(terminal.output(), b"last line");
+    }
+
+    #[test]
+    fn a_timeout_stops_the_programs_descendants() {
+        let mut terminal = Terminal::open(80, 24);
+        let (mut alive, held) = std::io::pipe().unwrap();
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "/bin/sleep 3600 & echo $!; wait"])
+            .stdout(terminal.slave())
+            .stderr(held);
+        let mut child = super::spawn(&mut command);
+        drop(command);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !terminal.output().ends_with(b"\n") {
+            assert!(terminal.read(&mut child, deadline));
+        }
+        let descendant = String::from_utf8(terminal.output().to_vec()).unwrap();
+        let timed_out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            terminal.wait(&mut child, Duration::ZERO)
+        }));
+        assert!(timed_out.is_err());
+        let mut ready = [PollFd::new(&alive, PollFlags::IN)];
+        poll(
+            &mut ready,
+            Some(&Timespec::try_from(Duration::from_secs(10)).unwrap()),
+        )
+        .unwrap();
+        let mut rest = Vec::new();
+        assert!(
+            !ready[0].revents().is_empty() && alive.read_to_end(&mut rest).unwrap() == 0,
+            "descendant {} outlived the timeout",
+            descendant.trim()
+        );
     }
 }

@@ -7,6 +7,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -696,7 +697,10 @@ fn terminal_run(
         matches!(input, TerminalInput::DifferentTerminal).then(|| Terminal::open(100, 30));
     let original = terminal.attributes();
     let mut command = koi(home);
-    command.args(args).env("TERM", "xterm-256color");
+    command
+        .args(args)
+        .env("TERM", "xterm-256color")
+        .process_group(0);
     if args.first() == Some(&"setup") {
         command.arg("--no-app");
     }
