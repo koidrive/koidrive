@@ -799,6 +799,7 @@ describe("RFC 0029 section 3.4 and 3.5: replays reaching the trash", () => {
     const created = await b.commit([sent(op.create(nodeId, deepest, "edge.txt", values[0]!), lost)]);
     expect(created.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
     expect(created.changes.map(changedId)).toEqual([nodeId]);
+    expect(await stateOf(space, nodeId)).toMatchObject({ parentId: deepest, kind: NodeKind.FILE, status: NodeStatus.TRASHED });
     await a.commit([sent(op.restore(deepest), intent(a.session.deviceId))]);
     expect(await stateOf(space, nodeId)).toMatchObject({ parentId: deepest, kind: NodeKind.FILE, status: NodeStatus.LIVE });
   });
