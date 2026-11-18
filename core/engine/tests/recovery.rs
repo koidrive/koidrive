@@ -327,6 +327,31 @@ fn a_restored_value_no_ancestry_names_is_followed() {
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
 
+#[test]
+fn a_store_rollback_to_an_ancestor_the_server_added_to_an_own_version_holds_the_own_value() {
+    let mut trees = trees(
+        &[("n", file(ROOT, "a", 1))],
+        &[("n", file(ROOT, "a", 1))],
+        &[],
+    );
+    trees.set_remote("n".into(), server_version(file(ROOT, "a", 1), "v1", &[], 1));
+    trees.settle(&Default::default());
+    let mut edited = trees.local().get("n").unwrap().clone();
+    edited.shape = file(ROOT, "a", 2);
+    trees.set_local_changed("n".into(), edited);
+    trees.settle(&Default::default());
+    let acknowledged = server_version(file(ROOT, "a", 2), "v2", &["v1", "v0"], 2);
+    trees.set_remote_edited_here("n".into(), acknowledged);
+    trees.set_synced("n".into(), Some(file(ROOT, "a", 2)));
+    trees.settle(&Default::default());
+    trees.set_remote("n".into(), server_version(file(ROOT, "a", 0), "v0", &[], 1));
+    trees.settle(&Default::default());
+    let cause = RecoveryCause::of(RecoveryTrigger::StoreRolledBack);
+    let (commits, _) = recovered_after(&mut trees, 0, cause);
+    asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(trees.held("n"));
+}
+
 fn server_version(shape: Shape, version_id: &str, made_over: &[&str], rev: u64) -> RemoteNode {
     RemoteNode {
         made_over: made_over.iter().map(|id| (*id).into()).collect(),
