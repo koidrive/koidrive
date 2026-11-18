@@ -233,6 +233,28 @@ class Tree:
         return {p: Tree.cache[self.blobs[p]] for p in paths}
 
 
+def test_only_files(scans, modules, test_modules):
+    test = {}
+
+    def walk(path, under_test):
+        if path not in scans:
+            return
+        under_test = under_test or bool(TEST_DIR.search(path) or TEST_CRATE.search(path) or scans[path]["whole_file"])
+        if path in test and (not test[path] or under_test):
+            return
+        test[path] = under_test
+        for child in modules[path]:
+            walk(child, under_test)
+        for child in test_modules[path]:
+            walk(child, True)
+
+    declared = set().union(*modules.values(), *test_modules.values())
+    for root in sorted(scans, key=lambda path: path in declared):
+        if root not in test:
+            walk(root, False)
+    return {path for path, is_test in test.items() if is_test}
+
+
 def count(tree):
     paths = [p for p in tree.blobs if p.startswith(tree.scope)]
     data = tree.contents(paths)
@@ -246,17 +268,7 @@ def count(tree):
         scans[path] = Tree.scans[blob]
         modules[path] = {module_file(path, d, tree.blobs) for d in scans[path]["modules"]}
         test_modules[path] = {module_file(path, d, tree.blobs) for d in scans[path]["test_modules"]}
-    test_files = {p for p in rust if TEST_DIR.search(p) or TEST_CRATE.search(p) or scans[p]["whole_file"]}
-    declared_for_tests = set().union(*test_modules.values())
-    shared = {m for p in rust if p not in test_files | declared_for_tests for m in modules[p]}
-    test_files.update(declared_for_tests - shared)
-    pending = list(test_files)
-    while pending:
-        path = pending.pop()
-        for child in modules.get(path, set()) | test_modules.get(path, set()):
-            if child not in test_files and child not in shared:
-                test_files.add(child)
-                pending.append(child)
+    test_files = test_only_files(scans, modules, test_modules)
     totals = Counter({category: 0 for category in CATEGORIES})
     for path in paths:
         lines = line_count(data[path])

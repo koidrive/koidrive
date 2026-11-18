@@ -219,6 +219,15 @@ class TestLines(unittest.TestCase):
         })
         self.assertEqual((counts["test"], counts["implementation"]), (4, 13))
 
+    def test_grandchildren_of_an_out_of_line_test_module_are_test_code(self):
+        after = {
+            "core/a/src/lib.rs": "#[cfg(test)]\nmod checks;\n",
+            "core/a/src/checks.rs": "mod a;\n",
+            "core/a/src/checks/a.rs": "mod b;\n",
+            "core/a/src/checks/a/b.rs": self.lines(413),
+        }
+        self.assertEqual(self.net({}, after), 417)
+
     def test_rust_files_under_fixtures_are_fixture_data(self):
         counts = self.counts({"core/a/tests/fixtures/template.rs": self.lines(5), "core/a/tests/flow.rs": self.lines(2)})
         self.assertEqual((counts["test"], counts["fixture"]), (2, 5))
