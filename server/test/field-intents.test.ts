@@ -2,6 +2,7 @@
 
 import { create } from "@bufbuild/protobuf";
 import { runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { type Op, OpResult_Code, OpSchema } from "../src/gen/koidrive/v1/commit_pb";
 import { type ChangeRecord, type Content, FieldIntentsSchema, type Intent, IntentSchema, type NodeState, NodeStatus } from "../src/gen/koidrive/v1/model_pb";
@@ -13,7 +14,7 @@ import { commitDigest } from "../src/space/digest";
 import { type Field, legacyIntentId, legacyPlaceKey, type LostChangeRule } from "../src/space/intents";
 import { getNode, nodeState } from "../src/space/store";
 import legacyVectors from "../../spec/vectors/legacy-intents.json";
-import { restoreFromR2, serverState, snapshotWithoutIntents } from "./export-reader";
+import { pageWithoutIntents, restoreFromR2, serverState, snapshotWithoutIntents } from "./export-reader";
 import { client, content, freezeClock, newSpace, op, revertIntentsMigration, runSpaceAlarm, type TestClient } from "./helpers";
 
 type Space = Awaited<ReturnType<typeof newSpace>>;
@@ -920,6 +921,24 @@ describe("RFC 0029 section 7.2: legacy intents", () => {
     for (const minutes of [10, 11, 12]) await runSpaceAlarm(space.stub, exportAt + minutes * 60_000);
     const restored = await restoreFromR2(space.spaceId);
     expect(restored.manifest!.start_seq).toBe(headSeq + 1);
+    expect(restored.nodes).toEqual((await serverState(space.stub)).nodes);
+  });
+
+  it("restarts a snapshot that was being written when the backfill ran, so no page from before the migration is published", async () => {
+    const { space, a, root } = await setup();
+    const now = Date.now();
+    await setClock(space, now);
+    for (const name of ["one", "two", "three", "four"]) await a.commit([op.mkdir(uuidv7(), root, name)]);
+    const exportAt = now + DAY_MS + 10 * 60_000;
+    await runSpaceAlarm(space.stub, exportAt, { pageNodes: 2, intercept: async (key, put) => (key.endsWith("/pages/1.fbsnap") ? Promise.reject(new Error("R2 is down")) : put()) });
+    const keys = (await env.BUCKET.list({ prefix: `spaces/${space.spaceId}/meta/` })).objects.map((object) => object.key);
+    const written = keys.filter((key) => key.endsWith("/pages/0.fbsnap"));
+    expect([written.length, keys.filter((key) => key.endsWith("/manifest.json")).length]).toEqual([1, 0]);
+    await pageWithoutIntents(written[0]!, 1);
+    await revertIntentsMigration(space.stub);
+    for (const minutes of [2, 3, 4, 5]) await runSpaceAlarm(space.stub, exportAt + minutes * 60_000, { pageNodes: 2 });
+    const restored = await restoreFromR2(space.spaceId);
+    expect(restored.manifest!.start_seq).toBe((await serverState(space.stub)).headSeq);
     expect(restored.nodes).toEqual((await serverState(space.stub)).nodes);
   });
 

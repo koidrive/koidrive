@@ -155,23 +155,27 @@ function replay(nodes: Map<string, RestoredNode>, tombstones: Map<string, NodePu
   }
 }
 
+export async function pageWithoutIntents(key: string, formatVersion?: number): Promise<Uint8Array> {
+  const reader = new BinaryReader(await gunzip(new Uint8Array(await (await env.BUCKET.get(key))!.arrayBuffer())));
+  const writer = new BinaryWriter();
+  const header = fromBinary(ExportHeaderSchema, reader.bytes());
+  writer.bytes(toBinary(ExportHeaderSchema, create(ExportHeaderSchema, { ...header, formatVersion: formatVersion ?? header.formatVersion })));
+  while (reader.pos < reader.len) {
+    const record = fromBinary(NodeSnapshotSchema, reader.bytes());
+    if (record.node) record.node.intents = undefined;
+    writer.bytes(toBinary(NodeSnapshotSchema, record));
+  }
+  const file = new Uint8Array(await new Response(new Blob([writer.finish()]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
+  await env.BUCKET.put(key, file);
+  return file;
+}
+
 export async function snapshotWithoutIntents(spaceId: string): Promise<void> {
   const keys = (await env.BUCKET.list({ prefix: `spaces/${spaceId}/meta/` })).objects.map((object) => object.key);
   const manifestKey = keys.filter((key) => key.endsWith("/manifest.json")).sort().at(-1)!;
   const manifest = (await (await env.BUCKET.get(manifestKey))!.json()) as Manifest;
-  const pages = manifestKey.replace(/manifest\.json$/, "pages/");
   for (const page of manifest.pages) {
-    const zipped = new Uint8Array(await (await env.BUCKET.get(pages + page.name))!.arrayBuffer());
-    const reader = new BinaryReader(new Uint8Array(await new Response(new Blob([zipped]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer()));
-    const writer = new BinaryWriter();
-    writer.bytes(reader.bytes());
-    while (reader.pos < reader.len) {
-      const record = fromBinary(NodeSnapshotSchema, reader.bytes());
-      if (record.node) record.node.intents = undefined;
-      writer.bytes(toBinary(NodeSnapshotSchema, record));
-    }
-    const file = new Uint8Array(await new Response(new Blob([writer.finish()]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
-    await env.BUCKET.put(pages + page.name, file);
+    const file = await pageWithoutIntents(manifestKey.replace(/manifest\.json$/, "pages/") + page.name);
     Object.assign(page, { bytes: file.length, sha256: toHex(await sha256(file)) });
   }
   await env.BUCKET.put(manifestKey, JSON.stringify(manifest));

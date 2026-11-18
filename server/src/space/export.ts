@@ -99,9 +99,8 @@ export function requestSnapshot(sql: Sql, atMs: number): void {
   if (getMeta(sql, "export_state") === undefined) return;
   const state = readState(sql);
   const head = Number(getMeta(sql, "head_seq"));
-  if (state.running && state.running.startSeq < head) state.running = undefined;
-  const named = Math.max(-1, state.running?.startSeq ?? -1, ...state.done.map((done) => done.startSeq));
-  state.dueSeq = named < head ? head : head + 1;
+  state.running = undefined;
+  state.dueSeq = state.done.some((done) => done.startSeq === head) ? head + 1 : head;
   setMeta(sql, "export_state", JSON.stringify(state));
   scheduleExport(sql, atMs, true);
 }
