@@ -19,7 +19,7 @@ import {
 import { ClientMessageSchema, RpcRequestSchema, RpcResponseSchema, type ServerMessage, ServerMessageSchema } from "../src/gen/koidrive/v1/messages_pb";
 import { ChunkBundleResultSchema, ChunkBundleSchema } from "../src/gen/koidrive/v1/rpc_pb";
 import { estimateMonthlyCost } from "../src/report/cost";
-import { countedBucket, countedEgress, countedState, meteredObject, meteredReply, meteredStub } from "../src/report/meter";
+import { CARRIED_HEADER, countedBucket, countedEgress, countedState, meteredObject, meteredReply, meteredStub, type Reply } from "../src/report/meter";
 import { reportBatch } from "../src/report/payload";
 import type { SpaceDO } from "../src/space-do";
 import { uuidv7 } from "../src/ids";
@@ -454,7 +454,7 @@ describe("billing meters", () => {
     expect(billing).toEqual({ do_rows_read: expected.read, do_rows_written: expected.written });
   });
 
-  it("counts each call into an object once, WebSocket messages apart, returns a call's counts and active time in its reply, gives each event nobody waits on its counts, and sends a failed call's or a fetch's counts with the next reply", async () => {
+  it("counts each call into an object once, WebSocket messages apart, returns a call's counts and active time in its reply, gives each event nobody waits on its counts, and returns a failed call's counts with its error and a fetch's in a header", async () => {
     class Probe {
       async rpc(gate: Promise<void>): Promise<string> {
         await gate;
@@ -494,10 +494,12 @@ describe("billing meters", () => {
     await probe.alarm();
     await probe.webSocketMessage();
     await probe.webSocketClose();
-    await expect(call("fail")).rejects.toThrow("refused");
-    expect((await probe.fetch()).status).toBe(204);
+    const failed = await call("fail");
+    expect({ thrown: failed.thrown?.message, billing: billingOf(failed.usage!.hours) }).toEqual({ thrown: "refused", billing: { do_space_requests: 1 } });
+    const fetched = await probe.fetch();
+    expect({ status: fetched.status, billing: billingOf((JSON.parse(fetched.headers.get(CARRIED_HEADER)!) as Carried).usage!.hours) }).toEqual({ status: 204, billing: { do_space_requests: 1 } });
     const after = await call("helper");
-    expect({ value: after.value, billing: billingOf(after.usage!.hours) }).toEqual({ value: "done", billing: { do_space_requests: 3 } });
+    expect({ value: after.value, billing: billingOf(after.usage!.hours) }).toEqual({ value: "done", billing: { do_space_requests: 1 } });
     await expect(call("alarm")).rejects.toThrow("no method alarm");
     await expect(call("constructor")).rejects.toThrow("no method constructor");
     expect(probe.helper()).toBe("done");
@@ -1332,7 +1334,7 @@ describe("billing counts across evictions", () => {
     expect(await leftover(stub)).toEqual([null, null]);
   });
 
-  it("counts WebSocket messages that wake a hibernated Space DO, and hands them over when the last socket closes", async () => {
+  it("counts WebSocket messages that wake a hibernated Space DO, and hands them over when the last socket closes, apart from the upgrade, whose response carries its counts", async () => {
     const { owner, spaceId, stub } = await reportingSpace();
     const usage = await watchUsage();
     const socket = await connect(spaceId, owner, stub);
@@ -1344,7 +1346,7 @@ describe("billing counts across evictions", () => {
     socket.ws.close(1000, "done");
     await vi.waitFor(() => expect(spaceCalls(usage.calls)).toHaveLength(1));
     const handed = sumOf(spaceCalls(usage.calls));
-    expect({ listed: handed.counts["rpc_list_tree.ok"], requests: handed.billing.do_space_requests, messages: handed.billing.do_ws_messages }).toEqual({ listed: 3, requests: 1, messages: 4 });
+    expect({ listed: handed.counts["rpc_list_tree.ok"], requests: handed.billing.do_space_requests, messages: handed.billing.do_ws_messages }).toEqual({ listed: 3, requests: undefined, messages: 4 });
     expect(await leftover(stub)).toEqual([null, null]);
   });
 
@@ -1526,7 +1528,7 @@ describe("reply latency", () => {
     const hour = Math.floor(Date.now() / HOUR_MS);
     await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("DELETE FROM usage_hours"));
     const replies: Carried[] = [];
-    const kept = meteredStub(account(), (carried) => replies.push(carried), false);
+    const kept = meteredStub(account(), (carried) => replies.push(carried), { keep: true });
     await kept.checkSessions([owner.deviceId], spaceId);
     expect(replies).toHaveLength(1);
     expect(replies[0]!.usage).toBeUndefined();
@@ -1546,15 +1548,97 @@ describe("reply latency", () => {
     const socket = await connect(spaceId, owner, stub);
     await socket.listTree();
     const parkedActiveMs = async () => billingOf(((await attachments(stub))[0]!.usage as { hours: UsageHours } | undefined)?.hours ?? {}).do_account_active_ms ?? 0;
-    const before = await parkedActiveMs();
     const slow = await slowAccount("checkSessions", 500);
+    const received: Carried[] = [];
     await runInDurableObject(stub, (instance: SpaceDO) => {
       instance.clock = () => Date.now() + 3_000;
+      const prototype = Object.getPrototypeOf(instance) as { received(carried: Carried): void };
+      const original = prototype.received;
+      vi.spyOn(prototype, "received").mockImplementation(function (this: unknown, carried: Carried) {
+        received.push(carried);
+        original.call(this, carried);
+      });
     });
     await socket.listTree();
     await vi.waitFor(() => expect(slow.calls).toEqual({ started: 1, answered: 1 }), { timeout: 5_000 });
-    await vi.waitFor(async () => expect(await parkedActiveMs()).toBeGreaterThanOrEqual(before + 500));
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    const answered = billingOf(received[0]!.usage!.hours).do_account_active_ms!;
+    expect(answered).toBeGreaterThan(0);
+    await vi.waitFor(async () => expect(await parkedActiveMs()).toBeGreaterThanOrEqual(answered));
     socket.ws.close(1000, "done");
+  });
+});
+
+describe("replies carry their counts", () => {
+  const listTree = (owner: DeviceCredentials, spaceId: string, reqId: bigint) =>
+    post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId, call: { case: "listTree", value: {} } }), owner.access!.token);
+  const handOverAtOnce = () => {
+    UsageTally.batchMs = 0;
+    restorers.push(() => {
+      UsageTally.batchMs = BATCH_MS;
+    });
+  };
+
+  it("counts each GET to a space's /ws that its Space DO refuses across the Space DO's eviction, and never shows the carrier header, on an upgrade either", { timeout: 30_000 }, async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    await vi.waitFor(async () => expect((await storedCounts())["post_spaces.201"]).toBeGreaterThanOrEqual(1));
+    await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("DELETE FROM usage_hours"));
+    for (let i = 0; i < 5; i++) {
+      const response = await exports.default.fetch(`${BASE}/v1/spaces/${spaceId}/ws`, { headers: { Authorization: "Bearer " + owner.access!.token } });
+      expect([response.status, response.headers.get(CARRIED_HEADER)]).toEqual([426, null]);
+    }
+    await vi.waitFor(async () => expect((await storedTotal()).billing.worker_requests).toBe(5));
+    await evictDurableObject(stub);
+    expect((await listTree(owner, spaceId, 1n)).status).toBe(200);
+    await vi.waitFor(async () => expect((await storedCounts())["rpc_list_tree.ok"]).toBe(1));
+    expect((await storedTotal()).billing.do_space_requests).toBeGreaterThanOrEqual(6);
+    const upgraded = await exports.default.fetch(`${BASE}/v1/spaces/${spaceId}/ws`, { headers: { Upgrade: "websocket", Authorization: "Bearer " + owner.access!.token } });
+    expect([upgraded.status, upgraded.headers.get(CARRIED_HEADER)]).toEqual([101, null]);
+    upgraded.webSocket!.accept();
+    upgraded.webSocket!.close(1000, "done");
+  });
+
+  it("returns a failed call's counts with its error, which the stub throws again with its message and platform flags", { timeout: 30_000 }, async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    handOverAtOnce();
+    expect((await listTree(owner, spaceId, 1n)).status).toBe(200);
+    await vi.waitFor(async () => expect((await storedCounts())["rpc_list_tree.ok"]).toBe(1));
+    await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("DELETE FROM usage_hours"));
+    const prototype = (await runInDurableObject(stub, (instance: SpaceDO) => Object.getPrototypeOf(instance))) as SpaceDO;
+    const httpRpc = prototype.httpRpc;
+    prototype.httpRpc = async () => {
+      throw Object.assign(new Error("space unavailable"), { retryable: true });
+    };
+    restorers.push(() => {
+      prototype.httpRpc = httpRpc;
+    });
+    expect((await listTree(owner, spaceId, 2n)).status).toBe(503);
+    prototype.httpRpc = httpRpc;
+    await evictDurableObject(stub);
+    await vi.waitFor(async () => expect((await storedTotal()).billing.do_space_requests).toBe(1));
+    expect(await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("SELECT 1 FROM usage_hours").toArray().length)).toBe(1);
+  });
+
+  it("asks the Worker for a Space DO's stored sizes in one reply an hour, however many RPCs answer at once", { timeout: 30_000 }, async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    const hour = Math.floor(Date.now() / HOUR_MS);
+    const calls = { hints: 0, notes: 0 };
+    await runInDurableObject(stub, (instance: SpaceDO) => {
+      Object.assign(instance, { storedHour: hour - 1, gaugesHintedMs: undefined });
+      const prototype = Object.getPrototypeOf(instance) as { metered(method: string, args: unknown[], call?: unknown): Promise<Reply<unknown>> };
+      const metered = prototype.metered;
+      vi.spyOn(prototype, "metered").mockImplementation(async function (this: unknown, method: string, args: unknown[], call?: unknown) {
+        if (method === "noteStored") calls.notes++;
+        const reply = await metered.call(this, method, args, call);
+        if (reply.gaugesDue) calls.hints++;
+        return reply;
+      });
+    });
+    const replies = await Promise.all([1n, 2n, 3n, 4n, 5n, 6n].map((reqId) => listTree(owner, spaceId, reqId)));
+    expect(replies.map((reply) => reply.status)).toEqual([200, 200, 200, 200, 200, 200]);
+    expect(calls.hints).toBe(1);
+    await vi.waitFor(() => expect(calls.notes).toBe(calls.hints));
+    expect(await runInDurableObject(stub, (instance: object) => (instance as unknown as { storedHour: number }).storedHour)).toBe(hour);
   });
 });
 

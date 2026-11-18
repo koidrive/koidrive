@@ -5,7 +5,7 @@ import { Error_Code } from "./gen/koidrive/v1/rpc_pb";
 import type { Database, ObjectState, Sql } from "./host";
 import { errorReply } from "./http";
 import { uuidv7 } from "./ids";
-import { countedBucket, countedState, meteredObject, meteredReply, meteredStub, type Reply } from "./report/meter";
+import { countedBucket, countedState, type MeteredCall, meteredObject, meteredReply, meteredStub, type Reply } from "./report/meter";
 import { bootstrapExport, requestSnapshot } from "./space/export";
 import { backfillMigratedIntents } from "./space/intents";
 import { type Pitr, pitrBackend } from "./space/pitr";
@@ -35,19 +35,19 @@ export class SpaceDO extends spaceLogic(DurableObject<Env>) {
     this.loadFlag();
     void ctx.blockConcurrencyWhile(() => this.armAlarm());
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
-    return meteredObject(this, "space", this.traffic, (event, args, waited) => this.ended(event, args, waited));
+    return meteredObject(this, "space", this.traffic, (event, args, replying) => this.ended(event, args, replying));
   }
 
-  metered(method: string, args: unknown[]): Promise<Reply<unknown>> {
-    return meteredReply(this, "space", this.traffic, (event, called, waited) => this.ended(event, called, waited), method, args);
+  metered(method: string, args: unknown[], call: MeteredCall = {}): Promise<Reply<unknown>> {
+    return meteredReply(this, "space", this.traffic, (event, called, replying) => this.ended(event, called, replying), method, args, call);
   }
 
   protected get objects(): R2Bucket {
     return countedBucket(this.env.BUCKET, this.traffic);
   }
 
-  protected account({ returnCounts } = { returnCounts: true }) {
-    return meteredStub(this.env.ACCOUNT.get(this.env.ACCOUNT.idFromName("account")), (carried) => this.received(carried), returnCounts);
+  protected account(call: MeteredCall = {}) {
+    return meteredStub(this.env.ACCOUNT.get(this.env.ACCOUNT.idFromName("account")), (carried) => this.received(carried), call);
   }
 
   override async fetch(request: Request): Promise<Response> {

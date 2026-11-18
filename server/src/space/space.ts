@@ -65,6 +65,7 @@ import { policy } from "../policy";
 import { causeOf } from "../cause";
 import { platformFailure, quotaRefusal } from "../quota";
 import { refusalOutcome } from "../http";
+import type { MeteredCall } from "../report/meter";
 import { batchDue, type Carried, type Counted, mergeBatch, nextHourMs, type UsageBatch, UsageTally } from "../report/usage";
 import { type ApplyContext, CallFailure, CommitApplier } from "./commit";
 import { DIGEST_VERSION, type DigestVersion, type Digests, commitDigests } from "./digest";
@@ -136,6 +137,7 @@ const CLOSED_RECHECK_MS = 10 * 60_000;
 const EXPORT_RETRY_MS = 60_000;
 const MAX_PARKED_BYTES = 8192;
 const USAGE_GRACE_MS = 60_000;
+const GAUGES_HINT_MS = 60_000;
 
 export type Role = "owner" | "editor" | "viewer";
 
@@ -335,7 +337,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     protected abstract readonly pitr: Pitr;
     protected abstract readonly state: ObjectState;
     protected abstract readonly objects: ObjectStore;
-    protected abstract account(call?: { returnCounts: boolean }): Directory;
+    protected abstract account(call?: MeteredCall): Directory;
     private spaceKeyCache: Uint8Array | undefined;
     clock: () => number = () => Date.now();
     sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -344,6 +346,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     protected readonly traffic = new UsageTally(() => this.clock(), "do_space_active_ms");
     private usageArmed = false;
     private storedHour: number | undefined;
+    private gaugesHintedMs: number | undefined;
     private exporting: Promise<void> | undefined;
     private alarmStale = false;
     private bookmarking: Promise<void> = Promise.resolve();
@@ -512,7 +515,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const generation = this.leaseGeneration;
       const renewal = { atMs: askedAtMs, forMs: Math.max(...due.map(({ leaseMs }) => leaseMs)) };
       this.renewing = renewal;
-      void this.account({ returnCounts: this.state.getWebSockets().some((ws) => ws.readyState === WebSocket.OPEN) })
+      void this.account({ keep: !this.state.getWebSockets().some((ws) => ws.readyState === WebSocket.OPEN) })
         .checkSessions(deviceIds, String(getMeta(this.sql, "space_id")))
         .then((answers) => {
           if (generation !== this.leaseGeneration) return;
@@ -809,11 +812,14 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       else if (on && restarted) this.dropParked(this.traffic.startedMs);
     }
 
-    protected async ended(event: string, args: unknown[], waited: boolean): Promise<void> {
+    protected async ended(event: string, args: unknown[], replying: boolean): Promise<void> {
       if (this.traffic.reporting !== true) return;
       this.traffic.lapse();
-      if (waited) {
-        if (this.storedHour !== Math.floor(this.clock() / HOUR_MS)) this.traffic.gaugesDue = true;
+      if (replying) {
+        const nowMs = this.clock();
+        if (this.storedHour === Math.floor(nowMs / HOUR_MS) || nowMs - (this.gaugesHintedMs ?? -Infinity) < GAUGES_HINT_MS) return;
+        this.gaugesHintedMs = nowMs;
+        this.traffic.gaugesDue = true;
         return;
       }
       this.noteStored();

@@ -656,8 +656,8 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       if (this.tally.idle) this.tally.take();
     }
 
-    protected ended(waited: boolean): void {
-      if (!waited) this.tally.take();
+    protected ended(replying: boolean): void {
+      if (!replying) this.tally.take();
     }
 
     private storeOwn(): void {

@@ -4,7 +4,7 @@ import { DurableObject } from "cloudflare:workers";
 import { accountLogic } from "./account/account";
 import { migrate } from "./account/schema";
 import type { Database, ObjectState, Sql } from "./host";
-import { countedState, meteredObject, meteredReply, meteredStub, type Reply } from "./report/meter";
+import { countedState, type MeteredCall, meteredObject, meteredReply, meteredStub, type Reply } from "./report/meter";
 import { ShareLinks } from "./share/links";
 
 export type { Outcome } from "./share/links";
@@ -27,11 +27,11 @@ export class AccountDO extends accountLogic(DurableObject<Env>) {
       serverSecret: async () => (await this.serverKey()).secret,
       spaceClosed: (spaceId) => this.spaceClosed(spaceId),
     });
-    return meteredObject(this, "account", this.tally, (_event, _args, waited) => this.ended(waited));
+    return meteredObject(this, "account", this.tally, (_event, _args, replying) => this.ended(replying));
   }
 
-  metered(method: string, args: unknown[], returnCounts = true): Promise<Reply<unknown>> {
-    return meteredReply(this, "account", this.tally, (_event, _args, replying) => this.ended(replying), method, args, returnCounts);
+  metered(method: string, args: unknown[], call: MeteredCall = {}): Promise<Reply<unknown>> {
+    return meteredReply(this, "account", this.tally, (_event, _args, replying) => this.ended(replying), method, args, call);
   }
 
   protected spaceStub(spaceId: string) {

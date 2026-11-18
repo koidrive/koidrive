@@ -12,10 +12,14 @@ export function account(env: Env) {
 }
 
 export function space(env: Env, spaceId: string) {
-  return meteredStub(env.SPACE.get(env.SPACE.idFromName(spaceId)), (carried) => {
-    traffic.receive(carried, false);
-    if (carried.gaugesDue) gaugesDue.add(spaceId);
-  });
+  return meteredStub(
+    env.SPACE.get(env.SPACE.idFromName(spaceId)),
+    (carried) => {
+      traffic.receive(carried, false);
+      if (carried.gaugesDue) gaugesDue.add(spaceId);
+    },
+    { gauges: true },
+  );
 }
 
 export async function noteGauges(env: Env): Promise<void> {
