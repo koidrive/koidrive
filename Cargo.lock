@@ -1573,7 +1573,6 @@ dependencies = [
  "proptest",
  "prost",
  "serde_json",
- "sha1",
  "sha2",
 ]
 
