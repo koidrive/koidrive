@@ -2144,6 +2144,18 @@ impl Trees {
     }
 
     pub fn remove_local(&mut self, id: &str) {
+        let deleted_in_place = (self.l.get(id))
+            .zip(self.discarded.get(id))
+            .is_some_and(|(old, shape)| old.parked || shape.parent == old.shape.parent)
+            && self.r.get(id).is_some();
+        if deleted_in_place {
+            self.forget_reclaims();
+            self.discarded.remove(id);
+        }
+        self.take_out_local(id);
+    }
+
+    fn take_out_local(&mut self, id: &str) {
         self.release_kept_entry(id);
         self.kept_nodes.remove(id);
         self.forget_local(id);
@@ -2182,13 +2194,6 @@ impl Trees {
         if let Some(old) = self.l.remove(id) {
             if self.unobserved.contains(id) {
                 self.copy_gone(id);
-            }
-            let deleted_in_place = (self.discarded.get(id))
-                .is_some_and(|shape| old.parked || shape.parent == old.shape.parent)
-                && self.r.get(id).is_some();
-            if deleted_in_place {
-                self.forget_reclaims();
-                self.discarded.remove(id);
             }
             match old.parked {
                 false => self.l_names.remove(id, &old.shape),
@@ -2721,7 +2726,7 @@ impl Trees {
             }
         };
         if copy {
-            let left_out = (self.synced_children(id))
+            let left_out = (self.synced_children(id).chain(self.waiting.children(id)))
                 .filter(|child| self.l.get(child).is_none() && self.ignored_in_remote(child))
                 .filter_map(|child| Some((child.clone(), self.r.live(child)?.clone())));
             kept.extend(left_out);
@@ -2965,7 +2970,7 @@ impl Trees {
         let Some(identity) = self.l.get(id).map(|node| node.identity) else {
             return;
         };
-        self.remove_local(id);
+        self.take_out_local(id);
         if self.r.live(id).is_some() {
             self.displaced.insert(id.to_owned(), identity);
         }
