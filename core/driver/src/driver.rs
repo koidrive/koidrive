@@ -732,7 +732,7 @@ impl Driver {
         };
         let account = pending
             .send(
-                held,
+                &held,
                 || api.pair_complete(&request),
                 |issued| {
                     self.adopt(
@@ -784,7 +784,7 @@ impl Driver {
         };
         let account = pending
             .send(
-                held,
+                &held,
                 || api.claim(&request),
                 |issued| {
                     let user_name = if issued.user_name.is_empty() {
@@ -5276,6 +5276,127 @@ mod tests {
         (bodies.iter())
             .map(|body| id(R::decode(body.as_slice()).unwrap()))
             .collect()
+    }
+
+    fn code_sha256(normalized: &str) -> String {
+        use sha2::Digest;
+        (sha2::Sha256::digest(normalized).iter())
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_claim_the_previous_release_left_pending_is_sent_with_its_request_id() {
+        use crate::pending_create::fake::{Answer, serve};
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let (server, served) = serve(vec![Answer::Reply(issued("d1"))]).await;
+        let url = url::Url::parse(&server).unwrap();
+        std::fs::create_dir_all(&paths.state_dir).unwrap();
+        let left = serde_json::json!([
+            { "server": "https://other.example/", "code_sha256": code_sha256("CLAIMCODE"), "request_id": "other-server" },
+            { "server": url.as_str(), "code_sha256": code_sha256("OTHERCODE"), "request_id": "other-code" },
+            { "server": url.as_str(), "code_sha256": code_sha256("CLAIMCODE"), "request_id": "alpha7-request-id" },
+        ]);
+        std::fs::write(paths.pending_claim(), left.to_string()).unwrap();
+        std::fs::write(paths.state_dir.join(".pending-claim.json.42.tmp"), b"[]").unwrap();
+        let driver = Driver::open(paths.clone()).unwrap();
+        assert!(crate::claim_pending(&paths, &url));
+
+        driver
+            .claim(&server, "claim-code", "Ada", "laptop")
+            .await
+            .unwrap();
+
+        let ids = request_ids(&served.await.unwrap(), |r: ClaimRequest| r.request_id);
+        assert_eq!(ids, ["alpha7-request-id"]);
+        assert!(!paths.pending_claim().exists());
+        assert!(!paths.state_dir.join(".pending-claim.json.42.tmp").exists());
+        assert!(!crate::claim_pending(&paths, &url));
+        assert_eq!(crate::pending_create::saved(&paths), 0);
+    }
+
+    #[tokio::test]
+    async fn a_claim_the_previous_release_left_pending_is_forgotten_once_it_is_refused_for_good() {
+        use crate::pending_create::fake::{Answer, serve};
+        use koidrive_proto::v1::{Error as ProtoError, error::Code};
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let owned = ProtoError {
+            code: Code::Forbidden as i32,
+            message: "this server already has an owner".into(),
+            ..ProtoError::default()
+        };
+        let (server, served) = serve(vec![Answer::Refuse(403, owned)]).await;
+        let url = url::Url::parse(&server).unwrap();
+        std::fs::create_dir_all(&paths.state_dir).unwrap();
+        let left = serde_json::json!([
+            { "server": url.as_str(), "code_sha256": code_sha256("CLAIMCODE"), "request_id": "alpha7-request-id" },
+        ]);
+        std::fs::write(paths.pending_claim(), left.to_string()).unwrap();
+        let driver = Driver::open(paths.clone()).unwrap();
+
+        let refused = driver.claim(&server, "claim-code", "Ada", "laptop").await;
+
+        assert!(matches!(refused, Err(DriverError::Api(_))), "{refused:?}");
+        let ids = request_ids(&served.await.unwrap(), |r: ClaimRequest| r.request_id);
+        assert_eq!(ids, ["alpha7-request-id"]);
+        assert!(!crate::claim_pending(&paths, &url));
+        assert!(!paths.pending_claim().exists());
+    }
+
+    #[tokio::test]
+    async fn a_claim_with_another_code_than_the_previous_release_left_draws_its_own_request_id() {
+        use crate::pending_create::fake::{Answer, serve};
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let (server, served) = serve(vec![Answer::Reply(issued("d1"))]).await;
+        let url = url::Url::parse(&server).unwrap();
+        std::fs::create_dir_all(&paths.state_dir).unwrap();
+        let left = serde_json::json!([
+            { "server": url.as_str(), "code_sha256": code_sha256("OTHERCODE"), "request_id": "other-code" },
+        ]);
+        std::fs::write(paths.pending_claim(), left.to_string()).unwrap();
+        let driver = Driver::open(paths.clone()).unwrap();
+
+        driver
+            .claim(&server, "claim-code", "Ada", "laptop")
+            .await
+            .unwrap();
+
+        let ids = request_ids(&served.await.unwrap(), |r: ClaimRequest| r.request_id);
+        assert_eq!(ids.len(), 1);
+        assert_ne!(ids[0], "other-code");
+        assert!(!paths.pending_claim().exists());
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_claim_record_of_the_previous_release_never_fails_a_claim() {
+        use crate::pending_create::fake::{Answer, serve};
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let (server, served) = serve(vec![Answer::Reply(issued("d1"))]).await;
+        let url = url::Url::parse(&server).unwrap();
+        std::fs::create_dir_all(&paths.state_dir).unwrap();
+        std::fs::write(paths.pending_claim(), b"{not json").unwrap();
+        let driver = Driver::open(paths.clone()).unwrap();
+        assert!(!crate::claim_pending(&paths, &url));
+        assert_eq!(std::fs::read(paths.pending_claim()).unwrap(), b"{not json");
+
+        let account = driver
+            .claim(&server, "claim-code", "Ada", "laptop")
+            .await
+            .unwrap();
+
+        assert_eq!(account.device_id, "d1");
+        let ids = request_ids(&served.await.unwrap(), |r: ClaimRequest| r.request_id);
+        assert_eq!(ids.len(), 1);
+        assert!(!ids[0].is_empty());
+        assert!(!paths.pending_claim().exists());
     }
 
     #[tokio::test]

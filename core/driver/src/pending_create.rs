@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::ffi::OsStr;
 use std::fs::{self, DirBuilder, File};
 use std::future::Future;
 use std::io::{self, Write};
@@ -51,14 +52,8 @@ impl Intent<'_> {
     }
 
     fn key(&self) -> Vec<String> {
-        let code = |code: &str| -> String {
-            (code.chars())
-                .filter(char::is_ascii_alphanumeric)
-                .map(|c| c.to_ascii_uppercase())
-                .collect()
-        };
         match self {
-            Intent::Claim { code: given } | Intent::Pair { code: given } => vec![code(given)],
+            Intent::Claim { code } | Intent::Pair { code } => vec![normalized(code)],
             Intent::Space { user_id, name } => vec![user_id.to_string(), name.to_string()],
             Intent::ShareLink {
                 space_id,
@@ -75,6 +70,42 @@ impl Intent<'_> {
     }
 }
 
+fn normalized(code: &str) -> String {
+    (code.chars())
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
+    (Sha256::digest(bytes).iter())
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[derive(Deserialize)]
+struct LegacyClaim {
+    server: String,
+    code_sha256: String,
+    request_id: String,
+}
+
+fn legacy_claims(path: &Path) -> Vec<LegacyClaim> {
+    (fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn legacy_claim_stage(name: &OsStr) -> bool {
+    name.to_str()
+        .and_then(|name| name.strip_prefix(".pending-claim.json."))
+        .and_then(|name| name.strip_suffix(".tmp"))
+        .is_some_and(|pid| {
+            pid.parse::<u32>()
+                .is_ok_and(|number| number > 0 && number.to_string() == pid)
+        })
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct Saved {
     server: String,
@@ -85,21 +116,25 @@ pub(crate) struct Saved {
 pub(crate) struct PendingCreate {
     path: PathBuf,
     server: String,
+    legacy_claim: Option<(PathBuf, String)>,
 }
 
 impl PendingCreate {
     pub(crate) fn new(paths: &Paths, server: &Url, intent: Intent) -> Self {
         let mut key = vec![server.to_string()];
         key.extend(intent.key());
-        let digest: String = (Sha256::digest(serde_json::to_vec(&key).expect("a key serializes"))
-            .iter())
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
+        let digest = sha256_hex(serde_json::to_vec(&key).expect("a key serializes"));
         PendingCreate {
             path: paths
                 .creates()
                 .join(format!("{}-{digest}.json", intent.kind())),
             server: server.to_string(),
+            legacy_claim: match intent {
+                Intent::Claim { code } => {
+                    Some((paths.pending_claim(), sha256_hex(normalized(code))))
+                }
+                _ => None,
+            },
         }
     }
 
@@ -108,8 +143,11 @@ impl PendingCreate {
     }
 
     pub(crate) fn hold(&self) -> io::Result<Held> {
+        let mut wrote = None;
         loop {
-            self.save_if_absent()?;
+            if let Some(request_id) = self.save_if_absent()? {
+                wrote = Some(request_id);
+            }
             let file = match File::open(&self.path) {
                 Ok(file) => file,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -118,11 +156,19 @@ impl PendingCreate {
             let Ok(saved) = serde_json::from_reader::<_, Saved>(&file) else {
                 continue;
             };
+            let resumed = wrote.as_ref() != Some(&saved.request_id);
             match Flock::take(file)? {
-                None => return Ok(Held { saved, owner: None }),
+                None => {
+                    return Ok(Held {
+                        saved,
+                        resumed,
+                        owner: None,
+                    });
+                }
                 Some(lock) if still_at(&lock, &self.path)? => {
                     return Ok(Held {
                         saved,
+                        resumed,
                         owner: Some(lock),
                     });
                 }
@@ -131,16 +177,20 @@ impl PendingCreate {
         }
     }
 
-    fn save_if_absent(&self) -> io::Result<()> {
+    fn save_if_absent(&self) -> io::Result<Option<String>> {
         let publish = match load(&self.path) {
-            Ok(Some(_)) => return Ok(()),
+            Ok(Some(_)) => return Ok(None),
             Ok(None) => Publish::Create,
             Err(error) if error.kind() == io::ErrorKind::InvalidData => Publish::Replace,
             Err(error) => return Err(error),
         };
+        let legacy = (self.legacy_claim.as_ref()).and_then(|(path, code_sha256)| {
+            (legacy_claims(path).into_iter())
+                .find(|claim| claim.server == self.server && claim.code_sha256 == *code_sha256)
+        });
         let fresh = Saved {
             server: self.server.clone(),
-            request_id: koidrive_net::request_id(),
+            request_id: legacy.map_or_else(koidrive_net::request_id, |claim| claim.request_id),
             since_ms: now_ms(),
         };
         let dir = self
@@ -153,8 +203,9 @@ impl PendingCreate {
             .as_file()
             .write_all(&serde_json::to_vec(&fresh).expect("a pending create serializes"))?;
         match stage.finish(publish) {
-            Err(error) if error.kind() != io::ErrorKind::AlreadyExists => Err(error),
-            _ => Ok(()),
+            Ok(_) => Ok(Some(fresh.request_id)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(None),
+            Err(error) => Err(error),
         }
     }
 
@@ -164,7 +215,7 @@ impl PendingCreate {
 
     pub(crate) async fn send<T, U, F, Fut>(
         &self,
-        held: Held,
+        held: &Held,
         send: F,
         keep: impl FnOnce(T) -> Result<U, DriverError>,
     ) -> Result<U, DriverError>
@@ -172,30 +223,54 @@ impl PendingCreate {
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<T, ApiError>>,
     {
-        let outcome = match koidrive_net::resend_lost(send).await {
+        match koidrive_net::resend_lost(send).await {
             Ok(made) => {
                 let kept = keep(made)?;
-                self.forget();
+                if !held.joined() {
+                    self.forget();
+                }
                 Ok(kept)
             }
             Err(error) => {
-                if refused_for_good(&error) {
+                if !held.joined() && refused_for_good(&error) {
                     self.forget();
                 }
                 Err(error.into())
             }
-        };
-        drop(held);
-        outcome
+        }
     }
 
-    pub(crate) fn forget(&self) {
-        forget(&self.path);
+    pub(crate) async fn redraw(&self, held: Held) -> io::Result<Held> {
+        if let Some(lock) = held.owner {
+            if still_at(&lock, &self.path)? {
+                self.forget();
+            }
+            return self.hold();
+        }
+        let file = match File::open(&self.path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return self.hold(),
+            Err(error) => return Err(error),
+        };
+        if serde_json::from_reader::<_, Saved>(&file).ok().as_ref() == Some(&held.saved) {
+            tokio::task::spawn_blocking(move || Flock::wait(file))
+                .await
+                .map_err(io::Error::other)??;
+        }
+        self.hold()
+    }
+
+    fn forget(&self) {
+        forget(&self.path, |_| false);
+        if let Some((legacy, _)) = &self.legacy_claim {
+            forget(legacy, legacy_claim_stage);
+        }
     }
 }
 
 pub(crate) struct Held {
     pub(crate) saved: Saved,
+    pub(crate) resumed: bool,
     owner: Option<Flock>,
 }
 
@@ -229,8 +304,8 @@ fn load(path: &Path) -> io::Result<Option<Saved>> {
     }
 }
 
-fn forget(path: &Path) {
-    if let Err(error) = koidrive_state_file::remove_with_legacy_matching(path, |_| false) {
+fn forget(path: &Path, legacy: impl FnMut(&OsStr) -> bool) {
+    if let Err(error) = koidrive_state_file::remove_with_legacy_matching(path, legacy) {
         tracing::warn!(path = %koidrive_fs::quoted(path), %error, "could not forget a finished create");
     }
 }
@@ -253,8 +328,9 @@ fn saved_of(paths: &Paths, kinds: &[&str]) -> Vec<PathBuf> {
 
 pub(crate) fn forget_sign_ins(paths: &Paths) {
     for path in saved_of(paths, &[CLAIM, PAIR]) {
-        forget(&path);
+        forget(&path, |_| false);
     }
+    forget(&paths.pending_claim(), legacy_claim_stage);
 }
 
 /// Whether this profile sent a claim to `server` that ended without an answer. Claiming again with the same code
@@ -262,6 +338,8 @@ pub(crate) fn forget_sign_ins(paths: &Paths) {
 pub fn claim_pending(paths: &Paths, server: &Url) -> bool {
     (saved_of(paths, &[CLAIM]).iter())
         .any(|path| matches!(load(path), Ok(Some(saved)) if saved.server == server.as_str()))
+        || (legacy_claims(&paths.pending_claim()).iter())
+            .any(|claim| claim.server == server.as_str())
 }
 
 fn space_create(paths: &Paths, auth: &Auth, name: &str) -> PendingCreate {
@@ -294,15 +372,14 @@ pub async fn create_space(
 ) -> Result<CreatedSpace, DriverError> {
     let pending = space_create(paths, auth, name);
     let held = pending.hold().map_err(io_error(pending.path()))?;
-    let joined = held.joined();
     let request = CreateSpaceRequest {
         name: name.to_owned(),
         request_id: held.saved.request_id.clone(),
     };
     let space = pending
-        .send(held, || auth.api().create_space(auth, &request), Ok)
+        .send(&held, || auth.api().create_space(auth, &request), Ok)
         .await?;
-    Ok(match joined {
+    Ok(match held.joined() {
         true => CreatedSpace::Joined(space),
         false => CreatedSpace::Made(space),
     })
@@ -446,7 +523,7 @@ mod tests {
             let sends = Cell::new(0);
             let outcome: Result<(), DriverError> = pending
                 .send(
-                    pending.hold().unwrap(),
+                    &pending.hold().unwrap(),
                     || {
                         sends.set(sends.get() + 1);
                         let answer = match failure.borrow_mut().take() {
@@ -464,6 +541,38 @@ mod tests {
         }
         pending.forget();
         assert_eq!(saved(&paths), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_run_that_joined_a_create_leaves_it_to_the_run_that_owns_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let pending = PendingCreate::new(
+            &paths,
+            &server(),
+            Intent::Space {
+                user_id: "u1",
+                name: "Notes",
+            },
+        );
+        let owner = pending.hold().unwrap();
+        let joiner = pending.hold().unwrap();
+        assert!(!owner.joined() && joiner.joined());
+
+        let refused: Result<(), DriverError> = pending
+            .send(
+                &joiner,
+                || async { Err(refusal(400, Code::InvalidArgument)) },
+                Ok,
+            )
+            .await;
+        assert!(refused.is_err());
+        let answered = pending.send(&joiner, || async { Ok(7) }, Ok).await;
+        assert_eq!(answered.unwrap(), 7);
+        assert_eq!(pending.hold().unwrap().saved, owner.saved);
+
+        pending.send(&owner, || async { Ok(7) }, Ok).await.unwrap();
+        assert!(!pending.pending());
     }
 
     #[test]
@@ -610,7 +719,7 @@ mod tests {
         let first = pending.hold().unwrap().saved;
         let not_kept: Result<(), DriverError> = pending
             .send(
-                pending.hold().unwrap(),
+                &pending.hold().unwrap(),
                 || async { Ok(7) },
                 |_| Err(DriverError::EmptyName),
             )
@@ -618,7 +727,7 @@ mod tests {
         assert!(matches!(not_kept, Err(DriverError::EmptyName)));
         assert_eq!(pending.hold().unwrap().saved, first);
 
-        let kept = (pending.send(pending.hold().unwrap(), || async { Ok(7) }, Ok))
+        let kept = (pending.send(&pending.hold().unwrap(), || async { Ok(7) }, Ok))
             .await
             .unwrap();
 

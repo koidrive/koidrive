@@ -223,6 +223,8 @@ fn only_what_koidrive_writes_leaves_a_state_folder() {
     for name in [
         "credential.json",
         "credential.next",
+        "pending-claim.json",
+        ".pending-claim.json.42.tmp",
         "creates",
         ".credential.next.123.tmp",
         ".credential.json.9.tmp",

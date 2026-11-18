@@ -172,6 +172,33 @@ describe("RFC 0024 create retries", () => {
     expect(links.message!.links).toHaveLength(3);
   });
 
+  it("answers a retried share link create with the link the first request made after it expired or was revoked", async () => {
+    const owner = await getOwner();
+    const token = owner.access!.token;
+    const space = await call("/v1/spaces", { token, body: body(CreateSpaceRequestSchema, { name: "Ended", requestId: "space-ended" }) }, SpaceInfoSchema);
+    const spaceId = space.message!.spaceId;
+    const share = (requestId: string) => call(`/v1/spaces/${spaceId}/links`, { token, body: body(CreateShareLinkRequestSchema, { nodeId: spaceId, requestId }) }, ShareLinkSchema);
+    const account = env.ACCOUNT.get(env.ACCOUNT.idFromName("account"));
+    const eightDaysMs = 8 * 86_400_000;
+
+    const old = await share("link-old");
+    await runInDurableObject(account, (_instance, state) =>
+      state.storage.sql.exec("UPDATE share_links SET created_at_ms = created_at_ms - ?, expires_at_ms = expires_at_ms - ? WHERE request_id = ?", eightDaysMs, eightDaysMs, "link-old"),
+    );
+    const expired = await share("link-old");
+    expect(expired.status).toBe(201);
+    expect(expired.message!.url).toBe(old.message!.url);
+    expect(Number(expired.message!.expiresAtMs)).toBeLessThan(Date.now());
+
+    const first = await share("link-revoked");
+    const revoke = await exports.default.fetch(`${BASE}/v1/spaces/${spaceId}/links/${first.message!.linkId}`, { method: "DELETE", headers: { Authorization: "Bearer " + token } });
+    expect(revoke.status).toBe(204);
+    const revoked = await share("link-revoked");
+    expect(revoked.status).toBe(201);
+    expect(revoked.message!.url).toBe(first.message!.url);
+    expect(Number(revoked.message!.revokedAtMs)).toBeGreaterThan(0);
+  });
+
   it("refuses a request_id longer than 64 characters", async () => {
     const owner = await getOwner();
     const answer = await call("/v1/spaces", { token: owner.access!.token, body: body(CreateSpaceRequestSchema, { name: "Long", requestId: "r".repeat(65) }) }, SpaceInfoSchema);

@@ -29,6 +29,7 @@ const SHORT_ID_DIGITS: usize = 10;
 const LINK_ID_CHARS: usize = 22;
 const PASSWORD_CHARS: std::ops::RangeInclusive<usize> = 8..=256;
 const SHORTEST_EXPIRY_MS: i64 = 60_000;
+const DEFAULT_EXPIRY_MS: i64 = 7 * 24 * 3_600_000;
 
 /// A value that grants access, such as a link's URL or password. `Debug` shows `Secret(..)`.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,7 +185,6 @@ impl Driver {
         expiry: Expiry,
         password: Option<Secret>,
     ) -> Result<ShareLink, DriverError> {
-        let now = now_ms();
         let pending = PendingCreate::new(
             self.paths(),
             auth.api().base(),
@@ -195,32 +195,46 @@ impl Driver {
                 password: password.as_ref().map(|password| password.0.as_str()),
             },
         );
-        let expires_at_ms = |since_ms: i64| match expiry {
-            Expiry::After { ms } => since_ms.saturating_add_unsigned(ms),
-            Expiry::Default | Expiry::Never => 0,
+        let ends_at_ms = |since_ms: i64| match expiry {
+            Expiry::After { ms } => Some(since_ms.saturating_add_unsigned(ms)),
+            Expiry::Default => Some(since_ms.saturating_add(DEFAULT_EXPIRY_MS)),
+            Expiry::Never => None,
         };
         let mut held = pending.hold().map_err(io_error(pending.path()))?;
-        let ended = |since_ms| {
-            expires_at_ms(since_ms) != 0 && expires_at_ms(since_ms) <= now + SHORTEST_EXPIRY_MS
-        };
-        if !held.joined() && ended(held.saved.since_ms) {
-            pending.forget();
-            held = pending.hold().map_err(io_error(pending.path()))?;
+        loop {
+            if held.resumed
+                && ends_at_ms(held.saved.since_ms)
+                    .is_some_and(|end| end <= now_ms() + SHORTEST_EXPIRY_MS)
+            {
+                held = (pending.redraw(held).await).map_err(io_error(pending.path()))?;
+                continue;
+            }
+            let request = CreateShareLinkRequest {
+                node_id: node_id.clone(),
+                expires_at_ms: match expiry {
+                    Expiry::After { ms } => held.saved.since_ms.saturating_add_unsigned(ms),
+                    Expiry::Default | Expiry::Never => 0,
+                },
+                no_expiry: expiry == Expiry::Never,
+                password: (password.as_ref())
+                    .map(|password| password.0.clone())
+                    .unwrap_or_default(),
+                request_id: held.saved.request_id.clone(),
+            };
+            let link = pending
+                .send(
+                    &held,
+                    || auth.api().create_share_link(auth, space_id, &request),
+                    Ok,
+                )
+                .await?;
+            let ended = link.revoked_at_ms != 0
+                || (link.expires_at_ms != 0 && link.expires_at_ms <= now_ms());
+            if !held.resumed || !ended {
+                return Ok(link);
+            }
+            held = (pending.redraw(held).await).map_err(io_error(pending.path()))?;
         }
-        let request = CreateShareLinkRequest {
-            node_id,
-            expires_at_ms: expires_at_ms(held.saved.since_ms),
-            no_expiry: expiry == Expiry::Never,
-            password: password.map(|password| password.0).unwrap_or_default(),
-            request_id: held.saved.request_id.clone(),
-        };
-        pending
-            .send(
-                held,
-                || auth.api().create_share_link(auth, space_id, &request),
-                Ok,
-            )
-            .await
     }
 
     /// Every link of the spaces this device's user owns, ended ones included, newest first.
@@ -1686,6 +1700,157 @@ mod tests {
         assert_eq!(requests[0].request_id, requests[1].request_id);
         assert_ne!(requests[2].request_id, requests[0].request_id);
         assert!(requests[2].expires_at_ms > now_ms() + 3_500_000);
+    }
+
+    fn backdate_saved_creates(paths: &Paths, by_ms: i64) {
+        for entry in std::fs::read_dir(paths.creates()).unwrap() {
+            let path = entry.unwrap().path();
+            let mut saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            saved["since_ms"] = (saved["since_ms"].as_i64().unwrap() - by_ms).into();
+            std::fs::write(&path, saved.to_string()).unwrap();
+        }
+    }
+
+    fn sent(bodies: Vec<Vec<u8>>) -> Vec<CreateShareLinkRequest> {
+        (bodies.iter())
+            .map(|body| CreateShareLinkRequest::decode(body.as_slice()).unwrap())
+            .collect()
+    }
+
+    const DAY_MS: i64 = 86_400_000;
+
+    #[tokio::test]
+    async fn a_saved_default_link_past_its_seven_days_is_asked_for_again_with_a_new_request() {
+        use crate::pending_create::fake::{Answer, long_wait, serve};
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let driver = Driver::open(paths.clone()).unwrap();
+        let (server, served) = serve(vec![
+            Answer::Lose,
+            long_wait(),
+            Answer::Reply(link("AAAAAAAAAAAAAAAAAAAAAA", "n1").encode_to_vec()),
+        ])
+        .await;
+        let auth = auth(&server);
+        let create = || driver.create_link(&auth, SPACE, "n1".into(), Expiry::Default, None);
+        assert!(create().await.is_err());
+        backdate_saved_creates(&paths, 7 * DAY_MS - 30_000);
+
+        create().await.unwrap();
+
+        let requests = sent(served.await.unwrap());
+        assert_eq!(requests[0].request_id, requests[1].request_id);
+        assert_ne!(requests[2].request_id, requests[0].request_id);
+        assert_eq!(requests[2].expires_at_ms, 0);
+        assert_eq!(crate::pending_create::saved(&paths), 0);
+    }
+
+    #[tokio::test]
+    async fn a_resent_link_that_comes_back_ended_is_asked_for_once_more_with_a_new_request() {
+        use crate::pending_create::fake::{Answer, long_wait, serve};
+
+        let mut expired = link("AAAAAAAAAAAAAAAAAAAAAA", "n1");
+        expired.expires_at_ms = now_ms() - 60_000;
+        let mut revoked = link("AAAAAAAAAAAAAAAAAAAAAA", "n1");
+        revoked.revoked_at_ms = now_ms() - 60_000;
+        for (expiry, ended) in [(Expiry::Default, expired), (Expiry::Never, revoked)] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = Paths::under(dir.path());
+            let driver = Driver::open(paths.clone()).unwrap();
+            let (server, served) = serve(vec![
+                Answer::Lose,
+                long_wait(),
+                Answer::Reply(ended.encode_to_vec()),
+                Answer::Reply(link("BBBBBBBBBBBBBBBBBBBBBB", "n1").encode_to_vec()),
+            ])
+            .await;
+            let auth = auth(&server);
+            let create = || driver.create_link(&auth, SPACE, "n1".into(), expiry, None);
+            assert!(create().await.is_err());
+            backdate_saved_creates(&paths, 6 * DAY_MS);
+
+            let made = create().await.unwrap();
+
+            assert_eq!(made.link_id, "BBBBBBBBBBBBBBBBBBBBBB", "{expiry:?}");
+            let requests = sent(served.await.unwrap());
+            assert_eq!(requests.len(), 4);
+            assert_eq!(requests[1].request_id, requests[0].request_id);
+            assert_eq!(requests[2].request_id, requests[0].request_id);
+            assert_ne!(requests[3].request_id, requests[0].request_id);
+            assert_eq!(crate::pending_create::saved(&paths), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ended_link_is_asked_for_again_only_once_and_only_for_a_resent_request() {
+        use crate::pending_create::fake::{Answer, long_wait, serve};
+
+        let mut revoked = link("AAAAAAAAAAAAAAAAAAAAAA", "n1");
+        revoked.revoked_at_ms = now_ms() - 60_000;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let driver = Driver::open(paths.clone()).unwrap();
+        let (server, served) = serve(vec![
+            Answer::Reply(revoked.encode_to_vec()),
+            Answer::Lose,
+            long_wait(),
+            Answer::Reply(revoked.encode_to_vec()),
+            Answer::Reply(revoked.encode_to_vec()),
+        ])
+        .await;
+        let auth = auth(&server);
+        let create = || driver.create_link(&auth, SPACE, "n1".into(), Expiry::Never, None);
+
+        assert_eq!(create().await.unwrap(), revoked);
+        assert!(create().await.is_err());
+        assert_eq!(create().await.unwrap(), revoked);
+
+        assert_eq!(sent(served.await.unwrap()).len(), 5);
+    }
+
+    #[tokio::test]
+    async fn a_run_that_joins_an_ended_saved_link_waits_for_the_owner_and_sends_its_new_request() {
+        use crate::pending_create::{
+            Intent, PendingCreate,
+            fake::{Answer, serve},
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let driver = Driver::open(paths.clone()).unwrap();
+        let (server, served) = serve(vec![Answer::Reply(
+            link("AAAAAAAAAAAAAAAAAAAAAA", "n1").encode_to_vec(),
+        )])
+        .await;
+        let auth = auth(&server);
+        let pending = PendingCreate::new(
+            &paths,
+            auth.api().base(),
+            Intent::ShareLink {
+                space_id: SPACE,
+                node_id: "n1",
+                expiry: Expiry::Default,
+                password: None,
+            },
+        );
+        let owner = pending.hold().unwrap();
+        backdate_saved_creates(&paths, 8 * DAY_MS);
+
+        let (made, redrawn) = tokio::join!(
+            driver.create_link(&auth, SPACE, "n1".into(), Expiry::Default, None),
+            async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                pending.redraw(owner).await.unwrap()
+            },
+        );
+
+        made.unwrap();
+        let requests = sent(served.await.unwrap());
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].request_id, redrawn.saved.request_id);
+        assert!(pending.pending());
     }
 
     #[tokio::test]
