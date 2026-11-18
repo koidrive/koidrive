@@ -540,7 +540,11 @@ fn a_file_left_out_of_a_commit_holds_back_no_other_change() {
 
 fn given_up_at(commits: Commits, slot: u64, commit_id: &str) -> Commits {
     let mut state = commits.state();
-    state.given_up.entry(slot).or_default().push(commit_id.into());
+    state
+        .given_up
+        .entry(slot)
+        .or_default()
+        .push(commit_id.into());
     Commits::from_state(state).unwrap()
 }
 
@@ -911,7 +915,8 @@ fn a_server_count_below_the_accepted_one_starts_recovery_when_its_token_names_an
 }
 
 #[test]
-fn a_restore_that_brings_back_a_commit_this_device_gave_its_slot_to_before_a_loss_starts_no_recovery() {
+fn a_restore_that_brings_back_a_commit_this_device_gave_its_slot_to_before_a_loss_starts_no_recovery()
+ {
     let mut commits = Commits::from_state(CommitsState {
         accepted: 1,
         slots: [(1, given(0))].into(),
@@ -931,7 +936,8 @@ fn a_restore_that_brings_back_a_commit_this_device_gave_its_slot_to_before_a_los
 }
 
 #[test]
-fn a_restore_that_brings_back_a_commit_a_slot_gave_up_more_than_the_kept_number_of_losses_ago_starts_recovery() {
+fn a_restore_that_brings_back_a_commit_a_slot_gave_up_more_than_the_kept_number_of_losses_ago_starts_recovery()
+ {
     let mut state = CommitsState::default();
     for loss in 0..=GIVEN_UP_KEPT {
         let mut commits = Commits::from_state(CommitsState {
@@ -955,7 +961,11 @@ fn a_restore_that_brings_back_a_commit_a_slot_gave_up_more_than_the_kept_number_
             0 => Reconnect::Recovery,
             _ => Reconnect::AheadOfServer,
         };
-        assert_eq!(commits.connected(&at_slot_1(loss)), reconnect, "loss {loss}");
+        assert_eq!(
+            commits.connected(&at_slot_1(loss)),
+            reconnect,
+            "loss {loss}"
+        );
     }
 }
 
@@ -989,7 +999,15 @@ fn a_recovery_forgets_the_commits_its_slots_were_given_before_a_loss() {
     let cause = RecoveryCause::of(RecoveryTrigger::SpaceRewound);
     commits.enter_recovery(cause);
     let (mut trees, mut ids) = (trees(&[]), IdGen::new(1));
-    commits.recover(&mut trees, 0, &cause, &History::new(), &Marks::new(), &mut ids, NOW);
+    commits.recover(
+        &mut trees,
+        0,
+        &cause,
+        &History::new(),
+        &Marks::new(),
+        &mut ids,
+        NOW,
+    );
     assert!(commits.state().given_up.is_empty());
     let mut commits = Commits::from_state(CommitsState {
         accepted: 2,
@@ -1077,7 +1095,8 @@ fn a_server_count_at_the_accepted_one_naming_a_commit_the_store_does_not_know_st
 }
 
 #[test]
-fn a_commit_waiting_for_its_result_is_not_resent_when_the_server_names_another_commit_at_the_accepted_slot() {
+fn a_commit_waiting_for_its_result_is_not_resent_when_the_server_names_another_commit_at_the_accepted_slot()
+ {
     let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
     let mut commits = kept_slots();
     build(&mut commits, &mut trees, &mut IdGen::new(1)).unwrap();
@@ -1086,7 +1105,8 @@ fn a_commit_waiting_for_its_result_is_not_resent_when_the_server_names_another_c
 }
 
 #[test]
-fn a_commit_holding_its_result_is_not_dropped_when_the_server_names_another_commit_at_the_accepted_slot() {
+fn a_commit_holding_its_result_is_not_dropped_when_the_server_names_another_commit_at_the_accepted_slot()
+ {
     let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
     let mut commits = kept_slots();
     build(&mut commits, &mut trees, &mut IdGen::new(1)).unwrap();
