@@ -600,10 +600,17 @@ fn at_place(shape: &Shape, remote: &Shape) -> bool {
     shape.parent == remote.parent && same_name(&shape.name, &remote.name)
 }
 
+/// Whether a modification time tells a write from another write with the same bytes at the same
+/// place. A time in whole steps of 10 ms does not, since file systems that keep 10 ms, 1 s or 2 s,
+/// and archive extracts, give separate writes the same time.
+pub fn time_tells_writes_apart(mtime_ns: i64) -> bool {
+    mtime_ns % 10_000_000 != 0
+}
+
 fn same_write(remote: &Option<Content>, local: &Option<Content>) -> bool {
     remote
         .as_ref()
-        .is_some_and(|remote| remote.mtime_ns % 10_000_000 != 0)
+        .is_some_and(|remote| time_tells_writes_apart(remote.mtime_ns))
         && placed_here(remote, local)
 }
 
