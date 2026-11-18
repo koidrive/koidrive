@@ -266,7 +266,11 @@ pub enum Response {
         files: u64,
         bytes: u64,
         /// The folders whose files the count leaves out because they cannot be read.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(
+            default,
+            skip_serializing_if = "Vec::is_empty",
+            serialize_with = "koidrive_driver::lossy_paths"
+        )]
         unreadable: Vec<PathBuf>,
     },
     /// A failed request. An older daemon sends only `message`, which reads as [`Code::Failed`].
@@ -675,6 +679,32 @@ mod tests {
             unreachable!();
         };
         assert_eq!(not_removed[0].path.as_os_str().as_bytes(), bytes);
+    }
+
+    #[tokio::test]
+    async fn a_gitignore_count_names_a_non_utf8_unreadable_folder_and_keeps_its_counts() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let bytes = b"/home/ada/Code/data-\xff";
+        let response = Response::GitignoreOnly {
+            files: 3,
+            bytes: 12,
+            unreadable: vec![PathBuf::from(OsString::from_vec(bytes.to_vec()))],
+        };
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        write_line(&mut writer, &response)
+            .await
+            .expect("a count must encode a non-UTF-8 folder name");
+        let line = read_line(&mut reader).await.unwrap();
+        assert_eq!(
+            parse(&line).unwrap(),
+            Response::GitignoreOnly {
+                files: 3,
+                bytes: 12,
+                unreadable: vec!["/home/ada/Code/data-\u{fffd}".into()],
+            }
+        );
     }
 
     #[test]

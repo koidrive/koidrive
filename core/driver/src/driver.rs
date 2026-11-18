@@ -96,7 +96,11 @@ pub struct SetAside {
     pub kept: Vec<PathBuf>,
 }
 
-fn lossy_paths<S: serde::Serializer>(paths: &[PathBuf], serializer: S) -> Result<S::Ok, S::Error> {
+/// Serializes `paths` as strings, with each byte sequence that is not UTF-8 replaced by U+FFFD.
+pub fn lossy_paths<S: serde::Serializer>(
+    paths: &[PathBuf],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
     serializer.collect_seq(paths.iter().map(|path| path.to_string_lossy()))
 }
 
