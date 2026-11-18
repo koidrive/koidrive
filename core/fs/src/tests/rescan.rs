@@ -547,3 +547,183 @@ fn a_swap_seen_halfway_through_a_scan_publishes_nothing_and_the_next_scan_reads_
         );
     }
 }
+
+#[test]
+fn a_rename_that_straddles_a_scan_is_never_read_as_a_removal_and_a_creation() {
+    type Renames<'a> = &'a [(&'a str, &'a str)];
+    let linked: Renames = &[("a.txt", "links/h.txt")];
+    let cases: [(&[&str], Renames, &str, Renames, Renames); 5] = [
+        (
+            &["a.txt", "b.txt"],
+            &[],
+            "a.txt",
+            &[("a.txt", "c.txt")],
+            &[],
+        ),
+        (
+            &["a.txt", "b.txt"],
+            &[],
+            "a.txt",
+            &[("a.txt", "t.tmp")],
+            &[("b.txt", "a.txt"), ("t.tmp", "b.txt")],
+        ),
+        (
+            &["x/keep.txt", "y/c.txt"],
+            &[],
+            "y",
+            &[("y/c.txt", "x/c.txt")],
+            &[],
+        ),
+        (
+            &["a.txt", "b.txt"],
+            linked,
+            "a.txt",
+            &[("a.txt", "c.txt")],
+            &[],
+        ),
+        (
+            &["a.txt", "b.txt"],
+            linked,
+            "a.txt",
+            &[("a.txt", "t.tmp")],
+            &[("b.txt", "a.txt"), ("t.tmp", "b.txt")],
+        ),
+    ];
+    for (kept_handles, (files, links, at, during, after)) in [true, false]
+        .into_iter()
+        .flat_map(|kept| cases.map(|case| (kept, case)))
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for file in files {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, file).unwrap();
+        }
+        for (file, link) in links {
+            fs::create_dir_all(root.join(link).parent().unwrap()).unwrap();
+            fs::hard_link(root.join(file), root.join(link)).unwrap();
+        }
+        let mut snapshot = Snapshot::scan(root).unwrap();
+        if !kept_handles {
+            for entry in snapshot.entries.values_mut() {
+                entry.id.handle = None;
+            }
+        }
+        let mut during = Some(during);
+        let straddling = snapshot.rescan_with(root, [PathBuf::new()], None, &mut |cut| {
+            if matches!(cut, Cut::Stating(path) if path == Path::new(at)) {
+                for (from, to) in during.take().into_iter().flatten() {
+                    fs::rename(root.join(from), root.join(to)).unwrap();
+                }
+            }
+        });
+        for (from, to) in after {
+            fs::rename(root.join(from), root.join(to)).unwrap();
+        }
+        let next = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
+        let split = |changes: &[Change]| {
+            (changes.iter())
+                .any(|change| matches!(change, Change::Removed { .. } | Change::Created { .. }))
+        };
+        assert!(
+            !straddling
+                .as_ref()
+                .is_ok_and(|rescan| split(&rescan.changes))
+                && !split(&next),
+            "{at}, handles kept {kept_handles}: {straddling:?} then {next:?}"
+        );
+    }
+}
+
+#[test]
+fn swaps_through_a_temporary_name_during_scans_publish_only_renames_and_settle_to_the_disk() {
+    let steps = [
+        ("a.txt", "t.tmp"),
+        ("b.txt", "a.txt"),
+        ("t.tmp", "b.txt"),
+        ("c.txt", "t.tmp"),
+        ("d.txt", "c.txt"),
+        ("t.tmp", "d.txt"),
+    ];
+    let names = ["a.txt", "b.txt", "c.txt", "d.txt", "t.tmp"];
+    let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut pick = move |n: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % n
+    };
+    let held = |snapshot: &Snapshot| -> Vec<(PathBuf, u128)> {
+        (snapshot.entries.iter())
+            .map(|(path, entry)| (path.clone(), entry.id.ino))
+            .collect()
+    };
+    for trial in 0..400 {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for name in &names[..4] {
+            fs::write(root.join(name), name).unwrap();
+        }
+        if trial % 2 == 1 {
+            fs::create_dir(root.join("links")).unwrap();
+            fs::hard_link(root.join("a.txt"), root.join("links/h.txt")).unwrap();
+        }
+        let mut done = 0;
+        let step = |done: &mut usize| {
+            let (from, to) = steps[*done % steps.len()];
+            fs::rename(root.join(from), root.join(to)).unwrap();
+            *done += 1;
+        };
+        let start = pick(6) as usize;
+        while done < start {
+            step(&mut done);
+        }
+        let mut snapshot = Snapshot::scan(root).unwrap();
+        let last = start + 6 + pick(7) as usize;
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            let scope: Vec<PathBuf> = match pick(2) {
+                0 => vec![PathBuf::new()],
+                _ => (names.iter())
+                    .filter(|_| pick(2) == 0)
+                    .map(PathBuf::from)
+                    .collect(),
+            };
+            let mut bursts: Vec<u64> = (0..12).map(|_| pick(3)).collect();
+            let rescan = snapshot.rescan_with(root, scope, None, &mut |cut| {
+                if let Cut::Stating(_) = cut {
+                    for _ in 0..bursts.pop().unwrap_or(0) {
+                        if done < last {
+                            step(&mut done);
+                        }
+                    }
+                }
+            });
+            seen.extend(rescan.unwrap().changes);
+            let mut held = HashSet::new();
+            assert!(
+                (snapshot.entries.values())
+                    .filter(|entry| !entry.linked)
+                    .all(|entry| held.insert(entry.id.ino)),
+                "trial {trial}: {:?}",
+                snapshot.entries
+            );
+        }
+        while done % 3 != 0 {
+            step(&mut done);
+        }
+        let settled =
+            (0..5).any(|_| (snapshot.rescan(root, [PathBuf::new()]).unwrap().unsettled).is_empty());
+        assert!(
+            settled
+                && !(seen.iter()).any(|change| matches!(
+                    change,
+                    Change::Removed { .. } | Change::Created { .. }
+                ))
+                && held(&snapshot) == held(&Snapshot::scan(root).unwrap()),
+            "trial {trial}: {seen:?}, held {:?}",
+            held(&snapshot)
+        );
+    }
+}
