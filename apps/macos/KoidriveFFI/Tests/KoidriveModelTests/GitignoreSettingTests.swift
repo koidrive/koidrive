@@ -189,8 +189,11 @@ struct GitignoreSettingTests {
         try session.setGitignore(follow: false)
         let gitignore = GitignoreSettingModel(app: app)
         session.countLeavesOut(["/Users/ada/Documents/pgdata"])
+        await gitignore.recount()
+        #expect(gitignore.count == nil)
 
         await gitignore.set(follow: true)
+        #expect(session.calls(.setGitignore) == 2)
         #expect(app.followsGitignore)
         #expect(gitignore.noLongerSyncing == nil)
 
