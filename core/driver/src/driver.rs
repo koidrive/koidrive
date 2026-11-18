@@ -2580,7 +2580,11 @@ fn held_aside(root: &Path) -> Vec<PathBuf> {
         });
         match listed {
             Ok(entries) => held.extend(entries),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) => {}
             Err(_) => held.push(dir),
         }
     }
