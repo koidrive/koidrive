@@ -11,7 +11,7 @@ export interface Dump {
 
 interface Snapshot {
   bookmark: string;
-  atMs: number;
+  atMs?: number;
   dump: Dump;
 }
 
@@ -72,6 +72,7 @@ function simulated(state: DurableObjectState): Simulated {
 
 export const simulatedPitr = {
   dropArms: false,
+  failCurrentBookmark: false,
   bookmarkFor: undefined as ((timestampMs: number) => string | undefined) | undefined,
 
   install(): void {
@@ -83,10 +84,13 @@ export const simulatedPitr = {
         state.storage.transactionSync(() => load(state.storage.sql, target.dump));
       }
       return {
-        currentBookmark: async () => nextBookmark(),
+        currentBookmark: async () => {
+          if (simulatedPitr.failCurrentBookmark) throw new Error("current bookmark unavailable");
+          return simulatedPitr.snapshot(state);
+        },
         bookmarkForTime: async (timestampMs) => {
           if (simulatedPitr.bookmarkFor) return simulatedPitr.bookmarkFor(timestampMs);
-          const earlier = object.snapshots.filter((snapshot) => snapshot.atMs <= timestampMs);
+          const earlier = object.snapshots.filter((snapshot) => snapshot.atMs !== undefined && snapshot.atMs <= timestampMs);
           return earlier.at(-1)?.bookmark;
         },
         restoreOnNextStart: async (bookmark) => {
@@ -97,7 +101,7 @@ export const simulatedPitr = {
     };
   },
 
-  snapshot(state: DurableObjectState, atMs: number): string {
+  snapshot(state: DurableObjectState, atMs?: number): string {
     const bookmark = nextBookmark();
     simulated(state).snapshots.push({ bookmark, atMs, dump: dump(state.storage.sql) });
     return bookmark;

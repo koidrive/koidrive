@@ -55,9 +55,21 @@ At admission, `restore_point_ms` (P) must meet all of these:
 
 The Account DO checks the PITR condition through the Space DO at admission, and refuses with `INVALID_ARGUMENT` like the others, since no retry can make PITR serve that point.
 
-The 29-day bound keeps P inside the 30-day PITR range, with a day for the rewind to finish. The window is checked once, at admission. A rewind already admitted is never refused later because time has passed.
+The 29-day bound keeps P inside the 30-day PITR range, with a day for the rewind to finish. The 29-day bound is checked once, at admission. After that, the passing of time fails an admitted rewind only if P leaves the PITR window before a restore runs, which each attempt checks before it selects B (§3, step 2). Once settling finds that a restore ran, the rewind completes, however much time has passed.
 
-P is the requested point. The restored state is the one at the bookmark that PITR selects for P, which is approximately P. `RewindResult.restore_seq`, `Welcome.restore_seq` and `ResyncRequired.restore_seq` give the exact `head_seq` of the restored state, and `restore_point_ms` is always the requested P.
+P is the requested point. The restored state is the state just after the last commit at or before P, the commit before the first one whose `committed_at_ms` is later than P. `getBookmarkForTime` gives only a bookmark approximately at P, which can be several commits earlier, so the Space DO stores bookmarks itself:
+- After every commit it appends, a GC purge included, it reads `getCurrentBookmark()` and stores it for that seq, usable for any P at or after the commit's `committed_at_ms`.
+- Rewind completion deletes every stored bookmark, because one taken before the completion restores a state without the completion's changes (§3). It then stores a bookmark for `restore_seq`, usable for any P at or after the completion.
+- A stored bookmark is usable while it is less than 30 days minus one hour old at the moment of use. PITR keeps 30 days, and the hour covers clock skew and arming. Admission, the selection at each attempt (§3) and GC apply this one rule: GC deletes a bookmark once it is no longer usable, and a usable bookmark is never replaced.
+
+The rewind restores the stored bookmark of the last commit at or before P when it is usable for P. Otherwise it restores the bookmark `getBookmarkForTime` selects for P. That happens when:
+- a server version that stored no bookmarks made the commit;
+- reading the bookmark failed, or the object stopped before the read;
+- another commit landed before the read finished, so the bookmark would include it;
+- P is before an earlier rewind's completion, and the commit is from before that completion;
+- the bookmark is no longer usable. At admission P is at most 29 days old, so it is then almost a day after that commit, with no commit between them. That margin is far wider than the drift of `getBookmarkForTime` seen in deploy tests (under a minute), so PITR's bookmark for P still lands after that commit. Only a retry in the last hour of the commit's 30 days, for a P within that drift of the commit, can land before it: no restorable bookmark after the commit remains then.
+
+`RewindResult.restore_seq`, `Welcome.restore_seq` and `ResyncRequired.restore_seq` give the exact `head_seq` of the restored state, and `restore_point_ms` is always the requested P.
 
 ## 3. A rewind resumes from its recorded phase after a crash
 
@@ -81,7 +93,7 @@ An Account DO alarm drives the phases with backoff from one second up to ten min
    - the bookmark B for P.
 
    It then checks §1 and §2. Any failure refuses the request, records nothing, and reopens the space within one lease (RFC 0014 §3). Otherwise it records the rewind as `admitted`, with B, the new `history_id` and the rewind number. From then on the space is closed (§4).
-2. **Preparing attempt k.** The Space DO:
+2. **Preparing attempt k.** If P has left the PITR window, the rewind fails (step 6) without asking PITR. Otherwise the Account DO selects B for P (§2) and records it, and the rewind fails if no bookmark for P remains. The Space DO then:
    - closes every WebSocket after sending `Goodbye` with close code 4004 (space rewound);
    - writes a marker row for the rewind and attempt k, and reads its current bookmark M;
    - returns its `history_id` and `head_seq`, and whether B is earlier than M.
@@ -89,12 +101,13 @@ An Account DO alarm drives the phases with backoff from one second up to ten min
    If B is not earlier than M, the restored state could contain the marker, and the rewind fails (step 5). Otherwise the Account DO records the phase `prepared`, and, on the first attempt, the returned history and head as the previous history and head. All of this happens before any restore can be armed. Preparing is idempotent: repeating it for the same attempt leaves one marker.
 3. **Arming attempt k.** The Account DO records the phase `arming`. Then the Space DO calls `onNextSessionRestoreBookmark(B)` and restarts with `ctx.abort()`.
 4. **Settling.** After an arming call, whether it answered, failed or has an unknown outcome, the Account DO first restarts the Space DO once more. A restore that is pending applies when the object starts, so after this restart none can still be pending. The Account DO then asks the Space DO to complete the rewind:
-   - **Marker of attempt k present.** No restore happened and none is pending. The Account DO goes back to step 2 with attempt k + 1, or ends in step 6 if B can no longer be restored.
+   - **Marker of attempt k present.** No restore happened and none is pending. The Account DO goes back to step 2 with attempt k + 1.
    - **No marker, but a completion receipt for this rewind in `meta`.** Completion already ran, and the Space DO returns that receipt again.
    - **Neither.** The storage was restored to B, which predates every marker of this rewind. The Space DO reads the space's retired incarnations from the Account DO (§5, rule 9). It then completes the rewind in one transaction:
      - sets the new `history_id` and the rewind number, plus `restore_seq` (its `head_seq`) and `restore_point_ms` in `meta` (RFC 0002 §8);
      - adds every device that the Account DO has revoked to `revoked_devices`;
      - applies the chunk rules of §5;
+     - deletes the stored commit bookmarks, and after the transaction stores one for `restore_seq` (§2);
      - resets the export state (§7);
      - stores the completion receipt.
 
@@ -102,7 +115,7 @@ An Account DO alarm drives the phases with backoff from one second up to ten min
 
    An Account DO that restarts in the phase `arming` resumes at this step. So it never arms again before it has settled the earlier attempt.
 5. **Reopening.** The Account DO stores the `RewindResult` and records the phase `completed`, which reopens the space.
-6. **Failure.** A rewind ends as `failed` only when no restore can have happened or be pending. That is the case when B is not earlier than M in step 2, or after step 4 has proved that the marker is still present and B can no longer be restored. The Account DO then removes the markers, records the error, and reopens the space unchanged.
+6. **Failure.** A rewind ends as `failed` only when no restore can have happened or be pending. That is the case in step 2, when P has left the PITR window, no bookmark for P remains, or B is not earlier than M. Step 2 runs only before the first arming or after step 4 has proved that the marker of the previous attempt is still present. The Account DO then removes the markers, records the error, and reopens the space unchanged.
 
    Once step 4 has found the marker gone, the rewind can only complete. If completion keeps failing, the space stays closed: reopening a restored database under its old history would let devices treat it as that history. This can only happen through a server bug. A retried request with the same `rewind_id` reports `RETRY_LATER` and the last error.
 

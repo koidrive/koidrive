@@ -45,6 +45,7 @@ const DAY = 24 * 3_600_000;
 afterEach(() => {
   vi.restoreAllMocks();
   simulatedPitr.dropArms = false;
+  simulatedPitr.failCurrentBookmark = false;
   simulatedPitr.bookmarkFor = undefined;
 });
 
@@ -128,8 +129,17 @@ function setAccountClock(atMs: number) {
   });
 }
 
+function setSpaceClock(spaceId: string, atMs: number) {
+  return runInDurableObject(space(spaceId), (instance: SpaceDO) => {
+    instance.clock = () => atMs;
+  });
+}
+
 function snapshot(spaceId: string, atMs: number) {
-  return runInDurableObject(space(spaceId), (_instance, state) => simulatedPitr.snapshot(state, atMs));
+  return runInDurableObject(space(spaceId), (instance: SpaceDO, state) => {
+    instance.clock = () => atMs + 1;
+    return simulatedPitr.snapshot(state, atMs);
+  });
 }
 
 function spaceRows(spaceId: string, query: string, ...bindings: SqlStorageValue[]) {
@@ -264,6 +274,204 @@ describe("space rewind (RFC 0003)", () => {
     expect(await spaceRows(spaceId, "SELECT value FROM meta WHERE key = 'rewind_number'")).toEqual([{ value: 2 }]);
   });
 
+  it("restores the last commit at or before the restore point, whatever earlier bookmark PITR selects for that time", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const a = device();
+    await a.commit([op.mkdir(uuidv7(), spaceId, "one")]);
+    const early = await snapshot(spaceId, createdAtMs + MINUTE);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "two")]);
+    const point = createdAtMs + 2 * MINUTE;
+    await setSpaceClock(spaceId, point + 1);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "three")]);
+    simulatedPitr.bookmarkFor = () => early;
+    await setAccountClock(createdAtMs + 5 * MINUTE);
+
+    const done = await rewind(creds.access!.token, spaceId, { restorePointMs: point, expectedHistoryId: await a.history() });
+    expect(done.message).toMatchObject({ restoreSeq: 2n, previousHeadSeq: 3n });
+    const names = [...(await device().tree()).values()].map((node) => node.name);
+    expect(names).toContain("two");
+    expect(names).not.toContain("three");
+    expect(await spaceRows(spaceId, "SELECT seq, from_ms FROM commit_bookmarks")).toEqual([{ seq: 2, from_ms: createdAtMs + 5 * MINUTE }]);
+  });
+
+  it("restores PITR's bookmark for the restore point when the last commit before it is older than PITR keeps a bookmark", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const a = device();
+    await a.commit([op.mkdir(uuidv7(), spaceId, "one")]);
+    const point = createdAtMs + 35 * DAY;
+    const recent = await snapshot(spaceId, point);
+    await setSpaceClock(spaceId, createdAtMs + 36 * DAY);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "two")]);
+    await setSpaceClock(spaceId, createdAtMs + 37 * DAY);
+    await setAccountClock(createdAtMs + 37 * DAY);
+
+    const rewindId = uuidv7();
+    const done = await rewind(creds.access!.token, spaceId, { restorePointMs: point, expectedHistoryId: await a.history(), rewindId });
+    expect(done.message).toMatchObject({ restoreSeq: 1n, previousHeadSeq: 2n });
+    expect(await rewindRecord(rewindId)).toMatchObject({ bookmark: recent });
+  });
+
+  it("restores a GC purge commit that is the last commit at or before the restore point", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const a = device();
+    const doomed = uuidv7();
+    await a.commit([op.mkdir(doomed, spaceId, "doomed")]);
+    const early = await snapshot(spaceId, createdAtMs + MINUTE);
+    await a.commit([op.delete(doomed)]);
+    const purgeAt = createdAtMs + 31 * DAY;
+    const report = await runInDurableObject(space(spaceId), (instance: SpaceDO) => instance.collectGarbage(purgeAt));
+    expect(report.purgedNodes).toBe(1);
+    expect((await spaceRows(spaceId, "SELECT seq FROM commit_bookmarks")).map((row) => row.seq)).toEqual([3]);
+    const point = purgeAt + MINUTE;
+    await setSpaceClock(spaceId, point + 1);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "after")]);
+    simulatedPitr.bookmarkFor = () => early;
+    await setAccountClock(point + 5 * MINUTE);
+
+    const done = await rewind(creds.access!.token, spaceId, { restorePointMs: point, expectedHistoryId: await a.history() });
+    expect(done.message).toMatchObject({ restoreSeq: 3n, previousHeadSeq: 4n });
+  });
+
+  it("restores the restored state, not the abandoned timeline, for a restore point just after an earlier rewind completed", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const token = creds.access!.token;
+    const a = device();
+    await a.commit([op.mkdir(uuidv7(), spaceId, "kept")]);
+    const p1 = createdAtMs + MINUTE;
+    await snapshot(spaceId, p1);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "rewound away")]);
+    const completedAtMs = p1 + 5 * MINUTE;
+    const abandoned = await snapshot(spaceId, completedAtMs - 30_000);
+    await setAccountClock(completedAtMs);
+    const first = await rewind(token, spaceId, { restorePointMs: p1, expectedHistoryId: await a.history() });
+    expect(first.message).toMatchObject({ restoreSeq: 1n, previousHeadSeq: 2n });
+    await runSpaceAlarm(space(spaceId), completedAtMs + MINUTE);
+
+    const p2 = completedAtMs + 10_000;
+    simulatedPitr.bookmarkFor = () => abandoned;
+    await setAccountClock(completedAtMs + 3 * MINUTE);
+    const second = await rewind(token, spaceId, { restorePointMs: p2, expectedHistoryId: first.message!.historyId });
+    expect(second.message).toMatchObject({ restoreSeq: 1n });
+    expect([...(await device().tree()).values()].map((node) => node.name)).not.toContain("rewound away");
+  });
+
+  it("restores the last commit before a restore point 29 days old when that commit is just over 29 days old", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const a = device();
+    await a.commit([op.mkdir(uuidv7(), spaceId, "one")]);
+    const early = await snapshot(spaceId, createdAtMs + MINUTE);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "two")]);
+    const [two] = await spaceRows(spaceId, "SELECT committed_at_ms FROM commits WHERE seq = 2");
+    const committedMs = Number(two!.committed_at_ms);
+    const nowMs = committedMs + 29 * DAY + 2_000;
+    await setSpaceClock(spaceId, nowMs);
+    await setAccountClock(nowMs);
+    simulatedPitr.bookmarkFor = () => early;
+
+    const done = await rewind(creds.access!.token, spaceId, { restorePointMs: committedMs + 5_000, expectedHistoryId: await a.history() });
+    expect(done.message).toMatchObject({ restoreSeq: 2n, previousHeadSeq: 2n });
+  });
+
+  it("retries a restore with PITR's bookmark for the restore point once the commit's bookmark is too old to arm", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const token = creds.access!.token;
+    const a = device();
+    await a.commit([op.mkdir(uuidv7(), spaceId, "one")]);
+    const early = await snapshot(spaceId, createdAtMs + MINUTE);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "two")]);
+    const [two] = await spaceRows(spaceId, "SELECT committed_at_ms, bookmark FROM commits JOIN commit_bookmarks USING (seq) WHERE seq = 2");
+    const committedMs = Number(two!.committed_at_ms);
+    const nowMs = committedMs + 29 * DAY + 2_000;
+    await setSpaceClock(spaceId, nowMs);
+    await setAccountClock(nowMs);
+    simulatedPitr.bookmarkFor = () => early;
+
+    simulatedPitr.dropArms = true;
+    const rewindId = uuidv7();
+    const args = { restorePointMs: committedMs + 5_000, expectedHistoryId: await a.history(), rewindId };
+    expect((await rewind(token, spaceId, args)).status).toBe(503);
+    expect(await rewindRecord(rewindId)).toMatchObject({ bookmark: two!.bookmark });
+
+    await spaceRows(spaceId, `UPDATE commit_bookmarks SET from_ms = from_ms - ${31 * DAY}`);
+    expect((await rewind(token, spaceId, args)).status).toBe(503);
+    expect(await rewindRecord(rewindId)).toMatchObject({ bookmark: early });
+
+    simulatedPitr.dropArms = false;
+    const done = await rewind(token, spaceId, args);
+    expect(done.message).toMatchObject({ restoreSeq: 1n, previousHeadSeq: 2n });
+  });
+
+  it("keeps the commit's bookmark on a retry while it is still usable, though the restore point is past 29 days", async () => {
+    const { spaceId, creds, device } = await newSpace();
+    const token = creds.access!.token;
+    const a = device();
+    await a.commit([op.mkdir(uuidv7(), spaceId, "one")]);
+    const early = await snapshot(spaceId, Date.now());
+    await a.commit([op.mkdir(uuidv7(), spaceId, "two")]);
+    const [two] = await spaceRows(spaceId, "SELECT committed_at_ms, bookmark FROM commits JOIN commit_bookmarks USING (seq) WHERE seq = 2");
+    const committedMs = Number(two!.committed_at_ms);
+    await setSpaceClock(spaceId, committedMs + 29 * DAY + 2_000);
+    await setAccountClock(committedMs + 29 * DAY + 2_000);
+    simulatedPitr.bookmarkFor = () => early;
+
+    simulatedPitr.dropArms = true;
+    const rewindId = uuidv7();
+    const args = { restorePointMs: committedMs + 5_000, expectedHistoryId: await a.history(), rewindId };
+    expect((await rewind(token, spaceId, args)).status).toBe(503);
+
+    const retryAgeMs = 29 * DAY + 23 * 3_600_000 - MINUTE;
+    await spaceRows(spaceId, `UPDATE commit_bookmarks SET from_ms = from_ms - ${retryAgeMs} WHERE seq = 2`);
+    await setAccountClock(committedMs + retryAgeMs);
+    expect((await rewind(token, spaceId, args)).status).toBe(503);
+    expect(await rewindRecord(rewindId)).toMatchObject({ bookmark: two!.bookmark });
+
+    simulatedPitr.dropArms = false;
+    const done = await rewind(token, spaceId, args);
+    expect(done.message).toMatchObject({ restoreSeq: 2n, previousHeadSeq: 2n });
+  });
+
+  it("restores the empty space, not the abandoned timeline, for a restore point just after a rewind to before the first commit", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const token = creds.access!.token;
+    const a = device();
+    const p1 = createdAtMs + MINUTE;
+    await snapshot(spaceId, p1);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "rewound away")]);
+    const completedAtMs = p1 + 5 * MINUTE;
+    const abandoned = await snapshot(spaceId, completedAtMs - 30_000);
+    await setAccountClock(completedAtMs);
+    const first = await rewind(token, spaceId, { restorePointMs: p1, expectedHistoryId: await a.history() });
+    expect(first.message).toMatchObject({ restoreSeq: 0n, previousHeadSeq: 1n });
+    await runSpaceAlarm(space(spaceId), completedAtMs + MINUTE);
+
+    simulatedPitr.bookmarkFor = () => abandoned;
+    await setAccountClock(completedAtMs + 3 * MINUTE);
+    const second = await rewind(token, spaceId, { restorePointMs: completedAtMs + 10_000, expectedHistoryId: first.message!.historyId });
+    expect(second.message).toMatchObject({ restoreSeq: 0n });
+    expect([...(await device().tree()).values()].map((node) => node.name)).not.toContain("rewound away");
+  });
+
+  it("takes a commit whose bookmark cannot be read, and restores PITR's bookmark for a restore point after it", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const a = device();
+    await a.commit([op.mkdir(uuidv7(), spaceId, "one")]);
+    const early = await snapshot(spaceId, createdAtMs + MINUTE);
+    simulatedPitr.failCurrentBookmark = true;
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    await a.commit([op.mkdir(uuidv7(), spaceId, "two")]);
+    expect(logged).toHaveBeenCalledWith("commit bookmark read failed", expect.stringContaining("current bookmark unavailable"));
+    simulatedPitr.failCurrentBookmark = false;
+    const point = createdAtMs + 2 * MINUTE;
+    await setSpaceClock(spaceId, point + 1);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "three")]);
+    expect((await spaceRows(spaceId, "SELECT seq FROM commit_bookmarks")).map((row) => row.seq)).toEqual([1, 3]);
+    simulatedPitr.bookmarkFor = () => early;
+    await setAccountClock(createdAtMs + 5 * MINUTE);
+
+    const done = await rewind(creds.access!.token, spaceId, { restorePointMs: point, expectedHistoryId: await a.history() });
+    expect(done.message).toMatchObject({ restoreSeq: 1n, previousHeadSeq: 3n });
+  });
+
   it("refuses a revoked device, a caller who is not the owner, and restore points outside the admissible range, recording nothing", async () => {
     const { spaceId, createdAtMs, creds, device } = await newSpace();
     const history = await device().history();
@@ -355,6 +563,7 @@ describe("space rewind (RFC 0003)", () => {
     const history = await a.history();
     await setAccountClock(createdAtMs + 5 * MINUTE);
 
+    await spaceRows(spaceId, "DELETE FROM commit_bookmarks");
     simulatedPitr.bookmarkFor = () => "~ later than every marker";
     const late = await rewind(token, spaceId, { restorePointMs: point, expectedHistoryId: history });
     expect([late.status, late.error?.code]).toEqual([400, Error_Code.INVALID_ARGUMENT]);
@@ -375,6 +584,30 @@ describe("space rewind (RFC 0003)", () => {
     expect((await rpc(token, spaceId, { case: "listTree", value: {} })).status).toBe(200);
   });
 
+  it("fails a retry whose restore point left the PITR window without asking PITR for a bookmark", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const token = creds.access!.token;
+    const a = device();
+    await createFile(a, spaceId, "a.txt", "a");
+    const point = createdAtMs + MINUTE;
+    await snapshot(spaceId, point);
+    const history = await a.history();
+    await setAccountClock(createdAtMs + 5 * MINUTE);
+
+    simulatedPitr.dropArms = true;
+    const rewindId = uuidv7();
+    const args = { restorePointMs: point, expectedHistoryId: history, rewindId };
+    expect((await rewind(token, spaceId, args)).status).toBe(503);
+    await setAccountClock(point + 30 * DAY + 1);
+    simulatedPitr.bookmarkFor = () => {
+      throw new Error("timestamp is outside the PITR window");
+    };
+    const expired = await rewind(token, spaceId, args);
+    expect([expired.status, expired.error?.message]).toEqual([400, "the restore point left the PITR window before the restore ran"]);
+    expect(await spaceRows(spaceId, "SELECT * FROM rewind_markers")).toEqual([]);
+    expect((await rpc(token, spaceId, { case: "listTree", value: {} })).status).toBe(200);
+  });
+
   it("applies the chunk rules and the revocations at completion, and replays the receipt on a repeated completion", async () => {
     const { spaceId, createdAtMs, creds, device } = await newSpace();
     const token = creds.access!.token;
@@ -387,6 +620,7 @@ describe("space rewind (RFC 0003)", () => {
     const key = (parts: { content: { chunks: { hash: Uint8Array }[] } }) => hashOf(parts).slice().buffer;
     const [retiredRow] = await spaceRows(spaceId, "SELECT incarnation FROM chunks WHERE hash = ?", key(retired.parts));
     await spaceRows(spaceId, "UPDATE chunks SET state = ? WHERE hash = ?", ChunkState.DELETING, key(deleting.parts));
+    await a.commit([op.mkdir(uuidv7(), spaceId, "after the delete began")]);
     const point = createdAtMs + MINUTE;
     await snapshot(spaceId, point);
     await spaceRows(spaceId, "UPDATE chunks SET state = ? WHERE hash = ?", ChunkState.LIVE, key(deleting.parts));
@@ -437,7 +671,7 @@ describe("space rewind (RFC 0003)", () => {
       revokedDevices: [],
       retired: [],
     });
-    expect(replay).toMatchObject({ state: "completed", receipt: { rewindId, historyId: record.history_id, restoreSeq: 2, completedAtMs } });
+    expect(replay).toMatchObject({ state: "completed", receipt: { rewindId, historyId: record.history_id, restoreSeq: 3, completedAtMs } });
     expect(await device().history()).toBe(record.history_id);
   });
 

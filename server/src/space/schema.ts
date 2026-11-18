@@ -107,6 +107,9 @@ export const MIGRATIONS: readonly Migration[] = [
     const columns = sql.exec("SELECT name FROM pragma_table_info('versions')").toArray().map((row) => row.name);
     if (!columns.includes("made_over")) sql.exec("ALTER TABLE versions ADD COLUMN made_over TEXT NOT NULL DEFAULT ''");
   },
+  `
+  CREATE TABLE IF NOT EXISTS commit_bookmarks (seq INTEGER PRIMARY KEY, bookmark TEXT NOT NULL, from_ms INTEGER NOT NULL);
+  `,
 ];
 
 export function migrate(sql: Sql): void {

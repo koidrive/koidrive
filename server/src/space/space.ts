@@ -96,6 +96,12 @@ import { PROTO_MAX, PROTO_MIN, SERVER_VERSION } from "../version";
 export const FORMAT_VERSION = 1;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
+const PITR_WINDOW_MS = 30 * DAY_MS;
+const BOOKMARK_SAFETY_MS = HOUR_MS;
+
+function oldestUsableBookmarkMs(nowMs: number): number {
+  return nowMs - PITR_WINDOW_MS + BOOKMARK_SAFETY_MS;
+}
 export const HOLD_MS = DAY_MS;
 export const GRANT_MS = HOUR_MS;
 const MAX_OPS = 1000;
@@ -316,6 +322,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     snapshotPageNodes = 1000;
     private exporting: Promise<void> | undefined;
     private alarmStale = false;
+    private bookmarking: Promise<void> = Promise.resolve();
     private readonly leases = new Map<string, { check: SessionCheck; askedAtMs: number; untilMs: number }>();
     private leaseGeneration = 0;
     private readonly renewalsDue = new Set<string>();
@@ -874,6 +881,19 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         digest,
       );
       setMeta(this.sql, "head_seq", Number(record.seq));
+      this.bookmarkHead(Number(record.seq), Number(record.committedAtMs));
+    }
+
+    private bookmarkHead(seq: number, fromMs: number): void {
+      this.bookmarking = this.bookmarking.then(async () => {
+        try {
+          const bookmark = await this.pitr.currentBookmark();
+          if (this.headSeq !== seq) return;
+          this.sql.exec("INSERT INTO commit_bookmarks (seq, bookmark, from_ms) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", seq, bookmark, fromMs);
+        } catch (error) {
+          console.error("commit bookmark read failed", errorText(error));
+        }
+      });
     }
 
     private async commit(session: Session, commit: Commit): Promise<{ result: CommitResult; record?: CommitRecord }> {
@@ -1189,6 +1209,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const settings = this.settings();
       const spaceId = this.spaceId;
       const purge = this.db.transactionSync(() => {
+        this.sql.exec("DELETE FROM commit_bookmarks WHERE from_ms < ?", oldestUsableBookmarkMs(nowMs));
         const expired = rows<VersionRow>(
           this.sql.exec(
             "SELECT * FROM versions WHERE superseded_at_ms IS NOT NULL AND superseded_at_ms < ? LIMIT ?",
@@ -1306,7 +1327,19 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
 
     async rewindInfo(restorePointMs: number): Promise<{ historyId: string; headSeq: number; descriptorDurable: boolean; bookmark: string | undefined }> {
       this.dropLeases();
-      const bookmark = await this.pitr.bookmarkForTime(restorePointMs);
+      await this.bookmarking;
+      const approximate = await this.pitr.bookmarkForTime(restorePointMs);
+      const exact = this.sql
+        .exec(
+          `SELECT bookmark FROM commit_bookmarks WHERE from_ms <= ? AND from_ms >= ? AND seq =
+             (SELECT COALESCE(MAX(seq), 0) FROM commits WHERE seq < (SELECT COALESCE(MIN(seq), ?) FROM commits WHERE committed_at_ms > ?))`,
+          restorePointMs,
+          oldestUsableBookmarkMs(this.clock()),
+          Number.MAX_SAFE_INTEGER,
+          restorePointMs,
+        )
+        .toArray()[0]?.bookmark;
+      const bookmark = approximate === undefined ? undefined : typeof exact === "string" ? exact : approximate;
       return { historyId: String(getMeta(this.sql, "history_id")), headSeq: this.headSeq, descriptorDurable: descriptorDurable(this.sql), bookmark };
     }
 
@@ -1360,11 +1393,14 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         const holdUntil = args.completedAtMs + this.settings().chunk_grace_days * DAY_MS;
         this.sql.exec("UPDATE chunks SET state = ?, hold_until_ms = ? WHERE refcount = 0", ChunkState.PENDING, holdUntil);
         this.sql.exec("DELETE FROM rewind_markers");
+        this.sql.exec("DELETE FROM commit_bookmarks");
         startExport(this.sql, completed.restoreSeq, args.completedAtMs, true);
         setMeta(this.sql, "rewind_receipt", JSON.stringify(completed));
         return completed;
       });
+      this.bookmarkHead(receipt.restoreSeq, receipt.completedAtMs);
       await this.armAlarm();
+      await this.bookmarking;
       return { state: "completed", receipt };
     }
 
