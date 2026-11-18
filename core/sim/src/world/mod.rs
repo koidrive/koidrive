@@ -3200,6 +3200,7 @@ impl World {
         }
         let held = Server::of(self.space.space_id(), self.space.nodes());
         let live = live_writes(&self.space);
+        self.revived_delete()?;
         self.undone_delete(&held)?;
         let gone = |d: usize| self.devices[d].left;
         (self.intents.check(&held, gone)).map_err(|(why, write)| match write {
@@ -3848,6 +3849,29 @@ mod tests {
             ),
             Err(Failure::Broken(_))
         ));
+    }
+
+    #[test]
+    fn a_delete_is_watched_after_another_device_overwrote_its_own_unsent_edit() {
+        let mut world = World::new(2);
+        let user = |d: usize, kind: u8| {
+            (
+                d,
+                Step::User(Action {
+                    kind,
+                    target: 0,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                }),
+            )
+        };
+        world.phase(0, &[user(1, 1)]).unwrap();
+        world.phase(1, &[user(1, 2), user(1, 2)]).unwrap();
+        world.phase(2, &[user(0, 4)]).unwrap();
+        let deletion = world.deletions.last().unwrap();
+        assert_eq!(deletion.device, 0);
+        assert!(deletion.watched);
     }
 
     #[test]

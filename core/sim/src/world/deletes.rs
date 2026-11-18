@@ -193,6 +193,7 @@ impl World {
                 other.author != d
                     && other.applied == 0
                     && !other.dropped
+                    && !self.intents.replaced(j)
                     && self.intents.nodes(j).any(|node| node == id)
             })
         };
@@ -246,30 +247,39 @@ impl World {
         }
     }
 
-    fn revived(
-        &self,
-        deletion: &Deletion,
-        live: &BTreeMap<i64, BTreeSet<NodeId>>,
-    ) -> Option<i64> {
-        if !self.revived_deletes || !deletion.watched || deletion.reached || deletion.gone {
-            return None;
+    pub(super) fn revived_delete(&self) -> Result<(), Failure> {
+        if !self.revived_deletes {
+            return Ok(());
         }
-        let (write, node, file) = deletion.held(live, |write, at_node| {
-            deletion.resendable.contains(&write) || (!at_node && self.copied.contains(&write))
-        })?;
-        let path: Vec<&NodeId> = std::iter::once(&node).chain(&file.path).collect();
-        let at = self.intents.intent(deletion.intent).made;
-        let changed_since = (0..self.intents.len()).any(|j| {
-            let other = self.intents.intent(j);
-            other.author != deletion.device
-                && other.made >= at
-                && self.intents.nodes(j).any(|id| path.contains(&id))
-        });
-        (!changed_since).then_some(write)
+        let live = live_nodes(&self.space);
+        let dropped = (self.deletions.iter())
+            .filter(|deletion| deletion.watched && !deletion.reached && !deletion.gone)
+            .find_map(|deletion| {
+                let (write, node, file) = deletion.held(&live, |write, at_node| {
+                    deletion.resendable.contains(&write)
+                        || (!at_node && self.copied.contains(&write))
+                })?;
+                let path: Vec<&NodeId> = std::iter::once(&node).chain(&file.path).collect();
+                let at = self.intents.intent(deletion.intent).made;
+                let changed_since = (0..self.intents.len()).any(|j| {
+                    let other = self.intents.intent(j);
+                    other.author != deletion.device
+                        && !other.answer
+                        && other.made >= at
+                        && self.intents.nodes(j).any(|id| path.contains(&id))
+                });
+                (!changed_since).then_some((write, deletion.device))
+            });
+        match dropped {
+            None => Ok(()),
+            Some((write, d)) => Err(Failure::Diverged(format!(
+                "the user of device {d} deleted write {write} or a later write made over it, and \
+                 the server held it live from then on: the delete never reached the server"
+            ))),
+        }
     }
 
     pub(super) fn undone_delete(&self, server: &Server) -> Result<(), Failure> {
-        let live = live_nodes(&self.space);
         let gone = |d: usize| self.devices[d].left;
         for deletion in &self.deletions {
             let Some(node) = deletion.undone(&self.intents, server, gone) else {
@@ -283,15 +293,7 @@ impl World {
             if expected(Check::DeleteUndone, &why) {
                 continue;
             }
-            return Err(Failure::Diverged(
-                match self.revived(deletion, &live) {
-                    Some(write) => format!(
-                        "the user of device {d} deleted write {write} or a later write made over it, \
-                     and the server held it live from then on: the delete never reached the server"
-                    ),
-                    None => why,
-                },
-            ));
+            return Err(Failure::Diverged(why));
         }
         Ok(())
     }

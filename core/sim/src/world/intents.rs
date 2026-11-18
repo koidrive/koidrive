@@ -264,6 +264,15 @@ impl Intents {
         &self.list[i]
     }
 
+    pub(super) fn replaced(&self, i: usize) -> bool {
+        let intent = &self.list[i];
+        (self.list[i + 1..].iter()).any(|later| {
+            later.author == intent.author
+                && later.ino == intent.ino
+                && later.value.field() == intent.value.field()
+        })
+    }
+
     pub(super) fn len(&self) -> usize {
         self.list.len()
     }
