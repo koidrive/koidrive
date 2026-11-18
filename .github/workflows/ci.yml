@@ -394,8 +394,12 @@ jobs:
         if: ${{ !cancelled() && matrix.os == 'macos' && matrix.suite == 'driver' }}
         run: |
           security list-keychains -d user
-          cargo test --locked -p koidrive-cli --bin koi --features koidrive-cli/test-install-inventory -- --ignored --exact app_install::macos::tests::native_codesign_refuses_an_app_and_updater_signed_by_a_forged_developer_id
+          cargo test --locked -p koidrive-cli --bin koi --features koidrive-cli/test-install-inventory -- --ignored --exact app_install::macos::tests::verification::native_codesign_refuses_an_app_and_updater_signed_by_a_forged_developer_id 2>&1 | tee "$RUNNER_TEMP/forged-developer-id.log"
           security list-keychains -d user
+          if ! grep -q '^test result: ok. 1 passed;' "$RUNNER_TEMP/forged-developer-id.log"; then
+            echo "::error::The forged Developer ID test filter must run exactly one test. The test was renamed or moved, so update the filter."
+            exit 1
+          fi
       - name: Test release updates with a tag-derived version
         if: ${{ !cancelled() && matrix.suite == 'driver' }}
         run: |
