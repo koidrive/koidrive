@@ -702,7 +702,9 @@ impl Engine {
     /// follow paths toward the root, so such a change is always left. A node whose rename is still to come is set aside
     /// while another entry takes its name, with what is under it, until its own rename places it. A renamed or
     /// modified entry is the node L holds at its path with its identity, else the node with its identity, else the
-    /// node at its path. A created entry with the identity of a node L holds is that node, wherever L had it, except a
+    /// node at its path. A created entry is never a node of the other kind by its identity: an entry keeps its kind, so
+    /// it has an inode the file system freed and gave out again, which Linux can do within one tick of its birth-time
+    /// clock. A created entry with the identity of a node L holds is that node, wherever L had it, except a
     /// folder L holds on disk, not recorded, at a path no change of the batch leaves: the scan kept the folder there
     /// with a new identity, as when an entry moved back into a new folder made at its path, so the created folder is a
     /// new one. So is a created entry with the path and identity a node had before an earlier change of the batch took
@@ -949,10 +951,16 @@ impl Engine {
                         continue;
                     }
                     let identity = file_identity(*id);
+                    let node_kind = match kind {
+                        EntryKind::File => Kind::File,
+                        EntryKind::Dir => Kind::Dir,
+                    };
                     let takes = |node: &&NodeId| {
-                        !linked
-                            || self.trees.recorded_local(node)
-                            || self.trees.displaced_local().contains_key(*node)
+                        (self.trees.local().get(node))
+                            .is_none_or(|held| held.shape.kind == node_kind)
+                            && (!linked
+                                || self.trees.recorded_local(node)
+                                || self.trees.displaced_local().contains_key(*node))
                     };
                     let node = (self.trees.locals_with_identity(&identity).rev())
                         .filter(|node| !staying.contains(*node))
