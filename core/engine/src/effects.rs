@@ -550,19 +550,26 @@ impl Effects {
             None => return Err(EffectError::NotInFlight(effect_id.to_owned())),
         };
         let record = self.take(effect_id)?;
-        let carried: Vec<NodeId> = match &record.effect {
-            Effect::RemoveDir { .. } => trees.local_children(&record.node).cloned().collect(),
-            _ => Vec::new(),
-        };
+        let mut below: Vec<NodeId> = Vec::new();
+        if matches!(record.effect, Effect::RemoveDir { .. }) {
+            let mut folders = vec![record.node.clone()];
+            while let Some(folder) = folders.pop() {
+                let children = trees.local_children(&folder).cloned();
+                let children: Vec<NodeId> = children.collect();
+                folders.extend(children.iter().cloned());
+                below.extend(children);
+            }
+        }
+        let carried = below.iter().filter(|id| trees.carried(id)).count();
         let removal =
             (record.after.is_none() && trees.remote().live(&record.node).is_none()).then(|| {
                 RemoteRemoval {
                     within: within(trees, &record.node),
                     files: u64::from(matches!(record.effect, Effect::RemoveFile { .. }))
-                        + carried.len() as u64,
+                        + carried as u64,
                 }
             });
-        for id in &carried {
+        for id in below.iter().rev() {
             trees.give_up(id);
             trees.remove_local(id);
         }
