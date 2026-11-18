@@ -4,6 +4,7 @@ tests = [
   "devices_converge_across_restores_and_rewinds",
   "devices_converge_across_server_restores",
   "devices_lose_no_write_across_restores_and_rewinds",
+  "devices_on_coarse_volumes_converge_across_restores_and_rewinds",
 ]
 message = '''after phase <n>: write <n> is in more than one file on the server, and no user copied it: \[\[.*\]\]\.'''
 examples = [
