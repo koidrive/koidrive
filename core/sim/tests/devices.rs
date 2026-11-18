@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use koidrive_engine::question::{Answer, QuestionKind};
 use koidrive_engine::restore::RestoreIntent;
 use koidrive_engine::tree::Content;
-use koidrive_proto::v1::error;
+use koidrive_proto::v1::{NodeStatus, error};
 use koidrive_sim::world::disk::Place;
 use koidrive_sim::world::{
     Action, Cut, Failure, NAMES, Outcome, PENDING_NAME, Reply, Step, TEXTS, World,
@@ -133,9 +133,20 @@ fn step(losses: Losses) -> BoxedStrategy<Step> {
 }
 
 fn phases(losses: Losses) -> impl Strategy<Value = Vec<Vec<(usize, Step)>>> {
-    prop::collection::vec(
-        prop::collection::vec((0..3usize, step(losses)), 0..48),
-        1..=3,
+    phases_of(step(losses))
+}
+
+fn phases_of(step: BoxedStrategy<Step>) -> impl Strategy<Value = Vec<Vec<(usize, Step)>>> {
+    prop::collection::vec(prop::collection::vec((0..3usize, step), 0..48), 1..=3)
+}
+
+fn scanning_folders() -> impl Strategy<Value = Vec<Vec<(usize, Step)>>> {
+    phases_of(
+        prop_oneof![
+            19 => step(Losses::None),
+            1 => any::<usize>().prop_map(Step::ScanFolder),
+        ]
+        .boxed(),
     )
 }
 
@@ -319,6 +330,16 @@ proptest! {
     }
 
     #[test]
+    fn devices_lose_no_write_when_folders_are_rescanned_alone(devices in 2..=3usize, phases in scanning_folders()) {
+        keep(devices, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
+    }
+
+    #[test]
+    fn devices_converge_when_folders_are_rescanned_alone(devices in 2..=3usize, phases in scanning_folders()) {
+        converge(devices, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
+    }
+
+    #[test]
     fn devices_converge_around_a_folder_another_device_replaces((devices, phases) in replaced_folder()) {
         converge(devices, &phases).map_err(|failure| TestCaseError::fail(failure.to_string()))?;
     }
@@ -495,6 +516,14 @@ fn two_rewinds_around_a_rolled_back_store_converge() {
 #[test]
 fn the_schedules_reach_every_fault() {
     reaches(phases(Losses::None), &EVENTS);
+}
+
+#[test]
+fn the_folder_rescan_schedules_follow_entries_across_their_edge() {
+    reaches(
+        scanning_folders(),
+        &["a rescan of a folder follows an entry across its edge"],
+    );
 }
 
 #[test]
@@ -10961,4 +10990,227 @@ fn a_rename_across_a_restore_earlier_and_a_rollback_keeps_the_write_in_one_file_
         ],
     ];
     converge(3, &phases).unwrap();
+}
+
+fn ino_at(world: &World, device: usize, path: &[&str]) -> u128 {
+    let disk = &world.devices[device].disk;
+    let found = (path.iter()).try_fold(Place::Root, |place, name| {
+        disk.child(&place, name).map(Place::In)
+    });
+    let Some(Place::In(ino)) = found else {
+        panic!("device {device} shows nothing at {path:?}");
+    };
+    ino
+}
+
+fn target(world: &World, device: usize, path: &[&str]) -> usize {
+    let ino = ino_at(world, device, path);
+    (world.devices[device].disk.visible().into_iter())
+        .position(|visible| visible == ino)
+        .unwrap()
+}
+
+fn folder_number(world: &World, device: usize, path: &[&str]) -> usize {
+    let ino = ino_at(world, device, path);
+    let disk = &world.devices[device].disk;
+    let mut folders =
+        (disk.visible().into_iter()).filter(|ino| disk.entries()[ino].content.is_none());
+    1 + folders.position(|folder| folder == ino).unwrap()
+}
+
+fn live_node_at(world: &World, path: &[&str]) -> Option<String> {
+    let nodes = world.space().nodes();
+    (path.iter()).try_fold(world.space().space_id().to_owned(), |parent, name| {
+        (nodes.iter())
+            .find(|node| {
+                node.status == NodeStatus::Live as i32
+                    && node.parent_id == parent
+                    && node.name == *name
+            })
+            .map(|node| node.node_id.clone())
+    })
+}
+
+fn held_at(world: &World, device: usize, path: &[&str]) -> Option<String> {
+    let local = world.devices[device].engine.trees.local();
+    (path.iter()).try_fold(local.root.clone(), |parent, name| {
+        (local.iter())
+            .find(|(_, node)| {
+                !node.parked && node.shape.parent == parent && node.shape.name == *name
+            })
+            .map(|(id, _)| id.clone())
+    })
+}
+
+fn live_writes(world: &World) -> Vec<i64> {
+    (world.space().nodes().into_iter())
+        .filter(|node| node.status == NodeStatus::Live as i32)
+        .filter_map(|node| Some(node.current?.content?.mtime_ns))
+        .collect()
+}
+
+fn a_file_in_a_b() -> Vec<(usize, Step)> {
+    vec![
+        (0, folder("a")),
+        (0, user(0, 0, 1, "b")),
+        (0, user(1, 0, 2, "c.txt")),
+        (0, folder("ß")),
+    ]
+}
+
+fn moved_out_of_a_removed_folder(
+    setup: &[(usize, Step)],
+    made: &[(usize, Step)],
+    kept: &[(&[&str], &[&str])],
+    edited: bool,
+    scans: [&str; 2],
+) -> World {
+    let mut world = world(2);
+    world.phase(0, setup).unwrap();
+    let nodes: Vec<String> = (kept.iter())
+        .map(|(from, _)| live_node_at(&world, from).unwrap())
+        .collect();
+    world.run(1, made).unwrap();
+    let (from, to) = kept[0];
+    let mut steps = vec![
+        (
+            0,
+            rename(
+                target(&world, 0, from),
+                folder_number(&world, 0, &to[..1]),
+                to[to.len() - 1],
+            ),
+        ),
+        (0, delete(target(&world, 0, &from[..2]))),
+    ];
+    if edited {
+        steps.push((1, overwrite(target(&world, 1, from))));
+        steps.extend(commit(1));
+    }
+    world.run(1, &steps).unwrap();
+    for folder in scans {
+        let scan = Step::ScanFolder(folder_number(&world, 0, &[folder]));
+        world
+            .run(1, &[(0, scan), (0, COMMIT), (0, COMMIT), (0, DELIVER)])
+            .unwrap();
+        assert_eq!(
+            held_at(&world, 0, &["a", "b"]),
+            None,
+            "after rescanning {folder} of {scans:?}"
+        );
+        for ((_, to), node) in kept.iter().zip(&nodes) {
+            assert_eq!(
+                held_at(&world, 0, to).as_ref(),
+                Some(node),
+                "{to:?} after rescanning {folder} of {scans:?}"
+            );
+        }
+    }
+    world.phase(1, &[]).unwrap();
+    assert_eq!(
+        live_node_at(&world, &["a", "b"]),
+        None,
+        "after rescanning {scans:?}"
+    );
+    for ((_, to), node) in kept.iter().zip(&nodes) {
+        assert_eq!(
+            live_node_at(&world, to).as_ref(),
+            Some(node),
+            "{to:?} after rescanning {scans:?}"
+        );
+    }
+    world
+}
+
+#[test]
+fn a_file_moved_out_of_a_removed_folder_keeps_its_node_when_each_end_is_rescanned_alone() {
+    for scans in [["a", "ß"], ["ß", "a"]] {
+        let kept: [(&[&str], &[&str]); 1] = [(&["a", "b", "c.txt"], &["ß", "a"])];
+        let world = moved_out_of_a_removed_folder(&a_file_in_a_b(), &[], &kept, false, scans);
+        assert_eq!(live_writes(&world), [1], "after rescanning {scans:?}");
+    }
+}
+
+#[test]
+fn a_file_moved_out_of_a_removed_folder_keeps_its_node_and_an_edit_from_another_device_when_each_end_is_rescanned_alone()
+ {
+    for scans in [["a", "ß"], ["ß", "a"]] {
+        let kept: [(&[&str], &[&str]); 1] = [(&["a", "b", "c.txt"], &["ß", "a"])];
+        let world = moved_out_of_a_removed_folder(&a_file_in_a_b(), &[], &kept, true, scans);
+        assert_eq!(live_writes(&world), [2], "after rescanning {scans:?}");
+    }
+}
+
+#[test]
+fn a_folder_moved_out_of_a_removed_folder_keeps_its_nodes_when_each_end_is_rescanned_alone() {
+    let setup = [
+        (0, folder("a")),
+        (0, user(0, 0, 1, "b")),
+        (0, user(0, 0, 2, "\u{c9}")),
+        (0, user(1, 0, 3, "c.txt")),
+        (0, folder("ß")),
+    ];
+    for scans in [["a", "ß"], ["ß", "a"]] {
+        let kept: [(&[&str], &[&str]); 2] = [
+            (&["a", "b", "\u{c9}"], &["ß", "\u{c9}"]),
+            (&["a", "b", "\u{c9}", "c.txt"], &["ß", "\u{c9}", "c.txt"]),
+        ];
+        let world = moved_out_of_a_removed_folder(&setup, &[], &kept, false, scans);
+        assert_eq!(live_writes(&world), [1], "after rescanning {scans:?}");
+    }
+}
+
+#[test]
+fn a_file_moved_out_of_a_removed_folder_into_a_new_folder_keeps_its_node_when_each_end_is_rescanned_alone()
+ {
+    for scans in [["a", "ß"], ["ß", "a"]] {
+        let kept: [(&[&str], &[&str]); 1] = [(&["a", "b", "c.txt"], &["ß", "a"])];
+        let made = [(0, folder("ß"))];
+        let world =
+            moved_out_of_a_removed_folder(&a_file_in_a_b()[..3], &made, &kept, false, scans);
+        assert_eq!(live_writes(&world), [1], "after rescanning {scans:?}");
+        assert_eq!(
+            world.seen.contains_key("a rescan of a folder widens"),
+            scans[0] == "ß",
+            "after rescanning {scans:?}"
+        );
+    }
+}
+
+#[test]
+fn a_rescan_of_a_folder_sees_new_and_gone_entries_beside_it() {
+    let mut world = world(2);
+    world.phase(0, &[(0, folder("a")), (0, file("b"))]).unwrap();
+    let gone = target(&world, 0, &["b"]);
+    world
+        .run(1, &[(0, delete(gone)), (0, file("c.txt"))])
+        .unwrap();
+    let scan = Step::ScanFolder(folder_number(&world, 0, &["a"]));
+    world.run(1, &[(0, scan)]).unwrap();
+    let local = world.devices[0].engine.trees.local();
+    let mut beside: Vec<&str> = (local.iter())
+        .filter(|(_, node)| node.shape.parent == local.root)
+        .map(|(_, node)| node.shape.name.as_str())
+        .collect();
+    beside.sort_unstable();
+    assert_eq!(beside, ["a", "c.txt"]);
+}
+
+#[test]
+fn a_rescan_of_a_folder_leaves_changes_inside_a_folder_beside_it_unseen() {
+    let mut world = world(2);
+    let setup = [
+        (0, folder("a")),
+        (0, folder("b")),
+        (0, user(1, 0, 2, "c.txt")),
+    ];
+    world.phase(0, &setup).unwrap();
+    let inside = target(&world, 0, &["b", "c.txt"]);
+    world.run(1, &[(0, delete(inside))]).unwrap();
+    let scan = Step::ScanFolder(folder_number(&world, 0, &["a"]));
+    world.run(1, &[(0, scan)]).unwrap();
+    assert!(held_at(&world, 0, &["b", "c.txt"]).is_some());
+    let scan = Step::ScanFolder(folder_number(&world, 0, &["b"]));
+    world.run(1, &[(0, scan)]).unwrap();
+    assert_eq!(held_at(&world, 0, &["b", "c.txt"]), None);
 }
