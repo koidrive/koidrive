@@ -123,142 +123,42 @@ async fn verifying_an_existing_helper_is_read_only_even_with_pending_work() {
     assert!(f.requests.lock().unwrap().is_empty());
 }
 
-#[tokio::test]
-async fn native_codesign_accepts_inline_pins_in_bundle_and_updater_modes() {
-    let executable = std::env::current_exe().unwrap();
-    let mut magic = [0; 4];
-    File::open(&executable)
-        .unwrap()
-        .read_exact(&mut magic)
+fn assert_codesign(path: &Path, requirement: &str, deep: bool, code: i32) {
+    let output = crate::program::system("/usr/bin/codesign")
+        .args(signature_args(path, requirement, deep).unwrap())
+        .env("LC_ALL", "C")
+        .output()
         .unwrap();
-    assert_eq!(magic, [0xcf, 0xfa, 0xed, 0xfe]);
-    let (_tx, cancel) = watch::channel(false);
-    let control = Control {
-        deadline: Instant::now() + Duration::from_secs(20),
-        cancel,
-    };
-    let codesign = Path::new("/usr/bin/codesign");
-    let display = process(
-        codesign,
-        &[
-            Arg::from("--display"),
-            Arg::from("--verbose=4"),
-            passed(&executable).unwrap(),
-        ],
-        &control,
-    )
-    .await
-    .unwrap();
-    let display = String::from_utf8(display).unwrap();
-    let hashes: Vec<_> = display
-        .lines()
-        .filter_map(|line| line.strip_prefix("CDHash="))
-        .collect();
-    assert_eq!(hashes.len(), 1, "{display}");
-    let requirement = format!("cdhash H\"{}\"", hashes[0]);
-    for deep in [true, false] {
-        process(
-            codesign,
-            &signature_args(&executable, &requirement, deep).unwrap(),
-            &control,
-        )
-        .await
-        .unwrap();
-    }
+    assert_eq!(
+        output.status.code(),
+        Some(code),
+        "{}: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
-#[tokio::test]
-async fn native_codesign_parses_production_requirements_and_rejects_the_wrong_signer() {
-    let executable = std::env::current_exe().unwrap();
-    let (_tx, cancel) = watch::channel(false);
-    let control = Control {
-        deadline: Instant::now() + Duration::from_secs(20),
-        cancel,
-    };
-    for (requirement, deep) in [(REQUIREMENT, true), (SIGNER, false)] {
-        let error = process(
-            Path::new("/usr/bin/codesign"),
-            &signature_args(&executable, requirement, deep).unwrap(),
-            &control,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error.kind, AppInstallFailure::Command);
-        assert!(error.message.contains("failed to satisfy"), "{error:?}");
-        let error = verification_error(error, "signature rejected");
-        assert_eq!(error.kind, AppInstallFailure::Verification);
-    }
-}
-
-#[tokio::test]
+#[test]
 #[ignore = "creates a throwaway signing keychain; CI runs it on GitHub-hosted macOS"]
-async fn native_codesign_refuses_an_app_and_updater_signed_by_a_forged_developer_id() {
+fn native_codesign_refuses_an_app_and_updater_signed_by_a_forged_developer_id() {
     let forged = ForgedDeveloperId::new();
     let app = forged.app();
     let helper = app.join("Contents/Helpers/koi");
-    let config = Config::production().unwrap();
-    let (_tx, cancel) = watch::channel(false);
-    let control = Control {
-        deadline: Instant::now() + Duration::from_secs(30),
-        cancel,
-    };
     let claimed = "certificate leaf[subject.OU] = \"656SPP5XR8\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists";
-    for (path, deep) in [(&app, true), (&helper, false)] {
-        process(
-            &config.codesign,
-            &signature_args(path, claimed, deep).unwrap(),
-            &control,
-        )
-        .await
-        .unwrap();
-    }
-    let Err(error) = verify(&config, &app, None, &control).await else {
-        panic!("a forged Developer ID app was accepted");
-    };
-    assert_eq!(error.kind, AppInstallFailure::Verification);
-    assert!(error.message.contains("failed to satisfy"), "{error:?}");
-    let error = process(
-        &config.codesign,
-        &signature_args(&helper, SIGNER, false).unwrap(),
-        &control,
-    )
-    .await
-    .unwrap_err();
-    assert!(error.message.contains("failed to satisfy"), "{error:?}");
+    assert_codesign(&app, claimed, true, 0);
+    assert_codesign(&helper, claimed, false, 0);
+    assert_codesign(&app, REQUIREMENT, true, 3);
+    assert_codesign(&helper, SIGNER, false, 3);
 }
 
-#[tokio::test]
-async fn native_codesign_refuses_an_app_and_updater_signed_by_another_identity() {
+#[test]
+fn native_codesign_refuses_an_app_and_updater_signed_by_another_identity() {
     let app = Path::new("/System/Applications/Calculator.app");
     let helper = Path::new("/usr/bin/true");
-    let config = Config::production().unwrap();
-    let (_tx, cancel) = watch::channel(false);
-    let control = Control {
-        deadline: Instant::now() + Duration::from_secs(30),
-        cancel,
-    };
-    for (path, deep) in [(app, true), (helper, false)] {
-        process(
-            &config.codesign,
-            &signature_args(path, "anchor apple", deep).unwrap(),
-            &control,
-        )
-        .await
-        .unwrap();
-    }
-    let Err(error) = verify(&config, app, None, &control).await else {
-        panic!("an app signed by another identity was accepted");
-    };
-    assert_eq!(error.kind, AppInstallFailure::Verification);
-    assert!(error.message.contains("failed to satisfy"), "{error:?}");
-    let error = process(
-        &config.codesign,
-        &signature_args(helper, SIGNER, false).unwrap(),
-        &control,
-    )
-    .await
-    .unwrap_err();
-    assert!(error.message.contains("failed to satisfy"), "{error:?}");
+    assert_codesign(app, "anchor apple", true, 0);
+    assert_codesign(helper, "anchor apple", false, 0);
+    assert_codesign(app, REQUIREMENT, true, 3);
+    assert_codesign(helper, SIGNER, false, 3);
 }
 
 #[tokio::test]

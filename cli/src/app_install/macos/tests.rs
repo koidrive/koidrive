@@ -15,8 +15,7 @@ use crate::app_install::macos::transaction::{
     ensure_registered, ensure_with, exchange, stage_copy,
 };
 use crate::app_install::macos::verification::{
-    VerifiedHelper, current, inventory, safe_tree, signature_args, unchanged_bundle,
-    verification_error, verify, verify_helper,
+    VerifiedHelper, current, inventory, safe_tree, signature_args, unchanged_bundle, verify_helper,
 };
 use crate::app_install::outcome::{AppChange, AppInstall, AppLaunchResult, AppSkip, RetiredApp};
 use crate::app_install::{cancel_active, skip_reason};
@@ -25,8 +24,7 @@ use rustix::fs::FlockOperation;
 use semver::Version;
 use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
-use std::fs::{self, File};
-use std::io::Read;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
