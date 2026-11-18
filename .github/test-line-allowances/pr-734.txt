@@ -1,4 +1,4 @@
-27
+28
 # The tests pin that a file seen with more than one link gets no change-time bound it can match once it has one link again: an edit that keeps the size and mtime after an outside link went away is read while Koidrive runs, after a restart, and when the edit landed between the read and the store write of a new linked file.
 # Earlier tests covered an outside link removed only while Koidrive was stopped, and none covered the bound a new linked file got from the clock of the store write.
 # Three fs tests that remove one link now also check that the file left with one link is reported modified, which is the read the rule needs.

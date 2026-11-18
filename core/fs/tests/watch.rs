@@ -1403,6 +1403,7 @@ fn a_new_link_a_scan_finds_beside_the_file_it_links_is_created() {
     fs::create_dir_all(root.join("x")).unwrap();
     fs::create_dir(root.join("e")).unwrap();
     fs::write(root.join("x/g.txt"), "g").unwrap();
+    fs::set_permissions(root.join("x/g.txt"), fs::Permissions::from_mode(0o644)).unwrap();
     let mut snapshot = Snapshot::scan(&root).unwrap();
     fs::hard_link(root.join("x/g.txt"), root.join("e/link.txt")).unwrap();
     let rescan = snapshot.rescan(&root, [PathBuf::from("e")]).unwrap();
