@@ -394,3 +394,108 @@ export function runTable(results: RunResult[]): string {
   }
   return lines.join("\n") + "\n";
 }
+
+export const TELEMETRY_KEPT = {
+  $metadata: ["id", "type", "service", "origin", "trigger", "requestId", "traceId", "spanId", "parentSpanId", "spanName", "startTime", "endTime", "duration", "traceDuration", "statusCode"],
+  $workers: ["eventType", "entrypoint", "executionModel", "outcome", "wallTimeMs", "cpuTimeMs", "requestId", "traceId", "spanId", "durableObjectId"],
+} as const;
+const SPAN_ATTRIBUTE = /cloudflare\.(r2\.(operation|response\.success|error\.code)|durable_object\.id|entrypoint|execution_model)$/;
+const FIELD_DEPTH = 4;
+const MAX_FIELDS = 500;
+
+type Scalar = string | number | boolean;
+type Raw = Record<string, unknown>;
+
+export interface ServerEvent {
+  timestamp: number | null;
+  $metadata: Record<string, Scalar>;
+  $workers: Record<string, Scalar>;
+  attributes: Record<string, Scalar>;
+}
+
+function isScalar(value: unknown): value is Scalar {
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+}
+
+function* leaves(value: unknown, depth: number, path: string[] = []): Generator<[string[], unknown]> {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || path.length >= depth) {
+    yield [path, value];
+    return;
+  }
+  for (const [key, child] of Object.entries(value)) yield* leaves(child, depth, [...path, key]);
+}
+
+export function serverEvent(event: Raw): ServerEvent {
+  const kept = (group: keyof typeof TELEMETRY_KEPT) => {
+    const source = event[group];
+    const out: Record<string, Scalar> = {};
+    if (typeof source !== "object" || source === null) return out;
+    for (const key of TELEMETRY_KEPT[group]) {
+      const value = (source as Raw)[key];
+      if (isScalar(value)) out[key] = typeof value === "string" ? value.split("?")[0]! : value;
+    }
+    return out;
+  };
+  const attributes: Record<string, Scalar> = {};
+  for (const [path, value] of leaves(event, 8)) {
+    const name = path.join(".");
+    const match = SPAN_ATTRIBUTE.exec(name);
+    if (match && isScalar(value)) attributes[match[0]] = value;
+  }
+  return { timestamp: typeof event.timestamp === "number" ? event.timestamp : null, $metadata: kept("$metadata"), $workers: kept("$workers"), attributes };
+}
+
+export function countFields(event: Raw, counts: Map<string, number>): void {
+  for (const [path] of leaves(event, FIELD_DEPTH)) {
+    const name = path.join(".");
+    if (counts.has(name) || counts.size < MAX_FIELDS) counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+}
+
+export interface Collected {
+  queries: number;
+  events: number;
+  duplicates: number;
+  saturated: { fromMs: number; toMs: number }[];
+  uncoveredFromMs: number | null;
+}
+
+export async function collectEvents(
+  query: (fromMs: number, toMs: number) => Promise<Raw[]>,
+  fromMs: number,
+  toMs: number,
+  keep: (event: Raw) => void,
+  options: { limit: number; minWindowMs: number; stopAtMs: number; now?: () => number },
+): Promise<Collected> {
+  const now = options.now ?? Date.now;
+  const seen = new Set<string>();
+  const collected: Collected = { queries: 0, events: 0, duplicates: 0, saturated: [], uncoveredFromMs: null };
+  const windows: [number, number][] = [[fromMs, toMs]];
+  for (let window = windows.shift(); window; window = windows.shift()) {
+    const [from, to] = window;
+    if (now() >= options.stopAtMs) {
+      collected.uncoveredFromMs = from;
+      break;
+    }
+    const events = await query(from, to);
+    collected.queries++;
+    if (events.length >= options.limit && to - from > options.minWindowMs) {
+      const mid = Math.floor((from + to) / 2);
+      windows.unshift([from, mid], [mid, to]);
+      continue;
+    }
+    if (events.length >= options.limit) collected.saturated.push({ fromMs: from, toMs: to });
+    for (const event of events) {
+      const metadata = event.$metadata as Raw | undefined;
+      const id = typeof metadata?.id === "string" ? metadata.id : JSON.stringify(event);
+      if (seen.has(id)) {
+        collected.duplicates++;
+        continue;
+      }
+      seen.add(id);
+      collected.events++;
+      keep(event);
+    }
+  }
+  return collected;
+}
