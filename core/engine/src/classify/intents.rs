@@ -827,6 +827,10 @@ impl Trees {
         let mut nodes: Vec<NodeId> = vec![id.to_owned()];
         let mut next = 0;
         while let Some(node) = nodes.get(next).cloned() {
+            next += 1;
+            if self.l.get(&node).is_none() {
+                continue;
+            }
             let deleted = (self.r_names.children(&node)).filter(|child| {
                 self.l.get(child).is_none() && !self.journal.seen(child).is_empty()
             });
@@ -835,7 +839,6 @@ impl Trees {
                 .cloned()
                 .collect();
             nodes.extend(children);
-            next += 1;
         }
         let mut seen = Vec::new();
         for node in &nodes {
