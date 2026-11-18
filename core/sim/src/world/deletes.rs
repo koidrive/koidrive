@@ -39,9 +39,18 @@ pub(super) struct Deletion {
     resendable: BTreeSet<i64>,
     pub(super) reached: bool,
     pub(super) gone: bool,
+    pub(super) carried_at: Option<u64>,
 }
 
 impl Deletion {
+    pub(super) fn carried(&mut self, seq: u64, deleted: &BTreeSet<&str>) {
+        if (self.files.iter())
+            .any(|file| (file.path.last()).is_some_and(|root| deleted.contains(root.as_str())))
+        {
+            self.carried_at.get_or_insert(seq);
+        }
+    }
+
     pub(super) fn held(
         &self,
         live: &BTreeMap<i64, BTreeSet<NodeId>>,
@@ -168,6 +177,7 @@ impl World {
                 unsent,
                 reached: false,
                 gone: false,
+                carried_at: None,
             };
             deletion.reached = deletion.held(&live, |_, _, _, _| false).is_none();
             self.deletions.push(deletion);

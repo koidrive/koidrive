@@ -691,3 +691,37 @@ fn a_save_another_device_makes_after_the_delete_brings_the_file_back() {
     saved.extend(commit(0));
     checked(2, &[vec![(0, file("a"))], saved]).unwrap();
 }
+
+#[test]
+fn a_sibling_edit_leaves_the_deleted_file_checked_after_the_deleting_device_leaves() {
+    let mut deleted = vec![(1, overwrite(2)), (0, delete(0))];
+    deleted.extend(commit(1));
+    deleted.extend(commit(0));
+    deleted.push((0, Step::Leave));
+    checked(
+        2,
+        &[
+            vec![
+                (0, folder("b")),
+                (0, user(1, 0, 1, "a")),
+                (0, user(1, 0, 1, "c.txt")),
+            ],
+            deleted,
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_unsent_edit_of_the_file_leaves_the_delete_checked_after_the_deleting_device_leaves() {
+    let mut renamed = vec![(1, rename(0, 0, "ss"))];
+    renamed.extend(commit(1));
+    renamed.push((0, delete(1)));
+    renamed.extend(commit(0));
+    renamed.extend([(1, overwrite(1)), (1, Step::Leave), (0, Step::Leave)]);
+    checked(
+        2,
+        &[vec![(0, folder("a")), (0, user(1, 0, 1, "b"))], renamed],
+    )
+    .unwrap();
+}

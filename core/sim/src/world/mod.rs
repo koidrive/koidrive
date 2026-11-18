@@ -935,8 +935,9 @@ impl World {
                 let device = &mut self.devices[d];
                 device.left = true;
                 device.link = None;
-                self.deletions
-                    .retain(|deletion| deletion.reached || deletion.device != d);
+                self.deletions.retain(|deletion| {
+                    deletion.reached || deletion.device != d || deletion.carried_at.is_some()
+                });
             }
             Step::User(action) => self.act(d, action, Act::of(action.kind)),
             Step::Copy(action) => self.act(d, action, Act::Copy),
@@ -1462,6 +1463,8 @@ impl World {
         let live = live_nodes(&self.space);
         for deletion in &mut self.deletions {
             deletion.gone = deletion.held(&live, |_, _, _, _| false).is_none();
+            deletion.carried_at =
+                (deletion.carried_at).filter(|seq| *seq <= backup.space.head_seq());
         }
         self.held_commits = backup.held_commits.clone();
         self.in_history = backup.in_history.clone();
@@ -2855,7 +2858,20 @@ impl World {
                                 self.unasked.get_or_insert(why);
                             }
                             let live = live_nodes(&self.space);
+                            let deleted: BTreeSet<&str> = (sent.ops.iter())
+                                .zip(&committed.result.results)
+                                .filter(|(_, outcome)| {
+                                    outcome.code != op_result::Code::Rejected as i32
+                                })
+                                .filter_map(|(op, _)| match &op.op {
+                                    Some(op::Op::Delete(op)) => Some(op.node_id.as_str()),
+                                    _ => None,
+                                })
+                                .collect();
                             for deletion in &mut self.deletions {
+                                if deletion.device == d {
+                                    deletion.carried(record.seq, &deleted);
+                                }
                                 deletion.reached |=
                                     deletion.held(&live, |_, _, _, _| false).is_none();
                             }
