@@ -149,7 +149,10 @@ impl Checked {
             .filter(|at| *at <= now)
             .map_or(i64::MIN, |at| at.saturating_add(DAY_MS));
         let retry = (self.retry_after)
-            .filter(|_| self.retry_set_at.is_none_or(|at| at <= now))
+            .filter(|_| match self.retry_set_at {
+                Some(at) => at <= now,
+                None => self.checked_at.is_none_or(|at| at <= now),
+            })
             .unwrap_or(i64::MIN);
         day.max(retry)
     }
@@ -356,7 +359,7 @@ pub(crate) async fn ask(
                 Err(_) => return Answer::Refused { until: None },
             };
             let (status, headers) = (response.status(), response.headers().clone());
-            let next = match next_page(&url, &headers) {
+            let next = match next_page(&url, &page, &headers) {
                 Ok(next) => next,
                 Err(()) => return Answer::Refused { until: None },
             };
@@ -402,7 +405,7 @@ pub(crate) async fn ask(
     .unwrap_or(Answer::Refused { until: None })
 }
 
-fn next_page(endpoint: &Url, headers: &HeaderMap) -> Result<Option<Url>, ()> {
+fn next_page(endpoint: &Url, page: &Url, headers: &HeaderMap) -> Result<Option<Url>, ()> {
     let mut next = None;
     for header in headers.get_all("link") {
         for link in header.to_str().map_err(|_| ())?.split(',') {
@@ -425,7 +428,7 @@ fn next_page(endpoint: &Url, headers: &HeaderMap) -> Result<Option<Url>, ()> {
                 .strip_prefix('<')
                 .and_then(|target| target.strip_suffix('>'))
                 .ok_or(())?;
-            let url = endpoint.join(target).map_err(|_| ())?;
+            let url = page.join(target).map_err(|_| ())?;
             if url.origin() != endpoint.origin()
                 || !lists_releases(endpoint, &url)
                 || !url.username().is_empty()

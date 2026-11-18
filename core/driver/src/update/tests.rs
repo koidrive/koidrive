@@ -196,6 +196,11 @@ fn a_check_time_ahead_of_the_clock_is_due_at_once() {
         now + 30 * DAY_MS,
     );
     assert!(limited.due(now) <= now);
+    let legacy = Checked {
+        retry_set_at: None,
+        ..limited
+    };
+    assert!(legacy.due(now) <= now);
 }
 
 #[test]
@@ -733,13 +738,17 @@ fn next_links_accept_relative_urls_and_relation_lists_but_not_ambiguous_targets(
     let (url, _) = releases_url(None).unwrap();
     let mut links = headers(&[("link", "<?per_page=20&page=2>; rel=\"next last\"")]);
     let expected = url.join("?per_page=20&page=2").unwrap();
-    assert_eq!(next_page(&url, &links), Ok(Some(expected)));
+    assert_eq!(next_page(&url, &url, &links), Ok(Some(expected)));
     links.append("link", HeaderValue::from_static("<?page=3>; rel=\"next\""));
-    assert_eq!(next_page(&url, &links), Err(()));
+    assert_eq!(next_page(&url, &url, &links), Err(()));
     assert_eq!(
-        next_page(&url, &headers(&[("link", "not-a-link; rel=next")])),
+        next_page(&url, &url, &headers(&[("link", "not-a-link; rel=next")])),
         Err(())
     );
+    let second = url.join("/repositories/7/releases?page=2").unwrap();
+    let third = headers(&[("link", "<?page=3>; rel=\"next\"")]);
+    let expected = url.join("/repositories/7/releases?page=3").unwrap();
+    assert_eq!(next_page(&url, &second, &third), Ok(Some(expected)));
 }
 
 #[tokio::test]
@@ -1164,7 +1173,7 @@ fn next_links_follow_githubs_repository_pages_on_the_same_origin() {
         let base = Url::parse(base).unwrap();
         let next = |target: &Url| {
             let link = format!("<{target}>; rel=\"next\"");
-            next_page(&url, &headers(&[("link", &link)]))
+            next_page(&url, &url, &headers(&[("link", &link)]))
         };
         let page = base
             .join("repositories/123/releases?per_page=20&page=2")
