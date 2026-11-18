@@ -301,7 +301,6 @@ impl Space {
         Ok(())
     }
 
-    /// The root as a folder, once [`Space::check_held`] passes.
     pub(crate) fn root_folder(&self) -> Result<Folder, Unresolved> {
         self.check_held()?;
         Ok(Folder {
@@ -315,7 +314,6 @@ impl Space {
     }
 }
 
-/// Opens `dir` inside `folder` and checks its identity.
 fn descend(folder: Folder, dir: &Dir) -> Result<Folder, Unresolved> {
     check_name(&dir.name)?;
     let fd = open_dir(folder.fd(), &dir.name, &folder.route)?;
@@ -392,8 +390,6 @@ fn open_dir(parent: BorrowedFd<'_>, name: &OsStr, route: &[Dir]) -> Result<Owned
     })
 }
 
-/// Opens the folder `name` inside `parent` without following a symbolic
-/// link.
 #[cfg(target_os = "linux")]
 fn open_beneath(parent: BorrowedFd<'_>, name: &OsStr) -> Result<OwnedFd, Errno> {
     use rustix::fs::{Mode, ResolveFlags};
