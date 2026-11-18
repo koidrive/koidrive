@@ -280,7 +280,7 @@ def property_tests(root):
 
 def cover(kills, killed, candidates, durations):
     left, chosen = set(killed), []
-    while left:
+    while left and candidates:
         best = max(sorted(candidates), key=lambda other: (len(left & kills[other]), -durations.get(other, 0.0)))
         if not left & kills[best]:
             break
