@@ -9,6 +9,10 @@ use koidrive_engine::effects::{Base, BatchLimit, Dir, Displaced, Effect, EffectR
 use koidrive_engine::first_link::PriorSync;
 use koidrive_engine::guard::{Counted, GuardState, RemoteDeletion, Trash};
 use koidrive_engine::ids::{IdGen, uuid_v7};
+use koidrive_engine::journal::{
+    Author, Field, Flight, HistoryEntry, IntentId, JournalState, Place, Row, RowState, Seen, Value,
+    WireBase,
+};
 use koidrive_engine::question::{
     Answer, Frozen, Held, Limit, Question, QuestionKind, RecoveryCause, RecoveryGroup,
     RecoveryTrigger, Revisions,
@@ -24,8 +28,8 @@ use koidrive_engine::tree::{
 };
 use koidrive_fs::{FileId, VolumeId};
 use koidrive_proto::v1::{
-    ChunkRef, Commit, CommitResult, Content, CreateFile, Delete, NodeKind, NodeState, NodeStatus,
-    Op, OpResult, VersionInfo, Welcome, op, op_result,
+    ChunkRef, Commit, CommitResult, Content, CreateFile, Delete, FieldIntents, Intent, NodeKind,
+    NodeState, NodeStatus, Op, OpResult, VersionInfo, Welcome, op, op_result,
 };
 use koidrive_store::migrations::{LEGACY_STEPS, MIGRATIONS, NAMED};
 use koidrive_store::{
@@ -1150,6 +1154,132 @@ fn three_trees_round_trip() {
         .unwrap();
 }
 
+#[test]
+fn intents_of_r_and_s_and_the_backfill_marker_survive_a_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let intent = |n: u8, author: &str| Intent {
+        id: vec![n; 16],
+        author_device_id: author.into(),
+        replay: n.is_multiple_of(2),
+        over: vec![n + 100; 16],
+        ..Default::default()
+    };
+    let trashed = NodeState {
+        node_id: "t".into(),
+        parent_id: "root".into(),
+        name: "t.txt".into(),
+        kind: NodeKind::File as i32,
+        status: NodeStatus::Trashed as i32,
+        intents: Some(FieldIntents {
+            place: Some(intent(1, "d1")),
+            content: None,
+            status: Some(intent(2, "")),
+        }),
+        trash_held: vec![vec![3; 16], vec![4; 16]],
+        ..Default::default()
+    };
+    let plain = NodeState {
+        node_id: "p".into(),
+        parent_id: "root".into(),
+        name: "p.txt".into(),
+        kind: NodeKind::File as i32,
+        status: NodeStatus::Live as i32,
+        ..Default::default()
+    };
+    let synced = FieldIntents {
+        place: None,
+        content: Some(intent(5, "d2")),
+        status: None,
+    };
+    let mut store = Store::open(&path).unwrap();
+    store
+        .transaction(|tx| {
+            assert!(tx.journal_backfill_owed()?);
+            tx.put_remote_node(&trashed)?;
+            tx.put_remote_node(&plain)?;
+            tx.put_synced_node(&discarded_in_s())?;
+            tx.put_synced_node(&SyncedNode {
+                node_id: "e".into(),
+                shape: file_shape("root", "e.txt"),
+                pending_for: String::new(),
+            })?;
+            tx.set_synced_intents("d", Some(&synced))?;
+            tx.set_remote_intents("p", Some(&synced))?;
+            tx.journal_backfilled()?;
+            Ok::<_, Error>(())
+        })
+        .unwrap();
+    drop(store);
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| {
+            let plain = NodeState {
+                intents: Some(synced.clone()),
+                ..plain.clone()
+            };
+            assert_eq!(tx.remote_nodes()?, [plain, trashed.clone()]);
+            assert_eq!(
+                tx.synced_intents()?,
+                BTreeMap::from([("d".to_owned(), synced.clone())])
+            );
+            assert!(!tx.journal_backfill_owed()?);
+            Ok::<_, Error>(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn a_legacy_place_intent_never_replaces_the_place_a_row_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let intent = |n: u8| Intent {
+        id: vec![n; 16],
+        ..Default::default()
+    };
+    let node = NodeState {
+        node_id: "n".into(),
+        parent_id: "root".into(),
+        name: "n.txt".into(),
+        kind: NodeKind::File as i32,
+        status: NodeStatus::Live as i32,
+        intents: Some(FieldIntents {
+            place: Some(intent(1)),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut store = Store::open(&path).unwrap();
+    store.transaction(|tx| tx.put_remote_node(&node)).unwrap();
+    drop(store);
+    let legacy = prost::Message::encode_to_vec(&intent(2));
+    (Connection::open(&path).unwrap())
+        .execute("UPDATE remote_nodes SET place_intent = ?1", [legacy])
+        .unwrap();
+    let read = Store::open(&path)
+        .unwrap()
+        .read(|tx| tx.remote_nodes())
+        .unwrap();
+    assert_eq!(read, std::slice::from_ref(&node));
+    let moved = NodeState {
+        intents: Some(FieldIntents {
+            place: Some(intent(3)),
+            ..Default::default()
+        }),
+        ..node
+    };
+    let mut store = Store::open(&path).unwrap();
+    store.transaction(|tx| tx.put_remote_node(&moved)).unwrap();
+    assert_eq!(store.read(|tx| tx.remote_nodes()).unwrap(), [moved]);
+    drop(store);
+    let column: Option<Vec<u8>> = (Connection::open(&path).unwrap())
+        .query_row("SELECT place_intent FROM remote_nodes", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(column, None);
+}
+
 fn identity(ino: u128) -> FileIdentity {
     FileIdentity {
         ino,
@@ -1251,6 +1381,128 @@ fn placed_and_version() -> [RestoreIntent; 2] {
 
 /// An engine state with every field set, and every kind of effect, location, restore and
 /// restore outcome.
+fn journal_state() -> JournalState {
+    let intent = |n: u8| IntentId::from_bytes(&[n; 16]).unwrap();
+    let content = Value::Content {
+        version_id: Some("v1".into()),
+        value: koidrive_engine::state::ContentValue {
+            size: 3,
+            manifest_digest: vec![1, 2],
+            executable: true,
+        },
+    };
+    let place = Value::Place(Place {
+        parent: "p".into(),
+        name: "Café.txt".into(),
+        mark: Some("Café.txt".into()),
+    });
+    let row = |n: u8, value: Value, state: RowState| Row {
+        intent: intent(n),
+        author: Author::Own,
+        base: Some(intent(n + 100)),
+        value,
+        wire_base: WireBase::None,
+        state,
+        time_ms: i64::from(n) * 1000,
+        replay: n.is_multiple_of(2),
+    };
+    let rows = [
+        (
+            ("a".to_owned(), Field::Content),
+            Row {
+                wire_base: WireBase::Content {
+                    made_over: vec!["v0".into()],
+                    source_version_id: Some("v0".into()),
+                },
+                ..row(
+                    1,
+                    content.clone(),
+                    RowState::Local {
+                        flight: Some(Flight {
+                            intent: intent(9),
+                            value: content.clone(),
+                            base: None,
+                            wire_base: WireBase::None,
+                            time_ms: 7,
+                        }),
+                    },
+                )
+            },
+        ),
+        (
+            ("a".to_owned(), Field::Place),
+            Row {
+                author: Author::Carried("other-device".into()),
+                wire_base: WireBase::Place(Place {
+                    parent: "q".into(),
+                    name: "old".into(),
+                    mark: None,
+                }),
+                ..row(2, place.clone(), RowState::Sent)
+            },
+        ),
+        (
+            ("b".to_owned(), Field::Status),
+            Row {
+                author: Author::Carried(String::new()),
+                base: None,
+                ..row(
+                    3,
+                    Value::Status { live: false },
+                    RowState::Held {
+                        held_as: intent(4),
+                        version_id: Some("v4".into()),
+                    },
+                )
+            },
+        ),
+        (
+            ("c".to_owned(), Field::Status),
+            row(
+                5,
+                Value::Status { live: true },
+                RowState::Local { flight: None },
+            ),
+        ),
+    ];
+    let history = |n: u8| HistoryEntry {
+        intent: intent(n),
+        applied_at_ms: i64::from(n),
+        in_local: n % 2 == 1,
+    };
+    JournalState {
+        rows: rows.into(),
+        history: [
+            (
+                ("a".to_owned(), Field::Content),
+                vec![history(10), history(11), history(12)],
+            ),
+            (("b".to_owned(), Field::Place), vec![history(13)]),
+        ]
+        .into(),
+        seen: [(
+            "b".to_owned(),
+            vec![
+                Seen {
+                    node: "b".into(),
+                    field: Field::Place,
+                    intent: intent(13),
+                    value: Some(place),
+                },
+                Seen {
+                    node: "b-child".into(),
+                    field: Field::Content,
+                    intent: intent(14),
+                    value: None,
+                },
+            ],
+        )]
+        .into(),
+        listed: true,
+        ids: Some(0x0123_4567_89ab_cdef),
+    }
+}
+
 fn engine_state() -> EngineState {
     let in_docs = |name: &str| Location::At {
         base: Base::Root,
@@ -1336,6 +1588,7 @@ fn engine_state() -> EngineState {
     };
     EngineState {
         trees: TreesState {
+            journal: journal_state(),
             dirty: nodes(["a", "b"]),
             unsearched: nodes(["b"]),
             reverted: nodes(["r"]),

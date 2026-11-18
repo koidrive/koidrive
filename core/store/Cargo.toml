@@ -15,6 +15,7 @@ koidrive-engine = { path = "../engine", features = ["serde"] }
 koidrive-fs = { path = "../fs" }
 koidrive-proto = { path = "../proto" }
 prost.workspace = true
+serde = "1.0.229"
 serde_json = "1.0.154"
 rusqlite = { version = "0.41.1", features = ["bundled", "fallible_uint", "functions"] }
 thiserror = "2.0.21"

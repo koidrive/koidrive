@@ -55,6 +55,7 @@ macro_rules! next_row {
 }
 
 mod engine;
+mod journal;
 mod questions;
 mod restore;
 
@@ -599,7 +600,7 @@ impl Tx<'_> {
     ) -> Result<Option<B>> {
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, parent_id, name, kind, status, content_rev, meta_rev, trash_group, current,
-                    edit_rev, meta_edit_rev, pending_for, pending_by, place_intent
+                    edit_rev, meta_edit_rev, pending_for, pending_by, intents, trash_held, place_intent
              FROM remote_nodes ORDER BY node_id",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -622,15 +623,21 @@ impl Tx<'_> {
                 },
                 row.get::<_, Option<Vec<u8>>>(8)?,
                 row.get::<_, Option<Vec<u8>>>(13)?,
+                row.get::<_, Option<Vec<u8>>>(14)?,
+                row.get::<_, Option<Vec<u8>>>(15)?,
             ))
         })?;
         for row in rows {
-            let (mut node, current, place_intent) = row?;
+            let (mut node, current, intents, trash_held, place_intent) = row?;
             node.current = decode(current)?;
-            node.intents = decode::<Intent>(place_intent)?.map(|place| FieldIntents {
-                place: Some(place),
-                ..Default::default()
-            });
+            node.intents = decode::<FieldIntents>(intents)?;
+            if let Some(place) = decode::<Intent>(place_intent)? {
+                let intents = node.intents.get_or_insert_with(FieldIntents::default);
+                intents.place.get_or_insert(place);
+            }
+            node.trash_held = decode::<NodeState>(trash_held)?
+                .unwrap_or_default()
+                .trash_held;
             if let ControlFlow::Break(stopped) = each(node) {
                 return Ok(Some(stopped));
             }
@@ -644,15 +651,16 @@ impl Tx<'_> {
             .prepare_cached(
                 "INSERT INTO remote_nodes
                  (node_id, parent_id, name, kind, status, content_rev, meta_rev, trash_group, current,
-                  edit_rev, meta_edit_rev, pending_for, pending_by, place_intent)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                  edit_rev, meta_edit_rev, pending_for, pending_by, intents, trash_held, place_intent)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL)
                  ON CONFLICT (node_id) DO UPDATE SET parent_id = excluded.parent_id,
                   name = excluded.name, kind = excluded.kind, status = excluded.status,
                   content_rev = excluded.content_rev, meta_rev = excluded.meta_rev,
                   trash_group = excluded.trash_group, current = excluded.current,
                   edit_rev = excluded.edit_rev, meta_edit_rev = excluded.meta_edit_rev,
                   pending_for = excluded.pending_for, pending_by = excluded.pending_by,
-                  place_intent = excluded.place_intent",
+                  intents = excluded.intents, trash_held = excluded.trash_held,
+                  place_intent = NULL",
             )?
             .execute(params![
                 node.node_id,
@@ -668,7 +676,14 @@ impl Tx<'_> {
                 node.meta_edit_rev,
                 non_empty(&node.pending_for),
                 non_empty(&node.pending_by),
-                node.intents.as_ref().and_then(|intents| intents.place.as_ref()).map(Intent::encode_to_vec),
+                node.intents.as_ref().map(FieldIntents::encode_to_vec),
+                (!node.trash_held.is_empty()).then(|| {
+                    NodeState {
+                        trash_held: node.trash_held.clone(),
+                        ..NodeState::default()
+                    }
+                    .encode_to_vec()
+                }),
             ])?;
         Ok(())
     }

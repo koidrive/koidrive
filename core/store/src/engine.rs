@@ -767,6 +767,7 @@ impl Tx<'_> {
                 Effect::try_from(effect)?,
             );
         }
+        state.trees.journal = self.journal_state()?;
         Ok(true)
     }
 
@@ -836,6 +837,7 @@ impl Tx<'_> {
             kept_originals,
             unsent_marks,
             pending_finishes,
+            journal,
         } = trees;
         let CommitsChanges {
             accepted,
@@ -1448,6 +1450,7 @@ impl Tx<'_> {
                 put.execute(params![node, StoredEffect::from(effect).encode_to_vec()])
             },
         )?;
+        self.write_journal_changes(journal)?;
         Ok(())
     }
 

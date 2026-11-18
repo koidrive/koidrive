@@ -333,7 +333,7 @@ fn a_delete_lists_what_r_holds_unseen_and_what_r_lost_held() {
         seen("b", Field::Content, 2, Some(content(2))),
         seen("b", Field::Content, 2, Some(content(2))),
     ];
-    let remote = |node: &str, n: u8, value: Value| Held {
+    let remote = |node: &str, n: u8, value: Value| RemoteField {
         node: node.into(),
         field: Field::Content,
         intent: id(n),
@@ -387,6 +387,23 @@ fn replacing_computed_ids_reaches_rows_history_and_seen_lists() {
     assert_eq!(history, [id(11), id(12)]);
     assert_eq!(journal.seen("d")[0].intent, id(11));
     assert_eq!(journal.row("d", Field::Status).unwrap().base, Some(id(11)));
+}
+
+#[test]
+fn the_generator_is_its_own_stream_and_survives_a_restore() {
+    let mut engine = IdGen::new(42);
+    let mut journal = Journal::default();
+    journal.seed(engine.state);
+    engine.next_u64();
+    let mut earlier: Vec<String> = (0..64).map(|_| engine.uuid_v7(0)).collect();
+    let minted: Vec<IntentId> = (0..64).map(|_| journal.mint()).collect();
+    earlier.extend(minted.iter().map(IntentId::to_string));
+    let mut restored = Journal::restore(journal.state());
+    restored.seed(IdGen::new(42).state);
+    let next = restored.mint().to_string();
+    assert!(!earlier.contains(&next), "{next}");
+    assert_eq!(earlier.iter().collect::<BTreeSet<_>>().len(), earlier.len());
+    assert_eq!(restored.take_changes().ids, Some(restored.state().ids));
 }
 
 #[test]

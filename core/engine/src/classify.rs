@@ -12,6 +12,7 @@ use siphasher::sip::SipHasher13;
 
 use crate::first_link;
 use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
+use crate::journal::Journal;
 use crate::names::{name_key, nfc, same_name};
 use crate::provenance::Provenances;
 use crate::question::Frozen;
@@ -680,6 +681,7 @@ pub struct Trees {
     kept_originals: TrackedMap<NodeId, NodeId>,
     unsent_marks: TrackedMap<NodeId, String>,
     pending_finishes: TrackedMap<NodeId, PendingFinish>,
+    journal: Journal,
     ignore: Matcher,
     /// Nodes whose local copy the user moved into an ignored folder that is no node. L keeps the
     /// entry each had before the move.
@@ -811,6 +813,7 @@ impl Trees {
             kept_originals: TrackedMap::default(),
             unsent_marks: TrackedMap::default(),
             pending_finishes: TrackedMap::default(),
+            journal: Journal::default(),
             ignore: Matcher::new(LocalRules::default()),
             outside: TrackedSet::default(),
             lost: TrackedSet::default(),
@@ -7799,6 +7802,7 @@ impl Trees {
             kept_originals: self.kept_originals.to_map(),
             unsent_marks: self.unsent_marks.to_map(),
             pending_finishes: self.pending_finishes.to_map(),
+            journal: self.journal.state(),
         }
     }
 
@@ -7860,6 +7864,7 @@ impl Trees {
             kept_originals,
             unsent_marks,
             pending_finishes,
+            journal,
             ignore: _,
             outside,
             lost,
@@ -7943,6 +7948,7 @@ impl Trees {
             kept_originals: kept_originals.take_changes(),
             unsent_marks: unsent_marks.take_changes(),
             pending_finishes: pending_finishes.take_changes(),
+            journal: journal.take_changes(),
         }
     }
 
@@ -8188,6 +8194,7 @@ impl Trees {
             kept_originals,
             unsent_marks,
             pending_finishes,
+            journal,
         } = state;
         self.unsettled = dirty.clone();
         self.same.clear();
@@ -8248,6 +8255,7 @@ impl Trees {
         self.kept_originals = kept_originals.into();
         self.unsent_marks = unsent_marks.into();
         self.pending_finishes = pending_finishes.into();
+        self.journal = Journal::restore(journal);
         self.rules_known = false;
         self.unknown_rules.clear();
         Ok(Some(()))
