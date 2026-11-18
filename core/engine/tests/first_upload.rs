@@ -147,7 +147,7 @@ fn first_upload(upload: Upload) -> u64 {
         ignored,
         cap,
     } = upload;
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.rules_scanned();
     let dirs = files.div_ceil(per_dir);
     for d in 0..dirs {
@@ -302,7 +302,7 @@ fn remote(parent: String, name: String, kind: Kind) -> RemoteNode {
 }
 
 fn first_download(files: usize, per_dir: usize) -> u64 {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.rules_scanned();
     let dirs = files.div_ceil(per_dir);
     for d in 0..dirs {
@@ -350,7 +350,7 @@ fn first_download(files: usize, per_dir: usize) -> u64 {
 }
 
 fn first_link_of_nested_folders(levels: usize, depth: usize) -> u64 {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.rules_scanned();
     let mut parent = ROOT.to_owned();
     for level in 0..levels {
@@ -383,7 +383,7 @@ fn first_link_of_nested_folders(levels: usize, depth: usize) -> u64 {
 }
 
 fn links_waiting_on_their_folders(folders: usize, settles: usize) -> (u64, u64) {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.rules_scanned();
     for f in 0..folders {
         let folder = format!("d{f:06}");

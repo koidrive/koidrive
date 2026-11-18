@@ -60,7 +60,7 @@ fn dir(parent: &str, name: &str) -> Shape {
 struct Remote<'a>(&'a str, Shape, bool, u64);
 
 fn trees(local: &[(&str, Shape)], synced: &[(&str, Shape)], remote: &[Remote]) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (ino, (id, shape)) in local.iter().enumerate() {
         let node = LocalNode {
             left_out_when_placed: false,
@@ -1389,7 +1389,7 @@ fn an_entry_like_the_servers_at_a_name_s_gives_another_node_is_held_and_s_stays_
         &mut IdGen::new(7),
         NOW,
     );
-    let mut synced = Trees::new(ROOT);
+    let mut synced = Trees::new(ROOT, &IdGen::new(0));
     for (id, shape) in trees.synced().iter() {
         synced.set_synced(id.clone(), Some(shape.clone()));
     }
@@ -2789,7 +2789,7 @@ fn a_folder_a_user_named_like_a_pending_name_is_created_again_unmarked_after_a_r
 #[test]
 fn a_mark_s_dropped_is_sent_with_the_create_after_a_restart() {
     let before = dropped_from_s();
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (id, node) in before.local().iter() {
         trees.set_local(id.clone(), node.clone());
     }
@@ -6068,7 +6068,7 @@ fn p7_after_another_device_trashed_the_destinations_old_folder(keep_require_head
             .collect(),
     );
     other(&mut space, vec![delete(&a)]);
-    let mut trees = Trees::new(&root);
+    let mut trees = Trees::new(&root, &IdGen::new(0));
     let local = [
         (&a, &root, "new"),
         (&c, &a, "c"),
@@ -6827,7 +6827,7 @@ fn a_published_folder_whose_child_another_device_moves_before_the_commit_is_aske
             trees.set_remote(id, held);
         }
     };
-    let mut trees = Trees::new(&root);
+    let mut trees = Trees::new(&root, &IdGen::new(0));
     for (ino, (id, parent, name)) in made.iter().enumerate() {
         let local = match *id == &d {
             true => dir(parent, "new"),

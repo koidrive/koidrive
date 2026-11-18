@@ -49,7 +49,7 @@ fn version(shape: Shape, version_id: &str, made_over: &[&str], rev: u64) -> Remo
 }
 
 fn rolled_back_under_a_later_edit(on_disk_at: i64) -> (Trees, Commits, IdGen) {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let local = LocalNode {
         left_out_when_placed: false,
         content_from_server: false,

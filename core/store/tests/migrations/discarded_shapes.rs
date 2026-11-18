@@ -88,7 +88,7 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
-    let mut trees = Trees::new("root");
+    let mut trees = Trees::new("root", &IdGen::new(0));
     let identity = FileIdentity {
         ino: 1,
         birth_ns: Some(0),
@@ -120,6 +120,7 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
             edit_rev: 1,
             pending_for: None,
             pending_by: None,
+            intents: None,
         },
     );
     trees.settle(&Default::default());
@@ -247,7 +248,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
     for answer in [Answer::Discard, Answer::Publish] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.db");
-        let mut trees = Trees::new("root");
+        let mut trees = Trees::new("root", &IdGen::new(0));
         let folder = EngineShape {
             parent: "root".into(),
             name: "dir".into(),
@@ -288,6 +289,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
                 edit_rev: 1,
                 pending_for: None,
                 pending_by: None,
+                intents: None,
             },
         );
         trees.settle(&Default::default());

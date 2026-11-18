@@ -133,7 +133,7 @@ fn shape(entry: &Entry, n: usize) -> (Shape, Box<[ChunkRef]>) {
 fn first_upload() -> (Trees, usize) {
     let mut ids = IdGen::new(1);
     let entries = node_modules(&mut ids);
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.skip_provenance_check();
     trees.rules_scanned();
     for (n, entry) in entries.iter().enumerate() {
@@ -228,7 +228,7 @@ fn first_upload() -> (Trees, usize) {
 
 fn restarted() -> (Trees, usize) {
     let (synced, entries) = first_upload();
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.skip_provenance_check();
     for (id, node) in synced.remote().iter() {
         trees.set_remote(id.clone(), node.clone());

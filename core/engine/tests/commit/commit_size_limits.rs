@@ -37,7 +37,7 @@ fn a_pending_name_stays_within_the_name_limit() {
 fn a_commit_holds_at_most_the_op_limit_with_parents_first() {
     let mut rows = vec![("d".to_string(), dir(ROOT, "d"))];
     rows.extend((0..MAX_OPS).map(|i| (format!("f{i:04}"), file("d", &format!("{i}"), 1))));
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (i, (id, shape)) in rows.into_iter().enumerate() {
         trees.set_local(NodeId::from(id), local(shape, i as u128 + 1));
     }
@@ -77,7 +77,7 @@ fn finishes_sent_on_their_own_stop_before_their_change_records_outgrow_one_messa
 
 #[test]
 fn a_commit_stops_before_its_change_records_outgrow_one_message() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for i in 0..8 {
         trees.set_local(
             format!("f{i}").into(),
@@ -185,7 +185,7 @@ fn a_delete_too_large_for_one_commit_deletes_the_folder_contents_first() {
 
 #[test]
 fn a_commit_that_does_not_fit_is_planned_again_in_halves_and_grows_back() {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for i in 0..12 {
         trees.set_local(
             format!("f{i:02}").into(),

@@ -86,7 +86,7 @@ fn local(shape: Shape, ino: u128) -> LocalNode {
 type Row = (&'static str, Option<Shape>, Option<Shape>, Option<Shape>);
 
 fn trees(nodes: &[Row]) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (i, (id, l, s, r)) in nodes.iter().enumerate() {
         if let Some(shape) = l {
             trees.set_local((*id).into(), local(shape.clone(), i as u128 + 1));
@@ -1288,7 +1288,7 @@ fn nothing_is_planned_after_a_restore_until_the_rules_are_scanned() {
     trash(&mut before, "gone");
     before.settle(&Default::default());
 
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (id, node) in before.remote().iter() {
         trees.set_remote(id.clone(), node.clone());
     }
@@ -1773,7 +1773,7 @@ fn the_mark_of_an_excluded_node_goes_with_it_when_another_device_trashes_it() {
 }
 
 fn restarted(before: &Trees) -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (id, node) in before.remote().iter() {
         trees.set_remote(id.clone(), node.clone());
     }
@@ -3159,7 +3159,7 @@ fn a_purged_folder_kept_for_an_excluded_file_sends_nothing_after_rename_or_resta
         )
         .unwrap();
 
-    let mut restarted = Trees::new(ROOT);
+    let mut restarted = Trees::new(ROOT, &IdGen::new(0));
     restarted.set_local("d".into(), trees.local().get(&"d".into()).unwrap().clone());
     restarted.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
     restarted.restore(trees.state()).unwrap();

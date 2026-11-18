@@ -8,7 +8,9 @@ use koidrive_engine::classify::{Class, Origin, Trees, Waiting};
 use koidrive_engine::commit::{Commits, Halt, InFlight, MAX_OPS, Slot};
 use koidrive_engine::effects::{Effect, EffectRecord, Effects, Location};
 use koidrive_engine::guard::{Counted, GuardState, RemoteDeletion, Trash};
+use koidrive_engine::ids::IdGen;
 use koidrive_engine::ids::uuid_v7;
+use koidrive_engine::journal::JournalState;
 use koidrive_engine::question::{
     Answer, Held, Limit, Question, QuestionKind, RecoveryCause, Revisions,
 };
@@ -54,7 +56,7 @@ fn remote(shape: Shape) -> RemoteNode {
 
 /// Trees as the store loads them, with `a` placed and `b` parked.
 fn trees() -> Trees {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     for (ino, (id, parked)) in [("a", false), ("b", true)].into_iter().enumerate() {
         let shape = dir(ROOT, id);
         let identity = FileIdentity {
@@ -89,7 +91,10 @@ fn trees() -> Trees {
 
 fn trees_state() -> TreesState {
     TreesState {
-        journal: Default::default(),
+        journal: JournalState {
+            ids: Some(1),
+            ..Default::default()
+        },
         dirty: ["b".into()].into(),
         unsearched: ["b".into()].into(),
         reverted: ["a".into()].into(),
@@ -216,7 +221,7 @@ fn content(digest: u8) -> ContentKey {
 }
 
 fn unsent() -> (Trees, TreesState) {
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     let shape = Shape {
         parent: ROOT.into(),
         name: "f".into(),
@@ -242,6 +247,10 @@ fn unsent() -> (Trees, TreesState) {
     let state = TreesState {
         dirty: ["f".into()].into(),
         unsent_edits: ["f".into()].into(),
+        journal: JournalState {
+            ids: Some(1),
+            ..Default::default()
+        },
         ..Default::default()
     };
     (trees, state)
@@ -865,7 +874,7 @@ fn an_identity_without_a_birth_time_round_trips() {
         }
     );
     let shape = dir(ROOT, "u");
-    let mut trees = Trees::new(ROOT);
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_remote("u".into(), remote(shape.clone()));
     trees.set_local(
         "u".into(),
@@ -879,7 +888,7 @@ fn an_identity_without_a_birth_time_round_trips() {
         },
     );
     trees.set_synced("u".into(), Some(shape));
-    let mut loaded = Trees::new(ROOT);
+    let mut loaded = Trees::new(ROOT, &IdGen::new(0));
     for (id, node) in trees.remote().iter() {
         loaded.set_remote(id.clone(), node.clone());
     }
