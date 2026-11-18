@@ -1359,3 +1359,42 @@ fn a_superseded_move_whose_live_node_holds_an_earlier_place_does_not_end() {
     assert!(matches!(row.state, RowState::Local { .. }), "{row:?}");
     assert_eq!(trees.synced().get("f"), Some(&file(ROOT, "a", 1)));
 }
+
+#[test]
+fn a_nested_delete_lists_each_intent_below_it_once() {
+    fn grow(trees: &mut Trees, order: &mut Vec<String>, parent: &str, depth: usize) {
+        for f in 0..4 {
+            let id = format!("{parent}/f{f}");
+            synced(trees, &id, file(parent, &format!("f{f}"), f), 1);
+            order.push(id);
+        }
+        if depth == 0 {
+            return;
+        }
+        for c in 0..2 {
+            let id = format!("{parent}/d{c}");
+            synced(trees, &id, dir(parent, &format!("d{c}")), 1);
+            grow(trees, order, &id, depth - 1);
+            order.push(id);
+        }
+    }
+    let mut trees = Trees::new(ROOT, &IdGen::new(0));
+    let mut order = Vec::new();
+    synced(&mut trees, "top", dir(ROOT, "top"), 1);
+    grow(&mut trees, &mut order, "top", 7);
+    order.push("top".into());
+    for id in &order {
+        trees.remove_local_by_user(id);
+    }
+    let fields: usize = (order.iter())
+        .map(|id| match trees.remote().get(id).unwrap().shape.kind {
+            Kind::File => 3,
+            Kind::Dir => 2,
+        })
+        .sum();
+    let seen = trees.journal().seen("top");
+    let distinct: std::collections::BTreeSet<_> = (seen.iter())
+        .map(|entry| (&entry.node, entry.field, entry.intent))
+        .collect();
+    assert_eq!((seen.len(), distinct.len()), (fields, fields));
+}
