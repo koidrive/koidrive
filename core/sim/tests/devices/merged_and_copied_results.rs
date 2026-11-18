@@ -123,5 +123,14 @@ fn a_rename_made_while_a_conflicting_edit_is_in_flight_keeps_the_users_name_on_t
             paths.contains(&"b".to_owned()),
             "device {device}: {paths:?}"
         );
+        let (original, edited) = (3, 4);
+        assert_eq!(
+            (
+                tag(&content_on(&world, device, "a")),
+                tag(&content_on(&world, device, "b"))
+            ),
+            (original, edited),
+            "device {device}: {paths:?}"
+        );
     }
 }
