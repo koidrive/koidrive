@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::fmt;
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -218,14 +218,10 @@ pub(crate) struct NewCredentialFile {
 impl NewCredentialFile {
     pub fn create(path: &Path) -> Result<Self, CredentialError> {
         let dir = path.parent().unwrap_or(Path::new("."));
-        DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)
-            .map_err(|source| CredentialError::Io {
-                path: path.to_path_buf(),
-                source,
-            })?;
+        koidrive_state_file::create_dir(dir, dir).map_err(|source| CredentialError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
         let file = koidrive_state_file::AtomicFile::prepare(path).map_err(|source| {
             CredentialError::Io {
                 path: path.to_path_buf(),
@@ -536,7 +532,11 @@ pub(crate) mod tests {
         let dir_mode = fs::metadata(path.parent().unwrap()).unwrap().mode() & 0o777;
         assert_eq!(dir_mode, 0o700);
         assert_eq!(Credential::load(&path).unwrap(), Some(credential()));
-        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+        let mut names = (fs::read_dir(path.parent().unwrap()).unwrap())
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, [koidrive_state_file::MADE, "credential.json"]);
     }
 
     #[test]
@@ -668,7 +668,7 @@ pub(crate) mod tests {
         for entry in fs::read_dir(dir.path()).unwrap() {
             let name = entry.unwrap().file_name().into_string().unwrap();
             assert!(
-                crate::Paths::STATE_ENTRIES.contains(&name.as_str()),
+                crate::Paths::state_entry(Path::new(&name)) == Some(crate::StateEntry::File),
                 "{name}"
             );
         }

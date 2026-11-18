@@ -61,7 +61,7 @@ pub use folder::MAX_FORMAT;
 pub use koidrive_engine::guard::MAX_DELETIONS;
 pub use koidrive_state_file::Flock;
 pub use observe::{FsObserver, Observation, Observed, Observer, Observing, RulesChange};
-pub use paths::{Paths, PathsError};
+pub use paths::{Paths, PathsError, StateEntry};
 pub use pending_create::{CreatedSpace, claim_pending, create_space, space_create_pending};
 pub use question::{
     Answer, HeldItem, Limit, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,

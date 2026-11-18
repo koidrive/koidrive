@@ -1,0 +1,7 @@
+169
+# Uninstall removes only what Koidrive wrote, and only from a state folder it recorded making.
+# Each test reproduces a separate way uninstall could delete a user's files: a state folder the
+# user made, one reached through a link, a linked backup, an older release's state, user files
+# named like Koidrive's entries, the service unit or update log creating the folder first, and a
+# copied ownership record. Unit tests hold shapes the koi binary can't start with (a folder named
+# lock, a file named creates); the journeys hold what only the binary does. Merging them drops cases.

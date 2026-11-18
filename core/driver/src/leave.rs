@@ -264,7 +264,8 @@ mod tests {
                 for entry in fs::read_dir(dir.path()).unwrap() {
                     let name = entry.unwrap().file_name().into_string().unwrap();
                     assert!(
-                        crate::Paths::STATE_ENTRIES.contains(&name.as_str()),
+                        crate::Paths::state_entry(Path::new(&name))
+                            == Some(crate::StateEntry::File),
                         "{name}"
                     );
                 }

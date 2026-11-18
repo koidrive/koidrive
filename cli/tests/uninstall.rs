@@ -36,6 +36,10 @@ impl Machine {
 
     fn write(&self, rel: &str, text: &str) -> PathBuf {
         let path = self.path(rel);
+        if let Some(at) = rel.find("state/koidrive/") {
+            let state = self.path(&rel[..at + "state/koidrive".len()]);
+            koidrive_state_file::create_dir(&state, &state).unwrap();
+        }
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, text).unwrap();
         path
@@ -113,7 +117,7 @@ impl Machine {
 
     fn profile(&self) {
         self.write("state/koidrive/update-check.json", "{}");
-        self.write("state/koidrive/spaces/.keep", "");
+        fs::create_dir_all(self.path("state/koidrive/spaces")).unwrap();
         self.write(
             "config/koidrive/config.toml",
             "[service]\nbackground = false\n",
@@ -186,7 +190,7 @@ fn a_profile_folder_that_lands_on_a_synced_folder_keeps_every_file() {
     assert_eq!(fs::read_to_string(&document).unwrap(), "q3", "{envelope:#}");
     assert!(
         kept(&envelope).contains(&json!({
-            "kind": "unrecognized",
+            "kind": "unrecorded_state",
             "path": machine.path("koidrive").display().to_string()
         })),
         "{envelope:#}"
@@ -215,7 +219,7 @@ fn a_profile_folder_that_lands_on_a_synced_folder_keeps_every_file() {
 }
 
 #[test]
-fn a_state_folder_that_holds_other_files_loses_only_what_koidrive_wrote() {
+fn a_linked_state_folder_koidrive_did_not_make_keeps_the_users_files() {
     let machine = Machine::new();
     let koi = Path::new(env!("CARGO_BIN_EXE_koi"));
     let photo = machine.write("Backup/wedding.jpg", "jpg");
@@ -234,8 +238,12 @@ fn a_state_folder_that_holds_other_files_loses_only_what_koidrive_wrote() {
         assert!(output.status.success(), "{envelope:#}");
         assert_eq!(fs::read_to_string(&photo).unwrap(), "jpg", "{envelope:#}");
         assert_eq!(fs::read_to_string(&document).unwrap(), "q3", "{envelope:#}");
+        let linked = json!({ "kind": "unrecorded_state", "path": machine.path("st/koidrive") });
+        assert!(
+            state != machine.path("st") || kept(&envelope).contains(&linked),
+            "{envelope:#}"
+        );
     }
-    assert!(!machine.path("Backup/lock").exists());
     assert!(fs::symlink_metadata(machine.path("st/koidrive")).is_ok());
 }
 
@@ -295,13 +303,222 @@ fn a_folder_with_only_subfolders_of_the_same_names_is_kept_whole() {
         !machine.path("state/koidrive/uninstall.json").exists(),
         "{envelope:#}"
     );
-    assert!(
-        kept(&envelope).contains(&json!({
-            "kind": "unrecognized",
-            "path": machine.path("state/koidrive"),
-        })),
-        "{envelope:#}"
-    );
+    let shown = machine.path("state/koidrive");
+    for rel in ["spaces", "telemetry"] {
+        assert!(
+            kept(&envelope).contains(&json!({
+                "kind": "unrecognized",
+                "path": shown.join(rel),
+            })),
+            "{envelope:#}"
+        );
+    }
+}
+
+#[test]
+fn a_state_folder_of_the_users_keeps_their_files_in_subfolders_named_like_koidrives() {
+    let machine = Machine::new();
+    let koi = Path::new(env!("CARGO_BIN_EXE_koi"));
+    let ours = [
+        format!("requests/{}.json", "ab".repeat(32)),
+        "telemetry/settings.json".to_owned(),
+        format!("telemetry/held/{}.json", "cd".repeat(16)),
+        "systemd/koidrive.service".to_owned(),
+    ];
+    let theirs = [
+        "spaces/plan.pdf".to_owned(),
+        "requests/letter.docx".to_owned(),
+        "telemetry/held/photo.jpg".to_owned(),
+        "systemd/backup.service".to_owned(),
+    ];
+    let backup = machine.path("Backup");
+    koidrive_state_file::create_dir(&backup, &backup).unwrap();
+    for rel in &ours {
+        machine.write(&format!("Backup/{rel}"), "{}");
+    }
+    for rel in &theirs {
+        machine.write(&format!("Backup/{rel}"), rel);
+    }
+    fs::create_dir_all(machine.path("st")).unwrap();
+    std::os::unix::fs::symlink(machine.path("Backup"), machine.path("st/koidrive")).unwrap();
+    let mut status = machine.command(koi, &["status", "--json"]);
+    status.env("XDG_STATE_HOME", machine.path("st"));
+    assert!(status.output().unwrap().status.success());
+    let mut command = machine.command(koi, &["uninstall", "--yes", "--json"]);
+    command.env("XDG_STATE_HOME", machine.path("st"));
+
+    let (output, envelope) = machine.envelope(command);
+
+    assert!(output.status.success(), "{envelope:#}");
+    for rel in &theirs {
+        let text = fs::read_to_string(machine.path(&format!("Backup/{rel}")));
+        assert_eq!(text.ok().as_ref(), Some(rel), "{envelope:#}");
+    }
+    for rel in &ours {
+        let path = machine.path(&format!("Backup/{rel}"));
+        assert!(!path.exists(), "{rel}: {envelope:#}");
+    }
+    let mut named: Vec<_> = (kept(&envelope).iter())
+        .filter(|kept| kept["kind"] == "unrecognized")
+        .map(|kept| kept["path"].as_str().unwrap().to_owned())
+        .collect();
+    named.sort();
+    let shown = machine.path("st/koidrive");
+    let mut expected: Vec<_> = ["spaces", "requests", "telemetry/held", "systemd"]
+        .iter()
+        .map(|rel| shown.join(rel).display().to_string())
+        .collect();
+    expected.sort();
+    assert_eq!(named, expected, "{envelope:#}");
+}
+
+#[test]
+fn records_koidrive_leaves_in_its_subfolders_go_with_the_state_folder() {
+    let space = "0190f0a0-0000-7000-8000-00000000000a";
+    let request = format!("requests/{}.json", "82".repeat(32));
+    let lifecycle = format!("spaces/{space}/lifecycle.json");
+    let link = format!("spaces/{space}/link.json");
+    let unlinking = format!("spaces/{space}/unlinking");
+    let left: [&[&str]; 2] = [
+        &[&request],
+        &["update-check.json", &lifecycle, &link, &unlinking],
+    ];
+    for files in left {
+        let machine = Machine::new();
+        let koi = machine.copy_koi(".local/bin/koi");
+        for file in files {
+            machine.write(&format!("state/koidrive/{file}"), "{}");
+        }
+
+        let (output, envelope) = machine.uninstall(&koi);
+
+        assert!(output.status.success(), "{files:?}: {envelope:#}");
+        assert!(
+            !machine.path("state/koidrive").exists(),
+            "{files:?}: {envelope:#}"
+        );
+        assert!(
+            !kept(&envelope)
+                .iter()
+                .any(|kept| kept["kind"] == "unrecognized"),
+            "{files:?}: {envelope:#}"
+        );
+    }
+}
+
+#[test]
+fn a_state_folder_koidrive_did_not_make_keeps_everything_in_it() {
+    let database = "spaces/0190f0a0-0000-7000-8000-00000000000a/store.sqlite";
+    let stage = ".koi-state-0123456789abcdef0123456789abcdef.tmp";
+    let made = tempfile::tempdir().unwrap();
+    let expenses = made.path().join("expenses.sqlite");
+    rusqlite::Connection::open(&expenses)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE expenses(label TEXT); INSERT INTO expenses VALUES ('January rent');",
+        )
+        .unwrap();
+    let expenses = fs::read(&expenses).unwrap();
+    type Files<'a> = &'a [(&'a str, &'a [u8])];
+    let cases: [(&str, &str, Files); 6] = [
+        (
+            "notes",
+            "its own folder",
+            &[("update.log", &b"my notes"[..])],
+        ),
+        (
+            "notes",
+            "below a linked folder",
+            &[("update.log", &b"my notes"[..])],
+        ),
+        (
+            "an expenses database",
+            "a linked folder",
+            &[(database, &expenses)],
+        ),
+        (
+            "a stage-named file",
+            "a linked folder",
+            &[
+                ("update-check.json", &br#"{"checked_at":5}"#[..]),
+                (stage, &b"my notes"[..]),
+            ],
+        ),
+        (
+            "a backup",
+            "a linked folder",
+            &[
+                ("update-check.json", &b"{}\n"[..]),
+                ("update.log", &b"mine\n"[..]),
+                ("telemetry/settings.json", &b"mine\n"[..]),
+                ("notes.txt", &b"mine\n"[..]),
+            ],
+        ),
+        (
+            "an older release's state",
+            "its own folder",
+            &[
+                ("update-check.json", &br#"{"checked_at":5}"#[..]),
+                ("uninstall.json", &br#"{"folders":[],"owner":null}"#[..]),
+                ("lock", &b""[..]),
+                (database, &b"SQLite format 3\0"[..]),
+                (stage, &b"{}"[..]),
+            ],
+        ),
+    ];
+    let mut lost = Vec::new();
+    for (what, setup, files) in cases {
+        let machine = Machine::new();
+        let koi = machine.copy_koi(".local/bin/koi");
+        let home = machine.path("custom");
+        match setup {
+            "its own folder" => fs::create_dir_all(home.join("koidrive")).unwrap(),
+            "below a linked folder" => {
+                fs::create_dir_all(machine.path("disk/koidrive")).unwrap();
+                std::os::unix::fs::symlink(machine.path("disk"), &home).unwrap();
+            }
+            _ => {
+                fs::create_dir_all(machine.path("Backup")).unwrap();
+                fs::create_dir_all(&home).unwrap();
+                std::os::unix::fs::symlink(machine.path("Backup"), home.join("koidrive")).unwrap();
+            }
+        }
+        let state = home.join("koidrive");
+        for (rel, text) in files {
+            let path = state.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, text).unwrap();
+        }
+        let mut command = machine.command(&koi, &["uninstall", "--yes", "--json"]);
+        command.env("XDG_STATE_HOME", &home);
+
+        let (output, envelope) = machine.envelope(command);
+
+        let case = format!("{what} in {setup}");
+        assert!(output.status.success(), "{case}: {envelope:#}");
+        lost.extend(
+            (files.iter())
+                .filter(|(rel, text)| fs::read(state.join(rel)).ok().as_deref() != Some(*text))
+                .map(|(rel, _)| format!("{case}: {rel}")),
+        );
+        let mut tops: Vec<_> = (files.iter())
+            .map(|(rel, _)| rel.split('/').next().unwrap())
+            .collect();
+        tops.sort();
+        tops.dedup();
+        let mut entries: Vec<_> = (fs::read_dir(&state).into_iter().flatten())
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        entries.sort();
+        if entries != tops {
+            lost.push(format!("{case}: holds {entries:?}"));
+        }
+        let reported = json!({ "kind": "unrecorded_state", "path": state });
+        if !kept(&envelope).contains(&reported) {
+            lost.push(format!("{case}: not reported"));
+        }
+    }
+    assert_eq!(lost, Vec::<String>::new());
 }
 
 #[test]
@@ -348,6 +565,8 @@ fn a_config_folder_that_is_the_state_folder_loses_only_what_koidrive_wrote() {
 
     let machine = Machine::new();
     let koi = machine.copy_koi(".local/bin/koi");
+    let state = machine.path("shared/koidrive");
+    koidrive_state_file::create_dir(&state, &state).unwrap();
     machine.write("shared/koidrive/update-check.json", "{}");
     machine.write(
         "shared/koidrive/config.toml",
@@ -402,9 +621,8 @@ fn a_state_folder_reached_through_a_link_into_a_synced_folder_keeps_every_file()
     assert_eq!(fs::read_to_string(&plan).unwrap(), "pdf", "{envelope:#}");
     assert!(
         kept(&envelope).contains(&json!({
-            "kind": "in_folder",
+            "kind": "unrecorded_state",
             "path": machine.path("st/koidrive").display().to_string(),
-            "folder": folder.display().to_string(),
         })),
         "{envelope:#}"
     );
@@ -530,8 +748,12 @@ fn a_linked_state_folder_goes_with_its_link() {
     let machine = Machine::new();
     let koi = machine.copy_koi(".local/bin/koi");
     let elsewhere = machine.path("disk/koidrive-state");
+    koidrive_state_file::create_dir(&elsewhere, &elsewhere).unwrap();
     machine.write("disk/koidrive-state/credential.json", "{}");
-    machine.write("disk/koidrive-state/spaces/s/store.sqlite", "x");
+    machine.write(
+        "disk/koidrive-state/spaces/0190f0a0-0000-7000-8000-00000000000a/store.sqlite",
+        "x",
+    );
     fs::create_dir_all(machine.path("state")).unwrap();
     std::os::unix::fs::symlink(&elsewhere, machine.path("state/koidrive")).unwrap();
 
@@ -1046,7 +1268,7 @@ fn another_profiles_service_keeps_the_shared_command_and_names_how_to_remove_it(
     .unwrap();
     let label = format!("dev.koidrive.koi.{}", other.state_key());
     machine.write("other/state/koidrive/credential.json", "");
-    machine.write("other/state/koidrive/spaces/.keep", "");
+    fs::create_dir_all(machine.path("other/state/koidrive/spaces")).unwrap();
     machine.write(
         &format!("Library/LaunchAgents/{label}.plist"),
         &format!(

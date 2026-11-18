@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #[cfg(target_os = "macos")]
 use std::fs;
+use std::path::Path;
 
 use koidrive_driver::Paths;
 use koidrive_driver::update;
@@ -65,7 +66,7 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
         Method::AppDownload => return download(paths, &install).await,
         _ => {}
     }
-    let mut echo = Echo::open(&update::log_path(paths), json, verbose);
+    let mut echo = open_log(paths, &update::log_path(paths), json, verbose);
     let steps = Steps::new(json, verbose);
     let updated = match &install.method {
         Method::Formula { brew } | Method::CaskElsewhere { brew } => {
@@ -80,6 +81,15 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
         }
         error
     })
+}
+
+fn open_log(paths: &Paths, log: &Path, json: bool, verbose: bool) -> Echo {
+    if log.parent() == Some(paths.state_dir.as_path())
+        && paths.create_state_dir(&paths.state_dir).is_err()
+    {
+        return Echo::console(json, verbose);
+    }
+    Echo::open(log, json, verbose)
 }
 
 async fn download(paths: &Paths, install: &Install) -> Result<Done, CliError> {

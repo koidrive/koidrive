@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fs::DirBuilder;
 use std::io::{self, Write};
-use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 use koidrive_driver::Paths;
@@ -68,13 +66,17 @@ pub fn begin(paths: &Paths, id: &RequestId, key: &Key) -> Result<Begun, CliError
         outcome: None,
     };
     loop {
-        if write(&path, &record, false).map_err(|error| {
+        if write(paths, &path, &record, false).map_err(|error| {
             CliError {
                 human: local_io_human(&error).map(|cause| format!("Could not save the request before running it. {cause} Run koi diagnose to collect a report.")),
                 ..CliError::from(format!("{}: {error}", path.display()))
             }
         })? {
-            return Ok(Begun::Claimed(Claim { path, record }));
+            return Ok(Begun::Claimed(Claim {
+                paths: paths.clone(),
+                path,
+                record,
+            }));
         }
         if let Some(outcome) = recorded(paths, id, key)? {
             return Ok(Begun::Done(outcome));
@@ -83,6 +85,7 @@ pub fn begin(paths: &Paths, id: &RequestId, key: &Key) -> Result<Begun, CliError
 }
 
 pub struct Claim {
+    paths: Paths,
     path: PathBuf,
     record: Record,
 }
@@ -90,7 +93,7 @@ pub struct Claim {
 impl Claim {
     pub fn finish(mut self, outcome: &impl Serialize) -> Result<(), CliError> {
         self.record.outcome = Some(serde_json::to_value(outcome).expect("an outcome serializes"));
-        write(&self.path, &self.record, true)
+        write(&self.paths, &self.path, &self.record, true)
             .map(drop)
             .map_err(|error| CliError {
                 human: local_io_human(&error).map(|cause| format!("Could not save the command's result. {cause} The change may already have happened. Check the affected item before repeating the command. Run koi diagnose to collect a report.")),
@@ -110,9 +113,8 @@ pub(crate) fn request_file(paths: &Paths, id: &RequestId) -> PathBuf {
     paths.requests().join(format!("{name}.json"))
 }
 
-fn write(path: &Path, value: &impl Serialize, replace: bool) -> io::Result<bool> {
-    let dir = path.parent().expect("a record has a directory");
-    DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+fn write(paths: &Paths, path: &Path, value: &impl Serialize, replace: bool) -> io::Result<bool> {
+    paths.create_state_dir(&paths.requests())?;
     let temp = koidrive_state_file::AtomicFile::prepare(path)?;
     temp.as_file()
         .write_all(&serde_json::to_vec(value).expect("a record serializes"))?;

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::{BTreeMap, HashMap};
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::os::fd::AsFd;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
@@ -518,10 +518,8 @@ impl Driver {
         paths: Paths,
         telemetry: koidrive_telemetry::Recorder,
     ) -> Result<Self, DriverError> {
-        DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&paths.state_dir)
+        paths
+            .create_state_dir(&paths.state_dir)
             .map_err(io_error(&paths.state_dir))?;
         let lock_path = paths.lock();
         let lock = OpenOptions::new()
@@ -1402,10 +1400,9 @@ impl Driver {
         };
         let store_path = self.inner.paths.store(&link.space_id)?;
         let store_dir = store_path.parent().expect("a store path has a parent");
-        DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(store_dir)
+        self.inner
+            .paths
+            .create_state_dir(store_dir)
             .map_err(io_error(store_dir))?;
         Store::open(&store_path)
             .and_then(|mut store| store.transaction(|tx| tx.set_link(&link)))
@@ -1845,7 +1842,7 @@ impl Driver {
         let paused = tokio::spawn(async move {
             let _pausing = pausing;
             let path = driver.inner.paths.paused();
-            fs::write(&path, b"paused\n").map_err(io_error(&path))?;
+            koidrive_state_file::write(&path, b"paused\n").map_err(io_error(&path))?;
             let changed = !driver.inner.paused.swap(true, Ordering::SeqCst);
             if changed {
                 driver.stop_folders().await;

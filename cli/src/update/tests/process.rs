@@ -26,6 +26,28 @@ fn a_quiet_echo_holds_child_lines_until_a_failure_replays_them() {
 }
 
 #[test]
+fn the_update_log_records_the_state_folder_it_creates_and_nothing_beside_another_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    drop(open_log(
+        &paths,
+        &paths.state_dir.join("update.log"),
+        true,
+        false,
+    ));
+    assert!(koidrive_state_file::made(&paths.state_dir));
+    assert!(paths.state_dir.join("update.log").is_file());
+
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    let logs = dir.path().join("Library/Logs/Koidrive");
+    drop(open_log(&paths, &logs.join("update.log"), true, false));
+    assert!(logs.join("update.log").exists());
+    assert!(!logs.join(koidrive_state_file::MADE).exists());
+    assert!(!paths.state_dir.exists());
+}
+
+#[test]
 fn reconcile_subprocess() {
     let Some(dir) = std::env::var_os("KOI_RECONCILE_TEST_DIR").map(PathBuf::from) else {
         return;

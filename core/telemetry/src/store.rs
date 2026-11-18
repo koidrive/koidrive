@@ -2,7 +2,6 @@
 
 use std::fs::{self, OpenOptions};
 use std::io;
-use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 use koidrive_state_file::Flock;
@@ -50,6 +49,7 @@ fn is_false(value: &bool) -> bool {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Store {
+    state: PathBuf,
     dir: PathBuf,
     origin: Option<Origin>,
 }
@@ -58,6 +58,7 @@ impl Store {
     /// The telemetry files of the profile whose state directory is `state_dir`.
     pub fn new(state_dir: &Path) -> Self {
         Store {
+            state: state_dir.to_path_buf(),
             dir: state_dir.join("telemetry"),
             origin: None,
         }
@@ -209,11 +210,12 @@ impl Store {
         self.flock("send.lock", false)
     }
 
+    fn create_dir(&self, dir: &Path) -> io::Result<()> {
+        koidrive_state_file::create_dir(&self.state, dir)
+    }
+
     fn flock(&self, name: &str, wait: bool) -> io::Result<Flock> {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&self.dir)?;
+        self.create_dir(&self.dir)?;
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)

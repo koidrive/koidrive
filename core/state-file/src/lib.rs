@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::ffi::{OsStr, OsString};
-use std::fs::File;
-use std::io::{self, Write};
+use std::fs::{DirBuilder, File};
+use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::Path;
 
 use rustix::fs::{self, AtFlags, Dir, FileType, FlockOperation, Mode, OFlags, flock};
@@ -193,6 +194,61 @@ impl Drop for AtomicFile {
 /// Replaces a state file with complete, synced bytes using [`AtomicFile`].
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_with_legacy(path, bytes, &[])
+}
+
+/// The file in which Koidrive records that it created a state folder.
+pub const MADE: &str = ".koidrive-state";
+
+/// Creates `dir`, which is `root` or a folder inside it, and any missing folders on the way as private folders. When
+/// this call creates `root` itself, it records in `root` that Koidrive made it; see [`made`].
+pub fn create_dir(root: &Path, dir: &Path) -> io::Result<()> {
+    let root = match root.as_os_str().is_empty() {
+        true => Path::new("."),
+        false => root,
+    };
+    if let Some(parent) = root
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
+    }
+    match DirBuilder::new().mode(0o700).create(root) {
+        Ok(()) => {
+            let recorded = std::fs::metadata(root)
+                .and_then(|folder| write(&root.join(MADE), made_record(&folder).as_bytes()));
+            if let Err(error) = recorded {
+                let _ = std::fs::remove_dir(root);
+                return Err(error);
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    DirBuilder::new().recursive(true).mode(0o700).create(dir)
+}
+
+/// Whether the folder at `root` is one [`create_dir`] made: it holds the record of its creation, and that record
+/// names this folder rather than one it was copied from.
+pub fn made(root: &Path) -> bool {
+    let record = root.join(MADE);
+    std::fs::symlink_metadata(&record).is_ok_and(|meta| meta.is_file())
+        && match (std::fs::metadata(root), File::open(&record)) {
+            (Ok(folder), Ok(file)) => {
+                let expected = made_record(&folder);
+                let mut text = String::new();
+                file.take(expected.len() as u64 + 1)
+                    .read_to_string(&mut text)
+                    .is_ok_and(|_| text == expected)
+            }
+            _ => false,
+        }
+}
+
+fn made_record(folder: &std::fs::Metadata) -> String {
+    format!("{} {}\n", folder.dev(), folder.ino())
 }
 
 /// Replaces a state file and removes obsolete sibling stages owned by the caller.

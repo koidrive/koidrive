@@ -2,7 +2,7 @@
 
 use std::fs;
 
-use super::command::{ok, remove_file, run, write};
+use super::command::{ok, remove_file, run};
 use super::definition::unit_binary;
 use super::{Manager, Service, ServiceManager, State};
 
@@ -45,7 +45,7 @@ impl Manager for Systemd {
 
     fn start(&self, service: &Service, restart: bool) -> Result<(), String> {
         let file = service.unit_file();
-        let changed = write(&file, &service.unit())?;
+        let changed = service.write_unit()?;
         systemctl(&["enable", &file.display().to_string()])?;
         systemctl(&["daemon-reload"])?;
         let verb = if changed || restart {

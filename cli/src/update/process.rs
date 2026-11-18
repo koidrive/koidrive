@@ -30,10 +30,17 @@ impl Echo {
         let log = (path.parent().map(fs::create_dir_all).transpose().ok())
             .and_then(|_| File::create(path).ok());
         Echo {
+            log,
+            ..Echo::console(json, verbose)
+        }
+    }
+
+    pub(super) fn console(json: bool, verbose: bool) -> Echo {
+        Echo {
             json,
             quiet: !json && !verbose,
             held: Vec::new(),
-            log,
+            log: None,
         }
     }
 
