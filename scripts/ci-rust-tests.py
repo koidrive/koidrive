@@ -150,6 +150,28 @@ def command_report(args):
     return 0
 
 
+def term(text):
+    binary, _, test = text.partition("=")
+    return binary, test
+
+
+def command_filter(args):
+    clauses = []
+    for binary, test in map(term, args.terms):
+        clauses.append(f"(binary_id(={binary}) & test({test}))" if test else f"binary_id(={binary})")
+    print(" | ".join(clauses))
+    return 0
+
+
+def command_matched(args):
+    ran = [(binary, name) for binary, name, _ in cases(args.junit)]
+    unmatched = [text for text in args.terms
+                 if not any(binary == term(text)[0] and term(text)[1] in name for binary, name in ran)]
+    for text in unmatched:
+        print(f"::error::The filter term {text} matched no test, so a test it should run was renamed or moved. Update the term.")
+    return 1 if unmatched else 0
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description="Build arguments, shard plans and reports for the Rust test jobs in ci.yml.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -165,7 +187,17 @@ def main(argv):
     report.add_argument("--list", action="append", required=True)
     report.add_argument("--junit", required=True)
     report.add_argument("--out", required=True)
+    terms_help = "BINARY_ID, or BINARY_ID=SUBSTRING to select that binary's tests whose names contain SUBSTRING"
+    filters = commands.add_parser("filter", help="Print the nextest filter expression that runs every term.")
+    filters.add_argument("terms", nargs="+", help=terms_help)
+    matched = commands.add_parser("matched", help="Fail unless every term matched at least one test in a nextest JUnit file.")
+    matched.add_argument("--junit", required=True)
+    matched.add_argument("terms", nargs="+", help=terms_help)
     args = parser.parse_args(argv)
+    if args.command == "filter":
+        return command_filter(args)
+    if args.command == "matched":
+        return command_matched(args)
     if args.command == "archive-args":
         print("\n".join(archive_args(set(args.selected))))
         return 0
