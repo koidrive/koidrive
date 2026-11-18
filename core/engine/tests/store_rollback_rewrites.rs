@@ -44,6 +44,7 @@ fn version(shape: Shape, version_id: &str, made_over: &[&str], rev: u64) -> Remo
         version_id: version_id.into(),
         pending_for: None,
         pending_by: None,
+        intents: None,
     }
 }
 

@@ -57,6 +57,7 @@ fn remote(shape: Shape) -> RemoteNode {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     }
 }
 
@@ -1256,6 +1257,10 @@ proptest! {
                 .retain(|id| trees.local().get(id).is_some() || trees.synced().get(id).is_some());
             everything.restore(state).unwrap();
             everything.rules_scanned();
+            for (id, _) in trees.synced().iter() {
+                everything.set_synced_intents(id, trees.synced_intents(id).unwrap());
+            }
+            *everything.journal_mut() = trees.journal().clone();
             trees.settle(&Default::default());
             everything.settle(&Default::default());
             prop_assert_eq!(trees.work(), everything.work());

@@ -345,6 +345,7 @@ fn a_local_delete_keeps_a_recorded_entry_and_the_folders_above_it_as_the_driver_
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             },
         );
     }
@@ -574,6 +575,7 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
         pending_for: None,
         pending_by: None,
         chunks: chunks.into(),
+        intents: None,
     };
     let folder = |parent: &str, name: &str| koidrive_engine::tree::Shape {
         parent: parent.into(),
@@ -694,6 +696,7 @@ fn a_file_in_a_taken_along_server_folder() -> (
                 pending_for: None,
                 pending_by: None,
                 chunks,
+                intents: None,
             },
         );
     }
@@ -920,6 +923,7 @@ fn place_dir(
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             },
         );
     }
@@ -994,6 +998,7 @@ fn a_change_inside_a_discarded_held_folder_is_not_acted_below_the_server_folder_
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     let discarded = BTreeMap::from([("h".into(), folder("s", "h"))]);
@@ -1421,6 +1426,7 @@ fn a_left_out_folder_does_not_keep_a_file_waiting_if_a_numbered_conflict_name_is
             pending_for: None,
             pending_by: None,
             chunks,
+            intents: None,
         },
     );
     device.left_out_folders.insert("ss".into());

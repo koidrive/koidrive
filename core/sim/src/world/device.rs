@@ -254,7 +254,7 @@ impl Engine {
         self.displace(&reported);
         let gone = self.gone(&missing);
         for id in missing.iter().filter(|id| gone.contains(id)) {
-            self.trees.remove_local(id);
+            self.trees.remove_local_by_user(id);
         }
         self.drop_lost_folders();
         Reached {
@@ -363,7 +363,7 @@ impl Engine {
                             (self.commits.in_flight()).is_some_and(|flight| flight.creates(id));
                         self.trees.displace_local(id, created)
                     }
-                    false => self.trees.remove_local(id),
+                    false => self.trees.remove_local_by_user(id),
                 }
             }
         }

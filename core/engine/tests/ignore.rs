@@ -62,6 +62,7 @@ fn remote(shape: Shape) -> RemoteNode {
         pending_for: None,
         pending_by: None,
         chunks: Box::default(),
+        intents: None,
     }
 }
 

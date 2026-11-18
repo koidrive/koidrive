@@ -62,6 +62,7 @@ fn serve(trees: &mut Trees, id: String, shape: Shape) {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
 }
@@ -638,6 +639,7 @@ fn a_held_file_changed_on_the_server_leaves_the_question_and_is_downloaded() {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     trees.settle(commits.aliases());
@@ -1018,6 +1020,7 @@ fn a_restore_answer_holds_a_node_deleted_under_its_folder_since() {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         },
     );
     trees.settle(commits.aliases());
@@ -1095,6 +1098,7 @@ fn trash_remotely(trees: &mut Trees, ids: &[&str]) {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote(id, node);
     }
@@ -1320,6 +1324,7 @@ fn a_folder_restored_after_its_notice_was_dismissed_is_noticed_when_deleted_agai
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             };
             trees.set_remote(id.clone(), node);
         }
@@ -1571,6 +1576,7 @@ fn a_folder_restored_after_a_dismissal_without_its_record_is_noticed_when_delete
                 pending_for: None,
                 pending_by: None,
                 chunks: Box::default(),
+                intents: None,
             };
             trees.set_remote(id.clone(), node);
         }
@@ -1655,6 +1661,7 @@ fn nested() -> Trees {
             pending_for: None,
             pending_by: None,
             chunks: Box::default(),
+            intents: None,
         };
         trees.set_remote(NodeId::from(id), node);
     }
