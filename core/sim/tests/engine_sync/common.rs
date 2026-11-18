@@ -2060,6 +2060,12 @@ fn run_ignoring_answering_after(
                 && outcome.code == op_result::Code::MergedInto as i32
             {
                 merged_into.insert(create.node_id.clone(), outcome.node_id.clone());
+                if let Some(shape) = discarded.remove(&create.node_id) {
+                    discarded.insert(outcome.node_id.clone(), shape);
+                }
+                for shape in discarded.values_mut().filter(|shape| shape.parent == create.node_id) {
+                    shape.parent = outcome.node_id.clone();
+                }
             }
         }
         let ended = commits.resolved().len();
