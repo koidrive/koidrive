@@ -561,25 +561,40 @@ fn an_edit_after_a_restart_is_an_edit_of_the_synced_file() {
 fn an_in_place_edit_made_while_stopped_that_keeps_the_size_and_mtime_is_sent_after_a_restart() {
     use std::io::Write;
 
-    let mut remote = Remote::new();
-    let (site, mut a) = linked(&mut remote, "a");
-    a.create(&mut remote, &site.root.join("notes.txt"), b"written on a");
-    a.settle();
-    drop(a);
+    for outside_link in [false, true] {
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site.root.join("notes.txt"), b"written on a");
+        a.settle();
+        let path = site.root.join("notes.txt");
+        let outside = site.root.with_file_name("outside.txt");
+        if outside_link {
+            fs::hard_link(&path, &outside).unwrap();
+            a.rescan();
+            a.settle();
+        }
+        drop(a);
 
-    let path = site.root.join("notes.txt");
-    let written = fs::metadata(&path).unwrap().modified().unwrap();
-    let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
-    file.write_all(b"edited on a!").unwrap();
-    file.set_modified(written).unwrap();
-    drop(file);
+        if outside_link {
+            fs::remove_file(&outside).unwrap();
+        }
+        let written = fs::metadata(&path).unwrap().modified().unwrap();
+        let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.write_all(b"edited on a!").unwrap();
+        file.set_modified(written).unwrap();
+        drop(file);
 
-    let mut a = site.start();
-    a.connect(&remote);
-    a.settle();
-    assert_eq!(a.run(&mut remote), ["subscribe", "upload", "send"]);
-    assert_eq!(kinds(&a.sent[0]), ["update content"]);
-    assert_eq!(a.state(), FolderState::UpToDate);
+        let mut a = site.start();
+        a.connect(&remote);
+        a.settle();
+        assert_eq!(
+            a.run(&mut remote),
+            ["subscribe", "upload", "send"],
+            "{outside_link}"
+        );
+        assert_eq!(kinds(&a.sent[0]), ["update content"]);
+        assert_eq!(a.state(), FolderState::UpToDate);
+    }
 }
 
 #[test]
@@ -1060,11 +1075,16 @@ fn a_restart_reads_nothing_after_any_change_the_observer_accepted() {
             )
             .unwrap();
         }),
-        ("a link removed", &["link.txt"], &[], |site, a, remote| {
-            fs::hard_link(site.root.join("notes.txt"), site.root.join("link.txt")).unwrap();
-            a.rest(remote);
-            fs::remove_file(site.root.join("link.txt")).unwrap();
-        }),
+        (
+            "a link removed",
+            &["link.txt"],
+            &["notes.txt"],
+            |site, a, remote| {
+                fs::hard_link(site.root.join("notes.txt"), site.root.join("link.txt")).unwrap();
+                a.rest(remote);
+                fs::remove_file(site.root.join("link.txt")).unwrap();
+            },
+        ),
     ];
     let mut wrong = Vec::new();
     for (row, read, read_again, change) in rows {
