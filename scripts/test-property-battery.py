@@ -594,6 +594,11 @@ cases = ["{1:064}"]
         w74e3 = "74e37aa2bf801d15aab9bf0f584dddf33f51a77e14d48566c299c6ec6b7b18e4"
         lose_restores = "devices_lose_no_write_across_restores_and_rewinds"
         g3a0d = "3a0d2e9f93add5bd8adc686860704064f6142131917fe4203d878de80082695b"
+        local_changes = "a_device_with_local_changes_converges_with_the_server_and_keeps_every_write"
+        e6d4a = "6d4a438ebc80d7846a131222b430d05dfda5334f90e1617453dd14ef4466ff4a"
+        e84d3 = "84d38f0bff21b60af7a74965e61163a0dee51349a80fe507b3fbc587567b2ae2"
+        elsewhere = ("assertion failed: `(left == right)` \n  left: `(\"01a1c2c0-39a0-75ee-831c-498d57bc0a70\", \"a\")`, \n right: `(\"01a1c2c0-39a0-780a-953a-eb70673e29cb\", \"a\")`: 01a1c2c0-39a0-7895-abc3-b3429e08873f"
+                     " is sent to a place the disk does not hold it at at core/sim/tests/engine_sync/common.rs:1330.")
         never_reached = next(entry for entry in entries
                              if entry["file"] == "GUN-864-I-delete-never-reached-server-across-server-restores.toml")["examples"][0]
         undone = next(entry for entry in entries if entry["file"] == "GUN-864-I-delete-came-undone.toml")["examples"][1]
@@ -631,6 +636,8 @@ cases = ["{1:064}"]
             ("devices_on_coarse_volumes_converge_once_the_faults_stop", undone + "\n" + example(w74e3), other, []),
             (lose_restores, example(g3a0d), g3a0d, [("G", "GUN-1203", ["3a0d2e9f93ad"])]),
             (lose_restores, example(g3a0d), other, []),
+            (local_changes, elsewhere, e6d4a, [("E", "GUN-984", ["4af1a1aa9520", "6d4a438ebc80", "c31339c2e813"])]),
+            (local_changes, elsewhere, e84d3, []),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):
                 found = triage.matches(entries, test, message, case)
