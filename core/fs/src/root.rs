@@ -839,6 +839,7 @@ mod tests {
 
     #[test]
     fn a_disk_swapped_while_a_scan_reads_it_never_passes_for_the_disk_it_identified() {
+        use std::ffi::OsString;
         use std::os::unix::fs::MetadataExt;
         use std::path::PathBuf;
         use std::process::Command;
@@ -849,11 +850,15 @@ mod tests {
         };
         let sudo = |args: &[&OsStr]| {
             let out = Command::new("sudo").arg("-n").args(args).output().unwrap();
-            (
-                out.status.success(),
-                String::from_utf8(out.stdout).unwrap().trim().to_owned(),
-            )
+            match out.status.success() {
+                true => Ok(String::from_utf8(out.stdout).unwrap().trim().to_owned()),
+                false => Err(format!(
+                    "sudo {args:?}: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )),
+            }
         };
+        let must = |args: &[&OsStr]| sudo(args).unwrap_or_else(|failure| panic!("{failure}"));
         let owner = std::fs::metadata(disks.base()).unwrap();
         let options = format!("uid={},gid={}", owner.uid(), owner.gid());
         for stage in ["root opened", "disk opened", "removal confirmed"] {
@@ -866,13 +871,12 @@ mod tests {
             std::fs::create_dir_all(&mount).unwrap();
             let attach = |image: &Path| {
                 let losetup = ["losetup", "--find", "--show"].map(OsStr::new);
-                sudo(&[&losetup[..], &[image.as_os_str()]].concat()).1
+                must(&[&losetup[..], &[image.as_os_str()]].concat())
             };
             let mut attached = Attached(vec![attach(&first)], mount.clone());
             let mount_on = |device: &str| {
                 let args = ["mount", "-o", &options, device].map(OsStr::new);
-                let done = sudo(&[&args[..], &[mount.as_os_str()]].concat()).0;
-                assert!(done, "{stage}: {device}");
+                must(&[&args[..], &[mount.as_os_str()]].concat());
             };
             mount_on(&attached.0[0]);
             std::fs::write(mount.join("report.docx"), b"first disk").unwrap();
@@ -893,17 +897,22 @@ mod tests {
                     return;
                 }
                 let device = attached.0[0].clone();
-                let replacement = match sudo(&["umount".as_ref(), mount.as_os_str()]).0 {
-                    true => {
-                        assert!(sudo(&["losetup", "-d", &device].map(OsStr::new)).0);
-                        attached.0.retain(|held| *held != device);
-                        let rebind = ["losetup", &device].map(OsStr::new);
-                        assert!(sudo(&[&rebind[..], &[second.as_os_str()]].concat()).0);
-                        attached.0.push(device.clone());
+                let replacement = match sudo(&["umount".as_ref(), mount.as_os_str()]) {
+                    Ok(_) => {
+                        let mut from = OsString::from("if=");
+                        from.push(&second);
+                        let to = format!("of={device}");
+                        must(&[
+                            "dd".as_ref(),
+                            from.as_os_str(),
+                            to.as_ref(),
+                            "bs=1M".as_ref(),
+                            "status=none".as_ref(),
+                        ]);
                         device
                     }
-                    false => {
-                        assert!(sudo(&["umount".as_ref(), "-l".as_ref(), mount.as_os_str()]).0);
+                    Err(_) => {
+                        must(&["umount".as_ref(), "-l".as_ref(), mount.as_os_str()]);
                         attached.0.push(attach(&second));
                         attached.0[1].clone()
                     }
