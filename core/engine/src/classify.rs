@@ -2994,8 +2994,11 @@ impl Trees {
         }
         let kept = self.kept_for_excluded();
         let goes = |id: &str| self.vanished(id) || self.l.get(id).is_none() && kept(id);
-        let whole = |folder: &str| {
-            self.vanished(folder) || (self.s_names.children(folder)).all(|child| goes(child))
+        let mut wholes: HashMap<NodeId, bool> = HashMap::new();
+        let mut whole = |folder: &NodeId| {
+            *(wholes.entry(folder.clone())).or_insert_with(|| {
+                self.vanished(folder) || (self.s_names.children(folder)).all(|child| goes(child))
+            })
         };
         let tops: BTreeSet<NodeId> = (self.gone_tops.iter())
             .filter(|id| self.vanished(id) && !self.ignored(id))
