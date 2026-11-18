@@ -67,7 +67,7 @@ use rustix::fs::{Mode, OFlags};
 
 use crate::engine::{Engine, file_id, file_identity};
 use crate::failures::{self, Failure};
-use crate::observe::{FsObserver, Observation, Observed, Observer, Reset};
+use crate::observe::{FsObserver, Marked, Observation, Observed, Observer, Reset};
 use crate::policy::{self, Disposition};
 use crate::progress::{Credit, Direction, Item};
 use crate::status::WaitKind;
@@ -164,6 +164,8 @@ pub(crate) struct Sections {
     /// Scopes the observer resets to L's view and scans again before its next batch, in the order requested, and
     /// how many requests there have been.
     resets: Mutex<(Vec<Reset>, u64)>,
+    /// Files the effect sections wrote a node mark on since the observer last took them.
+    marked: Mutex<Vec<Marked>>,
 }
 
 /// A count of the reset requests of the effect sections. The count a request returns names that request and every
@@ -210,6 +212,7 @@ impl Sections {
             Duration::ZERO
         };
         observer.reset(resets);
+        observer.restamp(std::mem::take(&mut *self.marked.lock().unwrap()));
         let stamp = self.stamp();
         let observation = observer.observe(wait)?;
         Ok(observation.map(|observation| Batch {
@@ -796,15 +799,37 @@ impl Disk {
             .collect()
     }
 
-    pub fn mark(&self, trees: &Trees, entries: impl IntoIterator<Item = (NodeId, NodeId)>) {
+    /// Marks the entry of each node with the node it names, and returns the change time each entry had before and after
+    /// its mark. The observer learns them too, so a mark is not taken for an edit.
+    pub fn mark(
+        &self,
+        trees: &Trees,
+        entries: impl IntoIterator<Item = (NodeId, NodeId)>,
+    ) -> Vec<(NodeId, i128, i128)> {
+        let mut stamped = Vec::new();
         for (id, node) in entries {
             let Some((at, expected)) = self.place_of(trees, &id) else {
                 continue;
             };
-            if let Err(err) = self.space.mark(&at, expected, &node) {
-                tracing::warn!(space_id = self.space_id, node, %err, "could not mark an entry");
+            match self.space.mark(&at, expected, &node) {
+                Ok(Some((before, after))) => {
+                    if let Some(path) = trees.local().path(&id) {
+                        (self.sections.marked.lock().unwrap()).push(Marked {
+                            path,
+                            id: expected,
+                            before,
+                            after,
+                        });
+                    }
+                    stamped.push((id, before, after));
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!(space_id = self.space_id, node, %err, "could not mark an entry");
+                }
             }
         }
+        stamped
     }
 
     fn place_of(&self, trees: &Trees, id: &str) -> Option<(Location, FileId)> {
@@ -1981,7 +2006,7 @@ fn displaced(displaced: &EngineDisplaced) -> Result<Displaced, String> {
             id: file_id(displaced.identity),
             size: displaced.content.size,
             mtime_ns: i128::from(displaced.content.mtime_ns),
-            ctime: Ctime::Settled(0),
+            ctime: Ctime::Settled { at: 0, mode: 0 },
             executable: displaced.content.executable,
             linked: false,
             mount: None,

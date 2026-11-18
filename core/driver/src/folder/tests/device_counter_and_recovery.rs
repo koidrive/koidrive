@@ -1038,7 +1038,7 @@ fn a_granted_node_l_does_not_hold_leaves_the_sent_entrys_mark() {
         .unwrap();
     let marks = |a: &Device| a.folder.disk.marks(&a.folder.engine.trees, [&id]);
     assert_eq!(marks(&a).get(&id), Some(&id));
-    a.folder.mark_granted(vec!["absent-copy".to_owned()]);
+    a.folder.mark_granted(vec!["absent-copy".to_owned()]).unwrap();
     assert_eq!(marks(&a).get(&id), Some(&id));
 }
 

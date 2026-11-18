@@ -583,7 +583,7 @@ fn an_in_place_edit_made_while_stopped_that_keeps_the_size_and_mtime_is_sent_aft
 }
 
 #[test]
-fn a_store_without_change_times_reports_only_files_changed_after_its_last_write() {
+fn an_upgraded_store_reports_only_files_changed_after_its_last_write_before_the_upgrade() {
     use std::io::Write;
 
     let mut remote = Remote::new();
@@ -592,14 +592,11 @@ fn a_store_without_change_times_reports_only_files_changed_after_its_last_write(
     a.create(&mut remote, &site.root.join("notes.txt"), b"written on a");
     a.settle();
     drop(a);
-    Store::open(&site.db)
-        .unwrap()
-        .transaction(|tx| {
-            for node in tx.local_nodes()? {
-                tx.set_local_ctime(&node.node_id, None)?;
-            }
-            Ok::<_, koidrive_store::Error>(())
-        })
+    (rusqlite::Connection::open(&site.db).unwrap())
+        .execute_batch(
+            "ALTER TABLE local_nodes DROP COLUMN ctime_ns;
+             DELETE FROM migrations WHERE name = 'local_nodes_ctime';",
+        )
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(50));
 
@@ -623,6 +620,34 @@ fn a_store_without_change_times_reports_only_files_changed_after_its_last_write(
     a.scan_until(|a| a.folder.scanned);
     assert_eq!(a.run(&mut remote), ["subscribe", "upload", "send"]);
     assert_eq!(kinds(&a.sent[0]), ["update content"]);
+}
+
+#[test]
+fn an_uploaded_file_is_read_again_only_once_for_an_attribute_another_app_wrote() {
+    #[cfg(target_vendor = "apple")]
+    const ATTRIBUTE: &str = "com.example.tag";
+    #[cfg(not(target_vendor = "apple"))]
+    const ATTRIBUTE: &str = "user.example.tag";
+    let reads = |a: &Device| {
+        (a.reports.lock().unwrap().iter())
+            .filter(|report| matches!(report, Observing::Reading { bytes, .. } if *bytes > 0))
+            .count()
+    };
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let path = site.root.join("notes.txt");
+    a.create(&mut remote, &path, b"written on a");
+    let uploaded = reads(&a);
+    a.settle();
+    assert_eq!(reads(&a), uploaded, "the node mark reads nothing again");
+
+    rustix::fs::setxattr(&path, ATTRIBUTE, b"red", rustix::fs::XattrFlags::empty()).unwrap();
+    a.settle();
+    assert_eq!(reads(&a), uploaded + 1);
+    assert!(a.run(&mut remote).is_empty());
+    drop(a);
+    let mut snapshot = site.start().folder.snapshot();
+    assert_eq!(snapshot.rescan(&site.root, [PathBuf::new()]).unwrap().changes, []);
 }
 
 /// Design §2.7 leaves a node the server refused an op for out of commits until the next rescan. The first whole scan

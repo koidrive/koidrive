@@ -135,6 +135,15 @@ pub struct Reset {
     pub known: BTreeMap<PathBuf, Known>,
 }
 
+/// A file a node mark was written on, with its change time before and after the mark.
+#[derive(Debug)]
+pub struct Marked {
+    pub path: PathBuf,
+    pub id: FileId,
+    pub before: i128,
+    pub after: i128,
+}
+
 /// A source of observations for one linked folder.
 pub trait Observer: Send {
     /// Waits up to about `timeout` and returns the next batch, or `None` when nothing changed.
@@ -276,7 +285,8 @@ struct Reads {
     bytes: u64,
     /// Files that changed while they were read, or could not be read.
     busy: Vec<PathBuf>,
-    /// Files left to a later observation because this one read all it may.
+    /// Files left to a later observation because this one read all it may, or because their change time has not
+    /// settled.
     deferred: Vec<PathBuf>,
     /// Folders the changes of this observation removed or renamed into place. A file created under one may be a node
     /// that the batch takes out of L with the folder, which the engine keeps only for a created file with content, so
@@ -383,6 +393,19 @@ impl FsObserver {
     /// gives no [`Observation`], so this is how a caller learns that the first scan is done.
     pub fn scanned(&self) -> Option<FileId> {
         self.scanned
+    }
+
+    /// [`koidrive_fs::Snapshot::restamp`] for each file a node mark was written on.
+    pub fn restamp(&mut self, marked: Vec<Marked>) {
+        for Marked {
+            path,
+            id,
+            before,
+            after,
+        } in marked
+        {
+            self.watcher.restamp(&path, id, before, after);
+        }
     }
 
     /// Resets the snapshot at each scope of `resets`, in order, to the entries L holds there, so the next observation
@@ -538,7 +561,7 @@ impl FsObserver {
                 self.unread.remove(&path);
                 continue;
             };
-            if !reads.take(entry.size, false) {
+            if matches!(entry.ctime, Ctime::Racy { .. }) || !reads.take(entry.size, false) {
                 continue;
             }
             match self.read(&path, &entry, reads) {
@@ -596,7 +619,7 @@ impl FsObserver {
         reads: &mut Reads,
         must: bool,
     ) -> Option<Content> {
-        if !reads.take(entry.size, must) {
+        if matches!(entry.ctime, Ctime::Racy { .. }) || !reads.take(entry.size, must) {
             reads.deferred.push(path.to_path_buf());
             return None;
         }
@@ -635,6 +658,14 @@ impl Observer for FsObserver {
             Some(due) => timeout.min(due.saturating_duration_since(Instant::now())),
             None => timeout,
         };
+        let entries = &self.watcher.snapshot().entries;
+        let racy = (self.unread.files.keys())
+            .filter(|path| {
+                (entries.get(*path)).is_some_and(|entry| matches!(entry.ctime, Ctime::Racy { .. }))
+            })
+            .cloned()
+            .collect();
+        self.watcher.revisit(racy);
         let poll = match self.watcher.poll(timeout) {
             Err(FsError::Watch(error)) if self.native => {
                 tracing::warn!(%error, "the platform watcher failed; rescanning periodically");
@@ -771,7 +802,7 @@ impl Observer for FsObserver {
                     content: Some(_),
                     ..
                 } => match entries.get(path)?.ctime {
-                    Ctime::Settled(at) => Some((path.clone(), at as i64)),
+                    Ctime::Settled { at, .. } => Some((path.clone(), at as i64)),
                     _ => None,
                 },
                 _ => None,
@@ -1914,6 +1945,10 @@ mod tests {
         }
 
         fn reset(&mut self, _scope: &Path, _known: BTreeMap<PathBuf, Known>) {}
+
+        fn restamp(&mut self, _path: &Path, _id: FileId, _before: i128, _after: i128) {}
+
+        fn revisit(&mut self, _paths: Vec<PathBuf>) {}
     }
 
     /// The first scan of an observer saw `proj`, a folder it knew, disappear and could not settle it, so it may not

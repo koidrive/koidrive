@@ -20,14 +20,17 @@ impl Space {
     /// finds the node of an entry the store lost track of (design section 6.4). An entry on a volume
     /// that keeps extended attributes in companion files, or one whose attribute cannot be written,
     /// gets no mark.
-    pub fn mark(&self, at: &Location, expected: FileId, node: &str) -> io::Result<()> {
-        match self.open_entry(at, expected)? {
-            Some(entry) => {
-                write(entry.as_fd(), node);
-                Ok(())
-            }
-            None => Ok(()),
-        }
+    ///
+    /// Returns the entry's change time before and after the mark, when it was written.
+    pub fn mark(
+        &self,
+        at: &Location,
+        expected: FileId,
+        node: &str,
+    ) -> io::Result<Option<(i128, i128)>> {
+        Ok(self
+            .open_entry(at, expected)?
+            .and_then(|entry| write(entry.as_fd(), node)))
     }
 
     /// The node the mark on the entry at `at` names, when the entry is still `expected` and the
@@ -65,16 +68,17 @@ pub(crate) fn open(folder: BorrowedFd<'_>, name: &OsStr) -> io::Result<Option<Ow
     }
 }
 
-pub(crate) fn write(entry: BorrowedFd<'_>, node: &str) {
-    let Ok(stat) = stat_fd(entry) else {
-        return;
-    };
-    if native(entry) {
-        let value = encode(node, stat.id);
-        if rustix::fs::fsetxattr(entry, NAME, value.as_bytes(), XattrFlags::empty()).is_err() {
-            let _ = rustix::fs::fremovexattr(entry, NAME);
-        }
+pub(crate) fn write(entry: BorrowedFd<'_>, node: &str) -> Option<(i128, i128)> {
+    let stat = stat_fd(entry).ok()?;
+    if !native(entry) {
+        return None;
     }
+    let value = encode(node, stat.id);
+    if rustix::fs::fsetxattr(entry, NAME, value.as_bytes(), XattrFlags::empty()).is_err() {
+        let _ = rustix::fs::fremovexattr(entry, NAME);
+        return None;
+    }
+    Some((stat.ctime_ns, stat_fd(entry).ok()?.ctime_ns))
 }
 
 /// The node the mark on the open entry `entry` names, when the mark was written on this entry rather than copied

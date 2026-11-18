@@ -1270,7 +1270,7 @@ fn folder_entry(id: FileId) -> Entry {
         id,
         size: 0,
         mtime_ns: 0,
-        ctime: Ctime::Settled(0),
+        ctime: Ctime::Settled { at: 0, mode: 0 },
         executable: false,
         linked: false,
         mount: None,

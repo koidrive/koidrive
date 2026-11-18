@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use koidrive_fs::{
-    Change, Entry, EntryKind, Error, FileId, Known, NativeWatcher, Poll, Rescan, RescanWatcher,
-    Snapshot, Space, Watcher,
+    Change, Ctime, Entry, EntryKind, Error, FileId, Known, NativeWatcher, Poll, Rescan,
+    RescanWatcher, Snapshot, Space, Watcher,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -1175,13 +1175,15 @@ fn an_in_place_edit_that_keeps_the_size_and_restores_the_mtime_is_modified() {
     fs::write(root.join("doc"), "first").unwrap();
     let written = fs::metadata(root.join("doc")).unwrap().modified().unwrap();
     let mut snapshot = Snapshot::scan(root).unwrap();
-    assert!(
-        snapshot
-            .rescan(root, [PathBuf::new()])
-            .unwrap()
-            .changes
-            .is_empty()
-    );
+    while matches!(snapshot.entries[Path::new("doc")].ctime, Ctime::Racy { .. }) {
+        assert!(
+            snapshot
+                .rescan(root, [PathBuf::new()])
+                .unwrap()
+                .changes
+                .is_empty()
+        );
+    }
 
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -1194,13 +1196,7 @@ fn an_in_place_edit_that_keeps_the_size_and_restores_the_mtime_is_modified() {
 }
 
 #[test]
-fn an_in_place_edit_right_after_a_scan_is_modified() {
-    let dir = tempfile::tempdir().unwrap();
-    assert_eq!(edited_right_after_a_scan(dir.path()), [modified("doc")]);
-}
-
-#[test]
-fn an_in_place_edit_on_fat_right_after_a_scan_is_modified() {
+fn a_file_written_on_fat_right_before_a_scan_is_racy_until_its_tick_passes() {
     let Some(mut disks) = koidrive_test_support::Disks::new() else {
         return;
     };
@@ -1208,22 +1204,18 @@ fn an_in_place_edit_on_fat_right_after_a_scan_is_modified() {
     fs::create_dir(&stick).unwrap();
     let image = disks.fat("Stick");
     disks.attach(&image, &stick);
-    let changes = edited_right_after_a_scan(&stick);
-    assert!(changes.contains(&modified("doc")), "{changes:?}");
-}
-
-fn edited_right_after_a_scan(root: &Path) -> Vec<Change> {
-    use std::io::Write;
-
-    fs::write(root.join("doc"), "first").unwrap();
-    let mut snapshot = Snapshot::scan(root).unwrap();
-    fs::OpenOptions::new()
-        .write(true)
-        .open(root.join("doc"))
-        .unwrap()
-        .write_all(b"other")
-        .unwrap();
-    snapshot.rescan(root, [PathBuf::new()]).unwrap().changes
+    fs::write(stick.join("doc"), "first").unwrap();
+    let started = Instant::now();
+    let mut snapshot = Snapshot::scan(&stick).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(1));
+    let racy = |snapshot: &Snapshot| {
+        matches!(snapshot.entries[Path::new("doc")].ctime, Ctime::Racy { .. })
+    };
+    assert!(racy(&snapshot));
+    std::thread::sleep(Duration::from_millis(2100));
+    let changes = snapshot.rescan(&stick, [PathBuf::new()]).unwrap().changes;
+    assert!(!racy(&snapshot));
+    assert!(!changes.contains(&modified("doc")), "{changes:?}");
 }
 
 #[test]
@@ -1406,6 +1398,14 @@ fn a_new_link_a_scan_finds_beside_the_file_it_links_is_created() {
     let rescan = snapshot.rescan(&root, [PathBuf::from("e")]).unwrap();
     assert_eq!(rescan.changes, vec![created("e/link.txt", File)]);
     assert!(snapshot.entries.contains_key(Path::new("x/g.txt")));
+    fs::remove_file(root.join("e/link.txt")).unwrap();
+    let rescan = snapshot.rescan(&root, [PathBuf::new()]).unwrap();
+    assert_eq!(rescan.changes, vec![removed("e/link.txt", File)]);
+    fs::set_permissions(root.join("x/g.txt"), fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        snapshot.rescan(&root, [PathBuf::new()]).unwrap().changes,
+        vec![]
+    );
 }
 
 #[cfg(target_os = "macos")]

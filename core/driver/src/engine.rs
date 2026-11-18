@@ -143,14 +143,23 @@ impl Engine {
                 }
             }
         }
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos() as i64);
         for id in &changed.local {
-            if !self.unstored_ctimes.contains_key(id) && self.stored_ctimes.remove(id).is_some() {
-                tx.set_local_ctime(id, None)?;
+            match self.trees.local().get(id) {
+                None => {
+                    self.stored_ctimes.remove(id);
+                }
+                Some(_) if !self.stored_ctimes.contains_key(id) => {
+                    self.unstored_ctimes.entry(id.clone()).or_insert(now_ns);
+                }
+                Some(_) => {}
             }
         }
         for (id, ctime) in std::mem::take(&mut self.unstored_ctimes) {
             if self.trees.local().get(&id).is_some() {
-                tx.set_local_ctime(&id, Some(ctime))?;
+                tx.set_local_ctime(&id, ctime)?;
                 self.stored_ctimes.insert(id, ctime);
             }
         }
@@ -602,7 +611,7 @@ impl Engine {
     /// changed while nothing observed the folder, removals included, and reads only the files that differ. A node
     /// [`Trees::ignore_local`] recorded is left out with what is under it, since the disk does not hold it there: an
     /// entry the scan finds at its path is reported as created.
-    pub fn snapshot(&self, unrecorded: Ctime) -> Snapshot {
+    pub fn snapshot(&self) -> Snapshot {
         let local = self.trees.local();
         let mut entries = BTreeMap::new();
         let mut pending = vec![(PathBuf::new(), local.root.clone())];
@@ -614,13 +623,18 @@ impl Engine {
                 if self.trees.ignored_local().contains(child) {
                     continue;
                 }
-                let ctime = self
-                    .stored_ctimes
-                    .get(child)
-                    .map_or(unrecorded, |&at| Ctime::Settled(i128::from(at)));
+                let ctime = Ctime::NotAfter(
+                    (self.stored_ctimes.get(child)).map_or(i128::MIN, |&at| i128::from(at)),
+                );
                 let (kind, size, mtime_ns, ctime, executable) =
                     match (&node.shape.kind, &node.shape.content) {
-                        (Kind::Dir, _) => (EntryKind::Dir, 0, 0, Ctime::Settled(0), false),
+                        (Kind::Dir, _) => (
+                            EntryKind::Dir,
+                            0,
+                            0,
+                            Ctime::Settled { at: 0, mode: 0 },
+                            false,
+                        ),
                         (Kind::File, Some(content)) => (
                             EntryKind::File,
                             content.size,
@@ -684,6 +698,22 @@ impl Engine {
             }
         }
         self.trees.rules_scanned();
+    }
+
+    /// Moves the change time stored for each node from `before` to `after`, when the stored one is not earlier than
+    /// `before`: the file was as L knows it until its node mark moved its change time.
+    pub fn restamp(
+        &mut self,
+        tx: &Tx<'_>,
+        stamped: Vec<(NodeId, i128, i128)>,
+    ) -> Result<(), Error> {
+        for (id, before, after) in stamped {
+            if (self.stored_ctimes.get(&id)).is_some_and(|&at| i128::from(at) >= before) {
+                tx.set_local_ctime(&id, after as i64)?;
+                self.stored_ctimes.insert(id, after as i64);
+            }
+        }
+        Ok(())
     }
 
     pub fn read_ctimes(&mut self, ctimes: BTreeMap<PathBuf, i64>) {
@@ -3966,7 +3996,7 @@ mod tests {
         }
         let x = local_at(&engine.trees, Path::new("d/x"));
         let seen = snapshot;
-        let mut snapshot = engine.snapshot(Ctime::NotAfter(i128::MAX));
+        let mut snapshot = engine.snapshot();
         for (path, entry) in snapshot.entries.iter_mut() {
             if let Some(before) = seen
                 .entries

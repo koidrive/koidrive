@@ -588,7 +588,7 @@ pub fn decode(text: &str) -> Vec<Entry> {
                 },
                 size: fields[3].parse().unwrap(),
                 mtime_ns: fields[4].parse().unwrap(),
-                ctime: koidrive_fs::Ctime::Settled(0),
+                ctime: koidrive_fs::Ctime::Settled { at: 0, mode: 0 },
                 executable: fields[5] == "true",
                 linked: false,
                 mount: None,

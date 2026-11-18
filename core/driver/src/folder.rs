@@ -23,7 +23,7 @@ use koidrive_engine::commit::{Base, Halt as CommitHalt, Reconnect};
 use koidrive_engine::first_link::PriorSync;
 use koidrive_engine::ignore::LocalRules;
 use koidrive_engine::tree::{FileIdentity, LocalNode, NodeId};
-use koidrive_fs::{Ctime, Detached, Refusal, Snapshot};
+use koidrive_fs::{Detached, Refusal, Snapshot};
 use koidrive_net::{Backoff, Cause, DisconnectReason, Event, ServerError};
 use koidrive_proto::v1::resync_required::Reason;
 use koidrive_proto::v1::{Commit, CommitRecord, Resume, TrashPage, TreePage, Welcome};
@@ -406,9 +406,7 @@ impl Folder {
 
     /// The snapshot the observer starts from: the disk as L describes it.
     pub fn snapshot(&self) -> Snapshot {
-        self.engine.snapshot(Ctime::NotAfter(
-            self.store.written_ns().unwrap_or(i128::MIN),
-        ))
+        self.engine.snapshot()
     }
 
     /// Reclaims the local trash, evicting the oldest entries while it holds more than `cap` bytes. An entry written
@@ -806,7 +804,7 @@ impl Folder {
         })?;
         self.questions = questions;
         let granted = self.engine.commits.take_granted();
-        self.mark_granted(granted);
+        self.mark_granted(granted)?;
         #[cfg(test)]
         if let Some(left) = &mut self.crash_after {
             if *left == 0 {
@@ -967,12 +965,24 @@ impl Folder {
         self.publish_remote()
     }
 
-    fn mark_granted(&self, granted: Vec<NodeId>) {
+    fn mark_granted(&mut self, granted: Vec<NodeId>) -> Result<(), Stop> {
         let trees = &self.engine.trees;
-        let entries = (granted.into_iter())
+        let entries: Vec<(NodeId, NodeId)> = (granted.into_iter())
             .filter(|node| trees.local().get(node).is_some())
-            .map(|node| (node.clone(), node));
-        self.disk.mark(trees, entries);
+            .map(|node| (node.clone(), node))
+            .collect();
+        self.mark(entries)
+    }
+
+    /// Writes the node marks of `entries` and keeps the change time of each file whose mark was all that moved it.
+    fn mark(&mut self, entries: Vec<(NodeId, NodeId)>) -> Result<(), Stop> {
+        let stamped = self.disk.mark(&self.engine.trees, entries);
+        if stamped.is_empty() {
+            return Ok(());
+        }
+        let engine = &mut self.engine;
+        self.store
+            .transaction(|tx| -> Result<(), Stop> { Ok(engine.restamp(tx, stamped)?) })
     }
 
     /// Replaces R with the bootstrap's tree once the log has caught it up (design §4.4). On the first link of the
@@ -1052,8 +1062,7 @@ impl Folder {
             })
             .map(|(id, _)| (id.clone(), id.clone()))
             .collect::<Vec<_>>();
-        self.disk.mark(trees, adopted);
-        Ok(())
+        self.mark(adopted)
     }
 
     /// Starts a recovery (design §6.4) for `why`: nothing is committed and the commit in flight is never sent again,

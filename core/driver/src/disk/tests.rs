@@ -1387,12 +1387,7 @@ fn a_start_that_recovers_an_effect_has_its_paths_read_again() {
     }));
     let running = folder.start(no_hook()).unwrap();
     let sections = running.disk.sections();
-    let mut watching = observer(
-        &folder.root,
-        running.engine.snapshot(koidrive_fs::Ctime::NotAfter(
-            running.store.written_ns().unwrap_or(i128::MIN),
-        )),
-    );
+    let mut watching = observer(&folder.root, running.engine.snapshot());
     let resets = catch_up(&mut watching, &sections);
     let scopes: Vec<&Path> = resets.iter().map(|reset| reset.scope.as_path()).collect();
     assert_eq!(scopes, [Path::new("report.txt")]);
@@ -1404,12 +1399,7 @@ fn a_start_that_recovers_an_effect_has_its_paths_read_again() {
 
     let running = folder.start(no_hook()).unwrap();
     assert!(running.disk.sections().take_resets().0.is_empty());
-    let mut watching = observer(
-        &folder.root,
-        running.engine.snapshot(koidrive_fs::Ctime::NotAfter(
-            running.store.written_ns().unwrap_or(i128::MIN),
-        )),
-    );
+    let mut watching = observer(&folder.root, running.engine.snapshot());
     assert_eq!(
         settle(&mut watching),
         [],
@@ -2068,7 +2058,7 @@ fn translation_copies_names_and_identities_and_refuses_what_is_not_a_name() {
             id: file_id(no_birth),
             size: 3,
             mtime_ns: -1,
-            ctime: koidrive_fs::Ctime::Settled(0),
+            ctime: koidrive_fs::Ctime::Settled { at: 0, mode: 0 },
             executable: true,
             linked: false,
             mount: None,

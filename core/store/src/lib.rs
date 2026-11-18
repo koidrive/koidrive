@@ -57,13 +57,21 @@ pub mod migrations {
 
     include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
 
-    pub fn register_functions(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    /// Registers the functions the migrations call. `written_ns` is when the database was last written before this
+    /// open, which `last_write_ns()` gives.
+    pub fn register_functions(
+        conn: &rusqlite::Connection,
+        written_ns: Option<i128>,
+    ) -> rusqlite::Result<()> {
         use koidrive_engine::names::same_name;
         use koidrive_engine::tree::same_content;
         use koidrive_proto::v1::Content;
         use rusqlite::functions::FunctionFlags;
 
         let flags = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
+        conn.create_scalar_function("last_write_ns", 0, flags, move |_| {
+            Ok(written_ns.map(|at| at as i64))
+        })?;
         conn.create_scalar_function("same_name", 2, flags, |ctx| {
             Ok(same_name(&ctx.get::<String>(0)?, &ctx.get::<String>(1)?))
         })?;
@@ -249,7 +257,6 @@ pub struct CachedChunk {
 
 pub struct Store {
     conn: Connection,
-    written_ns: Option<i128>,
 }
 
 impl Store {
@@ -281,12 +288,12 @@ impl Store {
         conn.pragma_update(None, "synchronous", "FULL")?;
         #[cfg(target_os = "macos")]
         conn.pragma_update(None, "fullfsync", true)?;
-        let mut store = Self { conn, written_ns };
+        let mut store = Self { conn };
         let durability = store.durability()?;
         if durability != Durability::required() {
             return Err(Error::NotDurable(durability));
         }
-        migrate(&mut store.conn)?;
+        migrate(&mut store.conn, written_ns)?;
         Ok(store)
     }
 
@@ -327,16 +334,7 @@ impl Store {
                 missing: missing.name.to_owned(),
             });
         }
-        Ok(Self {
-            conn,
-            written_ns: written_ns(path),
-        })
-    }
-
-    /// When the database or its write-ahead log was last written before this store opened it, in nanoseconds since the
-    /// Unix epoch. `None` for a database that did not exist.
-    pub fn written_ns(&self) -> Option<i128> {
-        self.written_ns
+        Ok(Self { conn })
     }
 
     /// The durability settings in effect on this connection.
@@ -398,8 +396,8 @@ fn applied_migrations(conn: &Connection) -> Result<(u32, BTreeSet<String>)> {
     Ok((version, applied))
 }
 
-fn migrate(conn: &mut Connection) -> Result<()> {
-    migrations::register_functions(conn)?;
+fn migrate(conn: &mut Connection, written_ns: Option<i128>) -> Result<()> {
+    migrations::register_functions(conn, written_ns)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let (version, applied) = applied_migrations(&tx)?;
     if version != NAMED {
@@ -694,7 +692,9 @@ impl Tx<'_> {
         self.remove("local_nodes", node_id)
     }
 
-    /// The change time each local node's file had when its content was last read, for the nodes that have one.
+    /// For each local node that has one, the latest change time its file can have while it still holds what L records:
+    /// the change time the file had when it was last read, when L recorded a node it had not read, or, for a node from
+    /// before change times were stored, when the database was last written before that.
     pub fn local_ctimes(&self) -> Result<BTreeMap<String, i64>> {
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, ctime_ns FROM local_nodes WHERE ctime_ns IS NOT NULL",
@@ -703,8 +703,8 @@ impl Tx<'_> {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Records the change time of the local node's file, or forgets it.
-    pub fn set_local_ctime(&self, node_id: &str, ctime_ns: Option<i64>) -> Result<()> {
+    /// Records the latest change time of the local node's file, as [`Tx::local_ctimes`] gives it.
+    pub fn set_local_ctime(&self, node_id: &str, ctime_ns: i64) -> Result<()> {
         self.0
             .prepare_cached("UPDATE local_nodes SET ctime_ns = ?2 WHERE node_id = ?1")?
             .execute(params![node_id, ctime_ns])?;
