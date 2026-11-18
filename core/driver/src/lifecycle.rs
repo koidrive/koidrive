@@ -163,6 +163,7 @@ impl Lifecycle {
             self.save(&next)?;
             if older.is_none() {
                 self.cleared(checkpoint.halt.as_ref());
+                self.status.lock().unwrap().remedy = None;
             }
             *checkpoint = next;
         }
@@ -676,6 +677,7 @@ mod tests {
         lifecycle.restart().unwrap();
         lifecycle.halt(Halted::Root, "missing".into(), Remedy::Root);
         lifecycle.claimed(identity).unwrap();
+        assert_eq!(lifecycle.lock().unwrap().remedy, None);
         lifecycle.claimed(identity).unwrap();
         lifecycle.halt(Halted::DiskBehind, "older".into(), Remedy::Relink);
         lifecycle.claimed(identity).unwrap();
