@@ -655,7 +655,7 @@ pub struct World {
     /// again.
     rolled_back: BTreeMap<NodeId, Vec<u8>>,
     rewound: BTreeMap<i64, BTreeSet<usize>>,
-    held_before_a_loss: Vec<BTreeMap<NodeId, u128>>,
+    held_before_a_loss: Vec<Vec<BTreeMap<NodeId, u128>>>,
     clock: u64,
     touches: Vec<BTreeMap<u128, BTreeSet<u64>>>,
     touched_nodes: Vec<BTreeMap<NodeId, u128>>,
@@ -797,7 +797,7 @@ impl World {
             clock: 0,
             touches: vec![BTreeMap::new(); count],
             touched_nodes: vec![BTreeMap::new(); count],
-            held_before_a_loss: vec![BTreeMap::new(); count],
+            held_before_a_loss: vec![Vec::new(); count],
             merged: vec![BTreeMap::new(); count],
             actions: vec![BTreeMap::new(); count],
             scanned: vec![Observed::default(); count],
@@ -1130,10 +1130,11 @@ impl World {
 
     fn hold_before_a_loss(&mut self, d: usize) {
         let local = self.devices[d].engine.trees.local();
-        self.held_before_a_loss[d].extend(
+        self.held_before_a_loss[d].push(
             local
                 .iter()
-                .map(|(id, node)| (id.clone(), node.identity.ino)),
+                .map(|(id, node)| (id.clone(), node.identity.ino))
+                .collect(),
         );
     }
 
@@ -3348,8 +3349,9 @@ impl World {
                     let ino =
                         (device.engine.trees.local().get(made_id)).map(|node| node.identity.ino);
                     ino.is_some()
-                        && self.held_before_a_loss[d].get(lost_id).copied() == ino
-                        && !self.held_before_a_loss[d].contains_key(made_id)
+                        && (self.held_before_a_loss[d].iter()).any(|held| {
+                            held.get(lost_id).copied() == ino && !held.contains_key(made_id)
+                        })
                         && (self.placements[d].iter()).any(|placement| placement.node == *made_id)
                 })
         };

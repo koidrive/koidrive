@@ -2790,6 +2790,21 @@ fn a_file_a_coarse_disk_keeps_through_a_loss_is_created_again_beside_the_servers
 }
 
 #[test]
+fn a_file_created_again_beside_the_servers_file_stays_one_write_through_a_later_loss() {
+    let mut phases = a_restore_and_a_store_rollback_that_lose_track_of_a_coarse_download();
+    phases[2].extend([(0, Step::Backup), (0, Step::Restore)]);
+    let world = converge_on(&[Precision::Seconds, Precision::Seconds], &phases).unwrap();
+    let names: Vec<String> = (world.space().nodes().into_iter())
+        .filter(|node| node.status == koidrive_proto::v1::NodeStatus::Live as i32)
+        .map(|node| node.name)
+        .collect();
+    assert!(
+        names.contains(&"ss (conflict from device-1 2026-11-09)".to_owned()),
+        "{names:?}"
+    );
+}
+
+#[test]
 fn a_file_a_fine_disk_keeps_through_the_same_loss_is_linked_to_the_servers_file() {
     converge_on(
         &[Precision::Fine, Precision::Fine],
