@@ -2121,7 +2121,7 @@ impl Stored {
                     .hash_one(std::time::SystemTime::now()),
             ),
         };
-        trees.journal_mut().seed(ids.state);
+        trees.journal_mut().seed(&ids);
         Ok(Some(Engine {
             trees,
             effects,

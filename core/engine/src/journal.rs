@@ -16,7 +16,6 @@ use crate::tracked::TrackedMap;
 use crate::tree::NodeId;
 use rows::Rows;
 
-/// The most intents the history keeps per node and field, and a seen list per node and field (RFC 0029 §5.1).
 pub const HISTORY_KEPT: usize = 64;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -60,7 +59,6 @@ impl IntentId {
         &self.0
     }
 
-    /// A lowercase hyphenated UUID.
     pub fn parse(text: &str) -> Option<Self> {
         let hex: String = text.chars().filter(|c| *c != '-').collect();
         (text.len() == 36 && hex.len() == 32)
@@ -145,12 +143,11 @@ impl fmt::Debug for IntentId {
     }
 }
 
-/// The intent that set a field, as a `NodeState` reports it. `carried` is the wire's `replay` on a `NodeState`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FieldIntent {
     pub id: IntentId,
     pub author: String,
-    pub carried: bool,
+    pub replay: bool,
     pub applied_at_ms: i64,
 }
 
@@ -159,7 +156,7 @@ impl FieldIntent {
         Self {
             id,
             author: String::new(),
-            carried: false,
+            replay: false,
             applied_at_ms: 0,
         }
     }
@@ -168,7 +165,7 @@ impl FieldIntent {
         Some(Self {
             id: IntentId::from_bytes(&intent.id)?,
             author: intent.author_device_id.clone(),
-            carried: intent.replay,
+            replay: intent.replay,
             applied_at_ms: intent.applied_at_ms,
         })
     }
@@ -177,7 +174,7 @@ impl FieldIntent {
         proto::Intent {
             id: self.id.0.to_vec(),
             author_device_id: self.author.clone(),
-            replay: self.carried,
+            replay: self.replay,
             over: Vec::new(),
             applied_at_ms: self.applied_at_ms,
         }
@@ -284,12 +281,21 @@ pub enum WireBase {
     },
 }
 
-/// `Carried` holds the author's device id, empty when the store could not show who made the value.
+/// `Carried` holds the author's device id when the store could show who made the value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Author {
     Own,
-    Carried(String),
+    Carried(Option<String>),
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wire {
+    WithIntents,
+    WithoutIntents,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OpsWithoutIntent(pub usize);
 
 /// An intent the commit in flight sends for a field whose row a later change of the user replaced.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -364,7 +370,6 @@ pub struct Seen {
     pub value: Option<Value>,
 }
 
-/// One field of R that a delete's lists compare against.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteField {
     pub node: NodeId,
@@ -373,15 +378,12 @@ pub struct RemoteField {
     pub value: Value,
 }
 
-/// `Delete.unseen` and `Delete.held` (RFC 0029 §5.3).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeleteView {
     pub unseen: Vec<IntentId>,
     pub held: Vec<IntentId>,
 }
 
-/// The view a delete sends: R's intents the seen list neither holds nor matches by value are unseen, and the seen
-/// intents R's fields do not hold are held.
 pub fn delete_view(seen: &[Seen], remote: &[RemoteField]) -> DeleteView {
     let seen_ids: BTreeSet<IntentId> = seen.iter().map(|entry| entry.intent).collect();
     let unseen = (remote.iter())
@@ -408,7 +410,6 @@ pub fn delete_view(seen: &[Seen], remote: &[RemoteField]) -> DeleteView {
     }
 }
 
-/// A `held` row while R holds its `held_as` with the row's value and time: R gives the rest of the row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeldRow {
     pub intent: IntentId,
@@ -421,7 +422,6 @@ pub struct HeldRow {
 }
 
 impl HeldRow {
-    /// The row with the value, time and version id R gives it.
     pub fn full(&self, value: Value, time_ms: i64, version_id: Option<String>) -> Row {
         let value = match value {
             Value::Content { value, .. } if !self.versioned => Value::Content {
@@ -555,7 +555,6 @@ impl Journal {
         }
     }
 
-    /// What the store keeps, each compact row in full as `full` gives it.
     pub fn state(&self, full: impl Fn(&RowKey, &HeldRow) -> Row) -> JournalState {
         let mut rows: BTreeMap<RowKey, Row> = (self.rows.iter())
             .map(|(key, row)| (key.clone(), row.clone()))
@@ -570,7 +569,6 @@ impl Journal {
         }
     }
 
-    /// What changed since the last take, each compact row in full as `full` gives it.
     pub fn take_changes(&mut self, full: impl Fn(&RowKey, &HeldRow) -> Row) -> JournalChanges {
         let mut keys: BTreeSet<RowKey> = std::mem::take(&mut self.held_changed);
         keys.extend(self.rows.take_changes().into_iter().map(|(key, _)| key));
@@ -595,11 +593,9 @@ impl Journal {
         }
     }
 
-    /// Gives a journal that has no generator yet one of its own, derived from the state of another generator
-    /// (the engine's) so that the two streams differ.
-    pub fn seed(&mut self, from: u64) {
+    pub fn seed(&mut self, engine: &IdGen) {
         if self.ids.is_none() {
-            let mut ids = IdGen::new(from ^ JOURNAL_STREAM);
+            let mut ids = IdGen::new(engine.state ^ JOURNAL_STREAM);
             ids.next_u64();
             self.ids = Some(ids);
         }
@@ -625,7 +621,6 @@ impl Journal {
         self.listed = listed;
     }
 
-    /// The field's row unless it is compact; Trees gives every row whole.
     pub(crate) fn row(&self, node: &str, field: Field) -> Option<&Row> {
         self.rows.get(&(node.to_owned(), field))
     }
@@ -657,7 +652,6 @@ impl Journal {
         true
     }
 
-    /// Puts a compact row back in full, before R stops giving it.
     pub(crate) fn write_out(&mut self, key: RowKey, row: Row) {
         self.rows.remove_compact(&key);
         self.rows.insert_quietly(key, row);
@@ -671,9 +665,6 @@ impl Journal {
         self.seen.get(node).map_or(&[], Vec::as_slice)
     }
 
-    /// Writes the row of a change the user made, which replaces the field's row (RFC 0029 §5.1). `seen` is the
-    /// intent the field held for the user when no row covers it. A value the commit in flight sends for the field
-    /// takes that intent back.
     pub fn user_change(
         &mut self,
         node: &str,
@@ -722,8 +713,6 @@ impl Journal {
         intent
     }
 
-    /// Writes the status row of a user's delete with its seen list, at most [`HISTORY_KEPT`] entries per node and
-    /// field, the newest kept.
     pub fn user_delete(
         &mut self,
         node: &str,
@@ -743,7 +732,6 @@ impl Journal {
         self.user_change(node, Value::Status { live: false }, WireBase::None, seen)
     }
 
-    /// Ends the status row of a node the user created or restored again.
     pub fn user_revived(&mut self, node: &str) {
         if (self.row(node, Field::Status))
             .is_some_and(|row| row.value == Value::Status { live: false })
@@ -752,7 +740,6 @@ impl Journal {
         }
     }
 
-    /// Writes a row a store upgrade finds, unless the field has one.
     pub fn insert_if_absent(&mut self, node: &str, row: Row) -> bool {
         let key = (node.to_owned(), row.value.field());
         if self.rows.get(&key).is_some() || self.rows.get_compact(&key).is_some() {
@@ -797,19 +784,17 @@ impl Journal {
         self.rows.remove(&key)
     }
 
-    /// Puts the field's row in the commit being built: a `local` row becomes `sent` at `time_ms`, R's head time.
-    pub fn send(&mut self, node: &str, field: Field, time_ms: i64) -> Option<&Row> {
+    pub fn send(&mut self, node: &str, field: Field, head_time_ms: i64) -> Option<&Row> {
         let key = (node.to_owned(), field);
         self.rows.update(&key, |row| {
             if matches!(row.state, RowState::Local { .. }) {
                 row.state = RowState::Sent;
-                row.time_ms = time_ms;
+                row.time_ms = head_time_ms;
             }
         })?;
         self.rows.get(&key)
     }
 
-    /// Writes an own `sent` row for a change the commit being built sends that no row recorded.
     pub fn send_unrecorded(
         &mut self,
         node: &str,
@@ -833,7 +818,6 @@ impl Journal {
         self.rows.get(&key).expect("the row was just written")
     }
 
-    /// Takes a `sent` row back to `local`, so the next commit sends it again.
     pub fn unsend(&mut self, node: &str, field: Field) {
         self.rows.update(&(node.to_owned(), field), |row| {
             if row.state == RowState::Sent {
@@ -842,7 +826,6 @@ impl Journal {
         });
     }
 
-    /// A result applied the op that sent `sent` for the field, and the server holds `held` (RFC 0029 §5.2).
     pub fn applied(
         &mut self,
         node: &str,
@@ -869,8 +852,6 @@ impl Journal {
         self.push_history(node, field, held.id, held.applied_at_ms, true);
     }
 
-    /// A result answered the op that sent `sent` `SUPERSEDED`: the row of that intent ends, and rows made over it
-    /// take the intent the field reported.
     pub fn superseded(
         &mut self,
         node: &str,
@@ -892,8 +873,6 @@ impl Journal {
         }
     }
 
-    /// A result showed `target` holding the intent `sent` the commit sent for the field of `node`, as the copy of a
-    /// `CONFLICT_COPY` does: the row moves to `target`, which holds it.
     pub fn held_elsewhere(
         &mut self,
         node: &str,
@@ -934,15 +913,12 @@ impl Journal {
         self.push_history(target, field, sent, at_ms, true);
     }
 
-    /// The intent the commit in flight sent for the field.
     pub fn sent_intent(&self, node: &str, field: Field) -> Option<IntentId> {
         self.row(node, field)?
             .in_flight()
             .map(|flight| flight.intent)
     }
 
-    /// A result merged `node` into `target`: its place and status rows end, and its content row and the place rows
-    /// of its children move to the target.
     pub fn merged_into(&mut self, node: &str, target: &str) {
         self.end(node, Field::Place);
         self.end(node, Field::Status);
@@ -958,7 +934,6 @@ impl Journal {
         }
     }
 
-    /// Every row whose base is `from` takes `to` as its base.
     pub fn rebase(&mut self, from: IntentId, to: IntentId) {
         if from == to {
             return;
@@ -983,8 +958,6 @@ impl Journal {
         }
     }
 
-    /// R holds `intent` for the field: the history takes it, and a `held` row whose `held_as` the history places
-    /// before it ends.
     pub fn remote_holds(&mut self, node: &str, field: Field, intent: &FieldIntent, in_local: bool) {
         self.push_history(node, field, intent.id, intent.applied_at_ms, in_local);
         let held_as = match (self.row(node, field), self.compact_row(node, field)) {
@@ -1001,7 +974,6 @@ impl Journal {
         }
     }
 
-    /// L took the value of `intent`, which R holds.
     pub fn local_holds(&mut self, node: &str, field: Field, intent: IntentId) {
         let key = (node.to_owned(), field);
         let held = (self.history.get(&key)).is_some_and(|entries| {
@@ -1017,7 +989,6 @@ impl Journal {
         }
     }
 
-    /// Whether the history holds both intents and placed `later` after `earlier`.
     pub fn places_after(
         &self,
         node: &str,
@@ -1071,7 +1042,6 @@ impl Journal {
         }
     }
 
-    /// Drops the newest entry of the field's history when it is `implied`, which R's intent gives.
     pub(crate) fn trim_history(&mut self, node: &str, field: Field, implied: &HistoryEntry) {
         let key = (node.to_owned(), field);
         if self.history.get(&key).and_then(|entries| entries.last()) != Some(implied) {
@@ -1095,7 +1065,6 @@ impl Journal {
         }
     }
 
-    /// The server lost a commit of this device: every row a commit sent is a replay from now on (RFC 0029 §5.4).
     pub fn lose(&mut self) {
         let keys: Vec<RowKey> = (self.rows.iter())
             .filter(|(_, row)| !row.replay && !matches!(row.state, RowState::Local { .. }))
@@ -1106,8 +1075,6 @@ impl Journal {
         }
     }
 
-    /// Replaces each id the map holds wherever the journal names it: rows' intents, `held_as` and bases, the
-    /// history and the seen lists.
     pub fn replace_ids(&mut self, ids: &BTreeMap<IntentId, IntentId>) {
         if ids.is_empty() {
             return;

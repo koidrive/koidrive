@@ -1,23 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The journal's hooks in the three trees (RFC 0029 §5.1): the intents R and S hold, R's history, and the rows the
-//! user's changes write. R's history and S's intents follow R's intents implicitly; the journal keeps a history,
-//! and Trees keeps S's intents, only once they differ from what R's intents give.
-
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_proto::v1::{self as proto, change_record, op, op_result};
 
 use crate::journal::{
-    Author, Field, FieldIntent, HeldRow, HistoryEntry, IntentId, Journal, NodeIntents, Place,
-    RemoteField, Row, RowKey, RowState, Seen, Value, WireBase, delete_view,
+    Author, Field, FieldIntent, HeldRow, HistoryEntry, IntentId, Journal, NodeIntents,
+    OpsWithoutIntent, Place, RemoteField, Row, RowKey, RowState, Seen, Value, Wire, WireBase,
+    delete_view,
 };
 use crate::names::nfc;
 use crate::state::ContentValue;
 use crate::tree::{Kind, LocalNode, NodeId, RemoteNode, Shape, Tree};
 
 use super::Trees;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Compact {
+    AfterChange,
+    Loaded,
+}
 
 pub(super) enum Carrier {
     LostCreate,
@@ -146,7 +149,7 @@ fn wire_intent(row: &Row, device_id: &str) -> proto::Intent {
         id: row.intent.as_bytes().to_vec(),
         author_device_id: match &row.author {
             Author::Own => device_id.to_owned(),
-            Author::Carried(author) => author.clone(),
+            Author::Carried(author) => author.clone().unwrap_or_default(),
         },
         replay: row.replay,
         over: Vec::new(),
@@ -167,7 +170,6 @@ impl Trees {
         &mut self.journal
     }
 
-    /// The field's journal row whole, a compact row with the value, time and version id R gives it.
     pub fn journal_row(&self, node: &str, field: Field) -> Option<Cow<'_, Row>> {
         if let Some(row) = self.journal.row(node, field) {
             return Some(Cow::Borrowed(row));
@@ -189,9 +191,7 @@ impl Trees {
             .chain(compact)
     }
 
-    /// Keeps each `held` row of the node compact while R gives its value, time and version id, and, unless `quiet`
-    /// for rows the store holds already, leaves out the newest history entry that R's intent gives.
-    pub(super) fn compact_journal(&mut self, node: &str, quiet: bool) {
+    pub(super) fn compact_journal(&mut self, node: &str, when: Compact) {
         let Some(remote) = self.r.get(node) else {
             return;
         };
@@ -204,7 +204,7 @@ impl Trees {
                 applied_at_ms: intent.applied_at_ms,
                 in_local: self.local_holds_remote(node, remote, field),
             };
-            if !quiet {
+            if when == Compact::AfterChange {
                 self.journal.trim_history(node, field, &implied);
             }
             let key = (node.to_owned(), field);
@@ -217,7 +217,6 @@ impl Trees {
         }
     }
 
-    /// Puts the node's compact rows back in full while R still gives them, before R changes or loses the node.
     pub(super) fn write_out_journal(&mut self, node: &str) {
         for field in Field::ALL {
             let key = (node.to_owned(), field);
@@ -228,7 +227,6 @@ impl Trees {
         }
     }
 
-    /// The server lost a commit of this device: every sent and held row becomes a replay (RFC 0029 §5.4).
     pub(super) fn journal_lost(&mut self) {
         let nodes: Vec<NodeId> = (self.journal.compact_rows())
             .map(|((node, _), _)| node.clone())
@@ -265,7 +263,7 @@ impl Trees {
                     continue;
                 }
                 let intent = self.legacy_intent(&id, field, &value);
-                let carried = Author::Carried(String::new());
+                let carried = Author::Carried(None);
                 let local = RowState::Local { flight: None };
                 (self.journal)
                     .insert_if_absent(&id, row(intent, carried, None, value, local, replay));
@@ -286,7 +284,7 @@ impl Trees {
                 };
                 let author = match own {
                     true => Author::Own,
-                    false => Author::Carried(String::new()),
+                    false => Author::Carried(None),
                 };
                 let base = self.acknowledged_intent(node, field);
                 let intent = self.journal.mint();
@@ -398,7 +396,7 @@ impl Trees {
         }
         let nodes: Vec<NodeId> = self.r.iter().map(|(id, _)| id.clone()).collect();
         for id in nodes {
-            self.compact_journal(&id, false);
+            self.compact_journal(&id, Compact::AfterChange);
         }
     }
 
@@ -588,8 +586,6 @@ impl Trees {
         }
     }
 
-    /// R's history of the field: the entries the journal keeps, then R's intent when the journal does not hold
-    /// it, marked when L holds its value.
     pub fn remote_history(&self, id: &str, field: Field) -> Vec<HistoryEntry> {
         let mut entries = self.journal.history(id, field).to_vec();
         let Some(remote) = self.r.get(id) else {
@@ -894,7 +890,7 @@ impl Trees {
                         _ => row.intent,
                     },
                     author: String::new(),
-                    carried: row.replay,
+                    replay: row.replay,
                     applied_at_ms: row.time_ms,
                 });
             if let Some(intent) = remote.or(row) {
@@ -904,18 +900,13 @@ impl Trees {
         self.keep_synced_intents(id, intents);
     }
 
-    /// Puts the rows of the fields each op sets in the commit being built (RFC 0029 §5.2): a `local` row becomes
-    /// `sent` at `time_ms`, R's head time, and an op no row covers gets an own `sent` row over the intent R or S
-    /// holds for the field, unless an earlier rule made it carry another device's value. With `wire`, the session's
-    /// server records intents and each op names them, with the view of each `Delete` (§5.3). Returns how many ops
-    /// went without an intent.
     pub fn stamp_intents(
         &mut self,
         ops: &mut [proto::Op],
         device_id: &str,
-        time_ms: i64,
-        wire: bool,
-    ) -> usize {
+        head_time_ms: i64,
+        wire: Wire,
+    ) -> OpsWithoutIntent {
         let mut unrecorded = 0;
         for op in ops.iter_mut() {
             let Some(kind) = &op.op else {
@@ -945,7 +936,9 @@ impl Trees {
                         }
                         None
                     }
-                    Some(row) if local(&row) => self.journal.send(&node, field, time_ms).cloned(),
+                    Some(row) if local(&row) => {
+                        self.journal.send(&node, field, head_time_ms).cloned()
+                    }
                     Some(row) => Some(row.into_owned()),
                     None if carried => None,
                     None => value.map(|value| {
@@ -958,7 +951,7 @@ impl Trees {
                                     .map(|intent| intent.id)
                             });
                         (self.journal)
-                            .send_unrecorded(&node, value, WireBase::None, base, time_ms)
+                            .send_unrecorded(&node, value, WireBase::None, base, head_time_ms)
                             .clone()
                     }),
                 };
@@ -970,7 +963,7 @@ impl Trees {
                 unrecorded += 1;
                 continue;
             }
-            if !wire {
+            if wire == Wire::WithoutIntents {
                 continue;
             }
             op.intent = Some(intents[0].1.clone());
@@ -997,13 +990,9 @@ impl Trees {
                 delete.held = view.held.iter().map(|id| id.as_bytes().to_vec()).collect();
             }
         }
-        unrecorded
+        OpsWithoutIntent(unrecorded)
     }
 
-    /// Takes the results of a commit into the journal (RFC 0029 §5.2): each row a result proves becomes `held` as
-    /// the result's `NodeState` shows, a superseded row ends or moves to the node that holds its intent, a
-    /// conflict copy or a merge moves rows to the node the result names, and a rejected op's rows wait to be sent
-    /// again.
     pub fn record_results(&mut self, commit: &proto::Commit, result: &proto::CommitResult) {
         use op_result::Code;
         let states: BTreeMap<&str, &proto::NodeState> = (result.changes.iter())
@@ -1128,7 +1117,7 @@ impl Trees {
             .filter(|node| !node.is_empty())
             .collect();
         for node in touched {
-            self.compact_journal(&node, false);
+            self.compact_journal(&node, Compact::AfterChange);
         }
     }
 
