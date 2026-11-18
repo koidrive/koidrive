@@ -961,6 +961,9 @@ impl Journal {
 
     /// Every row whose base is `from` takes `to` as its base.
     pub fn rebase(&mut self, from: IntentId, to: IntentId) {
+        if from == to {
+            return;
+        }
         let keys: Vec<RowKey> = (self.rows.iter())
             .filter(|(_, row)| {
                 row.base == Some(from)
