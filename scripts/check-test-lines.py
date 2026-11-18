@@ -99,8 +99,11 @@ def toml_strings(cargo_toml, key):
     start = workspace and re.search(rf"(?m)^\s*{key}\s*=\s*\[", workspace.group(1))
     if not start:
         return []
-    array = re.match(r'(?:\s|,|#[^\n]*|"(?:[^"\\]|\\.)*")*\]', workspace.group(1)[start.end():])
-    return re.findall(r'"((?:[^"\\]|\\.)*)"', array.group(0)) if array else []
+    token = r'#[^\n]*|"((?:[^"\\]|\\.)*)"|\'([^\'\n]*)\''
+    array = re.match(rf"(?:\s|,|{token})*\]", workspace.group(1)[start.end():])
+    if not array:
+        return []
+    return [basic or literal for basic, literal in re.findall(token, array.group(0)) if basic or literal]
 
 
 def workspace_members(cargo_toml, paths):
@@ -180,7 +183,7 @@ def count(tree):
     scans, modules, test_modules = {}, {}, {}
     for path in rust:
         scans[path] = Tree.scans[tree.blobs[path]]
-        if scans[path]["error"]:
+        if scans[path]["error"] and not RUST_FIXTURE.search(path):
             tree.unparsed.add(f"{path}:{scans[path]['error']}")
         modules[path] = {module_file(path, d, tree.blobs) for d in scans[path]["modules"]}
         test_modules[path] = {module_file(path, d, tree.blobs) for d in scans[path]["test_modules"]}
@@ -191,7 +194,7 @@ def count(tree):
         if path.endswith(".rs") and RUST_FIXTURE.search(path):
             totals["fixture"] += lines
         elif path.endswith(".rs"):
-            test = lines if path in test_files else min(lines, scans[path]["test_lines"])
+            test = 0 if scans[path]["error"] else lines if path in test_files else min(lines, scans[path]["test_lines"])
             totals["test"] += test
             totals["implementation"] += lines - test
         elif REGRESSION.search(path):
@@ -269,7 +272,8 @@ def report(base, head, allowance, pr=None):
             + f". Remove or consolidate {over} test lines, or add {RECORDS}pr-{pr if pr is not None else '<number>'}.txt holding the line count and # lines that say why these tests are needed."
         )
     for message in messages:
-        print(f"::warning title=Test-line budget::{message}")
+        encoded = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::warning title=Test-line budget::{encoded}")
         summary += f"\n> [!WARNING]\n> {message}\n"
     print(summary)
     if os.environ.get("GITHUB_STEP_SUMMARY"):

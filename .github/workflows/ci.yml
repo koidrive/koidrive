@@ -778,6 +778,7 @@ jobs:
           workspaces: scripts/fn-docs
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build the Rust parser the counter uses
+        id: parser
         continue-on-error: true
         run: |
           cargo build --release --locked --manifest-path scripts/fn-docs/Cargo.toml
@@ -785,7 +786,13 @@ jobs:
       - name: Test the test-line counter
         if: needs.changes.outputs.test_lines == 'true'
         run: python3 scripts/test-check-test-lines.py -v
+      - name: Say the test-line report is unavailable
+        if: steps.parser.outcome == 'failure'
+        run: |
+          echo "::warning title=Test-line budget::The Rust parser did not build, so this run has no test-line report."
+          echo "The test-line report is unavailable because the Rust parser did not build." >> "$GITHUB_STEP_SUMMARY"
       - name: Report the test lines this change adds
+        if: steps.parser.outcome == 'success'
         continue-on-error: true
         env:
           PR: ${{ github.event.pull_request.number }}

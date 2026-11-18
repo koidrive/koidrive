@@ -162,12 +162,11 @@ fn expr_attrs(expr: &Expr) -> &[Attribute] {
 
 impl Spans {
     fn mark(&mut self, attrs: &[Attribute], span: Span) -> bool {
-        let outer = attrs
-            .iter()
-            .filter(|attr| matches!(attr.style, AttrStyle::Outer));
-        let marked = outer.clone().any(test_only);
+        let marked = attrs.iter().any(test_only);
         if marked {
-            let start = outer
+            let start = attrs
+                .iter()
+                .filter(|attr| matches!(attr.style, AttrStyle::Outer))
                 .map(|attr| attr.span().start().line)
                 .min()
                 .unwrap_or(span.start().line);

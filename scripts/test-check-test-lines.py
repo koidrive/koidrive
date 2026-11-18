@@ -268,10 +268,26 @@ class TestLines(unittest.TestCase):
         self.assertEqual(len(warnings), 1, warnings)
         self.assertIn("core/a/src/lib.rs:", warnings[0])
         self.assertIn("does not parse, so its lines count as implementation", warnings[0])
+        broken = {"core/a/tests/t.rs": "#[test]\nfn broken( {\n", "core/a/tests/fixtures/f.rs": "fn broken( {\n"}
+        warnings = self.run_check({}, broken)
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("core/a/tests/t.rs:", warnings[0])
+        counts = self.counts({"core/a/src/lib.rs": None, **broken})
+        self.assertEqual((counts["test"], counts["implementation"], counts["fixture"]), (0, 2, 1))
+
+    def test_a_path_that_does_not_parse_cannot_start_a_workflow_command(self):
+        result = self.run_check({}, {"core/a/tests/a\n::error::forged.rs": "fn broken( {\n"})
+        self.assertEqual(len(result), 1, result)
+        self.assertIn("%0A::error::forged.rs", result[0])
+
+    def test_an_inline_module_gated_by_an_inner_cfg_test_is_test_code(self):
+        counts = self.counts({"core/a/src/lib.rs": "pub fn a() {}\nmod checks {\n    #![cfg(test)]\n    mod cases;\n}\n",
+                              "core/a/src/checks/cases.rs": self.lines(4)})
+        self.assertEqual((counts["test"], counts["implementation"]), (8, 1))
 
     def test_workspace_globs_with_brackets_and_excludes_cover_the_right_packages(self):
         files = {"core/a/Cargo.toml": "", "core/b/Cargo.toml": "", "core/vendor/Cargo.toml": "",
-                 "Cargo.toml": '[workspace]\nmembers = [\n    "core/[ab]",\n    "core/*",\n]\nexclude = ["core/vendor"]\n'}
+                 "Cargo.toml": '[workspace]\nmembers = [\n    "core/[ab]",\n    "core/*",\n]\nexclude = [\n    # "core/a" stays a member\n    \'core/vendor\',\n]\n'}
         cwd = os.getcwd()
         os.chdir(self.repo)
         try:
