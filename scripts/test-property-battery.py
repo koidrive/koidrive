@@ -588,6 +588,10 @@ cases = ["{1:064}"]
         d93b = "d93bc61897d139c24ba2b9cf1da1cf8a696676689896335347e9f41fabe4c95e"
         other = "0" * 64
         folder = "devices_converge_around_a_folder_another_device_replaces"
+        lose_rollbacks = "devices_lose_no_write_across_rewinds_and_rollbacks"
+        lose_coarse = "devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds"
+        x2293 = "2293e681b3bc09faeca001d034140fd95df720190105bcb9a754644310248df5"
+        w74e3 = "74e37aa2bf801d15aab9bf0f584dddf33f51a77e14d48566c299c6ec6b7b18e4"
         never_reached = next(entry for entry in entries
                              if entry["file"] == "GUN-864-I-delete-never-reached-server-across-server-restores.toml")["examples"][0]
         def example(case):
@@ -616,6 +620,11 @@ cases = ["{1:064}"]
             (server_restores, never_reached, other, [("I", "GUN-864", None)]),
             (restores_and_rewinds, never_reached, other, [("I", "GUN-864", None)]),
             ("devices_on_coarse_volumes_converge_across_restores_and_rewinds", never_reached, other, [("I", "GUN-864", None)]),
+            (lose_rollbacks, example(x2293), x2293, [("X", "GUN-1199", ["2293e681b3bc"])]),
+            (lose_rollbacks, example(x2293), other, [("A", "GUN-1004", None)]),
+            (lose_coarse, example(w74e3), w74e3, [("W", "GUN-1200", ["74e37aa2bf80"])]),
+            (lose_coarse, example(w74e3), other, []),
+            (lose_rollbacks, example(w74e3), w74e3, [("A", "GUN-1004", None)]),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):
                 found = triage.matches(entries, test, message, case)

@@ -1,0 +1,10 @@
+class = "W"
+issue = "GUN-1200"
+tests = [
+  "devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds",
+]
+message = '''(after phase <n>: write <n> of the .* of node <id> on device <n> is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it\.|not recorded: devices::\S+ \S+ WriteKept write <n> of the .* of node <id> on device <n> is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it( not recorded: devices::\S+ \S+ [A-Za-z]+ .+?(settles it|brought the node back|never gave it))*( devices::\S+ never ran case \S+)*)'''
+examples = [
+  "not recorded: devices::devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds\tcc-74e37aa2bf801d15aab9bf0f584dddf33f51a77e14d48566c299c6ec6b7b18e4\tWriteKept\twrite 2 of the write of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 1 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it\ndevices::devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds never ran case cc-79e1ecbfd8d69fa3b00e4960fa7a3a1949d66654b791f86672e512bda85e8526\ndevices::devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds never ran case cc-a0e99500cef5dbe9fa8d6b87b6520da3f8bf411ee15b54c22ddcc61a77688464",
+]
+cases = ["74e37aa2bf80"]
