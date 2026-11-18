@@ -240,7 +240,10 @@ export class UsageTally {
       if (!on || this.stops === stops) this.reporting = on;
     } catch (error) {
       console.error("usage flush failed", errorText(error));
-      if (this.stops === stops) this.put(batch);
+      if (this.stops !== stops) return;
+      const newer = this.take();
+      this.put(batch);
+      if (newer) this.put(newer);
     }
   }
 }

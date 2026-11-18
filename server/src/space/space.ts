@@ -876,7 +876,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const target = this.traffic.reporting === true ? this.state.getWebSockets().find((ws) => ws.readyState === WebSocket.OPEN) : undefined;
       this.traffic.lapse();
       const batch = this.traffic.take();
-      if (batch && target) this.park(target, batch);
+      if (batch && target && !this.park(target, batch)) this.traffic.put(batch);
     }
 
     private noteStored(): void {

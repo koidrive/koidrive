@@ -183,9 +183,12 @@ export async function meteredReply(object: object, kind: ObjectKind, tally: Usag
     thrown = thrownOf(error);
   } finally {
     tally.lapse();
-    await ended(method, args, true);
-    if (call.keep) tally.keep();
-    tally.leave();
+    try {
+      await ended(method, args, true);
+    } finally {
+      if (call.keep) tally.keep();
+      tally.leave();
+    }
   }
   return { value: result, thrown, ...carriedBy(tally) };
 }
@@ -209,8 +212,11 @@ export function meteredObject<T extends object>(object: T, kind: ObjectKind, tal
           thrown = thrownOf(error);
         } finally {
           tally.lapse();
-          await ended(name, args, replying);
-          tally.leave();
+          try {
+            await ended(name, args, replying);
+          } finally {
+            tally.leave();
+          }
         }
         if (!replying) return result;
         const response = thrown ? new Response(null, { status: 500 }) : (result as Response);

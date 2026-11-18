@@ -611,9 +611,10 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
 
     private storeVotes(votes: ReportVotes): void {
       const before = this.votes();
-      const startedMs = !this.reportsWith(before) && this.reportsWith(votes) ? this.clock() : before.startedMs;
+      const starts = !this.reportsWith(before) && this.reportsWith(votes);
+      const startedMs = starts ? this.clock() : before.startedMs;
       this.sql.exec("INSERT INTO settings (key, value) VALUES ('report_votes', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", JSON.stringify({ ...votes, startedMs }));
-      if (!this.reportsWith(votes)) this.sql.exec("DELETE FROM usage_hours");
+      if (starts || !this.reportsWith(votes)) this.sql.exec("DELETE FROM usage_hours");
     }
 
     private countVotes(): void {
@@ -638,7 +639,9 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       }
       if (openedMs < (votes.startedMs ?? 0)) return true;
       this.tally.lapse();
-      const added = this.writeUsage(mergeBatch(this.tally.takeAll(), { openedMs, hours, stored }));
+      const own = this.tally.takeAll();
+      const incoming = { openedMs, hours, stored };
+      const added = this.writeOwn(own, () => this.writeUsage(own ? mergeBatch(mergeBatch(undefined, own), incoming) : incoming));
       const unarmed = this.sql.exec("SELECT 1 FROM settings WHERE key = 'usage_alarm_unarmed'").toArray().length > 0;
       if (!added && !unarmed) return true;
       try {
@@ -663,7 +666,19 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
     private storeOwn(): void {
       this.tally.lapse();
       const own = this.tally.takeAll();
-      if (own) this.writeUsage(own);
+      if (own) this.writeOwn(own, () => this.writeUsage(own));
+    }
+
+    private writeOwn(own: UsageBatch | undefined, write: () => boolean): boolean {
+      try {
+        return write();
+      } catch (error) {
+        if (own) {
+          this.tally.put(own);
+          this.tally.keep();
+        }
+        throw error;
+      }
     }
 
     private writeUsage(batch: UsageBatch): boolean {

@@ -381,6 +381,19 @@ describe("usage tally", () => {
     expect(handed.map((hours) => hours[10]!.counts)).toEqual([{ "get_server.200": 1, "get_server.503": 1 }]);
   });
 
+  it("keeps the stored sizes noted while a failed hand-over ran over the older ones it carried", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const tally = new UsageTally(() => 10 * HOUR_MS);
+    tally.reporting = true;
+    const sizes = (sqlBytes: number) => ({ object: "space", sqlBytes, r2Bytes: 0, r2Objects: 0 });
+    tally.note(sizes(100));
+    await tally.handOver(async () => {
+      tally.note(sizes(200));
+      throw new Error("account unreachable");
+    });
+    expect(tally.take()?.stored).toEqual([sizes(200)]);
+  });
+
   it("drops a failed hand-over's counts when reporting stopped and started again while it ran", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const tally = new UsageTally();
@@ -540,6 +553,27 @@ describe("billing meters", () => {
       ["fetch", true, {}],
       ["helper", true, {}],
     ]);
+  });
+
+  it("leaves an object idle after its end of event fails, passes the failure on, and counts no idle time into its next call", async () => {
+    class Probe {
+      helper(): string {
+        return "done";
+      }
+      async alarm(): Promise<void> {}
+    }
+    const tally = new UsageTally(() => 10 * HOUR_MS, "do_space_active_ms");
+    tally.reporting = true;
+    const failing = () => Promise.reject(new Error("storage busy"));
+    let nowMs = 10 * HOUR_MS;
+    vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+    await expect(meteredReply(new Probe(), "space", tally, failing, "helper", [])).rejects.toThrow("storage busy");
+    await expect(meteredObject(new Probe(), "space", tally, failing).alarm()).rejects.toThrow("storage busy");
+    expect(tally.idle).toBe(true);
+    tally.take();
+    nowMs += 5_000;
+    const after = await meteredReply(new Probe(), "space", tally, () => {}, "helper", []);
+    expect(billingOf(after.usage!.hours)).toEqual({ do_space_requests: 1 });
   });
 
   it("unwraps each reply at the stub and gives the caller the callee's counts and flag", async () => {
@@ -783,6 +817,47 @@ describe("hourly server report", () => {
     expect(spaceCalls(usage.calls)).toHaveLength(1);
   });
 
+  it("keeps a failed hand-over's counts that no longer fit on the open socket, and hands them over with the next event", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { owner, spaceId, stub } = await reportingSpace();
+    const usage = await watchUsage();
+    const socket = await connect(spaceId, owner, stub);
+    const hour = Math.floor(Date.now() / HOUR_MS);
+    await runInDurableObject(stub, (_instance, state) => {
+      const ws = state.getWebSockets()[0]!;
+      const attachment = ws.deserializeAttachment() as { usage?: { openedMs: number; hours: UsageHours } };
+      const counts: Record<string, number> = {};
+      for (let n = 0; JSON.stringify({ ...attachment, usage: { openedMs: Date.now(), hours: { [hour]: { counts, latency: {} } } } }).length < 8150; n++) counts["rpc_pad_" + n + ".ok"] = 1;
+      ws.serializeAttachment({ ...attachment, usage: { openedMs: Date.now(), hours: { [hour]: { counts, latency: {} } } } });
+    });
+    usage.failures.left = 1;
+    await socket.listTree();
+    await vi.waitFor(() => expect(logged.mock.calls.map(([text]) => text)).toContain("usage flush failed"));
+    await socket.listTree();
+    await vi.waitFor(async () => expect((await storedCounts())["rpc_list_tree.ok"]).toBe(2));
+    expect(Object.keys(await storedCounts()).filter((key) => key.startsWith("rpc_pad_")).length).toBeGreaterThan(100);
+  });
+
+  it("counts a response's known length in the batch the Worker hands over for that request", async () => {
+    const { owner } = await reportingSpace();
+    UsageTally.batchMs = 0;
+    restorers.push(() => {
+      UsageTally.batchMs = BATCH_MS;
+    });
+    const usage = await watchUsage();
+    const fetched = async (path: string, headers: Record<string, string> = {}) => {
+      const response = await exports.default.fetch(BASE + path, { headers });
+      await response.arrayBuffer();
+      return Number(response.headers.get("Content-Length"));
+    };
+    const serverLength = await fetched("/v1/server");
+    const spacesLength = await fetched("/v1/spaces", { Authorization: "Bearer " + owner.access!.token });
+    expect(serverLength).not.toBe(spacesLength);
+    await vi.waitFor(() => expect(usage.calls.some((hours) => Object.values(hours).some((counted) => counted.counts["get_spaces.200"]))).toBe(true));
+    const call = usage.calls.find((hours) => Object.values(hours).some((counted) => counted.counts["get_spaces.200"]))!;
+    expect(billingOf(call).egress_bytes).toBe(spacesLength);
+  });
+
   it("counts an HTTP RPC the Space DO refuses before it runs, by kind and refusal code", async () => {
     const { stub } = await reportingSpace();
     const identity = { userId: crypto.randomUUID(), deviceId: crypto.randomUUID(), deviceName: "Stranger", expiresAtMs: Date.now() + 900_000, kind: "device", scope: null };
@@ -1023,6 +1098,30 @@ describe("hourly server report", () => {
     expect(billingOf(replies[0]!.usage!.hours).do_account_requests).toBeUndefined();
   });
 
+  it("keeps the Account DO's own counts when writing them fails, and stores them with its next write", async () => {
+    await reportingSpace();
+    const hour = Math.floor(Date.now() / HOUR_MS);
+    const counted = () => ({ openedMs: Date.now(), hours: { [hour]: { counts: { "get_server.200": 1 }, latency: {}, billing: {} } } });
+    await runInDurableObject(account(), async (instance: AccountDO, state) => {
+      const own = instance as unknown as { tally: UsageTally; db: { transactionSync(closure: () => unknown): unknown }; storeOwn(): void };
+      state.storage.sql.exec("DELETE FROM usage_hours");
+      own.tally.takeAll();
+      const busy = () => {
+        throw new Error("storage busy");
+      };
+      own.tally.add("do_account_requests", 7);
+      vi.spyOn(own.db, "transactionSync").mockImplementationOnce(busy);
+      await expect(instance.recordUsage(counted())).rejects.toThrow("storage busy");
+      await instance.recordUsage(counted());
+      own.tally.add("do_account_requests", 5);
+      vi.spyOn(own.db, "transactionSync").mockImplementationOnce(busy);
+      expect(() => own.storeOwn()).toThrow("storage busy");
+      own.storeOwn();
+    });
+    const total = await storedTotal();
+    expect({ served: total.counts["get_server.200"], requests: total.billing.do_account_requests }).toEqual({ served: 1, requests: 12 });
+  });
+
   it("drops the stored hours without sending them once a device turns reports off, even when reports turn on again before the send", async () => {
     const hour = Math.floor(Date.now() / HOUR_MS);
     const sent: unknown[] = [];
@@ -1163,6 +1262,31 @@ describe("hourly server report", () => {
     expect(await at(hourMs + 49 * HOUR_MS, async () => {})).toBe(false);
   });
 
+  it("drops the hours a lapsed ON vote left once a device turns reports on again, and keeps them when a refresh renews the vote before it lapses", async () => {
+    const owner = await ownerOnce();
+    const at = (clockMs: number, step: (instance: AccountDO) => unknown) =>
+      runInDurableObject(account(), async (instance: AccountDO) => {
+        instance.clock = () => clockMs;
+        await step(instance);
+      });
+    const record = (clockMs: number) =>
+      at(clockMs, (instance) => instance.recordUsage({ openedMs: clockMs, hours: { [Math.floor(clockMs / HOUR_MS)]: { counts: { "get_server.200": 1 }, latency: {}, billing: {} } } }));
+    await runInDurableObject(account(), (instance: AccountDO, state) => {
+      state.storage.sql.exec("UPDATE devices SET telemetry = ?", TokenRequest_Telemetry.UNSPECIFIED);
+      countVotes(instance);
+    });
+    const hourMs = (Math.floor(Date.now() / HOUR_MS) + 1) * HOUR_MS;
+    await at(hourMs + 15 * 60_000, () => refresh(owner, TokenRequest_Telemetry.ON));
+    await record(hourMs + 25 * HOUR_MS - 30 * 60_000);
+    await at(hourMs + 25 * HOUR_MS - 10 * 60_000, () => refresh(owner, TokenRequest_Telemetry.ON));
+    expect(await storedHours()).toHaveLength(1);
+    await record(hourMs + 49 * HOUR_MS - 30 * 60_000);
+    expect(await storedHours()).toHaveLength(2);
+    await at(hourMs + 49 * HOUR_MS + 60_000, () => refresh(owner, TokenRequest_Telemetry.ON));
+    expect(await reporting()).toBe(true);
+    expect(await storedHours()).toEqual([]);
+  });
+
   it("reads the same rows for a session check however many devices the server has revoked", async () => {
     const owner = await ownerOnce();
     await refresh(owner, TokenRequest_Telemetry.ON);
@@ -1273,8 +1397,8 @@ describe("billing counts across evictions", () => {
   const sumOf = (calls: UsageHours[]) => calls.flatMap((hours) => Object.values(hours)).reduce((sum, usage) => mergeUsage(sum, usage), emptyUsage());
   const leftover = (stub: SpaceStub) =>
     Promise.all([
-      runInDurableObject(stub, (instance: object) => (instance as unknown as { traffic: UsageTally }).traffic.take() ?? null),
-      runInDurableObject(account(), (instance: object) => (instance as unknown as { tally: UsageTally }).tally.take() ?? null),
+      runInDurableObject(stub, (instance: object) => (instance as unknown as { traffic: { batch?: UsageBatch } }).traffic.batch ?? null),
+      runInDurableObject(account(), (instance: object) => (instance as unknown as { tally: { batch?: UsageBatch } }).tally.batch ?? null),
     ]);
 
   async function ledger(stub: SpaceStub) {

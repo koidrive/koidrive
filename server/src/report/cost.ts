@@ -7,7 +7,7 @@ const DURABLE_OBJECTS = "https://developers.cloudflare.com/durable-objects/platf
 const R2 = "https://developers.cloudflare.com/r2/pricing/";
 
 export const MONTH_HOURS = 30 * 24;
-const GB = 2 ** 30;
+const GB = 1e9;
 
 type Free = { perDay: number } | { perMonth: number } | { total: number };
 
@@ -22,7 +22,7 @@ interface Price {
 
 export const PRICING = {
   subscription: { source: WORKERS, usdPerMonth: 5 },
-  objectMemory: { source: DURABLE_OBJECTS, gb: 0.125 },
+  objectMemory: { source: DURABLE_OBJECTS, gb: 0.128 },
   webSocket: { source: DURABLE_OBJECTS, messagesPerRequest: 20 },
   lines: {
     worker_requests: { source: WORKERS, unit: 1e6, usdPerUnit: 0.3, included: 10e6, roundsUp: false, free: { perDay: 100_000 } },

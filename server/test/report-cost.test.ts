@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { type BillingWindow, estimateMonthlyCost, type Line, PRICING } from "../src/report/cost";
 import type { Counter, Stored } from "../src/report/usage";
 
-const GB = 2 ** 30;
+const GB = 1e9;
 const NOTHING_STORED: Stored = { do_stored_bytes: 0, r2_stored_bytes: 0, r2_objects: 0 };
 
 function window(hours: number, billing: Partial<Record<Counter, number>>, stored: Partial<Stored> = {}): BillingWindow {
@@ -30,7 +30,7 @@ describe("monthly cost estimate", () => {
         do_account_requests: 10_000,
         do_space_requests: 10_000,
         do_ws_messages: 200_000,
-        do_space_active_ms: 104_000_000,
+        do_space_active_ms: 101_562_500,
         do_rows_read: 5_000_000,
         do_rows_written: 100_000,
         r2_class_a: 33_000,
@@ -75,7 +75,7 @@ describe("monthly cost estimate", () => {
 
   it("rounds billable Durable Object and R2 usage up to the next unit, and Workers usage not at all", () => {
     const month = (billing: Partial<Record<Counter, number>>, stored: Partial<Stored> = {}) => estimateMonthlyCost(window(30 * 24, billing, stored));
-    expect(month({ do_space_active_ms: 7_200_000_000 }).lines.do_gb_s).toEqual({ monthly: 900_000, usd: 12.5 });
+    expect(month({ do_space_active_ms: 7_031_250_000 }).lines.do_gb_s).toEqual({ monthly: 900_000, usd: 12.5 });
     expect(month({ do_rows_read: 25e9 + 1 }).lines.do_rows_read.usd).toBeCloseTo(0.001, 10);
     expect(month({ do_rows_written: 50e6 + 1 }).lines.do_rows_written.usd).toBe(1);
     expect(month({}, { do_stored_bytes: 5.5 * GB }).lines.do_stored_gb.usd).toBeCloseTo(0.2, 10);
@@ -103,6 +103,14 @@ describe("monthly cost estimate", () => {
     expect(shares.do_rows_read).toBeCloseTo(0.0052996, 10);
     expect(shares.do_rows_written).toBeCloseTo(0.00506, 10);
     expect(shares.do_gb_s).toBeLessThan(0.0001);
+  });
+
+  it("measures stored data in GB of 10^9 bytes and duration at 128 MB as 0.128 GB, as Cloudflare's pricing examples do", () => {
+    const month = (billing: Partial<Record<Counter, number>>, stored: Partial<Stored> = {}) => estimateMonthlyCost(window(30 * 24, billing, stored));
+    expect(month({}, { r2_stored_bytes: 10_500_000_000 }).lines.r2_stored_gb.usd).toBeCloseTo(0.015, 10);
+    expect(month({}, { do_stored_bytes: 5_500_000_000 }).lines.do_stored_gb.usd).toBeCloseTo(0.2, 10);
+    expect(month({ do_space_active_ms: 1_000_000_000 }).lines.do_gb_s.monthly).toBeCloseTo(128_000, 6);
+    expect(month({ do_space_active_ms: 86_400_000_000 }).lines.do_gb_s.usd).toBe(137.5);
   });
 
   it("bills incoming WebSocket messages as one request per 20", () => {

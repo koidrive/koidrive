@@ -424,7 +424,8 @@ export default {
     const nowMs = Date.now();
     traffic.count(routeOf(request), responseOutcome(response), nowMs - startedMs, nowMs);
     traffic.add("worker_requests", 1);
+    const counted = countedEgress(response, traffic);
     if (traffic.reporting === true) ctx.waitUntil(traffic.settle((batch) => account(env).recordUsage(batch), Date.now, (ms) => scheduler.wait(ms)));
-    return countedEgress(response, traffic);
+    return counted;
   },
 } satisfies ExportedHandler<Env>;
