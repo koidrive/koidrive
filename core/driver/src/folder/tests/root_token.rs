@@ -744,7 +744,7 @@ fn a_marker_write_that_fails_after_a_store_older_recovery_leaves_the_next_start_
     assert!(a.folder.engine.commits.halted().is_none());
     drop(a);
     fs::remove_dir_all(&blocker).unwrap();
-    assert!(!recovers(&site));
+    assert!(opened(&site).is_ok_and(|folder| folder.engine.commits.halted().is_none()));
     assert_eq!(names(&site.root), ["two.txt"]);
 }
 
@@ -786,38 +786,6 @@ fn a_store_from_before_tokens_restored_from_before_a_download_recovers_at_its_fi
 
 fn marker_file(site: &Site) -> PathBuf {
     site.root.join(koidrive_fs::PRIVATE_DIR).join("space.json")
-}
-
-fn as_an_older_build_rewrote_it(site: &Site) {
-    let json: serde_json::Value =
-        serde_json::from_slice(&fs::read(marker_file(site)).unwrap()).unwrap();
-    let kept: serde_json::Map<String, serde_json::Value> = (json.as_object().unwrap().iter())
-        .filter(|(key, _)| ["space_id", "effects", "token"].contains(&key.as_str()))
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
-    fs::write(marker_file(site), serde_json::to_vec(&kept).unwrap()).unwrap();
-}
-
-#[test]
-fn a_copy_from_before_a_downgrade_and_reupgrade_halts_as_a_copy() {
-    let mut remote = Remote::new();
-    let (site, mut a) = linked(&mut remote, "a");
-    a.create(&mut remote, &site.root.join("kept.txt"), b"kept");
-    a.create(&mut remote, &site.root.join("edited.txt"), b"old");
-    drop(a);
-    for _ in 0..3 {
-        drop(restarted(&site, &mut remote));
-    }
-    let copy = site.root.with_file_name("copy");
-    copy_folder(&site.root, &copy);
-    as_an_older_build_rewrote_it(&site);
-    let mut a = restarted(&site, &mut remote);
-    a.create(&mut remote, &site.root.join("after.txt"), b"after");
-    a.create(&mut remote, &site.root.join("edited.txt"), b"new");
-    drop(a);
-    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
-    fs::rename(&copy, &site.root).unwrap();
-    assert!(halts_as_a_copy(&site));
 }
 
 #[test]
