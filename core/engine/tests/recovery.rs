@@ -15,6 +15,7 @@ use koidrive_engine::question::{
     Answer, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
 };
 use koidrive_engine::restore::{Outcome, Rejection, RestoreIntent};
+use koidrive_engine::state::{ContentProvenance, ContentVersion, TreesState};
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
 use koidrive_proto::v1::{CommitResult, Error, OpResult, Welcome, error, op, op_result};
 
@@ -346,17 +347,44 @@ fn held_under_a_later_edit(
     local: &[(&str, Shape)],
     group: RecoveryGroup,
 ) -> (Trees, Commits, IdGen) {
-    let mut trees = trees(local, &[], &[]);
+    let later = server_version(file(ROOT, "a", 5), "v5", &["v4"], 2);
+    held_under(local, &[], Some(file(ROOT, "a", 4)), |_| {}, later, group)
+}
+
+fn version(version_id: &str) -> ContentVersion {
+    ContentVersion {
+        version_id: version_id.into(),
+        made_over: Vec::new(),
+        own: false,
+    }
+}
+
+fn held_under(
+    local: &[(&str, Shape)],
+    beside: &[(&str, Shape)],
+    synced: Option<Shape>,
+    stored: impl FnOnce(&mut TreesState),
+    later: RemoteNode,
+    group: RecoveryGroup,
+) -> (Trees, Commits, IdGen) {
+    let remote: Vec<Remote> = (beside.iter())
+        .map(|(id, shape)| Remote(id, shape.clone(), false, 1))
+        .collect();
+    let mut trees = trees(local, beside, &remote);
     trees.set_remote("n".into(), server_version(file(ROOT, "a", 4), "v4", &[], 1));
-    trees.set_synced("n".into(), Some(file(ROOT, "a", 4)));
+    if synced.is_some() {
+        trees.set_synced("n".into(), synced);
+    }
+    trees.settle();
+    let mut state = trees.state();
+    stored(&mut state);
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
     trees.settle();
     let cause = RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk);
     let (mut commits, mut ids) = recovered_after(&mut trees, 0, cause);
     let before = asked(&commits, group, &["n"]);
-    trees.set_remote(
-        "n".into(),
-        server_version(file(ROOT, "a", 5), "v5", &["v4"], 2),
-    );
+    trees.set_remote("n".into(), later);
     trees.settle();
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let after = asked(&commits, group, &["n"]);
@@ -428,6 +456,101 @@ fn a_published_offline_edit_after_a_store_rollback_keeps_the_other_devices_later
     held.sort_by_key(|content| content.as_ref().map(|c| c.manifest_digest.clone()));
     assert_eq!(held, [Some(content(5)), Some(content(6))]);
     assert_eq!(trees.local().get("n").unwrap().shape, file(ROOT, "a", 5));
+}
+
+#[test]
+fn a_published_rename_of_a_file_s_does_not_hold_keeps_another_devices_later_edit() {
+    let on_disk = ContentProvenance {
+        local: Some(version("v4")),
+        ..Default::default()
+    };
+    let (mut trees, mut commits, mut ids) = held_under(
+        &[("n", file(ROOT, "b", 4))],
+        &[],
+        None,
+        |state| {
+            state.content_provenance.insert("n".into(), on_disk);
+        },
+        server_version(file(ROOT, "a", 5), "v5", &["v4"], 2),
+        RecoveryGroup::ChangedOnThisDevice,
+    );
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "n".into())]
+    );
+    let moved = server_version(file(ROOT, "b", 5), "v5", &["v4"], 3);
+    apply(&mut commits, &mut trees, 1, &[("n", moved)]);
+    effects(&mut trees, &mut ids);
+    assert_eq!(trees.local().get("n").unwrap().shape, file(ROOT, "b", 5));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_published_offline_edit_while_an_update_of_s_waits_keeps_the_other_devices_later_edit_beside_it()
+ {
+    let (mut trees, mut commits, mut ids) = held_under(
+        &[("n", file(ROOT, "b", 6))],
+        &[("m", file(ROOT, "b", 1))],
+        Some(file(ROOT, "a", 4)),
+        |state| {
+            let waiting = Waiting {
+                shape: Some(file(ROOT, "b", 4)),
+                origin: Origin::Other,
+            };
+            state.waiting.insert("n".into(), waiting);
+        },
+        server_version(file(ROOT, "a", 5), "v5", &["v4"], 2),
+        RecoveryGroup::ChangedOnThisDevice,
+    );
+    assert!(trees.waiting().contains_key("n"));
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    let [("create file", copy)] = &sent[..] else {
+        panic!("{sent:?}");
+    };
+    let copy = copy.clone();
+    let renamed = server_version(file(ROOT, "a (conflict)", 6), "v6", &[], 3);
+    apply(&mut commits, &mut trees, 1, &[(&copy, renamed)]);
+    effects(&mut trees, &mut ids);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    effects(&mut trees, &mut ids);
+    let mut held: Vec<Option<Content>> = (trees.local().iter())
+        .map(|(_, node)| node.shape.content.clone())
+        .collect();
+    held.sort_by_key(|content| content.as_ref().map(|c| c.manifest_digest.clone()));
+    assert_eq!(held, [Some(content(5)), Some(content(6))]);
+}
+
+#[test]
+fn a_published_write_another_device_wrote_over_is_followed_without_a_copy() {
+    let own = ContentProvenance {
+        synced: Some(version("v4")),
+        local: Some(version("v5")),
+        ..Default::default()
+    };
+    let (mut trees, mut commits, mut ids) = held_under(
+        &[("n", file(ROOT, "a", 5))],
+        &[],
+        Some(file(ROOT, "a", 4)),
+        |state| {
+            state.content_provenance.insert("n".into(), own);
+        },
+        server_version(file(ROOT, "a", 6), "v6", &["v5", "v4"], 2),
+        RecoveryGroup::ChangedOnThisDevice,
+    );
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(node, Effect::WriteFile { content: written, .. })] if node == "n" && *written == content(6)),
+        "{done:?}"
+    );
+    assert_eq!(trees.local().len(), 1);
+    assert_eq!(trees.local().get("n").unwrap().shape, file(ROOT, "a", 6));
 }
 
 #[test]

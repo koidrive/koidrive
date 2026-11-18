@@ -271,14 +271,14 @@ pub(crate) fn release(
         let newer_than = |version: Option<&str>| {
             version.is_some_and(|version| trees.remote_made_over(id, version))
         };
-        let synced = (trees.synced().live(id)).filter(|_| !trees.waiting().contains_key(id));
         let on_disk = trees.local().get(id).map(|node| &node.shape);
+        let synced = trees.synced().live(id);
         let content = if trees.made_over_remote(id) {
             server.content.clone()
-        } else if let Some(synced) = synced.filter(|_| newer_than(trees.synced_version_id(id))) {
-            synced.content.clone()
         } else if let Some(on_disk) = on_disk.filter(|_| newer_than(trees.source_version_id(id))) {
             on_disk.content.clone()
+        } else if let Some(synced) = synced.filter(|_| newer_than(trees.synced_version_id(id))) {
+            synced.content.clone()
         } else {
             server.content.clone()
         };
