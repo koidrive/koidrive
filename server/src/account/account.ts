@@ -31,7 +31,7 @@ import { isUuidV7, uuidv7 } from "../ids";
 import { knownPrincipal } from "../policy";
 import { FORMAT_VERSION } from "../space/space";
 import { REPORT_URL, reportBatch } from "../report/payload";
-import { mergeUsage, type UsageHours } from "../report/usage";
+import { mergeUsage, type UsageBatch } from "../report/usage";
 import { PROTO_MAX, PROTO_MIN, SERVER_VERSION } from "../version";
 import { MAX_REQUEST_ID_LENGTH, type Outcome, type ResolvedLink, type ShareOutcome, ShareLinks } from "../share/links";
 
@@ -122,6 +122,7 @@ function sameBytes(a: ArrayBuffer, b: ArrayBuffer): boolean {
 interface ReportVotes {
   onUntilMs: number;
   off: boolean;
+  startedMs?: number;
 }
 
 interface DeviceRow {
@@ -392,7 +393,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       nextRefreshCredential?: string;
       rotateBeforeMs?: bigint;
       telemetry?: TokenRequest_Telemetry;
-    }): Promise<Outcome<AccessToken>> {
+    }): Promise<Outcome<AccessToken> & { reporting?: boolean }> {
       const proposed = args.nextRefreshCredential ?? "";
       const rotateBeforeMs = Number(args.rotateBeforeMs ?? 0n);
       if (proposed !== "" && (!REFRESH_CREDENTIAL.test(proposed) || !args.rotation || rotateBeforeMs === 0)) {
@@ -423,7 +424,7 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
         token.serverTimeMs = BigInt(serverTimeMs);
         token.rotated = rotated;
       }
-      return ok(token);
+      return { ...ok(token), reporting: this.reporting() };
     }
 
     async listDevices(args: { userId: string; callerId: string; cursor: string }): Promise<DeviceList> {
@@ -587,6 +588,10 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
 
     reporting(): boolean {
       const votes = this.votes();
+      return this.reportsWith(votes);
+    }
+
+    private reportsWith(votes: ReportVotes): boolean {
       return !votes.off && this.clock() < votes.onUntilMs;
     }
 
@@ -596,8 +601,10 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
     }
 
     private storeVotes(votes: ReportVotes): void {
-      this.sql.exec("INSERT INTO settings (key, value) VALUES ('report_votes', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", JSON.stringify(votes));
-      if (!this.reporting()) this.sql.exec("DELETE FROM usage_hours");
+      const before = this.votes();
+      const startedMs = !this.reportsWith(before) && this.reportsWith(votes) ? this.clock() : before.startedMs;
+      this.sql.exec("INSERT INTO settings (key, value) VALUES ('report_votes', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", JSON.stringify({ ...votes, startedMs }));
+      if (!this.reportsWith(votes)) this.sql.exec("DELETE FROM usage_hours");
     }
 
     private countVotes(): void {
@@ -612,11 +619,13 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
       this.storeVotes({ onUntilMs: onSeenMs === 0 ? 0 : onVoteEndMs(onSeenMs), off: Number(counted.off) === 1 });
     }
 
-    async recordUsage(hours: UsageHours): Promise<boolean> {
-      if (!this.reporting()) {
+    async recordUsage({ openedMs, hours }: UsageBatch): Promise<boolean> {
+      const votes = this.votes();
+      if (!this.reportsWith(votes)) {
         this.sql.exec("DELETE FROM usage_hours");
         return false;
       }
+      if (openedMs < (votes.startedMs ?? 0)) return true;
       const nowHour = Math.floor(this.clock() / HOUR_MS);
       let added = false;
       this.db.transactionSync(() => {

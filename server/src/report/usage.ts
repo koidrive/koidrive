@@ -87,7 +87,7 @@ export class UsageTally {
     this.lastMs = Math.max(this.lastMs, nowMs);
   }
 
-  async settle(record: (hours: UsageHours) => Promise<boolean>, now: () => number, wait: (ms: number) => Promise<unknown>): Promise<void> {
+  async settle(record: (batch: UsageBatch) => Promise<boolean>, now: () => number, wait: (ms: number) => Promise<unknown>): Promise<void> {
     if (this.reporting !== true) return;
     if (!this.due(now())) {
       await wait(UsageTally.quietMs);
@@ -112,12 +112,12 @@ export class UsageTally {
     this.batch = mergeBatch(this.batch, batch);
   }
 
-  async handOver(record: (hours: UsageHours) => Promise<boolean>): Promise<void> {
+  async handOver(record: (batch: UsageBatch) => Promise<boolean>): Promise<void> {
     const batch = this.take();
     if (!batch) return;
     const stops = this.stops;
     try {
-      const on = await record(batch.hours);
+      const on = await record(batch);
       if (!on || this.stops === stops) this.reporting = on;
     } catch (error) {
       console.error("usage flush failed", errorText(error));

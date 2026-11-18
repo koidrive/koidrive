@@ -20,7 +20,7 @@ import { ClientMessageSchema, RpcRequestSchema, type ServerMessage, ServerMessag
 import { reportBatch } from "../src/report/payload";
 import type { SpaceDO } from "../src/space-do";
 import { client, newSpace } from "./helpers";
-import { emptyUsage, LATENCY_BUCKETS, latencyBucket, mergeUsage, QUIET_MS, type Usage, type UsageHours, UsageTally } from "../src/report/usage";
+import { emptyUsage, LATENCY_BUCKETS, latencyBucket, mergeUsage, QUIET_MS, type Usage, type UsageBatch, type UsageHours, UsageTally } from "../src/report/usage";
 
 const BASE = "https://koidrive.test";
 const HOUR_MS = 3_600_000;
@@ -69,6 +69,13 @@ const storedHours = () => runInDurableObject(account(), (_instance, state) => st
 const storedCounts = async () => (await storedHours()).map((row) => JSON.parse(String(row.usage)) as Usage).reduce((sum, usage) => mergeUsage(sum, usage), emptyUsage()).counts;
 
 const restorers: (() => unknown)[] = [];
+const startReporting = (instance: AccountDO, state: DurableObjectState, atMs: number, seenMs = atMs) => {
+  instance.clock = () => atMs;
+  state.storage.sql.exec("UPDATE devices SET telemetry = ?", TokenRequest_Telemetry.UNSPECIFIED);
+  countVotes(instance);
+  state.storage.sql.exec("UPDATE devices SET telemetry = ?, last_seen_ms = ?", TokenRequest_Telemetry.ON, seenMs);
+  countVotes(instance);
+};
 const spaceStub = (spaceId: string) => env.SPACE.get(env.SPACE.idFromName(spaceId));
 type SpaceStub = ReturnType<typeof spaceStub>;
 const nextHour = (ms: number) => (Math.floor(ms / HOUR_MS) + 1) * HOUR_MS;
@@ -101,13 +108,13 @@ async function watchUsage() {
   const original = prototype.recordUsage;
   const calls: UsageHours[] = [];
   const failures = { left: 0 };
-  prototype.recordUsage = async function (this: AccountDO, hours: UsageHours) {
-    calls.push(hours);
+  prototype.recordUsage = async function (this: AccountDO, batch: UsageBatch) {
+    calls.push(batch.hours);
     if (failures.left > 0) {
       failures.left--;
       throw new Error("account unreachable");
     }
-    return original.call(this, hours);
+    return original.call(this, batch);
   };
   restorers.push(() => {
     prototype.recordUsage = original;
@@ -179,7 +186,7 @@ describe("usage tally", () => {
     const tally = new UsageTally();
     tally.reporting = true;
     const handed: UsageHours[] = [];
-    const record = async (hours: UsageHours) => {
+    const record = async ({ hours }: UsageBatch) => {
       handed.push(hours);
       return true;
     };
@@ -219,7 +226,7 @@ describe("usage tally", () => {
     const tally = new UsageTally();
     tally.reporting = true;
     const handed: { atMs: number; counts: number }[] = [];
-    const record = async (hours: UsageHours) => {
+    const record = async ({ hours }: UsageBatch) => {
       handed.push({ atMs: nowMs, counts: Object.values(hours).reduce((sum, usage) => sum + (usage.counts["get_server.200"] ?? 0), 0) });
       return true;
     };
@@ -269,7 +276,7 @@ describe("usage tally", () => {
     expect(record).not.toHaveBeenCalled();
     tally.count("get_server", "503", 3, 11 * HOUR_MS);
     await tally.settle(record, () => 12 * HOUR_MS, wait);
-    expect(record.mock.calls).toEqual([[{ 11: { counts: { "get_server.503": 1 }, latency: { get_server: [0, 0, 1, ...new Array(LATENCY_BUCKETS - 3).fill(0)] } } }]]);
+    expect(record.mock.calls).toEqual([[{ openedMs: 11 * HOUR_MS, hours: { 11: { counts: { "get_server.503": 1 }, latency: { get_server: [0, 0, 1, ...new Array(LATENCY_BUCKETS - 3).fill(0)] } } } }]]);
     tally.reporting = false;
     tally.count("get_server", "200", 3, 12 * HOUR_MS);
     tally.reporting = true;
@@ -284,7 +291,7 @@ describe("usage tally", () => {
     tally.count("get_server", "200", 3, 10 * HOUR_MS);
     tally.reporting = false;
     tally.reporting = true;
-    await tally.handOver(async (hours) => {
+    await tally.handOver(async ({ hours }) => {
       handed.push(hours);
       return true;
     });
@@ -301,7 +308,7 @@ describe("usage tally", () => {
       tally.count("get_server", "503", 3, 10 * HOUR_MS);
       throw new Error("account unreachable");
     });
-    await tally.handOver(async (hours) => {
+    await tally.handOver(async ({ hours }) => {
       handed.push(hours);
       return true;
     });
@@ -320,7 +327,7 @@ describe("usage tally", () => {
       throw new Error("account unreachable");
     });
     tally.count("get_server", "201", 3, 10 * HOUR_MS);
-    await tally.handOver(async (hours) => {
+    await tally.handOver(async ({ hours }) => {
       handed.push(hours);
       return true;
     });
@@ -418,6 +425,7 @@ describe("hourly server report", () => {
     const { owner, spaceId, stub } = await reportingSpace();
     const usage = await watchUsage();
     let nowMs = Math.floor(Date.now() / HOUR_MS) * HOUR_MS + 60_000;
+    await runInDurableObject(account(), (instance: AccountDO, state) => startReporting(instance, state, nowMs));
     await useClock(stub, () => nowMs);
     const socket = await connect(spaceId, owner, stub);
     const openedMs = nowMs;
@@ -448,6 +456,7 @@ describe("hourly server report", () => {
     const { owner, spaceId, stub } = await reportingSpace();
     const usage = await watchUsage();
     let nowMs = Math.floor(Date.now() / HOUR_MS) * HOUR_MS + 60_000;
+    await runInDurableObject(account(), (instance: AccountDO, state) => startReporting(instance, state, nowMs));
     await useClock(stub, () => nowMs);
     const socket = await connect(spaceId, owner, stub);
     for (let minute = 0; minute < 120; minute++, nowMs += 60_000) {
@@ -484,6 +493,7 @@ describe("hourly server report", () => {
     const { owner, spaceId, stub } = await reportingSpace();
     const usage = await watchUsage();
     let nowMs = Math.floor(Date.now() / HOUR_MS) * HOUR_MS + 60_000;
+    await runInDurableObject(account(), (instance: AccountDO, state) => startReporting(instance, state, nowMs));
     await useClock(stub, () => nowMs);
     const socket = await connect(spaceId, owner, stub);
     await socket.listTree();
@@ -590,10 +600,8 @@ describe("hourly server report", () => {
     const hour = Math.floor(Date.now() / HOUR_MS);
     const sent: unknown[] = [];
     await runInDurableObject(account(), async (instance: AccountDO, state) => {
-      state.storage.sql.exec("UPDATE devices SET telemetry = ?, last_seen_ms = ?", TokenRequest_Telemetry.ON, (hour + 2) * HOUR_MS);
-      countVotes(instance);
-      instance.clock = () => hour * HOUR_MS + 60_000;
-      await instance.recordUsage({ [hour]: { counts: { "get_server.200": 1 }, latency: {} } });
+      startReporting(instance, state, hour * HOUR_MS + 60_000, (hour + 2) * HOUR_MS);
+      await instance.recordUsage({ openedMs: instance.clock(), hours: { [hour]: { counts: { "get_server.200": 1 }, latency: {} } } });
       state.storage.sql.exec("UPDATE devices SET telemetry = ? WHERE rowid = (SELECT MIN(rowid) FROM devices)", TokenRequest_Telemetry.OFF);
       countVotes(instance);
       expect(state.storage.sql.exec("SELECT hour FROM usage_hours").toArray()).toEqual([]);
@@ -610,6 +618,58 @@ describe("hourly server report", () => {
     expect(await storedHours()).toEqual([]);
   });
 
+  it("drops what the Worker counted before reports stopped, even when they start again before its hand-over", async () => {
+    UsageTally.quietMs = 1500;
+    restorers.push(() => {
+      UsageTally.quietMs = QUIET_MS;
+    });
+    const owner = await ownerOnce();
+    await runInDurableObject(account(), (instance: AccountDO, state) => {
+      instance.clock = () => Date.now();
+      state.storage.sql.exec("DELETE FROM usage_hours");
+    });
+    await refresh(owner, TokenRequest_Telemetry.ON);
+    const listed = await exports.default.fetch(BASE + "/v1/spaces", { headers: { Accept: "application/x-protobuf", Authorization: "Bearer " + owner.access!.token } });
+    await listed.arrayBuffer();
+    expect(listed.status).toBe(200);
+    await refresh(owner, TokenRequest_Telemetry.OFF);
+    await refresh(owner, TokenRequest_Telemetry.ON);
+    await new Promise((resolve) => setTimeout(resolve, 4000));
+    expect(Object.keys(await storedCounts()).filter((key) => key.startsWith("get_spaces"))).toEqual([]);
+  });
+
+  it("drops the Worker's counts at the refresh that turns reports off, with no hand-over after it", async () => {
+    UsageTally.quietMs = 1500;
+    restorers.push(() => {
+      UsageTally.quietMs = QUIET_MS;
+    });
+    const owner = await ownerOnce();
+    await runInDurableObject(account(), (instance: AccountDO) => {
+      instance.clock = () => Date.now();
+    });
+    await refresh(owner, TokenRequest_Telemetry.ON);
+    const usage = await watchUsage();
+    const listed = await exports.default.fetch(BASE + "/v1/spaces", { headers: { Accept: "application/x-protobuf", Authorization: "Bearer " + owner.access!.token } });
+    await listed.arrayBuffer();
+    await refresh(owner, TokenRequest_Telemetry.OFF);
+    await new Promise((resolve) => setTimeout(resolve, 4000));
+    expect(usage.calls).toEqual([]);
+  });
+
+  it("drops what a Space DO parked before reports stopped, even when they start again before it hands the counts over", async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    const usage = await watchUsage();
+    const socket = await connect(spaceId, owner, stub);
+    await socket.listTree();
+    await socket.listTree();
+    await vi.waitFor(async () => expect(await parkedCounts(stub)).toEqual([2]));
+    await refresh(owner, TokenRequest_Telemetry.OFF);
+    await refresh(owner, TokenRequest_Telemetry.ON);
+    socket.ws.close(1000, "done");
+    await vi.waitFor(() => expect(listed(spaceCalls(usage.calls))).toBe(2));
+    expect((await storedCounts())["rpc_list_tree.ok"]).toBeUndefined();
+  });
+
   it("sends one server_report an hour even when a process hands over that hour's counts after it was sent", async () => {
     const hour = Math.floor(Date.now() / HOUR_MS);
     const sent: { batch: unknown[] }[] = [];
@@ -617,7 +677,7 @@ describe("hourly server report", () => {
       state.storage.sql.exec("UPDATE devices SET telemetry = ?, last_seen_ms = ?", TokenRequest_Telemetry.ON, hour * HOUR_MS);
       countVotes(instance);
       instance.clock = () => hour * HOUR_MS + 60_000;
-      await instance.recordUsage({ [hour]: { counts: { "get_server.200": 1 }, latency: {} } });
+      await instance.recordUsage({ openedMs: instance.clock(), hours: { [hour]: { counts: { "get_server.200": 1 }, latency: {} } } });
       instance.clock = () => (hour + 1) * HOUR_MS + 6 * 60_000;
       instance.sendReport = async (report) => {
         sent.push(report as { batch: unknown[] });
@@ -627,7 +687,7 @@ describe("hourly server report", () => {
     await runInDurableObject(account(), (instance: AccountDO) => instance.alarm());
     await runInDurableObject(account(), async (instance: AccountDO) => {
       instance.clock = () => (hour + 1) * HOUR_MS + 20 * 60_000;
-      await instance.recordUsage({ [hour]: { counts: { "get_server.200": 1 }, latency: {} } });
+      await instance.recordUsage({ openedMs: instance.clock(), hours: { [hour]: { counts: { "get_server.200": 1 }, latency: {} } } });
     });
     await runInDurableObject(account(), (instance: AccountDO) => instance.alarm());
     expect(sent.flatMap((report) => report.batch)).toHaveLength(1);
@@ -730,11 +790,9 @@ describe("hourly server report", () => {
     const hour = Math.floor(Date.now() / HOUR_MS);
     vi.spyOn(console, "error").mockImplementation(() => {});
     const stored = await runInDurableObject(account(), async (instance: AccountDO, state) => {
-      state.storage.sql.exec("UPDATE devices SET telemetry = ?, last_seen_ms = ?", TokenRequest_Telemetry.ON, hour * HOUR_MS);
-      countVotes(instance);
-      instance.clock = () => hour * HOUR_MS + 60_000;
+      startReporting(instance, state, hour * HOUR_MS + 60_000, hour * HOUR_MS);
       vi.spyOn(state.storage, "setAlarm").mockRejectedValue(new Error("storage busy"));
-      return instance.recordUsage({ [hour]: { counts: { "get_server.200": 1 }, latency: {} } });
+      return instance.recordUsage({ openedMs: instance.clock(), hours: { [hour]: { counts: { "get_server.200": 1 }, latency: {} } } });
     });
     expect(stored).toBe(true);
     expect(await storedCounts()).toEqual({ "get_server.200": 1 });
@@ -746,10 +804,8 @@ describe("hourly server report", () => {
     const tries: number[] = [];
     let nowMs = (hour + 2) * HOUR_MS;
     await runInDurableObject(account(), async (instance: AccountDO, state) => {
-      state.storage.sql.exec("UPDATE devices SET telemetry = ?, last_seen_ms = ?", TokenRequest_Telemetry.ON, (hour + 2) * HOUR_MS);
-      countVotes(instance);
-      instance.clock = () => hour * HOUR_MS + 60_000;
-      await instance.recordUsage({ [hour]: { counts: { "get_server.200": 1 }, latency: {} } });
+      startReporting(instance, state, hour * HOUR_MS + 60_000, (hour + 2) * HOUR_MS);
+      await instance.recordUsage({ openedMs: instance.clock(), hours: { [hour]: { counts: { "get_server.200": 1 }, latency: {} } } });
       instance.clock = () => nowMs;
       instance.sendReport = async () => {
         tries.push(nowMs);

@@ -344,6 +344,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     const body = await readMessage(request, TokenRequestSchema);
     const outcome = await account(env).refreshAccess(body);
     if (!outcome.ok) return errorReply(request, outcome.code, outcome.message);
+    traffic.reporting = outcome.reporting;
     return reply(request, AccessTokenSchema, create(AccessTokenSchema, outcome.value));
   }
 
@@ -431,7 +432,7 @@ export default {
     const response = await answer(request, env);
     const nowMs = Date.now();
     traffic.count(routeOf(request), responseOutcome(response), nowMs - startedMs, nowMs);
-    if (traffic.reporting) ctx.waitUntil(traffic.settle((hours) => account(env).recordUsage(hours), Date.now, (ms) => scheduler.wait(ms)));
+    if (traffic.reporting) ctx.waitUntil(traffic.settle((batch) => account(env).recordUsage(batch), Date.now, (ms) => scheduler.wait(ms)));
     return response;
   },
 } satisfies ExportedHandler<Env>;

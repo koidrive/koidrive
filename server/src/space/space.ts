@@ -807,7 +807,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         const usage = this.unpark(ws);
         if (usage) this.traffic.put(usage);
       }
-      await this.traffic.handOver((hours) => this.account().recordUsage(hours));
+      await this.traffic.handOver((batch) => this.account().recordUsage(batch));
       if (this.traffic.reporting === false) return this.dropParked();
       const kept = this.traffic.take();
       if (!kept) return;
