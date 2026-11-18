@@ -765,6 +765,8 @@ impl World {
                     recovery: None,
                     recovery_from: Resume::default(),
                     store_copy: None,
+                    sent: BTreeMap::new(),
+                    sent_copy: BTreeMap::new(),
                     rolled_back: false,
                     restored_ahead: false,
                     left: false,
@@ -945,6 +947,7 @@ impl World {
             Step::CopyStore => {
                 let device = &mut self.devices[d];
                 device.store_copy = Some(device.store.clone());
+                device.sent_copy = device.sent.clone();
                 self.built_copies[d] = self.built[d].clone();
             }
             Step::RollBack => {
@@ -962,6 +965,7 @@ impl World {
                     }
                     let ids = device.engine.ids.clone();
                     device.store = Engine { ids, ..copy };
+                    device.sent = device.sent_copy.clone();
                     self.built[d] = self.built_copies[d].clone();
                     device.rolled_back = true;
                     device.down = true;
@@ -2189,6 +2193,7 @@ impl World {
                             self.published.insert(tag(here));
                         }
                     }
+                    device.sent.clear();
                     device.persist()?;
                 }
                 let backlog = self.resume(d)?;

@@ -991,3 +991,34 @@ fn a_recovery_forgets_the_commits_its_slots_were_given_before_a_loss() {
     .unwrap();
     assert_eq!(commits.connected(&at_slot_1(0)), Reconnect::Recovery);
 }
+
+#[test]
+fn a_restore_that_brings_back_a_commit_built_again_at_its_slot_starts_no_recovery() {
+    let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let first = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(
+        commits.failed(&mut trees, &refusal(error::Code::AheadOfServer, 0)),
+        Ok(Failure::Resync)
+    );
+    let second = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!((first.device_seq, second.device_seq), (1, 1));
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![outcome(op_result::Code::Applied)],
+    );
+    let state = commits.state();
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 2,
+        slots: [(1, state.slots[&1].clone()), (2, slot(7))].into(),
+        ..state
+    })
+    .unwrap();
+    let welcome = Welcome {
+        device_commit_id: first.commit_id,
+        device_committed_at_ms: 30,
+        ..welcome(1)
+    };
+    assert_eq!(commits.connected(&welcome), Reconnect::AheadOfServer);
+}

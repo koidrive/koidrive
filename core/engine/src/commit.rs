@@ -417,6 +417,11 @@ impl Commits {
         {
             made.committed_at_ms = kept.committed_at_ms;
         }
+        if let Some(kept) = self.slots.get(&slot)
+            && kept.commit_id != made.commit_id
+        {
+            self.give_up(slot, kept.commit_id.clone());
+        }
         self.slots.insert(slot, made);
     }
 
@@ -489,15 +494,36 @@ impl Commits {
             .map(|(slot, made)| (*slot, made.commit_id.clone()))
             .collect();
         for (slot, commit_id) in lost {
-            let ids = self.given_up.get_or_insert_with(slot, Vec::new);
-            if !ids.contains(&commit_id) {
-                ids.push(commit_id);
-            }
-            if ids.len() > GIVEN_UP_KEPT {
-                ids.remove(0);
-            }
+            self.give_up(slot, commit_id);
         }
         self.slots.retain(|slot, _| *slot <= accepted);
+    }
+
+    fn give_up(&mut self, slot: u64, commit_id: String) {
+        if commit_id.is_empty() {
+            return;
+        }
+        let ids = self.given_up.get_or_insert_with(slot, Vec::new);
+        if !ids.contains(&commit_id) {
+            ids.push(commit_id);
+        }
+        if ids.len() > GIVEN_UP_KEPT {
+            ids.remove(0);
+        }
+    }
+
+    fn forget_in_flight(&mut self) {
+        if let Some(flight) = self.in_flight.get_mut().take() {
+            self.give_up(flight.commit.device_seq, flight.commit.commit_id);
+        }
+    }
+
+    pub fn slots(&self) -> &BTreeMap<u64, Slot> {
+        &self.slots
+    }
+
+    pub fn given_up(&self) -> &BTreeMap<u64, Vec<String>> {
+        &self.given_up
     }
 
     /// The accepted counter *a* of section 2.8: the `device_seq` of the last commit whose result
@@ -543,7 +569,7 @@ impl Commits {
         }
         self.halted.set(None);
         if lift == Lift::Replan {
-            self.in_flight.set(None);
+            self.forget_in_flight();
         }
         Ok(())
     }
@@ -2500,11 +2526,12 @@ impl Commits {
             Failure::Resend => {}
             Failure::Halted(halt) => {
                 self.halted.set(Some(halt));
-                self.in_flight.set(None);
+                self.forget_in_flight();
             }
-            Failure::Abandoned | Failure::Resync => self.in_flight.set(None),
+            Failure::Abandoned | Failure::Resync => self.forget_in_flight(),
             Failure::Split => {
                 let flight = self.in_flight.get_mut().take().expect("checked");
+                self.give_up(flight.commit.device_seq, flight.commit.commit_id.clone());
                 let ops = flight.commit.ops;
                 let restored = carried(&self.restores, &ops);
                 let restore = restored
@@ -2540,9 +2567,11 @@ impl Commits {
         if matches!(*self.halted, Some(Halt::Policy { .. })) {
             return false;
         }
-        self.in_flight
-            .take_if(|flight| flight.result.is_none())
-            .is_some()
+        let Some(flight) = self.in_flight.take_if(|flight| flight.result.is_none()) else {
+            return false;
+        };
+        self.give_up(flight.commit.device_seq, flight.commit.commit_id);
+        true
     }
 
     /// Forgets the commit in flight, which the server holds nothing of, because the content of
@@ -2649,7 +2678,7 @@ impl Commits {
         }
         if reconnect == Reconnect::AheadOfServer {
             self.accepted.set(w);
-            self.in_flight.set(None);
+            self.forget_in_flight();
         }
         if policy {
             return reconnect;
