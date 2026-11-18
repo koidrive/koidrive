@@ -3057,12 +3057,18 @@ impl Trees {
             return;
         };
         let entries: Vec<(String, Option<Kind>)> = entries.into_iter().collect();
-        let held: Vec<&str> = (self.local_children_placed_or_parked(folder))
+        let held: BTreeSet<&str> = (self.local_children_placed_or_parked(folder))
             .filter_map(|child| Some(self.l.get(child)?.shape.name.as_str()))
             .collect();
+        let listed: BTreeSet<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+        let mut unheld: BTreeMap<String, usize> = BTreeMap::new();
+        for name in listed.iter().filter(|name| !held.contains(*name)) {
+            *unheld.entry(name_key(name)).or_default() += 1;
+        }
         let respelled: BTreeSet<String> = (held.iter())
-            .filter(|name| entries.iter().all(|(listed, _)| listed != *name))
+            .filter(|name| !listed.contains(*name))
             .map(|name| name_key(name))
+            .filter(|key| unheld.get(key) == Some(&1))
             .collect();
         let names: BTreeSet<String> = (entries.iter())
             .filter(|(name, kind)| {
@@ -3072,7 +3078,7 @@ impl Trees {
                     Kind::Dir => koidrive_ignore::Kind::Dir,
                     Kind::File => koidrive_ignore::Kind::File,
                 };
-                !held.contains(&name.as_str())
+                !held.contains(name.as_str())
                     && !respelled.contains(&name_key(name))
                     && self.ignore.status(&entry, kind)
                         != Status::Excluded(koidrive_ignore::Reason::BuiltIn)

@@ -1134,4 +1134,19 @@ fn a_listing_reserves_an_entry_whose_name_differs_from_a_held_one_only_in_case()
         trees.kept_entries.get("app").unwrap().names,
         BTreeSet::from(["FOO".to_owned()])
     );
+
+    trees.set_local("lib".into(), kept_local("root", "lib", Kind::Dir, 4));
+    trees.set_local("bar".into(), kept_local("lib", "bar", Kind::File, 5));
+    trees.list_kept_folder(
+        "lib",
+        [
+            ("BaR".to_owned(), Some(Kind::File)),
+            ("BAR".to_owned(), Some(Kind::File)),
+        ],
+    );
+
+    assert_eq!(
+        trees.kept_entries.get("lib").unwrap().names,
+        BTreeSet::from(["BAR".to_owned(), "BaR".to_owned()])
+    );
 }

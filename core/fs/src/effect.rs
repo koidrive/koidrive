@@ -770,7 +770,13 @@ impl Space {
         self.flush_folder(&quarantine, Flush::Barrier)?;
         hook(Step::Quarantined);
 
-        let differs = differs(quarantine.fd(), id, &displaced.entry, along, contents)?;
+        let differs = match differs(quarantine.fd(), id, &displaced.entry, along, contents) {
+            Ok(differs) => differs,
+            Err(err) => {
+                self.put_back(&quarantine, id, &displaced.at, now)?;
+                return Err(err);
+            }
+        };
         hook(Step::Compared);
         if let Some(reason) = differs {
             let recovered = self.put_back(&quarantine, id, &displaced.at, now)?;
@@ -927,7 +933,13 @@ impl Space {
                 Action::RemoveDir { along, .. } => along.as_slice(),
                 _ => &[],
             };
-            let differs = differs(quarantine.fd(), id, &displaced.entry, along, contents)?;
+            let differs = match differs(quarantine.fd(), id, &displaced.entry, along, contents) {
+                Ok(differs) => differs,
+                Err(err) => {
+                    self.returned(&quarantine, effect, &displaced, Reason::Changed, now, hook)?;
+                    return Err(err);
+                }
+            };
             hook(Step::Compared);
             if let Some(reason) = differs {
                 return self.returned(&quarantine, effect, &displaced, reason, now, hook);

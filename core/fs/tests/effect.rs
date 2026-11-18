@@ -447,6 +447,54 @@ fn a_folder_whose_file_to_take_along_changed_in_place_keeping_its_size_and_time_
     assert_settled(root);
 }
 
+struct FailingRead;
+
+impl koidrive_fs::Contents for FailingRead {
+    fn displaced(&mut self, _: &fs::File) -> std::io::Result<bool> {
+        Err(std::io::Error::other("read failed"))
+    }
+
+    fn written(&mut self, _: &fs::File) -> std::io::Result<bool> {
+        Ok(false)
+    }
+
+    fn along(&mut self, _: usize, _: &fs::File) -> std::io::Result<bool> {
+        Err(std::io::Error::other("read failed"))
+    }
+
+    fn displaced_content(&self) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+#[test]
+fn a_removal_whose_comparison_fails_puts_the_entry_back_before_the_error() {
+    for removal in ["remove_file", "remove_dir"] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (effect, file) = match removal {
+            "remove_file" => (
+                prepare(common::scenario(removal), root),
+                root.join("docs/report.txt"),
+            ),
+            _ => {
+                let (effect, folder) = with_rules_file(root);
+                (effect, folder.join(".koiignore"))
+            }
+        };
+        let space = bind(root);
+        let mut hook = |_| {};
+        let mut section = space.section(&marker(), &mut hook).unwrap();
+        assert!(
+            section.apply(&effect, &mut FailingRead, now()).is_err(),
+            "{removal}"
+        );
+        drop(section);
+        assert!(file.exists(), "{removal}");
+        assert!(private_names(root, "quarantine").is_empty(), "{removal}");
+    }
+}
+
 #[test]
 fn a_removal_whose_file_became_unreadable_is_left_in_place() {
     use std::os::unix::fs::PermissionsExt;
