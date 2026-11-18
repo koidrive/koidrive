@@ -48,6 +48,10 @@ impl OwnedPath {
     }
 }
 pub(super) fn directory(path: &Path, create: bool) -> Result<File, AppInstallError> {
+    if create {
+        crate::lifeline::confine(path)
+            .map_err(|error| failure(AppInstallFailure::UnsafePath, error))?;
+    }
     let mut fd = rustix::fs::open(
         "/",
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
@@ -257,6 +261,8 @@ pub(super) async fn lock(root: &File, control: &Control) -> Result<InstallerLock
     Ok(guard)
 }
 pub(crate) fn writable(root: &Path) -> Result<bool, AppInstallError> {
+    crate::lifeline::confine(&root.join(".koidrive-write"))
+        .map_err(|error| failure(AppInstallFailure::UnsafePath, error))?;
     match tempfile::Builder::new()
         .prefix(".koidrive-write-")
         .tempdir_in(root)
