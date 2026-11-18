@@ -867,6 +867,31 @@ fn a_resent_folder_another_device_created_again_and_deleted_keeps_s_and_its_rese
     assert!(trees.state().resends.contains("p"), "{:?}", trees.state().resends);
 }
 
+#[test]
+fn a_resent_folder_the_user_renamed_is_created_at_its_new_name() {
+    let mut trees = resent_for_a_file_trashed_in_a_deleted_folder();
+    trees.set_local_changed("p".into(), local(dir(ROOT, "p2"), 3));
+    trees.set_local_changed("f".into(), local(file("p", "b", 1), 2));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
+    assert!(matches!(commit.as_deref(), Some([op::Op::CreateDir(create), moved]) if create.node_id == "p" && create.parent_id == ROOT && create.name == "p2" && *moved == mv("f", "p", "b")), "{commit:?}");
+}
+
+#[test]
+fn a_resent_folder_the_user_moved_into_another_folder_is_created_there() {
+    let mut trees = resent_for_a_file_trashed_in_a_deleted_folder();
+    trees.set_remote("q".into(), remote(dir(ROOT, "q")));
+    trees.set_local("q".into(), local(dir(ROOT, "q"), 4));
+    trees.set_synced("q".into(), Some(dir(ROOT, "q")));
+    trees.set_local_changed("p".into(), local(dir("q", "p"), 3));
+    trees.set_local_changed("f".into(), local(file("p", "b", 1), 2));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
+    assert!(matches!(commit.as_deref(), Some([op::Op::CreateDir(create), moved]) if create.node_id == "p" && create.parent_id == "q" && create.name == "p" && *moved == mv("f", "p", "b")), "{commit:?}");
+}
+
 fn held_elsewhere_in_a_lost_folder() -> Trees {
     trees(&[
         ("p", Some(dir(ROOT, "p")), Some(dir(ROOT, "p")), None),
