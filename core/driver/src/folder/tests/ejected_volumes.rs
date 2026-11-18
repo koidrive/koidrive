@@ -302,6 +302,8 @@ fn a_stick_of_the_same_size_with_a_sticks_serial_puts_the_first_sticks_files_in_
         let at = site.root.join("Disk");
         disks.detach(&at);
         observed(&mut a, &mut remote);
+        assert_eq!(user_files(&remote), tree, "{kind}");
+        assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)]);
         disks.attach(&second, &at);
         identified(&at);
         observed(&mut a, &mut remote);
@@ -486,7 +488,7 @@ fn a_stick_changed_on_another_computer_comes_back_with_the_change() {
             assert_eq!(after, tree, "{case}");
             for (file, text) in edits {
                 let id = &after[&format!("Disk/{file}")];
-                assert_eq!(server_size(&remote, id), text.len() as u64, "{case} {file}");
+                assert_eq!(server_bytes(&remote, id), text.as_bytes(), "{case} {file}");
             }
         }
     }
@@ -576,6 +578,7 @@ fn a_folder_whose_root_is_a_stick_syncs_again_once_the_stick_is_plugged_back_in(
         };
         write_marker(&site.root, &marker).unwrap();
         let found = identified(&site.root);
+        assert!(found.volume.is_some(), "{image:?}");
         rewrite_link(&site, |link| {
             link.root_dev = found.dev;
             link.root_volume = match legacy {
@@ -671,6 +674,7 @@ fn a_disk_without_a_uuid_ejected_stays_held_until_another_disk_takes_its_place()
         observed(&mut a, &mut remote);
         let tree = user_files(&remote);
         assert!(tree.contains_key("notes.txt"), "{tree:?}");
+        assert!(!tree.contains_key("Disk/report.docx"), "{tree:?}");
         assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)]);
         if !stopped {
             disks.detach(&at);

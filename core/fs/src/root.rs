@@ -825,6 +825,18 @@ mod tests {
         assert_eq!(volume_id_of(&[0; 4]), None);
     }
 
+    struct Attached(Vec<String>, std::path::PathBuf);
+
+    impl Drop for Attached {
+        fn drop(&mut self) {
+            let sudo = || std::process::Command::new("sudo");
+            let _ = sudo().args(["-n", "umount", "-l"]).arg(&self.1).status();
+            for device in &self.0 {
+                let _ = sudo().args(["-n", "losetup", "-d", device]).status();
+            }
+        }
+    }
+
     #[test]
     fn a_disk_swapped_while_a_scan_reads_it_never_passes_for_the_disk_it_identified() {
         use std::os::unix::fs::MetadataExt;
@@ -852,39 +864,22 @@ mod tests {
             let root = disks.base().join(stage);
             let mount = root.join("Disk");
             std::fs::create_dir_all(&mount).unwrap();
-            let (_, device) = sudo(&[
-                "losetup".as_ref(),
-                "--find".as_ref(),
-                "--show".as_ref(),
-                first.as_os_str(),
-            ]);
-            let device = OsStr::new(&device);
-            let mounted = |image: &Path| {
-                let (bound, _) = sudo(&["losetup".as_ref(), device, image.as_os_str()]);
-                let (done, _) = sudo(&[
-                    "mount".as_ref(),
-                    "-o".as_ref(),
-                    options.as_ref(),
-                    device,
-                    mount.as_os_str(),
-                ]);
-                assert!(bound && done, "{stage}: {image:?}");
+            let attach = |image: &Path| {
+                let losetup = ["losetup", "--find", "--show"].map(OsStr::new);
+                sudo(&[&losetup[..], &[image.as_os_str()]].concat()).1
             };
-            assert!(
-                sudo(&[
-                    "mount".as_ref(),
-                    "-o".as_ref(),
-                    options.as_ref(),
-                    device,
-                    mount.as_os_str()
-                ])
-                .0
-            );
+            let mut attached = Attached(vec![attach(&first)], mount.clone());
+            let mount_on = |device: &str| {
+                let args = ["mount", "-o", &options, device].map(OsStr::new);
+                let done = sudo(&[&args[..], &[mount.as_os_str()]].concat()).0;
+                assert!(done, "{stage}: {device}");
+            };
+            mount_on(&attached.0[0]);
             std::fs::write(mount.join("report.docx"), b"first disk").unwrap();
             std::fs::write(mount.join("old.txt"), b"old").unwrap();
             let mut snapshot = Snapshot::scan(&root).unwrap();
             std::fs::remove_file(mount.join("old.txt")).unwrap();
-            let mut tried = false;
+            let mut swapped = false;
             let result = snapshot.rescan_with(&root, [PathBuf::new()], None, &mut |cut| {
                 let now = match cut {
                     Cut::RootOpened => stage == "root opened",
@@ -894,17 +889,28 @@ mod tests {
                     }
                     Cut::Searching(_) => false,
                 };
-                if now && !tried {
-                    tried = true;
-                    if sudo(&["umount".as_ref(), mount.as_os_str()]).0 {
-                        assert!(sudo(&["losetup".as_ref(), "-d".as_ref(), device]).0);
-                        mounted(&second);
-                    }
+                if !now || swapped {
+                    return;
                 }
+                let device = attached.0[0].clone();
+                let replacement = match sudo(&["umount".as_ref(), mount.as_os_str()]).0 {
+                    true => {
+                        assert!(sudo(&["losetup", "-d", &device].map(OsStr::new)).0);
+                        let rebind = ["losetup", &device].map(OsStr::new);
+                        assert!(sudo(&[&rebind[..], &[second.as_os_str()]].concat()).0);
+                        device
+                    }
+                    false => {
+                        assert!(sudo(&["umount".as_ref(), "-l".as_ref(), mount.as_os_str()]).0);
+                        attached.0.push(attach(&second));
+                        attached.0[1].clone()
+                    }
+                };
+                mount_on(&replacement);
+                swapped = !mount.join("report.docx").exists();
             });
-            assert!(sudo(&["umount".as_ref(), mount.as_os_str()]).0);
-            assert!(sudo(&["losetup".as_ref(), "-d".as_ref(), device]).0);
-            assert!(tried, "{stage}");
+            drop(attached);
+            assert!(swapped, "{stage}");
             assert!(
                 result.is_err() || snapshot.entries.contains_key(Path::new("Disk/report.docx")),
                 "{stage}: {result:?}"

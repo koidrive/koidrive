@@ -561,6 +561,7 @@ fn swapped_for_a_disk_with_one_uuid(
     let at = root.join("Disk");
     fs::create_dir_all(&at).unwrap();
     disks.attach(&one, &at);
+    let first = identified(&at).volume;
     if filled {
         fill(&at);
     }
@@ -569,6 +570,10 @@ fn swapped_for_a_disk_with_one_uuid(
     disks.detach(&at);
     rescan(&mut snapshot, &root, &["", "Disk"]);
     disks.attach(&two, &at);
+    assert!(
+        first.is_some() && identified(&at).volume == first,
+        "{first:?}"
+    );
     write(&at.join("photo.jpg"), "photo");
     let found = rescan(&mut snapshot, &root, &["", "Disk"]);
     disks.detach(&at);

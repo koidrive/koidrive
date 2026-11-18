@@ -277,6 +277,10 @@ impl Disks {
     /// are laid out. [`Disks::attach`] mounts that partition.
     #[cfg(target_os = "linux")]
     pub fn partitioned(&self, volume: &Path) -> PathBuf {
+        let stick = volume
+            .extension()
+            .is_some_and(|kind| kind == "fat" || kind == "exfat");
+        assert!(stick, "{} is not a FAT or exFAT image", volume.display());
         let image = volume.with_extension("disk");
         let size = fs::metadata(volume).unwrap().len() + (1 << 20);
         run(
@@ -291,12 +295,12 @@ impl Disks {
                 image.as_ref(),
             ],
         );
-        let (from, to) = (
-            format!("if={}", volume.display()),
-            format!("of={}", image.display()),
-        );
-        let copy = [&from, &to, "bs=1M", "seek=1", "conv=notrunc", "status=none"];
-        run("dd", &copy.map(OsStr::new));
+        let [mut from, mut to] = [OsString::from("if="), OsString::from("of=")];
+        from.push(volume);
+        to.push(&image);
+        let copy = [&from, &to].map(OsString::as_os_str);
+        let options = ["bs=1M", "seek=1", "conv=notrunc", "status=none"].map(OsStr::new);
+        run("dd", &[&copy[..], &options[..]].concat());
         image
     }
 
@@ -353,6 +357,7 @@ impl Disks {
                         image.as_ref(),
                     ],
                 );
+                let detach = Detach(device.clone());
                 let partition = format!("{device}p1");
                 let started = std::time::Instant::now();
                 while !Path::new(&partition).exists() {
@@ -374,7 +379,7 @@ impl Disks {
                     partition.as_ref(),
                     at.as_ref(),
                 ]);
-                sudo(&["losetup".as_ref(), "-d".as_ref(), device.as_ref()]);
+                drop(detach);
             } else if image
                 .extension()
                 .is_some_and(|extension| extension == "fat" || extension == "exfat")
@@ -459,6 +464,24 @@ fn sudo(args: &[&OsStr]) {
     let mut all: Vec<&OsStr> = vec!["-n".as_ref()];
     all.extend_from_slice(args);
     run("sudo", &all);
+}
+
+#[cfg(target_os = "linux")]
+struct Detach(String);
+
+#[cfg(target_os = "linux")]
+impl Drop for Detach {
+    fn drop(&mut self) {
+        let detached = Command::new("sudo")
+            .args(["-n", "losetup", "-d", &self.0])
+            .status();
+        let detached = detached.is_ok_and(|status| status.success());
+        assert!(
+            detached || std::thread::panicking(),
+            "{} stayed attached",
+            self.0
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
