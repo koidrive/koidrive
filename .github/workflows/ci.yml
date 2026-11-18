@@ -726,6 +726,8 @@ jobs:
         run: python3 scripts/test-check-new-comments.py -v
       - name: Test the design-document splitter
         run: python3 scripts/test-split-sync-design.py -v
+      - name: Test the test-value harness
+        run: python3 scripts/test-test-value.py -v
       - name: Fail on comments that this change adds
         env:
           EVENT: ${{ github.event_name }}
