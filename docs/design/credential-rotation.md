@@ -8,7 +8,7 @@ Each device replaces its refresh credential once a day, so a copy taken from a b
 
 ## One `Auth` per process rotates the credential
 
-After a rotation the server refuses the old credential. So a process uses one `Auth` for every call that presents the credential. `Driver::auth` builds it once per profile, and folder tasks, `link`, the sign-out revocation and the macOS app's server calls (`Driver::signed_in`) all share it.
+After a rotation the server refuses the old credential. So a process uses one `Auth` for every call that presents the credential. `Driver::auth` builds it once per profile, and folder tasks, `link`, the sign-out revocation and the server calls the daemon makes for a command (`Driver::signed_in`) all share it. A `koi` process that only reads the credential, such as one that lists devices for the macOS app, uses `Auth::reloading`: when the server refuses the credential, it reads the stored one again once.
 
 `Auth::rotating` in `core/net/src/auth.rs` follows RFC 0011 §2. When the credential is older than `ROTATION_PERIOD` (24 hours), it stages a new credential with the deadline `server_time_ms` plus 60 seconds, proposes it, and makes it current once the server answers `rotated`. One refresh runs at a time, and it alone reads or changes the slots. If the answer is lost, both slots stay, and the next refresh settles which one the server holds. If storing a promotion fails, the `Auth` presents the new credential from memory and does not rotate again until the write succeeds.
 

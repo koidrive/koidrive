@@ -20,18 +20,23 @@ Each job runs on Ubuntu, and the jobs marked macOS run on macOS. The `changes` j
 | `rust special` (macOS) | The tests that need mounted disks, saved-case replays without random cases, or a release version stamped into the CLI | The commands in the job's steps |
 | `rust tests (…, sim)` (macOS) | `koidrive-sim` in the `checked` profile | `cargo test -p koidrive-sim --profile checked --features koidrive-engine/serde` |
 | `rust test report` | Every listed test ran in exactly one shard; per-test timings and flaky tests | Download the run's `rust-test-inventory-<os>` artifact into `inventory/` and its `rust-junit-<os>-*` artifacts into `junit/`, then `python3 scripts/ci-rust-tests.py report --os <os> --list inventory/list.json --junit junit --out report` |
-| `server` | Type checks, the Worker's Vitest suite, and the unit tests of the deploy-test scripts | In `server/`: `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm test`, then `pnpm exec vitest run --config scripts/deploy-test/vitest.config.ts run.unit e2e.unit load.unit bench.unit` |
+| `server` | Type checks, the Worker's Vitest suite, and the unit tests of the deploy-test scripts | In `server/`: `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm test`, then `pnpm exec vitest run --config scripts/deploy-test/vitest.config.ts run.unit e2e.unit load.unit bench.unit first-sync.unit` |
 | `server deploy check` | A copy of `server/` deploys on its own (a dry run, then `wrangler dev` and a claim), and the server bundle that the CLI embeds packs cleanly | `node server/scripts/check-deploy.mjs` |
 | `net integration`, `driver integration`, `cli integration`, `ffi integration` | The tests whose `#[ignore]` reason says they need the Worker, against the Worker under `wrangler dev` | After `pnpm install` in `server/`: `core/net/scripts/integration-test.sh`, `core/driver/scripts/integration-test.sh`, `cli/scripts/integration-test.sh` or `core/ffi/scripts/integration-test.sh` |
 | `spec` | `buf lint`, generated code that matches `spec/proto`, and no breaking change against the base | In `spec/`: `buf lint`, then `buf generate` and check that `git status` shows no change |
-| `comments` | The change adds no code comments outside the allowed kinds | `python3 scripts/check-new-comments.py origin/main HEAD` |
+| `comments` | The change adds no code comments outside the allowed kinds, and the tests of that check, the design-document splitter, the property battery workflows and the test-value harness pass | `python3 scripts/check-new-comments.py origin/main HEAD` |
 | `macos app` (macOS) | The app builds, the Swift bindings' tests pass, and an unsigned disk image packages and verifies | In `apps/macos/`: `scripts/build-ffi.sh`, then `swift test --package-path KoidriveFFI` |
+| `installer` (macOS) | `install.sh` parses and passes shellcheck, and the isolated installer journeys pass | `sh -n install.sh`, `shellcheck -s sh install.sh scripts/test-install.sh`, then `python3 scripts/test-install-journey.py -v` |
+| `test lines` | Reports the net Rust test lines the change adds against its allowance | `python3 scripts/check-test-lines.py` |
+| `test split mapping` | A test split moves every item unchanged and `mapping.json` lists it, and every changed `include!` fragment is rustfmt-formatted | `python3 scripts/split-tests.py verify --source-ref origin/main` and `python3 scripts/split-tests.py check-format --base-ref origin/main` |
+| `Store upgrade` | Every store migration has upgrade cases, and they pass | `python3 scripts/check-store-upgrades.py origin/main HEAD` |
+| `state file safety` (macOS) | The change adds no raw writes of state files | `python3 scripts/check-state-io.py origin/main` |
 
 On a pull request, CI adds macOS jobs only where a change needs them. The macOS Rust jobs and `macos app` run when the change touches a file that builds or behaves differently on macOS, as `scripts/macos-changes.sh` lists them. Every macOS job, `server (macos)` and `spec (macos)` included, runs when it touches `ci.yml`. The merge queue runs the macOS leg of every job it selects, and a push to `main` skips the macOS jobs only when CI finds a merge queue run that passed CI on the same commit. If that lookup fails or finds no such run, the push runs all four macOS groups. The macOS jobs run on GitHub-hosted runners.
 
-One test in `cli/tests/server.rs` also needs a systemd user instance. The `cli integration` job starts one, and locally the test skips itself unless `KOIDRIVE_TEST_SYSTEMD` is set.
+Two tests in `cli/tests/server/service.rs` also need a systemd user instance. The `cli integration` job starts one, and locally they skip themselves unless `KOIDRIVE_TEST_SYSTEMD` is set.
 
-Two other workflows run on pull requests. [CLI distribution](../.github/workflows/release-cli.yml) builds the CLI tarballs, tests the installer and installs the CLI from a local Homebrew tap. [DCO](../.github/workflows/dco.yml) checks the `Signed-off-by` line of every commit.
+Four other workflows run on pull requests. [CLI distribution](../.github/workflows/release-cli.yml) builds the CLI tarballs, tests the installer and installs the CLI from a local Homebrew tap. [DCO](../.github/workflows/dco.yml) checks the `Signed-off-by` line of every commit. [Dependency advisories](../.github/workflows/dependency-advisories.yml) checks the Rust dependencies against RustSec advisories. [Installer](../.github/workflows/installer.yml) runs only on a pull request that changes it, and checks that koidrive.com serves the `install.sh` on `main`.
 
 ### Shards follow measured test times
 
@@ -39,16 +44,15 @@ Two other workflows run on pull requests. [CLI distribution](../.github/workflow
 
 ## Some tests run only on request
 
-`cargo test` skips a test marked `#[ignore]`. Each ignore reason says how to run the test:
+`cargo test` skips a test marked `#[ignore]`. `grep -rn '#\[ignore' core cli` lists them. They are of three kinds:
 
-- The integration tests that need a Worker run through the scripts in the table above.
-- `upload_benchmark` in `core/net/tests/upload_bench.rs` runs in the [deploy test's bench mode](deploy-test.md#modes), or against a local Worker with `KOIDRIVE_BENCH_MIB=64`.
-- The timing probe in `core/fs/tests/ignore.rs` runs with `cargo test -p koidrive-fs --release --test ignore -- --ignored`.
-- Two tests in `core/sim/tests/devices.rs` are known failures: the property `devices_converge_across_server_restores` and the fixed schedule `a_resend_applied_before_a_delete_built_without_it_yields_to_it`. The fix for each removes its `#[ignore]`.
+- The integration tests that need a Worker. They run through the scripts in the table above.
+- Benchmarks, timing probes and models that take too long for every run, such as `upload_benchmark` in `core/net/tests/upload_bench.rs`, which runs in the [deploy test's bench mode](deploy-test.md#modes) or against a local Worker with `KOIDRIVE_BENCH_MIB=64`. Run one with `cargo test -p <package> <name> -- --ignored`, adding `--release` where the test says so.
+- Known failures. Their ignore reason names the issue, and the fix removes the `#[ignore]`.
 
 ## Property tests
 
-The property tests use [proptest](https://docs.rs/proptest/1.12.0/proptest/). They are the `proptest!` blocks in the integration tests of `core/chunk`, `core/engine`, `core/ignore` and `core/sim`, and in the unit tests of `core/driver/src/engine.rs` and `core/net/src/session/tests.rs`. The largest is the interleaving property in `core/sim/tests/engine_sync.rs`. Each block sets its own case count. Environment variables control the case budgets and seeds:
+The property tests use [proptest](https://docs.rs/proptest/1.12.0/proptest/). They are the `proptest!` blocks under `core/`, in integration tests and unit tests alike, and `grep -rln 'proptest!' core` lists them. Each block sets its own case count. Environment variables control the case budgets and seeds:
 
 - `PROPTEST_CASES`: the number of cases each property runs.
 - `KOIDRIVE_BATTERY_CASES`: the case budget for properties that opt in with `koidrive_test_support::battery_config`. Other properties use `regression_config` and keep their own budgets. Invalid battery budgets fail opted-in properties.
@@ -78,7 +82,7 @@ The loader also reads legacy `.proptest-regressions` files. To move their lines 
 - `devices_lose_no_write...` fails when a write is lost, or when the engine, the store or the server refuses a state.
 - `devices_converge...` also fails when a device does not reach the server's tree once the faults stop, or when a commit makes a change that the user of its device never made.
 
-The plain pair runs without server losses. The `..._across_server_restores` pair adds servers restored from backups, and the `..._across_rewinds_and_rollbacks` pair adds rewinds, copied stores and rolled-back stores. `cargo test` and the battery run all six except `devices_converge_across_server_restores`. To print the state after every step of one test:
+The plain pair runs without server losses. The `..._across_server_restores` pairs add servers restored from backups, and the `..._across_rewinds_and_rollbacks` pair adds rewinds, copied stores and rolled-back stores. Further properties cover folders rescanned one at a time, a folder another device replaces, and renames a device still owes. `cargo test` and the battery skip the properties marked `#[ignore]`. To print the state after every step of one test:
 
 ```sh
 KOIDRIVE_SIM_TRACE=1 cargo test -p koidrive-sim --test devices <test name> -- --nocapture
@@ -137,7 +141,9 @@ gh run list --workflow heavy-tests.yml --limit 1   # the run's ID, for gh run wa
 | `test` | One integration test target, as for `cargo test --test` | Every target of the package |
 | `filter` | A test name filter, as for `cargo test` | Every test |
 | `cases` | `KOIDRIVE_BATTERY_CASES`, for stress properties only | Each property's own count |
+| `mode` | `cargo` for Cargo tests, `worker` for the integration launchers against a fresh local Worker, `server` for the Vitest suite of `server/` (crate `koidrive-server`, where `test` filters test files and `filter` test names), or `macos-ui` for the macOS app's UI tests on a fresh runner per run | `cargo` |
 | `repeat` | How many times each OS runs the selection, 1 to 100 | 1 |
+| `parallel` | How many repetitions run at once on the same host, 1 to 8 | 1 |
 | `seed` | `PROPTEST_RNG_SEED` of the first run; run k uses seed + k - 1 | Run ID × 1000 |
 | `features` | Cargo features, comma-separated, such as `koidrive-engine/serde` | None |
 | `ignored` | Also runs the tests marked `#[ignore]` | Off |
