@@ -156,8 +156,12 @@ def property_files(executable, path, revision=None):
 
 
 def base_blocks(executable, mapping, revision):
+    try:
+        retired = json.loads(read_source(revision, MAPPING.relative_to(ROOT).as_posix()))
+    except subprocess.CalledProcessError:
+        retired = {}
     blocks = Counter()
-    for path in mapping:
+    for path in mapping.keys() | retired.keys():
         try:
             root = read_source(revision, path)
         except subprocess.CalledProcessError:
@@ -183,10 +187,16 @@ def require_properties_unmoved(base, tree):
     def functions(name):
         return set(name.removeprefix("proptest:").split(","))
 
-    old, new = base - tree, tree - base
+    old, new = list((base - tree).elements()), list((tree - base).elements())
+    for block in list(new):
+        edited = next((previous for previous in old if previous[1] == block[1]
+                       and functions(previous[0]) & functions(block[0])), None)
+        if edited:
+            old.remove(edited)
+            new.remove(block)
     for name, held in new:
         for previous, was in old:
-            if was != held and functions(name) & functions(previous):
+            if functions(name) & functions(previous):
                 raise ValueError(f"{name} must stay in {was}: a proptest block never changes file")
 
 
@@ -430,7 +440,11 @@ def main():
     mapping = json.loads(MAPPING.read_text())
     base_ref = getattr(args, "base_ref", None)
     if args.command == "map":
-        base_ref = subprocess.check_output(["git", "merge-base", "origin/main", "HEAD"], cwd=ROOT, text=True).strip()
+        found = subprocess.run(["git", "merge-base", "origin/main", "HEAD"], cwd=ROOT, capture_output=True, text=True)
+        if found.returncode:
+            raise ValueError("map compares proptest blocks with `git merge-base origin/main HEAD`, which failed; "
+                             "run `git fetch origin main` and retry")
+        base_ref = found.stdout.strip()
     if base_ref and subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{base_ref}^{{commit}}"],
                                    cwd=ROOT, capture_output=True).returncode:
         raise ValueError(f"base ref {base_ref} is not a commit in this repository")

@@ -348,6 +348,36 @@ class SplitTests(unittest.TestCase):
         self.map_against(base)
         self.assertEqual(json.loads(split.MAPPING.read_text())["tests.rs"]["proptest:holds,also_holds"], "scenario")
 
+    def test_map_accepts_proptest_blocks_edited_in_place_in_two_sources(self):
+        self.generate()
+        other = self.root / "other.rs"
+        self.mapping["other.rs"] = {"fn:other": "root"}
+        other.write_bytes(split.LICENSE + b"fn other() {}\n\n" + self.block(b"holds"))
+        self.path.write_bytes(self.path.read_bytes() + b"\n" + self.block(b"holds"))
+        base = self.layout()
+        other.write_bytes(split.LICENSE + b"fn other() {}\n\n" + self.block(b"holds", b"extra_b"))
+        self.path.write_bytes(base["tests.rs"].replace(self.block(b"holds"), self.block(b"holds", b"extra_a")))
+        self.map_against(base)
+        written = json.loads(split.MAPPING.read_text())
+        self.assertEqual((written["tests.rs"]["proptest:holds,extra_a"], written["other.rs"]["proptest:holds,extra_b"]), ("root", "root"))
+
+    def test_map_refuses_a_proptest_block_moved_out_of_a_retired_source(self):
+        self.generate()
+        retired = split.LICENSE + b"fn other() {}\n\n" + self.block(b"holds")
+        base = self.layout() | {"other.rs": retired, "mapping.json": json.dumps(self.mapping | {"other.rs": {}}).encode()}
+        scenario = self.root / "tests/scenario.rs"
+        scenario.write_bytes(scenario.read_bytes() + b"\n" + self.block(b"holds"))
+        with self.assertRaisesRegex(ValueError, "proptest:holds must stay in other.rs"):
+            self.map_against(base)
+
+    def test_map_names_the_fetch_when_origin_main_is_missing(self):
+        split.MAPPING.write_text(json.dumps(self.mapping))
+        before = split.MAPPING.read_bytes()
+        with patch.object(sys, "argv", ["split-tests.py", "map"]), patch.object(split, "parser", return_value=self.executable):
+            with self.assertRaisesRegex(ValueError, "git fetch origin main"):
+                split.main()
+        self.assertEqual(split.MAPPING.read_bytes(), before)
+
     def test_verify_with_a_base_refuses_a_proptest_block_that_changed_file(self):
         self.mapping["tests.rs"]["proptest:holds,also_holds"] = "scenario"
         base = {"tests.rs": self.source + b"\n" + self.block(b"holds")}
