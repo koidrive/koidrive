@@ -1122,6 +1122,45 @@ fn rewinds_converge_from_seed_3417() {
 }
 
 #[test]
+fn a_write_a_rewind_took_comes_back_beside_the_later_write_when_a_user_publishes_it() {
+    let phases = vec![
+        vec![
+            (1, user(0, 0, 0, "b")),
+            (1, user(1, 0, 3642928213778471807, "a")),
+            (1, Step::CopyStore),
+        ],
+        vec![
+            (1, Step::RollBack),
+            (0, Step::Backup),
+            (1, user(3, 0, 3499421453867702510, "a")),
+            (0, user(2, 39621527937367609, 0, "a")),
+            (0, Step::CopyStore),
+        ],
+        vec![
+            (0, user(0, 0, 0, "A")),
+            (1, user(3, 2810357682821646583, 0, "A")),
+            (0, user(2, 7676191507830041038, 0, "a")),
+            (0, Step::Rewind),
+            (0, Step::RollBack),
+        ],
+    ];
+    for intents in [false, true] {
+        FIELD_INTENTS.set(intents);
+        let world = converge(2, &phases).unwrap();
+        let mut writes: Vec<i64> = (world.space().nodes().into_iter())
+            .filter(|node| node.status == NodeStatus::Live as i32)
+            .filter_map(|node| Some(tag(&node.current?.content?)))
+            .collect();
+        writes.sort();
+        let kept = match intents {
+            false => vec![2],
+            true => vec![2, 3],
+        };
+        assert_eq!(writes, kept, "intents {intents}");
+    }
+}
+
+#[test]
 #[ignore = "a device goes quiet out of sync after a rewind, or keeps a write off the server while it waits (GUN-551)"]
 fn rewinds_converge_from_the_saved_gun_551_cases() {
     converges_from_saved_cases(
