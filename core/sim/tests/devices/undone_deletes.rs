@@ -590,6 +590,27 @@ fn a_bystanders_store_rollback_before_the_delete_leaves_it_checked() {
 }
 
 #[test]
+fn a_delete_made_before_its_device_hears_of_a_restore_stays_checked() {
+    reports_the_lost_delete(checked(
+        2,
+        &[
+            vec![(0, file("a")), (1, BACKUP)],
+            vec![
+                (1, RESTORE),
+                (1, Step::Connect),
+                (1, DELIVER),
+                (1, COMMIT),
+                (0, Step::Connect),
+                (1, Step::Work(0)),
+                (1, Step::Work(0)),
+                (0, delete(0)),
+                (0, Step::Work(0)),
+            ],
+        ],
+    ));
+}
+
+#[test]
 fn a_rename_another_device_makes_after_its_store_rollback_brings_the_file_back() {
     let world = checked(
         2,
