@@ -73,14 +73,16 @@ impl IntentId {
     }
 
     /// The UUIDv5 of RFC 0029 §7.2.
-    pub fn legacy(node: &str, field: Field, key: &str) -> Self {
+    pub fn legacy(node: &str, field: Field, key: &[&str]) -> Self {
         let mut hash = Sha1::new();
         hash.update(LEGACY_NAMESPACE);
         hash.update(node.as_bytes());
         hash.update([0]);
         hash.update(field.as_str().as_bytes());
-        hash.update([0]);
-        hash.update(key.as_bytes());
+        for part in key {
+            hash.update([0]);
+            hash.update(part.as_bytes());
+        }
         let digest = hash.finalize();
         let mut id = [0; 16];
         id.copy_from_slice(&digest[..16]);
@@ -90,19 +92,19 @@ impl IntentId {
     }
 
     pub fn legacy_content(node: &str, version_id: &str) -> Self {
-        Self::legacy(node, Field::Content, version_id)
+        Self::legacy(node, Field::Content, &[version_id])
     }
 
     pub fn legacy_place(node: &str, meta_rev: u64, parent: &str, name: &str) -> Self {
-        Self::legacy(node, Field::Place, &format!("{meta_rev}\0{parent}\0{name}"))
+        Self::legacy(node, Field::Place, &[&meta_rev.to_string(), parent, name])
     }
 
     pub fn legacy_live(node: &str, seq: u64) -> Self {
-        Self::legacy(node, Field::Status, &format!("live:{seq}"))
+        Self::legacy(node, Field::Status, &[&format!("live:{seq}")])
     }
 
     pub fn legacy_trashed(node: &str, trash_group: &str) -> Self {
-        Self::legacy(node, Field::Status, &format!("trashed:{trash_group}"))
+        Self::legacy(node, Field::Status, &[&format!("trashed:{trash_group}")])
     }
 }
 
