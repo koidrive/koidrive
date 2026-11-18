@@ -6,8 +6,8 @@
 
 use koidrive_driver::{
     Account, FolderState, FolderStatus, Limit, Question, QuestionKind, RecoveryGroup,
-    RecoveryTrigger, RestoreRejection, RestoreRequest, RestoreState, RestoreStatus, RestoreWait,
-    Status, Update, Wait, WaitKind,
+    RecoveryTrigger, Remedy, RestoreRejection, RestoreRequest, RestoreState, RestoreStatus,
+    RestoreWait, Status, Update, Wait, WaitKind,
 };
 use koidrive_ipc::{Code, Next, Reason};
 use koidrive_proto::v1::{DeviceInfo, SpaceInfo, SpaceUsage, device_info::Kind};
@@ -223,6 +223,57 @@ pub enum SyncState {
     UpToDate,
     Offline,
     Halted,
+}
+
+/// What lifts a halted folder's halt: a restart once the problem is fixed, putting the folder back where it was
+/// (Koidrive checks it again on its own), a relink, unlinking it again, a retry of the refused changes, the space's
+/// owner confirming them, setting the device up again, or the owner adding the device back to the space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RemedyData {
+    Restart,
+    Root,
+    Relink,
+    Unlink,
+    Retry,
+    Owner,
+    SetUpAgain,
+    Membership,
+}
+
+impl RemedyData {
+    pub fn of(folder: &FolderStatus) -> Option<Self> {
+        if folder.state != FolderState::Halted {
+            return None;
+        }
+        Some(
+            match folder
+                .remedy
+                .or(folder.relinkable.then_some(Remedy::Relink))
+            {
+                Some(Remedy::Restart) | None => RemedyData::Restart,
+                Some(Remedy::Root) => RemedyData::Root,
+                Some(Remedy::Relink) => RemedyData::Relink,
+                Some(Remedy::Unlink) => RemedyData::Unlink,
+                Some(Remedy::Retry) => RemedyData::Retry,
+                Some(Remedy::Owner) => RemedyData::Owner,
+                Some(Remedy::SetUpAgain) => RemedyData::SetUpAgain,
+                Some(Remedy::Membership) => RemedyData::Membership,
+            },
+        )
+    }
+
+    pub fn command(self) -> Option<&'static str> {
+        match self {
+            RemedyData::Restart | RemedyData::Root => Some("restart"),
+            RemedyData::Relink => Some("relink"),
+            RemedyData::Unlink => Some("unlink"),
+            RemedyData::Retry
+            | RemedyData::Owner
+            | RemedyData::SetUpAgain
+            | RemedyData::Membership => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
@@ -539,6 +590,8 @@ pub struct FolderData {
     pub local_entries: Option<u64>,
     pub questions: u64,
     pub problem: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remedy: Option<RemedyData>,
     pub wait: Option<WaitData>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<ProgressData>,
@@ -598,6 +651,7 @@ impl FolderData {
             local_entries: folder.local_entries,
             questions: folder.questions,
             problem: folder.problem.clone(),
+            remedy: RemedyData::of(folder),
             wait: folder.wait.as_ref().and_then(WaitData::of),
             progress: (folder.progress.as_ref()).map(|progress| ProgressData {
                 files_to_upload: progress.files_to_upload,

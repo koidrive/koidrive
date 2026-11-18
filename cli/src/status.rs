@@ -3,10 +3,12 @@
 use crate::error::CliError;
 use crate::formatting::{need_you, now_ms, printable, size};
 use crate::profile::unexpected;
-use crate::report::{AccountData, Decision, Done, FolderData, StatusData, UpdateNoticeData};
+use crate::report::{
+    AccountData, Decision, Done, FolderData, RemedyData, StatusData, UpdateNoticeData,
+};
 use crate::resolve::{question_brief, questions};
 use crate::{ipc, output, report, service, update};
-use koidrive_driver::{FolderState, FolderStatus, Paths, Progress, Question, Remedy, Status};
+use koidrive_driver::{FolderState, FolderStatus, Paths, Progress, Question, Status};
 use koidrive_ipc::{Request, Response};
 use std::path::Path;
 
@@ -59,11 +61,10 @@ pub(crate) async fn status(paths: &Paths, check: bool) -> Result<Done, CliError>
     if status.paused {
         done = done.then(&["koi", "resume"]);
     }
-    for path in (status.folders.iter())
-        .filter(|folder| folder.relinkable)
-        .filter_map(|folder| folder.path.as_deref())
+    for (path, command) in (status.folders.iter())
+        .filter_map(|folder| Some((folder.path.as_deref()?, RemedyData::of(folder)?.command()?)))
     {
-        done = done.then(&["koi", "folder", "relink", path]);
+        done = done.then(&["koi", "folder", command, path]);
     }
     Ok(done)
 }
@@ -106,20 +107,22 @@ pub(crate) fn status_summary(
         }
         if let Some(problem) = &folder.problem {
             text.push_str(&format!("  {}\n", printable(problem)));
-            let halted = folder
-                .path
-                .as_deref()
-                .filter(|_| folder.state == FolderState::Halted);
-            if let Some(root) = halted {
+            if let Some((root, remedy)) = folder.path.as_deref().zip(RemedyData::of(folder)) {
                 let path = output::command_path(Path::new(root));
-                match (folder.remedy).or(folder.relinkable.then_some(Remedy::Relink)) {
-                    Some(Remedy::Relink) => text.push_str(&format!(
+                match remedy {
+                    RemedyData::Relink => text.push_str(&format!(
                         "  If this copy is the one to keep, run koi folder relink {path}. Nothing it lacks is deleted on the server.\n"
                     )),
-                    Some(Remedy::Restart | Remedy::Root) | None => text.push_str(&format!(
+                    RemedyData::Restart | RemedyData::Root => text.push_str(&format!(
                         "  Fix the problem above, then run koi folder restart {path}\n"
                     )),
-                    Some(Remedy::Unlink | Remedy::Retry | Remedy::Owner | Remedy::SetUpAgain) => {}
+                    RemedyData::Unlink => {
+                        text.push_str(&format!("  To finish, run koi folder unlink {path}\n"))
+                    }
+                    RemedyData::Membership => text.push_str(&format!(
+                        "  Ask the space's owner to add this device again. If the space is gone, run koi folder unlink {path}; its files stay where they are.\n"
+                    )),
+                    RemedyData::Retry | RemedyData::Owner | RemedyData::SetUpAgain => {}
                 }
             }
         }

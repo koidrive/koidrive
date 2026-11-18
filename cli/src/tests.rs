@@ -54,6 +54,11 @@ fn concise_halted_status_offers_a_restart_only_when_a_restart_lifts_the_halt() {
             "restart",
             true,
         ),
+        (
+            "this device is not a member of the space",
+            "membership",
+            false,
+        ),
     ] {
         let status: Status = serde_json::from_value(serde_json::json!({
             "account":null, "running":true, "folders":[{
@@ -71,6 +76,13 @@ fn concise_halted_status_offers_a_restart_only_when_a_restart_lifts_the_halt() {
         let summary = status_summary(&status, &[], &service, &notice);
 
         assert_eq!(summary.contains("koi folder restart"), restart, "{summary}");
+        assert_eq!(
+            summary.contains("To finish, run koi folder unlink /home/ada/Work"),
+            remedy == "unlink",
+            "{summary}"
+        );
+        let data = serde_json::to_value(report::FolderData::of(&status.folders[0])).unwrap();
+        assert_eq!(data["remedy"], remedy);
     }
 }
 

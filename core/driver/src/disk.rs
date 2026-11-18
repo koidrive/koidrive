@@ -127,6 +127,7 @@ impl Stop {
             Stop::Session(StopReason::CredentialsRefused | StopReason::DeviceRevoked) => {
                 Remedy::SetUpAgain
             }
+            Stop::Session(StopReason::Forbidden | StopReason::NotFound) => Remedy::Membership,
             Stop::Policy {
                 needs_owner: true, ..
             } => Remedy::Owner,
