@@ -690,7 +690,8 @@ impl Effects {
                 let mut entry = folder.clone();
                 entry.push(name);
                 kind.is_none_or(|kind| trees.ignores(&entry, kind))
-                    || (trees.local_holders(&record.node, name)).any(|id| trees.ignored(id))
+                    || (trees.local_holders(&record.node, name))
+                        .any(|id| trees.under_kept_entry(id))
             })
     }
 
@@ -1174,7 +1175,7 @@ impl<'a> View<'a> {
                 _ => &[],
             };
             return self.trees.local_children(&record.node).all(|child| {
-                self.trees.excluded(child)
+                self.trees.under_kept_entry(child)
                     || (self.trees.local().get(child))
                         .is_some_and(|node| along.iter().any(|file| file.identity == node.identity))
             });
@@ -1276,7 +1277,8 @@ impl<'a> View<'a> {
             return Step::Skip;
         }
         let children: Vec<&NodeId> = self.trees.local_children(id).collect();
-        if (children.iter()).any(|child| !self.trees.carried(child) && !self.trees.excluded(child))
+        if (children.iter())
+            .any(|child| !self.trees.carried(child) && !self.trees.under_kept_entry(child))
         {
             return Step::Blocked(None);
         }

@@ -3092,7 +3092,7 @@ impl Trees {
             .map(|_| &node.shape.parent)
     }
 
-    fn under_kept_entry(&self, id: &str) -> bool {
+    pub(crate) fn under_kept_entry(&self, id: &str) -> bool {
         if self.kept_entries.is_empty() && self.kept_nodes.is_empty() {
             return false;
         }
