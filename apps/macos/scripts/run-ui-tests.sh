@@ -17,5 +17,6 @@ rm -rf "$result"
 mkdir -p "$(dirname "$result")"
 xcodebuild test -project Koidrive.xcodeproj -scheme Koidrive -configuration Debug \
   -derivedDataPath build/DerivedData -destination "platform=macOS,arch=$(uname -m)" \
+  -test-timeouts-enabled YES -default-test-execution-time-allowance 60 \
   -resultBundlePath "$result" CODE_SIGN_IDENTITY=- 2>&1 | tee "${result%.xcresult}.log"
 grep -E "Test Case .*(passed|failed)|Executed [0-9]+ test" "${result%.xcresult}.log"
