@@ -297,6 +297,79 @@ fn removals_below_a_folder_move_that_is_dropped_are_dropped_with_it() {
     assert!(live, "x stays on the server");
 }
 
+#[test]
+fn a_removal_dropped_while_excluded_stays_unobserved_until_the_reset_scan_answers() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    let (site, mut b) = linked(&mut remote, "b");
+    fs::create_dir(site.root.join("d")).unwrap();
+    b.create(&mut remote, &site.root.join("d/x.log"), b"x");
+    b.create(&mut remote, &site.root.join(".koiignore"), b"*.log\n");
+    b.rest(&mut remote);
+    fs::create_dir(site_a.root.join("n")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    let sections = b.folder.sections();
+    let stamp = sections.stamp();
+    let id = b.observer.snapshot().entries[Path::new("d")].id;
+    b.pull(&remote);
+    b.run(&mut remote);
+    assert!(site.root.join("n").is_dir());
+    fs::rename(site.root.join("d"), site.root.join("n/d")).unwrap();
+    fs::remove_file(site.root.join("n/d/x.log")).unwrap();
+    fs::write(site.root.join(".koiignore"), b"other.txt\n").unwrap();
+    let batch = |stamp, changes, rules, read| Batch {
+        stamp,
+        unread: (0, 0),
+        answered: None,
+        observation: crate::observe::Observation {
+            changes,
+            root: Ok(()),
+            unreadable: Vec::new(),
+            scanned: b.observer.scanned(),
+            busy: Vec::new(),
+            pending: Vec::new(),
+            waiting: Default::default(),
+            rules,
+            read,
+            all_rules: false,
+            mounts: BTreeMap::new(),
+            detached: BTreeMap::new(),
+            ctimes: BTreeMap::new(),
+        },
+    };
+    let stale = batch(
+        stamp,
+        vec![
+            Observed::Renamed {
+                from: "d".into(),
+                to: "n/d".into(),
+                kind: EntryKind::Dir,
+                id,
+                linked: false,
+            },
+            Observed::Removed {
+                path: "n/d/x.log".into(),
+                kind: EntryKind::File,
+            },
+        ],
+        vec![crate::observe::RulesChange {
+            dir: PathBuf::new(),
+            rules: Some(koidrive_engine::ignore::RuleFile::parse(b"other.txt\n")),
+        }],
+        Vec::new(),
+    );
+    let before_resets = batch(sections.stamp(), Vec::new(), Vec::new(), vec!["d".into()]);
+    let step = b.folder.observed(stale, 2);
+    b.take(step).unwrap();
+    let step = b.folder.observed(before_resets, 2);
+    b.take(step).unwrap();
+    b.settle();
+    b.rest(&mut remote);
+    assert!(!b.sent.iter().flat_map(kinds).any(|kind| kind == "delete"));
+    assert_eq!(fs::read(site.root.join("n/d/x.log")).unwrap(), b"x");
+}
+
 /// A folder the user deletes stays on the server while it holds a file the rules exclude here (design §5.10), so
 /// nothing is left to send for it, and the folder is up to date.
 #[test]

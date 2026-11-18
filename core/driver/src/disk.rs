@@ -251,11 +251,16 @@ impl Sections {
 struct Unscanned {
     batch: Vec<PathBuf>,
     effects: BTreeSet<PathBuf>,
+    dropped: BTreeSet<PathBuf>,
 }
 
 impl Unscanned {
     fn all(&self) -> Vec<PathBuf> {
-        (self.batch.iter()).chain(&self.effects).cloned().collect()
+        (self.batch.iter())
+            .chain(&self.effects)
+            .chain(&self.dropped)
+            .cloned()
+            .collect()
     }
 }
 
@@ -307,6 +312,7 @@ pub(crate) struct Disk {
     /// has passed a scan of the section's paths and the rules it read.
     scan_after: Option<Requests>,
     unscanned: Unscanned,
+    drop_after: Option<Requests>,
     rescan_after: Option<Requests>,
     /// The most each batch of effects holds: [`BATCH`] outside tests.
     batch: BatchLimit,
@@ -436,6 +442,7 @@ impl Disk {
             forgotten: 0,
             scan_after: None,
             unscanned: Unscanned::default(),
+            drop_after: None,
             rescan_after: None,
             batch: BATCH,
             hook,
@@ -739,6 +746,10 @@ impl Disk {
         if (self.rescan_after).is_some_and(|requested| answered >= Some(requested)) {
             self.rescan_after = None;
         }
+        if (self.drop_after).is_some_and(|requested| answered >= Some(requested)) {
+            self.drop_after = None;
+            self.unscanned.dropped.clear();
+        }
         if stamp.0 < self.forgotten {
             tracing::debug!(
                 space_id = self.space_id.as_str(),
@@ -746,8 +757,9 @@ impl Disk {
                 "dropped an observation older than the effects the folder remembers, and reset the whole folder"
             );
             engine.read(&observation.read, &observation.unreadable);
+            self.unscanned.dropped.insert(PathBuf::new());
             engine.listed(&[], pending(&self.unscanned.all(), &observation.waiting));
-            self.sections.request(engine.resets([PathBuf::new()]));
+            self.drop_after = Some(self.sections.request(engine.resets([PathBuf::new()])));
             return Ok(());
         }
         let mut scopes: BTreeSet<PathBuf> = (self.spans.iter())
@@ -790,9 +802,8 @@ impl Disk {
         let mounts = (observation.mounts != engine.mounts).then_some(observation.mounts);
         let mut ctimes = observation.ctimes;
         ctimes.retain(|path, _| !dropped.contains(path));
-        self.unscanned.batch = (observation.pending.into_iter())
-            .chain(dropped.iter().cloned())
-            .collect();
+        self.unscanned.batch = observation.pending;
+        self.unscanned.dropped.extend(dropped.iter().cloned());
         let pending = pending(&self.unscanned.all(), &observation.waiting);
         if !changes.is_empty()
             || mounts.is_some()
@@ -826,7 +837,7 @@ impl Disk {
                 ?dropped,
                 "dropped the changes an effect made after the observation began, and reset their paths"
             );
-            self.sections.request(engine.resets(dropped));
+            self.drop_after = Some(self.sections.request(engine.resets(dropped)));
         }
         Ok(())
     }
