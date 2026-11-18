@@ -538,6 +538,16 @@ fn a_file_left_out_of_a_commit_holds_back_no_other_change() {
     assert_eq!(ops(&commit), [update("b", 2)]);
 }
 
+fn given_up_at(commits: Commits, slot: u64, commit_id: &str) -> Commits {
+    let mut state = commits.state();
+    state
+        .given_up
+        .entry(slot)
+        .or_default()
+        .push(commit_id.into());
+    Commits::from_state(state).unwrap()
+}
+
 fn kept_slots() -> Commits {
     Commits::from_state(CommitsState {
         accepted: 2,
@@ -575,8 +585,9 @@ fn the_servers_token_at_its_count_decides_which_kept_slot_bounds_what_it_holds()
         device_committed_at_ms: 3,
         ..welcome(1)
     };
-    assert_eq!(elsewhere.connected(&another), Reconnect::AheadOfServer);
-    assert_eq!((elsewhere.accepted(), elsewhere.held_through()), (1, 0));
+    assert_eq!(elsewhere.connected(&another), Reconnect::Recovery);
+    assert!(matches!(elsewhere.halted(), Some(Halt::Recovery(_))));
+    assert_eq!(elsewhere.accepted(), 2);
     assert!(elsewhere.lost_here(7) && elsewhere.lost_here(3));
 }
 
@@ -609,6 +620,7 @@ fn a_slot_kept_without_a_token_keeps_the_bound_of_the_newest_kept_slot() {
             },
         )]
         .into(),
+        given_up: [(2, vec!["another".into()])].into(),
         ..Default::default()
     })
     .unwrap();
@@ -645,7 +657,8 @@ fn a_slot_kept_without_a_token_keeps_the_bound_of_the_newest_kept_slot() {
 #[test]
 fn a_result_applied_after_a_welcome_with_another_token_bounds_by_its_own_slot() {
     let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
-    let (mut commits, mut ids) = (kept_slots(), IdGen::new(1));
+    let mut commits = given_up_at(kept_slots(), 2, "another");
+    let mut ids = IdGen::new(1);
     let another = Welcome {
         device_commit_id: "another".into(),
         device_committed_at_ms: 7,
@@ -864,4 +877,242 @@ fn a_copy_rolled_back_past_its_resend_does_not_send_its_edit_again() {
         Vec::<&op::Op>::new(),
         "the copy sends the edit of n again over the delete"
     );
+}
+
+#[test]
+fn a_server_count_below_the_accepted_one_starts_recovery_when_its_token_names_another_commit() {
+    let kept = |commit_id: &str| Slot {
+        seq: 3,
+        commit_id: commit_id.into(),
+        committed_at_ms: 30,
+    };
+    let at_slot_1 = |commit_id: &str, committed_at_ms: i64| Welcome {
+        device_commit_id: commit_id.into(),
+        device_committed_at_ms: committed_at_ms,
+        ..welcome(1)
+    };
+    let cases = [
+        (kept("one"), at_slot_1("one", 30), Reconnect::AheadOfServer),
+        (kept("one"), at_slot_1("", 0), Reconnect::AheadOfServer),
+        (kept(""), at_slot_1("another", 30), Reconnect::AheadOfServer),
+        (kept("one"), at_slot_1("another", 30), Reconnect::Recovery),
+        (kept("one"), at_slot_1("one", 31), Reconnect::AheadOfServer),
+    ];
+    for (slot_1, welcome, reconnect) in cases {
+        let mut commits = Commits::from_state(CommitsState {
+            accepted: 2,
+            slots: [(1, slot_1), (2, slot(7))].into(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(commits.connected(&welcome), reconnect, "{welcome:?}");
+        let restarted = Commits::from_state(commits.state()).unwrap();
+        for commits in [&commits, &restarted] {
+            let recovering = matches!(commits.halted(), Some(Halt::Recovery(_)));
+            assert_eq!(recovering, reconnect == Reconnect::Recovery, "{welcome:?}");
+        }
+    }
+}
+
+#[test]
+fn a_restore_that_brings_back_a_commit_this_device_gave_its_slot_to_before_a_loss_starts_no_recovery()
+ {
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 1,
+        slots: [(1, given(0))].into(),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    commits.forget_lost_slots();
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 2,
+        slots: [(1, given(1)), (2, slot(7))].into(),
+        ..commits.state()
+    })
+    .unwrap();
+    assert_eq!(commits.connected(&at_slot_1(0)), Reconnect::AheadOfServer);
+    assert_eq!(commits.accepted(), 1);
+}
+
+#[test]
+fn a_restore_that_brings_back_a_commit_a_slot_gave_up_more_than_the_kept_number_of_losses_ago_starts_recovery()
+ {
+    let mut state = CommitsState::default();
+    for loss in 0..=GIVEN_UP_KEPT {
+        let mut commits = Commits::from_state(CommitsState {
+            accepted: 1,
+            slots: [(1, given(loss))].into(),
+            ..state
+        })
+        .unwrap();
+        assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+        commits.forget_lost_slots();
+        state = commits.state();
+    }
+    for loss in 0..=GIVEN_UP_KEPT {
+        let mut commits = Commits::from_state(CommitsState {
+            accepted: 2,
+            slots: [(1, given(GIVEN_UP_KEPT + 1)), (2, slot(7))].into(),
+            ..state.clone()
+        })
+        .unwrap();
+        let reconnect = match loss {
+            0 => Reconnect::Recovery,
+            _ => Reconnect::AheadOfServer,
+        };
+        assert_eq!(
+            commits.connected(&at_slot_1(loss)),
+            reconnect,
+            "loss {loss}"
+        );
+    }
+}
+
+fn given(loss: usize) -> Slot {
+    Slot {
+        seq: 3,
+        commit_id: format!("commit-{loss}"),
+        committed_at_ms: 30 + loss as i64,
+    }
+}
+
+fn at_slot_1(loss: usize) -> Welcome {
+    Welcome {
+        device_commit_id: format!("commit-{loss}"),
+        device_committed_at_ms: 30 + loss as i64,
+        ..welcome(1)
+    }
+}
+
+#[test]
+fn a_recovery_forgets_the_commits_its_slots_were_given_before_a_loss() {
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 1,
+        slots: [(1, given(0))].into(),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    commits.forget_lost_slots();
+    assert!(!commits.state().given_up.is_empty());
+    let cause = RecoveryCause::of(RecoveryTrigger::SpaceRewound);
+    commits.enter_recovery(cause);
+    let (mut trees, mut ids) = (trees(&[]), IdGen::new(1));
+    commits.recover(
+        &mut trees,
+        0,
+        &cause,
+        &History::new(),
+        &Marks::new(),
+        &mut ids,
+        NOW,
+    );
+    assert!(commits.state().given_up.is_empty());
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 2,
+        slots: [(1, given(1)), (2, slot(7))].into(),
+        ..commits.state()
+    })
+    .unwrap();
+    assert_eq!(commits.connected(&at_slot_1(0)), Reconnect::Recovery);
+}
+
+#[test]
+fn a_restore_that_brings_back_a_commit_built_again_at_its_slot_starts_no_recovery() {
+    let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let first = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(
+        commits.failed(&mut trees, &refusal(error::Code::AheadOfServer, 0)),
+        Ok(Failure::Resync)
+    );
+    let second = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!((first.device_seq, second.device_seq), (1, 1));
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![outcome(op_result::Code::Applied)],
+    );
+    let state = commits.state();
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 2,
+        slots: [(1, state.slots[&1].clone()), (2, slot(7))].into(),
+        ..state
+    })
+    .unwrap();
+    let welcome = Welcome {
+        device_commit_id: first.commit_id,
+        device_committed_at_ms: 30,
+        ..welcome(1)
+    };
+    assert_eq!(commits.connected(&welcome), Reconnect::AheadOfServer);
+}
+
+#[test]
+fn a_restore_that_brings_back_a_commit_a_reconnect_dropped_from_flight_starts_no_recovery() {
+    let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 1,
+        slots: [(1, given(0))].into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let dropped = build(&mut commits, &mut trees, &mut IdGen::new(1)).unwrap();
+    assert_eq!(dropped.device_seq, 2);
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    assert!(commits.in_flight().is_none());
+    let state = commits.state();
+    let mut commits = Commits::from_state(CommitsState {
+        accepted: 3,
+        slots: [(1, given(0)), (2, given(1)), (3, slot(7))].into(),
+        ..state
+    })
+    .unwrap();
+    let welcome = Welcome {
+        device_commit_id: dropped.commit_id,
+        device_committed_at_ms: 30,
+        ..welcome(2)
+    };
+    assert_eq!(commits.connected(&welcome), Reconnect::AheadOfServer);
+}
+
+fn another_at(slot: u64) -> Welcome {
+    Welcome {
+        device_commit_id: "another".into(),
+        device_committed_at_ms: 30,
+        ..welcome(slot)
+    }
+}
+
+#[test]
+fn a_server_count_at_the_accepted_one_naming_a_commit_the_store_does_not_know_starts_recovery() {
+    let mut commits = kept_slots();
+    assert_eq!(commits.connected(&another_at(2)), Reconnect::Recovery);
+    assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
+    let mut given_up = given_up_at(kept_slots(), 2, "another");
+    assert_eq!(given_up.connected(&another_at(2)), Reconnect::Idle);
+}
+
+#[test]
+fn a_commit_waiting_for_its_result_is_not_resent_when_the_server_names_another_commit_at_the_accepted_slot()
+ {
+    let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
+    let mut commits = kept_slots();
+    build(&mut commits, &mut trees, &mut IdGen::new(1)).unwrap();
+    assert_eq!(commits.connected(&another_at(2)), Reconnect::Recovery);
+    assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
+}
+
+#[test]
+fn a_commit_holding_its_result_is_not_dropped_when_the_server_names_another_commit_at_the_accepted_slot()
+ {
+    let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
+    let mut commits = kept_slots();
+    build(&mut commits, &mut trees, &mut IdGen::new(1)).unwrap();
+    commits
+        .received(result(9, vec![outcome(op_result::Code::Applied)]))
+        .unwrap();
+    assert_eq!(commits.connected(&another_at(2)), Reconnect::Recovery);
+    assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
 }

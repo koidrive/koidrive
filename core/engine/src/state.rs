@@ -356,6 +356,9 @@ pub struct CommitsState {
     /// [`SLOTS_KEPT`](crate::commit::SLOTS_KEPT) acknowledged commits, by slot. A slot kept from
     /// before commit tokens has an empty `commit_id`.
     pub slots: BTreeMap<u64, Slot>,
+    /// By slot, the `commit_id`s of the commits this device gave the slot to before a server loss
+    /// took them, at most [`GIVEN_UP_KEPT`](crate::commit::GIVEN_UP_KEPT) each, newest last.
+    pub given_up: BTreeMap<u64, Vec<String>>,
     /// The open questions, in the order they were asked.
     pub questions: Vec<Question>,
     /// The local entries a Publish answer to a first link's question released, until the server
@@ -523,6 +526,7 @@ pub struct CommitsChanges {
     pub restores: Option<BTreeMap<RestoreId, RestoreIntent>>,
     pub resolved: Option<Vec<Resolved>>,
     pub slots: MapChanges<u64, Slot>,
+    pub given_up: MapChanges<u64, Vec<String>>,
     pub questions: Option<Vec<Question>>,
     pub published: SetChanges<NodeId>,
     pub guard: GuardChanges,
@@ -542,6 +546,7 @@ impl CommitsChanges {
             restores,
             resolved,
             slots,
+            given_up,
             questions,
             published,
             guard,
@@ -557,6 +562,7 @@ impl CommitsChanges {
             restores: value_change(&before.restores, restores),
             resolved: value_change(&before.resolved, resolved),
             slots: map_changes(&before.slots, slots),
+            given_up: map_changes(&before.given_up, given_up),
             questions: value_change(&before.questions, questions),
             published: set_changes(&before.published, published),
             guard: GuardChanges::between(&before.guard, guard),

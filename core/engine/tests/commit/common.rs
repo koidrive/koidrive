@@ -7,7 +7,8 @@ use koidrive_engine::classify::{
 };
 
 use koidrive_engine::commit::{
-    Commits, Failure, Halt, Lift, LiftError, MAX_COMMIT_BYTES, MAX_OPS, Reconnect, Slot,
+    Commits, Failure, GIVEN_UP_KEPT, Halt, Lift, LiftError, MAX_COMMIT_BYTES, MAX_OPS, Reconnect,
+    Slot,
 };
 
 use koidrive_engine::effects::{BatchLimit, Effect, EffectError, Effects, Location};

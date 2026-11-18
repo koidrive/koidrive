@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Debug;
 
 use koidrive_engine::classify::Trees;
-use koidrive_engine::commit::{Base, Commits, Halt};
+use koidrive_engine::commit::{Base, Commits, GIVEN_UP_KEPT, Halt};
 use koidrive_engine::effects::Effects;
 use koidrive_engine::first_link::History;
 use koidrive_engine::ids::IdGen;
@@ -407,6 +407,8 @@ pub struct Device {
     pub recovery: Option<String>,
     pub recovery_from: Resume,
     pub store_copy: Option<Engine>,
+    pub sent: BTreeMap<u64, BTreeSet<String>>,
+    pub sent_copy: BTreeMap<u64, BTreeSet<String>>,
     pub rolled_back: bool,
     pub restored_ahead: bool,
     pub left: bool,
@@ -451,6 +453,30 @@ impl Device {
             )));
         }
         self.store = self.engine.reload()?;
+        let commits = &self.store.commits;
+        if let Some(flight) = commits.in_flight() {
+            (self.sent.entry(flight.commit.device_seq).or_default())
+                .insert(flight.commit.commit_id.clone());
+        }
+        if let Some(&oldest) = commits.slots().keys().next() {
+            self.sent = self.sent.split_off(&oldest);
+        }
+        for (slot, ids) in &self.sent {
+            let given_up = commits.given_up().get(slot);
+            if given_up.is_some_and(|ids| ids.len() >= GIVEN_UP_KEPT) {
+                continue;
+            }
+            let known = |id: &String| {
+                (commits.slots().get(slot)).is_some_and(|kept| kept.commit_id == *id)
+                    || given_up.is_some_and(|ids| ids.contains(id))
+                    || (commits.in_flight()).is_some_and(|flight| flight.commit.commit_id == *id)
+            };
+            if let Some(id) = ids.iter().find(|id| !known(id)) {
+                return Err(Failure::Broken(format!(
+                    "the store forgot commit {id}, which it sent at slot {slot}: it is neither the slot's result nor given up"
+                )));
+            }
+        }
         Ok(())
     }
 

@@ -156,3 +156,182 @@ fn a_reapplied_commit_does_not_hold_another_devices_edit_from_the_history_a_rest
         .unwrap();
     world.phase(3, &[]).unwrap();
 }
+
+#[test]
+fn a_rolled_back_store_enters_recovery_when_a_commit_after_the_restore_took_its_slot() {
+    converge(
+        2,
+        &[
+            vec![
+                (2, Step::Work(12267718578518239834)),
+                (0, Step::Connect),
+                (1, Step::Connect),
+                (2, Step::Work(11453646214662844128)),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 0,
+                        target: 8318797114919849338,
+                        parent: 12249469183885329173,
+                        name: 8,
+                        text: 2,
+                    }),
+                ),
+                (2, Step::Work(3514444316500576433)),
+                (2, Step::Work(15298596865811664161)),
+                (1, Step::Scan),
+                (2, Step::CopyStore),
+                (2, Step::Backup),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 1,
+                        target: 11406035755885105539,
+                        parent: 15052356312157459171,
+                        name: 5,
+                        text: 0,
+                    }),
+                ),
+                (2, Step::Effect(Outcome::Crash(Cut::Quarantined))),
+                (0, Step::Deliver(11627084299583293482)),
+            ],
+            vec![
+                (2, Step::Connect),
+                (1, Step::Connect),
+                (2, Step::Work(10688083400774508753)),
+                (1, Step::Restore),
+                (2, Step::Commit(Reply::Served)),
+                (0, Step::Commit(Reply::Served)),
+                (2, Step::CopyStore),
+                (1, Step::Backup),
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 1,
+                        target: 15056844090704155700,
+                        parent: 5023520681873993632,
+                        name: 0,
+                        text: 1,
+                    }),
+                ),
+                (0, Step::Work(7282969155948029946)),
+                (0, Step::Commit(Reply::Served)),
+                (0, Step::Connect),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 1,
+                        target: 3992013969463396657,
+                        parent: 6476948719336011986,
+                        name: 1,
+                        text: 3,
+                    }),
+                ),
+                (0, Step::Scan),
+                (0, Step::Commit(Reply::Served)),
+                (0, Step::Connect),
+                (1, Step::Commit(Reply::Refused(error::Code::RetryLater))),
+                (
+                    0,
+                    Step::User(Action {
+                        kind: 2,
+                        target: 3749631163116680640,
+                        parent: 17654841143953328153,
+                        name: 9,
+                        text: 3,
+                    }),
+                ),
+                (2, Step::Deliver(7633056873519615465)),
+                (2, Step::Commit(Reply::Served)),
+                (2, Step::Work(9320922278982703197)),
+                (1, Step::Deliver(15993184437109831250)),
+                (0, Step::Connect),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 3,
+                        target: 16968419168642968411,
+                        parent: 18412138271449934375,
+                        name: 9,
+                        text: 1,
+                    }),
+                ),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 3,
+                        target: 13417808454409653466,
+                        parent: 12736507178025465839,
+                        name: 1,
+                        text: 1,
+                    }),
+                ),
+                (0, Step::Crash),
+                (0, Step::Effect(Outcome::Crash(Cut::Quarantined))),
+                (0, Step::Scan),
+                (
+                    1,
+                    Step::User(Action {
+                        kind: 3,
+                        target: 12599019507213326821,
+                        parent: 472572499037889516,
+                        name: 4,
+                        text: 0,
+                    }),
+                ),
+                (2, Step::Deliver(17166006867113384059)),
+                (2, Step::RollBack),
+                (2, Step::Connect),
+                (1, Step::Scan),
+                (1, Step::Effect(Outcome::Run)),
+                (0, Step::Commit(Reply::Served)),
+                (
+                    2,
+                    Step::User(Action {
+                        kind: 3,
+                        target: 15837818162164378096,
+                        parent: 14091535599852482426,
+                        name: 7,
+                        text: 0,
+                    }),
+                ),
+                (0, Step::Answer(1)),
+                (1, Step::Work(8262024362581988907)),
+            ],
+            vec![],
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_commit_resent_across_a_restore_is_not_another_commit_when_a_later_restore_brings_back_its_first_application()
+ {
+    let act = |kind: u8, target: usize, parent: usize, name: usize| {
+        Step::User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text: 0,
+        })
+    };
+    converge(
+        2,
+        &[
+            vec![
+                (2, act(0, 0, 0, 3)),
+                (2, Step::Work(0)),
+                (0, Step::Backup),
+                (2, Step::Work(0)),
+                (2, act(3, 0, 5495008244535768158, 0)),
+                (0, act(0, 0, 0, 0)),
+                (2, Step::Work(12012490443824171944)),
+                (0, Step::Backup),
+                (0, Step::RestoreEarlier),
+            ],
+            vec![(0, Step::Restore)],
+        ],
+    )
+    .unwrap();
+}

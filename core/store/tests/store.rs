@@ -94,6 +94,7 @@ fn migrations_apply_from_empty() {
             "commit_in_flight_delete_members",
             "commit_in_flight_deletes",
             "commit_in_flight_restore_members",
+            "commit_slot_given_up",
             "commit_slots",
             "commit_state",
             "content_provenance",
@@ -1471,6 +1472,7 @@ fn engine_state() -> EngineState {
                     },
                 ),
             ]),
+            given_up: BTreeMap::from([(4, vec!["given-up-a".into(), "given-up-b".into()])]),
             questions: vec![
                 Question {
                     id: "q1".into(),
@@ -1641,7 +1643,7 @@ fn engine_state_survives_a_reopen() {
 }
 
 /// The tables of the engine state besides the nodes of R, L and S.
-const ENGINE_TABLES: [&str; 48] = [
+const ENGINE_TABLES: [&str; 49] = [
     "node_sets",
     "node_maps",
     "waiting_updates",
@@ -1654,6 +1656,7 @@ const ENGINE_TABLES: [&str; 48] = [
     "trashed_here",
     "recorded_nodes",
     "commit_slots",
+    "commit_slot_given_up",
     "edited_here",
     "replaced_versions",
     "content_provenance",
