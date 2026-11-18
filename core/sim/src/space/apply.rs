@@ -803,30 +803,40 @@ impl<'a> Applier<'a> {
         pending_for: Option<String>,
     ) -> Option<OpResult> {
         let deleted = self.deleted_parent(parent_id)?;
-        match &deleted {
-            Deleted::Trash(trash) if content.is_none() && self.depth(trash) < MAX_DEPTH => {
-                let dev = self.dev().to_string();
-                self.insert_node(node_id, &trash.node_id, name, NodeKind::Dir, None, &dev);
-                let node = self
-                    .st
-                    .nodes
-                    .get_mut(node_id)
-                    .expect("the node was inserted");
-                node.status = NodeStatus::Trashed;
-                node.trash_group = trash.trash_group.clone();
-                node.trashed_at_ms = trash.trashed_at_ms;
-                self.set_incoming(node_id, Field::Place);
-                self.set_incoming(node_id, Field::Status);
-                self.mark(node_id, pending_for);
-                return Some(superseded());
-            }
-            Deleted::Trash(_) if content.is_some() => {}
-            _ => self.leave_tombstone(node_id, parent_id, name, &deleted, content.is_some()),
-        }
         let intent = self.incoming(Field::Content).intent.clone();
-        let Some((content, made_over)) =
-            content.filter(|_| !self.deleted_knows(&deleted, intent.id))
-        else {
+        let seen = content.is_none() || self.deleted_knows(&deleted, intent.id);
+        if let Deleted::Trash(trash) = &deleted
+            && seen
+            && self.depth(trash) < MAX_DEPTH
+        {
+            let dev = self.dev().to_string();
+            let (kind, version_id, fields): (_, _, &[Field]) = match content {
+                Some((content, made_over)) => {
+                    let version_id = self.insert_version(node_id, content, &content.chunks);
+                    self.st.versions.get_mut(&version_id).unwrap().made_over = made_over;
+                    (NodeKind::File, Some(version_id), &FIELDS)
+                }
+                None => (NodeKind::Dir, None, &[Field::Place, Field::Status]),
+            };
+            self.insert_node(node_id, &trash.node_id, name, kind, version_id, &dev);
+            let node = self
+                .st
+                .nodes
+                .get_mut(node_id)
+                .expect("the node was inserted");
+            node.status = NodeStatus::Trashed;
+            node.trash_group = trash.trash_group.clone();
+            node.trashed_at_ms = Some(self.ctx.now_ms);
+            for &field in fields {
+                self.set_incoming(node_id, field);
+            }
+            self.mark(node_id, pending_for);
+            return Some(superseded());
+        }
+        if seen || !matches!(deleted, Deleted::Trash(_)) {
+            self.leave_tombstone(node_id, parent_id, name, &deleted, content.is_some());
+        }
+        let Some((content, made_over)) = content.filter(|_| !seen) else {
             return Some(superseded());
         };
         let home = self.nearest_live(Some(&self.id(parent_id)));
