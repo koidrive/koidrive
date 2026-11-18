@@ -1107,8 +1107,10 @@ fn written_ns(path: &Path) -> Option<i128> {
                 .and_then(|meta| meta.modified())
                 .ok()
         })
-        .filter_map(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|since| since.as_nanos() as i128)
+        .map(|at| match at.duration_since(std::time::UNIX_EPOCH) {
+            Ok(since) => since.as_nanos() as i128,
+            Err(before) => -(before.duration().as_nanos() as i128),
+        })
         .max()
 }
 
