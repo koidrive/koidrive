@@ -57,7 +57,11 @@ The Account DO checks the PITR condition through the Space DO at admission, and 
 
 The 29-day bound keeps P inside the 30-day PITR range, with a day for the rewind to finish. The window is checked once, at admission. A rewind already admitted is never refused later because time has passed.
 
-P is the requested point. The restored state is the one at the bookmark that PITR selects for P, which is approximately P. `RewindResult.restore_seq`, `Welcome.restore_seq` and `ResyncRequired.restore_seq` give the exact `head_seq` of the restored state, and `restore_point_ms` is always the requested P.
+P is the requested point. The restored state is the state just after the last commit at or before P, the commit before the first one whose `committed_at_ms` is later than P. After each commit, the Space DO stores `getCurrentBookmark()` for that commit's seq, and the rewind restores the bookmark stored for the last commit at or before P. `getBookmarkForTime` gives only a bookmark approximately at P, which can be several commits earlier.
+
+When the last commit at or before P has no stored bookmark, the rewind restores the bookmark `getBookmarkForTime` selects for P. A commit has none when a server version that stored no bookmarks made it, or when reading the bookmark failed. A commit made before an earlier rewind completed also has none: that bookmark restores the state without the completion's changes (§3), so completion deletes every stored bookmark.
+
+`RewindResult.restore_seq`, `Welcome.restore_seq` and `ResyncRequired.restore_seq` give the exact `head_seq` of the restored state, and `restore_point_ms` is always the requested P.
 
 ## 3. A rewind resumes from its recorded phase after a crash
 
@@ -95,6 +99,7 @@ An Account DO alarm drives the phases with backoff from one second up to ten min
      - sets the new `history_id` and the rewind number, plus `restore_seq` (its `head_seq`) and `restore_point_ms` in `meta` (RFC 0002 §8);
      - adds every device that the Account DO has revoked to `revoked_devices`;
      - applies the chunk rules of §5;
+     - deletes the stored commit bookmarks (§2);
      - resets the export state (§7);
      - stores the completion receipt.
 

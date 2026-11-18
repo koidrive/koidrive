@@ -128,8 +128,17 @@ function setAccountClock(atMs: number) {
   });
 }
 
+function setSpaceClock(spaceId: string, atMs: number) {
+  return runInDurableObject(space(spaceId), (instance: SpaceDO) => {
+    instance.clock = () => atMs;
+  });
+}
+
 function snapshot(spaceId: string, atMs: number) {
-  return runInDurableObject(space(spaceId), (_instance, state) => simulatedPitr.snapshot(state, atMs));
+  return runInDurableObject(space(spaceId), (instance: SpaceDO, state) => {
+    instance.clock = () => atMs + 1;
+    return simulatedPitr.snapshot(state, atMs);
+  });
 }
 
 function spaceRows(spaceId: string, query: string, ...bindings: SqlStorageValue[]) {
@@ -264,6 +273,43 @@ describe("space rewind (RFC 0003)", () => {
     expect(await spaceRows(spaceId, "SELECT value FROM meta WHERE key = 'rewind_number'")).toEqual([{ value: 2 }]);
   });
 
+  it("restores the last commit at or before the restore point, whatever earlier bookmark PITR selects for that time", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const a = device();
+    await a.commit([op.mkdir(uuidv7(), spaceId, "one")]);
+    const early = await snapshot(spaceId, createdAtMs + MINUTE);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "two")]);
+    const point = createdAtMs + 2 * MINUTE;
+    await setSpaceClock(spaceId, point + 1);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "three")]);
+    simulatedPitr.bookmarkFor = () => early;
+    await setAccountClock(createdAtMs + 5 * MINUTE);
+
+    const done = await rewind(creds.access!.token, spaceId, { restorePointMs: point, expectedHistoryId: await a.history() });
+    expect(done.message).toMatchObject({ restoreSeq: 2n, previousHeadSeq: 3n });
+    const names = [...(await device().tree()).values()].map((node) => node.name);
+    expect(names).toContain("two");
+    expect(names).not.toContain("three");
+    expect(await spaceRows(spaceId, "SELECT * FROM commit_bookmarks")).toEqual([]);
+  });
+
+  it("restores PITR's bookmark for the restore point when the last commit before it has no recorded bookmark", async () => {
+    const { spaceId, createdAtMs, creds, device } = await newSpace();
+    const a = device();
+    await a.commit([op.mkdir(uuidv7(), spaceId, "one")]);
+    const early = await snapshot(spaceId, createdAtMs + MINUTE);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "two")]);
+    const point = createdAtMs + 2 * MINUTE;
+    await setSpaceClock(spaceId, point + 1);
+    await a.commit([op.mkdir(uuidv7(), spaceId, "three")]);
+    await spaceRows(spaceId, "DELETE FROM commit_bookmarks WHERE seq = 2");
+    simulatedPitr.bookmarkFor = () => early;
+    await setAccountClock(createdAtMs + 5 * MINUTE);
+
+    const done = await rewind(creds.access!.token, spaceId, { restorePointMs: point, expectedHistoryId: await a.history() });
+    expect(done.message).toMatchObject({ restoreSeq: 1n, previousHeadSeq: 3n });
+  });
+
   it("refuses a revoked device, a caller who is not the owner, and restore points outside the admissible range, recording nothing", async () => {
     const { spaceId, createdAtMs, creds, device } = await newSpace();
     const history = await device().history();
@@ -355,6 +401,7 @@ describe("space rewind (RFC 0003)", () => {
     const history = await a.history();
     await setAccountClock(createdAtMs + 5 * MINUTE);
 
+    await spaceRows(spaceId, "DELETE FROM commit_bookmarks");
     simulatedPitr.bookmarkFor = () => "~ later than every marker";
     const late = await rewind(token, spaceId, { restorePointMs: point, expectedHistoryId: history });
     expect([late.status, late.error?.code]).toEqual([400, Error_Code.INVALID_ARGUMENT]);
@@ -387,6 +434,7 @@ describe("space rewind (RFC 0003)", () => {
     const key = (parts: { content: { chunks: { hash: Uint8Array }[] } }) => hashOf(parts).slice().buffer;
     const [retiredRow] = await spaceRows(spaceId, "SELECT incarnation FROM chunks WHERE hash = ?", key(retired.parts));
     await spaceRows(spaceId, "UPDATE chunks SET state = ? WHERE hash = ?", ChunkState.DELETING, key(deleting.parts));
+    await a.commit([op.mkdir(uuidv7(), spaceId, "after the delete began")]);
     const point = createdAtMs + MINUTE;
     await snapshot(spaceId, point);
     await spaceRows(spaceId, "UPDATE chunks SET state = ? WHERE hash = ?", ChunkState.LIVE, key(deleting.parts));
@@ -437,7 +485,7 @@ describe("space rewind (RFC 0003)", () => {
       revokedDevices: [],
       retired: [],
     });
-    expect(replay).toMatchObject({ state: "completed", receipt: { rewindId, historyId: record.history_id, restoreSeq: 2, completedAtMs } });
+    expect(replay).toMatchObject({ state: "completed", receipt: { rewindId, historyId: record.history_id, restoreSeq: 3, completedAtMs } });
     expect(await device().history()).toBe(record.history_id);
   });
 
