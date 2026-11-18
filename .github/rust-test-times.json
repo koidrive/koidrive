@@ -3,47 +3,49 @@
   "koidrive-chunk::chunking": {
    "count": 15,
    "tests": {
-    "v0_cuts_large_files_within_bounds": 3.0
+    "v0_cuts_large_files_within_bounds": 4.0
    },
-   "total": 3.8
+   "total": 4.8
   },
   "koidrive-chunk::golden": {
    "count": 1,
    "tests": {
-    "v0_matches_the_reference_vectors": 3.1
+    "v0_matches_the_reference_vectors": 3.3
    },
-   "total": 3.1
+   "total": 3.3
   },
   "koidrive-cli::bin/koi": {
    "count": 498,
    "tests": {
     "app::tests::handoff_shutdown_stops_the_helper_process_group": 10.1,
-    "app::tests::retirement_requires_a_successful_handoff_and_a_current_running_daemon": 13.0,
-    "app_install::macos::tests::control::deadline_kills_and_reaps_child_then_cleans_mount": 10.2,
-    "app_install::macos::tests::recovery::native_dmg_attach_copy_detach_and_receipt_replay": 11.5,
-    "app_install::macos::tests::recovery::recovery_refuses_substituted_receipts_roots_and_retired_bundles": 5.2,
-    "app_install::macos::tests::retirement::retired_completion_refuses_changed_or_symlinked_ownership": 6.1,
-    "app_install::macos::tests::verification::native_codesign_accepts_inline_pins_in_bundle_and_updater_modes": 7.2,
-    "app_install::macos::tests::verification::native_codesign_parses_production_requirements_and_rejects_the_wrong_signer": 7.1,
-    "ipc::tests::a_status_request_to_a_daemon_that_never_replies_fails_after_the_reply_limit": 5.2,
-    "ipc::tests::questions_read_without_a_daemon_free_the_profile_while_the_device_list_hangs": 3.2,
+    "app::tests::retirement_requires_a_successful_handoff_and_a_current_running_daemon": 8.9,
+    "app_install::macos::tests::control::deadline_kills_and_reaps_child_then_cleans_mount": 10.1,
+    "app_install::macos::tests::recovery::native_dmg_attach_copy_detach_and_receipt_replay": 10.9,
+    "app_install::macos::tests::recovery::recovery_refuses_substituted_receipts_roots_and_retired_bundles": 3.0,
+    "app_install::macos::tests::retirement::retired_completion_refuses_changed_or_symlinked_ownership": 3.8,
+    "app_install::macos::tests::verification::native_codesign_accepts_inline_pins_in_bundle_and_updater_modes": 5.0,
+    "app_install::macos::tests::verification::native_codesign_parses_production_requirements_and_rejects_the_wrong_signer": 4.6,
+    "ipc::tests::a_status_request_to_a_daemon_that_never_replies_fails_after_the_reply_limit": 5.1,
+    "ipc::tests::questions_read_without_a_daemon_free_the_profile_while_the_device_list_hangs": 3.1,
     "service::tests::a_daemon_that_keeps_exiting_is_a_stopped_service_that_names_its_exit_and_log": 15.3,
     "service::tests::a_daemon_that_starts_and_then_never_replies_is_a_problem_after_the_probe": 6.0,
-    "service::tests::a_daemon_that_takes_the_status_request_and_never_answers_is_a_problem_after_the_probe": 5.5,
-    "service::tests::a_koi_that_leaves_a_child_holding_its_output_reads_as_unversioned_within_the_probe": 5.1,
+    "service::tests::a_daemon_that_takes_the_status_request_and_never_answers_is_a_problem_after_the_probe": 5.1,
+    "service::tests::a_koi_that_leaves_a_child_holding_its_output_reads_as_unversioned_within_the_probe": 5.0,
     "service::tests::a_service_that_never_leaves_starting_is_a_retryable_problem": 15.2,
-    "service::tests::a_service_that_starts_after_a_late_spawn_gets_the_startup_wait": 7.3,
-    "service::tests::a_service_that_stops_after_starting_names_its_daemon_exit": 5.4,
+    "service::tests::a_service_that_starts_after_a_late_spawn_gets_the_startup_wait": 7.2,
+    "service::tests::a_service_that_stops_after_starting_names_its_daemon_exit": 5.2,
     "setup::claim::tests::a_claim_is_sent_again_after_any_server_failure": 12.1,
     "tests::setup_finish_bounds_a_status_request_that_accepts_but_never_replies": 5.0,
     "update::tests::the_app_update_wait_uses_only_its_remaining_deadline": 2.1
    },
-   "total": 228.1
+   "total": 195.8
   },
   "koidrive-cli::daemon_status": {
    "count": 8,
-   "tests": {},
-   "total": 4.4
+   "tests": {
+    "reconcile_reports_a_bootstrap_error_even_when_the_service_is_not_installed": 2.0
+   },
+   "total": 4.2
   },
   "koidrive-cli::diagnose": {
    "count": 3,
@@ -53,10 +55,11 @@
   "koidrive-cli::json": {
    "count": 21,
    "tests": {
-    "every_command_prints_its_help_as_an_envelope_its_schema_takes": 10.4,
-    "the_help_manifest_names_each_command_its_schema_and_the_sign_in_it_needs": 4.7
+    "every_command_prints_its_help_as_an_envelope_its_schema_takes": 10.0,
+    "help_named_after_a_group_is_the_help_of_the_commands_after_it": 2.0,
+    "the_help_manifest_names_each_command_its_schema_and_the_sign_in_it_needs": 4.5
    },
-   "total": 21.6
+   "total": 22.3
   },
   "koidrive-cli::logs": {
    "count": 3,
@@ -64,105 +67,92 @@
    "total": 0.3
   },
   "koidrive-cli::output_terminal": {
-   "count": 45,
+   "count": 47,
    "tests": {
-    "history_rpc_failures_keep_specific_causes_without_protocol_details": 3.4,
-    "joining_a_busy_server_offers_retry_without_a_saved_sign_in": 2.4,
-    "joining_an_unreachable_server_does_not_require_a_connected_device": 2.9,
-    "status_summarizes_every_state_and_verbose_keeps_engine_details": 2.1
+    "history_rpc_failures_keep_specific_causes_without_protocol_details": 2.1,
+    "joining_a_busy_server_offers_retry_without_a_saved_sign_in": 2.2,
+    "joining_an_unreachable_server_does_not_require_a_connected_device": 2.5
    },
-   "total": 25.1
+   "total": 15.9
   },
   "koidrive-cli::setup_cloudflare_terminal": {
-   "count": 51,
+   "count": 53,
    "tests": {
-    "a_concurrent_creation_collision_never_links_the_existing_shared_folder": 4.2,
-    "a_default_creation_collision_requires_a_choice_and_fresh_file_consent": 4.2,
-    "a_machine_without_a_screen_logs_in_by_pasting_the_address_the_browser_ends_on": 7.7,
-    "a_new_cloudflare_account_without_r2_or_workers_dev_completes_setup": 23.4,
-    "a_racing_workers_dev_registration_is_kept_and_conflict_retries_are_bounded": 16.0,
-    "a_taken_workers_dev_name_gets_a_suffix_and_existing_names_are_kept": 2.6,
-    "a_workers_dev_name_can_be_edited_or_given_to_server_deploy": 4.2,
-    "browser_spawn_failure_and_unsuccessful_exit_show_the_full_login_url": 6.5,
-    "checkout_waits_for_r2_before_completing_the_same_setup": 11.5,
-    "creating_a_shared_folder_reprompts_for_an_existing_name": 7.0,
-    "default_enter_deploys_and_links_the_exact_created_space": 2.8,
-    "golden_browser_failure": 6.8,
-    "golden_create_shared_folder": 3.2,
-    "golden_default_collision": 3.0,
-    "golden_existing_files_another_folder": 3.5,
-    "golden_existing_files_new_space": 2.7,
-    "golden_existing_files_sync": 3.1,
-    "golden_existing_multiple_servers": 3.2,
-    "golden_existing_single_server": 2.8,
-    "golden_new_server": 3.2,
-    "golden_pairing": 2.6,
-    "golden_r2_checkout": 12.8,
-    "golden_rerun": 3.1,
-    "metadata_does_not_hide_ordinary_files_from_real_driver_setup_consent": 3.9,
-    "named_bucket_uninstall_resumes_require_the_saved_jurisdiction": 3.7,
-    "off_paused_and_blocked_folders_never_report_successful_setup": 7.1,
-    "stopped_login_messages_follow_effective_output_detail": 3.2
+    "a_concurrent_creation_collision_never_links_the_existing_shared_folder": 2.5,
+    "a_default_creation_collision_requires_a_choice_and_fresh_file_consent": 2.7,
+    "a_machine_without_a_screen_logs_in_by_pasting_the_address_the_browser_ends_on": 4.8,
+    "a_new_cloudflare_account_without_r2_or_workers_dev_completes_setup": 22.2,
+    "a_racing_workers_dev_registration_is_kept_and_conflict_retries_are_bounded": 13.5,
+    "a_workers_dev_name_can_be_edited_or_given_to_server_deploy": 2.5,
+    "browser_spawn_failure_and_unsuccessful_exit_show_the_full_login_url": 4.2,
+    "checkout_waits_for_r2_before_completing_the_same_setup": 11.0,
+    "creating_a_shared_folder_reprompts_for_an_existing_name": 4.2,
+    "golden_browser_failure": 4.9,
+    "golden_create_shared_folder": 2.1,
+    "golden_default_collision": 2.6,
+    "golden_existing_files_another_folder": 3.0,
+    "golden_existing_files_new_space": 2.3,
+    "golden_existing_files_sync": 2.6,
+    "golden_existing_multiple_servers": 3.3,
+    "golden_existing_single_server": 2.5,
+    "golden_new_server": 2.4,
+    "golden_r2_checkout": 12.3,
+    "golden_rerun": 2.4,
+    "metadata_does_not_hide_ordinary_files_from_real_driver_setup_consent": 2.5,
+    "named_bucket_uninstall_resumes_require_the_saved_jurisdiction": 2.4,
+    "off_paused_and_blocked_folders_never_report_successful_setup": 4.5
    },
-   "total": 176.7
+   "total": 137.0
   },
   "koidrive-cli::setup_terminal": {
-   "count": 72,
+   "count": 74,
    "tests": {
-    "a_deployed_server_is_claimed_with_its_address_and_claim_code": 2.0,
-    "a_folder_with_files_links_only_after_its_owner_agrees": 3.2,
-    "a_lost_create_answer_links_the_named_shared_folder_it_made_once": 2.7,
-    "a_new_shared_folder_takes_the_name_typed": 2.0,
-    "cancelled_reporting_returns_after_the_next_successful_interactive_command": 2.2,
-    "cancelling_a_folder_question_keeps_the_device_and_links_nothing": 6.4,
-    "eof_closes_each_plain_and_rich_prompt_without_granting_consent": 10.5,
-    "explicit_choice_and_environment_do_not_prompt_after_setup": 2.2,
-    "keyboard_ctrl_c_through_controlling_proxies_restores_input_and_reaps_helpers": 3.2,
-    "pairing_with_an_existing_server_selects_a_shared_folder": 2.2,
-    "queued_enter_cannot_answer_deferred_consent": 2.6,
-    "signals_reap_helpers_and_restore_each_prompt": 17.9,
-    "signals_through_the_controlling_terminal_reap_helpers_and_restore_input": 3.3
+    "cancelling_a_folder_question_keeps_the_device_and_links_nothing": 3.0,
+    "ctrl_c_during_the_service_spawn_poll_exits_promptly_and_keeps_the_folder_link": 3.3,
+    "eof_closes_each_plain_and_rich_prompt_without_granting_consent": 3.3,
+    "signals_reap_helpers_and_restore_each_prompt": 5.3
    },
-   "total": 109.6
+   "total": 53.9
   },
   "koidrive-cli::share_progress": {
    "count": 1,
    "tests": {},
-   "total": 1.4
+   "total": 1.3
   },
   "koidrive-cli::share_terminal": {
-   "count": 1,
+   "count": 3,
    "tests": {},
-   "total": 0.3
+   "total": 0.2
   },
   "koidrive-cli::telemetry": {
    "count": 15,
    "tests": {
-    "a_daemon_sends_again_a_tick_after_the_network_returns_and_sends_as_it_stops": 60.3,
-    "every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and_a_downgrade": 60.4,
+    "a_daemon_sends_again_a_tick_after_the_network_returns_and_sends_as_it_stops": 60.2,
+    "every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and_a_downgrade": 60.2,
     "the_next_command_sends_a_crash_queued_before_it_but_preview_sends_nothing": 3.2
    },
-   "total": 125.5
+   "total": 124.7
   },
   "koidrive-cli::uninstall": {
-   "count": 25,
+   "count": 27,
    "tests": {
-    "a_config_another_profile_uses_stays": 4.5,
+    "a_config_another_profile_uses_stays": 6.4,
+    "a_config_folder_that_is_the_state_folder_loses_only_what_koidrive_wrote": 2.1,
+    "a_failed_app_removal_keeps_the_command_that_finishes_it": 2.1,
     "a_state_folder_left_with_one_staged_file_is_removed": 3.5,
-    "another_profiles_service_keeps_the_shared_command_and_names_how_to_remove_it": 2.7,
-    "on_a_terminal_it_shows_what_goes_and_what_stays_and_asks_first": 2.2
+    "another_profiles_service_keeps_the_shared_command_and_names_how_to_remove_it": 2.3
    },
-   "total": 35.7
+   "total": 39.4
   },
   "koidrive-cli::update": {
-   "count": 46,
+   "count": 48,
    "tests": {},
-   "total": 8.1
+   "total": 14.0
   },
   "koidrive-cli::version": {
    "count": 4,
    "tests": {},
-   "total": 1.4
+   "total": 1.7
   },
   "koidrive-cloudflare": {
    "count": 13,
@@ -172,7 +162,7 @@
   "koidrive-cloudflare::api": {
    "count": 23,
    "tests": {},
-   "total": 0.2
+   "total": 0.1
   },
   "koidrive-cloudflare::oauth": {
    "count": 19,
@@ -180,227 +170,208 @@
    "total": 1.1
   },
   "koidrive-driver": {
-   "count": 787,
+   "count": 788,
    "tests": {
-    "disk::tests::a_crash_at_every_cut_of_a_batch_is_recovered_on_the_next_start": 7.7,
-    "disk::tests::a_crash_at_every_cut_of_every_effect_is_recovered_on_the_next_start": 15.9,
-    "disk::tests::a_crash_during_recovery_is_recovered_on_the_start_after": 4.4,
-    "disk::tests::a_replaced_file_the_user_changed_before_the_start_leaves_s": 2.1,
-    "disk::tests::a_start_that_recovers_an_effect_has_its_paths_read_again": 2.3,
-    "disk::tests::an_effect_l_no_longer_takes_leaves_a_store_that_loads_at_every_cut": 6.0,
-    "driver::tests::a_claim_keeps_its_request_id_through_a_429_an_unreadable_answer_or_any_5xx": 3.2,
-    "driver::tests::a_damaged_store_halts_only_its_folder_and_counts_once": 2.2,
-    "driver::tests::a_folder_moved_away_and_back_syncs_again": 2.4,
-    "driver::tests::a_resume_and_a_reopen_keep_a_replacement_folder_waiting_for_explicit_restart": 3.6,
-    "driver::tests::an_ejected_disk_whose_mount_point_stays_resumes_under_its_old_or_a_new_device_number": 70.2,
-    "driver::tests::another_folder_with_the_spaces_marker_waits_for_a_restart": 4.5,
-    "driver::tests::any_409_or_a_stalled_answer_keeps_the_credential_and_the_folders": 10.6,
-    "driver::tests::no_reader_opens_the_store_of_a_folder_while_it_is_unlinked": 3.9,
+    "disk::tests::a_crash_at_every_cut_of_a_batch_is_recovered_on_the_next_start": 6.0,
+    "disk::tests::a_crash_at_every_cut_of_every_effect_is_recovered_on_the_next_start": 11.2,
+    "disk::tests::a_crash_during_recovery_is_recovered_on_the_start_after": 8.1,
+    "disk::tests::a_start_that_recovers_an_effect_has_its_paths_read_again": 2.1,
+    "disk::tests::an_effect_l_no_longer_takes_leaves_a_store_that_loads_at_every_cut": 3.1,
+    "disk::tests::an_effect_l_no_longer_takes_reaches_no_cut_that_changes_the_folder": 2.8,
+    "driver::tests::a_claim_keeps_its_request_id_through_a_429_an_unreadable_answer_or_any_5xx": 3.4,
+    "driver::tests::a_folder_moved_away_and_back_syncs_again": 4.2,
+    "driver::tests::a_folder_replaced_under_its_task_halts_it": 2.3,
+    "driver::tests::a_halted_folder_shows_in_the_next_hourly_report_and_its_recovery_after": 3.2,
+    "driver::tests::a_paused_root_wait_reopens_and_recovers_only_the_original_folder": 3.3,
+    "driver::tests::a_pending_start_cannot_skip_a_restarts_root_reset": 2.2,
+    "driver::tests::a_resume_and_a_reopen_keep_a_replacement_folder_waiting_for_explicit_restart": 4.6,
+    "driver::tests::an_ejected_disk_whose_mount_point_stays_resumes_under_its_old_or_a_new_device_number": 69.8,
+    "driver::tests::another_folder_with_the_spaces_marker_waits_for_a_restart": 4.6,
+    "driver::tests::any_409_or_a_stalled_answer_keeps_the_credential_and_the_folders": 10.5,
+    "driver::tests::no_reader_opens_the_store_of_a_folder_while_it_is_unlinked": 4.5,
     "driver::tests::progress_alone_wakes_a_watcher_at_most_once_an_interval_and_a_state_change_at_once": 3.1,
     "driver::tests::questions_read_once_free_the_profile_while_the_device_list_hangs": 3.2,
-    "driver::tests::questions_read_once_never_rotate_the_credential_of_the_process_that_takes_the_profile": 3.5,
-    "driver::tests::refused_signout_restores_only_previously_active_update_checks": 6.0,
-    "driver::tests::restore_refuses_a_malformed_id_and_an_unlinked_space": 2.1,
-    "driver::tests::reviewer_a_refused_leave_does_not_keep_an_outdated_root_after_credential_loss": 3.9,
-    "driver::tests::saving_a_credential_unlinks_only_the_folders_of_a_lost_one": 2.2,
-    "driver::tests::saving_another_credential_forgets_a_folder_whose_path_is_unknown": 2.3,
-    "driver::tests::the_folders_of_a_profile_share_one_limit_on_uploads_in_flight": 2.6,
-    "driver::tests::two_profiles_never_sync_one_folder_at_once_or_in_turn": 2.8,
-    "engine::first_sync::a_first_sync_with_its_checkpoints_takes_work_in_proportion_to_its_files": 15.0,
-    "engine::tests::a_bounded_search_leaves_l_as_an_unbounded_one_does": 3.9,
-    "folder::tests::a_batch_that_was_not_asked_to_scan_a_moved_folder_does_not_end_the_wait_for_its_rules": 2.7,
-    "folder::tests::a_bulk_delete_with_a_file_moved_over_another_keeps_the_file_at_its_path": 24.7,
-    "folder::tests::a_change_koidrive_cannot_make_in_its_own_folder_names_that_folder": 4.7,
-    "folder::tests::a_commit_the_server_is_behind_for_sends_what_it_lost_after_a_crash_right_after_the_refusal": 2.2,
-    "folder::tests::a_commit_the_server_is_behind_for_sends_what_it_lost_when_the_head_catches_up_before_the_listing": 2.1,
-    "folder::tests::a_conflict_answer_the_server_rejects_is_asked_again_under_the_same_id": 4.4,
-    "folder::tests::a_conflict_copy_is_counted_as_a_question_asked": 4.6,
-    "folder::tests::a_conflict_ends_when_someone_renames_a_file_by_hand": 7.4,
-    "folder::tests::a_conflict_ends_when_the_person_deletes_a_file_by_hand": 8.6,
-    "folder::tests::a_conflict_is_asked_again_after_a_restart_and_answered_then": 10.0,
-    "folder::tests::a_conflict_shows_its_files_at_their_new_paths_after_their_folder_is_renamed": 7.2,
-    "folder::tests::a_conflict_whose_file_changes_before_the_answer_reaches_the_server_is_asked_again": 6.7,
-    "folder::tests::a_conflict_whose_file_changes_is_asked_again": 10.9,
-    "folder::tests::a_create_whose_result_never_came_is_sent_again_after_a_listing_whose_pages_held_it": 8.1,
-    "folder::tests::a_cursor_the_restored_head_caught_up_with_lists_the_tree_again": 3.8,
-    "folder::tests::a_delete_replayed_below_a_folder_the_server_lost_still_deletes_the_file": 2.9,
-    "folder::tests::a_denial_the_check_did_not_foresee_waits_for_its_own_timer": 16.3,
-    "folder::tests::a_denied_change_says_koidrive_tries_again_by_itself": 5.2,
-    "folder::tests::a_denied_download_is_not_fetched_again_while_its_folder_cannot_be_opened": 7.4,
-    "folder::tests::a_denied_download_is_not_fetched_again_while_its_folder_stays_read_only": 19.8,
-    "folder::tests::a_device_that_restarts_after_the_server_behind_it_caught_up_still_gets_back_the_files_it_lost": 2.1,
-    "folder::tests::a_discard_takes_along_a_server_file_moved_into_an_excluded_folder_inside_the_held_folder": 10.4,
-    "folder::tests::a_discard_takes_along_a_server_file_moved_into_the_held_folder_while_the_rules_left_it_out_across_a_restart": 8.7,
-    "folder::tests::a_discard_takes_along_a_server_file_the_server_edits_after_the_link_across_a_restart_before_the_next_scan": 22.5,
-    "folder::tests::a_discard_takes_along_an_adopted_server_file_the_server_edits_while_the_folder_is_asked_about": 5.1,
-    "folder::tests::a_disk_ejected_while_the_folder_is_stopped_leaves_the_server_as_it_was": 6.5,
-    "folder::tests::a_disk_ejected_while_the_folder_syncs_leaves_the_server_as_it_was": 12.6,
-    "folder::tests::a_disk_mounted_before_an_upgrade_and_ejected_while_the_folder_is_stopped_stays_on_the_server": 4.1,
-    "folder::tests::a_disk_mounted_before_an_upgrade_and_ejected_while_the_folder_syncs_stays_on_the_server": 5.0,
-    "folder::tests::a_disk_mounted_over_synced_files_leaves_them_on_the_server_until_it_is_ejected": 4.6,
-    "folder::tests::a_dismissed_folder_stays_dismissed_after_a_bootstrap": 6.3,
-    "folder::tests::a_dismissed_folder_stays_dismissed_after_a_truncated_log_and_a_rollback": 43.0,
-    "folder::tests::a_download_counts_its_files_until_they_are_on_disk": 2.2,
+    "driver::tests::questions_read_once_never_rotate_the_credential_of_the_process_that_takes_the_profile": 3.2,
+    "driver::tests::the_folders_of_a_profile_share_one_limit_on_uploads_in_flight": 2.0,
+    "driver::tests::two_profiles_never_sync_one_folder_at_once_or_in_turn": 2.6,
+    "driver::tests::unlinking_a_folder_whose_store_is_damaged_forgets_it_and_keeps_its_files": 2.3,
+    "engine::first_sync::a_first_sync_with_its_checkpoints_takes_work_in_proportion_to_its_files": 14.3,
+    "engine::tests::a_bounded_search_leaves_l_as_an_unbounded_one_does": 3.1,
+    "folder::tests::a_batch_that_was_not_asked_to_scan_a_moved_folder_does_not_end_the_wait_for_its_rules": 2.1,
+    "folder::tests::a_bulk_delete_with_a_file_moved_over_another_keeps_the_file_at_its_path": 18.8,
+    "folder::tests::a_change_koidrive_cannot_make_in_its_own_folder_names_that_folder": 3.7,
+    "folder::tests::a_commit_the_server_is_behind_for_sends_what_it_lost_when_the_head_catches_up_before_the_listing": 2.0,
+    "folder::tests::a_conflict_answer_the_server_rejects_is_asked_again_under_the_same_id": 3.3,
+    "folder::tests::a_conflict_copy_is_counted_as_a_question_asked": 3.5,
+    "folder::tests::a_conflict_ends_when_someone_renames_a_file_by_hand": 5.8,
+    "folder::tests::a_conflict_ends_when_the_person_deletes_a_file_by_hand": 6.7,
+    "folder::tests::a_conflict_is_asked_again_after_a_restart_and_answered_then": 8.0,
+    "folder::tests::a_conflict_shows_its_files_at_their_new_paths_after_their_folder_is_renamed": 6.1,
+    "folder::tests::a_conflict_whose_file_changes_before_the_answer_reaches_the_server_is_asked_again": 5.3,
+    "folder::tests::a_conflict_whose_file_changes_is_asked_again": 8.4,
+    "folder::tests::a_create_whose_result_never_came_is_sent_again_after_a_listing_whose_pages_held_it": 6.0,
+    "folder::tests::a_cursor_the_restored_head_caught_up_with_lists_the_tree_again": 3.1,
+    "folder::tests::a_delete_replayed_below_a_folder_the_server_lost_still_deletes_the_file": 2.5,
+    "folder::tests::a_denial_the_check_did_not_foresee_waits_for_its_own_timer": 13.2,
+    "folder::tests::a_denied_change_says_koidrive_tries_again_by_itself": 3.6,
+    "folder::tests::a_denied_download_is_not_fetched_again_while_its_folder_cannot_be_opened": 5.6,
+    "folder::tests::a_denied_download_is_not_fetched_again_while_its_folder_stays_read_only": 14.8,
+    "folder::tests::a_device_that_restarts_after_the_server_behind_it_caught_up_still_gets_back_the_files_it_lost": 2.2,
+    "folder::tests::a_discard_takes_along_a_server_file_moved_into_an_excluded_folder_inside_the_held_folder": 9.3,
+    "folder::tests::a_discard_takes_along_a_server_file_moved_into_the_held_folder_while_the_rules_left_it_out_across_a_restart": 7.8,
+    "folder::tests::a_discard_takes_along_a_server_file_the_server_edits_after_the_link_across_a_restart_before_the_next_scan": 15.4,
+    "folder::tests::a_discard_takes_along_an_adopted_server_file_the_server_edits_while_the_folder_is_asked_about": 4.4,
+    "folder::tests::a_disk_ejected_while_the_folder_is_stopped_leaves_the_server_as_it_was": 6.7,
+    "folder::tests::a_disk_ejected_while_the_folder_syncs_leaves_the_server_as_it_was": 9.5,
+    "folder::tests::a_disk_mounted_before_an_upgrade_and_ejected_while_the_folder_is_stopped_stays_on_the_server": 3.6,
+    "folder::tests::a_disk_mounted_before_an_upgrade_and_ejected_while_the_folder_syncs_stays_on_the_server": 4.6,
+    "folder::tests::a_disk_mounted_over_synced_files_leaves_them_on_the_server_until_it_is_ejected": 4.1,
+    "folder::tests::a_dismissed_folder_stays_dismissed_after_a_bootstrap": 7.7,
+    "folder::tests::a_dismissed_folder_stays_dismissed_after_a_truncated_log_and_a_rollback": 35.0,
+    "folder::tests::a_download_counts_its_files_until_they_are_on_disk": 3.0,
     "folder::tests::a_download_that_halts_is_counted_by_its_cause": 2.6,
-    "folder::tests::a_download_this_device_does_not_allow_is_fetched_again_only_after_its_own_wait": 17.9,
-    "folder::tests::a_file_a_store_copied_before_its_download_forgot_follows_a_rename_made_while_the_tree_is_read": 2.1,
-    "folder::tests::a_file_a_store_older_than_the_disk_forgot_is_asked_about_when_the_log_no_longer_reaches_the_store": 2.2,
-    "folder::tests::a_file_and_a_folder_swapped_in_one_batch_keep_the_folders_child": 6.7,
-    "folder::tests::a_file_and_two_folders_rotated_in_one_batch_keep_each_child_in_its_folder": 7.2,
-    "folder::tests::a_file_another_device_adds_after_an_empty_listing_asks_nothing_after_a_relist_or_a_restart": 3.2,
-    "folder::tests::a_file_another_device_deleted_before_an_empty_listing_is_held": 5.2,
-    "folder::tests::a_file_another_device_deletes_after_a_live_listing_stays_held_after_a_relist_or_a_restart": 7.9,
-    "folder::tests::a_file_created_at_a_removed_folder_kept_for_an_ignored_file_keeps_the_file_on_the_server": 7.6,
+    "folder::tests::a_download_this_device_does_not_allow_is_fetched_again_only_after_its_own_wait": 19.2,
+    "folder::tests::a_file_and_a_folder_swapped_in_one_batch_keep_the_folders_child": 5.5,
+    "folder::tests::a_file_and_two_folders_rotated_in_one_batch_keep_each_child_in_its_folder": 7.5,
+    "folder::tests::a_file_another_device_adds_after_an_empty_listing_asks_nothing_after_a_relist_or_a_restart": 2.9,
+    "folder::tests::a_file_another_device_deleted_before_an_empty_listing_is_held": 4.0,
+    "folder::tests::a_file_another_device_deletes_after_a_live_listing_stays_held_after_a_relist_or_a_restart": 6.0,
+    "folder::tests::a_file_created_at_a_removed_folder_kept_for_an_ignored_file_keeps_the_file_on_the_server": 5.9,
     "folder::tests::a_file_created_at_the_name_of_a_file_moved_into_an_ignored_folder_keeps_the_file_on_the_server": 7.6,
-    "folder::tests::a_file_created_in_a_folder_created_again_does_not_replace_the_file_moved_into_an_ignored_folder": 4.0,
-    "folder::tests::a_file_created_under_a_name_another_device_took_is_asked_about": 3.7,
-    "folder::tests::a_file_edited_while_it_is_uploaded_counts_its_new_content_after_the_bytes_done": 2.0,
-    "folder::tests::a_file_from_the_server_reaches_a_folder_swapped_for_another": 5.3,
-    "folder::tests::a_file_in_a_deleted_folder_another_device_recreates_after_an_empty_listing_is_held": 4.7,
-    "folder::tests::a_file_in_a_folder_an_excluded_entry_keeps_out_is_named_with_it": 2.0,
-    "folder::tests::a_file_moved_and_rewritten_into_a_folder_this_device_does_not_allow_stays_where_it_was": 5.0,
-    "folder::tests::a_file_moved_back_out_of_an_ignored_folder_after_its_name_was_taken_is_moved_on_the_server": 5.6,
-    "folder::tests::a_file_moved_below_a_folder_that_takes_its_name_in_one_batch_is_kept": 5.6,
-    "folder::tests::a_file_moved_below_an_ignored_folder_while_a_new_file_takes_its_name_stays_on_the_server_on_macos": 12.8,
-    "folder::tests::a_file_moved_into_a_folder_made_in_the_same_batch_reaches_the_other_device": 5.4,
-    "folder::tests::a_file_moved_into_a_new_folder_that_takes_its_name_in_one_batch_keeps_l_a_tree": 6.6,
-    "folder::tests::a_file_moved_into_an_ignored_folder_while_its_overwrite_is_held_stays_on_the_other_device": 31.8,
-    "folder::tests::a_file_moved_out_of_its_folder_while_the_folder_was_ignored_stays_on_the_server_after_a_restart": 2.3,
-    "folder::tests::a_file_moved_over_another_out_of_a_removed_folder_leaves_the_server_across_a_restart_during_a_bounded_search": 8.8,
-    "folder::tests::a_file_moved_over_another_out_of_a_removed_folder_with_an_older_link_in_an_ignored_folder_leaves_the_server": 3.1,
-    "folder::tests::a_file_moved_over_another_with_an_older_link_in_an_ignored_folder_leaves_the_server": 2.8,
-    "folder::tests::a_file_placed_at_a_name_l_gave_away_is_not_recorded_by_the_next_start": 7.1,
-    "folder::tests::a_file_sent_aside_in_a_split_swap_and_deleted_in_flight_takes_its_name": 6.4,
-    "folder::tests::a_file_unreadable_until_its_folder_swapped_names_reaches_the_other_device": 7.8,
-    "folder::tests::a_file_whose_place_an_excluded_folder_holds_is_reported_while_its_folder_syncs": 4.5,
-    "folder::tests::a_first_link_adopts_what_the_space_holds_alike_and_publishes_the_rest_when_asked": 3.0,
-    "folder::tests::a_first_link_holds_what_another_devices_rules_leave_out_for_a_while_until_the_person_publishes_it": 3.8,
-    "folder::tests::a_first_link_holds_what_the_space_lacks_and_publishing_it_keeps_both_files_of_one_name": 7.2,
+    "folder::tests::a_file_created_in_a_folder_created_again_does_not_replace_the_file_moved_into_an_ignored_folder": 3.0,
+    "folder::tests::a_file_created_under_a_name_another_device_took_is_asked_about": 3.3,
+    "folder::tests::a_file_from_the_server_reaches_a_folder_swapped_for_another": 4.5,
+    "folder::tests::a_file_in_a_deleted_folder_another_device_recreates_after_an_empty_listing_is_held": 3.9,
+    "folder::tests::a_file_moved_and_rewritten_into_a_folder_this_device_does_not_allow_stays_where_it_was": 5.5,
+    "folder::tests::a_file_moved_back_out_of_an_ignored_folder_after_its_name_was_taken_is_moved_on_the_server": 6.0,
+    "folder::tests::a_file_moved_below_a_folder_that_takes_its_name_in_one_batch_is_kept": 4.5,
+    "folder::tests::a_file_moved_below_an_ignored_folder_while_a_new_file_takes_its_name_stays_on_the_server_on_macos": 10.8,
+    "folder::tests::a_file_moved_into_a_folder_made_in_the_same_batch_reaches_the_other_device": 4.6,
+    "folder::tests::a_file_moved_into_a_new_folder_that_takes_its_name_in_one_batch_keeps_l_a_tree": 5.5,
+    "folder::tests::a_file_moved_into_an_ignored_folder_while_its_overwrite_is_held_stays_on_the_other_device": 28.0,
+    "folder::tests::a_file_moved_out_of_its_folder_while_the_folder_was_ignored_stays_on_the_server_after_a_restart": 2.4,
+    "folder::tests::a_file_moved_over_another_out_of_a_removed_folder_leaves_the_server_across_a_restart_during_a_bounded_search": 9.4,
+    "folder::tests::a_file_moved_over_another_out_of_a_removed_folder_with_an_older_link_in_an_ignored_folder_leaves_the_server": 2.2,
+    "folder::tests::a_file_moved_over_another_with_an_older_link_in_an_ignored_folder_leaves_the_server": 2.3,
+    "folder::tests::a_file_placed_at_a_name_l_gave_away_is_not_recorded_by_the_next_start": 6.1,
+    "folder::tests::a_file_sent_aside_in_a_split_swap_and_deleted_in_flight_takes_its_name": 7.0,
+    "folder::tests::a_file_unreadable_until_its_folder_swapped_names_reaches_the_other_device": 6.6,
+    "folder::tests::a_file_whose_place_an_excluded_folder_holds_is_reported_while_its_folder_syncs": 3.6,
+    "folder::tests::a_first_link_adopts_what_the_space_holds_alike_and_publishes_the_rest_when_asked": 2.4,
+    "folder::tests::a_first_link_holds_what_another_devices_rules_leave_out_for_a_while_until_the_person_publishes_it": 3.4,
+    "folder::tests::a_first_link_holds_what_the_space_lacks_and_publishing_it_keeps_both_files_of_one_name": 8.1,
     "folder::tests::a_first_link_of_a_folder_another_device_synced_and_unlinked_keeps_what_the_space_deleted_since_deleted": 7.6,
-    "folder::tests::a_first_link_records_its_proven_cause_with_the_stored_question": 2.2,
-    "folder::tests::a_first_link_whose_files_wait_for_the_person_says_so": 2.3,
-    "folder::tests::a_folder_brought_back_at_its_pending_name_takes_its_own_name": 3.9,
-    "folder::tests::a_folder_created_again_at_a_kept_folder_another_device_deleted_is_a_new_folder": 5.7,
-    "folder::tests::a_folder_created_at_the_name_of_a_file_moved_into_an_ignored_folder_keeps_the_file_on_the_server": 7.2,
-    "folder::tests::a_folder_made_writable_again_gets_its_download_without_waiting": 6.6,
-    "folder::tests::a_folder_moved_above_a_disk_mounted_over_synced_files_keeps_them_on_the_server": 4.7,
-    "folder::tests::a_folder_moved_into_a_folder_the_server_lost_is_moved_there_again": 2.3,
-    "folder::tests::a_folder_moved_into_a_new_folder_that_takes_its_name_in_one_batch_keeps_l_a_tree": 6.5,
-    "folder::tests::a_folder_moved_into_an_ignored_folder_after_its_file_stays_on_the_server_when_the_file_comes_back": 2.2,
-    "folder::tests::a_folder_moved_onto_a_removed_folder_kept_for_an_ignored_file_keeps_the_file_on_the_server": 7.6,
-    "folder::tests::a_folder_moved_onto_the_name_of_a_file_moved_into_an_ignored_folder_keeps_the_file_on_the_server": 7.1,
-    "folder::tests::a_folder_removed_while_its_file_moves_out_and_its_ignored_file_comes_back_leaves_the_server": 2.2,
-    "folder::tests::a_folder_renamed_to_the_name_a_file_left_for_a_new_folder_keeps_the_file": 5.9,
-    "folder::tests::a_folder_restored_and_deleted_again_while_the_log_was_truncated_is_noticed": 42.1,
-    "folder::tests::a_folder_that_returns_from_a_path_the_rules_exclude_keeps_its_node": 46.1,
-    "folder::tests::a_folder_to_remove_that_holds_a_file_an_excluded_entry_keeps_out_lets_the_folder_settle": 2.1,
-    "folder::tests::a_fresh_first_link_adopts_a_folder_both_macs_name_in_nfd": 2.6,
-    "folder::tests::a_fresh_first_link_adopts_what_the_space_holds_alike_and_sends_the_rest": 7.0,
-    "folder::tests::a_fresh_first_link_sends_what_the_space_lacks_and_keeps_both_files_of_one_name_without_a_question": 22.6,
-    "folder::tests::a_held_folder_another_devices_rules_leave_out_stays_held_when_renamed": 3.0,
-    "folder::tests::a_held_folder_another_devices_rules_leave_out_stays_held_when_renamed_while_stopped": 3.0,
-    "folder::tests::a_held_folder_renamed_while_another_devices_rule_lets_it_in_stays_held": 2.9,
-    "folder::tests::a_kept_copy_the_server_lost_gives_the_original_its_content_again": 10.9,
-    "folder::tests::a_kept_original_deleted_before_the_answer_reaches_the_server_keeps_the_copy": 6.8,
-    "folder::tests::a_kept_original_renamed_before_the_answer_reaches_the_server_keeps_the_copy": 6.4,
-    "folder::tests::a_kept_original_the_server_lost_moves_the_copy_to_the_trash_again": 7.9,
-    "folder::tests::a_link_moved_into_an_ignored_folder_beside_an_included_link_keeps_its_node": 12.8,
-    "folder::tests::a_link_moved_into_an_ignored_folder_while_another_link_is_renamed_keeps_its_node": 5.3,
-    "folder::tests::a_link_of_a_file_moved_into_an_ignored_folder_after_its_name_was_taken_is_moved_on_the_server": 2.4,
-    "folder::tests::a_lost_keep_original_below_a_removed_folder_deletes_the_folder_after_the_copy": 9.1,
-    "folder::tests::a_lost_keep_original_below_a_removed_folder_keeps_the_copy_once_the_original_is_deleted": 9.3,
-    "folder::tests::a_lost_keep_original_is_not_sent_again_once_another_device_deleted_the_original": 8.7,
-    "folder::tests::a_lost_keep_original_is_sent_again_requiring_the_original": 8.8,
-    "folder::tests::a_lost_keep_original_moved_out_of_a_folder_the_person_removed_keeps_only_the_original": 8.6,
-    "folder::tests::a_lost_keep_original_whose_folder_the_person_removed_with_the_original_brings_nothing_back": 9.7,
-    "folder::tests::a_lost_keep_original_whose_original_both_devices_deleted_brings_nothing_back": 12.4,
-    "folder::tests::a_lost_keep_original_whose_original_only_other_devices_deleted_keeps_the_copy": 11.4,
-    "folder::tests::a_move_onto_a_name_a_symlink_holds_still_lets_the_new_file_take_the_old_name": 2.1,
-    "folder::tests::a_node_denied_before_that_now_fails_for_another_reason_waits_only_the_ordinary_retry": 5.1,
-    "folder::tests::a_notice_whose_counts_grow_marks_the_questions_changed": 11.2,
-    "folder::tests::a_pending_name_finished_on_a_server_restored_to_before_the_rename_is_finished_again_after_a_restart": 6.4,
-    "folder::tests::a_question_that_holds_no_change_is_not_waited_on": 4.2,
+    "folder::tests::a_first_link_whose_files_wait_for_the_person_says_so": 2.0,
+    "folder::tests::a_folder_brought_back_at_its_pending_name_takes_its_own_name": 3.7,
+    "folder::tests::a_folder_created_again_at_a_kept_folder_another_device_deleted_is_a_new_folder": 4.6,
+    "folder::tests::a_folder_created_at_the_name_of_a_file_moved_into_an_ignored_folder_keeps_the_file_on_the_server": 6.3,
+    "folder::tests::a_folder_made_writable_again_gets_its_download_without_waiting": 7.4,
+    "folder::tests::a_folder_moved_above_a_disk_mounted_over_synced_files_keeps_them_on_the_server": 4.2,
+    "folder::tests::a_folder_moved_into_a_new_folder_that_takes_its_name_in_one_batch_keeps_l_a_tree": 5.8,
+    "folder::tests::a_folder_moved_onto_a_removed_folder_kept_for_an_ignored_file_keeps_the_file_on_the_server": 6.5,
+    "folder::tests::a_folder_moved_onto_the_name_of_a_file_moved_into_an_ignored_folder_keeps_the_file_on_the_server": 6.4,
+    "folder::tests::a_folder_renamed_to_the_name_a_file_left_for_a_new_folder_keeps_the_file": 5.2,
+    "folder::tests::a_folder_restored_and_deleted_again_while_the_log_was_truncated_is_noticed": 33.9,
+    "folder::tests::a_folder_that_returns_from_a_path_the_rules_exclude_keeps_its_node": 37.6,
+    "folder::tests::a_fresh_first_link_adopts_a_folder_both_macs_name_in_nfd": 2.7,
+    "folder::tests::a_fresh_first_link_adopts_what_the_space_holds_alike_and_sends_the_rest": 5.4,
+    "folder::tests::a_fresh_first_link_sends_what_the_space_lacks_and_keeps_both_files_of_one_name_without_a_question": 18.9,
+    "folder::tests::a_held_folder_another_devices_rules_leave_out_stays_held_when_renamed": 2.7,
+    "folder::tests::a_held_folder_another_devices_rules_leave_out_stays_held_when_renamed_while_stopped": 2.5,
+    "folder::tests::a_held_folder_renamed_while_another_devices_rule_lets_it_in_stays_held": 2.7,
+    "folder::tests::a_kept_copy_the_server_lost_gives_the_original_its_content_again": 9.2,
+    "folder::tests::a_kept_original_deleted_before_the_answer_reaches_the_server_keeps_the_copy": 4.9,
+    "folder::tests::a_kept_original_renamed_before_the_answer_reaches_the_server_keeps_the_copy": 5.8,
+    "folder::tests::a_kept_original_the_server_lost_moves_the_copy_to_the_trash_again": 8.7,
+    "folder::tests::a_link_moved_into_an_ignored_folder_beside_an_included_link_keeps_its_node": 11.2,
+    "folder::tests::a_link_moved_into_an_ignored_folder_while_another_link_is_renamed_keeps_its_node": 4.4,
+    "folder::tests::a_link_of_a_file_moved_into_an_ignored_folder_after_its_name_was_taken_is_moved_on_the_server": 2.2,
+    "folder::tests::a_lost_keep_original_below_a_removed_folder_deletes_the_folder_after_the_copy": 7.3,
+    "folder::tests::a_lost_keep_original_below_a_removed_folder_keeps_the_copy_once_the_original_is_deleted": 9.8,
+    "folder::tests::a_lost_keep_original_is_not_sent_again_once_another_device_deleted_the_original": 7.1,
+    "folder::tests::a_lost_keep_original_is_sent_again_requiring_the_original": 7.0,
+    "folder::tests::a_lost_keep_original_moved_out_of_a_folder_the_person_removed_keeps_only_the_original": 9.2,
+    "folder::tests::a_lost_keep_original_whose_folder_the_person_removed_with_the_original_brings_nothing_back": 7.1,
+    "folder::tests::a_lost_keep_original_whose_original_both_devices_deleted_brings_nothing_back": 13.6,
+    "folder::tests::a_lost_keep_original_whose_original_only_other_devices_deleted_keeps_the_copy": 9.5,
+    "folder::tests::a_node_denied_before_that_now_fails_for_another_reason_waits_only_the_ordinary_retry": 4.0,
+    "folder::tests::a_notice_whose_counts_grow_marks_the_questions_changed": 8.6,
+    "folder::tests::a_pending_name_finished_on_a_server_restored_to_before_the_rename_is_finished_again_after_a_restart": 5.0,
+    "folder::tests::a_question_that_holds_no_change_is_not_waited_on": 4.6,
     "folder::tests::a_question_the_engine_holds_without_its_row_is_shown_and_answered_once_the_folder_opens": 3.3,
-    "folder::tests::a_reconnect_still_under_way_after_a_moment_shows_offline_with_its_cause_and_no_next_try": 5.4,
-    "folder::tests::a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_names_the_entry_until_it_is_removed": 4.7,
-    "folder::tests::a_remote_delete_of_a_folder_whose_subfolder_holds_an_entry_l_does_not_know_leaves_the_folder_up_to_date": 2.6,
-    "folder::tests::a_remote_edit_of_an_excluded_file_is_not_applied_while_its_folder_moves": 2.7,
-    "folder::tests::a_restart_during_a_bootstrap_reads_the_tree_again": 2.4,
-    "folder::tests::a_restart_that_finds_the_users_folder_at_a_planned_folders_name_keeps_l_a_tree": 5.5,
-    "folder::tests::a_restore_after_the_server_lost_a_delete_under_a_policy_halt_is_kept": 2.8,
-    "folder::tests::a_restore_is_applied_once_wherever_the_folder_stops": 4.5,
-    "folder::tests::a_rules_file_a_restart_cannot_read_holds_everything_below_its_folder": 2.2,
-    "folder::tests::a_scan_that_unblocks_a_node_without_planning_an_effect_stores_it_unblocked": 2.6,
-    "folder::tests::a_slot_another_store_of_this_device_reused_after_a_rewind_claims_no_restore_of_another_device": 2.3,
-    "folder::tests::a_slot_another_store_of_this_device_reused_before_two_rewinds_claims_no_restore_of_another_device": 2.8,
-    "folder::tests::a_store_with_a_commit_in_flight_recovers_and_holds_it_when_the_server_counts_past_its_slot": 2.0,
-    "folder::tests::a_synced_file_moved_onto_a_removed_folder_kept_for_an_ignored_file_keeps_the_file_on_the_server": 7.1,
-    "folder::tests::a_synced_file_moved_onto_the_name_of_a_file_moved_into_an_ignored_folder_keeps_the_file_on_the_server": 7.1,
-    "folder::tests::a_wait_for_another_failed_effect_leaves_a_folder_removal_that_entries_l_does_not_know_block_blocked": 2.1,
-    "folder::tests::an_edit_of_the_copy_the_answer_would_delete_is_kept": 10.0,
-    "folder::tests::an_edit_of_the_copy_while_the_original_takes_its_content_is_asked_about_again": 6.0,
-    "folder::tests::an_edit_of_the_original_on_another_device_is_kept_when_the_copy_is_kept": 9.8,
-    "folder::tests::an_edit_of_the_original_sent_before_the_answer_asks_again": 7.4,
+    "folder::tests::a_reconnect_still_under_way_after_a_moment_shows_offline_with_its_cause_and_no_next_try": 5.6,
+    "folder::tests::a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_names_the_entry_until_it_is_removed": 4.3,
+    "folder::tests::a_remote_delete_of_a_folder_whose_subfolder_holds_an_entry_l_does_not_know_leaves_the_folder_up_to_date": 2.1,
+    "folder::tests::a_remote_edit_of_an_excluded_file_is_not_applied_while_its_folder_moves": 2.2,
+    "folder::tests::a_restart_during_a_bootstrap_reads_the_tree_again": 2.3,
+    "folder::tests::a_restart_that_finds_the_users_folder_at_a_planned_folders_name_keeps_l_a_tree": 5.4,
+    "folder::tests::a_restore_after_the_server_lost_a_delete_under_a_policy_halt_is_kept": 3.0,
+    "folder::tests::a_restore_is_applied_once_wherever_the_folder_stops": 3.9,
+    "folder::tests::a_rules_file_a_restart_cannot_read_holds_everything_below_its_folder": 3.4,
+    "folder::tests::a_scan_that_unblocks_a_node_without_planning_an_effect_stores_it_unblocked": 2.4,
+    "folder::tests::a_slot_another_store_of_this_device_reused_after_a_rewind_claims_no_restore_of_another_device": 2.1,
+    "folder::tests::a_slot_another_store_of_this_device_reused_before_two_rewinds_claims_no_restore_of_another_device": 2.5,
+    "folder::tests::a_synced_file_moved_onto_a_removed_folder_kept_for_an_ignored_file_keeps_the_file_on_the_server": 7.7,
+    "folder::tests::a_synced_file_moved_onto_the_name_of_a_file_moved_into_an_ignored_folder_keeps_the_file_on_the_server": 6.0,
+    "folder::tests::an_edit_of_the_copy_the_answer_would_delete_is_kept": 9.6,
+    "folder::tests::an_edit_of_the_copy_while_the_original_takes_its_content_is_asked_about_again": 6.6,
+    "folder::tests::an_edit_of_the_original_on_another_device_is_kept_when_the_copy_is_kept": 8.3,
+    "folder::tests::an_edit_of_the_original_sent_before_the_answer_asks_again": 7.9,
     "folder::tests::an_edit_that_became_a_conflict_copy_is_asked_about_with_both_files": 4.3,
-    "folder::tests::an_edit_the_server_lost_leaves_no_copy_when_both_devices_send_it_again": 2.7,
-    "folder::tests::an_edit_the_server_lost_revives_a_file_another_device_deleted": 2.0,
-    "folder::tests::an_edit_the_server_lost_under_a_policy_halt_is_kept_when_the_server_passed_the_cursor": 3.3,
-    "folder::tests::an_edit_the_server_lost_under_a_policy_halt_is_not_sent_again_over_a_later_edit": 3.0,
-    "folder::tests::an_effect_whose_name_l_gave_to_another_node_writes_nothing_and_is_planned_again": 10.8,
-    "folder::tests::an_excluded_folder_in_a_renamed_folder_leaves_l_once_deleted": 2.9,
-    "folder::tests::an_excluded_folder_moved_to_another_excluded_name_leaves_l_once_deleted": 3.2,
-    "folder::tests::an_excluded_folder_removed_while_the_device_is_stopped_frees_its_name_for_the_parked_file": 3.4,
-    "folder::tests::an_upload_that_halts_is_counted_by_its_cause": 2.2,
-    "folder::tests::another_devices_deletion_of_most_of_the_space_is_noticed_until_it_is_dismissed": 8.1,
-    "folder::tests::another_disk_mounted_where_one_was_leaves_the_first_disks_files_on_the_server": 27.8,
-    "folder::tests::chunks_the_server_holds_already_count_as_done_without_being_sent": 2.0,
-    "folder::tests::deleting_a_rules_file_a_restart_cannot_read_ends_the_hold_of_its_folder": 2.6,
-    "folder::tests::discarding_a_held_folder_that_holds_an_entry_l_does_not_know_keeps_the_folder_and_names_the_entry": 6.7,
-    "folder::tests::discarding_what_a_first_link_holds_moves_it_to_the_local_trash_and_downloads_the_space": 3.4,
-    "folder::tests::dismissing_the_notice_while_the_folder_is_removed_opens_no_new_one": 46.1,
-    "folder::tests::downloads_move_their_bytes_and_the_count_only_grows": 4.5,
-    "folder::tests::files_and_folders_swapped_in_one_batch_keep_every_byte": 10.2,
-    "folder::tests::files_moved_between_two_swapped_folders_keep_their_paths_on_both_devices": 6.9,
-    "folder::tests::files_that_cannot_be_read_hold_back_no_other_change": 16.5,
-    "folder::tests::files_that_cannot_be_written_hold_back_no_other_download": 29.5,
-    "folder::tests::keeping_both_files_of_a_conflict_changes_nothing": 5.8,
-    "folder::tests::keeping_one_of_two_copies_of_an_original_asks_about_the_other_again": 13.9,
-    "folder::tests::keeping_the_copy_of_a_conflict_gives_the_original_its_content_and_moves_the_copy_to_the_trash": 10.6,
-    "folder::tests::keeping_the_original_of_a_conflict_moves_the_copy_to_the_trash": 7.8,
-    "folder::tests::planning_goes_on_after_a_folder_move_once_a_scan_that_found_nothing_is_reported": 2.3,
-    "folder::tests::publishing_a_folder_a_store_rollback_brought_back_moves_no_child_it_did_not_ask_about": 2.6,
-    "folder::tests::removing_an_excluded_folder_lets_the_file_parked_behind_it_take_its_name": 4.1,
-    "folder::tests::renames_after_a_server_loss_was_handled_under_a_policy_halt_are_kept": 5.0,
-    "folder::tests::review_removing_unknown_rules_while_renaming_the_folder_does_not_hold_remote_updates_forever": 3.8,
-    "folder::tests::telemetry_tests::resent_commits_without_a_burst_do_not_inflate_later_uploads": 2.2,
-    "folder::tests::telemetry_tests::telemetry_folder_hooks_measure_first_sync_transfers_and_successful_apply": 4.2,
-    "folder::tests::the_rules_hold_of_a_folder_ends_also_after_it_was_renamed_only_in_case": 3.4,
-    "folder::tests::three_files_rotated_through_a_third_name_keep_their_nodes": 7.2,
-    "folder::tests::two_copies_of_one_disk_image_mounted_at_once_keep_their_own_files": 7.1,
-    "folder::tests::two_files_swapped_through_a_third_name_keep_their_nodes": 6.7,
-    "folder::tests::two_folders_swapped_through_a_third_name_keep_their_nodes": 6.8,
-    "folder::tests::two_links_moved_into_an_ignored_folder_and_linked_back_in_turn_keep_their_nodes": 2.9,
-    "folder::tests::with_four_uploads_at_once_a_file_that_changed_after_it_was_chunked_abandons_the_commit": 2.9,
-    "observe::tests::a_file_larger_than_the_budget_is_read_before_the_changes_of_a_later_observation": 4.1,
-    "observe::tests::the_first_observation_is_returned_when_the_folder_is_as_it_was": 10.4,
+    "folder::tests::an_edit_the_server_lost_is_sent_again_by_a_device_that_downloaded_it": 2.5,
+    "folder::tests::an_edit_the_server_lost_leaves_no_copy_when_both_devices_send_it_again": 2.1,
+    "folder::tests::an_edit_the_server_lost_under_a_policy_halt_is_kept_when_the_server_passed_the_cursor": 4.4,
+    "folder::tests::an_edit_the_server_lost_under_a_policy_halt_is_not_sent_again_over_a_later_edit": 3.6,
+    "folder::tests::an_effect_whose_name_l_gave_to_another_node_writes_nothing_and_is_planned_again": 8.7,
+    "folder::tests::an_excluded_folder_in_a_renamed_folder_leaves_l_once_deleted": 2.6,
+    "folder::tests::an_excluded_folder_moved_to_another_excluded_name_leaves_l_once_deleted": 3.5,
+    "folder::tests::an_excluded_folder_removed_while_the_device_is_stopped_frees_its_name_for_the_parked_file": 2.9,
+    "folder::tests::another_devices_deletion_of_most_of_the_space_is_noticed_until_it_is_dismissed": 6.5,
+    "folder::tests::another_disk_mounted_where_one_was_leaves_the_first_disks_files_on_the_server": 22.7,
+    "folder::tests::deleting_a_rules_file_a_restart_cannot_read_ends_the_hold_of_its_folder": 2.8,
+    "folder::tests::discarding_a_held_folder_that_holds_an_entry_l_does_not_know_keeps_the_folder_and_names_the_entry": 3.9,
+    "folder::tests::discarding_what_a_first_link_holds_moves_it_to_the_local_trash_and_downloads_the_space": 2.5,
+    "folder::tests::dismissing_the_notice_while_the_folder_is_removed_opens_no_new_one": 35.0,
+    "folder::tests::downloads_move_their_bytes_and_the_count_only_grows": 2.9,
+    "folder::tests::files_and_folders_swapped_in_one_batch_keep_every_byte": 7.0,
+    "folder::tests::files_moved_between_two_swapped_folders_keep_their_paths_on_both_devices": 5.8,
+    "folder::tests::files_that_cannot_be_read_hold_back_no_other_change": 13.4,
+    "folder::tests::files_that_cannot_be_written_hold_back_no_other_download": 20.7,
+    "folder::tests::keeping_both_files_of_a_conflict_changes_nothing": 4.4,
+    "folder::tests::keeping_one_of_two_copies_of_an_original_asks_about_the_other_again": 9.9,
+    "folder::tests::keeping_the_copy_of_a_conflict_gives_the_original_its_content_and_moves_the_copy_to_the_trash": 9.9,
+    "folder::tests::keeping_the_original_of_a_conflict_moves_the_copy_to_the_trash": 7.1,
+    "folder::tests::removing_an_excluded_folder_lets_the_file_parked_behind_it_take_its_name": 2.9,
+    "folder::tests::renames_after_a_server_loss_was_handled_under_a_policy_halt_are_kept": 3.5,
+    "folder::tests::review_removing_unknown_rules_while_renaming_the_folder_does_not_hold_remote_updates_forever": 2.8,
+    "folder::tests::telemetry_tests::telemetry_folder_hooks_measure_first_sync_transfers_and_successful_apply": 2.9,
+    "folder::tests::the_rules_hold_of_a_folder_ends_also_after_it_was_renamed_only_in_case": 2.9,
+    "folder::tests::three_files_rotated_through_a_third_name_keep_their_nodes": 7.6,
+    "folder::tests::two_copies_of_one_disk_image_mounted_at_once_keep_their_own_files": 4.7,
+    "folder::tests::two_files_swapped_through_a_third_name_keep_their_nodes": 5.1,
+    "folder::tests::two_folders_swapped_through_a_third_name_keep_their_nodes": 7.1,
+    "folder::tests::two_links_moved_into_an_ignored_folder_and_linked_back_in_turn_keep_their_nodes": 2.3,
+    "folder::tests::with_four_uploads_at_once_a_file_that_changed_after_it_was_chunked_abandons_the_commit": 3.2,
+    "observe::tests::a_file_larger_than_the_budget_is_read_before_the_changes_of_a_later_observation": 4.9,
+    "observe::tests::the_first_observation_is_returned_when_the_folder_is_as_it_was": 10.3,
     "update::tests::all_pages_and_their_bodies_share_one_timeout": 10.0
    },
-   "total": 1803.0
+   "total": 1574.6
   },
   "koidrive-engine": {
    "count": 38,
    "tests": {
-    "classify::tests::a_server_folder_of_fifty_thousand_files_in_a_discarded_folder_is_checked_in_linear_time": 31.8,
-    "classify::tests::holders_against_a_rebuild::holders_match_a_rebuild_from_l": 3.5
+    "classify::tests::a_server_folder_of_fifty_thousand_files_in_a_discarded_folder_is_checked_in_linear_time": 27.8,
+    "classify::tests::holders_against_a_rebuild::holders_match_a_rebuild_from_l": 2.0
    },
-   "total": 36.0
+   "total": 30.6
   },
   "koidrive-engine::attribution": {
    "count": 26,
    "tests": {
-    "a_small_budget_breaks_no_rule": 6.3
+    "a_small_budget_breaks_no_rule": 5.5
    },
-   "total": 6.3
+   "total": 5.5
   },
   "koidrive-engine::commit": {
    "count": 476,
@@ -409,72 +380,70 @@
   },
   "koidrive-engine::effects": {
    "count": 54,
-   "tests": {
-    "effects_bring_the_disk_to_the_remote_tree": 2.4
-   },
-   "total": 4.1
+   "tests": {},
+   "total": 2.8
   },
   "koidrive-engine::first_link": {
    "count": 140,
    "tests": {
-    "a_deep_discarded_folder_goes_to_the_local_trash_folder_by_folder": 5.4
+    "a_deep_discarded_folder_goes_to_the_local_trash_folder_by_folder": 3.4
    },
-   "total": 6.5
+   "total": 4.3
   },
   "koidrive-engine::first_upload": {
    "count": 5,
    "tests": {
-    "a_first_download_takes_work_in_proportion_to_its_files": 14.1,
-    "a_first_link_of_nested_new_folders_takes_work_in_proportion_to_its_files": 32.1,
-    "a_first_upload_takes_work_in_proportion_to_its_files": 80.1,
-    "links_waiting_on_their_folders_cost_nothing_until_the_folders_enter_s": 67.9
+    "a_first_download_takes_work_in_proportion_to_its_files": 12.2,
+    "a_first_link_of_nested_new_folders_takes_work_in_proportion_to_its_files": 25.2,
+    "a_first_upload_takes_work_in_proportion_to_its_files": 74.5,
+    "links_waiting_on_their_folders_cost_nothing_until_the_folders_enter_s": 63.9
    },
-   "total": 195.6
+   "total": 177.2
   },
   "koidrive-engine::guard": {
    "count": 40,
    "tests": {
-    "more_than_1000_deletions_are_held_in_a_large_space_and_1000_are_not": 3.3
+    "more_than_1000_deletions_are_held_in_a_large_space_and_1000_are_not": 2.1
    },
-   "total": 4.2
+   "total": 3.1
   },
   "koidrive-engine::guard_model": {
    "count": 22,
    "tests": {
-    "the_notice_follows_the_model_over_every_short_sequence_of_events": 211.2
+    "the_notice_follows_the_model_over_every_short_sequence_of_events": 205.6
    },
-   "total": 212.2
+   "total": 206.4
   },
   "koidrive-engine::ignore": {
    "count": 40,
    "tests": {
-    "a_folder_renamed_here_keeps_planning_below_it_fast": 3.0
+    "a_folder_renamed_here_keeps_planning_below_it_fast": 3.2
    },
-   "total": 3.0
+   "total": 3.3
   },
   "koidrive-engine::memory": {
    "count": 1,
    "tests": {
-    "the_engine_holds_a_synced_folder_within_its_memory_ceiling": 25.1
+    "the_engine_holds_a_synced_folder_within_its_memory_ceiling": 28.1
    },
-   "total": 25.1
+   "total": 28.1
   },
   "koidrive-engine::names": {
    "count": 8,
    "tests": {},
-   "total": 2.8
+   "total": 2.5
   },
   "koidrive-engine::recovery": {
    "count": 131,
    "tests": {
-    "a_recovery_by_mark_keeps_its_rules_for_any_marks_places_and_history": 3.2
+    "a_recovery_by_mark_keeps_its_rules_for_any_marks_places_and_history": 3.4
    },
-   "total": 4.2
+   "total": 4.9
   },
   "koidrive-engine::restore": {
    "count": 45,
    "tests": {},
-   "total": 0.0
+   "total": 0.1
   },
   "koidrive-engine::state": {
    "count": 9,
@@ -489,29 +458,26 @@
   "koidrive-engine::trees": {
    "count": 39,
    "tests": {},
-   "total": 1.8
+   "total": 2.0
   },
   "koidrive-ffi": {
    "count": 104,
    "tests": {
     "daemon::tests::opening_a_session_does_not_wait_forever_for_status": 5.1
    },
-   "total": 19.8
+   "total": 16.0
   },
   "koidrive-fs": {
-   "count": 30,
+   "count": 35,
    "tests": {
-    "tests::a_folder_swapped_for_another_volume_while_it_opens_is_not_published": 7.1
+    "tests::a_folder_swapped_for_another_volume_while_it_opens_is_not_published": 5.9
    },
-   "total": 9.9
+   "total": 7.9
   },
   "koidrive-fs::crash": {
    "count": 14,
-   "tests": {
-    "kill_during_a_file_removal_then_recover": 3.9,
-    "kill_during_a_file_removal_whose_folder_moves_then_recover": 3.8
-   },
-   "total": 20.7
+   "tests": {},
+   "total": 15.4
   },
   "koidrive-fs::effect": {
    "count": 41,
@@ -521,17 +487,17 @@
   "koidrive-fs::ignore": {
    "count": 85,
    "tests": {
-    "a_bounded_search_ends_where_an_unbounded_one_does": 10.4,
-    "a_watcher_started_from_the_snapshot_of_another_reports_the_removal_it_held": 6.2
+    "a_bounded_search_ends_where_an_unbounded_one_does": 11.7,
+    "a_watcher_started_from_the_snapshot_of_another_reports_the_removal_it_held": 6.4
    },
-   "total": 27.3
+   "total": 30.0
   },
   "koidrive-fs::mark": {
    "count": 7,
    "tests": {
-    "a_volume_that_keeps_attributes_in_companion_files_gets_no_mark": 2.2
+    "a_volume_that_keeps_attributes_in_companion_files_gets_no_mark": 3.4
    },
-   "total": 2.2
+   "total": 3.6
   },
   "koidrive-fs::quoted": {
    "count": 2,
@@ -546,7 +512,7 @@
   "koidrive-fs::resolve": {
    "count": 11,
    "tests": {},
-   "total": 0.0
+   "total": 0.1
   },
   "koidrive-fs::root": {
    "count": 12,
@@ -556,57 +522,54 @@
   "koidrive-fs::section": {
    "count": 2,
    "tests": {},
-   "total": 0.3
+   "total": 0.9
   },
   "koidrive-fs::trash": {
    "count": 17,
    "tests": {},
-   "total": 0.4
+   "total": 0.6
   },
   "koidrive-fs::volumes": {
    "count": 13,
    "tests": {
-    "a_disk_whose_root_cannot_be_opened_is_read_once_it_can_be": 2.4,
-    "a_folder_above_a_mounted_volume_moves_with_the_volume_in_it": 2.4,
-    "a_folder_above_a_volume_mounted_over_synced_files_moves_with_them": 3.1,
-    "a_folder_moved_while_a_volume_is_mounted_over_synced_files_in_it_keeps_them": 3.3,
-    "a_scan_of_paths_inside_a_mount_point_reads_nothing_from_another_disk_there": 24.5,
-    "a_volume_ejected_from_inside_the_folder_keeps_everything_it_held": 7.3,
-    "a_volume_known_as_a_plain_folder_is_taken_as_that_volume": 2.7,
-    "a_volume_mounted_over_a_folder_leaves_what_the_folder_held_until_it_is_ejected": 3.1,
-    "an_unreadable_folder_moved_on_one_copy_of_a_disk_keeps_what_it_held_there": 5.5,
-    "an_unreadable_folder_on_a_disk_in_a_moved_folder_keeps_what_it_held": 4.2,
-    "another_volume_at_a_mount_point_leaves_the_first_one_held": 7.7,
-    "renames_pair_entries_of_one_volume_only_also_on_byte_identical_copies": 3.6,
-    "the_watcher_takes_a_volume_back_when_it_is_mounted_again": 5.4
+    "a_disk_whose_root_cannot_be_opened_is_read_once_it_can_be": 2.1,
+    "a_folder_above_a_mounted_volume_moves_with_the_volume_in_it": 2.0,
+    "a_scan_of_paths_inside_a_mount_point_reads_nothing_from_another_disk_there": 28.6,
+    "a_volume_ejected_from_inside_the_folder_keeps_everything_it_held": 7.8,
+    "a_volume_known_as_a_plain_folder_is_taken_as_that_volume": 2.1,
+    "a_volume_mounted_over_a_folder_leaves_what_the_folder_held_until_it_is_ejected": 2.8,
+    "an_unreadable_folder_moved_on_one_copy_of_a_disk_keeps_what_it_held_there": 3.8,
+    "another_volume_at_a_mount_point_leaves_the_first_one_held": 5.8,
+    "renames_pair_entries_of_one_volume_only_also_on_byte_identical_copies": 6.2,
+    "the_watcher_takes_a_volume_back_when_it_is_mounted_again": 11.2
    },
-   "total": 75.2
+   "total": 78.3
   },
   "koidrive-fs::watch": {
-   "count": 32,
+   "count": 37,
    "tests": {
     "a_folder_whose_mode_changes_is_scanned_once_and_then_left_alone": 2.2,
-    "a_mark_on_a_folder_rescans_nothing_below_it": 4.1,
-    "native_watcher_reports_live_changes_to_files_and_folders": 6.0,
-    "rescan_watcher_reports_live_changes_to_files_and_folders": 4.0
+    "a_mark_on_a_folder_rescans_nothing_below_it": 4.7,
+    "native_watcher_reports_live_changes_to_files_and_folders": 6.2,
+    "rescan_watcher_reports_live_changes_to_files_and_folders": 4.1
    },
-   "total": 24.2
+   "total": 26.6
   },
   "koidrive-ignore::git_oracle": {
    "count": 7,
    "tests": {
-    "agrees_with_git_case_sensitive": 7.7,
-    "agrees_with_git_ignorecase": 8.6,
-    "combining_mark_boundaries_agree_with_git": 4.3,
-    "curated_lines_agree_with_git": 6.4,
-    "nfd_spellings_agree_with_git_on_nfc_code_points": 9.2
+    "agrees_with_git_case_sensitive": 10.3,
+    "agrees_with_git_ignorecase": 10.2,
+    "combining_mark_boundaries_agree_with_git": 4.7,
+    "curated_lines_agree_with_git": 7.9,
+    "nfd_spellings_agree_with_git_on_nfc_code_points": 12.1
    },
-   "total": 37.4
+   "total": 47.2
   },
   "koidrive-ignore::properties": {
    "count": 4,
    "tests": {},
-   "total": 2.0
+   "total": 2.1
   },
   "koidrive-ignore::rules": {
    "count": 21,
@@ -621,14 +584,14 @@
   "koidrive-net": {
    "count": 152,
    "tests": {
-    "chunks::tests::an_upload_that_takes_longer_than_the_read_timeout_completes_while_it_moves": 36.2,
-    "chunks::tests::the_first_wave_of_full_chunks_is_as_wide_as_the_concurrency": 6.4,
-    "chunks::tests::transfers_that_share_a_gate_share_its_limit": 2.6,
+    "chunks::tests::an_upload_that_takes_longer_than_the_read_timeout_completes_while_it_moves": 36.1,
+    "chunks::tests::the_first_wave_of_full_chunks_is_as_wide_as_the_concurrency": 6.8,
+    "chunks::tests::transfers_that_share_a_gate_share_its_limit": 2.9,
     "chunks::tests::uploads_keep_as_many_full_chunks_in_flight_as_the_gate_allows_and_no_more": 2.8,
     "session::tests::a_refusal_whose_error_cannot_be_read_is_retried_a_bounded_number_of_times_in_a_row": 2.8,
     "session::tests::unreadable_token_errors_stop_the_session_in_a_row": 5.2
    },
-   "total": 77.6
+   "total": 78.0
   },
   "koidrive-net::send": {
    "count": 1,
@@ -658,7 +621,7 @@
   "koidrive-state-file::persistence": {
    "count": 40,
    "tests": {},
-   "total": 0.8
+   "total": 1.3
   },
   "koidrive-store": {
    "count": 6,
@@ -668,112 +631,112 @@
   "koidrive-store::ancestry": {
    "count": 3,
    "tests": {},
-   "total": 0.5
+   "total": 1.3
   },
   "koidrive-store::crash": {
    "count": 2,
    "tests": {},
-   "total": 1.6
+   "total": 2.0
   },
   "koidrive-store::restore": {
    "count": 1,
    "tests": {},
-   "total": 0.6
+   "total": 0.3
   },
   "koidrive-store::store": {
    "count": 82,
    "tests": {
-    "a_file_discarded_before_shapes_were_recorded_that_s_no_longer_holds_is_asked_about_again": 2.4,
-    "a_store_from_any_past_version_upgrades_and_keeps_every_row": 7.3,
-    "migrations_that_touch_different_things_commute_and_ones_that_clash_do_not": 3.1,
-    "named_migrations_give_the_same_store_in_any_order": 9.7
+    "a_store_from_any_past_version_upgrades_and_keeps_every_row": 7.0,
+    "migrations_that_touch_different_things_commute_and_ones_that_clash_do_not": 2.6,
+    "named_migrations_give_the_same_store_in_any_order": 5.2
    },
-   "total": 52.3
+   "total": 36.5
   },
   "koidrive-store::upgrade": {
-   "count": 10,
+   "count": 11,
    "tests": {},
    "total": 1.1
   },
   "koidrive-telemetry": {
    "count": 114,
    "tests": {
-    "store::tests::an_app_crash_is_sent_only_if_reports_were_on_as_it_crashed_and_no_off_or_reset_came_after": 146.8
+    "store::tests::an_app_crash_is_sent_only_if_reports_were_on_as_it_crashed_and_no_off_or_reset_came_after": 130.0
    },
-   "total": 153.0
+   "total": 134.3
   },
   "koidrive-telemetry::koidrive_crash": {
    "count": 1,
    "tests": {},
-   "total": 0.2
+   "total": 0.1
   },
   "koidrive-test-support": {
    "count": 22,
    "tests": {
-    "disks::tests::a_busy_image_attached_through_a_symlinked_path_is_still_ejected": 5.5,
-    "disks::tests::images_detach_after_releasing_a_file_and_moving_the_parent": 10.4
+    "disks::tests::a_busy_image_attached_through_a_symlinked_path_is_still_ejected": 5.2,
+    "disks::tests::images_detach_after_releasing_a_file_and_moving_the_parent": 7.8
    },
-   "total": 18.2
+   "total": 14.6
   },
   "koidrive-test-support::budgets": {
    "count": 4,
    "tests": {},
-   "total": 0.8
+   "total": 0.6
   }
  },
  "ubuntu-latest": {
   "koidrive-chunk::chunking": {
    "count": 15,
    "tests": {
-    "v0_cuts_large_files_within_bounds": 3.9
+    "v0_cuts_large_files_within_bounds": 3.6
    },
-   "total": 5.1
+   "total": 4.7
   },
   "koidrive-chunk::golden": {
    "count": 1,
-   "tests": {
-    "v0_matches_the_reference_vectors": 4.2
-   },
-   "total": 4.2
+   "tests": {},
+   "total": 1.9
   },
   "koidrive-cli::bin/koi": {
    "count": 402,
    "tests": {
     "app::tests::handoff_shutdown_stops_the_helper_process_group": 10.1,
     "ipc::tests::a_status_request_to_a_daemon_that_never_replies_fails_after_the_reply_limit": 5.1,
-    "ipc::tests::questions_read_without_a_daemon_free_the_profile_while_the_device_list_hangs": 3.2,
-    "service::tests::a_daemon_that_keeps_exiting_is_a_stopped_service_that_names_its_exit_and_log": 15.2,
+    "ipc::tests::questions_read_without_a_daemon_free_the_profile_while_the_device_list_hangs": 3.1,
+    "service::tests::a_daemon_that_keeps_exiting_is_a_stopped_service_that_names_its_exit_and_log": 15.3,
     "service::tests::a_daemon_that_starts_and_then_never_replies_is_a_problem_after_the_probe": 6.0,
-    "service::tests::a_daemon_that_takes_the_status_request_and_never_answers_is_a_problem_after_the_probe": 5.1,
+    "service::tests::a_daemon_that_takes_the_status_request_and_never_answers_is_a_problem_after_the_probe": 8.8,
     "service::tests::a_koi_that_leaves_a_child_holding_its_output_reads_as_unversioned_within_the_probe": 5.0,
-    "service::tests::a_service_that_never_leaves_starting_is_a_retryable_problem": 15.2,
+    "service::tests::a_service_that_never_leaves_starting_is_a_retryable_problem": 15.1,
     "service::tests::a_service_that_starts_after_a_late_spawn_gets_the_startup_wait": 7.1,
     "service::tests::a_service_that_stops_after_starting_names_its_daemon_exit": 5.1,
-    "setup::claim::tests::a_claim_is_sent_again_after_any_server_failure": 12.3,
+    "setup::claim::tests::a_claim_is_sent_again_after_any_server_failure": 12.2,
     "tests::setup_finish_bounds_a_status_request_that_accepts_but_never_replies": 5.0,
     "update::tests::the_app_update_wait_uses_only_its_remaining_deadline": 2.0
    },
-   "total": 117.8
+   "total": 120.9
   },
   "koidrive-cli::daemon_status": {
    "count": 5,
-   "tests": {},
-   "total": 3.4
+   "tests": {
+    "a_real_daemon_keeps_a_paused_halt_visible_after_sigterm_and_reopen": 6.1,
+    "reconcile_reports_a_systemd_enable_error_even_when_the_service_is_not_installed": 5.8
+   },
+   "total": 12.5
   },
   "koidrive-cli::diagnose": {
    "count": 2,
    "tests": {},
-   "total": 0.4
+   "total": 0.3
   },
   "koidrive-cli::json": {
    "count": 21,
    "tests": {
-    "every_command_prints_its_help_as_an_envelope_its_schema_takes": 14.3,
+    "every_command_prints_its_help_as_an_envelope_its_schema_takes": 12.7,
     "help_and_the_version_are_envelopes_under_json": 2.3,
-    "help_named_after_a_group_is_the_help_of_the_commands_after_it": 3.0,
-    "the_help_manifest_names_each_command_its_schema_and_the_sign_in_it_needs": 4.2
+    "help_named_after_a_group_is_the_help_of_the_commands_after_it": 2.8,
+    "the_help_manifest_names_each_command_its_schema_and_the_sign_in_it_needs": 4.3
    },
-   "total": 26.9
+   "total": 31.6
   },
   "koidrive-cli::logs": {
    "count": 3,
@@ -781,12 +744,15 @@
    "total": 0.5
   },
   "koidrive-cli::output_terminal": {
-   "count": 45,
+   "count": 47,
    "tests": {
-    "joining_a_busy_server_offers_retry_without_a_saved_sign_in": 2.3,
-    "joining_an_unreachable_server_does_not_require_a_connected_device": 2.3
+    "joining_a_busy_server_offers_retry_without_a_saved_sign_in": 3.0,
+    "joining_an_unreachable_server_does_not_require_a_connected_device": 3.0,
+    "last_device_refusal_keeps_owner_recovery_and_the_confirmation_command": 2.5,
+    "last_device_sign_out_keeps_the_unconfirmed_revocation_warning": 3.9,
+    "summary_regression_standalone_decisions_keep_their_scope": 2.3
    },
-   "total": 12.6
+   "total": 23.3
   },
   "koidrive-cli::server": {
    "count": 1,
@@ -794,62 +760,67 @@
    "total": 0.0
   },
   "koidrive-cli::setup_cloudflare_terminal": {
-   "count": 50,
+   "count": 52,
    "tests": {
-    "a_default_creation_collision_requires_a_choice_and_fresh_file_consent": 2.9,
-    "a_machine_without_a_screen_logs_in_by_pasting_the_address_the_browser_ends_on": 4.2,
-    "a_new_cloudflare_account_without_r2_or_workers_dev_completes_setup": 21.2,
-    "a_racing_workers_dev_registration_is_kept_and_conflict_retries_are_bounded": 11.9,
-    "browser_spawn_failure_and_unsuccessful_exit_show_the_full_login_url": 2.2,
+    "a_concurrent_creation_collision_never_links_the_existing_shared_folder": 2.2,
+    "a_default_creation_collision_requires_a_choice_and_fresh_file_consent": 3.6,
+    "a_machine_without_a_screen_logs_in_by_pasting_the_address_the_browser_ends_on": 4.8,
+    "a_new_cloudflare_account_without_r2_or_workers_dev_completes_setup": 21.6,
+    "a_racing_workers_dev_registration_is_kept_and_conflict_retries_are_bounded": 12.1,
+    "a_workers_dev_name_can_be_edited_or_given_to_server_deploy": 6.5,
+    "browser_spawn_failure_and_unsuccessful_exit_show_the_full_login_url": 7.7,
     "checkout_waits_for_r2_before_completing_the_same_setup": 10.5,
-    "creating_a_shared_folder_reprompts_for_an_existing_name": 2.2,
+    "creating_a_shared_folder_reprompts_for_an_existing_name": 3.0,
     "golden_browser_failure": 2.3,
-    "golden_r2_checkout": 11.2,
-    "metadata_does_not_hide_ordinary_files_from_real_driver_setup_consent": 3.2,
-    "off_paused_and_blocked_folders_never_report_successful_setup": 2.7
+    "golden_r2_checkout": 11.5,
+    "metadata_does_not_hide_ordinary_files_from_real_driver_setup_consent": 2.7,
+    "off_paused_and_blocked_folders_never_report_successful_setup": 3.3
    },
-   "total": 99.8
+   "total": 117.7
   },
   "koidrive-cli::setup_terminal": {
-   "count": 72,
+   "count": 74,
    "tests": {
-    "eof_closes_each_plain_and_rich_prompt_without_granting_consent": 2.0,
-    "signals_reap_helpers_and_restore_each_prompt": 3.5
+    "cancelling_a_folder_question_keeps_the_device_and_links_nothing": 2.8,
+    "ctrl_c_during_the_service_spawn_poll_exits_promptly_and_keeps_the_folder_link": 2.5,
+    "eof_closes_each_plain_and_rich_prompt_without_granting_consent": 2.7,
+    "signals_reap_helpers_and_restore_each_prompt": 6.1,
+    "signals_through_the_controlling_terminal_reap_helpers_and_restore_input": 2.6
    },
-   "total": 32.9
+   "total": 42.8
   },
   "koidrive-cli::share_progress": {
    "count": 1,
    "tests": {},
-   "total": 1.2
+   "total": 1.5
   },
   "koidrive-cli::share_terminal": {
-   "count": 1,
+   "count": 3,
    "tests": {},
-   "total": 0.0
+   "total": 0.2
   },
   "koidrive-cli::telemetry": {
    "count": 15,
    "tests": {
     "a_daemon_sends_again_a_tick_after_the_network_returns_and_sends_as_it_stops": 60.1,
-    "every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and_a_downgrade": 60.3,
+    "every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and_a_downgrade": 60.2,
     "the_next_command_sends_a_crash_queued_before_it_but_preview_sends_nothing": 3.1
    },
-   "total": 124.6
+   "total": 124.5
   },
   "koidrive-cli::uninstall": {
-   "count": 19,
+   "count": 21,
    "tests": {
-    "a_state_folder_left_with_one_staged_file_is_removed": 2.8
+    "a_state_folder_left_with_one_staged_file_is_removed": 2.9
    },
-   "total": 15.8
+   "total": 17.5
   },
   "koidrive-cli::update": {
-   "count": 46,
+   "count": 48,
    "tests": {
     "an_unverified_invocation_never_enters_installer_replacement": 2.6
    },
-   "total": 15.7
+   "total": 15.4
   },
   "koidrive-cli::version": {
    "count": 4,
@@ -872,218 +843,206 @@
    "total": 0.5
   },
   "koidrive-driver": {
-   "count": 783,
+   "count": 784,
    "tests": {
-    "disk::tests::a_crash_at_every_cut_of_a_batch_is_recovered_on_the_next_start": 4.2,
-    "disk::tests::a_crash_at_every_cut_of_every_effect_is_recovered_on_the_next_start": 8.8,
-    "disk::tests::a_crash_during_recovery_is_recovered_on_the_start_after": 2.0,
-    "disk::tests::an_effect_l_no_longer_takes_leaves_a_store_that_loads_at_every_cut": 4.1,
-    "driver::tests::a_claim_keeps_its_request_id_through_a_429_an_unreadable_answer_or_any_5xx": 3.8,
-    "driver::tests::a_folder_moved_away_and_back_syncs_again": 4.2,
-    "driver::tests::a_folder_replaced_under_its_task_halts_it": 2.2,
-    "driver::tests::a_halted_folder_shows_in_the_next_hourly_report_and_its_recovery_after": 4.2,
+    "disk::tests::a_crash_at_every_cut_of_every_effect_is_recovered_on_the_next_start": 4.6,
+    "disk::tests::an_effect_l_no_longer_takes_leaves_a_store_that_loads_at_every_cut": 3.0,
+    "driver::tests::a_claim_keeps_its_request_id_through_a_429_an_unreadable_answer_or_any_5xx": 3.2,
+    "driver::tests::a_failed_unlink_leaves_no_marker_to_block_a_later_restart": 2.2,
+    "driver::tests::a_folder_moved_away_and_back_syncs_again": 4.8,
+    "driver::tests::a_folder_replaced_under_its_task_halts_it": 2.3,
+    "driver::tests::a_halted_folder_shows_in_the_next_hourly_report_and_its_recovery_after": 4.3,
     "driver::tests::a_pause_and_a_resume_during_a_restart_leave_the_folder_one_task": 2.4,
     "driver::tests::a_paused_root_wait_reopens_and_recovers_only_the_original_folder": 3.3,
     "driver::tests::a_pending_start_cannot_skip_a_restarts_root_reset": 3.2,
+    "driver::tests::a_prepared_sign_out_releases_every_current_root_and_owner_after_credential_loss": 2.3,
     "driver::tests::a_resume_and_a_reopen_keep_a_replacement_folder_waiting_for_explicit_restart": 4.5,
-    "driver::tests::another_folder_with_the_spaces_marker_waits_for_a_restart": 4.4,
+    "driver::tests::another_folder_with_the_spaces_marker_waits_for_a_restart": 4.3,
     "driver::tests::any_409_or_a_stalled_answer_keeps_the_credential_and_the_folders": 10.7,
-    "driver::tests::no_reader_opens_the_store_of_a_folder_while_it_is_unlinked": 2.6,
+    "driver::tests::no_reader_opens_the_store_of_a_folder_while_it_is_unlinked": 2.4,
     "driver::tests::progress_alone_wakes_a_watcher_at_most_once_an_interval_and_a_state_change_at_once": 3.0,
     "driver::tests::questions_read_once_free_the_profile_while_the_device_list_hangs": 3.2,
     "driver::tests::questions_read_once_never_rotate_the_credential_of_the_process_that_takes_the_profile": 3.2,
-    "driver::tests::the_folders_of_a_profile_share_one_limit_on_uploads_in_flight": 2.9,
-    "driver::tests::two_profiles_never_sync_one_folder_at_once_or_in_turn": 2.2,
-    "driver::tests::unlinking_a_folder_whose_store_is_damaged_forgets_it_and_keeps_its_files": 4.1,
-    "engine::first_sync::a_first_sync_with_its_checkpoints_takes_work_in_proportion_to_its_files": 17.2,
-    "engine::tests::a_bounded_search_leaves_l_as_an_unbounded_one_does": 2.2,
-    "folder::tests::a_bulk_delete_with_a_file_moved_over_another_keeps_the_file_at_its_path": 10.7,
+    "driver::tests::the_folders_of_a_profile_share_one_limit_on_uploads_in_flight": 2.1,
+    "driver::tests::unlinking_a_folder_whose_store_is_damaged_forgets_it_and_keeps_its_files": 2.4,
+    "engine::first_sync::a_first_sync_with_its_checkpoints_takes_work_in_proportion_to_its_files": 8.9,
+    "folder::tests::a_bulk_delete_with_a_file_moved_over_another_keeps_the_file_at_its_path": 9.8,
     "folder::tests::a_change_koidrive_cannot_make_in_its_own_folder_names_that_folder": 2.2,
-    "folder::tests::a_conflict_answer_the_server_rejects_is_asked_again_under_the_same_id": 2.4,
-    "folder::tests::a_conflict_copy_is_counted_as_a_question_asked": 2.4,
-    "folder::tests::a_conflict_ends_when_someone_renames_a_file_by_hand": 4.0,
-    "folder::tests::a_conflict_ends_when_the_person_deletes_a_file_by_hand": 4.4,
-    "folder::tests::a_conflict_is_asked_again_after_a_restart_and_answered_then": 5.7,
-    "folder::tests::a_conflict_shows_its_files_at_their_new_paths_after_their_folder_is_renamed": 4.0,
+    "folder::tests::a_conflict_answer_the_server_rejects_is_asked_again_under_the_same_id": 2.3,
+    "folder::tests::a_conflict_copy_is_counted_as_a_question_asked": 2.3,
+    "folder::tests::a_conflict_ends_when_someone_renames_a_file_by_hand": 3.8,
+    "folder::tests::a_conflict_ends_when_the_person_deletes_a_file_by_hand": 4.5,
+    "folder::tests::a_conflict_is_asked_again_after_a_restart_and_answered_then": 5.9,
+    "folder::tests::a_conflict_shows_its_files_at_their_new_paths_after_their_folder_is_renamed": 4.1,
     "folder::tests::a_conflict_whose_file_changes_before_the_answer_reaches_the_server_is_asked_again": 3.6,
     "folder::tests::a_conflict_whose_file_changes_is_asked_again": 6.0,
-    "folder::tests::a_create_whose_result_never_came_is_sent_again_after_a_listing_whose_pages_held_it": 4.3,
-    "folder::tests::a_cursor_the_restored_head_caught_up_with_lists_the_tree_again": 2.1,
-    "folder::tests::a_denial_the_check_did_not_foresee_waits_for_its_own_timer": 7.2,
-    "folder::tests::a_denied_change_says_koidrive_tries_again_by_itself": 2.2,
-    "folder::tests::a_denied_download_is_not_fetched_again_while_its_folder_cannot_be_opened": 3.2,
+    "folder::tests::a_create_whose_result_never_came_is_sent_again_after_a_listing_whose_pages_held_it": 4.0,
+    "folder::tests::a_denial_the_check_did_not_foresee_waits_for_its_own_timer": 7.1,
+    "folder::tests::a_denied_change_says_koidrive_tries_again_by_itself": 2.1,
+    "folder::tests::a_denied_download_is_not_fetched_again_while_its_folder_cannot_be_opened": 3.1,
     "folder::tests::a_denied_download_is_not_fetched_again_while_its_folder_stays_read_only": 8.2,
-    "folder::tests::a_discard_takes_along_a_server_file_moved_into_an_excluded_folder_inside_the_held_folder": 5.6,
-    "folder::tests::a_discard_takes_along_a_server_file_moved_into_the_held_folder_while_the_rules_left_it_out_across_a_restart": 5.0,
-    "folder::tests::a_discard_takes_along_a_server_file_the_server_edits_after_the_link_across_a_restart_before_the_next_scan": 10.5,
-    "folder::tests::a_discard_takes_along_an_adopted_server_file_the_server_edits_while_the_folder_is_asked_about": 2.6,
-    "folder::tests::a_dismissed_folder_stays_dismissed_after_a_bootstrap": 3.5,
-    "folder::tests::a_dismissed_folder_stays_dismissed_after_a_truncated_log_and_a_rollback": 24.2,
-    "folder::tests::a_download_this_device_does_not_allow_is_fetched_again_only_after_its_own_wait": 8.3,
+    "folder::tests::a_discard_takes_along_a_server_file_moved_into_an_excluded_folder_inside_the_held_folder": 5.5,
+    "folder::tests::a_discard_takes_along_a_server_file_moved_into_the_held_folder_while_the_rules_left_it_out_across_a_restart": 4.9,
+    "folder::tests::a_discard_takes_along_a_server_file_the_server_edits_after_the_link_across_a_restart_before_the_next_scan": 10.2,
+    "folder::tests::a_discard_takes_along_an_adopted_server_file_the_server_edits_while_the_folder_is_asked_about": 2.5,
+    "folder::tests::a_dismissed_folder_stays_dismissed_after_a_bootstrap": 3.4,
+    "folder::tests::a_dismissed_folder_stays_dismissed_after_a_truncated_log_and_a_rollback": 23.6,
+    "folder::tests::a_download_this_device_does_not_allow_is_fetched_again_only_after_its_own_wait": 8.4,
     "folder::tests::a_file_and_a_folder_swapped_in_one_batch_keep_the_folders_child": 3.5,
     "folder::tests::a_file_and_two_folders_rotated_in_one_batch_keep_each_child_in_its_folder": 3.9,
-    "folder::tests::a_file_another_device_deleted_before_an_empty_listing_is_held": 2.9,
-    "folder::tests::a_file_another_device_deletes_after_a_live_listing_stays_held_after_a_relist_or_a_restart": 4.2,
-    "folder::tests::a_file_created_at_a_removed_folder_kept_for_an_ignored_file_keeps_the_file_on_the_server": 3.9,
-    "folder::tests::a_file_created_at_the_name_of_a_file_moved_into_an_ignored_folder_keeps_the_file_on_the_server": 3.8,
-    "folder::tests::a_file_created_under_a_name_another_device_took_is_asked_about": 2.1,
-    "folder::tests::a_file_from_the_server_reaches_a_folder_swapped_for_another": 3.2,
-    "folder::tests::a_file_in_a_deleted_folder_another_device_recreates_after_an_empty_listing_is_held": 2.8,
-    "folder::tests::a_file_moved_and_rewritten_into_a_folder_this_device_does_not_allow_stays_where_it_was": 2.5,
+    "folder::tests::a_file_another_device_deleted_before_an_empty_listing_is_held": 2.7,
+    "folder::tests::a_file_another_device_deletes_after_a_live_listing_stays_held_after_a_relist_or_a_restart": 4.1,
+    "folder::tests::a_file_created_at_a_removed_folder_kept_for_an_ignored_file_keeps_the_file_on_the_server": 3.7,
+    "folder::tests::a_file_created_at_the_name_of_a_file_moved_into_an_ignored_folder_keeps_the_file_on_the_server": 3.7,
+    "folder::tests::a_file_created_under_a_name_another_device_took_is_asked_about": 2.0,
+    "folder::tests::a_file_from_the_server_reaches_a_folder_swapped_for_another": 3.1,
+    "folder::tests::a_file_in_a_deleted_folder_another_device_recreates_after_an_empty_listing_is_held": 2.7,
+    "folder::tests::a_file_moved_and_rewritten_into_a_folder_this_device_does_not_allow_stays_where_it_was": 2.7,
     "folder::tests::a_file_moved_back_out_of_an_ignored_folder_after_its_name_was_taken_is_moved_on_the_server": 2.9,
-    "folder::tests::a_file_moved_below_a_folder_that_takes_its_name_in_one_batch_is_kept": 3.2,
-    "folder::tests::a_file_moved_below_an_ignored_folder_while_a_new_file_takes_its_name_stays_on_the_server_on_macos": 7.6,
-    "folder::tests::a_file_moved_into_a_folder_made_in_the_same_batch_reaches_the_other_device": 3.0,
-    "folder::tests::a_file_moved_into_a_new_folder_that_takes_its_name_in_one_batch_keeps_l_a_tree": 3.9,
-    "folder::tests::a_file_moved_into_an_ignored_folder_while_its_overwrite_is_held_stays_on_the_other_device": 16.6,
-    "folder::tests::a_file_moved_over_another_out_of_a_removed_folder_leaves_the_server_across_a_restart_during_a_bounded_search": 3.6,
+    "folder::tests::a_file_moved_below_a_folder_that_takes_its_name_in_one_batch_is_kept": 3.1,
+    "folder::tests::a_file_moved_below_an_ignored_folder_while_a_new_file_takes_its_name_stays_on_the_server_on_macos": 7.2,
+    "folder::tests::a_file_moved_into_a_folder_made_in_the_same_batch_reaches_the_other_device": 4.4,
+    "folder::tests::a_file_moved_into_a_new_folder_that_takes_its_name_in_one_batch_keeps_l_a_tree": 3.7,
+    "folder::tests::a_file_moved_into_an_ignored_folder_while_its_overwrite_is_held_stays_on_the_other_device": 18.5,
+    "folder::tests::a_file_moved_over_another_out_of_a_removed_folder_leaves_the_server_across_a_restart_during_a_bounded_search": 3.3,
     "folder::tests::a_file_placed_at_a_name_l_gave_away_is_not_recorded_by_the_next_start": 4.3,
     "folder::tests::a_file_sent_aside_in_a_split_swap_and_deleted_in_flight_takes_its_name": 3.5,
     "folder::tests::a_file_unreadable_until_its_folder_swapped_names_reaches_the_other_device": 4.4,
-    "folder::tests::a_file_whose_place_an_excluded_folder_holds_is_reported_while_its_folder_syncs": 2.3,
-    "folder::tests::a_first_link_holds_what_another_devices_rules_leave_out_for_a_while_until_the_person_publishes_it": 2.2,
-    "folder::tests::a_first_link_holds_what_the_space_lacks_and_publishing_it_keeps_both_files_of_one_name": 4.4,
-    "folder::tests::a_first_link_of_a_folder_another_device_synced_and_unlinked_keeps_what_the_space_deleted_since_deleted": 5.0,
-    "folder::tests::a_folder_brought_back_at_its_pending_name_takes_its_own_name": 2.4,
-    "folder::tests::a_folder_created_again_at_a_kept_folder_another_device_deleted_is_a_new_folder": 3.1,
-    "folder::tests::a_folder_created_at_the_name_of_a_file_moved_into_an_ignored_folder_keeps_the_file_on_the_server": 3.9,
-    "folder::tests::a_folder_made_writable_again_gets_its_download_without_waiting": 3.2,
+    "folder::tests::a_file_whose_place_an_excluded_folder_holds_is_reported_while_its_folder_syncs": 3.7,
+    "folder::tests::a_first_link_holds_what_another_devices_rules_leave_out_for_a_while_until_the_person_publishes_it": 2.1,
+    "folder::tests::a_first_link_holds_what_the_space_lacks_and_publishing_it_keeps_both_files_of_one_name": 4.1,
+    "folder::tests::a_first_link_of_a_folder_another_device_synced_and_unlinked_keeps_what_the_space_deleted_since_deleted": 7.2,
+    "folder::tests::a_folder_brought_back_at_its_pending_name_takes_its_own_name": 2.6,
+    "folder::tests::a_folder_created_again_at_a_kept_folder_another_device_deleted_is_a_new_folder": 2.8,
+    "folder::tests::a_folder_created_at_the_name_of_a_file_moved_into_an_ignored_folder_keeps_the_file_on_the_server": 4.5,
+    "folder::tests::a_folder_made_writable_again_gets_its_download_without_waiting": 3.5,
     "folder::tests::a_folder_moved_into_a_new_folder_that_takes_its_name_in_one_batch_keeps_l_a_tree": 3.9,
-    "folder::tests::a_folder_moved_onto_a_removed_folder_kept_for_an_ignored_file_keeps_the_file_on_the_server": 3.8,
+    "folder::tests::a_folder_moved_onto_a_removed_folder_kept_for_an_ignored_file_keeps_the_file_on_the_server": 4.1,
     "folder::tests::a_folder_moved_onto_the_name_of_a_file_moved_into_an_ignored_folder_keeps_the_file_on_the_server": 3.8,
-    "folder::tests::a_folder_renamed_to_the_name_a_file_left_for_a_new_folder_keeps_the_file": 3.5,
+    "folder::tests::a_folder_renamed_to_the_name_a_file_left_for_a_new_folder_keeps_the_file": 3.9,
     "folder::tests::a_folder_restored_and_deleted_again_while_the_log_was_truncated_is_noticed": 24.2,
-    "folder::tests::a_folder_that_returns_from_a_path_the_rules_exclude_keeps_its_node": 25.7,
-    "folder::tests::a_fresh_first_link_adopts_what_the_space_holds_alike_and_sends_the_rest": 3.8,
-    "folder::tests::a_fresh_first_link_sends_what_the_space_lacks_and_keeps_both_files_of_one_name_without_a_question": 12.9,
-    "folder::tests::a_kept_copy_the_server_lost_gives_the_original_its_content_again": 6.1,
-    "folder::tests::a_kept_original_deleted_before_the_answer_reaches_the_server_keeps_the_copy": 3.6,
-    "folder::tests::a_kept_original_renamed_before_the_answer_reaches_the_server_keeps_the_copy": 3.6,
-    "folder::tests::a_kept_original_the_server_lost_moves_the_copy_to_the_trash_again": 4.6,
+    "folder::tests::a_folder_that_returns_from_a_path_the_rules_exclude_keeps_its_node": 24.5,
+    "folder::tests::a_fresh_first_link_adopts_what_the_space_holds_alike_and_sends_the_rest": 3.7,
+    "folder::tests::a_fresh_first_link_sends_what_the_space_lacks_and_keeps_both_files_of_one_name_without_a_question": 12.4,
+    "folder::tests::a_kept_copy_the_server_lost_gives_the_original_its_content_again": 6.2,
+    "folder::tests::a_kept_original_deleted_before_the_answer_reaches_the_server_keeps_the_copy": 3.7,
+    "folder::tests::a_kept_original_renamed_before_the_answer_reaches_the_server_keeps_the_copy": 3.7,
+    "folder::tests::a_kept_original_the_server_lost_moves_the_copy_to_the_trash_again": 4.4,
     "folder::tests::a_link_moved_into_an_ignored_folder_beside_an_included_link_keeps_its_node": 7.7,
-    "folder::tests::a_link_moved_into_an_ignored_folder_while_another_link_is_renamed_keeps_its_node": 3.0,
-    "folder::tests::a_lost_keep_original_below_a_removed_folder_deletes_the_folder_after_the_copy": 5.1,
-    "folder::tests::a_lost_keep_original_below_a_removed_folder_keeps_the_copy_once_the_original_is_deleted": 5.1,
-    "folder::tests::a_lost_keep_original_is_not_sent_again_once_another_device_deleted_the_original": 5.0,
-    "folder::tests::a_lost_keep_original_is_sent_again_requiring_the_original": 5.0,
+    "folder::tests::a_link_moved_into_an_ignored_folder_while_another_link_is_renamed_keeps_its_node": 2.9,
+    "folder::tests::a_lost_keep_original_below_a_removed_folder_deletes_the_folder_after_the_copy": 4.9,
+    "folder::tests::a_lost_keep_original_below_a_removed_folder_keeps_the_copy_once_the_original_is_deleted": 5.3,
+    "folder::tests::a_lost_keep_original_is_not_sent_again_once_another_device_deleted_the_original": 4.9,
+    "folder::tests::a_lost_keep_original_is_sent_again_requiring_the_original": 4.7,
     "folder::tests::a_lost_keep_original_moved_out_of_a_folder_the_person_removed_keeps_only_the_original": 5.1,
-    "folder::tests::a_lost_keep_original_whose_folder_the_person_removed_with_the_original_brings_nothing_back": 5.1,
-    "folder::tests::a_lost_keep_original_whose_original_both_devices_deleted_brings_nothing_back": 7.1,
-    "folder::tests::a_lost_keep_original_whose_original_only_other_devices_deleted_keeps_the_copy": 6.6,
-    "folder::tests::a_node_denied_before_that_now_fails_for_another_reason_waits_only_the_ordinary_retry": 2.5,
+    "folder::tests::a_lost_keep_original_whose_folder_the_person_removed_with_the_original_brings_nothing_back": 4.9,
+    "folder::tests::a_lost_keep_original_whose_original_both_devices_deleted_brings_nothing_back": 6.8,
+    "folder::tests::a_lost_keep_original_whose_original_only_other_devices_deleted_keeps_the_copy": 6.7,
+    "folder::tests::a_node_denied_before_that_now_fails_for_another_reason_waits_only_the_ordinary_retry": 2.4,
     "folder::tests::a_notice_whose_counts_grow_marks_the_questions_changed": 6.3,
     "folder::tests::a_pending_name_finished_on_a_server_restored_to_before_the_rename_is_finished_again_after_a_restart": 3.5,
-    "folder::tests::a_question_that_holds_no_change_is_not_waited_on": 2.4,
+    "folder::tests::a_question_that_holds_no_change_is_not_waited_on": 2.2,
     "folder::tests::a_reconnect_still_under_way_after_a_moment_shows_offline_with_its_cause_and_no_next_try": 5.3,
     "folder::tests::a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_names_the_entry_until_it_is_removed": 2.8,
-    "folder::tests::a_restart_that_finds_the_users_folder_at_a_planned_folders_name_keeps_l_a_tree": 3.3,
-    "folder::tests::a_restore_is_applied_once_wherever_the_folder_stops": 2.5,
-    "folder::tests::a_synced_file_moved_onto_a_removed_folder_kept_for_an_ignored_file_keeps_the_file_on_the_server": 3.9,
+    "folder::tests::a_restart_that_finds_the_users_folder_at_a_planned_folders_name_keeps_l_a_tree": 3.2,
+    "folder::tests::a_restore_is_applied_once_wherever_the_folder_stops": 2.3,
+    "folder::tests::a_synced_file_moved_onto_a_removed_folder_kept_for_an_ignored_file_keeps_the_file_on_the_server": 3.6,
     "folder::tests::a_synced_file_moved_onto_the_name_of_a_file_moved_into_an_ignored_folder_keeps_the_file_on_the_server": 3.8,
-    "folder::tests::an_edit_of_the_copy_the_answer_would_delete_is_kept": 5.5,
-    "folder::tests::an_edit_of_the_copy_while_the_original_takes_its_content_is_asked_about_again": 3.6,
+    "folder::tests::an_edit_of_the_copy_the_answer_would_delete_is_kept": 5.7,
+    "folder::tests::an_edit_of_the_copy_while_the_original_takes_its_content_is_asked_about_again": 3.5,
     "folder::tests::an_edit_of_the_original_on_another_device_is_kept_when_the_copy_is_kept": 5.5,
     "folder::tests::an_edit_of_the_original_sent_before_the_answer_asks_again": 4.5,
-    "folder::tests::an_edit_that_became_a_conflict_copy_is_asked_about_with_both_files": 2.3,
-    "folder::tests::an_edit_the_server_lost_under_a_policy_halt_is_kept_when_the_server_passed_the_cursor": 2.0,
-    "folder::tests::an_effect_whose_name_l_gave_to_another_node_writes_nothing_and_is_planned_again": 6.2,
-    "folder::tests::an_excluded_folder_removed_while_the_device_is_stopped_frees_its_name_for_the_parked_file": 2.0,
-    "folder::tests::another_devices_deletion_of_most_of_the_space_is_noticed_until_it_is_dismissed": 4.7,
-    "folder::tests::discarding_a_held_folder_that_holds_an_entry_l_does_not_know_keeps_the_folder_and_names_the_entry": 2.5,
-    "folder::tests::dismissing_the_notice_while_the_folder_is_removed_opens_no_new_one": 24.0,
-    "folder::tests::downloads_move_their_bytes_and_the_count_only_grows": 2.4,
+    "folder::tests::an_edit_that_became_a_conflict_copy_is_asked_about_with_both_files": 2.2,
+    "folder::tests::an_effect_whose_name_l_gave_to_another_node_writes_nothing_and_is_planned_again": 6.0,
+    "folder::tests::another_devices_deletion_of_most_of_the_space_is_noticed_until_it_is_dismissed": 4.6,
+    "folder::tests::discarding_a_held_folder_that_holds_an_entry_l_does_not_know_keeps_the_folder_and_names_the_entry": 3.1,
+    "folder::tests::dismissing_the_notice_while_the_folder_is_removed_opens_no_new_one": 23.3,
+    "folder::tests::downloads_move_their_bytes_and_the_count_only_grows": 2.3,
     "folder::tests::files_and_folders_swapped_in_one_batch_keep_every_byte": 4.8,
-    "folder::tests::files_moved_between_two_swapped_folders_keep_their_paths_on_both_devices": 3.9,
-    "folder::tests::files_that_cannot_be_read_hold_back_no_other_change": 8.4,
-    "folder::tests::files_that_cannot_be_written_hold_back_no_other_download": 14.0,
+    "folder::tests::files_moved_between_two_swapped_folders_keep_their_paths_on_both_devices": 4.2,
+    "folder::tests::files_that_cannot_be_read_hold_back_no_other_change": 8.2,
+    "folder::tests::files_that_cannot_be_written_hold_back_no_other_download": 13.9,
     "folder::tests::keeping_both_files_of_a_conflict_changes_nothing": 2.8,
     "folder::tests::keeping_one_of_two_copies_of_an_original_asks_about_the_other_again": 6.9,
-    "folder::tests::keeping_the_copy_of_a_conflict_gives_the_original_its_content_and_moves_the_copy_to_the_trash": 5.1,
-    "folder::tests::keeping_the_original_of_a_conflict_moves_the_copy_to_the_trash": 4.0,
-    "folder::tests::renames_after_a_server_loss_was_handled_under_a_policy_halt_are_kept": 2.2,
-    "folder::tests::three_files_rotated_through_a_third_name_keep_their_nodes": 4.0,
-    "folder::tests::two_files_swapped_through_a_third_name_keep_their_nodes": 3.6,
-    "folder::tests::two_folders_swapped_through_a_third_name_keep_their_nodes": 3.6,
-    "folder::tests::with_four_uploads_at_once_a_file_that_changed_after_it_was_chunked_abandons_the_commit": 4.5,
-    "observe::tests::a_file_larger_than_the_budget_is_read_before_the_changes_of_a_later_observation": 6.3,
+    "folder::tests::keeping_the_copy_of_a_conflict_gives_the_original_its_content_and_moves_the_copy_to_the_trash": 5.6,
+    "folder::tests::keeping_the_original_of_a_conflict_moves_the_copy_to_the_trash": 3.8,
+    "folder::tests::renames_after_a_server_loss_was_handled_under_a_policy_halt_are_kept": 2.3,
+    "folder::tests::three_files_rotated_through_a_third_name_keep_their_nodes": 4.3,
+    "folder::tests::two_files_swapped_through_a_third_name_keep_their_nodes": 3.7,
+    "folder::tests::two_folders_swapped_through_a_third_name_keep_their_nodes": 3.5,
+    "folder::tests::with_four_uploads_at_once_a_file_that_changed_after_it_was_chunked_abandons_the_commit": 2.6,
+    "observe::tests::a_file_larger_than_the_budget_is_read_before_the_changes_of_a_later_observation": 6.0,
     "observe::tests::the_first_observation_is_returned_when_the_folder_is_as_it_was": 10.2,
     "update::tests::all_pages_and_their_bodies_share_one_timeout": 10.0
    },
-   "total": 985.2
+   "total": 922.9
   },
   "koidrive-engine": {
    "count": 38,
    "tests": {
-    "classify::tests::a_server_folder_of_fifty_thousand_files_in_a_discarded_folder_is_checked_in_linear_time": 51.9,
-    "classify::tests::holders_against_a_rebuild::holders_match_a_rebuild_from_l": 4.5
+    "classify::tests::a_server_folder_of_fifty_thousand_files_in_a_discarded_folder_is_checked_in_linear_time": 18.4
    },
-   "total": 57.4
+   "total": 20.7
   },
   "koidrive-engine::attribution": {
    "count": 26,
    "tests": {
-    "a_small_budget_breaks_no_rule": 8.3
+    "a_small_budget_breaks_no_rule": 4.4
    },
-   "total": 8.3
+   "total": 4.4
   },
   "koidrive-engine::commit": {
    "count": 476,
    "tests": {},
-   "total": 0.4
+   "total": 0.0
   },
   "koidrive-engine::effects": {
    "count": 54,
-   "tests": {
-    "batches_of_effects_bring_the_disk_to_the_remote_tree": 3.0,
-    "effects_bring_the_disk_to_the_remote_tree": 5.3
-   },
-   "total": 8.3
+   "tests": {},
+   "total": 3.0
   },
   "koidrive-engine::first_link": {
    "count": 140,
    "tests": {
-    "a_deep_discarded_folder_goes_to_the_local_trash_folder_by_folder": 6.9
+    "a_deep_discarded_folder_goes_to_the_local_trash_folder_by_folder": 2.7
    },
-   "total": 9.8
+   "total": 3.4
   },
   "koidrive-engine::first_upload": {
    "count": 5,
    "tests": {
-    "a_first_download_takes_work_in_proportion_to_its_files": 26.2,
-    "a_first_link_of_nested_new_folders_takes_work_in_proportion_to_its_files": 55.9,
-    "a_first_upload_in_small_commits_sends_every_file_whatever_order_its_ids_take": 2.3,
-    "a_first_upload_takes_work_in_proportion_to_its_files": 125.0,
-    "links_waiting_on_their_folders_cost_nothing_until_the_folders_enter_s": 104.4
+    "a_first_download_takes_work_in_proportion_to_its_files": 13.6,
+    "a_first_link_of_nested_new_folders_takes_work_in_proportion_to_its_files": 36.1,
+    "a_first_upload_takes_work_in_proportion_to_its_files": 68.4,
+    "links_waiting_on_their_folders_cost_nothing_until_the_folders_enter_s": 65.1
    },
-   "total": 313.8
+   "total": 184.5
   },
   "koidrive-engine::guard": {
    "count": 40,
-   "tests": {
-    "more_than_1000_deletions_are_held_in_a_large_space_and_1000_are_not": 4.2
-   },
-   "total": 5.6
+   "tests": {},
+   "total": 2.8
   },
   "koidrive-engine::guard_model": {
    "count": 22,
    "tests": {
-    "the_notice_follows_the_model_over_every_short_sequence_of_events": 229.5
+    "the_notice_follows_the_model_over_every_short_sequence_of_events": 193.1
    },
-   "total": 230.7
+   "total": 193.9
   },
   "koidrive-engine::ignore": {
    "count": 40,
    "tests": {
-    "a_folder_renamed_here_keeps_planning_below_it_fast": 6.0
+    "a_folder_renamed_here_keeps_planning_below_it_fast": 2.3
    },
-   "total": 6.0
+   "total": 2.3
   },
   "koidrive-engine::memory": {
    "count": 1,
    "tests": {
-    "the_engine_holds_a_synced_folder_within_its_memory_ceiling": 36.6
+    "the_engine_holds_a_synced_folder_within_its_memory_ceiling": 31.4
    },
-   "total": 36.6
+   "total": 31.4
   },
   "koidrive-engine::names": {
    "count": 8,
@@ -1095,9 +1054,10 @@
   "koidrive-engine::recovery": {
    "count": 131,
    "tests": {
+    "a_commit_counts_the_nodes_a_published_folder_brings_back_from_the_trash": 2.2,
     "a_recovery_by_mark_keeps_its_rules_for_any_marks_places_and_history": 7.1
    },
-   "total": 8.8
+   "total": 9.3
   },
   "koidrive-engine::restore": {
    "count": 45,
@@ -1117,41 +1077,42 @@
   "koidrive-engine::trees": {
    "count": 39,
    "tests": {
-    "settling_leaves_no_set_of_same_updates_that_fits": 3.3
+    "settling_leaves_no_set_of_same_updates_that_fits": 2.1
    },
-   "total": 4.2
+   "total": 2.7
   },
   "koidrive-ffi": {
    "count": 104,
    "tests": {
     "daemon::tests::opening_a_session_does_not_wait_forever_for_status": 5.0
    },
-   "total": 9.9
+   "total": 9.6
   },
   "koidrive-fs": {
-   "count": 35,
+   "count": 40,
    "tests": {
     "tests::a_rename_inside_a_folder_a_poll_moved_comes_in_a_poll_of_its_own": 3.5
    },
-   "total": 7.4
+   "total": 7.3
   },
   "koidrive-fs::crash": {
    "count": 14,
    "tests": {},
-   "total": 4.9
+   "total": 4.4
   },
   "koidrive-fs::effect": {
    "count": 41,
    "tests": {},
-   "total": 0.4
+   "total": 1.1
   },
   "koidrive-fs::ignore": {
    "count": 89,
    "tests": {
-    "a_bounded_search_ends_where_an_unbounded_one_does": 9.9,
+    "a_bounded_search_ends_where_an_unbounded_one_does": 13.1,
+    "a_rules_file_over_the_size_limit_keeps_the_rules_the_folder_had": 2.4,
     "a_watcher_started_from_the_snapshot_of_another_reports_the_removal_it_held": 6.0
    },
-   "total": 22.5
+   "total": 26.8
   },
   "koidrive-fs::mark": {
    "count": 6,
@@ -1181,7 +1142,7 @@
   "koidrive-fs::section": {
    "count": 2,
    "tests": {},
-   "total": 0.1
+   "total": 0.2
   },
   "koidrive-fs::trash": {
    "count": 17,
@@ -1194,30 +1155,28 @@
    "total": 0.0
   },
   "koidrive-fs::watch": {
-   "count": 35,
+   "count": 40,
    "tests": {
     "a_mark_on_a_folder_rescans_nothing_below_it": 3.4,
     "folder_readable_again_is_watched_again": 2.8,
     "native_watcher_reports_live_changes_to_files_and_folders": 4.2,
-    "rescan_watcher_reports_live_changes_to_files_and_folders": 3.6
+    "rescan_watcher_reports_live_changes_to_files_and_folders": 3.7
    },
-   "total": 22.6
+   "total": 22.7
   },
   "koidrive-ignore::git_oracle": {
    "count": 7,
    "tests": {
-    "agrees_with_git_case_sensitive": 3.1,
-    "agrees_with_git_ignorecase": 3.1,
-    "curated_lines_agree_with_git": 2.3,
-    "ignorecase_lines_hold_no_letter_git_leaves_unfolded": 2.1,
-    "nfd_spellings_agree_with_git_on_nfc_code_points": 4.1
+    "agrees_with_git_case_sensitive": 2.9,
+    "agrees_with_git_ignorecase": 2.9,
+    "nfd_spellings_agree_with_git_on_nfc_code_points": 3.3
    },
-   "total": 15.8
+   "total": 13.1
   },
   "koidrive-ignore::properties": {
    "count": 4,
    "tests": {},
-   "total": 2.8
+   "total": 1.3
   },
   "koidrive-ignore::rules": {
    "count": 21,
@@ -1232,15 +1191,15 @@
   "koidrive-net": {
    "count": 152,
    "tests": {
-    "chunks::tests::an_upload_target_that_expires_during_its_batch_is_prepared_again_before_the_chunk_is_read": 2.1,
+    "chunks::tests::an_upload_target_that_expires_during_its_batch_is_prepared_again_before_the_chunk_is_read": 2.2,
     "chunks::tests::an_upload_that_takes_longer_than_the_read_timeout_completes_while_it_moves": 37.3,
-    "chunks::tests::the_first_wave_of_full_chunks_is_as_wide_as_the_concurrency": 8.1,
+    "chunks::tests::the_first_wave_of_full_chunks_is_as_wide_as_the_concurrency": 8.9,
     "chunks::tests::transfers_that_share_a_gate_share_its_limit": 4.1,
-    "chunks::tests::uploads_keep_as_many_full_chunks_in_flight_as_the_gate_allows_and_no_more": 3.4,
+    "chunks::tests::uploads_keep_as_many_full_chunks_in_flight_as_the_gate_allows_and_no_more": 4.0,
     "session::tests::a_refusal_whose_error_cannot_be_read_is_retried_a_bounded_number_of_times_in_a_row": 2.8,
-    "session::tests::unreadable_token_errors_stop_the_session_in_a_row": 5.3
+    "session::tests::unreadable_token_errors_stop_the_session_in_a_row": 5.2
    },
-   "total": 93.6
+   "total": 97.8
   },
   "koidrive-net::send": {
    "count": 1,
@@ -1270,7 +1229,7 @@
   "koidrive-state-file::persistence": {
    "count": 34,
    "tests": {},
-   "total": 0.0
+   "total": 0.1
   },
   "koidrive-store": {
    "count": 6,
@@ -1280,38 +1239,37 @@
   "koidrive-store::ancestry": {
    "count": 3,
    "tests": {},
-   "total": 0.2
+   "total": 0.4
   },
   "koidrive-store::crash": {
    "count": 2,
    "tests": {},
-   "total": 1.3
+   "total": 1.1
   },
   "koidrive-store::restore": {
    "count": 1,
    "tests": {},
-   "total": 0.2
+   "total": 0.3
   },
   "koidrive-store::store": {
    "count": 82,
    "tests": {
-    "a_store_from_any_past_version_upgrades_and_keeps_every_row": 6.0,
-    "migrations_that_touch_different_things_commute_and_ones_that_clash_do_not": 2.2,
-    "named_migrations_give_the_same_store_in_any_order": 5.6
+    "a_store_from_any_past_version_upgrades_and_keeps_every_row": 4.5,
+    "named_migrations_give_the_same_store_in_any_order": 2.6
    },
-   "total": 29.4
+   "total": 22.4
   },
   "koidrive-store::upgrade": {
-   "count": 10,
+   "count": 11,
    "tests": {},
-   "total": 1.0
+   "total": 1.4
   },
   "koidrive-telemetry": {
    "count": 114,
    "tests": {
-    "store::tests::an_app_crash_is_sent_only_if_reports_were_on_as_it_crashed_and_no_off_or_reset_came_after": 38.7
+    "store::tests::an_app_crash_is_sent_only_if_reports_were_on_as_it_crashed_and_no_off_or_reset_came_after": 44.2
    },
-   "total": 40.2
+   "total": 47.1
   },
   "koidrive-telemetry::koidrive_crash": {
    "count": 1,

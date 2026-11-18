@@ -108,7 +108,7 @@ jobs:
             for pair in "rust_macos:rust build (macos)" "server_macos:server (macos)" "spec_macos:spec (macos)" "macos_app:macos app"; do
               covered=true
               if [ "${pair%%:*}" = rust_macos ]; then
-                for job in "rust lint (macos)" "rust special (macos)" "rust tests (macos, sim)" "rust tests (macos, "{1,2,3,4,5}/5")"; do
+                for job in "rust lint (macos)" "rust special (macos)" "rust tests (macos, sim)" "rust tests (macos, "{1,2,3,4,5,6}/6")"; do
                   if ! grep -Fxq "$job" <<<"$passed"; then covered=false; fi
                 done
               fi
@@ -199,7 +199,7 @@ jobs:
           if [ "$RUST" = true ] || [ "$RUST_DRIVER" = true ] || [ "$RUST_ENGINE" = true ]; then archive=true; fi
           macos=false
           if [ "$RUST_MACOS" = true ]; then macos=true; fi
-          shards="$(jq -cn --argjson macos "$macos" '{include: ([range(1; 4) | {os: "ubuntu-latest", shard: ., of: 3}] + (if $macos then [range(1; 6) | {os: "macos", shard: ., of: 5}] else [] end))}')"
+          shards="$(jq -cn --argjson macos "$macos" '{include: ([range(1; 6) | {os: "ubuntu-latest", shard: ., of: 5}] + (if $macos then [range(1; 7) | {os: "macos", shard: ., of: 6}] else [] end))}')"
           echo "Rust test archive: $archive. Shards: $shards"
           {
             echo "rust_archive=$archive"

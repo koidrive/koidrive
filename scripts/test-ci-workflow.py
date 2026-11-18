@@ -73,7 +73,7 @@ class ChangesJob(unittest.TestCase):
 
     def test_push_reuses_rust_only_when_all_macos_shards_pass(self):
         names = ("rust build (macos)", "rust lint (macos)", "rust special (macos)", "rust tests (macos, sim)",
-                 *(f"rust tests (macos, {shard}/5)" for shard in range(1, 6)))
+                 *(f"rust tests (macos, {shard}/6)" for shard in range(1, 7)))
         for missing in (None, *names):
             with self.subTest(missing=missing):
                 fixtures = {
@@ -279,7 +279,7 @@ class RustShards(unittest.TestCase):
             return dict(line.split("=", 1) for line in output.read_text().splitlines())
 
     def test_a_selected_partition_builds_the_archive_and_shards_it_on_each_system(self):
-        for macos, systems in (("true", {"ubuntu-latest": 3, "macos": 5}), ("false", {"ubuntu-latest": 3}), ("covered", {"ubuntu-latest": 3})):
+        for macos, systems in (("true", {"ubuntu-latest": 5, "macos": 6}), ("false", {"ubuntu-latest": 5}), ("covered", {"ubuntu-latest": 5})):
             with self.subTest(macos=macos):
                 outputs = self.run_step(RUST="false", RUST_DRIVER="false", RUST_ENGINE="true", RUST_MACOS=macos)
                 self.assertEqual(outputs["rust_archive"], "true")
