@@ -68,6 +68,7 @@ struct Search {
     pending: HashMap<Key, u64>,
     decided: HashMap<Key, Option<PathBuf>>,
     held: BTreeMap<PathBuf, Entry>,
+    postponed: BTreeSet<PathBuf>,
     scanned: Vec<PathBuf>,
     reseeded: Vec<PathBuf>,
 }
@@ -177,6 +178,7 @@ impl Rules {
     pub(crate) fn forget(&mut self, scope: &Path) {
         let search = &mut self.search;
         search.held.retain(|path, _| !path.starts_with(scope));
+        search.postponed.retain(|path| !path.starts_with(scope));
         search.prune();
         search.reseeded.push(scope.to_path_buf());
         search.reseeded = crate::outermost(std::mem::take(&mut search.reseeded));
@@ -679,6 +681,20 @@ impl<'r> Pending<'r> {
 
     pub(crate) fn held(&self) -> impl Iterator<Item = &PathBuf> {
         self.rules.search.held.keys()
+    }
+
+    pub(crate) fn postpone(
+        &mut self,
+        scopes: &[PathBuf],
+        paths: impl IntoIterator<Item = PathBuf>,
+    ) {
+        let postponed = &mut self.rules.search.postponed;
+        postponed.retain(|path| !scopes.iter().any(|scope| path.starts_with(scope)));
+        postponed.extend(paths);
+    }
+
+    pub(crate) fn postponed(&self) -> impl Iterator<Item = &PathBuf> {
+        self.rules.search.postponed.iter()
     }
 
     pub(crate) fn cover(&mut self, scopes: &[PathBuf], unread: &[PathBuf]) -> Seeded {

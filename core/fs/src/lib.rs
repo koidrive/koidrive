@@ -1456,9 +1456,11 @@ impl Snapshot {
             let arrivals: BTreeSet<PathBuf> = arrivals.into_iter().collect();
             scan.new
                 .retain(|path, _| !path.ancestors().any(|above| arrivals.contains(above)));
-            unsettled.extend(postponed.keys().cloned());
+            rules.postpone(&scan.replaced, postponed.keys().cloned());
             scan.new.extend(postponed);
-            unsettled.extend(outermost(rules.held().cloned().collect()));
+            unsettled.extend(outermost(
+                rules.held().chain(rules.postponed()).cloned().collect(),
+            ));
         }
         let whole = (scan.replaced.iter()).any(|prefix| prefix.as_os_str().is_empty());
         let doubtful = match keep {
