@@ -42,7 +42,7 @@ import { shareRoute } from "./share/routes";
 import { CONNECT_HEADER, type Connect, GRANT_MS, MAX_CHUNK_BYTES, MAX_CLIENT_FRAME } from "./space/space";
 import { chunkKey, INCARNATION } from "./space/store";
 import { STORAGE } from "./storage";
-import { account, space, traffic } from "./stubs";
+import { account, noteGauges, space, traffic } from "./stubs";
 import { PROTO_MAX, PROTO_MIN, SERVER_COMMIT, SERVER_VERSION } from "./version";
 
 export { AccountDO } from "./account-do";
@@ -424,7 +424,7 @@ export default {
     const nowMs = Date.now();
     traffic.count(routeOf(request), responseOutcome(response), nowMs - startedMs, nowMs);
     traffic.add("worker_requests", 1);
-    if (traffic.reporting === true) ctx.waitUntil(traffic.settle((batch) => account(env).recordUsage(batch), Date.now, (ms) => scheduler.wait(ms)));
+    if (traffic.reporting === true) ctx.waitUntil(noteGauges(env).then(() => traffic.settle((batch) => account(env).recordUsage(batch), Date.now, (ms) => scheduler.wait(ms))));
     return countedEgress(response, traffic);
   },
 } satisfies ExportedHandler<Env>;

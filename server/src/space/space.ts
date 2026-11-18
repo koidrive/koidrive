@@ -796,6 +796,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const { on, startedMs } = flag === undefined ? {} : (JSON.parse(String(flag)) as { on?: boolean; startedMs?: number });
       this.traffic.reporting = on === true;
       this.traffic.restart(startedMs);
+      if (on === true) this.storedHour = (JSON.parse(String(getMeta(this.sql, "r2_stored") ?? "{}")) as { hour?: number }).hour;
     }
 
     private learn(on: boolean, startedMs: number | undefined): void {
@@ -811,8 +812,11 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     protected async ended(event: string, args: unknown[], waited: boolean): Promise<void> {
       if (this.traffic.reporting !== true) return;
       this.traffic.lapse();
+      if (waited) {
+        if (this.storedHour !== Math.floor(this.clock() / HOUR_MS)) this.traffic.gaugesDue = true;
+        return;
+      }
       this.noteStored();
-      if (waited) return;
       const nowMs = this.clock();
       const open = this.state.getWebSockets().filter((ws) => ws.readyState === WebSocket.OPEN);
       const carrier = event.startsWith("webSocket") ? (args[0] as Socket) : undefined;
@@ -877,10 +881,11 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (batch && target) this.park(target, batch);
     }
 
-    private noteStored(): void {
+    noteStored(): void {
       const nowMs = this.clock();
       const hour = Math.floor(nowMs / HOUR_MS);
-      if (this.storedHour === hour) return;
+      if (this.traffic.reporting !== true || this.storedHour === hour) return;
+      this.traffic.gaugesDue = false;
       this.storedHour = hour;
       const day = Math.floor(nowMs / DAY_MS);
       const cached = getMeta(this.sql, "r2_stored");
@@ -888,8 +893,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (counted?.day !== day) {
         const row = this.sql.exec("SELECT COUNT(*) AS objects, COALESCE(SUM(size), 0) AS bytes FROM chunks WHERE state != ?", ChunkState.PENDING).one();
         counted = { day, bytes: Number(row.bytes), objects: Number(row.objects) };
-        setMeta(this.sql, "r2_stored", JSON.stringify(counted));
       }
+      setMeta(this.sql, "r2_stored", JSON.stringify({ day: counted.day, bytes: counted.bytes, objects: counted.objects, hour }));
       this.traffic.note({ object: this.state.id.toString(), sqlBytes: this.sql.databaseSize, r2Bytes: counted.bytes, r2Objects: counted.objects });
     }
 

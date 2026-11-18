@@ -840,16 +840,40 @@ describe("hourly server report", () => {
     expect(before[0]).not.toHaveProperty("usage");
   });
 
-  it("hands a Space DO's counts from each HTTP RPC back to the Worker in its reply, with the stored sizes, and calls and arms nothing itself", async () => {
+  it("hands a Space DO's counts from each HTTP RPC back to the Worker in its reply, and its stored sizes through one call the Worker makes after the reply, and calls and arms nothing itself", async () => {
     const { owner, spaceId, stub } = await reportingSpace();
     const usage = await watchUsage();
     for (let reqId = 1n; reqId <= 3n; reqId++) {
       expect((await post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId, call: { case: "listTree", value: {} } }), owner.access!.token)).status).toBe(200);
     }
-    await vi.waitFor(async () => expect((await storedTotal()).billing.do_space_requests).toBe(3));
+    await vi.waitFor(async () => expect((await storedTotal()).billing.do_space_requests).toBe(4));
     expect(usage.stored.map((object) => object.object)).toContain(stub.id.toString());
     expect(await usageDueMs(stub)).toBeUndefined();
     expect(usage.calls.filter((hours) => Object.values(hours).every((counted) => Object.keys(counted.counts).length === 0))).toEqual([]);
+  });
+
+  it("counts a Space DO's stored chunks only after the reply to its first HTTP RPC of a day, and the stored sizes still reach the report", async () => {
+    const { owner, spaceId, stub } = await reportingSpace();
+    UsageTally.batchMs = 0;
+    restorers.push(() => {
+      UsageTally.batchMs = BATCH_MS;
+    });
+    await runInDurableObject(account(), (_instance, state) => state.storage.sql.exec("DELETE FROM object_usage"));
+    const order: string[] = [];
+    await runInDurableObject(stub, (instance: object, state) => {
+      (instance as unknown as { storedHour: number | undefined }).storedHour = undefined;
+      state.storage.sql.exec("DELETE FROM meta WHERE key = 'r2_stored'");
+      const sql = Object.getPrototypeOf(state.storage.sql) as { exec(this: unknown, query: string, ...bindings: unknown[]): unknown };
+      const exec = sql.exec;
+      vi.spyOn(sql, "exec").mockImplementation(function (this: unknown, query: string, ...bindings: unknown[]) {
+        if (query.includes("FROM chunks WHERE state != ?")) order.push("scan");
+        return exec.call(this, query, ...bindings);
+      });
+    });
+    expect((await post(`/v1/spaces/${spaceId}/rpc`, body(RpcRequestSchema, { reqId: 1n, call: { case: "listTree", value: {} } }), owner.access!.token)).status).toBe(200);
+    order.push("reply");
+    await vi.waitFor(() => expect(order).toEqual(["reply", "scan"]));
+    await vi.waitFor(async () => expect((await storedObjects()).find((row) => row.object === stub.id.toString())?.sql_bytes).toBeGreaterThan(0));
   });
 
   it("counts each chunk a bundle stores as one R2 Class A write, as it counts a chunk uploaded alone", async () => {
@@ -1340,7 +1364,7 @@ describe("billing counts across evictions", () => {
     expect(await leftover(stub)).toEqual([null, null]);
   });
 
-  it("counts share-link calls and the Account DO's calls into an evicted Space DO", async () => {
+  it("counts share-link calls, the Account DO's calls into an evicted Space DO, and the Worker's one call for its stored sizes", async () => {
     const { owner, spaceId, stub } = await reportingSpace();
     await vi.waitFor(async () => expect((await storedCounts())["post_spaces.201"]).toBe(1));
     await clearHours();
@@ -1352,7 +1376,7 @@ describe("billing counts across evictions", () => {
       await evictDurableObject(account());
       expect((await exports.default.fetch(`${BASE}/v1/share/${created.message!.linkId}`)).status).toBe(200);
     }
-    await vi.waitFor(async () => expect((await storedTotal()).billing.do_space_requests).toBe(3));
+    await vi.waitFor(async () => expect((await storedTotal()).billing.do_space_requests).toBe(4));
     expect(await leftover(stub)).toEqual([null, null]);
   });
 

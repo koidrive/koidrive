@@ -148,7 +148,9 @@ export async function meteredReply(object: object, kind: ObjectKind, tally: Usag
     if (!returnCounts) tally.keep();
     tally.leave();
   }
-  return { value: result, usage: tally.take(), reporting: tally.reporting, startedMs: tally.startedMs };
+  const gaugesDue = tally.gaugesDue || undefined;
+  tally.gaugesDue = false;
+  return { value: result, usage: tally.take(), reporting: tally.reporting, startedMs: tally.startedMs, gaugesDue };
 }
 
 export function meteredObject<T extends object>(object: T, kind: ObjectKind, tally: UsageTally, ended: Ended): T {
