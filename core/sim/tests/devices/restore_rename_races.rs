@@ -169,3 +169,26 @@ fn a_later_rename_survives_a_restore_when_a_bystander_sends_the_earlier_lost_ren
     restore_and_reconnect(&mut world, 2, &[2, 0]);
     every_disk_shows(&world, &[0, 2], "c.txt");
 }
+
+#[test]
+fn a_move_the_server_renamed_is_sent_again_when_a_restore_loses_the_rename() {
+    let mut lost = vec![
+        (0, Step::Backup),
+        (1, rename(1, 0, "ss")),
+        (1, overwrite(1)),
+    ];
+    lost.extend([(1, Step::Work(0)); 4]);
+    lost.push((0, Step::Restore));
+    let phases = [
+        vec![
+            (1, folder("a")),
+            (1, user(1, 0, 1, "b")),
+            (1, folder("\u{df}")),
+        ],
+        lost,
+        vec![],
+    ];
+    let world = converge(2, &phases).unwrap();
+    assert_eq!(files_on(&world, 0), files_on(&world, 1));
+    assert!(world.devices.iter().all(|device| device.disk.shows(2)));
+}
