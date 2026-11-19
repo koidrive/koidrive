@@ -18,7 +18,7 @@ use crate::commit::{Halt, InFlight, Slot};
 use crate::effects::{Effect, EffectRecord};
 use crate::guard::{Counted, GuardState, RemoteDeletion};
 use crate::question::{Held, Limit, Question, Revisions};
-use crate::restore::{Resolved, RestoreId, RestoreIntent, RestorePiece};
+use crate::restore::{Resolved, RestoreId, RestoreIntent, SplitRestore};
 use crate::tree::{FileIdentity, NodeId, Shape, TreeError};
 
 /// A position L and R agreed on, with the revision of R's record that held it.
@@ -405,8 +405,8 @@ pub struct CommitsState {
     pub split: BTreeSet<NodeId>,
     /// Folders whose deletion takes several `Delete` ops, by the trash group each of them joins.
     pub trash_groups: BTreeMap<NodeId, String>,
-    /// The members a restore too large for one commit brings back one by one, before its own op.
-    pub restore_pieces: BTreeMap<NodeId, RestorePiece>,
+    /// The restores too large for one commit, sent over several (see [`SplitRestore`]).
+    pub split_restores: BTreeMap<RestoreId, SplitRestore>,
     /// Folders merged into one L holds elsewhere, by the folder they were merged into.
     pub aliases: BTreeMap<NodeId, NodeId>,
     /// The restores a person asked for that have no outcome yet, in request order. The commit in
@@ -598,7 +598,7 @@ pub struct CommitsChanges {
     pub cap: Option<Option<usize>>,
     pub split: SetChanges<NodeId>,
     pub trash_groups: MapChanges<NodeId, String>,
-    pub restore_pieces: MapChanges<NodeId, RestorePiece>,
+    pub split_restores: MapChanges<RestoreId, SplitRestore>,
     pub aliases: MapChanges<NodeId, NodeId>,
     pub restores: Option<BTreeMap<RestoreId, RestoreIntent>>,
     pub resolved: Option<Vec<Resolved>>,
@@ -622,7 +622,7 @@ impl CommitsChanges {
             cap,
             split,
             trash_groups,
-            restore_pieces,
+            split_restores,
             aliases,
             restores,
             resolved,
@@ -642,7 +642,7 @@ impl CommitsChanges {
             cap: value_change(&before.cap, cap),
             split: set_changes(&before.split, split),
             trash_groups: map_changes(&before.trash_groups, trash_groups),
-            restore_pieces: map_changes(&before.restore_pieces, restore_pieces),
+            split_restores: map_changes(&before.split_restores, split_restores),
             aliases: map_changes(&before.aliases, aliases),
             restores: value_change(&before.restores, restores),
             resolved: value_change(&before.resolved, resolved),

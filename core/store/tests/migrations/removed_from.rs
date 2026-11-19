@@ -18,7 +18,7 @@ fn a_store_from_before_removals_were_recorded_opens_with_none_recorded() {
     let after = before.clone();
     before.trees.removed_from.clear();
     before.commits.trash_groups.clear();
-    before.commits.restore_pieces.clear();
+    before.commits.split_restores.clear();
     assert!(!after.trees.removed_from.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store

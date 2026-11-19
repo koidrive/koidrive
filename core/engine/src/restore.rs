@@ -28,12 +28,13 @@ pub const RESOLVED_KEPT: usize = MAX_OPS;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestoreIntent(proto::Restore);
 
-/// A member of a trash group that a restore too large for one commit sends on its own (R8), with
-/// the group it was trashed into when the restore began.
+/// A restore too large for one commit, sent as restores of its trash group's topmost members (R8)
+/// and then its own op: the group and the place its node held in the trash when it began.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RestorePiece {
-    pub restore_id: RestoreId,
+pub struct SplitRestore {
     pub trash_group: String,
+    pub parent: NodeId,
+    pub name: String,
 }
 
 /// The field of a restore that is not a lowercase UUIDv7, or that a version restore must leave

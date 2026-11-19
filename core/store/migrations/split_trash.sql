@@ -3,8 +3,9 @@ CREATE TABLE trash_groups (
     node_id TEXT PRIMARY KEY,
     trash_group TEXT NOT NULL
 ) STRICT, WITHOUT ROWID;
-CREATE TABLE restore_pieces (
-    node_id TEXT PRIMARY KEY,
-    restore_id TEXT NOT NULL,
-    trash_group TEXT NOT NULL
+CREATE TABLE split_restores (
+    restore_id TEXT PRIMARY KEY,
+    trash_group TEXT NOT NULL,
+    parent_id TEXT NOT NULL,
+    name TEXT NOT NULL
 ) STRICT, WITHOUT ROWID;

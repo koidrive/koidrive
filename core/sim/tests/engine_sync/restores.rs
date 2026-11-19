@@ -451,13 +451,17 @@ impl Bench {
         panic!("no end within {STEPS} steps");
     }
 
-    fn delete(&mut self, folder: &str, between: impl FnMut(&mut Bench)) {
+    fn remove(&mut self, folder: &str) {
         let mut below = vec![folder.to_owned()];
         while let Some(id) = below.pop() {
             below.extend(self.trees.local_children(&id).cloned());
             self.trees.remove_local(&id);
         }
         self.trees.settle(self.commits.aliases());
+    }
+
+    fn delete(&mut self, folder: &str, between: impl FnMut(&mut Bench)) {
+        self.remove(folder);
         self.sync(between);
         let trashed = |node: &NodeState| node.node_id == folder && node.status == 2;
         assert!(self.space.nodes().iter().any(trashed));
@@ -530,19 +534,83 @@ fn a_big_deletion_and_its_restore_bring_back_every_file() {
 }
 
 #[test]
-fn two_requests_for_a_big_folder_bring_back_every_file() {
+fn two_requests_for_big_folders_bring_back_every_file() {
+    for (path, asked) in [(&["big"][..], 0), (&["big", "sub"], 1)] {
+        let (mut bench, folders) = Bench::large_files(path, 8);
+        bench.delete(&folders[0], |_| {});
+        let intent = RestoreIntent::from_trash(folders[0].clone(), None, None).unwrap();
+        let id = bench.ids.uuid_v7(NOW as u64);
+        assert!(bench.commits.restore(id, intent));
+        let ended_with = |bench: &mut Bench| {
+            if !bench.outcomes().is_empty() {
+                assert_eq!(bench.live_files(), 8, "{path:?}");
+            }
+        };
+        bench.restore(&folders[asked], ended_with);
+        let restored = [Outcome::Restored, Outcome::Restored];
+        assert_eq!(bench.outcomes(), restored, "{path:?}");
+    }
+}
+
+#[test]
+fn a_big_folder_restored_where_its_name_is_taken_reports_its_new_name() {
     let (mut bench, folders) = Bench::large_files(&["big"], 8);
     bench.delete(&folders[0], |_| {});
-    let intent = RestoreIntent::from_trash(folders[0].clone(), None, None).unwrap();
-    let id = bench.ids.uuid_v7(NOW as u64);
-    assert!(bench.commits.restore(id, intent));
-    let ended_with = |bench: &mut Bench| {
-        if !bench.outcomes().is_empty() {
-            assert_eq!(bench.live_files(), 8);
+    let root = bench.space.space_id().to_owned();
+    let taker = bench.other.uuid_v7(NOW as u64);
+    bench.commit_by_other(op::Op::CreateDir(CreateDir {
+        node_id: taker,
+        parent_id: root,
+        name: "big".to_owned(),
+        pending_for: String::new(),
+    }));
+    bench.restore(&folders[0], |_| {});
+    let big = (bench.space.nodes().into_iter()).find(|node| node.node_id == folders[0]);
+    let name = big.unwrap().name;
+    assert_ne!(name, "big");
+    assert_eq!(bench.live_files(), 8);
+    assert_eq!(bench.outcomes(), [Outcome::Renamed { name }]);
+}
+
+fn deleted_inside_first(path: &[&str], finished: bool) -> (Bench, Vec<String>) {
+    let (mut bench, folders) = Bench::large_files(path, 8);
+    let mut around = (!finished).then(|| folders[0].clone());
+    bench.delete(folders.last().unwrap(), |bench| {
+        if let Some(folder) = around.take() {
+            bench.remove(&folder);
         }
-    };
-    bench.restore(&folders[0], ended_with);
-    assert_eq!(bench.outcomes(), [Outcome::Restored, Outcome::Restored]);
+    });
+    bench.delete(&folders[0], |_| {});
+    (bench, folders)
+}
+
+const INSIDE_FIRST: [(&[&str], bool); 3] = [
+    (&["big", "sub"], false),
+    (&["big", "sub", "inner"], false),
+    (&["big", "sub"], true),
+];
+
+#[test]
+fn a_folder_deleted_before_the_folder_around_it_comes_back_whole() {
+    for (path, finished) in INSIDE_FIRST {
+        let (mut bench, folders) = deleted_inside_first(path, finished);
+        bench.restore(folders.last().unwrap(), |_| {});
+        assert_eq!(bench.live_files(), 8, "{path:?} {finished}");
+        assert_eq!(bench.outcomes(), [Outcome::Restored], "{path:?} {finished}");
+    }
+}
+
+#[test]
+fn a_folder_deleted_after_a_folder_inside_it_comes_back_without_it() {
+    for (path, finished) in INSIDE_FIRST {
+        let (mut bench, folders) = deleted_inside_first(path, finished);
+        bench.restore(&folders[0], |_| {});
+        let inside =
+            (bench.space.nodes().into_iter()).find(|node| &node.node_id == folders.last().unwrap());
+        assert_eq!(inside.unwrap().status, 2, "{path:?} {finished}");
+        assert_eq!(bench.live_files(), 0, "{path:?} {finished}");
+        assert_eq!(bench.outcomes(), [Outcome::Restored], "{path:?} {finished}");
+    }
 }
 
 #[test]

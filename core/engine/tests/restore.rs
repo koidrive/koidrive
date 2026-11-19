@@ -725,6 +725,37 @@ fn a_restore_that_does_not_fit_alone_is_resolved() {
 }
 
 #[test]
+fn a_piece_of_a_split_restore_answered_superseded_leaves_the_restore_going() {
+    let (folder, request) = (id(1), id(100));
+    let chunk = proto::ChunkRef {
+        hash: vec![7; 32],
+        size: 3,
+        encoding: 0,
+    };
+    let large = Content {
+        chunks: vec![chunk; 4096],
+        chunk_count: 4096,
+        ..content(1)
+    };
+    let mut rows = vec![in_trash(folder.clone(), dir(&root(), "d"))];
+    for n in 2..10 {
+        let shape = file(&folder, &format!("f{n}"), 1);
+        let content = Some(large.clone());
+        rows.push(in_trash(id(n), Shape { content, ..shape }));
+    }
+    let mut trees = trees(&rows);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    commits.restore(request, from_trash(&folder));
+    let pieces = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(!pieces.contains(&restore_op(&from_trash(&folder))));
+    let superseded = vec![outcome(op_result::Code::Superseded); pieces.len()];
+    acknowledge(&mut commits, &mut trees, superseded);
+    assert!(commits.resolved().is_empty());
+    let again = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&again), pieces);
+}
+
+#[test]
 fn a_restore_in_a_commit_that_does_not_fit_is_sent_again_in_a_smaller_one() {
     let (n, request) = (id(1), id(100));
     let mut trees = trees(&[created(id(2), "a"), in_trash(n.clone(), dir(&root(), "d"))]);

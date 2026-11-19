@@ -60,8 +60,8 @@ upgrade_case!(schema_forget_sync_state, |store| {
         "migrations",
         "restore_asked",
         "restore_intents",
-        "restore_pieces",
         "restore_requests",
+        "split_restores",
         "volume_mounts",
     ];
     let forgotten = "answer_moves commit_in_flight commit_in_flight_delete_members commit_in_flight_deletes \

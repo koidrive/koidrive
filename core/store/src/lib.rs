@@ -860,7 +860,7 @@ impl Tx<'_> {
             "restore_requests",
             "restore_intents",
             "restore_asked",
-            "restore_pieces",
+            "split_restores",
         ];
         let ids = self.id_generator()?;
         let tables: Vec<String> = self

@@ -13,7 +13,7 @@ use koidrive_engine::question::{
     Answer, Held, Limit, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
     Revisions,
 };
-use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent, RestorePiece};
+use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent, SplitRestore};
 use koidrive_engine::state::{
     Agreed, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptCause, KeptEntries, KeptRules,
     KeptRulesFile, LostPosition, MovedHere, PendingFinish, TreesState,
@@ -1416,11 +1416,12 @@ fn engine_state() -> EngineState {
             cap: Some(8),
             split: nodes(["big"]),
             trash_groups: BTreeMap::from([("big".into(), "commit:3".into())]),
-            restore_pieces: BTreeMap::from([(
-                "piece".into(),
-                RestorePiece {
-                    restore_id: id(100),
+            split_restores: BTreeMap::from([(
+                id(100),
+                SplitRestore {
                     trash_group: "commit:4".into(),
+                    parent: "root".into(),
+                    name: "big".into(),
                 },
             )]),
             aliases: BTreeMap::from([("twin".into(), "kept".into())]),
