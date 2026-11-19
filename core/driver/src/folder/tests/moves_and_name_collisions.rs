@@ -1040,4 +1040,3 @@ fn a_delete_the_server_refused_after_a_rule_left_its_file_out_is_sent_again_afte
         "{nodes:?}"
     );
 }
-
