@@ -63,6 +63,32 @@ proptest! {
         )?;
         prop_assert_eq!((ran.deletes, ran.removals, ran.trashed), (0, 0, 0));
     }
+
+    #[test]
+    fn a_node_another_device_moves_onto_a_folder_the_rules_leave_out_here_settles(
+        seed in prop::collection::vec(action(2), 0..6),
+        local in prop::collection::vec(action(4), 0..6),
+        remote in prop::collection::vec(action(4), 0..6),
+        moved in any::<usize>(),
+        during in prop::collection::vec(
+            (any::<bool>(), prop::collection::vec(action(4), 1..4)),
+            0..6,
+        ),
+        rulings in prop::collection::vec(ruling(), 0..4),
+    ) {
+        run_ignoring(
+            &[vec![act(1, 0, 0, 0, 0)], seed].concat(),
+            &[vec![act(0, 0, 0, 6, 0)], local].concat(),
+            &[vec![act(3, moved, 0, 6, 0)], remote].concat(),
+            MAX_OPS,
+            false,
+            &during,
+            Cut::None,
+            &[vec![Ruling::Exclude(vec!["ss/"])], rulings].concat(),
+            Answer::Delete,
+            None,
+        )?;
+    }
 }
 
 proptest! {

@@ -579,6 +579,7 @@ struct Device {
     removed_from: BTreeMap<NodeId, NodeId>,
     kept_back: BTreeSet<NodeId>,
     relocated: BTreeMap<NodeId, Relocation>,
+    left_out_folders: BTreeSet<String>,
     ignored: IgnoredDisk,
     off_disk: BTreeSet<NodeId>,
 }
@@ -611,6 +612,7 @@ impl Device {
             removed_from: BTreeMap::new(),
             kept_back: BTreeSet::new(),
             relocated: BTreeMap::new(),
+            left_out_folders: BTreeSet::new(),
             ignored: IgnoredDisk::new(),
             off_disk: BTreeSet::new(),
         }
@@ -666,6 +668,29 @@ impl Device {
             Ruling::Include(paths) => self.rules.include = paths.clone(),
         }
         self.rules.read(&mut self.trees);
+        let root = self.trees.local().root.clone();
+        let let_in: Vec<String> = (self.left_out_folders.iter())
+            .filter(|name| !self.trees.ignores(&[name.as_str()], Kind::Dir))
+            .cloned()
+            .collect();
+        for name in let_in {
+            self.left_out_folders.remove(&name);
+            let node = LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
+                shape: koidrive_engine::tree::Shape {
+                    parent: root.clone(),
+                    name,
+                    kind: Kind::Dir,
+                    content: None,
+                },
+                identity: self.identity(),
+                parked: false,
+            };
+            let id = self.ids.uuid_v7(NOW as u64);
+            self.acted.insert(id.clone());
+            self.trees.set_local_changed(id, node);
+        }
         self.rescan();
     }
 
@@ -901,6 +926,8 @@ impl Device {
                                 original: None,
                             },
                         );
+                    } else if kind == Kind::Dir && parent == root {
+                        self.left_out_folders.insert(name.to_owned());
                     }
                     return;
                 }
@@ -1015,8 +1042,22 @@ impl Device {
         }
     }
 
+    fn left_out_root_holds(&self, name: &str) -> bool {
+        let key = name_key(name);
+        self.left_out_folders.iter().any(|held| name_key(held) == key)
+    }
+
     fn disk_name_taken(&self, holder: &NodeId, below: &[String], name: &str) -> bool {
         let key = name_key(name);
+        if *holder == self.trees.local().root
+            && below.is_empty()
+            && self
+                .left_out_folders
+                .iter()
+                .any(|held| name_key(held) == key)
+        {
+            return true;
+        }
         (self.ignored.keys()).any(|(anchor, path)| {
             anchor == holder
                 && path
@@ -1416,9 +1457,12 @@ fn fail_on_ignored_name(
         return false;
     };
     let target = (record.effect.clone(), at.clone());
-    effects
-        .failed(&mut device.trees, &record.effect_id)
-        .unwrap();
+    if at.parent == device.trees.local().root && device.left_out_root_holds(&at.name) {
+        effects.taken(&mut device.trees, &record.effect_id, Some(Kind::Dir))
+    } else {
+        effects.failed(&mut device.trees, &record.effect_id)
+    }
+    .unwrap();
     failed_on_ignored.insert(record.node.clone(), target);
     true
 }
@@ -1447,6 +1491,16 @@ fn still_planned_target<'a>(
         fresh.failed(&mut trees, &record.effect_id).ok()?;
     }
     None
+}
+
+fn waits_on_left_out(device: &Device, id: &NodeId) -> bool {
+    let Some(remote) = device.trees.remote().live(id) else {
+        return false;
+    };
+    let conflict_name = koidrive_engine::names::conflict_name(&remote.name, "me", NOW, 1);
+    remote.parent == device.trees.remote().root
+        && device.left_out_root_holds(&remote.name)
+        && (remote.kind == Kind::Dir || device.trees.ignores(&[conflict_name], remote.kind))
 }
 
 /// Whether S cannot take `id` at its R position because the S entry of a node that waits still
@@ -1702,7 +1756,20 @@ fn sent_move_check(
     remote: Option<&RemoteNode>,
     device: &str,
     merged_into: &BTreeMap<NodeId, NodeId>,
+    name_left_out: bool,
 ) -> Result<(), TestCaseError> {
+    let refused_name = name_left_out
+        && moved.pending_for.is_empty()
+        && remote.is_some_and(|node| {
+            !node.trashed
+                && node.shape.parent == moved.new_parent_id
+                && (moved.from.as_ref()).is_some_and(|from| {
+                    from.parent_id == node.shape.parent && from.name == node.shape.name
+                })
+        });
+    if refused_name {
+        return Ok(());
+    }
     let held = position(local);
     let owed_rename = moved.pending_for.is_empty()
         && moved.new_parent_id == local.parent
@@ -2054,6 +2121,7 @@ fn run_ignoring_answering_after(
     let me = session("me");
     let mut effects = Effects::default();
     let (mut steps, mut quiet, mut due, mut parked_reverted) = (0, false, false, 0);
+    let mut retried: Option<Trees> = None;
     let (mut deletes, mut removals) = (0, 0);
     let (mut asked, mut held_once, mut confirmed) = (0, BTreeSet::new(), BTreeSet::new());
     let mut discarded_folders = BTreeSet::new();
@@ -2440,6 +2508,13 @@ fn run_ignoring_answering_after(
             }
             quiet = (&device.trees, commits.questions()) == (&before.0, &before.1[..])
                 && during.len() == 0;
+            if quiet && !effects.blocked().is_empty() && retried.as_ref() != Some(&device.trees) {
+                retried = Some(device.trees.clone());
+                for node in effects.blocked().keys().cloned().collect::<Vec<_>>() {
+                    effects.unblock(&node);
+                }
+                quiet = false;
+            }
             continue;
         };
         let mut sending = Vec::new();
@@ -2482,6 +2557,7 @@ fn run_ignoring_answering_after(
                     remote,
                     &me.device_id,
                     &merged_into,
+                    device.trees.name_left_out(id),
                 )?;
             }
             if matches!(
@@ -2666,7 +2742,18 @@ fn run_ignoring_answering_after(
             id
         );
     }
-    let blocked_by_ignored = |id: &NodeId| failed_here(id).is_some();
+    let blocked_by_ignored = |id: &NodeId| {
+        failed_here(id).is_some_and(|at| {
+            at.parent != device.trees.remote().root
+                || !device.left_out_root_holds(&at.name)
+                || device
+                    .trees
+                    .remote()
+                    .live(id)
+                    .is_none_or(|remote| !remote.same_position(at))
+                || waits_on_left_out(&device, id)
+        })
+    };
     let mut waiting = refused_merges.clone();
     loop {
         let more: Vec<NodeId> = (unsettled.iter())
@@ -2674,7 +2761,8 @@ fn run_ignoring_answering_after(
                 !waiting.contains(*id)
                     && (blocked_by_ignored(id)
                         || waits_on_excluded(&device.trees, id, &waiting)
-                        || waits_on_synced(&device.trees, id, &waiting))
+                        || waits_on_synced(&device.trees, id, &waiting)
+                        || waits_on_left_out(&device, id))
             })
             .cloned()
             .collect();

@@ -3476,7 +3476,7 @@ impl Trees {
         self.names_left_out.insert(id.to_owned());
     }
 
-    pub(crate) fn name_left_out(&self, id: &str) -> bool {
+    pub fn name_left_out(&self, id: &str) -> bool {
         self.names_left_out.contains(id)
     }
 

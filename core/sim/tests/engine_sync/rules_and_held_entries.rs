@@ -898,3 +898,28 @@ fn a_folder_deleted_around_only_a_moved_away_entry_leaves_nothing_on_disk() {
     assert_eq!(local_path(&device.trees, &"c".into()), ["p", "b", "c.txt"]);
     assert!(device.trees.local().get(&a).is_none());
 }
+
+#[test]
+fn a_file_another_device_renames_to_a_folder_the_rules_leave_out_here_takes_a_conflict_name() {
+    let parked = vec![(false, vec![act(0, 0, 0, 0, 0)])];
+    for during in [vec![], parked] {
+        let ran = run_ignoring(
+            &[act(1, 0, 0, 0, 0)],
+            &[act(0, 0, 0, 6, 0)],
+            &[act(3, 0, 0, 6, 0)],
+            MAX_OPS,
+            false,
+            &during,
+            Cut::None,
+            &[Ruling::Exclude(vec!["ss/"])],
+            Answer::Discard,
+            None,
+        )
+        .unwrap();
+        let names: Vec<String> = (ran.space.nodes().into_iter())
+            .filter(|node| node.status == 1 && node.kind == 2)
+            .map(|node| node.name)
+            .collect();
+        assert_eq!(names, ["ss (conflict from unknown device 2026-11-09)"]);
+    }
+}
