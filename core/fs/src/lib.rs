@@ -2326,6 +2326,33 @@ fn take_left_out(
     (left_out, kept)
 }
 
+#[cfg(test)]
+thread_local! {
+    static VISITED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static VISIT_BUDGET: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
+}
+
+#[cfg(test)]
+type Visiting<I> = std::iter::Inspect<I, fn(&<I as Iterator>::Item)>;
+
+#[cfg(not(test))]
+type Visiting<I> = I;
+
+#[cfg(test)]
+fn visiting<I: Iterator>(items: I) -> Visiting<I> {
+    items.inspect(|_| {
+        let visited = VISITED.get() + 1;
+        VISITED.set(visited);
+        let budget = VISIT_BUDGET.get();
+        assert!(visited <= budget, "visited {visited}, budget {budget}");
+    })
+}
+
+#[cfg(not(test))]
+fn visiting<I: Iterator>(items: I) -> Visiting<I> {
+    items
+}
+
 /// Turns each removal whose entry now sits at or below an entry the rules
 /// leave out into [`Change::Ignored`] (design §5.10). A folder is looked for
 /// by its own identity, and so is each entry it held. Such an entry found
@@ -2360,7 +2387,7 @@ fn find_ignored(
         old
     } else {
         let aside = |path: &Path| -> PathBuf {
-            let (top, below) = (roots.iter())
+            let (top, below) = visiting(roots.iter())
                 .find_map(|top| Some((top, path.strip_prefix(top).ok()?)))
                 .expect("held below a root");
             let mut name = top.as_os_str().to_owned();
@@ -2370,7 +2397,7 @@ fn find_ignored(
                 .chain(below.components())
                 .collect()
         };
-        merged = (old.iter())
+        merged = visiting(old.iter())
             .map(|(path, entry)| (path.clone(), *entry))
             .chain(held.iter().map(|(path, entry)| (aside(path), *entry)))
             .collect();
@@ -2378,7 +2405,7 @@ fn find_ignored(
         &merged
     };
     let (arrivals, postponed) = hold_back(changes, old, new, earlier, rules, root, cut);
-    for change in changes.iter_mut() {
+    for change in visiting(changes.iter_mut()) {
         match change {
             Change::Removed { path, .. }
             | Change::Renamed { from: path, .. }
@@ -2386,7 +2413,7 @@ fn find_ignored(
             Change::Created { .. } | Change::Modified { .. } | Change::Reidentified { .. } => {}
         }
     }
-    let created: BTreeSet<&PathBuf> = (changes.iter())
+    let created: BTreeSet<&PathBuf> = visiting(changes.iter())
         .filter_map(|change| match change {
             Change::Created {
                 path,
@@ -2395,7 +2422,7 @@ fn find_ignored(
             _ => None,
         })
         .collect();
-    let saved: BTreeSet<PathBuf> = (changes.iter())
+    let saved: BTreeSet<PathBuf> = visiting(changes.iter())
         .filter_map(|change| match change {
             Change::Removed {
                 path,
@@ -2406,7 +2433,7 @@ fn find_ignored(
         .collect();
     changes
         .retain(|change| !matches!(change, Change::Created { path, .. } if saved.contains(path)));
-    for change in changes.iter_mut() {
+    for change in visiting(changes.iter_mut()) {
         if let Change::Removed { path, .. } = change
             && saved.contains(path)
         {
@@ -2434,7 +2461,7 @@ fn hold_back(
     root: BorrowedFd<'_>,
     cut: &mut dyn FnMut(Cut<'_>),
 ) -> (Vec<PathBuf>, BTreeMap<PathBuf, Entry>) {
-    let replaced: BTreeSet<PathBuf> = (changes.iter())
+    let replaced: BTreeSet<PathBuf> = visiting(changes.iter())
         .filter_map(|change| match change {
             Change::Modified { path }
                 if (old.get(path).zip(new.get(path)))
@@ -2445,7 +2472,7 @@ fn hold_back(
             _ => None,
         })
         .collect();
-    let removed: BTreeSet<PathBuf> = (changes.iter())
+    let removed: BTreeSet<PathBuf> = visiting(changes.iter())
         .filter_map(|change| match change {
             Change::Removed { path, .. } => Some(path.clone()),
             _ => None,
@@ -2455,7 +2482,7 @@ fn hold_back(
         rules.hold(BTreeMap::new());
         return (Vec::new(), BTreeMap::new());
     }
-    let renamed: HashMap<PathBuf, PathBuf> = (changes.iter())
+    let renamed: HashMap<PathBuf, PathBuf> = visiting(changes.iter())
         .filter_map(|change| match change {
             Change::Renamed { from, to, .. } => Some((from.clone(), to.clone())),
             _ => None,
@@ -2463,7 +2490,7 @@ fn hold_back(
         .collect();
     let carried = |path: &Path| {
         let entry = &old[path];
-        (path.ancestors())
+        visiting(path.ancestors())
             .filter_map(|from| Some((renamed.get(from)?, path.strip_prefix(from).ok()?)))
             .any(|(to, below)| {
                 (new.get(&to.join(below)))
@@ -2473,7 +2500,7 @@ fn hold_back(
     let mut held: BTreeSet<&PathBuf> = (removed.iter())
         .filter(|dir| old[*dir].kind == EntryKind::Dir)
         .flat_map(|dir| {
-            (old.range(dir.clone()..).skip(1))
+            visiting(old.range(dir.clone()..).skip(1))
                 .take_while(move |(path, _)| path.starts_with(dir))
                 .map(|(path, _)| path)
         })
@@ -2521,21 +2548,21 @@ fn hold_back(
     let mut deferred: Vec<(PathBuf, PathBuf)> = (searched.iter().copied())
         .filter(|path| {
             wanted.get(&key(path)) == Some(&None)
-                && (held.iter().copied())
+                && visiting(held.iter().copied())
                     .filter(|inside| inside.starts_with(path))
                     .chain([*path])
                     .any(|inside| undecided.contains(&key(inside)))
         })
         .map(|path| (path.clone(), relocated(path)))
         .collect();
-    let taken = |path: &Path| (deferred.iter()).any(|(_, to)| path.starts_with(to));
-    let mut arrivals: Vec<PathBuf> = (changes.iter())
+    let taken = |path: &Path| visiting(deferred.iter()).any(|(_, to)| path.starts_with(to));
+    let mut arrivals: Vec<PathBuf> = visiting(changes.iter())
         .filter_map(|change| match change {
             Change::Created { path, .. } if taken(path) => Some(path.clone()),
             _ => None,
         })
         .collect();
-    let finish = (changes.iter()).any(|change| match change {
+    let finish = visiting(changes.iter()).any(|change| match change {
         Change::Modified { path } | Change::Renamed { to: path, .. } => taken(path),
         _ => false,
     });
@@ -2559,8 +2586,10 @@ fn hold_back(
         .collect();
     unseen.retain(|path| !postponed.contains_key(path));
     changes.retain(|change| match change {
-        Change::Created { path, .. } => !arrivals.contains(path),
-        Change::Modified { path } => !unseen.contains(path) && !postponed.contains_key(path),
+        Change::Created { path, .. } => !visiting(arrivals.iter()).any(|arrival| arrival == path),
+        Change::Modified { path } => {
+            !visiting(unseen.iter()).any(|seen| seen == path) && !postponed.contains_key(path)
+        }
         _ => true,
     });
     let mut kept: BTreeMap<PathBuf, Entry> = (unseen.iter())
@@ -2607,7 +2636,7 @@ fn hold_back(
             id: entry.id,
         })
     };
-    let mut moved: Vec<Change> = (held.iter())
+    let mut moved: Vec<Change> = visiting(held.iter())
         .filter(|path| {
             !(path.ancestors().skip(1))
                 .take_while(|above| old.contains_key(*above))
@@ -2615,7 +2644,7 @@ fn hold_back(
         })
         .filter_map(|path| found(path))
         .collect();
-    for change in changes.iter_mut() {
+    for change in visiting(changes.iter_mut()) {
         match &*change {
             Change::Removed { path, .. } if !exempt.contains(&path) => {
                 if let Some(ignored) = found(path) {
@@ -2672,7 +2701,7 @@ fn volume_now(
 }
 
 fn carried(path: &Path, moved: &[(&Path, &Path)]) -> PathBuf {
-    (moved.iter())
+    visiting(moved.iter())
         .filter(|(from, _)| path.starts_with(from))
         .max_by_key(|(from, _)| from.components().count())
         .map_or_else(
@@ -2689,8 +2718,7 @@ fn diff<'t>(
     let mounted = (old.values().chain(new.values()).chain(beyond.values()))
         .any(|entry| entry.mount.is_some());
     let volume = |path: &'t Path, tree| mounted.then(|| volume_of(path, tree, beyond)).flatten();
-    let moved: HashSet<(Option<&Path>, FileId)> = old
-        .iter()
+    let moved: HashSet<(Option<&Path>, FileId)> = visiting(old.iter())
         .filter(|(path, before)| {
             before.kind == EntryKind::Dir
                 && !new
@@ -2699,13 +2727,13 @@ fn diff<'t>(
         })
         .map(|(path, before)| (volume(path, old), before.id))
         .collect();
-    let dirs: HashSet<(Option<&Path>, FileId)> = (new.iter())
+    let dirs: HashSet<(Option<&Path>, FileId)> = visiting(new.iter())
         .filter(|(_, after)| after.kind == EntryKind::Dir)
         .map(|(path, after)| (volume(path, new), after.id))
         .collect();
     let ids =
         |tree: &'t BTreeMap<PathBuf, Entry>| -> HashSet<(Option<&'t Path>, FileId, EntryKind)> {
-            (tree.iter())
+            visiting(tree.iter())
                 .map(|(path, entry)| (volume(path, tree), entry.id, entry.kind))
                 .collect()
         };
@@ -2719,7 +2747,7 @@ fn diff<'t>(
             && !(after.kind == EntryKind::Dir
                 && after.id != before.id
                 && dirs.contains(&(was_on, before.id))
-                && !(old.range(path.to_path_buf()..).skip(1))
+                && !visiting(old.range(path.to_path_buf()..).skip(1))
                     .take_while(|(inside, _)| inside.starts_with(path))
                     .any(|(inside, entry)| {
                         (new.get(inside))
@@ -2735,7 +2763,7 @@ fn diff<'t>(
                         .is_some_and(|(inside, _)| inside.starts_with(path))))
     };
     let mut changed: HashSet<&Path> = HashSet::new();
-    for (path, before) in old {
+    for (path, before) in visiting(old.iter()) {
         let parent_changed = path.parent().is_some_and(|parent| changed.contains(parent));
         if parent_changed || !new.get(path).is_some_and(|after| kept(path, before, after)) {
             changed.insert(path);
@@ -2745,7 +2773,7 @@ fn diff<'t>(
     let mut created: Vec<(&Path, &Entry)> = Vec::new();
     let mut modified: Vec<&Path> = Vec::new();
     let mut reidentified: Vec<&Path> = Vec::new();
-    for (path, before) in old {
+    for (path, before) in visiting(old.iter()) {
         match new.get(path) {
             Some(after) if !changed.contains(path.as_path()) => {
                 let moved = (path.parent()).is_some_and(|parent| {
@@ -2766,14 +2794,14 @@ fn diff<'t>(
             }
         }
     }
-    for (path, after) in new {
+    for (path, after) in visiting(new.iter()) {
         if !old.contains_key(path) || changed.contains(path.as_path()) {
             created.push((path, after));
         }
     }
 
     let mut by_id: HashMap<(FileId, EntryKind), VecDeque<&Path>> = HashMap::new();
-    for (path, entry) in &removed {
+    for (path, entry) in visiting(removed.iter()) {
         by_id
             .entry((entry.id, entry.kind))
             .or_default()
@@ -2786,7 +2814,7 @@ fn diff<'t>(
         let Some(candidates) = by_id.get_mut(&(after.id, after.kind)) else {
             return true;
         };
-        let Some(at) = candidates.iter().position(|from| {
+        let Some(at) = visiting(candidates.iter()).position(|from| {
             let source = volume_of(from, old, beyond);
             (source == Some(*from) && target == Some(to))
                 || source.map(|source| carried(source, &moved)) == target.map(Path::to_path_buf)

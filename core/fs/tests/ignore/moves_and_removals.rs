@@ -463,42 +463,6 @@ fn a_file_swapped_with_an_ignored_file_is_ignored_and_the_other_created() {
 }
 
 #[test]
-#[ignore = "timing probe; run with --release -- --ignored"]
-fn many_files_moved_out_of_a_removed_folder_are_renamed_in_less_than_a_second() {
-    let files = 20_000;
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    write(root, KOIIGNORE, "ig/\n");
-    write(root, "ig/deep/old.txt", "o");
-    fs::create_dir(root.join("d")).unwrap();
-    fs::create_dir(root.join("e")).unwrap();
-    for i in 0..files {
-        fs::write(root.join(format!("d/{i}")), "x").unwrap();
-    }
-    let mut rules = rules();
-    let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
-    for i in 0..files {
-        fs::rename(root.join(format!("d/{i}")), root.join(format!("e/{i}"))).unwrap();
-    }
-    fs::remove_dir(root.join("d")).unwrap();
-
-    let started = Instant::now();
-    let rescan = snapshot
-        .rescan_with_rules(root, whole(), &mut rules)
-        .unwrap();
-    let elapsed = started.elapsed();
-    let renamed = (rescan.changes.iter())
-        .filter(|change| matches!(change, Change::Renamed { .. }))
-        .count();
-    assert_eq!((rescan.changes.len(), renamed), (files + 1, files));
-    assert!(
-        elapsed < Duration::from_secs(1),
-        "{files} files took {elapsed:?}"
-    );
-    eprintln!("{files} files: {elapsed:?}");
-}
-
-#[test]
 fn a_file_moved_below_an_ignored_folder_while_another_takes_its_path_is_ignored_on_macos() {
     for to in ["ig/f.txt", "ig/deep/f.txt"] {
         let (dir, mut snapshot, mut rules) = tree_with_an_ignored_folder();
