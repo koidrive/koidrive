@@ -8,8 +8,10 @@ tests = [
   "devices_on_coarse_volumes_converge_across_restores_and_rewinds",
   "devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds",
 ]
-message = '''after phase <n>: a restore took write <n> from the server while a disk held it, and the server does not hold it again, though no user overwrote or deleted it\.'''
+message = '''after phase <n>: a restore took write <n> from the server while a disk held it, and the server does not hold it again, though no user overwrote or deleted it\.( not recorded: devices::\S+ \S+ (DeleteUndone the delete of node <id> on device <n> came undone, and no change its user did not see brought the node back|WriteKept write <n> of the write of node <id> on device <n> is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it))*'''
 examples = [
   "after phase 1: a restore took write 5 from the server while a disk held it, and the server does not hold it again, though no user overwrote or deleted it.",
   "after phase 2: a restore took write 4 from the server while a disk held it, and the server does not hold it again, though no user overwrote or deleted it.",
+  "after phase 2: a restore took write 9 from the server while a disk held it, and the server does not hold it again, though no user overwrote or deleted it.\nnot recorded: devices::devices_on_coarse_volumes_converge_across_restores_and_rewinds\tcc-90c1a88661b2e83ebc83f37b1ae621cf7152213d60480a5127661bb76a0eb260\tDeleteUndone\tthe delete of node 01a1c2c0-39a0-7697-a09e-ac5b8b8a095b on device 0 came undone, and no change its user did not see brought the node back",
+  "after phase 2: a restore took write 6 from the server while a disk held it, and the server does not hold it again, though no user overwrote or deleted it.\nnot recorded: devices::devices_on_coarse_volumes_converge_across_restores_and_rewinds\tcc-ddd6ee99fd8d2281edaf4677fb4b4d3389f64db092928ce95023aeadeba08a24\tWriteKept\twrite 6 of the write of node 01a1c2c0-39a0-7ea7-93f8-3d888a182e12 on device 1 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it",
 ]
