@@ -965,3 +965,27 @@ fn a_restore_answer_is_not_settled_by_a_delete_the_server_lost_from_a_device_tha
     world.run(2, &schedule).unwrap();
     world.phase(3, &[]).unwrap();
 }
+
+#[test]
+fn a_server_that_keeps_a_copy_of_a_write_the_delete_saw_is_caught() {
+    let mut world = world(2);
+    world.phase(0, &[(0, file("a"))]).unwrap();
+    world.phase(1, &[(0, overwrite(0))]).unwrap();
+    world.space_mut().copy_each_deleted_file();
+    let failure = world.phase(2, &[(1, delete(0))]).unwrap_err();
+    let node = |named: &str| {
+        (world.space().nodes().into_iter())
+            .find(|node| node.name.starts_with(named))
+            .unwrap()
+            .node_id
+    };
+    assert_eq!(
+        failure.to_string(),
+        format!(
+            "after phase 2: write 2 that the delete of node {} on device 1 saw is live again on \
+             node {}, and no user copied it",
+            node("a"),
+            node("a (conflict")
+        )
+    );
+}

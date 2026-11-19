@@ -290,6 +290,10 @@ fn expect_red_without_intents(check: Check, why: &str) -> Option<ExpectedRed> {
     (!FIELD_INTENTS.get()).then(|| expect_red(check, why))
 }
 
+fn expect_red_with_intents(check: Check, why: &str) -> Option<ExpectedRed> {
+    FIELD_INTENTS.get().then(|| expect_red(check, why))
+}
+
 fn world(devices: usize) -> World {
     on(&vec![Precision::Fine; devices])
 }
@@ -5486,6 +5490,10 @@ fn known_red(issue: &str, message: &str, test: fn()) {
 }
 
 fn a_resend_applied_before_a_delete_built_without_it() {
+    let _gun_665 = expect_red_with_intents(
+        Check::DeleteUndone,
+        "write 2 that the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 saw is live again on node 01a1c2c0-39bc-7a9c-a2fe-ec8a5505a73c, and no user copied it",
+    );
     let mut world = converge(
         2,
         &[vec![(0, file("a"))], vec![(0, BACKUP), (0, overwrite(0))]],
@@ -5820,6 +5828,10 @@ fn a_delete_whose_user_held_the_lost_edit_beats_the_authors_edit_sent_after_anot
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
     );
+    let _gun_665 = expect_red_with_intents(
+        Check::DeleteUndone,
+        "write 2 that the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 saw is live again on node 01a1c2c0-39c8-7a9c-a2fe-ec8a5505a73c, and no user copied it",
+    );
     let mut world = a_lost_edit_three_devices_held(overwrite(0));
     let mut steps = connect(&[1, 0, 2]);
     steps.extend([(2, delete(0)), (2, SCAN), (2, COMMIT)]);
@@ -5835,6 +5847,10 @@ fn a_file_trashed_by_a_user_who_held_the_lost_edit_stays_trashed_when_the_author
     let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+    );
+    let _gun_665 = expect_red_with_intents(
+        Check::DeleteUndone,
+        "write 2 that the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 saw is live again on node 01a1c2c0-39c5-7a9c-a2fe-ec8a5505a73c, and no user copied it",
     );
     let mut world = a_lost_edit_three_devices_held(overwrite(0));
     let mut steps = connect(&[1, 0, 2]);
@@ -5999,6 +6015,10 @@ fn a_device_that_deleted_the_file_after_holding_the_lost_edit_keeps_it_deleted_p
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
     );
+    let _gun_665 = expect_red_with_intents(
+        Check::DeleteUndone,
+        "write 2 that the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 saw is live again on node 01a1c2c0-39d1-7a9c-a2fe-ec8a5505a73c, and no user copied it",
+    );
     a_delete_pulled_after_the_authors_edit(true);
 }
 
@@ -6112,6 +6132,10 @@ fn a_delete_whose_user_held_the_lost_edit_stays_across_a_second_loss_after_anoth
     let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back",
+    );
+    let _gun_665 = expect_red_with_intents(
+        Check::DeleteUndone,
+        "write 2 that the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 saw is live again on node 01a1c2c0-39f6-7bed-b3e4-9ef55c94cb0d, and no user copied it",
     );
     the_authors_edit_after_two_losses(true);
 }

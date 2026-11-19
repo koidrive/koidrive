@@ -473,6 +473,7 @@ pub struct SpaceDo {
     /// The commit token at `log_floor_seq` (RFC 0013), kept when the log is truncated past it.
     floor_token: Option<(String, i64)>,
     copies_created_files: bool,
+    copies_deleted_files: bool,
     field_intents: bool,
 }
 
@@ -535,6 +536,7 @@ impl SpaceDo {
             log_floor_seq: 0,
             floor_token: None,
             copies_created_files: false,
+            copies_deleted_files: false,
             field_intents: false,
         }
     }
@@ -694,10 +696,12 @@ impl SpaceDo {
         let intent_ids = self.state.intent_ids.clone();
         let objects = std::mem::take(&mut self.objects);
         let account_history = std::mem::take(&mut self.account_history);
-        let copies_created_files = self.copies_created_files;
+        let (copies_created_files, copies_deleted_files) =
+            (self.copies_created_files, self.copies_deleted_files);
         let field_intents = self.field_intents;
         *self = backup.clone();
         self.copies_created_files = copies_created_files;
+        self.copies_deleted_files = copies_deleted_files;
         self.field_intents = field_intents;
         self.state.ids = ids;
         self.state.intent_ids = intent_ids;
@@ -718,6 +722,12 @@ impl SpaceDo {
     /// as a server that duplicates creates would.
     pub fn copy_each_created_file(&mut self) {
         self.copies_created_files = true;
+    }
+
+    /// Makes every later commit that trashes a file also keep a conflict copy of it beside it, as
+    /// a server that copies a file out of the trash it puts it in would.
+    pub fn copy_each_deleted_file(&mut self) {
+        self.copies_deleted_files = true;
     }
 
     pub fn refuses(&self) -> bool {
@@ -1071,6 +1081,7 @@ impl SpaceDo {
             now_ms,
             committer: session,
             copies_created_files: self.copies_created_files,
+            copies_deleted_files: self.copies_deleted_files,
             results: &self.results,
         };
         let (results, changes) = Applier::new(&mut state, ctx).apply(&commit.ops)?;
