@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, btree_map};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -270,33 +270,63 @@ impl Rules {
         self.ignore.status(path, kind)
     }
 
-    /// The git index files of the work trees the scans found, each with its work tree.
-    pub(crate) fn index_files(&self) -> impl Iterator<Item = (&PathBuf, PathBuf)> {
-        (self.indexes.iter()).filter_map(|(tree, index)| Some((tree, index.index_path()?)))
+    pub(crate) fn git_dirs(&self) -> impl Iterator<Item = (&PathBuf, &Path)> {
+        (self.indexes.iter()).filter_map(|(tree, index)| Some((tree, index.git_dir()?)))
     }
 
-    /// Reads the index of the work tree at `tree` again when RFC 0033 §3 rule 4 says so and gives the matcher the
-    /// files it lists. Returns what the matcher held before, when that changed.
-    pub(crate) fn read_index(&mut self, root: &Path, tree: &Path) -> Option<Vec<String>> {
-        let index = match self.indexes.entry(tree.to_path_buf()) {
-            btree_map::Entry::Occupied(index) => index.into_mut(),
-            btree_map::Entry::Vacant(slot) => slot.insert(GitIndex::find(&root.join(tree))?),
-        };
-        if !index.refresh() && self.tracked.contains_key(tree) {
-            return None;
+    pub(crate) fn read_index(&mut self, root: &Path, tree: &Path) -> Vec<(PathBuf, Vec<String>)> {
+        if let Some(index) = self.indexes.get_mut(tree) {
+            if !index.refresh() && self.tracked.contains_key(tree) {
+                return Vec::new();
+            }
+            return self.publish(tree).into_iter().collect();
         }
-        let mut listed: Vec<String> = index.listed().map(str::to_owned).collect();
-        listed.sort_unstable();
-        self.set_tracked(tree, listed)
+        let Some(mut index) = GitIndex::find(&root.join(tree)) else {
+            return Vec::new();
+        };
+        index.refresh();
+        self.indexes.insert(tree.to_path_buf(), index);
+        self.publish_above(tree)
     }
 
     pub(crate) fn tracked(&self, tree: &Path) -> &[String] {
         self.tracked.get(tree).map_or(&[], Vec::as_slice)
     }
 
-    pub(crate) fn forget_index(&mut self, tree: &Path) -> Option<Vec<String>> {
-        self.indexes.remove(tree);
-        self.set_tracked(tree, Vec::new())
+    pub(crate) fn forget_index(&mut self, tree: &Path) -> Vec<(PathBuf, Vec<String>)> {
+        let mut changed: Vec<_> = (self.set_tracked(tree, Vec::new()).into_iter())
+            .map(|before| (tree.to_path_buf(), before))
+            .collect();
+        if self.indexes.remove(tree).is_some() {
+            changed.extend(self.publish_above(tree));
+        }
+        changed
+    }
+
+    fn publish_above(&mut self, tree: &Path) -> Vec<(PathBuf, Vec<String>)> {
+        let above: Vec<PathBuf> = (tree.ancestors())
+            .filter(|folder| self.indexes.contains_key(*folder))
+            .map(Path::to_path_buf)
+            .collect();
+        above.iter().filter_map(|tree| self.publish(tree)).collect()
+    }
+
+    fn publish(&mut self, tree: &Path) -> Option<(PathBuf, Vec<String>)> {
+        let inner: Vec<PathBuf> = (self.indexes.keys())
+            .filter_map(|folder| folder.strip_prefix(tree).ok())
+            .filter(|folder| !folder.as_os_str().is_empty())
+            .map(|folder| self.key(folder))
+            .collect();
+        let owned = |path: &&str| {
+            inner.is_empty() || {
+                let path = self.key(Path::new(path));
+                !inner.iter().any(|folder| path.starts_with(folder))
+            }
+        };
+        let index = self.indexes.get(tree)?;
+        let mut listed: Vec<String> = index.listed().filter(owned).map(str::to_owned).collect();
+        listed.sort_unstable();
+        Some((tree.to_path_buf(), self.set_tracked(tree, listed)?))
     }
 
     fn set_tracked(&mut self, tree: &Path, listed: Vec<String>) -> Option<Vec<String>> {
@@ -393,9 +423,9 @@ impl<'r> Pending<'r> {
         } else {
             self.rules.forget_index(rel)
         };
-        let mut changed = tracked.is_some();
-        if let Some(before) = tracked {
-            self.tracked.entry(rel.to_path_buf()).or_insert(before);
+        let mut changed = !tracked.is_empty();
+        for (tree, before) in tracked {
+            self.tracked.entry(tree).or_insert(before);
         }
         for (key, read) in reads {
             let found = match read {
@@ -939,10 +969,8 @@ impl<'r> Pending<'r> {
             .filter(|tree| !held(tree))
             .cloned()
             .collect();
-        for tree in gone {
-            if let Some(listed) = rules.forget_index(&tree) {
-                tracked.entry(tree).or_insert(listed);
-            }
+        for (tree, before) in gone.iter().flat_map(|tree| rules.forget_index(tree)) {
+            tracked.entry(tree).or_insert(before);
         }
         let tracked = (tracked.into_iter())
             .filter_map(|(tree, before)| {

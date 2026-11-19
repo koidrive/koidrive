@@ -3445,8 +3445,7 @@ pub struct NativeWatcher {
     /// The rules changes of the scans since the last poll returned.
     changed_rules: Vec<(PathBuf, Source, Option<Vec<u8>>)>,
     changed_tracked: Vec<(PathBuf, Vec<String>)>,
-    /// The git index files the watcher watches, by the path events name them at, each with its work tree.
-    indexes: BTreeMap<PathBuf, PathBuf>,
+    git_dirs: BTreeMap<PathBuf, PathBuf>,
     /// The folders whose rules the scans since the last poll established.
     read: BTreeSet<PathBuf>,
     /// Folders whose subfolders may be unwatched, which are registered once a
@@ -3513,7 +3512,7 @@ impl NativeWatcher {
             rules,
             changed_rules: Vec::new(),
             changed_tracked: Vec::new(),
-            indexes: BTreeMap::new(),
+            git_dirs: BTreeMap::new(),
             read: BTreeSet::new(),
             rewatch: false,
             remount_checked: Instant::now(),
@@ -3594,9 +3593,17 @@ impl NativeWatcher {
             _ => false,
         };
         for path in event.paths {
-            if let Some(tree) = self.indexes.get(&path).cloned() {
-                self.read_index(tree);
-                continue;
+            if let Some(tree) = path
+                .parent()
+                .and_then(|dir| self.git_dirs.get(dir))
+                .cloned()
+            {
+                if path.ends_with("index") || path.ends_with("index.lock") {
+                    self.read_index(tree);
+                }
+                if !path.starts_with(&self.root) {
+                    continue;
+                }
             }
             let rel = path.strip_prefix(&self.root).unwrap_or(Path::new(""));
             if listing_only && self.folder_as_scanned(&path, rel) {
@@ -3616,44 +3623,34 @@ impl NativeWatcher {
         Ok(())
     }
 
-    /// Reads the index of the work tree at `tree` after an event for it, and rescans each path whose answer changed.
     fn read_index(&mut self, tree: PathBuf) {
         let Some(rules) = self.rules.as_mut() else {
             return;
         };
-        let Some(before) = rules.read_index(&self.root, &tree) else {
-            return;
-        };
-        let now = rules.tracked(&tree).to_vec();
-        let before: BTreeSet<&String> = before.iter().collect();
-        let after: BTreeSet<&String> = now.iter().collect();
-        (self.dirty).extend(
-            before
-                .symmetric_difference(&after)
-                .map(|path| tree.join(path)),
-        );
-        self.changed_tracked.push((tree, now));
+        for (tree, before) in rules.read_index(&self.root, &tree) {
+            let now = rules.tracked(&tree).to_vec();
+            let before: BTreeSet<&String> = before.iter().collect();
+            let after: BTreeSet<&String> = now.iter().collect();
+            (self.dirty).extend(
+                before
+                    .symmetric_difference(&after)
+                    .map(|path| tree.join(path)),
+            );
+            self.changed_tracked.push((tree, now));
+        }
     }
 
-    /// Watches the index file of each work tree the scans found, where the watch of the root does not cover it.
-    fn watch_indexes(&mut self) {
+    fn watch_git_dirs(&mut self) {
         let Some(rules) = &self.rules else {
             return;
         };
-        let now: BTreeMap<PathBuf, PathBuf> = (rules.index_files())
-            .filter_map(|(tree, index)| {
-                let dir = std::fs::canonicalize(index.parent()?).ok()?;
-                Some((dir.join("index"), tree.clone()))
-            })
+        let now: BTreeMap<PathBuf, PathBuf> = (rules.git_dirs())
+            .filter_map(|(tree, dir)| Some((std::fs::canonicalize(dir).ok()?, tree.clone())))
             .collect();
         let root = self.root.clone();
-        let uncovered = |index: &Path| cfg!(target_os = "linux") || !index.starts_with(&root);
-        for index in now
-            .keys()
-            .filter(|index| !self.indexes.contains_key(*index))
-        {
-            if let Some(dir) = index.parent()
-                && uncovered(index)
+        let uncovered = |dir: &Path| cfg!(target_os = "linux") || !dir.starts_with(&root);
+        for dir in now.keys().filter(|dir| !self.git_dirs.contains_key(*dir)) {
+            if uncovered(dir)
                 && let Err(err) =
                     notify::Watcher::watch(&mut self.watcher, dir, RecursiveMode::NonRecursive)
                 && !gone(dir)
@@ -3661,18 +3658,12 @@ impl NativeWatcher {
                 self.failed = Some(watch_error(err));
             }
         }
-        for index in self
-            .indexes
-            .keys()
-            .filter(|index| !now.contains_key(*index))
-        {
-            if let Some(dir) = index.parent()
-                && uncovered(index)
-            {
+        for dir in self.git_dirs.keys().filter(|dir| !now.contains_key(*dir)) {
+            if uncovered(dir) {
                 let _ = notify::Watcher::unwatch(&mut self.watcher, dir);
             }
         }
-        self.indexes = now;
+        self.git_dirs = now;
     }
 
     fn folder_as_scanned(&self, path: &Path, rel: &Path) -> bool {
@@ -4010,7 +4001,7 @@ impl Watcher for NativeWatcher {
             if self.rewatch {
                 let deferred = cfg!(target_os = "linux") && self.rules.is_some();
                 self.watcher = watch_root(&self.root, &self.sender, deferred)?;
-                self.indexes.clear();
+                self.git_dirs.clear();
                 #[cfg(target_os = "linux")]
                 self.blocked.extend(deferred.then(PathBuf::new));
                 self.rewatch = false;
@@ -4049,7 +4040,7 @@ impl Watcher for NativeWatcher {
             root = Some(rescan.root);
             self.changed_rules.extend(rescan.rules);
             self.changed_tracked.extend(rescan.tracked);
-            self.watch_indexes();
+            self.watch_git_dirs();
             self.settled.extend(rescan.settled);
             self.waiting
                 .retain(|path| self.snapshot.unplaced.contains(path));
@@ -4357,7 +4348,7 @@ pub use effect::{
     Action, BroughtBack, Contents, Displaced, Effect, Outcome, QUARANTINE_DIR, Reason, Refusal,
     STAGING_DIR, Section, Step,
 };
-pub use git::{GitIndex, owner};
+pub use git::GitIndex;
 pub use ignore::{Coverage, Ignore, Ignored, Rules};
 use ignore::{Key, Pending, RulesRead, Seeded, Wanted};
 pub use koidrive_ignore::Source;

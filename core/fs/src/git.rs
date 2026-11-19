@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
 use std::marker::PhantomData;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
@@ -16,6 +16,7 @@ use sha2::Sha256;
 use crate::{FileId, is_gone, stat_path};
 
 const MAX_GITFILE: u64 = 1 << 20;
+const MAX_INDEX: u64 = 1 << 30;
 
 /// The index of a work tree (RFC 0033 §3): a folder that holds a `.git` folder, or a `.git` file whose
 /// `gitdir:` line names its git directory. Paths are relative to the work tree and compared by `K`'s key.
@@ -98,7 +99,7 @@ impl<K: NameKey> GitIndex<K> {
     /// directory entry.
     pub fn lists(&self, path: &Path) -> Option<bool> {
         let answers = self.answers.as_ref()?;
-        let path = key::<K>(path.as_os_str().as_bytes());
+        let path = key::<K>(&path.as_os_str().to_string_lossy());
         let sparse =
             (path.match_indices('/')).any(|(end, _)| answers.sparse.contains(&path[..end]));
         (!sparse).then(|| answers.listed.contains(&path))
@@ -109,9 +110,10 @@ impl<K: NameKey> GitIndex<K> {
         (self.answers.iter()).flat_map(|answers| answers.listed.iter().map(String::as_str))
     }
 
-    /// The index file the last [`GitIndex::refresh`] looked for, which a watcher watches.
-    pub fn index_path(&self) -> Option<PathBuf> {
-        Some(self.git_dir.as_ref()?.join("index"))
+    /// The git directory the last [`GitIndex::refresh`] looked in, whose `index` and `index.lock` a watcher
+    /// watches.
+    pub fn git_dir(&self) -> Option<&Path> {
+        self.git_dir.as_deref()
     }
 
     fn current(&self) -> Option<(PathBuf, Stamp)> {
@@ -138,31 +140,29 @@ impl NameKey for Spelled {
     }
 }
 
-/// The work tree in `indexes`, keyed by folder, that owns `path`: the deepest one above it, with `path`
-/// relative to it.
-pub fn owner<'a, K>(
-    indexes: &'a BTreeMap<PathBuf, GitIndex<K>>,
-    path: &'a Path,
-) -> Option<(&'a GitIndex<K>, &'a Path)> {
-    (path.ancestors().skip(1))
-        .find_map(|folder| Some((indexes.get(folder)?, path.strip_prefix(folder).ok()?)))
-}
-
 fn git_dir(folder: &Path) -> Option<PathBuf> {
     let dot_git = folder.join(".git");
     if fs::symlink_metadata(&dot_git).ok()?.is_dir() {
         return Some(dot_git);
     }
+    let text = read(&dot_git, MAX_GITFILE).ok()?;
+    Some(folder.join(path_line(text.strip_prefix(b"gitdir: ")?)))
+}
+
+fn read(path: &Path, max: u64) -> io::Result<Vec<u8>> {
     let file = (fs::File::options().read(true))
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(&dot_git)
-        .ok()?;
-    if !file.metadata().ok()?.is_file() {
-        return None;
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > max {
+        return Err(io::ErrorKind::InvalidData.into());
     }
-    let mut text = Vec::new();
-    file.take(MAX_GITFILE).read_to_end(&mut text).ok()?;
-    Some(folder.join(path_line(text.strip_prefix(b"gitdir: ")?)))
+    let mut bytes = Vec::new();
+    file.take(max + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    Ok(bytes)
 }
 
 fn path_line(line: &[u8]) -> &OsStr {
@@ -174,16 +174,16 @@ fn path_line(line: &[u8]) -> &OsStr {
 }
 
 fn hash_size(git_dir: &Path) -> Option<usize> {
-    let read = |path: PathBuf| match fs::read(path) {
+    let optional = |path: PathBuf| match read(&path, MAX_GITFILE) {
         Ok(bytes) => Some(Some(bytes)),
-        Err(err) if is_gone(&err) => Some(None),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Some(None),
         Err(_) => None,
     };
-    let common = match read(git_dir.join("commondir"))? {
+    let common = match optional(git_dir.join("commondir"))? {
         Some(line) => git_dir.join(path_line(&line)),
         None => git_dir.to_path_buf(),
     };
-    let config = read(common.join("config"))?.unwrap_or_default();
+    let config = optional(common.join("config"))?.unwrap_or_default();
     match object_format(&String::from_utf8_lossy(&config)).as_deref() {
         None | Some("sha1") => Some(20),
         Some("sha256") => Some(32),
@@ -211,7 +211,7 @@ fn object_format(config: &str) -> Option<String> {
 
 fn answers<K: NameKey>(git_dir: &Path) -> Option<Answers> {
     let hash = hash_size(git_dir)?;
-    let bytes = fs::read(git_dir.join("index")).ok()?;
+    let bytes = read(&git_dir.join("index"), MAX_INDEX).ok()?;
     let index = parse(&bytes, hash)?;
     let entries = match index.link {
         None => index.entries,
@@ -221,7 +221,7 @@ fn answers<K: NameKey>(git_dir: &Path) -> Option<Answers> {
                 index.entries
             } else {
                 let hex: String = base.iter().map(|byte| format!("{byte:02x}")).collect();
-                let shared = fs::read(git_dir.join(format!("sharedindex.{hex}"))).ok()?;
+                let shared = read(&git_dir.join(format!("sharedindex.{hex}")), MAX_INDEX).ok()?;
                 let shared = parse(&shared, hash)?;
                 if shared.checksum != base {
                     return None;
@@ -237,12 +237,14 @@ fn answers<K: NameKey>(git_dir: &Path) -> Option<Answers> {
     for entry in entries {
         match entry.mode {
             0o100644 | 0o100755 => {
-                answers.listed.insert(key::<K>(&entry.name));
+                if let Some(name) = verified(&entry.name) {
+                    answers.listed.insert(key::<K>(name));
+                }
             }
             0o040000 => {
-                answers
-                    .sparse
-                    .insert(key::<K>(entry.name.strip_suffix(b"/")?));
+                if let Some(name) = verified(entry.name.strip_suffix(b"/")?) {
+                    answers.sparse.insert(key::<K>(name));
+                }
             }
             _ => {}
         }
@@ -250,11 +252,15 @@ fn answers<K: NameKey>(git_dir: &Path) -> Option<Answers> {
     Some(answers)
 }
 
-fn key<K: NameKey>(path: &[u8]) -> String {
-    let names = path.split(|byte| *byte == b'/');
-    let keys: Vec<String> = names
-        .map(|name| K::key(&String::from_utf8_lossy(name)))
-        .collect();
+fn verified(path: &[u8]) -> Option<&str> {
+    let path = std::str::from_utf8(path).ok()?;
+    (path.split('/'))
+        .all(|name| !matches!(name, "" | "." | "..") && !name.eq_ignore_ascii_case(".git"))
+        .then_some(path)
+}
+
+fn key<K: NameKey>(path: &str) -> String {
+    let keys: Vec<String> = path.split('/').map(K::key).collect();
     keys.join("/")
 }
 
@@ -283,7 +289,7 @@ fn parse(bytes: &[u8], hash: usize) -> Option<Index<'_>> {
         let fixed = r.take(40 + hash)?;
         let mode = u32::from_be_bytes(fixed[24..28].try_into().ok()?);
         let flags = r.u16()?;
-        if flags & 0x4000 != 0 && r.u16()? & !0x6000 != 0 {
+        if flags & 0x4000 != 0 && (version == 2 || r.u16()? & !0x6000 != 0) {
             return None;
         }
         if version == 4 {
@@ -338,15 +344,15 @@ fn merge(base: Vec<Entry>, own: Vec<Entry>, bitmaps: &[u8]) -> Option<Vec<Entry>
     }
     let mut base: Vec<Option<Entry>> = base.into_iter().map(Some).collect();
     let mut own = own.into_iter();
+    for at in deleted {
+        base[at].take()?;
+    }
     for at in replaced {
         let entry = own.next()?;
         if !entry.name.is_empty() {
             return None;
         }
         base[at].as_mut()?.mode = entry.mode;
-    }
-    for at in deleted {
-        base[at].take()?;
     }
     let added: Vec<Entry> = own.collect();
     if added.iter().any(|entry| entry.name.is_empty()) {

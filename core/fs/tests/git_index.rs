@@ -4,9 +4,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use koidrive_engine::ignore::Key;
-use koidrive_fs::{GitIndex, owner};
+use koidrive_fs::GitIndex;
 use sha1::{Digest, Sha1};
 
 fn run(dir: &Path, args: &[&str]) -> Output {
@@ -64,6 +66,35 @@ fn answers(index: &GitIndex<Key>, paths: &str) -> String {
 
 fn holds(path: &Path, signature: &[u8]) -> bool {
     fs::read(path).unwrap().windows(4).any(|w| w == signature)
+}
+
+fn replace(path: &Path, bytes: &[u8]) {
+    let next = path.with_extension("next");
+    fs::write(&next, bytes).unwrap();
+    fs::rename(next, path).unwrap();
+}
+
+fn index(version: u32, entries: &[(&[u8], u16)], extensions: &[u8]) -> Vec<u8> {
+    let count = u32::try_from(entries.len()).unwrap().to_be_bytes();
+    let mut bytes = [&b"DIRC"[..], &version.to_be_bytes(), &count].concat();
+    for (name, flags) in entries {
+        let start = bytes.len();
+        bytes.extend([0; 24]);
+        bytes.extend(0o100644_u32.to_be_bytes());
+        bytes.extend([0; 32]);
+        bytes.extend((flags | u16::try_from(name.len()).unwrap()).to_be_bytes());
+        bytes.extend(if flags & 0x4000 != 0 {
+            &[0; 2][..]
+        } else {
+            &[]
+        });
+        bytes.extend([*name, &[0]].concat());
+        bytes.resize(start + (bytes.len() - start).next_multiple_of(8), 0);
+    }
+    bytes.extend(extensions);
+    let checksum = Sha1::digest(&bytes);
+    bytes.extend_from_slice(&checksum);
+    bytes
 }
 
 fn with_extension(index: &[u8], signature: &[u8; 4]) -> Vec<u8> {
@@ -202,7 +233,7 @@ fn a_path_below_a_sparse_directory_has_no_answer() {
 }
 
 #[test]
-fn every_dot_git_entry_makes_a_work_tree_that_owns_the_paths_below_it() {
+fn every_dot_git_entry_makes_a_work_tree_with_its_own_index() {
     let source = repo(&["s.txt"]);
     git(source.path(), &["add", "."]);
     git(source.path(), &["commit", "-qm", "sub"]);
@@ -229,18 +260,15 @@ fn every_dot_git_entry_makes_a_work_tree_that_owns_the_paths_below_it() {
         .into_iter()
         .map(|folder| (PathBuf::from(folder), read(&root.join(folder))))
         .collect();
-    let answer = |path: &str| {
-        let (index, rel) = owner(&indexes, Path::new(path)).unwrap();
-        answers(index, rel.to_str().unwrap())
-    };
+    let answer = |(tree, path)| answers(&indexes[Path::new(tree)], path);
     let paths = [
-        "m.txt",
-        "wt/side.txt",
-        "wt/m.txt",
-        "sub/s.txt",
-        "sub/m.txt",
-        "side.txt",
-        "odd/x",
+        ("", "m.txt"),
+        ("wt", "side.txt"),
+        ("wt", "m.txt"),
+        ("sub", "s.txt"),
+        ("sub", "m.txt"),
+        ("", "side.txt"),
+        ("odd", "x"),
     ];
     assert_eq!(paths.map(answer).concat(), "yyyynn?");
     for gitfile in ["nonsense", "gitdir: /nowhere"] {
@@ -267,19 +295,153 @@ fn an_unreadable_index_keeps_the_last_answers() {
         assert_eq!(answers(index, "a.txt b.txt"), "yn", "{case}");
         assert_eq!(answers(&read(root), "a.txt"), "?", "{case}");
         let _ = fs::remove_file(&lock);
-        fs::write(&path, &good).unwrap();
+        replace(&path, &good);
         assert!(!index.refresh() && index.readable(), "{case}");
     };
-    fs::write(&path, &corrupt).unwrap();
+    replace(&path, &corrupt);
     check(&mut index, "corrupt");
-    fs::write(&path, &unknown).unwrap();
+    replace(&path, &unknown);
     check(&mut index, "required extension");
     fs::remove_file(&path).unwrap();
     check(&mut index, "missing");
     fs::write(&lock, "").unwrap();
     check(&mut index, "being replaced");
-    fs::write(&path, with_extension(&good, b"ABCD")).unwrap();
+    replace(&path, &with_extension(&good, b"ABCD"));
     assert!(!index.refresh() && index.readable());
+}
+
+#[test]
+fn a_name_git_refuses_is_not_listed() {
+    let dir = repo(&[]);
+    let names: [&[u8]; 10] = [
+        b"../x",
+        b"/abs",
+        b"a//b",
+        b"a/./b",
+        b"dir/",
+        b"dist/../../x",
+        b".git/config",
+        b"a/.GIT/x",
+        b"bad\xff",
+        b"dist/ok.js",
+    ];
+    let entries: Vec<(&[u8], u16)> = names.iter().map(|name| (*name, 0)).collect();
+    fs::write(dir.path().join(".git/index"), index(2, &entries, &[])).unwrap();
+    assert_eq!(
+        read(dir.path()).listed().collect::<Vec<_>>(),
+        ["dist/ok.js"]
+    );
+}
+
+#[test]
+fn an_index_git_refuses_to_read_is_unreadable() {
+    let dir = repo(&[]);
+    let root = dir.path();
+    let path = root.join(".git/index");
+    fs::write(&path, index(3, &[(b"a", 0x4000)], &[])).unwrap();
+    assert_eq!(answers(&read(root), "a"), "y");
+    fs::write(&path, index(2, &[(b"a", 0x4000)], &[])).unwrap();
+    assert!(!read(root).readable(), "extended flags in version 2");
+    let shared = index(2, &[(b"a", 0)], &[]);
+    let base = &shared[shared.len() - 20..];
+    let hex: String = base.iter().map(|byte| format!("{byte:02x}")).collect();
+    fs::write(root.join(format!(".git/sharedindex.{hex}")), &shared).unwrap();
+    let none = [0; 12];
+    let first = [
+        &[0, 0, 0, 1, 0, 0, 0, 2][..],
+        &(1u64 << 33).to_be_bytes(),
+        &1u64.to_be_bytes(),
+        &[0; 4],
+    ]
+    .concat();
+    for (deleted, case) in [(&none[..], "y"), (&first, "unreadable")] {
+        let link = [base, deleted, &first].concat();
+        let size = u32::try_from(link.len()).unwrap().to_be_bytes();
+        fs::write(
+            &path,
+            index(2, &[(b"", 0)], &[&b"link"[..], &size, &link].concat()),
+        )
+        .unwrap();
+        let index = read(root);
+        let answer = if index.readable() {
+            answers(&index, "a")
+        } else {
+            "unreadable".into()
+        };
+        assert_eq!(answer, case);
+    }
+}
+
+#[test]
+fn reads_only_regular_git_files_of_a_bounded_size() {
+    let cases = [
+        "index fifo",
+        "index link",
+        "index large",
+        "sharedindex fifo",
+        "sharedindex link",
+        "commondir fifo",
+        "commondir link",
+        "commondir large",
+        "config fifo",
+        "config link",
+        "config large",
+    ];
+    for case in cases {
+        let (name, kind) = case.split_once(' ').unwrap();
+        let dir = repo(&["a.txt"]);
+        let root = dir.path().to_path_buf();
+        git(&root, &["add", "."]);
+        git(&root, &["update-index", "--split-index"]);
+        fs::write(root.join(".git/commondir"), ".\n").unwrap();
+        assert_eq!(answers(&read(&root), "a.txt"), "y", "{case}");
+        let shared = |entry: &fs::DirEntry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("sharedindex.")
+        };
+        let path = match name {
+            "sharedindex" => fs::read_dir(root.join(".git"))
+                .unwrap()
+                .map(Result::unwrap)
+                .find(shared)
+                .unwrap()
+                .path(),
+            _ => root.join(".git").join(name),
+        };
+        let moved = root.join("moved");
+        fs::rename(&path, &moved).unwrap();
+        let mut bytes = fs::read(&moved).unwrap();
+        match (kind, name) {
+            ("fifo", _) => assert!(
+                Command::new("mkfifo")
+                    .arg(&path)
+                    .status()
+                    .unwrap()
+                    .success()
+            ),
+            ("link", _) => std::os::unix::fs::symlink(&moved, &path).unwrap(),
+            (_, "index") => {
+                bytes.truncate(bytes.len() - 20);
+                bytes.extend([&b"ZZZZ"[..], &(1u32 << 30).to_be_bytes()].concat());
+                fs::write(&path, &bytes).unwrap();
+                let file = fs::File::options().write(true).open(&path).unwrap();
+                file.set_len(bytes.len() as u64 + (1 << 30) + 20).unwrap();
+            }
+            _ => {
+                bytes.resize((1 << 20) + 1, b'\n');
+                fs::write(&path, bytes).unwrap();
+            }
+        }
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || sender.send(read(&root).readable()));
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(5)),
+            Ok(false),
+            "{case}"
+        );
+    }
 }
 
 #[test]

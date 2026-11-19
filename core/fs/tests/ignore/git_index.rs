@@ -66,3 +66,78 @@ fn a_watcher_scans_the_files_a_git_index_lists_below_a_folder_a_gitignore_exclud
     assert_eq!(settle(&mut watcher).1, now);
     assert!(known(watcher.snapshot()).contains(&"moved/dist/x.js"));
 }
+
+#[test]
+fn an_outer_index_answers_nothing_below_a_nested_work_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, ".gitignore", "*.env\n");
+    write(root, "inner/secret.env", "secret");
+    write(root, "inner/a.txt", "a");
+    git(root, &["init", "-q"]);
+    git(root, &["add", "-f", "inner/secret.env"]);
+    let mut rules = rules();
+    let mut snapshot = Snapshot::default();
+    let mut scan = || {
+        snapshot.rescan_with_rules(root, whole(), &mut rules).unwrap();
+        known(&snapshot).contains(&"inner/secret.env")
+    };
+    assert!(scan());
+    std::os::unix::fs::symlink("/nonexistent", root.join("inner/.git")).unwrap();
+    assert!(!scan(), "a .git link");
+    fs::remove_file(root.join("inner/.git")).unwrap();
+    git(&root.join("inner"), &["init", "-q"]);
+    git(&root.join("inner"), &["add", "a.txt"]);
+    assert!(!scan(), "an inner index that does not list it");
+    fs::remove_dir_all(root.join("inner/.git")).unwrap();
+    assert!(scan(), "no inner work tree");
+}
+
+#[test]
+fn a_watcher_reads_an_index_outside_the_root_only_after_an_event_for_it_or_its_lock() {
+    let main = tempfile::tempdir().unwrap();
+    write(main.path(), ".gitignore", "dist/\n");
+    git(main.path(), &["init", "-q"]);
+    git(main.path(), &["add", "."]);
+    git(main.path(), &["commit", "-qm", "main"]);
+    let dir = tempfile::tempdir().unwrap();
+    let root = &dir.path().join("wt");
+    git(main.path(), &["worktree", "add", "-q", root.to_str().unwrap()]);
+    write(root, "dist/app.js", "a");
+    write(root, "dist/b.js", "b");
+    git(root, &["add", "-f", "dist/app.js"]);
+    let mut rules = rules();
+    let mut snapshot = Snapshot::default();
+    snapshot.rescan_with_rules(root, whole(), &mut rules).unwrap();
+    let mut watcher = NativeWatcher::start_with_rules(root, snapshot, rules).unwrap();
+    let read = |watcher: &mut NativeWatcher, wait: Duration| {
+        let mut read = Vec::new();
+        let deadline = Instant::now() + wait;
+        while Instant::now() < deadline && !known(watcher.snapshot()).contains(&"dist/b.js") {
+            read.extend(watcher.poll(Duration::from_millis(300)).unwrap().read);
+        }
+        read
+    };
+    read(&mut watcher, Duration::from_secs(1));
+    let git_dir = main.path().join(".git/worktrees/wt");
+    for n in 0..5 {
+        write(&git_dir, &format!("noise{n}"), "x");
+    }
+    assert_eq!(read(&mut watcher, Duration::from_secs(2)), Vec::<PathBuf>::new());
+    let next = git_dir.join("next-index");
+    fs::copy(git_dir.join("index"), &next).unwrap();
+    let out = std::process::Command::new("git")
+        .current_dir(root)
+        .env("GIT_INDEX_FILE", &next)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .args(["add", "-f", "dist/b.js"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    fs::rename(&next, git_dir.join("index")).unwrap();
+    fs::write(git_dir.join("index.lock"), "").unwrap();
+    read(&mut watcher, Duration::from_millis(1500));
+    fs::remove_file(git_dir.join("index.lock")).unwrap();
+    read(&mut watcher, WAIT);
+    assert!(known(watcher.snapshot()).contains(&"dist/b.js"));
+}
