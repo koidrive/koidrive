@@ -1,0 +1,4 @@
+125
+# Cleanup in test-support now reports what it did with each image, ejected or kept because the eject stayed busy past the bounded 30 s wait, and the drop tests check the outcome on their own image's device, so a busy eject no longer fails them while a sweep that skips the image still does.
+# A refused hdiutil create can leave its image attached with no record, which is the leak this change closes, so a refused create now ejects every drive listed on its path before the retry, and a test proves it with a stray drive and a refused answer.
+# Every line of test-support counts as test code, so the outcome type, the close step, the create guard and their checks count against the budget.
