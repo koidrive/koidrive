@@ -1314,3 +1314,56 @@ proptest! {
         }
     }
 }
+
+fn a_release_below_a_folder_whose_copy_went(hold: impl FnOnce(&mut Trees)) -> Trees {
+    let mut trees = Trees::new(ROOT);
+    for (id, shape, ino) in [("n0", dir(ROOT, "y"), 0), ("n1", file(ROOT, "X", 0), 1)] {
+        trees.set_remote(id.into(), remote(shape.clone()));
+        trees.set_local(id.into(), local(shape.clone(), ino));
+        trees.set_synced(id.into(), Some(shape));
+    }
+    trees.settle(&Default::default());
+    trees.set_rules(&["y"], Source::Koiignore, Some(RuleFile::parse(b"y\n")));
+    trees.set_remote("n1".into(), remote(file(ROOT, "x", 0)));
+    trees.settle(&Default::default());
+    trees.set_rules(&["y"], Source::Koiignore, Some(RuleFile::parse(b"x\n")));
+    trees.set_local("n1".into(), local(dir("n0", "x"), 0));
+    trees.remove_local("n1");
+    trees.settle(&Default::default());
+    hold(&mut trees);
+    trees.set_remote("n1".into(), remote(dir("n0", "y")));
+    trees.remove_local("n0");
+    trees.settle(&Default::default());
+    assert_eq!(trees.check(), Ok(()));
+    trees
+}
+
+#[test]
+fn rules_that_let_in_a_folder_whose_copy_went_retry_the_release_below_it() {
+    let mut trees = a_release_below_a_folder_whose_copy_went(|trees| {
+        trees.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(b"y\n")),
+        );
+    });
+    trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn known_rules_above_a_folder_whose_copy_went_retry_the_release_below_it() {
+    let mut trees = a_release_below_a_folder_whose_copy_went(|trees| {
+        trees.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(b"y\n")),
+        );
+    });
+    trees.set_rules_unknown(ROOT);
+    trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+    trees.settle(&Default::default());
+    assert_eq!(trees.check(), Ok(()));
+    trees.set_rules_known(ROOT);
+    assert_eq!(trees.check(), Ok(()));
+}

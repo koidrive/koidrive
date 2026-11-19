@@ -2221,7 +2221,9 @@ impl Trees {
         }
         self.observe_removal_in_held_folder(id);
         self.parked_as.remove(id);
-        self.unknown_rules.remove(id);
+        if self.unknown_rules.remove(id) {
+            self.forget_reclaims();
+        }
         self.outside.remove(id);
         self.lost.remove(id);
         self.count_held_trash(id, false);
@@ -2284,6 +2286,7 @@ impl Trees {
     /// Replaces this device's include and exclude lists, which are never synced.
     pub fn set_local_rules(&mut self, local: LocalRules) {
         self.ignore.set_local(local, std::iter::empty());
+        self.forget_reclaims();
         self.relink = true;
         self.rules_changed.insert(Vec::new());
     }
@@ -2294,6 +2297,7 @@ impl Trees {
     pub fn set_rules<S: AsRef<str>>(&mut self, dir: &[S], source: Source, rules: Option<RuleFile>) {
         self.ignore
             .set_rules(dir, source, rules, std::iter::empty());
+        self.forget_reclaims();
         self.relink = true;
         (self.rules_changed).insert(dir.iter().map(|name| name.as_ref().to_owned()).collect());
     }
@@ -2301,6 +2305,7 @@ impl Trees {
     /// Forgets the rules of every rules file, for a caller about to pass all of them again.
     pub fn clear_rules(&mut self) {
         self.ignore.clear_rules();
+        self.forget_reclaims();
         self.relink = true;
         self.rules_changed.insert(Vec::new());
     }
@@ -2322,7 +2327,10 @@ impl Trees {
 
     /// Records that a scan read the folder `id` and passed its rules, or found it has none.
     pub fn set_rules_known(&mut self, id: &str) {
-        self.relink |= self.unknown_rules.remove(id);
+        if self.unknown_rules.remove(id) {
+            self.forget_reclaims();
+            self.relink = true;
+        }
     }
 
     /// Sets the local entries R does not hold that the open questions hold (the commit planner's
