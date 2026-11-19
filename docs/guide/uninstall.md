@@ -6,14 +6,14 @@
 koi uninstall
 ```
 
-Koidrive lists what it will remove and asks before it changes anything. Then it:
+Koidrive lists what it will remove and asks before it changes anything. If that list changes while it waits for your answer, for example because another Koidrive profile starts its background service, it changes nothing and asks you to run `koi uninstall` again. Otherwise it:
 
 1. Quits the Koidrive app.
 2. Signs this device out of the server. Other devices then list it as revoked.
 3. Stops and removes the [background service](service.md).
 4. Deletes the settings, the sync state and the logs: `~/.config/koidrive`, `~/.local/state/koidrive`, and on macOS `~/Library/Logs/Koidrive` and the app's files in `~/Library`.
 5. Deletes the `.koidrive` folder in each folder it synced. A part of it that still holds files stays, and the summary names it. `.koidrive/trash/` holds files that sync replaced in the last 7 days.
-6. Removes the line the installer added to your shell profile.
+6. Removes the line the installer added to your shell profile. A profile inside a synced folder, or a link to one there, stays as it is.
 7. Removes the app and the `koi` command. For a Homebrew install, it runs `brew uninstall --cask koidrive` or `brew uninstall --formula koidrive`.
 
 The files in your folders stay where they are. The summary lists what Koidrive removed and what it kept. If a step fails, the summary says why and Koidrive keeps the `koi` command, so you can run `koi uninstall` again to finish.

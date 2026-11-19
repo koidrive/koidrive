@@ -339,6 +339,14 @@ fn a_server_that_keeps_its_last_device() -> String {
 }
 
 fn a_server_that_keeps_its_last_device_once_it_answers(answers: Arc<AtomicBool>) -> String {
+    serve(answers, Arc::new(|| {}))
+}
+
+fn a_server_that_revokes_and_then(on_revoke: impl Fn() + Send + Sync + 'static) -> String {
+    serve(Arc::new(AtomicBool::new(true)), Arc::new(on_revoke))
+}
+
+fn serve(answers: Arc<AtomicBool>, on_revoke: Arc<dyn Fn() + Send + Sync>) -> String {
     use prost::Message;
     use std::io::{Read, Write};
 
@@ -347,6 +355,7 @@ fn a_server_that_keeps_its_last_device_once_it_answers(answers: Arc<AtomicBool>)
     std::thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
             let answers = answers.clone();
+            let on_revoke = on_revoke.clone();
             std::thread::spawn(move || {
                 let mut request = [0; 65536];
                 let read = stream.read(&mut request).unwrap_or(0);
@@ -365,6 +374,7 @@ fn a_server_that_keeps_its_last_device_once_it_answers(answers: Arc<AtomicBool>)
                     };
                     (200, token.encode_to_vec())
                 } else if line.contains("confirm=last-device") {
+                    on_revoke();
                     (204, Vec::new())
                 } else if !answers.load(Ordering::SeqCst) {
                     std::thread::sleep(std::time::Duration::from_secs(60));
@@ -1542,6 +1552,16 @@ fn on_terminal(
     args: &[&str],
     answers: &[(&str, &str)],
 ) -> (i32, String) {
+    on_terminal_with(machine, koi, args, answers, || {})
+}
+
+fn on_terminal_with(
+    machine: &Machine,
+    koi: &Path,
+    args: &[&str],
+    answers: &[(&str, &str)],
+    mut before_answer: impl FnMut(),
+) -> (i32, String) {
     let mut terminal = Terminal::open(160, 40);
     let mut child = terminal::spawn(
         machine
@@ -1559,6 +1579,7 @@ fn on_terminal(
             && console::strip_ansi_codes(&String::from_utf8_lossy(terminal.output()))
                 .contains(question)
         {
+            before_answer();
             terminal.write(answer.as_bytes());
             answered += 1;
         }
@@ -1686,6 +1707,53 @@ fn the_launch_agent_of_a_temporary_profile_is_stopped_and_removed() {
 }
 
 #[cfg(target_os = "macos")]
+struct OtherProfile {
+    label: String,
+    config: PathBuf,
+    state: PathBuf,
+    agent: String,
+}
+
+#[cfg(target_os = "macos")]
+impl OtherProfile {
+    fn new(machine: &Machine, koi: &Path) -> Self {
+        Self::with_config(machine, koi, machine.path("other/config"))
+    }
+
+    fn with_config(machine: &Machine, koi: &Path, config: PathBuf) -> Self {
+        let state = machine.path("other/state");
+        let other = koidrive_driver::Paths::from_vars(|name| match name {
+            "XDG_CONFIG_HOME" => Some(config.clone().into()),
+            "XDG_STATE_HOME" => Some(state.clone().into()),
+            _ => None,
+        })
+        .unwrap();
+        let label = format!("dev.koidrive.koi.{}", other.state_key());
+        machine.write("other/state/koidrive/update-check.json", "{}");
+        fs::create_dir_all(machine.path("other/state/koidrive/spaces")).unwrap();
+        let agent = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array><string>{}</string><string>_daemon</string></array><key>EnvironmentVariables</key><dict><key>XDG_CONFIG_HOME</key><string>{}</string><key>XDG_STATE_HOME</key><string>{}</string><key>XDG_RUNTIME_DIR</key><string></string></dict></dict></plist>\n",
+            koi.display(),
+            config.display(),
+            state.display()
+        );
+        OtherProfile {
+            label,
+            config,
+            state,
+            agent,
+        }
+    }
+
+    fn register(&self, machine: &Machine) {
+        machine.write(
+            &format!("Library/LaunchAgents/{}.plist", self.label),
+            &self.agent,
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
 #[test]
 fn another_profiles_service_keeps_the_shared_command_and_names_how_to_remove_it() {
     let machine = Machine::new();
@@ -1694,25 +1762,14 @@ fn another_profiles_service_keeps_the_shared_command_and_names_how_to_remove_it(
     let line = path_line(koi.parent().unwrap());
     let zprofile = machine.write(".zprofile", &format!("{line}\n"));
     let support = machine.write("Library/Application Support/Koidrive/window.json", "x");
-    let (config, state) = (machine.path("other/config"), machine.path("other/state"));
-    let other = koidrive_driver::Paths::from_vars(|name| match name {
-        "XDG_CONFIG_HOME" => Some(config.clone().into()),
-        "XDG_STATE_HOME" => Some(state.clone().into()),
-        _ => None,
-    })
-    .unwrap();
-    let label = format!("dev.koidrive.koi.{}", other.state_key());
-    machine.write("other/state/koidrive/update-check.json", "{}");
-    fs::create_dir_all(machine.path("other/state/koidrive/spaces")).unwrap();
-    machine.write(
-        &format!("Library/LaunchAgents/{label}.plist"),
-        &format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array><string>{}</string><string>_daemon</string></array><key>EnvironmentVariables</key><dict><key>XDG_CONFIG_HOME</key><string>{}</string><key>XDG_STATE_HOME</key><string>{}</string><key>XDG_RUNTIME_DIR</key><string></string></dict></dict></plist>\n",
-            koi.display(),
-            config.display(),
-            state.display()
-        ),
-    );
+    let other = OtherProfile::new(&machine, &koi);
+    other.register(&machine);
+    let OtherProfile {
+        label,
+        config,
+        state,
+        ..
+    } = other;
 
     let (output, envelope) = machine.uninstall(&koi);
 
@@ -1817,5 +1874,226 @@ fn a_credential_koidrive_cannot_use_stays_until_it_is_fixed_or_the_last_device_f
     assert!(
         text.contains("Its server may still list this device. To remove it, revoke it from another device signed in to that server with koi device revoke.\nIf you have no other device, add one with koi server add-device --interactive and run the command there.\n"),
         "{text}"
+    );
+}
+
+#[test]
+fn a_shell_profile_in_a_synced_folder_keeps_its_path_line() {
+    for linked_here in [true, false] {
+        let machine = Machine::new();
+        machine.profile();
+        let koi = machine.copy_koi(".local/bin/koi");
+        let line = path_line(koi.parent().unwrap());
+        let folder = machine.path("Koidrive");
+        machine.write("Koidrive/.koidrive/space.json", "{}");
+        match linked_here {
+            true => record(&machine, &folder),
+            false => _ = machine.write("Koidrive/.koidrive/device.json", "{}"),
+        }
+        let zprofile = machine.write("Koidrive/dotfiles/.zprofile", &format!("{line}\n"));
+        let mut command = machine.command(&koi, &["uninstall", "--yes", "--json"]);
+        command.env("ZDOTDIR", machine.path("Koidrive/dotfiles"));
+
+        let (output, envelope) = machine.envelope(command);
+
+        assert!(output.status.success(), "{envelope:#}");
+        assert_eq!(
+            fs::read_to_string(&zprofile).unwrap(),
+            format!("{line}\n"),
+            "{envelope:#}"
+        );
+        assert!(
+            kept(&envelope).contains(&json!({
+                "kind": "in_folder",
+                "path": zprofile.display().to_string(),
+                "folder": folder.display().to_string()
+            })),
+            "{envelope:#}"
+        );
+        assert!(!koi.exists(), "{envelope:#}");
+    }
+}
+
+#[test]
+fn a_shell_profile_linked_into_a_synced_folder_is_left_alone() {
+    let machine = Machine::new();
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let text = format!("export EDITOR=vim\n{}\n", path_line(koi.parent().unwrap()));
+    let folder = machine.path("Koidrive");
+    machine.write("Koidrive/.koidrive/space.json", "{}");
+    record(&machine, &folder);
+    let target = machine.write("Koidrive/dotfiles/.zprofile", &text);
+    let zprofile = machine.path(".zprofile");
+    std::os::unix::fs::symlink(&target, &zprofile).unwrap();
+
+    let (output, envelope) = machine.uninstall(&koi);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert_eq!(fs::read_to_string(&target).unwrap(), text, "{envelope:#}");
+    assert_eq!(fs::read_link(&zprofile).unwrap(), target, "{envelope:#}");
+    assert!(
+        kept(&envelope).contains(&json!({
+            "kind": "in_folder",
+            "path": zprofile.display().to_string(),
+            "folder": folder.display().to_string()
+        })),
+        "{envelope:#}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_profile_that_registers_its_service_while_uninstall_asks_stops_it() {
+    let machine = Machine::new();
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let other = OtherProfile::new(&machine, &koi);
+
+    let (code, text) = on_terminal_with(
+        &machine,
+        &koi,
+        &["uninstall", "--plain"],
+        &[(REMOVE, "y\n")],
+        || other.register(&machine),
+    );
+
+    assert_ne!(code, 0, "{text}");
+    assert!(text.contains("nothing was changed"), "{text}");
+    assert!(koi.is_file(), "{text}");
+    assert!(
+        machine.path("state/koidrive/update-check.json").exists(),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_profile_in_a_folder_uninstall_already_released_loses_its_path_line() {
+    let machine = Machine::new();
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let folder = machine.path("Docs");
+    machine.write("Docs/.koidrive/space.json", "{}");
+    machine.write("Docs/.koidrive/trash/report.docx", "old version");
+    record(&machine, &folder);
+
+    let (output, first) = machine.uninstall(&koi);
+    assert!(output.status.success(), "{first:#}");
+    assert!(
+        machine.path("Docs/.koidrive/trash/report.docx").exists(),
+        "{first:#}"
+    );
+
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let line = path_line(koi.parent().unwrap());
+    let zprofile = machine.write(
+        "Docs/zsh/.zprofile",
+        &format!("export EDITOR=vim\n{line}\n"),
+    );
+    let mut command = machine.command(&koi, &["uninstall", "--yes", "--json"]);
+    command.env("ZDOTDIR", machine.path("Docs/zsh"));
+
+    let (output, second) = machine.envelope(command);
+
+    assert!(output.status.success(), "{second:#}");
+    assert_eq!(
+        fs::read_to_string(&zprofile).unwrap(),
+        "export EDITOR=vim\n",
+        "{second:#}"
+    );
+}
+
+#[test]
+fn a_profile_in_a_folder_unlinked_earlier_loses_its_path_line() {
+    let machine = Machine::new();
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    machine.write("Docs/.koidrive/space.json", "{\"space_id\":\"s1\"}");
+    let line = path_line(koi.parent().unwrap());
+    let zprofile = machine.write(
+        "Docs/zsh/.zprofile",
+        &format!("export EDITOR=vim\n{line}\n"),
+    );
+    let mut command = machine.command(&koi, &["uninstall", "--yes", "--json"]);
+    command.env("ZDOTDIR", machine.path("Docs/zsh"));
+
+    let (output, envelope) = machine.envelope(command);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert!(!koi.exists(), "{envelope:#}");
+    assert_eq!(
+        fs::read_to_string(&zprofile).unwrap(),
+        "export EDITOR=vim\n",
+        "{envelope:#}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_profile_that_registers_its_service_during_the_sign_out_keeps_the_shared_command_and_config() {
+    let agent = Arc::new(std::sync::OnceLock::<(PathBuf, String)>::new());
+    let server = a_server_that_revokes_and_then({
+        let agent = agent.clone();
+        move || {
+            if let Some((plist, text)) = agent.get() {
+                fs::create_dir_all(plist.parent().unwrap()).unwrap();
+                fs::write(plist, text).unwrap();
+            }
+        }
+    });
+    let (machine, koi, _) = signed_in_to(&server);
+    let other = OtherProfile::with_config(&machine, &koi, machine.path("config"));
+    let plist = machine.path(&format!("Library/LaunchAgents/{}.plist", other.label));
+    agent.set((plist.clone(), other.agent.clone())).unwrap();
+
+    let command = machine.command(&koi, &["uninstall", "--yes", "--last-device", "--json"]);
+    let (output, envelope) = machine.envelope(command);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert!(plist.exists(), "{envelope:#}");
+    assert!(koi.is_file(), "{envelope:#}");
+    assert!(
+        machine.path("config/koidrive/config.toml").is_file(),
+        "{envelope:#}"
+    );
+    assert!(
+        kept(&envelope).contains(&json!({ "kind": "shared", "path": koi.display().to_string() })),
+        "{envelope:#}"
+    );
+}
+
+#[test]
+fn a_profile_whose_folder_is_linked_during_the_sign_out_keeps_its_path_line() {
+    let marker = Arc::new(std::sync::OnceLock::<PathBuf>::new());
+    let server = a_server_that_revokes_and_then({
+        let marker = marker.clone();
+        move || {
+            if let Some(marker) = marker.get() {
+                fs::write(marker, "{}").unwrap();
+            }
+        }
+    });
+    let (machine, koi, _) = signed_in_to(&server);
+    let text = format!("export EDITOR=vim\n{}\n", path_line(koi.parent().unwrap()));
+    let zprofile = machine.write("Docs/zsh/.zprofile", &text);
+    fs::create_dir_all(machine.path("Docs/.koidrive")).unwrap();
+    marker
+        .set(machine.path("Docs/.koidrive/device.json"))
+        .unwrap();
+    let mut command = machine.command(&koi, &["uninstall", "--yes", "--last-device", "--json"]);
+    command.env("ZDOTDIR", machine.path("Docs/zsh"));
+
+    let (output, envelope) = machine.envelope(command);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert_eq!(fs::read_to_string(&zprofile).unwrap(), text, "{envelope:#}");
+    assert!(
+        kept(&envelope).contains(&json!({
+            "kind": "in_folder",
+            "path": zprofile.display().to_string(),
+            "folder": machine.path("Docs").display().to_string()
+        })),
+        "{envelope:#}"
     );
 }

@@ -49,16 +49,7 @@ pub(super) async fn find(paths: &Paths, home: &Path) -> Found {
     }
     let manager = service::system();
     let this = service::this_service(paths).ok();
-    let own = this.as_ref().map(|service| manager.name(service));
-    let (others, unlisted) = match service::installed_services(manager.kind(), home) {
-        Ok(installed) => (
-            (installed.into_iter())
-                .filter(|installed| Some(&installed.name) != own.as_ref())
-                .collect::<Vec<_>>(),
-            None,
-        ),
-        Err(problem) => (Vec::new(), Some(problem)),
-    };
+    let (others, unlisted) = other_services(paths, home);
     let mut files = Vec::new();
     if cfg!(target_os = "macos")
         && let Some(service) = &this
@@ -129,6 +120,23 @@ pub(super) async fn find(paths: &Paths, home: &Path) -> Found {
     }
     files.retain(|path| fs::symlink_metadata(path).is_ok());
     app_files.retain(|path| fs::symlink_metadata(path).is_ok());
+    let mut stripped = Vec::new();
+    for profile in profiles(home)
+        .into_iter()
+        .filter(|path| has_path_line(path))
+    {
+        let target = fs::canonicalize(&profile).ok();
+        match std::iter::once(profile.as_path())
+            .chain(target.as_deref())
+            .find_map(|path| synced_folder(&folders, path))
+        {
+            Some(folder) => kept.push(Kept::InFolder {
+                path: profile.display().to_string(),
+                folder: folder.display().to_string(),
+            }),
+            None => stripped.push(profile),
+        }
+    }
     Found {
         paired,
         unusable,
@@ -141,13 +149,44 @@ pub(super) async fn find(paths: &Paths, home: &Path) -> Found {
         programs,
         files,
         app_files,
-        profiles: profiles(home)
-            .into_iter()
-            .filter(|path| has_path_line(path))
-            .collect(),
+        profiles: stripped,
         kept,
         unlisted,
         config_in_state,
+    }
+}
+
+pub(super) fn relist(found: &mut Found, paths: &Paths, home: &Path) -> Option<Kept> {
+    (found.others, found.unlisted) = other_services(paths, home);
+    let config = paths.config_file.parent()?;
+    let shared = found.unlisted.is_some()
+        || (found.others.iter()).any(|other| uses_config(other, home, paths));
+    let listed = (found.files.iter()).position(|file| file == config);
+    if !shared || (listed.is_none() && !found.config_in_state) {
+        return None;
+    }
+    found.config_in_state = false;
+    if let Some(at) = listed {
+        found.files.remove(at);
+    }
+    Some(Kept::Shared {
+        path: config.display().to_string(),
+    })
+}
+
+fn other_services(paths: &Paths, home: &Path) -> (Vec<service::Installed>, Option<String>) {
+    let manager = service::system();
+    let own = service::this_service(paths)
+        .ok()
+        .map(|service| manager.name(&service));
+    match service::installed_services(manager.kind(), home) {
+        Ok(installed) => (
+            (installed.into_iter())
+                .filter(|installed| Some(&installed.name) != own.as_ref())
+                .collect(),
+            None,
+        ),
+        Err(problem) => (Vec::new(), Some(problem)),
     }
 }
 
