@@ -645,6 +645,59 @@ fn denied(err: &io::Error) -> bool {
 
 /// Whether the error means the name no longer leads to a directory: it is gone,
 /// or a file or symbolic link took its place.
+/// Where the entry with `known`'s kind and identity is, at or below one of `scopes` of the folder at `root`. Each entry
+/// is stat'ed where its folder lists it, so no file is opened and no symbolic link is followed. Fails when a folder
+/// there cannot be listed, since the entry may be in it.
+pub fn find_below(root: &Path, scopes: &[&PathBuf], known: &Known) -> io::Result<Option<PathBuf>> {
+    let root = open_root(root)?;
+    let is = |stat: &Stat| {
+        (stat.entry()).is_some_and(|entry| entry.kind == known.kind && entry.id.same(&known.id))
+    };
+    let open = |dir: BorrowedFd<'_>, name: &OsStr| -> io::Result<OwnedFd> {
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        Ok(rustix::fs::openat(dir, name, flags, Mode::empty())?)
+    };
+    let mut folders: Vec<(PathBuf, OwnedFd)> = Vec::new();
+    for scope in scopes {
+        let (Some(parent), Some(name)) = (scope.parent(), scope.file_name()) else {
+            folders.push((PathBuf::new(), root.try_clone()?));
+            continue;
+        };
+        let Some((dir, _)) = open_attached(root.as_fd(), parent, &mut |_| {})? else {
+            continue;
+        };
+        let stat = match stat_at(dir.as_fd(), name) {
+            Err(err) if is_gone(&err) => continue,
+            stat => stat?,
+        };
+        if is(&stat) {
+            return Ok(Some(scope.to_path_buf()));
+        }
+        if stat.file_type == FileType::Directory {
+            folders.push((scope.to_path_buf(), open(dir.as_fd(), name)?));
+        }
+    }
+    while let Some((path, folder)) = folders.pop() {
+        for name in list(folder.as_fd())? {
+            let stat = match stat_at(folder.as_fd(), &name) {
+                Err(err) if is_gone(&err) => continue,
+                stat => stat?,
+            };
+            let at = path.join(&name);
+            if is(&stat) {
+                return Ok(Some(at));
+            }
+            if stat.file_type == FileType::Directory {
+                match open(folder.as_fd(), &name) {
+                    Err(err) if is_gone(&err) => {}
+                    opened => folders.push((at, opened?)),
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
 fn is_gone(err: &io::Error) -> bool {
     matches!(
         err.kind(),

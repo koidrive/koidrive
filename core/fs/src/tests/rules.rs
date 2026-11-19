@@ -253,3 +253,40 @@ fn a_mount_point_that_cannot_be_opened_is_left_out_once_its_folder_rules_leave_i
     assert_eq!(below, Vec::<&PathBuf>::new());
     assert!(snapshot.left_out.contains_key(Path::new("Disk")));
 }
+
+#[test]
+fn find_below_passes_a_locked_file_and_a_socket_and_fails_at_a_folder_it_cannot_list() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("logs/deep")).unwrap();
+    fs::write(root.join("logs/locked.log"), "locked").unwrap();
+    fs::set_permissions(
+        root.join("logs/locked.log"),
+        fs::Permissions::from_mode(0o0),
+    )
+    .unwrap();
+    let _socket = std::os::unix::net::UnixListener::bind(root.join("logs/dev.sock")).unwrap();
+    let report = root.join("logs/deep/report.docx");
+    fs::write(&report, "report").unwrap();
+    let id = id_of(fs::File::open(&report).unwrap().as_fd()).unwrap();
+    let known = Known {
+        kind: EntryKind::File,
+        id,
+    };
+    let logs = PathBuf::from("logs");
+    let found = find_below(root, &[&logs], &known);
+    assert_eq!(found.unwrap(), Some(PathBuf::from("logs/deep/report.docx")));
+
+    fs::remove_file(&report).unwrap();
+    fs::create_dir(root.join("logs/sealed")).unwrap();
+    fs::set_permissions(root.join("logs/sealed"), fs::Permissions::from_mode(0o0)).unwrap();
+    let sealed = find_below(root, &[&logs], &known);
+    fs::set_permissions(root.join("logs/sealed"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(
+        root.join("logs/locked.log"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    blocks_reads("find_below", sealed);
+}

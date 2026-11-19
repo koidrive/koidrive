@@ -71,3 +71,31 @@ fn a_dropped_batch_waits_only_for_the_folder_that_stays_busy() {
     });
     assert!(back, "report.docx comes back while logs stays busy");
 }
+
+#[test]
+fn a_synced_file_deleted_inside_a_left_out_folder_comes_back_past_a_locked_file_and_a_socket_in_a_busy_folder()
+ {
+    let mut remote = Remote::new();
+    let (site, mut b) = busy_logs(&mut remote, &dist_left_out());
+    fs::create_dir(site.root.join("dist")).unwrap();
+    fs::rename(
+        site.root.join("report.docx"),
+        site.root.join("dist/report.docx"),
+    )
+    .unwrap();
+    b.settle();
+    b.rest(&mut remote);
+    use std::os::unix::fs::PermissionsExt;
+    let locked = site.root.join("logs/locked.log");
+    fs::write(&locked, b"locked").unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let _socket = std::os::unix::net::UnixListener::bind(site.root.join("logs/dev.sock")).unwrap();
+    b.observer.keep_pending(PathBuf::from("logs"));
+
+    fs::remove_file(site.root.join("dist/report.docx")).unwrap();
+    let back = until(&mut b, &mut remote, |_, _| {
+        site.root.join("report.docx").exists()
+    });
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(back, "report.docx comes back while logs stays busy");
+}

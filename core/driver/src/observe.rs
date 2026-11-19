@@ -14,12 +14,10 @@
 //! reported as created, each entry with its identity and every file with its content.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
 use std::fs::File;
 use std::io;
 use std::ops::Bound;
 use std::os::fd::{AsFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -676,6 +674,25 @@ impl FsObserver {
         }
     }
 
+    fn find_unsettled(
+        &self,
+        path: &Path,
+        known: &Known,
+        unsettled: &[&PathBuf],
+    ) -> io::Result<Option<PathBuf>> {
+        if unsettled.is_empty() {
+            return Ok(None);
+        }
+        let last =
+            (self.found.get(path)).filter(|at| unsettled.iter().any(|scope| at.starts_with(scope)));
+        if let Some(at) = last
+            && let Ok(Some(at)) = koidrive_fs::find_below(&self.root, &[at], known)
+        {
+            return Ok(Some(at));
+        }
+        koidrive_fs::find_below(&self.root, unsettled, known)
+    }
+
     fn marked_node(&self, path: &Path, entry: &Entry) -> Option<String> {
         let read = || -> io::Result<Option<String>> {
             let opened = open_beneath(&self.root, path)?;
@@ -847,15 +864,7 @@ impl Observer for FsObserver {
                                 let Some(known) = self.recorded.get(&path).copied() else {
                                     continue;
                                 };
-                                let held = match unsettled.is_empty() {
-                                    true => Ok(None),
-                                    false => entry_within(
-                                        &self.root,
-                                        &known,
-                                        self.found.get(&path),
-                                        &unsettled,
-                                    ),
-                                };
+                                let held = self.find_unsettled(&path, &known, &unsettled);
                                 match held {
                                     Ok(None) => {}
                                     Ok(Some(at)) => {
@@ -956,61 +965,6 @@ impl Observer for FsObserver {
 
 fn overlap(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
-}
-
-fn entry_within(
-    root: &Path,
-    known: &Known,
-    last: Option<&PathBuf>,
-    scopes: &[&PathBuf],
-) -> io::Result<Option<PathBuf>> {
-    let open = |path: &Path| match path.as_os_str().is_empty() {
-        true => {
-            let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-            Ok(File::from(rustix::fs::open(root, flags, Mode::empty())?))
-        }
-        false => open_beneath(root, path),
-    };
-    let missing = |error: &io::Error| {
-        error.kind() == io::ErrorKind::NotFound
-            || [rustix::io::Errno::LOOP, rustix::io::Errno::NOTDIR]
-                .iter()
-                .any(|errno| error.raw_os_error() == Some(errno.raw_os_error()))
-    };
-    let is = |file: &File| -> io::Result<bool> {
-        let kind = match file.metadata()?.is_dir() {
-            true => EntryKind::Dir,
-            false => EntryKind::File,
-        };
-        Ok(kind == known.kind && koidrive_fs::id_of(file.as_fd())?.same(&known.id))
-    };
-    let within = |path: &PathBuf| scopes.iter().any(|scope| path.starts_with(scope));
-    if let Some(last) = last.filter(|last| within(last))
-        && open(last).and_then(|file| is(&file)).unwrap_or(false)
-    {
-        return Ok(Some(last.clone()));
-    }
-    let mut paths: Vec<PathBuf> = scopes.iter().map(|scope| (*scope).clone()).collect();
-    while let Some(path) = paths.pop() {
-        let file = match open(&path) {
-            Err(error) if missing(&error) => continue,
-            opened => opened?,
-        };
-        if is(&file)? {
-            return Ok(Some(path));
-        }
-        if !file.metadata()?.is_dir() {
-            continue;
-        }
-        for item in rustix::fs::Dir::read_from(&file)? {
-            let item = item?;
-            let name = OsStr::from_bytes(item.file_name().to_bytes());
-            if name != "." && name != ".." {
-                paths.push(path.join(name));
-            }
-        }
-    }
-    Ok(None)
 }
 
 fn still_pending(scopes: &[PathBuf], pending: &[PathBuf]) -> Vec<PathBuf> {
