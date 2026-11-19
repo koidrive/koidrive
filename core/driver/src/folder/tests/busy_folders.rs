@@ -164,3 +164,46 @@ fn a_synced_file_deleted_inside_a_left_out_folder_comes_back_past_a_locked_file_
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(back, "report.docx comes back while logs stays busy");
 }
+
+#[test]
+fn a_folder_moved_into_a_busy_folder_keeps_its_rules_and_holds_no_upload_elsewhere() {
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    fs::create_dir(site.root.join("logs")).unwrap();
+    fs::write(site.root.join("logs/app.log"), b"started\n").unwrap();
+    fs::write(site.root.join("report.docx"), b"report").unwrap();
+    fs::create_dir(site.root.join("proj")).unwrap();
+    fs::write(site.root.join("proj/.koiignore"), b"*.tmp\n").unwrap();
+    fs::write(site.root.join("proj/a.txt"), b"a").unwrap();
+    b.settle();
+    b.rest(&mut remote);
+    drop(b);
+    let mut b = started(&site, &mut remote, &SyncRules::default());
+    let (site_a, mut a) = linked(&mut remote, "a");
+    a.rest(&mut remote);
+    b.observer.keep_pending(PathBuf::from("logs"));
+    fs::rename(site_a.root.join("proj"), site_a.root.join("logs/proj")).unwrap();
+    a.rest(&mut remote);
+    b.pull(&remote);
+    for _ in 0..10 {
+        b.scan(Duration::from_millis(20));
+        b.run(&mut remote);
+    }
+    fs::write(site.root.join("logs/proj/y.tmp"), b"secret").unwrap();
+    fs::write(site.root.join("report.docx"), b"report, edited").unwrap();
+    let edited = |_: &Device, remote: &Remote| {
+        (remote.tree().get("report.docx")).is_some_and(|id| server_size(remote, id) == 14)
+    };
+    assert!(
+        until(&mut b, &mut remote, edited),
+        "the edit outside logs is uploaded while logs stays busy"
+    );
+    for _ in 0..20 {
+        b.scan(Duration::from_millis(20));
+        b.run(&mut remote);
+    }
+    assert!(
+        !remote.tree().contains_key("logs/proj/y.tmp"),
+        "what the moved folder's rules leave out stays off the server"
+    );
+}

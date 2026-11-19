@@ -130,7 +130,7 @@ Only the executable bit is synced (spec §5.1), as part of `Content`. Owners, gr
 
 ## 5.8 Files that change while being chunked or uploaded
 
-The fs driver records identity, size and mtime before reading a file and checks them again after chunking. If they changed, it discards the result and rescans after the file has been quiet for the debounce interval. Chunk bytes are read again on upload and must match their hash, which the server also checks (spec §8 step 2). If the file changed after chunking, the upload fails, the commit gets `MISSING_CHUNKS`, and §4.2 abandons it and re-plans from the newer observation. Until a scan reports the file again, the next commits leave it out and carry every other change. A file that never stays still is retried with backoff and reported as busy after a limit.
+The fs driver records identity, size and mtime before reading a file and checks them again after chunking. If they changed, it discards the result and rescans after the file has been quiet for the debounce interval. Chunk bytes are read again on upload and must match their hash, which the server also checks (spec §8 step 2). If the file changed after chunking, the upload fails, the commit gets `MISSING_CHUNKS`, and §4.2 abandons it and re-plans from the newer observation. Until a scan reports the file again, the next commits carry every other change. A file that never stays still is retried with backoff and reported as busy after a limit.
 
 ## 5.9 Very large directories and trees
 
