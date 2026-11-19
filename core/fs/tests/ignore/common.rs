@@ -205,16 +205,9 @@ struct Changer {
     vacated: Vec<PathBuf>,
     out: BTreeSet<u128>,
     bounced: BTreeSet<u128>,
-    gone: Option<tempfile::TempDir>,
 }
 
 impl Changer {
-    fn remove(&mut self, root: &Path, path: &Path) {
-        let name = self.fresh.to_string();
-        let gone = (self.gone).get_or_insert_with(|| tempfile::tempdir().unwrap());
-        fs::rename(root.join(path), gone.path().join(name)).unwrap();
-    }
-
     fn change(&mut self, root: &Path) {
         let mut all = Vec::new();
         listed(root, Path::new(""), &mut all);
@@ -256,12 +249,12 @@ impl Changer {
         match self.random.below(8) {
             0 => {
                 if let Some((path, false)) = self.random.pick(&included) {
-                    self.remove(root, &path);
+                    fs::remove_file(root.join(path)).unwrap();
                 }
             }
             1 => {
                 if let Some((path, true)) = self.random.pick(&included) {
-                    self.remove(root, &path);
+                    fs::remove_dir_all(root.join(path)).unwrap();
                 }
             }
             2 => {
