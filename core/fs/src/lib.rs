@@ -1680,18 +1680,10 @@ impl Snapshot {
             &departed,
             &mut *scan.cut,
         )?;
-        let halfway = |twice: Vec<(PathBuf, PathBuf)>, new: &BTreeMap<PathBuf, Entry>| {
-            (twice.into_iter())
-                .filter(|(first, second)| {
-                    let id = new[first].id;
-                    ![first, second].iter().all(|at| {
-                        (stat_rel(again.as_fd(), at).ok())
-                            .and_then(|stat| stat.entry())
-                            .is_some_and(|now| now.id.same(&id))
-                    })
-                })
-                .flat_map(|(first, second)| [first, second])
-                .collect::<Vec<PathBuf>>()
+        let on_disk = |at: &Path, id: &FileId| {
+            (stat_rel(again.as_fd(), at).ok())
+                .and_then(|stat| stat.entry())
+                .is_some_and(|now| now.id.same(id))
         };
         let left_out_ids: HashSet<FileId> = (scan.left_out.values())
             .map(|entry| entry.id.without_handle())
@@ -1704,7 +1696,13 @@ impl Snapshot {
             &held_from,
             &self.entries,
         );
-        let mut fresh = halfway(twice, &scan.new);
+        let mut fresh: Vec<PathBuf> = (twice.into_iter())
+            .filter(|(first, second)| {
+                let id = scan.new[first].id;
+                !(on_disk(first, &id) && on_disk(second, &id))
+            })
+            .flat_map(|(first, second)| [first, second])
+            .collect();
         if !vanished.is_empty() {
             let (found, unsure) = missed_moves(
                 again.as_fd(),
@@ -1747,7 +1745,8 @@ impl Snapshot {
                 placed_at.insert(path.clone(), key);
             }
             let mut sources: HashMap<_, Vec<(PathBuf, FileId)>> = HashMap::new();
-            let mut met = HashSet::new();
+            let (mut pushed, mut verified, mut drained) =
+                (HashSet::new(), HashSet::new(), HashSet::new());
             for (path, entry) in left {
                 let volume = volume_now(path, &old, &scan.new, &self.entries);
                 (sources
@@ -1791,20 +1790,31 @@ impl Snapshot {
                     for (inside, entry) in restored {
                         let volume =
                             volume_of(&inside, &scan.new, &self.entries).map(Path::to_path_buf);
-                        if !met.insert((volume.clone(), entry.id)) {
+                        let met = (volume.clone(), entry.id);
+                        if !observed(&inside, &unreadable, &held_from) || drained.contains(&met) {
                             continue;
                         }
-                        let pairs = (placed.get(&(volume, entry.id.without_handle())))
+                        let here = on_disk(&inside, &entry.id);
+                        if here && verified.contains(&met) {
+                            continue;
+                        }
+                        for (at, id) in (placed.get(&(volume, entry.id.without_handle())))
                             .into_iter()
                             .flatten()
-                            .filter(|(at, id)| {
-                                id.same(&entry.id)
-                                    && observed(at, &unreadable, &held_from)
-                                    && observed(&inside, &unreadable, &held_from)
-                            })
-                            .map(|(at, _)| (at.clone(), inside.clone()))
-                            .collect();
-                        next.extend(halfway(pairs, &scan.new));
+                        {
+                            if id.same(&entry.id)
+                                && observed(at, &unreadable, &held_from)
+                                && !pushed.contains(at)
+                                && !(here && on_disk(at, id))
+                            {
+                                pushed.insert(at.clone());
+                                next.push(at.clone());
+                            }
+                        }
+                        match here {
+                            true => verified.insert(met),
+                            false => drained.insert(met),
+                        };
                     }
                 }
                 next.retain(|path| !path.ancestors().any(|above| straddled.contains(above)));

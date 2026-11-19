@@ -729,6 +729,43 @@ fn a_move_into_a_listed_folder_is_found_when_its_search_fails_or_its_mtime_is_se
 }
 
 #[test]
+fn a_moved_link_paired_with_a_restored_link_on_disk_is_held_back_by_a_later_one_that_is_gone() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for file in ["a", "c", "w"] {
+        fs::write(root.join(file), file).unwrap();
+    }
+    fs::create_dir(root.join("z")).unwrap();
+    fs::hard_link(root.join("a"), root.join("d")).unwrap();
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    let swap: &[(&str, &str)] = &[("a", "t.tmp"), ("c", "a"), ("t.tmp", "c")];
+    let mut steps: Vec<(&str, &[(&str, &str)])> = vec![
+        ("a", swap),
+        ("c", swap),
+        ("d", &[("d", "z/m"), ("w", "d")]),
+        ("w", &[("d", "w")]),
+    ];
+    let straddling = snapshot
+        .rescan_with(root, [PathBuf::new()], None, &mut |cut| {
+            if let Cut::Stating(path) = cut
+                && let Some(at) = steps.iter().position(|(name, _)| path == Path::new(name))
+            {
+                for (from, to) in steps.remove(at).1 {
+                    fs::rename(root.join(from), root.join(to)).unwrap();
+                }
+            }
+        })
+        .unwrap();
+    let next = snapshot.rescan(root, [PathBuf::new()]).unwrap();
+    let changes = [straddling.changes, next.changes].concat();
+    assert!(
+        !(changes.iter())
+            .any(|change| matches!(change, Change::Removed { .. } | Change::Created { .. })),
+        "{changes:?}"
+    );
+}
+
+#[test]
 fn swaps_through_a_temporary_name_during_scans_publish_only_renames_and_settle_to_the_disk() {
     let steps = [
         ("a.txt", "t.tmp"),
