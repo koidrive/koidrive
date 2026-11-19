@@ -148,7 +148,8 @@ fn git_dir(folder: &Path) -> Option<PathBuf> {
         return Some(dot_git);
     }
     let text = read(&dot_git, MAX_GITFILE).ok()?;
-    Some(folder.join(path_line(text.strip_prefix(b"gitdir: ")?)))
+    let target = path_line(text.strip_prefix(b"gitdir: ")?);
+    (!target.is_empty()).then(|| folder.join(target))
 }
 
 fn read(path: &Path, max: u64) -> io::Result<Vec<u8>> {

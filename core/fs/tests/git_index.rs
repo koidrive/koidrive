@@ -286,7 +286,8 @@ fn every_dot_git_entry_makes_a_work_tree_with_its_own_index() {
         ("odd", "x"),
     ];
     assert_eq!(paths.map(answer).concat(), "yyyynn?");
-    for gitfile in ["nonsense", "gitdir: /nowhere"] {
+    fs::copy(root.join(".git/index"), root.join("odd/index")).unwrap();
+    for gitfile in ["nonsense", "gitdir: /nowhere", "gitdir: "] {
         fs::remove_file(root.join("odd/.git")).unwrap();
         fs::write(root.join("odd/.git"), gitfile).unwrap();
         assert_eq!(answers(&read(&root.join("odd")), "x"), "?", "{gitfile}");
