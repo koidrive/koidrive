@@ -5259,6 +5259,43 @@ fn an_own_lost_create_under_a_folder_deleted_after_the_loss_leaves_the_folder_de
     world.phase(1, &steps).unwrap();
 }
 
+#[test]
+fn a_replayed_edit_a_delete_listed_as_unseen_stays_on_the_copy_the_delete_makes() {
+    let _red = expect_red_without_intents(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 1 came undone, and no change its user did not see brought the node back",
+    );
+    let make = |kind, target, parent, name, text| {
+        Step::User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = [
+        vec![
+            (2, make(1, 0, 2, 9, 0)),
+            (2, make(1, 3, 1, 1, 0)),
+            (0, make(0, 0, 3, 7, 2)),
+            (2, make(0, 2, 2, 4, 1)),
+            (1, make(1, 0, 0, 3, 3)),
+        ],
+        vec![
+            (1, make(4, 0, 2, 6, 3)),
+            (1, BACKUP),
+            (0, make(2, 18216757102927397494, 4343495607357845745, 5, 0)),
+            (0, Step::Work(0)),
+            (2, Step::Work(0)),
+            (0, Step::Work(0)),
+            (0, Step::Work(0)),
+            (0, RESTORE),
+        ],
+    ];
+    converge(2, &phases).unwrap();
+}
+
 fn paths_on(world: &World, device: usize) -> Vec<String> {
     let disk = &world.devices[device].disk;
     let mut paths: Vec<String> = (disk.visible().into_iter())

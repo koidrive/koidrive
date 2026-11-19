@@ -1909,4 +1909,46 @@ mod tests {
         intents.sync(&server, 4, None);
         assert_eq!(intents.check(&server, |_| false, |_, _| false), Ok(()));
     }
+
+    fn a_write_whose_file_is_trashed_beside_a_file_of_its_bytes() -> (Intents, Server) {
+        let mut intents = Intents::new(1);
+        intents.nodes[0].insert(1, BTreeSet::from(["n".to_owned()]));
+        let write = Value::Content {
+            write: 4,
+            digest: vec![4],
+        };
+        intents.record(0, 1, 1, "write", write);
+        let copy = NodeState {
+            current: Some(koidrive_proto::v1::VersionInfo {
+                content: Some(koidrive_proto::v1::Content {
+                    manifest_digest: vec![4],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..node_named("c", "x", NodeStatus::Live)
+        };
+        let server = Server::of(
+            "root",
+            vec![node_named("n", "a", NodeStatus::Trashed), copy],
+        );
+        (intents, server)
+    }
+
+    #[test]
+    fn a_write_stays_on_the_copy_the_server_made_of_it() {
+        let (mut intents, server) = a_write_whose_file_is_trashed_beside_a_file_of_its_bytes();
+        intents.copied("n", "c");
+        assert_eq!(intents.check(&server, |_| false, |_, _| false), Ok(()));
+    }
+
+    #[test]
+    fn a_write_trashed_with_its_file_and_copied_nowhere_is_lost() {
+        let (intents, server) = a_write_whose_file_is_trashed_beside_a_file_of_its_bytes();
+        let (why, write) = intents.check(&server, |_| false, |_, _| false).unwrap_err();
+        assert!(
+            write && why.starts_with("write 4 of the write of node n"),
+            "{why}"
+        );
+    }
 }
