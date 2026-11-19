@@ -65,7 +65,7 @@ pub(crate) use task::FolderTask;
 #[cfg(test)]
 use task::reporter;
 #[cfg(test)]
-pub(crate) use task::{BEFORE_OPEN, ObserveFault, WHILE_LOADING};
+pub(crate) use task::{BEFORE_OPEN, LOADS, ObserveFault, Parked, WHILE_LOADING, WHILE_READING};
 #[cfg(test)]
 use tokio::sync::watch;
 #[cfg(test)]
@@ -119,7 +119,7 @@ const OTHER_FOLDER: &str = "the folder at this path is not the one this device s
 
 pub(crate) struct Loaded {
     timing: Timing,
-    store: Store,
+    store: PathBuf,
     engine: Engine,
     snapshot: Snapshot,
 }
@@ -343,18 +343,31 @@ impl Folder {
         link: &Link,
         local: LocalRules,
         abandoned: &dyn Fn() -> bool,
+        released: impl FnOnce(),
     ) -> Result<Option<Loaded>, Stop> {
+        let timing = Timing::open(store, link.linked_at_ms);
+        let read = Store::open_existing(store).and_then(|mut opened| {
+            opened.read(|tx| {
+                #[cfg(test)]
+                let parked = WHILE_READING.lock().unwrap().remove(store);
+                #[cfg(test)]
+                if let Some(parked) = parked {
+                    parked(abandoned);
+                }
+                Engine::read_unless(tx, &link.space_id, abandoned)
+            })
+        });
+        released();
         #[cfg(test)]
         let parked = WHILE_LOADING.lock().unwrap().remove(store);
         #[cfg(test)]
         if let Some(parked) = parked {
             parked(abandoned);
         }
-        let timing = Timing::open(store, link.linked_at_ms);
-        let mut store = Store::open_existing(store)?;
-        let Some(mut engine) =
-            store.read(|tx| Engine::load_unless(tx, &link.space_id, abandoned))?
-        else {
+        let Some(read) = read? else {
+            return Ok(None);
+        };
+        let Some(mut engine) = read.engine_unless(abandoned)? else {
             return Ok(None);
         };
         if abandoned() {
@@ -372,7 +385,7 @@ impl Folder {
         };
         Ok(Some(Loaded {
             timing,
-            store,
+            store: store.to_owned(),
             snapshot,
             engine,
         }))
@@ -387,10 +400,11 @@ impl Folder {
     pub fn open(loaded: Loaded, link: Link, lock: &File) -> Result<(Folder, Snapshot), Stop> {
         let Loaded {
             timing,
-            mut store,
+            store,
             mut engine,
             snapshot,
         } = loaded;
+        let mut store = Store::open_existing(store)?;
         let disk = Disk::start(lock, &link, &mut engine, &mut store)?;
         for node in engine.effects.blocked().clone().into_keys() {
             engine.effects.unblock(&node);

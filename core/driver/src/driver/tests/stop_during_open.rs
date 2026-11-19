@@ -3,6 +3,8 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 
+use crate::folder::Parked;
+
 use koidrive_engine::restore::RestoreIntent;
 
 use super::*;
@@ -14,6 +16,14 @@ fn stored(store: &Path) -> (usize, koidrive_fs::RootTokens) {
             Ok::<_, koidrive_store::Error>((tx.restore_requests()?.len(), tx.root_tokens()?))
         })
         .unwrap()
+}
+
+fn unshared(store: &Path) -> bool {
+    let conn = rusqlite::Connection::open(store).unwrap();
+    conn.busy_timeout(Duration::ZERO).unwrap();
+    conn.pragma_update(None, "locking_mode", "EXCLUSIVE")
+        .unwrap();
+    conn.execute_batch("BEGIN EXCLUSIVE; COMMIT").is_ok()
 }
 
 #[tokio::test]
@@ -34,7 +44,7 @@ async fn a_pause_while_a_folder_loads_its_store_stops_it_at_once_and_leaves_the_
     let before = stored(&store);
     let (entered, loading) = mpsc::channel();
     let waited_out = Arc::new(AtomicBool::new(false));
-    crate::folder::WHILE_LOADING.lock().unwrap().insert(
+    crate::folder::WHILE_READING.lock().unwrap().insert(
         store.clone(),
         Box::new({
             let waited_out = waited_out.clone();
@@ -48,6 +58,7 @@ async fn a_pause_while_a_folder_loads_its_store_stops_it_at_once_and_leaves_the_
                     }
                     std::thread::sleep(Duration::from_millis(5));
                 }
+                std::thread::sleep(Duration::from_millis(200));
             }
         }),
     );
@@ -56,10 +67,13 @@ async fn a_pause_while_a_folder_loads_its_store_stops_it_at_once_and_leaves_the_
     eventually("the folder loads its store", || loading.try_recv().is_ok()).await;
 
     driver.pause().await.unwrap();
+    let stopped = driver.inner.pausing.lock().await;
     assert!(
         !waited_out.load(Ordering::SeqCst),
         "the pause waited for the store to load"
     );
+    assert!(unshared(&store), "the stopped load still holds the store");
+    drop(stopped);
     assert!(
         claim::lock(&root).unwrap().is_some(),
         "the paused folder is still claimed"
@@ -75,8 +89,7 @@ async fn a_pause_while_a_folder_loads_its_store_stops_it_at_once_and_leaves_the_
     driver.stop().await;
 }
 
-#[tokio::test]
-async fn pauses_and_resumes_while_a_folder_loads_its_store_never_load_it_twice_at_once() {
+async fn pauses_and_resumes_never_load_twice_at_once(hook: &Mutex<BTreeMap<PathBuf, Parked>>) {
     let dir = tempfile::tempdir().unwrap();
     let base = fs::canonicalize(dir.path()).unwrap();
     let root = base.join("Koidrive");
@@ -85,7 +98,7 @@ async fn pauses_and_resumes_while_a_folder_loads_its_store_never_load_it_twice_a
     let store = paths.store(SPACE).unwrap();
     let parked = Arc::new(AtomicBool::new(true));
     let (entered, loading) = mpsc::channel();
-    crate::folder::WHILE_LOADING.lock().unwrap().insert(
+    hook.lock().unwrap().insert(
         store.clone(),
         Box::new({
             let parked = parked.clone();
@@ -100,7 +113,7 @@ async fn pauses_and_resumes_while_a_folder_loads_its_store_never_load_it_twice_a
     driver.start();
     eventually("the folder loads its store", || loading.try_recv().is_ok()).await;
     let (again, loading_again) = mpsc::channel();
-    crate::folder::WHILE_LOADING.lock().unwrap().insert(
+    crate::folder::WHILE_READING.lock().unwrap().insert(
         store.clone(),
         Box::new({
             let parked = parked.clone();
@@ -124,4 +137,18 @@ async fn pauses_and_resumes_while_a_folder_loads_its_store_never_load_it_twice_a
         "a second load ran beside the first"
     );
     driver.stop().await;
+    eventually("the store's last load ends", || {
+        !crate::folder::LOADS.lock().unwrap().contains_key(&store)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn pauses_and_resumes_while_a_folder_reads_its_store_never_load_it_twice_at_once() {
+    pauses_and_resumes_never_load_twice_at_once(&crate::folder::WHILE_READING).await;
+}
+
+#[tokio::test]
+async fn a_resume_while_a_stopped_load_builds_its_engine_waits_for_that_load() {
+    pauses_and_resumes_never_load_twice_at_once(&crate::folder::WHILE_LOADING).await;
 }

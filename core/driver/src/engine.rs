@@ -28,7 +28,7 @@ use koidrive_fs::{Ctime, Entry, EntryKind, FileId, Known, Mount, Snapshot};
 use koidrive_proto::v1::{
     CaughtUp, ChangeRecord, CommitRecord, NodeKind, NodeState, TrashPage, TreePage, change_record,
 };
-use koidrive_store::{Cursor, EngineChanges, Error, StoredQuestion, SyncedNode, Tx};
+use koidrive_store::{Cursor, EngineChanges, EngineState, Error, StoredQuestion, SyncedNode, Tx};
 
 use crate::ItemKind;
 use crate::disk::Stop;
@@ -61,6 +61,73 @@ pub(crate) struct Engine {
 
 const DELETE_WAIT_MS: u64 = 2_000;
 
+pub(crate) struct Stored {
+    trees: Trees,
+    state: EngineState,
+    ids: Option<Vec<u8>>,
+    cursor: Option<Cursor>,
+    mounts: BTreeMap<PathBuf, Mount>,
+    ctimes: BTreeMap<NodeId, i64>,
+}
+
+impl Stored {
+    pub fn engine_unless(self, abandoned: &dyn Fn() -> bool) -> Result<Option<Engine>, Error> {
+        let Stored {
+            mut trees,
+            state,
+            ids,
+            cursor,
+            mounts,
+            ctimes,
+        } = self;
+        if abandoned() {
+            return Ok(None);
+        }
+        let restored = trees
+            .restore_unless(state.trees, abandoned)
+            .map_err(|error| invalid(format!("{error:?}")))?;
+        if restored.is_none() {
+            return Ok(None);
+        }
+        trees.take_changed();
+        let stored_questions = state.commits.questions.clone();
+        let commits =
+            Commits::from_state(state.commits).map_err(|error| invalid(format!("{error:?}")))?;
+        commits.hold(&mut trees);
+        let effects = effects_of(state.effects)?;
+        let ids = match ids {
+            Some(bytes) => {
+                let state = <[u8; 8]>::try_from(bytes.as_slice()).map_err(|_| {
+                    invalid(format!("an ID generator state of {} bytes", bytes.len()))
+                })?;
+                IdGen::new(u64::from_le_bytes(state))
+            }
+            None => IdGen::new(
+                std::collections::hash_map::RandomState::new()
+                    .hash_one(std::time::SystemTime::now()),
+            ),
+        };
+        Ok(Some(Engine {
+            trees,
+            effects,
+            commits,
+            ids,
+            cursor,
+            stored_questions,
+            asked: false,
+            reshown_since_load: false,
+            recovery_cause: None,
+            unscanned: None,
+            mounts,
+            stored_ctimes: ctimes,
+            unstored_ctimes: BTreeMap::new(),
+            local_written_since_load: false,
+            removed_at: BTreeMap::new(),
+            owed: BTreeSet::new(),
+        }))
+    }
+}
+
 /// What applying a batch of the log did.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Applied {
@@ -74,15 +141,17 @@ impl Engine {
     /// The engine state of the space whose root node is `root`, as the store holds it. A space that never stored an
     /// ID generator gets one with a random seed.
     pub fn load(tx: &Tx<'_>, root: &str) -> Result<Self, Error> {
-        Self::load_unless(tx, root, &|| false)
+        Self::read_unless(tx, root, &|| false)?
+            .expect("a read nobody abandons ends with the rows")
+            .engine_unless(&|| false)
             .map(|engine| engine.expect("a load nobody abandons ends with the engine"))
     }
 
-    pub fn load_unless(
+    pub fn read_unless(
         tx: &Tx<'_>,
         root: &str,
         abandoned: &dyn Fn() -> bool,
-    ) -> Result<Option<Self>, Error> {
+    ) -> Result<Option<Stored>, Error> {
         let mut trees = Trees::new(root);
         let mut walked = 0;
         let mut abandoned_now = || {
@@ -154,53 +223,18 @@ impl Engine {
         if abandoned() {
             return Ok(None);
         }
-        let stored = tx.engine_state()?;
-        if abandoned() {
+        let Some(state) = tx.engine_state_unless(&mut abandoned_now)? else {
             return Ok(None);
-        }
-        let restored = trees
-            .restore_unless(stored.trees, abandoned)
-            .map_err(|error| invalid(format!("{error:?}")))?;
-        if restored.is_none() {
-            return Ok(None);
-        }
-        trees.take_changed();
-        let stored_questions = stored.commits.questions.clone();
-        let commits =
-            Commits::from_state(stored.commits).map_err(|error| invalid(format!("{error:?}")))?;
-        commits.hold(&mut trees);
-        let effects = effects_of(stored.effects)?;
-        let ids = match tx.id_generator()? {
-            Some(bytes) => {
-                let state = <[u8; 8]>::try_from(bytes.as_slice()).map_err(|_| {
-                    invalid(format!("an ID generator state of {} bytes", bytes.len()))
-                })?;
-                IdGen::new(u64::from_le_bytes(state))
-            }
-            None => IdGen::new(
-                std::collections::hash_map::RandomState::new()
-                    .hash_one(std::time::SystemTime::now()),
-            ),
         };
-        Ok(Some(Engine {
+        Ok(Some(Stored {
             trees,
-            effects,
-            commits,
-            ids,
+            state,
+            ids: tx.id_generator()?,
             cursor: tx.cursor()?,
-            stored_questions,
-            asked: false,
-            reshown_since_load: false,
-            recovery_cause: None,
-            unscanned: None,
             mounts: tx.volume_mounts()?,
-            stored_ctimes: (tx.local_ctimes()?.into_iter())
+            ctimes: (tx.local_ctimes()?.into_iter())
                 .map(|(id, ctime)| (NodeId::from(id), ctime))
                 .collect(),
-            unstored_ctimes: BTreeMap::new(),
-            local_written_since_load: false,
-            removed_at: BTreeMap::new(),
-            owed: BTreeSet::new(),
         }))
     }
 

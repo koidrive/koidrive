@@ -24,6 +24,14 @@ upgrade_case!(schema_node_walks, |store| {
             assert_eq!(tx.each_remote_node(Break)?.as_ref(), remote.first());
             assert_eq!(tx.each_synced_node(Break)?.as_ref(), synced.first());
             assert_eq!(tx.each_local_node(Break)?.as_ref(), local.first());
+            let mut rows = 0;
+            let state = tx.engine_state_unless(&mut || {
+                rows += 1;
+                false
+            })?;
+            assert!(rows > 0);
+            assert_eq!(state, Some(tx.engine_state()?));
+            assert_eq!(tx.engine_state_unless(&mut || true)?, None);
             Ok::<_, koidrive_store::Error>(())
         })
         .unwrap();

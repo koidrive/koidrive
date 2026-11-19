@@ -823,7 +823,7 @@ impl Driver {
                 device_id: credential.device_id.clone(),
             },
             observer: Mutex::default(),
-            loader: Mutex::default(),
+            released: Mutex::default(),
             changed: self.inner.changed.clone(),
             progressed: self.inner.progressed.clone(),
             totals: self.inner.totals.clone(),
