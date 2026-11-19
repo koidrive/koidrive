@@ -17,6 +17,7 @@ koidrive-ignore = { path = "../ignore" }
 koidrive-proto = { path = "../proto" }
 prost.workspace = true
 serde = { version = "1.0.229", features = ["derive"], optional = true }
+siphasher = "1"
 unicode-normalization = "0.1"
 
 [dev-dependencies]

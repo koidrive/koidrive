@@ -6,6 +6,7 @@ use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use koidrive_ignore::{Scope, Source, Status};
+use siphasher::sip::SipHasher13;
 
 use crate::first_link;
 use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
@@ -326,9 +327,8 @@ impl<V: Placed + Clone + PartialEq> From<BTreeMap<NodeId, V>> for ByParent<V> {
 struct ByName(CountedMap<(NodeId, u32), Holders>);
 
 fn key_hash(key: &str) -> u32 {
-    key.bytes().fold(0x811c_9dc5, |hash, byte| {
-        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
-    })
+    let [a, b, c, d, ..] = SipHasher13::new().hash(key.as_bytes()).to_le_bytes();
+    u32::from_le_bytes([a, b, c, d])
 }
 
 impl ByName {

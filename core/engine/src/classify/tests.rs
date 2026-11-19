@@ -1520,3 +1520,56 @@ fn a_synced_rename_between_names_whose_keys_share_a_hash_keeps_the_node_held() {
     );
     assert!(!trees.set_synced_if_valid("m".into(), Some(file(&b))));
 }
+
+#[test]
+fn names_built_to_share_an_fnv_hash_are_synced_in_linear_reads() {
+    use crate::tree::{ENTRIES_BUDGET, ENTRIES_READ};
+    let fnv = |hash: u32, block: &[u8]| {
+        (block.iter()).fold(hash, |hash, byte| {
+            (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
+        })
+    };
+    let colliding = |stages: usize| {
+        let alphabet = b"abcdefghijklmnopqrstuvwxyz0123456789";
+        let mut state = 0x811c_9dc5;
+        let mut pairs = Vec::new();
+        for _ in 0..stages {
+            let mut seen = HashMap::new();
+            let (a, b, next) = (0..alphabet.len().pow(4))
+                .find_map(|i| {
+                    let block: Vec<u8> = (0..4u32)
+                        .map(|j| alphabet[i / alphabet.len().pow(j) % alphabet.len()])
+                        .collect();
+                    let hash = fnv(state, &block);
+                    (seen.insert(hash, block.clone())).map(|other| (other, block, hash))
+                })
+                .unwrap();
+            pairs.push((a, b));
+            state = next;
+        }
+        (0..1usize << stages).map(move |bits| {
+            let pick = |(j, (a, b)): (usize, &(Vec<u8>, Vec<u8>))| {
+                String::from_utf8(if bits >> j & 1 == 0 { a } else { b }.clone()).unwrap()
+            };
+            pairs.iter().enumerate().map(pick).collect::<String>()
+        })
+    };
+    let reads = |stages, budget: u64| {
+        let mut trees = Trees::new("root");
+        let before = ENTRIES_READ.with(Cell::get);
+        ENTRIES_BUDGET.with(|limit| limit.set(before.saturating_add(budget)));
+        for (i, name) in colliding(stages).enumerate() {
+            let shape = Shape {
+                parent: "root".into(),
+                name,
+                kind: Kind::File,
+                content: None,
+            };
+            assert!(trees.set_synced_if_valid(format!("n{i}").into(), Some(shape)));
+        }
+        ENTRIES_BUDGET.with(|limit| limit.set(u64::MAX));
+        ENTRIES_READ.with(Cell::get) - before
+    };
+    let two_hundred_fifty_six = reads(8, u64::MAX);
+    reads(11, two_hundred_fifty_six * 11);
+}
