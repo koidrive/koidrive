@@ -1626,8 +1626,6 @@ fn a_viewer_keeping_a_folder_reports_a_file_made_at_its_name() {
     );
 }
 
-/// The server holds `Disk/report.docx` and `files` files below `Disk/.DocumentRevisions-V100`, as a client that
-/// synced what a disk's system writes left them.
 fn system_files_on_the_server(files: usize) -> Remote {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
@@ -1670,7 +1668,6 @@ fn system_files_on_the_server(files: usize) -> Remote {
     remote
 }
 
-/// A device linked after the system files reached the server deletes `Disk`. Returns the server and the device.
 fn deleted_on_a_new_device(files: usize, delete_limit: Option<usize>) -> (Remote, Device) {
     let mut remote = system_files_on_the_server(files);
     remote.delete_limit = delete_limit;
