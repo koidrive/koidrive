@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, File};
 use std::io::Write;
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::MetadataExt;
@@ -11,7 +11,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use koidrive_state_file::{
-    AtomicFile, Publish, recover, remove_with_legacy_matching, write, write_with_legacy,
+    AtomicFile, Flock, Publish, recover, remove_with_legacy_matching, write, write_with_legacy,
 };
 
 #[cfg(target_os = "macos")]
@@ -571,10 +571,14 @@ fn interrupted_create_recovers_its_stage_without_removing_the_destination() {
         assert_eq!(fs::read(&path).unwrap(), b"published");
         assert_eq!(fs::read(&abandoned).unwrap(), b"published");
         assert_eq!(stages(dir.path()), 1);
-        let result = AtomicFile::prepare(&path);
+        let retry = AtomicFile::prepare(&path)
+            .unwrap_or_else(|error| panic!("recovery rejected publication: {error}"));
         assert_eq!(fs::read(&path).unwrap(), b"published");
-        assert!(!abandoned.exists());
-        let retry = result.unwrap_or_else(|error| panic!("recovery rejected publication: {error}"));
+        assert!(
+            !abandoned.exists(),
+            "recovery left the abandoned stage; a fresh lock attempt on it gives {:?}",
+            File::open(&abandoned).and_then(|file| Flock::take(file).map(|lock| lock.is_some()))
+        );
         retry.as_file().write_all(b"replacement").unwrap();
         match publish {
             Publish::Create => {
