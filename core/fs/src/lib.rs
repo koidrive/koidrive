@@ -2175,6 +2175,11 @@ impl Snapshot {
                 |dir| folder(&self.left_out, dir),
             )
         });
+        unsettled.extend(
+            finished
+                .iter()
+                .flat_map(|done| done.unsettled.iter().cloned()),
+        );
         let reported: HashSet<&Path> = (changes.iter())
             .filter_map(|change| match change {
                 Change::Created { path, .. } | Change::Modified { path } => Some(path.as_path()),
@@ -3631,6 +3636,8 @@ impl NativeWatcher {
             });
             if !below_left_out {
                 self.dirty.insert(rel.to_path_buf());
+            } else if rel.ends_with(".git") {
+                self.dirty.extend(rel.parent().map(Path::to_path_buf));
             }
         }
         Ok(())
@@ -3641,20 +3648,10 @@ impl NativeWatcher {
             return;
         };
         for (tree, before) in rules.read_index(&self.root, &tree) {
+            let entries = &self.snapshot.entries;
+            (self.dirty)
+                .extend(rules.rescope(&tree, &before, |folder| entries.contains_key(folder)));
             let now = rules.tracked(&tree).to_vec();
-            let before: BTreeSet<&String> = before.iter().collect();
-            let after: BTreeSet<&String> = now.iter().collect();
-            for path in before
-                .symmetric_difference(&after)
-                .map(|path| tree.join(path))
-            {
-                let left_out = (path.ancestors().skip(1))
-                    .filter(|folder| self.snapshot.entries.contains_key(*folder))
-                    .filter(|folder| rules.status(folder, EntryKind::Dir) != Ignored::No)
-                    .last()
-                    .map(Path::to_path_buf);
-                self.dirty.insert(left_out.unwrap_or(path));
-            }
             self.changed_tracked.push((tree, now));
         }
     }

@@ -293,6 +293,29 @@ impl Rules {
         self.tracked.get(tree).map_or(&[], Vec::as_slice)
     }
 
+    /// The scopes to scan again once the list of the work tree at `tree` changed from `before`: each file one of the
+    /// lists holds, or the outermost folder above it that `known` holds and the rules leave out.
+    pub(crate) fn rescope(
+        &self,
+        tree: &Path,
+        before: &[String],
+        known: impl Fn(&Path) -> bool,
+    ) -> Vec<PathBuf> {
+        let before: BTreeSet<&String> = before.iter().collect();
+        let after: BTreeSet<&String> = self.tracked(tree).iter().collect();
+        (before.symmetric_difference(&after))
+            .map(|path| {
+                let path = tree.join(path);
+                let left_out = (path.ancestors().skip(1))
+                    .filter(|folder| known(folder))
+                    .filter(|folder| self.status(folder, EntryKind::Dir) != Ignored::No)
+                    .last()
+                    .map(Path::to_path_buf);
+                left_out.unwrap_or(path)
+            })
+            .collect()
+    }
+
     pub(crate) fn forget_index(&mut self, tree: &Path) -> Vec<(PathBuf, Vec<String>)> {
         let mut changed: Vec<_> = (self.set_tracked(tree, Vec::new()).into_iter())
             .map(|before| (tree.to_path_buf(), before))
@@ -986,7 +1009,14 @@ impl<'r> Pending<'r> {
             .filter(|tree| !held(tree) && !marked(tree))
             .cloned()
             .collect();
-        for (tree, before) in gone.iter().flat_map(|tree| rules.forget_index(tree)) {
+        let forgotten: Vec<_> = gone
+            .iter()
+            .flat_map(|tree| rules.forget_index(tree))
+            .collect();
+        let unsettled = (forgotten.iter())
+            .flat_map(|(tree, before)| rules.rescope(tree, before, &is_folder))
+            .collect();
+        for (tree, before) in forgotten {
             tracked.entry(tree).or_insert(before);
         }
         let tracked = (tracked.into_iter())
@@ -1019,6 +1049,7 @@ impl<'r> Pending<'r> {
             rules: changed,
             read: read.into_iter().filter(|dir| held(dir)).collect(),
             tracked,
+            unsettled,
         }
     }
 }
@@ -1029,6 +1060,8 @@ pub(crate) struct Finished {
     pub(crate) rules: Vec<RulesFile>,
     pub(crate) read: Vec<PathBuf>,
     pub(crate) tracked: Vec<(PathBuf, Vec<String>)>,
+    /// The scopes whose answer changed after the traversal, which it judged by the lists before.
+    pub(crate) unsettled: Vec<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
