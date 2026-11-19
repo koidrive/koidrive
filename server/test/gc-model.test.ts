@@ -44,7 +44,7 @@ type Simple =
   | { t: "prepare"; chunks: number[] }
   | { t: "put"; plan: number; outcome: Outcome }
   | { t: "bundle"; plans: number[]; outcome: Outcome }
-  | { t: "commit"; file: number; receipts: number[]; extra: number[] }
+  | { t: "commit"; file: number; receipts: number[]; extra: number[]; dup?: boolean }
   | { t: "trash"; file: number }
   | { t: "drop"; version: number }
   | { t: "gc"; retire: Retirement; del: Outcome }
@@ -328,7 +328,8 @@ async function act(world: World, step: Step): Promise<boolean> {
       const receipts = step.receipts.flatMap((i) => pick(world.receipts, i) ?? []);
       const used = new Set([...receipts.map((receipt) => chunks.findIndex((c) => c.hex === toHex(receipt.hash))), ...step.extra]);
       if (used.size === 0) return false;
-      const parts = await content(...[...used].sort().map((i) => TEXTS[i]!));
+      const texts = [...used].sort().map((i) => TEXTS[i]!);
+      const parts = await content(...(step.dup ? [...texts, texts[0]!] : texts));
       const nodeId = world.files[step.file]!;
       const status = await nodeStatus(world, nodeId);
       const change = status === undefined ? op.create(nodeId, spaceId, `file ${step.file}`, parts.content) : op.update(nodeId, parts.content);
@@ -549,6 +550,7 @@ const commit = fc.record({
   file: fc.nat({ max: FILES - 1 }),
   receipts: fc.uniqueArray(index, { maxLength: 2 }),
   extra: fc.uniqueArray(fc.nat({ max: TEXTS.length - 1 }), { maxLength: 1 }),
+  dup: fc.oneof({ weight: 3, arbitrary: fc.constant(false) }, fc.constant(true)),
 });
 const collect = fc.record({ t: fc.constant("gc" as const), retire: fc.constantFrom<Retirement>("ok", "ok", "refused", "lostBefore", "lostAfter"), del: outcome });
 const drop = fc.record({ t: fc.constant("drop" as const), version: index });
@@ -595,7 +597,21 @@ const step: fc.Arbitrary<Step> = fc.oneof(
     ),
   },
 );
-const steps = fc.array(step, { minLength: 1, maxLength: 60, size: "max" });
+const edit = fc
+  .record({ file: fc.nat({ max: FILES - 1 }), from: fc.nat({ max: TEXTS.length - 1 }), to: fc.nat({ max: TEXTS.length - 1 }) })
+  .filter(({ from, to }) => from !== to)
+  .map(({ file, from, to }): Step[] => [
+    { t: "prepare", chunks: [from] },
+    { t: "put", plan: 0, outcome: "ok" },
+    { t: "commit", file, receipts: [0], extra: [from] },
+    { t: "prepare", chunks: [to] },
+    { t: "put", plan: 0, outcome: "ok" },
+    { t: "commit", file, receipts: [0], extra: [to] },
+    { t: "drop", version: 0 },
+  ]);
+const steps = fc
+  .array(fc.oneof({ weight: 9, arbitrary: step.map((one) => [one]) }, { weight: 1, arbitrary: edit }), { minLength: 1, maxLength: 60, size: "max" })
+  .map((parts) => parts.flat());
 
 const minute: Step = { t: "clock", ms: MINUTE };
 const day: Step = { t: "clock", ms: DAY };
@@ -603,6 +619,7 @@ const week: Step = { t: "clock", ms: 7 * DAY };
 const gc: Step = { t: "gc", retire: "ok", del: "ok" };
 const uploadBothThenA: Step[] = [{ t: "prepare", chunks: [0, 1] }, { t: "put", plan: 0, outcome: "ok" }, { t: "put", plan: 1, outcome: "ok" }];
 const scenarios: Step[][] = [
+  [minute, { t: "prepare", chunks: [0] }, { t: "put", plan: 0, outcome: "ok" }, { t: "commit", file: 0, receipts: [0], extra: [], dup: true }, { t: "commit", file: 0, receipts: [], extra: [0] }, { t: "drop", version: 0 }],
   [
     minute,
     { t: "prepare", chunks: [0, 1] },
