@@ -1296,12 +1296,8 @@ impl Engine {
         {
             return None;
         }
-        let sent = |id: &str| {
-            (self.commits.in_flight()).is_some_and(|flight| {
-                (flight.deletes.iter())
-                    .any(|(top, members)| top == id || members.iter().any(|member| member == id))
-            })
-        };
+        let sent =
+            |id: &str| (self.commits.in_flight()).is_some_and(|flight| flight.deletes_node(id));
         (self.trees.synced_holders(&parent, name))
             .find(|id| {
                 (self.trees.synced().live(id))

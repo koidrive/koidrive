@@ -930,3 +930,33 @@ fn a_file_removed_before_a_rule_leaves_it_out_leaves_the_server() {
         assert!(!kept, "{rules_file} {rule}: {nodes:?}");
     }
 }
+
+#[test]
+fn a_file_written_at_a_conflict_copy_whose_delete_is_out_is_kept() {
+    let mut remote = Remote::new();
+    let ((site_a, mut a), (site_b, mut b)) = edited_on_both(&mut remote);
+    let trashed = live_id(&server_nodes(&remote), COPY);
+    answer(&site_b, Answer::KeepOriginal);
+    let step = b.folder.requested();
+    b.take(step).unwrap();
+    let at = (b.work.iter()).position(|work| matches!(work, Work::Send(_)));
+    let send = b.work.remove(at.unwrap()).unwrap();
+    let copy = site_b.root.join(COPY);
+    fs::remove_file(&copy).unwrap();
+    b.scan_until(|_| !local_holds(&site_b, COPY));
+    fs::write(&copy, b"written again").unwrap();
+    b.scan_until(|_| local_holds(&site_b, COPY));
+    b.perform(send, &mut remote).unwrap();
+    sync(&mut remote, (&site_a, &mut a), (&site_b, &mut b));
+    assert_eq!(fs::read(&copy).ok(), Some(b"written again".to_vec()));
+    let nodes = server_nodes(&remote);
+    assert!(
+        nodes.contains(&(COPY.to_owned(), trashed, false)),
+        "{nodes:?}"
+    );
+    assert_eq!(
+        server_bytes(&remote, &live_id(&nodes, COPY)),
+        b"written again"
+    );
+}
+

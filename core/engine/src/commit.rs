@@ -99,6 +99,13 @@ impl InFlight {
     pub(crate) fn positions(&self, id: &str) -> bool {
         (self.commit.ops.iter()).any(|op| op.op.as_ref().and_then(positioned) == Some(id))
     }
+
+    /// Whether the commit deletes `id`, by a `Delete` of it or of a folder above it.
+    pub fn deletes_node(&self, id: &str) -> bool {
+        (self.deletes.iter()).any(|(top, members)| top == id || members.iter().any(|m| m == id))
+            || (self.commit.ops.iter())
+                .any(|op| matches!(&op.op, Some(op::Op::Delete(delete)) if delete.node_id == id))
+    }
 }
 
 /// Why no commit is built or resent.
