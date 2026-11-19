@@ -5757,6 +5757,7 @@ impl Trees {
         let reverted = self.reverted.contains(&id);
         self.set_local(id.clone(), node);
         if reverted {
+            self.cycle_reverted.remove(&id);
             self.reverted.insert(id);
         }
     }
