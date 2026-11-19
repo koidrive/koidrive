@@ -37,6 +37,7 @@ pub const INLINE_CHUNKS: u32 = 16_384;
 pub const MAX_SERVER_MESSAGE_BYTES: usize = 1024 * 1024;
 pub const PAGE_CHUNKS: usize = 4096;
 const GRANT_MS: i64 = 3_600_000;
+const MAX_HEAD_CHECKS: usize = 50;
 const PAGE_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +67,7 @@ pub(crate) enum ChunkState {
 pub(crate) struct ChunkRow {
     size: u32,
     state: ChunkState,
+    head_checked: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -410,7 +412,8 @@ pub struct SpaceDo {
     receipts: HashMap<String, IssuedReceipt>,
     /// The bucket: the size of every chunk object a `PUT` stored, by hash. A commit counts a
     /// `pending` chunk without a valid receipt as uploaded when its object is here with the row's
-    /// size, the `head` check of RFC 0002 section 11. Nothing deletes objects, so the object cannot
+    /// size, the `head` check of RFC 0002 section 11, which one call runs for at most
+    /// [`MAX_HEAD_CHECKS`] chunks and the row keeps. Nothing deletes objects, so the object cannot
     /// go between that check and the commit.
     objects: HashMap<Vec<u8>, u32>,
     head_seq: u64,
@@ -878,20 +881,27 @@ impl SpaceDo {
             .map(|r| r.hash.as_slice())
             .collect();
 
-        let mut missing: Vec<Vec<u8>> = referenced
-            .iter()
-            .filter(|chunk| {
-                let ready = self.state.chunks.get(&chunk.hash).is_some_and(|row| {
-                    row.size == chunk.size
-                        && (row.state == ChunkState::Live
-                            || (row.state == ChunkState::Pending
-                                && (receipted.contains(chunk.hash.as_slice())
-                                    || self.objects.get(&chunk.hash) == Some(&row.size))))
-                });
-                !ready
-            })
-            .map(|chunk| chunk.hash.clone())
-            .collect();
+        let mut head_checks = MAX_HEAD_CHECKS;
+        let mut missing: Vec<Vec<u8>> = Vec::new();
+        for chunk in referenced {
+            let ready = match self.state.chunks.get_mut(&chunk.hash) {
+                Some(row) if row.size != chunk.size => false,
+                Some(ChunkRow {
+                    state: ChunkState::Live,
+                    ..
+                }) => true,
+                Some(row) if row.head_checked || receipted.contains(chunk.hash.as_slice()) => true,
+                Some(row) if head_checks > 0 => {
+                    head_checks -= 1;
+                    row.head_checked = self.objects.get(&chunk.hash) == Some(&row.size);
+                    row.head_checked
+                }
+                Some(_) | None => false,
+            };
+            if !ready {
+                missing.push(chunk.hash.clone());
+            }
+        }
         if !missing.is_empty() {
             let total = missing.len();
             missing.truncate(MAX_CHUNKS_PER_CALL);
@@ -1007,6 +1017,7 @@ impl SpaceDo {
                         ChunkRow {
                             size: chunk.size,
                             state: ChunkState::Pending,
+                            head_checked: false,
                         },
                     );
                     chunk_plan::Action::Upload

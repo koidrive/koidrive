@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use koidrive_engine::effects::Effect as EngineEffect;
 use koidrive_fs::Unresolved;
 use koidrive_net::{CallError, ChunkError};
-use koidrive_proto::v1::{Commit, UploadReceipt};
+use koidrive_proto::v1::UploadReceipt;
 
 use crate::clock;
 use crate::disk::Stop;
@@ -133,11 +133,9 @@ impl Folder {
                 for (node, _) in sources.values() {
                     self.unreadable.remove(node);
                 }
-                if let Some(flight) = self.engine.commits.in_flight() {
-                    let commit = Commit {
-                        receipts,
-                        ..flight.commit.clone()
-                    };
+                let commit =
+                    self.step(|engine, _| Ok(engine.commits.uploaded(receipts).cloned()))?;
+                if let Some(commit) = commit {
                     self.sent_commit = Some(commit.commit_id.clone());
                     self.flight = Flight::Sending(commit.clone());
                     work.push(Work::Send(commit));

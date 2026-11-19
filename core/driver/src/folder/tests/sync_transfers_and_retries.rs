@@ -828,19 +828,15 @@ fn a_restart_with_a_commit_in_flight_sends_the_stored_commit_again() {
 
         let mut a = site.start();
         a.connect(&remote);
-        let stored = Commit {
-            receipts: Vec::new(),
-            ..commit
-        };
         assert!(
-            matches!(a.work.front(), Some(Work::Send(again)) if *again == stored),
+            matches!(a.work.front(), Some(Work::Send(again)) if *again == commit),
             "reached the server: {reached_the_server}"
         );
         a.scan_until(|a| a.folder.scanned);
         a.run(&mut remote);
         a.settle();
         assert!(a.work.is_empty());
-        assert!(a.sent.iter().all(|sent| sent.commit_id == stored.commit_id));
+        assert!(a.sent.iter().all(|sent| sent.commit_id == commit.commit_id));
         assert_eq!(remote.space.head_seq(), 1);
         assert_eq!(remote.names(), ["notes.txt"]);
         assert_eq!(a.state(), FolderState::UpToDate);

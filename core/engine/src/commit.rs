@@ -2848,6 +2848,18 @@ impl Commits {
         Ok(failure)
     }
 
+    /// Keeps the receipts of an upload of the commit in flight with it, in place of earlier ones,
+    /// so that a resend after a restart presents them. Returns the commit to send, or none when no
+    /// commit waits for its result.
+    pub fn uploaded(&mut self, receipts: Vec<proto::UploadReceipt>) -> Option<&proto::Commit> {
+        if !(self.in_flight.as_ref()).is_some_and(|flight| flight.result.is_none()) {
+            return None;
+        }
+        let flight = self.in_flight.get_mut().as_mut()?;
+        flight.commit.receipts = receipts;
+        Some(&flight.commit)
+    }
+
     /// Forgets the commit in flight when the driver knows it was not applied: after
     /// `MISSING_CHUNKS` when the file changed since it was chunked (section 4.2). False when no
     /// commit is in flight, its result has arrived, or a policy halt keeps it.
