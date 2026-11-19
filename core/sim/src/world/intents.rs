@@ -852,6 +852,8 @@ impl Intents {
                         || saw_the_value
                         || merged
                         || field != Field::Content && intent.lost && other.made > intent.made
+                        || other.made > intent.made
+                            && (0..self.list.len()).any(|k| held_as(k) && self.saw(j, k))
                         || intent.restore_answer()
                             && other.author != intent.author
                             && (!other.lost || other.carried.is_some()));
