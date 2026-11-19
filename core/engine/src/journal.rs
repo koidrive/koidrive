@@ -16,6 +16,7 @@ use crate::state::{ContentValue, MapChanges};
 use crate::tracked::TrackedMap;
 use crate::tree::NodeId;
 use rows::Rows;
+use seen::SeenLists;
 
 pub const HISTORY_KEPT: usize = 64;
 
@@ -530,7 +531,7 @@ pub struct Journal {
     rows: Rows,
     held_changed: BTreeSet<RowKey>,
     history: TrackedMap<RowKey, Vec<HistoryEntry>>,
-    seen: TrackedMap<NodeId, Vec<Seen>>,
+    seen: SeenLists,
     listed: bool,
     listed_before: bool,
     ids: IdGen,
@@ -560,7 +561,7 @@ impl Journal {
             rows: Rows::default(),
             held_changed: BTreeSet::new(),
             history: TrackedMap::default(),
-            seen: TrackedMap::default(),
+            seen: SeenLists::default(),
             listed: false,
             listed_before: false,
             ids,
@@ -915,12 +916,9 @@ impl Journal {
             });
         self.rebase(sent, held.id);
         if sent != held.id {
-            let keys: Vec<NodeId> = (self.seen.iter())
-                .filter(|(_, entries)| {
-                    entries.iter().any(|entry| entry.intent == sent)
-                        && !entries.iter().any(|entry| entry.intent == held.id)
-                })
-                .map(|(key, _)| key.clone())
+            let keys: Vec<NodeId> = (self.seen.holding(sent))
+                .difference(self.seen.holding(held.id))
+                .cloned()
                 .collect();
             for key in keys {
                 let mut entries = Vec::new();
@@ -1243,5 +1241,6 @@ impl Journal {
 }
 
 mod rows;
+mod seen;
 #[cfg(test)]
 mod tests;

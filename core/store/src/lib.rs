@@ -13,7 +13,7 @@
 //!   commits and the effects keep, and the restores a person asked for with
 //!   their outcomes;
 //! - the restore requests the engine has not taken yet;
-//! - the engine's ID generator state and the index of chunks cached on disk;
+//! - the index of chunks cached on disk;
 //! - the [`Link`]: the folder the store syncs and the device credential that
 //!   writes it, and the questions the engine asked with their answers.
 //!
@@ -1029,7 +1029,7 @@ impl Tx<'_> {
     }
 
     /// Empties the sync state to what a first link starts from, keeping the link with its root tokens, the volume
-    /// mounts, the chunk cache, the ID generator, the write stamp and the restores a person asked for.
+    /// mounts, the chunk cache, the write stamp and the restores a person asked for.
     pub fn forget_sync_state(&self) -> Result<()> {
         const KEPT: [&str; 9] = [
             "migrations",
