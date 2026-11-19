@@ -649,3 +649,56 @@ fn conflict_copies(world: &World, device: usize) -> Vec<String> {
         .filter(|name| name.contains("(conflict from"))
         .collect()
 }
+
+#[test]
+fn a_file_another_device_deletes_after_the_disk_refused_its_name_here_stays_deleted() {
+    for heard in [true, false] {
+        let [_, (mut world, phase)] = left_out_name_shapes();
+        let mut steps = vec![(0, delete(0))];
+        steps.extend(commit(0));
+        steps.extend(heard.then_some((1, DELIVER)));
+        steps.extend(commit(1));
+        world.run(phase, &steps).unwrap();
+        world.phase(phase + 1, &[]).unwrap();
+        assert_eq!(world.seen.get("move with from applied"), None, "{heard}");
+        let superseded = world.seen.get("move with from superseded").copied();
+        assert_eq!(superseded, (!heard).then_some(1), "{heard}");
+        assert_eq!(live_node_at(&world, &["ss"]), None);
+        for device in 0..2 {
+            assert!(
+                files_on(&world, device)
+                    .iter()
+                    .all(|(_, content)| content.is_none())
+            );
+        }
+    }
+}
+
+#[test]
+fn a_file_another_device_renames_after_the_disk_refused_its_name_here_keeps_that_name() {
+    for heard in [true, false] {
+        let [_, (mut world, phase)] = left_out_name_shapes();
+        let mut steps = vec![(0, rename(0, 0, "b"))];
+        steps.extend(commit(0));
+        steps.extend(heard.then_some((1, DELIVER)));
+        steps.extend(commit(1));
+        world.run(phase, &steps).unwrap();
+        world.phase(phase + 1, &[]).unwrap();
+        assert_eq!(world.seen.get("move with from applied"), None, "{heard}");
+        let superseded = world.seen.get("move with from superseded").copied();
+        assert_eq!(superseded, (!heard).then_some(1), "{heard}");
+        assert!(live_node_at(&world, &["b"]).is_some());
+        for device in 0..2 {
+            assert_eq!(conflict_copies(&world, device), Vec::<String>::new());
+            assert!(files_on(&world, device).iter().any(|(name, _)| name == "b"));
+        }
+        assert!(
+            world.devices[1]
+                .engine
+                .trees
+                .state()
+                .names_left_out
+                .is_empty()
+        );
+    }
+}
