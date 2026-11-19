@@ -61,73 +61,6 @@ pub(crate) struct Engine {
 
 const DELETE_WAIT_MS: u64 = 2_000;
 
-pub(crate) struct Stored {
-    trees: Trees,
-    state: EngineState,
-    ids: Option<Vec<u8>>,
-    cursor: Option<Cursor>,
-    mounts: BTreeMap<PathBuf, Mount>,
-    ctimes: BTreeMap<NodeId, i64>,
-}
-
-impl Stored {
-    pub fn engine_unless(self, abandoned: &dyn Fn() -> bool) -> Result<Option<Engine>, Error> {
-        let Stored {
-            mut trees,
-            state,
-            ids,
-            cursor,
-            mounts,
-            ctimes,
-        } = self;
-        if abandoned() {
-            return Ok(None);
-        }
-        let restored = trees
-            .restore_unless(state.trees, abandoned)
-            .map_err(|error| invalid(format!("{error:?}")))?;
-        if restored.is_none() {
-            return Ok(None);
-        }
-        trees.take_changed();
-        let stored_questions = state.commits.questions.clone();
-        let commits =
-            Commits::from_state(state.commits).map_err(|error| invalid(format!("{error:?}")))?;
-        commits.hold(&mut trees);
-        let effects = effects_of(state.effects)?;
-        let ids = match ids {
-            Some(bytes) => {
-                let state = <[u8; 8]>::try_from(bytes.as_slice()).map_err(|_| {
-                    invalid(format!("an ID generator state of {} bytes", bytes.len()))
-                })?;
-                IdGen::new(u64::from_le_bytes(state))
-            }
-            None => IdGen::new(
-                std::collections::hash_map::RandomState::new()
-                    .hash_one(std::time::SystemTime::now()),
-            ),
-        };
-        Ok(Some(Engine {
-            trees,
-            effects,
-            commits,
-            ids,
-            cursor,
-            stored_questions,
-            asked: false,
-            reshown_since_load: false,
-            recovery_cause: None,
-            unscanned: None,
-            mounts,
-            stored_ctimes: ctimes,
-            unstored_ctimes: BTreeMap::new(),
-            local_written_since_load: false,
-            removed_at: BTreeMap::new(),
-            owed: BTreeSet::new(),
-        }))
-    }
-}
-
 /// What applying a batch of the log did.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Applied {
@@ -141,101 +74,12 @@ impl Engine {
     /// The engine state of the space whose root node is `root`, as the store holds it. A space that never stored an
     /// ID generator gets one with a random seed.
     pub fn load(tx: &Tx<'_>, root: &str) -> Result<Self, Error> {
-        Self::read_unless(tx, root, &|| false)?
-            .expect("a read nobody abandons ends with the rows")
+        let mut stored = Stored::new(root);
+        let whole = stored.read_unless(tx, root, &|| false)?;
+        assert!(whole, "a read nobody abandons reads every row");
+        stored
             .engine_unless(&|| false)
             .map(|engine| engine.expect("a load nobody abandons ends with the engine"))
-    }
-
-    pub fn read_unless(
-        tx: &Tx<'_>,
-        root: &str,
-        abandoned: &dyn Fn() -> bool,
-    ) -> Result<Option<Stored>, Error> {
-        let mut trees = Trees::new(root);
-        let mut walked = 0;
-        let mut abandoned_now = || {
-            walked += 1;
-            walked % CHECK_EVERY == 0 && abandoned()
-        };
-        let stopped = tx.each_remote_node(|state| {
-            if abandoned_now() {
-                return ControlFlow::Break(Ok(None));
-            }
-            if state.node_id == root {
-                return ControlFlow::Continue(());
-            }
-            match RemoteNode::from_state(&state) {
-                Ok((id, node)) => trees.set_remote(id, node),
-                Err(error) => {
-                    let error = invalid(format!("remote node {}: {error:?}", state.node_id));
-                    return ControlFlow::Break(Err(error));
-                }
-            }
-            ControlFlow::Continue(())
-        })?;
-        if let Some(stopped) = stopped {
-            return stopped;
-        }
-        if abandoned() {
-            return Ok(None);
-        }
-        let stopped = tx.each_synced_node(|node| {
-            if abandoned_now() {
-                return ControlFlow::Break(Ok(None));
-            }
-            let shape = match shape(node.shape) {
-                Ok(shape) => shape,
-                Err(error) => return ControlFlow::Break(Err(error)),
-            };
-            trees.set_synced(node.node_id.clone(), Some(shape));
-            let mark = Some(node.pending_for).filter(|name| !name.is_empty());
-            trees.set_synced_mark(node.node_id, mark);
-            ControlFlow::Continue(())
-        })?;
-        if let Some(stopped) = stopped {
-            return stopped;
-        }
-        if abandoned() {
-            return Ok(None);
-        }
-        let stopped = tx.each_local_node(|node| {
-            if abandoned_now() {
-                return ControlFlow::Break(Ok(None));
-            }
-            let shape = match shape(node.shape) {
-                Ok(shape) => shape,
-                Err(error) => return ControlFlow::Break(Err(error)),
-            };
-            let local = LocalNode {
-                shape,
-                identity: file_identity(node.identity),
-                parked: node.parked,
-                left_out_when_placed: node.left_out_when_placed,
-                content_from_server: node.content_from_server,
-            };
-            trees.set_local(node.node_id, local);
-            ControlFlow::Continue(())
-        })?;
-        if let Some(stopped) = stopped {
-            return stopped;
-        }
-        if abandoned() {
-            return Ok(None);
-        }
-        let Some(state) = tx.engine_state_unless(&mut abandoned_now)? else {
-            return Ok(None);
-        };
-        Ok(Some(Stored {
-            trees,
-            state,
-            ids: tx.id_generator()?,
-            cursor: tx.cursor()?,
-            mounts: tx.volume_mounts()?,
-            ctimes: (tx.local_ctimes()?.into_iter())
-                .map(|(id, ctime)| (NodeId::from(id), ctime))
-                .collect(),
-        }))
     }
 
     /// Ends a step that changed the engine, inside the step's transaction. It settles the trees, then writes the L
@@ -1715,6 +1559,181 @@ impl Engine {
             }
             touched.insert(id);
         }
+    }
+}
+
+pub(crate) struct Stored {
+    trees: Trees,
+    state: EngineState,
+    ids: Option<Vec<u8>>,
+    cursor: Option<Cursor>,
+    mounts: BTreeMap<PathBuf, Mount>,
+    ctimes: BTreeMap<NodeId, i64>,
+}
+
+impl Stored {
+    pub fn new(root: &str) -> Self {
+        Stored {
+            trees: Trees::new(root),
+            state: EngineState::default(),
+            ids: None,
+            cursor: None,
+            mounts: BTreeMap::new(),
+            ctimes: BTreeMap::new(),
+        }
+    }
+
+    pub fn read_unless(
+        &mut self,
+        tx: &Tx<'_>,
+        root: &str,
+        abandoned: &dyn Fn() -> bool,
+    ) -> Result<bool, Error> {
+        let trees = &mut self.trees;
+        let mut walked = 0;
+        let mut abandoned_now = || {
+            walked += 1;
+            walked % CHECK_EVERY == 0 && abandoned()
+        };
+        let stopped = tx.each_remote_node(|state| {
+            if abandoned_now() {
+                return ControlFlow::Break(Ok(false));
+            }
+            if state.node_id == root {
+                return ControlFlow::Continue(());
+            }
+            match RemoteNode::from_state(&state) {
+                Ok((id, node)) => trees.set_remote(id, node),
+                Err(error) => {
+                    let error = invalid(format!("remote node {}: {error:?}", state.node_id));
+                    return ControlFlow::Break(Err(error));
+                }
+            }
+            ControlFlow::Continue(())
+        })?;
+        if let Some(stopped) = stopped {
+            return stopped;
+        }
+        if abandoned() {
+            return Ok(false);
+        }
+        let stopped = tx.each_synced_node(|node| {
+            if abandoned_now() {
+                return ControlFlow::Break(Ok(false));
+            }
+            let shape = match shape(node.shape) {
+                Ok(shape) => shape,
+                Err(error) => return ControlFlow::Break(Err(error)),
+            };
+            trees.set_synced(node.node_id.clone(), Some(shape));
+            let mark = Some(node.pending_for).filter(|name| !name.is_empty());
+            trees.set_synced_mark(node.node_id, mark);
+            ControlFlow::Continue(())
+        })?;
+        if let Some(stopped) = stopped {
+            return stopped;
+        }
+        if abandoned() {
+            return Ok(false);
+        }
+        let stopped = tx.each_local_node(|node| {
+            if abandoned_now() {
+                return ControlFlow::Break(Ok(false));
+            }
+            let shape = match shape(node.shape) {
+                Ok(shape) => shape,
+                Err(error) => return ControlFlow::Break(Err(error)),
+            };
+            let local = LocalNode {
+                shape,
+                identity: file_identity(node.identity),
+                parked: node.parked,
+                left_out_when_placed: node.left_out_when_placed,
+                content_from_server: node.content_from_server,
+            };
+            trees.set_local(node.node_id, local);
+            ControlFlow::Continue(())
+        })?;
+        if let Some(stopped) = stopped {
+            return stopped;
+        }
+        if abandoned() {
+            return Ok(false);
+        }
+        if !tx.engine_state_unless(&mut self.state, &mut abandoned_now)? {
+            return Ok(false);
+        }
+        let ctimes = &mut self.ctimes;
+        let stopped = tx.each_local_ctime(|node_id, ctime_ns| {
+            if abandoned_now() {
+                return ControlFlow::Break(());
+            }
+            ctimes.insert(NodeId::from(node_id), ctime_ns);
+            ControlFlow::Continue(())
+        })?;
+        if stopped.is_some() || abandoned() {
+            return Ok(false);
+        }
+        self.ids = tx.id_generator()?;
+        self.cursor = tx.cursor()?;
+        self.mounts = tx.volume_mounts()?;
+        Ok(true)
+    }
+
+    pub fn engine_unless(self, abandoned: &dyn Fn() -> bool) -> Result<Option<Engine>, Error> {
+        let Stored {
+            mut trees,
+            state,
+            ids,
+            cursor,
+            mounts,
+            ctimes,
+        } = self;
+        if abandoned() {
+            return Ok(None);
+        }
+        let restored = trees
+            .restore_unless(state.trees, abandoned)
+            .map_err(|error| invalid(format!("{error:?}")))?;
+        if restored.is_none() {
+            return Ok(None);
+        }
+        trees.take_changed();
+        let stored_questions = state.commits.questions.clone();
+        let commits =
+            Commits::from_state(state.commits).map_err(|error| invalid(format!("{error:?}")))?;
+        commits.hold(&mut trees);
+        let effects = effects_of(state.effects)?;
+        let ids = match ids {
+            Some(bytes) => {
+                let state = <[u8; 8]>::try_from(bytes.as_slice()).map_err(|_| {
+                    invalid(format!("an ID generator state of {} bytes", bytes.len()))
+                })?;
+                IdGen::new(u64::from_le_bytes(state))
+            }
+            None => IdGen::new(
+                std::collections::hash_map::RandomState::new()
+                    .hash_one(std::time::SystemTime::now()),
+            ),
+        };
+        Ok(Some(Engine {
+            trees,
+            effects,
+            commits,
+            ids,
+            cursor,
+            stored_questions,
+            asked: false,
+            reshown_since_load: false,
+            recovery_cause: None,
+            unscanned: None,
+            mounts,
+            stored_ctimes: ctimes,
+            unstored_ctimes: BTreeMap::new(),
+            local_written_since_load: false,
+            removed_at: BTreeMap::new(),
+            owed: BTreeSet::new(),
+        }))
     }
 }
 

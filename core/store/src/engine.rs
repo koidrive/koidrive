@@ -79,25 +79,27 @@ fn node_maps(state: &mut EngineState) -> [(&'static str, &mut BTreeMap<NodeId, N
 impl Tx<'_> {
     /// The stored engine state, or the default state of a space that never stored one.
     pub fn engine_state(&self) -> Result<EngineState> {
-        self.engine_state_unless(&mut || false)
-            .map(|state| state.expect("a read nobody abandons ends with the state"))
+        let mut state = EngineState::default();
+        self.engine_state_unless(&mut state, &mut || false)?;
+        Ok(state)
     }
 
-    /// The stored engine state, or `None` once `abandoned`, which is asked once per row read, returns true.
+    /// Reads the stored engine state into `state`, which starts as the default, and tells whether it read all of it.
+    /// It stops once `abandoned`, which is asked once per row read, returns true.
     pub fn engine_state_unless(
         &self,
+        state: &mut EngineState,
         abandoned: &mut dyn FnMut() -> bool,
-    ) -> Result<Option<EngineState>> {
+    ) -> Result<bool> {
         macro_rules! next_row {
             ($rows:ident) => {
                 match $rows.next()? {
-                    Some(_) if abandoned() => return Ok(None),
+                    Some(_) if abandoned() => return Ok(false),
                     row => row,
                 }
             };
         }
-        let mut state = EngineState::default();
-        let mut sets = node_sets(&mut state);
+        let mut sets = node_sets(state);
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_set, node_id FROM node_sets")?;
@@ -110,7 +112,7 @@ impl Tx<'_> {
                 .ok_or_else(|| invalid(format!("unknown node set {name:?}")))?;
             set.insert(NodeId::from(row.get::<_, String>(1)?));
         }
-        let mut maps = node_maps(&mut state);
+        let mut maps = node_maps(state);
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_map, node_id, target FROM node_maps")?;
@@ -693,7 +695,7 @@ impl Tx<'_> {
                 Effect::try_from(effect)?,
             );
         }
-        Ok(Some(state))
+        Ok(true)
     }
 
     /// Replaces the stored engine state with `state`.

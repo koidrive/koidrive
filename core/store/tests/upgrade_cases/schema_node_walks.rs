@@ -24,14 +24,22 @@ upgrade_case!(schema_node_walks, |store| {
             assert_eq!(tx.each_remote_node(Break)?.as_ref(), remote.first());
             assert_eq!(tx.each_synced_node(Break)?.as_ref(), synced.first());
             assert_eq!(tx.each_local_node(Break)?.as_ref(), local.first());
+            let mut ctimes = std::collections::BTreeMap::new();
+            let walked = tx.each_local_ctime(|node_id, ctime_ns| {
+                ctimes.insert(node_id, ctime_ns);
+                Continue::<()>(())
+            })?;
+            assert_eq!((walked, ctimes), (None, tx.local_ctimes()?));
             let mut rows = 0;
-            let state = tx.engine_state_unless(&mut || {
+            let mut state = koidrive_store::EngineState::default();
+            let whole = tx.engine_state_unless(&mut state, &mut || {
                 rows += 1;
                 false
             })?;
-            assert!(rows > 0);
-            assert_eq!(state, Some(tx.engine_state()?));
-            assert_eq!(tx.engine_state_unless(&mut || true)?, None);
+            assert!(whole && rows > 0);
+            assert_eq!(state, tx.engine_state()?);
+            let mut part = koidrive_store::EngineState::default();
+            assert!(!tx.engine_state_unless(&mut part, &mut || true)?);
             Ok::<_, koidrive_store::Error>(())
         })
         .unwrap();

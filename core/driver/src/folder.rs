@@ -31,7 +31,7 @@ use koidrive_store::{Cursor, Link, Store, Tx};
 
 use crate::clock;
 use crate::disk::{Batch, Disk, Pending, Sections, Settled, Sources, Staged, Stall, Stop, Upload};
-use crate::engine::{Applied, Engine, Staging};
+use crate::engine::{Applied, Engine, Staging, Stored};
 use crate::progress::Tracker;
 use crate::status::{FolderState, HeldDisk, Wait, WaitKind, describe};
 use crate::timing::{Time, Timing};
@@ -346,6 +346,7 @@ impl Folder {
         released: impl FnOnce(),
     ) -> Result<Option<Loaded>, Stop> {
         let timing = Timing::open(store, link.linked_at_ms);
+        let mut stored = Stored::new(&link.space_id);
         let read = Store::open_existing(store).and_then(|mut opened| {
             opened.read(|tx| {
                 #[cfg(test)]
@@ -354,7 +355,7 @@ impl Folder {
                 if let Some(parked) = parked {
                     parked(abandoned);
                 }
-                Engine::read_unless(tx, &link.space_id, abandoned)
+                stored.read_unless(tx, &link.space_id, abandoned)
             })
         });
         released();
@@ -364,10 +365,10 @@ impl Folder {
         if let Some(parked) = parked {
             parked(abandoned);
         }
-        let Some(read) = read? else {
+        if !read? {
             return Ok(None);
-        };
-        let Some(mut engine) = read.engine_unless(abandoned)? else {
+        }
+        let Some(mut engine) = stored.engine_unless(abandoned)? else {
             return Ok(None);
         };
         if abandoned() {

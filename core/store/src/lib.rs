@@ -790,11 +790,30 @@ impl Tx<'_> {
     /// the change time the file had when it was last read, when L recorded a node it had not read, or, for a node from
     /// before change times were stored, when the database was last written before that.
     pub fn local_ctimes(&self) -> Result<BTreeMap<String, i64>> {
+        let mut ctimes = BTreeMap::new();
+        self.each_local_ctime(|node_id, ctime_ns| {
+            ctimes.insert(node_id, ctime_ns);
+            ControlFlow::<()>::Continue(())
+        })?;
+        Ok(ctimes)
+    }
+
+    /// Gives `each` the entries of [`Tx::local_ctimes`] one at a time, and stops with what it breaks with.
+    pub fn each_local_ctime<B>(
+        &self,
+        mut each: impl FnMut(String, i64) -> ControlFlow<B>,
+    ) -> Result<Option<B>> {
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, ctime_ns FROM local_nodes WHERE ctime_ns IS NOT NULL",
         )?;
         let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        for row in rows {
+            let (node_id, ctime_ns) = row?;
+            if let ControlFlow::Break(stopped) = each(node_id, ctime_ns) {
+                return Ok(Some(stopped));
+            }
+        }
+        Ok(None)
     }
 
     /// Records the latest change time of the local node's file, as [`Tx::local_ctimes`] gives it.

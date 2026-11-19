@@ -208,8 +208,6 @@ impl FolderTask {
         }
     }
 
-    /// Waits until the load has closed the store and the observer's thread has ended, which both happen soon after
-    /// `sync` has dropped their receivers.
     async fn join_threads(&self) {
         let released = self.released.lock().unwrap().take();
         if let Some(released) = released {
