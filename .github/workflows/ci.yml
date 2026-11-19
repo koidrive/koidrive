@@ -491,11 +491,6 @@ jobs:
             ${{ needs.changes.outputs.rust_engine == 'true' && 'binary_id(=koidrive-engine::names) | binary_id(=koidrive-engine::trees) | binary_id(=koidrive-engine::effects) |' || '' }}
             ${{ needs.changes.outputs.rust_driver == 'true' && '(binary_id(=koidrive-driver) & test(batches_leave_l_a_tree_that_holds_the_disk)) |' || '' }}
         run: cargo nextest run --binaries-metadata target/nextest/binaries-metadata.json --cargo-metadata target/nextest/cargo-metadata.json --workspace-remap . --target-dir-remap target --profile ci --success-output final -E "$(sed -E 's/[ |]+$//' <<<"$FILTERS")"
-      - name: Install btrfs-progs
-        if: ${{ !cancelled() && runner.os == 'Linux' && needs.changes.outputs.rust == 'true' }}
-        uses: ./.github/actions/apt-packages
-        with:
-          packages: btrfs-progs
       - name: Test root identities on btrfs and ext4
         if: ${{ !cancelled() && runner.os == 'Linux' && needs.changes.outputs.rust == 'true' }}
         run: |
@@ -507,11 +502,6 @@ jobs:
           sudo chown "$USER" /mnt/koidrive-btrfs
           KOIDRIVE_TEST_BTRFS_DIR=/mnt/koidrive-btrfs cargo nextest run --binaries-metadata target/nextest/binaries-metadata.json --cargo-metadata target/nextest/cargo-metadata.json --workspace-remap . --target-dir-remap target --profile ci --success-output final -E 'binary_id(=koidrive-fs::root) & test(a_btrfs_snapshot)'
           KOIDRIVE_TEST_LOOP_MOUNTS=1 cargo nextest run --binaries-metadata target/nextest/binaries-metadata.json --cargo-metadata target/nextest/cargo-metadata.json --workspace-remap . --target-dir-remap target --profile ci --success-output final -E 'binary_id(=koidrive-fs::root) & test(an_ext4_disk)'
-      - name: Install FAT, exFAT and partitioning tools
-        if: ${{ !cancelled() && runner.os == 'Linux' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.rust_driver == 'true') }}
-        uses: ./.github/actions/apt-packages
-        with:
-          packages: dosfstools exfatprogs fdisk
       - name: Test volumes and disks mounted inside a folder
         if: ${{ !cancelled() && runner.os == 'Linux' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.rust_driver == 'true') }}
         env:
