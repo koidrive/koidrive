@@ -3,12 +3,14 @@
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
-import { CommitResultSchema, OpResult_Code } from "../src/gen/koidrive/v1/commit_pb";
-import { Error_Code } from "../src/gen/koidrive/v1/rpc_pb";
+import { describe, expect, it, vi } from "vitest";
+import { CommitResultSchema, type Op, OpResult_Code, type UploadReceipt } from "../src/gen/koidrive/v1/commit_pb";
+import { ChunkPlan_Action, Error_Code } from "../src/gen/koidrive/v1/rpc_pb";
 import { toHex, uuidv7 } from "../src/ids";
-import { MAX_HEAD_CHECKS, type SpaceDO } from "../src/space-do";
-import { client, content, newSpace, op, type TestClient } from "./helpers";
+import { policy } from "../src/policy";
+import { HOLD_MS, MAX_HEAD_CHECKS, type SpaceDO } from "../src/space-do";
+import { ChunkState } from "../src/space/schema";
+import { client, content, newSpace, op, targetIncarnation, type TestClient } from "./helpers";
 import { dump, load } from "./pitr";
 
 async function setup() {
@@ -323,4 +325,132 @@ describe("RFC 0002 section 11", () => {
       await swap(false);
     }
   });
+});
+
+describe("RFC 0032 section 3 rule 4", () => {
+  type Parts = Awaited<ReturnType<typeof content>>;
+  const HOUR = 3_600_000;
+  const RESEND_TIMEOUT_MS = 120_000;
+
+  function chunkRow(c: TestClient, hash: Uint8Array) {
+    return runInDurableObject(c.stub, (_instance, state) => state.storage.sql.exec("SELECT state, incarnation, head_checked, hold_until_ms FROM chunks WHERE hash = ?", hash).toArray()[0]);
+  }
+
+  async function prepare(c: TestClient, parts: Parts) {
+    const result = await c.call({ case: "prepareUpload", value: { chunks: parts.content.chunks } });
+    if (result.case !== "prepareUpload") throw new Error(`prepareUpload failed: ${JSON.stringify(result.value)}`);
+    return result.value.chunks;
+  }
+
+  async function headCheckedBeside(c: TestClient, root: string, text: string) {
+    const checked = await content(text);
+    const both = await content(text, "never uploaded");
+    await c.uploadParts(checked);
+    await prepare(c, both);
+    expect(code(await c.commitRaw([op.create(uuidv7(), root, "refused", both.content)]))).toBe(Error_Code.MISSING_CHUNKS);
+    return checked;
+  }
+
+  it("answers PRESENT for a pending chunk a HEAD check confirmed, extends its hold, and a commit without its receipt takes it", async () => {
+    const { a, root } = await setup();
+    const checked = await headCheckedBeside(a, root, "confirmed by a HEAD check");
+    const hash = checked.content.chunks[0]!.hash;
+    expect(await chunkRow(a, hash)).toMatchObject({ state: ChunkState.PENDING, head_checked: 1 });
+    await runInDurableObject(a.stub, (_instance, state) => state.storage.sql.exec("UPDATE chunks SET hold_until_ms = 0 WHERE hash = ?", hash));
+    const before = Date.now();
+    const [plan] = await prepare(a, checked);
+    expect([plan!.action, plan!.target]).toEqual([ChunkPlan_Action.PRESENT, undefined]);
+    expect(Number((await chunkRow(a, hash))!.hold_until_ms)).toBeGreaterThanOrEqual(before + HOLD_MS);
+    expect((await a.commit([op.create(uuidv7(), root, "present", checked.content)])).seq).toBe(1n);
+    expect(await chunkRow(a, hash)).toMatchObject({ state: ChunkState.LIVE });
+  });
+
+  it("answers UPLOAD with the row's incarnation for a pending chunk nothing confirmed, and refuses another size", async () => {
+    const { a, root } = await setup();
+    const pending = await content("prepared but never uploaded");
+    const first = await prepare(a, pending);
+    const again = await prepare(a, pending);
+    expect(again[0]!.action).toBe(ChunkPlan_Action.UPLOAD);
+    expect(targetIncarnation(again[0]!.target!.url)).toBe(targetIncarnation(first[0]!.target!.url));
+
+    const checked = await headCheckedBeside(a, root, "checked, then asked with another size");
+    const resized = { ...checked.content.chunks[0]!, size: checked.content.chunks[0]!.size + 1 };
+    const result = await a.call({ case: "prepareUpload", value: { chunks: [resized] } });
+    expect(result.case === "error" && result.value.code).toBe(Error_Code.INVALID_ARGUMENT);
+  });
+
+  it("answers live, deleting and unknown chunks as before", async () => {
+    const { a, root } = await setup();
+    const live = await content("live");
+    await a.commit([op.create(uuidv7(), root, "live", live.content)], { receipts: await a.uploadParts(live) });
+    const deleting = await headCheckedBeside(a, root, "deleting");
+    await runInDurableObject(a.stub, (_instance, state) => state.storage.sql.exec("UPDATE chunks SET state = ? WHERE hash = ?", ChunkState.DELETING, deleting.content.chunks[0]!.hash));
+    expect((await prepare(a, live))[0]!.action).toBe(ChunkPlan_Action.PRESENT);
+    expect((await prepare(a, deleting))[0]!.action).toBe(ChunkPlan_Action.RETRY_LATER);
+    expect((await prepare(a, await content("unknown")))[0]!.action).toBe(ChunkPlan_Action.UPLOAD);
+  });
+
+  async function resendUntilCommitted(c: TestClient, ops: Op[], parts: Parts, receipts: UploadReceipt[]) {
+    const commitId = uuidv7();
+    let rounds = 0;
+    let uploaded = 0;
+    while (rounds < 5) {
+      rounds++;
+      const result = await c.commitRaw(ops, { commitId, receipts });
+      if (result.case === "commit") return { rounds, uploaded };
+      expect(code(result)).toBe(Error_Code.MISSING_CHUNKS);
+      receipts = await c.uploadParts(parts);
+      uploaded += receipts.length;
+    }
+    return { rounds, uploaded, stuck: true };
+  }
+
+  it.each([MAX_HEAD_CHECKS + 10, 3 * MAX_HEAD_CHECKS])("uploads again only the chunks no HEAD check confirmed when %i receipts have expired", async (count) => {
+    const { a, root } = await setup();
+    const parts = await content(...Array.from({ length: count }, (_, i) => "expired " + i));
+    a.nowMs = Date.now() - 2 * HOUR;
+    const expired = await a.uploadParts(parts);
+    a.nowMs = undefined;
+    const sent = await resendUntilCommitted(a, [op.create(uuidv7(), root, "many", parts.content)], parts, expired);
+    expect(sent).toEqual({ rounds: 2, uploaded: count - MAX_HEAD_CHECKS });
+  }, RESEND_TIMEOUT_MS);
+
+  it("records the chunks a refused commit's valid receipts confirmed, so they are not uploaded again", async () => {
+    const { a, root } = await setup();
+    const old = Array.from({ length: 2 * MAX_HEAD_CHECKS }, (_, i) => "expired " + i);
+    const fresh = Array.from({ length: MAX_HEAD_CHECKS }, (_, i) => "fresh " + i);
+    const parts = await content(...old, ...fresh);
+    a.nowMs = Date.now() - 2 * HOUR;
+    const expired = await a.uploadParts(await content(...old));
+    a.nowMs = undefined;
+    const valid = await a.uploadParts(await content(...fresh));
+    const sent = await resendUntilCommitted(a, [op.create(uuidv7(), root, "many", parts.content)], parts, [...expired, ...valid]);
+    expect(sent).toEqual({ rounds: 2, uploaded: MAX_HEAD_CHECKS });
+  }, RESEND_TIMEOUT_MS);
+
+  it("records the chunks a commit confirmed by receipt when the commit is refused for another reason", async () => {
+    const { a, root } = await setup();
+    const gone = uuidv7();
+    await a.commit([op.mkdir(gone, root, "to delete")]);
+    const parts = await content("receipted before a refusal");
+    const receipts = await a.uploadParts(parts);
+    vi.spyOn(policy, "deletes").mockReturnValue(false);
+    const refused = await a.commitRaw([op.create(uuidv7(), root, "kept", parts.content), op.delete(gone)], { receipts });
+    vi.restoreAllMocks();
+    expect(code(refused)).toBe(Error_Code.CONFIRMATION_REQUIRED);
+    expect((await prepare(a, parts))[0]!.action).toBe(ChunkPlan_Action.PRESENT);
+  });
+
+  it("takes a commit whose chunks answered PRESENT outnumber MAX_HEAD_CHECKS without checking them again", async () => {
+    const { a, root } = await setup();
+    const texts = Array.from({ length: 2 * MAX_HEAD_CHECKS }, (_, i) => "checked " + i);
+    const parts = await content(...texts, ...Array.from({ length: 10 }, (_, i) => "absent " + i));
+    a.nowMs = Date.now() - 2 * HOUR;
+    await a.uploadParts(await content(...texts));
+    a.nowMs = undefined;
+    await prepare(a, parts);
+    const ops = [op.create(uuidv7(), root, "many", parts.content)];
+    for (let i = 0; i < 2; i++) expect(code(await a.commitRaw(ops))).toBe(Error_Code.MISSING_CHUNKS);
+    expect(await resendUntilCommitted(a, ops, parts, [])).toEqual({ rounds: 2, uploaded: 10 });
+  }, RESEND_TIMEOUT_MS);
 });
