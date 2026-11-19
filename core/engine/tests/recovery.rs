@@ -1157,25 +1157,32 @@ fn a_delete_answered_after_a_rewind_past_two_renames_deletes_it_once_r_forgot_th
 }
 
 #[test]
-fn a_folder_deleted_on_this_device_stays_held_while_another_device_adds_a_file_to_it_and_removes_it()
+fn a_folder_deleted_on_this_device_comes_back_with_a_file_another_device_adds_and_stays_once_it_is_removed()
  {
     let mut trees = trees(&[], &[("d", dir(ROOT, "d"))], &[live("d", dir(ROOT, "d"))]);
     let (mut commits, mut ids) = recovered(&mut trees, 0);
-    for (rev, trashed) in [(2, false), (3, true)] {
-        let mut added = server_version(file("d", "e", 2), "", &[], rev);
-        added.trashed = trashed;
-        trees.set_remote("e".into(), added);
-        trees.settle(commits.aliases());
-        assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{trashed}");
+    trees.set_remote("e".into(), server_version(file("d", "e", 2), "", &[], 2));
+    trees.settle(commits.aliases());
+    for _ in 0..2 {
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     }
-    assert_eq!(effects(&mut trees, &mut ids), []);
-    let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["d"]);
-    assert!(commits.decide(&question.id, Answer::Delete));
-    assert_eq!(
-        ops(&mut commits, &mut trees, &mut ids),
-        [("delete", "d".to_owned())]
+    assert_eq!(groups(&commits), []);
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(d, Effect::CreateDir { .. }), (e, Effect::WriteFile { .. })] if d == "d" && e == "e"),
+        "{done:?}"
     );
-    assert_eq!(effects(&mut trees, &mut ids), []);
+    let mut removed = server_version(file("d", "e", 2), "", &[], 3);
+    removed.trashed = true;
+    trees.set_remote("e".into(), removed);
+    trees.settle(commits.aliases());
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(e, Effect::RemoveFile { .. })] if e == "e"),
+        "{done:?}"
+    );
+    assert!(trees.local().get("d").is_some());
 }
 
 #[test]

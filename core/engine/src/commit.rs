@@ -3788,8 +3788,9 @@ fn parked_until_moved(trees: &Trees) -> impl Iterator<Item = &NodeId> {
 }
 
 fn keep(trees: &mut Trees, id: &str, asked: &BTreeSet<NodeId>, needed: &mut BTreeSet<NodeId>) {
+    let held = asked.contains(id);
     let deleted: Vec<NodeId> = (trees.keep_walk(id))
-        .filter(|(node, deleted)| *deleted && !asked.contains(*node))
+        .filter(|(node, deleted)| *deleted && !(held && *node == id))
         .map(|(node, _)| node.to_owned())
         .collect();
     for node in deleted {
