@@ -367,14 +367,21 @@ impl Session {
             .clone()
             .ok_or_else(|| format!("{} binds no R2 bucket", server.script.id))?;
         let api = self.fresh().await?;
-        api.delete_secret(self.account(), &server.script.id, FEATURES_VARIABLE)
+        let removal = |error| {
+            CliError::from(error).context(format!(
+                "cannot remove {FEATURES_VARIABLE} from {}",
+                server.script.id
+            ))
+        };
+        let secrets = api
+            .secrets(self.account(), &server.script.id)
             .await
-            .map_err(|error| {
-                CliError::from(error).context(format!(
-                    "cannot remove {FEATURES_VARIABLE} from {}",
-                    server.script.id
-                ))
-            })?;
+            .map_err(removal)?;
+        if secrets.iter().any(|name| name == FEATURES_VARIABLE) {
+            api.delete_secret(self.account(), &server.script.id, FEATURES_VARIABLE)
+                .await
+                .map_err(removal)?;
+        }
         let terminal = self.terminal.clone();
         let progress = if terminal.setup_guided() {
             Some(terminal.progress("Updating your server..."))

@@ -856,13 +856,45 @@ fn a_development_bundle_is_never_older_than_a_release_by_version_alone() {
 
 #[tokio::test]
 async fn an_upgrade_removes_the_features_variable_before_it_uploads() {
-    let features = format!("/workers/scripts/koidrive/secrets/{FEATURES_VARIABLE}");
-    let fake = Fake::start(vec![tokens(), cf("DELETE", &features, json!(null))]).await;
+    let secrets = "/workers/scripts/koidrive/secrets";
+    let features = format!("{secrets}/{FEATURES_VARIABLE}");
+    let named = |names: &[&str]| {
+        json!(
+            names
+                .iter()
+                .map(|name| json!({ "name": name }))
+                .collect::<Vec<_>>()
+        )
+    };
+    let fake = Fake::start(vec![
+        tokens(),
+        cf(
+            "GET",
+            secrets,
+            named(&["KOIDRIVE_RECOVERY_KEY", FEATURES_VARIABLE]),
+        ),
+        cf("DELETE", &features, json!(null)),
+        cf("GET", secrets, named(&["KOIDRIVE_RECOVERY_KEY"])),
+        cf("GET", secrets, named(&[FEATURES_VARIABLE])),
+    ])
+    .await;
     let mut session = fake::session(&fake).await;
     let (_dir, release) = bundle("0.1.0", STORAGE);
     let over = Found {
         info: Some(reporting("0.1.0", None)),
         ..deployed(&fake)
+    };
+    let calls = || -> Vec<(String, String)> {
+        fake.seen()
+            .into_iter()
+            .map(|seen| (seen.method, seen.path))
+            .collect()
+    };
+    let uploads = || {
+        calls()
+            .iter()
+            .filter(|(_, path)| path.contains("/workers/scripts/koidrive/assets-upload-session"))
+            .count()
     };
 
     let error = session
@@ -874,18 +906,33 @@ async fn an_upgrade_removes_the_features_variable_before_it_uploads() {
         "{}",
         error.message
     );
-    let calls: Vec<_> = fake
-        .seen()
-        .into_iter()
-        .map(|seen| (seen.method, seen.path))
-        .collect();
-    let deleted = calls
+    let seen = calls();
+    let deleted = seen
         .iter()
         .position(|(method, path)| method == "DELETE" && path.ends_with(&features));
-    let uploaded = calls
+    let uploaded = seen
         .iter()
-        .position(|(_, path)| path.contains("/workers/scripts/koidrive/assets-upload-session"));
-    assert!(deleted.is_some() && deleted < uploaded, "{calls:?}");
+        .position(|(_, path)| path.contains("assets-upload-session"));
+    assert!(deleted.is_some() && deleted < uploaded, "{seen:?}");
+
+    let error = session
+        .upgrade(&release, &over, true, false)
+        .await
+        .unwrap_err();
+    assert!(
+        error.message.contains("cannot upload the static assets"),
+        "{}",
+        error.message
+    );
+    assert_eq!(
+        calls()
+            .iter()
+            .filter(|(method, _)| method == "DELETE")
+            .count(),
+        1,
+        "a Worker without the variable gets no delete"
+    );
+    assert_eq!(uploads(), 2);
 
     let error = session
         .upgrade(&release, &over, true, false)
@@ -899,23 +946,20 @@ async fn an_upgrade_removes_the_features_variable_before_it_uploads() {
         error.message
     );
     assert_eq!(
-        fake.seen()
-            .iter()
-            .filter(|seen| seen.path.contains("assets-upload-session"))
-            .count(),
-        1,
+        uploads(),
+        2,
         "an upgrade that cannot remove the variable uploads nothing"
     );
 }
 
 #[tokio::test]
 async fn an_upgrade_that_may_go_back_uploads_nothing_unless_allowed() {
-    let features = format!("/workers/scripts/koidrive/secrets/{FEATURES_VARIABLE}");
+    let secrets = "/workers/scripts/koidrive/secrets";
     let fake = Fake::start(vec![
         tokens(),
-        cf("DELETE", &features, json!(null)),
-        cf("DELETE", &features, json!(null)),
-        cf("DELETE", &features, json!(null)),
+        cf("GET", secrets, json!([])),
+        cf("GET", secrets, json!([])),
+        cf("GET", secrets, json!([])),
     ])
     .await;
     let mut session = fake::session(&fake).await;
