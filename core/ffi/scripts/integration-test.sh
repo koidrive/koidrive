@@ -7,6 +7,9 @@ set -euo pipefail
 set -m
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+if [ -d /dev/shm ]; then
+  export TMPDIR=/dev/shm
+fi
 work="$(mktemp -d)"
 port="${KOIDRIVE_TEST_PORT:-0}"
 log="$work/wrangler.log"
