@@ -44,10 +44,15 @@
 //! A rescan of part of the tree reports a move whose other end lies outside
 //! the paths it was given as a rescan of both places would. On macOS, for an
 //! entry it no longer finds, it asks the system where that identity is now.
-//! An entry whose identity the system places where the scan cannot read keeps
-//! its old entry until a rescan finds it or the system no longer places it
-//! there. An entry whose whereabouts the system cannot tell is kept once, and
-//! the next rescan of its path reports it as a rename or as removed.
+//! An entry the system still finds by its identity, where the scan cannot
+//! read or where the scan looked before the entry got there, keeps its old
+//! entry until a rescan finds it or the system no longer finds it. When the
+//! scan found another entry at the path of one it looked for too early, that
+//! path and the other entry's old path both keep their old entries, so a swap
+//! the scan read halfway is not reported as a move over the other file. An
+//! entry whose whereabouts the system cannot tell, such as a file with several
+//! links, is kept once, and the next rescan of its path reports it as a
+//! rename or as removed.
 //! [`NativeWatcher`] keeps every removal that neither a move nor the rules
 //! explain the same way and ends the poll, so a file replaced at its path in
 //! two steps reads as modified, and a move whose two ends reach it in
@@ -684,6 +689,8 @@ enum Cut<'a> {
     Confirming(&'a Path),
     Searching(&'a Path),
     Stating(&'a Path),
+    #[cfg(target_os = "macos")]
+    Locating(&'a Path),
 }
 
 /// The entries one rescan observed, and the parts of the snapshot they replace.
@@ -1302,9 +1309,9 @@ impl Snapshot {
             if scanned.is_ok() {
                 self.learn_handles(&scan);
             }
-            let (unscanned, hidden, unsure) = match &scanned {
-                Ok(_) => self.other_ends(root, &scan, &paths),
-                Err(_) => (Vec::new(), Vec::new(), Vec::new()),
+            let (unscanned, hidden, moving, unsure) = match &scanned {
+                Ok(_) => self.other_ends(root, &mut scan, &paths),
+                Err(_) => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
             };
             let whole = paths.iter().any(|path| path.as_os_str().is_empty());
             if let Ok(stat) = &scanned
@@ -1323,8 +1330,9 @@ impl Snapshot {
                 widened = true;
                 continue;
             }
-            let result =
-                scanned.and_then(|stat| self.publish(root, &stat, &mut scan, hidden, unsure, keep));
+            let result = scanned.and_then(|stat| {
+                self.publish(root, &stat, &mut scan, hidden, moving, unsure, keep)
+            });
             if result.is_err()
                 && let Some(rules) = scan.rules
             {
@@ -1364,9 +1372,9 @@ impl Snapshot {
     fn other_ends(
         &self,
         root: &Path,
-        scan: &Scan<'_>,
+        scan: &mut Scan<'_>,
         scopes: &[PathBuf],
-    ) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>) {
+    ) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>) {
         let scanned: HashSet<&Path> = (scan.replaced.iter().chain(scopes))
             .map(PathBuf::as_path)
             .collect();
@@ -1374,6 +1382,9 @@ impl Snapshot {
         let blocked = |path: &Path| (scan.unreadable.iter()).any(|dir| path.starts_with(dir));
         let same =
             |entry: &Entry, other: &Entry| entry.id.same(&other.id) && entry.kind == other.kind;
+        let missed = |at: &Path| {
+            covered(at) && !(at.ancestors()).any(|above| scan.left_out.contains_key(above))
+        };
         let mut arrived: HashMap<(FileId, EntryKind), Vec<&PathBuf>> = HashMap::new();
         for (path, now) in &scan.new {
             if !(self.entries.get(path)).is_some_and(|before| same(before, now)) {
@@ -1393,7 +1404,7 @@ impl Snapshot {
             .map(|(known, _)| known.clone())
             .collect();
         if !ends.is_empty() {
-            return (ends, Vec::new(), Vec::new());
+            return (ends, Vec::new(), Vec::new(), Vec::new());
         }
         let gone: Vec<(&PathBuf, &Entry)> = (outermost(scan.replaced.clone()).iter())
             .flat_map(|prefix| {
@@ -1414,7 +1425,7 @@ impl Snapshot {
             .and_then(|dir| Some((stat_fd(dir.as_fd()).ok()?.dev, dir)))
             .map(|(dev, dir)| (dir, dev))
         else {
-            return (ends, Vec::new(), Vec::new());
+            return (ends, Vec::new(), Vec::new(), Vec::new());
         };
         let linked: HashSet<(FileId, EntryKind)> = (gone.iter())
             .filter(|(_, entry)| entry.linked)
@@ -1431,6 +1442,7 @@ impl Snapshot {
             }
         }
         let mut hidden = Vec::new();
+        let mut moving = Vec::new();
         let mut unsure = Vec::new();
         let mut moved: Option<&Path> = None;
         for (path, entry) in gone {
@@ -1438,6 +1450,8 @@ impl Snapshot {
                 continue;
             }
             let links = (links.get(&(entry.id, entry.kind))).map_or(&[][..], Vec::as_slice);
+            #[cfg(target_os = "macos")]
+            (scan.cut)(Cut::Locating(path));
             match whereabouts(dir.as_fd(), dev, entry, links) {
                 Whereabouts::At(at) if blocked(&at) => {
                     hidden.push(path.clone());
@@ -1445,6 +1459,14 @@ impl Snapshot {
                 }
                 Whereabouts::Hidden => {
                     hidden.push(path.clone());
+                    moved = Some(path);
+                }
+                Whereabouts::Moving => {
+                    moving.push(path.clone());
+                    moved = Some(path);
+                }
+                Whereabouts::At(at) if missed(&at) => {
+                    moving.push(path.clone());
                     moved = Some(path);
                 }
                 Whereabouts::At(at) => {
@@ -1466,7 +1488,8 @@ impl Snapshot {
                 }
             }
         }
-        (ends, hidden, unsure)
+        let hidden = [hidden, moving.clone()].concat();
+        (ends, hidden, moving, unsure)
     }
 
     fn scan_scopes(
@@ -1563,12 +1586,14 @@ impl Snapshot {
         Ok(root_stat)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn publish(
         &mut self,
         root: &Path,
         root_stat: &Stat,
         scan: &mut Scan<'_>,
         hidden: Vec<PathBuf>,
+        moving: Vec<PathBuf>,
         unsure: Vec<PathBuf>,
         keep: Keep<'_>,
     ) -> Result<Rescan> {
@@ -1802,6 +1827,10 @@ impl Snapshot {
             })
             .flat_map(|(first, second)| [first, second])
             .collect();
+        fresh.extend(moving.into_iter().filter(|path| {
+            (scan.new.get(path))
+                .is_some_and(|now| !old.get(path).is_some_and(|before| before.id.same(&now.id)))
+        }));
         if !vanished.is_empty() {
             let (found, unsure) = missed_moves(
                 again.as_fd(),
@@ -2592,6 +2621,7 @@ fn keep_unconfirmed(
 enum Whereabouts {
     At(PathBuf),
     Hidden,
+    Moving,
     Unsure,
     Nowhere,
 }
@@ -2614,24 +2644,34 @@ fn whereabouts(root: BorrowedFd<'_>, root_dev: u64, entry: &Entry, links: &[&Pat
         Ok(stat) if is_it(&stat) && links.contains(&rel.as_path()) => Whereabouts::Nowhere,
         Ok(stat) if is_it(&stat) => Whereabouts::At(rel),
         Err(err) if denied(&err) => Whereabouts::Hidden,
-        Ok(_) | Err(_) if !linked_anywhere(root_dev, entry) => Whereabouts::Nowhere,
-        Ok(_) | Err(_) => Whereabouts::Unsure,
+        Ok(_) | Err(_) => match linked_anywhere(root_dev, entry) {
+            Some(false) => Whereabouts::Nowhere,
+            Some(true) if !entry.linked => Whereabouts::Moving,
+            _ => Whereabouts::Unsure,
+        },
     }
 }
 
 #[cfg(target_os = "macos")]
-fn linked_anywhere(dev: u64, entry: &Entry) -> bool {
+fn linked_anywhere(dev: u64, entry: &Entry) -> Option<bool> {
     let by_id = PathBuf::from(format!("/.vol/{dev}/{}", entry.id.ino));
     match rustix::fs::lstat(&by_id) {
-        Ok(stat) => (from_stat(stat).entry())
-            .is_some_and(|now| now.id.same(&entry.id) && now.kind == entry.kind),
-        Err(err) => err != rustix::io::Errno::NOENT,
+        Ok(stat) => {
+            let now = from_stat(stat);
+            Some(
+                now.nlink > 0
+                    && (now.entry())
+                        .is_some_and(|now| now.id.same(&entry.id) && now.kind == entry.kind),
+            )
+        }
+        Err(rustix::io::Errno::NOENT) => Some(false),
+        Err(_) => None,
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn linked_anywhere(_: u64, _: &Entry) -> bool {
-    true
+fn linked_anywhere(_: u64, _: &Entry) -> Option<bool> {
+    None
 }
 
 #[cfg(target_os = "macos")]
