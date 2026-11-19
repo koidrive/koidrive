@@ -192,3 +192,105 @@ fn a_move_the_server_renamed_is_sent_again_when_a_restore_loses_the_rename() {
     assert_eq!(files_on(&world, 0), files_on(&world, 1));
     assert!(world.devices.iter().all(|device| device.disk.shows(2)));
 }
+
+fn moved_beside_a_folder_whose_name_folds_to_ss() -> World {
+    converge(
+        2,
+        &[vec![
+            (1, folder("a")),
+            (1, user(1, 0, 1, "b")),
+            (1, folder("\u{df}")),
+        ]],
+    )
+    .unwrap()
+}
+
+fn visible_b(world: &World, device: usize) -> usize {
+    let ino = ino_at(world, device, &["a", "b"]);
+    (world.devices[device].disk.visible().into_iter())
+        .position(|visible| visible == ino)
+        .unwrap()
+}
+
+#[test]
+fn a_rename_another_device_makes_after_a_restore_beats_a_server_renamed_move_the_restore_lost() {
+    let mut world = moved_beside_a_folder_whose_name_folds_to_ss();
+    let mut steps = vec![(0, BACKUP), (1, rename(1, 0, "ss"))];
+    steps.extend(commit(1));
+    steps.extend([(0, RESTORE), (0, Step::Connect)]);
+    steps.extend(take(0));
+    steps.push((0, rename(visible_b(&world, 0), 0, "c.txt")));
+    steps.extend(commit(0));
+    reconnect(&mut steps, 1, true);
+    world.phase(1, &steps).unwrap();
+    assert!(
+        live_names(&world).contains(&"c.txt".to_owned()),
+        "{:?}",
+        live_names(&world)
+    );
+}
+
+#[test]
+fn a_server_renamed_move_the_restore_kept_is_not_sent_over_a_later_rename_the_restore_lost() {
+    let mut world = moved_beside_a_folder_whose_name_folds_to_ss();
+    let mut steps = vec![(1, rename(1, 0, "ss"))];
+    steps.extend(commit(1));
+    steps.extend([(0, BACKUP), (0, Step::Connect)]);
+    steps.extend(take(0));
+    steps.push((0, rename(visible_b(&world, 0), 0, "c.txt")));
+    steps.extend(commit(0));
+    steps.extend([(1, DELIVER); 4]);
+    world.run(1, &steps).unwrap();
+    restore_and_reconnect(&mut world, 2, &[1, 0]);
+    assert!(
+        live_names(&world).contains(&"c.txt".to_owned()),
+        "{:?}",
+        live_names(&world)
+    );
+}
+
+#[test]
+fn a_later_delete_the_restore_lost_stays_done_when_the_renamed_mover_reconnects_first() {
+    let mut steps = vec![
+        (1, rename(1, 0, "ss")),
+        (1, SCAN),
+        (1, COMMIT),
+        (1, COMMIT),
+        (0, BACKUP),
+    ];
+    steps.extend(take(0));
+    steps.extend([(0, delete(2)), (0, SCAN), (0, COMMIT), (0, COMMIT)]);
+    steps.extend([(1, DELIVER); 6]);
+    steps.push((0, RESTORE));
+    reconnect(&mut steps, 1, true);
+    reconnect(&mut steps, 0, true);
+    let phases = [
+        vec![
+            (1, folder("a")),
+            (1, user(1, 0, 1, "b")),
+            (1, folder("\u{df}")),
+        ],
+        steps,
+        vec![],
+    ];
+    converge(2, &phases).unwrap();
+}
+
+#[test]
+fn a_move_the_server_renamed_is_sent_again_after_each_of_two_restores_loses_the_rename() {
+    let mut world = moved_beside_a_folder_whose_name_folds_to_ss();
+    let mut steps = vec![(0, BACKUP), (1, rename(1, 0, "ss")), (1, overwrite(1))];
+    steps.extend(commit(1));
+    for _ in 0..2 {
+        steps.push((0, RESTORE));
+        reconnect(&mut steps, 1, true);
+    }
+    world.phase(1, &steps).unwrap();
+    assert_eq!(files_on(&world, 0), files_on(&world, 1));
+    assert!(world.devices.iter().all(|device| device.disk.shows(2)));
+    assert!(
+        live_names(&world).iter().any(|name| name.starts_with("ss")),
+        "{:?}",
+        live_names(&world)
+    );
+}

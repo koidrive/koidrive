@@ -5221,7 +5221,10 @@ impl Trees {
     /// live with another shape, and every node S holds below one. A node L still holds is then
     /// created again instead of being taken for a remote delete, under its own ID and at the
     /// position L holds. A reverted node that S, a waiting S update or R held and R no longer holds at all stops being
-    /// reverted, since the server's rename that reverted it was lost too. A folder this device
+    /// reverted, since the server's rename that reverted it was lost too. So does one whose record
+    /// R held at a position a lost commit of this device set, when R now holds it as before that
+    /// commit: at a revision at or below `held_through`, or with a record R held earlier. A later
+    /// change by another device keeps the revert. A folder this device
     /// merged into another (`merged`, by the folder it went into) stops being reverted only when R
     /// no longer holds that folder, since the merge was lost too. One whose content differs from
     /// R's is kept beside R's as a conflict copy instead of being replaced by R's older content. A
@@ -5441,6 +5444,19 @@ impl Trees {
         let lost_moves: BTreeSet<NodeId> = (moved.into_iter())
             .filter(|(id, moved)| moved.seq > held_through && before(id, moved))
             .map(|(id, _)| id)
+            .collect();
+        let renames_lost: BTreeSet<NodeId> = (held.iter())
+            .filter(|id| !merged.contains_key(*id) && !self.cycle_reverted.contains(*id))
+            .filter(|id| {
+                records
+                    .get(*id)
+                    .is_some_and(|record| record.moved_in_lost_commit)
+            })
+            .filter(|id| {
+                (self.r.get(id))
+                    .is_some_and(|remote| remote.meta_rev <= held_through || seen(id, remote))
+            })
+            .cloned()
             .collect();
         let lost_edits: BTreeSet<NodeId> = (edited.iter())
             .filter(|(_, seq)| *seq > held_through)
@@ -5813,15 +5829,7 @@ impl Trees {
             }
         }
         for id in held {
-            let renamed_there = |record: &RemoteRecord| {
-                (self.r.live(&id)).is_some_and(|remote| {
-                    record.node.trashed || !record.node.shape.same_position(remote)
-                })
-            };
-            let rename_lost = !merged.contains_key(&id)
-                && !self.cycle_reverted.contains(&id)
-                && records.get(&id).is_some_and(renamed_there);
-            if rename_lost || self.r.get(merged.get(&id).unwrap_or(&id)).is_none() {
+            if renames_lost.contains(&id) || self.r.get(merged.get(&id).unwrap_or(&id)).is_none() {
                 self.end_revert(&id);
             }
         }
