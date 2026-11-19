@@ -150,7 +150,7 @@ impl Deletion {
             .filter_map(|node| {
                 let brings_back = |j: usize| {
                     let other = intents.intent(j);
-                    let carries = other.value.field() != Field::Content && !other.answer;
+                    let carries = other.value.field() != Field::Content && other.answer.is_none();
                     intents.nodes(j).any(|id| {
                         id == node
                             || server.live(id).is_some()
@@ -167,7 +167,7 @@ impl Deletion {
                         && !other.restore_answer()
                         && !matches!(other.value, Value::Trashed { .. })
                         && !intents.saw(i, j)
-                        && !(other.answer && intents.saw_value(i, j))
+                        && !(other.answer.is_some() && intents.saw_value(i, j))
                         && (intents.saw(j, i) || !other.lost)
                         && brings_back(j)
                 });
@@ -334,7 +334,7 @@ impl World {
                         let other = self.intents.intent(j);
                         let Some(carried) = (other.carried.as_ref()).filter(|_| {
                             other.author != deletion.device
-                                && !other.answer
+                                && other.answer.is_none()
                                 && !other.restore_answer()
                                 && (deletion.unsent.contains(&j) || other.made >= at)
                         }) else {

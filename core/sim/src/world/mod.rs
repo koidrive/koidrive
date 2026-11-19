@@ -40,7 +40,11 @@
 //! - Every change a user made holds on the server, unless a later change whose user saw it, a
 //!   delete whose user saw it, a recovery answer or the rule for lost changes (RFC 0029 section
 //!   4) settles it. A write that nothing settles and the server's tree lacks is a
-//!   [`Failure::Broken`].
+//!   [`Failure::Broken`]. A Publish or Keep answer makes such a change of each value that a node
+//!   its question holds has in L and on disk at the answer and that differs from S, and of each
+//!   such write a rewind took from the server.
+//! - No commit sends a change that a Discard answer gave up while the server lacked it, unless
+//!   its user made it again.
 //! - Only the device whose user gave a folder its owed name finishes the pending name (RFC 0017).
 //! - No node a user deleted is live on the server, unless a change whose user did not see the
 //!   delete brought it back. With [`World::revived_deletes`] set, such a delete is reported as one
@@ -88,8 +92,8 @@ use self::deletes::{Deletion, live_nodes};
 use self::device::{Device, Engine, Link, Message, Rules};
 pub use self::disk::Cut;
 use self::disk::{Applied, Disk, Place, Precision, Refused};
+use self::intents::{Answered, Intents, RESTORE_ANSWER, Server, Value};
 pub use self::intents::{Check, ExpectedRed, allow_red, expect_red};
-use self::intents::{Intents, RESTORE_ANSWER, Server, Value};
 use self::rules::{LeftOutOnDisk, Unsynced, excluded_op};
 use crate::space::{Role, Session, SpaceDo};
 
@@ -1129,13 +1133,22 @@ impl World {
                 if (self.intents).placed(own.then_some(d), id, parent, name, root)
                     || own && !finish && (self.intents).lost_place(id, parent, name, root)
                     || finish
-                        && (self.intents).placed(None, id, parent, name, root)
+                        && ((self.intents).placed(None, id, parent, name, root)
+                            || (self.intents).discarded_place(None, id, parent, name, root))
                         && intents::expected(Check::OwnerFinish, &finishes)
                 {
                     return None;
                 }
                 Some(match (finish, own) {
                     (true, _) => finishes,
+                    (false, true)
+                        if (self.intents).discarded_place(Some(d), id, parent, name, root) =>
+                    {
+                        format!(
+                            "a commit of device {d} moves node {id} to {name:?}, a change its user \
+                             discarded in answer to a recovery question"
+                        )
+                    }
                     (false, true) => format!(
                         "a commit of device {d} moves node {id} to {name:?}, a place the user of \
                          device {d} never gave it"
@@ -1168,6 +1181,12 @@ impl World {
                     was.and_then(|node| Some(tag(node.current.as_ref()?.content.as_ref()?)));
                 if had == Some(write) {
                     return None;
+                }
+                if self.intents.discarded_write(d, write) && !self.intents.wrote(d, write) {
+                    return Some(format!(
+                        "a commit of device {d} sends write {write}, which its user discarded in \
+                         answer to a recovery question"
+                    ));
                 }
                 let writer = *self.writers.get(&write)?;
                 (!self.intents.wrote(d, write)).then(|| {
@@ -1385,7 +1404,7 @@ impl World {
             .filter_map(|id| content(trees.remote().live(id)))
             .collect();
         let ids: BTreeSet<NodeId> = question.holds().cloned().collect();
-        let mut published: Vec<(u128, Value)> = Vec::new();
+        let mut published: Vec<(u128, Value, Answered)> = Vec::new();
         if matches!(answer, Answer::Publish | Answer::Keep) {
             for (id, write, ino) in &held {
                 self.kept[d]
@@ -1398,6 +1417,8 @@ impl World {
                 let mut at = held;
                 while let Some(node) = trees.local().get(at).filter(|_| chain.insert(at)) {
                     let ino = node.identity.ino;
+                    let synced = trees.synced().live(at);
+                    let shown = device.disk.entries().get(&ino);
                     let parent = trees.local().get(&node.shape.parent);
                     let place = Value::Place {
                         parent: parent.map(|parent| parent.identity.ino),
@@ -1407,8 +1428,42 @@ impl World {
                         write: tag(content),
                         digest: content.manifest_digest.clone(),
                     });
+                    let on_disk = |value: &Value| {
+                        shown.is_some_and(|entry| match value {
+                            Value::Place { parent, name } => {
+                                entry.name == *name
+                                    && match (&entry.place, parent) {
+                                        (Place::Root, None) => true,
+                                        (Place::In(at), Some(parent)) => at == parent,
+                                        _ => false,
+                                    }
+                            }
+                            Value::Content { write, .. } => {
+                                entry.content.as_ref().map(tag) == Some(*write)
+                            }
+                            _ => true,
+                        })
+                    };
+                    let owed = |value: &Value| match (value, synced) {
+                        _ if !ids.contains(at) || !on_disk(value) => false,
+                        (_, None) => true,
+                        (Value::Place { .. }, Some(synced)) => {
+                            (&synced.parent, &synced.name) != (&node.shape.parent, &node.shape.name)
+                        }
+                        (Value::Content { write, .. }, Some(synced)) => {
+                            synced.content.as_ref().map(tag) != Some(*write)
+                                || self.rewound.contains_key(write)
+                        }
+                        _ => false,
+                    };
                     let values = [Some(place), content, Some(Value::Live)];
-                    published.extend(values.into_iter().flatten().map(|value| (ino, value)));
+                    published.extend(values.into_iter().flatten().map(|value| {
+                        let answered = match owed(&value) {
+                            true => Answered::Owed,
+                            false => Answered::Settles,
+                        };
+                        (ino, value, answered)
+                    }));
                     at = &node.shape.parent;
                 }
             }
@@ -1445,8 +1500,8 @@ impl World {
             Answer::Restore => self.intents.restore_deleted(d, &ids),
             _ => {}
         }
-        for (ino, value) in published {
-            self.intents.answered(d, self.moment, ino, value);
+        for (ino, value, answered) in published {
+            self.intents.answered(d, self.moment, ino, value, answered);
         }
         assert!(engine.commits.decide(&question.id, answer));
         if !down {
