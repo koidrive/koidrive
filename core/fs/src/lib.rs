@@ -3816,6 +3816,9 @@ impl Watcher for NativeWatcher {
             self.settled.extend(rescan.settled);
             self.waiting
                 .retain(|path| self.snapshot.unplaced.contains(path));
+            if let Some(barrier) = self.barrier.as_mut() {
+                barrier.holds.retain(|path| self.waiting.contains(path));
+            }
             self.waiting
                 .extend(self.snapshot.unplaced.difference(&held).cloned());
             self.dirty = (rescan.unsettled.into_iter())

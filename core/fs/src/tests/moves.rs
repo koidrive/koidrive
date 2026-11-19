@@ -865,6 +865,41 @@ fn a_removal_held_after_an_overflow_gets_a_barrier_of_its_own() {
 }
 
 #[test]
+fn a_barrier_does_not_lift_a_hold_made_after_it_was_written() {
+    let (_dir, root, _) = one_file();
+    fs::create_dir(root.join(".koidrive")).unwrap();
+    fs::create_dir(root.join("y")).unwrap();
+    let mut watcher = quiet_watcher(&root, &["x/g.txt"]);
+    let _old = fs::File::open(root.join("x/g.txt")).unwrap();
+    fs::remove_file(root.join("x/g.txt")).unwrap();
+    let mut changes = watcher.poll(Duration::ZERO).unwrap().changes;
+    fs::write(root.join("x/g.txt"), "new").unwrap();
+    watcher.dirty.insert("x/g.txt".into());
+    changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+    fs::rename(root.join("x/g.txt"), root.join("y/g.txt")).unwrap();
+    watcher.dirty.insert("x/g.txt".into());
+    changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+    hear_barrier(&watcher);
+    changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+    watcher.dirty.insert("y/g.txt".into());
+    hear_barrier(&watcher);
+    changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+    assert_eq!(
+        changes,
+        [
+            Change::Modified {
+                path: "x/g.txt".into()
+            },
+            Change::Renamed {
+                from: "x/g.txt".into(),
+                to: "y/g.txt".into(),
+                kind: EntryKind::File
+            }
+        ]
+    );
+}
+
+#[test]
 fn a_native_watcher_hears_its_barrier_before_the_timeout() {
     for rules in [false, true] {
         let (_dir, root, _) = one_file();
