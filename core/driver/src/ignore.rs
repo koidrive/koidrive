@@ -215,7 +215,7 @@ pub(crate) fn gitignore_only(root: &Path, local: LocalRules) -> GitignoreOnly {
     let rescan = match snapshot.rescan_with_rules(root, [PathBuf::new()], &mut rules) {
         Ok(rescan) => rescan,
         Err(error) => {
-            tracing::warn!(%error, root = %root.display(), "the .gitignore count cannot read a linked folder");
+            tracing::warn!(path = %koidrive_fs::quoted(root), %error, "the .gitignore count cannot read a linked folder");
             return unreadable();
         }
     };
