@@ -76,6 +76,7 @@ fn rolled_back_under_a_later_edit(on_disk_at: i64) -> (Trees, Commits, IdGen) {
     commits.recover(
         &mut trees,
         0,
+        false,
         &cause,
         &History::new(),
         &Marks::new(),
