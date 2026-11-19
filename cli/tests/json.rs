@@ -199,16 +199,19 @@ async fn pair_and_claim_read_codes_from_stdin_or_positional_arguments() {
 #[test]
 fn a_reader_that_went_away_does_not_crash_koi() {
     let profile = Profile::new();
-    for stream in ["stdout", "stderr"] {
+    for (args, stdout, code) in [
+        (["--version", "--json"], true, 0),
+        (["--not-a-flag", "--quiet"], false, 2),
+    ] {
         let (reader, writer) = std::io::pipe().unwrap();
         drop(reader);
-        let mut command = profile.command(&["--version", "--json"]);
-        match stream {
-            "stdout" => command.stdout(writer).stderr(Stdio::piped()),
-            _ => command.stderr(writer).stdout(Stdio::null()),
+        let mut command = profile.command(&args);
+        match stdout {
+            true => command.stdout(writer).stderr(Stdio::piped()),
+            false => command.stderr(writer).stdout(Stdio::piped()),
         };
         let output = command.output().expect("run koi");
-        assert_eq!(output.status.code(), Some(0), "{stream}: {output:?}");
+        assert_eq!(output.status.code(), Some(code), "{args:?}: {output:?}");
     }
 }
 
