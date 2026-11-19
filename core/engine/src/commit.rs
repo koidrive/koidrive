@@ -1331,30 +1331,6 @@ impl Commits {
         let mut asked = index.map(|index| self.questions.get_mut().remove(index));
         let open = asked.as_ref().map(|question| question.id.clone());
         skip.extend(self.questions.iter().flat_map(Question::holds).cloned());
-        let deleted = (trees.dirty_others().iter())
-            .filter(|id| !skip.contains(*id) && deletes(trees, id, &needed))
-            .cloned()
-            .collect();
-        let pending = guard::deletions(trees, &deleted);
-        let checked = (self.guard).check(&mut asked, pending, trees, ids, now_ms);
-        skip.extend(checked.held);
-        let restored: Vec<NodeId> = (checked.restored.into_values())
-            .flat_map(|held| held.members.into_keys())
-            .collect();
-        skip.extend(restored.iter().cloned());
-        let updates = restored.into_iter().map(|id| (id, None)).collect();
-        for (id, shape) in update_synced(trees, updates) {
-            trees.wait(id, shape, Origin::Other);
-        }
-        if let Some(question) = asked {
-            let kept = index.filter(|_| open.as_ref() == Some(&question.id));
-            let at = kept.unwrap_or(self.questions.len());
-            self.questions.get_mut().insert(at, question);
-        }
-        self.hold(trees);
-        self.split.retain(|id| trees.synced().live(id).is_some());
-        self.trash_groups
-            .retain(|id, _| trees.synced().live(id).is_some() && trees.local().get(id).is_none());
         self.given_up_nodes.retain(|id, given| {
             let Some(remote) = trees.remote().get(id).filter(|node| !node.trashed) else {
                 return false;
@@ -1384,6 +1360,34 @@ impl Commits {
                 self.given_up_nodes.remove(&id);
             }
         }
+        let deleted = (trees.dirty_others().iter())
+            .filter(|id| {
+                !skip.contains(*id)
+                    && !self.given_up_nodes.contains_key(*id)
+                    && deletes(trees, id, &needed)
+            })
+            .cloned()
+            .collect();
+        let pending = guard::deletions(trees, &deleted);
+        let checked = (self.guard).check(&mut asked, pending, trees, ids, now_ms);
+        skip.extend(checked.held);
+        let restored: Vec<NodeId> = (checked.restored.into_values())
+            .flat_map(|held| held.members.into_keys())
+            .collect();
+        skip.extend(restored.iter().cloned());
+        let updates = restored.into_iter().map(|id| (id, None)).collect();
+        for (id, shape) in update_synced(trees, updates) {
+            trees.wait(id, shape, Origin::Other);
+        }
+        if let Some(question) = asked {
+            let kept = index.filter(|_| open.as_ref() == Some(&question.id));
+            let at = kept.unwrap_or(self.questions.len());
+            self.questions.get_mut().insert(at, question);
+        }
+        self.hold(trees);
+        self.split.retain(|id| trees.synced().live(id).is_some());
+        self.trash_groups
+            .retain(|id, _| trees.synced().live(id).is_some() && trees.local().get(id).is_none());
         self.published.retain(|id| trees.local().get(id).is_some());
         self.aliases.retain(|id, _| trees.holds_merge(id));
         let held_restores: BTreeSet<&RestoreId> = self.asked_again().collect();

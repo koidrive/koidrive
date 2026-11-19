@@ -5030,3 +5030,44 @@ fn a_given_up_file_this_device_holds_keeps_the_version_its_user_restores() {
     assert_eq!(effects(&mut trees, &mut ids).len(), 1);
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
+
+#[test]
+fn files_an_answer_brings_back_beyond_one_commit_are_trashed_again_without_a_mass_delete_question()
+{
+    let files: Vec<(String, Shape)> = (0..600)
+        .map(|index| (format!("f{index}"), file("d", &format!("child{index}"), 1)))
+        .collect();
+    let synced: Vec<(&str, Shape)> = [("d", dir(ROOT, "old"))]
+        .into_iter()
+        .chain(files.iter().map(|(id, shape)| (id.as_str(), shape.clone())))
+        .collect();
+    let remote: Vec<Remote> = (synced.iter())
+        .map(|(id, shape)| Remote(id, shape.clone(), true, 1))
+        .collect();
+    let mut trees = trees(&[("d", dir(ROOT, "new"))], &synced, &remote);
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "d".into())]
+    );
+    let revived: Vec<(&str, Shape, bool)> = [("d", dir(ROOT, "new"), false)]
+        .into_iter()
+        .chain(
+            files
+                .iter()
+                .map(|(id, shape)| (id.as_str(), shape.clone(), false)),
+        )
+        .collect();
+    applied(&mut commits, &mut trees, 2, &revived);
+    assert_eq!(effects(&mut trees, &mut ids), []);
+    let mut sent = ops(&mut commits, &mut trees, &mut ids);
+    sent.sort();
+    let mut expected: Vec<(&str, String)> = (files.iter())
+        .map(|(id, _)| ("delete", id.clone()))
+        .collect();
+    expected.sort();
+    assert_eq!(sent, expected);
+    assert_eq!(commits.questions(), []);
+}
