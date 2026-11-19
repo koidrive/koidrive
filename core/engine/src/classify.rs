@@ -5753,6 +5753,14 @@ impl Trees {
         self.reverted.insert(id);
     }
 
+    pub(crate) fn place_local(&mut self, id: NodeId, node: LocalNode) {
+        let reverted = self.reverted.contains(&id);
+        self.set_local(id.clone(), node);
+        if reverted {
+            self.reverted.insert(id);
+        }
+    }
+
     pub(crate) fn end_revert(&mut self, id: &str) {
         if self.reverted.remove(id) {
             self.mark(id);

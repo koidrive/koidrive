@@ -1179,6 +1179,41 @@ fn a_move_r_undid_while_it_was_in_flight_is_moved_back() {
     assert_in_sync(&mut trees);
 }
 
+/// A reverted file's move to R's position is in flight when R moves the file on. The move is this
+/// device's effect, not the user's, so no commit moves the file, and the effects move it on.
+#[test]
+fn a_reverted_move_r_moved_on_from_while_it_was_in_flight_is_moved_on() {
+    let (mut trees, mut disk) = space(&[("f", Some(file(ROOT, "b", 1)), Some(file(ROOT, "c", 1)))]);
+    let mut local = trees.local().get("f").unwrap().clone();
+    local.shape.name = "a".into();
+    trees.set_local("f".into(), local);
+    disk.entries.get_mut(&1).unwrap().name = "a".into();
+    trees.revert("f".into());
+    trees.settle(&Default::default());
+    let (mut effects, mut ids) = (Effects::default(), IdGen::new(1));
+    let record = effects
+        .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+        .first()
+        .unwrap()
+        .clone();
+    assert!(matches!(record.effect, Effect::Move { .. }));
+
+    trees.set_remote("f".into(), remote(file(ROOT, "d", 1)));
+    let created = disk.apply(&record.effect).unwrap();
+    effects
+        .done(&mut trees, None, &record.effect_id, created)
+        .unwrap();
+    trees.settle(&Default::default());
+    let commit = koidrive_engine::commit::Commits::default()
+        .build(&mut trees, &mut ids, NOW, "history", "me", 1)
+        .map(|commit| commit.ops.clone());
+    assert_eq!(commit, None);
+
+    let done = converge(&mut trees, &mut disk, 10).unwrap();
+    assert!(matches!(done[..], [Effect::Move { .. }]), "{done:?}");
+    assert_in_sync(&mut trees);
+}
+
 /// A move to R's position is in flight when R moves the file back with new content, and the
 /// user's copy reaches the same content, so S takes it. The move changes only the position, so
 /// L and S keep that content, and the effects move the file back without a conflict.

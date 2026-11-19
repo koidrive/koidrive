@@ -525,7 +525,8 @@ impl Effects {
     /// planned with. An edit the user made while the move was in flight stays the user's.
     /// A change R made while the effect was in flight then stays a remote change and is never
     /// taken for the user's: a file R restored during its removal is downloaded again, and a file
-    /// R moved back during its move is moved back. A finished removal leaves S without the node
+    /// R moved back during its move is moved back, and a reverted node stays reverted, so a node R
+    /// moved on during its move back is moved on. A finished removal leaves S without the node
     /// even when L no longer matched S: the effect took the entry off the disk, so a change of the
     /// user's to it is gone with it, and a node R brings back later is downloaded, never deleted
     /// as the user's. For any other effect, S stays as it is when L no longer matched it: L then
@@ -623,7 +624,7 @@ impl Effects {
         let content = (trees.local().get(&record.node)).map(|node| node.shape.content.clone());
         match record.after {
             None => trees.drop_local(&record.node),
-            Some(shape) => trees.set_local(
+            Some(shape) => trees.place_local(
                 record.node.clone(),
                 LocalNode {
                     left_out_when_placed: false,
