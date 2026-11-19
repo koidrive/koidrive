@@ -45,6 +45,7 @@ fn prepare(root: &Path) -> Vec<Effect> {
             Action::WriteFile {
                 at: docs("a.txt"),
                 replaces: None,
+                staged: None,
             },
         ),
         effect(
@@ -52,6 +53,7 @@ fn prepare(root: &Path) -> Vec<Effect> {
             Action::WriteFile {
                 at: docs("b.txt"),
                 replaces: None,
+                staged: None,
             },
         ),
         effect("c", Action::CreateDir { at: docs("sub") }),
@@ -63,6 +65,7 @@ fn prepare(root: &Path) -> Vec<Effect> {
                     at: docs("report.txt"),
                     entry: found[1],
                 }),
+                staged: None,
             },
         ),
         effect(

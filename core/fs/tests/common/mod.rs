@@ -80,6 +80,7 @@ pub fn apply_one(
     let mut section = space.section(&marker(), hook)?;
     section.apply(effect, &mut Bytes, now())?;
     let [outcome] = section.finish()?.try_into().unwrap();
+    space.drop_staged(&effect.id)?;
     Ok(outcome)
 }
 
@@ -91,6 +92,7 @@ pub fn recover_one(
     let mut section = space.section(&marker(), hook)?;
     section.recover(effect, &mut Bytes, now())?;
     let [outcome] = section.finish()?.try_into().unwrap();
+    space.drop_staged(&effect.id)?;
     Ok(outcome)
 }
 
@@ -203,6 +205,7 @@ fn replacement(entries: &[Entry]) -> Effect {
                 at,
                 entry: entries[1],
             }),
+            staged: None,
         },
     }
 }
@@ -259,6 +262,7 @@ pub const SCENARIOS: [Scenario; 7] = [
             action: Action::WriteFile {
                 at: at(vec![dir("docs", &entries[0])], "new.txt"),
                 replaces: None,
+                staged: None,
             },
         },
         disturb: |_| {},

@@ -8,12 +8,12 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 use common::{
-    EDITED, ID, REMOTE, RULES, SCENARIOS, SYNCED, apply_one, assert_settled, at, bind, contents,
-    dir, entries, marker, now, prepare, private_names, recover_one, rewrite_keeping_mtime, same,
-    stage, trashed,
+    Bytes, EDITED, ID, REMOTE, RULES, SCENARIOS, SYNCED, apply_one, assert_settled, at, bind,
+    contents, dir, entries, marker, now, prepare, private_names, recover_one,
+    rewrite_keeping_mtime, same, stage, trashed,
 };
 use koidrive_fs::{
-    Action, Base, Displaced, Effect, EntryKind, Location, Outcome, PARKED_DIR, PRIVATE_DIR,
+    Action, Base, Displaced, Effect, EntryKind, FileId, Location, Outcome, PARKED_DIR, PRIVATE_DIR,
     QUARANTINE_DIR, Reason, STAGING_DIR, Snapshot, Step, TRASH_RETENTION, Unresolved, read_marker,
 };
 
@@ -887,7 +887,7 @@ fn space_changes_nothing_once_its_root_is_moved_away() {
         apply_one(&space, &effect, &mut |_| {}).map(drop),
         recover_one(&space, &effect, &mut |_| {}).map(drop),
         space.stage("e2").map(drop),
-        space.finish_staged(ID, true),
+        space.finish_staged(ID, true).map(drop),
         space.clear_staging(None).map(drop),
         space.probe_no_replace().map(drop),
         space.reclaim_trash(now(), 0, &mut same).map(drop),
@@ -1022,21 +1022,43 @@ fn recovery_of_a_done_effect_whose_folder_moved_beside_an_unlistable_folder_repo
     assert_eq!(outcome.unwrap(), done);
 }
 
+fn recorded(root: &Path, mut effect: Effect) -> (Effect, FileId) {
+    let identity = bind(root).finish_staged(ID, false).unwrap();
+    if let Action::WriteFile { staged, .. } = &mut effect.action {
+        *staged = Some(identity);
+    }
+    (effect, identity)
+}
+
 #[test]
-fn recovery_of_a_replacement_whose_target_the_user_changed_is_overtaken() {
+fn recovery_of_a_replacement_whose_target_the_user_changed_is_done_only_by_its_staged_identity() {
     let remove: fn(&Path) = |file| fs::remove_file(file).unwrap();
     let write: fn(&Path) = |file| fs::write(file, EDITED).unwrap();
+    let swap: fn(&Path) = |file| {
+        fs::rename(file, file.with_extension("old")).unwrap();
+        fs::write(file, REMOTE).unwrap();
+    };
     let cases = [
-        (Step::Quarantined, write),
-        (Step::Placed, remove),
-        (Step::Placed, write),
-        (Step::Trashed, remove),
-        (Step::Trashed, write),
+        (Step::Quarantined, write, false),
+        (Step::Placed, remove, false),
+        (Step::Placed, write, false),
+        (Step::Placed, swap, true),
+        (Step::Trashed, remove, false),
+        (Step::Trashed, write, false),
+        (Step::Trashed, swap, true),
     ];
-    for (kill, change) in cases {
+    let both = cases
+        .into_iter()
+        .flat_map(|case| [(case, false), (case, true)]);
+    for ((kill, change, swapped), with_identity) in both {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let effect = replace(root);
+        let without = replace(root);
+        let (with, identity) = recorded(root, without.clone());
+        let effect = match with_identity {
+            true => with,
+            false => without,
+        };
         let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             apply(root, &effect, |step| {
                 if step == kill {
@@ -1047,10 +1069,38 @@ fn recovery_of_a_replacement_whose_target_the_user_changed_is_overtaken() {
         assert!(crashed.is_err());
         change(&root.join("docs/report.txt"));
         let outcome = recover_one(&bind(root), &effect, &mut |_| {}).unwrap();
-        assert_eq!(outcome, failed(Reason::Overtaken), "{kill:?}");
-        assert_eq!(trashed(root), [SYNCED], "{kill:?}");
+        let expected = match (with_identity && kill != Step::Quarantined, swapped) {
+            (true, _) => Outcome::Done {
+                identity: Some(identity),
+            },
+            (false, true) => made(root, "docs/report.txt"),
+            (false, false) => failed(Reason::Overtaken),
+        };
+        assert_eq!(outcome, expected, "{kill:?} {with_identity}");
+        assert_eq!(trashed(root), [SYNCED], "{kill:?} {with_identity}");
         assert_settled(root);
     }
+}
+
+#[test]
+fn a_write_whose_name_was_taken_keeps_its_staged_file_until_the_caller_drops_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let (effect, _) = recorded(root, replace(root));
+    let space = bind(root);
+    let mut take = |step| {
+        if step == Step::Compared {
+            fs::write(root.join("docs/report.txt"), EDITED).unwrap();
+        }
+    };
+    let mut section = space.section(&marker(), &mut take).unwrap();
+    section.apply(&effect, &mut Bytes, now()).unwrap();
+    assert_eq!(section.finish().unwrap(), [failed(Reason::Overtaken)]);
+    assert_eq!(private_names(root, STAGING_DIR), [ID]);
+    let outcome = recover_one(&space, &effect, &mut |_| {}).unwrap();
+    assert_eq!(outcome, failed(Reason::Overtaken));
+    assert_eq!(fs::read(root.join("docs/report.txt")).unwrap(), EDITED);
+    assert_settled(root);
 }
 
 #[test]
@@ -1090,6 +1140,7 @@ fn recovery_of_a_replacement_that_never_ran_leaves_the_bytes_the_user_wrote_at_i
                 at: at(docs, "report.txt"),
                 entry: found[1],
             }),
+            staged: None,
         },
     };
     fs::write(root.join("docs/renamed.txt"), REMOTE).unwrap();
@@ -1296,6 +1347,7 @@ fn a_file_moved_and_rewritten_into_a_folder_the_system_does_not_allow_is_put_bac
                     at: at(vec![dir("docs", &found[0])], "report.txt"),
                     entry: found[1],
                 }),
+                staged: None,
             },
         };
         let locked = root.join("locked");

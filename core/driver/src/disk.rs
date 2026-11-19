@@ -52,7 +52,7 @@ use koidrive_engine::effects::{
 use koidrive_engine::first_link::{self, Marks};
 use koidrive_engine::ignore::is_rules_file;
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
-use koidrive_engine::tree::{Content, Kind, LocalNode, NodeId};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId};
 use koidrive_fs::{
     Action, Base, BroughtBack, Contents, Ctime, Dir, Displaced, Effect, Entry, EntryKind, FileId,
     Known, Location, Marker, Minted, Outcome, Reason, Reclaimed, Refusal, RootAt, RootProblem,
@@ -677,6 +677,27 @@ impl Disk {
         if !self.space.held()? {
             return Err(Stop::Withdrawn(self.path.clone()));
         }
+        let staged: Vec<_> = (effects.iter())
+            .filter_map(|(planned, _)| match planned.effect.action {
+                Action::WriteFile {
+                    staged: Some(identity),
+                    ..
+                } => Some((&planned.effect.id, file_identity(identity))),
+                _ => None,
+            })
+            .collect();
+        if !staged.is_empty() {
+            store.transaction(|tx| -> Result<_, Stop> {
+                for (effect_id, identity) in &staged {
+                    (engine.effects.stage(effect_id, *identity)).map_err(|error| Stop::Record {
+                        effect_id: effect_id.to_string(),
+                        what: format!("the engine refused its staged file: {error:?}"),
+                    })?;
+                }
+                engine.checkpoint(tx)?;
+                Ok(())
+            })?;
+        }
         let marker = self.counter(counter);
         self.sections.epoch.fetch_add(1, Ordering::SeqCst);
         let hook = &mut self.hook;
@@ -726,6 +747,9 @@ impl Disk {
             store,
             hook,
         )?;
+        for (planned, _) in &effects {
+            self.space.drop_staged(&planned.effect.id)?;
+        }
         self.finish_rotation(store)?;
         let end = self.sections.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let requested = (self.sections).request(engine.resets(scopes_of_batch.iter().cloned()));
@@ -904,7 +928,7 @@ impl Disk {
     }
 
     pub fn refuses(&self, effect: &EngineEffect) -> Option<Refusal> {
-        let (action, _) = action(effect).ok()?;
+        let (action, _) = action(effect, None).ok()?;
         self.space.refuses(&action).ok().flatten()
     }
 
@@ -1369,6 +1393,7 @@ impl Pending {
     /// batch, which is staged again from the start.
     pub async fn stage(&self, fetch: &impl Fetch) -> Result<Staged, Stall> {
         let mut unfetchable: Vec<Option<String>> = vec![None; self.effects.len()];
+        let mut effects = self.effects.clone();
         let mut writes: Vec<(usize, &Content, Manifest)> = Vec::new();
         for (index, planned) in self.effects.iter().enumerate() {
             let EngineEffect::WriteFile { content, .. } = &planned.record.effect else {
@@ -1526,14 +1551,14 @@ impl Pending {
                     all - missing[write]
                 ));
             }
-            if unfetchable[*index].is_none() {
-                self.space
-                    .finish_staged(id, content.executable)
-                    .map_err(halt)?;
+            if unfetchable[*index].is_none()
+                && let Action::WriteFile { staged, .. } = &mut effects[*index].effect.action
+            {
+                *staged = Some((self.space.finish_staged(id, content.executable)).map_err(halt)?);
             }
         }
         Ok(Staged {
-            effects: self.effects.iter().cloned().zip(unfetchable).collect(),
+            effects: effects.into_iter().zip(unfetchable).collect(),
         })
     }
 }
@@ -2046,7 +2071,7 @@ fn scopes(action: &Action, outcome: &Outcome) -> Vec<PathBuf> {
         Action::RemoveDir { at, along, .. } => std::iter::once(at)
             .chain(along.iter().map(|file| &file.at))
             .collect(),
-        Action::WriteFile { at, replaces } => std::iter::once(at)
+        Action::WriteFile { at, replaces, .. } => std::iter::once(at)
             .chain(replaces.iter().map(|d| &d.at))
             .collect(),
         Action::Move { from, to, .. } => vec![from, to],
@@ -2101,7 +2126,7 @@ fn translate(record: &EffectRecord) -> Result<(Effect, Expected), Stop> {
         what,
     };
     name(&record.effect_id).map_err(bad)?;
-    let (action, contents) = action(&record.effect).map_err(bad)?;
+    let (action, contents) = action(&record.effect, record.staged).map_err(bad)?;
     let effect = Effect {
         id: record.effect_id.clone(),
         node: record.node.to_string(),
@@ -2110,7 +2135,10 @@ fn translate(record: &EffectRecord) -> Result<(Effect, Expected), Stop> {
     Ok((effect, contents))
 }
 
-fn action(effect: &EngineEffect) -> Result<(Action, Expected), String> {
+fn action(
+    effect: &EngineEffect,
+    staged: Option<FileIdentity>,
+) -> Result<(Action, Expected), String> {
     Ok(match effect {
         EngineEffect::CreateDir { at } => {
             (Action::CreateDir { at: location(at)? }, Expected::default())
@@ -2123,6 +2151,7 @@ fn action(effect: &EngineEffect) -> Result<(Action, Expected), String> {
             Action::WriteFile {
                 at: location(at)?,
                 replaces: replaces.as_ref().map(displaced).transpose()?,
+                staged: staged.map(file_id),
             },
             Expected {
                 displaced: replaces.as_ref().map(|d| d.content.clone()),

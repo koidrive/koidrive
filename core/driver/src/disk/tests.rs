@@ -895,7 +895,8 @@ fn a_crash_at_every_cut_of_every_effect_is_recovered_on_the_next_start() {
 }
 
 #[test]
-fn a_replaced_file_the_user_changed_before_the_start_leaves_s() {
+fn a_replaced_file_the_user_changed_before_the_start_stays_in_s_once_placed_by_its_recorded_staged_file()
+ {
     let remove: fn(&Path) = |file| fs::remove_file(file).unwrap();
     let write: fn(&Path) = |file| fs::write(file, b"edited").unwrap();
     let cases = [
@@ -907,7 +908,10 @@ fn a_replaced_file_the_user_changed_before_the_start_leaves_s() {
         (Cut::BeforeAck, remove),
         (Cut::BeforeAck, write),
     ];
-    for (cut, change) in cases {
+    let both = cases
+        .into_iter()
+        .flat_map(|case| [(case, true), (case, false)]);
+    for ((cut, change), recorded) in both {
         let folder = Folder::new();
         let mut server = Server::default();
         (SCENARIOS[2].setup)(&folder, &mut server);
@@ -919,18 +923,27 @@ fn a_replaced_file_the_user_changed_before_the_start_leaves_s() {
             crashed.is_err_and(|payload| payload.is::<Crash>()),
             "{cut:?}: no crash"
         );
+        if !recorded {
+            let (mut store, _) = folder.open();
+            store
+                .transaction(|tx| {
+                    let mut state = tx.engine_state()?;
+                    state.effects.in_flight[0].staged = None;
+                    tx.set_engine_state(&state)
+                })
+                .unwrap();
+        }
         change(&folder.root.join("report.txt"));
         let running = folder.start(no_hook()).unwrap();
-        assert_eq!(
-            running.engine.trees.synced().get(&NodeId::from(NODE)),
-            None,
-            "{cut:?}"
-        );
+        let kept = recorded && cut != Cut::Step(Step::Quarantined);
+        let node = NodeId::from(NODE);
+        let synced = running.engine.trees.synced().get(&node).is_some();
+        assert_eq!(synced, kept, "{cut:?} {recorded}");
         let (_, stored) = folder.open();
         assert_eq!(
-            stored.trees.synced().get(&NodeId::from(NODE)),
-            None,
-            "{cut:?}"
+            stored.trees.synced().get(&node).is_some(),
+            kept,
+            "{cut:?} {recorded}"
         );
         assert!(trashed(&folder, SYNCED), "{cut:?}");
     }
@@ -2031,6 +2044,7 @@ fn record(effect: EngineEffect) -> EffectRecord {
         effect,
         after: None,
         recoveries: 0,
+        staged: None,
     }
 }
 

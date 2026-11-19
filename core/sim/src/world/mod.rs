@@ -1750,10 +1750,19 @@ impl World {
             Outcome::Crash(_) => batch.len() - 1,
             _ => (self.clock.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize % batch.len(),
         };
+        let device = &mut self.devices[d];
+        let mut staged = false;
         for (index, record) in batch.iter().enumerate() {
-            if index != unlucky || outcome != Outcome::Fail {
-                self.devices[d].disk.stage(record);
+            if (index != unlucky || outcome != Outcome::Fail)
+                && let Some(identity) = device.disk.stage(record)
+            {
+                (device.engine.effects.stage(&record.effect_id, identity))
+                    .map_err(|error| Failure::Broken(format!("staging refused: {error:?}")))?;
+                staged = true;
             }
+        }
+        if staged {
+            device.persist()?;
         }
         let mut ends = Vec::new();
         for (index, record) in batch.iter().enumerate() {
@@ -1914,6 +1923,7 @@ impl World {
             }
         }
         device.persist()?;
+        device.disk.unstage();
         self.read_rules_file(d);
         let device = &mut self.devices[d];
         device.engine.scan(&device.disk);
@@ -2018,8 +2028,8 @@ impl World {
                 Ok(identity) if applies && !refuted => {
                     // A file that the user made with the bytes of the download counts as the
                     // download. The server holds that write from then on.
-                    let taken = identity
-                        .as_ref()
+                    let taken = (identity.as_ref())
+                        .filter(|_| record.staged.is_none())
                         .zip(download)
                         .and_then(|(identity, content)| {
                             let found = device.disk.entries()[&identity.ino].content.as_ref()?;
@@ -2121,6 +2131,7 @@ impl World {
         if !batch.is_empty() {
             device.persist()?;
         }
+        device.disk.unstage();
         if device.engine.commits.in_flight().is_some() {
             note(&mut self.seen, "restart with a commit in flight");
         }
@@ -4045,6 +4056,7 @@ mod tests {
             },
             after: None,
             recoveries: 0,
+            staged: None,
         };
         disk.apply(&record, Some(Cut::Done)).unwrap();
         assert!(disk.binned(5));
@@ -4202,6 +4214,7 @@ mod tests {
                 content: Some(incoming),
             }),
             recoveries: 0,
+            staged: None,
         };
         let applied = disk.apply(&record, Some(Cut::Done)).unwrap();
         assert!(
@@ -4247,6 +4260,7 @@ mod tests {
             },
             after: None,
             recoveries: 0,
+            staged: None,
         };
         let applied = Applied {
             outcome: Ok(None),
@@ -4307,6 +4321,7 @@ mod tests {
             },
             after: None,
             recoveries: 0,
+            staged: None,
         };
         disk.apply(&record, Some(Cut::Done)).unwrap();
         assert!(disk.binned(5));
@@ -4476,6 +4491,7 @@ mod tests {
             },
             after: Some(after),
             recoveries: 0,
+            staged: None,
         };
         assert!(record.applies(&world.devices[0].engine.trees, None));
         let mut state = world.devices[0].engine.effects.state();

@@ -1596,6 +1596,8 @@ struct StoredRecord {
     effect: Option<StoredEffect>,
     #[prost(message, optional, tag = "5")]
     after: Option<StoredShape>,
+    #[prost(message, optional, tag = "6")]
+    staged: Option<StoredIdentity>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -1729,6 +1731,7 @@ impl From<&EffectRecord> for StoredRecord {
                 kind: node_kind(shape.kind),
                 content: shape.content.clone(),
             }),
+            staged: record.staged.as_ref().map(StoredIdentity::from),
         }
     }
 }
@@ -1753,6 +1756,7 @@ impl TryFrom<StoredRecord> for EffectRecord {
             effect: required(record.effect, "the effect")?.try_into()?,
             after,
             recoveries: 0,
+            staged: record.staged.map(FileIdentity::from),
         })
     }
 }

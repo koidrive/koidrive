@@ -697,6 +697,7 @@ mod tests {
             },
             after: Some(remote.shape),
             recoveries: 0,
+            staged: None,
         }
     }
 

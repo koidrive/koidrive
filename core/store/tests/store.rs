@@ -676,6 +676,9 @@ fn legacy_state() -> EngineState {
     state.commits.published = full.commits.published;
     state.commits.guard = full.commits.guard;
     state.effects.in_flight = full.effects.in_flight;
+    for record in &mut state.effects.in_flight {
+        record.staged = None;
+    }
     state.effects.cleared = full.effects.cleared;
     state.effects.failed = full.effects.failed;
     for effect in state.effects.failed.values_mut() {
@@ -1637,6 +1640,7 @@ fn engine_state() -> EngineState {
                 },
                 after: Some(engine_shape("p", "inner.txt")),
                 recoveries: 0,
+                staged: Some(identity(9)),
             }],
             cleared: 2,
             failed: BTreeMap::from([
@@ -1695,6 +1699,31 @@ fn engine_state_survives_a_reopen() {
             Ok::<_, Error>(())
         })
         .unwrap();
+}
+
+#[test]
+fn an_effect_record_from_before_staged_identities_loads_without_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut state = EngineState {
+        effects: engine_state().effects,
+        ..EngineState::default()
+    };
+    let mut store = Store::open(&path).unwrap();
+    store.transaction(|tx| tx.set_engine_state(&state)).unwrap();
+    drop(store);
+    let hex = include_str!("fixtures/effect-record-without-staged.hex").trim();
+    let old: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+        .collect();
+    let conn = Connection::open(&path).unwrap();
+    conn.execute("UPDATE effects_in_flight SET record = ?1", [old])
+        .unwrap();
+    drop(conn);
+    state.effects.in_flight[0].staged = None;
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), state);
 }
 
 fn count_writes_to_every_table(path: &Path) {
