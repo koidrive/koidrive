@@ -1209,12 +1209,6 @@ impl Trees {
     }
 
     fn apply_remote(&mut self, id: NodeId, node: RemoteNode, made: Made) {
-        let moved = !(self.r.live(&id)).is_some_and(|old| old.same_position(&node.shape));
-        let home = (self.l.get(&id))
-            .is_some_and(|local| !local.parked && local.shape.same_position(&node.shape));
-        if node.trashed || moved && (made == Made::Elsewhere || home) {
-            self.names_left_out.remove(&id);
-        }
         let made_here = made != Made::Elsewhere;
         let edit = matches!(made, Made::Edit | Made::Answer);
         if edit {
@@ -1362,6 +1356,12 @@ impl Trees {
 
     fn place_remote(&mut self, id: NodeId, node: RemoteNode, made_here: bool) {
         self.place_ids.remove(&id);
+        let moved = !(self.r.live(&id)).is_some_and(|old| old.same_position(&node.shape));
+        let home = (self.l.get(&id))
+            .is_some_and(|local| !local.parked && local.shape.same_position(&node.shape));
+        if node.trashed || moved && (!made_here || home) {
+            self.names_left_out.remove(&id);
+        }
         let sent_again = self.resends.contains(&id) || self.lost_creates.contains(&id);
         let changed_after_loss = !made_here
             && sent_again
