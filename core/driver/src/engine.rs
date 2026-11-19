@@ -1093,7 +1093,26 @@ impl Engine {
         let mut gone = Gone::new();
         let mut parked = Vec::new();
         for at in order {
-            let (change, before) = (&changes[at], before[at].take());
+            let lost;
+            let (change, before) = match (&changes[at], before[at].take()) {
+                (Observed::Reidentified { path, id }, _)
+                    if let Some(node) = local_at(&self.trees, path)
+                        && self.trees.ignored_local().contains(&node)
+                        && (self.trees.local_with_identity(&file_identity(*id)))
+                            .is_some_and(|other| *other != node)
+                        && let Some(local) = self.trees.local().get(&node) =>
+                {
+                    lost = Observed::Removed {
+                        path: path.clone(),
+                        kind: match local.shape.kind {
+                            Kind::Dir => EntryKind::Dir,
+                            Kind::File => EntryKind::File,
+                        },
+                    };
+                    (&lost, Some(node))
+                }
+                (change, before) => (change, before),
+            };
             if let Observed::Created { path, .. } | Observed::Renamed { to: path, .. } = change
                 && let Some(holder) = local_at(&self.trees, path)
                 && moving.contains(&holder)
@@ -1142,11 +1161,6 @@ impl Engine {
                     });
                     if let Some((node, local)) = outside {
                         let identity = file_identity(*id);
-                        if (self.trees.local_with_identity(&identity))
-                            .is_some_and(|other| *other != node)
-                        {
-                            continue;
-                        }
                         let at = self.trees.found_local().get(&node).cloned();
                         self.trees
                             .set_local(node.clone(), LocalNode { identity, ..local });
@@ -4048,7 +4062,7 @@ mod tests {
     }
 
     #[test]
-    fn a_recorded_node_never_takes_an_identity_another_node_holds() {
+    fn a_recorded_node_whose_place_holds_another_nodes_identity_is_gone() {
         let (_dir, mut engine) = mapper();
         engine.observe(
             &[
@@ -4064,8 +4078,9 @@ mod tests {
             id: ino(2),
         };
         engine.observe(&[reidentified], 1);
-        let identity = holding(&engine, "a").map(|(_, identity, _)| identity);
-        assert_eq!(identity, Some(file_identity(ino(1))));
+        assert!(holding(&engine, "a").is_none());
+        let identity = holding(&engine, "b").map(|(_, identity, _)| identity);
+        assert_eq!(identity, Some(file_identity(ino(2))));
     }
 
     /// Names that the edits of [`batches`] pick from, few enough that entries often take each other's names.
