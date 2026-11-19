@@ -164,6 +164,12 @@ impl<K: PartialEq> PartialEq for TrackedSet<K> {
     }
 }
 
+impl<K: PartialEq> PartialEq<BTreeSet<K>> for TrackedSet<K> {
+    fn eq(&self, other: &BTreeSet<K>) -> bool {
+        self.set == *other
+    }
+}
+
 impl<K: fmt::Debug> fmt::Debug for TrackedSet<K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.set.fmt(f)

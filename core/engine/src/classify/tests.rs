@@ -799,7 +799,7 @@ fn a_discard_check_over_a_deep_chain_of_kept_back_folders_finishes() {
         parent = c;
     }
     trees.set_remote("f".into(), remote(dir(&NodeId::from(&parent), "f")));
-    trees.others = BTreeSet::from(["f".into()]);
+    trees.others = BTreeSet::from(["f".into()]).into();
     assert!(trees.is_discarded(&"x0".into()));
 }
 

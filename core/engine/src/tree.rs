@@ -5,8 +5,9 @@
 
 use std::borrow::Borrow;
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet};
-use std::ops::RangeBounds;
+use std::collections::{BTreeMap, BTreeSet, btree_set};
+use std::fmt;
+use std::ops::{Deref, RangeBounds};
 use std::path::PathBuf;
 
 use koidrive_proto::v1::{self as proto, NodeKind, NodeStatus};
@@ -49,6 +50,90 @@ pub(crate) fn counted<I: Iterator>(entries: I) -> Counting<I> {
 #[cfg(not(test))]
 pub(crate) fn counted<I: Iterator>(entries: I) -> Counting<I> {
     entries
+}
+
+/// A [`BTreeSet`] whose reads count as entries read.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CountedSet<K>(BTreeSet<K>);
+
+impl<K> Default for CountedSet<K> {
+    fn default() -> Self {
+        Self(BTreeSet::new())
+    }
+}
+
+impl<K: Ord> CountedSet<K> {
+    pub(crate) fn insert(&mut self, key: K) -> bool {
+        self.0.insert(key)
+    }
+
+    pub(crate) fn remove<Q: Ord + ?Sized>(&mut self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
+        self.0.remove(key)
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub fn contains<Q: Ord + ?Sized>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
+        read_entries(1);
+        self.0.contains(key)
+    }
+
+    pub fn iter(&self) -> Counting<btree_set::Iter<'_, K>> {
+        counted(self.0.iter())
+    }
+
+    pub fn first(&self) -> Option<&K> {
+        read_entries(1);
+        self.0.first()
+    }
+
+    pub fn last(&self) -> Option<&K> {
+        read_entries(1);
+        self.0.last()
+    }
+}
+
+impl<'a, K: Ord> IntoIterator for &'a CountedSet<K> {
+    type Item = &'a K;
+    type IntoIter = Counting<btree_set::Iter<'a, K>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<K> Deref for CountedSet<K> {
+    type Target = BTreeSet<K>;
+
+    fn deref(&self) -> &BTreeSet<K> {
+        &self.0
+    }
+}
+
+impl<K> From<BTreeSet<K>> for CountedSet<K> {
+    fn from(set: BTreeSet<K>) -> Self {
+        Self(set)
+    }
+}
+
+impl<K: PartialEq> PartialEq<BTreeSet<K>> for CountedSet<K> {
+    fn eq(&self, other: &BTreeSet<K>) -> bool {
+        self.0 == *other
+    }
+}
+
+impl<K: fmt::Debug> fmt::Debug for CountedSet<K> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
