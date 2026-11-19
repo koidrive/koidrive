@@ -2826,3 +2826,64 @@ fn a_restore_asked_for_before_recovery_is_listed_by_its_file_and_what_it_brings_
         ])
     );
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn gitignore_status_counts_each_linked_folder_when_their_paths_print_alike() {
+    use crate::gitignore::GitignoreAction;
+    use std::os::unix::ffi::OsStrExt;
+
+    const OTHER: &str = "0190f0a0-0000-7000-8000-000000000002";
+    let (_dir, paths, root) = ipc::tests::linked_profile();
+    let raw = root.with_file_name(std::ffi::OsStr::from_bytes(b"Koidrive\xff"));
+    let alike = root.with_file_name("Koidrive\u{FFFD}");
+    std::fs::rename(&root, &raw).unwrap();
+    std::fs::create_dir(&alike).unwrap();
+    let link = |space_id: &str, root: &std::path::Path| {
+        let store = paths.store(space_id).unwrap();
+        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+        koidrive_store::Store::open(store)
+            .unwrap()
+            .transaction(|tx| {
+                tx.set_link(&koidrive_store::Link {
+                    space_id: space_id.into(),
+                    space_name: space_id.into(),
+                    root: root.to_path_buf(),
+                    root_dev: 1,
+                    root_volume: None,
+                    server_url: "https://files.example.com/".into(),
+                    device_id: "d1".into(),
+                    linked_at_ms: 1,
+                    found_marker: false,
+                })
+            })
+            .unwrap();
+    };
+    link(ipc::tests::SPACE, &raw);
+    link(OTHER, &alike);
+    for (folder, files) in [(&raw, &["a.log"][..]), (&alike, &["b.log", "c.log"][..])] {
+        std::fs::write(folder.join(".gitignore"), "*.log\n").unwrap();
+        for file in files {
+            std::fs::write(folder.join(file), file.as_bytes()).unwrap();
+        }
+    }
+    let status = run(
+        paths.clone(),
+        Command::Gitignore {
+            action: GitignoreAction::Status { folder: None },
+        },
+        true,
+        false,
+        Arc::new(terminal::Terminal::new(true, true)),
+    )
+    .await
+    .unwrap();
+
+    let counted: Vec<(&str, u64)> = (status.data["folders"].as_array().unwrap().iter())
+        .map(|folder| {
+            let space_id = folder["space_id"].as_str().unwrap();
+            (space_id, folder["files"].as_u64().unwrap())
+        })
+        .collect();
+    assert_eq!(counted, [(ipc::tests::SPACE, 1), (OTHER, 2)]);
+}

@@ -2486,16 +2486,15 @@ impl Driver {
         Ok(true)
     }
 
-    /// Counts the regular files in the linked folder at `folder` that its `.gitignore` files alone leave out: those
+    /// Counts the regular files in the linked folder of `space_id` that its `.gitignore` files alone leave out: those
     /// the folder excludes while it follows `.gitignore` files and includes while it does not. It reads the disk as it
     /// is now, as a scan does, whatever [`Driver::follows_gitignore`] says, and never follows a symbolic link. What it
     /// holds below a folder it cannot list, or whose rules file it cannot read, is left out of the count, and the folder
     /// is in [`GitignoreOnly::unreadable`].
-    pub fn gitignore_only(&self, folder: &Path) -> Result<GitignoreOnly, DriverError> {
-        let root = find(&mut self.inner.folders.lock().unwrap(), folder)?
-            .link
-            .root
-            .clone();
+    pub fn gitignore_only(&self, space_id: &str) -> Result<GitignoreOnly, DriverError> {
+        let root = (self.inner.folders.lock().unwrap().get(space_id))
+            .map(|folder| folder.link.root.clone())
+            .ok_or_else(|| DriverError::SpaceNotLinked(space_id.to_owned()))?;
         let local = self.inner.rules.lock().unwrap().local.clone();
         Ok(crate::ignore::gitignore_only(&root, local))
     }
@@ -10824,12 +10823,12 @@ mod tests {
             bytes: 18,
             unreadable: Vec::new(),
         };
-        assert_eq!(driver.gitignore_only(&root).unwrap(), only);
+        assert_eq!(driver.gitignore_only(SPACE).unwrap(), only);
         driver.set_gitignore(false).await.unwrap();
-        assert_eq!(driver.gitignore_only(&root).unwrap(), only);
+        assert_eq!(driver.gitignore_only(SPACE).unwrap(), only);
         assert!(matches!(
-            driver.gitignore_only(&base.join("elsewhere")),
-            Err(DriverError::NotLinked(_))
+            driver.gitignore_only("0190f0a0-0000-7000-8000-000000000002"),
+            Err(DriverError::SpaceNotLinked(_))
         ));
     }
 
@@ -10855,12 +10854,12 @@ mod tests {
         };
 
         fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
-        let counted = driver.gitignore_only(&root);
+        let counted = driver.gitignore_only(SPACE);
         fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(counted.unwrap(), blocked);
 
         fs::rename(&root, base.join("Moved")).unwrap();
-        assert_eq!(driver.gitignore_only(&root).unwrap(), blocked);
+        assert_eq!(driver.gitignore_only(SPACE).unwrap(), blocked);
     }
 
     #[tokio::test]
@@ -10898,14 +10897,12 @@ mod tests {
             fs::write(folder.join(file), text).unwrap();
         }
         let driver = Driver::open(paths).unwrap();
-        let alias = base.join("Alias");
-        std::os::unix::fs::symlink(&root, &alias).unwrap();
         let counted = GitignoreOnly {
             files: 1,
             bytes: 3,
             unreadable: Vec::new(),
         };
-        assert_eq!(driver.gitignore_only(&alias).unwrap(), counted);
+        assert_eq!(driver.gitignore_only(SPACE).unwrap(), counted);
 
         fs::rename(&root, base.join("Moved")).unwrap();
         std::os::unix::fs::symlink(&other, &root).unwrap();
@@ -10914,6 +10911,6 @@ mod tests {
             bytes: 0,
             unreadable: vec![root.clone()],
         };
-        assert_eq!(driver.gitignore_only(&root).unwrap(), blocked);
+        assert_eq!(driver.gitignore_only(SPACE).unwrap(), blocked);
     }
 }

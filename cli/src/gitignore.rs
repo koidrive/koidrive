@@ -134,7 +134,7 @@ async fn counted(paths: &Paths, only: Option<&Path>) -> Result<Vec<GitignoreFold
     let mut counted = Vec::new();
     for (space_id, path) in folders {
         let request = Request::GitignoreOnly {
-            folder: PathBuf::from(&path),
+            space_id: space_id.clone(),
         };
         match ipc::run(paths, request).await? {
             Response::GitignoreOnly {

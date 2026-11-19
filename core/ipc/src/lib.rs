@@ -138,9 +138,9 @@ pub enum Request {
     SetGitignore {
         follow: bool,
     },
-    /// `Driver::gitignore_only`: what only the `.gitignore` files of the linked folder at `folder` leave out.
+    /// `Driver::gitignore_only`: what only the `.gitignore` files of the linked folder of `space_id` leave out.
     GitignoreOnly {
-        folder: PathBuf,
+        space_id: String,
     },
     /// Runs `run` once for `request_id`: a later request with the same ID and key gets the first response, and one
     /// with another key fails as stale.
@@ -1054,9 +1054,9 @@ mod tests {
         );
         pinned(
             Request::GitignoreOnly {
-                folder: "/home/ada/Code".into(),
+                space_id: "0190f0a0-0000-7000-8000-000000000001".into(),
             },
-            r#"{"request":"gitignore_only","folder":"/home/ada/Code"}"#,
+            r#"{"request":"gitignore_only","space_id":"0190f0a0-0000-7000-8000-000000000001"}"#,
         );
         pinned(
             Response::Gitignore { follows: true },

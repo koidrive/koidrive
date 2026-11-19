@@ -255,9 +255,9 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
                 already: !changed,
             })
         }
-        Request::GitignoreOnly { folder } => {
+        Request::GitignoreOnly { space_id } => {
             let driver = driver.clone();
-            match tokio::task::spawn_blocking(move || driver.gitignore_only(&folder)).await {
+            match tokio::task::spawn_blocking(move || driver.gitignore_only(&space_id)).await {
                 Ok(counted) => counted.map(|only| Response::GitignoreOnly {
                     files: only.files,
                     bytes: only.bytes,
@@ -624,7 +624,7 @@ pub(crate) mod tests {
             Response::Gitignore { follows: true }
         );
         let count = || Request::GitignoreOnly {
-            folder: root.clone(),
+            space_id: SPACE.into(),
         };
         assert_eq!(ask(count()).await.unwrap(), counted);
         for already in [false, true] {
@@ -642,11 +642,13 @@ pub(crate) mod tests {
         );
         assert_eq!(ask(count()).await.unwrap(), counted);
         let not_linked = Request::GitignoreOnly {
-            folder: root.join("node_modules"),
+            space_id: "0190f0a0-0000-7000-8000-000000000002".into(),
         };
         let error = ask(not_linked).await.unwrap_err();
         assert!(
-            error.message.ends_with("is not a linked folder"),
+            error
+                .message
+                .starts_with("no linked folder syncs the space"),
             "{}",
             error.message
         );
