@@ -1157,6 +1157,28 @@ fn a_delete_answered_after_a_rewind_past_two_renames_deletes_it_once_r_forgot_th
 }
 
 #[test]
+fn a_folder_deleted_on_this_device_stays_held_while_another_device_adds_a_file_to_it_and_removes_it()
+ {
+    let mut trees = trees(&[], &[("d", dir(ROOT, "d"))], &[live("d", dir(ROOT, "d"))]);
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    for (rev, trashed) in [(2, false), (3, true)] {
+        let mut added = server_version(file("d", "e", 2), "", &[], rev);
+        added.trashed = trashed;
+        trees.set_remote("e".into(), added);
+        trees.settle(commits.aliases());
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{trashed}");
+    }
+    assert_eq!(effects(&mut trees, &mut ids), []);
+    let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["d"]);
+    assert!(commits.decide(&question.id, Answer::Delete));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("delete", "d".to_owned())]
+    );
+    assert_eq!(effects(&mut trees, &mut ids), []);
+}
+
+#[test]
 fn an_entry_new_on_this_device_is_held_as_created_on_this_device() {
     let mut trees = trees(
         &[
