@@ -177,9 +177,9 @@ fn summary_regression_standalone_decisions_keep_their_scope() {
         if context == "linked" {
             for (index, folder) in ["~/Work Files", "~/Personal"].iter().enumerate() {
                 assert!(
-                    output
-                        .terminal
-                        .contains(&format!("q{index}  folder {folder}  files disappeared")),
+                    output.terminal.contains(&format!(
+                        "q{index}  folder {folder}  Koidrive couldn't tell"
+                    )),
                     "{}",
                     output.terminal
                 );
@@ -192,7 +192,7 @@ fn summary_regression_standalone_decisions_keep_their_scope() {
                 assert!(
                     output
                         .terminal
-                        .contains(&format!("q{index}  space {id}  files disappeared")),
+                        .contains(&format!("q{index}  space {id}  Koidrive couldn't tell")),
                     "{}",
                     output.terminal
                 );

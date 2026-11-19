@@ -34,29 +34,7 @@ fn a_file_moved_into_an_ignored_folder_stays_on_the_server_when_its_folder_is_re
             false => vec![renamed, removed],
             true => vec![removed, renamed],
         };
-        let sections = a.folder.sections();
-        let batch = Batch {
-            stamp: sections.stamp(),
-            unread: (0, 0),
-            answered: None,
-            observation: crate::observe::Observation {
-                changes,
-                root: Ok(()),
-                unreadable: Vec::new(),
-                read: vec![PathBuf::new()],
-                scanned: a.observer.scanned(),
-                busy: Vec::new(),
-                pending: Vec::new(),
-                waiting: Default::default(),
-                rules: Vec::new(),
-                all_rules: false,
-                mounts: BTreeMap::new(),
-                detached: BTreeMap::new(),
-                ctimes: BTreeMap::new(),
-            },
-        };
-        let step = a.folder.observed(batch, 1);
-        a.take(step).unwrap();
+        observe(&mut a, changes);
         a.run(&mut remote);
         assert_eq!(fs::read(site.root.join("ignored/file")).unwrap(), b"kept");
         assert_eq!(
@@ -903,5 +881,275 @@ fn a_file_moved_below_an_ignored_folder_while_a_new_file_takes_its_name_stays_on
             assert_eq!(on_b, [("x".into(), "new".into())], "{case}");
         }
         assert_eq!(a.folder.engine.trees.check(), Ok(()), "{case}");
+    }
+}
+
+fn observe(a: &mut Device, changes: Vec<Observed>) {
+    let batch = Batch {
+        stamp: a.folder.sections().stamp(),
+        unread: (0, 0),
+        answered: None,
+        observation: crate::observe::Observation {
+            changes,
+            root: Ok(()),
+            unreadable: Vec::new(),
+            read: vec![PathBuf::new()],
+            scanned: a.observer.scanned(),
+            busy: Vec::new(),
+            pending: Vec::new(),
+            waiting: Default::default(),
+            rules: Vec::new(),
+            all_rules: false,
+            mounts: BTreeMap::new(),
+            detached: BTreeMap::new(),
+            ctimes: BTreeMap::new(),
+        },
+    };
+    let step = a.folder.observed(batch, 1);
+    a.take(step).unwrap();
+}
+
+fn items_of(question: &crate::question::Question) -> Vec<&str> {
+    question
+        .items
+        .iter()
+        .map(|item| item.path.unquoted())
+        .collect()
+}
+
+fn missed_on_a(remote: &mut Remote) -> ((Site, Device), (Site, Device)) {
+    let (site_a, mut a) = linked(remote, "a");
+    let (site_b, mut b) = linked(remote, "b");
+    fs::create_dir(site_a.root.join("d")).unwrap();
+    fs::write(site_a.root.join(".koiignore"), "ignored/\n").unwrap();
+    fs::write(site_a.root.join("d/report.txt"), "report").unwrap();
+    fs::write(site_a.root.join("d/notes.txt"), "notes").unwrap();
+    sync(remote, (&site_a, &mut a), (&site_b, &mut b));
+    fs::create_dir(site_a.root.join("ignored")).unwrap();
+    let missed = ["report.txt", "notes.txt"].map(|name| {
+        fs::rename(
+            site_a.root.join("d").join(name),
+            site_a.root.join("ignored").join(name),
+        )
+        .unwrap();
+        Observed::Missing {
+            path: Path::new("d").join(name),
+            kind: EntryKind::File,
+        }
+    });
+    observe(&mut a, missed.to_vec());
+    a.run(remote);
+    drop(a);
+    let mut a = restarted(&site_a, remote);
+    a.settle();
+    a.run(remote);
+    ((site_a, a), (site_b, b))
+}
+
+#[test]
+fn files_a_scan_missed_stay_everywhere_under_one_question_until_the_person_answers() {
+    for (given, stopped) in [(Answer::Delete, false), (Answer::Restore, true)] {
+        let mut remote = Remote::new();
+        let ((site_a, mut a), (site_b, mut b)) = missed_on_a(&mut remote);
+        assert_eq!(deletes(&a), Vec::<String>::new());
+        assert_eq!(
+            remote.names(),
+            [".koiignore", "d", "notes.txt", "report.txt"]
+        );
+        b.pull(&remote);
+        b.run(&mut remote);
+        assert_eq!(
+            fs::read(site_b.root.join("d/report.txt")).unwrap(),
+            b"report"
+        );
+
+        let question = if stopped {
+            drop(a);
+            let question = answer(&site_a, given);
+            a = restarted(&site_a, &mut remote);
+            question
+        } else {
+            let question = answer(&site_a, given);
+            let step = a.folder.requested();
+            a.take(step).unwrap();
+            question
+        };
+        assert_eq!(
+            question.kind,
+            crate::question::QuestionKind::AmbiguousDisappearance
+        );
+        assert_eq!(items_of(&question), ["d/notes.txt", "d/report.txt"]);
+        a.run(&mut remote);
+        a.settle();
+        a.run(&mut remote);
+
+        assert_eq!(a.folder.view().questions, 0, "{given}");
+        match given {
+            Answer::Delete => assert_eq!(remote.names(), [".koiignore", "d"]),
+            _ => {
+                assert_eq!(deletes(&a), Vec::<String>::new());
+                assert_eq!(remote.names().len(), 4);
+                assert_eq!(
+                    fs::read(site_a.root.join("d/report.txt")).unwrap(),
+                    b"report"
+                );
+                assert_eq!(fs::read(site_a.root.join("d/notes.txt")).unwrap(), b"notes");
+            }
+        }
+        assert_eq!(a.folder.engine.trees.check(), Ok(()));
+    }
+}
+
+#[test]
+fn a_missed_file_placed_again_or_deleted_elsewhere_leaves_the_question() {
+    for end in ["moved back", "written again", "deleted on b"] {
+        let mut remote = Remote::new();
+        let ((site_a, mut a), (site_b, mut b)) = missed_on_a(&mut remote);
+        match end {
+            "moved back" => fs::rename(
+                site_a.root.join("ignored/report.txt"),
+                site_a.root.join("d/again.txt"),
+            )
+            .unwrap(),
+            "written again" => fs::write(site_a.root.join("d/report.txt"), "new").unwrap(),
+            _ => {
+                b.pull(&remote);
+                fs::remove_file(site_b.root.join("d/report.txt")).unwrap();
+                b.settle();
+                b.run(&mut remote);
+                a.pull(&remote);
+            }
+        }
+        a.settle();
+        a.run(&mut remote);
+
+        let questions = shown(&site_a);
+        let [question] = &questions[..] else {
+            panic!("{end}: {questions:?}");
+        };
+        assert_eq!(items_of(question), ["d/notes.txt"], "{end}");
+        assert_eq!(deletes(&a), Vec::<String>::new(), "{end}");
+        let expected: &[&str] = match end {
+            "moved back" => &[".koiignore", "again.txt", "d", "notes.txt"],
+            "written again" => &[".koiignore", "d", "notes.txt", "report.txt"],
+            _ => &[".koiignore", "d", "notes.txt"],
+        };
+        assert_eq!(remote.names(), expected, "{end}");
+        assert_eq!(a.folder.engine.trees.check(), Ok(()));
+    }
+}
+
+#[test]
+fn a_missed_file_beside_a_folder_the_guard_holds_is_not_counted_as_its_deletion() {
+    let mut remote = Remote::new();
+    let (site, mut a) = with_a_held_folder(&mut remote);
+    let guarded = shown(&site).remove(0);
+    fs::remove_file(site.root.join("0.txt")).unwrap();
+    let missed = Observed::Missing {
+        path: "0.txt".into(),
+        kind: EntryKind::File,
+    };
+    observe(&mut a, vec![missed]);
+    a.run(&mut remote);
+
+    let mut questions: Vec<_> = (shown(&site).into_iter())
+        .map(|question| (items_of(&question).join(" "), question.kind))
+        .collect();
+    questions.sort_by(|a, b| a.0.cmp(&b.0));
+    let expected = [
+        (
+            "0.txt".to_owned(),
+            crate::question::QuestionKind::AmbiguousDisappearance,
+        ),
+        ("d".to_owned(), guarded.kind),
+    ];
+    assert_eq!(questions, expected);
+    assert_eq!(deletes(&a), Vec::<String>::new());
+    assert_eq!(remote.names().len(), 21);
+
+    let mut store = Store::open(&site.db).unwrap();
+    let missed = (store.transaction(|tx| tx.questions()).unwrap().into_iter())
+        .find(|row| {
+            let question: crate::question::Question = serde_json::from_slice(&row.body).unwrap();
+            question.kind == crate::question::QuestionKind::AmbiguousDisappearance
+        })
+        .unwrap();
+    let given = koidrive_store::GivenAnswer {
+        answer: Answer::Delete.as_str().into(),
+        answered_at_ms: NOW,
+    };
+    store
+        .transaction(|tx| tx.answer_question(&missed.question_id, &given))
+        .unwrap();
+    let step = a.folder.requested();
+    a.take(step).unwrap();
+    a.run(&mut remote);
+    assert_eq!(deletes(&a).len(), 1);
+    assert_eq!(remote.names().len(), 20);
+    let still: Vec<_> = (shown(&site).into_iter())
+        .map(|question| question.kind)
+        .collect();
+    assert_eq!(still, [expected[1].1.clone()]);
+}
+
+#[test]
+fn a_held_file_is_listed_where_the_server_holds_it_after_a_move() {
+    let (in_e, in_d): (&[&str], &[&str]) = (
+        &["e/notes.txt", "e/report.txt"],
+        &["d/report.txt", "notes.txt"],
+    );
+    let all_e: &[&str] = &[".koiignore", "e", "notes.txt", "report.txt"];
+    let all_d: &[&str] = &[".koiignore", "d", "notes.txt", "report.txt"];
+    let (moved, delete, restore) = ("notes.txt moved on b", Answer::Delete, Answer::Restore);
+    let (gone_e, gone_d): (&[&str], &[&str]) = (&[".koiignore", "e"], &[".koiignore", "d"]);
+    let cases = [
+        ("d renamed on a", in_e, all_e, delete, gone_e),
+        ("d renamed on b", in_e, all_e, restore, all_e),
+        (moved, in_d, all_d, delete, gone_d),
+        (moved, in_d, all_d, restore, all_d),
+    ];
+    for (case, items, names, given, after) in cases {
+        let mut remote = Remote::new();
+        let ((site_a, mut a), (site_b, mut b)) = missed_on_a(&mut remote);
+        let (site, device, from, to) = match case {
+            "d renamed on a" => (&site_a, &mut a, "d", "e"),
+            "d renamed on b" => (&site_b, &mut b, "d", "e"),
+            _ => (&site_b, &mut b, "d/notes.txt", "notes.txt"),
+        };
+        device.pull(&remote);
+        device.run(&mut remote);
+        fs::rename(site.root.join(from), site.root.join(to)).unwrap();
+        device.settle();
+        device.run(&mut remote);
+        a.pull(&remote);
+        a.settle();
+        a.run(&mut remote);
+
+        let questions = shown(&site_a);
+        let [question] = &questions[..] else {
+            panic!("{case}: {questions:?}");
+        };
+        assert_eq!(items_of(question), items, "{case}");
+        assert!(
+            (question.items.iter()).all(|item| item.kind == Some(crate::ItemKind::File)),
+            "{case}: {question:?}"
+        );
+        assert_eq!(deletes(&a), Vec::<String>::new(), "{case}");
+        assert_eq!(remote.names(), names, "{case}");
+        assert_eq!(a.folder.engine.trees.check(), Ok(()), "{case}");
+
+        answer(&site_a, given);
+        let step = a.folder.requested();
+        a.take(step).unwrap();
+        a.run(&mut remote);
+        a.settle();
+        a.run(&mut remote);
+        assert_eq!(remote.names(), after, "{case} {given}");
+        for item in items {
+            let on_disk = site_a.root.join(item).exists();
+            assert_eq!(on_disk, given == Answer::Restore, "{case} {given}: {item}");
+        }
+        assert_eq!(shown(&site_a).len(), 0, "{case} {given}");
+        assert_eq!(a.folder.engine.trees.check(), Ok(()), "{case} {given}");
     }
 }

@@ -156,7 +156,9 @@ fn question_summary(question: &Question) -> String {
             why(exceeded)
         ),
         QuestionKind::AmbiguousDisappearance => {
-            "files disappeared while changes were not tracked".to_owned()
+            "Koidrive couldn't tell whether these were moved or deleted. Other devices keep them \
+             until you decide"
+                .to_owned()
         }
         QuestionKind::Recovery { group, .. } => match group {
             RecoveryGroup::CreatedAfterRestorePoint => {

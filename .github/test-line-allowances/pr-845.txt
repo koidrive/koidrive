@@ -1,0 +1,5 @@
+99
+# Engine: a held file stays out of recovery after a server rewind, Delete on its one question deletes it against the server's rewound version, Restore downloads that version, and a rewind past the file's create ends the hold without a question. These cases come from the adversarial review; no existing test rewinds the server while a node is held.
+# Driver: a file moved into a left-out folder the search cannot open stays on the server under one question on Linux, for a rescan, a file below the unreadable folder, and the watcher alone. These are the three reproductions of the Linux deletion; the existing unreadable-folder tests never move a synced file into one.
+# Driver: files a scan missed stay everywhere under one question, its Delete is not counted by the mass-delete guard, the question leaves when a file comes back or another device deletes it, it lists a held file where the server holds it, and Delete or Restore after another device moves the file acts on the server copy at its new path. The hold and its question are new.
+# Store: the held nodes survive an upgrade and a migration. The table is new.

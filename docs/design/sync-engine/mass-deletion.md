@@ -9,6 +9,7 @@ The guard (`core/engine/src/guard.rs`) holds local deletions that would remove t
 - A local deletion is planned as one `Delete` per topmost deleted node: a node of S that is absent from L while its parent is present in L (§2.6). Each topmost deleted node is one deletion, a file or a whole folder. Emptying a folder but keeping it makes each removed child a deletion.
 - Separately, the guard counts the affected files of each deletion: the live files of S in its subtree, leaving out nodes the server will keep (§2.4) and nodes moved elsewhere first.
 - A delete of a folder that holds excluded nodes is split (§5.10) and still counts as one deletion.
+- A node held under the ambiguous-disappearance question (§5.10) is not counted, and neither is its deletion once the person answers Delete.
 - A file whose `node_id` is a UUIDv7 with a time in the last 10 minutes is new. A deletion waiting to be sent counts all its files; once sent, it counts only the files that are not new. A file whose ID time is later than `now_ms` is not new. So making and deleting files over and over, on one device or across devices, never adds up to a mass delete.
 
 ### Thresholds

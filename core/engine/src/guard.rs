@@ -307,6 +307,11 @@ impl Guard {
         checked
     }
 
+    pub(crate) fn confirm(&mut self, held: BTreeMap<NodeId, Held>) {
+        self.ledger.retain(|top, _| !held.contains_key(top));
+        self.confirmed.extend(held);
+    }
+
     fn count(&mut self, open: &BTreeMap<NodeId, Held>, trees: &Trees, now_ms: u64) {
         for (id, held) in open {
             let at_ms = self.ledger.get(id).map_or(now_ms, |counted| counted.at_ms);

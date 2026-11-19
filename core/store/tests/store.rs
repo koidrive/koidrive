@@ -1358,6 +1358,7 @@ fn engine_state() -> EngineState {
                     handle: None,
                 },
             )]),
+            missing: nodes(["displaced"]),
             edited_here: BTreeMap::from([("e".into(), 6)]),
             moved_here: BTreeMap::from([
                 (

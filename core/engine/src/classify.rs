@@ -607,6 +607,7 @@ pub struct Trees {
     /// The nodes of `outside`, and those L held under them, that left L because another entry took their name
     /// ([`Trees::displace_local`]), each with the identity L held for it.
     displaced: TrackedMap<NodeId, FileIdentity>,
+    missing: TrackedSet<NodeId>,
     /// False from a restore until the rules of a full scan are in force.
     rules_known: bool,
     /// The folders whose rules the last scan of each could not read, by node: a folder renamed is the same folder,
@@ -726,6 +727,7 @@ impl Trees {
             outside: TrackedSet::default(),
             lost: TrackedSet::default(),
             displaced: TrackedMap::default(),
+            missing: TrackedSet::default(),
             rules_known: true,
             unknown_rules: BTreeSet::new(),
             asked: BTreeSet::new(),
@@ -1307,6 +1309,7 @@ impl Trees {
         }
         if node.trashed {
             self.displaced.remove(&id);
+            self.missing.remove(&id);
             self.removed_from.remove(&id);
         }
         if self.r.get(&id).is_none() {
@@ -1664,6 +1667,7 @@ impl Trees {
         self.count_held_trash(id, false);
         self.count_trashed(id, false);
         self.displaced.remove(id);
+        self.missing.remove(id);
         self.edited_here.remove(id);
         self.replaced_versions.remove(id);
         self.lost_creates.remove(id);
@@ -2004,6 +2008,7 @@ impl Trees {
             self.outside.extend(children);
         }
         self.displaced.remove(&id);
+        self.missing.remove(&id);
         self.kept_originals.remove(&id);
         if let Some(finish) = self.pending_finishes.get_mut(&id) {
             finish.disk_first |=
@@ -3040,6 +3045,33 @@ impl Trees {
         }
     }
 
+    /// Takes the node out of L because a scan missed its local copy after a search of the ignored folders that did
+    /// not look everywhere (section 5.10). The copy may still be in an ignored folder, so a node R holds live stays
+    /// recorded with its identity, as [`Trees::displace_local`] records it, and excluded. The commit planner holds it
+    /// under a question until the person answers, an observation places it again, or R no longer holds it live.
+    pub fn miss_local(&mut self, id: &str) {
+        let Some(identity) = self.l.get(id).map(|node| node.identity) else {
+            return;
+        };
+        self.remove_local(id);
+        if self.r.live(id).is_some() {
+            self.displaced.insert(id.to_owned(), identity);
+            self.missing.insert(id.to_owned());
+        }
+    }
+
+    /// The nodes [`Trees::miss_local`] took out of L that it still holds.
+    pub fn missing(&self) -> &BTreeSet<NodeId> {
+        &self.missing
+    }
+
+    pub(crate) fn release_missing(&mut self, id: &str) {
+        if self.missing.remove(id) {
+            self.displaced.remove(id);
+            self.mark(id);
+        }
+    }
+
     /// The nodes [`Trees::displace_local`] took out of L, each with the identity L held for it.
     pub fn displaced_local(&self) -> &BTreeMap<NodeId, FileIdentity> {
         &self.displaced
@@ -3593,8 +3625,9 @@ impl Trees {
         false
     }
 
-    /// The node whose local copy disappeared while it was unobserved, that R holds in `parent` as
-    /// `kind` under the name key of `name`: an entry a scan finds there is that node's local copy.
+    /// The node whose local copy disappeared while it was unobserved, or that a scan missed ([`Trees::miss_local`]),
+    /// that R holds in `parent` as `kind` under the name key of `name`: an entry a scan finds there is that node's
+    /// local copy.
     pub fn vanished_at<'a>(
         &'a self,
         parent: &'a str,
@@ -3602,7 +3635,8 @@ impl Trees {
         kind: Kind,
     ) -> Option<&'a NodeId> {
         self.r_names.holders(parent, name).find(|id| {
-            self.vanished(id) && (self.r.live(id)).is_some_and(|remote| remote.kind == kind)
+            (self.vanished(id) || self.missing.contains(*id))
+                && (self.r.live(id)).is_some_and(|remote| remote.kind == kind)
         })
     }
 
@@ -6393,6 +6427,7 @@ impl Trees {
             outside: (*self.outside).clone(),
             lost: (*self.lost).clone(),
             displaced: (*self.displaced).clone(),
+            missing: (*self.missing).clone(),
             edited_here: (*self.edited_here).clone(),
             moved_here: (*self.moved_here).clone(),
             past_positions: (*self.past_positions).clone(),
@@ -6471,6 +6506,7 @@ impl Trees {
             outside,
             lost,
             displaced,
+            missing,
             rules_known: _,
             unknown_rules: _,
             asked: _,
@@ -6521,6 +6557,7 @@ impl Trees {
             outside: outside.take_changes(),
             lost: lost.take_changes(),
             displaced: displaced.take_changes(),
+            missing: missing.take_changes(),
             edited_here: edited_here.take_changes(),
             moved_here: moved_here.take_changes(),
             past_positions: past_positions.take_changes(),
@@ -6600,6 +6637,9 @@ impl Trees {
         if let Some(id) = state.displaced.keys().find(|id| !kept(id)) {
             return Err(StateError::NotDisplaced(id.clone()));
         }
+        if let Some(id) = (state.missing.iter()).find(|id| !state.displaced.contains_key(*id)) {
+            return Err(StateError::NotDisplaced(id.clone()));
+        }
         let edited = |(id, seq): &(&NodeId, &u64)| {
             (self.r.get(id)).is_some_and(|remote| !remote.trashed && remote.edit_rev == **seq)
         };
@@ -6665,6 +6705,7 @@ impl Trees {
             outside,
             lost,
             displaced,
+            missing,
             edited_here,
             moved_here,
             past_positions,
@@ -6719,6 +6760,7 @@ impl Trees {
         self.outside = outside.into();
         self.lost = lost.into();
         self.displaced = displaced.into();
+        self.missing = missing.into();
         self.edited_here = edited_here.into();
         self.moved_here = moved_here.into();
         self.past_positions = past_positions.into();

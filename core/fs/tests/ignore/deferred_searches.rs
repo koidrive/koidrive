@@ -48,6 +48,44 @@ fn a_search_through_a_large_ignored_folder_goes_on_across_rescans() {
 }
 
 #[test]
+fn a_search_ended_before_it_looked_everywhere_reports_its_miss_as_missing() {
+    for (moved, end) in [(false, false), (false, true), (true, true)] {
+        let dir = large_ignored_tree();
+        let root = dir.path();
+        write(root, "f.txt", "f");
+        let mut rules = rules().with_search_budget(100);
+        let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
+        let id = snapshot.entries[Path::new("f.txt")].id;
+        match moved {
+            true => fs::rename(root.join("f.txt"), root.join("ig/zz/deep/f.txt")).unwrap(),
+            false => fs::remove_file(root.join("f.txt")).unwrap(),
+        }
+        let mut rescan = snapshot
+            .rescan_with_rules(root, whole(), &mut rules)
+            .unwrap();
+        assert_eq!(rescan.unsettled, [PathBuf::from("f.txt")], "{moved} {end}");
+        if end {
+            rules.end_search();
+        }
+        for _ in 0..20 {
+            if !rescan.changes.is_empty() {
+                break;
+            }
+            rescan = (snapshot.rescan_with_rules(root, rescan.unsettled, &mut rules)).unwrap();
+        }
+        let expected = match end && (moved || !cfg!(target_os = "macos")) {
+            true => Change::Missing {
+                path: "f.txt".into(),
+                kind: File,
+                id,
+            },
+            false => removed("f.txt", File),
+        };
+        assert_eq!(rescan.changes, [expected], "{moved} {end}");
+    }
+}
+
+#[test]
 fn a_file_removed_from_a_folder_renamed_while_the_search_runs_waits_at_its_new_path() {
     let dir = large_ignored_tree();
     let root = dir.path();

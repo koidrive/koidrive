@@ -454,10 +454,16 @@ impl Engine {
                     })
                     .collect()
             }
-            _ => (asked.held.iter())
+            kind => (asked.held.iter())
                 .map(|(id, held)| HeldItem {
                     node_id: id.clone(),
-                    path: self.path(id).into(),
+                    path: match kind {
+                        engine::QuestionKind::AmbiguousDisappearance => {
+                            path(self.trees.remote(), id)
+                        }
+                        _ => self.path(id),
+                    }
+                    .into(),
                     kind: self.kind(id),
                     files: held.files,
                     device_id: None,
@@ -935,7 +941,9 @@ impl Engine {
         let mut before: Vec<Option<NodeId>> = changes
             .iter()
             .map(|change| match change {
-                Observed::Removed { path, .. } => local_at(&self.trees, path),
+                Observed::Removed { path, .. } | Observed::Missing { path, .. } => {
+                    local_at(&self.trees, path)
+                }
                 Observed::Renamed {
                     from,
                     id,
@@ -957,9 +965,9 @@ impl Engine {
             .collect();
         let left: Vec<&Path> = (changes.iter())
             .filter_map(|change| match change {
-                Observed::Removed { path, .. } | Observed::Renamed { from: path, .. } => {
-                    Some(path.as_path())
-                }
+                Observed::Removed { path, .. }
+                | Observed::Missing { path, .. }
+                | Observed::Renamed { from: path, .. } => Some(path.as_path()),
                 Observed::Created { .. }
                 | Observed::Modified { .. }
                 | Observed::Reidentified { .. } => None,
@@ -995,6 +1003,7 @@ impl Engine {
                     Some((path.as_path(), at))
                 }
                 Observed::Removed { .. }
+                | Observed::Missing { .. }
                 | Observed::Modified { .. }
                 | Observed::Reidentified { .. } => None,
             })
@@ -1003,6 +1012,7 @@ impl Engine {
             .filter_map(|(at, change)| match change {
                 Observed::Renamed { from, .. } => Some((from.as_path(), at)),
                 Observed::Removed { .. }
+                | Observed::Missing { .. }
                 | Observed::Created { .. }
                 | Observed::Modified { .. }
                 | Observed::Reidentified { .. } => None,
@@ -1021,7 +1031,9 @@ impl Engine {
                     [(folder(path), true), (arrival.get(path.as_path()), true)]
                 }
                 Observed::Reidentified { path, .. } => [(folder(path), true), (None, false)],
-                Observed::Removed { .. } => [(None, false), (None, false)],
+                Observed::Removed { .. } | Observed::Missing { .. } => {
+                    [(None, false), (None, false)]
+                }
             };
             for (first, arrives) in firsts {
                 let Some(&first) = first.filter(|&&first| first != at) else {
@@ -1088,9 +1100,10 @@ impl Engine {
                 parked.push(holder);
             }
             match change {
-                Observed::Removed { .. } => {
+                Observed::Removed { .. } | Observed::Missing { .. } => {
                     if let Some(id) = before {
-                        self.remove(&id, &moving, true, &mut touched, &mut gone);
+                        let missing = matches!(change, Observed::Missing { .. });
+                        self.remove(&id, &moving, true, missing, &mut touched, &mut gone);
                     }
                 }
                 Observed::Reidentified { path, id } => {
@@ -1230,7 +1243,7 @@ impl Engine {
         }
         for id in parked {
             if self.trees.local().get(&id).is_some_and(|node| node.parked) {
-                self.remove(&id, &moving, false, &mut touched, &mut gone);
+                self.remove(&id, &moving, false, false, &mut touched, &mut gone);
             }
         }
         for id in &moving {
@@ -1239,7 +1252,7 @@ impl Engine {
                 node.shape.parent != local.root && local.get(&node.shape.parent).is_none()
             });
             if orphaned {
-                self.remove(id, &BTreeSet::new(), false, &mut touched, &mut gone);
+                self.remove(id, &BTreeSet::new(), false, false, &mut touched, &mut gone);
             }
         }
         touched
@@ -1389,7 +1402,7 @@ impl Engine {
             let recorded = self.trees.recorded_local(&holder);
             if kind == Kind::File && replaced == Some(Kind::File) && !synced && !recorded {
                 if self.trees.local().get(&id).is_some() {
-                    self.remove(&id, moving, false, touched, gone);
+                    self.remove(&id, moving, false, false, touched, gone);
                 }
                 id = holder;
             } else if kind == Kind::Dir
@@ -1400,7 +1413,7 @@ impl Engine {
             {
                 id = holder;
             } else {
-                self.remove(&holder, moving, false, touched, gone);
+                self.remove(&holder, moving, false, false, touched, gone);
             }
         }
         let left = (self.trees.recorded_local(&id))
@@ -1428,7 +1441,7 @@ impl Engine {
                 && self.trees.local_children(folder).next().is_none()
         }) {
             above = (self.trees.local().get(&folder)).map(|node| node.shape.parent.clone());
-            self.remove(&folder, moving, true, touched, gone);
+            self.remove(&folder, moving, true, false, touched, gone);
         }
     }
 
@@ -1443,6 +1456,7 @@ impl Engine {
         id: &NodeId,
         moving: &BTreeSet<NodeId>,
         outside: bool,
+        missing: bool,
         touched: &mut BTreeSet<NodeId>,
         gone: &mut Gone,
     ) {
@@ -1491,9 +1505,10 @@ impl Engine {
             }
         }
         for id in doomed.into_iter().rev() {
-            match displaced.contains(&id) {
-                true => self.trees.displace_local(&id),
-                false => self.trees.remove_local(&id),
+            match (displaced.contains(&id), missing) {
+                (true, _) => self.trees.displace_local(&id),
+                (false, true) => self.trees.miss_local(&id),
+                (false, false) => self.trees.remove_local(&id),
             }
             touched.insert(id);
         }
@@ -2937,6 +2952,7 @@ mod tests {
                     linked: false,
                 },
                 Change::Removed { path, kind } => Observed::Removed { path, kind },
+                Change::Missing { path, kind, .. } => Observed::Missing { path, kind },
                 Change::Reidentified { path } => Observed::Reidentified {
                     id: entry(&path).id,
                     path,
@@ -4036,7 +4052,9 @@ mod tests {
                     id: entry(&path).id,
                     path,
                 }),
-                Change::Ignored { .. } => unreachable!("a scan without rules ignores nothing"),
+                Change::Ignored { .. } | Change::Missing { .. } => {
+                    unreachable!("a scan without rules ignores nothing")
+                }
             })
             .collect()
     }
