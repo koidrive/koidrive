@@ -65,7 +65,7 @@ fn agent_env(dir: &Path) -> Option<Vec<(&'static str, Option<OsString>)>> {
             only
         }
     };
-    let text = koidrive_state_file::read_to_string(&plist).ok()?;
+    let text = koidrive_state_file::read_following(&plist).ok()?;
     let (_, after) = text.split_once("<key>EnvironmentVariables</key>")?;
     let (_, dict) = after.split_once("<dict>")?;
     let (dict, _) = dict.split_once("</dict>")?;

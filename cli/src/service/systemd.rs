@@ -47,7 +47,7 @@ impl Manager for Systemd {
     }
 
     fn installed(&self, service: &Service) -> Option<String> {
-        unit_binary(&koidrive_state_file::read_to_string(&service.unit_file()).ok()?)
+        unit_binary(&koidrive_state_file::read_following(&service.unit_file()).ok()?)
     }
 
     fn start(&self, service: &Service, restart: bool) -> Result<(), String> {
