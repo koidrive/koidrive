@@ -1020,7 +1020,7 @@ fn a_file_still_moving_out_of_a_renamed_folder_is_held_over_a_file_at_its_carrie
         })
         .unwrap();
     assert_eq!(
-        (rescan.changes, rescan.unsettled.clone()),
+        (rescan.changes.clone(), rescan.unsettled.clone()),
         (
             vec![Change::Renamed {
                 from: "a".into(),
@@ -1029,6 +1029,21 @@ fn a_file_still_moving_out_of_a_renamed_folder_is_held_over_a_file_at_its_carrie
             }],
             vec![PathBuf::from("b/x")]
         )
+    );
+    assert_eq!(
+        settle_and_compare(&mut snapshot, root, rescan),
+        [
+            Change::Renamed {
+                from: "a".into(),
+                to: "b".into(),
+                kind: EntryKind::Dir,
+            },
+            Change::Created {
+                path: "c/w".into(),
+                kind: EntryKind::File,
+            },
+            Change::Modified { path: "b/x".into() },
+        ]
     );
 }
 
@@ -1129,11 +1144,32 @@ fn a_folder_still_moving_out_of_a_renamed_folder_keeps_a_child_the_scan_found_el
             }
         })
         .unwrap();
-    let changes = settle_and_compare(&mut snapshot, root, first);
-    for (from, to) in [("a/d/k", "f/k"), ("b/d", "e/d")] {
-        assert!(
-            (changes.iter()).any(|change| matches!(change, Change::Renamed { from: f, to: t, .. } if f.ends_with(from.rsplit('/').next().unwrap()) && t == Path::new(to))),
-            "{from} -> {to}: {changes:?}"
-        );
-    }
+    assert_eq!(
+        settle_and_compare(&mut snapshot, root, first),
+        [
+            Change::Renamed {
+                from: "a".into(),
+                to: "b".into(),
+                kind: EntryKind::Dir,
+            },
+            Change::Renamed {
+                from: "a/d/k".into(),
+                to: "f/k".into(),
+                kind: EntryKind::File,
+            },
+            Change::Renamed {
+                from: "b/d".into(),
+                to: "e/d".into(),
+                kind: EntryKind::Dir,
+            },
+            Change::Created {
+                path: "b/d".into(),
+                kind: EntryKind::Dir,
+            },
+            Change::Created {
+                path: "b/d/n".into(),
+                kind: EntryKind::File,
+            },
+        ]
+    );
 }
