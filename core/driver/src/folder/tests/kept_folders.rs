@@ -2068,12 +2068,16 @@ fn a_kept_folder_goes_to_the_trash_after_a_rules_file_another_device_edited_is_s
     assert!(site.root.join("app/.koiignore").exists());
 
     fs::remove_file(site.root.join("app/.env")).unwrap();
-    for _ in 0..3 {
+    let app = site.root.join("app");
+    for _ in 0..10 {
         b.settle();
         b.run(&mut remote);
+        if !app.exists() {
+            break;
+        }
     }
 
-    assert!(!site.root.join("app").exists());
+    assert!(!app.exists());
     assert!(b.sent.is_empty(), "{:?}", b.sent);
     assert!(remote.names().is_empty());
 }

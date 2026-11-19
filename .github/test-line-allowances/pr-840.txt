@@ -1,4 +1,4 @@
-28
+32
 # The tests protect when a folder kept for entries this device leaves out goes to the local trash: once the entries leave,
 # at a restart, after a batch that renames the folder above, with platform files or with rules files that hold no local
 # edit, and never while a rules file holds an edit, including one made after the server purged it or saved with
