@@ -5511,6 +5511,23 @@ mod a_server_file_moved_into_an_asked_folder {
         t.settle(&Default::default());
     }
 
+    fn downloaded(t: &mut Trees, shape: Shape) {
+        on_the_server(t, "sn", |node| node.shape = shape);
+        let mut effects = Effects::default();
+        let record = (effects.plan(t, None, &mut IdGen::new(9), NOW, BatchLimit::ONE))
+            .first()
+            .cloned()
+            .unwrap();
+        let identity = FileIdentity {
+            ino: 400,
+            birth_ns: Some(0),
+            handle: None,
+        };
+        effects
+            .done(t, None, &record.effect_id, Some(identity))
+            .unwrap();
+    }
+
     fn by_the_user(t: &mut Trees, id: &str, change: impl FnOnce(&mut Shape)) {
         let mut node =
             (t.local().get(id).cloned()).unwrap_or_else(|| local_node(file("sf", "n", 7), 90));
@@ -5561,27 +5578,18 @@ mod a_server_file_moved_into_an_asked_folder {
     #[test]
     fn a_discard_asks_again_when_the_user_changes_a_server_folder_it_takes_along_after_the_answer()
     {
-        let changes: [fn(&mut Trees); 5] = [
+        let changes: [fn(&mut Trees); 6] = [
             |t| by_the_user(t, "sc", |shape| shape.content = Some(content(5))),
             |t| by_the_user(t, "n", |_| {}),
             |t| by_the_user(t, "sc", |shape| shape.name = "renamed".into()),
             |t| by_the_user(t, "sm", |shape| shape.parent = "f".into()),
             |t| {
-                on_the_server(t, "sn", |node| node.shape = dir("sf", "new"));
-                let mut effects = Effects::default();
-                let record = (effects.plan(t, None, &mut IdGen::new(9), NOW, BatchLimit::ONE))
-                    .first()
-                    .cloned()
-                    .unwrap();
-                let identity = FileIdentity {
-                    ino: 400,
-                    birth_ns: Some(0),
-                    handle: None,
-                };
-                effects
-                    .done(t, None, &record.effect_id, Some(identity))
-                    .unwrap();
+                downloaded(t, dir("sf", "new"));
                 by_the_user(t, "sc", |shape| shape.parent = "sn".into());
+            },
+            |t| {
+                downloaded(t, file("sf", "new", 5));
+                by_the_user(t, "sn", |shape| shape.content = Some(content(8)));
             },
         ];
         for (index, change) in changes.into_iter().enumerate() {

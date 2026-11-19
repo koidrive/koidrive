@@ -2902,8 +2902,10 @@ impl Trees {
                     if !remote.is_some_and(|remote| remote.parent == *parent) {
                         return None;
                     }
-                    if frozen.get(parent).is_some_and(|parent| parent.taken) {
-                        self.server_copy(id, shown, landing, &mut kept);
+                    if frozen.get(parent).is_some_and(|parent| parent.taken)
+                        && !self.server_copy(id, shown, landing, &mut kept)
+                    {
+                        return None;
                     }
                     at.push(id);
                     continue;
