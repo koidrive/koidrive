@@ -1220,8 +1220,11 @@ fn a_file_saved_unchanged_takes_its_new_modification_time_and_sends_nothing() {
         let trees = &b.folder.engine.trees;
         let id = local_named(&b, "notes.txt");
         let mtime = |shape: &koidrive_engine::tree::Shape| shape.content.as_ref().unwrap().mtime_ns;
-        let local = mtime(&trees.local().get(&id).unwrap().shape);
+        let node = trees.local().get(&id).unwrap();
+        let local = mtime(&node.shape);
         assert_eq!(local, disk_mtime(&site.root.join("notes.txt")), "{restart}");
+        assert!(node.content_from_server, "{restart}");
+        assert!(!trees.unsent_edits().contains(&id), "{restart}");
         let remote = trees.remote().get(&id).map(|node| &node.shape);
         assert_eq!(trees.synced().get(&id), remote, "{restart}");
         assert_ne!(mtime(remote.unwrap()), local, "{restart}");

@@ -1941,6 +1941,25 @@ impl Trees {
         }
     }
 
+    /// Sets the modification time of the file `id` in L to the one a scan found for its unchanged
+    /// bytes, without counting it as a change of the user.
+    pub fn restamp_local(&mut self, id: &str, mtime_ns: i64) {
+        let Some(mut node) = self.l.get(id).cloned() else {
+            return;
+        };
+        let Some(content) = node
+            .shape
+            .content
+            .as_mut()
+            .filter(|content| content.mtime_ns != mtime_ns)
+        else {
+            return;
+        };
+        content.mtime_ns = mtime_ns;
+        self.l.insert(id.to_owned(), node);
+        self.mark(id);
+    }
+
     /// Sets L. A reverted node that L now holds at a position other than its old one and R's was
     /// moved by the user, and is no longer reverted: that move is committed instead.
     pub fn set_local(&mut self, id: NodeId, mut node: LocalNode) {

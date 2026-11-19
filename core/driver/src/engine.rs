@@ -1357,13 +1357,14 @@ impl Engine {
                 && old.shape.name == shape.name
                 && old.shape.kind == shape.kind
                 && match (&old.shape.content, &shape.content) {
-                    (Some(old), Some(new)) => {
-                        same_content(old, new) && old.mtime_ns == new.mtime_ns
-                    }
+                    (Some(old), Some(new)) => same_content(old, new),
                     (old, new) => old.is_none() && new.is_none(),
                 }
         });
         if unchanged {
+            if let (Some(id), Some(content)) = (&node, &shape.content) {
+                self.trees.restamp_local(id, content.mtime_ns);
+            }
             return;
         }
         let shape = Shape {
