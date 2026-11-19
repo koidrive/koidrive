@@ -187,6 +187,8 @@ pub struct NodeIntents {
     pub place: Option<FieldIntent>,
     pub content: Option<FieldIntent>,
     pub status: Option<FieldIntent>,
+    pub trash_over: Option<IntentId>,
+    pub trash_held: Vec<IntentId>,
 }
 
 impl NodeIntents {
@@ -213,6 +215,9 @@ impl NodeIntents {
             place: read(&intents.place),
             content: read(&intents.content),
             status: read(&intents.status),
+            trash_over: (intents.status.as_ref())
+                .and_then(|status| IntentId::from_bytes(&status.over)),
+            trash_held: Vec::new(),
         }
     }
 
@@ -220,7 +225,10 @@ impl NodeIntents {
         proto::FieldIntents {
             place: self.place.as_ref().map(FieldIntent::to_proto),
             content: self.content.as_ref().map(FieldIntent::to_proto),
-            status: self.status.as_ref().map(FieldIntent::to_proto),
+            status: self.status.as_ref().map(|status| proto::Intent {
+                over: (self.trash_over).map_or_else(Vec::new, |over| over.0.to_vec()),
+                ..status.to_proto()
+            }),
         }
     }
 }

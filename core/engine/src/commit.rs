@@ -5027,6 +5027,7 @@ fn plan(
     let mut emit = |want: Want, scratch: &mut Scratch, moving: &mut BTreeSet<NodeId>| {
         scratch.stalled = false;
         let generated = matches!(want, Want::Retrash { .. });
+        let mut intent = None;
         for node in want.nodes().filter(|_| !generated) {
             if let Some(left) = scratch.unsent.get_mut(node) {
                 *left -= 1;
@@ -5152,6 +5153,13 @@ fn plan(
                 }
                 scratch.trash(&id);
                 deletes.insert(id.clone(), members.into_iter().collect());
+                intent = (trees.remote().get(&id))
+                    .and_then(|node| node.intents.as_ref()?.status.as_ref())
+                    .map(|trash| proto::Intent {
+                        id: trash.id.as_bytes().to_vec(),
+                        author_device_id: trash.author.to_string(),
+                        ..Default::default()
+                    });
                 op::Op::Delete(proto::Delete {
                     node_id: id.into(),
                     requires: None,
@@ -5185,6 +5193,7 @@ fn plan(
         };
         ops.push(proto::Op {
             op: Some(op),
+            intent,
             ..Default::default()
         });
     };

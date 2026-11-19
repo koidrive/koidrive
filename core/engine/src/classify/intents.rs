@@ -718,6 +718,8 @@ impl Trees {
                     false => IntentId::legacy_live(id, node.meta_rev),
                 })
             })),
+            trash_over: None,
+            trash_held: Vec::new(),
         }
     }
 
@@ -991,6 +993,23 @@ impl Trees {
             };
             let (node, fields, carried) = op_fields(kind);
             let node = node.to_owned();
+            if op.intent.is_some() {
+                match (wire, &mut op.op) {
+                    (Wire::WithoutIntents, _) => op.intent = None,
+                    (Wire::WithIntents, Some(op::Op::Delete(delete))) => {
+                        let view =
+                            delete_view(&self.trash_seen(&node), &self.remote_fields_below(&node));
+                        delete.unseen = view
+                            .unseen
+                            .iter()
+                            .map(|id| id.as_bytes().to_vec())
+                            .collect();
+                        delete.held = view.held.iter().map(|id| id.as_bytes().to_vec()).collect();
+                    }
+                    (Wire::WithIntents, _) => {}
+                }
+                continue;
+            }
             let mut intents: Vec<(Field, proto::Intent)> = Vec::new();
             for (field, value) in fields {
                 let local = |row: &Row| matches!(row.state, RowState::Local { .. });
@@ -1207,6 +1226,46 @@ impl Trees {
             self.compact_journal(&node, Compact::AfterChange);
         }
         sent_again
+    }
+
+    fn trash_seen(&self, id: &str) -> Vec<Seen> {
+        let mut nodes: Vec<NodeId> = vec![id.to_owned()];
+        let mut next = 0;
+        while let Some(node) = nodes.get(next).cloned() {
+            nodes.extend(self.r_names.children(&node).cloned());
+            nodes.extend(self.r_trashed.get(&node).into_iter().flatten().cloned());
+            next += 1;
+        }
+        let mut seen = Vec::new();
+        for node in nodes {
+            let Some(remote) = self.r.get(&node) else {
+                continue;
+            };
+            for field in Field::ALL {
+                if let Some(intent) = remote_intent_of(remote, field) {
+                    seen.push(Seen {
+                        node: node.clone(),
+                        field,
+                        intent: intent.id,
+                        value: remote_value(remote, field),
+                    });
+                }
+            }
+            let Some(intents) = &remote.intents else {
+                continue;
+            };
+            seen.extend(
+                (intents.trash_over.iter())
+                    .chain(&intents.trash_held)
+                    .map(|intent| Seen {
+                        node: node.clone(),
+                        field: Field::Status,
+                        intent: *intent,
+                        value: None,
+                    }),
+            );
+        }
+        seen
     }
 
     fn remote_fields_below(&self, id: &str) -> Vec<RemoteField> {
