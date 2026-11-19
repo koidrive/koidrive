@@ -5030,3 +5030,112 @@ fn a_given_up_file_this_device_holds_keeps_the_version_its_user_restores() {
     assert_eq!(effects(&mut trees, &mut ids).len(), 1);
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
 }
+
+#[test]
+fn a_move_the_answer_carries_into_a_live_folder_waits_for_that_folders_own_move() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "new")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+            ("x", dir(ROOT, "x")),
+            ("d", dir(ROOT, "d")),
+        ],
+        &[
+            ("a", dir(ROOT, "old")),
+            ("c", dir("a", "c")),
+            ("b", file("c", "child", 1)),
+            ("x", dir(ROOT, "x")),
+            ("d", dir("x", "d")),
+        ],
+        &[
+            Remote("a", dir(ROOT, "old"), true, 1),
+            Remote("c", dir("a", "c"), true, 1),
+            Remote("b", file("c", "child", 1), true, 1),
+            Remote("x", dir(ROOT, "x"), false, 1),
+            Remote("d", dir("x", "d"), false, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["a", "d"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    let mut moved = trees.local().get("b").unwrap().clone();
+    moved.shape = file("d", "child", 1);
+    trees.set_local("b".into(), moved);
+    trees.settle(&Default::default());
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    let at = |op: (&str, &str)| sent.iter().position(|sent| *sent == (op.0, op.1.into()));
+    assert!(at(("move", "b")).is_some(), "{sent:?}");
+    assert!(at(("move", "d")) < at(("move", "b")), "{sent:?}");
+}
+#[test]
+fn carried_moves_follow_the_moves_of_the_folders_they_go_into_when_the_answer_is_set_aside() {
+    let mut trees = trees(
+        &[
+            ("b", dir(ROOT, "a")),
+            ("a", dir("b", "a")),
+            ("d", dir("a", "d")),
+            ("f", file("a", "b", 1)),
+        ],
+        &[
+            ("b", dir(ROOT, "b")),
+            ("c", dir("b", "c")),
+            ("d", dir("c", "d")),
+            ("a", dir(ROOT, "a")),
+        ],
+        &[
+            Remote("b", dir(ROOT, "b"), true, 1),
+            Remote("c", dir("b", "c"), true, 1),
+            Remote("d", dir("c", "d"), true, 1),
+            Remote("a", dir(ROOT, "a"), false, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    for question in commits.questions().to_vec() {
+        assert!(commits.decide(&question.id, Answer::Publish));
+    }
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    let at = |op: (&str, &str)| sent.iter().position(|sent| *sent == (op.0, op.1.into()));
+    assert!(at(("delete", "c")).is_some(), "{sent:?}");
+    assert!(at(("move", "b")) < at(("move", "a")), "{sent:?}");
+    assert!(at(("move", "a")) < at(("move", "d")), "{sent:?}");
+    assert!(at(("move", "d")) < at(("delete", "c")), "{sent:?}");
+}
+
+#[test]
+fn publishing_a_folder_moved_out_of_a_trashed_parent_with_a_move_into_a_new_folder_inside_it_sends_every_change()
+ {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "a")),
+            ("n", dir("a", "n")),
+            ("b", dir("n", "b")),
+        ],
+        &[
+            ("p", dir(ROOT, "p")),
+            ("a", dir("p", "a")),
+            ("c", dir("a", "c")),
+            ("b", dir("c", "b")),
+        ],
+        &[
+            Remote("p", dir(ROOT, "p"), true, 2),
+            Remote("a", dir("p", "a"), true, 1),
+            Remote("c", dir("a", "c"), true, 1),
+            Remote("b", dir("c", "b"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    for question in commits.questions().to_vec() {
+        assert!(commits.decide(&question.id, Answer::Publish));
+    }
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    let expected = [
+        ("move", "a"),
+        ("move", "b"),
+        ("move", "c"),
+        ("delete", "c"),
+        ("create dir", "n"),
+        ("move", "b"),
+    ];
+    assert_eq!(sent, expected.map(|(op, id)| (op, id.to_owned())));
+}
