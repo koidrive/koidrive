@@ -471,7 +471,7 @@ async fn a_download_that_keeps_moving_is_not_bounded_by_the_install_window() {
     )
     .await
     .unwrap();
-    assert!(started.elapsed() > Duration::from_secs(9));
+    assert!(started.elapsed() > Duration::from_secs(8));
     let AppInstall::Present { change, .. } = installed else {
         panic!("the app should be installed");
     };

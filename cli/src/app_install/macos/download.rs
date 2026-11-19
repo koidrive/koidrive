@@ -204,9 +204,9 @@ fn download_error(
     stall: Duration,
     error: &reqwest::Error,
 ) -> AppInstallError {
-    let why = match (error.is_timeout(), error.is_connect()) {
-        (true, _) => format!("no data arrived for {} seconds", stall.as_secs()),
-        (false, true) => format!("could not connect: {error}"),
+    let why = match (error.is_connect(), error.is_timeout()) {
+        (true, _) => format!("could not connect: {error}"),
+        (false, true) => format!("no data arrived for {} seconds", stall.as_secs()),
         _ => error.to_string(),
     };
     failure(
