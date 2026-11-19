@@ -547,7 +547,8 @@ impl Intents {
         };
         self.nodes(i).any(|id| {
             server.nodes.get(id).is_some_and(|node| {
-                pending_stem(&node.name).is_some_and(|stem| named(stem, name))
+                !node.pending_for.is_empty()
+                    && named(&node.pending_for, name)
                     && self.parent_is(i, *parent, &node.parent_id, &server.root)
             })
         })
@@ -1006,6 +1007,28 @@ mod tests {
         assert!(!intents.placed(Some(0), "n", "root", "b", "root"));
         assert!(intents.discarded_place(Some(0), "n", "root", "b", "root"));
         assert!(!intents.wrote(0, 2) && intents.discarded_write(0, 2));
+    }
+
+    #[test]
+    fn a_name_is_pending_only_when_the_server_says_what_it_is_pending_for() {
+        let mut intents = Intents::new(1);
+        intents.nodes[0].insert(1, ["n".to_owned()].into());
+        let named_pending = NodeState {
+            node_id: "n".into(),
+            parent_id: "root".into(),
+            name: "A (pending)".into(),
+            status: NodeStatus::Live as i32,
+            ..NodeState::default()
+        };
+        let server = Server::of("root", vec![named_pending]);
+        let place = Value::Place {
+            parent: None,
+            name: "A".to_owned(),
+        };
+        intents.record(0, 1, 1, "move", place);
+        intents.give_up(&server, 0, &["n".to_owned()].into());
+        assert!(!intents.placed(Some(0), "n", "root", "A", "root"));
+        assert!(intents.discarded_place(Some(0), "n", "root", "A", "root"));
     }
 
     #[test]
