@@ -216,10 +216,12 @@ impl Engine {
     /// engine stopped asking, of the same kind and still unanswered, continues that one's lineage: the guard asks
     /// again under a new id when the held set changes, and this is the one place that sees both in one step. A
     /// question whose answer the engine dropped, as it does for a conflict whose answer the server refused, is shown
-    /// again without it. A conflict or a restore asked for before a reset is shown again when what it shows changes, as when
-    /// a folder above its files is renamed. Every open question is shown again once after the store loads, so a row an
-    /// earlier build stored gains the fields it lacks.
+    /// again without it. Every open question is shown again when what it shows changed: once after the store loads, so a
+    /// row an earlier build stored gains the fields it lacks, and after a step that moved or renamed a node, so its paths
+    /// follow ([`Trees::take_moved`]). A conflict or a restore asked for before a reset is shown again after every step,
+    /// since the versions and trash it shows change without a move.
     pub fn ask(&mut self, tx: &Tx<'_>, space_id: &str) -> Result<(), Error> {
+        let redraw = self.trees.take_moved() || !self.reshown_since_load;
         let asked = &self.stored_questions;
         let asking = self.commits.questions();
         let open = |questions: &[engine::Question], id: &str| questions.iter().any(|q| q.id == id);
@@ -267,7 +269,7 @@ impl Engine {
                 && (asked.iter()).any(|before| before.id == question.id && before.answer.is_some())
         };
         let shown_again = |question: &engine::Question| {
-            !self.reshown_since_load
+            redraw
                 || matches!(
                     question.kind,
                     engine::QuestionKind::Conflict { .. }
