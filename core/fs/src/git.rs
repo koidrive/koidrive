@@ -193,9 +193,22 @@ fn hash_size(git_dir: &Path) -> Option<usize> {
 }
 
 fn object_format(config: &str) -> Option<String> {
+    let mut joined = String::with_capacity(config.len());
+    let mut chars = config.chars().peekable();
+    while let Some(char) = chars.next() {
+        if char != '\\' {
+            joined.push(char);
+            continue;
+        }
+        match chars.next() {
+            Some('\n') => {}
+            Some('\r') if chars.next_if_eq(&'\n').is_some() => {}
+            next => joined.extend([Some(char), next].into_iter().flatten()),
+        }
+    }
     let mut section = String::new();
     let mut format = None;
-    for line in config.replace("\\\r\n", "").replace("\\\n", "").lines() {
+    for line in joined.lines() {
         let mut line = line.trim();
         if let Some((name, rest)) = line.strip_prefix('[').and_then(|line| line.split_once(']')) {
             section = name.trim().to_ascii_lowercase();
