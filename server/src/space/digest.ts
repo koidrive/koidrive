@@ -20,11 +20,11 @@ function content(value: Content | undefined): Content | undefined {
   });
 }
 
-export const DIGEST_VERSIONS = [1, 2, 3, 4, 5, 6] as const;
+export const DIGEST_VERSIONS = [1, 2, 3, 4, 5, 6, 7] as const;
 
 export type DigestVersion = (typeof DIGEST_VERSIONS)[number];
 
-export const DIGEST_VERSION: DigestVersion = 6;
+export const DIGEST_VERSION: DigestVersion = 7;
 
 export type Digests = Record<DigestVersion, Uint8Array>;
 
@@ -86,6 +86,9 @@ function opBody({ op }: Op, version: DigestVersion): Op {
       const { nodeId, versionId, targetParentId, name } = op.value;
       return create(OpSchema, { op: { case: op.case, value: { nodeId, versionId, targetParentId, name } } });
     }
+    case "markGitTracked":
+      if (version < 7) return create(OpSchema);
+      return create(OpSchema, { op: { case: op.case, value: { nodeId: op.value.nodeId, tracked: op.value.tracked } } });
     default:
       return create(OpSchema);
   }

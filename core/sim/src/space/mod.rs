@@ -278,7 +278,7 @@ fn check_ids(op: &Op, index: usize) -> Result<(), Error> {
         Some(op::Op::Delete(o)) => (vec![&o.node_id], vec![]),
         Some(op::Op::Move(o)) => (vec![&o.node_id, &o.new_parent_id], vec![]),
         Some(op::Op::Restore(o)) => (vec![&o.node_id], vec![&o.version_id, &o.target_parent_id]),
-        None => {
+        Some(op::Op::MarkGitTracked(_)) | None => {
             return Err(fail(
                 error::Code::InvalidArgument,
                 format!("op {index} is empty"),

@@ -1029,10 +1029,10 @@ class Run {
   }
 
   private checkNodeState(space: string, wanted: Json, got: NodeState, complete: boolean): void {
-    const optional = ["edit_rev", "meta_edit_rev", "intents", "trash_held"];
+    const optional = ["edit_rev", "meta_edit_rev", "intents", "trash_held", "git_tracked", "git_tracked_rev"];
     const want = keys(wanted, "a node", complete ? [...NODE_FIELDS, ...optional] : [...NODE_FIELDS, ...optional, "absent", "content"]);
     if (complete) every(want, NODE_FIELDS);
-    covered(NodeStateSchema, ["nodeId", "parentId", "name", "kind", "status", "contentRev", "metaRev", "trashGroup", "current", "pendingFor", "pendingBy", "editRev", "metaEditRev", "intents", "trashHeld"]);
+    covered(NodeStateSchema, ["nodeId", "parentId", "name", "kind", "status", "contentRev", "metaRev", "trashGroup", "current", "pendingFor", "pendingBy", "editRev", "metaEditRev", "intents", "trashHeld", "gitTracked", "gitTrackedRev"]);
     const symbol = req(optStr(want, "node"), "node");
     within("node", () => this.expectId(space, symbol, got.nodeId));
     const differs = (field: string, value: unknown) => fail(`${symbol}.${field} is ${String(value)}, expected ${show(want[field])}`);
@@ -1059,6 +1059,10 @@ class Run {
     if (editRev !== undefined && got.editRev !== BigInt(editRev)) differs("edit_rev", got.editRev);
     const metaEditRev = optUint(want, "meta_edit_rev");
     if (metaEditRev !== undefined && got.metaEditRev !== BigInt(metaEditRev)) differs("meta_edit_rev", got.metaEditRev);
+    const gitTracked = optBool(want, "git_tracked");
+    if (gitTracked !== undefined && got.gitTracked !== gitTracked) differs("git_tracked", got.gitTracked);
+    const gitTrackedRev = optUint(want, "git_tracked_rev");
+    if (gitTrackedRev !== undefined && got.gitTrackedRev !== BigInt(gitTrackedRev)) differs("git_tracked_rev", got.gitTrackedRev);
     if ("trash_group" in want) {
       const group = want.trash_group;
       if (group === null) {

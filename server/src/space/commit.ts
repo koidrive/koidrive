@@ -5,6 +5,7 @@ import {
   type CreateDir,
   type CreateFile,
   type Delete,
+  type MarkGitTracked,
   type Move,
   type Op,
   type OpResult,
@@ -216,6 +217,8 @@ export class CommitApplier {
         return this.delete(op.op.value, index);
       case "restore":
         return this.restore(op.op.value);
+      case "markGitTracked":
+        return this.markGitTracked(op.op.value);
       default:
         throw new CallFailure(Error_Code.INVALID_ARGUMENT, `op ${index} is empty`);
     }
@@ -518,12 +521,21 @@ export class CommitApplier {
     return versionId;
   }
 
-  private conflictCopy(parent: NodeRow, original: string, content: Content, chunks: readonly ChunkRef[], lineage: Chain, intent: FieldIntent): OpResult {
+  private conflictCopy(
+    parent: NodeRow,
+    original: string,
+    content: Content,
+    chunks: readonly ChunkRef[],
+    lineage: Chain,
+    intent: FieldIntent,
+    of?: NodeRow,
+  ): OpResult {
     const home = this.depth(parent) < MAX_DEPTH ? parent : getNode(this.sql, parent.parent_id!)!;
     const copyId = uuidv7(this.ctx.nowMs);
     const name = this.pickConflictCopyName(home.node_id, original);
     const versionId = this.insertVersion(copyId, content, chunks, lineage);
     this.insertNode(copyId, home.node_id, name, NodeKindValue.FILE, versionId, "");
+    if (of?.git_tracked === 1) this.sql.exec("UPDATE nodes SET git_tracked = 1, git_tracked_rev = ? WHERE node_id = ?", this.ctx.seq, copyId);
     const [place, status] = intent.carried ? [this.minted(intent.author, true), this.minted(intent.author, true)] : [this.minted(this.dev, false), this.minted(this.dev, false)];
     this.setIntent(copyId, "content", intent);
     this.setIntent(copyId, "place", place);
@@ -534,7 +546,7 @@ export class CommitApplier {
 
   private copyOf(node: NodeRow, parent: NodeRow, intent: FieldIntent): void {
     const version = getVersion(this.sql, node.cur_version_id!)!;
-    this.conflictCopy(parent, node.name, versionContent(this.sql, version, false), versionChunks(this.sql, version), versionChain(version), intent);
+    this.conflictCopy(parent, node.name, versionContent(this.sql, version, false), versionChunks(this.sql, version), versionChain(version), intent, node);
   }
 
   private mark(nodeId: string, pendingFor: string | null): void {
@@ -687,7 +699,7 @@ export class CommitApplier {
     if (found.status === NodeStatusValue.TRASHED) {
       if (this.client && intent.carried) {
         if (this.trashKnows(found, intent.id)) return superseded();
-        return this.conflictCopy(this.nearestLive(found.parent_id), found.name, content, chunks, chain(source, ancestry?.madeOver ?? []), intent);
+        return this.conflictCopy(this.nearestLive(found.parent_id), found.name, content, chunks, chain(source, ancestry?.madeOver ?? []), intent, found);
       }
       if (resend) return superseded();
     }
@@ -720,7 +732,7 @@ export class CommitApplier {
     }
     const lineage = chain(source, merges || viaAlias ? [...bases, ...known] : bases);
     const { node, renamed } = this.reviveTarget(found);
-    if (stale(node)) return this.conflictCopy(getNode(this.sql, node.parent_id!)!, node.name, content, chunks, lineage, intent);
+    if (stale(node)) return this.conflictCopy(getNode(this.sql, node.parent_id!)!, node.name, content, chunks, lineage, intent, node);
     this.sql.exec("UPDATE versions SET superseded_at_ms = ? WHERE version_id = ?", this.ctx.nowMs, node.cur_version_id);
     const versionId = this.insertVersion(node.node_id, content, chunks, lineage);
     const [editRev, editDev] = yields ? [node.edit_rev, node.edit_dev] : [this.ctx.seq, this.dev];
@@ -997,6 +1009,19 @@ export class CommitApplier {
     const own = this.sql.exec("SELECT 1 FROM commits WHERE commit_id = ? AND device_id = ?", commitId, this.dev).toArray().length > 0;
     const held = own && this.sql.exec("SELECT 1 FROM nodes WHERE trash_group = ? LIMIT 1", group).toArray().length > 0;
     return held ? group : undefined;
+  }
+
+  private markGitTracked(op: MarkGitTracked): OpResult {
+    const node = this.node(op.nodeId);
+    if (!node) return tombstoneOf(this.sql, this.id(op.nodeId)) ? superseded() : rejected("NOT_FOUND");
+    if (node.kind !== NodeKindValue.FILE) return rejected("NOT_FILE");
+    if (node.status !== NodeStatusValue.LIVE) return superseded();
+    const tracked = op.tracked ? 1 : 0;
+    if (node.git_tracked !== tracked) {
+      this.sql.exec("UPDATE nodes SET git_tracked = ?, git_tracked_rev = ? WHERE node_id = ?", tracked, this.ctx.seq, node.node_id);
+      this.touch(node.node_id);
+    }
+    return unchanged(node);
   }
 
   private restore(op: Restore): OpResult {

@@ -3,6 +3,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { Error_Code } from "./gen/koidrive/v1/rpc_pb";
 import type { Database, ObjectState, Sql } from "./host";
+import { configuredFeatures } from "./features";
 import { errorReply } from "./http";
 import { uuidv7 } from "./ids";
 import { countedBucket, countedState, type MeteredCall, meteredObject, meteredReply, meteredStub, type Reply } from "./report/meter";
@@ -35,6 +36,7 @@ export class SpaceDO extends spaceLogic(DurableObject<Env>) {
       bootstrapExport(this.sql, this.clock());
     });
     this.loadFlag();
+    this.closeStaleWelcomes();
     void ctx.blockConcurrencyWhile(() => this.armAlarm());
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     return meteredObject(this, "space", this.traffic, (event, args, replying) => this.ended(event, args, replying));
@@ -42,6 +44,10 @@ export class SpaceDO extends spaceLogic(DurableObject<Env>) {
 
   metered(method: string, args: unknown[], call: MeteredCall = {}): Promise<Reply<unknown>> {
     return meteredReply(this, "space", this.traffic, (event, called, replying) => this.ended(event, called, replying), method, args, call);
+  }
+
+  protected features(): ReadonlySet<string> {
+    return configuredFeatures((this.env as Env & { KOIDRIVE_FEATURES?: string }).KOIDRIVE_FEATURES);
   }
 
   protected get objects(): R2Bucket {

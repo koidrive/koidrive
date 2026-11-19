@@ -105,7 +105,7 @@ impl<'a> Applier<'a> {
             Some(op::Op::Move(op)) => self.move_node(op),
             Some(op::Op::Delete(op)) => Ok(self.delete(op, index)),
             Some(op::Op::Restore(op)) => self.restore(op),
-            None => Err(fail(
+            Some(op::Op::MarkGitTracked(_)) | None => Err(fail(
                 error::Code::InvalidArgument,
                 format!("op {index} is empty"),
             )),

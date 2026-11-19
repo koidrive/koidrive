@@ -63,10 +63,13 @@ export function checkIds(op: Op, index: number): void {
       required.push(op.op.value.nodeId);
       optional.push(op.op.value.versionId, op.op.value.targetParentId);
       break;
+    case "markGitTracked":
+      required.push(op.op.value.nodeId);
+      break;
     default:
       fail(Error_Code.INVALID_ARGUMENT, `op ${index} is empty`);
   }
-  if (!intentsValid(op)) fail(Error_Code.INVALID_ARGUMENT, `op ${index} has a malformed intent`);
+  if (op.op.case !== "markGitTracked" && !intentsValid(op)) fail(Error_Code.INVALID_ARGUMENT, `op ${index} has a malformed intent`);
   if (!required.every(isUuidV7) || !optional.every((id) => id === "" || isUuidV7(id))) {
     fail(Error_Code.INVALID_ARGUMENT, `op ${index} has a malformed id`);
   }

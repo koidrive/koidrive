@@ -47,6 +47,8 @@ export interface NodeRow {
   pending_by: string | null;
   status_before: string | null;
   copy_mark: string | null;
+  git_tracked: number;
+  git_tracked_rev: number;
 }
 
 export interface VersionRow {
@@ -253,5 +255,7 @@ export function nodeState(sql: Sql, node: NodeRow, complete = false): NodeState 
     pendingBy: node.pending_by ?? "",
     intents: wireIntents(readIntents(sql, node.node_id), node.status === 2 ? node.status_before : null),
     trashHeld: node.status === 2 ? trashHeld(sql, node.trash_group).map(intentBytes) : [],
+    gitTracked: node.git_tracked === 1,
+    gitTrackedRev: BigInt(node.git_tracked_rev),
   });
 }

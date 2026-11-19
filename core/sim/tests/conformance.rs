@@ -1613,6 +1613,8 @@ impl Run {
             pending_by,
             intents: _,
             trash_held: _,
+            git_tracked: _,
+            git_tracked_rev: _,
         } = node;
         let trash_group = if trash_group.is_empty() {
             Value::Null
@@ -2106,6 +2108,8 @@ impl Run {
             pending_by,
             intents: _,
             trash_held: _,
+            git_tracked: _,
+            git_tracked_rev: _,
         } = got;
         let symbol = req(opt_str(want, "node"), "node")?;
         self.expect_id(space, symbol, node_id)

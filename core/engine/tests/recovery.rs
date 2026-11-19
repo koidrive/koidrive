@@ -142,6 +142,7 @@ fn ops(commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen) -> Vec<(&'stat
             Some(op::Op::UpdateContent(update)) => ("update", update.node_id.clone()),
             Some(op::Op::Delete(delete)) => ("delete", delete.node_id.clone()),
             Some(op::Op::Restore(restore)) => ("restore", restore.node_id.clone()),
+            Some(op::Op::MarkGitTracked(mark)) => ("mark", mark.node_id.clone()),
             None => panic!("an empty op"),
         })
         .collect()

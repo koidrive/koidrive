@@ -108,6 +108,7 @@ fn sent_for<'a>(sent: &'a [op::Op], node: &str) -> Vec<&'a op::Op> {
         op::Op::Move(op) => op.node_id.clone(),
         op::Op::Delete(op) => op.node_id.clone(),
         op::Op::Restore(op) => op.node_id.clone(),
+        op::Op::MarkGitTracked(op) => op.node_id.clone(),
     };
     sent.iter().filter(|op| node_of(op) == node).collect()
 }

@@ -460,6 +460,12 @@ pub struct NodeState {
     /// On a trashed node: the held lists of the delete that trashed it and of each later delete while it stays trashed (RFC 0029).
     #[prost(bytes="vec", repeated, tag="15")]
     pub trash_held: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    /// True when a device's git index listed this file (RFC 0033). Only a file carries it.
+    #[prost(bool, tag="16")]
+    pub git_tracked: bool,
+    /// The seq of the newest commit that changed git_tracked (RFC 0033). 0 while it never changed.
+    #[prost(uint64, tag="17")]
+    pub git_tracked_rev: u64,
 }
 /// One user change to one node (RFC 0029).
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -617,7 +623,7 @@ pub struct Op {
     /// Set only on CreateDir and CreateFile: a separate intent for each field. A field left empty takes `intent`.
     #[prost(message, optional, tag="8")]
     pub fields: ::core::option::Option<FieldIntents>,
-    #[prost(oneof="op::Op", tags="1, 2, 3, 4, 5, 6")]
+    #[prost(oneof="op::Op", tags="1, 2, 3, 4, 5, 6, 9")]
     pub op: ::core::option::Option<op::Op>,
 }
 /// Nested message and enum types in `Op`.
@@ -636,6 +642,8 @@ pub mod op {
         Delete(super::Delete),
         #[prost(message, tag="6")]
         Restore(super::Restore),
+        #[prost(message, tag="9")]
+        MarkGitTracked(super::MarkGitTracked),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -748,6 +756,14 @@ pub struct Restore {
     pub target_parent_id: ::prost::alloc::string::String,
     #[prost(string, tag="4")]
     pub name: ::prost::alloc::string::String,
+}
+/// Sets whether git tracks a file (RFC 0033). It records no intent: the server ignores the op's intent and fields.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MarkGitTracked {
+    #[prost(string, tag="1")]
+    pub node_id: ::prost::alloc::string::String,
+    #[prost(bool, tag="2")]
+    pub tracked: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UploadReceipt {

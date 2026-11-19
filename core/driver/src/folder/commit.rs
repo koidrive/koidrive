@@ -333,8 +333,8 @@ pub(super) fn lift_hint(code: i32) -> &'static str {
     }
 }
 
-/// The node of each op of `commit` that `result` says the server did not apply, with why. A `Restore` op is left out:
-/// its node never stays out of commits.
+/// The node of each op of `commit` that `result` says the server did not apply, with why. `Restore` and
+/// `MarkGitTracked` ops are left out: their node never stays out of commits.
 fn not_applied(commit: &Commit, result: &CommitResult) -> Vec<(String, String)> {
     use op_result::Code as Outcome;
     (commit.ops.iter().zip(&result.results))
@@ -355,7 +355,7 @@ fn not_applied(commit: &Commit, result: &CommitResult) -> Vec<(String, String)> 
                 op::Op::UpdateContent(op) => &op.node_id,
                 op::Op::Move(op) => &op.node_id,
                 op::Op::Delete(op) => &op.node_id,
-                op::Op::Restore(_) => return None,
+                op::Op::Restore(_) | op::Op::MarkGitTracked(_) => return None,
             };
             let why = match outcome.reject_reason.as_str() {
                 "" => format!("the server did not apply it: {}", code.as_str_name()),

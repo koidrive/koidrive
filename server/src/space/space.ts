@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { clone, create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import type { SpaceUsage } from "../gen/koidrive/v1/auth_pb";
 import { type Commit, type CommitResult, CommitResultSchema, type UploadReceipt } from "../gen/koidrive/v1/commit_pb";
 import {
@@ -28,6 +28,7 @@ import {
   type ChunkRef,
   type CommitRecord,
   CommitRecordSchema,
+  type NodeState,
   NodeStateSchema,
   VersionInfoSchema,
 } from "../gen/koidrive/v1/model_pb";
@@ -60,6 +61,7 @@ import { type ChunkObject, signChunkGrant, verifyChunkGrant } from "../crypto";
 import { errorText } from "../errors";
 import type { Database, ObjectState, ObjectStore, Socket, Sql } from "../host";
 import { fromHex, isUuidV7, toHex, uuidv7 } from "../ids";
+import { GIT_TRACKED } from "../features";
 import { policy } from "../policy";
 import { causeOf } from "../cause";
 import { platformFailure, quotaRefusal } from "../quota";
@@ -135,6 +137,35 @@ import {
   fitPage,
 } from "./requests";
 
+const CHUNK_BUNDLES = "chunk_bundles";
+
+function welcomed(ws: Socket): ReadonlySet<string> {
+  return new Set((ws.deserializeAttachment() as Attachment).features ?? []);
+}
+
+function unmark(state: NodeState): void {
+  state.gitTracked = false;
+  state.gitTrackedRev = 0n;
+}
+
+function unmarkRecords(records: readonly ChangeRecord[]): void {
+  for (const { change } of records) if (change.case === "node") unmark(change.value);
+}
+
+function unmarkReply(response: RpcResponse): RpcResponse {
+  const { result } = response;
+  if (result.case === "commit") unmarkRecords(result.value.changes);
+  if (result.case === "tree" || result.case === "trash") result.value.nodes.forEach(unmark);
+  return response;
+}
+
+function withoutGitTracked(message: ServerMessage): ServerMessage {
+  const { msg } = message;
+  if (msg.case === "changes") for (const commit of msg.value.commits) unmarkRecords(commit.changes);
+  if (msg.case === "rpc") unmarkReply(msg.value);
+  return message;
+}
+
 function oldestUsableBookmarkMs(nowMs: number): number {
   return nowMs - PITR_WINDOW_MS + BOOKMARK_SAFETY_MS;
 }
@@ -191,6 +222,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     protected abstract readonly state: ObjectState;
     protected abstract readonly objects: ObjectStore;
     protected abstract account(call?: MeteredCall): Directory;
+    protected abstract features(): ReadonlySet<string>;
     private spaceKeyCache: Uint8Array | undefined;
     clock: () => number = () => Date.now();
     sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -244,7 +276,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     async rpc(session: Session, request: Uint8Array): Promise<Uint8Array> {
       const { response, counted } = await this.call(session, fromBinary(RpcRequestSchema, request));
       this.traffic.count(counted.route, counted.outcome, counted.latencyMs, this.clock());
-      return toBinary(RpcResponseSchema, response);
+      return toBinary(RpcResponseSchema, this.unwelcomed(response));
     }
 
     async httpRpc(connect: Connect, request: Uint8Array): Promise<{ response: Uint8Array; counted: Counted }> {
@@ -265,7 +297,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const session = this.sessionOf(connect, role, device ? Number(device.max_format) : FORMAT_VERSION, check);
       const { response, record, counted } = await this.call(session, req);
       if (record) await this.broadcast(record);
-      return { response: toBinary(RpcResponseSchema, response), counted };
+      return { response: toBinary(RpcResponseSchema, this.unwelcomed(response)), counted };
     }
 
     async webSocketMessage(ws: Socket, message: string | ArrayBuffer): Promise<void> {
@@ -477,7 +509,20 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
 
     private send(ws: Socket, msg: ServerMessage["msg"]): void {
       if (ws.readyState !== WebSocket.OPEN) return;
-      ws.send(toBinary(ServerMessageSchema, create(ServerMessageSchema, { msg })));
+      const message = create(ServerMessageSchema, { msg });
+      ws.send(toBinary(ServerMessageSchema, welcomed(ws).has(GIT_TRACKED) ? message : withoutGitTracked(clone(ServerMessageSchema, message))));
+    }
+
+    private unwelcomed(response: RpcResponse): RpcResponse {
+      return this.features().has(GIT_TRACKED) ? response : unmarkReply(clone(RpcResponseSchema, response));
+    }
+
+    protected closeStaleWelcomes(): void {
+      const on = this.features().has(GIT_TRACKED);
+      for (const ws of this.state.getWebSockets()) {
+        if (!(ws.deserializeAttachment() as Attachment).hello || welcomed(ws).has(GIT_TRACKED) === on) continue;
+        this.goodbye(ws, Close.TRY_AGAIN_LATER, "the server's features changed; connect again");
+      }
     }
 
     private goodbye(ws: Socket, code: number, reason: string): void {
@@ -497,7 +542,9 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (sockets.length === 0) return;
       const deviceIds = [...new Set(sockets.map((ws) => (ws.deserializeAttachment() as Attachment).identity.deviceId))];
       const checks = await this.checkDevices(deviceIds);
-      const frame = toBinary(ServerMessageSchema, create(ServerMessageSchema, { msg: { case: "changes", value: { commits: [record] } } }));
+      const message = create(ServerMessageSchema, { msg: { case: "changes", value: { commits: [record] } } });
+      const marked = toBinary(ServerMessageSchema, message);
+      const unmarked = sockets.every((ws) => welcomed(ws).has(GIT_TRACKED)) ? marked : toBinary(ServerMessageSchema, withoutGitTracked(clone(ServerMessageSchema, message)));
       for (const ws of sockets) {
         if (ws.readyState !== WebSocket.OPEN) continue;
         const check = checks?.get((ws.deserializeAttachment() as Attachment).identity.deviceId);
@@ -507,7 +554,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         else if (this.historyRetired(check)) this.goodbye(ws, Close.TRY_AGAIN_LATER, RETIRED_HISTORY);
         else {
           try {
-            ws.send(frame);
+            ws.send(welcomed(ws).has(GIT_TRACKED) ? marked : unmarked);
           } catch {
           }
         }
@@ -519,7 +566,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (proto < Math.max(PROTO_MIN, hello.protoMin)) {
         return this.goodbye(ws, Close.UNSUPPORTED_VERSION, "this server speaks protocol 1." + PROTO_MIN + " to 1." + PROTO_MAX);
       }
-      ws.serializeAttachment({ ...(ws.deserializeAttachment() as Attachment), hello: true, maxFormat: hello.maxFormat });
+      const features = [CHUNK_BUNDLES, ...this.features()];
+      ws.serializeAttachment({ ...(ws.deserializeAttachment() as Attachment), hello: true, maxFormat: hello.maxFormat, features });
       const { identity } = attachment;
       this.sql.exec(
         `INSERT INTO devices (device_id, user_id, name, max_format, last_seen_ms) VALUES (?, ?, ?, ?, ?)
@@ -542,7 +590,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         restoreSeq: BigInt(Number(getMeta(this.sql, "restore_seq") ?? 0)),
         restorePointMs: BigInt(Number(getMeta(this.sql, "restore_point_ms") ?? 0)),
         readOnly: attachment.role === "viewer" || hello.maxFormat < formatVersion,
-        features: ["chunk_bundles"],
+        features,
       });
       this.send(ws, { case: "welcome", value: welcome });
     }
@@ -974,6 +1022,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         await this.armAfterCommit();
         return { result: stored };
       }
+      const marking = commit.ops.findIndex((each) => each.op.case === "markGitTracked");
+      if (marking >= 0 && !this.features().has(GIT_TRACKED)) fail(Error_Code.INVALID_ARGUMENT, `op ${marking} needs the feature ${GIT_TRACKED}, which this server has off`);
       this.checkCanWrite(session);
       if (!isUuidV7(commit.commitId)) fail(Error_Code.INVALID_ARGUMENT, "commit_id must be a UUIDv7");
       if (commit.ops.length === 0) fail(Error_Code.INVALID_ARGUMENT, "a commit needs at least one op");

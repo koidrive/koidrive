@@ -1984,7 +1984,7 @@ impl Commits {
                 op::Op::CreateDir(_) | op::Op::CreateFile(_) | op::Op::Move(_) => {
                     trees.record_moved(op_node(op), seq);
                 }
-                op::Op::UpdateContent(_) | op::Op::Restore(_) => {}
+                op::Op::UpdateContent(_) | op::Op::Restore(_) | op::Op::MarkGitTracked(_) => {}
             }
         }
     }
@@ -3050,6 +3050,7 @@ fn op_node(op: &op::Op) -> &str {
         op::Op::Move(op) => &op.node_id,
         op::Op::Delete(op) => &op.node_id,
         op::Op::Restore(op) => &op.node_id,
+        op::Op::MarkGitTracked(op) => &op.node_id,
     }
 }
 

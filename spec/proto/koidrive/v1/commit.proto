@@ -15,6 +15,7 @@ message Op {
     Move move = 4;
     Delete delete = 5;
     Restore restore = 6;
+    MarkGitTracked mark_git_tracked = 9;
   }
   // The user change this op sends (RFC 0029). Empty from a client before RFC 0029; the server mints one.
   Intent intent = 7;
@@ -96,6 +97,12 @@ message Restore {
   string version_id = 2;
   string target_parent_id = 3;
   string name = 4;
+}
+
+// Sets whether git tracks a file (RFC 0033). It records no intent: the server ignores the op's intent and fields.
+message MarkGitTracked {
+  string node_id = 1;
+  bool tracked = 2;
 }
 
 message UploadReceipt {
