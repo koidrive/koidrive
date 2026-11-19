@@ -936,7 +936,9 @@ pub struct Rescan {
     /// The snapshot keeps what it knew about them and everything below them.
     /// Also the paths of removals held back while the search under left-out
     /// entries goes on: the snapshot holds nothing there, and the rules hold
-    /// the entries until the search decides. Rescan them later.
+    /// the entries until the search decides. Also both ends of a move the
+    /// scan read halfway, which keep what the snapshot knew there, nothing at
+    /// a new name. Rescan them later.
     pub unsettled: Vec<PathBuf>,
     /// Folders the scan may not open or list, folders with a rules file it
     /// cannot read when no earlier scan read one for them, so that what they
@@ -1736,15 +1738,16 @@ impl Snapshot {
         let mut straddled = BTreeSet::new();
         if !fresh.is_empty() {
             let (moved, _, left) = split(&scan.new, &old);
-            let mut placed: HashMap<_, Vec<(PathBuf, FileId)>> = HashMap::new();
+            let mut placed: HashMap<_, HashMap<PathBuf, FileId>> = HashMap::new();
             let mut placed_at = HashMap::new();
             for (path, entry) in moved {
                 let volume = volume_of(path, &scan.new, &self.entries).map(Path::to_path_buf);
                 let key = (volume, entry.id.without_handle());
-                (placed.entry(key.clone()).or_default()).push((path.clone(), entry.id));
+                (placed.entry(key.clone()).or_default()).insert(path.clone(), entry.id);
                 placed_at.insert(path.clone(), key);
             }
             let mut sources: HashMap<_, Vec<(PathBuf, FileId)>> = HashMap::new();
+            let mut met = HashSet::new();
             for (path, entry) in left {
                 let volume = volume_now(path, &old, &scan.new, &self.entries);
                 (sources
@@ -1768,8 +1771,8 @@ impl Snapshot {
                             continue;
                         };
                         let others = placed.get_mut(&key).expect("indexed at its path");
-                        others.retain(|(at, _)| *at != inside);
-                        if others.iter().any(|(_, id)| id.same(&entry.id))
+                        others.remove(&inside);
+                        if others.values().any(|id| id.same(&entry.id))
                             || left_out_ids.contains(&key.1)
                         {
                             continue;
@@ -1788,6 +1791,9 @@ impl Snapshot {
                     for (inside, entry) in restored {
                         let volume =
                             volume_of(&inside, &scan.new, &self.entries).map(Path::to_path_buf);
+                        if !met.insert((volume.clone(), entry.id)) {
+                            continue;
+                        }
                         let pairs = (placed.get(&(volume, entry.id.without_handle())))
                             .into_iter()
                             .flatten()
