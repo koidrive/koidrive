@@ -16,8 +16,9 @@ use koidrive_engine::classify::{Pending, Trees};
 use koidrive_engine::commit::{Base, Commits, Halt};
 use koidrive_engine::effects::Effects;
 use koidrive_engine::first_link::History;
-use koidrive_engine::ids::IdGen;
+use koidrive_engine::ids::{IdGen, unix_ms};
 use koidrive_engine::question as engine;
+use koidrive_engine::restore::RestoreIntent;
 use koidrive_engine::tree::{
     Content, FileIdentity, Kind, LocalNode, Names, Node, NodeId, RemoteNode, Shape, Tree,
     same_content,
@@ -31,6 +32,7 @@ use koidrive_store::{Cursor, EngineChanges, Error, StoredQuestion, SyncedNode, T
 use crate::disk::Stop;
 use crate::observe::{Observed, Reset, RulesChange};
 use crate::question::{HeldItem, Question, RecoveryCause};
+use crate::restore::RestoreRequest;
 
 pub(crate) struct Engine {
     pub trees: Trees,
@@ -260,17 +262,28 @@ impl Engine {
                 && (asked.iter()).any(|before| before.id == question.id && before.answer.is_some())
         };
         for question in asking.iter().filter(|question| {
-            matches!(question.kind, engine::QuestionKind::Conflict { .. })
-                && (asked.iter())
-                    .any(|before| before.id == question.id && before.kind == question.kind)
+            matches!(
+                question.kind,
+                engine::QuestionKind::Conflict { .. }
+                    | engine::QuestionKind::Recovery {
+                        group: engine::RecoveryGroup::RequestedBeforeReset,
+                        ..
+                    }
+            ) && (asked.iter())
+                .any(|before| before.id == question.id && before.kind == question.kind)
                 && !dropped(question)
         }) {
             let Some(row) = rows.get(&question.id) else {
                 continue;
             };
-            let body =
-                serde_json::to_vec(&self.shown(tx, space_id, question, lineage(row), None)?)
-                    .expect("a question serializes");
+            let body = serde_json::to_vec(&self.shown(
+                tx,
+                space_id,
+                question,
+                lineage(row),
+                cause(row),
+            )?)
+            .expect("a question serializes");
             if body != row.body {
                 tx.reshow_question(&question.id, &body)?;
                 changed = true;
@@ -346,11 +359,52 @@ impl Engine {
                         device_name: None,
                         size: None,
                         modified_at_ms: None,
+                        restore: None,
                     };
                     item.show_current(tx.remote_current(&file.node_id)?);
                     Ok(item)
                 })
                 .collect::<Result<_, Error>>()?,
+            engine::QuestionKind::Recovery {
+                group: engine::RecoveryGroup::RequestedBeforeReset,
+                ..
+            } => {
+                let noted = tx.asked_restores()?;
+                (asked.held.keys())
+                    .map(|id| {
+                        let intent = self.commits.restores().get(id);
+                        let noted = noted.get(id);
+                        let node = intent.map(RestoreIntent::node);
+                        let rooted = |path: Option<PathBuf>| {
+                            Some(path?.to_str()?.to_owned()).filter(|path| !path.is_empty())
+                        };
+                        let path = node
+                            .and_then(|node| {
+                                rooted(self.trees.local().path(node))
+                                    .or_else(|| rooted(self.trees.remote().path(node)))
+                                    .or_else(|| rooted(self.trees.synced().path(node)))
+                            })
+                            .or_else(|| noted.and_then(|noted| noted.path.clone()))
+                            .or_else(|| intent.and_then(RestoreIntent::name).map(str::to_owned))
+                            .unwrap_or_else(|| id.clone());
+                        let saved_at_ms = (noted.and_then(|noted| noted.version_saved_at_ms))
+                            .or_else(|| {
+                                let version = intent.and_then(RestoreIntent::version_id)?;
+                                unix_ms(version).map(|ms| ms as i64)
+                            });
+                        HeldItem {
+                            node_id: id.clone(),
+                            path: path.into(),
+                            files: 1,
+                            device_id: None,
+                            device_name: None,
+                            size: None,
+                            modified_at_ms: None,
+                            restore: intent.map(|intent| RestoreRequest::of(intent, saved_at_ms)),
+                        }
+                    })
+                    .collect()
+            }
             _ => (asked.held.iter())
                 .map(|(id, held)| HeldItem {
                     node_id: id.clone(),
@@ -360,6 +414,7 @@ impl Engine {
                     device_name: None,
                     size: None,
                     modified_at_ms: None,
+                    restore: None,
                 })
                 .collect(),
         };
@@ -4396,5 +4451,60 @@ mod tests {
             "ops {ops:?}"
         );
         assert!(engine.trees.synced().get(&x).is_none(), "x downloads again");
+    }
+
+    #[test]
+    fn a_restore_of_a_file_off_disk_is_shown_where_the_server_holds_it_now() {
+        let (_dir, mut store) = store();
+        let file = "0190a0b0-0000-7000-8000-00000000000f";
+        store
+            .transaction(|tx| {
+                let mut engine = Engine::load(tx, ROOT)?;
+                let report = NodeState {
+                    parent_id: "renamed".into(),
+                    kind: NodeKind::File as i32,
+                    current: Some(proto::VersionInfo {
+                        content: Some(proto::Content::default()),
+                        ..Default::default()
+                    }),
+                    ..node(file, "report.txt")
+                };
+                let served = vec![node("old", "old"), node("renamed", "renamed"), report];
+                engine.replace_remote(tx, listed(3, served))?;
+                let shape = |parent: &str, name: &str, kind| Shape {
+                    parent: parent.into(),
+                    name: name.into(),
+                    kind,
+                    content: None,
+                };
+                (engine.trees).set_synced("old".into(), Some(shape(ROOT, "old", Kind::Dir)));
+                (engine.trees)
+                    .set_synced(file.into(), Some(shape("old", "report.txt", Kind::File)));
+                let id = crate::restore::new_id(1);
+                let intent = RestoreIntent::from_trash(file.into(), None, None).unwrap();
+                assert!(engine.commits.restore(id.clone(), intent));
+                let members = BTreeMap::from([(id.clone(), None)]);
+                let asked = engine::Question {
+                    id: "q".into(),
+                    asked_at_ms: 1,
+                    kind: engine::QuestionKind::Recovery {
+                        group: engine::RecoveryGroup::RequestedBeforeReset,
+                        sent_in: None,
+                        cause: None,
+                    },
+                    held: BTreeMap::from([(id, engine::Held { members, files: 0 })]),
+                    shown: BTreeMap::new(),
+                    answer: None,
+                };
+                let shown = engine.shown(tx, "s", &asked, "q".into(), None).unwrap();
+                let paths: Vec<&str> = shown
+                    .items
+                    .iter()
+                    .map(|item| item.path.unquoted())
+                    .collect();
+                assert_eq!(paths, ["renamed/report.txt"]);
+                Ok::<_, Stop>(())
+            })
+            .unwrap();
     }
 }

@@ -168,3 +168,47 @@ fn a_conflict_without_its_complete_payload_does_not_invent_revision_data() {
     });
     assert!(serde_json::from_value::<DecisionData>(data).is_err());
 }
+
+#[test]
+fn a_restore_asked_for_before_recovery_keeps_what_it_brings_back() {
+    let data = serde_json::json!({
+        "id": "q1",
+        "space_id": "s1",
+        "kind": "recovery",
+        "group": "requested_before_reset",
+        "asked_at_ms": 42,
+        "items": [
+            {
+                "node_id": "restore-1", "path": "docs/draft.txt", "files": 1,
+                "restore": {
+                    "type": "version", "node_id": "draft", "version_id": "draft-0",
+                    "saved_at_ms": 1_737_000_000_000_i64
+                }
+            },
+            {
+                "node_id": "restore-2", "path": "notes.txt", "files": 1,
+                "restore": { "type": "from_trash", "node_id": "notes", "parent_id": null, "name": null }
+            }
+        ],
+    });
+    let decision: DecisionData = serde_json::from_value(data).unwrap();
+    let restores: Vec<Option<driver::RestoreRequest>> = (decision.driver().unwrap().items)
+        .into_iter()
+        .map(|item| item.restore)
+        .collect();
+    assert_eq!(
+        restores,
+        [
+            Some(driver::RestoreRequest::Version {
+                node_id: "draft".into(),
+                version_id: "draft-0".into(),
+                saved_at_ms: Some(1_737_000_000_000),
+            }),
+            Some(driver::RestoreRequest::FromTrash {
+                node_id: "notes".into(),
+                parent_id: None,
+                name: None,
+            }),
+        ]
+    );
+}

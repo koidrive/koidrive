@@ -850,6 +850,7 @@ thread 'tokio-runtime-worker' panicked at /Users/ada/Secret Plans/ledger.rs:1:1:
                     device_name: None,
                     size: None,
                     modified_at_ms: None,
+                    restore: None,
                 })
                 .collect(),
             answers: (names.iter().enumerate())

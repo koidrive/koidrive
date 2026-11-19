@@ -811,6 +811,7 @@ pub(crate) mod tests {
             device_name: None,
             size: None,
             modified_at_ms: None,
+            restore: None,
         };
         let conflict = Question {
             id: "c1".into(),

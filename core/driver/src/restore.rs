@@ -59,7 +59,7 @@ impl RestoreRequest {
         }
     }
 
-    fn of(intent: &RestoreIntent, saved_at_ms: Option<i64>) -> Self {
+    pub(crate) fn of(intent: &RestoreIntent, saved_at_ms: Option<i64>) -> Self {
         let node_id = intent.node().to_owned();
         match intent.version_id() {
             Some(version_id) => Self::Version {

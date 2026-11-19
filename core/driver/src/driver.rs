@@ -3249,6 +3249,7 @@ mod tests {
                 device_name: None,
                 size: None,
                 modified_at_ms: None,
+                restore: None,
             }],
         }
     }
@@ -3483,6 +3484,7 @@ mod tests {
             device_name: None,
             size: None,
             modified_at_ms: None,
+            restore: None,
         };
         let stored = Question {
             recovery_cause: None,
@@ -3528,6 +3530,7 @@ mod tests {
             device_id: Some("d2".into()),
             size: Some(1_024),
             modified_at_ms: Some(1_794_442_400_123),
+            restore: None,
             ..item("n-original", "notes.txt", "d2")
         };
         assert_eq!(driver.questions().unwrap(), [expected, mass_delete("q1")]);
@@ -3552,6 +3555,7 @@ mod tests {
             device_name: None,
             size: None,
             modified_at_ms: None,
+            restore: None,
         };
         let conflict = Question {
             recovery_cause: None,

@@ -487,6 +487,8 @@ struct ItemData {
     size: Option<u64>,
     #[serde(default)]
     modified_at_ms: Option<i64>,
+    #[serde(default)]
+    restore: Option<driver::RestoreRequest>,
 }
 
 impl DecisionData {
@@ -547,6 +549,7 @@ impl DecisionData {
                     device_name: None,
                     size: item.size,
                     modified_at_ms: item.modified_at_ms,
+                    restore: item.restore.clone(),
                 })
                 .collect(),
         })
