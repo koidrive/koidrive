@@ -351,8 +351,8 @@ impl Driver {
     /// the paused file and every folder's lifecycle record are saved, without waiting for the folders to end. They end in
     /// a task of its own on the current Tokio runtime that holds the pause lock, so a later resume waits until they have,
     /// and a halt they record while ending is saved there, with a warning if it cannot be. A pause that cannot save the
-    /// paused file or a lifecycle record waits for the folders to end and then fails. A pause dropped before it holds the
-    /// lock changes nothing.
+    /// paused file or a lifecycle record at once waits for the folders to end, saves again, and fails if that fails too.
+    /// A pause dropped before it holds the lock changes nothing.
     pub async fn pause(&self) -> Result<bool, DriverError> {
         let pausing = self.inner.pausing.clone().lock_owned().await;
         let driver = self.clone();
@@ -400,12 +400,8 @@ impl Driver {
                 .unwrap_or_else(|error| std::panic::resume_unwind(error.into_panic()));
         };
         tokio::spawn(async move {
-            match finished.await {
-                Ok(Err(error)) => {
-                    tracing::warn!(%error, "sync is paused, but a folder's paused state could not be saved");
-                }
-                Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
-                _ => {}
+            if let Ok(Err(error)) = finished.await {
+                tracing::warn!(%error, "sync is paused, but a folder's paused state could not be saved");
             }
         });
         Ok(changed)
@@ -673,11 +669,12 @@ impl Driver {
         }
     }
 
-    /// Stops every folder and the update check, and waits for the folders' tasks to end, also those an earlier stop or
-    /// unlink is still waiting for. State on disk is kept.
+    /// Stops every folder and the update check, and waits for the folders' tasks to end, also those an earlier stop,
+    /// pause or unlink is still waiting for, and for that pause to finish. State on disk is kept.
     pub async fn stop(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
         self.inner.updates.stop();
+        let _pausing = self.inner.pausing.lock().await;
         self.stop_folders().await;
     }
 
