@@ -147,8 +147,6 @@ impl Ignore for Scanned {
     }
 }
 
-/// The rules a new watcher of a folder scans with: `device`, the built-in exclusions, and the rules files, of which it
-/// has read none yet. Its first scan reads and reports every one.
 pub(crate) fn scan_rules(device: &Arc<dyn Matcher>) -> koidrive_fs::Rules {
     let local = device.local();
     koidrive_fs::Rules::new(Box::new(Scanned {
