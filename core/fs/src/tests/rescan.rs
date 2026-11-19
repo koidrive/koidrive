@@ -619,9 +619,7 @@ fn a_rename_that_straddles_a_scan_is_never_read_as_a_removal_and_a_creation() {
         }
         let mut snapshot = Snapshot::scan(root).unwrap();
         if !kept_handles {
-            for entry in snapshot.entries.values_mut() {
-                entry.id.handle = None;
-            }
+            snapshot.entries.update_all(|_, entry| entry.id.handle = None);
         }
         let mut during = Some(during);
         let straddling = snapshot

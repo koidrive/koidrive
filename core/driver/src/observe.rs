@@ -1031,9 +1031,7 @@ impl Observer for FsObserver {
             rules,
             all_rules: first,
             tracked: poll.tracked,
-            mounts: (self.watcher.snapshot().entries.iter())
-                .filter_map(|(path, entry)| Some((path.clone(), entry.mount?)))
-                .collect(),
+            mounts: self.watcher.snapshot().entries.mounts().clone(),
             detached: self.watcher.snapshot().detached.clone(),
             ctimes,
             unread: (self.watcher.snapshot().unread.as_ref()).map(|unread| {
