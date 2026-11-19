@@ -195,12 +195,10 @@ fn a_watcher_keeps_reading_an_index_outside_the_root_it_may_not_watch() {
 
 #[test]
 fn a_watcher_reads_an_index_outside_the_root_after_an_event_for_it_or_its_lock() {
-    let main_dir = tempfile::tempdir().unwrap();
-    let main = main_dir.path();
-    git(main, &["init", "-q"]);
-    git(main, &["commit", "-q", "--allow-empty", "-m", "main"]);
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
+    let (main, root) = (&dir.path().join("main"), &dir.path().join("root"));
+    git(dir.path(), &["init", "-q", "main"]);
+    git(main, &["commit", "-q", "--allow-empty", "-m", "main"]);
     let wt = &root.join("wt");
     git(main, &["worktree", "add", "-q", wt.to_str().unwrap()]);
     write(root, ".gitignore", "dist/\n");
@@ -211,6 +209,7 @@ fn a_watcher_reads_an_index_outside_the_root_after_an_event_for_it_or_its_lock()
     git(wt, &["add", "-f", "dist/b.js"]);
     fs::copy(git_dir.join("index"), git_dir.join("next-index")).unwrap();
     git(wt, &["rm", "-q", "--cached", "dist/b.js"]);
+    fs::rename(&git_dir, main.join("away")).unwrap();
     let mut rules = rules();
     let mut snapshot = Snapshot::default();
     snapshot
@@ -230,6 +229,7 @@ fn a_watcher_reads_an_index_outside_the_root_after_an_event_for_it_or_its_lock()
         read
     };
     read(&mut watcher, Duration::from_secs(1));
+    fs::rename(main.join("away"), &git_dir).unwrap();
     for n in 0..5 {
         write(&git_dir, &format!("noise{n}"), "x");
     }

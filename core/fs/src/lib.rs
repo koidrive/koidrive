@@ -3673,15 +3673,14 @@ impl NativeWatcher {
                     .any(|folder| rules.status(folder, EntryKind::Dir) != Ignored::No);
             let folder = left_out.then(|| self.root.join(tree));
             for dir in git_dir.map(Path::to_path_buf).into_iter().chain(folder) {
-                let Ok(dir) = std::fs::canonicalize(dir) else {
-                    continue;
+                let (dir, id) = match std::fs::canonicalize(&dir)
+                    .and_then(|found| Ok((stat_path(&found)?, found)))
+                {
+                    Ok((stat, found)) => (found, Some((stat.dev, stat.id))),
+                    Err(_) => (dir, None),
                 };
-                let Ok(stat) = stat_path(&dir) else {
-                    continue;
-                };
-                let id = (stat.dev, stat.id);
                 now.entry(dir)
-                    .or_insert((Some(id), Vec::new()))
+                    .or_insert((id, Vec::new()))
                     .1
                     .push(tree.clone());
             }
