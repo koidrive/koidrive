@@ -6,7 +6,24 @@ use std::fmt;
 use crate::pattern::{LineError, RuleFile, key};
 use crate::{NameKey, Source};
 
-pub const PLATFORM_FILES: [&str; 4] = [".DS_Store", "Thumbs.db", "desktop.ini", "Icon\r"];
+pub const PLATFORM_FILES: [&str; 16] = [
+    ".DS_Store",
+    "Thumbs.db",
+    "desktop.ini",
+    "Icon\r",
+    ".fseventsd",
+    ".Spotlight-V100",
+    ".Trashes",
+    ".TemporaryItems",
+    ".DocumentRevisions-V100",
+    ".PKInstallSandboxManager",
+    ".PKInstallSandboxManager-SystemSoftware",
+    ".com.apple.timemachine.donotpresent",
+    ".com.apple.timemachine.supported",
+    ".HFS+ Private Directory Data\r",
+    "System Volume Information",
+    "$RECYCLE.BIN",
+];
 const STATE_DIR: &str = ".koidrive";
 const GIT_DIR: &str = ".git";
 

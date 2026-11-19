@@ -317,3 +317,33 @@ fn scans_without_rules_leave_out_nothing_but_the_private_folder() {
     assert_eq!(known(&snapshot), [".DS_Store", KOIIGNORE, "ig", "ig/x"]);
     assert_eq!(rescan.rules, []);
 }
+
+#[test]
+fn scans_leave_out_what_systems_write_at_a_volume_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let written = [
+        ".fseventsd/fseventsd-uuid",
+        ".Spotlight-V100/Store-V2/index",
+        ".Trashes/501/report.docx",
+        ".TemporaryItems/folders.501/x",
+        ".DocumentRevisions-V100/db-V1/db.sqlite",
+        ".PKInstallSandboxManager/sandbox/x",
+        ".PKInstallSandboxManager-SystemSoftware/sandbox/x",
+        ".com.apple.timemachine.donotpresent",
+        ".com.apple.timemachine.supported",
+        ".HFS+ Private Directory Data\r/dir_16",
+        "System Volume Information/IndexerVolumeGuid",
+        "$RECYCLE.BIN/S-1-5-21-1/desktop.ini",
+        "$Recycle.Bin/S-1-5-21-2/$RABC.docx",
+    ];
+    write(root, KOIIGNORE, "!*\n");
+    write(root, "Disk/report.docx", "mine");
+    for path in written {
+        write(root, path, "system");
+        write(root, &format!("Disk/{path}"), "system");
+    }
+    let mut rules = rules();
+    let snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
+    assert_eq!(known(&snapshot), [KOIIGNORE, "Disk", "Disk/report.docx"]);
+}

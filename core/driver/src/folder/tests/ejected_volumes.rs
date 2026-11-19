@@ -13,12 +13,6 @@ fn observed(device: &mut Device, remote: &mut Remote) {
     device.rest(remote);
 }
 
-fn user_files(remote: &Remote) -> BTreeMap<String, String> {
-    (remote.tree().into_iter())
-        .filter(|(path, _)| !koidrive_test_support::is_volume_metadata(Path::new(path)))
-        .collect()
-}
-
 fn held(device: &Device) -> Vec<(String, HeldDiskKind)> {
     (device.folder.view().held_disks.into_iter())
         .map(|disk| (disk.path.into(), disk.kind))
@@ -73,20 +67,20 @@ fn a_disk_ejected_while_the_folder_syncs_leaves_the_server_as_it_was() {
     }
     for (mount, image) in disk_images {
         let (site, mut a, image) = with_disk(&mut disks, &mut remote, mount, image);
-        let tree = user_files(&remote);
+        let tree = remote.tree();
         assert_eq!(held(&a), []);
         disks.detach(&site.root.join(mount));
         observed(&mut a, &mut remote);
-        assert_eq!(user_files(&remote), tree, "{mount}");
+        assert_eq!(remote.tree(), tree, "{mount}");
         assert_eq!(held(&a), [(mount.to_owned(), HeldDiskKind::NotConnected)]);
         fs::remove_dir(site.root.join(mount)).unwrap();
         observed(&mut a, &mut remote);
-        assert_eq!(user_files(&remote), tree, "{mount}");
+        assert_eq!(remote.tree(), tree, "{mount}");
 
         fs::write(site.root.join("notes.txt"), b"edited").unwrap();
         on_the_disk(&site.root, &["after.txt"]);
         observed(&mut a, &mut remote);
-        let after = user_files(&remote);
+        let after = remote.tree();
         assert!(after.contains_key("after.txt"));
         assert_eq!(after.len(), tree.len() + 1, "{mount}: {after:?}");
 
@@ -95,7 +89,7 @@ fn a_disk_ejected_while_the_folder_syncs_leaves_the_server_as_it_was() {
         identified(&site.root.join(mount));
         observed(&mut a, &mut remote);
         assert_eq!(held(&a), [], "{mount}");
-        assert_eq!(user_files(&remote), after, "{mount}");
+        assert_eq!(remote.tree(), after, "{mount}");
         disks.detach(&site.root.join(mount));
         remote = Remote::new();
     }
@@ -118,19 +112,19 @@ fn a_disk_ejected_while_the_folder_is_stopped_leaves_the_server_as_it_was() {
 fn ejected_while_stopped(disks: &mut koidrive_test_support::Disks, image: PathBuf) {
     let mut remote = Remote::new();
     let (site, a, image) = with_disk(disks, &mut remote, "Disk", image);
-    let tree = user_files(&remote);
+    let tree = remote.tree();
     let at = site.root.join("Disk");
     drop(a);
     disks.detach(&at);
     let mut a = restarted(&site, &mut remote);
     a.rest(&mut remote);
-    assert_eq!(user_files(&remote), tree);
+    assert_eq!(remote.tree(), tree);
     drop(a);
 
     fs::remove_dir(&at).unwrap();
     let mut a = restarted(&site, &mut remote);
     a.rest(&mut remote);
-    assert_eq!(user_files(&remote), tree);
+    assert_eq!(remote.tree(), tree);
     assert!(!at.exists(), "nothing is downloaded where the disk was");
     drop(a);
 
@@ -139,7 +133,7 @@ fn ejected_while_stopped(disks: &mut koidrive_test_support::Disks, image: PathBu
     identified(&at);
     let mut a = restarted(&site, &mut remote);
     a.rest(&mut remote);
-    assert_eq!(user_files(&remote), tree);
+    assert_eq!(remote.tree(), tree);
     on_the_disk(&at, &["new.txt"]);
     observed(&mut a, &mut remote);
     assert_eq!(held(&a), [], "{image:?}");
@@ -155,7 +149,7 @@ fn another_disk_where_one_was(first: &Path, second: &Path, stopped: bool) {
     disks.attach(first, &at);
     on_the_disk(&at, &["report.docx", "Slides/deck.key"]);
     observed(&mut a, &mut remote);
-    let tree = user_files(&remote);
+    let tree = remote.tree();
     assert!(tree.contains_key("Disk/report.docx"), "{tree:?}");
     if stopped {
         drop(a);
@@ -171,7 +165,7 @@ fn another_disk_where_one_was(first: &Path, second: &Path, stopped: bool) {
         on_the_disk(&at, &["other.txt"]);
         observed(&mut a, &mut remote);
     }
-    assert_eq!(user_files(&remote), tree, "{first:?} stopped={stopped}");
+    assert_eq!(remote.tree(), tree, "{first:?} stopped={stopped}");
     assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)]);
     disks.detach(&at);
 }
@@ -249,7 +243,7 @@ fn swapped_for_a_bigger_stick_with_its_serial(format: Formatted, stopped: bool, 
     on_the_disk(&at, &["report.docx", "Slides/deck.key"]);
     stage(&at, shared);
     observed(&mut a, &mut remote);
-    let tree = user_files(&remote);
+    let tree = remote.tree();
     assert!(tree.contains_key("Disk/Slides/deck.key"), "{tree:?}");
     if stopped {
         drop(a);
@@ -265,7 +259,7 @@ fn swapped_for_a_bigger_stick_with_its_serial(format: Formatted, stopped: bool, 
         identified(&at);
     }
     observed(&mut a, &mut remote);
-    let (after, held) = (user_files(&remote), held(&a));
+    let (after, held) = (remote.tree(), held(&a));
     drop(a);
     disks.detach(&at);
     assert_eq!(after, tree, "stopped={stopped} identical={identical}");
@@ -297,16 +291,16 @@ fn a_stick_of_the_same_size_with_a_sticks_serial_puts_the_first_sticks_files_in_
         );
         let mut remote = Remote::new();
         let (site, mut a, _) = with_disk(&mut disks, &mut remote, "Disk", first);
-        let tree = user_files(&remote);
+        let tree = remote.tree();
         let at = site.root.join("Disk");
         disks.detach(&at);
         observed(&mut a, &mut remote);
-        assert_eq!(user_files(&remote), tree, "{kind}");
+        assert_eq!(remote.tree(), tree, "{kind}");
         assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)]);
         disks.attach(&second, &at);
         identified(&at);
         observed(&mut a, &mut remote);
-        let left: Vec<String> = user_files(&remote).into_keys().collect();
+        let left: Vec<String> = remote.tree().into_keys().collect();
         assert_eq!(left, ["Disk", "notes.txt"], "{kind}");
         let trashed: Vec<String> = (remote.trash_pages(100).into_iter())
             .flat_map(|page| page.nodes)
@@ -337,7 +331,7 @@ fn a_stick_of_the_same_size_with_a_sticks_serial_puts_the_first_sticks_files_in_
                 .filter(|(path, _)| !apple_double(path))
                 .collect::<BTreeMap<_, _>>()
         };
-        assert_eq!(written(user_files(&remote)), written(tree), "{kind}");
+        assert_eq!(written(remote.tree()), written(tree), "{kind}");
         for name in ["report.docx", "Slides/deck.key"] {
             let on_b = fs::read(site_b.root.join("Disk").join(name)).unwrap();
             assert_eq!(on_b, name.as_bytes(), "{kind}");
@@ -364,13 +358,13 @@ fn a_stick_emptied_while_it_is_mounted_syncs_the_deletes() {
         on_the_disk(&at, &["report.docx", "Slides/deck.key"]);
         observed(&mut a, &mut remote);
         assert!(
-            user_files(&remote).contains_key("Disk/report.docx"),
+            remote.tree().contains_key("Disk/report.docx"),
             "{image:?}"
         );
         fs::remove_file(at.join("report.docx")).unwrap();
         fs::remove_dir_all(at.join("Slides")).unwrap();
         observed(&mut a, &mut remote);
-        let left: Vec<String> = user_files(&remote).into_keys().collect();
+        let left: Vec<String> = remote.tree().into_keys().collect();
         assert_eq!(left, ["Disk"], "{image:?}");
         assert_eq!(held(&a), [], "{image:?}");
         disks.detach(&at);
@@ -385,13 +379,13 @@ fn a_fat_stick_mounted_at_another_folder_stays_held_where_it_was() {
     let mut remote = Remote::new();
     let image = disks.fat("Stick");
     let (site, mut a, image) = with_disk(&mut disks, &mut remote, "Disk", image);
-    let before = user_files(&remote);
+    let before = remote.tree();
     disks.detach(&site.root.join("Disk"));
     let elsewhere = site.root.join("Elsewhere");
     fs::create_dir(&elsewhere).unwrap();
     disks.attach(&image, &elsewhere);
     observed(&mut a, &mut remote);
-    let after = user_files(&remote);
+    let after = remote.tree();
     disks.detach(&elsewhere);
     assert!(
         before.iter().all(|(path, id)| after.get(path) == Some(id)),
@@ -416,7 +410,7 @@ fn an_exfat_stick_swapped_for_another_and_back_deletes_nothing() {
         );
         let (site, mut a, one) = with_disk(&mut disks, &mut remote, "Disk", one);
         let at = site.root.join("Disk");
-        let tree = user_files(&remote);
+        let tree = remote.tree();
         for (step, image) in [
             ("swapped", Some(&two)),
             ("back", Some(&one)),
@@ -434,14 +428,14 @@ fn an_exfat_stick_swapped_for_another_and_back_deletes_nothing() {
             } else {
                 disks.detach(&at);
                 observed(&mut a, &mut remote);
-                assert_eq!(user_files(&remote), tree, "stopped={stopped} {step}");
+                assert_eq!(remote.tree(), tree, "stopped={stopped} {step}");
                 if let Some(image) = image {
                     disks.attach(image, &at);
                     identified(&at);
                 }
             }
             observed(&mut a, &mut remote);
-            assert_eq!(user_files(&remote), tree, "stopped={stopped} {step}");
+            assert_eq!(remote.tree(), tree, "stopped={stopped} {step}");
             let expected = match step {
                 "back" => vec![],
                 _ => vec![("Disk".to_owned(), HeldDiskKind::NotConnected)],
@@ -469,7 +463,7 @@ fn a_stick_changed_on_another_computer_comes_back_with_the_change() {
         for stick in sticks {
             let mut remote = Remote::new();
             let (site, mut a, image) = with_disk(&mut disks, &mut remote, "Disk", stick);
-            let tree = user_files(&remote);
+            let tree = remote.tree();
             let at = site.root.join("Disk");
             disks.detach(&at);
             observed(&mut a, &mut remote);
@@ -496,7 +490,7 @@ fn a_stick_changed_on_another_computer_comes_back_with_the_change() {
                 identified(&at);
             }
             observed(&mut a, &mut remote);
-            let (after, held) = (user_files(&remote), held(&a));
+            let (after, held) = (remote.tree(), held(&a));
             drop(a);
             disks.detach(&at);
             let case = format!("{image:?} stopped={stopped} deleted={deleted}");
@@ -540,7 +534,7 @@ fn a_stick_recorded_before_its_size_was_comes_back_and_is_told_from_a_bigger_sti
         );
         let mut remote = Remote::new();
         let (site, a, _) = with_disk(&mut disks, &mut remote, "Disk", first.clone());
-        let tree = user_files(&remote);
+        let tree = remote.tree();
         drop(a);
         let at = site.root.join("Disk");
         let (plain, sized) = (
@@ -574,7 +568,7 @@ fn a_stick_recorded_before_its_size_was_comes_back_and_is_told_from_a_bigger_sti
             observed(&mut a, &mut remote);
         }
         assert_eq!(held(&a), [], "{kind} {unplugged}");
-        let back = user_files(&remote);
+        let back = remote.tree();
         assert!(
             tree.iter().all(|(path, id)| back.get(path) == Some(id)),
             "{kind}: {back:?}"
@@ -590,7 +584,7 @@ fn a_stick_recorded_before_its_size_was_comes_back_and_is_told_from_a_bigger_sti
         identified(&at);
         on_the_disk(&at, &["other.txt"]);
         observed(&mut a, &mut remote);
-        let (after, held) = (user_files(&remote), held(&a));
+        let (after, held) = (remote.tree(), held(&a));
         drop(a);
         disks.detach(&at);
         assert_eq!(after, back, "{kind} {unplugged}");
@@ -639,7 +633,7 @@ fn a_folder_whose_root_is_a_stick_syncs_again_once_the_stick_is_plugged_back_in(
         let mut a = restarted(&site, &mut remote);
         on_the_disk(&site.root, &["report.docx"]);
         observed(&mut a, &mut remote);
-        let tree = user_files(&remote);
+        let tree = remote.tree();
         assert!(tree.contains_key("report.docx"), "{image:?}: {tree:?}");
         drop(a);
         let mut store = Store::open(&site.db).unwrap();
@@ -654,7 +648,7 @@ fn a_folder_whose_root_is_a_stick_syncs_again_once_the_stick_is_plugged_back_in(
         a.rest(&mut remote);
         on_the_disk(&site.root, &["new.txt"]);
         observed(&mut a, &mut remote);
-        let (after, held) = (user_files(&remote), held(&a));
+        let (after, held) = (remote.tree(), held(&a));
         drop(a);
         disks.detach(&site.root);
         assert_eq!(held, [], "{image:?}");
@@ -722,7 +716,7 @@ fn a_disk_without_a_uuid_ejected_stays_held_until_another_disk_takes_its_place()
         on_the_disk(&at, &["report.docx"]);
         on_the_disk(&site.root, &["notes.txt"]);
         observed(&mut a, &mut remote);
-        let tree = user_files(&remote);
+        let tree = remote.tree();
         assert!(tree.contains_key("notes.txt"), "{tree:?}");
         assert!(!tree.contains_key("Disk/report.docx"), "{tree:?}");
         assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)]);
@@ -739,7 +733,7 @@ fn a_disk_without_a_uuid_ejected_stays_held_until_another_disk_takes_its_place()
             a.rest(&mut remote);
             observed(&mut a, &mut remote);
         }
-        assert_eq!(user_files(&remote), tree, "{case}");
+        assert_eq!(remote.tree(), tree, "{case}");
         assert_eq!(
             held(&a),
             [("Disk".to_owned(), HeldDiskKind::NotConnected)],
@@ -758,7 +752,7 @@ fn a_disk_without_a_uuid_ejected_stays_held_until_another_disk_takes_its_place()
             on_the_disk(&at, &["photo.jpg"]);
             observed(&mut a, &mut remote);
         }
-        let synced = user_files(&remote);
+        let synced = remote.tree();
         assert!(synced.contains_key("Disk/photo.jpg"), "{case}: {synced:?}");
         assert!(!synced.contains_key("Disk/report.docx"), "{synced:?}");
         assert_eq!(synced["notes.txt"], tree["notes.txt"]);
@@ -772,7 +766,7 @@ fn a_disk_without_a_uuid_ejected_stays_held_until_another_disk_takes_its_place()
         disks.detach(&at);
         observed(&mut a, &mut remote);
         assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)]);
-        assert!(user_files(&remote).contains_key("Disk/later.txt"));
+        assert!(remote.tree().contains_key("Disk/later.txt"));
     }
 }
 
@@ -785,22 +779,22 @@ fn a_disk_mounted_over_synced_files_leaves_them_on_the_server_until_it_is_ejecte
     let (site, mut a) = linked(&mut remote, "a");
     on_the_disk(&site.root, &["Data/keep.docx"]);
     observed(&mut a, &mut remote);
-    let tree = user_files(&remote);
+    let tree = remote.tree();
     let at = site.root.join("Data");
     let image = disks.image("Over");
     disks.attach(&image, &at);
     on_the_disk(&at, &["on-the-disk.txt"]);
     observed(&mut a, &mut remote);
-    assert_eq!(user_files(&remote), tree);
+    assert_eq!(remote.tree(), tree);
     assert_eq!(held(&a), [("Data".to_owned(), HeldDiskKind::MountedOver)]);
 
     disks.detach(&at);
     observed(&mut a, &mut remote);
-    assert_eq!(user_files(&remote), tree);
+    assert_eq!(remote.tree(), tree);
     assert_eq!(held(&a), []);
     on_the_disk(&at, &["after.txt"]);
     observed(&mut a, &mut remote);
-    let after = user_files(&remote);
+    let after = remote.tree();
     assert!(after.contains_key("Data/after.txt"), "{after:?}");
     assert_eq!(after["Data/keep.docx"], tree["Data/keep.docx"]);
 }
@@ -852,7 +846,7 @@ fn upgraded_with_a_disk_mounted(stopped: bool) {
     let mut remote = Remote::new();
     let image = disks.image("Disk");
     let (site, a, _image) = with_disk(&mut disks, &mut remote, "Disk", image);
-    let tree = user_files(&remote);
+    let tree = remote.tree();
     drop(a);
     let mut store = Store::open(&site.db).unwrap();
     store
@@ -861,7 +855,7 @@ fn upgraded_with_a_disk_mounted(stopped: bool) {
     drop(store);
     let mut a = restarted(&site, &mut remote);
     a.rest(&mut remote);
-    assert_eq!(user_files(&remote), tree);
+    assert_eq!(remote.tree(), tree);
     assert_eq!(held(&a), []);
 
     let at = site.root.join("Disk");
@@ -874,7 +868,7 @@ fn upgraded_with_a_disk_mounted(stopped: bool) {
         disks.detach(&at);
         observed(&mut a, &mut remote);
     }
-    assert_eq!(user_files(&remote), tree);
+    assert_eq!(remote.tree(), tree);
     assert_eq!(held(&a), [("Disk".to_owned(), HeldDiskKind::NotConnected)]);
 }
 
@@ -897,7 +891,7 @@ fn a_folder_moved_above_a_disk_mounted_over_synced_files_keeps_them_on_the_serve
     let (site, mut a) = linked(&mut remote, "a");
     on_the_disk(&site.root, &["p/Data/keep.docx"]);
     observed(&mut a, &mut remote);
-    let keep = user_files(&remote)["p/Data/keep.docx"].clone();
+    let keep = remote.tree()["p/Data/keep.docx"].clone();
     let image = disks.image("Over");
     disks.attach(&image, &site.root.join("p/Data"));
     on_the_disk(&site.root.join("p/Data"), &["on-the-disk.txt"]);
@@ -906,7 +900,7 @@ fn a_folder_moved_above_a_disk_mounted_over_synced_files_keeps_them_on_the_serve
     disks.moved(&site.root.join("p"), &site.root.join("p2"));
     observed(&mut a, &mut remote);
     let synced = |remote: &Remote, at: &str, gone: &str| {
-        let files = user_files(remote);
+        let files = remote.tree();
         assert_eq!(files.get(&format!("{at}/Data/keep.docx")), Some(&keep), "{files:?}");
         assert!(
             !(files.keys()).any(|path| path.starts_with(gone) || path.ends_with("on-the-disk.txt")),

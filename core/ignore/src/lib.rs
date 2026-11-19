@@ -26,9 +26,15 @@
 //!
 //! # Built-in exclusions
 //!
-//! `.koidrive` at the root and the platform files `.DS_Store`, `Thumbs.db`, `desktop.ini` and
-//! `Icon\r` in any directory are always excluded, as files or directories. No pattern and no local
-//! include can bring them back.
+//! `.koidrive` at the root and the platform files ([`PLATFORM_FILES`]) in any directory are always
+//! excluded, as files or directories. No pattern and no local include can bring them back. The
+//! platform files are `.DS_Store`, `Thumbs.db`, `desktop.ini` and `Icon\r`, and what macOS and
+//! Windows write at the root of a volume they mount: `.fseventsd`, `.Spotlight-V100`, `.Trashes`,
+//! `.TemporaryItems`, `.DocumentRevisions-V100`, `.PKInstallSandboxManager`,
+//! `.PKInstallSandboxManager-SystemSoftware`, `.com.apple.timemachine.donotpresent`,
+//! `.com.apple.timemachine.supported`, `.HFS+ Private Directory Data\r`, `System Volume Information`
+//! and `$RECYCLE.BIN`. They match by name at any depth, so a volume mounted inside a linked folder,
+//! or a copy of one, syncs only the files a person put on it.
 //!
 //! # `.git` directories
 //!
