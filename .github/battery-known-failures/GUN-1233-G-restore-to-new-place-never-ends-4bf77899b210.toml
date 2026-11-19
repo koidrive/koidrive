@@ -1,0 +1,10 @@
+class = "G"
+issue = "GUN-1233"
+tests = ["a_device_with_local_changes_converges_with_the_server_and_keeps_every_write"]
+message = '''\{"<id>": RestoreIntent\(Restore \{ node_id: "<id>", version_id: "[^"]*", target_parent_id: "<id>", name: "(?:[^"\\]|\\.)*" \}\)(, "<id>": RestoreIntent\(Restore \{ node_id: "<id>", version_id: "[^"]*", target_parent_id: "<id>", name: "(?:[^"\\]|\\.)*" \}\))*\} at \S+\.rs:<line>\.'''
+examples = [
+  "{\"01a1c2c0-39a0-7baf-b5ba-4eb728dd632c\": RestoreIntent(Restore { node_id: \"01a1c2c0-39a0-7c9f-92dd-37ded7172a70\", version_id: \"\", target_parent_id: \"01a1c2c0-39a0-72d6-a4fd-bf2db1bb78a0\", name: \"ss\" })} at core/sim/tests/engine_sync/common.rs:2126.",
+]
+cases = [
+  "4bf77899b210",
+]

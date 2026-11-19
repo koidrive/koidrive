@@ -627,6 +627,14 @@ cases = ["{1:064}"]
         takes_along = "a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone"
         w78f3 = "78f33ddc3d91d9ca24ee8db9ad24f0ca0437d7aef0592e880d853f42fbc7443a"
         l14fe = "14fe391f4d7b8011cbf4479f6c7a329d79742ba2970f9a9dba0de41bb92f4f40"
+        t1437 = "143726c8b8801b7144fea65b7f6befcad226e9320027197f360eb3e51ee4b6f4"
+        w570e = "570e17d678be8db7ebb4f77ea1126ef4fb3f78e9e54a571548f9a65426b4a44e"
+        l6e1e = "6e1e45a64034f0df942d9c9029a9dba041aeff0631a6fa348d5702b89187059f"
+        g4bf7 = "4bf77899b21078eb86e2db7aee36b0b5603d934353d3504d728d8cf7262cf635"
+        od1d0 = "d1d0430345fa" + "0" * 52
+        n62f7 = "62f7a056c8c4" + "0" * 52
+        restored_late = next(text for entry in entries for text in entry["examples"] if "01a1c2c0-39a0-7353-a331-565b5a0660d9" in text)
+        queued = next(entry for entry in entries if entry["file"].startswith("GUN-1233-G-"))["examples"][0]
         def replayed(case):
             return next(text for entry in entries for text in entry["examples"] if f"\tcc-{case}\t" in text)
         coarse_once = "devices_on_coarse_volumes_converge_once_the_faults_stop"
@@ -680,7 +688,7 @@ cases = ["{1:064}"]
             ("devices_on_coarse_volumes_converge_across_restores_and_rewinds", never_reached, other, [("I", "GUN-864", None)]),
             (lose_rollbacks, example(x2293), x2293, [("X", "GUN-1199", ["2293e681b3bc"])]),
             (lose_rollbacks, example(x2293), other, []),
-            (lose_coarse, example(w74e3), w74e3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91"])]),
+            (lose_coarse, example(w74e3), w74e3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be"])]),
             (lose_coarse, example(w74e3), other, []),
             (lose_rollbacks, example(w74e3), w74e3, [("A", "GUN-1004", None)]),
             ("devices_on_coarse_volumes_converge_once_the_faults_stop", undone + "\n" + example(w74e3), other, []),
@@ -715,11 +723,11 @@ cases = ["{1:064}"]
             (lose_coarse, example(d1f04) + "\n" + undone, d1f04, []),
             (lose_coarse, head_only_undone(lose_coarse, d1f04), d1f04, []),
             (lose_coarse, taken, d1f04, [("D", "GUN-984", None)]),
-            (takes_along, example(tb5bf), tb5bf, [("T", "GUN-1046", ["b5bf582a739d"])]),
+            (takes_along, example(tb5bf), tb5bf, [("T", "GUN-1046", ["b5bf582a739d", "143726c8b880"])]),
             (takes_along, example(tb5bf), other, []),
             (rewinds_and_rollbacks, example(tb5bf), tb5bf, []),
             (takes_along, example(tb5bf) + "\n" + undone, tb5bf, []),
-            (lose_coarse, replayed(w78f3), w78f3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91"])]),
+            (lose_coarse, replayed(w78f3), w78f3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be"])]),
             (lose_coarse, replayed(w78f3), other, []),
             (lose_coarse, replayed(w78f3) + "\n" + undone, w78f3, []),
             (lose_coarse, head_only_undone(lose_coarse, w78f3), w78f3, []),
@@ -727,7 +735,35 @@ cases = ["{1:064}"]
             (folder, replayed(l14fe), other, [("L", "GUN-984", None)]),
             (folder, replayed(l14fe) + "\n" + undone, l14fe, []),
             (folder, head_only_undone(folder, l14fe), l14fe, []),
-            (coarse_once, replayed(l14fe), l14fe, []),
+            (lose_coarse, replayed(l14fe), l14fe, []),
+            (takes_along, restored_late, t1437, [("T", "GUN-1046", ["b5bf582a739d", "143726c8b880"])]),
+            (takes_along, restored_late, other, []),
+            (rewinds_and_rollbacks, restored_late, t1437, []),
+            (takes_along, restored_late + "\n" + undone, t1437, []),
+            (takes_along, head_only_undone(takes_along, t1437), t1437, []),
+            (lose_coarse, replayed(w570e), w570e, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be"])]),
+            (lose_coarse, replayed(w570e), other, []),
+            (coarse_once, replayed(w570e), w570e, []),
+            (lose_coarse, replayed(w570e) + "\n" + undone, w570e, []),
+            (lose_coarse, head_only_undone(lose_coarse, w570e), w570e, []),
+            (coarse_once, replayed(l6e1e), l6e1e, [("L", "GUN-984", None)]),
+            (coarse_once, replayed(l6e1e), other, [("L", "GUN-984", None)]),
+            (coarse_once, replayed(l6e1e), s968b, [("L", "GUN-984", None)]),
+            (lose_coarse, replayed(l6e1e), l6e1e, []),
+            (coarse_once, replayed(l6e1e) + "\n" + undone, l6e1e, []),
+            (coarse_once, head_only_undone(coarse_once, l6e1e), l6e1e, []),
+            (local_changes, queued, g4bf7, [("G", "GUN-1233", ["4bf77899b210"])]),
+            (local_changes, queued, other, []),
+            (takes_along, queued, g4bf7, []),
+            (local_changes, queued + "\n" + undone, g4bf7, []),
+            (local_changes, head_only_undone(local_changes, g4bf7), g4bf7, []),
+            (local_changes, queued, od1d0, []),
+            (local_changes, example(od1d0), od1d0, [("O", "GUN-1040", ["d1d0430345fa", "f40ecba8380a"])]),
+            (local_changes, example(od1d0), g4bf7, []),
+            (local_changes, queued, e6d4a, []),
+            (local_changes, elsewhere, g4bf7, []),
+            (local_changes, queued, n62f7, []),
+            (local_changes, example(n62f7), g4bf7, []),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):
                 found = triage.matches(entries, test, message, case)
