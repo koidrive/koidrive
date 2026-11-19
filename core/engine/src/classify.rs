@@ -2905,6 +2905,7 @@ impl Trees {
                     if frozen.get(parent).is_some_and(|parent| parent.taken) {
                         self.server_copy(id, shown, landing, &mut kept);
                     }
+                    at.push(id);
                     continue;
                 };
                 let moved = (local.parent != was.parent || !same_name(&local.name, &was.name))

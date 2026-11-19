@@ -5485,7 +5485,8 @@ mod a_server_file_moved_into_an_asked_folder {
         t.settle(&Default::default());
         assert_eq!(settle(&mut c, &mut t, &mut i), []);
         let again = question(&c);
-        assert_ne!((&again.id, again.answer), (&asked, Some(Answer::Discard)));
+        assert_ne!(again.id, asked);
+        assert_eq!(again.answer, None);
         assert!(c.decide(&mut t, &again.id, Answer::Discard));
         assert_eq!(settle(&mut c, &mut t, &mut i), []);
         assert!(t.remote().get(&"sc".into()).is_some_and(|node| !node.trashed));
@@ -5560,11 +5561,28 @@ mod a_server_file_moved_into_an_asked_folder {
     #[test]
     fn a_discard_asks_again_when_the_user_changes_a_server_folder_it_takes_along_after_the_answer()
     {
-        let changes: [fn(&mut Trees); 4] = [
+        let changes: [fn(&mut Trees); 5] = [
             |t| by_the_user(t, "sc", |shape| shape.content = Some(content(5))),
             |t| by_the_user(t, "n", |_| {}),
             |t| by_the_user(t, "sc", |shape| shape.name = "renamed".into()),
             |t| by_the_user(t, "sm", |shape| shape.parent = "f".into()),
+            |t| {
+                on_the_server(t, "sn", |node| node.shape = dir("sf", "new"));
+                let mut effects = Effects::default();
+                let record = (effects.plan(t, None, &mut IdGen::new(9), NOW, BatchLimit::ONE))
+                    .first()
+                    .cloned()
+                    .unwrap();
+                let identity = FileIdentity {
+                    ino: 400,
+                    birth_ns: Some(0),
+                    handle: None,
+                };
+                effects
+                    .done(t, None, &record.effect_id, Some(identity))
+                    .unwrap();
+                by_the_user(t, "sc", |shape| shape.parent = "sn".into());
+            },
         ];
         for (index, change) in changes.into_iter().enumerate() {
             let (mut c, mut t, mut i, asked) = answered();
