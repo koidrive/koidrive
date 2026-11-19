@@ -334,7 +334,11 @@ impl Rules {
         if before == listed {
             return None;
         }
-        self.ignore.set_tracked(tree, &listed);
+        let respelled = listed.is_empty()
+            && (self.tracked.keys()).any(|live| live != tree && self.key(live) == self.key(tree));
+        if !respelled {
+            self.ignore.set_tracked(tree, &listed);
+        }
         if listed.is_empty() {
             self.tracked.remove(tree);
         } else {
@@ -960,17 +964,26 @@ impl<'r> Pending<'r> {
         seeded
     }
 
-    pub(crate) fn finish(self, is_folder: impl Fn(&Path) -> bool) -> Finished {
+    pub(crate) fn finish(
+        self,
+        is_folder: impl Fn(&Path) -> bool,
+        is_left_out_folder: impl Fn(&Path) -> bool,
+    ) -> Finished {
         let Self {
             rules,
+            root,
             mut before,
             mut tracked,
             read,
             ..
         } = self;
         let held = |dir: &Path| dir.as_os_str().is_empty() || is_folder(dir);
+        let marked = |tree: &Path| {
+            is_left_out_folder(tree)
+                && std::fs::symlink_metadata(root.join(tree).join(".git")).is_ok()
+        };
         let gone: Vec<PathBuf> = (rules.indexes.keys().chain(rules.tracked.keys()))
-            .filter(|tree| !held(tree))
+            .filter(|tree| !held(tree) && !marked(tree))
             .cloned()
             .collect();
         for (tree, before) in gone.iter().flat_map(|tree| rules.forget_index(tree)) {
@@ -979,7 +992,9 @@ impl<'r> Pending<'r> {
         let tracked = (tracked.into_iter())
             .filter_map(|(tree, before)| {
                 let now = rules.tracked.get(&tree).cloned().unwrap_or_default();
-                (now != before).then_some((tree, now))
+                let respelled = now.is_empty()
+                    && (rules.tracked.keys()).any(|live| rules.key(live) == rules.key(&tree));
+                (now != before && !respelled).then_some((tree, now))
             })
             .collect();
         let stale: Vec<(PathBuf, Source)> = (rules.files.iter())

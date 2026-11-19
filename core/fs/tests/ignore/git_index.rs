@@ -6,6 +6,7 @@ fn git(root: &Path, args: &[&str]) {
         .env_clear()
         .envs(std::env::vars_os().filter(|(name, _)| !name.to_string_lossy().starts_with("GIT_")))
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .args(["-c", "user.name=koi", "-c", "user.email=koi@example.com"])
         .args(args)
         .output()
@@ -73,6 +74,9 @@ fn a_watcher_scans_the_files_a_git_index_lists_below_a_folder_a_gitignore_exclud
     let now = r#""moved":["dist/x.js"] "repo":[]"#;
     assert_eq!(settle(&mut watcher).1, now);
     assert!(known(watcher.snapshot()).contains(&"moved/dist/x.js"));
+    fs::rename(root.join("moved"), root.join("Moved")).unwrap();
+    assert_eq!(settle(&mut watcher).1, r#""Moved":["dist/x.js"]"#);
+    assert!(known(watcher.snapshot()).contains(&"Moved/dist/x.js"));
 }
 
 #[test]
@@ -86,21 +90,58 @@ fn an_outer_index_answers_nothing_below_a_nested_work_tree() {
     git(root, &["add", "-f", "inner/secret.env"]);
     let mut rules = rules();
     let mut snapshot = Snapshot::default();
-    let mut scan = || {
+    let mut scan = |path| {
         snapshot
             .rescan_with_rules(root, whole(), &mut rules)
             .unwrap();
-        known(&snapshot).contains(&"inner/secret.env")
+        known(&snapshot).contains(&path)
     };
-    assert!(scan());
+    assert!(scan("inner/secret.env"));
     std::os::unix::fs::symlink("/nonexistent", root.join("inner/.git")).unwrap();
-    assert!(!scan(), "a .git link");
+    assert!(!scan("inner/secret.env"), "a .git link");
     fs::remove_file(root.join("inner/.git")).unwrap();
     git(&root.join("inner"), &["init", "-q"]);
     git(&root.join("inner"), &["add", "a.txt"]);
-    assert!(!scan(), "an inner index that does not list it");
+    assert!(!scan("inner/secret.env"), "an inner index without it");
     fs::remove_dir_all(root.join("inner/.git")).unwrap();
-    assert!(scan(), "no inner work tree");
+    assert!(scan("inner/secret.env"), "no inner work tree");
+    write(root, ".gitignore", "*.env\ninner/\n");
+    git(&root.join("inner"), &["init", "-q"]);
+    let opened = [scan("inner"), scan("inner"), scan("inner")];
+    assert_eq!(opened, [true, false, false], "opened by the outer index");
+    fs::remove_dir_all(root.join("inner/.git")).unwrap();
+    let gone = [scan("inner"), scan("inner/secret.env")];
+    assert_eq!(gone, [false, true], "its work tree is gone");
+}
+
+#[test]
+fn a_watcher_reads_a_split_index_again_when_its_shared_index_returns() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, ".gitignore", "dist/\n");
+    write(root, "dist/a.js", "a");
+    git(root, &["init", "-q"]);
+    git(root, &["add", "-f", "dist/a.js"]);
+    git(root, &["update-index", "--split-index"]);
+    let shared = (fs::read_dir(root.join(".git")).unwrap())
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.to_string_lossy().contains("sharedindex."))
+        .unwrap();
+    let away = tempfile::tempdir().unwrap();
+    fs::rename(&shared, away.path().join("shared")).unwrap();
+    let mut rules = rules();
+    let mut snapshot = Snapshot::default();
+    snapshot
+        .rescan_with_rules(root, whole(), &mut rules)
+        .unwrap();
+    let mut watcher = NativeWatcher::start_with_rules(root, snapshot, rules).unwrap();
+    watcher.poll(Duration::from_secs(2)).unwrap();
+    fs::rename(away.path().join("shared"), &shared).unwrap();
+    let deadline = Instant::now() + WAIT;
+    while Instant::now() < deadline && !known(watcher.snapshot()).contains(&"dist/a.js") {
+        watcher.poll(Duration::from_millis(300)).unwrap();
+    }
+    assert!(known(watcher.snapshot()).contains(&"dist/a.js"));
 }
 
 #[test]

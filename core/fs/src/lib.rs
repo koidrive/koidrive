@@ -2165,11 +2165,15 @@ impl Snapshot {
             }
         }));
         let finished = (scan.rules.take()).map(|rules| {
-            rules.finish(|dir| {
-                self.entries
+            let folder = |entries: &BTreeMap<PathBuf, Entry>, dir: &Path| {
+                entries
                     .get(dir)
                     .is_some_and(|entry| entry.kind == EntryKind::Dir)
-            })
+            };
+            rules.finish(
+                |dir| folder(&self.entries, dir),
+                |dir| folder(&self.left_out, dir),
+            )
         });
         let reported: HashSet<&Path> = (changes.iter())
             .filter_map(|change| match change {
@@ -3606,7 +3610,8 @@ impl NativeWatcher {
                 .and_then(|dir| self.git_dirs.get(dir))
                 .cloned()
             {
-                if path.ends_with("index") || path.ends_with("index.lock") {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if matches!(&*name, "index" | "index.lock") || name.starts_with("sharedindex.") {
                     trees.into_iter().for_each(|tree| self.read_index(tree));
                 }
                 if !path.starts_with(&self.root) {
