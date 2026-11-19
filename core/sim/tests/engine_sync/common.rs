@@ -609,6 +609,7 @@ fn remote_path(trees: &Trees, id: &NodeId) -> Vec<String> {
 struct Device {
     trees: Trees,
     ids: IdGen,
+    loads: IdGen,
     inos: u64,
     /// Whether the folders the user creates take names nothing else has, so none is merged.
     fresh_dir_names: bool,
@@ -688,6 +689,7 @@ impl Device {
         Self {
             trees,
             ids: IdGen::new(7),
+            loads: IdGen::new(8),
             inos: 0,
             fresh_dir_names: false,
             rules: Rules::default(),
@@ -1504,8 +1506,9 @@ fn reload(
     commits: &Commits,
     effects: &Effects,
     rules: &Rules,
+    loads: &mut IdGen,
 ) -> Result<(Trees, Commits, Effects), TestCaseError> {
-    let mut loaded = Trees::new(trees.remote().root.clone(), &IdGen::new(0));
+    let mut loaded = Trees::new(trees.remote().root.clone(), &IdGen::new(loads.next_u64()));
     for (id, node) in trees.remote().iter() {
         loaded.set_remote(id.clone(), node.clone());
     }
@@ -2520,8 +2523,13 @@ fn run_ignoring_answering_after(
         prop_assert_eq!(device.trees.check(), Ok(()));
         device.list_moved();
         device.follow_rekeys();
-        (device.trees, commits, effects) =
-            reload(&device.trees, &commits, &effects, &device.rules)?;
+        (device.trees, commits, effects) = reload(
+            &device.trees,
+            &commits,
+            &effects,
+            &device.rules,
+            &mut device.loads,
+        )?;
         note_kept_back(&mut device);
         note_unacknowledged_taken_along_kept_back(&mut device, &kept_with);
         let held = held_by(commits.questions());
@@ -2666,8 +2674,13 @@ fn run_ignoring_answering_after(
                 );
             }
             if cut == Cut::Effect {
-                (device.trees, commits, effects) =
-                    reload(&device.trees, &commits, &effects, &device.rules)?;
+                (device.trees, commits, effects) = reload(
+                    &device.trees,
+                    &commits,
+                    &effects,
+                    &device.rules,
+                    &mut device.loads,
+                )?;
                 prop_assert_eq!(effects.in_flight().first(), Some(&record));
             }
             if let Effect::RemoveDir { along, .. } = &record.effect {
@@ -2954,8 +2967,13 @@ fn run_ignoring_answering_after(
         let cut = if restores.is_empty() { Cut::None } else { cut };
         let in_flight = |commits: &Commits| commits.in_flight().map(|f| f.commit.clone());
         if cut == Cut::Built {
-            (device.trees, commits, effects) =
-                reload(&device.trees, &commits, &effects, &device.rules)?;
+            (device.trees, commits, effects) = reload(
+                &device.trees,
+                &commits,
+                &effects,
+                &device.rules,
+                &mut device.loads,
+            )?;
             prop_assert_eq!(commits.connected(&space.welcome(&me)), Reconnect::Resend);
             prop_assert_eq!(in_flight(&commits), Some(commit.clone()));
         }
@@ -2974,8 +2992,13 @@ fn run_ignoring_answering_after(
         if cut == Cut::Applied {
             // The response is lost. The server counts the commit, so the device sends the same
             // commit again and gets the stored result: nothing is applied a second time.
-            (device.trees, commits, effects) =
-                reload(&device.trees, &commits, &effects, &device.rules)?;
+            (device.trees, commits, effects) = reload(
+                &device.trees,
+                &commits,
+                &effects,
+                &device.rules,
+                &mut device.loads,
+            )?;
             prop_assert_eq!(commits.connected(&space.welcome(&me)), Reconnect::Resend);
             prop_assert_eq!(in_flight(&commits), Some(commit.clone()));
             let head = space.head_seq();
@@ -3006,8 +3029,13 @@ fn run_ignoring_answering_after(
         let ended = commits.resolved().len();
         if cut == Cut::Answered {
             commits.received(result.clone()).unwrap();
-            (device.trees, commits, effects) =
-                reload(&device.trees, &commits, &effects, &device.rules)?;
+            (device.trees, commits, effects) = reload(
+                &device.trees,
+                &commits,
+                &effects,
+                &device.rules,
+                &mut device.loads,
+            )?;
             prop_assert_eq!(commits.connected(&space.welcome(&me)), Reconnect::Idle);
             prop_assert!(!commits.acknowledge(&mut device.trees, last_seq));
             prop_assert_eq!(commits.resolved().len(), ended);
