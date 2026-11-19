@@ -1728,6 +1728,30 @@ fn a_left_out_copy_moved_over_another_ones_found_place_while_stopped_keeps_both_
 }
 
 #[test]
+fn a_left_out_copy_replaced_by_a_hard_link_of_a_synced_file_while_stopped_downloads_again() {
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    fs::write(site.root.join("report.docx"), "report").unwrap();
+    fs::write(site.root.join("notes.docx"), "notes").unwrap();
+    b.settle();
+    b.rest(&mut remote);
+    drop(b);
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    fs::create_dir(site.root.join("dist")).unwrap();
+    fs::rename(site.root.join("report.docx"), site.root.join("dist/report.docx")).unwrap();
+    for _ in 0..3 {
+        b.settle();
+        b.rest(&mut remote);
+    }
+    drop(b);
+    fs::remove_file(site.root.join("dist/report.docx")).unwrap();
+    fs::hard_link(site.root.join("notes.docx"), site.root.join("dist/report.docx")).unwrap();
+    settled_after_a_start(&site, &mut remote, &dist_left_out());
+    settled_after_a_start(&site, &mut remote, &SyncRules::default());
+    assert!(files(&site.root).contains(&("report.docx".to_owned(), "report".to_owned())), "{:?}", files(&site.root));
+}
+
+#[test]
 fn a_copy_in_a_left_out_folder_saved_by_rename_stays_the_only_copy() {
     let mut remote = Remote::new();
     let (site, mut b) = moved_into_a_left_out_folder(&mut remote, "dist/report.docx");

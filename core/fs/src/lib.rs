@@ -1351,10 +1351,12 @@ impl Snapshot {
                     .is_some_and(|ids| ids.iter().any(|id| id.same(&known.id)))
             });
         for (path, known) in missed {
-            match found.get(path).map(|at| entry_at(at)) {
-                Some(Err(_)) => {}
-                Some(Ok(Some(entry)))
+            match found.get(path).map(|at| (at, entry_at(at))) {
+                Some((_, Err(_))) => {}
+                Some((at, Ok(Some(entry))))
                     if entry.kind == known.kind
+                        && !(self.entries.iter().chain(&self.left_out))
+                            .any(|(other, held)| other != at && held.id.same(&entry.id))
                         && !wanted.values().any(|other| other.id.same(&entry.id)) =>
                 {
                     looked.push((path.clone(), Looked::Replaced(entry.id)));
