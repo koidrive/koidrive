@@ -3036,7 +3036,10 @@ impl Commits {
     /// device keeps, another `commit_id` than the one it kept and than those it gave the slot to
     /// before a loss took them ([`GIVEN_UP_KEPT`]) starts recovery: the server holds there a
     /// commit of this device that the store does not know, so the store is behind the server. A
-    /// kept slot above *a* is one a loss took, which the store plans again once R is listed again. Otherwise, with *w* the server's counter, *w* = *a* means the commit in flight was not accepted
+    /// kept slot above *a* is one a loss took, which the store plans again once R is listed again.
+    /// When *a* takes such a slot while no commit is in flight, the `commit_id` the `Welcome`
+    /// names there joins those given up at it, so a later `Welcome` naming that commit there is
+    /// the commit this store already took on. Otherwise, with *w* the server's counter, *w* = *a* means the commit in flight was not accepted
     /// and *w* = *a* + 1 that it was and its response was lost; both resend it unchanged, and
     /// the server answers an accepted one with its stored result. *w* < *a* means the server lost
     /// commits it had accepted, since its counter only grows and *a* takes a slot only from a
@@ -3072,9 +3075,9 @@ impl Commits {
             .filter(|slot| !slot.commit_id.is_empty() && !welcome.device_commit_id.is_empty());
         let given_up =
             (self.given_up.get(&w)).is_some_and(|ids| ids.contains(&welcome.device_commit_id));
-        let another_commit = w <= a
-            && kept.is_some_and(|slot| slot.commit_id != welcome.device_commit_id)
-            && !given_up;
+        let named_elsewhere = kept.is_some_and(|slot| slot.commit_id != welcome.device_commit_id);
+        let another_commit = w <= a && named_elsewhere && !given_up;
+        let taken_on = w > a && named_elsewhere && self.in_flight.is_none();
         self.confirmed.0 = kept.map(|slot| {
             if same_application(welcome, &slot.commit_id, slot.committed_at_ms) {
                 w
@@ -3123,6 +3126,9 @@ impl Commits {
             return reconnect;
         }
         if reconnect == Reconnect::AheadOfServer {
+            if taken_on {
+                self.give_up(w, welcome.device_commit_id.clone());
+            }
             self.accepted.set(w);
             self.forget_in_flight();
         }
