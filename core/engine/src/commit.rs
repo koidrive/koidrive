@@ -13,7 +13,7 @@ use prost::Message;
 
 use crate::classify::{Class, Landing, Origin, Trees, Waiting, path};
 use crate::effects;
-use crate::first_link::{self, History, Marks, PriorSync};
+use crate::first_link::{self, LogRead, Marks, PriorSync};
 use crate::guard::{self, Guard, RemoteRemoval};
 use crate::ids::{IdGen, unix_ms};
 use crate::names::{MAX_NAME_BYTES, conflict_name, name_key, nfc};
@@ -812,10 +812,11 @@ impl Commits {
 
     /// Recovers once R holds the server's tree in the history the device recovers into, and L a
     /// scan of the disk (section 6.4). `device_seq` is the server's count of this device's commits
-    /// there, which the next commit continues, and `history` the shapes the log gave nodes since
-    /// the store's cursor, and `marks` the nodes the disk's entries name, by which an entry the store lost track of is found. An entry whose mark claims a node other than its ID, where R holds that ID, takes a new ID first, so it is never settled as the node its ID names. The commit in flight is dropped: the tree changes it
+    /// there, which the next commit continues, `log` what the server's log showed about R, and
+    /// `marks` the nodes the disk's entries name, by which an entry the store lost track of is found. An entry whose mark claims a node other than its ID, where R holds that ID, takes a new ID first, so it is never settled as the node its ID names. The commit in flight is dropped: the tree changes it
     /// carried are still differences between L and S. Every node is classified by whether this
-    /// device changed it since S. What is certain is left to the planner, and the rest is held, one
+    /// device changed it since S, and a node R holds only since the restore point counts as held as
+    /// created after it. What is certain is left to the planner, and the rest is held, one
     /// question per group, with S kept as it was, so a held node is classified again against the
     /// same S whenever L or R changes. A restore asked for before the reset that R shows done ends
     /// as restored, and the others are held under one question. Committing then stays halted by
@@ -828,7 +829,7 @@ impl Commits {
         device_seq: u64,
         read_only: bool,
         cause: &RecoveryCause,
-        history: &History,
+        log: &LogRead,
         marks: &Marks,
         ids: &mut IdGen,
         now_ms: u64,
@@ -856,17 +857,20 @@ impl Commits {
         self.given_up_nodes.clear();
         self.answer_moves.clear();
         trees.rewound();
-        let held: BTreeMap<NodeId, RecoveryGroup> = (self.questions.iter())
+        let mut held: BTreeMap<NodeId, RecoveryGroup> = (self.questions.iter())
             .filter_map(|question| match question.kind {
                 QuestionKind::Recovery { group, .. } => Some((group, question)),
                 _ => None,
             })
             .flat_map(|(group, question)| question.holds().map(move |id| (id.clone(), group)))
             .collect();
+        for id in &log.recreated {
+            (held.entry(id.clone())).or_insert(RecoveryGroup::CreatedAfterRestorePoint);
+        }
         (self.questions.get_mut())
             .retain(|question| matches!(question.kind, QuestionKind::RemoteMassDelete { .. }));
         self.hold(trees);
-        first_link::adopt_by_marks_first(trees, history, marks, ids, now_ms);
+        first_link::adopt_by_marks_first(trees, &log.history, marks, ids, now_ms);
         let agreed: Vec<(NodeId, Option<Shape>)> = (trees.local().iter().map(|(id, _)| id))
             .chain(trees.synced().iter().map(|(id, _)| id))
             .collect::<BTreeSet<_>>()

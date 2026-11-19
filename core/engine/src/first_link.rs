@@ -24,17 +24,61 @@ pub type History = BTreeMap<NodeId, Vec<Shape>>;
 /// keyed by their ID in L. The caller keeps only marks written on the entry as L holds it.
 pub type Marks = BTreeMap<NodeId, NodeId>;
 
-/// The history of a recovery whose log reaches back to the store's cursor: the shape `remote`, R
-/// as the store held it, gives each live node, and then each shape in `log`.
-pub fn since(remote: &Tree<RemoteNode>, log: History) -> History {
-    let mut history: History = (remote.iter())
-        .filter(|(_, node)| !node.trashed)
-        .map(|(id, node)| (id.clone(), vec![node.shape.clone()]))
-        .collect();
-    for (id, shapes) in log {
-        history.entry(id).or_default().extend(shapes);
+/// Each state the server's log gave a node, in seq order.
+pub type Log = BTreeMap<NodeId, Vec<RemoteNode>>;
+
+/// What a recovery learns from the server's log (design section 6.4).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LogRead {
+    /// After a store rollback within one history: the shape R₀ gives each live node, then each
+    /// shape the log gave it since the store's cursor.
+    pub history: History,
+    /// After a history change: the nodes R′ holds only since the restore point.
+    pub recreated: BTreeSet<NodeId>,
+}
+
+impl LogRead {
+    /// `log` is the log since the store's cursor when `cause` names no restore point, and the
+    /// new history's log from its first seq when it does; `None` when the log no longer reaches
+    /// back that far. `trees` still holds R₀ and S₀.
+    pub fn new(trees: &Trees, cause: &RecoveryCause, log: Option<Log>) -> LogRead {
+        let Some(restore_point_ms) = cause.restore_point_ms else {
+            let Some(log) = log else {
+                return LogRead::default();
+            };
+            let mut history: History = (trees.remote().iter())
+                .filter(|(_, node)| !node.trashed)
+                .map(|(id, node)| (id.clone(), vec![node.shape.clone()]))
+                .collect();
+            for (id, states) in log {
+                (history.entry(id).or_default()).extend(states.into_iter().map(|node| node.shape));
+            }
+            return LogRead {
+                history,
+                recreated: BTreeSet::new(),
+            };
+        };
+        let recreated = match log {
+            Some(log) => (log.into_iter())
+                .filter(|(_, states)| {
+                    (states.first()).is_some_and(|first| first.content_rev == first.meta_rev)
+                })
+                .map(|(id, _)| id)
+                .collect(),
+            None => (trees.synced().iter())
+                .filter(|(_, shape)| shape.kind == Kind::File)
+                .filter(|(id, _)| {
+                    (trees.synced_version_id(id).and_then(crate::ids::unix_ms))
+                        .is_none_or(|committed_ms| committed_ms as i64 > restore_point_ms)
+                })
+                .map(|(id, _)| id.clone())
+                .collect(),
+        };
+        LogRead {
+            history: History::new(),
+            recreated,
+        }
     }
-    history
 }
 
 /// Whether the folder synced the space before the store it links with: the server accepted commits

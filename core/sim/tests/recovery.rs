@@ -2,7 +2,7 @@
 
 use koidrive_engine::commit::{Commits, InFlight};
 use koidrive_engine::effects::{Base, Dir, Effect, EffectRecord, Location};
-use koidrive_engine::first_link::{History, Marks};
+use koidrive_engine::first_link::{LogRead, Marks};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::NodeId;
 use koidrive_proto::v1::{Commit, Move, NodeStatus, Op, error, op};
@@ -3308,7 +3308,7 @@ fn a_publish_for_a_folder_does_not_count_for_its_unchanged_child() {
         seq,
         false,
         &cause,
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         &mut engine.ids,
         1_794_268_740_020,
@@ -4148,5 +4148,38 @@ fn a_rewind_of_an_edit_to_a_file_the_restore_point_held_follows_the_server() {
         );
         world.phase(2, &[]).unwrap();
         assert_eq!(live_writes(&world), [1], "online {online}");
+    }
+}
+
+#[test]
+fn a_device_back_after_another_device_edited_and_moved_a_file_in_one_commit_is_asked_once() {
+    for (answer, live, binned) in [(0, vec![2, 3], false), (1, vec![3], true)] {
+        let mut world = synced(2, &[vec![(0, file("c.txt"))], vec![(0, Step::Backup)]]);
+        let schedule = [
+            (1, overwrite(0)),
+            (1, SCAN),
+            (1, COMMIT),
+            (1, COMMIT),
+            (1, DELIVER),
+            (0, Step::Rewind),
+            (0, Step::Connect),
+            (0, DELIVER),
+            (0, COMMIT),
+            (0, overwrite(0)),
+            (0, rename(0, "b")),
+            (0, SCAN),
+            (0, COMMIT),
+            (0, COMMIT),
+            (0, DELIVER),
+            (1, Step::Connect),
+            (1, DELIVER),
+            (1, COMMIT),
+        ];
+        world.run(1, &schedule).unwrap();
+        assert_eq!(open_recovery(&world, 1), 1, "answer {answer}");
+        world.run(2, &[(1, Step::Answer(answer))]).unwrap();
+        world.phase(3, &[]).unwrap();
+        assert_eq!(live_writes(&world), live, "answer {answer}");
+        assert_eq!(world.devices[1].disk.binned(2), binned, "answer {answer}");
     }
 }

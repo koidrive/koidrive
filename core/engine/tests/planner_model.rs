@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::{Commits, Failure};
-use koidrive_engine::first_link::{History, Marks};
+use koidrive_engine::first_link::{LogRead, Marks};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::question::{Answer, RecoveryCause};
 use koidrive_engine::restore::RestoreIntent;
@@ -2552,7 +2552,7 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
                 0,
                 false,
                 &cause,
-                &History::new(),
+                &LogRead::default(),
                 &Marks::new(),
                 &mut planner.ids,
                 NOW,
@@ -3193,7 +3193,7 @@ fn moved_after_a_publish_answer(world: &World, moved: usize, to: Spot) -> (World
         0,
         false,
         &cause,
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         &mut planner.ids,
         NOW,

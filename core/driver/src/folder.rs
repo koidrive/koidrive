@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use koidrive_engine::commit::{Base, Halt as CommitHalt, Reconnect};
-use koidrive_engine::first_link::PriorSync;
+use koidrive_engine::first_link::{LogRead, PriorSync};
 use koidrive_engine::ignore::LocalRules;
 use koidrive_engine::tree::{FileIdentity, LocalNode, NodeId};
 use koidrive_fs::{Detached, Refusal, Snapshot};
@@ -624,18 +624,24 @@ impl Folder {
             seq = staging.last_seq(),
             "read the space's tree"
         );
-        let recovering = matches!(
-            self.engine.commits.halted(),
-            Some(CommitHalt::Recovery { .. })
-        );
-        let since = (self.engine.cursor.as_ref()).filter(|cursor| {
-            recovering
-                && cursor.history_id == self.history_id
-                && !cursor.ahead_of_server
-                && cursor.last_seq <= staging.last_seq()
-        });
+        let since = match self.engine.commits.halted() {
+            Some(CommitHalt::Recovery { cause, .. }) if cause.restore_point_ms.is_some() => {
+                (cause.restore_seq.filter(|seq| *seq <= staging.last_seq())).map(|seq| Base {
+                    seq,
+                    ..Base::default()
+                })
+            }
+            Some(CommitHalt::Recovery { .. }) => (self.engine.cursor.as_ref())
+                .filter(|cursor| {
+                    cursor.history_id == self.history_id
+                        && !cursor.ahead_of_server
+                        && cursor.last_seq <= staging.last_seq()
+                })
+                .map(|cursor| cursor.base()),
+            _ => None,
+        };
         let from = match since {
-            Some(cursor) => staging.read_history_since(cursor.base()),
+            Some(since) => staging.read_history_since(since),
             None => staging.last().clone(),
         };
         let work = vec![Work::Subscribe(resume(&self.history_id, &from))];
@@ -1087,9 +1093,7 @@ impl Folder {
             true => PriorSync::Shown,
             false => PriorSync::Fresh,
         };
-        let history = (staging.take_history())
-            .map(|log| koidrive_engine::first_link::since(self.engine.trees.remote(), log))
-            .unwrap_or_default();
+        let log = LogRead::new(&self.engine.trees, &cause, staging.take_history());
         let trees = &self.engine.trees;
         let unheld: BTreeMap<NodeId, FileIdentity> = (trees.local().iter())
             .filter(|(id, _)| recovering && trees.synced().get(id).is_none())
@@ -1105,7 +1109,7 @@ impl Folder {
                     device_seq,
                     read_only,
                     &cause,
-                    &history,
+                    &log,
                     &marks,
                     &mut engine.ids,
                     now_ms,

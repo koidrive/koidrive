@@ -1006,7 +1006,7 @@ fn a_recovery_forgets_the_commits_its_slots_were_given_before_a_loss() {
         0,
         false,
         &cause,
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         &mut ids,
         NOW,
@@ -1136,9 +1136,9 @@ fn a_recovery_keeps_the_policy_halt_it_interrupted() {
         ..welcome(0)
     };
     assert_eq!(commits.connected(&rewound), Reconnect::Recovery);
-    let (history, marks) = (History::new(), Marks::new());
+    let (log, marks) = (LogRead::default(), Marks::new());
     commits.recover(
-        &mut trees, 0, false, &cause, &history, &marks, &mut ids, NOW,
+        &mut trees, 0, false, &cause, &log, &marks, &mut ids, NOW,
     );
     assert_eq!(commits.halted(), halt);
     assert_eq!(
@@ -1163,8 +1163,8 @@ fn a_recovery_on_a_read_only_device_ends_read_only() {
     let Some(Halt::Recovery { cause, .. }) = commits.halted() else {
         panic!("the history differs, so the device recovers");
     };
-    let (history, marks) = (History::new(), Marks::new());
-    commits.recover(&mut trees, 0, true, &cause, &history, &marks, &mut ids, NOW);
+    let (log, marks) = (LogRead::default(), Marks::new());
+    commits.recover(&mut trees, 0, true, &cause, &log, &marks, &mut ids, NOW);
     assert_eq!(commits.halted(), Some(Halt::ReadOnly));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }

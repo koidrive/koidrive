@@ -7,7 +7,7 @@ use proptest::prelude::*;
 use koidrive_engine::classify::{Class, Origin, Trees, Waiting};
 use koidrive_engine::commit::{Base, Commits, Failure, Halt, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, Effects};
-use koidrive_engine::first_link::{History, Marks, PriorSync};
+use koidrive_engine::first_link::{History, Log, LogRead, Marks, PriorSync};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::{RuleFile, Source};
 use koidrive_engine::names::{nfc, same_name};
@@ -131,7 +131,7 @@ fn recovered_after(trees: &mut Trees, device_seq: u64, cause: RecoveryCause) -> 
         device_seq,
         false,
         &cause,
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         &mut ids,
         NOW,
@@ -1372,7 +1372,7 @@ fn an_entry_like_the_servers_at_a_name_s_gives_another_node_is_held_and_s_stays_
         0,
         false,
         &rewind(),
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         &mut IdGen::new(7),
         NOW,
@@ -1475,7 +1475,7 @@ fn the_commit_in_flight_before_the_reset_is_never_sent_again() {
         4,
         false,
         &rewind(),
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         &mut ids,
         NOW,
@@ -1522,7 +1522,7 @@ fn a_result_that_arrives_after_the_recovery_starts_leaves_the_change_held() {
         0,
         false,
         &rewind(),
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         &mut ids,
         NOW,
@@ -1551,7 +1551,7 @@ fn a_restore_asked_for_before_the_reset_is_held_until_it_is_answered() {
             0,
             false,
             &rewind(),
-            &History::new(),
+            &LogRead::default(),
             &Marks::new(),
             &mut ids,
             NOW,
@@ -1596,7 +1596,7 @@ fn a_restore_asked_for_again_after_the_reset_waits_for_the_answer_about_the_firs
         0,
         false,
         &rewind(),
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         &mut ids,
         NOW,
@@ -1648,7 +1648,7 @@ fn a_restore_the_rewound_tree_already_shows_is_done() {
         0,
         false,
         &rewind(),
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         &mut ids,
         NOW,
@@ -2046,7 +2046,7 @@ fn a_repeated_restore_is_sent_only_against_the_head_it_was_answered_at() {
         0,
         false,
         &rewind(),
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         &mut ids,
         NOW,
@@ -2395,7 +2395,7 @@ fn a_folder_whose_removal_from_s_waits_is_held_with_its_new_children_after_a_rew
         0,
         false,
         &rewind(),
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         &mut ids,
         NOW,
@@ -2810,7 +2810,7 @@ fn a_removal_planned_before_a_rewind() -> Stale {
         0,
         false,
         &rewind(),
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         &mut ids,
         NOW,
@@ -2958,7 +2958,7 @@ fn a_removal_planned_before_a_rewind_stays_refused_after_a_second_rewind() {
         0,
         false,
         &rewind(),
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         ids,
         NOW,
@@ -2979,7 +2979,7 @@ fn a_download_planned_after_a_rewind_is_still_taken_after_a_reload() {
         0,
         false,
         &rewind(),
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         &mut ids,
         NOW,
@@ -3341,7 +3341,10 @@ fn recovered_by_marks(
         0,
         false,
         &rewind(),
-        &logged,
+        &LogRead {
+            history: logged,
+            ..LogRead::default()
+        },
         &marks,
         &mut ids,
         NOW,
@@ -3800,7 +3803,10 @@ fn a_marked_file_moved_into_a_new_folder_named_like_a_files_pending_name_follows
         0,
         false,
         &rewind(),
-        &logged,
+        &LogRead {
+            history: logged,
+            ..LogRead::default()
+        },
         &marks,
         &mut ids,
         NOW,
@@ -3904,7 +3910,10 @@ fn a_marked_folder_the_server_holds_under_its_pending_name_is_adopted_and_moved_
         0,
         false,
         &rewind(),
-        &logged,
+        &LogRead {
+            history: logged,
+            ..LogRead::default()
+        },
         &marks,
         &mut ids,
         NOW,
@@ -3944,7 +3953,10 @@ fn a_marked_folder_named_like_its_pending_name_in_another_normal_form_is_adopted
         0,
         false,
         &rewind(),
-        &logged,
+        &LogRead {
+            history: logged,
+            ..LogRead::default()
+        },
         &marks,
         &mut ids,
         NOW,
@@ -4721,7 +4733,10 @@ fn recovered_with_history(trees: &mut Trees, history: &[(&str, Shape)]) -> (Comm
         0,
         false,
         &rewind(),
-        &log,
+        &LogRead {
+            history: log,
+            ..LogRead::default()
+        },
         &Marks::new(),
         &mut ids,
         NOW,
@@ -5794,5 +5809,65 @@ fn discarding_a_never_sent_folder_keeps_it_around_an_unobserved_file_the_rules_e
                 Some(&shape)
             );
         }
+    }
+}
+
+fn recovered_from_log(trees: &mut Trees, log: Option<Log>) -> Commits {
+    let cause = rewind();
+    let read = LogRead::new(trees, &cause, log);
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    commits.enter_recovery(cause.clone());
+    commits.recover(trees, 0, false, &cause, &read, &Marks::new(), &mut ids, NOW);
+    commits
+}
+
+#[test]
+fn a_rewound_file_follows_the_server_unless_the_new_history_logs_it_created_again() {
+    for (content_rev, recreated) in [(3, false), (9, true)] {
+        let synced = file(ROOT, "a", 2);
+        let mut trees = trees(
+            &[("n", synced.clone())],
+            &[("n", synced)],
+            &[live("n", file(ROOT, "a", 1))],
+        );
+        let first = RemoteNode {
+            content_rev,
+            meta_rev: 9,
+            ..trees.remote().get("n").unwrap().clone()
+        };
+        let log = Log::from([("n".to_owned(), vec![first])]);
+        let commits = recovered_from_log(&mut trees, Some(log));
+        let asked = match recreated {
+            true => vec![RecoveryGroup::CreatedAfterRestorePoint],
+            false => vec![],
+        };
+        assert_eq!(groups(&commits), asked, "content_rev {content_rev}");
+    }
+}
+
+#[test]
+fn without_the_new_historys_log_a_file_whose_synced_version_postdates_the_restore_point_is_held() {
+    for (committed_ms, held) in [(NOW - 1, false), (NOW + 1, true)] {
+        let synced = file(ROOT, "a", 2);
+        let mut trees = trees(
+            &[("n", synced.clone())],
+            &[("n", synced)],
+            &[live("n", file(ROOT, "a", 1))],
+        );
+        let mut state = trees.state();
+        let provenance = ContentProvenance {
+            synced: Some(version(&koidrive_engine::ids::uuid_v7(committed_ms, 5))),
+            ..ContentProvenance::default()
+        };
+        state.content_provenance.insert("n".into(), provenance);
+        trees.restore(state).unwrap();
+        trees.settle(&Default::default());
+        let commits = recovered_from_log(&mut trees, None);
+        let asked = match held {
+            true => vec![RecoveryGroup::CreatedAfterRestorePoint],
+            false => vec![],
+        };
+        assert_eq!(groups(&commits), asked, "committed at {committed_ms}");
     }
 }

@@ -16,7 +16,7 @@ use std::path::{Component, Path, PathBuf};
 use koidrive_engine::classify::{CHECK_EVERY, Pending, Trees};
 use koidrive_engine::commit::{Base, Commits, Halt};
 use koidrive_engine::effects::Effects;
-use koidrive_engine::first_link::History;
+use koidrive_engine::first_link::Log;
 use koidrive_engine::ids::{IdGen, unix_ms};
 use koidrive_engine::question as engine;
 use koidrive_engine::restore::RestoreIntent;
@@ -2073,7 +2073,7 @@ pub(crate) struct Staging {
     /// The head of the last `CaughtUp`.
     caught_up: Option<u64>,
     nodes: BTreeMap<String, NodeState>,
-    history: Option<(u64, History)>,
+    history: Option<(u64, Log)>,
 }
 
 fn edit_revs(node: &NodeState) -> (u64, u64) {
@@ -2141,7 +2141,7 @@ impl Staging {
     }
 
     pub fn read_history_since(&mut self, since: Base) -> Base {
-        self.history = Some((since.seq, History::new()));
+        self.history = Some((since.seq, Log::new()));
         since
     }
 
@@ -2149,7 +2149,7 @@ impl Staging {
         self.history.take().map(|_| &self.last)
     }
 
-    pub fn take_history(&mut self) -> Option<History> {
+    pub fn take_history(&mut self) -> Option<Log> {
         self.history.take().map(|(_, history)| history)
     }
 
@@ -2169,7 +2169,7 @@ impl Staging {
             if let Some(change_record::Change::Node(state)) = &change.change
                 && let Ok((id, node)) = RemoteNode::from_state(state)
             {
-                history.entry(id).or_default().push(node.shape);
+                history.entry(id).or_default().push(node);
             }
         }
     }

@@ -9,7 +9,7 @@ use std::fmt::Debug;
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::{Base, Commits, GIVEN_UP_KEPT, Halt};
 use koidrive_engine::effects::Effects;
-use koidrive_engine::first_link::History;
+use koidrive_engine::first_link::LogRead;
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::{LocalRules, RuleFile, Source};
 use koidrive_engine::names::name_key;
@@ -594,7 +594,7 @@ pub enum Message {
     Listing {
         nodes: Vec<NodeState>,
         head: Base,
-        history: History,
+        log: LogRead,
     },
 }
 
