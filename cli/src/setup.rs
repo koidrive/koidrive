@@ -212,7 +212,6 @@ impl ScriptArgs {
     }
 }
 
-/// How a setup or server command runs: guided, asking questions on the terminal, or direct, never asking.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Guided,
@@ -254,7 +253,6 @@ fn this_mode(json: bool, interactive: bool) -> Result<Mode, CliError> {
     )
 }
 
-/// A Koidrive server found in the account.
 struct Found {
     script: Script,
     bucket: Option<Bound>,
@@ -262,7 +260,6 @@ struct Found {
     info: Option<ServerInfo>,
 }
 
-/// The R2 bucket a server's Worker binds.
 #[derive(Clone)]
 struct Bound {
     name: String,

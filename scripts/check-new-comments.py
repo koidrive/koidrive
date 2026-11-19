@@ -22,7 +22,7 @@ LANGUAGES = {
 }
 PRAGMA = re.compile(r"^[/*!\s]*(SPDX-License-Identifier|SAFETY:|@generated|eslint-|prettier-ignore|swiftlint:|swift-tools-version:)")
 LINK = re.compile(r"https?://")
-CLAP_DERIVE = re.compile(r"derive\([^)]*\b(Parser|Subcommand|Args|ValueEnum)\b")
+CLAP_DERIVE = re.compile(r"derive\s*\([^)]*\b(Parser|Subcommand|Args|ValueEnum|JsonSchema)\b")
 MARKER = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b|\bfor now\b", re.IGNORECASE)
 INTERNAL = re.compile(r"^(server|apps/macos/Koidrive|cli/tests)/|(^|/)(tests?|Tests|examples|benches)/|(^|/)src/bin/|(^|/)(tests|build)\.rs$|\.test\.[cm]?[jt]sx?$")
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -258,8 +258,80 @@ def is_subsequence(words, run):
     return all(w in it for w in words)
 
 
-def macro_docs(src, lang):
-    return lang == "rust" and bool(CLAP_DERIVE.search(src))
+def clap_items(src, comments):
+    starts = dict(comments)
+    code, i, n = [], 0, len(src)
+    while i < n:
+        if i in starts:
+            i = starts[i]
+            continue
+        m = RUST_RAW.match(src, i)
+        if m and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] == "_")):
+            end = src.find('"' + m.group(1), m.end())
+            i = n if end < 0 else end + 1 + len(m.group(1))
+            continue
+        if src[i] == '"':
+            j = i + 1
+            while j < n and src[j] != '"':
+                j += 2 if src[j] == "\\" else 1
+            i = j + 1
+            continue
+        if src[i] == "'" and (m := RUST_CHAR.match(src, i)):
+            i = m.end()
+            continue
+        code.append(i)
+        i += 1
+
+    def close(k):
+        depth = 0
+        while k < len(code):
+            c = src[code[k]]
+            depth += c in "([{"
+            depth -= c in ")]}"
+            if depth == 0:
+                return k
+            k += 1
+        return len(code) - 1
+
+    attrs, k = {}, 0
+    while k < len(code):
+        if src[code[k]] == "#" and k + 1 < len(code) and src[code[k + 1]] in "[!":
+            b = k + 1 if src[code[k + 1]] == "[" else k + 2
+            e = close(b)
+            attrs[code[e] + 1] = (code[k], k, e)
+            k = e
+        k += 1
+    ends = {e: s for s, e in comments}
+    items = []
+    for end, (start, _, last) in attrs.items():
+        if not CLAP_DERIVE.search(src[start:end]):
+            continue
+        while True:
+            j = start
+            while j > 0 and src[j - 1].isspace():
+                j -= 1
+            if j in ends and not src.startswith(("//!", "/*!"), ends[j]):
+                start = ends[j]
+            elif j in attrs:
+                start = attrs[j][0]
+            else:
+                break
+        k = last + 1
+        while k < len(code) and not (src.startswith(("struct", "enum"), code[k]) and IDENT.match(src, code[k]).group() in ("struct", "enum") and not IDENT.match(src[code[k] - 1])):
+            k += 1
+        while k < len(code) and src[code[k]] not in "{(;":
+            k += 1
+        if k < len(code):
+            items.append((start, code[k] + 1 if src[code[k]] == ";" else code[close(k)] + 1))
+    return items
+
+
+def macro_lines(src, lang):
+    if lang != "rust" or not CLAP_DERIVE.search(src):
+        return set()
+    newlines = [k for k, ch in enumerate(src) if ch == "\n"]
+    lines = [(bisect.bisect_left(newlines, s) + 1, bisect.bisect_left(newlines, e - 1) + 1) for s, e in clap_items(src, comment_spans(src, lang))]
+    return {n for first, last in lines for n in range(first, last + 1)}
 
 
 def code_tokens(src, lang):
@@ -267,18 +339,19 @@ def code_tokens(src, lang):
     spans = comment_spans(src, lang, tokens)
     if lang != "rust":
         return tokens, []
+    items = clap_items(src, spans) if CLAP_DERIVE.search(src) else []
     docs, end = [], None
     for s, e in spans:
         text = src[s:e]
         if not is_doc(text, lang):
             end = None
             continue
-        if end is not None and re.fullmatch(r"\n[ \t]*", src[end:s]) and text[:3] == docs[-1][:3] and text.startswith(("///", "//!")):
-            docs[-1] += "\n" + text
+        if end is not None and re.fullmatch(r"\n[ \t]*", src[end:s]) and text[:3] == docs[-1][1][:3] and text.startswith(("///", "//!")):
+            docs[-1][1] += "\n" + text
         else:
-            docs.append(text)
+            docs.append([s, text])
         end = e
-    return tokens, [d for d in docs if macro_docs(src, lang) or "```" in d]
+    return tokens, [d for s, d in docs if any(a <= s < b for a, b in items) or "```" in d]
 
 
 def differences_beyond_comments(base, head):
@@ -347,7 +420,7 @@ def check(base, head):
         if not f["added"]:
             continue
         new_lines = comment_lines(new_src, lang)
-        help_text = macro_docs(new_src, lang)
+        help_lines = macro_lines(new_src, lang)
         for number in f["added"]:
             for doc, piece in new_lines.get(number, []):
                 words = [w.lower() for w in WORD.findall(piece)]
@@ -355,7 +428,7 @@ def check(base, head):
                     continue
                 if MARKER.search(piece):
                     problems.append((path, number, "marker", piece))
-                elif doc and help_text:
+                elif doc and number in help_lines:
                     continue
                 elif any(is_subsequence(words, run) for run in runs):
                     continue

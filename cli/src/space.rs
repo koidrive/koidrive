@@ -141,7 +141,6 @@ fn existing_space(spaces: &[SpaceInfo], name: &str) -> Result<Option<SpaceInfo>,
     }
 }
 
-/// One line per space: its ID and its name.
 pub(crate) fn space_table(spaces: &[SpaceInfo]) -> String {
     if spaces.is_empty() {
         return "No spaces. Create one with koi space create <name>.\n".to_owned();
@@ -257,7 +256,6 @@ pub(crate) fn total_bytes(usage: &SpaceUsage) -> u64 {
     usage.live_bytes + usage.trash_bytes + usage.old_version_bytes + usage.unreferenced_bytes
 }
 
-/// One block per space: its live files, trash, old versions and unreferenced chunks, then a note on how they count.
 pub(crate) fn usage_report(usages: &[(SpaceInfo, SpaceUsage)]) -> String {
     if usages.is_empty() {
         return "No spaces.\n".to_owned();
