@@ -7,5 +7,7 @@ message = '''(after phase <n>: write <n> of the .* of node <id> on device <n> is
 examples = [
   "not recorded: devices::devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds\tcc-74e37aa2bf801d15aab9bf0f584dddf33f51a77e14d48566c299c6ec6b7b18e4\tWriteKept\twrite 2 of the write of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 1 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it",
   "not recorded: devices::devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds\tcc-78f33ddc3d91d9ca24ee8db9ad24f0ca0437d7aef0592e880d853f42fbc7443a\tWriteKept\twrite 3 of the write of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 2 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it",
+  "not recorded: devices::devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds\tcc-570e17d678be8db7ebb4f77ea1126ef4fb3f78e9e54a571548f9a65426b4a44e\tWriteKept\twrite 2 of the write of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 2 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it",
+  "not recorded: devices::devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds\tcc-17e659c037e555323b11dcd2ee4741bd632f1ca7a6ffa45baf2f4c350fa9c144\tWriteKept\twrite 5 of the write of node 01a1c2c0-39a0-7ea7-93f8-3d888a182e12 on device 1 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it",
 ]
-cases = ["74e37aa2bf80", "78f33ddc3d91"]
+cases = ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"]

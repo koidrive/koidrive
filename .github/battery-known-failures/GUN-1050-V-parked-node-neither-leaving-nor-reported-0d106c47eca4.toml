@@ -1,0 +1,10 @@
+class = "V"
+issue = "GUN-1050"
+tests = ["a_device_whose_rules_change_deletes_nothing_on_either_side"]
+message = '''a parked node is neither on its way out nor reported at \S+\.rs:<line>\.'''
+examples = [
+  "a parked node is neither on its way out nor reported at core/sim/tests/engine_sync/common.rs:2199.",
+]
+cases = [
+  "0d106c47eca4",
+]
