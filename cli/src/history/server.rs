@@ -296,6 +296,29 @@ pub(super) fn deletions<'a>(
     found
 }
 
+pub(super) fn files_trashed_with(trash: &[NodeState], folder: &NodeState) -> u64 {
+    let trashed: HashMap<&str, &NodeState> = trash
+        .iter()
+        .map(|node| (node.node_id.as_str(), node))
+        .collect();
+    let inside = |node: &NodeState| {
+        let mut at = node;
+        for _ in 0..trash.len() {
+            match trashed.get(at.parent_id.as_str()) {
+                Some(parent) if parent.trash_group == at.trash_group => at = parent,
+                _ => return false,
+            }
+            if at.node_id == folder.node_id {
+                return true;
+            }
+        }
+        false
+    };
+    (trash.iter())
+        .filter(|node| node.kind() != NodeKind::Dir && inside(node))
+        .count() as u64
+}
+
 pub(super) fn content_size(version: Option<&VersionInfo>) -> u64 {
     version
         .and_then(|version| version.content.as_ref())

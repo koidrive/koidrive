@@ -37,8 +37,8 @@ mod server;
 use locate::below;
 use locate::{Located, lexical, linked_folders, locate, starts_with};
 use server::{
-    Deleted, content_size, deletions, device_names, find, kind, names_of, trash_nodes, tree,
-    versions_and_current,
+    Deleted, content_size, deletions, device_names, files_trashed_with, find, kind, names_of,
+    trash_nodes, tree, versions_and_current,
 };
 #[cfg(test)]
 use server::{every_page, versions_of};
@@ -329,12 +329,10 @@ async fn checked(
                 name: None,
             };
             let (kind, files) = match deleted.kind() {
-                NodeKind::Dir => {
-                    let files = (deletions(&live, &trashed, &HashMap::new(), space).into_iter())
-                        .find(|top| top.node.node_id == deleted.node_id)
-                        .map(|top| top.files);
-                    (ItemKind::Folder, files)
-                }
+                NodeKind::Dir => (
+                    ItemKind::Folder,
+                    Some(files_trashed_with(&trashed, deleted)),
+                ),
                 _ => (ItemKind::File, Some(1)),
             };
             (request, kind, files)
