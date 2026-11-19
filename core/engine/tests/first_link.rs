@@ -5640,3 +5640,12 @@ fn deleting_a_taken_along_server_folder_with_only_a_local_note_keeps_it_on_the_s
         &["n", "x"],
     );
 }
+
+#[test]
+fn deleting_only_the_discarded_note_in_a_taken_along_server_folder_keeps_it_taken_along() {
+    deleting_a_taken_along_folder_keeps_it_on_the_server(
+        ("n", file("x", "note", 3)),
+        false,
+        &["n"],
+    );
+}
