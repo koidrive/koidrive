@@ -357,10 +357,7 @@ fn a_stick_emptied_while_it_is_mounted_syncs_the_deletes() {
         disks.attach(&image, &at);
         on_the_disk(&at, &["report.docx", "Slides/deck.key"]);
         observed(&mut a, &mut remote);
-        assert!(
-            remote.tree().contains_key("Disk/report.docx"),
-            "{image:?}"
-        );
+        assert!(remote.tree().contains_key("Disk/report.docx"), "{image:?}");
         fs::remove_file(at.join("report.docx")).unwrap();
         fs::remove_dir_all(at.join("Slides")).unwrap();
         observed(&mut a, &mut remote);
