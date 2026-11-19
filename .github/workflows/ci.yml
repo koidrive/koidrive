@@ -494,10 +494,6 @@ jobs:
       - name: Test root identities on btrfs and ext4
         if: ${{ !cancelled() && runner.os == 'Linux' && needs.changes.outputs.rust == 'true' }}
         run: |
-          if ! command -v mkfs.btrfs > /dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq btrfs-progs
-          fi
           image="$RUNNER_TEMP/btrfs.img"
           truncate -s 256M "$image"
           mkfs.btrfs -q "$image"
@@ -515,10 +511,6 @@ jobs:
             ${{ needs.changes.outputs.rust == 'true' && 'koidrive-fs::volumes koidrive-fs=disk_swapped_while_a_scan koidrive-fs=mount_point_that_cannot_be_opened koidrive-test-support=disks' || '' }}
             ${{ needs.changes.outputs.rust_driver == 'true' && 'koidrive-driver=disk_ejected koidrive-driver=another_disk_mounted koidrive-driver=two_copies_of_one_disk koidrive-driver=mounted_over_synced koidrive-driver=disk_without_a_uuid koidrive-driver=before_an_upgrade koidrive-driver=stick' || '' }}
         run: |
-          if ! command -v mkfs.vfat > /dev/null || ! command -v mkfs.exfat > /dev/null || ! command -v tune.exfat > /dev/null || ! command -v sfdisk > /dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq dosfstools exfatprogs fdisk
-          fi
           read -ra terms <<<"$TERMS"
           cargo nextest run --binaries-metadata target/nextest/binaries-metadata.json --cargo-metadata target/nextest/cargo-metadata.json --workspace-remap . --target-dir-remap target --profile ci --success-output final \
             -E "$(python3 scripts/ci-rust-tests.py filter "${terms[@]}")"
@@ -990,7 +982,9 @@ jobs:
           persist-credentials: false
       - name: Install shell test tools on Linux
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y shellcheck zsh fish
+        uses: ./.github/actions/apt-packages
+        with:
+          packages: shellcheck zsh fish
       - name: Install shell test tools on macOS
         if: runner.os == 'macOS'
         run: brew install shellcheck fish

@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: apt packages
+description: Install Ubuntu packages from .debs cached for this package list, reaching the Ubuntu mirror only when no cached set installs them. The cache is saved only from main.
+inputs:
+  packages:
+    description: Space-separated Ubuntu package names
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: plan
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        read -ra packages <<<"$PACKAGES"
+        missing=()
+        for package in "${packages[@]}"; do
+          [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null)" == *" installed" ]] || missing+=("$package")
+        done
+        hash=$(printf '%s\n' "${packages[@]}" | sort -u | sha256sum | cut -c1-16)
+        prefix="apt-$ImageOS-$RUNNER_ARCH-$hash-"
+        {
+          echo "missing=${missing[*]}"
+          echo "prefix=$prefix"
+          echo "key=$prefix$ImageVersion"
+          echo "dir=$RUNNER_TEMP/apt-packages-$hash"
+        } >> "$GITHUB_OUTPUT"
+        if [ ${#missing[@]} -eq 0 ]; then
+          echo "The runner image already has ${packages[*]}."
+        fi
+    - if: github.ref == 'refs/heads/main'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.plan.outputs.dir }}
+        key: ${{ steps.plan.outputs.key }}
+        restore-keys: ${{ steps.plan.outputs.prefix }}
+    - if: github.ref != 'refs/heads/main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.plan.outputs.dir }}
+        key: ${{ steps.plan.outputs.key }}
+        restore-keys: ${{ steps.plan.outputs.prefix }}
+    - if: steps.plan.outputs.missing != ''
+      shell: bash
+      env:
+        MISSING: ${{ steps.plan.outputs.missing }}
+        DIR: ${{ steps.plan.outputs.dir }}
+      run: |
+        read -ra missing <<<"$MISSING"
+        apt=(sudo apt-get -y -q -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o DPkg::Lock::Timeout=120 -o APT::Sandbox::User=root)
+        installed() { [[ "$(dpkg-query -W -f='${Status}' "$1" 2>/dev/null)" == *" installed" ]]; }
+        all_installed() {
+          local package
+          for package in "${missing[@]}"; do
+            installed "$package" || return 1
+          done
+        }
+        if compgen -G "$DIR/*.deb" > /dev/null; then
+          debs=()
+          for deb in "$DIR"/*.deb; do
+            installed "$(dpkg-deb -f "$deb" Package)" || debs+=("$deb")
+          done
+          if [ ${#debs[@]} -gt 0 ] && sudo dpkg -i "${debs[@]}" && all_installed; then
+            echo "Installed ${missing[*]} from the cached .debs without the Ubuntu mirror."
+            exit 0
+          fi
+          echo "::warning::The cached .debs did not install ${missing[*]}, so they are downloaded from the Ubuntu mirror."
+        fi
+        rm -rf "$DIR"
+        mkdir -p "$DIR/partial"
+        "${apt[@]}" update || echo "::warning::apt-get update failed for some sources; installing with the package lists it fetched."
+        if ! "${apt[@]}" install -o Dir::Cache::Archives="$DIR" "${missing[@]}" || ! all_installed; then
+          echo "::error::Installing ${missing[*]} from the Ubuntu mirror failed (see the apt errors above), and no cached .debs installed them."
+          exit 1
+        fi
+        sudo rm -rf "$DIR/partial" "$DIR/lock"
+        echo "Installed ${missing[*]} from the Ubuntu mirror."
