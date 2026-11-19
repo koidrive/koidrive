@@ -7,13 +7,14 @@ const bindings = { KOIDRIVE_RECOVERY_KEY: "test-recovery-key-for-local-workerd-o
 /** Fills a Durable Object with sql.setMaxPageCountForTest, which workerd offers only under its experimental flag. */
 const STORAGE_FULL = "test/storage-full.test.ts";
 const SETUP = "test/setup.ts";
+const provide = { batteryCases: process.env.KOIDRIVE_BATTERY_CASES ?? "", deterministic: process.env.KOIDRIVE_PROPTEST_DETERMINISTIC ?? "" };
 
 export default defineConfig({
   test: {
     projects: [
       {
         plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.jsonc" }, miniflare: { bindings } })],
-        test: { name: "server", exclude: [...configDefaults.exclude, STORAGE_FULL], setupFiles: [SETUP] },
+        test: { name: "server", exclude: [...configDefaults.exclude, STORAGE_FULL], setupFiles: [SETUP], provide },
       },
       {
         plugins: [cloudflareTest({ wrangler: { configPath: "./wrangler.jsonc" }, miniflare: { bindings, compatibilityFlags: ["experimental"] } })],
