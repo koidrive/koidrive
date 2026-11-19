@@ -197,7 +197,7 @@ fn reads_sha256_indexes_with_the_object_format_of_the_common_dir() {
     let config = root.join(".git/config");
     let text = fs::read_to_string(&config).unwrap();
     let text = text.replace("[extensions]", "[x]\n\ty = a\\\\\n[extensions]\n# c \\");
-    fs::write(&config, text.replace("sha512", "sha\\\n256")).unwrap();
+    fs::write(&config, text.replace("sha512", "sha\"\\\n25\"6")).unwrap();
     assert_eq!(answers(&read(root), "a.txt"), "y");
 }
 

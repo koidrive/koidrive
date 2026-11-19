@@ -199,9 +199,16 @@ fn object_format(config: &str) -> Option<String> {
     while let Some(char) = chars.next() {
         match char {
             '\n' => (quoted, comment) = (false, false),
-            '"' if !comment => quoted = !quoted,
-            '#' | ';' if !quoted => comment = true,
-            '\\' if !comment => {
+            _ if comment => continue,
+            '"' => {
+                quoted = !quoted;
+                continue;
+            }
+            '#' | ';' if !quoted => {
+                comment = true;
+                continue;
+            }
+            '\\' => {
                 match chars.next() {
                     Some('\n') => {}
                     Some('\r') if chars.next_if_eq(&'\n').is_some() => {}
@@ -223,8 +230,7 @@ fn object_format(config: &str) -> Option<String> {
         }
         let (key, value) = line.split_once('=').unwrap_or((line, ""));
         if section == "extensions" && key.trim().eq_ignore_ascii_case("objectformat") {
-            let value = value.split(['#', ';']).next().unwrap_or_default().trim();
-            format = Some(value.trim_matches('"').to_owned());
+            format = Some(value.trim().to_owned());
         }
     }
     format
