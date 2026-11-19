@@ -333,9 +333,19 @@ impl Intents {
         ino: u128,
         value: Value,
         answer: Answered,
+        held: bool,
     ) {
+        let discarded = answer == Answered::Settles
+            && !held
+            && (self.list.iter()).any(|intent| {
+                intent.discarded
+                    && (intent.author, intent.ino) == (author, ino)
+                    && intent.value == value
+            });
         self.record(author, made, ino, "publish", value);
-        self.list.last_mut().expect("recorded above").answer = Some(answer);
+        let intent = self.list.last_mut().expect("recorded above");
+        intent.answer = Some(answer);
+        intent.discarded = discarded;
     }
 
     pub(super) fn ino_of(&self, d: usize, node: &NodeId) -> Option<u128> {
@@ -1000,9 +1010,9 @@ mod tests {
         };
         let server = Server::of("root", vec![at_a]);
         let ok = |intents: &Intents| intents.check(&server, |_| false, |_, _| false).is_ok();
-        intents.answered(0, 1, 1, content(1), Answered::Settles);
+        intents.answered(0, 1, 1, content(1), Answered::Settles, false);
         assert!(ok(&intents));
-        intents.answered(0, 2, 1, content(2), Answered::Owed);
+        intents.answered(0, 2, 1, content(2), Answered::Owed, false);
         assert!(!ok(&intents));
         intents.record(0, 3, 1, "move", place("a"));
         intents.record(0, 3, 1, "move", place("b"));
@@ -1033,6 +1043,21 @@ mod tests {
         intents.give_up(&server, 0, &[NodeId::from("n")].into());
         assert!(!intents.placed(Some(0), "n", "root", "A", "root"));
         assert!(intents.discarded_place(Some(0), "n", "root", "A", "root"));
+    }
+
+    #[test]
+    fn a_settled_answer_does_not_give_back_a_place_its_user_discarded() {
+        let mut intents = Intents::new(1);
+        intents.nodes[0].insert(1, ["n".to_owned()].into());
+        let place = || Value::Place {
+            parent: None,
+            name: "p".to_owned(),
+        };
+        intents.record(0, 1, 1, "move", place());
+        intents.give_up(&Server::of("root", Vec::new()), 0, &["n".to_owned()].into());
+        intents.answered(0, 2, 1, place(), Answered::Settles, false);
+        assert!(!intents.placed(Some(0), "n", "root", "p", "root"));
+        assert!(intents.discarded_place(Some(0), "n", "root", "p", "root"));
     }
 
     #[test]

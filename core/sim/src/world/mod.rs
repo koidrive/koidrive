@@ -1506,7 +1506,9 @@ impl World {
             _ => {}
         }
         for (ino, value, answered) in published {
-            self.intents.answered(d, self.moment, ino, value, answered);
+            let held = ids.iter().any(|id| self.intents.ino_of(d, id) == Some(ino));
+            self.intents
+                .answered(d, self.moment, ino, value, answered, held);
         }
         assert!(engine.commits.decide(&question.id, answer));
         if !down {
