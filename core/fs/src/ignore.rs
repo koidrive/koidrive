@@ -232,7 +232,8 @@ impl Rules {
     }
 
     pub(crate) fn searching(&self) -> bool {
-        !self.search.pending.is_empty()
+        let search = &self.search;
+        (search.held.values()).any(|entry| search.pending.contains_key(&(entry.id, entry.kind)))
     }
 
     pub(crate) fn held(&self) -> Option<&BTreeMap<PathBuf, Entry>> {

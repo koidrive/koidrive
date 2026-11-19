@@ -516,3 +516,33 @@ fn a_sought_entry_below_a_folder_the_search_could_not_open_is_searched_for_again
     fs::remove_file(locked.join("f.txt")).unwrap();
     assert_eq!(look(), [(PathBuf::from("f.txt"), Looked::Gone)]);
 }
+
+#[test]
+fn a_poll_waits_out_its_interval_while_only_a_sought_entry_is_searched_for() {
+    let dir = large_ignored_tree();
+    let root = dir.path();
+    write(root, "f.txt", "f");
+    let mut rules = rules().with_search_budget(100);
+    let id = Snapshot::scan_with_rules(root, &mut rules).unwrap().entries[Path::new("f.txt")].id;
+    fs::rename(root.join("f.txt"), root.join("ig/zz/deep/f.txt")).unwrap();
+    let snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let scans = Arc::new(AtomicUsize::new(0));
+    let interval = Duration::from_millis(500);
+    let mut watcher = RescanWatcher::with_rules(root, snapshot, interval, rules)
+        .unwrap()
+        .counting({
+            let scans = scans.clone();
+            move |found| {
+                if found == 1 {
+                    scans.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+    let wanted = BTreeMap::from([(PathBuf::from("f.txt"), Known { kind: File, id })]);
+    assert_eq!(watcher.look_for(&wanted, &BTreeMap::new()).unwrap(), []);
+
+    watcher.poll(interval).unwrap();
+    assert!(scans.load(Ordering::Relaxed) <= 3, "{scans:?}");
+}
