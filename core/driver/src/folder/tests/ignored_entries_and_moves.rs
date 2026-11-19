@@ -1093,7 +1093,6 @@ fn a_missed_file_beside_a_folder_the_guard_holds_is_not_counted_as_its_deletion(
 }
 
 #[test]
-#[ignore = "needs the question redraw on rename from #831"]
 fn a_held_file_is_listed_where_the_server_holds_it_after_a_move() {
     let cases: [(&str, &[&str], &[&str]); 3] = [
         (
