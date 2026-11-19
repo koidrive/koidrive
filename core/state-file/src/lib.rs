@@ -461,47 +461,57 @@ fn recover_locked(directory: &File) -> io::Result<usize> {
         if !is_stage(name.as_bytes()) {
             continue;
         }
-        let named = match fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
-            Ok(named) => named,
-            Err(rustix::io::Errno::NOENT) => continue,
-            Err(error) => return Err(error.into()),
-        };
-        if FileType::from_raw_mode(named.st_mode) != FileType::RegularFile
-            || named.st_uid != rustix::process::getuid().as_raw()
-        {
-            continue;
-        }
-        let mut file = None;
-        for access in [OFlags::RDONLY, OFlags::WRONLY] {
-            match fs::openat(
-                directory,
-                name,
-                access | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-                Mode::empty(),
-            ) {
-                Ok(opened) => {
-                    file = Some(File::from(opened));
-                    break;
-                }
-                Err(rustix::io::Errno::ACCESS | rustix::io::Errno::PERM) => {}
-                Err(rustix::io::Errno::NOENT | rustix::io::Errno::LOOP) => break,
-                Err(error) => return Err(error.into()),
+        match recover_stage(directory, name) {
+            Ok(removed) => recovered += usize::from(removed),
+            Err(error) => {
+                tracing::warn!(%error, stage = ?name, "an abandoned state-file stage was left in place");
             }
-        }
-        let Some(file) = file else {
-            continue;
-        };
-        let metadata = fs::fstat(&file)?;
-        if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
-            || metadata.st_uid != rustix::process::getuid().as_raw()
-        {
-            continue;
-        }
-        if let Some(abandoned) = Flock::take(file)?
-            && same_inode(directory, name, &abandoned)?
-        {
-            recovered += usize::from(unlink_obsolete(directory, name)?);
         }
     }
     Ok(recovered)
+}
+
+fn recover_stage(directory: &File, name: &OsStr) -> io::Result<bool> {
+    let named = match fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(named) => named,
+        Err(rustix::io::Errno::NOENT) => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    if FileType::from_raw_mode(named.st_mode) != FileType::RegularFile
+        || named.st_uid != rustix::process::getuid().as_raw()
+    {
+        return Ok(false);
+    }
+    let mut file = None;
+    for access in [OFlags::RDONLY, OFlags::WRONLY] {
+        match fs::openat(
+            directory,
+            name,
+            access | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(opened) => {
+                file = Some(File::from(opened));
+                break;
+            }
+            Err(rustix::io::Errno::ACCESS | rustix::io::Errno::PERM) => {}
+            Err(rustix::io::Errno::NOENT | rustix::io::Errno::LOOP) => break,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let Some(file) = file else {
+        return Ok(false);
+    };
+    let metadata = fs::fstat(&file)?;
+    if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
+        || metadata.st_uid != rustix::process::getuid().as_raw()
+    {
+        return Ok(false);
+    }
+    match Flock::take(file)? {
+        Some(abandoned) if same_inode(directory, name, &abandoned)? => {
+            unlink_obsolete(directory, name)
+        }
+        _ => Ok(false),
+    }
 }
