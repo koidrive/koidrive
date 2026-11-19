@@ -822,13 +822,17 @@ impl Engine {
     /// follows its scan of the whole tree and lists every rules file, so from the first call on the trees know the
     /// rules, and the engine plans again (design §5.10), except below a folder that could not be read
     /// ([`Engine::read`]). The rules of a folder whose path L cannot hold are left out, since no node is below it.
-    /// When `all` is set the batch lists every rules file its scans read, and the trees forget the rules they had.
-    pub fn rules(&mut self, rules: Vec<RulesChange>, all: bool) {
-        if !all && rules.is_empty() && self.trees.rules_known() {
-            self.unscanned = None;
-            return;
-        }
-        self.unscanned = (all || !rules.is_empty()).then(|| {
+    /// `tracked` holds the files the git index of each work tree lists, for the work trees whose index the batch's
+    /// scans read with other files listed (RFC 0033 §4). When `all` is set the batch lists every rules file and every
+    /// work tree's files its scans read, and the trees forget the ones they had.
+    pub fn rules(
+        &mut self,
+        rules: Vec<RulesChange>,
+        tracked: Vec<(PathBuf, Vec<String>)>,
+        all: bool,
+    ) {
+        let changed = all || !rules.is_empty();
+        self.unscanned = changed.then(|| {
             (self.trees.local().iter())
                 .filter(|(id, node)| node.shape.kind == Kind::Dir && !self.scanned(id))
                 .map(|(id, _)| id.clone())
@@ -842,17 +846,13 @@ impl Engine {
                 self.trees.set_rules(&dir, source, rules);
             }
         }
-        self.trees.rules_scanned();
-    }
-
-    /// Gives the trees the files the git index of each work tree lists, for the work trees whose index the batch's scans
-    /// read with other files listed (RFC 0033 §4). Call it after [`Engine::rules`], which forgets them with every rules
-    /// file when the batch lists all.
-    pub fn tracked(&mut self, tracked: Vec<(PathBuf, Vec<String>)>) {
         for (tree, paths) in tracked {
             if let Some(tree) = names(&tree) {
                 self.trees.set_tracked(&tree, &paths);
             }
+        }
+        if changed || !self.trees.rules_known() {
+            self.trees.rules_scanned();
         }
     }
 
@@ -3163,6 +3163,7 @@ mod tests {
                         source: koidrive_fs::Source::Koiignore,
                         rules: Some(koidrive_engine::ignore::RuleFile::parse(b"ig/\n")),
                     }],
+                    Vec::new(),
                     true,
                 );
                 observe_rescan(&mut engine, &mut snapshot, &root, &mut rules);
@@ -3586,7 +3587,7 @@ mod tests {
             source: koidrive_fs::Source::Koiignore,
             rules: Some(koidrive_engine::ignore::RuleFile::parse(b"*.log\n")),
         };
-        engine.rules(vec![log()], true);
+        engine.rules(vec![log()], Vec::new(), true);
         let proj = Observed::Created {
             path: "proj".into(),
             kind: EntryKind::Dir,
@@ -3598,9 +3599,9 @@ mod tests {
         engine.observe(&[proj, created("proj/build.log", ino(2), false, 1)], 0);
         let (log_id, _, _) = holding(&engine, "proj/build.log").unwrap();
         assert!(engine.trees.excluded(&log_id));
-        engine.rules(Vec::new(), false);
+        engine.rules(Vec::new(), Vec::new(), false);
         assert!(engine.trees.excluded(&log_id), "no rules file changed");
-        engine.rules(Vec::new(), true);
+        engine.rules(Vec::new(), Vec::new(), true);
         assert!(!engine.trees.excluded(&log_id), "no rules file is left");
     }
 
@@ -3612,8 +3613,11 @@ mod tests {
             source: koidrive_fs::Source::Gitignore,
             rules: Some(koidrive_engine::ignore::RuleFile::parse(b"dist/\n")),
         };
-        engine.rules(vec![dist], true);
-        engine.tracked(vec![("".into(), vec!["dist/app.js".into()])]);
+        engine.rules(
+            vec![dist],
+            vec![("".into(), vec!["dist/app.js".into()])],
+            true,
+        );
         let folder = Observed::Created {
             path: "dist".into(),
             kind: EntryKind::Dir,
@@ -3630,7 +3634,7 @@ mod tests {
         let excluded =
             |engine: &Engine, path| engine.trees.excluded(&holding(engine, path).unwrap().0);
         assert!(!excluded(&engine, "dist/app.js") && excluded(&engine, "dist/other.js"));
-        engine.tracked(vec![("".into(), Vec::new())]);
+        engine.rules(Vec::new(), vec![("".into(), Vec::new())], false);
         assert!(excluded(&engine, "dist/app.js"));
     }
 
@@ -4663,7 +4667,7 @@ mod tests {
                         .map(koidrive_engine::ignore::RuleFile::parse),
                 })
                 .collect();
-            engine.rules(changes, false);
+            engine.rules(changes, Vec::new(), false);
             let batch: Vec<Observed> = (rescan.changes.into_iter())
                 .filter_map(|change| match change {
                     Change::Removed { path, kind } => Some(Observed::Removed { path, kind }),
@@ -4694,6 +4698,7 @@ mod tests {
                 source: koidrive_fs::Source::Koiignore,
                 rules: ignored,
             }],
+            Vec::new(),
             true,
         );
         observe_rescan(&mut engine, &mut snapshot, &root, &mut rules);

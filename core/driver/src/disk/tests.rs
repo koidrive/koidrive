@@ -301,7 +301,7 @@ impl Folder {
     /// without rules files: the engine plans.
     fn start(&self, hook: Option<Hook>) -> Result<Running, Stop> {
         let mut running = self.start_unobserved(hook)?;
-        running.engine.rules(Vec::new(), true);
+        running.engine.rules(Vec::new(), Vec::new(), true);
         Ok(running)
     }
 
