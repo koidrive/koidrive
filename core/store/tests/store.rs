@@ -3498,12 +3498,13 @@ fn an_upgrade_cannot_hide_an_offline_edit_behind_a_newer_store_mtime() {
         .find(|node| node.shape.name == "pending.txt")
         .unwrap();
     let ctimes = store.read(|tx| tx.local_ctimes()).unwrap();
-    snapshot.entries.get_mut(name).unwrap().ctime = Ctime::NotAfter(
+    let ctime = Ctime::NotAfter(
         ctimes
             .get(&node.node_id.to_string())
             .copied()
             .map_or(i128::MIN, i128::from),
     );
+    snapshot.entries.update(name, |entry| entry.ctime = ctime);
     let scan = snapshot.rescan(&root, [std::path::PathBuf::new()]).unwrap();
     assert_eq!(scan.changes, [Change::Modified { path: name.into() }]);
 }
