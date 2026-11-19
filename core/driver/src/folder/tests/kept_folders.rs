@@ -1625,3 +1625,89 @@ fn a_viewer_keeping_a_folder_reports_a_file_made_at_its_name() {
         (FolderState::UpToDate, true)
     );
 }
+
+/// The server holds `Disk/report.docx` and `files` files below `Disk/.DocumentRevisions-V100`, as a client that
+/// synced what a disk's system writes left them.
+fn system_files_on_the_server(files: usize) -> Remote {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site.root.join("Disk")).unwrap();
+    fs::write(site.root.join("Disk/report.docx"), b"report").unwrap();
+    for i in 0..files {
+        let path = site.root.join(format!(
+            "Disk/revisions/PerUID/501/{:02}/{i:08x}.docx",
+            i % 50
+        ));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, b"v").unwrap();
+    }
+    a.rescan();
+    a.rest(&mut remote);
+    drop(a);
+    let nodes = server_nodes(&remote);
+    let older = Caller {
+        device_id: "older".into(),
+        ..site.caller.clone()
+    };
+    let rename = koidrive_proto::v1::Move {
+        node_id: live_id(&nodes, "revisions"),
+        new_parent_id: live_id(&nodes, "Disk"),
+        new_name: ".DocumentRevisions-V100".into(),
+        ..Default::default()
+    };
+    let commit = Commit {
+        commit_id: koidrive_engine::ids::uuid_v7(NOW as u64, 1),
+        history_id: remote.space.history_id().to_owned(),
+        base_seq: remote.space.head_seq(),
+        device_seq: 1,
+        ops: vec![Op {
+            op: Some(op::Op::Move(rename)),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    remote.commit(&older, &commit).unwrap();
+    remote
+}
+
+/// A device linked after the system files reached the server deletes `Disk`. Returns the server and the device.
+fn deleted_on_a_new_device(files: usize, delete_limit: Option<usize>) -> (Remote, Device) {
+    let mut remote = system_files_on_the_server(files);
+    remote.delete_limit = delete_limit;
+    let (site, mut b) = linked(&mut remote, "b");
+    b.rest(&mut remote);
+    assert_eq!(names(&site.root.join("Disk")), ["report.docx"]);
+    fs::remove_dir_all(site.root.join("Disk")).unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    assert!(remote.names().is_empty(), "{:?}", remote.names());
+    let view = b.folder.view();
+    assert_eq!((view.state, view.problem), (FolderState::UpToDate, None));
+    (remote, b)
+}
+
+fn delete_ops(commit: &Commit) -> usize {
+    (commit.ops.iter())
+        .filter(|op| matches!(op.op, Some(op::Op::Delete(_))))
+        .count()
+}
+
+#[test]
+fn a_folder_deleted_on_a_device_that_never_held_its_system_files_leaves_the_server() {
+    let (_, b) = deleted_on_a_new_device(3, None);
+    assert_eq!(b.sent.iter().map(delete_ops).collect::<Vec<_>>(), [1]);
+}
+
+#[test]
+fn system_files_only_the_server_holds_leave_with_their_folder_in_pieces() {
+    let (_, b) = deleted_on_a_new_device(2000, None);
+    let pieces = (b.sent.iter()).filter(|commit| delete_ops(commit) > 0);
+    assert!(pieces.count() > 1);
+}
+
+#[test]
+fn a_system_folder_the_server_refuses_to_delete_at_once_is_deleted_in_pieces() {
+    let (remote, b) = deleted_on_a_new_device(300, Some(100));
+    let refused = (b.sent.iter()).filter(|commit| !remote.results.contains_key(&commit.commit_id));
+    assert!(refused.count() > 0);
+}

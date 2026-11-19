@@ -610,6 +610,27 @@ fn deleting_a_folder_whose_excluded_nodes_are_all_built_in_deletes_it_with_them(
 }
 
 #[test]
+fn deleting_a_folder_deletes_the_system_folders_in_it_that_only_the_server_holds() {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "Disk")),
+        synced("doc", file("d", "report.docx", 1)),
+        ("trashes", None, None, Some(dir("d", ".Trashes"))),
+        ("old", None, None, Some(file("trashes", "old.docx", 2))),
+    ]);
+    assert_eq!(ops(&mut trees), []);
+    for id in ["doc", "d"] {
+        trees.remove_local(id);
+    }
+    assert_eq!(ops(&mut trees), [delete("d")]);
+    for id in ["d", "doc", "trashes", "old"] {
+        trash(&mut trees, id);
+    }
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(effects(&mut trees), []);
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
 fn a_deleted_folder_that_also_holds_a_node_the_rules_exclude_stays_and_its_system_folders_go() {
     let mut trees = trees(&[
         synced("d", dir(ROOT, "Disk")),
