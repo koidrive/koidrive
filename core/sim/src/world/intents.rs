@@ -226,6 +226,17 @@ impl Server {
         (self.nodes.get(id)).filter(|node| node.status == NodeStatus::Live as i32)
     }
 
+    pub(super) fn live_with(&self, write: i64) -> impl Iterator<Item = &NodeId> {
+        (self.nodes.iter())
+            .filter(move |(_, node)| {
+                node.status == NodeStatus::Live as i32
+                    && (node.current.as_ref())
+                        .and_then(|version| version.content.as_ref())
+                        .is_some_and(|content| tag(content) == write)
+            })
+            .map(|(id, _)| id)
+    }
+
     pub(super) fn above(&self, id: &NodeId) -> Vec<NodeId> {
         let mut chain = Vec::new();
         let mut at = self.nodes.get(id).map(|node| node.parent_id.as_str());
