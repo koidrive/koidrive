@@ -2989,3 +2989,31 @@ fn a_file_moved_over_another_waits_for_the_answer_to_a_question_about_the_others
     assert_eq!(fs::read(site.root.join("x")).unwrap(), b"kept");
     assert!(after.iter().any(|node| node.1 == x && !node.2), "{after:?}");
 }
+
+#[test]
+fn a_file_opened_after_its_folder_left_the_root_never_reaches_the_server() {
+    let mut remote = Remote::new();
+    let (site, mut device) = linked(&mut remote, "a");
+    device.create(
+        &mut remote,
+        &site.root.join("seed"),
+        b"already on the server",
+    );
+    device.settle();
+    let outside = tempfile::tempdir().unwrap();
+    fs::create_dir(site.root.join("a")).unwrap();
+    fs::write(site.root.join("a/1.txt"), b"already on the server").unwrap();
+    fs::write(site.root.join("a/2.txt"), b"already on the server").unwrap();
+    let (root, out) = (site.root.clone(), outside.path().to_path_buf());
+    crate::observe::before_next_file_open(
+        "a/2.txt".into(),
+        Box::new(move || fs::rename(root.join("a"), out.join("moved")).unwrap()),
+    );
+    device.scan_until(|_| outside.path().join("moved").exists());
+    let work = device.run(&mut remote);
+    assert!(
+        !remote.names().iter().any(|name| name == "2.txt"),
+        "a file read after its folder left the root was uploaded; work: {work:?}, remote: {:?}",
+        remote.names()
+    );
+}
