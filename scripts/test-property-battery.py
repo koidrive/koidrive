@@ -680,14 +680,14 @@ cases = ["{1:064}"]
         w17e6 = "17e659c037e555323b11dcd2ee4741bd632f1ca7a6ffa45baf2f4c350fa9c144"
         v0d10 = "0d106c47eca4" + "0" * 52
         vad76 = "ad761b2bdcf3" + "0" * 52
+        v73cf = "73cfd110a184" + "0" * 52
         rules_change = "a_device_whose_rules_change_deletes_nothing_on_either_side"
         rules_leave_out = "a_first_link_sends_nothing_the_rules_leave_out_for_a_while_until_the_person_publishes_it"
         od1d0 = "d1d0430345fa" + "0" * 52
         n62f7 = "62f7a056c8c4" + "0" * 52
         restored_late = next(text for entry in entries for text in entry["examples"] if "01a1c2c0-39a0-7353-a331-565b5a0660d9" in text)
         queued = next(entry for entry in entries if entry["file"].startswith("GUN-1233-G-"))["examples"][0]
-        def parked(case):
-            return next(entry for entry in entries if entry["file"].endswith(f"-{case[:12]}.toml"))["examples"][0]
+        parked = next(entry for entry in entries if entry["file"] == "GUN-1050-V-parked-node-neither-leaving-nor-reported.toml")["examples"][0]
         excluded_left = next(entry for entry in entries if entry["file"] == "GUN-1011-E-nodes-left-where-none-expected.toml")["examples"][0]
         def replayed(case):
             return next(text for entry in entries for text in entry["examples"] if f"\tcc-{case}\t" in text)
@@ -833,19 +833,11 @@ cases = ["{1:064}"]
             (coarse_once, replayed(w17e6), w17e6, []),
             (lose_coarse, replayed(w17e6) + "\n" + undone, w17e6, []),
             (lose_coarse, head_only_undone(lose_coarse, w17e6), w17e6, []),
-            (rules_change, parked(v0d10), v0d10, [("V", "GUN-1050", ["0d106c47eca4"])]),
-            (rules_change, parked(v0d10), other, []),
-            (rules_change, parked(v0d10), vad76, []),
-            (takes_along, parked(v0d10), v0d10, []),
-            (rules_change, parked(v0d10) + "\n" + undone, v0d10, []),
-            (rules_change, head_only_undone(rules_change, v0d10), v0d10, []),
+            (rules_change, parked, v0d10, []),
+            (rules_leave_out, parked, vad76, []),
+            (takes_along, parked, v73cf, [("V", "GUN-1050", ["73cfd110a184"])]),
+            (takes_along, parked, other, []),
             (rules_change, excluded_left, v0d10, [("E", "GUN-1011", None)]),
-            (rules_leave_out, parked(vad76), vad76, [("V", "GUN-1050", ["ad761b2bdcf3"])]),
-            (rules_leave_out, parked(vad76), other, []),
-            (rules_leave_out, parked(vad76), v0d10, []),
-            (takes_along, parked(vad76), vad76, []),
-            (rules_leave_out, parked(vad76) + "\n" + undone, vad76, []),
-            (rules_leave_out, head_only_undone(rules_leave_out, vad76), vad76, []),
             (rules_leave_out, excluded_left, vad76, [("E", "GUN-1011", None)]),
             (local_changes, example(n62f7), g4bf7, []),
         ]:

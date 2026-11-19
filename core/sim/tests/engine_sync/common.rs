@@ -2177,10 +2177,18 @@ fn run_ignoring_answering_after(
     let reported =
         koidrive_engine::effects::stuck(&device.trees, &effects, commits.in_flight(), &renaming);
     let local = device.trees.local();
+    let inside_itself = |id: &str, folder: &str| {
+        folder == id
+            || std::iter::successors(local.get(folder), |node| local.get(&node.shape.parent))
+                .take(local.len())
+                .take_while(|node| !node.parked)
+                .any(|node| node.shape.parent == id)
+    };
     let unreachable = |id: &str, shape: &koidrive_engine::tree::Shape| {
         let folder = shape.parent == local.root
             || (local.get(&shape.parent)).is_some_and(|node| node.shape.kind == Kind::Dir);
         !folder
+            || inside_itself(id, &shape.parent)
             || (local.iter()).any(|(other, node)| {
                 other != id
                     && !node.parked
