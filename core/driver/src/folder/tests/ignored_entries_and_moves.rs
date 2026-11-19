@@ -1094,24 +1094,20 @@ fn a_missed_file_beside_a_folder_the_guard_holds_is_not_counted_as_its_deletion(
 
 #[test]
 fn a_held_file_is_listed_where_the_server_holds_it_after_a_move() {
-    let cases: [(&str, &[&str], &[&str]); 3] = [
-        (
-            "d renamed on a",
-            &["e/notes.txt", "e/report.txt"],
-            &[".koiignore", "e", "notes.txt", "report.txt"],
-        ),
-        (
-            "d renamed on b",
-            &["e/notes.txt", "e/report.txt"],
-            &[".koiignore", "e", "notes.txt", "report.txt"],
-        ),
-        (
-            "notes.txt moved on b",
-            &["d/report.txt", "notes.txt"],
-            &[".koiignore", "d", "notes.txt", "report.txt"],
-        ),
+    let (in_e, in_d): (&[&str], &[&str]) = (
+        &["e/notes.txt", "e/report.txt"],
+        &["d/report.txt", "notes.txt"],
+    );
+    let all_e: &[&str] = &[".koiignore", "e", "notes.txt", "report.txt"];
+    let all_d: &[&str] = &[".koiignore", "d", "notes.txt", "report.txt"];
+    let (moved, delete, restore) = ("notes.txt moved on b", Answer::Delete, Answer::Restore);
+    let cases: [(&str, &[&str], &[&str], Answer, &[&str]); 4] = [
+        ("d renamed on a", in_e, all_e, delete, &[".koiignore", "e"]),
+        ("d renamed on b", in_e, all_e, restore, all_e),
+        (moved, in_d, all_d, delete, &[".koiignore", "d"]),
+        (moved, in_d, all_d, restore, all_d),
     ];
-    for (case, items, names) in cases {
+    for (case, items, names, given, after) in cases {
         let mut remote = Remote::new();
         let ((site_a, mut a), (site_b, mut b)) = missed_on_a(&mut remote);
         let (site, device, from, to) = match case {
@@ -1140,5 +1136,19 @@ fn a_held_file_is_listed_where_the_server_holds_it_after_a_move() {
         assert_eq!(deletes(&a), Vec::<String>::new(), "{case}");
         assert_eq!(remote.names(), names, "{case}");
         assert_eq!(a.folder.engine.trees.check(), Ok(()), "{case}");
+
+        answer(&site_a, given);
+        let step = a.folder.requested();
+        a.take(step).unwrap();
+        a.run(&mut remote);
+        a.settle();
+        a.run(&mut remote);
+        assert_eq!(remote.names(), after, "{case} {given}");
+        for item in items {
+            let on_disk = site_a.root.join(item).exists();
+            assert_eq!(on_disk, given == Answer::Restore, "{case} {given}: {item}");
+        }
+        assert_eq!(shown(&site_a).len(), 0, "{case} {given}");
+        assert_eq!(a.folder.engine.trees.check(), Ok(()), "{case} {given}");
     }
 }
