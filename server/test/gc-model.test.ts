@@ -99,7 +99,8 @@ interface World {
   targets: { chunk: number; url: string; expiresAtMs: number }[];
   points: number[];
   drops: number[];
-  history: { atMs: number; keys: string[] }[];
+  history: { atMs: number; keys: string[]; lastUsedMs: Map<string, number> }[];
+  lastUsedMs: Map<string, number>;
 }
 
 let owner: DeviceCredentials;
@@ -256,7 +257,7 @@ async function newWorld(): Promise<World> {
   if (!created.ok) throw new Error(created.message);
   const spaceId = created.value.spaceId;
   const session: Session = { deviceId: owner.deviceId, userId: owner.userId, deviceName: "Laptop", kind: "device", scope: null, role: "owner", maxFormat: 1, origin: BASE };
-  const world: World = { spaceId, session, files: Array.from({ length: FILES }, () => uuidv7()), plans: [], receipts: [], targets: [], points: [], drops: [], history: [] };
+  const world: World = { spaceId, session, files: Array.from({ length: FILES }, () => uuidv7()), plans: [], receipts: [], targets: [], points: [], drops: [], history: [], lastUsedMs: new Map() };
   await snapshot(world);
   return world;
 }
@@ -382,7 +383,9 @@ async function act(world: World, step: Step): Promise<boolean> {
       if (restorePointMs === undefined) return false;
       await act(world, { t: "export" });
       const rewound = await account().rewind({ userId: owner.userId, spaceId, rewindId: uuidv7(), restorePointMs, expectedHistoryId: await historyId(world) });
-      return rewound.ok && (await historyId(world)) === rewound.value.historyId;
+      if (!rewound.ok) return false;
+      world.lastUsedMs = world.history.findLast((state) => state.atMs === restorePointMs)!.lastUsedMs;
+      return (await historyId(world)) === rewound.value.historyId;
     }
     case "targets": {
       const hash = fromHex(chunks[step.chunk]!.hex)!;
@@ -449,12 +452,14 @@ function historyId(world: World): Promise<string> {
 
 async function snapshot(world: World): Promise<void> {
   const atMs = Date.now();
-  const keys = await runInDurableObject(space(world.spaceId), (_instance, state) => {
+  const used = await runInDurableObject(space(world.spaceId), (_instance, state) => {
     simulatedPitr.snapshot(state, atMs);
-    return state.storage.sql.exec("SELECT hash, incarnation FROM chunks WHERE refcount > 0 AND incarnation IS NOT NULL").toArray().map((row) => chunkKey(world.spaceId, toHex(new Uint8Array(row.hash as ArrayBuffer)), String(row.incarnation)));
+    return state.storage.sql.exec("SELECT hash, incarnation FROM chunks WHERE refcount > 0").toArray().map((row) => ({ hex: toHex(new Uint8Array(row.hash as ArrayBuffer)), incarnation: row.incarnation }));
   });
+  const keys = used.flatMap(({ hex, incarnation }) => (incarnation === null ? [] : [chunkKey(world.spaceId, hex, String(incarnation))]));
+  world.lastUsedMs = new Map([...world.lastUsedMs, ...used.map(({ hex }): [string, number] => [hex, atMs])]);
   world.points.push(atMs);
-  world.history.push({ atMs, keys });
+  world.history.push({ atMs, keys, lastUsedMs: world.lastUsedMs });
 }
 
 interface ChunkRow {
@@ -463,13 +468,14 @@ interface ChunkRow {
   refcount: number;
   incarnation: string | null;
   headChecked: boolean;
+  zeroSinceMs: number | null;
 }
 
 async function chunkRows(world: World): Promise<{ rows: ChunkRow[]; references: Map<string, number> }> {
   return runInDurableObject(space(world.spaceId), (_instance, state) => {
     const sql = state.storage.sql;
     const rows = sql
-      .exec("SELECT hash, state, refcount, incarnation, head_checked FROM chunks")
+      .exec("SELECT hash, state, refcount, incarnation, head_checked, zero_since_ms FROM chunks")
       .toArray()
       .map((row) => ({
         hex: toHex(new Uint8Array(row.hash as ArrayBuffer)),
@@ -477,6 +483,7 @@ async function chunkRows(world: World): Promise<{ rows: ChunkRow[]; references: 
         refcount: Number(row.refcount),
         incarnation: row.incarnation === null ? null : String(row.incarnation),
         headChecked: row.head_checked === 1,
+        zeroSinceMs: row.zero_since_ms === null ? null : Number(row.zero_since_ms),
       }));
     const references = new Map<string, number>();
     for (const version of sql.exec("SELECT * FROM versions").toArray() as unknown as VersionRow[]) {
@@ -499,6 +506,10 @@ async function check(world: World): Promise<void> {
       else if (toHex(await sha256(stored.bytes)) !== row.hex) violations.push(`R2 holds other bytes at ${key}`);
     }
     if (row.refcount > 0 && row.state !== ChunkState.LIVE) violations.push(`chunk ${row.hex} has refcount ${row.refcount} in state ${row.state}`);
+    const lastUsedMs = world.lastUsedMs.get(row.hex);
+    if (row.refcount === 0 && row.zeroSinceMs !== null && lastUsedMs !== undefined && row.zeroSinceMs <= lastUsedMs) {
+      violations.push(`chunk ${row.hex} counts its grace from ${row.zeroSinceMs}, but the state at ${lastUsedMs} still used it`);
+    }
     if (row.refcount !== (references.get(row.hex) ?? 0)) violations.push(`chunk ${row.hex} has refcount ${row.refcount}, but ${references.get(row.hex) ?? 0} versions use it`);
   }
   for (const { atMs, keys } of world.history) {
@@ -698,6 +709,30 @@ const scenarios: Step[][] = [
     { t: "clock", ms: 2 * DAY },
     gc,
     { t: "rewind", point: 7 },
+  ],
+  [
+    minute,
+    ...uploadBothThenA,
+    { t: "commit", file: 0, receipts: [], extra: [0] },
+    { t: "commit", file: 0, receipts: [], extra: [1] },
+    { t: "clock", ms: 30 * DAY + MINUTE },
+    gc,
+  ],
+  [
+    minute,
+    minute,
+    { t: "prepare", chunks: [0, 1, 2] },
+    { t: "put", plan: 0, outcome: "ok" },
+    { t: "put", plan: 1, outcome: "ok" },
+    { t: "put", plan: 2, outcome: "ok" },
+    { t: "commit", file: 0, receipts: [0, 1, 2], extra: [] },
+    minute,
+    { t: "rewind", point: 0, from: "oldest" },
+    { t: "prepare", chunks: [0, 1, 2] },
+    { t: "put", plan: 0, outcome: "ok" },
+    { t: "put", plan: 1, outcome: "ok" },
+    { t: "put", plan: 2, outcome: "ok" },
+    { t: "commit", file: 0, receipts: [0, 1, 2], extra: [] },
   ],
 ];
 
