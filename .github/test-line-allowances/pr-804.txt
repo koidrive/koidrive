@@ -1,0 +1,4 @@
+16
+# Store: synced_positions is a new table, so the engine-state round trip, the forget-sync-state table list and a migration test that a store from before it opens with none recorded cover it. No existing test reads that table.
+# Engine state: a store whose synced positions name a node R does not hold is refused, the same as for every other per-node record. It is a new invariant.
+# Recovery: a Delete answer after a rewind back past two renames deletes the file once R's history forgot the first place, and a folder deleted here stays held while another device adds a file to it and removes it again. The existing recovery tests cover neither a place only S remembers nor a held folder that a kept child walks through.

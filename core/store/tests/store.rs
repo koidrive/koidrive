@@ -16,7 +16,7 @@ use koidrive_engine::question::{
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent, SplitRestore};
 use koidrive_engine::state::{
     Agreed, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptCause, KeptEntries, KeptRules,
-    KeptRulesFile, LostPosition, MovedHere, PendingFinish, TreesState,
+    KeptRulesFile, LostPosition, MovedHere, PendingFinish, SyncedPosition, TreesState,
 };
 use koidrive_engine::tree::{
     FileIdentity, Kind, LocalNode as EngineLocalNode, RemoteNode, Shape as EngineShape,
@@ -1386,6 +1386,19 @@ fn engine_state() -> EngineState {
                     },
                     Agreed {
                         rev: 8,
+                        parent: String::new(),
+                        name: "before.txt".into(),
+                    },
+                ],
+            )]),
+            synced_positions: BTreeMap::from([(
+                "moved".into(),
+                vec![
+                    SyncedPosition {
+                        parent: "root".into(),
+                        name: "old.txt".into(),
+                    },
+                    SyncedPosition {
                         parent: String::new(),
                         name: "before.txt".into(),
                     },

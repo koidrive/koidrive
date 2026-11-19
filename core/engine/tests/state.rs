@@ -15,7 +15,7 @@ use koidrive_engine::question::{
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent, SplitRestore};
 use koidrive_engine::state::{
     Agreed, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptEntries, LostPosition,
-    MovedHere, PendingFinish, StateError, TreesState,
+    MovedHere, PendingFinish, StateError, SyncedPosition, TreesState,
 };
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape, TreeError};
 use koidrive_proto::v1::{Commit, CommitResult, Delete, Move, Op, OpResult, op};
@@ -135,6 +135,14 @@ fn trees_state() -> TreesState {
                 rev: 1,
                 parent: ROOT.into(),
                 name: "q".into(),
+            }],
+        )]
+        .into(),
+        synced_positions: [(
+            "a".into(),
+            vec![SyncedPosition {
+                parent: ROOT.into(),
+                name: "p".into(),
             }],
         )]
         .into(),
@@ -663,6 +671,15 @@ fn trees_restore_a_valid_state_and_refuse_each_broken_one() {
                 state.past_positions.insert("gone".into(), past);
             }),
             StateError::NotPastPosition("gone".into()),
+        ),
+        (
+            "earlier positions of S of a node R does not hold",
+            trees(),
+            broken(trees_state(), |state| {
+                let past = state.synced_positions["a"].clone();
+                state.synced_positions.insert("gone".into(), past);
+            }),
+            StateError::NotSyncedPosition("gone".into()),
         ),
         (
             "a node moved here that R holds at a revision before that commit",

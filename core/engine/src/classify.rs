@@ -12,8 +12,8 @@ use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
 use crate::names::{name_key, nfc, same_name};
 use crate::state::{
     Agreed, ContentProvenance, ContentValue, ContentVersion, FinishOrigin, KeptCause, KeptEntries,
-    KeptRules, KeptRulesFile, LostPosition, MovedHere, PendingFinish, StateError, TreesChanges,
-    TreesState, made_over,
+    KeptRules, KeptRulesFile, LostPosition, MovedHere, PendingFinish, StateError, SyncedPosition,
+    TreesChanges, TreesState, made_over,
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
@@ -53,6 +53,11 @@ pub const REPLACED_VERSIONS_KEPT: usize = 64;
 /// [`TreesState::past_positions`]: crate::state::TreesState::past_positions
 /// [`TreesState::moved_here`]: crate::state::TreesState::moved_here
 pub const PAST_POSITIONS_KEPT: usize = 64;
+
+/// How many of the earlier positions S held of one node [`TreesState::synced_positions`] keeps.
+///
+/// [`TreesState::synced_positions`]: crate::state::TreesState::synced_positions
+pub const SYNCED_POSITIONS_KEPT: usize = 64;
 
 /// An S update of an acknowledged op that waits until S stays a valid tree with it
 /// ([`Trees::waiting`]).
@@ -580,6 +585,7 @@ pub struct Trees {
     edited_here: TrackedMap<NodeId, u64>,
     moved_here: TrackedMap<NodeId, MovedHere>,
     past_positions: TrackedMap<NodeId, Vec<Agreed>>,
+    synced_positions: TrackedMap<NodeId, Vec<SyncedPosition>>,
     /// See [`TreesState::unsent_edits`].
     unsent_edits: TrackedSet<NodeId>,
     /// See [`TreesState::dropped_edits`].
@@ -706,6 +712,7 @@ impl Trees {
             edited_here: TrackedMap::default(),
             moved_here: TrackedMap::default(),
             past_positions: TrackedMap::default(),
+            synced_positions: TrackedMap::default(),
             unsent_edits: TrackedSet::default(),
             dropped_edits: TrackedSet::default(),
             unsent_moves: TrackedSet::default(),
@@ -1421,7 +1428,7 @@ impl Trees {
         };
         let place = &remote.shape;
         let placed_here = synced.same_position(place)
-            || (self.past_positions.get(id).into_iter().flatten())
+            || (self.synced_positions.get(id).into_iter().flatten())
                 .any(|past| past.parent == place.parent && same_name(&past.name, &place.name));
         if !placed_here {
             return false;
@@ -1701,6 +1708,7 @@ impl Trees {
         self.resends.remove(id);
         self.moved_here.remove(id);
         self.past_positions.remove(id);
+        self.synced_positions.remove(id);
         if let Some(old) = self.r.remove(id) {
             self.index_remote(id, Some(&old));
             self.mark(id);
@@ -6276,6 +6284,24 @@ impl Trees {
             self.resends.remove(id);
             self.local_changes.remove(id);
         }
+        let left = (self.s.get(id))
+            .filter(|old| {
+                self.r.get(id).is_some() && shape.as_ref().is_none_or(|new| !new.same_position(old))
+            })
+            .map(|old| SyncedPosition {
+                parent: old.parent.clone(),
+                name: old.name.clone(),
+            });
+        if let Some(left) = left {
+            let earlier = self
+                .synced_positions
+                .get_or_insert_with(id.to_owned(), Vec::new);
+            earlier.retain(|position| *position != left);
+            earlier.push(left);
+            if earlier.len() > SYNCED_POSITIONS_KEPT {
+                earlier.remove(0);
+            }
+        }
         let old = match shape {
             Some(shape) => {
                 self.moved |= self.l.get(id).is_none()
@@ -6476,6 +6502,7 @@ impl Trees {
             edited_here: (*self.edited_here).clone(),
             moved_here: (*self.moved_here).clone(),
             past_positions: (*self.past_positions).clone(),
+            synced_positions: (*self.synced_positions).clone(),
             unsent_edits: (*self.unsent_edits).clone(),
             dropped_edits: (*self.dropped_edits).clone(),
             unsent_moves: (*self.unsent_moves).clone(),
@@ -6530,6 +6557,7 @@ impl Trees {
             edited_here,
             moved_here,
             past_positions,
+            synced_positions,
             unsent_edits,
             dropped_edits,
             unsent_moves,
@@ -6606,6 +6634,7 @@ impl Trees {
             edited_here: edited_here.take_changes(),
             moved_here: moved_here.take_changes(),
             past_positions: past_positions.take_changes(),
+            synced_positions: synced_positions.take_changes(),
             unsent_edits: unsent_edits.take_changes(),
             dropped_edits: dropped_edits.take_changes(),
             unsent_moves: unsent_moves.take_changes(),
@@ -6704,6 +6733,9 @@ impl Trees {
         {
             return Err(StateError::NotPastPosition(id.clone()));
         }
+        if let Some(id) = (state.synced_positions.keys()).find(|id| self.r.get(id).is_none()) {
+            return Err(StateError::NotSyncedPosition(id.clone()));
+        }
         if let Some(id) = state
             .unsent_edits
             .iter()
@@ -6754,6 +6786,7 @@ impl Trees {
             edited_here,
             moved_here,
             past_positions,
+            synced_positions,
             unsent_edits,
             dropped_edits,
             unsent_moves,
@@ -6809,6 +6842,7 @@ impl Trees {
         self.edited_here = edited_here.into();
         self.moved_here = moved_here.into();
         self.past_positions = past_positions.into();
+        self.synced_positions = synced_positions.into();
         self.unsent_edits = unsent_edits.into();
         self.dropped_edits = dropped_edits.into();
         self.unsent_moves = unsent_moves.into();
