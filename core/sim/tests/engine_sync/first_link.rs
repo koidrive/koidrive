@@ -1436,3 +1436,82 @@ fn a_discarded_folder_stays_discarded_when_the_keep_rule_brings_back_a_folder_th
     )
     .unwrap();
 }
+
+#[test]
+fn a_first_link_keeps_the_new_entries_of_a_folder_another_device_renames_out_and_deletes() {
+    let stories = [
+        (
+            vec![
+                act(1, 0, 0, 0, 0),
+                act(0, 0, 0, 0, 0),
+                act(0, 0, 2358951240356502644, 5, 0),
+            ],
+            vec![
+                act(0, 0, 0, 5, 0),
+                act(1, 0, 4320063286760220797, 0, 1),
+                act(0, 0, 0, 2, 0),
+            ],
+            vec![
+                (true, vec![act(4, 908015061919967668, 0, 0, 0)]),
+                (
+                    false,
+                    vec![
+                        act(3, 9344709762309712034, 12949626192290698577, 0, 0),
+                        act(4, 0, 0, 0, 0),
+                    ],
+                ),
+            ],
+            vec![
+                Ruling::File(vec![]),
+                Ruling::File(vec![]),
+                Ruling::Include(vec!["ß"]),
+            ],
+            Answer::Publish,
+        ),
+        (
+            vec![act(0, 0, 0, 5, 0)],
+            vec![act(1, 0, 0, 5, 0), act(0, 0, 0, 3, 0)],
+            vec![
+                (
+                    true,
+                    vec![
+                        act(0, 0, 1011605735161941865, 2, 0),
+                        act(4, 13744081409392619080, 0, 0, 0),
+                    ],
+                ),
+                (false, vec![act(1, 0, 0, 2, 0)]),
+                (
+                    true,
+                    vec![
+                        act(0, 0, 9869730158601991877, 2, 0),
+                        act(1, 0, 12822411412874084036, 3, 0),
+                    ],
+                ),
+                (
+                    false,
+                    vec![
+                        act(3, 9336223676250328502, 785552231167039106, 0, 0),
+                        act(4, 4976022107021787368, 0, 0, 0),
+                    ],
+                ),
+            ],
+            vec![Ruling::Exclude(vec!["a"])],
+            Answer::Discard,
+        ),
+    ];
+    for (seed, local, during, rulings, answer) in stories {
+        run_ignoring(
+            &seed,
+            &local,
+            &[],
+            MAX_OPS,
+            false,
+            &during,
+            Cut::None,
+            &rulings,
+            answer,
+            Some(PriorSync::Shown),
+        )
+        .unwrap();
+    }
+}
