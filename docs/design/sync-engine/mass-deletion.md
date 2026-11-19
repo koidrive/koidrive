@@ -128,7 +128,7 @@ Entering recovery is one store transaction that copies R, S and L into evidence 
 
 ### Classification
 
-"In R′" includes R′'s trash, so a node trashed before the restore point counts as known. "Unchanged" means L(n) = S₀(n), comparing parent, name, kind and content, and for a file a modification time equal to S₀(n)'s once cut to the precision L(n)'s own time shows, as for entries the store lost track of (below). A file written again with S₀'s bytes after the restore point is changed on this device.
+"In R′" includes R′'s trash, so a node trashed before the restore point counts as known. "Unchanged" means L(n) = S₀(n), comparing parent, name, kind and content, and for a file a modification time equal to S₀(n)'s once cut to the precision L(n)'s own time shows, as for entries the store lost track of (below). So a file written again with S₀'s bytes after the restore point is changed on this device when the time the volume records for it differs from S₀'s at that precision, and unchanged otherwise.
 
 | L against S₀ | R′ | Certain? | Action |
 |---|---|---|---|
