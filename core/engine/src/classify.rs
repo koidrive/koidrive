@@ -1023,7 +1023,7 @@ impl Trees {
     }
 
     /// The nodes of S under `parent` whose name has the `name_key` of `name`.
-    pub(crate) fn synced_holders<'a>(
+    pub fn synced_holders<'a>(
         &'a self,
         parent: &str,
         name: &str,

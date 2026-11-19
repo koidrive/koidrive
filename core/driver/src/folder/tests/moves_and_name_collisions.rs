@@ -812,3 +812,94 @@ fn stored_before_handles(site: &Site) {
         )
         .unwrap();
 }
+
+fn report_removed(remote: &mut Remote) -> (Site, Device, String) {
+    clock::freeze();
+    let (site, mut a) = linked(remote, "a");
+    fs::create_dir_all(site.root.join("docs")).unwrap();
+    a.create(remote, &site.root.join("docs/report.txt"), b"version one");
+    a.rest(remote);
+    let before = live_id(&server_nodes(remote), "report.txt");
+    fs::remove_file(site.root.join("docs/report.txt")).unwrap();
+    a.scan_until(|a| a.folder.engine.trees.local().get(&before).is_none());
+    (site, a, before)
+}
+
+#[test]
+fn a_file_replaced_at_its_path_in_a_later_scan_keeps_its_node() {
+    let mut remote = Remote::new();
+    let (site, mut a, before) = report_removed(&mut remote);
+    clock::advance_to(clock::instant() + Duration::from_millis(1_999));
+    fs::write(site.root.join("docs/report.txt"), b"version two").unwrap();
+    a.scan_until(|a| {
+        let local = a.folder.engine.trees.local();
+        local.iter().any(|(_, node)| node.shape.name == "report.txt")
+    });
+    a.rest(&mut remote);
+    assert_eq!(live_id(&server_nodes(&remote), "report.txt"), before);
+    assert_eq!(server_bytes(&remote, &before), b"version two");
+    assert!(!a.sent.iter().flat_map(kinds).any(|kind| kind == "delete"));
+}
+
+#[test]
+fn a_file_written_again_once_the_wait_ended_is_a_new_node_after_the_delete() {
+    let mut remote = Remote::new();
+    let (site, mut a, before) = report_removed(&mut remote);
+    let waits: Vec<Duration> = (a.work.iter())
+        .map(|work| match work {
+            Work::RetryAfter(wait) => *wait,
+            _ => Duration::MAX,
+        })
+        .collect();
+    assert_eq!(waits, [Duration::from_secs(2)]);
+    assert_eq!(a.run(&mut remote), ["retry", "send"]);
+    assert_eq!(remote.names(), ["docs"]);
+    fs::write(site.root.join("docs/report.txt"), b"version two").unwrap();
+    a.rest(&mut remote);
+    assert_ne!(live_id(&server_nodes(&remote), "report.txt"), before);
+}
+
+#[test]
+fn a_file_removed_with_its_folder_leaves_the_server_without_a_wait() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::create_dir_all(site.root.join("docs")).unwrap();
+    a.create(&mut remote, &site.root.join("docs/report.txt"), b"version one");
+    a.rest(&mut remote);
+    fs::remove_dir_all(site.root.join("docs")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    assert_eq!(a.run(&mut remote), ["send"]);
+    assert!(remote.names().is_empty());
+}
+
+#[test]
+fn an_edit_from_another_device_during_the_wait_is_kept_beside_the_file_written_again() {
+    for written_again in [false, true] {
+        let mut remote = Remote::new();
+        let (site, mut a, before) = report_removed(&mut remote);
+        let (site_b, mut b) = linked(&mut remote, "b");
+        b.rest(&mut remote);
+        fs::write(site_b.root.join("docs/report.txt"), b"edited on b").unwrap();
+        b.rescan();
+        b.rest(&mut remote);
+        a.pull(&remote);
+        if written_again {
+            fs::write(site.root.join("docs/report.txt"), b"version two").unwrap();
+        }
+        for _ in 0..6 {
+            while let Some(at) = (a.work.iter()).position(|work| !matches!(work, Work::RetryAfter(_))) {
+                let work = a.work.remove(at).unwrap();
+                a.perform(work, &mut remote).unwrap();
+            }
+            a.settle();
+        }
+        a.rest(&mut remote);
+        let report = ("docs/report.txt".to_owned(), "edited on b".to_owned());
+        let disk = files(&site.root);
+        assert!(disk.contains(&report), "{written_again}: {disk:?}");
+        assert_eq!(disk.len(), 1 + usize::from(written_again), "{disk:?}");
+        assert_eq!(live_id(&server_nodes(&remote), "report.txt"), before);
+        assert_eq!(server_bytes(&remote, &before), b"edited on b");
+        assert!(!a.sent.iter().flat_map(kinds).any(|kind| kind == "delete"));
+    }
+}

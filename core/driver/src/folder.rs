@@ -664,9 +664,11 @@ impl Folder {
 
     /// The observer has scanned the folder once. Design §2.7 leaves a node the server refused an op for out of
     /// commits until the next rescan. This scan is that rescan, so the engine may plan every such node again from
-    /// here on. Nothing else clears them.
+    /// here on. Nothing else clears them. The files it found removed are deleted without waiting to see whether they
+    /// are written again.
     pub fn scanned(&mut self) -> Result<Vec<Work>, Stop> {
         self.scanned = true;
+        self.engine.forget_removals();
         let cleared: Vec<String> = self.engine.commits.problems().iter().cloned().collect();
         self.let_back_in(&cleared)?;
         self.refused_nodes.retain(|id, _| !cleared.contains(id));
@@ -1162,20 +1164,30 @@ impl Folder {
             return Ok(());
         };
         let built = self.step(|engine, tx| {
+            let deferred = engine.deferred_deletes(now_ms);
             let cursor = engine.cursor.as_ref().expect("R follows the log");
-            let built = engine.commits.build(
+            let built = engine.commits.build_deferring(
                 &mut engine.trees,
                 &mut engine.ids,
                 now_ms,
                 &cursor.history_id,
                 &device_id,
                 cursor.base(),
+                &deferred,
             );
             if built.is_some() {
                 tx.commit_root_token(token)?;
             }
             Ok(built.cloned())
         })?;
+        if let Some(due) = self.engine.deletes_due() {
+            let wait = Duration::from_millis(due.saturating_sub(now_ms));
+            let at = clock::instant() + wait;
+            if self.retry_at.is_none_or(|out| at < out) {
+                self.retry_at = Some(at);
+                work.push(Work::RetryAfter(wait));
+            }
+        }
         match built {
             Some(commit) => {
                 self.disk.built(token);

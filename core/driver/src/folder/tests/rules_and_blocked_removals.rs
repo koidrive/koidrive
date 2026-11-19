@@ -661,7 +661,7 @@ fn a_file_whose_place_an_excluded_folder_holds_is_reported_while_its_folder_sync
 
     fs::remove_file(site.root.join("a/a")).unwrap();
     b.settle();
-    assert_eq!(b.run(&mut remote), ["send"]);
+    assert_eq!(b.run(&mut remote), ["retry", "send"]);
     b.settle();
     assert!(b.run(&mut remote).is_empty());
     assert_eq!(remote.names(), ["a", "ß"]);
