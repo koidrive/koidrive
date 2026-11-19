@@ -12514,6 +12514,7 @@ mod planned_against_the_server {
                     shape: local,
                     identity,
                     parked: false,
+                    displaced: false,
                     left_out_when_placed: false,
                     content_from_server: false,
                 },

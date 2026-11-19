@@ -22,6 +22,7 @@ fn an_own_move_whose_earlier_positions_aged_out_before_the_upgrade_is_sent_again
         pending_by: None,
     };
     let local = |name: &str| EngineLocalNode {
+        displaced: false,
         left_out_when_placed: false,
         content_from_server: false,
         shape: engine_shape("root", name),

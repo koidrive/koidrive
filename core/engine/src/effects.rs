@@ -15,7 +15,9 @@ use crate::ignore::is_rules_file;
 use crate::names::{name_key, same_name};
 use crate::state::{EffectsChanges, EffectsState, StateError};
 use crate::tracked::{Marked, TrackedMap};
-use crate::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, Shape, same, same_content};
+use crate::tree::{
+    Content, FileIdentity, Kind, LocalNode, Node, NodeId, Shape, same, same_content,
+};
 
 /// A directory on the way to an entry, with the identity L holds for it. The driver resolves a
 /// location one directory at a time and fails the effect when an identity differs (section 5.2).
@@ -631,6 +633,7 @@ impl Effects {
                 trees.place_local(
                     record.node.clone(),
                     LocalNode {
+                        displaced: false,
                         left_out_when_placed: false,
                         content_from_server: false,
                         shape: match (&record.effect, content) {
@@ -1170,7 +1173,7 @@ impl<'a> View<'a> {
         if self.trees.edited(id) && self.trees.ignored_in_remote(id) {
             return Step::Skip;
         }
-        if !local.parked
+        if local.is_placed()
             && local.shape.parent == remote.parent
             && name_key(&local.shape.name) == name_key(&remote.name)
         {
@@ -1414,7 +1417,7 @@ impl<'a> View<'a> {
                 return true;
             }
             match self.trees.local().get(current) {
-                Some(node) if !node.parked && node.shape.parent != self.root() => {
+                Some(node) if node.is_placed() && node.shape.parent != self.root() => {
                     current = &node.shape.parent;
                 }
                 _ => return false,
@@ -1432,7 +1435,7 @@ impl<'a> View<'a> {
             return false;
         }
         in_flight.is_some_and(|flight| flight.positions(id))
-            || (!local.parked
+            || (local.is_placed()
                 && !trees.reverted().contains(id)
                 && !trees.is_discarded(id)
                 && (trees.acknowledged(id)).is_some_and(|base| !local.shape.same_position(base)))
@@ -1444,7 +1447,7 @@ impl<'a> View<'a> {
             && !trees.excluded(id)
             && !trees.held(id)
             && trees.local().get(id).is_some_and(|node| {
-                !node.parked
+                node.is_placed()
                     && !(trees.remote().live(id))
                         .is_some_and(|remote| node.shape.same_position(remote))
             })

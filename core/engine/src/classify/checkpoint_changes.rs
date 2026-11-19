@@ -43,6 +43,7 @@ fn shape(i: u8, v: u8) -> Shape {
 
 fn local(i: u8, placed: Placed, left_out: bool, from_server: bool) -> LocalNode {
     LocalNode {
+        displaced: false,
         shape: shape(i, placed.version),
         identity: FileIdentity {
             ino: u128::from(i) + 1 + 100 * u128::from(placed.inode),

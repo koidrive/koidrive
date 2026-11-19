@@ -299,7 +299,7 @@ fn c_txt(world: &World, device: usize) -> Content {
 }
 
 #[test]
-fn a_file_moved_out_of_a_displaced_folder_sends_its_edit_whoever_made_the_new_folder() {
+fn a_file_moved_out_of_a_displaced_folder_keeps_every_edit_whoever_made_the_new_folder() {
     let moved_in = || {
         vec![
             (1, rename(0, 2, "a")),
@@ -313,22 +313,74 @@ fn a_file_moved_out_of_a_displaced_folder_sends_its_edit_whoever_made_the_new_fo
     rewound.extend([(0, Step::Work(0)); 6]);
     rewound.extend([(1, Step::Work(0)), (1, Step::Work(0)), (0, Step::Rewind)]);
     for displacing in [made_there, made_here, rewound] {
-        let phases = [
-            vec![
+        let edits = [
+            vec![vec![(1, rename(1, 0, "ss"))], vec![(1, overwrite(1))]],
+            vec![vec![(1, rename(1, 0, "ss")), (0, overwrite(1))]],
+            vec![vec![(1, rename(1, 0, "A")), (0, overwrite(1))]],
+        ];
+        for edit in edits {
+            let p0 = vec![
                 (1, folder("a")),
                 (1, user(1, 0, 1, "b")),
                 (1, folder("c.txt")),
-            ],
-            displacing,
-            vec![(1, rename(1, 0, "ss"))],
-            vec![(1, overwrite(1))],
+            ];
+            let phases = [vec![p0, displacing.clone()], edit].concat();
+            let world = converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
+            let files = |device| {
+                (files_on(&world, device).into_iter())
+                    .filter(|(_, content)| content.is_some())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(files(0), files(1));
+        }
+    }
+}
+
+#[test]
+fn a_deleted_folder_whose_file_was_moved_into_an_ignored_folder_gives_its_name_to_a_new_folder() {
+    for made_there in [false, true] {
+        let mut deleted = vec![
+            (1, rename(1, 2, "b")),
+            (1, SCAN),
+            (1, delete(0)),
+            (1, SCAN),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (0, rename(0, 0, "\u{df}")),
         ];
-        let world = converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
-        let files = |device| {
-            (files_on(&world, device).into_iter())
-                .filter(|(_, content)| content.is_some())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(files(0), files(1));
+        deleted.extend([(0, Step::Work(0)); 6]);
+        deleted.extend([(1, Step::Work(0)); 6]);
+        deleted.push((usize::from(!made_there), folder("a")));
+        let p0 = vec![
+            (1, folder("a")),
+            (1, user(1, 0, 1, "b")),
+            (1, folder("c.txt")),
+        ];
+        for edit in [vec![], vec![(0, overwrite(1))]] {
+            let out = [vec![(1, rename(0, 0, "ss"))], edit].concat();
+            converge_excluding(
+                &[vec![], vec!["*.txt"]],
+                &[p0.clone(), deleted.clone(), out],
+            )
+            .unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_restore_that_loses_the_move_of_a_displaced_file_leaves_nothing_to_send() {
+    for works in 1..=3 {
+        let mut phase = vec![
+            (1, act(3, 451136702324572615, 2740734820468211981, "a", 0)),
+            (0, rename(0, 0, "b")),
+            (2, folder("a")),
+            (0, act(0, 13001166, 13484083470633789766, "E\u{301}", 2)),
+        ];
+        phase.extend([(0, Step::Work(0)); 6]);
+        phase.extend(std::iter::repeat_n((1, Step::Work(0)), works));
+        phase.push((0, Step::Restore));
+        let p0 = vec![(0, file("a")), (1, folder("c.txt")), (0, Step::Backup)];
+        let moved_out = vec![(1, rename(1, 0, "\u{df}"))];
+        converge_excluding(&[vec![], vec!["*.txt"]], &[p0, phase, moved_out]).unwrap();
     }
 }

@@ -44,6 +44,7 @@ fn add(trees: &mut Trees, id: String, shape: Shape) {
     trees.set_local(
         id.clone(),
         LocalNode {
+            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: shape.clone(),

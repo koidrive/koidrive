@@ -55,6 +55,7 @@ fn ancestry_tree() -> Trees {
     trees.set_local(
         "f".into(),
         LocalNode {
+            displaced: false,
             shape: ancestry_file(1),
             identity: FileIdentity {
                 ino: 1,
@@ -366,6 +367,7 @@ fn reclaimable(child_to: &str, own_wait: bool) -> Trees {
             handle: None,
         };
         let local = LocalNode {
+            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape,
@@ -445,6 +447,7 @@ fn a_server_folder_in_a_discarded_folder(folders: usize, waiting: bool) -> (Tree
             }
         }
         let local = LocalNode {
+            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape,
@@ -528,6 +531,7 @@ fn two_server_folders_swapped_below_a_discarded_folder_stay_discarded() {
             handle: None,
         };
         let local = LocalNode {
+            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape,
@@ -564,6 +568,7 @@ fn a_discarded_node_drops_its_unsent_move_and_follows_the_server() {
     let mut trees = Trees::new("root");
     let shape = dir("root", "c");
     let local = LocalNode {
+        displaced: false,
         left_out_when_placed: false,
         content_from_server: false,
         shape: shape.clone(),
@@ -595,6 +600,7 @@ fn a_resend_that_yields_to_the_server_trash_drops_its_unsent_move() {
     let mut trees = Trees::new("root");
     let shape = dir("root", "c");
     let local = LocalNode {
+        displaced: false,
         left_out_when_placed: false,
         content_from_server: false,
         shape: shape.clone(),
@@ -625,6 +631,7 @@ fn a_resend_that_yields_to_the_server_trash_drops_its_unsent_move() {
 fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_a_loss_follows() {
     let mut trees = Trees::new("root");
     let local = |shape: Shape, ino: u128| LocalNode {
+        displaced: false,
         left_out_when_placed: false,
         content_from_server: false,
         shape,
@@ -669,6 +676,7 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_a_loss_follows() {
 fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_the_loss_also_takes_the_delete() {
     let mut trees = Trees::new("root");
     let local = |shape: Shape, ino: u128| LocalNode {
+        displaced: false,
         left_out_when_placed: false,
         content_from_server: false,
         shape,
@@ -714,6 +722,7 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_the_loss_also_takes_th
 fn a_discard_check_over_a_deep_chain_of_taken_along_server_folders_finishes() {
     let mut trees = Trees::new("root");
     let local = |shape: Shape, ino: u128, left_out_when_placed: bool| LocalNode {
+        displaced: false,
         left_out_when_placed,
         content_from_server: false,
         shape,
@@ -754,6 +763,7 @@ fn a_discard_check_over_a_deep_chain_of_kept_back_folders_finishes() {
             handle: None,
         };
         let local = LocalNode {
+            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: dir("root", &x),
@@ -778,6 +788,7 @@ fn nodes_sharing_an_identity_or_a_name_key_are_found_in_id_order_as_they_come_an
         handle: None,
     };
     let local = |name: &str| LocalNode {
+        displaced: false,
         shape: Shape {
             parent: "root".into(),
             name: name.into(),
@@ -872,6 +883,7 @@ mod holders_against_a_rebuild {
 
     fn node(n: usize, k: u64, parked: bool) -> LocalNode {
         LocalNode {
+            displaced: false,
             shape: Shape {
                 parent: "root".into(),
                 name: NAMES[n].into(),
@@ -1018,6 +1030,7 @@ fn holders_take_no_more_room_than_a_set() {
 
 fn kept_local(parent: &str, name: &str, kind: Kind, ino: u128) -> LocalNode {
     LocalNode {
+        displaced: false,
         shape: Shape {
             parent: parent.into(),
             name: name.into(),
@@ -1338,4 +1351,28 @@ fn a_restored_node_moved_out_of_an_ignored_folder_is_not_excluded_while_its_remo
     trees.set_local("n".into(), kept_local("root", "x", Kind::File, 2));
     trees.wait("n".into(), None, Origin::Other);
     assert!(!trees.excluded("n"));
+}
+
+#[test]
+fn a_missed_node_stays_in_l_without_a_name_until_a_scan_places_it_or_its_question_releases_it() {
+    let mut trees = Trees::new("root");
+    trees.set_remote("f".into(), remote(dir("root", "f")));
+    trees.set_synced("f".into(), Some(dir("root", "f")));
+    trees.set_local("f".into(), kept_local("root", "f", Kind::Dir, 2));
+    let identity = trees.local().get("f").unwrap().identity;
+    for found in [true, false] {
+        trees.miss_local("f");
+        trees.miss_local("f");
+        assert!(trees.local().get("f").is_some_and(|node| node.displaced));
+        assert_eq!(trees.local_child("root", "f"), None);
+        assert_eq!(trees.local_with_identity(&identity), Some(&"f".to_owned()));
+        assert!(trees.missing().contains("f") && trees.excluded("f"));
+        match found {
+            true => trees.set_local("f".into(), kept_local("root", "f", Kind::Dir, 2)),
+            false => trees.release_missing("f"),
+        }
+        assert!(trees.missing().is_empty() && trees.displaced_local().is_empty());
+        assert_eq!(trees.local_child("root", "f").is_some(), found);
+    }
+    assert!(trees.local().get("f").is_none());
 }

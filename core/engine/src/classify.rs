@@ -604,8 +604,8 @@ pub struct Trees {
     /// entry each had before the move.
     outside: TrackedSet<NodeId>,
     lost: TrackedSet<NodeId>,
-    /// The nodes of `outside`, and those L held under them, that left L because another entry took their name
-    /// ([`Trees::displace_local`]), each with the identity L held for it.
+    /// The nodes of `outside`, and those L held under them, that hold no name in L because another entry took it
+    /// ([`Trees::displace_local`]), each with the identity L holds for it.
     displaced: TrackedMap<NodeId, FileIdentity>,
     missing: TrackedSet<NodeId>,
     /// False from a restore until the rules of a full scan are in force.
@@ -626,6 +626,7 @@ pub struct Trees {
     /// The placed nodes of L.
     l_names: ByName,
     l_parked: ByName,
+    l_displaced: ByName,
     /// Every node of L, placed or parked, by its identity.
     l_identities: HashMap<(u128, Option<i64>), Holders>,
     /// The nodes of S.
@@ -739,6 +740,7 @@ impl Trees {
             same: BTreeSet::new(),
             l_names: ByName::default(),
             l_parked: ByName::default(),
+            l_displaced: ByName::default(),
             l_identities: HashMap::new(),
             s_names: ByName::default(),
             s_marks: BTreeMap::new(),
@@ -853,7 +855,7 @@ impl Trees {
     }
 
     fn creates_only(&self, id: &str) -> bool {
-        self.l.get(id).is_some_and(|node| !node.parked)
+        self.l.get(id).is_some_and(|node| node.is_placed())
             && self.s.get(id).is_none()
             && self.r.get(id).is_none()
             && !self.waiting.contains_key(id)
@@ -937,6 +939,13 @@ impl Trees {
     /// The placed nodes of L under `parent`, by the `name_key` of their names.
     pub fn local_children<'a>(&'a self, parent: &'a str) -> impl Iterator<Item = &'a NodeId> + 'a {
         self.l_names.children(parent)
+    }
+
+    /// Whether L holds a node under `parent`, placed or displaced.
+    pub fn holds_local_children(&self, parent: &str) -> bool {
+        [&self.l_names, &self.l_displaced]
+            .iter()
+            .any(|names| names.children(parent).next().is_some())
     }
 
     /// The nodes of S under `parent`.
@@ -1038,12 +1047,14 @@ impl Trees {
             .last()
     }
 
-    /// A node of L, placed or parked, with `identity`: the greatest ID when several have it.
+    /// A node of L with `identity`, as [`Trees::locals_with_identity`] finds them: the greatest ID when several have it.
     pub fn local_with_identity(&self, identity: &FileIdentity) -> Option<&NodeId> {
         self.locals_with_identity(identity).next_back()
     }
 
-    /// The nodes of L, placed or parked, with `identity`, in ID order.
+    /// The nodes of L with `identity`, in ID order. A displaced node matches only an identity with a birth time: its
+    /// record can outlive its copy, and the file system may give the inode to another file, which only the birth time
+    /// tells apart.
     pub fn locals_with_identity(
         &self,
         identity: &FileIdentity,
@@ -1055,9 +1066,9 @@ impl Trees {
             .into_iter())
         .flat_map(Holders::iter)
         .filter(move |id| {
-            self.l
-                .get(id)
-                .is_some_and(|node| node.identity.same(&identity))
+            self.l.get(id).is_some_and(|node| {
+                node.identity.same(&identity) && (identity.birth_ns.is_some() || !node.displaced)
+            })
         })
     }
 
@@ -1156,7 +1167,7 @@ impl Trees {
                 old.content_rev == node.content_rev && old.meta_rev != node.meta_rev
             })
             && local.is_some_and(|local| {
-                !local.parked
+                local.is_placed()
                     && synced.is_some_and(|synced| synced.same(&local.shape))
                     && !(self.pending_finishes.get(&id)).is_some_and(|finish| {
                         finish.disk_first
@@ -1225,7 +1236,7 @@ impl Trees {
             && !path(&self.r, &id).is_some_and(|(names, kind)| self.ignores(&names, kind))
             && (shape.parent == self.l.root
                 || (self.l.get(&shape.parent))
-                    .is_some_and(|parent| !parent.parked && parent.shape.kind == Kind::Dir))
+                    .is_some_and(|parent| parent.is_placed() && parent.shape.kind == Kind::Dir))
             && self
                 .local_holders(&shape.parent, &shape.name)
                 .all(|other| *other == id);
@@ -1308,9 +1319,10 @@ impl Trees {
             self.kept_originals.remove(&id);
         }
         if node.trashed {
-            self.displaced.remove(&id);
-            self.missing.remove(&id);
             self.removed_from.remove(&id);
+            if self.displaced.contains_key(&id) {
+                self.drop_local(&id);
+            }
         }
         if self.r.get(&id).is_none() {
             self.discarded.remove(&id);
@@ -1666,7 +1678,6 @@ impl Trees {
         self.kept_originals.remove(id);
         self.count_held_trash(id, false);
         self.count_trashed(id, false);
-        self.displaced.remove(id);
         self.missing.remove(id);
         self.edited_here.remove(id);
         self.replaced_versions.remove(id);
@@ -1977,7 +1988,8 @@ impl Trees {
                 self.forgotten_shapes.remove(&id);
                 self.lost_shapes.remove(&id);
             }
-            let moved = !old.parked && !node.parked && !old.shape.same_position(&node.shape);
+            let moved =
+                old.is_placed() && node.is_placed() && !old.shape.same_position(&node.shape);
             if moved {
                 self.unsent_marks.remove(&id);
                 self.cycles_may_end = true;
@@ -1987,19 +1999,21 @@ impl Trees {
             if moved && !to_remote {
                 self.reverted.remove(&id);
             }
-            match old.parked {
-                false => self.l_names.remove(&id, &old.shape),
-                true => self.l_parked.remove(&id, &old.shape),
+            match (old.parked, old.displaced) {
+                (true, _) => self.l_parked.remove(&id, &old.shape),
+                (false, false) => self.l_names.remove(&id, &old.shape),
+                (false, true) => self.l_displaced.remove(&id, &old.shape),
             }
             let identity = old.identity;
             self.forget_identity(&id, &identity);
         }
-        match node.parked {
-            false => {
+        match (node.parked, node.displaced) {
+            (true, _) => self.l_parked.insert(&id, &node.shape),
+            (false, false) => {
                 self.parked_as.remove(&id);
                 self.l_names.insert(&id, &node.shape);
             }
-            true => self.l_parked.insert(&id, &node.shape),
+            (false, true) => self.l_displaced.insert(&id, &node.shape),
         }
         self.lost.remove(&id);
         self.removed_from.remove(&id);
@@ -2007,14 +2021,16 @@ impl Trees {
             let children: Vec<NodeId> = self.l_names.children(&id).cloned().collect();
             self.outside.extend(children);
         }
-        self.displaced.remove(&id);
-        self.missing.remove(&id);
+        if !node.displaced {
+            self.displaced.remove(&id);
+            self.missing.remove(&id);
+        }
         self.kept_originals.remove(&id);
         if let Some(finish) = self.pending_finishes.get_mut(&id) {
             finish.disk_first |=
                 node.shape.parent == finish.parent && nfc(&node.shape.name) == nfc(&finish.name);
         }
-        let home = !node.parked
+        let home = node.is_placed()
             && (self.r.live(&id)).is_some_and(|remote| node.shape.same_position(remote));
         if home
             && (self.discarded.get(&id)).is_some_and(|shape| self.r.get(&shape.parent).is_none())
@@ -2022,7 +2038,7 @@ impl Trees {
             self.drop_discarded_copy(&id);
         }
         let as_remote =
-            !node.parked && (self.r.live(&id)).is_some_and(|remote| node.shape.same(remote));
+            node.is_placed() && (self.r.live(&id)).is_some_and(|remote| node.shape.same(remote));
         if as_remote && self.discarded.contains_key(&id) {
             self.discarded.insert(id.clone(), node.shape.clone());
         }
@@ -2077,10 +2093,10 @@ impl Trees {
             return;
         }
         let relist = node.shape.kind == Kind::Dir
-            && !node.parked
+            && node.is_placed()
             && !self.unobserved.is_empty()
             && (self.l.get(&id))
-                .is_some_and(|old| !old.parked && !old.shape.same_position(&node.shape));
+                .is_some_and(|old| old.is_placed() && !old.shape.same_position(&node.shape));
         if relist {
             self.relist.insert(id.clone());
         }
@@ -2102,7 +2118,7 @@ impl Trees {
             );
             provenance
         });
-        let placed = !node.parked
+        let placed = node.is_placed()
             && (self.l.get(&id)).is_none_or(|old| !old.shape.same_position(&node.shape));
         let rewritten = (self.l.get(&id)).is_some_and(|old| {
             !old.identity.same(&node.identity)
@@ -2214,13 +2230,15 @@ impl Trees {
         let left_out = self.rules_known
             && !self.rules_changed.is_empty()
             && !self.unobserved.contains(id)
-            && self.l.get(id).is_some()
+            && self.l.get(id).is_some_and(|node| !node.displaced)
             && self.left_out(id, &self.ignore, &mut HashMap::new());
         if left_out {
             self.set_unobserved(id.to_owned());
         }
         self.observe_removal_in_held_folder(id);
         self.parked_as.remove(id);
+        self.displaced.remove(id);
+        self.missing.remove(id);
         self.unknown_rules.remove(id);
         self.outside.remove(id);
         self.lost.remove(id);
@@ -2239,9 +2257,10 @@ impl Trees {
             if self.unobserved.contains(id) {
                 self.copy_gone(id);
             }
-            match old.parked {
-                false => self.l_names.remove(id, &old.shape),
-                true => self.l_parked.remove(id, &old.shape),
+            match (old.parked, old.displaced) {
+                (true, _) => self.l_parked.remove(id, &old.shape),
+                (false, false) => self.l_names.remove(id, &old.shape),
+                (false, true) => self.l_displaced.remove(id, &old.shape),
             }
             self.forget_identity(id, &old.identity);
             self.mark(id);
@@ -2579,7 +2598,7 @@ impl Trees {
             let remote = self.r.live(current)?;
             let deleted = match self.l.get(current) {
                 Some(local) => {
-                    let moved = !local.parked
+                    let moved = local.is_placed()
                         && (self.acknowledged(current))
                             .is_none_or(|held| !local.shape.same_position(held));
                     if moved && !self.reverted.contains(current) && !self.is_discarded(current) {
@@ -3030,37 +3049,52 @@ impl Trees {
         false
     }
 
-    /// Takes the node out of L because another entry took its name, and keeps the record that its local copy is in
+    /// Keeps the node in L without a name because another entry took its name, and records that its local copy is in
     /// an ignored folder: L cannot hold two entries at one name, and the copy is still there. The node stays excluded
-    /// ([`Trees::excluded`]) until an observation places it again or R holds it trashed. This record is part of the
-    /// stored state, since no scan can find the node again once L has no entry for it. The caller passes only a node
-    /// [`Trees::recorded_local`] holds for.
+    /// ([`Trees::excluded`]) until an observation places it again or R holds it trashed, which takes it out of L. The
+    /// caller passes only a node [`Trees::recorded_local`] holds for.
     pub fn displace_local(&mut self, id: &str) {
-        let Some(identity) = self.l.get(id).map(|node| node.identity) else {
+        let Some(node) = self.l.get(id).filter(|node| node.is_placed()) else {
             return;
         };
-        self.take_out_local(id);
-        if self.r.live(id).is_some() {
-            self.displaced.insert(id.to_owned(), identity);
+        if self.r.get(id).is_some_and(|remote| remote.trashed) {
+            self.take_out_local(id);
+            return;
         }
+        let (shape, identity) = (node.shape.clone(), node.identity);
+        self.release_kept_entry(id);
+        self.kept_nodes.remove(id);
+        self.l_names.remove(id, &shape);
+        self.l_displaced.insert(id, &shape);
+        self.l.update(id, |node| node.displaced = true);
+        self.displaced.insert(id.to_owned(), identity);
+        self.mark(id);
     }
 
-    /// Takes the node out of L because a scan missed its local copy after a search of the ignored folders that did
-    /// not look everywhere (section 5.10). The copy may still be in an ignored folder, so a node R holds live stays
-    /// recorded with its identity, as [`Trees::displace_local`] records it, and excluded. The commit planner holds it
+    /// Leaves the node in L without a name because a scan missed its local copy after a search of the ignored folders
+    /// that did not look everywhere (section 5.10). The copy may still be in an ignored folder, so a node R holds live
+    /// stays in L with its identity, as [`Trees::displace_local`] keeps it, and excluded. The commit planner holds it
     /// under a question until the person answers, an observation places it again, or R no longer holds it live.
     pub fn miss_local(&mut self, id: &str) {
-        let Some(identity) = self.l.get(id).map(|node| node.identity) else {
+        let Some(node) = self.l.get(id).filter(|node| !node.displaced) else {
             return;
         };
-        self.remove_local(id);
-        if self.r.live(id).is_some() {
-            self.displaced.insert(id.to_owned(), identity);
-            self.missing.insert(id.to_owned());
+        if self.r.live(id).is_none() {
+            self.remove_local(id);
+            return;
         }
+        if node.is_placed() {
+            self.displace_local(id);
+        } else {
+            let identity = node.identity;
+            self.l.update(id, |node| node.displaced = true);
+            self.displaced.insert(id.to_owned(), identity);
+            self.mark(id);
+        }
+        self.missing.insert(id.to_owned());
     }
 
-    /// The nodes [`Trees::miss_local`] took out of L that it still holds.
+    /// The nodes [`Trees::miss_local`] holds in L without a name.
     pub fn missing(&self) -> &BTreeSet<NodeId> {
         &self.missing
     }
@@ -3068,6 +3102,7 @@ impl Trees {
     pub(crate) fn release_missing(&mut self, id: &str) {
         if self.missing.remove(id) {
             self.displaced.remove(id);
+            self.remove_local(id);
             self.mark(id);
         }
     }
@@ -3090,22 +3125,9 @@ impl Trees {
         }
     }
 
-    /// The nodes [`Trees::displace_local`] took out of L, each with the identity L held for it.
+    /// The nodes [`Trees::displace_local`] left without a name in L, each with the identity L holds for it.
     pub fn displaced_local(&self) -> &BTreeMap<NodeId, FileIdentity> {
         &self.displaced
-    }
-
-    /// The node of `kind` [`Trees::displace_local`] took out of L with `identity`: the greatest ID when several have
-    /// it. An identity without a birth time finds none: the record can outlive the node's copy, and the file system may
-    /// give its inode to another file, which only the birth time tells apart.
-    pub fn displaced_with_identity(&self, identity: &FileIdentity, kind: Kind) -> Option<&NodeId> {
-        (self.displaced.iter().rev())
-            .find(|(id, held)| {
-                held.same(identity)
-                    && identity.birth_ns.is_some()
-                    && self.r.live(id).is_some_and(|shape| shape.kind == kind)
-            })
-            .map(|(id, _)| id)
     }
 
     /// Whether S holds the node at a position that neither placed L nor R holds, the nodes
@@ -3116,7 +3138,7 @@ impl Trees {
         };
         let held = |shape: Option<&Shape>| shape.is_some_and(|shape| shape.same_position(synced));
         let placed = (self.l.get(id))
-            .filter(|node| !node.parked)
+            .filter(|node| node.is_placed())
             .map(|node| &node.shape);
         !held(placed) && !held(self.r.live(id))
     }
@@ -3213,7 +3235,9 @@ impl Trees {
         let server = self.r.get(id).is_some();
         let fits = |shape: &Shape| !server || !self.under_discarded(shape);
         let held = |shape: Option<&Shape>| shape.is_some_and(|shape| shape.same_position(synced));
-        let placed = local.filter(|node| !node.parked).map(|node| &node.shape);
+        let placed = local
+            .filter(|node| node.is_placed())
+            .map(|node| &node.shape);
         if (held(placed) || held(remote)) && fits(synced)
             || !self.ignored(id)
             || self.trashed_while_parked(id)
@@ -3442,7 +3466,7 @@ impl Trees {
         id: &str,
         scopes: &mut HashMap<NodeId, Option<Scope<'m, Key>>>,
     ) -> bool {
-        let Some(node) = self.l.get(id).filter(|node| !node.parked) else {
+        let Some(node) = self.l.get(id).filter(|node| node.is_placed()) else {
             return false;
         };
         if id == self.l.root {
@@ -3489,7 +3513,7 @@ impl Trees {
             for names in [&self.l_names, &self.l_parked, &self.s_names, &self.r_names] {
                 below.extend(names.children(node).map(String::as_str));
             }
-            if self.l.get(node).is_some()
+            if self.l.get(node).is_some_and(|node| !node.displaced)
                 && !self.unobserved.contains(node)
                 && self.left_out(node, &self.ignore, &mut scopes)
             {
@@ -3561,9 +3585,9 @@ impl Trees {
             Kind::File => koidrive_ignore::Kind::File,
         };
         match self.local_scope(&node.shape.parent, ignore, scopes) {
-            Some(None) => !node.parked,
+            Some(None) => node.is_placed(),
             Some(Some(scope)) if scope.status(&node.shape.name, kind) != Status::Included => {
-                !node.parked
+                node.is_placed()
             }
             Some(Some(_)) if self.placed_alike(id) || self.moved_from_s(id) => false,
             _ => self.excluded(id),
@@ -3762,7 +3786,7 @@ impl Trees {
         };
         let parent = node.shape.parent.as_str();
         self.left_rules_file(id)
-            && !node.parked
+            && node.is_placed()
             && !self.edited(id)
             && parent != self.l.root
             && self.r.live(parent).is_none()
@@ -3841,7 +3865,7 @@ impl Trees {
         id != self.l.root
             && !self.kept_folders.contains(id)
             && self.r.get(id).is_some_and(|node| node.trashed)
-            && self.l.get(id).is_some_and(|node| !node.parked)
+            && self.l.get(id).is_some_and(|node| node.is_placed())
             && !self.held(id)
             && (self.local_children_placed_or_parked(id))
                 .all(|child| self.kept_folder(child) || self.carried(child))
@@ -4315,13 +4339,6 @@ impl Trees {
             self.acknowledged(id).or_else(|| self.s.live(id)),
         ) {
             (Some(local), Some(synced)) => !local.shape.same_position(synced),
-            (Some(local), None) => {
-                self.local_changes.contains(id)
-                    && self
-                        .r
-                        .live(id)
-                        .is_some_and(|remote| !local.shape.same_position(remote))
-            }
             _ => false,
         };
         if local == Some(false) && moved {
@@ -5640,8 +5657,9 @@ impl Trees {
     fn settle_marked(&mut self) {
         let (l, r) = (&self.l, &self.r);
         self.lost_positions
-            .retain(|id, _| match (l.live(id), r.live(id)) {
-                (Some(local), Some(remote)) => !local.same_position(remote),
+            .retain(|id, _| match (l.get(id), r.live(id)) {
+                (Some(local), _) if local.displaced => false,
+                (Some(local), Some(remote)) => !local.shape.same_position(remote),
                 _ => true,
             });
         let mut pending = std::mem::take(&mut self.same);
@@ -5678,7 +5696,7 @@ impl Trees {
             changed.push(id.clone());
             pending.remove(&id);
             match self.class(&id) {
-                Class::InSync if !self.parked(&id) => {
+                Class::InSync if !self.parked(&id) && !self.missing.contains(&id) => {
                     self.clean(&id);
                 }
                 Class::Same => {
@@ -6543,6 +6561,7 @@ impl Trees {
             same: _,
             l_names: _,
             l_parked: _,
+            l_displaced: _,
             l_identities: _,
             s_names: _,
             s_marks: _,
@@ -6613,6 +6632,16 @@ impl Trees {
     /// although it is parked or not in sync, an unsearched node that is not dirty, and a parked
     /// name for a node L does not hold as parked.
     pub fn restore(&mut self, state: TreesState) -> Result<(), StateError> {
+        for id in state.displaced.keys() {
+            if let Some(shape) = (self.l.get(id))
+                .filter(|node| node.is_placed())
+                .map(|node| node.shape.clone())
+            {
+                self.l_names.remove(id, &shape);
+                self.l_displaced.insert(id, &shape);
+                self.l.update(id, |node| node.displaced = true);
+            }
+        }
         if let Some((id, _)) = state
             .content_provenance
             .iter()
@@ -6658,7 +6687,10 @@ impl Trees {
         if let Some(id) = (state.lost.iter()).find(|id| !state.outside.contains(*id)) {
             return Err(StateError::NotIgnoredLocal(id.clone()));
         }
-        let kept = |id: &&NodeId| self.l.get(id).is_none() && self.r.live(id).is_some();
+        let kept = |id: &&NodeId| {
+            self.l.get(id).is_some_and(|node| node.displaced)
+                && !self.r.get(id).is_some_and(|remote| remote.trashed)
+        };
         if let Some(id) = state.displaced.keys().find(|id| !kept(id)) {
             return Err(StateError::NotDisplaced(id.clone()));
         }

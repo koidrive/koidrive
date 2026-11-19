@@ -23,6 +23,7 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
     trees.set_local(
         "f".into(),
         EngineLocalNode {
+            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: shape.clone(),

@@ -374,6 +374,8 @@ fn a_store_written_by_alpha_1_upgrades_and_keeps_every_row() {
     expected.trees.lost_creates.clear();
     expected.trees.replaced_versions.clear();
     expected.trees.discarded.clear();
+    let (_, recorded) = kept.get_mut("recorded_nodes").unwrap();
+    recorded.retain(|row| !row.contains("Text(\"displaced\")"));
     let upgraded = MovedHere {
         seq: 9,
         upgraded: true,
@@ -638,7 +640,6 @@ fn legacy_state() -> EngineState {
     state.trees.discarded = full.trees.discarded;
     state.trees.outside = full.trees.outside;
     state.trees.lost = full.trees.lost;
-    state.trees.displaced = full.trees.displaced;
     state.trees.edited_here = full.trees.edited_here;
     state.trees.unsent_edits = full.trees.unsent_edits;
     state.trees.resends = full.trees.resends;
@@ -704,6 +705,14 @@ fn populate(path: &Path) {
         .transaction(|tx| {
             tx.set_engine_state(&engine_state())?;
             tx.put_synced_node(&discarded_in_s())?;
+            tx.put_local_node(&LocalNode {
+                left_out_when_placed: false,
+                content_from_server: false,
+                node_id: "displaced".into(),
+                shape: file_shape("root", "displaced.txt"),
+                identity: FileId::stored(9, Some(-1), None),
+                parked: false,
+            })?;
             tx.put_synced_node(&SyncedNode {
                 node_id: "moved".into(),
                 shape: moved.clone(),
@@ -2276,7 +2285,8 @@ fn a_store_from_before_nodes_in_ignored_folders_were_stored_opens_with_none_reco
 
     let mut store = Store::open(&path).unwrap();
     assert_eq!(applied(&path), all_migrations());
-    let after = before.clone();
+    let mut after = before.clone();
+    after.trees.displaced = engine_state().trees.displaced;
     before.trees.outside.clear();
     before.trees.lost.clear();
     before.trees.displaced.clear();

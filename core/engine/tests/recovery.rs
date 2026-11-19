@@ -57,6 +57,7 @@ fn trees(local: &[(&str, Shape)], synced: &[(&str, Shape)], remote: &[Remote]) -
     let mut trees = Trees::new(ROOT);
     for (ino, (id, shape)) in local.iter().enumerate() {
         let node = LocalNode {
+            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: shape.clone(),
@@ -1056,6 +1057,7 @@ fn an_entry_like_the_servers_at_a_name_s_gives_another_node_is_held_and_s_stays_
     );
     let identity = trees.local().get("moved").unwrap().identity;
     let moved = LocalNode {
+        displaced: false,
         left_out_when_placed: false,
         content_from_server: false,
         shape: file(ROOT, "c.txt", 1),
@@ -1064,6 +1066,7 @@ fn an_entry_like_the_servers_at_a_name_s_gives_another_node_is_held_and_s_stays_
     };
     trees.set_local("moved".into(), moved);
     let mine = LocalNode {
+        displaced: false,
         left_out_when_placed: false,
         content_from_server: false,
         shape: dir(ROOT, "a"),
@@ -4778,6 +4781,7 @@ fn a_given_up_folder_another_device_puts_a_file_in_stays_and_its_other_given_up_
 fn a_given_up_folder_this_device_writes_a_file_in_stays_and_its_other_given_up_nodes_are_trashed() {
     let (mut trees, mut commits, mut ids) = answered_with_a_given_up_folder_left_live(&kept_here());
     let node = LocalNode {
+        displaced: false,
         left_out_when_placed: false,
         content_from_server: false,
         shape: file("e", "mine", 9),
@@ -4804,6 +4808,7 @@ fn a_given_up_folder_this_device_puts_back_before_its_trash_again_is_kept() {
         .enumerate()
     {
         let node = LocalNode {
+            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape,

@@ -94,6 +94,7 @@ fn an_own_move_acknowledged_before_the_upgrade_is_sent_again_after_a_later_loss(
         pending_by: None,
     };
     let local = |name: &str| EngineLocalNode {
+        displaced: false,
         left_out_when_placed: false,
         content_from_server: false,
         shape: engine_shape("root", name),

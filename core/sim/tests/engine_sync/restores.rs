@@ -321,6 +321,7 @@ impl Bench {
                 shape: node.shape.clone(),
                 identity: identity(ino as u64),
                 parked: false,
+                displaced: false,
             };
             bench.trees.set_local(id.clone(), local);
             bench.trees.set_synced(id.clone(), Some(node.shape.clone()));

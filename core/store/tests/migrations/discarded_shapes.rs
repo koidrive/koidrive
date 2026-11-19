@@ -25,7 +25,11 @@ fn a_store_from_before_discarded_shapes_were_recorded_takes_them_from_the_waitin
                 shape: file_shape("root", "w-before.txt"),
                 pending_for: String::new(),
             })?;
-            for (node_id, name) in [("d", "d-edited.txt"), ("l", "l.txt")] {
+            for (node_id, name) in [
+                ("d", "d-edited.txt"),
+                ("l", "l.txt"),
+                ("displaced", "displaced.txt"),
+            ] {
                 tx.put_local_node(&LocalNode {
                     left_out_when_placed: false,
                     content_from_server: false,
@@ -97,6 +101,7 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
     trees.set_local(
         "secret".into(),
         Entry {
+            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: engine_shape("root", "secret.txt"),
@@ -261,6 +266,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
                 handle: None,
             };
             let entry = Entry {
+                displaced: false,
                 left_out_when_placed: false,
                 content_from_server: false,
                 shape,

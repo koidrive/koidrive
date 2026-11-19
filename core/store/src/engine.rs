@@ -1161,8 +1161,8 @@ impl Tx<'_> {
         Ok(())
     }
 
-    /// The rows of the nodes kept outside the synced folders and of the displaced ones, which share a table: the
-    /// rows that leave go first, so that a node that turns from one into the other takes its new row.
+    /// The rows of the nodes kept outside the synced folders and of the displaced ones, which share a table where a
+    /// node holds at most one row of each.
     fn write_recorded(
         &self,
         outside: &SetChanges<NodeId>,

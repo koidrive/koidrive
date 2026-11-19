@@ -67,6 +67,7 @@ fn identity(ino: u128) -> FileIdentity {
 
 fn local(shape: Shape, ino: u128) -> LocalNode {
     LocalNode {
+        displaced: false,
         left_out_when_placed: false,
         content_from_server: false,
         shape,
@@ -358,7 +359,7 @@ fn a_node_whose_name_another_entry_took_stays_excluded_until_it_returns_or_is_tr
     assert!(["d", "a", "b"].iter().all(|id| trees.recorded_local(id)));
     for id in ["d", "a", "b"] {
         trees.displace_local(id);
-        assert!(trees.local().get(id).is_none() && trees.excluded(id));
+        assert!(trees.displaced_local().contains_key(id) && trees.excluded(id));
     }
     trees.set_local("new".into(), local(file(ROOT, "d", 3), 9));
     let sent = ops(&mut trees);
@@ -374,19 +375,21 @@ fn a_node_whose_name_another_entry_took_stays_excluded_until_it_returns_or_is_tr
     assert_eq!(restored.state(), trees.state());
     assert!(["d", "a", "b"].iter().all(|id| restored.ignored(id)));
 
-    assert_eq!(
-        trees.displaced_with_identity(&held, Kind::File),
-        Some(&"a".to_owned())
-    );
+    assert_eq!(trees.local_with_identity(&held), Some(&"a".to_owned()));
+    let reused = FileIdentity {
+        birth_ns: held.birth_ns.map(|birth| birth + 1),
+        ..held
+    };
+    assert_eq!(trees.local_with_identity(&reused), None);
     let undated = trees.displaced_local()["b"];
     assert_eq!(undated.birth_ns, None);
     assert_eq!(
-        trees.displaced_with_identity(&undated, Kind::File),
+        trees.local_with_identity(&undated),
         None,
         "a record without a birth time matches no file"
     );
     trees.set_local("a".into(), local(file(ROOT, "back.txt", 1), 2));
-    assert!(!trees.excluded("a") && trees.displaced_with_identity(&held, Kind::File).is_none());
+    assert!(!trees.excluded("a") && !trees.displaced_local().contains_key("a"));
     trash(&mut trees, "b");
     assert!(!trees.excluded("b"));
     assert_eq!(

@@ -565,7 +565,6 @@ struct Device {
     removed_from: BTreeMap<String, String>,
     kept_back: BTreeSet<String>,
     relocated: BTreeMap<String, Relocation>,
-    in_ignored_folders: Vec<Content>,
 }
 
 struct Relocation {
@@ -710,6 +709,7 @@ impl Device {
                     content,
                 };
                 let node = LocalNode {
+                    displaced: false,
                     left_out_when_placed: false,
                     content_from_server: false,
                     shape,
@@ -739,13 +739,6 @@ impl Device {
                     (false, true) if into_ignored => {
                         self.touched.insert(id.clone());
                         self.acted.insert(id.clone());
-                        let mut below = vec![id.clone()];
-                        while let Some(node) = below.pop() {
-                            below.extend(self.trees.local_children(&node).cloned());
-                            let content = self.trees.local().get(&node);
-                            (self.in_ignored_folders)
-                                .extend(content.and_then(|node| node.shape.content.clone()));
-                        }
                         self.trees.ignore_local(&id)
                     }
                     _ => {
@@ -1627,7 +1620,6 @@ fn run_ignoring_answering_after(
         removed_from: BTreeMap::new(),
         kept_back: BTreeSet::new(),
         relocated: BTreeMap::new(),
-        in_ignored_folders: Vec::new(),
     };
     for state in space.nodes().iter().filter(|n| n.node_id != root) {
         let (id, node) = RemoteNode::from_state(state).unwrap();
@@ -1636,6 +1628,7 @@ fn run_ignoring_answering_after(
                 .trees
                 .set_synced(id.clone(), Some(node.shape.clone()));
             let local = LocalNode {
+                displaced: false,
                 left_out_when_placed: false,
                 content_from_server: false,
                 shape: node.shape.clone(),
@@ -2261,8 +2254,7 @@ fn run_ignoring_answering_after(
     }
     let unsent = (device.trees.local().iter())
         .filter(|(id, _)| device.trees.ignored(id) || waiting.contains(*id))
-        .map(|(_, node)| node.shape.content.clone())
-        .chain(device.in_ignored_folders.iter().cloned().map(Some));
+        .map(|(_, node)| node.shape.content.clone());
     let kept = written(
         server
             .iter()

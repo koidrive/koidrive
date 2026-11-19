@@ -61,6 +61,7 @@ fn trees() -> Trees {
         trees.set_local(
             id.into(),
             LocalNode {
+                displaced: false,
                 left_out_when_placed: false,
                 content_from_server: false,
                 shape: shape.clone(),
@@ -202,6 +203,7 @@ fn unsent() -> (Trees, TreesState) {
         handle: None,
     };
     let local = LocalNode {
+        displaced: false,
         left_out_when_placed: false,
         content_from_server: false,
         shape: shape.clone(),
@@ -500,6 +502,7 @@ fn trees_restore_a_valid_state_and_refuse_each_broken_one() {
     });
     let uploaded = broken(trees(), |trees| {
         let node = LocalNode {
+            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: dir(ROOT, "n"),
@@ -611,12 +614,12 @@ fn trees_restore_a_valid_state_and_refuse_each_broken_one() {
             StateError::NotIgnoredLocal("b".into()),
         ),
         (
-            "a displaced node that L holds",
+            "a displaced node that L does not hold",
             trees(),
             broken(trees_state(), |state| {
-                state.displaced.insert("a".into(), held);
+                state.displaced.insert("c".into(), held);
             }),
-            StateError::NotDisplaced("a".into()),
+            StateError::NotDisplaced("c".into()),
         ),
         (
             "a displaced node that R holds trashed",
@@ -801,6 +804,7 @@ fn an_identity_without_a_birth_time_round_trips() {
     trees.set_local(
         "u".into(),
         LocalNode {
+            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: shape.clone(),

@@ -29,7 +29,7 @@ use crate::state::{
     Agreed, CONTENT_ANCESTRY_LIMIT, CommitsChanges, CommitsState, FinishOrigin, GivenUp, StateError,
 };
 use crate::tracked::{Marked, TrackedMap, TrackedSet};
-use crate::tree::{Content, Kind, NodeId, RemoteNode, Shape, same, same_content};
+use crate::tree::{Content, Kind, Node, NodeId, RemoteNode, Shape, same, same_content};
 
 /// The most ops one commit holds (spec v0 section 13).
 pub const MAX_OPS: usize = 1000;
@@ -2336,7 +2336,7 @@ impl Commits {
                     let superseded = code == Code::Superseded && moved.from.is_some();
                     let moved_back = finishing == Some(true)
                         && applied
-                        && (trees.local().get(id).filter(|local| !local.parked)).is_some_and(
+                        && (trees.local().get(id).filter(|local| local.is_placed())).is_some_and(
                             |local| {
                                 let finish = &trees.pending_finishes()[id];
                                 local.shape.parent == finish.parent
@@ -2378,7 +2378,7 @@ impl Commits {
                     }
                     if superseded {
                         let local = (trees.local().get(id))
-                            .filter(|local| !local.parked)
+                            .filter(|local| local.is_placed())
                             .map(|local| &local.shape)
                             .filter(|local| {
                                 local.parent == target && nfc(&local.name) == nfc(&moved.new_name)
@@ -3453,7 +3453,7 @@ fn rebase(
         let (Some(local), Some(remote)) = (trees.local().get(id), trees.remote().live(id)) else {
             continue;
         };
-        if !local.parked
+        if local.is_placed()
             || trees.acknowledged_class(id) != Class::Remote
             || trees.excluded(id)
             || !effects::held_by_excluded(trees, id, remote)
@@ -3786,7 +3786,7 @@ pub(crate) fn finishes<'a>(
                 Some(_) => return None,
                 None => remote.pending_for.as_deref()?,
             };
-            let local = trees.local().get(id).filter(|node| !node.parked)?;
+            let local = trees.local().get(id).filter(|node| node.is_placed())?;
             let synced = trees.synced().live(id)?;
             let parent = &remote.shape.parent;
             let free = holder(trees, parent, name, id).is_none()
@@ -6168,6 +6168,7 @@ mod ancestry_size_tests {
                 },
             );
             let mut local = LocalNode {
+                displaced: false,
                 shape: shape.clone(),
                 identity: FileIdentity {
                     ino: n as u128 + 1,
