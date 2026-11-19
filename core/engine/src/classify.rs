@@ -20,7 +20,7 @@ use crate::state::{
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
-    Content, CountedMap, CountedSet, FileIdentity, Kind, LocalNode, Names, Node, NodeId,
+    ContentKey, CountedMap, CountedSet, FileIdentity, Kind, LocalNode, Names, Node, NodeId,
     RemoteNode, Shape, TrackedTree, Tree, TreeError, counted, read_entries, same, same_content,
 };
 
@@ -30,7 +30,7 @@ type Pair = (NodeId, NodeId);
 
 #[derive(Default)]
 pub(crate) struct Landing {
-    pub(crate) contents: BTreeMap<NodeId, Option<Content>>,
+    pub(crate) contents: BTreeMap<NodeId, Option<ContentKey>>,
     pub(crate) deleted: BTreeSet<NodeId>,
 }
 
@@ -1253,7 +1253,7 @@ impl Trees {
         let sent = (self.acknowledged(&id))
             .filter(|_| edited_here && made == Made::Edit)
             .map(|synced| Shape {
-                content: node.shape.content.clone(),
+                content: node.shape.content,
                 ..synced.clone()
             });
         let shape = node.shape.clone();
@@ -1723,7 +1723,7 @@ impl Trees {
         let Some(write) = local.content.as_ref() else {
             return false;
         };
-        let unchanged_here = |other: &NodeId, held: &Content| match self.l.live(other) {
+        let unchanged_here = |other: &NodeId, held: &ContentKey| match self.l.live(other) {
             Some(local) => (local.content.as_ref()).is_some_and(|kept| same_content(kept, held)),
             None => self.s.get(other).is_none(),
         };
@@ -3140,7 +3140,7 @@ impl Trees {
                     match parent {
                         Some(dir) if reclaimed.contains(dir) => {
                             let base = Shape {
-                                content: kept.content.clone(),
+                                content: kept.content,
                                 ..remote.shape.clone()
                             };
                             return Some((id.clone(), base, released.contains(dir)));
@@ -4883,7 +4883,7 @@ impl Trees {
 
     /// Records that an edit of this device set the content of `id` to `sent`, at R's edit
     /// revision, if R holds that content live.
-    pub fn record_edited(&mut self, id: &NodeId, sent: Option<&Content>) {
+    pub fn record_edited(&mut self, id: &NodeId, sent: Option<&ContentKey>) {
         let Some(remote) = (self.r.get(id)).filter(|remote| !remote.trashed) else {
             return;
         };
@@ -4977,7 +4977,7 @@ impl Trees {
     pub fn edited_here(&self) -> Vec<(NodeId, u64)> {
         (self.edited_here.iter())
             .filter(|(id, _)| {
-                let content = |shape: Option<&Shape>| shape.and_then(|shape| shape.content.clone());
+                let content = |shape: Option<&Shape>| shape.and_then(|shape| shape.content);
                 let remote = content(self.r.live(id));
                 let released = (self.waiting.get(id))
                     .filter(|waiting| waiting.origin == Origin::Released)
@@ -5604,7 +5604,7 @@ impl Trees {
         let lost: Vec<(NodeId, bool)> = (lost.into_iter())
             .map(|id| (id.to_owned(), waits.contains(id)))
             .collect();
-        let content = |shape: Option<&Shape>| shape.and_then(|shape| shape.content.clone());
+        let content = |shape: Option<&Shape>| shape.and_then(|shape| shape.content);
         let in_trash: Vec<NodeId> = (self.s.iter())
             .filter(|(id, _)| self.r.get(id).is_some_and(|remote| remote.trashed))
             .filter(|(id, _)| self.edited(id))
@@ -5807,7 +5807,7 @@ impl Trees {
 
     /// Records that the server acknowledged an edit of `id` to `sent`, so L's content is no longer
     /// an edit it lacks ([`Trees::unsent_edits`]), unless L has since taken other content.
-    pub fn sent_edit(&mut self, id: &NodeId, sent: Option<&Content>) {
+    pub fn sent_edit(&mut self, id: &NodeId, sent: Option<&ContentKey>) {
         let local = self.l.live(id).and_then(|shape| shape.content.as_ref());
         if matches!((local, sent), (Some(local), Some(sent)) if !same_content(local, sent)) {
             return;
@@ -5820,7 +5820,7 @@ impl Trees {
     pub(crate) fn sent_version(
         &mut self,
         id: &NodeId,
-        sent: Option<&Content>,
+        sent: Option<&ContentKey>,
         seq: u64,
         own: bool,
     ) {
@@ -6177,7 +6177,7 @@ impl Trees {
                     )
                 });
                 let next = Shape {
-                    content: remote.content.clone(),
+                    content: remote.content,
                     ..synced.clone()
                 };
                 self.set_synced_unmarked(id, Some(next));
@@ -6680,8 +6680,9 @@ impl Trees {
             .and_then(|shape| shape.content.as_ref())
             .and_then(|content| {
                 let provenance = self.content_provenance.get(id);
-                let same_value =
-                    |held: Option<&Content>| held.is_some_and(|held| same_content(held, content));
+                let same_value = |held: Option<&ContentKey>| {
+                    held.is_some_and(|held| same_content(held, content))
+                };
                 let old = same_value(self.s.get(id).and_then(|old| old.content.as_ref()))
                     .then(|| provenance.and_then(|provenance| provenance.synced.clone()))
                     .flatten();

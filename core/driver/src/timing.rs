@@ -698,6 +698,7 @@ mod tests {
             after: Some(remote.shape),
             recoveries: 0,
             staged: None,
+            after_chunks: Box::default(),
         }
     }
 

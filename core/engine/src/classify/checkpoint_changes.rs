@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
-use crate::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
+use crate::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape, key};
 use proptest::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
@@ -34,10 +34,10 @@ fn shape(i: u8, v: u8) -> Shape {
         parent: "root".into(),
         name: format!("{}{i}", ["a", "b", "A"][usize::from(v % 3)]),
         kind: Kind::File,
-        content: Some(Content {
+        content: Some(key(&Content {
             size: u64::from(v / 3 % 2),
             ..Default::default()
-        }),
+        })),
     }
 }
 
@@ -52,6 +52,7 @@ fn local(i: u8, placed: Placed, left_out: bool, from_server: bool) -> LocalNode 
         parked: placed.parked,
         left_out_when_placed: left_out,
         content_from_server: from_server,
+        chunks: Box::default(),
     }
 }
 
@@ -68,6 +69,7 @@ fn remote(i: u8, v: u8, mark: Option<u8>) -> RemoteNode {
         edit_rev: 1,
         pending_for: mark.map(|m| format!("m{m}")),
         pending_by: None,
+        chunks: Box::default(),
     }
 }
 

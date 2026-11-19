@@ -102,12 +102,14 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
             shape: engine_shape("root", "secret.txt"),
             identity,
             parked: false,
+            chunks: content(3).chunks.into(),
         },
     );
     trees.set_remote(
         "other".into(),
         RemoteNode {
             shape: engine_shape("root", "other.txt"),
+            chunks: content(3).chunks.into(),
             trashed: false,
             meta_rev: 1,
             meta_edit_rev: 1,
@@ -149,7 +151,8 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
     if edited {
         now.content = Some(content(6));
         let mut entry = trees.local().get(&"secret".into()).unwrap().clone();
-        entry.shape.content = Some(content(6));
+        entry.shape.content = Some(key(6));
+        entry.chunks = chunks(&entry.shape);
         trees.set_local("secret".into(), entry);
     }
     let before = EngineState {
@@ -263,6 +266,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
             let entry = Entry {
                 left_out_when_placed: false,
                 content_from_server: false,
+                chunks: chunks(&shape),
                 shape,
                 identity,
                 parked: false,
@@ -273,6 +277,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
             "other".into(),
             RemoteNode {
                 shape: engine_shape("root", "other.txt"),
+                chunks: content(3).chunks.into(),
                 trashed: false,
                 meta_rev: 1,
                 meta_edit_rev: 1,

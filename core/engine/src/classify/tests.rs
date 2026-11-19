@@ -1,5 +1,7 @@
+use koidrive_proto::v1::Content;
+
 use super::*;
-use crate::tree::FileIdentity;
+use crate::tree::{FileIdentity, key};
 
 fn dir(parent: &NodeId, name: &str) -> Shape {
     Shape {
@@ -23,6 +25,7 @@ fn remote(shape: Shape) -> RemoteNode {
         made_over: Vec::new(),
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     }
 }
 
@@ -31,11 +34,11 @@ fn ancestry_file(value: u8) -> Shape {
         parent: "root".into(),
         name: "f".into(),
         kind: Kind::File,
-        content: Some(Content {
+        content: Some(key(&Content {
             size: 1,
             manifest_digest: vec![value; 32],
             ..Content::default()
-        }),
+        })),
     }
 }
 
@@ -64,6 +67,7 @@ fn ancestry_tree() -> Trees {
             parked: false,
             left_out_when_placed: false,
             content_from_server: false,
+            chunks: Box::default(),
         },
     );
     trees.set_synced("f".into(), Some(ancestry_file(1)));
@@ -192,7 +196,7 @@ fn ancestry_a_reused_sequence_does_not_discard_a_known_later_value() {
     );
     assert!(commit.is_some_and(|commit| matches!(commit.ops.as_slice(), [op]
         if matches!(&op.op, Some(koidrive_proto::v1::op::Op::UpdateContent(update))
-            if update.resend && update.source_version_id == "held" && update.content == ancestry_file(1).content))), "{commit:?}");
+            if update.resend && update.source_version_id == "held" && update.content.as_ref().map(key) == ancestry_file(1).content))), "{commit:?}");
 }
 
 #[test]
@@ -375,6 +379,7 @@ fn reclaimable(child_to: &NodeId, own_wait: bool) -> Trees {
             shape,
             identity,
             parked: false,
+            chunks: Box::default(),
         };
         trees.set_local(id.into(), local);
     }
@@ -464,6 +469,7 @@ fn a_server_folder_in_a_discarded_folder(folders: usize, waiting: bool) -> (Tree
             shape,
             identity,
             parked: false,
+            chunks: Box::default(),
         };
         trees.set_local(id, local);
     };
@@ -480,7 +486,7 @@ fn a_server_folder_in_a_discarded_folder(folders: usize, waiting: bool) -> (Tree
         );
         ids.push(folder.clone().into());
         for j in 0..500 {
-            let content = Content {
+            let content = key(&Content {
                 size: 1,
                 mtime_ns: 0,
                 executable: false,
@@ -488,7 +494,7 @@ fn a_server_folder_in_a_discarded_folder(folders: usize, waiting: bool) -> (Tree
                 chunk_count: 0,
                 manifest_digest: vec![1; 32],
                 chunker: String::new(),
-            };
+            });
             let shape = Shape {
                 parent: NodeId::from(&folder),
                 name: format!("f{j}"),
@@ -556,6 +562,7 @@ fn two_server_folders_swapped_below_a_discarded_folder_stay_discarded() {
             shape,
             identity,
             parked: false,
+            chunks: Box::default(),
         };
         trees.set_local(id.clone(), local);
     };
@@ -601,6 +608,7 @@ fn a_discarded_node_drops_its_unsent_move_and_follows_the_server() {
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("c".into(), local);
     trees.set_synced("c".into(), Some(shape.clone()));
@@ -632,6 +640,7 @@ fn a_resend_that_yields_to_the_server_trash_drops_its_unsent_move() {
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("c".into(), local);
     trees.set_synced("c".into(), Some(shape.clone()));
@@ -662,6 +671,7 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_a_loss_follows() {
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("f".into(), local(dir(&"root".into(), "f"), 1));
     trees.set_synced("f".into(), Some(dir(&"root".into(), "f")));
@@ -706,6 +716,7 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_the_loss_also_takes_th
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("f".into(), local(dir(&"root".into(), "f"), 1));
     trees.set_synced("f".into(), Some(dir(&"root".into(), "f")));
@@ -751,6 +762,7 @@ fn a_discard_check_over_a_deep_chain_of_taken_along_server_folders_finishes() {
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("f".into(), local(dir(&"root".into(), "new"), 100, false));
     let mut parent = "root".to_string();
@@ -788,6 +800,7 @@ fn a_discard_check_over_a_deep_chain_of_kept_back_folders_finishes() {
             shape: dir(&"root".into(), &x),
             identity,
             parked: false,
+            chunks: Box::default(),
         };
         trees.set_local(NodeId::from(&x), local);
         trees
@@ -815,16 +828,17 @@ fn nodes_sharing_an_identity_or_a_name_key_are_found_in_id_order_as_they_come_an
             parent: "root".into(),
             name: name.into(),
             kind: Kind::File,
-            content: Some(Content {
+            content: Some(key(&Content {
                 size: 1,
                 manifest_digest: vec![1; 32],
                 ..Content::default()
-            }),
+            })),
         },
         identity,
         parked: false,
         left_out_when_placed: false,
         content_from_server: false,
+        chunks: Box::default(),
     };
     let mut trees = Trees::new("root");
     for (id, name) in [
@@ -921,16 +935,17 @@ mod holders_against_a_rebuild {
                 parent: "root".into(),
                 name: NAMES[n].into(),
                 kind: Kind::File,
-                content: Some(Content {
+                content: Some(key(&Content {
                     size: 1,
                     manifest_digest: vec![1; 32],
                     ..Content::default()
-                }),
+                })),
             },
             identity: ident(k),
             parked,
             left_out_when_placed: false,
             content_from_server: false,
+            chunks: Box::default(),
         }
     }
 
@@ -1084,6 +1099,7 @@ fn kept_local(parent: &NodeId, name: &str, kind: Kind, ino: u128) -> LocalNode {
         parked: false,
         left_out_when_placed: false,
         content_from_server: false,
+        chunks: Box::default(),
     }
 }
 
@@ -1223,11 +1239,11 @@ fn a_kept_node_renamed_to_an_included_name_while_an_unrelated_rule_changes_stays
 
 fn rules_file(parent: &NodeId, version: u8, ino: u128) -> LocalNode {
     let mut node = kept_local(parent, ".koiignore", Kind::File, ino);
-    node.shape.content = Some(Content {
+    node.shape.content = Some(key(&Content {
         size: 1,
         manifest_digest: vec![version; 32],
         ..Default::default()
-    });
+    }));
     node
 }
 

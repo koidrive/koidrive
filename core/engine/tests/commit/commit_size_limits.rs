@@ -103,18 +103,13 @@ fn a_conflict_answer_counts_toward_the_change_records_of_its_commit() {
     )]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     build(&mut commits, &mut trees, &mut ids).unwrap();
-    let chunk = proto::ChunkRef {
-        hash: vec![7; 32],
-        size: 4 << 20,
-        encoding: 0,
-    };
     let copied = Content {
-        chunks: vec![chunk; 8192],
+        chunks: vec![chunk(); 8192],
         chunk_count: 8192,
         ..content(2)
     };
     let copy = Shape {
-        content: Some(copied.clone()),
+        content: Some(key(&copied)),
         ..file(ROOT, "f (conflict)", 2)
     };
     trees.set_remote("f".into(), remote(file(ROOT, "f", 3)));
@@ -149,8 +144,10 @@ fn a_conflict_answer_counts_toward_the_change_records_of_its_commit() {
     assert!(sent.contains(&answer));
     assert_eq!(sent.len(), 2);
 
-    let mut took = remote(file(ROOT, "f", 3));
-    took.shape.content = Some(copied);
+    let mut took = remote(Shape {
+        content: Some(key(&copied)),
+        ..file(ROOT, "f", 3)
+    });
     took.content_rev = 2;
     took.edit_rev = 2;
     trees.set_remote("f".into(), took);

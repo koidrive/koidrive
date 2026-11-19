@@ -29,6 +29,7 @@ use koidrive_fs::{
 };
 use koidrive_net::ServerError;
 use koidrive_proto::v1::{NodeKind, NodeState, NodeStatus, VersionInfo};
+use koidrive_sim::world::{key, split};
 use koidrive_store::{EngineState, SyncedNode};
 
 use super::*;
@@ -121,7 +122,8 @@ fn an_edit_the_user_made_before_a_recovered_download_stays_an_edit() {
         .unwrap();
     fs::write(folder.root.join("report.txt"), REMOTE).unwrap();
     let mut edited = running.local(NODE).unwrap().clone();
-    edited.shape.content = Some(disk_content(&folder.root.join("report.txt")));
+    (edited.shape.content, edited.chunks) =
+        split(Some(disk_content(&folder.root.join("report.txt"))));
     batch(&mut running, |trees| trees.set_local(NODE.into(), edited));
     assert_eq!(
         running.engine.trees.class(&NodeId::from(NODE)),
@@ -638,10 +640,12 @@ const OTHER: &str = "0190f0a0-0000-7000-8000-0000000000b2";
 
 /// A node that only L holds, as after a batch that reported an entry the disk no longer has.
 fn other(parent: &str, name: &str, kind: Kind) -> LocalNode {
-    let content = (kind == Kind::File).then(|| Content {
-        size: 1,
-        manifest_digest: vec![7; 32],
-        ..Content::default()
+    let content = (kind == Kind::File).then(|| {
+        key(&Content {
+            size: 1,
+            manifest_digest: vec![7; 32],
+            ..Content::default()
+        })
     });
     LocalNode {
         left_out_when_placed: false,
@@ -658,6 +662,7 @@ fn other(parent: &str, name: &str, kind: Kind) -> LocalNode {
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     }
 }
 
@@ -1625,8 +1630,8 @@ fn a_remote_edit_never_replaces_a_file_whose_read_was_deferred() {
         matches!(
             at_report.as_slice(),
             [(id, node)] if **id != NODE
-                && node.shape.content.as_ref().map(|content| &content.manifest_digest)
-                    == Some(&edit.manifest_digest)
+                && node.shape.content.as_ref().map(|content| content.manifest_digest())
+                    == Some(edit.manifest_digest.as_slice())
         ),
         "the edit is forked off the node: {at_report:?}"
     );
@@ -1982,7 +1987,7 @@ fn a_stale_batch_does_not_undo_an_effect_and_the_rescan_reports_its_result() {
             path: "report.txt".into(),
             id: known.id,
             linked: false,
-            content: written.shape.content.clone(),
+            content: written.content(),
         }],
         "the rescan reads the written file again and reports nothing else"
     );
@@ -2134,6 +2139,7 @@ fn record(effect: EngineEffect) -> EffectRecord {
         after: None,
         recoveries: 0,
         staged: None,
+        after_chunks: Box::default(),
     }
 }
 
@@ -2649,11 +2655,11 @@ fn an_edit_that_keeps_size_and_mtime_while_a_file_is_placed_reaches_l_after_the_
     let sections = running.disk.sections();
     let mut watching = observer(&folder.root, Snapshot::scan(&folder.root).unwrap());
     assert_eq!(running.step(&server), Some(Settled::Done));
-    let acknowledged = running.local(NODE).unwrap().shape.content.clone().unwrap();
+    let acknowledged = running.local(NODE).unwrap().shape.content.unwrap();
     let edited = disk_content(&path);
     assert_eq!(edited.size, acknowledged.size);
     assert_eq!(edited.mtime_ns, acknowledged.mtime_ns);
-    assert_ne!(edited.manifest_digest, acknowledged.manifest_digest);
+    assert_ne!(edited.manifest_digest, acknowledged.manifest_digest());
 
     catch_up(&mut watching, &sections);
     let fresh = observe_until(&mut watching, sections.stamp(), |seen| !seen.is_empty());
@@ -2661,9 +2667,10 @@ fn an_edit_that_keeps_size_and_mtime_while_a_file_is_placed_reaches_l_after_the_
         .disk
         .observed(fresh, &mut running.engine, &mut running.store)
         .unwrap();
-    let held = running.local(NODE).unwrap().shape.content.clone().unwrap();
+    let held = running.local(NODE).unwrap().shape.content.unwrap();
     assert_eq!(
-        held.manifest_digest, edited.manifest_digest,
+        held.manifest_digest(),
+        edited.manifest_digest,
         "L keeps the downloaded content for a file the user edited"
     );
 }
@@ -2974,7 +2981,7 @@ fn a_removal_counts_against_the_files_s_holds_after_it() {
     let edited = disk_content(&path);
     batch(&mut running, |trees| {
         let mut local = trees.local().get(&NodeId::from(NODE)).unwrap().clone();
-        local.shape.content = Some(edited);
+        (local.shape.content, local.chunks) = split(Some(edited));
         trees.set_local(NODE.into(), local);
     });
     fs::write(&path, SYNCED).unwrap();
@@ -3040,7 +3047,7 @@ fn a_parked_fork_whose_name_is_taken_is_uploaded_from_the_parked_directory() {
             .to_string(),
     );
     fs::write(&entry, b"the person's own c.txt").unwrap();
-    let content = disk_content(&entry);
+    let (content, chunks) = split(Some(disk_content(&entry)));
     let id = koidrive_fs::id_of(fs::File::open(&entry).unwrap().as_fd()).unwrap();
     batch(&mut running, |trees| {
         trees.set_local(
@@ -3052,10 +3059,11 @@ fn a_parked_fork_whose_name_is_taken_is_uploaded_from_the_parked_directory() {
                     parent: SPACE.into(),
                     name: "c.txt".into(),
                     kind: Kind::File,
-                    content: Some(content),
+                    content,
                 },
                 identity: crate::engine::file_identity(id),
                 parked: true,
+                chunks,
             },
         )
     });
@@ -3620,7 +3628,7 @@ fn a_store_restored_from_before_a_write_that_failed_does_not_take_its_download_a
         (running.disk)
             .observed(seen, &mut running.engine, &mut running.store)
             .unwrap();
-        let content = |shape: Option<&Shape>| shape.and_then(|shape| shape.content.clone());
+        let content = |shape: Option<&Shape>| shape.and_then(|shape| shape.content);
         let synced =
             content(running.engine.trees.synced().live(&NodeId::from(NODE))).map(|c| c.size);
         let expected = scenario.displaces.map(|bytes| bytes.len() as u64);

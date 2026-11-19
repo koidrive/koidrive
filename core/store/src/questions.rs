@@ -5,12 +5,11 @@ use std::collections::BTreeMap;
 use koidrive_engine::guard::{Counted, GuardState, RemoteDeletion, Trash};
 use koidrive_engine::question::{Answer, Frozen, Held, Limit, Question, QuestionKind, Revisions};
 use koidrive_engine::state::GuardChanges;
-use koidrive_engine::tree::{Content, NodeId, Shape};
-use prost::Message;
+use koidrive_engine::tree::{NodeId, Shape};
 use rusqlite::{Row, params};
 
-use crate::engine::{kind, node_kind};
-use crate::{Error, Result, Tx, decode};
+use crate::engine::{content_key, key_bytes, kind, node_kind};
+use crate::{Error, Result, Tx};
 
 type HeldBy = BTreeMap<String, BTreeMap<NodeId, Held>>;
 
@@ -39,7 +38,7 @@ impl Tx<'_> {
                 parent: NodeId::from(row.get::<_, String>(2)?),
                 name: row.get(3)?,
                 kind: kind(row.get(4)?)?,
-                content: decode(row.get(5)?)?,
+                content: content_key(row.get(5)?)?,
             };
             (shown.entry(row.get(0)?).or_default())
                 .insert(NodeId::from(row.get::<_, String>(1)?), shape);
@@ -163,7 +162,7 @@ impl Tx<'_> {
                     shape.parent.to_string(),
                     shape.name,
                     node_kind(shape.kind),
-                    shape.content.as_ref().map(Content::encode_to_vec),
+                    shape.content.as_ref().map(key_bytes),
                 ])?;
             }
         }

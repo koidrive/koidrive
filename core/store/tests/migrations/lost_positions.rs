@@ -6,6 +6,7 @@ use super::*;
 fn an_own_move_whose_earlier_positions_aged_out_before_the_upgrade_is_sent_again_after_a_loss() {
     let remote = |name: &str, meta_rev: u64, trashed: bool| RemoteNode {
         shape: engine_shape("root", name),
+        chunks: content(3).chunks.into(),
         trashed,
         content_rev: 1,
         meta_rev,
@@ -25,6 +26,7 @@ fn an_own_move_whose_earlier_positions_aged_out_before_the_upgrade_is_sent_again
         left_out_when_placed: false,
         content_from_server: false,
         shape: engine_shape("root", name),
+        chunks: content(3).chunks.into(),
         identity: FileIdentity {
             ino: 1,
             birth_ns: Some(0),

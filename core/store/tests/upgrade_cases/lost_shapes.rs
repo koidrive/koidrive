@@ -14,7 +14,10 @@ upgrade_case!(lost_shapes, |store| {
                 parent: report.shape.parent_id.into(),
                 name: report.shape.name,
                 kind: koidrive_engine::tree::Kind::File,
-                content: report.shape.content,
+                content: report
+                    .shape
+                    .content
+                    .map(|content| koidrive_engine::tree::ContentKey::try_from(&content).unwrap()),
             };
             state
                 .trees

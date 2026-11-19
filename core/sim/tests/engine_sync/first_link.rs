@@ -38,6 +38,7 @@ fn placement_check_after_a_move(
                 },
                 identity: identity(1),
                 parked: false,
+                chunks: Box::default(),
             },
         );
         trees.set_remote(id, remote);
@@ -79,6 +80,7 @@ fn placement_check_after_a_move(
         after: Some(after),
         recoveries: 0,
         staged: None,
+        after_chunks: Box::default(),
     };
     assert!(record.applies(&trees, None));
     let mut state = Effects::default().state();
@@ -871,6 +873,7 @@ fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
             shape: moved.clone(),
             identity: identity(1),
             parked: false,
+            chunks: Box::default(),
         },
     );
     let from = RemoteNode::from_state(&state("m", "k")).unwrap().1.shape;
@@ -919,6 +922,7 @@ fn keep_rule_keeps_a_deleted_folder(server_renames_it: bool) -> bool {
             shape: held,
             identity: identity(1),
             parked: false,
+            chunks: Box::default(),
         },
     );
     device.trees.settle(&Default::default());
@@ -965,6 +969,7 @@ fn the_keep_rule_keeps_back_a_folder_above_an_entry_it_already_kept_back() {
             shape,
             identity: identity(ino),
             parked: false,
+            chunks: Box::default(),
         };
         device.trees.set_local(id.into(), node);
     }

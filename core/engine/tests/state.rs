@@ -17,8 +17,11 @@ use koidrive_engine::state::{
     Agreed, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptEntries, LostPosition,
     MovedHere, PendingFinish, StateError, SyncedPosition, TreesState,
 };
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape, TreeError};
-use koidrive_proto::v1::{Commit, CommitResult, Delete, Move, Op, OpResult, op};
+use koidrive_engine::tree::{
+    Content, ContentKey, FileIdentity, Kind, LocalNode, RemoteNode, Shape, TreeError,
+};
+use koidrive_proto::v1::{Commit, CommitResult, Delete, Move, Op, OpResult, UpdateContent, op};
+use koidrive_sim::world::key;
 
 const ROOT: &str = "root";
 
@@ -44,6 +47,7 @@ fn remote(shape: Shape) -> RemoteNode {
         edit_rev: 1,
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     }
 }
 
@@ -66,6 +70,7 @@ fn trees() -> Trees {
                 shape: shape.clone(),
                 identity,
                 parked,
+                chunks: Box::default(),
             },
         );
         trees.set_synced(id.into(), Some(shape));
@@ -190,12 +195,12 @@ fn trees_state() -> TreesState {
     }
 }
 
-fn content(digest: u8) -> Content {
-    Content {
+fn content(digest: u8) -> ContentKey {
+    key(&Content {
         size: 3,
         manifest_digest: vec![digest; 32],
         ..Default::default()
-    }
+    })
 }
 
 fn unsent() -> (Trees, TreesState) {
@@ -218,6 +223,7 @@ fn unsent() -> (Trees, TreesState) {
         shape: shape.clone(),
         identity,
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("f".into(), local);
     trees.set_synced("f".into(), Some(shape));
@@ -490,6 +496,7 @@ fn effects_state() -> EffectsState {
             after: Some(dir(ROOT, "a")),
             recoveries: 0,
             staged: None,
+            after_chunks: Box::default(),
         }],
         cleared: 3,
         failed: [("b".into(), create)].into(),
@@ -525,6 +532,7 @@ fn trees_restore_a_valid_state_and_refuse_each_broken_one() {
                 handle: None,
             },
             parked: false,
+            chunks: Box::default(),
         };
         trees.set_local("n".into(), node);
     });
@@ -786,6 +794,20 @@ fn commits_restore_a_valid_state_and_refuse_each_broken_one() {
             StateError::RestoreResolved("r0".into()),
         ),
         (
+            "an edit in flight whose digest no content key holds",
+            flight(|flight| {
+                flight.commit.ops[1].op = Some(op::Op::UpdateContent(UpdateContent {
+                    node_id: "m".into(),
+                    content: Some(Content {
+                        manifest_digest: vec![1; 33],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }));
+            }),
+            StateError::DigestTooLong("m".into()),
+        ),
+        (
             "a restore with two outcomes",
             broken(commits_state(), |state| {
                 state.resolved.push(state.resolved[0].clone());
@@ -839,6 +861,7 @@ fn an_identity_without_a_birth_time_round_trips() {
             shape: shape.clone(),
             identity: unknown,
             parked: false,
+            chunks: Box::default(),
         },
     );
     trees.set_synced("u".into(), Some(shape));
@@ -873,6 +896,7 @@ fn an_identity_without_a_birth_time_round_trips() {
             after: None,
             recoveries: 0,
             staged: None,
+            after_chunks: Box::default(),
         }],
         cleared: 0,
         failed: [(

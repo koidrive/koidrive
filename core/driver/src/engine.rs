@@ -21,12 +21,13 @@ use koidrive_engine::ids::{IdGen, unix_ms};
 use koidrive_engine::question as engine;
 use koidrive_engine::restore::RestoreIntent;
 use koidrive_engine::tree::{
-    Content, FileIdentity, Kind, LocalNode, Names, Node, NodeId, RemoteNode, Shape, Tree,
-    same_content,
+    Content, ContentKey, DigestTooLong, FileIdentity, Kind, LocalNode, Names, Node, NodeId,
+    RemoteNode, Shape, Tree, same_content,
 };
 use koidrive_fs::{Ctime, Entry, EntryKind, FileId, Known, Mount, Snapshot};
 use koidrive_proto::v1::{
-    CaughtUp, ChangeRecord, CommitRecord, NodeKind, NodeState, TrashPage, TreePage, change_record,
+    CaughtUp, ChangeRecord, ChunkRef, CommitRecord, NodeKind, NodeState, TrashPage, TreePage,
+    change_record,
 };
 use koidrive_store::{Cursor, EngineChanges, EngineState, Error, StoredQuestion, SyncedNode, Tx};
 
@@ -124,7 +125,7 @@ impl Engine {
             match self.trees.synced().get(id) {
                 Some(shape) => tx.put_synced_node(&SyncedNode {
                     node_id: id.clone(),
-                    shape: stored_shape(shape),
+                    shape: stored_shape(shape, &[]),
                     pending_for: self.trees.synced_mark(id).unwrap_or_default().to_owned(),
                 })?,
                 None => {
@@ -1150,7 +1151,7 @@ impl Engine {
                     let content = before
                         .as_ref()
                         .and_then(|id| self.trees.local().get(id))
-                        .and_then(|node| node.shape.content.clone());
+                        .and_then(LocalNode::content);
                     self.place(
                         before,
                         to,
@@ -1457,14 +1458,19 @@ impl Engine {
             EntryKind::File => Kind::File,
             EntryKind::Dir => Kind::Dir,
         };
+        let (content, chunks) = match (kind, content) {
+            (Kind::File, Some(content)) => {
+                let (key, chunks) =
+                    ContentKey::split(content).expect("a scanned content has a 32-byte digest");
+                (Some(key), chunks)
+            }
+            _ => (None, Box::default()),
+        };
         let shape = Shape {
             parent: parent.clone(),
             name: name.to_owned(),
             kind,
-            content: match kind {
-                Kind::File => content,
-                Kind::Dir => None,
-            },
+            content,
         };
         let node = node
             .filter(|id| {
@@ -1494,13 +1500,15 @@ impl Engine {
             }
             return;
         }
-        let shape = Shape {
-            content: shape.content.or_else(|| {
-                existing
-                    .filter(|_| kind == Kind::File)
-                    .and_then(|old| old.shape.content.clone())
-            }),
-            ..shape
+        let (shape, chunks) = match existing.filter(|_| kind == Kind::File) {
+            Some(old) if shape.content.is_none() => (
+                Shape {
+                    content: old.shape.content,
+                    ..shape
+                },
+                old.chunks.clone(),
+            ),
+            _ => (shape, chunks),
         };
         if kind == Kind::File && shape.content.is_none() {
             return;
@@ -1549,6 +1557,7 @@ impl Engine {
                 shape,
                 identity,
                 parked: false,
+                chunks,
             },
         );
         touched.insert(id);
@@ -1692,7 +1701,7 @@ impl Stored {
                 return ControlFlow::Break(Ok(false));
             }
             let shape = match shape(node.shape) {
-                Ok(shape) => shape,
+                Ok((shape, _)) => shape,
                 Err(error) => return ControlFlow::Break(Err(error)),
             };
             trees.set_synced(node.node_id.clone(), Some(shape));
@@ -1710,8 +1719,8 @@ impl Stored {
             if abandoned_now() {
                 return ControlFlow::Break(Ok(false));
             }
-            let shape = match shape(node.shape) {
-                Ok(shape) => shape,
+            let (shape, chunks) = match shape(node.shape) {
+                Ok(split) => split,
                 Err(error) => return ControlFlow::Break(Err(error)),
             };
             let local = LocalNode {
@@ -1720,6 +1729,7 @@ impl Stored {
                 parked: node.parked,
                 left_out_when_placed: node.left_out_when_placed,
                 content_from_server: node.content_from_server,
+                chunks,
             };
             trees.set_local(node.node_id, local);
             ControlFlow::Continue(())
@@ -1916,24 +1926,32 @@ pub(crate) fn effects_of(state: koidrive_engine::state::EffectsState) -> Result<
     Effects::from_state(state).map_err(|error| invalid(format!("{error:?}")))
 }
 
-fn shape(shape: koidrive_store::Shape) -> Result<Shape, Error> {
+fn shape(shape: koidrive_store::Shape) -> Result<(Shape, Box<[ChunkRef]>), Error> {
     let kind = match NodeKind::try_from(shape.kind) {
         Ok(NodeKind::Dir) => Kind::Dir,
         Ok(NodeKind::File) => Kind::File,
         _ => return Err(invalid(format!("node kind {}", shape.kind))),
     };
-    Ok(Shape {
+    let (content, chunks) = match shape.content.map(ContentKey::split).transpose() {
+        Ok(Some((key, chunks))) => (Some(key), chunks),
+        Ok(None) => (None, Box::default()),
+        Err(DigestTooLong(len)) => {
+            return Err(invalid(format!("a manifest digest of {len} bytes")));
+        }
+    };
+    let shape = Shape {
         parent: NodeId::from(shape.parent_id),
         name: shape.name,
         kind,
-        content: shape.content,
-    })
+        content,
+    };
+    Ok((shape, chunks))
 }
 
 fn stored(id: &NodeId, node: &LocalNode) -> koidrive_store::LocalNode {
     koidrive_store::LocalNode {
         node_id: id.clone(),
-        shape: stored_shape(&node.shape),
+        shape: stored_shape(&node.shape, &node.chunks),
         identity: file_id(node.identity),
         parked: node.parked,
         left_out_when_placed: node.left_out_when_placed,
@@ -1941,7 +1959,7 @@ fn stored(id: &NodeId, node: &LocalNode) -> koidrive_store::LocalNode {
     }
 }
 
-fn stored_shape(shape: &Shape) -> koidrive_store::Shape {
+fn stored_shape(shape: &Shape, chunks: &[ChunkRef]) -> koidrive_store::Shape {
     let kind = match shape.kind {
         Kind::Dir => NodeKind::Dir,
         Kind::File => NodeKind::File,
@@ -1950,7 +1968,7 @@ fn stored_shape(shape: &Shape) -> koidrive_store::Shape {
         parent_id: shape.parent.to_string(),
         name: shape.name.clone(),
         kind: kind as i32,
-        content: shape.content.clone(),
+        content: shape.content.map(|key| key.content(chunks)),
     }
 }
 
@@ -2184,6 +2202,7 @@ mod tests {
     use std::fs;
 
     use koidrive_fs::Change;
+    use koidrive_sim::world::key;
     use koidrive_store::{EngineState, Store};
     use proptest::prelude::*;
 
@@ -2559,11 +2578,11 @@ mod tests {
             parent: parent.into(),
             name: name.into(),
             kind: Kind::File,
-            content: Some(Content {
+            content: Some(key(&Content {
                 size: 3,
                 manifest_digest: vec![digest; 32],
                 ..Default::default()
-            }),
+            })),
         }
     }
 
@@ -2587,6 +2606,7 @@ mod tests {
                 handle: None,
             },
             parked: false,
+            chunks: Box::default(),
         }
     }
 
@@ -2629,6 +2649,7 @@ mod tests {
                     edit_rev: 1,
                     pending_for: None,
                     pending_by: None,
+                    chunks: Box::default(),
                 };
                 trees.set_remote((*id).into(), node);
             }
@@ -2938,6 +2959,7 @@ mod tests {
                         edit_rev: 1,
                         pending_for: None,
                         pending_by: None,
+                        chunks: Box::default(),
                     };
                     trees.set_remote("d".into(), node);
                 },
@@ -3303,6 +3325,7 @@ mod tests {
                 edit_rev: 1,
                 pending_for: None,
                 pending_by: None,
+                chunks: Box::default(),
             };
             engine.trees.set_remote(id, node);
         }
@@ -4805,6 +4828,7 @@ mod tests {
                 parked: false,
                 left_out_when_placed: false,
                 content_from_server: false,
+                chunks: Box::default(),
             };
             engine.trees.set_local(NodeId::from(id), local);
         }
@@ -4844,6 +4868,7 @@ mod tests {
                 edit_rev: 1,
                 pending_for: None,
                 pending_by: None,
+                chunks: Box::default(),
             };
             engine
                 .trees

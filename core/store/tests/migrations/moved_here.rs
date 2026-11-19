@@ -82,6 +82,7 @@ fn a_store_from_before_moves_were_recorded_records_the_positions_its_commits_set
 fn an_own_move_acknowledged_before_the_upgrade_is_sent_again_after_a_later_loss() {
     let remote = |name: &str, meta_rev| RemoteNode {
         shape: engine_shape("root", name),
+        chunks: content(3).chunks.into(),
         trashed: false,
         content_rev: 1,
         meta_rev,
@@ -97,6 +98,7 @@ fn an_own_move_acknowledged_before_the_upgrade_is_sent_again_after_a_later_loss(
         left_out_when_placed: false,
         content_from_server: false,
         shape: engine_shape("root", name),
+        chunks: content(3).chunks.into(),
         identity: FileIdentity {
             ino: 1,
             birth_ns: Some(0),

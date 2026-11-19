@@ -15,9 +15,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_engine::effects::{Base, Displaced, Effect, EffectRecord, Location};
-use koidrive_engine::tree::{Content, FileIdentity, Kind, NodeId, same_content};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, NodeId};
 
-use super::tag;
+use super::{same_bytes, tag};
 
 /// Where an entry sits.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -666,7 +666,7 @@ impl Disk {
     fn written(&self, at: &Location, content: &Content) -> Option<FileIdentity> {
         let ino = self.found(at).ok()??;
         let held = self.entries[&ino].content.as_ref()?;
-        same_content(held, content).then(|| identity(ino))
+        same_bytes(held, content).then(|| identity(ino))
     }
 
     /// The file an effect displaces, when it still is the file the engine saw.
@@ -676,7 +676,7 @@ impl Disk {
             .filter(|ino| *ino == displaced.identity.ino);
         let ino = ino.ok_or(Refused::Moved)?;
         match &self.entries[&ino].content {
-            Some(content) if same_content(content, &displaced.content) => Ok(ino),
+            Some(content) if same_bytes(content, &displaced.content) => Ok(ino),
             _ => Err(Refused::Changed),
         }
     }

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use koidrive_engine::classify::Class;
 use koidrive_engine::commit::Halt as CommitHalt;
 use koidrive_engine::effects::{self, Stuck};
-use koidrive_engine::tree::{Content, Kind, NodeId, Shape, same_content};
+use koidrive_engine::tree::{ContentKey, Kind, NodeId, Shape, same_content};
 use koidrive_fs::Detached;
 use koidrive_net::{Cause, DisconnectReason};
 
@@ -339,17 +339,17 @@ impl Folder {
         let trees = &self.engine.trees;
         let held = self.held();
         let stays_out = self.stays_out(&held);
-        fn file(shape: Option<&Shape>) -> Option<&Content> {
+        fn file(shape: Option<&Shape>) -> Option<&ContentKey> {
             (shape.filter(|shape| shape.kind == Kind::File))
                 .and_then(|shape| shape.content.as_ref())
         }
-        let other = |a: &Content, b: Option<&Content>| b.is_none_or(|b| !same_content(a, b));
+        let other = |a: &ContentKey, b: Option<&ContentKey>| b.is_none_or(|b| !same_content(a, b));
         let mut wanted = BTreeMap::new();
-        let mut want = |direction, id: &NodeId, content: &Content| {
+        let mut want = |direction, id: &NodeId, content: &ContentKey| {
             let item = Item {
                 direction,
                 node: id.clone(),
-                digest: content.manifest_digest.clone(),
+                digest: content.manifest_digest().to_vec(),
             };
             wanted.insert(item, content.size);
         };
@@ -403,7 +403,7 @@ impl Folder {
                 Direction::Upload => file(trees.synced().live(&item.node)),
                 Direction::Download => file(trees.local().live(&item.node)),
             };
-            holds.is_some_and(|content| content.manifest_digest == item.digest)
+            holds.is_some_and(|content| content.manifest_digest() == item.digest)
         };
         let began_or_ended = self.progress.lock().unwrap().track(wanted, synced);
         self.other_changes = other_changes;

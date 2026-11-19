@@ -149,11 +149,11 @@ pub(crate) fn made_over(made_over: &[String], version_id: &str) -> bool {
     !version_id.is_empty() && made_over.iter().any(|base| base == version_id)
 }
 
-impl From<&crate::tree::Content> for ContentValue {
-    fn from(content: &crate::tree::Content) -> Self {
+impl From<&crate::tree::ContentKey> for ContentValue {
+    fn from(content: &crate::tree::ContentKey) -> Self {
         Self {
             size: content.size,
-            manifest_digest: content.manifest_digest.clone(),
+            manifest_digest: content.manifest_digest().to_vec(),
             executable: content.executable,
         }
     }
@@ -176,7 +176,7 @@ impl ContentVersion {
 }
 
 impl ContentProvenance {
-    pub(crate) fn edit(&mut self, previous: Option<&crate::tree::Content>) {
+    pub(crate) fn edit(&mut self, previous: Option<&crate::tree::ContentKey>) {
         if let Some(source) = self.local.take() {
             self.edit_bases = source.bases();
             self.unversioned_bases = previous.map(ContentValue::from).into_iter().collect();
@@ -801,6 +801,7 @@ pub enum StateError {
     NotUnseenChange(NodeId),
     NotRemote(NodeId),
     InvalidContentProvenance(NodeId),
+    DigestTooLong(NodeId),
     /// A node is recorded as sent again after a server loss, but L does not hold it.
     NotResend(NodeId),
     /// A node is recorded as holding a change of this device's user, but L does not hold it.

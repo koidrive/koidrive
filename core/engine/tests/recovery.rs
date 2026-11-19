@@ -16,8 +16,11 @@ use koidrive_engine::question::{
 };
 use koidrive_engine::restore::{Outcome, Rejection, RestoreIntent};
 use koidrive_engine::state::{ContentProvenance, ContentVersion, TreesState};
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
+use koidrive_engine::tree::{
+    Content, ContentKey, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape,
+};
 use koidrive_proto::v1::{CommitResult, Error, OpResult, Welcome, error, op, op_result};
+use koidrive_sim::world::key;
 
 const ROOT: &str = "root";
 const NOW: u64 = 1_794_268_740_000;
@@ -25,12 +28,12 @@ const OLD: &str = "old-history";
 const NEW: &str = "new-history";
 const NODE: &str = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
 
-fn content(digest: u8) -> Content {
-    Content {
+fn content(digest: u8) -> ContentKey {
+    key(&Content {
         size: 3,
         manifest_digest: vec![digest; 32],
         ..Default::default()
-    }
+    })
 }
 
 fn file(parent: &str, name: &str, digest: u8) -> Shape {
@@ -66,6 +69,7 @@ fn trees(local: &[(&str, Shape)], synced: &[(&str, Shape)], remote: &[Remote]) -
                 handle: None,
             },
             parked: false,
+            chunks: Box::default(),
         };
         trees.set_local((*id).into(), node);
     }
@@ -85,6 +89,7 @@ fn trees(local: &[(&str, Shape)], synced: &[(&str, Shape)], remote: &[Remote]) -
             version_id: String::new(),
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         };
         trees.set_remote((*id).into(), node);
     }
@@ -285,6 +290,7 @@ fn restored_under(made_over: &[&str]) -> Trees {
         version_id: version_id.into(),
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     };
     trees.set_remote("n".into(), version(2, "v2", made_over));
     trees.set_synced("n".into(), Some(file(ROOT, "a", 2)));
@@ -373,6 +379,7 @@ fn server_version(shape: Shape, version_id: &str, made_over: &[&str], rev: u64) 
         version_id: version_id.into(),
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     }
 }
 
@@ -458,7 +465,7 @@ fn a_published_rename_after_a_store_rollback_keeps_another_devices_later_edit() 
     apply(&mut commits, &mut trees, 1, &[("n", moved)]);
     let done = effects(&mut trees, &mut ids);
     assert!(
-        matches!(&done[..], [(node, Effect::WriteFile { content: written, .. })] if node == "n" && *written == content(5)),
+        matches!(&done[..], [(node, Effect::WriteFile { content: written, .. })] if node == "n" && key(written) == content(5)),
         "{done:?}"
     );
     assert_eq!(
@@ -486,10 +493,10 @@ fn a_published_offline_edit_after_a_store_rollback_keeps_the_other_devices_later
     effects(&mut trees, &mut ids);
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     effects(&mut trees, &mut ids);
-    let mut held: Vec<Option<Content>> = (trees.local().iter())
-        .map(|(_, node)| node.shape.content.clone())
+    let mut held: Vec<Option<ContentKey>> = (trees.local().iter())
+        .map(|(_, node)| node.shape.content)
         .collect();
-    held.sort_by_key(|content| content.as_ref().map(|c| c.manifest_digest.clone()));
+    held.sort_by_key(|content| content.as_ref().map(|c| c.manifest_digest().to_vec()));
     assert_eq!(held, [Some(content(5)), Some(content(6))]);
     assert_eq!(
         trees.local().get(&"n".into()).unwrap().shape,
@@ -559,10 +566,10 @@ fn a_published_offline_edit_while_an_update_of_s_waits_keeps_the_other_devices_l
     effects(&mut trees, &mut ids);
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     effects(&mut trees, &mut ids);
-    let mut held: Vec<Option<Content>> = (trees.local().iter())
-        .map(|(_, node)| node.shape.content.clone())
+    let mut held: Vec<Option<ContentKey>> = (trees.local().iter())
+        .map(|(_, node)| node.shape.content)
         .collect();
-    held.sort_by_key(|content| content.as_ref().map(|c| c.manifest_digest.clone()));
+    held.sort_by_key(|content| content.as_ref().map(|c| c.manifest_digest().to_vec()));
     assert_eq!(held, [Some(content(5)), Some(content(6))]);
 }
 
@@ -588,7 +595,7 @@ fn a_published_write_another_device_wrote_over_is_followed_without_a_copy() {
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let done = effects(&mut trees, &mut ids);
     assert!(
-        matches!(&done[..], [(node, Effect::WriteFile { content: written, .. })] if node == "n" && *written == content(6)),
+        matches!(&done[..], [(node, Effect::WriteFile { content: written, .. })] if node == "n" && key(written) == content(6)),
         "{done:?}"
     );
     assert_eq!(trees.local().len(), 1);
@@ -607,7 +614,7 @@ fn a_delete_answered_after_a_store_rollback_keeps_another_devices_later_edit() {
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let done = effects(&mut trees, &mut ids);
     assert!(
-        matches!(&done[..], [(node, Effect::WriteFile { content: written, .. })] if node == "n" && *written == content(5)),
+        matches!(&done[..], [(node, Effect::WriteFile { content: written, .. })] if node == "n" && key(written) == content(5)),
         "{done:?}"
     );
     assert_eq!(
@@ -649,6 +656,7 @@ fn an_answer_whose_commit_finds_the_head_moved_is_asked_again() {
             version_id: String::new(),
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         },
     );
     trees.settle(commits.aliases());
@@ -701,6 +709,7 @@ fn a_question_asked_again_names_the_cause_of_its_recovery() {
             version_id: String::new(),
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         },
     );
     trees.settle(commits.aliases());
@@ -849,6 +858,7 @@ fn keeping_a_folder_sends_an_edit_in_it_and_still_moves_the_file_where_the_rewin
             version_id: String::new(),
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         },
     );
     assert!(commits.acknowledge(&mut trees, 2));
@@ -1115,7 +1125,7 @@ fn a_delete_answered_after_a_rewind_keeps_another_devices_edit_of_either_version
         assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{over}");
         let done = effects(&mut trees, &mut ids);
         assert!(
-            matches!(&done[..], [(node, Effect::WriteFile { content: written, .. })] if node == "n" && *written == content(3)),
+            matches!(&done[..], [(node, Effect::WriteFile { content: written, .. })] if node == "n" && key(written) == content(3)),
             "{over}: {done:?}"
         );
     }
@@ -1158,7 +1168,7 @@ fn a_delete_answered_while_an_update_of_s_waits_deletes_only_a_version_s_held() 
             true => assert_eq!((sent, done), (vec![("delete", "n".to_owned())], vec![])),
             false => assert!(
                 sent.is_empty()
-                    && matches!(&done[..], [Effect::WriteFile { content: written, .. }] if *written == content(8)),
+                    && matches!(&done[..], [Effect::WriteFile { content: written, .. }] if key(written) == content(8)),
                 "{sent:?} {done:?}"
             ),
         }
@@ -1299,6 +1309,7 @@ fn an_entry_new_on_this_device_stays_held_when_another_device_sends_the_same_nod
             version_id: String::new(),
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         },
     );
     trees.settle(commits.aliases());
@@ -1322,6 +1333,7 @@ fn an_entry_like_the_servers_at_a_name_s_gives_another_node_is_held_and_s_stays_
         shape: file(ROOT, "c.txt", 1),
         identity,
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("moved".into(), moved);
     let mine = LocalNode {
@@ -1330,6 +1342,7 @@ fn an_entry_like_the_servers_at_a_name_s_gives_another_node_is_held_and_s_stays_
         shape: dir(ROOT, "a"),
         identity: FileIdentity { ino: 9, ..identity },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("mine".into(), mine);
     for (id, shape) in [
@@ -1348,6 +1361,7 @@ fn an_entry_like_the_servers_at_a_name_s_gives_another_node_is_held_and_s_stays_
             version_id: String::new(),
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         };
         trees.set_remote(id.into(), node);
     }
@@ -1400,6 +1414,7 @@ fn a_held_node_another_device_publishes_stays_held_unless_it_ends_equal() {
                 version_id: String::new(),
                 pending_for: None,
                 pending_by: None,
+                chunks: Box::default(),
             },
         );
         trees.settle(commits.aliases());
@@ -1744,6 +1759,7 @@ fn a_discarded_file_in_a_kept_folder_the_server_merged_stays_discarded() {
             version_id: String::new(),
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         },
     );
     trees.settle(commits.aliases());
@@ -1794,6 +1810,7 @@ fn a_discarded_file_in_a_kept_folder_the_server_merged_is_not_moved_back_over_an
             version_id: String::new(),
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         },
     );
     trees.settle(commits.aliases());
@@ -1933,6 +1950,7 @@ fn a_name_the_disk_and_the_server_agree_on_at_recovery_is_not_sent_after_the_ser
         version_id: String::new(),
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     };
     trees.set_remote("n".into(), renamed);
     trees.settle(commits.aliases());
@@ -2096,6 +2114,7 @@ fn applied(commits: &mut Commits, trees: &mut Trees, seq: u64, nodes: &[(&str, S
             version_id: String::new(),
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         };
         trees.set_remote((*id).into(), node);
     }
@@ -2276,6 +2295,7 @@ fn a_child_an_answer_trashes_again_leaves_the_disk_and_is_not_sent_again() {
             version_id: String::new(),
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         };
         trees.set_remote(id.into(), node);
     }
@@ -2897,6 +2917,7 @@ fn a_removal_planned_before_a_rewind_leaves_a_kept_file_once_the_server_has_it()
         version_id: String::new(),
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     };
     trees.set_remote("x".into(), sent);
     let applied = OpResult {
@@ -3007,6 +3028,7 @@ fn a_mark_s_dropped_goes_once_r_holds_the_folder() {
         pending_for: Some("A".into()),
         pending_by: Some("me".into()),
         edit_rev: 5,
+        chunks: Box::default(),
     };
     trees.set_remote("p".into(), node);
     trees.settle(&Default::default());
@@ -5116,6 +5138,7 @@ fn written_elsewhere(trees: &mut Trees, id: &str, shape: Shape, seq: u64) {
         version_id: String::new(),
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     };
     trees.set_remote(id.into(), node);
     trees.settle(&Default::default());
@@ -5153,6 +5176,7 @@ fn a_given_up_folder_this_device_writes_a_file_in_stays_and_its_other_given_up_n
             handle: None,
         },
         parked: false,
+        chunks: Box::default(),
     };
     trees.set_local("y".into(), node);
     trees.settle(commits.aliases());
@@ -5179,6 +5203,7 @@ fn a_given_up_folder_this_device_puts_back_before_its_trash_again_is_kept() {
                 handle: None,
             },
             parked: false,
+            chunks: Box::default(),
         };
         trees.set_local(id.into(), node);
     }
@@ -5212,6 +5237,7 @@ fn a_given_up_file_another_device_edits_before_the_answer_is_acknowledged_is_kep
         version_id: String::new(),
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     };
     trees.set_remote("d".into(), revived(dir(ROOT, "new"), 1));
     trees.set_remote("e".into(), revived(dir("d", "e"), 1));
@@ -5603,6 +5629,7 @@ fn files_another_device_changes_after_an_answer_gave_them_up_count_in_the_space_
         let node = RemoteNode {
             made_over: Vec::new(),
             shape: shape.clone(),
+            chunks: Box::default(),
             trashed,
             content_rev: 2,
             edit_rev: 2,

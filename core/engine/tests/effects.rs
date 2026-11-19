@@ -16,6 +16,7 @@ use koidrive_engine::state::{EffectsChanges, EffectsState, TreesChanges, TreesSt
 use koidrive_engine::tree::{
     Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape, same_content,
 };
+use koidrive_sim::world::{key, same_bytes};
 use proptest::prelude::*;
 
 const ROOT: &str = "root";
@@ -35,7 +36,7 @@ fn file(parent: &str, name: &str, digest: u8) -> Shape {
         parent: parent.into(),
         name: name.into(),
         kind: Kind::File,
-        content: Some(content(digest)),
+        content: Some(key(&content(digest))),
     }
 }
 
@@ -69,6 +70,7 @@ fn remote(shape: Shape) -> RemoteNode {
         edit_rev: 1,
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     }
 }
 
@@ -152,7 +154,7 @@ impl Disk {
 
     fn check_content(&self, ino: u128, displaced: &Displaced) -> Result<(), String> {
         match &self.entries[&ino].content {
-            Some(c) if same_content(c, &displaced.content) => Ok(()),
+            Some(c) if same_bytes(c, &displaced.content) => Ok(()),
             _ => Err(format!("{:?} holds other content", displaced.at)),
         }
     }
@@ -262,7 +264,7 @@ impl Disk {
                 (Area::Dir(parent.ino), node.shape.name.clone())
             };
             let content_matches = match (&entry.content, &node.shape.content) {
-                (Some(a), Some(b)) => same_content(a, b),
+                (Some(a), Some(b)) => same_content(&key(a), b),
                 (a, b) => a.is_none() && b.is_none(),
             };
             if entry.area != area || entry.name != name || !content_matches {
@@ -295,7 +297,7 @@ fn space(nodes: &[(&str, Option<Shape>, Option<Shape>)]) -> (Trees, Disk) {
                     area,
                     name: shape.name.clone(),
                     kind: shape.kind,
-                    content: shape.content.clone(),
+                    content: shape.content.map(|content| content.content(&[])),
                 },
             );
             trees.set_local(
@@ -306,6 +308,7 @@ fn space(nodes: &[(&str, Option<Shape>, Option<Shape>)]) -> (Trees, Disk) {
                     shape: shape.clone(),
                     identity: identity(i as u128 + 1),
                     parked: false,
+                    chunks: Box::default(),
                 },
             );
         }
@@ -624,7 +627,7 @@ fn only_a_node_whose_only_change_is_remote_gets_an_effect_and_one_at_a_time() {
         ("h", Some(file(ROOT, "h", 1)), Some(file(ROOT, "h", 2))),
     ]);
     let mut edited = trees.local().get(&"edited".into()).unwrap().clone();
-    edited.shape.content = Some(content(3));
+    edited.shape.content = Some(key(&content(3)));
     trees.set_local("edited".into(), edited);
     trees.settle(&Default::default());
     assert_eq!(trees.class(&"edited".into()), Class::Concurrent);
@@ -877,7 +880,7 @@ fn an_edit_observed_while_parked_is_moved_out_and_never_displaced() {
         .done(&mut trees, None, &park.effect_id, None)
         .unwrap();
     let mut observed = trees.local().get(&"f".into()).unwrap().clone();
-    observed.shape.content = Some(content(3));
+    observed.shape.content = Some(key(&content(3)));
     disk.entries.get_mut(&1).unwrap().content = Some(content(3));
     trees.set_local("f".into(), observed);
     trees.settle(&Default::default());
@@ -932,7 +935,7 @@ fn a_parked_edit_whose_node_was_removed_remotely_goes_back_to_its_place() {
         .done(&mut trees, None, &park.effect_id, None)
         .unwrap();
     let mut observed = trees.local().get(&"a".into()).unwrap().clone();
-    observed.shape.content = Some(content(3));
+    observed.shape.content = Some(key(&content(3)));
     disk.entries.get_mut(&1).unwrap().content = Some(content(3));
     trees.set_local("a".into(), observed);
     trees.remove_remote(&"a".into());
@@ -968,7 +971,7 @@ fn a_parked_edit_whose_name_the_remote_tree_gives_another_node_stays_parked() {
     trees.set_remote("k".into(), trashed(file("d", "k", 1)));
     let edit = |trees: &mut Trees, disk: &mut Disk, id: &str, ino: u128| {
         let mut node = trees.local().get(&NodeId::from(id)).unwrap().clone();
-        node.shape.content = Some(content(9));
+        node.shape.content = Some(key(&content(9)));
         disk.entries.get_mut(&ino).unwrap().content = Some(content(9));
         trees.set_local(id.into(), node);
     };
@@ -1008,7 +1011,7 @@ fn a_parked_edit_that_the_remote_tree_matches_is_still_moved_out() {
         .done(&mut trees, None, &park.effect_id, None)
         .unwrap();
     let mut observed = trees.local().get(&"f".into()).unwrap().clone();
-    observed.shape.content = Some(content(3));
+    observed.shape.content = Some(key(&content(3)));
     disk.entries.get_mut(&1).unwrap().content = Some(content(3));
     trees.set_local("f".into(), observed);
     trees.set_remote("f".into(), remote(file(ROOT, "a", 3)));
@@ -1091,6 +1094,7 @@ fn done_refuses_an_outcome_whose_name_another_node_took() {
             shape: file(ROOT, "a", 2),
             identity: identity(7),
             parked: false,
+            chunks: Box::default(),
         },
     );
     assert!(!record.applies(&trees, None));
@@ -1284,7 +1288,7 @@ fn a_move_r_undid_with_new_content_while_it_was_in_flight_keeps_the_new_content(
 
     trees.set_remote("f".into(), remote(file(ROOT, "a", 2)));
     let mut local = trees.local().get(&"f".into()).unwrap().clone();
-    local.shape.content = Some(content(2));
+    local.shape.content = Some(key(&content(2)));
     trees.set_local("f".into(), local);
     disk.entries.get_mut(&1).unwrap().content = Some(content(2));
     trees.settle(&Default::default());
@@ -1320,7 +1324,7 @@ fn an_edit_made_while_a_move_r_undid_was_in_flight_is_uploaded_without_the_move(
 
     trees.set_remote("f".into(), remote(file(ROOT, "a", 1)));
     let mut local = trees.local().get(&"f".into()).unwrap().clone();
-    local.shape.content = Some(content(2));
+    local.shape.content = Some(key(&content(2)));
     trees.set_local("f".into(), local);
     disk.entries.get_mut(&1).unwrap().content = Some(content(2));
     trees.settle(&Default::default());
@@ -1351,7 +1355,7 @@ fn an_edit_made_while_a_move_r_undid_was_in_flight_is_uploaded_without_the_move(
 fn a_reverted_move_keeps_an_edit_that_was_not_uploaded() {
     let (mut trees, mut disk) = space(&[("f", Some(file(ROOT, "a", 1)), Some(file(ROOT, "b", 1)))]);
     let mut local = trees.local().get(&"f".into()).unwrap().clone();
-    local.shape.content = Some(content(2));
+    local.shape.content = Some(key(&content(2)));
     trees.set_local("f".into(), local);
     disk.entries.get_mut(&1).unwrap().content = Some(content(2));
     trees.revert("f".into());
@@ -1371,7 +1375,7 @@ fn a_reverted_move_keeps_an_edit_that_was_not_uploaded() {
     assert!(trees.edited(&"f".into()));
     assert_eq!(
         trees.local().live(&"f".into()).unwrap().content,
-        Some(content(2))
+        Some(key(&content(2)))
     );
     let mut commits = koidrive_engine::commit::Commits::default();
     let commit = commits
@@ -1420,7 +1424,7 @@ fn a_parked_edit_brings_back_its_deleted_folder_after_a_remote_trash() {
     trees.set_remote("f".into(), trashed);
     let mut local = trees.local().get(&"f".into()).unwrap().clone();
     local.parked = true;
-    local.shape.content = Some(content(2));
+    local.shape.content = Some(key(&content(2)));
     trees.set_local("f".into(), local);
     trees.remove_local(&"d".into());
     trees.revert("d".into());
@@ -1442,7 +1446,7 @@ fn a_parked_edit_brings_back_its_deleted_folder_after_a_remote_trash() {
     assert!(!trees.local().get(&"f".into()).unwrap().parked);
     assert_eq!(
         trees.local().live(&"f".into()).unwrap().content,
-        Some(content(2))
+        Some(key(&content(2)))
     );
     assert!(trees.edited(&"f".into()));
     let (mut commits, mut ids) = (koidrive_engine::commit::Commits::default(), IdGen::new(1));
@@ -1473,7 +1477,7 @@ fn a_parked_edit_brings_back_its_deleted_folder_after_a_remote_move_into_an_igno
     );
     let mut local = trees.local().get(&"f".into()).unwrap().clone();
     local.parked = true;
-    local.shape.content = Some(content(2));
+    local.shape.content = Some(key(&content(2)));
     trees.set_local("f".into(), local);
     trees.remove_local(&"d".into());
     trees.revert("d".into());
@@ -2030,7 +2034,7 @@ fn parked_folder_with_a_file_the_server_trashed(edited: bool) -> (Trees, Disk) {
     entry.name = "x".into();
     if edited {
         let mut local = trees.local().get(&"f".into()).unwrap().clone();
-        local.shape.content = Some(content(2));
+        local.shape.content = Some(key(&content(2)));
         trees.set_local("f".into(), local);
         disk.entries.get_mut(&3).unwrap().content = Some(content(2));
     }
@@ -2059,11 +2063,8 @@ fn a_parked_folder_the_server_trashed_keeps_a_file_edited_in_it_while_the_rules_
     let (mut trees, mut disk) = parked_folder_with_a_file_the_server_trashed(true);
     converge(&mut trees, &mut disk, 10).unwrap();
     assert_eq!(
-        trees
-            .local()
-            .live(&"f".into())
-            .and_then(|f| f.content.clone()),
-        Some(content(2))
+        trees.local().live(&"f".into()).and_then(|f| f.content),
+        Some(key(&content(2)))
     );
 }
 
@@ -2413,7 +2414,7 @@ fn an_edit_saved_while_its_file_is_parked_survives_a_folder_taking_its_name() {
         "{park:?}"
     );
     let mut node = trees.local().get(&"a".into()).unwrap().clone();
-    node.shape.content = Some(content(9));
+    node.shape.content = Some(key(&content(9)));
     trees.set_local("a".into(), node);
     disk.entries.get_mut(&1).unwrap().content = Some(content(9));
     let created = disk.apply(&park.effect).unwrap();
@@ -2421,7 +2422,7 @@ fn an_edit_saved_while_its_file_is_parked_survives_a_folder_taking_its_name() {
         .done(&mut trees, None, &park.effect_id, created)
         .unwrap();
     let a = trees.local().get(&"a".into()).unwrap();
-    assert!(a.parked && a.shape.content == Some(content(9)));
+    assert!(a.parked && a.shape.content == Some(key(&content(9))));
     trees.set_remote(
         "a".into(),
         RemoteNode {

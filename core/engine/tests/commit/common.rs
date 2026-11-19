@@ -26,6 +26,7 @@ use koidrive_engine::tree::{
 };
 
 use koidrive_proto::v1::{self as proto, CommitResult, OpResult, Welcome, error, op, op_result};
+use koidrive_sim::world::key;
 
 use prost::Message;
 
@@ -48,7 +49,7 @@ fn file(parent: &str, name: &str, digest: u8) -> Shape {
         parent: parent.into(),
         name: name.into(),
         kind: Kind::File,
-        content: Some(content(digest)),
+        content: Some(key(&content(digest))),
     }
 }
 
@@ -63,6 +64,7 @@ fn dir(parent: &str, name: &str) -> Shape {
 
 fn remote(shape: Shape) -> RemoteNode {
     RemoteNode { made_over: Vec::new(),
+        chunks: chunks(&shape),
         shape,
         trashed: false,
         content_rev: 1,
@@ -96,6 +98,7 @@ fn local(shape: Shape, ino: u128) -> LocalNode {
     LocalNode {
         left_out_when_placed: false,
         content_from_server: false,
+        chunks: chunks(&shape),
         shape,
         identity: FileIdentity {
             ino,
@@ -329,19 +332,27 @@ fn edited_at_5_then_lost() -> (Commits, Trees, IdGen) {
     (commits, trees, ids)
 }
 
-/// A file of 4,096 chunks, whose change record takes about 150 KiB.
-fn large(parent: &str, name: &str) -> Shape {
-    let chunk = proto::ChunkRef {
+fn chunk() -> proto::ChunkRef {
+    proto::ChunkRef {
         hash: vec![7; 32],
         size: 4 << 20,
         encoding: 0,
-    };
+    }
+}
+
+fn chunks(shape: &Shape) -> Box<[proto::ChunkRef]> {
+    let count = shape.content.map_or(0, |content| content.chunk_count);
+    vec![chunk(); count as usize].into()
+}
+
+/// A file of 4,096 chunks, whose change record takes about 150 KiB.
+fn large(parent: &str, name: &str) -> Shape {
     Shape {
-        content: Some(Content {
-            chunks: vec![chunk; 4096],
+        content: Some(key(&Content {
+            chunks: vec![chunk(); 4096],
             chunk_count: 4096,
             ..content(1)
-        }),
+        })),
         ..file(parent, name, 1)
     }
 }
@@ -650,9 +661,9 @@ fn commit_file(trees: &mut Trees, commits: &mut Commits, ids: &mut IdGen, id: &s
 fn uploads(ops: &[op::Op], digest: u8) -> bool {
     ops.iter().any(|op| match op {
         op::Op::CreateFile(create) => (create.content.as_ref())
-            .is_some_and(|sent| same_content(sent, &content(digest))),
+            .is_some_and(|sent| same_content(&key(sent), &key(&content(digest)))),
         op::Op::UpdateContent(update) => (update.content.as_ref())
-            .is_some_and(|sent| same_content(sent, &content(digest))),
+            .is_some_and(|sent| same_content(&key(sent), &key(&content(digest)))),
         _ => false,
     })
 }

@@ -78,6 +78,7 @@ fn a_new_folder_merges_into_a_folder_that_unknown_rules_hold_away_from_its_name(
                 shape: node.shape.clone(),
                 identity: identity(index as u64 + 1),
                 parked: false,
+                chunks: Box::default(),
             },
         );
         trees.set_remote(id, node);
@@ -107,6 +108,7 @@ fn a_new_folder_merges_into_a_folder_that_unknown_rules_hold_away_from_its_name(
             },
             identity: identity(9),
             parked: false,
+            chunks: Box::default(),
         },
     );
     trees.settle(commits.aliases());
@@ -145,6 +147,7 @@ fn a_new_folder_takes_its_name_once_a_held_back_rename_frees_it() {
             shape: old.shape.clone(),
             identity: identity(1),
             parked: false,
+            chunks: Box::default(),
         },
     );
     trees.set_remote(NodeId::from(&holder), old);
@@ -189,6 +192,7 @@ fn a_new_folder_takes_its_name_once_a_held_back_rename_frees_it() {
             },
             identity: identity(2),
             parked: false,
+            chunks: Box::default(),
         },
     );
     trees.settle(commits.aliases());

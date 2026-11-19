@@ -9,20 +9,23 @@ use koidrive_engine::first_link::{History, Marks};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::{LocalRules, RuleFile, Source};
 use koidrive_engine::question::RecoveryCause;
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
+use koidrive_engine::tree::{
+    Content, ContentKey, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape,
+};
 use koidrive_proto::v1::{self as proto, op};
+use koidrive_sim::world::key;
 
 const ROOT: &str = "root";
 const NOW: u64 = 1_794_268_740_000;
 const HISTORY: &str = "history";
 const AT_ROOT: [&str; 0] = [];
 
-fn content(digest: u8) -> Content {
-    Content {
+fn content(digest: u8) -> ContentKey {
+    key(&Content {
         size: 3,
         manifest_digest: vec![digest; 32],
         ..Default::default()
-    }
+    })
 }
 
 fn file(parent: &str, name: &str, digest: u8) -> Shape {
@@ -56,6 +59,7 @@ fn remote(shape: Shape) -> RemoteNode {
         edit_rev: 1,
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     }
 }
 
@@ -74,6 +78,7 @@ fn local(shape: Shape, ino: u128) -> LocalNode {
         shape,
         identity: identity(ino),
         parked: false,
+        chunks: Box::default(),
     }
 }
 
@@ -272,7 +277,7 @@ fn a_node_is_synced_again_once_its_rule_is_removed() {
         made_over: Vec::new(),
         source_version_id: String::new(),
         node_id: "b".into(),
-        content: Some(content(9)),
+        content: Some(content(9).content(&[])),
         resend: false,
     });
     assert_eq!(

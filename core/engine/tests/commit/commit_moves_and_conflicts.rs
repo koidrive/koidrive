@@ -261,10 +261,10 @@ fn an_edit_on_both_sides_is_forked_when_this_device_changed_the_file_beside_it_t
 #[test]
 fn an_edit_on_both_sides_is_forked_unless_the_same_write_is_beside_it() {
     let later = |shape: Shape| Shape {
-        content: Some(Content {
+        content: Some(key(&Content {
             mtime_ns: 1,
             ..content(2)
-        }),
+        })),
         ..shape
     };
     let cases = [
@@ -849,7 +849,7 @@ fn a_parked_fork_recovers_after_its_empty_local_parent_is_deleted() {
                             parent: NodeId::from(create.parent_id),
                             name: create.name,
                             kind: Kind::File,
-                            content: create.content,
+                            content: create.content.as_ref().map(key),
                         }),
                     );
                 }
@@ -875,7 +875,7 @@ fn a_parked_fork_recovers_after_its_empty_local_parent_is_deleted() {
     );
     assert!(trees.work().is_empty());
     let (id, fork) = (trees.remote().iter())
-        .find(|(_, node)| !node.trashed && node.shape.content == Some(content(2)))
+        .find(|(_, node)| !node.trashed && node.shape.content == Some(key(&content(2))))
         .expect("the edited fork is on the server");
     assert!(trees.remote().live(&fork.shape.parent).is_some());
     assert_eq!(fork.shape.name, "x");

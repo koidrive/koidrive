@@ -10,9 +10,10 @@ use std::fmt;
 use std::ops::RangeBounds;
 use std::path::PathBuf;
 
-use koidrive_proto::v1::{self as proto, NodeKind, NodeStatus};
+use koidrive_proto::v1::{self as proto, ChunkRef, NodeKind, NodeStatus};
 
 use crate::names::{name_key, same_name};
+use crate::node_id::{intern, interned};
 
 pub use crate::node_id::NodeId;
 
@@ -293,10 +294,96 @@ pub enum Kind {
 /// A file's content as the driver describes it (spec v0 section 5.1). The engine never sees bytes.
 pub type Content = proto::Content;
 
+/// What a tree holds of a file's content: a [`Content`] without its chunk list.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ContentKey {
+    pub size: u64,
+    pub mtime_ns: i64,
+    pub chunk_count: u32,
+    chunker: [u8; 4],
+    digest: [u8; DIGEST_MAX],
+    digest_len: u8,
+    pub executable: bool,
+}
+
+const DIGEST_MAX: usize = 32;
+
+/// A manifest digest longer than a [`ContentKey`] holds, with its length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DigestTooLong(pub usize);
+
+impl ContentKey {
+    pub fn manifest_digest(&self) -> &[u8] {
+        &self.digest[..usize::from(self.digest_len)]
+    }
+
+    pub fn chunker(&self) -> &'static str {
+        interned(self.chunker)
+    }
+
+    /// The [`Content`] this key was taken from, given its chunk list.
+    pub fn content(&self, chunks: &[ChunkRef]) -> Content {
+        Content {
+            size: self.size,
+            mtime_ns: self.mtime_ns,
+            executable: self.executable,
+            chunks: chunks.to_vec(),
+            chunk_count: self.chunk_count,
+            manifest_digest: self.manifest_digest().to_vec(),
+            chunker: self.chunker().to_owned(),
+        }
+    }
+
+    /// The key and the chunk list of `content`.
+    pub fn split(content: Content) -> Result<(ContentKey, Box<[ChunkRef]>), DigestTooLong> {
+        Ok((ContentKey::try_from(&content)?, content.chunks.into()))
+    }
+}
+
+impl TryFrom<&Content> for ContentKey {
+    type Error = DigestTooLong;
+
+    fn try_from(content: &Content) -> Result<Self, DigestTooLong> {
+        let len = content.manifest_digest.len();
+        let mut digest = [0; DIGEST_MAX];
+        digest
+            .get_mut(..len)
+            .ok_or(DigestTooLong(len))?
+            .copy_from_slice(&content.manifest_digest);
+        Ok(ContentKey {
+            size: content.size,
+            mtime_ns: content.mtime_ns,
+            chunk_count: content.chunk_count,
+            chunker: intern(&content.chunker),
+            digest,
+            digest_len: len as u8,
+            executable: content.executable,
+        })
+    }
+}
+
+impl std::fmt::Debug for ContentKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContentKey")
+            .field("size", &self.size)
+            .field("mtime_ns", &self.mtime_ns)
+            .field("executable", &self.executable)
+            .field("chunk_count", &self.chunk_count)
+            .field("manifest_digest", &self.manifest_digest())
+            .field("chunker", &self.chunker())
+            .finish()
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn key(content: &Content) -> ContentKey {
+    ContentKey::try_from(content).unwrap()
+}
+
 /// Two contents are equal for sync purposes when size, manifest digest and executable bit are equal;
 /// mtime alone is not a change.
-pub fn same_content(a: &Content, b: &Content) -> bool {
-    a.size == b.size && a.manifest_digest == b.manifest_digest && a.executable == b.executable
+pub fn same_content(a: &ContentKey, b: &ContentKey) -> bool {
+    a.size == b.size && a.manifest_digest() == b.manifest_digest() && a.executable == b.executable
 }
 
 /// What every tree records about a node: its position, its kind and, for a file, its content.
@@ -305,7 +392,7 @@ pub struct Shape {
     pub parent: NodeId,
     pub name: String,
     pub kind: Kind,
-    pub content: Option<Content>,
+    pub content: Option<ContentKey>,
 }
 
 impl Shape {
@@ -369,6 +456,7 @@ pub struct RemoteNode {
     pub edit_rev: u64,
     pub pending_for: Option<String>,
     pub pending_by: Option<String>,
+    pub chunks: Box<[ChunkRef]>,
 }
 
 impl Node for RemoteNode {
@@ -385,6 +473,7 @@ pub enum StateError {
     UnknownKind(i32),
     UnknownStatus(i32),
     MissingContent,
+    DigestTooLong(usize),
 }
 
 impl RemoteNode {
@@ -400,15 +489,16 @@ impl RemoteNode {
             Ok(NodeStatus::Trashed) => true,
             _ => return Err(StateError::UnknownStatus(state.status)),
         };
-        let content = match kind {
-            Kind::Dir => None,
-            Kind::File => Some(
-                state
-                    .current
-                    .as_ref()
+        let (content, chunks) = match kind {
+            Kind::Dir => (None, Box::default()),
+            Kind::File => {
+                let content = (state.current.as_ref())
                     .and_then(|version| version.content.clone())
-                    .ok_or(StateError::MissingContent)?,
-            ),
+                    .ok_or(StateError::MissingContent)?;
+                let (key, chunks) = ContentKey::split(content)
+                    .map_err(|DigestTooLong(len)| StateError::DigestTooLong(len))?;
+                (Some(key), chunks)
+            }
         };
         let node = RemoteNode {
             shape: Shape {
@@ -437,8 +527,14 @@ impl RemoteNode {
             },
             pending_for: Some(state.pending_for.clone()).filter(|name| !name.is_empty()),
             pending_by: Some(state.pending_by.clone()).filter(|device| !device.is_empty()),
+            chunks,
         };
         Ok((NodeId::from(&state.node_id), node))
+    }
+
+    /// The content R holds, as the server listed it.
+    pub fn content(&self) -> Option<Content> {
+        (self.shape.content).map(|key| key.content(&self.chunks))
     }
 }
 
@@ -475,6 +571,14 @@ pub struct LocalNode {
     /// written by the effects or found equal to the server's when the device linked or adopted it,
     /// with no write of the user found by a scan since.
     pub content_from_server: bool,
+    pub chunks: Box<[ChunkRef]>,
+}
+
+impl LocalNode {
+    /// The content L holds, as the driver read it.
+    pub fn content(&self) -> Option<Content> {
+        (self.shape.content).map(|key| key.content(&self.chunks))
+    }
 }
 
 impl Node for LocalNode {

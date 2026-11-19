@@ -128,17 +128,12 @@ fn an_edit_made_while_an_unsent_edit_is_out_stays_unsent_when_that_edit_is_ackno
 
 #[test]
 fn an_edit_of_a_file_whose_chunk_list_r_leaves_out_counts_for_loss_recovery() {
-    let chunk = proto::ChunkRef {
-        hash: vec![7; 32],
-        size: 3,
-        encoding: 0,
-    };
     let listed = Shape {
-        content: Some(Content {
-            chunks: vec![chunk],
+        content: Some(key(&Content {
+            chunks: vec![chunk()],
             chunk_count: 1,
             ..content(2)
-        }),
+        })),
         ..file(ROOT, "n", 2)
     };
     let unlisted = RemoteNode {
@@ -146,7 +141,7 @@ fn an_edit_of_a_file_whose_chunk_list_r_leaves_out_counts_for_loss_recovery() {
         edit_rev: 4,
         ..remote(file(ROOT, "n", 2))
     };
-    let sent = listed.content.clone();
+    let sent = listed.content;
     let mut trees = trees(&[("n", Some(listed.clone()), Some(listed), Some(unlisted))]);
     trees.record_edited(&"n".into(), sent.as_ref());
     assert_eq!(trees.edited_here(), [(NodeId::from("n"), 4)]);
@@ -216,7 +211,7 @@ fn a_parked_edit_whose_name_goes_to_a_folder_this_device_excludes_is_not_held_ba
         .done(&mut trees, None, &park.effect_id, None)
         .unwrap();
     let mut edited = trees.local().get(&"h".into()).unwrap().clone();
-    edited.shape.content = Some(content(2));
+    edited.shape.content = Some(key(&content(2)));
     trees.set_local("h".into(), edited);
     trees.set_remote("h".into(), trashed(file(ROOT, "X", 1)));
     trees.set_remote("n".into(), remote(dir(ROOT, "x")));
@@ -960,11 +955,8 @@ fn a_finish_another_device_makes_keeps_a_remote_write_this_device_never_took() {
     );
     trees.settle(&Default::default());
     assert_eq!(
-        trees
-            .synced()
-            .live(&"a".into())
-            .and_then(|shape| shape.content.clone()),
-        Some(content(1))
+        trees.synced().live(&"a".into()).and_then(|shape| shape.content),
+        Some(key(&content(1)))
     );
     assert_eq!(trees.class(&"a".into()), Class::Concurrent);
 }

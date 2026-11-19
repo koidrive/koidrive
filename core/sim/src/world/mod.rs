@@ -80,7 +80,7 @@ use koidrive_engine::ignore::Source;
 use koidrive_engine::names::{name_key, nfc, same_name};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{
-    Content, FileIdentity, Kind, NodeId, RemoteNode, Shape, same, same_content,
+    Content, ContentKey, FileIdentity, Kind, NodeId, RemoteNode, Shape, same, same_content,
 };
 use koidrive_proto::v1::{
     ChunkRef, Commit, Error, ListVersions, NodeKind, NodeState, NodeStatus, PrepareUpload, Resume,
@@ -286,8 +286,46 @@ fn content(device: u8, text: u8, write: i64) -> Content {
     }
 }
 
-pub fn tag(content: &Content) -> i64 {
-    (content.mtime_ns - NOW * 1_000_000).div_euclid(WRITE_SLOT_NS)
+pub trait Written {
+    fn mtime_ns(&self) -> i64;
+}
+
+impl Written for Content {
+    fn mtime_ns(&self) -> i64 {
+        self.mtime_ns
+    }
+}
+
+impl Written for ContentKey {
+    fn mtime_ns(&self) -> i64 {
+        self.mtime_ns
+    }
+}
+
+impl<T: Written> Written for &T {
+    fn mtime_ns(&self) -> i64 {
+        (*self).mtime_ns()
+    }
+}
+
+pub fn tag(content: &impl Written) -> i64 {
+    (content.mtime_ns() - NOW * 1_000_000).div_euclid(WRITE_SLOT_NS)
+}
+
+pub fn key(content: &Content) -> ContentKey {
+    ContentKey::try_from(content).expect("a simulated manifest digest is 32 bytes")
+}
+
+pub fn split(content: Option<Content>) -> (Option<ContentKey>, Box<[ChunkRef]>) {
+    match content.map(ContentKey::split) {
+        Some(Ok((key, chunks))) => (Some(key), chunks),
+        Some(Err(error)) => panic!("a simulated manifest digest is 32 bytes: {error:?}"),
+        None => (None, Box::default()),
+    }
+}
+
+pub fn same_bytes(a: &Content, b: &Content) -> bool {
+    same_content(&key(a), &key(b))
 }
 
 fn sources(commit: &Commit) -> impl Iterator<Item = (&String, &Content)> {
@@ -425,7 +463,7 @@ fn trashed_copy(
     }
     let digest = &trashed.manifest_digest;
     let unchanged = (synced.and_then(|shape| shape.content.as_ref()))
-        .is_some_and(|content| content.manifest_digest == *digest);
+        .is_some_and(|content| content.manifest_digest() == digest.as_slice());
     if !unchanged || !retained.contains(digest) {
         return Err(Failure::Broken(format!(
             "{:?} removed write {write} from the disk of device {d}, and the server never held that write",
@@ -1407,7 +1445,7 @@ impl World {
         let shown: BTreeMap<&NodeId, intents::Shown> = (question.holds())
             .filter_map(|id| {
                 let shape = trees.remote().live(id)?;
-                let digest = (shape.content.as_ref()).map(|c| c.manifest_digest.as_slice());
+                let digest = (shape.content.as_ref()).map(|c| c.manifest_digest());
                 Some((id, (Some(&shape.parent), shape.name.as_str(), digest)))
             })
             .collect();
@@ -1436,7 +1474,7 @@ impl World {
                     };
                     let content = (node.shape.content.as_ref()).map(|content| Value::Content {
                         write: tag(content),
-                        digest: content.manifest_digest.clone(),
+                        digest: content.manifest_digest().to_vec(),
                     });
                     let on_disk = |value: &Value| {
                         shown.is_some_and(|entry| match value {
@@ -1655,21 +1693,20 @@ impl World {
             } else if taken || !self.exposed.contains_key(write) {
                 self.retired.insert(*write);
             }
-            let holds =
-                |content: &Option<Content>| content.as_ref().is_some_and(|c| tag(c) == *write);
+            let holds = |held: Option<i64>| held == Some(*write);
             let exposure = self.exposed.entry(*write).or_default();
             let on_server = (held_before.iter()).filter(|(_, held)| held == write);
             exposure.nodes.extend(on_server.map(|(id, _)| id.clone()));
             for device in &self.devices {
                 let trees = &device.engine.trees;
                 let local = (trees.local().iter())
-                    .filter(|(_, node)| holds(&node.shape.content))
+                    .filter(|(_, node)| holds(node.shape.content.as_ref().map(tag)))
                     .map(|(id, _)| id);
                 let remote = (trees.remote().iter())
-                    .filter(|(_, node)| holds(&node.shape.content))
+                    .filter(|(_, node)| holds(node.shape.content.as_ref().map(tag)))
                     .map(|(id, _)| id);
                 let on_disk = (device.disk.entries().iter())
-                    .filter(|(_, entry)| holds(&entry.content))
+                    .filter(|(_, entry)| holds(entry.content.as_ref().map(tag)))
                     .filter_map(|(ino, _)| {
                         (trees.local().iter()).find(|(_, node)| node.identity.ino == *ino)
                     })
@@ -2400,7 +2437,7 @@ impl World {
                         };
                         if tag(here) != tag(there) && same_content(here, there) {
                             let writes = self.held.entry(id.clone()).or_default();
-                            writes.insert(tag(here), here.manifest_digest.clone());
+                            writes.insert(tag(here), here.manifest_digest().to_vec());
                             self.published.insert(tag(here));
                         }
                     }
@@ -3068,8 +3105,8 @@ impl World {
     fn dump(&self) -> String {
         use std::fmt::Write;
         let short = |id: &str| id[id.len().saturating_sub(4)..].to_owned();
-        let file = |content: &Option<Content>| match content {
-            Some(content) => format!("w{}", tag(content)),
+        let file = |write: Option<i64>| match write {
+            Some(write) => format!("w{write}"),
             None => "dir".to_owned(),
         };
         let mut out = format!(
@@ -3097,7 +3134,7 @@ impl World {
                 out,
                 "  {id} in {parent} {:?} {}{trashed}",
                 node.name,
-                file(&content)
+                file(content.as_ref().map(tag))
             )
             .unwrap();
             if let Some(version) = &node.current {
@@ -3127,7 +3164,7 @@ impl World {
                     out,
                     "  disk ino {ino} in {place} {:?} {}",
                     entry.name,
-                    file(&entry.content)
+                    file(entry.content.as_ref().map(tag))
                 )
                 .unwrap();
             }
@@ -3141,7 +3178,7 @@ impl World {
                         "{} {:?} {}",
                         short(&shape.parent.to_string()),
                         shape.name,
-                        file(&shape.content)
+                        file(shape.content.as_ref().map(tag))
                     ),
                     None => "-".to_owned(),
                 };
@@ -3562,7 +3599,7 @@ impl World {
             let equal = |here: Option<&Option<Content>>, there: Option<&Option<Content>>| match (
                 here, there,
             ) {
-                (Some(Some(here)), Some(Some(there))) => same_content(here, there),
+                (Some(Some(here)), Some(Some(there))) => same_bytes(here, there),
                 (here, there) => here == there,
             };
             if let Some(path) = paths
@@ -4075,6 +4112,7 @@ mod tests {
             after: None,
             recoveries: 0,
             staged: None,
+            after_chunks: Box::default(),
         };
         disk.apply(&record, Some(Cut::Done)).unwrap();
         assert!(disk.binned(5));
@@ -4229,10 +4267,11 @@ mod tests {
                 parent: "root".into(),
                 name: "a".into(),
                 kind: Kind::File,
-                content: Some(incoming),
+                content: Some(key(&incoming)),
             }),
             recoveries: 0,
             staged: None,
+            after_chunks: incoming.chunks.clone().into(),
         };
         let applied = disk.apply(&record, Some(Cut::Done)).unwrap();
         assert!(
@@ -4279,6 +4318,7 @@ mod tests {
             after: None,
             recoveries: 0,
             staged: None,
+            after_chunks: Box::default(),
         };
         let applied = Applied {
             outcome: Ok(None),
@@ -4288,7 +4328,7 @@ mod tests {
             parent: "root".into(),
             name: "a".into(),
             kind: Kind::File,
-            content: Some(bytes.clone()),
+            content: Some(key(bytes)),
         };
         let (same, changed) = (synced(&trashed), synced(&other));
         let kept = vec![trashed.manifest_digest.clone()];
@@ -4340,6 +4380,7 @@ mod tests {
             after: None,
             recoveries: 0,
             staged: None,
+            after_chunks: Box::default(),
         };
         disk.apply(&record, Some(Cut::Done)).unwrap();
         assert!(disk.binned(5));
@@ -4391,6 +4432,7 @@ mod tests {
             version_id: String::new(),
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         };
         engine.trees.set_remote("d".into(), folder);
         engine.trees.settle(engine.commits.aliases());
@@ -4478,15 +4520,9 @@ mod tests {
         assert!(!world.removed[0].contains(&4));
         assert!(!world.published.contains(&4));
         assert!(!world.discarded.contains(&4));
-        let after = world.devices[0]
-            .engine
-            .trees
-            .remote()
-            .get(&node)
-            .unwrap()
-            .shape
-            .clone();
-        let b = after.content.clone().unwrap();
+        let remote = world.devices[0].engine.trees.remote().get(&node).unwrap();
+        let (after, after_chunks) = (remote.shape.clone(), remote.chunks.clone());
+        let b = remote.content().unwrap();
         let disk = &mut world.devices[0].disk;
         let ino = disk.child(&Place::Root, "a").unwrap();
         let at = Location::At {
@@ -4510,6 +4546,7 @@ mod tests {
             after: Some(after),
             recoveries: 0,
             staged: None,
+            after_chunks,
         };
         assert!(record.applies(&world.devices[0].engine.trees, None));
         let mut state = world.devices[0].engine.effects.state();

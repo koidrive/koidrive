@@ -9,13 +9,14 @@ use koidrive_engine::ids::IdGen;
 use koidrive_engine::state::CommitsState;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
 use koidrive_proto::v1::{ChunkRef, CommitResult, OpResult, op, op_result};
+use koidrive_sim::world::split;
 
 const ROOT: &str = "01a1eab7-d941-7d6a-9e0d-576a24408e65";
 const NOW: u64 = 1_794_268_740_000;
 const PACKAGES: usize = 600;
 const TARGET: u64 = 600;
-const FIRST_UPLOAD_CEILING: u64 = 2_190;
-const RESTART_CEILING: u64 = 2_410;
+const FIRST_UPLOAD_CEILING: u64 = 1_888;
+const RESTART_CEILING: u64 = 2_086;
 
 struct Live;
 
@@ -118,13 +119,15 @@ fn content(n: usize) -> Content {
     }
 }
 
-fn shape(entry: &Entry, n: usize) -> Shape {
-    Shape {
+fn shape(entry: &Entry, n: usize) -> (Shape, Box<[ChunkRef]>) {
+    let (content, chunks) = split((entry.kind == Kind::File).then(|| content(n)));
+    let shape = Shape {
         parent: NodeId::from(&entry.parent),
         name: entry.name.clone(),
         kind: entry.kind,
-        content: (entry.kind == Kind::File).then(|| content(n)),
-    }
+        content,
+    };
+    (shape, chunks)
 }
 
 fn first_upload() -> (Trees, usize) {
@@ -133,8 +136,9 @@ fn first_upload() -> (Trees, usize) {
     let mut trees = Trees::new(ROOT);
     trees.rules_scanned();
     for (n, entry) in entries.iter().enumerate() {
+        let (shape, chunks) = shape(entry, n);
         let local = LocalNode {
-            shape: shape(entry, n),
+            shape,
             identity: FileIdentity {
                 ino: n as u128 + 1,
                 birth_ns: Some(1_794_268_740_000_000_000),
@@ -143,6 +147,7 @@ fn first_upload() -> (Trees, usize) {
             parked: false,
             left_out_when_placed: false,
             content_from_server: false,
+            chunks,
         };
         trees.set_local(NodeId::from(&entry.id), local);
     }
@@ -155,26 +160,29 @@ fn first_upload() -> (Trees, usize) {
     {
         seq += 1;
         for op in commit.ops.iter().filter_map(|op| op.op.as_ref()) {
-            let (id, shape) = match op {
+            let (id, kind, parent, name, content) = match op {
                 op::Op::CreateDir(create) => (
-                    create.node_id.clone(),
-                    Shape {
-                        parent: NodeId::from(&create.parent_id),
-                        name: create.name.clone(),
-                        kind: Kind::Dir,
-                        content: None,
-                    },
+                    &create.node_id,
+                    Kind::Dir,
+                    &create.parent_id,
+                    &create.name,
+                    None,
                 ),
                 op::Op::CreateFile(create) => (
-                    create.node_id.clone(),
-                    Shape {
-                        parent: NodeId::from(&create.parent_id),
-                        name: create.name.clone(),
-                        kind: Kind::File,
-                        content: create.content.clone(),
-                    },
+                    &create.node_id,
+                    Kind::File,
+                    &create.parent_id,
+                    &create.name,
+                    create.content.clone(),
                 ),
                 op => panic!("a first upload only creates: {op:?}"),
+            };
+            let (content, chunks) = split(content);
+            let shape = Shape {
+                parent: NodeId::from(parent),
+                name: name.clone(),
+                kind,
+                content,
             };
             let version_id = match shape.kind {
                 Kind::File => ids.uuid_v7(NOW),
@@ -192,6 +200,7 @@ fn first_upload() -> (Trees, usize) {
                 edit_rev: seq,
                 pending_for: None,
                 pending_by: None,
+                chunks,
             };
             trees.set_remote_made_here(NodeId::from(id), node);
         }

@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use koidrive_engine::classify::Trees;
 use koidrive_engine::ignore::{RuleFile, Source};
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
+use koidrive_sim::world::key;
 
 const ROOT: &str = "root";
 const ROUNDS: usize = 21;
@@ -15,10 +16,12 @@ fn shape(parent: &str, name: &str, kind: Kind, digest: u8) -> Shape {
         parent: parent.into(),
         name: name.into(),
         kind,
-        content: (kind == Kind::File).then(|| Content {
-            size: 3,
-            manifest_digest: vec![digest; 32],
-            ..Default::default()
+        content: (kind == Kind::File).then(|| {
+            key(&Content {
+                size: 3,
+                manifest_digest: vec![digest; 32],
+                ..Default::default()
+            })
         }),
     }
 }
@@ -39,6 +42,7 @@ fn add(trees: &mut Trees, id: String, shape: Shape) {
             edit_rev: 1,
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         },
     );
     trees.set_local(
@@ -53,6 +57,7 @@ fn add(trees: &mut Trees, id: String, shape: Shape) {
                 handle: None,
             },
             parked: false,
+            chunks: Box::default(),
         },
     );
     trees.set_synced(NodeId::from(id), Some(shape));

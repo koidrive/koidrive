@@ -504,8 +504,8 @@ fn a_late_acknowledgement_takes_an_agreed_position_only_where_s_can_hold_it() {
                 };
                 let n = held(&trees, "n");
                 assert_eq!(
-                    n.as_ref().and_then(|s| s.content.clone()),
-                    Some(content(digest)),
+                    n.as_ref().and_then(|s| s.content),
+                    Some(key(&content(digest))),
                     "{case}"
                 );
                 assert_eq!(position(n), expected, "{case}");

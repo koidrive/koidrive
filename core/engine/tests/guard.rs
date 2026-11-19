@@ -9,6 +9,7 @@ use koidrive_engine::question::{Answer, Held, Limit, Question, QuestionKind, Rec
 use koidrive_engine::state::CommitsState;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
 use koidrive_proto::v1::{CommitResult, OpResult, op, op_result};
+use koidrive_sim::world::key;
 
 const ROOT: &str = "root";
 const NOW: u64 = 1_794_268_740_000;
@@ -19,10 +20,12 @@ fn shape(parent: &str, name: &str, kind: Kind) -> Shape {
         parent: parent.into(),
         name: name.into(),
         kind,
-        content: (kind == Kind::File).then(|| Content {
-            size: 3,
-            manifest_digest: vec![1; 32],
-            ..Default::default()
+        content: (kind == Kind::File).then(|| {
+            key(&Content {
+                size: 3,
+                manifest_digest: vec![1; 32],
+                ..Default::default()
+            })
         }),
     }
 }
@@ -57,6 +60,7 @@ fn serve(trees: &mut Trees, id: String, shape: Shape) {
             edit_rev: 1,
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         },
     );
 }
@@ -75,6 +79,7 @@ fn put_back(trees: &mut Trees, id: &str, shape: Shape, ino: u128) {
             shape,
             identity,
             parked: false,
+            chunks: Box::default(),
         },
     );
 }
@@ -612,7 +617,11 @@ fn a_held_file_changed_on_the_server_leaves_the_question_and_is_downloaded() {
     assert_eq!(held(&commits).len(), 13);
 
     let mut edited = shape(ROOT, "f0", Kind::File);
-    edited.content.as_mut().unwrap().manifest_digest = vec![2; 32];
+    edited.content = Some(key(&Content {
+        size: 3,
+        manifest_digest: vec![2; 32],
+        ..Default::default()
+    }));
     trees.set_remote(
         "f0".into(),
         RemoteNode {
@@ -627,6 +636,7 @@ fn a_held_file_changed_on_the_server_leaves_the_question_and_is_downloaded() {
             edit_rev: 2,
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         },
     );
     trees.settle(commits.aliases());
@@ -904,6 +914,7 @@ fn a_restore_answer_holds_a_node_deleted_under_its_folder_since() {
             edit_rev: 1,
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         },
     );
     trees.settle(commits.aliases());
@@ -980,6 +991,7 @@ fn trash_remotely(trees: &mut Trees, ids: &[&str]) {
             edit_rev: 2,
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         };
         trees.set_remote(id, node);
     }
@@ -1204,6 +1216,7 @@ fn a_folder_restored_after_its_notice_was_dismissed_is_noticed_when_deleted_agai
                 edit_rev: rev,
                 pending_for: None,
                 pending_by: None,
+                chunks: Box::default(),
             };
             trees.set_remote(id.clone(), node);
         }
@@ -1454,6 +1467,7 @@ fn a_folder_restored_after_a_dismissal_without_its_record_is_noticed_when_delete
                 edit_rev: rev,
                 pending_for: None,
                 pending_by: None,
+                chunks: Box::default(),
             };
             trees.set_remote(id.clone(), node);
         }
@@ -1537,6 +1551,7 @@ fn nested() -> Trees {
             edit_rev: 1,
             pending_for: None,
             pending_by: None,
+            chunks: Box::default(),
         };
         trees.set_remote(NodeId::from(id), node);
     }

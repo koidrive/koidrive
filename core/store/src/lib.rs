@@ -70,7 +70,7 @@ pub mod migrations {
 
     pub fn register_functions(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         use koidrive_engine::names::same_name;
-        use koidrive_engine::tree::same_content;
+        use koidrive_engine::tree::{ContentKey, same_content};
         use koidrive_proto::v1::Content;
         use rusqlite::functions::FunctionFlags;
 
@@ -81,8 +81,11 @@ pub mod migrations {
         })?;
         conn.create_scalar_function("same_content", 2, flags, |ctx| {
             let content = |at| {
-                super::decode::<Content>(ctx.get(at)?)
-                    .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))
+                let content = super::decode::<Content>(ctx.get(at)?)
+                    .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))?;
+                (content.as_ref().map(ContentKey::try_from).transpose()).map_err(|error| {
+                    rusqlite::Error::UserFunctionError(format!("{error:?}").into())
+                })
             };
             Ok(match (content(0)?, content(1)?) {
                 (Some(a), Some(b)) => same_content(&a, &b),

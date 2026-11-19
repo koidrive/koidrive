@@ -167,6 +167,7 @@ fn a_rename_a_store_recorded_before_pending_marks_is_finished_after_the_upgrade_
                         left_out_when_placed: false,
                         content_from_server: false,
                         shape: at(name),
+                        chunks: Box::default(),
                         identity: FileIdentity {
                             ino,
                             birth_ns: Some(0),

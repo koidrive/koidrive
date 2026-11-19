@@ -18,6 +18,7 @@ use koidrive_engine::ids::IdGen;
 use koidrive_engine::question::{Answer, QuestionKind};
 use koidrive_engine::state::{CommitsChanges, TreesChanges};
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
+use koidrive_sim::world::key;
 
 const ROOT: &str = "root";
 const NOW: u64 = 1_794_268_740_000;
@@ -120,10 +121,12 @@ fn shape(parent: &str, name: &str, kind: Kind) -> Shape {
         parent: parent.into(),
         name: name.into(),
         kind,
-        content: (kind == Kind::File).then(|| Content {
-            size: 3,
-            manifest_digest: vec![1; 32],
-            ..Default::default()
+        content: (kind == Kind::File).then(|| {
+            key(&Content {
+                size: 3,
+                manifest_digest: vec![1; 32],
+                ..Default::default()
+            })
         }),
     }
 }
@@ -716,6 +719,7 @@ fn remote(node: &ServerNode) -> RemoteNode {
         edit_rev: 1,
         pending_for: None,
         pending_by: None,
+        chunks: Box::default(),
     }
 }
 
@@ -726,6 +730,7 @@ fn local(shape: Shape, ino: u128) -> LocalNode {
         shape,
         identity: identity(ino),
         parked: false,
+        chunks: Box::default(),
     }
 }
 
