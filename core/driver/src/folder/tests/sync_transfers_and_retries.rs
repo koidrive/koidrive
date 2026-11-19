@@ -624,7 +624,7 @@ fn take_one_observation(a: &mut Device, meanwhile: impl FnOnce()) {
         let unread = a.observer.unread();
         let batch = crate::disk::Batch {
             stamp,
-            answered: None,
+            answered: Default::default(),
             observation,
             unread,
         };

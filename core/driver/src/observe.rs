@@ -54,8 +54,9 @@ pub struct Observation {
     /// The root check of design §6.2, made after the scans of this batch. Removals in a batch whose check failed
     /// are not trusted.
     pub root: Result<(), RootProblem>,
-    /// Folders the scans may not read. What is below them is unknown, not absent. Until a scan of the current watcher
-    /// has settled every scope, the folders still pending are among them too, since no scan may have read their rules.
+    /// Folders the scans may not read. What is below them is unknown, not absent. A pending folder that no scan of the
+    /// current watcher may have read the rules of is among them too: one pending since its first scan, until a scan
+    /// settles it.
     pub unreadable: Vec<PathBuf>,
     /// Folders whose rules the scans established, at the paths the scans read them. A folder reported unreadable
     /// before has known rules again once it is here.
@@ -171,12 +172,11 @@ pub struct FsObserver {
     scanned: Option<FileId>,
     /// Whether the batch that follows the first scan of the whole tree is still to be returned.
     first: bool,
-    /// Whether no poll of the current watcher has settled every scope yet. Until one has, a folder still pending may
-    /// be one whose rules no scan of this watcher has read.
-    settling: bool,
+    /// The scopes that may hold a folder whose rules no scan of the current watcher has read: `None` until a poll of
+    /// it has scanned, then the pending scopes that overlap the scopes of the poll before.
+    unread_rules: Option<Vec<PathBuf>>,
     delivered: Vec<PathBuf>,
-    /// Whether a reset still waits for the batch of a scan made after it.
-    reset: bool,
+    unanswered: Vec<PathBuf>,
     recorded: BTreeMap<PathBuf, Known>,
     found: BTreeMap<PathBuf, PathBuf>,
     /// Files whose content could not be read, or that an observation left to a later one, with when to read them.
@@ -389,9 +389,9 @@ impl FsObserver {
             matcher,
             scanned: None,
             first: true,
-            settling: true,
+            unread_rules: None,
             delivered: Vec::new(),
-            reset: false,
+            unanswered: Vec::new(),
             recorded: BTreeMap::new(),
             found: BTreeMap::new(),
             unread: Unread::default(),
@@ -438,24 +438,28 @@ impl FsObserver {
     /// Resets the snapshot at each scope of `resets`, in order, to the entries L holds there, so the next observation
     /// reports how the disk differs from L in those scopes: what L lacks as created, what the disk lacks as removed,
     /// and every file both hold as modified, each file with the content read from the disk. Nothing outside the
-    /// scopes is reported again unless it changed. The first observation whose scans settled every scope after a
-    /// reset is returned also when it holds nothing, so the caller learns that the disk was read after the reset.
+    /// scopes is reported again unless it changed. An observation whose scans settled a scope of a reset is returned
+    /// also when it holds nothing, so the caller learns that the disk was read there after the reset.
     pub fn reset(&mut self, resets: Vec<Reset>) {
-        self.reset |= !resets.is_empty();
         for Reset { scope, known } in resets {
             let below: Vec<PathBuf> = self.unread.below(&scope).cloned().collect();
             for path in below {
                 self.unread.remove(&path);
             }
             self.watcher.reset(&scope, known);
+            self.unanswered.push(scope);
         }
     }
 
-    /// Whether every reset so far is answered: a scan made after it settled each of its scopes, and the batch of that
-    /// scan was returned. A reset stays unanswered while a scope of it is pending, and through a batch that scanned
-    /// nothing.
+    /// The scopes of the resets so far that no returned batch answers yet. A batch answers a scope once a scan made
+    /// after its reset settled it, whatever else is still pending.
+    pub fn unanswered(&self) -> &[PathBuf] {
+        &self.unanswered
+    }
+
+    /// Whether every reset so far is answered.
     pub fn answered(&self) -> bool {
-        !self.reset
+        self.unanswered.is_empty()
     }
 
     /// Adds what `change` means for the engine to `out`. The scans leave out excluded paths, so every path here is
@@ -702,7 +706,7 @@ impl Observer for FsObserver {
                 self.watcher = Box::new(watcher.counting(walking(&self.progress)));
                 self.native = false;
                 self.first = true;
-                self.settling = true;
+                self.unread_rules = None;
                 return Ok(None);
             }
             Err(FsError::Stopped) => return Ok(None),
@@ -792,12 +796,30 @@ impl Observer for FsObserver {
             })
             .collect();
         let first = self.first && poll.root.is_some();
-        let answers = self.reset && poll.root.is_some() && poll.pending.is_empty();
+        let pending_at =
+            |scope: &Path| (poll.pending.iter()).any(|pending| overlap(pending, scope));
+        let unanswered: Vec<PathBuf> = (self.unanswered.iter())
+            .filter(|scope| poll.root.is_none() || pending_at(scope))
+            .cloned()
+            .collect();
+        let answers = unanswered.len() < self.unanswered.len();
         let mut unreadable = poll.unreadable;
-        if self.settling && poll.root.is_some() {
+        if poll.root.is_some()
+            && self
+                .unread_rules
+                .as_ref()
+                .is_none_or(|scopes| !scopes.is_empty())
+        {
+            let unread: Vec<PathBuf> = (poll.pending.iter())
+                .filter(|pending| {
+                    (self.unread_rules.as_ref())
+                        .is_none_or(|scopes| scopes.iter().any(|scope| overlap(pending, scope)))
+                })
+                .cloned()
+                .collect();
             let snapshot = self.watcher.snapshot();
             unreadable.extend(
-                (poll.pending.iter())
+                (unread.iter())
                     .filter(|scope| {
                         scope.as_os_str().is_empty()
                             || (snapshot.entries.get(*scope))
@@ -805,7 +827,7 @@ impl Observer for FsObserver {
                     })
                     .cloned(),
             );
-            self.settling = !poll.pending.is_empty();
+            self.unread_rules = Some(unread);
         }
         if self.scanned.is_some() && poll.pending.is_empty() && unreadable.is_empty() {
             match self.watcher.look_for(&self.recorded, &self.found) {
@@ -854,7 +876,7 @@ impl Observer for FsObserver {
         }
         self.delivered.clone_from(&poll.pending);
         self.first &= !first;
-        self.reset &= !answers;
+        self.unanswered = unanswered;
         let root = check_root(&self.root, &self.space_id, &self.linked).map(|_| ());
         let entries = &self.watcher.snapshot().entries;
         let read = (changes.iter()).filter_map(|change| match change {
@@ -901,6 +923,10 @@ impl Observer for FsObserver {
     fn snapshot(&self) -> &Snapshot {
         self.watcher.snapshot()
     }
+}
+
+fn overlap(a: &Path, b: &Path) -> bool {
+    a.starts_with(b) || b.starts_with(a)
 }
 
 /// `stopped` as a watcher takes it.
@@ -1006,6 +1032,53 @@ fn open_under(root: impl AsFd, path: &Path) -> io::Result<File> {
         io::ErrorKind::InvalidInput,
         format!("{} is not a relative file path", koidrive_fs::quoted(path)),
     ))
+}
+
+#[cfg(test)]
+struct Busy {
+    watcher: Box<dyn Watcher + Send>,
+    scope: PathBuf,
+}
+
+#[cfg(test)]
+impl Watcher for Busy {
+    fn poll(&mut self, timeout: Duration) -> Result<koidrive_fs::Poll, FsError> {
+        let mut poll = self.watcher.poll(timeout)?;
+        if poll.root.is_some() && !poll.pending.contains(&self.scope) {
+            poll.pending.push(self.scope.clone());
+            poll.pending.sort();
+        }
+        Ok(poll)
+    }
+
+    fn snapshot(&self) -> &Snapshot {
+        self.watcher.snapshot()
+    }
+
+    fn reset(&mut self, scope: &Path, known: BTreeMap<PathBuf, Known>) {
+        self.watcher.reset(scope, known);
+    }
+
+    fn revisit(&mut self, paths: Vec<PathBuf>) {
+        self.watcher.revisit(paths);
+    }
+
+    fn look_for(
+        &mut self,
+        wanted: &BTreeMap<PathBuf, Known>,
+        found: &BTreeMap<PathBuf, PathBuf>,
+    ) -> Result<Vec<(PathBuf, Looked)>, FsError> {
+        self.watcher.look_for(wanted, found)
+    }
+}
+
+#[cfg(test)]
+impl FsObserver {
+    pub(crate) fn keep_pending(&mut self, scope: PathBuf) {
+        let idle = RescanWatcher::new(&self.root, Snapshot::default(), RESCAN_INTERVAL).unwrap();
+        let watcher = std::mem::replace(&mut self.watcher, Box::new(idle));
+        self.watcher = Box::new(Busy { watcher, scope });
+    }
 }
 
 #[cfg(test)]
@@ -2103,6 +2176,96 @@ mod tests {
             .expect("the poll that found the folder pending again");
         assert_eq!(again.pending, [PathBuf::from("proj")]);
         assert!(again.unreadable.is_empty());
+    }
+
+    #[test]
+    fn a_reset_is_answered_once_a_scan_settles_its_own_scopes_whatever_else_is_pending() {
+        let dir = marked();
+        let root = dir.path();
+        fs::create_dir(root.join("docs")).unwrap();
+        fs::create_dir(root.join("logs")).unwrap();
+        let mut observer = observer(root);
+        observer.observe(Duration::from_secs(10)).unwrap();
+        let busy = || Poll {
+            pending: vec![PathBuf::from("logs")],
+            root: observer.scanned(),
+            ..Poll::default()
+        };
+        let polls = vec![busy(), busy(), busy()];
+        observer.watcher = Box::new(Scripted {
+            snapshot: observer.snapshot().clone(),
+            polls,
+        });
+        let reset = |scope: &str| {
+            vec![Reset {
+                scope: PathBuf::from(scope),
+                known: BTreeMap::new(),
+            }]
+        };
+        observer.reset(reset("docs"));
+        (observer.observe(Duration::ZERO).unwrap()).expect("the batch of the scan after the reset");
+        assert!(observer.answered(), "the scan settled docs");
+        observer.reset(reset("logs/app.log"));
+        assert!(observer.observe(Duration::ZERO).unwrap().is_none());
+        assert!(!observer.answered(), "logs is pending");
+        observer.reset(reset("docs"));
+        (observer.observe(Duration::ZERO).unwrap())
+            .expect("the batch that answers the reset of docs");
+        assert_eq!(observer.unanswered(), [PathBuf::from("logs/app.log")]);
+    }
+
+    #[test]
+    fn a_folder_a_scan_settled_is_not_unreadable_while_another_stays_pending() {
+        let dir = marked();
+        let root = dir.path();
+        fs::create_dir(root.join("logs")).unwrap();
+        fs::create_dir(root.join("src")).unwrap();
+        let mut known = observer(root);
+        known.observe(Duration::from_secs(10)).unwrap();
+        let dev = RootAt {
+            dev: fs::metadata(root).unwrap().dev(),
+            volume: None,
+        };
+        let mut observer = FsObserver::start(
+            root,
+            SPACE,
+            dev,
+            known.snapshot().clone(),
+            MarkLog::default(),
+            Arc::new(Unfiltered),
+            || false,
+            |_| {},
+        )
+        .unwrap();
+        let paths = |paths: &[&str]| paths.iter().map(PathBuf::from).collect::<Vec<_>>();
+        let poll = |pending: &[&str], read: &[&str]| Poll {
+            pending: paths(pending),
+            read: paths(read),
+            root: known.scanned(),
+            ..Poll::default()
+        };
+        observer.watcher = Box::new(Scripted {
+            snapshot: known.snapshot().clone(),
+            polls: vec![
+                poll(&["logs"], &[""]),
+                poll(&["logs", "src"], &[]),
+                poll(&["src"], &["logs"]),
+                poll(&["logs"], &[]),
+            ],
+        });
+        let mut unreadable = || {
+            (observer.observe(Duration::ZERO).unwrap())
+                .expect("a batch")
+                .unreadable
+        };
+        assert_eq!(unreadable(), paths(&["logs"]));
+        assert_eq!(
+            unreadable(),
+            paths(&["logs"]),
+            "the first scan read the rules of src"
+        );
+        assert_eq!(unreadable(), paths(&[]));
+        assert_eq!(unreadable(), paths(&[]));
     }
 
     /// The platform watcher fails after the user deleted a rules file it had not reported. The rescanning watcher that

@@ -888,7 +888,7 @@ fn observe(a: &mut Device, changes: Vec<Observed>) {
     let batch = Batch {
         stamp: a.folder.sections().stamp(),
         unread: (0, 0),
-        answered: None,
+        answered: Default::default(),
         observation: crate::observe::Observation {
             changes,
             root: Ok(()),

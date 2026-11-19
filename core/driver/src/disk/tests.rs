@@ -1719,7 +1719,7 @@ fn observe_until(
                 return Batch {
                     stamp,
                     unread: (0, 0),
-                    answered: None,
+                    answered: Default::default(),
                     observation: Observation {
                         changes: seen,
                         rules,
@@ -2288,7 +2288,10 @@ fn a_parked_folder_removal_that_an_entry_left_first_stays_stuck_without_holding_
 
 /// Passes the resets the disk requested to the observer, and returns them.
 fn catch_up(watching: &mut FsObserver, sections: &Sections) -> Vec<Reset> {
-    let (resets, _) = sections.take_resets();
+    let (requested, _) = sections.take_resets();
+    let resets: Vec<Reset> = (requested.into_iter())
+        .flat_map(|(_, resets)| resets)
+        .collect();
     watching.reset(resets.clone());
     resets
 }
