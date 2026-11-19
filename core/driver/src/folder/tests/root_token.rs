@@ -1736,6 +1736,6 @@ fn a_start_that_finishes_an_interrupted_delete_gives_the_observer_the_tree_witho
 
     let a = site.start();
     assert!(a.folder.engine.effects.in_flight().is_empty());
-    assert!(!a.observer.snapshot().entries.contains_key(Path::new("kept.txt")));
+    let entries = &a.observer.snapshot().entries;
+    assert!(!entries.contains_key(Path::new("kept.txt")));
 }
-
