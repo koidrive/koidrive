@@ -331,7 +331,10 @@ fn write_gitignore(path: &Path, follow: bool) -> Result<(), DriverError> {
             .create(dir)
             .map_err(io_error(dir))?;
     }
-    koidrive_state_file::write(path, text.as_bytes()).map_err(io_error(path))
+    koidrive_state_file::write(path, text.as_bytes())
+        .map_err(io_error(path))?
+        .warn_unless_durable(path);
+    Ok(())
 }
 
 pub(crate) fn io_error(path: &Path) -> impl FnOnce(io::Error) -> DriverError + '_ {
