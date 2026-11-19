@@ -962,8 +962,12 @@ fn a_file_is_linked_before_planning_when_its_two_folders_enter_s_in_the_same_set
 }
 
 fn restarted(trees: &Trees) -> Trees {
+    restarted_without(trees, &[])
+}
+
+fn restarted_without(trees: &Trees, gone: &[&str]) -> Trees {
     let mut fresh = Trees::new(ROOT);
-    for (id, node) in trees.local().iter() {
+    for (id, node) in (trees.local().iter()).filter(|(id, _)| !gone.contains(&id.as_str())) {
         fresh.set_local(id.clone(), node.clone());
     }
     for (id, node) in trees.remote().iter() {
@@ -5639,4 +5643,27 @@ fn deleting_a_taken_along_server_folder_with_only_a_local_note_keeps_it_on_the_s
         false,
         &["n", "x"],
     );
+}
+
+#[test]
+fn deleting_only_the_discarded_note_in_a_taken_along_server_folder_keeps_it_taken_along() {
+    deleting_a_taken_along_folder_keeps_it_on_the_server(
+        ("n", file("x", "note", 3)),
+        false,
+        &["n"],
+    );
+}
+
+#[test]
+fn deleting_only_the_discarded_note_while_stopped_keeps_its_server_folder_taken_along() {
+    let (mut commits, before, mut ids) =
+        a_server_folder_taken_along_into_a_discarded_folder(("n", file("x", "note", 3)), false);
+    let mut trees = restarted_without(&before, &["n"]);
+    trees.settle(commits.aliases());
+    let mut sent = discard_until_quiet(&mut commits, &mut trees, &mut ids);
+    trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+    sent.extend(discard_until_quiet(&mut commits, &mut trees, &mut ids));
+    assert!(sent.is_empty(), "{sent:?}");
+    assert!(trees.remote().get("x").is_some_and(|node| !node.trashed));
+    assert_eq!(local(&trees), [("x".into(), ROOT.into(), "server".into())]);
 }
