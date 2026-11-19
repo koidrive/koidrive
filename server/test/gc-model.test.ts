@@ -423,6 +423,7 @@ async function act(world: World, step: Step): Promise<boolean> {
       const outer = act(world, step.outer).finally(() => (outerDone = true));
       await until(() => outerGate.reached || outerDone);
       pauses.clear();
+      const outerOutcomes = { put: r2.put, retire: r2.retire, del: r2.del };
       for (const inner of step.inner.slice(0, -1)) await act(world, inner);
       const innerGate: Gate = { reached: false, released: false };
       if (step.innerAt !== undefined) pauses.set(step.innerAt, innerGate);
@@ -430,11 +431,14 @@ async function act(world: World, step: Step): Promise<boolean> {
       const inner = act(world, step.inner.at(-1)!).finally(() => (innerDone = true));
       await until(() => innerGate.reached || innerDone);
       pauses.clear();
+      const innerOutcomes = { put: r2.put, retire: r2.retire, del: r2.del };
+      Object.assign(r2, outerOutcomes);
       outerGate.released = true;
       await outer;
+      Object.assign(r2, innerOutcomes);
       innerGate.released = true;
       await inner;
-      return outerGate.reached;
+      return outerGate.reached && (step.innerAt === undefined || innerGate.reached);
     }
   }
 }
