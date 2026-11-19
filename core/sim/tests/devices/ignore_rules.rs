@@ -133,11 +133,7 @@ fn a_folder_made_in_a_folder_another_device_renamed_to_a_name_its_rules_exclude_
 }
 
 #[test]
-fn a_file_at_a_name_another_spelling_of_which_its_rules_came_to_exclude_waits_for_that_name() {
-    let _red = expect_red(
-        Check::NameLeftOut,
-        "device 1 is quiet, but nodes [\"01a1c2c0-39a0-7cb2-989b-810659c5a8bc\"] wait for names that entries its rules leave out hold",
-    );
+fn a_file_at_a_name_another_spelling_of_which_its_rules_came_to_exclude_syncs_there() {
     let phases = [
         vec![
             (2, file("A")),
