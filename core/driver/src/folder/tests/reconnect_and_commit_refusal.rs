@@ -291,13 +291,11 @@ fn a_commit_resent_after_a_restart_uploads_again_only_once_its_receipts_no_longe
         a.connect(&remote);
         a.scan_until(|a| a.folder.scanned);
         a.rest(&mut remote);
-        assert_eq!(
-            (a.sent.iter()).filter(|sent| sent.commit_id == commit.commit_id).count(),
-            uploads + 1,
-            "expired: {expired}, unstored: {unstored}"
-        );
-        assert_eq!(remote.space.head_seq(), 1, "expired: {expired}, unstored: {unstored}");
-        assert_eq!(remote.names().len(), 60, "expired: {expired}, unstored: {unstored}");
-        assert_eq!(a.state(), FolderState::UpToDate, "expired: {expired}, unstored: {unstored}");
+        let case = format!("expired: {expired}, unstored: {unstored}");
+        let sends = (a.sent.iter()).filter(|sent| sent.commit_id == commit.commit_id);
+        assert_eq!(sends.count(), uploads + 1, "{case}");
+        assert_eq!(remote.space.head_seq(), 1, "{case}");
+        assert_eq!(remote.names().len(), 60, "{case}");
+        assert_eq!(a.state(), FolderState::UpToDate, "{case}");
     }
 }
