@@ -377,6 +377,7 @@ impl Fixture {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let observed = requests.clone();
         let stall = base.join("download-stall");
+        let trickle = base.join("download-trickle");
         let server = tokio::spawn(async move {
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else {
@@ -386,6 +387,7 @@ impl Fixture {
                 let sums = sums.clone();
                 let dmg = dmg.clone();
                 let stall = stall.clone();
+                let trickle = trickle.clone();
                 tokio::spawn(async move {
                     let mut request = vec![0; 16 * 1024];
                     let len = socket.read(&mut request).await.unwrap();
@@ -408,6 +410,13 @@ impl Fixture {
                         body.len()
                     );
                     socket.write_all(response.as_bytes()).await.unwrap();
+                    if trickle.exists() && !path.ends_with("/SHA256SUMS") {
+                        for piece in body.chunks(body.len().div_ceil(8)) {
+                            tokio::time::sleep(Duration::from_millis(600)).await;
+                            socket.write_all(piece).await.unwrap();
+                        }
+                        return;
+                    }
                     if stall.exists() && !path.ends_with("/SHA256SUMS") {
                         socket.write_all(&body[..body.len() / 2]).await.unwrap();
                         tokio::time::sleep(Duration::from_secs(60)).await;

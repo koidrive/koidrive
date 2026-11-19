@@ -2,7 +2,7 @@ use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
 use crate::app_install::facts::{AppLaunch, CommitChange, CommitFact};
 use crate::app_install::macos::attempt::Attempt;
 use crate::app_install::macos::config::Config;
-use crate::app_install::macos::constants::{BUNDLE, CLEANUP, SIGNER};
+use crate::app_install::macos::constants::{BUNDLE, CLEANUP, DOWNLOAD, SIGNER};
 use crate::app_install::macos::control::{
     CancelOnDrop, Control, Registry, io_error, passed, process,
 };
@@ -455,8 +455,19 @@ async fn transaction_inner(
     attempt.receipts.push(receipt.path());
     let mut data = receipt.data();
     let work = data.work.path.clone();
+    let mut paused = Duration::ZERO;
     let result: Result<AppInstall, AppInstallError> = async {
-        let dmg = download(&config, &target, &data.image, &control).await?;
+        let started = Instant::now();
+        let downloading = Control {
+            deadline: started + DOWNLOAD,
+            cancel: control.cancel.clone(),
+        };
+        let dmg = download(&config, &target, &data.image, &downloading).await?;
+        paused = started.elapsed();
+        let control = Control {
+            deadline: control.deadline + paused,
+            cancel: control.cancel.clone(),
+        };
         let mounted = OwnedMount {
             point: data.point.path.clone(),
             image: dmg.0,
@@ -511,6 +522,8 @@ async fn transaction_inner(
         })
     }
     .await;
+    let cleanup_deadline = cleanup_deadline + paused;
+    control.deadline += paused;
     let (_tx, cancel) = watch::channel(false);
     let cleanup_control = Control {
         deadline: cleanup_deadline.min(Instant::now() + CLEANUP),

@@ -28,16 +28,11 @@ pub(super) enum Child {
 
 impl Echo {
     pub(super) fn open(path: &Path, json: bool, verbose: bool) -> Echo {
-        let earlier = fs::metadata(path).map_or(0, |metadata| metadata.len());
-        let log = (path.parent().map(fs::create_dir_all).transpose().ok()).and_then(|_| {
-            OpenOptions::new()
-                .create(true)
-                .append(earlier <= KEPT_LOG)
-                .write(true)
-                .truncate(earlier > KEPT_LOG)
-                .open(path)
-                .ok()
-        });
+        if fs::metadata(path).is_ok_and(|metadata| metadata.len() > KEPT_LOG) {
+            let _ = fs::rename(path, path.with_extension("log.1"));
+        }
+        let log = (path.parent().map(fs::create_dir_all).transpose().ok())
+            .and_then(|_| OpenOptions::new().create(true).append(true).open(path).ok());
         Echo {
             log,
             ..Echo::console(json, verbose)

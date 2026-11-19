@@ -39,14 +39,19 @@ fn a_later_update_keeps_the_log_of_the_attempt_before_it() {
         fs::read_to_string(&log).unwrap(),
         "Failed: Koidrive did not quit within 30 seconds of being asked to\nDownloaded and checked Koidrive 0.1.1\n"
     );
-    fs::write(&log, vec![b'x'; 1024 * 1024 + 1]).unwrap();
-    let mut fresh = Echo::open(&log, true, false);
-    fresh.log("Failed: the download stalled");
-    drop(fresh);
+    let full = vec![b'x'; 1024 * 1024 + 1];
+    fs::write(&log, &full).unwrap();
+    let mut first = Echo::open(&log, true, false);
+    first.log("== first attempt");
+    let mut second = Echo::open(&log, true, false);
+    second.log("== second attempt");
+    first.log("Failed: the download stalled");
+    drop((first, second));
     assert_eq!(
         fs::read_to_string(&log).unwrap(),
-        "Failed: the download stalled\n"
+        "== first attempt\n== second attempt\nFailed: the download stalled\n"
     );
+    assert_eq!(fs::read(log.with_extension("log.1")).unwrap(), full);
 }
 
 #[test]

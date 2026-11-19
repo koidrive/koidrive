@@ -5,6 +5,7 @@ pub(super) const IDENTIFIER: &str = "dev.koidrive.Koidrive";
 pub(super) const REQUIREMENT: &str = "anchor apple generic and identifier \"dev.koidrive.Koidrive\" and certificate leaf[subject.OU] = \"656SPP5XR8\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists";
 pub(super) const SIGNER: &str = "anchor apple generic and certificate leaf[subject.OU] = \"656SPP5XR8\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists";
 pub(super) const CLEANUP: Duration = Duration::from_secs(20);
+pub(super) const DOWNLOAD: Duration = Duration::from_secs(4 * 60 * 60);
 pub(super) const MAX_OUTPUT: u64 = 4 * 1024 * 1024;
 pub(super) const INSPECT_RUNNING: &str = r#"ObjC.import('AppKit');
 function run(args) {

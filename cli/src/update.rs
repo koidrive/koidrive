@@ -154,7 +154,7 @@ async fn release(
     }
     let manager = service::system();
     let service = service::this_service(paths);
-    let app_deadline = tokio::time::Instant::now() + RECONCILE;
+    let mut app_deadline = tokio::time::Instant::now() + RECONCILE;
     #[cfg(target_os = "macos")]
     let existing_app = if matches!(install.method, Method::App | Method::Cask { .. }) {
         let binary = &install.binary;
@@ -201,6 +201,7 @@ async fn release(
             let prepared =
                 crate::app::prepare(&to, crate::app_install::AppLaunch::Preserve, app_deadline)
                     .await;
+            app_deadline = tokio::time::Instant::now() + RECONCILE;
             #[cfg(target_os = "macos")]
             {
                 match select_app_helper(

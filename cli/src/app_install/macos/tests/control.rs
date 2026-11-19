@@ -355,3 +355,26 @@ async fn a_held_install_lock_fails_fast_and_says_another_install_holds_it() {
     );
     f.preserved();
 }
+
+#[tokio::test]
+async fn a_download_that_keeps_moving_is_not_bounded_by_the_install_window() {
+    let mut f = Fixture::new(None, DMG.to_vec(), 200).await;
+    f.old();
+    f.flag("download-trickle");
+    f.config.limits.stall = Duration::from_secs(2);
+    let started = Instant::now();
+    let installed = ensure_with(
+        f.config.clone(),
+        Version::parse(TARGET).unwrap(),
+        AppLaunch::Preserve,
+        Instant::now() + CLEANUP + Duration::from_secs(3),
+    )
+    .await
+    .unwrap();
+    assert!(started.elapsed() > Duration::from_secs(4));
+    let AppInstall::Present { change, .. } = installed else {
+        panic!("the app should be installed");
+    };
+    assert_eq!(change, AppChange::Replaced);
+    f.unmounted();
+}
