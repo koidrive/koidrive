@@ -43,6 +43,7 @@ fn run(program: &str, args: &[&OsStr]) -> String {
     output(program, args).unwrap_or_else(|failure| panic!("{failure}"))
 }
 
+#[cfg(target_os = "macos")]
 fn hdiutil(args: &[&OsStr]) -> String {
     until_ready(std::time::Duration::from_secs(120), || {
         output("hdiutil", args)
@@ -89,6 +90,17 @@ fn until_ready(
 pub struct Disks {
     dir: tempfile::TempDir,
     mounted: Vec<Mounted>,
+    closed: bool,
+}
+
+#[derive(Debug, PartialEq)]
+enum Outcome {
+    Ejected {
+        #[cfg(target_os = "macos")]
+        device: String,
+    },
+    #[cfg(target_os = "macos")]
+    KeptBusy { device: String },
 }
 
 #[derive(Clone)]
@@ -112,6 +124,7 @@ impl Disks {
         Some(Disks {
             dir: tempfile::tempdir().unwrap(),
             mounted: Vec::new(),
+            closed: false,
         })
     }
 
@@ -279,7 +292,8 @@ impl Disks {
             args.push(format!("-I {serial:#x}").into());
         }
         args.push(image.clone().into());
-        hdiutil(&args.iter().map(OsString::as_os_str).collect::<Vec<_>>());
+        let args: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
+        created(&image, || output("hdiutil", &args)).unwrap_or_else(|failure| panic!("{failure}"));
         image
     }
 
@@ -432,8 +446,13 @@ impl Disks {
             .iter()
             .rposition(|mounted| mounted.at == at)
             .unwrap_or_else(|| panic!("no image owned at {}", at.display()));
-        if let Err(failure) = unmount(&self.mounted[index]) {
-            panic!("{failure}");
+        match unmount(&self.mounted[index]) {
+            Ok(Outcome::Ejected { .. }) => {}
+            #[cfg(target_os = "macos")]
+            Ok(Outcome::KeptBusy { device }) => {
+                panic!("{} stays attached as {device}", at.display())
+            }
+            Err(failure) => panic!("{failure}"),
         }
         self.mounted.remove(index);
     }
@@ -459,13 +478,23 @@ impl Disks {
         }
     }
 
-    fn cleanup(&mut self, mut detach: impl FnMut(&Mounted) -> Result<(), String>) {
-        let failures: Vec<String> = self
-            .mounted
-            .drain(..)
-            .rev()
-            .filter_map(|mounted| detach(&mounted).err())
-            .collect();
+    fn cleanup(
+        &mut self,
+        mut detach: impl FnMut(&Mounted) -> Result<Outcome, String>,
+    ) -> Vec<Outcome> {
+        let mut outcomes = Vec::new();
+        let mut failures = Vec::new();
+        for mounted in self.mounted.drain(..).rev() {
+            match detach(&mounted) {
+                Ok(outcome) => {
+                    if !matches!(outcome, Outcome::Ejected { .. }) {
+                        failures.push(format!("{outcome:?}"));
+                    }
+                    outcomes.push(outcome);
+                }
+                Err(failure) => failures.push(failure),
+            }
+        }
         if !failures.is_empty() {
             self.dir.disable_cleanup(true);
             let _ = writeln!(
@@ -474,7 +503,100 @@ impl Disks {
                 self.dir.path().display()
             );
         }
+        outcomes
     }
+
+    fn close(&mut self) -> Vec<Outcome> {
+        if std::mem::replace(&mut self.closed, true) {
+            return Vec::new();
+        }
+        #[cfg(target_os = "macos")]
+        match attached_under(self.dir.path()) {
+            Ok(attached) => {
+                for image in attached {
+                    if !self
+                        .mounted
+                        .iter()
+                        .any(|known| known.device == image.device && known.image == image.image)
+                    {
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "Disk cleanup found {} attached as {} without a record",
+                            image.image.display(),
+                            image.device
+                        );
+                        self.mounted.push(image);
+                    }
+                }
+            }
+            Err(failure) => {
+                self.dir.disable_cleanup(true);
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "Disk cleanup could not list attached images; keeping {} for the OS to reclaim: {failure}",
+                    self.dir.path().display()
+                );
+            }
+        }
+        self.cleanup(unmount)
+    }
+}
+
+fn created(
+    image: &Path,
+    mut create: impl FnMut() -> Result<String, String>,
+) -> Result<String, String> {
+    until_ready(std::time::Duration::from_secs(120), || {
+        let created = create();
+        if created
+            .as_ref()
+            .is_err_and(|failure| failure.contains("Resource busy"))
+            && let Err(failure) = eject_strays(image)
+        {
+            let _ = writeln!(
+                std::io::stderr(),
+                "A refused create could not eject the drives on {}: {failure}",
+                image.display()
+            );
+        }
+        created
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn eject_strays(image: &Path) -> Result<(), String> {
+    for attached in registry::attached()? {
+        let Some(path) = attached
+            .image
+            .filter(|path| resolved(path) == resolved(image))
+        else {
+            continue;
+        };
+        let device = attached.device.ok_or_else(|| {
+            format!(
+                "{} is attached without a device it can read",
+                path.display()
+            )
+        })?;
+        let stray = Mounted {
+            at: path.clone(),
+            image: path,
+            device,
+        };
+        let outcome = unmount(&stray)?;
+        let _ = writeln!(
+            std::io::stderr(),
+            "A refused create left {} attached as {}: {outcome:?}",
+            image.display(),
+            stray.device
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn eject_strays(_: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 fn serial(image: &Path) -> u32 {
@@ -536,19 +658,23 @@ fn whole_device(attached: &str) -> Result<String, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn image_on(device: &str) -> Result<Option<PathBuf>, String> {
-    use std::ffi::{CStr, CString, c_char, c_void};
+mod registry {
+    use std::ffi::{CStr, OsStr, c_char, c_void};
     use std::os::unix::ffi::OsStrExt;
+    use std::path::PathBuf;
 
     #[link(name = "IOKit", kind = "framework")]
     unsafe extern "C" {
-        fn IOBSDNameMatching(main_port: u32, options: u32, name: *const c_char) -> *mut c_void;
-        fn IOServiceGetMatchingService(main_port: u32, matching: *mut c_void) -> u32;
-        fn IOObjectConformsTo(object: u32, class: *const c_char) -> u32;
-        fn IORegistryEntryGetParentEntry(entry: u32, plane: *const c_char, parent: *mut u32)
-        -> i32;
-        fn IORegistryEntryCreateCFProperty(
+        fn IOServiceMatching(class: *const c_char) -> *mut c_void;
+        fn IOServiceGetMatchingServices(
+            main_port: u32,
+            matching: *mut c_void,
+            iterator: *mut u32,
+        ) -> i32;
+        fn IOIteratorNext(iterator: u32) -> u32;
+        fn IORegistryEntrySearchCFProperty(
             entry: u32,
+            plane: *const c_char,
             key: *const c_void,
             allocator: *const c_void,
             options: u32,
@@ -563,87 +689,195 @@ fn image_on(device: &str) -> Result<Option<PathBuf>, String> {
             text: *const c_char,
             encoding: u32,
         ) -> *const c_void;
+        fn CFStringGetCString(
+            text: *const c_void,
+            buffer: *mut c_char,
+            size: isize,
+            encoding: u32,
+        ) -> u8;
         fn CFGetTypeID(object: *const c_void) -> usize;
         fn CFDataGetTypeID() -> usize;
+        fn CFStringGetTypeID() -> usize;
+        fn CFStringGetLength(text: *const c_void) -> isize;
+        fn CFStringGetMaximumSizeForEncoding(length: isize, encoding: u32) -> isize;
         fn CFDataGetLength(data: *const c_void) -> isize;
         fn CFDataGetBytePtr(data: *const c_void) -> *const u8;
         fn CFRelease(object: *const c_void);
     }
 
-    const NO_DEVICE: i32 = 0xe000_02c0_u32 as i32;
-    let name = device.strip_prefix("/dev/").unwrap_or(device);
-    let node = Path::new("/dev").join(name);
-    let name = CString::new(name).map_err(|error| error.to_string())?;
-    let property = |entry: u32, key: &CStr| unsafe {
-        let key = CFStringCreateWithCString(std::ptr::null(), key.as_ptr(), 0x0800_0100);
-        let found = IORegistryEntryCreateCFProperty(entry, key, std::ptr::null(), 0);
-        CFRelease(key);
-        found
-    };
-    unsafe {
-        let media = IOServiceGetMatchingService(0, IOBSDNameMatching(0, 0, name.as_ptr()));
-        if media == 0 {
-            return if node.exists() {
-                Err(format!(
-                    "{device} exists but the IO registry has no entry for it"
-                ))
-            } else {
-                Ok(None)
-            };
-        }
-        let bsd_name = property(media, c"BSD Name");
-        if bsd_name.is_null() {
-            IOObjectRelease(media);
-            return Err(format!("the IO registry entry of {device} cannot be read"));
-        }
-        CFRelease(bsd_name);
-        let mut entry = media;
-        while IOObjectConformsTo(entry, c"IOHDIXHDDrive".as_ptr()) == 0 {
-            let mut parent = 0;
-            let status = IORegistryEntryGetParentEntry(entry, c"IOService".as_ptr(), &mut parent);
-            IOObjectRelease(entry);
-            match status {
-                0 => {}
-                NO_DEVICE => return Ok(None),
-                status => {
-                    return Err(format!(
-                        "looking up the parent of {device} in the IO registry failed with {status:#x}"
-                    ));
-                }
+    const UTF8: u32 = 0x0800_0100;
+    const CHILDREN: u32 = 0b01;
+
+    unsafe fn search(entry: u32, name: &CStr, options: u32) -> Result<Option<Vec<u8>>, String> {
+        unsafe {
+            let key = CFStringCreateWithCString(std::ptr::null(), name.as_ptr(), UTF8);
+            if key.is_null() {
+                return Err(format!("{name:?} cannot be made into a registry key"));
             }
-            entry = parent;
-        }
-        let found = property(entry, c"image-path");
-        IOObjectRelease(entry);
-        if found.is_null() {
-            return Err(format!(
-                "{device} is on a disk image whose image-path cannot be read"
-            ));
-        }
-        let image = (CFGetTypeID(found) == CFDataGetTypeID()).then(|| {
-            let bytes = match CFDataGetLength(found) {
-                0 => &[][..],
-                length => std::slice::from_raw_parts(CFDataGetBytePtr(found), length as usize),
+            let found = IORegistryEntrySearchCFProperty(
+                entry,
+                c"IOService".as_ptr(),
+                key,
+                std::ptr::null(),
+                options,
+            );
+            CFRelease(key);
+            if found.is_null() {
+                return Ok(None);
+            }
+            let value = if CFGetTypeID(found) == CFDataGetTypeID() {
+                let bytes = match CFDataGetLength(found) {
+                    0 => &[][..],
+                    length => std::slice::from_raw_parts(CFDataGetBytePtr(found), length as usize),
+                };
+                Ok(Some(bytes.strip_suffix(&[0]).unwrap_or(bytes).to_vec()))
+            } else if CFGetTypeID(found) == CFStringGetTypeID() {
+                let mut buffer = vec![
+                    0 as c_char;
+                    CFStringGetMaximumSizeForEncoding(CFStringGetLength(found), UTF8)
+                        as usize
+                        + 1
+                ];
+                (CFStringGetCString(found, buffer.as_mut_ptr(), buffer.len() as isize, UTF8) != 0)
+                    .then(|| Some(CStr::from_ptr(buffer.as_ptr()).to_bytes().to_vec()))
+                    .ok_or_else(|| format!("{name:?} does not fit in {} bytes", buffer.len()))
+            } else {
+                Err(format!("{name:?} is neither data nor a string"))
             };
-            PathBuf::from(OsStr::from_bytes(bytes.strip_suffix(&[0]).unwrap_or(bytes)))
-        });
-        CFRelease(found);
-        image
-            .map(Some)
-            .ok_or_else(|| format!("{device} has an image-path that is not data"))
+            CFRelease(found);
+            value
+        }
+    }
+
+    unsafe fn image(drive: u32) -> Result<Option<PathBuf>, String> {
+        let path = |bytes: Vec<u8>| PathBuf::from(OsStr::from_bytes(&bytes));
+        if let Some(image) = unsafe { search(drive, c"image-path", 0)? } {
+            return Ok(Some(path(image)));
+        }
+        let url = unsafe { search(drive, c"DiskImageURL", 0)? };
+        let Some(url) = url else {
+            return Err("a disk image drive has no image path it can read".to_owned());
+        };
+        let Some(encoded) = url.strip_prefix(b"file://") else {
+            return Ok(None);
+        };
+        let mut encoded = encoded.iter().copied();
+        let mut decoded = Vec::new();
+        while let Some(byte) = encoded.next() {
+            decoded.push(match byte {
+                b'%' => encoded
+                    .next()
+                    .zip(encoded.next())
+                    .and_then(|(high, low)| {
+                        u8::from_str_radix(std::str::from_utf8(&[high, low]).ok()?, 16).ok()
+                    })
+                    .ok_or_else(|| {
+                        format!("{} has a broken escape", String::from_utf8_lossy(&url))
+                    })?,
+                byte => byte,
+            });
+        }
+        Ok(Some(path(decoded)))
+    }
+
+    pub struct Attached {
+        pub image: Option<PathBuf>,
+        pub device: Option<String>,
+    }
+
+    pub fn attached() -> Result<Vec<Attached>, String> {
+        let mut images = Vec::new();
+        for class in [c"IOHDIXHDDrive", c"AppleDiskImageDevice"] {
+            let mut drives = 0;
+            let status = unsafe {
+                IOServiceGetMatchingServices(0, IOServiceMatching(class.as_ptr()), &mut drives)
+            };
+            if status != 0 {
+                return Err(format!("listing {class:?} failed with {status:#x}"));
+            }
+            let found = std::iter::from_fn(|| {
+                let drive = unsafe { IOIteratorNext(drives) };
+                (drive != 0).then(|| {
+                    let found = unsafe { (image(drive), search(drive, c"BSD Name", CHILDREN)) };
+                    unsafe { IOObjectRelease(drive) };
+                    Ok((found.0?, found.1?))
+                })
+            })
+            .collect::<Result<Vec<_>, String>>();
+            unsafe { IOObjectRelease(drives) };
+            images.extend(found?.into_iter().map(|(image, name)| Attached {
+                image,
+                device: name.map(|name| format!("/dev/{}", String::from_utf8_lossy(&name))),
+            }));
+        }
+        Ok(images)
     }
 }
 
 #[cfg(target_os = "macos")]
-fn still_attached(mounted: &Mounted) -> Result<bool, String> {
-    Ok(image_on(&mounted.device)?.is_some_and(|image| image == mounted.image))
+fn resolved(image: &Path) -> Option<PathBuf> {
+    fs::canonicalize(image).ok().or_else(|| {
+        Some(
+            fs::canonicalize(image.parent()?)
+                .ok()?
+                .join(image.file_name()?),
+        )
+    })
 }
 
 #[cfg(target_os = "macos")]
-fn unmount(mounted: &Mounted) -> Result<(), String> {
+fn attached_under(dir: &Path) -> Result<Vec<Mounted>, String> {
+    let base = match fs::canonicalize(dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        base => base.map_err(|error| error.to_string())?,
+    };
+    registry::attached()?
+        .into_iter()
+        .filter_map(|attached| Some((attached.image?, attached.device)))
+        .filter(|(image, _)| resolved(image).is_some_and(|image| image.starts_with(&base)))
+        .map(|(image, device)| {
+            Ok(Mounted {
+                at: base.clone(),
+                device: device.ok_or_else(|| {
+                    format!(
+                        "{} is attached without a device it can read",
+                        image.display()
+                    )
+                })?,
+                image,
+            })
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn still_attached(mounted: &Mounted) -> Result<bool, String> {
+    listed(Some(&mounted.image), &mounted.device)
+}
+
+#[cfg(target_os = "macos")]
+fn listed(image: Option<&Path>, device: &str) -> Result<bool, String> {
+    let mut listed = false;
+    for attached in registry::attached()? {
+        if attached.image.as_deref() != image {
+            continue;
+        }
+        let on = attached
+            .device
+            .ok_or_else(|| format!("{image:?} is attached without a device it can read"))?;
+        listed |= on == device;
+    }
+    Ok(listed)
+}
+
+#[cfg(target_os = "macos")]
+fn unmount(mounted: &Mounted) -> Result<Outcome, String> {
     let started = std::time::Instant::now();
     let mut busy = None;
     loop {
+        if !still_attached(mounted)? {
+            break;
+        }
         let detached = if is_mount_point(&mounted.at)? {
             output("/sbin/umount", &["-f".as_ref(), mounted.at.as_os_str()])
         } else {
@@ -669,11 +903,15 @@ fn unmount(mounted: &Mounted) -> Result<(), String> {
             return Err(failure);
         }
         if started.elapsed() >= std::time::Duration::from_secs(30) {
-            return Err(format!(
-                "{} remains attached as {}: {failure}",
+            let _ = writeln!(
+                std::io::stderr(),
+                "{} stays attached as {}: {failure}",
                 mounted.image.display(),
                 mounted.device
-            ));
+            );
+            return Ok(Outcome::KeptBusy {
+                device: mounted.device.clone(),
+            });
         }
         busy.get_or_insert_with(std::time::Instant::now);
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -686,7 +924,9 @@ fn unmount(mounted: &Mounted) -> Result<(), String> {
             busy.elapsed()
         );
     }
-    Ok(())
+    Ok(Outcome::Ejected {
+        device: mounted.device.clone(),
+    })
 }
 
 fn is_mount_point(at: &Path) -> Result<bool, String> {
@@ -699,7 +939,7 @@ fn is_mount_point(at: &Path) -> Result<bool, String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn unmount(mounted: &Mounted) -> Result<(), String> {
+fn unmount(mounted: &Mounted) -> Result<Outcome, String> {
     if is_mount_point(&mounted.at)? {
         output(
             "sudo",
@@ -723,7 +963,7 @@ fn unmount(mounted: &Mounted) -> Result<(), String> {
             ],
         )?;
         if loops.is_empty() {
-            return Ok(());
+            return Ok(Outcome::Ejected {});
         }
         if started.elapsed() >= std::time::Duration::from_secs(30) {
             return Err(format!(
@@ -738,7 +978,7 @@ fn unmount(mounted: &Mounted) -> Result<(), String> {
 
 impl Drop for Disks {
     fn drop(&mut self) {
-        self.cleanup(unmount);
+        self.close();
     }
 }
 
@@ -756,7 +996,32 @@ mod tests {
                 device: String::new(),
             })
             .collect();
-        Disks { dir, mounted }
+        Disks {
+            dir,
+            mounted,
+            closed: false,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn close_ejects_or_keeps_busy(mut disks: Disks, image: &Path, device: &str) {
+        let (base, outcomes) = (disks.base(), disks.close());
+        let listed = listed(Some(image), device);
+        drop(disks);
+        let ejected = Outcome::Ejected {
+            device: device.to_owned(),
+        };
+        let kept = Outcome::KeptBusy {
+            device: device.to_owned(),
+        };
+        let all_ejected = outcomes
+            .iter()
+            .all(|outcome| matches!(outcome, Outcome::Ejected { .. }));
+        assert!(
+            (outcomes.contains(&ejected) && listed == Ok(false) && base.exists() != all_ejected)
+                || (outcomes.contains(&kept) && listed == Ok(true) && base.exists()),
+            "{device} {outcomes:?} {listed:?}"
+        );
     }
 
     #[test]
@@ -805,7 +1070,12 @@ mod tests {
     fn successful_cleanup_removes_the_fixture_directory() {
         let mut disks = owned(tempfile::tempdir().unwrap());
         let base = disks.base();
-        disks.cleanup(|_| Ok(()));
+        disks.cleanup(|_| {
+            Ok(Outcome::Ejected {
+                #[cfg(target_os = "macos")]
+                device: String::new(),
+            })
+        });
         drop(disks);
         assert!(!base.exists());
     }
@@ -815,6 +1085,7 @@ mod tests {
         let disks = Disks {
             dir: tempfile::tempdir().unwrap(),
             mounted: Vec::new(),
+            closed: false,
         };
         let image = disks.base().join("source.dmg");
         let bytes = vec![42; 16_384];
@@ -862,6 +1133,252 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn an_image_attached_without_a_record_is_ejected_on_drop() {
+        let mut disks = Disks::new().unwrap();
+        let image = disks.image("Unrecorded");
+        let at = disks.base().join("at");
+        fs::create_dir(&at).unwrap();
+        let attached = hdiutil(&[
+            "attach".as_ref(),
+            "-plist".as_ref(),
+            "-nobrowse".as_ref(),
+            "-noautoopen".as_ref(),
+            "-mountpoint".as_ref(),
+            at.as_os_str(),
+            image.as_os_str(),
+        ]);
+        let unrecorded = Mounted {
+            at,
+            image,
+            device: whole_device(&attached).unwrap(),
+        };
+        disks.mounted.push(Mounted {
+            at: disks.base().join("earlier"),
+            image: disks.base().join("Earlier.dmg"),
+            device: unrecorded.device.clone(),
+        });
+        close_ejects_or_keeps_busy(disks, &unrecorded.image, &unrecorded.device);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_drop_leaves_another_disks_image_attached_through_a_link_into_its_folder() {
+        let mut theirs = Disks::new().unwrap();
+        let ours = Disks::new().unwrap();
+        theirs.image("Theirs");
+        std::os::unix::fs::symlink(theirs.base(), ours.base().join("link")).unwrap();
+        let at = theirs.base().join("at");
+        fs::create_dir(&at).unwrap();
+        theirs.attach(&ours.base().join("link/Theirs.dmg"), &at);
+        let recorded = theirs.mounted[0].clone();
+        drop(ours);
+        assert_eq!(still_attached(&recorded), Ok(true), "{}", recorded.device);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_drop_ejects_an_image_of_its_folder_attached_through_another_spelling() {
+        let disks = Disks::new().unwrap();
+        let image = disks.image("Spelled");
+        let links = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(disks.base(), links.path().join("link")).unwrap();
+        let spelled = links.path().join("link/Spelled.dmg");
+        assert_ne!(spelled, image);
+        let at = disks.base().join("at");
+        fs::create_dir(&at).unwrap();
+        let attached = hdiutil(&[
+            "attach".as_ref(),
+            "-plist".as_ref(),
+            "-nobrowse".as_ref(),
+            "-noautoopen".as_ref(),
+            "-mountpoint".as_ref(),
+            at.as_os_str(),
+            spelled.as_os_str(),
+        ]);
+        let unrecorded = Mounted {
+            at,
+            image: spelled,
+            device: whole_device(&attached).unwrap(),
+        };
+        close_ejects_or_keeps_busy(disks, &unrecorded.image, &unrecorded.device);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_drop_ejects_an_image_of_its_folder_that_disk_images_2_attached() {
+        let disks = Disks::new().unwrap();
+        let image = disks.image("Disk Images 2%");
+        let device = Eject::attach(Some(image.clone()));
+        close_ejects_or_keeps_busy(disks, &image, &device.device);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_drop_ejects_an_image_of_its_folder_while_a_ram_disk_is_attached() {
+        let ram = Eject::attach(None);
+        let disks = Disks::new().unwrap();
+        let image = disks.image("BesideRam");
+        let at = disks.base().join("at");
+        fs::create_dir(&at).unwrap();
+        let attached = hdiutil(&[
+            "attach".as_ref(),
+            "-plist".as_ref(),
+            "-nobrowse".as_ref(),
+            "-noautoopen".as_ref(),
+            "-mountpoint".as_ref(),
+            at.as_os_str(),
+            image.as_os_str(),
+        ]);
+        let unrecorded = Mounted {
+            at,
+            image,
+            device: whole_device(&attached).unwrap(),
+        };
+        close_ejects_or_keeps_busy(disks, &unrecorded.image, &unrecorded.device);
+        assert_eq!(listed(None, &ram.device), Ok(true), "{}", ram.device);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_drop_ejects_an_image_of_its_folder_at_the_longest_url_disk_images_2_takes() {
+        use std::os::unix::ffi::OsStrExt;
+        let disks = Disks::new().unwrap();
+        let image = disks.image("Long");
+        let url_length = |path: &Path| {
+            "file://".len()
+                + path
+                    .as_os_str()
+                    .as_bytes()
+                    .iter()
+                    .map(|&byte| if byte == b' ' { 3 } else { 1 })
+                    .sum::<usize>()
+        };
+        let mut long = fs::canonicalize(disks.base()).unwrap();
+        for _ in 0..3 {
+            long.push(" ".repeat(100));
+        }
+        fs::create_dir_all(&long).unwrap();
+        let name = 1023usize
+            .checked_sub(url_length(&long) + "/.dmg".len())
+            .filter(|&length| length > 0)
+            .unwrap_or_else(|| panic!("{} leaves no room for a 1023-byte URL", long.display()));
+        let name = "x".repeat(name);
+        long.push(format!("{name}.dmg"));
+        assert_eq!(url_length(&long), 1023);
+        fs::rename(&image, &long).unwrap();
+        let device = Eject::attach(Some(long.clone()));
+        close_ejects_or_keeps_busy(disks, &long, &device.device);
+    }
+
+    #[cfg(target_os = "macos")]
+    struct Eject {
+        device: String,
+        image: Option<PathBuf>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Eject {
+        fn attach(image: Option<PathBuf>) -> Eject {
+            let source = image
+                .as_deref()
+                .map_or("ram://32768".as_ref(), Path::as_os_str);
+            Eject {
+                device: disk_images_2_attach(source),
+                image,
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for Eject {
+        fn drop(&mut self) {
+            if listed(self.image.as_deref(), &self.device) == Ok(true) {
+                let _ = output("diskutil", &["eject".as_ref(), self.device.as_ref()]);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_refused_create_ejects_the_drive_it_left_on_its_path() {
+        let disks = Disks::new().unwrap();
+        let image = disks.image("Stray");
+        let stray = Eject::attach(Some(image.clone()));
+        let mut answers = [
+            Err("hdiutil: create failed - Resource busy".to_owned()),
+            Ok(String::new()),
+        ]
+        .into_iter();
+        assert_eq!(
+            created(&image, || answers.next().unwrap()),
+            Ok(String::new())
+        );
+        assert_eq!(
+            listed(stray.image.as_deref(), &stray.device),
+            Ok(false),
+            "{}",
+            stray.device
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_eject_guard_ejects_only_its_own_image() {
+        let disks = Disks::new().unwrap();
+        let image = disks.image("Held");
+        let held = Eject::attach(Some(image.clone()));
+        let device = held.device.clone();
+        drop(Eject {
+            device: device.clone(),
+            image: Some(disks.image("Other")),
+        });
+        let after_another_guard = listed(Some(&image), &device);
+        drop(held);
+        assert_eq!(after_another_guard, Ok(true));
+        assert_eq!(listed(Some(&image), &device), Ok(false));
+    }
+
+    #[cfg(target_os = "macos")]
+    fn disk_images_2_attach(source: &OsStr) -> String {
+        let attached = run(
+            "diskutil",
+            &[
+                "image".as_ref(),
+                "attach".as_ref(),
+                "--noMount".as_ref(),
+                "--plist".as_ref(),
+                source,
+            ],
+        );
+        plist::Value::from_reader_xml(attached.as_bytes())
+            .unwrap()
+            .as_dictionary()
+            .and_then(|attached| attached.get("system-entities"))
+            .and_then(plist::Value::as_array)
+            .and_then(|entities| entities.first())
+            .and_then(plist::Value::as_dictionary)
+            .and_then(|entity| entity.get("dev-entry"))
+            .and_then(plist::Value::as_string)
+            .map(|name| format!("/dev/{name}"))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_drop_after_its_folder_moved_keeps_it_without_a_panic() {
+        let disks = Disks {
+            dir: tempfile::tempdir().unwrap(),
+            mounted: Vec::new(),
+            closed: false,
+        };
+        let moved = disks.dir.path().with_extension("moved");
+        fs::rename(disks.dir.path(), &moved).unwrap();
+        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(disks)));
+        fs::remove_dir_all(&moved).unwrap();
+        assert!(dropped.is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn the_image_owns_the_physical_disk_not_its_apfs_volume() {
         let attached = r#"<?xml version="1.0"?><plist version="1.0"><dict><key>system-entities</key><array><dict><key>dev-entry</key><string>/dev/disk6s1</string></dict><dict><key>dev-entry</key><string>/dev/disk6</string></dict><dict><key>dev-entry</key><string>/dev/disk5</string><key>content-hint</key><string>GUID_partition_scheme</string></dict></array></dict></plist>"#;
         assert_eq!(whole_device(attached).as_deref(), Ok("/dev/disk5"));
@@ -877,39 +1394,63 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn a_device_belongs_to_the_image_the_kernel_backs_it_with() {
+    fn unmount_leaves_a_device_that_now_holds_another_image() {
         let mut disks = Disks::new().unwrap();
-        let image = disks.image("Backing");
+        let image = disks.image("Now");
+        let at = disks.base().join("now");
+        fs::create_dir(&at).unwrap();
+        disks.attach(&image, &at);
+        let now = disks.mounted[0].clone();
+        let earlier = Mounted {
+            at: disks.base().join("earlier"),
+            image: disks.base().join("Earlier.dmg"),
+            device: now.device.clone(),
+        };
+        assert_eq!(
+            unmount(&earlier),
+            Ok(Outcome::Ejected {
+                device: earlier.device.clone()
+            })
+        );
+        assert_eq!(still_attached(&now), Ok(true), "{}", now.device);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_record_of_the_same_image_on_another_device_is_not_attached() {
+        let mut disks = Disks::new().unwrap();
+        let image = disks.image("Again");
+        let at = disks.base().join("again");
+        fs::create_dir(&at).unwrap();
+        disks.attach(&image, &at);
+        let again = disks.mounted[0].clone();
+        let earlier = Mounted {
+            at: disks.base().join("earlier"),
+            image,
+            device: "/dev/disk999999".to_owned(),
+        };
+        assert_eq!(still_attached(&earlier), Ok(false));
+        assert_eq!(
+            unmount(&earlier),
+            Ok(Outcome::Ejected {
+                device: earlier.device.clone()
+            })
+        );
+        assert_eq!(still_attached(&again), Ok(true), "{}", again.device);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_listing_the_registry_will_not_describe_is_an_error() {
+        if std::env::var_os("KOIDRIVE_TEST_IOKIT_DENIED").is_some() {
+            assert!(registry::attached().is_err());
+            return;
+        }
+        let mut disks = Disks::new().unwrap();
+        let image = disks.image("Described");
         let at = disks.base().join("at");
         fs::create_dir(&at).unwrap();
         disks.attach(&image, &at);
-        let device = disks.mounted[0].device.clone();
-        assert_eq!(image_on(&device), Ok(Some(image)));
-        assert_eq!(
-            image_on(&format!("{device}s1")).map(|image| image.is_some()),
-            Ok(true)
-        );
-        disks.detach(&at);
-        assert_ne!(
-            image_on(&device),
-            Ok(Some(disks.base().join("Backing.dmg")))
-        );
-        assert_eq!(image_on("/dev/disk999999"), Ok(None));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_disk_no_image_backs_has_no_image() {
-        assert_eq!(image_on("/dev/disk0"), Ok(None));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_disk_the_registry_will_not_describe_is_an_error_and_not_detached() {
-        if std::env::var_os("KOIDRIVE_TEST_IOKIT_DENIED").is_some() {
-            assert!(image_on("/dev/disk0").is_err());
-            return;
-        }
         let denied = std::process::Command::new("sandbox-exec")
             .args([
                 "-p",
@@ -918,7 +1459,7 @@ mod tests {
             .arg(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "disks::tests::a_disk_the_registry_will_not_describe_is_an_error_and_not_detached",
+                "disks::tests::a_listing_the_registry_will_not_describe_is_an_error",
                 "--nocapture",
             ])
             .env("KOIDRIVE_TEST_IOKIT_DENIED", "1")
@@ -1014,10 +1555,7 @@ mod tests {
             disks.attach(&image, &moved.join("mount"));
             assert_eq!(fs::read(moved.join("mount/held.txt")).unwrap(), b"saved");
             let second = disks.mounted[0].clone();
-            let base = disks.base();
-            drop(disks);
-            assert_eq!(still_attached(&second), Ok(false), "{format}");
-            assert!(!base.exists(), "{format}");
+            close_ejects_or_keeps_busy(disks, &second.image, &second.device);
         }
     }
 }
