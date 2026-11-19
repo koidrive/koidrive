@@ -7,6 +7,9 @@ use std::fmt::Debug;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use proptest::test_runner::{Config, FailurePersistence, PersistedSeed, RngSeed};
 
@@ -18,6 +21,20 @@ pub use forked::Forked;
 pub use net::reset_tcp_address;
 mod sandbox;
 pub use sandbox::{LIFELINE, Sandbox, sandboxed};
+
+/// Puts a FIFO with no writer at `path`.
+pub fn make_fifo(path: &Path) {
+    assert!(Command::new("mkfifo").arg(path).status().unwrap().success());
+}
+
+/// Runs `read` on another thread and returns its result, failing when it takes longer than ten seconds, as a read
+/// that waits for a FIFO's writer does.
+pub fn without_waiting<T: Send + 'static>(read: impl FnOnce() -> T + Send + 'static) -> T {
+    let (sent, done) = mpsc::channel();
+    std::thread::spawn(move || sent.send(read()));
+    done.recv_timeout(Duration::from_secs(10))
+        .expect("the read waited")
+}
 
 const DETERMINISTIC: &str = "KOIDRIVE_PROPTEST_DETERMINISTIC";
 const FIXED_SEED: u64 = 0;

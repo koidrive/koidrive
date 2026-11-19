@@ -1664,6 +1664,19 @@ fn a_start_replaces_a_token_log_that_is_not_a_file_without_waiting_on_it() {
 }
 
 #[test]
+fn a_start_whose_marker_is_not_a_file_stops_on_an_unreadable_marker_without_waiting_on_it() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let marker = marker_file(&site);
+    fs::remove_file(&marker).unwrap();
+    koidrive_test_support::make_fifo(&marker);
+    let clone = store_clone(&site);
+    let started = koidrive_test_support::without_waiting(move || opened(&clone).err());
+    assert!(matches!(started, Some(Stop::Root(RootProblem::BadMarker(_)))), "{started:?}");
+}
+
+#[test]
 fn a_restart_whose_marker_took_its_token_before_the_flush_failed_keeps_the_token_in_the_log() {
     let mut remote = Remote::new();
     let (site, a) = linked(&mut remote, "a");
