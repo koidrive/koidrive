@@ -344,8 +344,10 @@ impl Folder {
         abandoned: &dyn Fn() -> bool,
     ) -> Result<Option<Loaded>, Stop> {
         #[cfg(test)]
-        if let Some(parked) = WHILE_LOADING.lock().unwrap().remove(store) {
-            parked();
+        let parked = WHILE_LOADING.lock().unwrap().remove(store);
+        #[cfg(test)]
+        if let Some(parked) = parked {
+            parked(abandoned);
         }
         let timing = Timing::open(store, link.linked_at_ms);
         let mut store = Store::open_existing(store)?;

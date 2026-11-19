@@ -90,9 +90,11 @@ pub(crate) struct ObserveFault {
 }
 
 #[cfg(test)]
-pub(crate) static WHILE_LOADING: Mutex<
-    std::collections::BTreeMap<PathBuf, Box<dyn FnOnce() + Send>>,
-> = Mutex::new(std::collections::BTreeMap::new());
+type Parked = Box<dyn FnOnce(&dyn Fn() -> bool) + Send>;
+
+#[cfg(test)]
+pub(crate) static WHILE_LOADING: Mutex<std::collections::BTreeMap<PathBuf, Parked>> =
+    Mutex::new(std::collections::BTreeMap::new());
 
 #[cfg(test)]
 thread_local! {

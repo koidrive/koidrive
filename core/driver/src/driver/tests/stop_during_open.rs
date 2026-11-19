@@ -34,16 +34,18 @@ async fn a_pause_while_a_folder_loads_its_store_stops_it_at_once_and_leaves_the_
     let before = stored(&store);
     let (entered, loading) = mpsc::channel();
     let (release, released) = mpsc::channel::<()>();
+    let (gave_up, giving_up) = mpsc::channel();
     let waited_out = Arc::new(AtomicBool::new(false));
     crate::folder::WHILE_LOADING.lock().unwrap().insert(
         store.clone(),
         Box::new({
             let waited_out = waited_out.clone();
-            move || {
+            move |abandoned: &dyn Fn() -> bool| {
                 entered.send(()).unwrap();
                 if released.recv_timeout(Duration::from_secs(10)).is_err() {
                     waited_out.store(true, Ordering::SeqCst);
                 }
+                gave_up.send(abandoned()).unwrap();
             }
         }),
     );
@@ -63,6 +65,10 @@ async fn a_pause_while_a_folder_loads_its_store_stops_it_at_once_and_leaves_the_
     assert_eq!(stored(&store), before, "the stopped open changed the store");
 
     release.send(()).unwrap();
+    assert!(
+        giving_up.recv().unwrap(),
+        "the load went on after the pause"
+    );
     driver.resume().await.unwrap();
     eventually("the next open takes the restore request", || {
         stored(&store).0 == 0
