@@ -2511,11 +2511,25 @@ fn whereabouts(root: BorrowedFd<'_>, root_dev: u64, entry: &Entry, links: &[&Pat
     match stat_rel(root, &rel) {
         Ok(stat) if is_it(&stat) && links.contains(&rel.as_path()) => Whereabouts::Nowhere,
         Ok(stat) if is_it(&stat) => Whereabouts::At(rel),
-        Ok(_) => Whereabouts::Unsure,
         Err(err) if denied(&err) => Whereabouts::Hidden,
-        Err(err) if is_gone(&err) => Whereabouts::Unsure,
-        Err(_) => Whereabouts::Nowhere,
+        Ok(_) | Err(_) if !linked_anywhere(root_dev, entry) => Whereabouts::Nowhere,
+        Ok(_) | Err(_) => Whereabouts::Unsure,
     }
+}
+
+#[cfg(target_os = "macos")]
+fn linked_anywhere(dev: u64, entry: &Entry) -> bool {
+    let by_id = PathBuf::from(format!("/.vol/{dev}/{}", entry.id.ino));
+    match rustix::fs::lstat(&by_id) {
+        Ok(stat) => (from_stat(stat).entry())
+            .is_some_and(|now| now.id.same(&entry.id) && now.kind == entry.kind),
+        Err(err) => err != rustix::io::Errno::NOENT,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn linked_anywhere(_: u64, _: &Entry) -> bool {
+    true
 }
 
 #[cfg(target_os = "macos")]

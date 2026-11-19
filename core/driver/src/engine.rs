@@ -4037,6 +4037,7 @@ mod tests {
                     make(folder.path(), edit, &mut entry_numbers, &mut last_number);
                 }
                 let batch = scan(&mut snapshot, folder.path());
+                prop_assert_eq!(on_disk(&snapshot), on_disk(&Snapshot::scan(folder.path()).unwrap()), "after {:?}", batch);
                 engine.observe(&batch, 0);
                 prop_assert_eq!(engine.trees.check(), Ok(()), "after {:?}", batch);
                 prop_assert_eq!(in_l(&engine), on_disk(&snapshot), "after {:?}", batch);
@@ -4091,6 +4092,11 @@ mod tests {
         for edits in rounds {
             run(root, edits);
             let batch = scan(&mut snapshot, root);
+            assert_eq!(
+                on_disk(&snapshot),
+                on_disk(&Snapshot::scan(root).unwrap()),
+                "after {batch:?}"
+            );
             engine.observe(&batch, 0);
             assert_eq!(engine.trees.check(), Ok(()), "after {batch:?}");
             assert_eq!(in_l(&engine), on_disk(&snapshot), "after {batch:?}");
@@ -4115,6 +4121,14 @@ mod tests {
         replay(&[
             &["mkdir a", "write a/x"],
             &["mkdir b", "mv a/x b/x", "rmdir a", "mv b a"],
+        ]);
+    }
+
+    #[test]
+    fn a_folder_renamed_over_its_moved_out_child_keeps_l_on_the_disk() {
+        replay(&[
+            &["mkdir s", "mkdir s/a", "mkdir s/a/s"],
+            &["mv s/a/s s/s", "mv s/a s/s"],
         ]);
     }
 
