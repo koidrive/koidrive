@@ -19,6 +19,14 @@
 //! the `.env` files a `.gitignore` excludes, and `*.psd` excludes files no `.gitignore`
 //! mentions.
 //!
+//! # Files git tracks
+//!
+//! A file the git index of a work tree lists ([`Matcher::set_tracked`]) is included where only
+//! `.gitignore` files exclude it, and so is each folder on the way to it (RFC 0033 §4). A folder
+//! included only on the way keeps its other entries out, with the reason that excluded the folder,
+//! as git keeps the untracked files of an ignored folder out. The built-in exclusions, the local
+//! list, the `.koiignore` files and the `.git` default still exclude such a file.
+//!
 //! `.gitignore` files apply only while the device follows them ([`LocalRules::with_gitignore`]),
 //! which it does unless its person turns it off. Git's other sources are not read: `.git/info/exclude`
 //! and the file `core.excludesFile` names hold one person's choices for one clone, and only
@@ -97,8 +105,6 @@
 //!   byte of a UTF-8 name. Git also compares patterns and names byte for byte, so an NFD pattern
 //!   does not match an NFC name there.
 //! - A rules file in an included directory is never excluded; git can ignore a `.gitignore`.
-//! - Git's index is not read, so a file git tracks is excluded when a `.gitignore` pattern matches
-//!   it, although git keeps tracking it.
 //! - Every `.gitignore` file of the space applies to its subtree. Inside a nested repository or a
 //!   submodule, git reads only that repository's files, so the `.gitignore` files of the folders
 //!   around it can exclude more here than git does.
