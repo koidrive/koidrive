@@ -53,10 +53,13 @@ fn read(folder: &Path) -> GitIndex<Key> {
     index
 }
 
-fn lists(index: &GitIndex<Key>, paths: &[&str]) -> Vec<Option<bool>> {
-    (paths.iter())
-        .map(|path| index.lists(Path::new(path)))
-        .collect()
+fn answers(index: &GitIndex<Key>, paths: &str) -> String {
+    let answer = |path| match index.lists(Path::new(path)) {
+        Some(true) => 'y',
+        Some(false) => 'n',
+        None => '?',
+    };
+    paths.split(' ').map(answer).collect()
 }
 
 fn holds(path: &Path, signature: &[u8]) -> bool {
@@ -85,11 +88,7 @@ fn lists_regular_files_by_name_key_and_skips_optional_extensions() {
     let root = dir.path();
     fs::write(root.join(".gitignore"), "dist/\n").unwrap();
     std::os::unix::fs::symlink("a.txt", root.join("link")).unwrap();
-    fs::set_permissions(
-        root.join("bin/run"),
-        std::os::unix::fs::PermissionsExt::from_mode(0o755),
-    )
-    .unwrap();
+    git(root, &["update-index", "--chmod=+x", "--add", "bin/run"]);
     git(root, &["config", "index.recordEndOfIndexEntries", "true"]);
     git(root, &["config", "core.untrackedCache", "true"]);
     git(root, &["add", "."]);
@@ -101,44 +100,8 @@ fn lists_regular_files_by_name_key_and_skips_optional_extensions() {
     assert!(holds(&root.join(".git/index"), b"EOIE"));
     let index = read(root);
     assert!(index.readable());
-    let paths = [
-        "a.txt",
-        "A.TXT",
-        "bin/run",
-        "dist/app.js",
-        "DIST/App.JS",
-        "dist/other.js",
-    ];
-    assert_eq!(
-        lists(&index, &paths),
-        [
-            Some(true),
-            Some(true),
-            Some(true),
-            Some(true),
-            Some(true),
-            Some(false)
-        ]
-    );
-    let paths = [
-        "e\u{301}.txt",
-        "É.TXT",
-        "link",
-        "new.txt",
-        "untracked.txt",
-        "bin",
-    ];
-    assert_eq!(
-        lists(&index, &paths),
-        [
-            Some(true),
-            Some(true),
-            Some(false),
-            Some(true),
-            Some(false),
-            Some(false)
-        ]
-    );
+    let paths = "a.txt A.TXT bin/run dist/app.js DIST/App.JS dist/other.js e\u{301}.txt É.TXT link new.txt untracked.txt bin";
+    assert_eq!(answers(&index, paths), "yyyyynyynynn");
 }
 
 #[test]
@@ -154,17 +117,9 @@ fn a_conflicted_file_stays_listed() {
     fs::write(root.join("f.txt"), "main").unwrap();
     git(root, &["commit", "-qam", "main"]);
     assert!(!run(root, &["merge", "side"]).status.success());
-    let stages = run(root, &["ls-files", "--stage"]).stdout;
-    assert!(
-        String::from_utf8(stages)
-            .unwrap()
-            .lines()
-            .all(|line| !line.contains(" 0\t"))
-    );
-    assert_eq!(
-        lists(&read(root), &["f.txt", "g.txt"]),
-        [Some(true), Some(false)]
-    );
+    let stages = String::from_utf8(run(root, &["ls-files", "--stage"]).stdout).unwrap();
+    assert!(stages.lines().all(|line| !line.contains(" 0\t")));
+    assert_eq!(answers(&read(root), "f.txt g.txt"), "yn");
 }
 
 #[test]
@@ -175,27 +130,31 @@ fn reads_version_4_prefix_compressed_paths() {
     git(root, &["config", "index.skipHash", "true"]);
     git(root, &["update-index", "--index-version", "4"]);
     let bytes = fs::read(root.join(".git/index")).unwrap();
-    assert_eq!(bytes[4..8], [0, 0, 0, 4]);
-    assert_eq!(bytes[bytes.len() - 20..], [0; 20]);
-    let paths = [
-        "dir/aaa.txt",
-        "dir/aab.txt",
-        "dir/sub/x",
-        "other",
-        "dir/aac.txt",
-        "dir/aa",
-    ];
     assert_eq!(
-        lists(&read(root), &paths),
-        [
-            Some(true),
-            Some(true),
-            Some(true),
-            Some(true),
-            Some(false),
-            Some(false)
-        ]
+        (&bytes[4..8], &bytes[bytes.len() - 20..]),
+        (&[0, 0, 0, 4][..], &[0; 20][..])
     );
+    let paths = "dir/aaa.txt dir/aab.txt dir/sub/x other dir/aac.txt dir/aa";
+    assert_eq!(answers(&read(root), paths), "yyyynn");
+}
+
+#[test]
+fn reads_sha256_indexes_with_the_object_format_of_the_common_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git(root, &["init", "-q", "--object-format=sha256"]);
+    write(root, &["a.txt", "b.txt"]);
+    git(root, &["add", "a.txt"]);
+    git(root, &["commit", "-qm", "one"]);
+    git(root, &["worktree", "add", "-q", "-b", "side", "wt"]);
+    assert_eq!(answers(&read(root), "a.txt b.txt"), "yn");
+    assert_eq!(answers(&read(&root.join("wt")), "a.txt b.txt"), "yn");
+    git(root, &["config", "index.skipHash", "true"]);
+    git(root, &["add", "b.txt"]);
+    assert_eq!(answers(&read(root), "a.txt b.txt"), "yy");
+    git(root, &["config", "extensions.objectFormat", "sha512"]);
+    assert_eq!(answers(&read(root), "a.txt"), "?");
+    assert_eq!(answers(&read(&root.join("wt")), "a.txt"), "?");
 }
 
 #[test]
@@ -211,11 +170,7 @@ fn reads_a_split_index_and_its_shared_index() {
     git(root, &["add", "f01", "new"]);
     git(root, &["rm", "-q", "--cached", "f02"]);
     assert!(holds(&root.join(".git/index"), b"link"));
-    let paths = ["f00", "f01", "f02", "f29", "new"];
-    assert_eq!(
-        lists(&read(root), &paths),
-        [Some(true), Some(true), Some(false), Some(true), Some(true)]
-    );
+    assert_eq!(answers(&read(root), "f00 f01 f02 f29 new"), "yynyy");
     for entry in fs::read_dir(root.join(".git")).unwrap() {
         let entry = entry.unwrap();
         if entry
@@ -228,7 +183,7 @@ fn reads_a_split_index_and_its_shared_index() {
     }
     let index = read(root);
     assert!(!index.readable());
-    assert_eq!(lists(&index, &["f00"]), [None]);
+    assert_eq!(answers(&index, "f00"), "?");
 }
 
 #[test]
@@ -242,27 +197,18 @@ fn a_path_below_a_sparse_directory_has_no_answer() {
         &["sparse-checkout", "set", "--cone", "--sparse-index", "a"],
     );
     assert!(holds(&root.join(".git/index"), b"sdir"));
-    let paths = ["a/x", "top", "a/y", "b/y", "B/Y", "b/z/w", "b"];
     assert_eq!(
-        lists(&read(root), &paths),
-        [
-            Some(true),
-            Some(true),
-            Some(false),
-            None,
-            None,
-            None,
-            Some(false)
-        ]
+        answers(&read(root), "a/x top a/y b/y B/Y b/z/w b"),
+        "yyn???n"
     );
 }
 
 #[test]
-fn linked_worktrees_and_submodules_answer_for_their_own_paths() {
+fn every_dot_git_entry_makes_a_work_tree_that_owns_the_paths_below_it() {
     let source = repo(&["s.txt"]);
     git(source.path(), &["add", "."]);
     git(source.path(), &["commit", "-qm", "sub"]);
-    let dir = repo(&["m.txt"]);
+    let dir = repo(&["m.txt", "odd/x"]);
     let root = dir.path();
     git(root, &["add", "."]);
     git(root, &["commit", "-qm", "main"]);
@@ -280,18 +226,31 @@ fn linked_worktrees_and_submodules_answer_for_their_own_paths() {
         ],
     );
     assert!(root.join("sub/.git").is_file() && root.join("wt/.git").is_file());
+    std::os::unix::fs::symlink(root.join(".git"), root.join("odd/.git")).unwrap();
     assert!(GitIndex::<Key>::find(&root.join(".git")).is_none());
-    let indexes: BTreeMap<PathBuf, GitIndex<Key>> = ["", "wt", "sub"]
+    let indexes: BTreeMap<PathBuf, GitIndex<Key>> = ["", "wt", "sub", "odd"]
         .into_iter()
         .map(|folder| (PathBuf::from(folder), read(&root.join(folder))))
         .collect();
-    let answer = |path: &str| owner(&indexes, Path::new(path)).map(|(index, rel)| index.lists(rel));
-    assert_eq!(answer("m.txt"), Some(Some(true)));
-    assert_eq!(answer("wt/side.txt"), Some(Some(true)));
-    assert_eq!(answer("wt/m.txt"), Some(Some(true)));
-    assert_eq!(answer("sub/s.txt"), Some(Some(true)));
-    assert_eq!(answer("sub/m.txt"), Some(Some(false)));
-    assert_eq!(answer("side.txt"), Some(Some(false)));
+    let answer = |path: &str| {
+        let (index, rel) = owner(&indexes, Path::new(path)).unwrap();
+        answers(index, rel.to_str().unwrap())
+    };
+    let paths = [
+        "m.txt",
+        "wt/side.txt",
+        "wt/m.txt",
+        "sub/s.txt",
+        "sub/m.txt",
+        "side.txt",
+        "odd/x",
+    ];
+    assert_eq!(paths.map(answer).concat(), "yyyynn?");
+    for gitfile in ["nonsense", "gitdir: /nowhere"] {
+        fs::remove_file(root.join("odd/.git")).unwrap();
+        fs::write(root.join("odd/.git"), gitfile).unwrap();
+        assert_eq!(answers(&read(&root.join("odd")), "x"), "?", "{gitfile}");
+    }
 }
 
 #[test]
@@ -302,25 +261,17 @@ fn an_unreadable_index_keeps_the_last_answers() {
     let path = root.join(".git/index");
     let good = fs::read(&path).unwrap();
     let mut index = read(root);
-    assert_eq!(lists(&index, &["a.txt"]), [Some(true)]);
-
     let mut corrupt = good.clone();
     corrupt[40] ^= 1;
     let unknown = with_extension(&good, b"abcd");
     let lock = root.join(".git/index.lock");
     let check = |index: &mut GitIndex<Key>, case: &str| {
-        assert!(!index.refresh(), "{case}");
-        assert!(!index.readable(), "{case}");
-        assert_eq!(
-            lists(index, &["a.txt", "b.txt"]),
-            [Some(true), Some(false)],
-            "{case}"
-        );
-        assert!(read(root).lists(Path::new("a.txt")).is_none(), "{case}");
+        assert!(!index.refresh() && !index.readable(), "{case}");
+        assert_eq!(answers(index, "a.txt b.txt"), "yn", "{case}");
+        assert_eq!(answers(&read(root), "a.txt"), "?", "{case}");
         let _ = fs::remove_file(&lock);
         fs::write(&path, &good).unwrap();
-        assert!(!index.refresh(), "{case}");
-        assert!(index.readable(), "{case}");
+        assert!(!index.refresh() && index.readable(), "{case}");
     };
     fs::write(&path, &corrupt).unwrap();
     check(&mut index, "corrupt");
@@ -331,8 +282,7 @@ fn an_unreadable_index_keeps_the_last_answers() {
     fs::write(&lock, "").unwrap();
     check(&mut index, "being replaced");
     fs::write(&path, with_extension(&good, b"ABCD")).unwrap();
-    assert!(!index.refresh());
-    assert!(index.readable());
+    assert!(!index.refresh() && index.readable());
 }
 
 #[test]
@@ -346,24 +296,15 @@ fn an_index_replaced_with_the_same_size_and_time_is_read_again() {
     git(root, &["rm", "-q", "--cached", "b.txt"]);
     git(root, &["add", "a.txt"]);
     let mut index = read(root);
-    assert_eq!(
-        lists(&index, &["a.txt", "b.txt"]),
-        [Some(true), Some(false)]
-    );
+    assert_eq!(answers(&index, "a.txt b.txt"), "yn");
     assert!(!index.refresh());
-
     let before = fs::metadata(&path).unwrap();
     let file = fs::File::options().write(true).open(&replacement).unwrap();
     file.set_modified(before.modified().unwrap()).unwrap();
     fs::rename(&replacement, &path).unwrap();
     let after = fs::metadata(&path).unwrap();
-    assert_eq!(
-        (after.len(), after.modified().unwrap()),
-        (before.len(), before.modified().unwrap())
-    );
+    assert_eq!(after.len(), before.len());
+    assert_eq!(after.modified().unwrap(), before.modified().unwrap());
     assert!(index.refresh());
-    assert_eq!(
-        lists(&index, &["a.txt", "b.txt"]),
-        [Some(false), Some(true)]
-    );
+    assert_eq!(answers(&index, "a.txt b.txt"), "ny");
 }

@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::{BTreeMap, HashSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::io::Read;
 use std::marker::PhantomData;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use koidrive_ignore::NameKey;
 use sha1::{Digest, Sha1};
+use sha2::Sha256;
 
 use crate::{FileId, is_gone, stat_path};
 
-const HASH: usize = 20;
 const MAX_GITFILE: u64 = 1 << 20;
 
 /// The index of a work tree (RFC 0033 §3): a folder that holds a `.git` folder, or a `.git` file whose
@@ -54,7 +56,6 @@ impl<K: NameKey> GitIndex<K> {
     pub fn find(folder: &Path) -> Option<GitIndex<K>> {
         match fs::symlink_metadata(folder.join(".git")) {
             Err(err) if is_gone(&err) => None,
-            Ok(meta) if !meta.is_dir() && !meta.is_file() => None,
             _ => Some(GitIndex {
                 folder: folder.to_path_buf(),
                 read: None,
@@ -136,33 +137,76 @@ fn git_dir(folder: &Path) -> Option<PathBuf> {
     if fs::symlink_metadata(&dot_git).ok()?.is_dir() {
         return Some(dot_git);
     }
-    let mut text = Vec::new();
-    (fs::File::open(&dot_git).ok()?.take(MAX_GITFILE))
-        .read_to_end(&mut text)
+    let file = (fs::File::options().read(true))
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&dot_git)
         .ok()?;
-    let line = text.strip_prefix(b"gitdir: ")?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut text = Vec::new();
+    file.take(MAX_GITFILE).read_to_end(&mut text).ok()?;
+    Some(folder.join(path_line(text.strip_prefix(b"gitdir: ")?)))
+}
+
+fn path_line(line: &[u8]) -> &OsStr {
     let end = line.len()
-        - line
-            .iter()
-            .rev()
+        - (line.iter().rev())
             .take_while(|b| matches!(b, b'\n' | b'\r'))
             .count();
-    Some(folder.join(std::ffi::OsStr::from_bytes(&line[..end])))
+    OsStr::from_bytes(&line[..end])
+}
+
+fn hash_size(git_dir: &Path) -> Option<usize> {
+    let read = |path: PathBuf| match fs::read(path) {
+        Ok(bytes) => Some(Some(bytes)),
+        Err(err) if is_gone(&err) => Some(None),
+        Err(_) => None,
+    };
+    let common = match read(git_dir.join("commondir"))? {
+        Some(line) => git_dir.join(path_line(&line)),
+        None => git_dir.to_path_buf(),
+    };
+    let config = read(common.join("config"))?.unwrap_or_default();
+    match object_format(&String::from_utf8_lossy(&config)).as_deref() {
+        None | Some("sha1") => Some(20),
+        Some("sha256") => Some(32),
+        Some(_) => None,
+    }
+}
+
+fn object_format(config: &str) -> Option<String> {
+    let mut section = String::new();
+    let mut format = None;
+    for line in config.lines() {
+        let mut line = line.trim();
+        if let Some((name, rest)) = line.strip_prefix('[').and_then(|line| line.split_once(']')) {
+            section = name.trim().to_ascii_lowercase();
+            line = rest.trim();
+        }
+        let (key, value) = line.split_once('=').unwrap_or((line, ""));
+        if section == "extensions" && key.trim().eq_ignore_ascii_case("objectformat") {
+            let value = value.split(['#', ';']).next().unwrap_or_default().trim();
+            format = Some(value.trim_matches('"').to_owned());
+        }
+    }
+    format
 }
 
 fn answers<K: NameKey>(git_dir: &Path) -> Option<Answers> {
+    let hash = hash_size(git_dir)?;
     let bytes = fs::read(git_dir.join("index")).ok()?;
-    let index = parse(&bytes)?;
+    let index = parse(&bytes, hash)?;
     let entries = match index.link {
         None => index.entries,
         Some(link) => {
-            let (base, bitmaps) = link.split_at_checked(HASH)?;
-            if base == [0; HASH] {
+            let (base, bitmaps) = link.split_at_checked(hash)?;
+            if base.iter().all(|byte| *byte == 0) {
                 index.entries
             } else {
                 let hex: String = base.iter().map(|byte| format!("{byte:02x}")).collect();
                 let shared = fs::read(git_dir.join(format!("sharedindex.{hex}"))).ok()?;
-                let shared = parse(&shared)?;
+                let shared = parse(&shared, hash)?;
                 if shared.checksum != base {
                     return None;
                 }
@@ -198,9 +242,13 @@ fn key<K: NameKey>(path: &[u8]) -> String {
     keys.join("/")
 }
 
-fn parse(bytes: &[u8]) -> Option<Index<'_>> {
-    let (body, checksum) = bytes.split_at(bytes.len().checked_sub(HASH)?);
-    if checksum != [0; HASH] && Sha1::digest(body).as_slice() != checksum {
+fn parse(bytes: &[u8], hash: usize) -> Option<Index<'_>> {
+    let (body, checksum) = bytes.split_at(bytes.len().checked_sub(hash)?);
+    let digest = match hash {
+        20 => Sha1::digest(body).to_vec(),
+        _ => Sha256::digest(body).to_vec(),
+    };
+    if checksum.iter().any(|byte| *byte != 0) && digest != checksum {
         return None;
     }
     let mut r = Reader(body);
@@ -216,9 +264,9 @@ fn parse(bytes: &[u8]) -> Option<Index<'_>> {
     let mut name = Vec::new();
     for _ in 0..count {
         let start = r.0.len();
-        let fixed = r.take(62)?;
+        let fixed = r.take(40 + hash)?;
         let mode = u32::from_be_bytes(fixed[24..28].try_into().ok()?);
-        let flags = u16::from_be_bytes(fixed[60..62].try_into().ok()?);
+        let flags = r.u16()?;
         if flags & 0x4000 != 0 && r.u16()? & !0x6000 != 0 {
             return None;
         }
