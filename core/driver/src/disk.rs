@@ -786,6 +786,7 @@ impl Disk {
         }
         observation.root.map_err(Stop::Root)?;
         engine.rules(observation.rules, observation.all_rules);
+        engine.tracked(observation.tracked);
         self.rescan_after
             .retain(|requested| !answered.covers(*requested));
         (self.unscanned.effects).retain(|(requested, _)| !answered.covers(*requested));

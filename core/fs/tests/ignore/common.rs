@@ -65,6 +65,10 @@ impl Ignore for Matched {
     fn key(&self, name: &OsStr) -> OsString {
         Folded::key(&name.to_string_lossy()).into()
     }
+
+    fn set_tracked(&mut self, tree: &Path, paths: &[String]) {
+        self.0.set_tracked(&names(tree), paths);
+    }
 }
 
 fn rules() -> Rules {

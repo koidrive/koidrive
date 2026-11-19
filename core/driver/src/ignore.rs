@@ -141,6 +141,10 @@ impl Ignore for Scanned {
     fn follows(&self, source: Source) -> bool {
         source == Source::Koiignore || self.gitignore
     }
+
+    fn set_tracked(&mut self, tree: &Path, paths: &[String]) {
+        self.files.set_tracked(&names(tree), paths);
+    }
 }
 
 /// The rules a new watcher of a folder scans with: `device`, the built-in exclusions, and the rules files, of which it
@@ -196,6 +200,11 @@ impl Ignore for Counted {
 
     fn key(&self, name: &OsStr) -> OsString {
         name_key(&name.to_string_lossy()).into()
+    }
+
+    fn set_tracked(&mut self, tree: &Path, paths: &[String]) {
+        let mut both = self.0.lock().unwrap();
+        both.with.set_tracked(&names(tree), paths);
     }
 }
 

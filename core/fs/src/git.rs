@@ -21,6 +21,7 @@ const MAX_GITFILE: u64 = 1 << 20;
 /// `gitdir:` line names its git directory. Paths are relative to the work tree and compared by `K`'s key.
 pub struct GitIndex<K> {
     folder: PathBuf,
+    git_dir: Option<PathBuf>,
     read: Option<Stamp>,
     answers: Option<Answers>,
     key: PhantomData<fn() -> K>,
@@ -58,6 +59,7 @@ impl<K: NameKey> GitIndex<K> {
             Err(err) if is_gone(&err) => None,
             _ => Some(GitIndex {
                 folder: folder.to_path_buf(),
+                git_dir: None,
                 read: None,
                 answers: None,
                 key: PhantomData,
@@ -69,6 +71,7 @@ impl<K: NameKey> GitIndex<K> {
     /// returns whether the answers changed. An index that is missing, being replaced or unreadable keeps the
     /// answers of the last read.
     pub fn refresh(&mut self) -> bool {
+        self.git_dir = git_dir(&self.folder);
         let current = self.current();
         if let Some((_, stamp)) = &current
             && self.read.as_ref() == Some(stamp)
@@ -106,8 +109,13 @@ impl<K: NameKey> GitIndex<K> {
         (self.answers.iter()).flat_map(|answers| answers.listed.iter().map(String::as_str))
     }
 
+    /// The index file the last [`GitIndex::refresh`] looked for, which a watcher watches.
+    pub fn index_path(&self) -> Option<PathBuf> {
+        Some(self.git_dir.as_ref()?.join("index"))
+    }
+
     fn current(&self) -> Option<(PathBuf, Stamp)> {
-        let git_dir = git_dir(&self.folder)?;
+        let git_dir = self.git_dir.clone()?;
         if fs::symlink_metadata(git_dir.join("index.lock")).is_ok() {
             return None;
         }
@@ -119,6 +127,14 @@ impl<K: NameKey> GitIndex<K> {
             mtime_ns: stat.mtime_ns,
         };
         Some((git_dir, stamp))
+    }
+}
+
+pub(crate) struct Spelled;
+
+impl NameKey for Spelled {
+    fn key(name: &str) -> String {
+        name.to_owned()
     }
 }
 

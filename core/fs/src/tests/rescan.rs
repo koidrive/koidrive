@@ -479,6 +479,7 @@ fn sibling_recreated_after_its_parent_was_listed_publishes_no_removal() {
                 root: root_id(&root),
                 rules: vec![],
                 read: vec![],
+                tracked: vec![],
                 settled: vec![],
             },
             "{paths:?}"

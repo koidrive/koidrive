@@ -984,6 +984,9 @@ pub struct Rescan {
     /// before has known rules again once it is here, whatever its rules files
     /// did meanwhile. Empty for a scan without [`Rules`].
     pub read: Vec<PathBuf>,
+    /// The work trees whose git index this scan read with other files listed (RFC 0033 §3), each with every file it
+    /// lists now, relative to the work tree, or none for a work tree that is gone. Empty for a scan without [`Rules`].
+    pub tracked: Vec<(PathBuf, Vec<String>)>,
     pub settled: Vec<PathBuf>,
 }
 
@@ -1149,7 +1152,7 @@ impl Snapshot {
         let Some(rules) = rules else {
             return Ok(Vec::new());
         };
-        let mut rules = Pending::new(rules);
+        let mut rules = Pending::new(rules, root);
         rules.seek(
             wanted
                 .values()
@@ -1277,7 +1280,7 @@ impl Snapshot {
                     .collect(),
                 plain_ids: BTreeMap::new(),
                 detached: Vec::new(),
-                rules: rules.as_deref_mut().map(Pending::new),
+                rules: (rules.as_deref_mut()).map(|rules| Pending::new(rules, root)),
                 cut: &mut *cut,
                 stopped,
                 files: 0,
@@ -2157,14 +2160,13 @@ impl Snapshot {
                 _ => None,
             }
         }));
-        let (rules, read) = match scan.rules.take() {
-            Some(rules) => rules.finish(|dir| {
+        let finished = (scan.rules.take()).map(|rules| {
+            rules.finish(|dir| {
                 self.entries
                     .get(dir)
                     .is_some_and(|entry| entry.kind == EntryKind::Dir)
-            }),
-            None => (Vec::new(), Vec::new()),
-        };
+            })
+        });
         let reported: HashSet<&Path> = (changes.iter())
             .filter_map(|change| match change {
                 Change::Created { path, .. } | Change::Modified { path } => Some(path.as_path()),
@@ -2177,8 +2179,15 @@ impl Snapshot {
             unsettled,
             unreadable,
             root: root_stat.id,
-            rules,
-            read,
+            rules: finished
+                .as_ref()
+                .map(|done| done.rules.clone())
+                .unwrap_or_default(),
+            read: finished
+                .as_ref()
+                .map(|done| done.read.clone())
+                .unwrap_or_default(),
+            tracked: finished.map(|done| done.tracked).unwrap_or_default(),
             settled,
         })
     }
@@ -3349,6 +3358,9 @@ pub struct Poll {
     /// The folders whose rules the scans of this poll established and that no
     /// later scan of the poll found unreadable; see [`Rescan::read`].
     pub read: Vec<PathBuf>,
+    /// The work trees whose git index the scans or index events of this poll read with other files listed, in the
+    /// order it read them; see [`Rescan::tracked`].
+    pub tracked: Vec<(PathBuf, Vec<String>)>,
     /// The files the scans of this poll found unchanged in content but whose change time moved, by any cause, to a new
     /// settled value or bound.
     pub settled: Vec<PathBuf>,
@@ -3432,6 +3444,9 @@ pub struct NativeWatcher {
     rules: Option<Rules>,
     /// The rules changes of the scans since the last poll returned.
     changed_rules: Vec<(PathBuf, Source, Option<Vec<u8>>)>,
+    changed_tracked: Vec<(PathBuf, Vec<String>)>,
+    /// The git index files the watcher watches, by the path events name them at, each with its work tree.
+    indexes: BTreeMap<PathBuf, PathBuf>,
     /// The folders whose rules the scans since the last poll established.
     read: BTreeSet<PathBuf>,
     /// Folders whose subfolders may be unwatched, which are registered once a
@@ -3497,6 +3512,8 @@ impl NativeWatcher {
             uncovered: None,
             rules,
             changed_rules: Vec::new(),
+            changed_tracked: Vec::new(),
+            indexes: BTreeMap::new(),
             read: BTreeSet::new(),
             rewatch: false,
             remount_checked: Instant::now(),
@@ -3577,6 +3594,10 @@ impl NativeWatcher {
             _ => false,
         };
         for path in event.paths {
+            if let Some(tree) = self.indexes.get(&path).cloned() {
+                self.read_index(tree);
+                continue;
+            }
             let rel = path.strip_prefix(&self.root).unwrap_or(Path::new(""));
             if listing_only && self.folder_as_scanned(&path, rel) {
                 self.listed.insert(rel.to_path_buf());
@@ -3593,6 +3614,65 @@ impl NativeWatcher {
             }
         }
         Ok(())
+    }
+
+    /// Reads the index of the work tree at `tree` after an event for it, and rescans each path whose answer changed.
+    fn read_index(&mut self, tree: PathBuf) {
+        let Some(rules) = self.rules.as_mut() else {
+            return;
+        };
+        let Some(before) = rules.read_index(&self.root, &tree) else {
+            return;
+        };
+        let now = rules.tracked(&tree).to_vec();
+        let before: BTreeSet<&String> = before.iter().collect();
+        let after: BTreeSet<&String> = now.iter().collect();
+        (self.dirty).extend(
+            before
+                .symmetric_difference(&after)
+                .map(|path| tree.join(path)),
+        );
+        self.changed_tracked.push((tree, now));
+    }
+
+    /// Watches the index file of each work tree the scans found, where the watch of the root does not cover it.
+    fn watch_indexes(&mut self) {
+        let Some(rules) = &self.rules else {
+            return;
+        };
+        let now: BTreeMap<PathBuf, PathBuf> = (rules.index_files())
+            .filter_map(|(tree, index)| {
+                let dir = std::fs::canonicalize(index.parent()?).ok()?;
+                Some((dir.join("index"), tree.clone()))
+            })
+            .collect();
+        let root = self.root.clone();
+        let uncovered = |index: &Path| cfg!(target_os = "linux") || !index.starts_with(&root);
+        for index in now
+            .keys()
+            .filter(|index| !self.indexes.contains_key(*index))
+        {
+            if let Some(dir) = index.parent()
+                && uncovered(index)
+                && let Err(err) =
+                    notify::Watcher::watch(&mut self.watcher, dir, RecursiveMode::NonRecursive)
+                && !gone(dir)
+            {
+                self.failed = Some(watch_error(err));
+            }
+        }
+        for index in self
+            .indexes
+            .keys()
+            .filter(|index| !now.contains_key(*index))
+        {
+            if let Some(dir) = index.parent()
+                && uncovered(index)
+            {
+                let _ = notify::Watcher::unwatch(&mut self.watcher, dir);
+            }
+        }
+        self.indexes = now;
     }
 
     fn folder_as_scanned(&self, path: &Path, rel: &Path) -> bool {
@@ -3736,6 +3816,7 @@ impl NativeWatcher {
             root,
             rules: std::mem::take(&mut self.changed_rules),
             read: std::mem::take(&mut self.read).into_iter().collect(),
+            tracked: std::mem::take(&mut self.changed_tracked),
             settled: std::mem::take(&mut self.settled).into_iter().collect(),
         }
     }
@@ -3929,6 +4010,7 @@ impl Watcher for NativeWatcher {
             if self.rewatch {
                 let deferred = cfg!(target_os = "linux") && self.rules.is_some();
                 self.watcher = watch_root(&self.root, &self.sender, deferred)?;
+                self.indexes.clear();
                 #[cfg(target_os = "linux")]
                 self.blocked.extend(deferred.then(PathBuf::new));
                 self.rewatch = false;
@@ -3966,6 +4048,8 @@ impl Watcher for NativeWatcher {
             self.listed.clear();
             root = Some(rescan.root);
             self.changed_rules.extend(rescan.rules);
+            self.changed_tracked.extend(rescan.tracked);
+            self.watch_indexes();
             self.settled.extend(rescan.settled);
             self.waiting
                 .retain(|path| self.snapshot.unplaced.contains(path));
@@ -3986,6 +4070,7 @@ impl Watcher for NativeWatcher {
             self.cover(&changes, readable, rescan.root);
             if !changes.is_empty()
                 || !self.changed_rules.is_empty()
+                || !self.changed_tracked.is_empty()
                 || !self.settled.is_empty()
                 || Instant::now() >= deadline
                 || !self.snapshot.unplaced.is_subset(&held)
@@ -4118,6 +4203,7 @@ impl Watcher for RescanWatcher {
                     root: Some(rescan.root),
                     rules: rescan.rules,
                     read: rescan.read,
+                    tracked: rescan.tracked,
                     settled: rescan.settled,
                 },
                 Err(Error::Changed) => Poll {
@@ -4129,6 +4215,7 @@ impl Watcher for RescanWatcher {
             let left = deadline.saturating_duration_since(Instant::now());
             if !poll.changes.is_empty()
                 || !poll.rules.is_empty()
+                || !poll.tracked.is_empty()
                 || !poll.settled.is_empty()
                 || left.is_zero()
             {

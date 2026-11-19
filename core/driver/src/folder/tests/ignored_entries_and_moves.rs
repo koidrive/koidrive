@@ -900,6 +900,7 @@ fn observe(a: &mut Device, changes: Vec<Observed>) {
             waiting: Default::default(),
             rules: Vec::new(),
             all_rules: false,
+            tracked: Vec::new(),
             mounts: BTreeMap::new(),
             detached: BTreeMap::new(),
             ctimes: BTreeMap::new(),

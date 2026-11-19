@@ -845,6 +845,17 @@ impl Engine {
         self.trees.rules_scanned();
     }
 
+    /// Gives the trees the files the git index of each work tree lists, for the work trees whose index the batch's scans
+    /// read with other files listed (RFC 0033 §4). Call it after [`Engine::rules`], which forgets them with every rules
+    /// file when the batch lists all.
+    pub fn tracked(&mut self, tracked: Vec<(PathBuf, Vec<String>)>) {
+        for (tree, paths) in tracked {
+            if let Some(tree) = names(&tree) {
+                self.trees.set_tracked(&tree, &paths);
+            }
+        }
+    }
+
     pub fn read_ctimes(&mut self, ctimes: BTreeMap<PathBuf, i64>) {
         for (path, ctime) in ctimes {
             if let Some(id) = local_at(&self.trees, &path)
@@ -3591,6 +3602,36 @@ mod tests {
         assert!(engine.trees.excluded(&log_id), "no rules file changed");
         engine.rules(Vec::new(), true);
         assert!(!engine.trees.excluded(&log_id), "no rules file is left");
+    }
+
+    #[test]
+    fn a_file_a_git_index_lists_is_included_below_a_folder_a_gitignore_excludes() {
+        let (_dir, mut engine) = mapper();
+        let dist = RulesChange {
+            dir: "".into(),
+            source: koidrive_fs::Source::Gitignore,
+            rules: Some(koidrive_engine::ignore::RuleFile::parse(b"dist/\n")),
+        };
+        engine.rules(vec![dist], true);
+        engine.tracked(vec![("".into(), vec!["dist/app.js".into()])]);
+        let folder = Observed::Created {
+            path: "dist".into(),
+            kind: EntryKind::Dir,
+            id: ino(1),
+            linked: false,
+            content: None,
+            marked_node: None,
+        };
+        let app = created("dist/app.js", ino(2), false, 1);
+        engine.observe(
+            &[folder, app, created("dist/other.js", ino(3), false, 1)],
+            0,
+        );
+        let excluded =
+            |engine: &Engine, path| engine.trees.excluded(&holding(engine, path).unwrap().0);
+        assert!(!excluded(&engine, "dist/app.js") && excluded(&engine, "dist/other.js"));
+        engine.tracked(vec![("".into(), Vec::new())]);
+        assert!(excluded(&engine, "dist/app.js"));
     }
 
     /// A reset queued before a child entered L leaves the snapshot without the

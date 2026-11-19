@@ -2300,7 +2300,17 @@ impl Trees {
         (self.rules_changed).insert(dir.iter().map(|name| name.as_ref().to_owned()).collect());
     }
 
-    /// Forgets the rules of every rules file, for a caller about to pass all of them again.
+    /// Sets the files the git index of the work tree at `tree`, the names from the root to it, lists, each relative
+    /// to it with names joined by `/` (RFC 0033 §4). The driver passes them with the observation of a scan that read
+    /// the index.
+    pub fn set_tracked<S: AsRef<str>>(&mut self, tree: &[S], paths: &[String]) {
+        self.ignore.set_tracked(tree, paths);
+        self.relink = true;
+        (self.rules_changed).insert(tree.iter().map(|name| name.as_ref().to_owned()).collect());
+    }
+
+    /// Forgets the rules of every rules file and the files every git index lists, for a caller about to pass all of
+    /// them again.
     pub fn clear_rules(&mut self) {
         self.ignore.clear_rules();
         self.forget_reclaims();
