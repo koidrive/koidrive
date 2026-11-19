@@ -116,27 +116,27 @@ fn an_outer_index_answers_nothing_below_a_nested_work_tree() {
 
 #[test]
 fn a_watcher_scans_the_files_an_outer_index_lists_once_a_left_out_work_tree_is_gone() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    write(root, ".gitignore", "*.env\ninner/\n");
-    write(root, "inner/secret.env", "secret");
-    git(root, &["init", "-q"]);
-    git(root, &["add", "-f", "inner/secret.env"]);
-    git(&root.join("inner"), &["init", "-q"]);
-    let mut rules = rules();
-    let mut snapshot = Snapshot::default();
-    snapshot
-        .rescan_with_rules(root, whole(), &mut rules)
-        .unwrap();
-    let mut watcher = NativeWatcher::start_with_rules(root, snapshot, rules).unwrap();
-    watcher.poll(Duration::from_secs(2)).unwrap();
-    assert!(!known(watcher.snapshot()).contains(&"inner/secret.env"));
-    fs::remove_dir_all(root.join("inner/.git")).unwrap();
-    let deadline = Instant::now() + WAIT;
-    while Instant::now() < deadline && !known(watcher.snapshot()).contains(&"inner/secret.env") {
-        watcher.poll(Duration::from_millis(300)).unwrap();
+    for init in ["-q", "--separate-git-dir=../.git/inner"] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, ".gitignore", "*.env\ninner/\n");
+        write(root, "inner/secret.env", "secret");
+        git(root, &["init", "-q"]);
+        git(root, &["add", "-f", "inner/secret.env"]);
+        git(&root.join("inner"), &["init", "-q", init]);
+        let start = NativeWatcher::start_with_rules(root, Snapshot::default(), rules());
+        let mut watcher = start.unwrap();
+        let found = |w: &NativeWatcher| known(w.snapshot()).contains(&"inner/secret.env");
+        watcher.poll(Duration::from_secs(2)).unwrap();
+        assert!(watcher.poll(WAIT / 10).is_ok() && !found(&watcher));
+        let marker = root.join("inner/.git");
+        assert!(fs::remove_file(&marker).is_ok() || fs::remove_dir_all(&marker).is_ok());
+        let deadline = Instant::now() + WAIT;
+        while Instant::now() < deadline && !found(&watcher) {
+            watcher.poll(Duration::from_millis(300)).unwrap();
+        }
+        assert!(found(&watcher), "{init}");
     }
-    assert!(known(watcher.snapshot()).contains(&"inner/secret.env"));
 }
 
 #[test]

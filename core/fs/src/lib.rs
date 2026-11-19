@@ -3462,8 +3462,8 @@ pub struct NativeWatcher {
     /// The rules changes of the scans since the last poll returned.
     changed_rules: Vec<(PathBuf, Source, Option<Vec<u8>>)>,
     changed_tracked: Vec<(PathBuf, Vec<String>)>,
-    /// The git directories of the work trees the rules know, each with the identity a watch covers, if one does, and
-    /// its work trees.
+    /// The git directories of the work trees the rules know and, on Linux, the folders of those the rules leave out, which
+    /// no other watch covers, each with the identity a watch covers, if one does, and its work trees.
     git_dirs: GitDirs,
     git_watcher: Option<RecommendedWatcher>,
     /// The folders whose rules the scans since the last poll established.
@@ -3667,18 +3667,24 @@ impl NativeWatcher {
             return;
         };
         let mut now = GitDirs::new();
-        for (tree, dir) in rules.git_dirs() {
-            let Ok(dir) = std::fs::canonicalize(dir) else {
-                continue;
-            };
-            let Ok(stat) = stat_path(&dir) else {
-                continue;
-            };
-            let id = (stat.dev, stat.id);
-            now.entry(dir)
-                .or_insert((Some(id), Vec::new()))
-                .1
-                .push(tree.clone());
+        for (tree, git_dir) in rules.work_trees() {
+            let left_out = cfg!(target_os = "linux")
+                && (tree.ancestors())
+                    .any(|folder| rules.status(folder, EntryKind::Dir) != Ignored::No);
+            let folder = left_out.then(|| self.root.join(tree));
+            for dir in git_dir.map(Path::to_path_buf).into_iter().chain(folder) {
+                let Ok(dir) = std::fs::canonicalize(dir) else {
+                    continue;
+                };
+                let Ok(stat) = stat_path(&dir) else {
+                    continue;
+                };
+                let id = (stat.dev, stat.id);
+                now.entry(dir)
+                    .or_insert((Some(id), Vec::new()))
+                    .1
+                    .push(tree.clone());
+            }
         }
         let root = self.root.clone();
         let uncovered = |dir: &Path| cfg!(target_os = "linux") || !dir.starts_with(&root);

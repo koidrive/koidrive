@@ -270,8 +270,8 @@ impl Rules {
         self.ignore.status(path, kind)
     }
 
-    pub(crate) fn git_dirs(&self) -> impl Iterator<Item = (&PathBuf, &Path)> {
-        (self.indexes.iter()).filter_map(|(tree, index)| Some((tree, index.git_dir()?)))
+    pub(crate) fn work_trees(&self) -> impl Iterator<Item = (&PathBuf, Option<&Path>)> {
+        (self.indexes.iter()).map(|(tree, index)| (tree, index.git_dir()))
     }
 
     pub(crate) fn read_index(&mut self, root: &Path, tree: &Path) -> Vec<(PathBuf, Vec<String>)> {
