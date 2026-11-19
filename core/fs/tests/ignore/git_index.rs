@@ -174,14 +174,11 @@ fn a_watcher_reads_a_split_index_again_when_its_shared_index_returns() {
 #[test]
 fn a_watcher_keeps_reading_an_index_outside_the_root_it_may_not_watch() {
     use std::os::unix::fs::PermissionsExt;
-    let away = tempfile::tempdir().unwrap();
-    let git_dir = away.path().join("g");
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
+    let (root, git_dir) = (&dir.path().join("r"), dir.path().join("g"));
     write(root, ".gitignore", "dist/\n");
     write(root, "dist/a.js", "a");
-    let separate = format!("--separate-git-dir={}", git_dir.display());
-    git(root, &["init", "-q", &separate]);
+    git(root, &["init", "-q", "--separate-git-dir=../g"]);
     git(root, &["add", "-f", "dist/a.js"]);
     fs::set_permissions(&git_dir, fs::Permissions::from_mode(0o100)).unwrap();
     let mut rules = rules();
