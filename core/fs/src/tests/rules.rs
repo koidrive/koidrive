@@ -329,3 +329,53 @@ fn one_search_finds_files_moved_behind_it_or_into_a_new_scope_past_a_locked_file
     .unwrap();
     blocks_reads("a search", sealed);
 }
+
+#[test]
+fn a_search_opens_each_folder_of_a_wide_folder_past_the_open_folder_cap_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("space");
+    let wide: PathBuf = ["ig"].into_iter().chain(["d"; 15]).collect();
+    for i in 0..100 {
+        fs::create_dir_all(root.join(&wide).join(format!("{i}"))).unwrap();
+        fs::write(root.join(&wide).join(format!("{i}/f")), "w").unwrap();
+    }
+    fs::write(root.join(".koiignore"), "ig\n").unwrap();
+    fs::write(root.join("f.txt"), "f").unwrap();
+    let mut rules = Rules::new(Box::new(Lines::default())).with_search_budget(usize::MAX);
+    let mut snapshot = Snapshot::scan_with_rules(&root, &mut rules).unwrap();
+    fs::remove_file(root.join("f.txt")).unwrap();
+
+    let mut opened = BTreeMap::<PathBuf, usize>::new();
+    let mut looked = 0;
+    let rescan = snapshot
+        .rescan_under(
+            &root,
+            [PathBuf::new()],
+            &BTreeSet::new(),
+            None,
+            Some(&mut rules),
+            &|| false,
+            &|_| {},
+            Keep::Unplaced,
+            &mut |cut| match cut {
+                Cut::OpeningDir(path) if path.starts_with("ig") => {
+                    *opened.entry(path.to_path_buf()).or_default() += 1;
+                }
+                Cut::Searching(_) | Cut::Confirming(_) => looked += 1,
+                _ => {}
+            },
+            &MarkLog::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        rescan.changes,
+        [Change::Removed {
+            path: "f.txt".into(),
+            kind: EntryKind::File
+        }]
+    );
+    let (folders, entries) = (16 + 100, 16 + 200);
+    assert_eq!(opened.len(), folders);
+    assert_eq!(opened.values().sum::<usize>(), folders);
+    assert_eq!(looked, entries);
+}

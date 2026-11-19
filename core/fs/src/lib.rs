@@ -92,10 +92,11 @@
 //! deleted, so it is reported as [`Change::Ignored`]. A miss is reported as a
 //! removal, although a file saved again after such a move has a new identity
 //! and is missed. A miss of a search that ended before it looked everywhere
-//! ([`Rules::end_search`]), or that could not open a left-out folder
-//! ([`Rules::coverage`]), is reported as [`Change::Missing`], which design
-//! §5.10 holds for a question to the user. The search does not look in
-//! [`PRIVATE_DIR`] or in the built-in platform files.
+//! ([`Rules::end_search`]), or that could not open a left-out folder or
+//! left behind one that kept being replaced ([`Rules::coverage`]), is
+//! reported as [`Change::Missing`], which design §5.10 holds for a question
+//! to the user. The search does not look in [`PRIVATE_DIR`] or in the
+//! built-in platform files.
 //!
 //! The engine's private folder [`PRIVATE_DIR`] at the root is never scanned.
 //! The [`check_root`] of design §6.2, the root [`Marker`] and the rename that
