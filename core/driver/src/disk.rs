@@ -55,7 +55,7 @@ use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{Content, Kind, LocalNode, NodeId};
 use koidrive_fs::{
     Action, Base, BroughtBack, Contents, Ctime, Dir, Displaced, Effect, Entry, EntryKind, FileId,
-    Location, Marker, Minted, Outcome, Reason, Reclaimed, Refusal, RootProblem, RootTokens,
+    Location, Marker, Minted, Outcome, Reason, Reclaimed, Refusal, RootAt, RootProblem, RootTokens,
     Rotation, Space, Step, Unresolved, check_root_at, open_root_folder, root_at,
 };
 use koidrive_net::{CallError, ChunkError, Session, StopReason, Transfer};
@@ -1497,6 +1497,30 @@ pub(crate) enum Adopted {
     Children(usize),
 }
 
+pub(crate) struct LinkedRoot {
+    pub(crate) dir: OwnedFd,
+    found: RootAt,
+    renumbered: bool,
+}
+
+pub(crate) fn open_linked_root(link: &Link) -> Result<LinkedRoot, RootProblem> {
+    let dir = open_root_folder(&link.root)?;
+    let found = root_at(dir.as_fd()).map_err(RootProblem::Unreadable)?;
+    let renumbered = match check_root_at(dir.as_fd(), &link.space_id, &link.root_at()) {
+        Ok(_) => false,
+        Err(RootProblem::Renumbered) if found.volume.is_some() => {
+            check_root_at(dir.as_fd(), &link.space_id, &found)?;
+            true
+        }
+        Err(problem) => return Err(problem),
+    };
+    Ok(LinkedRoot {
+        dir,
+        found,
+        renumbered,
+    })
+}
+
 pub(crate) fn admit_root(link: &mut Link, store: &mut Store) -> Result<Option<Adopted>, Stop> {
     if let Some(stored) = store.transaction(|tx| tx.link())? {
         link.root_dev = stored.root_dev;
@@ -1504,16 +1528,11 @@ pub(crate) fn admit_root(link: &mut Link, store: &mut Store) -> Result<Option<Ad
         link.found_marker = stored.found_marker;
     }
     let unreadable = |error| Stop::Root(RootProblem::Unreadable(error));
-    let dir = open_root_folder(&link.root).map_err(Stop::Root)?;
-    let found = root_at(dir.as_fd()).map_err(unreadable)?;
-    let renumbered = match check_root_at(dir.as_fd(), &link.space_id, &link.root_at()) {
-        Ok(_) => false,
-        Err(RootProblem::Renumbered) if found.volume.is_some() => {
-            check_root_at(dir.as_fd(), &link.space_id, &found).map_err(Stop::Root)?;
-            true
-        }
-        Err(problem) => return Err(Stop::Root(problem)),
-    };
+    let LinkedRoot {
+        dir,
+        found,
+        renumbered,
+    } = open_linked_root(link).map_err(Stop::Root)?;
     let space = Space::bind(dir, &link.root).map_err(unreadable)?;
     let adopted = if renumbered {
         let engine = store.transaction(|tx| Engine::load(tx, &link.space_id))?;

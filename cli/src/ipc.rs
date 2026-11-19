@@ -606,6 +606,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn the_gitignore_setting_is_read_set_and_counted_through_the_daemon() {
         let (_dir, paths, root) = linked_profile();
+        linked_at(&paths, SPACE, &root);
         fs::write(root.join(".gitignore"), "node_modules/\n").unwrap();
         fs::create_dir_all(root.join("node_modules")).unwrap();
         fs::write(root.join("node_modules/a.js"), "abc").unwrap();
@@ -1078,6 +1079,31 @@ pub(crate) mod tests {
             })
             .unwrap();
         (dir, paths, root)
+    }
+
+    pub(crate) fn linked_at(paths: &Paths, space_id: &str, root: &Path) {
+        let marker = koidrive_fs::Marker {
+            space_id: space_id.into(),
+            effects: 0,
+            token: None,
+        };
+        koidrive_fs::write_marker(root, &marker).unwrap();
+        let store = paths.store(space_id).unwrap();
+        fs::create_dir_all(store.parent().unwrap()).unwrap();
+        let link = koidrive_store::Link {
+            space_id: space_id.into(),
+            space_name: "Projects".into(),
+            root: root.to_path_buf(),
+            root_dev: std::os::unix::fs::MetadataExt::dev(&fs::metadata(root).unwrap()),
+            root_volume: None,
+            server_url: "https://files.example.com/".into(),
+            device_id: "d1".into(),
+            linked_at_ms: 1,
+            found_marker: false,
+        };
+        (koidrive_store::Store::open(store).unwrap())
+            .transaction(|tx| tx.set_link(&link))
+            .unwrap();
     }
 
     #[tokio::test]

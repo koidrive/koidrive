@@ -13,8 +13,9 @@ use std::sync::{Arc, Mutex};
 
 use koidrive_engine::ignore::{LocalRules, Matcher as Rules, RuleFile};
 use koidrive_engine::names::name_key;
-use koidrive_fs::{EntryKind, Ignore, Ignored, Snapshot, Source};
+use koidrive_fs::{EntryKind, Ignore, Ignored, RootProblem, Snapshot, Source, Space};
 use koidrive_ignore::{Kind, LocalRulesError, Reason, Status};
+use koidrive_store::Link;
 
 use crate::config::SyncRules;
 
@@ -198,14 +199,21 @@ impl Ignore for Counted {
     }
 }
 
-pub(crate) fn gitignore_only(root: &Path, local: LocalRules) -> GitignoreOnly {
+pub(crate) fn gitignore_only(link: &Link, local: LocalRules) -> GitignoreOnly {
+    let root = &link.root;
     let unreadable = || GitignoreOnly {
-        unreadable: vec![root.to_path_buf()],
+        unreadable: vec![root.clone()],
         ..GitignoreOnly::default()
     };
-    if !std::fs::symlink_metadata(root).is_ok_and(|metadata| metadata.is_dir()) {
-        return unreadable();
-    }
+    let held = match crate::disk::open_linked_root(link)
+        .and_then(|linked| Space::bind(linked.dir, root).map_err(RootProblem::Unreadable))
+    {
+        Ok(space) => space.id(),
+        Err(problem) => {
+            tracing::warn!(path = %koidrive_fs::quoted(root), %problem, "the .gitignore count skips a linked folder that fails the root check");
+            return unreadable();
+        }
+    };
     let both = Arc::new(Mutex::new(Both {
         with: Rules::new(local.clone().with_gitignore(true)),
         without: Rules::new(local.with_gitignore(false)),
@@ -213,7 +221,8 @@ pub(crate) fn gitignore_only(root: &Path, local: LocalRules) -> GitignoreOnly {
     let mut rules = koidrive_fs::Rules::new(Box::new(Counted(both.clone())));
     let mut snapshot = Snapshot::default();
     let rescan = match snapshot.rescan_with_rules(root, [PathBuf::new()], &mut rules) {
-        Ok(rescan) => rescan,
+        Ok(rescan) if rescan.root.same(&held) => rescan,
+        Ok(_) => return unreadable(),
         Err(error) => {
             tracing::warn!(path = %koidrive_fs::quoted(root), %error, "the .gitignore count cannot read a linked folder");
             return unreadable();
@@ -398,9 +407,26 @@ mod tests {
             std::fs::write(root.join("private/a.log"), "abc").unwrap();
             std::fs::write(root.join(".gitignore"), "*.tmp\n").unwrap();
             std::fs::write(root.join("b.tmp"), "12").unwrap();
+            let marker = koidrive_fs::Marker {
+                space_id: "s1".into(),
+                effects: 0,
+                token: None,
+            };
+            koidrive_fs::write_marker(root, &marker).unwrap();
+            let link = Link {
+                space_id: "s1".into(),
+                space_name: "Projects".into(),
+                root: root.to_path_buf(),
+                root_dev: std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(root).unwrap()),
+                root_volume: None,
+                server_url: "https://files.example.com/".into(),
+                device_id: "d1".into(),
+                linked_at_ms: 1,
+                found_marker: false,
+            };
             let locked = root.join(locked);
             std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
-            let counted = gitignore_only(root, LocalRules::default());
+            let counted = gitignore_only(&link, LocalRules::default());
             std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
             let only = GitignoreOnly {
                 files: 1,
