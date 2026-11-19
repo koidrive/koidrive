@@ -342,6 +342,7 @@ fn a_server_that_keeps_its_last_device_once_it_answers(answers: Arc<AtomicBool>)
     serve(answers, Arc::new(|| {}))
 }
 
+#[cfg(target_os = "macos")]
 fn a_server_that_revokes_and_then(on_revoke: impl Fn() + Send + Sync + 'static) -> String {
     serve(Arc::new(AtomicBool::new(true)), Arc::new(on_revoke))
 }
