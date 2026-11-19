@@ -546,6 +546,31 @@ class SplitTests(unittest.TestCase):
         self.assertIn(b'mod helpers {\n    pub fn fixture() -> &\'static str {\n        r#"keep\n    build/\n"#\n    }\n}\n',
                       (self.root / "driver/tests/cases.rs").read_bytes())
 
+    def test_replay_gives_a_private_method_added_in_a_split_module_pub_super(self):
+        self.split_driver()
+        self.replay(self.REPLAY_BASE.replace(b"        2\n    }\n", b"        2\n    }\n\n    fn three(&self) -> u8 {\n        3\n    }\n"))
+        self.assertIn(b"    pub(super) fn two(&self) -> u8 {\n        2\n    }\n\n    pub(super) fn three(&self) -> u8 {\n        3\n    }\n",
+                      (self.root / "driver/parts.rs").read_bytes())
+
+    def test_replay_adds_an_import_only_where_its_module_lacks_it(self):
+        self.split_driver()
+        tests = self.root / "driver/tests.rs"
+        tests.write_bytes(tests.read_bytes().replace(b"use super::*;\n", b"use super::*;\nuse std::fmt::Write;\n"))
+        before = tests.read_bytes()
+        self.replay(self.REPLAY_BASE.replace(b"    use super::*;\n", b"    use super::*;\n    use std::fmt::Write;\n"))
+        self.assertEqual(tests.read_bytes(), before)
+
+    def test_replay_removes_the_first_two_methods_of_an_impl_block(self):
+        self.split_driver()
+        parts = self.root / "driver/parts.rs"
+        parts.write_bytes(parts.read_bytes().replace(b"    pub(super) fn two", b"    pub(super) fn zero(&self) -> u8 {\n        0\n    }\n\n    pub(super) fn two"))
+        base = self.REPLAY_BASE.replace(b"    fn two", b"    fn zero(&self) -> u8 {\n        0\n    }\n\n    fn two")
+        sources = {"base": base, "branch": base.replace(b"    }\n\n    fn zero(&self) -> u8 {\n        0\n    }\n\n    fn two(&self) -> u8 {\n        2\n    }\n}", b"    }\n}")}
+        with patch.object(split, "git_source", side_effect=lambda ref, path: sources[ref]):
+            for file, source in split.replay_onto_split(self.executable, "driver.rs", "base", "branch").items():
+                file.write_bytes(source)
+        self.assertEqual(parts.read_bytes(), b"use super::*;\n\nimpl Driver {}\n")
+
     def test_replay_refuses_a_key_that_repeats(self):
         before = self.split_driver()
         repeated = b"const _: () = assert!(true);\n\nconst _: () = assert!(!false);\n\npub struct Driver;"

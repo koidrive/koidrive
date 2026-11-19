@@ -443,7 +443,7 @@ def visibility(text, other):
 def gather(executable, read, path, base=None, atomic=frozenset()):
     tree = {"items": {}, "containers": set(), "order": {}, "sources": {}, "residual": []}
 
-    def visit(file, prefix):
+    def visit(file, prefix, scope, added):
         source = tree["sources"][file] = read(file)
         last = {}
         residual, kept = [], 0
@@ -458,11 +458,12 @@ def gather(executable, read, path, base=None, atomic=frozenset()):
             inline = [name.removeprefix("mod:").split("[")[0] for name in parent if name.startswith("mod:")]
             kind = entry["kind"]
             if kind == "include":
-                visit((Path(file).parent / entry["name"]).as_posix(), prefix + list(parent))
+                visit((Path(file).parent / entry["name"]).as_posix(), prefix + list(parent), scope, added)
                 continue
             if kind == "module" and base is not None and (key in base["containers"] or key not in base["items"]):
                 moved = module_file(read, file, inline, entry["file"], entry["path"])
-                visit(moved, logical if key in base["containers"] else prefix + list(parent))
+                kept = key in base["containers"]
+                visit(moved, logical if kept else prefix + list(parent), moved, added or not kept)
                 continue
             if kind == "container" and key not in atomic:
                 tree["containers"].add(key)
@@ -471,14 +472,15 @@ def gather(executable, read, path, base=None, atomic=frozenset()):
             lead = entry["start"] - len(gap.lstrip()) if previous is not None else entry["start"]
             tree["items"].setdefault(key, []).append({
                 "file": file, "lead": lead, "end": entry["end"], "indent": indent(source, lead),
-                "newlines": max(gap.count(b"\n"), 1), "use": kind == "use", "literals": entry.get("literals", [])})
+                "newlines": max(gap.count(b"\n"), 1), "use": kind == "use", "literals": entry.get("literals", []),
+                "scope": scope, "added": added})
             tree["order"].setdefault("/".join(prefix + list(parent)), []).append(key)
             residual.append(source[kept:lead])
             kept = entry["end"]
         residual.append(source[kept:])
         tree["residual"].append(b"".join(residual))
 
-    visit(path, [])
+    visit(path, [], path, False)
     return tree
 
 
@@ -565,11 +567,6 @@ def replay_onto_split(executable, path, base_ref, branch_ref):
             edits.setdefault(target["file"], []).append((target["lead"], target["end"], merged))
             print(f"changed {key} in {target['file']}")
             continue
-        held = [found for found in current["items"].get(key, []) if not found["use"] or found["file"] == path]
-        if held:
-            if region(current, held[0]) != reindent(place, text, held[0]["indent"] - place["indent"]):
-                raise ValueError(f"{path}: {key} was added on both sides with different text; resolve it by hand")
-            continue
         parent, _, _ = key.rpartition("/")
         siblings = branch["order"][parent]
         position = siblings.index(key)
@@ -579,9 +576,18 @@ def replay_onto_split(executable, path, base_ref, branch_ref):
         if neighbour is None:
             raise ValueError(f"{path}: no neighbour of the added {key} exists after the split; place it by hand")
         anchor = present(neighbour)
+        held = [found for found in current["items"].get(key, []) if not found["use"] or found["scope"] == anchor["scope"]]
+        if held:
+            if region(current, held[0]) != reindent(place, text, held[0]["indent"] - place["indent"]):
+                raise ValueError(f"{path}: {key} was added on both sides with different text; resolve it by hand")
+            continue
         bucket = anchor["bucket"] if "bucket" in anchor else (anchor["file"], anchor["end"] if mode == "after" else anchor["lead"], mode)
         width = anchor["indent"]
-        entry = (b"\n" * place["newlines"] + b" " * width, reindent(place, text, width - place["indent"]))
+        text = reindent(place, text, width - place["indent"])
+        if anchor["added"] and not place["use"] and ITEM.search(text) and not ITEM.search(text).group(1):
+            text = visibility(text, b"pub(super) fn ")
+            print(f"made {key} pub(super): the split put it in a module of its own; drop the marker if nothing outside that module uses it")
+        entry = (b"\n" * place["newlines"] + b" " * width, text)
         buckets.setdefault(bucket, []).append(entry)
         inserted[key] = {**anchor, "bucket": bucket}
         print(f"added {key} to {bucket[0]} {mode} {neighbour}")
@@ -596,6 +602,19 @@ def replay_onto_split(executable, path, base_ref, branch_ref):
     written = {}
     for file, changes in edits.items():
         source = current["sources"][file]
+        deletions = sorted(change[:2] for change in changes if change[0] < change[1] and change[2] == b"")
+        merged = []
+        for start, end in deletions:
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        changes = [change for change in changes if not (change[0] < change[1] and change[2] == b"")]
+        for span in merged:
+            before, after = source[:span[0]].rstrip(), source[span[1]:].lstrip()
+            if before.endswith(b"{") and after.startswith(b"}"):
+                span[:] = [len(before), len(source) - len(after)]
+        changes += [(start, end, b"") for start, end in merged]
         changes.sort(key=lambda change: (change[0], change[1]), reverse=True)
         limit = len(source) + 1
         for start, end, text in changes:
