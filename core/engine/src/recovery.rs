@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::classify::Trees;
 use crate::first_link::placed_here;
 use crate::ids::IdGen;
-use crate::names::same_name;
+use crate::names::{name_key, same_name};
 use crate::question::{
     Answer, Held, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger, Revisions,
 };
@@ -36,6 +36,7 @@ pub(crate) fn asks(question: &Question) -> bool {
 pub(crate) fn group(
     trees: &Trees,
     id: &NodeId,
+    held: Option<RecoveryGroup>,
     cause: Option<&RecoveryCause>,
 ) -> Option<RecoveryGroup> {
     if *id == trees.local().root || trees.missing().contains(id) {
@@ -63,10 +64,25 @@ pub(crate) fn group(
                 && (r.pending_for.as_deref()).is_some_and(|stem| same_name(stem, &local.name))
         })
     };
+    let same_bytes = |a: &Shape, b: &Shape| match (&a.content, &b.content) {
+        (Some(a), Some(b)) => same_content(a, b),
+        _ => false,
+    };
+    let rewritten = |local: &Shape| {
+        let on_server = (trees.remote_holders_of_key(&local.parent, &name_key(&local.name)))
+            .filter(|other| *other != id)
+            .filter_map(|other| trees.remote().live(other))
+            .any(|other| same_bytes(local, other));
+        !on_server && live.is_none_or(|r| r.content.is_some() && !same_bytes(local, r))
+    };
     let unchanged = same(local, synced) && !written_again(local, synced);
     match (local, synced) {
         (Some(l), _) if trees.adopted(id) && pending(l) => None,
-        (Some(_), Some(_)) if unchanged && remote.is_none() => {
+        (Some(l), Some(_))
+            if unchanged
+                && (remote.is_none()
+                    || (held == Some(RecoveryGroup::CreatedAfterRestorePoint) && rewritten(l))) =>
+        {
             Some(RecoveryGroup::CreatedAfterRestorePoint)
         }
         (Some(_), Some(_))
@@ -89,44 +105,29 @@ fn written_again(local: Option<&Shape>, synced: Option<&Shape>) -> bool {
     })
 }
 
-pub(crate) fn regroup_held(
-    trees: &Trees,
-    id: &str,
-    held: RecoveryGroup,
-    cause: Option<&RecoveryCause>,
-) -> Option<RecoveryGroup> {
-    let local = trees.local().get(id).map(|node| &node.shape);
-    let reappeared = held == RecoveryGroup::CreatedAfterRestorePoint
-        && local.is_some()
-        && trees.remote().get(id).is_some()
-        && !same(local, trees.remote().live(id));
-    match group(trees, id, cause) {
-        None if reappeared => Some(held),
-        now => now,
-    }
-}
-
 /// Every node of R, S and L that a group holds, by group.
 pub(crate) fn classify(
     trees: &Trees,
+    held: &BTreeMap<NodeId, RecoveryGroup>,
     cause: &RecoveryCause,
 ) -> BTreeMap<RecoveryGroup, BTreeSet<NodeId>> {
     let ids: BTreeSet<&NodeId> = (trees.remote().iter().map(|(id, _)| id))
         .chain(trees.synced().iter().map(|(id, _)| id))
         .chain(trees.local().iter().map(|(id, _)| id))
         .collect();
-    regroup(trees, ids.into_iter().cloned(), Some(cause))
+    regroup(trees, ids.into_iter().cloned(), held, Some(cause))
 }
 
 /// The groups that hold each of `ids` now.
 pub(crate) fn regroup(
     trees: &Trees,
     ids: impl IntoIterator<Item = NodeId>,
+    held: &BTreeMap<NodeId, RecoveryGroup>,
     cause: Option<&RecoveryCause>,
 ) -> BTreeMap<RecoveryGroup, BTreeSet<NodeId>> {
     let mut groups: BTreeMap<RecoveryGroup, BTreeSet<NodeId>> = BTreeMap::new();
     for id in ids {
-        if let Some(group) = group(trees, &id, cause) {
+        if let Some(group) = group(trees, &id, held.get(&id).copied(), cause) {
             groups.entry(group).or_default().insert(id);
         }
     }

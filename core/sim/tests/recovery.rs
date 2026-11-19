@@ -3802,3 +3802,47 @@ fn a_kept_file_another_device_keeps_with_other_bytes_first_is_asked_about_again(
     world.phase(3, &[]).unwrap();
     assert_eq!(live_writes(&world), [1, 2]);
 }
+
+#[test]
+fn a_held_file_stays_held_when_a_second_rewind_brings_back_another_devices_keep() {
+    let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("c.txt"))]]);
+    world
+        .run(
+            1,
+            &[
+                (1, overwrite(0)),
+                (1, SCAN),
+                (1, COMMIT),
+                (1, COMMIT),
+                (1, DELIVER),
+                (0, Step::Rewind),
+                (0, Step::Connect),
+                (0, DELIVER),
+                (1, Step::Connect),
+                (1, DELIVER),
+                (0, Step::Answer(0)),
+                (0, COMMIT),
+                (0, COMMIT),
+                (0, DELIVER),
+                (0, Step::Backup),
+                (1, DELIVER),
+                (1, DELIVER),
+                (1, COMMIT),
+                (0, Step::Rewind),
+                (0, Step::Connect),
+                (0, DELIVER),
+                (1, Step::Connect),
+                (1, DELIVER),
+                (1, COMMIT),
+                (1, EFFECT),
+                (1, EFFECT),
+            ],
+        )
+        .unwrap();
+    let held = only_entry(&world, 1, "c.txt");
+    let content = world.devices[1].disk.entries()[&held].content.as_ref();
+    assert_eq!(content.map(tag), Some(2));
+    world.run(2, &[(1, Step::Answer(0))]).unwrap();
+    world.phase(3, &[]).unwrap();
+    assert_eq!(live_writes(&world), [1, 2]);
+}
