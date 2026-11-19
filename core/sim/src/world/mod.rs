@@ -642,6 +642,8 @@ pub struct World {
     /// again.
     rolled_back: BTreeMap<NodeId, Vec<u8>>,
     rewound: BTreeMap<i64, BTreeSet<usize>>,
+    user_trashed: BTreeMap<NodeId, Vec<(usize, NodeState)>>,
+    sent_deletes: BTreeSet<(usize, NodeId)>,
     held_before_a_loss: Vec<Vec<BTreeMap<NodeId, u128>>>,
     clock: u64,
     moment: u64,
@@ -728,6 +730,8 @@ impl World {
             recovery_copies: BTreeMap::new(),
             rolled_back: BTreeMap::new(),
             rewound: BTreeMap::new(),
+            user_trashed: BTreeMap::new(),
+            sent_deletes: BTreeSet::new(),
             clock: 0,
             held_before_a_loss: vec![Vec::new(); count],
             moment: 0,
@@ -1178,7 +1182,8 @@ impl World {
                     .find(|node| node.node_id == *id)
                     .is_some_and(live);
                 let gone = !self.space.node(id).is_some_and(|node| live(&node));
-                (was && gone && !self.intents.deleted(d, id)).then(|| {
+                let unasked = was && gone && !self.intents.deleted(d, id);
+                (unasked && !self.carries_delete(d, id, held)).then(|| {
                     format!(
                         "a commit of device {d} deletes node {id}, which its user never deleted"
                     )
@@ -1202,6 +1207,36 @@ impl World {
             }
             _ => None,
         }
+    }
+
+    fn carries_delete(&self, d: usize, id: &str, held: &[NodeState]) -> bool {
+        if !self.sent_deletes.contains(&(d, id.to_owned())) {
+            return false;
+        }
+        let live = |node: &NodeState| node.status == NodeStatus::Live as i32;
+        let parents: BTreeMap<String, String> = (self.space.nodes().into_iter())
+            .map(|node| (node.node_id, node.parent_id))
+            .collect();
+        let under = |node: &str| {
+            std::iter::successors(Some(node), |at| parents.get(*at).map(String::as_str))
+                .take(parents.len() + 1)
+                .any(|at| at == id)
+        };
+        let authors = |node: &NodeState| -> BTreeSet<usize> {
+            (self.user_trashed.get(&node.node_id).into_iter().flatten())
+                .filter(|(author, was)| *author != d && was == node)
+                .map(|(author, _)| *author)
+                .collect()
+        };
+        let trashed: Vec<&NodeState> = (held.iter())
+            .filter(|node| live(node) && under(&node.node_id))
+            .filter(|node| !self.space.node(&node.node_id).is_some_and(|now| live(&now)))
+            .collect();
+        let Some(top) = trashed.iter().find(|node| node.node_id == id) else {
+            return false;
+        };
+        (authors(top).into_iter())
+            .any(|author| trashed.iter().all(|node| authors(node).contains(&author)))
     }
 
     /// Notes what the disk of device `d` shows, and the node each of its entries is in L or in its
@@ -2636,6 +2671,25 @@ impl World {
                                 .find_map(|(op, _)| self.unasked_op(d, op, &held));
                             if let Some(why) = unasked {
                                 self.unasked.get_or_insert(why);
+                            }
+                            for op in &sent.ops {
+                                if let Some(op::Op::Delete(delete)) = &op.op {
+                                    self.sent_deletes.insert((d, delete.node_id.clone()));
+                                }
+                            }
+                            let now: BTreeMap<String, NodeState> = (self.space.nodes().into_iter())
+                                .map(|node| (node.node_id.clone(), node))
+                                .collect();
+                            for was in held
+                                .iter()
+                                .filter(|was| was.status == NodeStatus::Live as i32)
+                            {
+                                let trashed = (now.get(&was.node_id))
+                                    .is_some_and(|node| node.status == NodeStatus::Trashed as i32);
+                                if trashed && self.intents.deleted(d, &was.node_id) {
+                                    let deletes = self.user_trashed.entry(was.node_id.clone());
+                                    deletes.or_default().push((d, was.clone()));
+                                }
                             }
                             let local = self.devices[d].engine.trees.local();
                             let after = live_writes(&self.space);
