@@ -1101,10 +1101,11 @@ fn a_held_file_is_listed_where_the_server_holds_it_after_a_move() {
     let all_e: &[&str] = &[".koiignore", "e", "notes.txt", "report.txt"];
     let all_d: &[&str] = &[".koiignore", "d", "notes.txt", "report.txt"];
     let (moved, delete, restore) = ("notes.txt moved on b", Answer::Delete, Answer::Restore);
-    let cases: [(&str, &[&str], &[&str], Answer, &[&str]); 4] = [
-        ("d renamed on a", in_e, all_e, delete, &[".koiignore", "e"]),
+    let (gone_e, gone_d): (&[&str], &[&str]) = (&[".koiignore", "e"], &[".koiignore", "d"]);
+    let cases = [
+        ("d renamed on a", in_e, all_e, delete, gone_e),
         ("d renamed on b", in_e, all_e, restore, all_e),
-        (moved, in_d, all_d, delete, &[".koiignore", "d"]),
+        (moved, in_d, all_d, delete, gone_d),
         (moved, in_d, all_d, restore, all_d),
     ];
     for (case, items, names, given, after) in cases {
