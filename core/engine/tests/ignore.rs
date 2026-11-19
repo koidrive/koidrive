@@ -2487,9 +2487,6 @@ fn given_up_beside(rows: &[Row]) -> Trees {
     trees
 }
 
-/// The rules exclude x while y, which L and R agree on, waits for x's place, so x is given up with
-/// z. z's removal comes in the batch that brings the rules, which the trees take first, or in the
-/// batch before it. `stopped` restarts the trees before both.
 fn given_up_and_removed(same_batch: bool, stopped: bool) -> Trees {
     let mut trees = holder_beside(&[synced("z", file("x", "g", 1))]);
     if stopped {
