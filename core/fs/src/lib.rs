@@ -680,6 +680,7 @@ enum Cut<'a> {
     Confirming(&'a Path),
     Searching(&'a Path),
     Stating(&'a Path),
+    #[cfg(target_os = "macos")]
     Locating(&'a Path),
 }
 
@@ -1362,6 +1363,7 @@ impl Snapshot {
                 continue;
             }
             let links = (links.get(&(entry.id, entry.kind))).map_or(&[][..], Vec::as_slice);
+            #[cfg(target_os = "macos")]
             (scan.cut)(Cut::Locating(path));
             match whereabouts(dir.as_fd(), dev, entry, links) {
                 Whereabouts::At(at) if blocked(&at) => {
