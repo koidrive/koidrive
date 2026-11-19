@@ -40,7 +40,7 @@ for i in "${!names[@]}"; do
     echo "${names[$i]}: BROKEN (the mutation expression failed)" >&2
     status=1
   elif cmp -s "$file" "$scratch/mutated"; then
-    echo "${names[$i]}: STALE (the pattern no longer matches $file)" >&2
+    echo "${names[$i]}: STALE (the pattern no longer matches $file; re-anchor it in scripts/engine-mutations.sh)" >&2
     status=1
   else
     echo "${names[$i]}: matches"
