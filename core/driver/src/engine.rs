@@ -431,10 +431,16 @@ impl Engine {
                     })
                     .collect()
             }
-            _ => (asked.held.iter())
+            kind => (asked.held.iter())
                 .map(|(id, held)| HeldItem {
                     node_id: id.clone(),
-                    path: self.path(id).into(),
+                    path: match kind {
+                        engine::QuestionKind::AmbiguousDisappearance => {
+                            path(self.trees.remote(), id)
+                        }
+                        _ => self.path(id),
+                    }
+                    .into(),
                     kind: self.kind(id),
                     files: held.files,
                     device_id: None,

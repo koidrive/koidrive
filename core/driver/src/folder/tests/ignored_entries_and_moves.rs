@@ -1091,3 +1091,55 @@ fn a_missed_file_beside_a_folder_the_guard_holds_is_not_counted_as_its_deletion(
         .collect();
     assert_eq!(still, [expected[1].1.clone()]);
 }
+
+#[test]
+#[ignore = "needs the question redraw on rename from #831"]
+fn a_held_file_is_listed_where_the_server_holds_it_after_a_move() {
+    let cases: [(&str, &[&str], &[&str]); 3] = [
+        (
+            "d renamed on a",
+            &["e/notes.txt", "e/report.txt"],
+            &[".koiignore", "e", "notes.txt", "report.txt"],
+        ),
+        (
+            "d renamed on b",
+            &["e/notes.txt", "e/report.txt"],
+            &[".koiignore", "e", "notes.txt", "report.txt"],
+        ),
+        (
+            "notes.txt moved on b",
+            &["d/report.txt", "notes.txt"],
+            &[".koiignore", "d", "notes.txt", "report.txt"],
+        ),
+    ];
+    for (case, items, names) in cases {
+        let mut remote = Remote::new();
+        let ((site_a, mut a), (site_b, mut b)) = missed_on_a(&mut remote);
+        let (site, device, from, to) = match case {
+            "d renamed on a" => (&site_a, &mut a, "d", "e"),
+            "d renamed on b" => (&site_b, &mut b, "d", "e"),
+            _ => (&site_b, &mut b, "d/notes.txt", "notes.txt"),
+        };
+        device.pull(&remote);
+        device.run(&mut remote);
+        fs::rename(site.root.join(from), site.root.join(to)).unwrap();
+        device.settle();
+        device.run(&mut remote);
+        a.pull(&remote);
+        a.settle();
+        a.run(&mut remote);
+
+        let questions = shown(&site_a);
+        let [question] = &questions[..] else {
+            panic!("{case}: {questions:?}");
+        };
+        assert_eq!(items_of(question), items, "{case}");
+        assert!(
+            (question.items.iter()).all(|item| item.kind == Some(crate::ItemKind::File)),
+            "{case}: {question:?}"
+        );
+        assert_eq!(deletes(&a), Vec::<String>::new(), "{case}");
+        assert_eq!(remote.names(), names, "{case}");
+        assert_eq!(a.folder.engine.trees.check(), Ok(()), "{case}");
+    }
+}
