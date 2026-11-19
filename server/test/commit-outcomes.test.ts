@@ -413,6 +413,19 @@ describe("RFC 0032 section 3 rule 4", () => {
     expect(sent).toEqual({ rounds: 2, uploaded: count - MAX_HEAD_CHECKS });
   });
 
+  it("records the chunks a refused commit's valid receipts confirmed, so they are not uploaded again", async () => {
+    const { a, root } = await setup();
+    const old = Array.from({ length: 2 * MAX_HEAD_CHECKS }, (_, i) => "expired " + i);
+    const fresh = Array.from({ length: MAX_HEAD_CHECKS }, (_, i) => "fresh " + i);
+    const parts = await content(...old, ...fresh);
+    a.nowMs = Date.now() - 2 * HOUR;
+    const expired = await a.uploadParts(await content(...old));
+    a.nowMs = undefined;
+    const valid = await a.uploadParts(await content(...fresh));
+    const sent = await resendUntilCommitted(a, [op.create(uuidv7(), root, "many", parts.content)], parts, [...expired, ...valid]);
+    expect(sent).toEqual({ rounds: 2, uploaded: MAX_HEAD_CHECKS });
+  });
+
   it("takes a commit whose chunks answered PRESENT outnumber MAX_HEAD_CHECKS without checking them again", async () => {
     const { a, root } = await setup();
     const texts = Array.from({ length: 2 * MAX_HEAD_CHECKS }, (_, i) => "checked " + i);

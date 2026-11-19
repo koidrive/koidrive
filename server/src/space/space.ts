@@ -1121,18 +1121,27 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const spaceId = this.spaceId;
       const confirmed = new Map<string, string>();
       const unconfirmed: { object: ChunkObject; size: number }[] = [];
+      const receipted: ChunkObject[] = [];
+      let live = 0;
       const receiptsByHash = Map.groupBy(receipts, (receipt) => toHex(receipt.hash));
       for (const [hex, chunk] of referenced) {
         const row = this.sql.exec("SELECT size, state, incarnation, head_checked FROM chunks WHERE hash = ?", chunk.hash).toArray()[0];
+        if (row?.state === ChunkState.LIVE && row.size === chunk.size) live++;
         if (!row || row.size !== chunk.size || row.state !== ChunkState.PENDING || row.incarnation === null) continue;
         const object = { spaceId, hashHex: hex, incarnation: String(row.incarnation) };
-        let valid = confirmedPending(row);
+        if (confirmedPending(row)) {
+          confirmed.set(hex, object.incarnation);
+          continue;
+        }
+        let valid = false;
         for (const receipt of receiptsByHash.get(hex) ?? []) {
           if (receipt.size !== chunk.size) continue;
           if (await verifyChunkGrant(this.spaceKey, "receipt", object, receipt.size, receipt.token, nowMs)) valid = true;
         }
-        if (valid) confirmed.set(hex, object.incarnation);
-        else unconfirmed.push({ object, size: chunk.size });
+        if (valid) {
+          confirmed.set(hex, object.incarnation);
+          receipted.push(object);
+        } else unconfirmed.push({ object, size: chunk.size });
       }
       const checked: ChunkObject[] = [];
       for (const { object, size } of unconfirmed.slice(0, MAX_HEAD_CHECKS)) {
@@ -1141,9 +1150,10 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         confirmed.set(object.hashHex, object.incarnation);
         checked.push(object);
       }
-      if (checked.length > 0) {
+      const recorded = live + confirmed.size < referenced.size ? [...checked, ...receipted] : checked;
+      if (recorded.length > 0) {
         this.db.transactionSync(() => {
-          for (const object of checked) {
+          for (const object of recorded) {
             this.sql.exec(
               "UPDATE chunks SET hold_until_ms = MAX(hold_until_ms, ?), head_checked = 1 WHERE hash = ? AND state = ? AND incarnation = ?",
               nowMs + HOLD_MS,
