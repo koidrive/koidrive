@@ -1196,9 +1196,11 @@ impl Folder {
             work.push(Work::ResendAfter(BUILD_AGAIN));
             return Ok(());
         };
+        let root = self.disk.root().to_path_buf();
         let built = self.step(|engine, tx| {
             let deferred = engine.deferred_deletes(now_ms);
-            let owed = engine.owed_deletes();
+            let owed =
+                engine.owed_deletes(|path| std::fs::symlink_metadata(root.join(path)).is_ok());
             let cursor = engine.cursor.as_ref().expect("R follows the log");
             let built = engine.commits.build_deferring(
                 &mut engine.trees,

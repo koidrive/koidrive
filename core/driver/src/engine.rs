@@ -122,7 +122,7 @@ impl Engine {
                 self.local_written_since_load = true;
             }
         }
-        let owed = self.owed_deletes();
+        let owed = self.owed_deletes(|_| false);
         for id in owed.difference(&self.stored_owed) {
             tx.set_owed_delete(id, true)?;
         }
@@ -1362,10 +1362,13 @@ impl Engine {
             .extend(std::mem::take(&mut self.removed_at).into_keys());
     }
 
-    pub fn owed_deletes(&mut self) -> BTreeSet<NodeId> {
+    pub fn owed_deletes(&mut self, on_disk: impl Fn(&Path) -> bool) -> BTreeSet<NodeId> {
         let trees = &self.trees;
-        self.owed
-            .retain(|id| trees.local().get(id).is_none() && trees.synced().live(id).is_some());
+        self.owed.retain(|id| {
+            trees.local().get(id).is_none()
+                && trees.synced().live(id).is_some()
+                && !trees.synced().path(id).is_some_and(|path| on_disk(&path))
+        });
         self.owed.clone()
     }
 

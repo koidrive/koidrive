@@ -1000,6 +1000,10 @@ impl Disk {
         Ok(())
     }
 
+    pub fn root(&self) -> &Path {
+        &self.path
+    }
+
     /// True while an effect or a failed upload waits for a scan of its paths. Until then the engine holds what L, S or R
     /// places at or below them ([`Engine::await_scan`]): the rules file's folder after an effect on a rules file, both
     /// places of a moved folder, the folder of a removal that awaits a scan ([`Settled::AwaitsScan`]), and the paths of
