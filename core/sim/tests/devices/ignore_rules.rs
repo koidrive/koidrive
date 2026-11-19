@@ -297,3 +297,38 @@ fn a_folder_its_include_list_takes_under_a_pending_name_is_sent() {
 fn c_txt(world: &World, device: usize) -> Content {
     content_on(world, device, "c.txt")
 }
+
+#[test]
+fn a_file_moved_out_of_a_displaced_folder_sends_its_edit_whoever_made_the_new_folder() {
+    let moved_in = || {
+        vec![
+            (1, rename(0, 2, "a")),
+            (1, SCAN),
+            (0, rename(0, 0, "\u{df}")),
+        ]
+    };
+    let made_there = [moved_in(), vec![(0, folder("a"))]].concat();
+    let made_here = [moved_in(), vec![(1, folder("a"))]].concat();
+    let mut rewound = [vec![(0, Step::Backup)], made_there.clone()].concat();
+    rewound.extend([(0, Step::Work(0)); 6]);
+    rewound.extend([(1, Step::Work(0)), (1, Step::Work(0)), (0, Step::Rewind)]);
+    for displacing in [made_there, made_here, rewound] {
+        let phases = [
+            vec![
+                (1, folder("a")),
+                (1, user(1, 0, 1, "b")),
+                (1, folder("c.txt")),
+            ],
+            displacing,
+            vec![(1, rename(1, 0, "ss"))],
+            vec![(1, overwrite(1))],
+        ];
+        let world = converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
+        let files = |device| {
+            (files_on(&world, device).into_iter())
+                .filter(|(_, content)| content.is_some())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(files(0), files(1));
+    }
+}

@@ -94,6 +94,7 @@ fn placement_check_after_a_move(
         removed_from: BTreeMap::new(),
         kept_back: BTreeSet::new(),
         relocated: BTreeMap::new(),
+        in_ignored_folders: Vec::new(),
     };
     let result = placement_check(
         &device,
@@ -866,6 +867,7 @@ fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
         removed_from: BTreeMap::from([("k".into(), "root".into())]),
         kept_back: BTreeSet::new(),
         relocated: BTreeMap::new(),
+        in_ignored_folders: Vec::new(),
     };
     let state = |id: &str, parent: &str| NodeState {
         node_id: id.into(),
@@ -923,6 +925,7 @@ fn keep_rule_keeps_a_deleted_folder(server_renames_it: bool) -> bool {
         removed_from: BTreeMap::from([("k".into(), "root".into())]),
         kept_back: BTreeSet::new(),
         relocated: BTreeMap::new(),
+        in_ignored_folders: Vec::new(),
     };
     let change = |name: &str| ChangeRecord {
         change: Some(change_record::Change::Node(NodeState {
@@ -976,6 +979,7 @@ fn the_keep_rule_keeps_back_a_folder_above_an_entry_it_already_kept_back() {
         removed_from: BTreeMap::new(),
         kept_back: BTreeSet::new(),
         relocated: BTreeMap::new(),
+        in_ignored_folders: Vec::new(),
     };
     let change = |id: &str, parent: &str, name: &str| ChangeRecord {
         change: Some(change_record::Change::Node(NodeState {
@@ -1027,6 +1031,7 @@ fn a_move_out_and_back_leaves_no_relocation_to_stop_the_keep_rule_walk() {
         removed_from: BTreeMap::new(),
         kept_back: BTreeSet::new(),
         relocated: BTreeMap::new(),
+        in_ignored_folders: Vec::new(),
     };
     let at = |parent: &str| koidrive_engine::tree::Shape {
         parent: parent.into(),
@@ -1056,6 +1061,7 @@ fn a_move_the_server_answers_at_another_place_is_pending_from_there() {
         removed_from: BTreeMap::new(),
         kept_back: BTreeSet::new(),
         relocated: BTreeMap::new(),
+        in_ignored_folders: Vec::new(),
     };
     let at = |parent: &str| koidrive_engine::tree::Shape {
         parent: parent.into(),

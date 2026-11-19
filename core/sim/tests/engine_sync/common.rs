@@ -565,6 +565,7 @@ struct Device {
     removed_from: BTreeMap<String, String>,
     kept_back: BTreeSet<String>,
     relocated: BTreeMap<String, Relocation>,
+    in_ignored_folders: Vec<Content>,
 }
 
 struct Relocation {
@@ -647,9 +648,11 @@ impl Device {
     /// reported, except a move across the boundary: a node moved to an ignored name keeps its
     /// identity and is reported at that name, one moved into an ignored folder is found there by
     /// its identity, and one moved out is reported where it now is. L keeps the entries of
-    /// ignored nodes, so here it still stands for the disk; a node moved into an ignored folder
-    /// is out of the user's reach after that, and the user puts nothing where it was: an entry
-    /// that takes the path of such a node replaces it, which is a deletion the user made.
+    /// ignored nodes until another entry takes their name, and `in_ignored_folders` keeps what
+    /// the user moved into ignored folders, so together they stand for the disk; a node moved
+    /// into an ignored folder is out of the user's reach after that, and the user puts nothing
+    /// where it was: an entry that takes the path of such a node replaces it, which is a
+    /// deletion the user made.
     fn act(&mut self, action: &Action) {
         let root = self.trees.local().root.clone();
         let local = self.trees.local();
@@ -746,6 +749,13 @@ impl Device {
                     (false, true) if into_ignored => {
                         self.touched.insert(id.clone());
                         self.acted.insert(id.clone());
+                        let mut below = vec![id.clone()];
+                        while let Some(node) = below.pop() {
+                            below.extend(self.trees.local_children(&node).cloned());
+                            let content = self.trees.local().get(&node);
+                            (self.in_ignored_folders)
+                                .extend(content.and_then(|node| node.shape.content.clone()));
+                        }
                         self.trees.ignore_local(&id)
                     }
                     _ => {
@@ -1627,6 +1637,7 @@ fn run_ignoring_answering_after(
         removed_from: BTreeMap::new(),
         kept_back: BTreeSet::new(),
         relocated: BTreeMap::new(),
+        in_ignored_folders: Vec::new(),
     };
     for state in space.nodes().iter().filter(|n| n.node_id != root) {
         let (id, node) = RemoteNode::from_state(state).unwrap();
@@ -2260,7 +2271,8 @@ fn run_ignoring_answering_after(
     }
     let unsent = (device.trees.local().iter())
         .filter(|(id, _)| device.trees.ignored(id) || waiting.contains(*id))
-        .map(|(_, node)| node.shape.content.clone());
+        .map(|(_, node)| node.shape.content.clone())
+        .chain(device.in_ignored_folders.iter().cloned().map(Some));
     let kept = written(
         server
             .iter()

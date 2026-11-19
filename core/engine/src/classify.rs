@@ -4315,6 +4315,13 @@ impl Trees {
             self.acknowledged(id).or_else(|| self.s.live(id)),
         ) {
             (Some(local), Some(synced)) => !local.shape.same_position(synced),
+            (Some(local), None) => {
+                self.local_changes.contains(id)
+                    && self
+                        .r
+                        .live(id)
+                        .is_some_and(|remote| !local.shape.same_position(remote))
+            }
             _ => false,
         };
         if local == Some(false) && moved {
