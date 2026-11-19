@@ -154,6 +154,52 @@ async fn a_folder_replaced_under_its_task_halts_it() {
 }
 
 #[tokio::test]
+async fn a_folder_replaced_before_its_task_opens_it_halts_the_task_as_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = fs::canonicalize(dir.path()).unwrap();
+    let root = base.join("Koidrive");
+    let paths = Paths::under(&base.join("profile"));
+    linked(&paths, &root, "d1");
+    let (at, moved) = (root.clone(), base.join("Moved"));
+    crate::folder::BEFORE_OPEN.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            fs::rename(&at, &moved).unwrap();
+            fs::create_dir(&at).unwrap();
+        }));
+    });
+    let driver = Driver::open(paths).unwrap();
+    driver.start();
+
+    let problem = halted(&driver).await;
+    assert!(problem.contains("no longer the folder"), "{problem}");
+    driver.stop().await;
+}
+
+#[tokio::test]
+async fn a_batch_scanned_before_its_folder_was_replaced_halts_the_task_as_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = fs::canonicalize(dir.path()).unwrap();
+    let root = base.join("Koidrive");
+    let paths = Paths::under(&base.join("profile"));
+    linked(&paths, &root, "d1");
+    let mut driver = Driver::open(paths).unwrap();
+    let (at, moved) = (root.clone(), base.join("Moved"));
+    Arc::get_mut(&mut driver.inner).unwrap().observe_fault =
+        Some(Arc::new(crate::folder::ObserveFault {
+            paused: Mutex::new(None),
+            before_batch: Mutex::new(Some(Box::new(move || {
+                fs::rename(&at, &moved).unwrap();
+                fs::create_dir(&at).unwrap();
+            }))),
+        }));
+    driver.start();
+
+    let problem = halted(&driver).await;
+    assert!(problem.contains("no longer the folder"), "{problem}");
+    driver.stop().await;
+}
+
+#[tokio::test]
 async fn stopping_does_not_wait_for_the_first_scan_to_read_every_file() {
     let dir = tempfile::tempdir().unwrap();
     let base = fs::canonicalize(dir.path()).unwrap();
@@ -194,6 +240,7 @@ async fn stopping_does_not_wait_out_the_observers_pause_after_an_error() {
     Arc::get_mut(&mut driver.inner).unwrap().observe_fault =
         Some(Arc::new(crate::folder::ObserveFault {
             paused: Mutex::new(Some(paused)),
+            before_batch: Mutex::new(None),
         }));
     driver.start();
     pausing.await.unwrap();
