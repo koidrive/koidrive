@@ -967,6 +967,83 @@ fn a_name_the_user_takes_while_its_replaced_file_is_in_quarantine_leaves_s() {
 }
 
 #[test]
+fn a_file_edited_after_a_crash_between_placing_and_trashing_is_an_edit_of_its_node() {
+    let folder = Folder::new();
+    let mut server = Server::default();
+    (SCENARIOS[2].setup)(&folder, &mut server);
+    let crashed = catch_unwind(AssertUnwindSafe(|| {
+        let mut running = folder.start(crash_at(Cut::Step(Step::Placed))).unwrap();
+        running.step(&server);
+    }));
+    assert!(crashed.is_err_and(|payload| payload.is::<Crash>()));
+    let placed = Snapshot::scan(&folder.root).unwrap();
+    let edited = b"edited while the device was down";
+    fs::write(folder.root.join("report.txt"), edited).unwrap();
+    let mut running = folder.start(no_hook()).unwrap();
+    let mut watching = observer(&folder.root, placed);
+    let edit = observe_until(&mut watching, running.disk.sections().stamp(), |seen| {
+        !seen.is_empty()
+    });
+    (running.disk)
+        .observed(edit, &mut running.engine, &mut running.store)
+        .unwrap();
+    let live = |shape: Option<&Shape>| {
+        shape
+            .and_then(|shape| shape.content.as_ref())
+            .map(|c| c.size)
+    };
+    assert_eq!(
+        live(running.engine.trees.synced().live(NODE)),
+        Some(REMOTE.len() as u64)
+    );
+    assert_eq!(
+        live(running.engine.trees.local().live(NODE)),
+        Some(edited.len() as u64)
+    );
+    assert_eq!(running.step(&server), None);
+    let found = Snapshot::scan(&folder.root).unwrap().entries[Path::new("report.txt")].id;
+    assert_eq!(running.local(NODE).unwrap().identity, file_identity(found));
+    let only = BTreeMap::from([(PathBuf::from("report.txt"), Some(edited.to_vec()))]);
+    assert_eq!(visible(&folder), only);
+}
+
+#[test]
+fn a_name_the_user_takes_before_a_crash_leaves_the_node_to_r_and_keeps_their_file() {
+    for cut in [Cut::Step(Step::Trashed), Cut::BeforeAck, Cut::AfterAck] {
+        let folder = Folder::new();
+        let mut server = Server::default();
+        (SCENARIOS[2].setup)(&folder, &mut server);
+        let target = folder.root.join("report.txt");
+        let saved = b"saved by the user";
+        let hook: Option<Hook> = Some(Box::new(move |reached| {
+            if reached == Cut::Step(Step::Compared) {
+                fs::write(&target, saved).unwrap();
+            }
+            if reached == cut {
+                resume_unwind(Box::new(Crash));
+            }
+        }));
+        let crashed = catch_unwind(AssertUnwindSafe(|| {
+            let mut running = folder.start(hook).unwrap();
+            running.step(&server);
+        }));
+        assert!(
+            crashed.is_err_and(|payload| payload.is::<Crash>()),
+            "{cut:?}"
+        );
+        assert_eq!(names(&folder, STAGING_DIR).len(), 1, "{cut:?}");
+        let running = folder.start(no_hook()).unwrap();
+        assert_eq!(running.engine.trees.synced().get(NODE), None, "{cut:?}");
+        assert!(running.local(NODE).is_none(), "{cut:?}");
+        assert!(names(&folder, STAGING_DIR).is_empty(), "{cut:?}");
+        assert!(trashed(&folder, SYNCED), "{cut:?}");
+        assert!(running.engine.trees.remote().get(NODE).is_some(), "{cut:?}");
+        let user = BTreeMap::from([(PathBuf::from("report.txt"), Some(saved.to_vec()))]);
+        assert_eq!(visible(&folder), user, "{cut:?}");
+    }
+}
+
+#[test]
 fn a_crash_during_recovery_is_recovered_on_the_start_after() {
     for scenario in SCENARIOS
         .iter()
