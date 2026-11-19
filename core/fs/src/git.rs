@@ -298,6 +298,7 @@ fn parse(bytes: &[u8], hash: usize) -> Option<Index<'_>> {
     let count = r.u32()?;
     let mut entries = Vec::new();
     let mut name = Vec::new();
+    let mut decoded = 0u64;
     for _ in 0..count {
         let start = r.0.len();
         let fixed = r.take(40 + hash)?;
@@ -315,7 +316,8 @@ fn parse(bytes: &[u8], hash: usize) -> Option<Index<'_>> {
         if flags & 0xfff != 0xfff && usize::from(flags & 0xfff) != name.len() {
             return None;
         }
-        if name.len() > MAX_PATH {
+        decoded += name.len() as u64;
+        if name.len() > MAX_PATH || decoded > MAX_INDEX {
             return None;
         }
         if version != 4
