@@ -162,14 +162,20 @@ fn reads_version_4_prefix_compressed_paths() {
     let dir = repo(&["dir/aaa.txt", "dir/aab.txt", "dir/sub/x", "other"]);
     let root = dir.path();
     git(root, &["add", "."]);
+    let long = format!("{}/", "x".repeat(200)).repeat(10);
+    let blob = "100644,e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
+    let infos: Vec<String> = (0..200).map(|n| format!("{blob},{long}{n}")).collect();
+    let mut args = vec!["update-index", "--add"];
+    args.extend(infos.iter().flat_map(|info| ["--cacheinfo", info]));
+    git(root, &args);
     git(root, &["update-index", "--index-version", "4"]);
     let mut bytes = fs::read(root.join(".git/index")).unwrap();
     assert_eq!(&bytes[4..8], &[0, 0, 0, 4]);
     let end = bytes.len() - 20;
     bytes[end..].fill(0);
     fs::write(root.join(".git/index"), bytes).unwrap();
-    let paths = "dir/aaa.txt dir/aab.txt dir/sub/x other dir/aac.txt dir/aa";
-    assert_eq!(answers(&read(root), paths), "yyyynn");
+    let paths = format!("dir/aaa.txt dir/aab.txt dir/sub/x other {long}199 dir/aac.txt dir/aa");
+    assert_eq!(answers(&read(root), &paths), "yyyyynn");
 }
 
 #[test]
@@ -342,8 +348,8 @@ fn an_index_git_refuses_to_read_is_unreadable() {
     assert_eq!(answers(&read(root), "a"), "y");
     fs::write(&path, index(2, &[(b"a", 0x4000)], &[])).unwrap();
     assert!(!read(root).readable(), "extended flags in version 2");
-    fs::write(&path, index(4, &vec![(&b"a"[..], 0xfff); 3000], &[])).unwrap();
-    assert!(!read(root).readable(), "paths far longer than the index");
+    fs::write(&path, index(4, &vec![(&b"a"[..], 0xfff); 4097], &[])).unwrap();
+    assert!(!read(root).readable(), "a path longer than 4096 bytes");
     let shared = index(2, &[(b"a", 0)], &[]);
     let base = &shared[shared.len() - 20..];
     let hex: String = base.iter().map(|byte| format!("{byte:02x}")).collect();

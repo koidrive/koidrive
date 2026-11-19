@@ -17,6 +17,7 @@ use crate::{FileId, is_gone, stat_path};
 
 const MAX_GITFILE: u64 = 1 << 20;
 const MAX_INDEX: u64 = 1 << 30;
+const MAX_PATH: usize = 4096;
 
 /// The index of a work tree (RFC 0033 §3): a folder that holds a `.git` folder, or a `.git` file whose
 /// `gitdir:` line names its git directory. Paths are relative to the work tree and compared by `K`'s key.
@@ -284,7 +285,6 @@ fn parse(bytes: &[u8], hash: usize) -> Option<Index<'_>> {
     let count = r.u32()?;
     let mut entries = Vec::new();
     let mut name = Vec::new();
-    let mut decoded = 0usize;
     for _ in 0..count {
         let start = r.0.len();
         let fixed = r.take(40 + hash)?;
@@ -302,8 +302,7 @@ fn parse(bytes: &[u8], hash: usize) -> Option<Index<'_>> {
         if flags & 0xfff != 0xfff && usize::from(flags & 0xfff) != name.len() {
             return None;
         }
-        decoded += name.len();
-        if decoded > bytes.len().saturating_mul(16) {
+        if name.len() > MAX_PATH {
             return None;
         }
         if version != 4
