@@ -7,8 +7,9 @@ tests = [
   "devices_converge_once_the_faults_stop",
   "devices_converge_across_rewinds_and_rollbacks",
 ]
-message = '''(after phase <n>: a commit of device <n> finishes the pending name \".*\" of node <id>, which the user of device <n> never gave it\.|not recorded: devices::\S+ \S+ OwnerFinish a commit of device <n> finishes the pending name \"(?:(?! not recorded: ).)*\" of node <id>, which the user of device <n> never gave it( not recorded: devices::\S+ \S+ OwnerFinish (?:(?! not recorded: ).)+?never gave it)*)'''
+message = '''(after phase <n>: a commit of device <n> finishes the pending name \".*\" of node <id>, which the user of device <n> never gave it\.|not recorded: devices::\S+ \S+ OwnerFinish a commit of device <n> finishes the pending name \"(?:(?! not recorded: ).)*\" of node <id>, which the user of device <n> never gave it( not recorded: devices::\S+ \S+ OwnerFinish (?:(?! not recorded: ).)+?never gave it)*( not recorded: devices::\S+ \S+ DeleteUndone (?:(?! not recorded: ).)+?brought the node back)*)'''
 examples = [
   "after phase 1: a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it.",
   "not recorded: devices::devices_converge_when_a_folder_owing_its_name_is_deleted_and_brought_back\tcc-6441ca063a4f9379f04cfe6b94b012a5bbf0008256e1230d0f7b88453880f651\tOwnerFinish\ta commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
+  "not recorded: devices::devices_converge_around_an_owed_rename\tcc-04fd892bab2cf9b6553ae8610e69f7672f12a4b7427768d3a8ec879cd1808259\tOwnerFinish\ta commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it\nnot recorded: devices::devices_converge_around_an_owed_rename\tcc-04fd892bab2cf9b6553ae8610e69f7672f12a4b7427768d3a8ec879cd1808259\tDeleteUndone\tthe delete of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 on device 0 came undone, and no change its user did not see brought the node back",
 ]

@@ -1,6 +1,0 @@
-class = "H"
-issue = "GUN-1215"
-tests = ["devices_with_rules_lose_no_write"]
-message = '''not recorded: devices::\S+ \S+ NameLeftOut device <n> is quiet, but nodes \["<id>"(, "<id>")*\] wait for names that entries its rules leave out hold( not recorded: devices::\S+ \S+ SentLeftOut (?:(?! not recorded: ).)+?leave out)+'''
-examples = ["not recorded: devices::devices_with_rules_lose_no_write\tcc-d188ddaca8f7c0cc217722f3f58a5ea07485de711a33ffcf3fc9f3b7c0ff9706\tNameLeftOut\tdevice 2 is quiet, but nodes [\"01a1c2c0-39a0-7741-9272-f1d95e3d688f\"] wait for names that entries its rules leave out hold\nnot recorded: devices::devices_with_rules_lose_no_write\tcc-d188ddaca8f7c0cc217722f3f58a5ea07485de711a33ffcf3fc9f3b7c0ff9706\tSentLeftOut\ta commit of device 2 places node 01a1c2c0-39a0-765b-be7b-fabd85ac36da at [\"C.TXT\", \"ß\", \"A\"], which the rules of device 2 leave out\nnot recorded: devices::devices_with_rules_lose_no_write\tcc-d188ddaca8f7c0cc217722f3f58a5ea07485de711a33ffcf3fc9f3b7c0ff9706\tSentLeftOut\ta commit of device 2 places node 01a1c2c0-39a0-7741-9272-f1d95e3d688f at [\"C.TXT\", \"ß\"], which the rules of device 2 leave out"]
-cases = ["d188ddaca8f7"]
