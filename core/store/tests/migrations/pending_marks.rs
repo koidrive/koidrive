@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
-use koidrive_engine::tree::NodeId;
 
 #[test]
 fn a_store_that_recorded_pending_names_opens_owing_each_rename_r_and_s_still_hold() {
@@ -155,9 +154,9 @@ fn a_rename_a_store_recorded_before_pending_marks_is_finished_after_the_upgrade_
                 trees.set_remote(id, remote);
             }
             for node in tx.synced_nodes()? {
-                trees.set_synced(NodeId::from(&node.node_id), Some(at(&node.shape.name)));
+                trees.set_synced(node.node_id.clone(), Some(at(&node.shape.name)));
                 trees.set_synced_mark(
-                    NodeId::from(node.node_id),
+                    node.node_id,
                     Some(node.pending_for).filter(|mark| !mark.is_empty()),
                 );
             }

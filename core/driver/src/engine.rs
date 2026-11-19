@@ -95,9 +95,9 @@ impl Engine {
             return Ok(None);
         }
         for node in tx.synced_nodes()? {
-            trees.set_synced(NodeId::from(&node.node_id), Some(shape(node.shape)?));
+            trees.set_synced(node.node_id.clone(), Some(shape(node.shape)?));
             let mark = Some(node.pending_for).filter(|name| !name.is_empty());
-            trees.set_synced_mark(NodeId::from(node.node_id), mark);
+            trees.set_synced_mark(node.node_id, mark);
         }
         if abandoned() {
             return Ok(None);
@@ -110,7 +110,7 @@ impl Engine {
                 left_out_when_placed: node.left_out_when_placed,
                 content_from_server: node.content_from_server,
             };
-            trees.set_local(NodeId::from(node.node_id), local);
+            trees.set_local(node.node_id, local);
         }
         if abandoned() {
             return Ok(None);
@@ -200,7 +200,7 @@ impl Engine {
         for id in &changed.synced {
             match self.trees.synced().get(id) {
                 Some(shape) => tx.put_synced_node(&SyncedNode {
-                    node_id: id.to_string(),
+                    node_id: id.clone(),
                     shape: stored_shape(shape),
                     pending_for: self.trees.synced_mark(id).unwrap_or_default().to_owned(),
                 })?,
@@ -1744,7 +1744,7 @@ fn shape(shape: koidrive_store::Shape) -> Result<Shape, Error> {
 
 fn stored(id: &NodeId, node: &LocalNode) -> koidrive_store::LocalNode {
     koidrive_store::LocalNode {
-        node_id: id.to_string(),
+        node_id: id.clone(),
         shape: stored_shape(&node.shape),
         identity: file_id(node.identity),
         parked: node.parked,

@@ -1093,14 +1093,14 @@ mod tests {
                         content: remote.shape.content,
                     };
                     tx.put_synced_node(&koidrive_store::SyncedNode {
-                        node_id: node.node_id.clone(),
+                        node_id: node.node_id.clone().into(),
                         shape: shape.clone(),
                         pending_for: String::new(),
                     })?;
                     tx.put_local_node(&koidrive_store::LocalNode {
                         left_out_when_placed: false,
                         content_from_server: false,
-                        node_id: node.node_id.clone(),
+                        node_id: node.node_id.clone().into(),
                         shape,
                         identity: snapshot.entries[Path::new(path)].id,
                         parked: false,

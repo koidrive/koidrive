@@ -95,14 +95,14 @@ fn write_input(tx: &Tx<'_>, seq: u64) -> Result<(), Error> {
     for n in (seq - 1) * NODES_PER_INPUT..seq * NODES_PER_INPUT {
         tx.put_remote_node(&remote(n))?;
         tx.put_synced_node(&SyncedNode {
-            node_id: remote(n).node_id,
+            node_id: remote(n).node_id.into(),
             shape: shape(n),
             pending_for: String::new(),
         })?;
         tx.put_local_node(&LocalNode {
             left_out_when_placed: false,
             content_from_server: false,
-            node_id: remote(n).node_id,
+            node_id: remote(n).node_id.into(),
             shape: shape(n),
             identity: FileId::stored(n.into(), None, None),
             parked: false,

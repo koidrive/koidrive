@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use koidrive_engine::tree::NodeId;
 use koidrive_store::Store;
 
 fn preserved_rows(
@@ -102,7 +101,7 @@ macro_rules! upgrade_case {
                 let pending = local.iter().find(|node| node.shape.name == "pending.txt").unwrap();
                 let old = synced.iter().find(|node| node.node_id == pending.node_id).unwrap();
                 assert_ne!(pending.shape.content, old.shape.content);
-                assert!(tx.engine_state()?.trees.local_changes.contains(&NodeId::from(&pending.node_id)));
+                assert!(tx.engine_state()?.trees.local_changes.contains(&pending.node_id));
                 Ok::<_, koidrive_store::Error>(())
             }).unwrap();
             assert_eq!(preserved_rows(&rusqlite::Connection::open(&path).unwrap()), preserved);

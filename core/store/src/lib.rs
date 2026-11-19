@@ -36,6 +36,7 @@ use std::time::Duration;
 
 pub use engine::{EngineChanges, EngineState};
 use koidrive_engine::commit::Base;
+use koidrive_engine::tree::NodeId;
 use koidrive_fs::{FileId, Minted, Mount, RootAt, RootTokens, VolumeId};
 use koidrive_proto::v1::{Content, NodeState, VersionInfo};
 use migrations::{LEGACY_STEPS, MIGRATIONS, NAMED};
@@ -188,7 +189,7 @@ pub struct Shape {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SyncedNode {
-    pub node_id: String,
+    pub node_id: NodeId,
     pub shape: Shape,
     pub pending_for: String,
 }
@@ -198,7 +199,7 @@ pub struct SyncedNode {
 /// position the engine compares it at.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalNode {
-    pub node_id: String,
+    pub node_id: NodeId,
     pub shape: Shape,
     pub identity: FileId,
     pub parked: bool,
@@ -630,7 +631,7 @@ impl Tx<'_> {
         rows.map(|row| {
             let (node_id, shape, pending_for) = row?;
             Ok(SyncedNode {
-                node_id,
+                node_id: node_id.into(),
                 shape: shape.into_shape()?,
                 pending_for,
             })
@@ -649,7 +650,7 @@ impl Tx<'_> {
                   pending_for = excluded.pending_for",
             )?
             .execute(params![
-                node.node_id,
+                node.node_id.to_string(),
                 non_empty(&shape.parent_id),
                 shape.name,
                 shape.kind,
@@ -689,7 +690,7 @@ impl Tx<'_> {
             let (node_id, shape, identity, parked, left_out_when_placed, content_from_server) =
                 row?;
             Ok(LocalNode {
-                node_id,
+                node_id: node_id.into(),
                 shape: shape.into_shape()?,
                 identity,
                 parked,
@@ -717,7 +718,7 @@ impl Tx<'_> {
                   content_from_server = excluded.content_from_server, handle = excluded.handle",
             )?
             .execute(params![
-                node.node_id,
+                node.node_id.to_string(),
                 non_empty(&shape.parent_id),
                 shape.name,
                 shape.kind,

@@ -16,7 +16,7 @@ upgrade_case!(waiting_update_released, |store| {
                 shape: Some(base),
                 origin: koidrive_engine::classify::Origin::Released,
             };
-            after.trees.waiting.insert(report.node_id.clone().into(), released);
+            after.trees.waiting.insert(report.node_id.clone(), released);
             tx.update_engine_state(&before, &after)?;
             assert_eq!(tx.engine_state()?, after);
             Ok::<_, koidrive_store::Error>(())

@@ -3281,7 +3281,11 @@ fn an_upgrade_bounds_change_times_by_the_last_write_before_it_on_every_open() {
             let ctimes = store.transaction(|tx| tx.local_ctimes()).unwrap();
             assert!(!nodes.is_empty());
             for node in nodes {
-                assert_eq!(ctimes.get(&node.node_id), Some(&at), "{ctimes:?}");
+                assert_eq!(
+                    ctimes.get(&node.node_id.to_string()),
+                    Some(&at),
+                    "{ctimes:?}"
+                );
             }
         }
     }
