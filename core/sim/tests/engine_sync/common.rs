@@ -2797,6 +2797,7 @@ fn run_ignoring_answering_after(
             || (local.get(&shape.parent)).is_some_and(|node| node.shape.kind == Kind::Dir);
         !folder
             || inside_itself(id, &shape.parent)
+            || (shape.parent == local.root && device.left_out_root_holds(&shape.name))
             || (local.iter()).any(|(other, node)| {
                 other != id
                     && !node.parked
@@ -2822,6 +2823,7 @@ fn run_ignoring_answering_after(
     };
     let stays_parked = |id: &NodeId| {
         waiting.contains(id)
+            || waits_on_left_out(&device, id)
             || device.trees.ignored(id)
                 && reported.contains_key(id)
                 && (!device.trees.reverted().contains(id) || nowhere(id))
