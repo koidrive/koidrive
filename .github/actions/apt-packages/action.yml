@@ -52,35 +52,31 @@ runs:
         MATCHED: ${{ steps.cache-main.outputs.cache-matched-key || steps.cache.outputs.cache-matched-key }}
       run: |
         read -ra missing <<<"$MISSING"
-        apt=(sudo apt-get -y -q -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o DPkg::Lock::Timeout=120)
+        apt=(sudo apt-get -y -q -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o DPkg::Lock::Timeout=120 -o APT::Sandbox::User=root)
         installed() { [[ "$(dpkg-query -W -f='${Status}' "$1" 2>/dev/null)" == *" installed" ]]; }
-        install_from() {
-          local debs=() deb
-          for deb in "$1"/*.deb; do
-            [ -e "$deb" ] || continue
-            installed "$(dpkg-deb -f "$deb" Package)" || debs+=("$deb")
-          done
-          [ ${#debs[@]} -gt 0 ] && "${apt[@]}" install --no-download "${debs[@]}" || return 1
+        all_installed() {
+          local package
           for package in "${missing[@]}"; do
-            installed "$package" || { echo "$package is still missing after installing the .debs in $1."; return 1; }
+            installed "$package" || return 1
           done
         }
         if [ -n "$MATCHED" ]; then
-          if install_from "$DIR"; then
+          debs=()
+          for deb in "$DIR"/*.deb; do
+            installed "$(dpkg-deb -f "$deb" Package)" || debs+=("$deb")
+          done
+          if [ ${#debs[@]} -gt 0 ] && sudo dpkg -i "${debs[@]}" && all_installed; then
             echo "Installed ${missing[*]} from the cached .debs in $MATCHED without the Ubuntu mirror."
             exit 0
           fi
           echo "::warning::The cached .debs in $MATCHED did not install ${missing[*]}, so they are downloaded from the Ubuntu mirror."
         fi
-        fresh="$RUNNER_TEMP/apt-download"
-        mkdir -p "$fresh/partial"
-        "${apt[@]}" update || echo "::warning::apt-get update failed for some sources; downloading with the package lists it fetched."
-        if ! "${apt[@]}" install --download-only -o Dir::Cache::Archives="$fresh" "${missing[@]}"; then
-          echo "::error::Downloading ${missing[*]} from the Ubuntu mirror failed (see the apt errors above), and no cached .debs installed them."
+        rm -rf "$DIR"
+        mkdir -p "$DIR/partial"
+        "${apt[@]}" update || echo "::warning::apt-get update failed for some sources; installing with the package lists it fetched."
+        if ! "${apt[@]}" install -o Dir::Cache::Archives="$DIR" "${missing[@]}" || ! all_installed; then
+          echo "::error::Installing ${missing[*]} from the Ubuntu mirror failed (see the apt errors above), and no cached .debs installed them."
           exit 1
         fi
-        rm -rf "$DIR"
-        mkdir -p "$DIR"
-        cp "$fresh"/*.deb "$DIR"/
-        install_from "$DIR" || { echo "::error::Installing ${missing[*]} from the .debs downloaded from the Ubuntu mirror failed (see the apt errors above)."; exit 1; }
+        sudo rm -rf "$DIR/partial" "$DIR/lock"
         echo "Installed ${missing[*]} from the Ubuntu mirror."
