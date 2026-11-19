@@ -267,7 +267,8 @@ pub struct TreesState {
     /// The nodes whose position a create or a move of this device set, while R holds them at that
     /// position, also after a delete and a restore of the node.
     pub moved_here: BTreeMap<NodeId, MovedHere>,
-    /// The earlier live records R held of each node, oldest first: the newest
+    /// The earlier live records R held of each node, and each trashed one that a record this
+    /// device made replaced, oldest first: the newest
     /// [`PAST_POSITIONS_KEPT`](crate::classify::PAST_POSITIONS_KEPT), and the one a move of
     /// `moved_here` replaced, which shows that a move and not a create set that position.
     pub past_positions: BTreeMap<NodeId, Vec<Agreed>>,

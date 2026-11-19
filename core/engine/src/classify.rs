@@ -1340,7 +1340,8 @@ impl Trees {
         if (self.moved_here.get(&id)).is_some_and(|moved| !kept(moved.seq)) {
             self.moved_here.remove(&id);
         }
-        let replaced = (self.r.get(&id)).filter(|old| !old.trashed && old.meta_rev < node.meta_rev);
+        let replaced = (self.r.get(&id))
+            .filter(|old| (made_here || !old.trashed) && old.meta_rev < node.meta_rev);
         if let Some(old) = replaced {
             let past = Agreed {
                 rev: old.meta_rev,
@@ -4981,13 +4982,11 @@ impl Trees {
             })
         };
         let before = |id: &NodeId, moved: &MovedHere| {
-            (self.r.get(id))
-                .filter(|remote| !remote.trashed)
-                .is_some_and(|remote| {
-                    remote.meta_rev <= held_through
-                        || (moved.upgraded && remote.meta_rev < moved.seq)
-                        || seen(id, remote)
-                })
+            (self.r.get(id)).is_some_and(|remote| {
+                remote.meta_rev <= held_through
+                    || (moved.upgraded && remote.meta_rev < moved.seq)
+                    || seen(id, remote)
+            })
         };
         let edited: Vec<(NodeId, u64)> = (edited.into_iter())
             .chain(
@@ -5049,7 +5048,9 @@ impl Trees {
         }
         let mut queued = BTreeSet::new();
         for id in &lost_moves {
-            let (Some(remote), Some(synced)) = (self.r.live(id), self.s.live(id)) else {
+            let (Some(remote), Some(synced)) =
+                (self.r.get(id).map(|remote| &remote.shape), self.s.live(id))
+            else {
                 continue;
             };
             let before = Shape {
