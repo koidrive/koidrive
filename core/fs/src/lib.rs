@@ -88,6 +88,9 @@
 //! §5.10 holds for a question to the user. The search does not look in
 //! [`PRIVATE_DIR`] or in the built-in platform files.
 //!
+//! [`GitIndex`] reads which files the git index of a work tree lists (RFC
+//! 0033 §3), and [`owner`] finds the work tree a path belongs to.
+//!
 //! The engine's private folder [`PRIVATE_DIR`] at the root is never scanned.
 //! The [`check_root`] of design §6.2, the root [`Marker`] and the rename that
 //! never replaces its target ([`rename_no_replace`], [`probe_no_replace`])
@@ -4253,6 +4256,7 @@ impl From<ItemPath> for String {
 }
 
 mod effect;
+mod git;
 mod ignore;
 mod mark;
 mod recovered;
@@ -4266,6 +4270,7 @@ pub use effect::{
     Action, BroughtBack, Contents, Displaced, Effect, Outcome, QUARANTINE_DIR, Reason, Refusal,
     STAGING_DIR, Section, Step,
 };
+pub use git::{GitIndex, owner};
 pub use ignore::{Coverage, Ignore, Ignored, Rules};
 use ignore::{Key, Pending, RulesRead, Seeded, Wanted};
 pub use koidrive_ignore::Source;
