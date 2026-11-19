@@ -7483,8 +7483,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_recovery_409_cannot_restore_the_account() {
-        recovery_refusal_stays_blocked(409).await;
+    async fn a_recovery_409_restores_the_account() {
+        for reopen in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let base = fs::canonicalize(dir.path()).unwrap();
+            let credential_path = Paths::under(&base.join("profile")).credential();
+            let (server, served) = serve_each(
+                vec![access_token(), (500, Vec::new()), last_device_refused()],
+                credential_path,
+            )
+            .await;
+            let paths = linked_with_server(&base, server);
+            let mut driver = Driver::open(paths.clone()).unwrap();
+            driver.start();
+            assert!(matches!(
+                driver.sign_out(false).await,
+                Err(DriverError::NotRevoked(_))
+            ));
+            if reopen {
+                drop(driver);
+                driver = Driver::open(paths.clone()).unwrap();
+            }
+            assert!(matches!(
+                driver.sign_out(false).await,
+                Err(DriverError::LastDevice)
+            ));
+            assert_eq!(served.await.unwrap().len(), 3);
+            assert!(
+                driver.status().account.is_some(),
+                "recovery 409 left the account signed out, reopen={reopen}"
+            );
+            assert!(
+                driver.status().running,
+                "recovery 409 left sync stopped, reopen={reopen}"
+            );
+            assert!(matches!(crate::leave::phase(&paths.state_dir), Ok(None)));
+            assert!(Credential::load(&paths.credential()).is_ok());
+            assert!(paths.store(SPACE).unwrap().exists());
+        }
     }
 
     async fn prepared_retry_restores_authority(running: bool, checking: bool) {
@@ -7773,21 +7809,14 @@ mod tests {
                 retry.unwrap().not_removed
             } else {
                 assert!(matches!(retry, Err(DriverError::LastDevice)));
-                assert_eq!(driver.status().account, None);
-                assert!(!driver.status().running);
+                assert!(driver.status().account.is_some());
                 assert!(driver.status().paused);
-                assert!(driver.status().folders.is_empty());
-                assert!(matches!(
-                    crate::leave::phase(&paths.state_dir),
-                    Ok(Some(Phase::Revoking))
-                ));
-                assert!(matches!(
-                    Credential::load(&paths.credential()),
-                    Err(CredentialError::SignOutPending)
-                ));
-                assert_eq!(fs::read(paths.credential()).unwrap(), bytes);
+                assert!(matches!(crate::leave::phase(&paths.state_dir), Ok(None)));
+                assert!(Credential::load(&paths.credential()).unwrap().is_some());
                 assert!(paths.store(SPACE).unwrap().exists());
-                driver.sign_out(false).await.unwrap().not_removed
+                open_dir(&private);
+                assert_eq!(driver.sign_out(false).await.unwrap().not_removed, []);
+                Vec::new()
             };
             let calls = served.await.unwrap();
             open_dir(&private);
@@ -7808,7 +7837,7 @@ mod tests {
             assert_eq!(driver.status().account, None);
             assert!(!paths.credential().exists());
             assert!(!paths.store(SPACE).unwrap().parent().unwrap().exists());
-            if !rustix::process::geteuid().is_root() {
+            if remote_revoked && !rustix::process::geteuid().is_root() {
                 assert_eq!(failed.len(), 1);
                 assert_eq!(failed[0].path, private.join("device.json"));
             }
