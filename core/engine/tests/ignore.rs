@@ -680,6 +680,35 @@ fn a_parked_node_the_rules_now_exclude_is_moved_back_to_where_l_keeps_it() {
 }
 
 #[test]
+fn a_folder_the_user_deleted_comes_back_for_a_parked_node_the_rules_now_exclude() {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "d")),
+        (
+            "a",
+            None,
+            Some(file("d", "a.txt", 1)),
+            Some(file("d", "A.TXT", 1)),
+        ),
+        synced("e", dir("d", "e")),
+    ]);
+    let parked = LocalNode {
+        parked: true,
+        ..local(file("d", "a.txt", 1), 1)
+    };
+    trees.set_local("a".into(), parked);
+    trees.set_rules(&AT_ROOT, rules("a.txt\n"));
+    trees.remove_local("e");
+    trees.remove_local("d");
+    assert_eq!(ops(&mut trees), [delete("e")]);
+    assert_eq!(nodes(&effects(&mut trees)), ["d", "a"]);
+    let placed = trees.local().get("a").unwrap();
+    assert!(!placed.parked);
+    assert_eq!(placed.shape, file("d", "a.txt", 1));
+    assert!(trees.excluded("a"));
+    assert_eq!(trees.local().get("d").unwrap().shape, dir(ROOT, "d"));
+}
+
+#[test]
 fn a_node_whose_place_an_excluded_node_holds_is_not_parked_to_make_room() {
     let mut trees = trees(&[
         (
@@ -2258,4 +2287,49 @@ fn an_excluded_file_the_server_moves_keeps_its_synced_entry_while_its_place_in_r
         assert_eq!(trees.synced().live("x"), None, "{folder_in_s}");
         assert_eq!(trees.check(), Ok(()));
     }
+}
+
+fn excluded_folder_released_with_its_file() -> Trees {
+    let mut trees = trees(&[
+        incoming("far", dir(ROOT, "far")),
+        (
+            "x",
+            Some(dir(ROOT, "x")),
+            Some(dir(ROOT, "x")),
+            Some(dir("far", "x")),
+        ),
+        synced("z", file("x", "g", 1)),
+    ]);
+    let parked = LocalNode {
+        parked: true,
+        ..local(dir(ROOT, "x"), 2)
+    };
+    trees.set_local("x".into(), parked);
+    trees.set_local("y".into(), local(file(ROOT, "x", 2), 4));
+    trees.set_synced("y".into(), Some(file("x", "f", 2)));
+    trees.set_remote("y".into(), remote(file(ROOT, "x", 2)));
+    trees.set_rules(&AT_ROOT, rules("/far/\n"));
+    trees.settle();
+    trees
+}
+
+#[test]
+fn another_devices_trash_of_an_excluded_folder_is_not_undone() {
+    let mut trees = excluded_folder_released_with_its_file();
+    trash(&mut trees, "z");
+    trash(&mut trees, "x");
+    assert_eq!(ops(&mut trees), []);
+}
+
+#[test]
+fn an_unchanged_excluded_file_takes_the_remote_edit_when_included_again() {
+    let mut trees = excluded_folder_released_with_its_file();
+    set_content(&mut trees, "z", 9);
+    trees.set_rules(&AT_ROOT, None);
+    effects(&mut trees);
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(
+        trees.local().get("z").map(|node| &node.shape),
+        Some(&file("x", "g", 9))
+    );
 }

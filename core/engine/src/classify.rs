@@ -2553,8 +2553,9 @@ impl Trees {
             let remote = self.r.live(current)?;
             let deleted = match self.l.get(current) {
                 Some(local) => {
-                    let moved = (self.acknowledged(current))
-                        .is_none_or(|held| !local.shape.same_position(held));
+                    let moved = !local.parked
+                        && (self.acknowledged(current))
+                            .is_none_or(|held| !local.shape.same_position(held));
                     if moved && !self.reverted.contains(current) && !self.is_discarded(current) {
                         return None;
                     }
@@ -4234,7 +4235,7 @@ impl Trees {
             |path: Option<(Vec<&str>, Kind)>| path.map(|(names, kind)| self.ignores(&names, kind));
         let placed = path(&self.l, id);
         let local = ignored(placed.clone());
-        let moved = match (self.l.get(id), self.s.live(id)) {
+        let moved = match (self.l.get(id), self.acknowledged(id)) {
             (Some(local), Some(synced)) => !local.shape.same_position(synced),
             _ => false,
         };

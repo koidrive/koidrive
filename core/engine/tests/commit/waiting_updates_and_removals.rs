@@ -428,6 +428,22 @@ fn a_remote_move_of_a_node_whose_update_waits_reaches_the_disk() {
     assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "q", 1)));
 }
 
+#[test]
+fn a_node_whose_update_waits_stays_where_it_is_when_moved_into_an_ignored_folder() {
+    let (mut trees, mut commits, mut ids) = a_move_and_edit_whose_s_update_waits();
+    trees.set_rules::<&str>(&[], Some(RuleFile::parse(b"/build/\n")));
+    trees.set_remote("build".into(), remote(dir(ROOT, "build")));
+    trees.set_remote("n".into(), remote(file("build", "x", 5)));
+    trees.settle();
+    assert!(trees.excluded("n"));
+    assert_eq!(effects_for(&mut trees, &mut ids, "n"), []);
+    assert_eq!(
+        trees.local().get("n").map(|node| &node.shape),
+        Some(&file(ROOT, "x", 1))
+    );
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+}
+
 /// The user creates folder d at X, where S still holds parked file h at x, and file m in d, so the
 /// updates of both wait. The other device moves h into d, and the user deletes d with m. d is
 /// brought back for h, and m's delete is uploaded once its update fits.
