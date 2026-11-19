@@ -211,6 +211,26 @@ class NewComments(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertEqual([line.split(":")[0] for line in out.splitlines()[:2]], ["cli/src/main.rs", "core/a/src/lib.rs"])
 
+    def test_comments_only_protects_only_docs_on_clap_items(self):
+        src = (
+            '/// Syncs folders.\n#[derive(Parser)]\n#[command(name = "koi {")]\nstruct Cli {\n    /// Print JSON.\n    #[arg(long)]\n    json: bool,\n}\n\n'
+            "#[derive(Subcommand)]\nenum Command {\n    /// Show sync history.\n    History {\n        /// The folder to show.\n        folder: String,\n    },\n}\n\n"
+            "/// One line per space.\nfn table() {}\n\n/// A found server.\n#[derive(Debug)]\nstruct Found;\n"
+        )
+        for doc in ["/// Syncs folders.\n", "    /// Print JSON.\n", "    /// Show sync history.\n", "        /// The folder to show.\n"]:
+            with self.subTest(doc=doc):
+                code, out = self.comments_only({"cli/src/a.rs": src}, {"cli/src/a.rs": src.replace(doc, "", 1)})
+                self.assertEqual(code, 1, out)
+        code, out = self.comments_only({"cli/src/a.rs": src}, {"cli/src/a.rs": src.replace("/// One line per space.\n", "").replace("/// A found server.\n", "")})
+        self.assertEqual(code, 0, out)
+
+    def test_a_new_doc_beside_clap_items_in_internal_code_fails(self):
+        self.assertFlags(
+            {"cli/tests/t.rs": "#[derive(Parser)]\nstruct Cli {}\nfn run() {}\n"},
+            {"cli/tests/t.rs": "#[derive(Parser)]\nstruct Cli {}\n/// Runs.\nfn run() {}\n"},
+            ("cli/tests/t.rs", 3),
+        )
+
     def test_comments_only_passes_plain_rust_doc_removal(self):
         code, out = self.comments_only({"core/a/src/lib.rs": "/// Adds.\npub fn add(a: u8, b: u8) -> u8 { a + b }\n"}, {"core/a/src/lib.rs": "pub fn add(a: u8, b: u8) -> u8 { a + b }\n"})
         self.assertEqual(code, 0, out)
