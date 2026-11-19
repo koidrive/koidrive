@@ -331,7 +331,8 @@ async fn progress_alone_wakes_a_watcher_at_most_once_an_interval_and_a_state_cha
     let started = tokio::time::Instant::now();
     let mut woke = Vec::new();
     while started.elapsed() < Duration::from_secs(1) {
-        assert_eq!(changes.next().await.unwrap(), Change::Progress);
+        let next = tokio::time::timeout(PROGRESS_INTERVAL * 2, changes.next()).await;
+        assert_eq!(next.ok().map(Result::unwrap), Some(Change::Progress));
         woke.push(started.elapsed());
     }
     let marks = marking.await.unwrap();
@@ -366,8 +367,11 @@ async fn a_progress_change_waiting_out_the_interval_survives_a_dropped_wait() {
     driver.inner.progressed.send_replace(());
     let dropped = tokio::time::timeout(PROGRESS_INTERVAL / 5, changes.next()).await;
     assert!(dropped.is_err(), "the interval holds the change back");
+    driver.inner.progressed.send_replace(());
     let kept = tokio::time::timeout(PROGRESS_INTERVAL * 2, changes.next()).await;
     assert_eq!(kept.ok().map(Result::unwrap), Some(Change::Progress));
+    let quiet = tokio::time::timeout(PROGRESS_INTERVAL * 2, changes.next()).await;
+    assert!(quiet.is_err(), "the change took the marks of its wait with it");
 }
 
 #[tokio::test(flavor = "multi_thread")]
