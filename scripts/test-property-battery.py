@@ -124,6 +124,12 @@ class PropertyBattery(unittest.TestCase):
             "- devices lose_no_write: failed without saving a case on shards 5, on a case that may be one another test of "
             "its binary saved there"])
         self.assertEqual(none, "No property failed without saving a case.\n")
+        unknown = re.search(r"(?ms)^ *(jq -r '\[\.\[\] \| select\(\.unsaved == null\).*?' shards\.json)$", self.workflow)[1]
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "shards.json").write_text(json.dumps(shards + [{"shard": 11, "unsaved": None}]))
+            self.assertEqual(subprocess.check_output(["bash", "-eu", "-c", unknown], cwd=directory, text=True),
+                             "- Unknown on shards 9, 11: the battery could not read their logs for tests that failed "
+                             "without saving a case\n")
 
     def test_execution_and_repro_pass_isolated_budgets_and_same_selection(self):
         execution, repro = commands(self.workflow)
@@ -1050,6 +1056,24 @@ class Triage(unittest.TestCase):
                 self.assertEqual("(saved by another test)" in text, bool(listed) is False)
                 self.assertEqual("- devices §lose_no_write§ on shards 2".replace("§", chr(96)) in text, bool(listed))
 
+    def test_a_shard_whose_logs_could_not_be_read_fails_the_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for shard, result in ((3, {"shard": 3, "failing": [], "unsaved": None}), (4, {"shard": 4, "failing": []}),
+                                  (6, {"shard": 6, "failing": [], "unsaved": []})):
+                (root / f"failure-shard-{shard}/logs").mkdir(parents=True)
+                (root / f"failure-shard-{shard}/result-{shard}.json").write_text(json.dumps(result))
+            self.assertEqual(triage.unread(root), [3, 4])
+            spec = {"run": "7", "head": "h" * 40, "base": "b" * 40, "cases": [], "others": [], "unread": [3, 4]}
+            (root / "cases.json").write_text(json.dumps(spec))
+            run = subprocess.run([sys.executable, str(ROOT / "scripts/triage-battery.py"), "report",
+                                  "--cases", str(root / "cases.json"), "--run-url", "https://example.com/runs/7",
+                                  "--out", str(root / "out")], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            text = (root / "out/triage.md").read_text()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("::error::the battery could not read the logs of shards 3, 4", run.stdout)
+        self.assertIn("could not read the logs of shards 3, 4", text)
+
     def test_a_property_stopped_by_a_committed_case_is_flagged_as_generating_nothing(self):
         case = "7d9b037c" + "0" * 56
         test = "devices_converge_across_restores_and_rewinds"
@@ -1121,6 +1145,13 @@ class Triage(unittest.TestCase):
         failing = {"runs": [{"result": "fail", "message": "lost"}] * 2, "target": "sim --test devices"}
         passing = {"runs": [{"result": "pass", "message": None}] * 2, "target": "sim --test devices"}
         rows = triage.combine(spec, {"head": {"results": [failing, passing]}, "base": {"results": [failing, failing]}})
+        broken = {"runs": [{"result": "error", "message": "the build failed"}] * 2, "target": "sim --test devices"}
+        unbuilt = triage.combine(spec, {"head": {"results": [broken, passing]}, "base": {"results": [failing, failing]}})
+        spec["others"] = [{"binary": "devices", "test": "lose_no_write", "shards": [5], "cases": [explaining],
+                           "message": "lost", "by_shard": [entry(5, [explaining])]}]
+        self.assertEqual([row["verdict"] for row in unbuilt], ["unknown"])
+        self.assertEqual([other["shards"] for other in triage.starved(spec, unbuilt)], [[5]])
+        self.assertEqual([other["test"] for other in triage.caseless(spec, unbuilt)], ["lose_no_write"])
         for by_shard, shards in (([entry(2, [unrelated]), entry(5, [explaining])], [2]),
                                  ([entry(2, [explaining]), entry(5, [], zero=True)], [5]),
                                  ([entry(2, [explaining]), entry(5, [explaining])], [])):
@@ -1150,6 +1181,8 @@ class Triage(unittest.TestCase):
         self.assertEqual(unsaved(fixed_seed), [])
         self.assertEqual(unsaved(recorded), [])
         self.assertEqual(unsaved(plain), [])
+        self.assertEqual(unsaved(committed.replace("Test failed", "cannot save proptest regression cc 77: disk full\nTest failed")),
+                         [])
         self.assertEqual(unsaved(plain.replace("prints_help", "prints_help_twice")), [("prints_help_twice", True)])
         self.assertEqual(unsaved(FAILING_LOG.format(case="a" * 64)), [])
 

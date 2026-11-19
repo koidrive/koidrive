@@ -12,6 +12,7 @@ SAVED = re.compile(r"^proptest regression saved in (\S+): cc ([0-9a-f]+)$", re.M
 CASE_FAILS = re.compile(r"^\S+::\S+ case \S+ fails: ")
 NEVER_RAN = re.compile(r"^\S+::\S+ never ran case \S+$", re.M)
 HARNESS_REPORT = re.compile(r"^(\S+::\S+ case \S+ fails: |not recorded: |recorded but passed: )")
+UNSAVABLE = "cannot save proptest regression"
 LOADED = re.compile(r"^proptest regression: cc ([0-9a-f]+)$", re.M)
 COMMITTED = re.compile(r"\bcc-[0-9a-f]+\b")
 
@@ -53,7 +54,7 @@ def unsaved(log, properties):
     saved = {match[2] for match in SAVED.finditer(log)}
     found = []
     for test, body in sections(log):
-        if SAVED.search(body):
+        if SAVED.search(body) or UNSAVABLE in body:
             continue
         reports = [line for line in body.splitlines() if HARNESS_REPORT.match(line) or NEVER_RAN.match(line)]
         loaded = set(LOADED.findall(body))

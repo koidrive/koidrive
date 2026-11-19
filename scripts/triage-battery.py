@@ -184,6 +184,12 @@ def target_logs(logs, failing):
     return [log for log in logs.glob("*.log") if log.stem.rsplit("-", 1)[0] == binary]
 
 
+def unread(failures):
+    return [shard for shard, shard_dir in shards(failures)
+            for result in [shard_dir / f"result-{shard}.json"]
+            if result.is_file() and json.loads(result.read_text()).get("unsaved") is None]
+
+
 def unattributed(failures):
     found = []
     for shard, shard_dir in shards(failures):
@@ -438,14 +444,18 @@ def combine(spec, replays):
     return rows
 
 
+def reproducing(rows):
+    return {(row["path"], row["test"]) for row in rows if any(run["result"] == "fail" for run in row["head"])}
+
+
 def caseless(spec, rows):
-    reproduced = {(row["path"], row["test"]) for row in rows}
+    reproduced = reproducing(rows)
     return [other for other in spec["others"]
             if not any((path, other["test"]) in reproduced for path in other["cases"])]
 
 
 def starved(spec, rows):
-    reproduced = {(row["path"], row["test"]) for row in rows}
+    reproduced = reproducing(rows)
     found = []
     for other in spec["others"]:
         shards = [entry["shard"] for entry in other.get("by_shard", [])
@@ -536,6 +546,10 @@ masked, and for an entry that lists cases, only by those cases, which come befor
                   "binary passes them on every head run, so they are not in the table:", ""]
         lines += [f"- {other['binary']} `{other['test']}` on shards {', '.join(map(str, other['shards']))}"
                   for other in others]
+    if spec.get("unread"):
+        lines += ["", f"The battery could not read the logs of shards {', '.join(map(str, spec['unread']))} for the "
+                  "tests that failed without saving a case, so triage can't tell whether a property there generated "
+                  "0 cases."]
     if spec.get("unattributed"):
         lines += ["", "These targets failed, but their logs name no failing test, so triage replayed nothing for "
                   "them (a crash, a signal or a timeout ends a test binary before it reports). Run their repro "
@@ -582,7 +596,8 @@ def main():
         if profile is None:
             sys.exit("Neither the head's Cargo.toml nor this checkout's has a [profile.checked] section.")
         spec = {"run": arguments.run, "head": arguments.head, "base": arguments.base,
-                "checked_profile": profile, "cases": cases, "others": others, "unattributed": failed}
+                "checked_profile": profile, "cases": cases, "others": others, "unattributed": failed,
+                "unread": unread(arguments.failures)}
         arguments.out.write_text(json.dumps(spec, indent=2) + "\n")
         print(f"{len(cases)} new cases; {len(others)} failing tests saved no new case; "
               f"{len(failed)} failing targets left no failing test in their logs.")
@@ -612,6 +627,9 @@ def main():
             errors.append("these tests generated 0 cases on some shards: " + "; ".join(
                 f"{other['binary']} {other['test']} on shards {', '.join(map(str, other['shards']))}"
                 for other in zero))
+        if spec.get("unread"):
+            errors.append(f"the battery could not read the logs of shards {', '.join(map(str, spec['unread']))} "
+                          "for tests that generated 0 cases")
         if spec.get("unattributed"):
             errors.append("; ".join(f"shard {failed['shard']}: {failed['target'] or 'the whole shard'} "
                                     f"failed ({failed['reason']}) with no failing test in its log"
