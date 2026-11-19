@@ -160,6 +160,12 @@ impl Value {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Answered {
+    Owed,
+    Settles,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Intent {
     pub(super) author: usize,
@@ -173,7 +179,8 @@ pub(super) struct Intent {
     pub(super) dropped: bool,
     restored: bool,
     pub(super) forgotten: bool,
-    pub(super) answer: bool,
+    discarded: bool,
+    pub(super) answer: Option<Answered>,
     pub(super) carried: Option<Carried>,
 }
 
@@ -281,7 +288,8 @@ impl Intents {
             dropped: false,
             restored: false,
             forgotten: false,
-            answer: false,
+            discarded: false,
+            answer: None,
             carried: None,
         });
         self.list.len() - 1
@@ -304,9 +312,16 @@ impl Intents {
         self.list.len()
     }
 
-    pub(super) fn answered(&mut self, author: usize, made: u64, ino: u128, value: Value) {
+    pub(super) fn answered(
+        &mut self,
+        author: usize,
+        made: u64,
+        ino: u128,
+        value: Value,
+        answer: Answered,
+    ) {
         self.record(author, made, ino, "publish", value);
-        self.list.last_mut().expect("recorded above").answer = true;
+        self.list.last_mut().expect("recorded above").answer = Some(answer);
     }
 
     pub(super) fn ino_of(&self, d: usize, node: &str) -> Option<u128> {
@@ -446,6 +461,18 @@ impl Intents {
         }
     }
 
+    fn owed(&self, i: usize, server: &Server) -> bool {
+        let Value::Place { parent, name } = &self.list[i].value else {
+            return false;
+        };
+        self.nodes(i).any(|id| {
+            server.nodes.get(id).is_some_and(|node| {
+                pending_stem(&node.name).is_some_and(|stem| named(stem, name))
+                    && self.parent_is(i, *parent, &node.parent_id, &server.root)
+            })
+        })
+    }
+
     pub(super) fn sync(&mut self, server: &Server, clock: u64, before: Option<&Server>) {
         for i in 0..self.list.len() {
             let holds = self.holds(i, server, true);
@@ -513,10 +540,12 @@ impl Intents {
         }
     }
 
-    pub(super) fn give_up(&mut self, d: usize, nodes: &BTreeSet<NodeId>) {
+    pub(super) fn give_up(&mut self, d: usize, nodes: &BTreeSet<NodeId>, server: &Server) {
         for i in 0..self.list.len() {
             let given_up = self.list[i].author == d && self.nodes(i).any(|id| nodes.contains(id));
+            let unsent = given_up && !self.holds(i, server, true) && !self.owed(i, server);
             self.list[i].dropped |= given_up;
+            self.list[i].discarded |= unsent;
         }
     }
 
@@ -539,13 +568,30 @@ impl Intents {
         root: &str,
     ) -> bool {
         self.gave_place(
-            |intent| author.is_none_or(|author| intent.author == author),
+            |intent| !intent.discarded && author.is_none_or(|author| intent.author == author),
+            (node, parent, name, root),
+        )
+    }
+
+    pub(super) fn discarded_place(
+        &self,
+        author: Option<usize>,
+        node: &str,
+        parent: &str,
+        name: &str,
+        root: &str,
+    ) -> bool {
+        self.gave_place(
+            |intent| intent.discarded && author.is_none_or(|author| intent.author == author),
             (node, parent, name, root),
         )
     }
 
     pub(super) fn lost_place(&self, node: &str, parent: &str, name: &str, root: &str) -> bool {
-        self.gave_place(|intent| intent.lost, (node, parent, name, root))
+        self.gave_place(
+            |intent| intent.lost && !intent.discarded,
+            (node, parent, name, root),
+        )
     }
 
     fn gave_place(
@@ -585,6 +631,7 @@ impl Intents {
                 return false;
             };
             self.list[i].author == d
+                && !self.list[i].discarded
                 && (subtree.iter()).any(|ino| self.nodes_of(d, *ino).any(|id| id == node))
         })
     }
@@ -597,8 +644,17 @@ impl Intents {
     }
 
     pub(super) fn wrote(&self, d: usize, write: i64) -> bool {
+        self.gave_write(d, write, false)
+    }
+
+    pub(super) fn discarded_write(&self, d: usize, write: i64) -> bool {
+        self.gave_write(d, write, true)
+    }
+
+    fn gave_write(&self, d: usize, write: i64, discarded: bool) -> bool {
         (self.list.iter()).any(|intent| {
             intent.author == d
+                && intent.discarded == discarded
                 && matches!(intent.value, Value::Content { write: made, .. } if made == write)
         })
     }
@@ -640,17 +696,27 @@ impl Intents {
                     && !self.saw(i, j)
                     && (other.applied > intent.applied || other.held);
                 let held_as = |k: usize| match (&intent.value, &self.list[k].value) {
-                    (Value::Content { digest, .. }, Value::Content { digest: seen, .. }) => {
+                    (
+                        Value::Content { digest, write },
+                        Value::Content {
+                            digest: seen,
+                            write: seen_write,
+                        },
+                    ) => {
                         k != i
-                            && intent.applied > 0
-                            && digest == seen
+                            && (intent.applied > 0 && digest == seen
+                                || intent.answer.is_some() && write == seen_write)
                             && self.nodes(i).any(|id| self.on(k, id))
                     }
                     _ => false,
                 };
+                let answered_over = intent.answer.is_some()
+                    && other.answer == Some(Answered::Owed)
+                    && (1..=other.made).contains(&intent.applied);
                 let replaced = other.value.field() == field
                     && self.nodes(i).any(|id| self.on(j, id))
                     && (self.saw(j, i)
+                        || answered_over
                         || later
                         || (0..self.list.len()).any(|k| held_as(k) && self.saw(j, k)));
                 let looped = later
@@ -740,7 +806,7 @@ impl Intents {
             }
             let author = intent.author;
             if matches!(intent.value, Value::Trashed { .. })
-                || intent.answer
+                || intent.answer == Some(Answered::Settles)
                 || self.holds(i, server, false)
                 || self.settled(i, server)
             {
@@ -834,12 +900,46 @@ mod tests {
     }
 
     #[test]
+    fn a_published_write_must_reach_the_server_and_a_discarded_change_counts_as_unasked() {
+        let mut intents = Intents::new(1);
+        intents.nodes[0].insert(1, ["n".to_owned()].into());
+        let content = |write: i64| Value::Content {
+            write,
+            digest: vec![write as u8],
+        };
+        let place = |name: &str| Value::Place {
+            parent: None,
+            name: name.to_owned(),
+        };
+        let at_a = NodeState {
+            node_id: "n".into(),
+            parent_id: "root".into(),
+            name: "a".into(),
+            status: NodeStatus::Live as i32,
+            ..NodeState::default()
+        };
+        let server = Server::of("root", vec![at_a]);
+        let ok = |intents: &Intents| intents.check(&server, |_| false, |_, _| false).is_ok();
+        intents.answered(0, 1, 1, content(1), Answered::Settles);
+        assert!(ok(&intents));
+        intents.answered(0, 2, 1, content(2), Answered::Owed);
+        assert!(!ok(&intents));
+        intents.record(0, 3, 1, "move", place("a"));
+        intents.record(0, 3, 1, "move", place("b"));
+        intents.give_up(0, &["n".to_owned()].into(), &server);
+        assert!(intents.placed(Some(0), "n", "root", "a", "root"));
+        assert!(!intents.placed(Some(0), "n", "root", "b", "root"));
+        assert!(intents.discarded_place(Some(0), "n", "root", "b", "root"));
+        assert!(!intents.wrote(0, 2) && intents.discarded_write(0, 2));
+    }
+
+    #[test]
     fn only_a_restore_answer_keeps_a_given_up_delete_settling_the_writes_it_saw() {
         assert!(a_delete_of_another_devices_write(
             |intents, node| intents.restore_deleted(0, node)
         ));
         assert!(!a_delete_of_another_devices_write(
-            |intents, node| intents.give_up(0, node)
+            |intents, node| intents.give_up(0, node, &Server::of("root", Vec::new()))
         ));
     }
 }
