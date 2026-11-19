@@ -410,7 +410,9 @@ fn an_identity_holding_another_entrys_handle_makes_its_move_a_removal_and_a_crea
     let Some(other) = snapshot.entries[Path::new("b.txt")].id.handle else {
         return;
     };
-    (snapshot.entries.get_mut(Path::new("a.txt")).unwrap().id).handle = Some(other);
+    snapshot
+        .entries
+        .update(Path::new("a.txt"), |entry| entry.id.handle = Some(other));
     fs::rename(root.join("a.txt"), root.join("c.txt")).unwrap();
     let changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
     assert_eq!(changes, [removed("a.txt", File), created("c.txt", File)]);
@@ -1065,8 +1067,10 @@ fn a_folder_on_another_device_number_is_not_replaced() {
 
     for ino in [0, 1000] {
         let mut snapshot = scanned.clone();
-        for entry in snapshot.entries.values_mut() {
+        for (path, entry) in &scanned.entries {
+            let mut entry = *entry;
             entry.id.ino += ino;
+            snapshot.entries.insert(path.clone(), entry);
         }
         let changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
         let expected = match ino {
