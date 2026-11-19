@@ -61,10 +61,13 @@ pub(crate) async fn status(paths: &Paths, check: bool) -> Result<Done, CliError>
     if status.paused {
         done = done.then(&["koi", "resume"]);
     }
-    for (path, command) in (status.folders.iter())
-        .filter_map(|folder| Some((folder.path.as_deref()?, RemedyData::of(folder)?.command()?)))
-    {
-        done = done.then(&["koi", "folder", command, &path.to_string_lossy()]);
+    for (path, command) in (status.folders.iter()).filter_map(|folder| {
+        Some((
+            folder.path.as_deref()?.to_str()?,
+            RemedyData::of(folder)?.command()?,
+        ))
+    }) {
+        done = done.then(&["koi", "folder", command, path]);
     }
     Ok(done)
 }

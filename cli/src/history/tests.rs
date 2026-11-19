@@ -50,6 +50,19 @@ fn concise_restore_replay_does_not_assume_a_linked_folder() {
 }
 
 #[test]
+fn a_restore_in_a_folder_whose_name_is_not_utf8_suggests_no_command_naming_it() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let done = asked(
+        Path::new(std::ffi::OsStr::from_bytes(b"/home/ada/Work\xff")),
+        "report.docx",
+        "restore-1".into(),
+        Some(FolderState::UpToDate),
+    );
+    assert!(done.next.is_empty(), "{:?}", done.next);
+}
+
+#[test]
 fn concise_pending_restores_keep_the_folder_problem_and_decisions() {
     let folder = FolderStatus {
         state: FolderState::Halted,

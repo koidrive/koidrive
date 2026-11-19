@@ -406,8 +406,8 @@ fn asked(folder: &Path, path: &str, id: String, state: Option<FolderState>) -> D
         ..Done::value(data, &value, note)
     }
     .human(format!("{value}\n"), summary);
-    match state {
-        Some(_) => done.then(&["koi", "history", "requests", &folder_text]),
+    match state.and(folder.to_str()) {
+        Some(folder) => done.then(&["koi", "history", "requests", folder]),
         None => done,
     }
 }
