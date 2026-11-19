@@ -234,18 +234,6 @@ fn a_folder_kept_for_a_file_its_rules_exclude_stays_out_of_sync_once_the_file_le
 }
 
 #[test]
-fn a_file_renamed_to_a_name_its_rules_exclude_stays_when_another_device_deletes_it() {
-    let phases = vec![
-        vec![(0, folder("a")), (0, user(1, 0, 1, "b"))],
-        vec![(1, rename(1, 1, "c.txt"))],
-        vec![(0, delete(1))],
-    ];
-    let world = converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
-    assert_eq!(live_node_at(&world, &["a", "b"]), None);
-    ino_at(&world, 1, &["a", "c.txt"]);
-}
-
-#[test]
 fn a_rules_file_another_device_writes_leaves_out_what_it_names_until_it_goes() {
     let rulings = [
         (0, 0, Ruling::File(vec!["*.txt"])),
@@ -256,10 +244,7 @@ fn a_rules_file_another_device_writes_leaves_out_what_it_names_until_it_goes() {
     assert_eq!(live_node_at(&world, &["c.txt"]), None);
     ino_at(&world, 1, &[".koiignore"]);
     let world = converge_ruled(&[vec![], vec![]], &rulings, &phases).unwrap();
-    assert_eq!(
-        content_on(&world, 0, "c.txt"),
-        content_on(&world, 1, "c.txt")
-    );
+    assert_eq!(c_txt(&world, 0), c_txt(&world, 1));
 }
 
 #[test]
@@ -275,26 +260,40 @@ fn files_its_rules_left_out_sync_once_its_rules_let_them_back() {
         assert_eq!(live_node_at(&world, &["c.txt"]), None);
         assert!(live_node_at(&world, &["a"]).is_some());
         let world = converge_ruled(&[vec![], exclude], rulings, &phases).unwrap();
-        assert_eq!(
-            content_on(&world, 0, "c.txt"),
-            content_on(&world, 1, "c.txt")
-        );
+        assert_eq!(c_txt(&world, 0), c_txt(&world, 1));
     }
 }
 
 #[test]
-fn a_synced_file_its_rules_come_to_exclude_keeps_its_bytes_when_another_device_overwrites_it() {
-    let rulings = [(1, 1, Ruling::Exclude(vec!["*.txt"]))];
-    let phases = [vec![(0, file("c.txt"))], vec![]];
-    let before = converge_ruled(&[vec![], vec![]], &rulings, &phases).unwrap();
-    let phases = [vec![(0, file("c.txt"))], vec![(0, overwrite(0))]];
-    let world = converge_ruled(&[vec![], vec![]], &rulings, &phases).unwrap();
-    assert_eq!(
-        content_on(&world, 1, "c.txt"),
-        content_on(&before, 1, "c.txt")
+fn a_synced_file_its_rules_come_to_leave_out_keeps_its_bytes_when_another_device_changes_it() {
+    let mut renamed = vec![vec![(0, folder("a")), (0, user(1, 0, 1, "b"))]];
+    renamed.extend([vec![(1, rename(1, 1, "c.txt"))], vec![(0, delete(1))]]);
+    let world = converge_excluding(&[vec![], vec!["*.txt"]], &renamed).unwrap();
+    assert_eq!(live_node_at(&world, &["a", "b"]), None);
+    ino_at(&world, 1, &["a", "c.txt"]);
+    let ruled = |last| {
+        let rulings = [(1, 1, Ruling::Exclude(vec!["*.txt"]))];
+        let phases = [vec![(0, file("c.txt"))], last];
+        converge_ruled(&[vec![], vec![]], &rulings, &phases).unwrap()
+    };
+    let (before, world) = (ruled(vec![]), ruled(vec![(0, overwrite(0))]));
+    assert_eq!(c_txt(&world, 1), c_txt(&before, 1));
+    assert_ne!(c_txt(&world, 0), c_txt(&world, 1));
+}
+
+#[test]
+fn a_folder_its_include_list_takes_under_a_pending_name_is_sent() {
+    let _red = expect_red(
+        Check::SentLeftOut,
+        "a commit of device 1 places node 01a1c2c0-39a0-7504-af4d-4d6a531020af at [\"ss (pending)\"], which the rules of device 1 leave out",
     );
-    assert_ne!(
-        content_on(&world, 0, "c.txt"),
-        content_on(&world, 1, "c.txt")
-    );
+    let work = (1, Step::Work(0));
+    let mut phase = vec![(1, folder("\u{df}")), work, (1, folder("ss")), work];
+    phase.push((1, rename(0, 0, "a")));
+    let rulings = [(0, 1, Ruling::Include(vec!["ss/"]))];
+    converge_ruled(&[vec![], vec![]], &rulings, &[phase]).unwrap();
+}
+
+fn c_txt(world: &World, device: usize) -> Content {
+    content_on(world, device, "c.txt")
 }
