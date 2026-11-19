@@ -7,8 +7,8 @@ tests = [
   "devices_converge_once_the_faults_stop",
   "devices_converge_across_rewinds_and_rollbacks",
 ]
-message = '''(after phase <n>: a commit of device <n> finishes the pending name \".*\" of node <id>, which the user of device <n> never gave it\.|not recorded: devices::\S+ \S+ OwnerFinish a commit of device <n> finishes the pending name \"(?:(?! not recorded: ).)*\" of node <id>, which the user of device <n> never gave it( not recorded: devices::\S+ \S+ OwnerFinish (?:(?! not recorded: ).)+?never gave it)*( devices::\S+ never ran case \S+)*)'''
+message = '''(after phase <n>: a commit of device <n> finishes the pending name \".*\" of node <id>, which the user of device <n> never gave it\.|not recorded: devices::\S+ \S+ OwnerFinish a commit of device <n> finishes the pending name \"(?:(?! not recorded: ).)*\" of node <id>, which the user of device <n> never gave it( not recorded: devices::\S+ \S+ OwnerFinish (?:(?! not recorded: ).)+?never gave it)*)'''
 examples = [
   "after phase 1: a commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it.",
-  "not recorded: devices::devices_converge_when_a_folder_owing_its_name_is_deleted_and_brought_back\tcc-6441ca063a4f9379f04cfe6b94b012a5bbf0008256e1230d0f7b88453880f651\tOwnerFinish\ta commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it\ndevices::devices_converge_when_a_folder_owing_its_name_is_deleted_and_brought_back never ran case cc-04e9c2e75cb97a8b5778a1a946c4dadae04b3f63461c2c6bef76634c3556c2db",
+  "not recorded: devices::devices_converge_when_a_folder_owing_its_name_is_deleted_and_brought_back\tcc-6441ca063a4f9379f04cfe6b94b012a5bbf0008256e1230d0f7b88453880f651\tOwnerFinish\ta commit of device 1 finishes the pending name \"A\" of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68, which the user of device 1 never gave it",
 ]
