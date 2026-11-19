@@ -54,7 +54,7 @@ Property: from any reachable state, after quiescence starts, every device eventu
 
 ## 3.5 No resurrection
 
-Property: a node trashed by a delete whose author had seen its latest state stays trashed unless a later op revives it. Every op a device sends derives from one specific user action on that device that has not been propagated yet (an edit, move, rename, create or delete it observed on disk), or from a user's restore request.
+Property: a node trashed by a delete whose author had seen its latest state stays trashed unless a later op revives it. Every op a device sends derives from one specific user action on that device that has not been propagated yet (an edit, move, rename, create or delete it observed on disk), from a user's restore request or recovery answer, or carries another user's change that the server lost or that a recovery answer must keep: a compensating op of §6.4 or a carried replay (RFC 0018, RFC 0019, RFC 0029 §5.4). A carried op never counts as a change of this device's user.
 
 The engine sends ops only for L ≠ S, L changes only through observations, and S moves only toward what was sent or what R says. Two paths could make a known file look new, and both are guarded: a crash, handled by effect recovery (§2.8, §5.3), and a lost store, handled as a first link that matches local files against R before anything is uploaded and holds the unmatched ones when the root marker counts effects the store lacks, or when the server counts commits of this device or the folder held the space's root marker before the link. Without that evidence, it holds the ones at a path R's trash holds, so a fresh link of a copy that left out `.koidrive` can bring back a deleted file that the trash no longer holds (§6.4).
 
