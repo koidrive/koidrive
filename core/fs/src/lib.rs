@@ -3629,7 +3629,10 @@ impl NativeWatcher {
                     continue;
                 }
             }
-            let rel = path.strip_prefix(&self.root).unwrap_or(Path::new(""));
+            let Ok(rel) = path.strip_prefix(&self.root) else {
+                self.watch_git_dirs();
+                continue;
+            };
             if listing_only && self.folder_as_scanned(&path, rel) {
                 self.listed.insert(rel.to_path_buf());
                 continue;
