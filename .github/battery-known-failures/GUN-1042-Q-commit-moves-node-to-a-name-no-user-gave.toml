@@ -1,6 +1,0 @@
-class = "Q"
-issue = "GUN-1042"
-tests = ["devices_converge_across_restores_and_rewinds"]
-message = '''after phase <n>: a commit of device <n> moves node <id> to the name ".*", which the user of device <n> never gave to anything\.'''
-examples = ["after phase 1: a commit of device 2 moves node 01a1c2c0-39d2-7bed-b3e4-9ef55c94cb0d to the name \"c.txt\", which the user of device 2 never gave to anything."]
-cases = ["099e4727784c"]
