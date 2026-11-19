@@ -54,10 +54,11 @@ jobs = ["rust_lint"]
 globs = [
   ".config/nextest.toml",
   ".github/rust-test-times.json",
+  ".github/rust-tests-merge-only.txt",
   "scripts/ci-rust-tests.py",
   "scripts/test-ci-rust-tests.py",
 ]
-jobs = ["rust", "rust_lint", "rust_driver", "rust_engine"]
+jobs = ["rust", "rust_lint", "rust_driver", "rust_engine", "rust_sim"]
 
 [[path]]
 globs = [

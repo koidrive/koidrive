@@ -1,0 +1,15 @@
+# Slow tests that run on merge_group, main pushes and every other event, but not on pull_request runs.
+# Mutation testing found that each one catches no mutant a faster test misses (KOI-1125), so pull requests
+# skip them and the merge queue still runs each once. One test per line: the nextest binary id, a space, the test name.
+koidrive-engine::guard_model the_notice_follows_the_model_over_every_short_sequence_of_events
+koidrive-driver folder::tests::a_dismissed_folder_stays_dismissed_after_a_truncated_log_and_a_rollback
+koidrive-driver folder::tests::a_file_moved_into_an_ignored_folder_while_its_overwrite_is_held_stays_on_the_other_device
+koidrive-driver folder::tests::a_folder_restored_and_deleted_again_while_the_log_was_truncated_is_noticed
+koidrive-driver folder::tests::a_folder_that_returns_from_a_path_the_rules_exclude_keeps_its_node
+koidrive-driver folder::tests::a_fresh_first_link_sends_what_the_space_lacks_and_keeps_both_files_of_one_name_without_a_question
+koidrive-driver folder::tests::dismissing_the_notice_while_the_folder_is_removed_opens_no_new_one
+koidrive-sim::devices rewinds_converge_from_seed_122
+koidrive-sim::devices rewinds_converge_from_seed_301
+koidrive-sim::devices rewinds_converge_from_seed_313
+koidrive-sim::devices rewinds_converge_from_seed_319
+koidrive-sim::devices rewinds_converge_from_seed_605

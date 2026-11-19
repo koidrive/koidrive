@@ -362,10 +362,11 @@ jobs:
       - name: Balance the shards by measured test time
         env:
           SHARDS: ${{ env.OS == 'macos' && needs.changes.outputs.rust_shards_macos || needs.changes.outputs.rust_shards_linux }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -o pipefail
           python3 scripts/ci-rust-tests.py plan --os "$OS" --shards "$(jq --arg os "$OS" '[.include[] | select(.os == $os)] | length' <<<"$SHARDS")" \
-            --list "$RUNNER_TEMP/test-inventory/list.json" --out "$RUNNER_TEMP/rust-tests/shards.toml" | tee -a "$GITHUB_STEP_SUMMARY"
+            --list "$RUNNER_TEMP/test-inventory/list.json" --out "$RUNNER_TEMP/rust-tests/shards.toml" --event "$EVENT" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rust-test-inventory-${{ env.OS }}
@@ -574,7 +575,14 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Run the package tests and doctests
-        run: cargo test --locked --profile checked --no-fail-fast -p koidrive-sim --features koidrive-engine/serde
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          skips=()
+          lines="$(python3 scripts/ci-rust-tests.py skip-args --package koidrive-sim --inventory "$RUNNER_TEMP/inventory.txt" --event "$EVENT")"
+          while IFS= read -r arg; do [ -n "$arg" ] && skips+=("$arg"); done <<<"$lines"
+          echo "Left for the merge queue: ${skips[*]:-nothing}"
+          cargo test --locked --profile checked --no-fail-fast -p koidrive-sim --features koidrive-engine/serde -- "${skips[@]}"
 
   rust-report:
     name: rust test report
@@ -618,6 +626,7 @@ jobs:
           JUNIT_DOWNLOAD: ${{ steps.junit.outcome }}
           INVENTORY_LINUX: ${{ steps.inventory_linux.outcome }}
           INVENTORY_MACOS: ${{ steps.inventory_macos.outcome }}
+          EVENT: ${{ github.event_name }}
         run: |
           status=0
           if [ "$JUNIT_DOWNLOAD" != success ]; then
@@ -637,7 +646,7 @@ jobs:
             mkdir -p "$RUNNER_TEMP/by-os/$os"
             mv "$RUNNER_TEMP/junit/rust-junit-$os-"* "$RUNNER_TEMP/by-os/$os/" || true
             python3 scripts/ci-rust-tests.py report --os "$os" --list "$RUNNER_TEMP/inventory/rust-test-inventory-$os/list.json" \
-              --junit "$RUNNER_TEMP/by-os/$os" --out "$RUNNER_TEMP/report/$os" || status=1
+              --junit "$RUNNER_TEMP/by-os/$os" --out "$RUNNER_TEMP/report/$os" --event "$EVENT" || status=1
             cat "$RUNNER_TEMP/report/$os/summary.md" >> "$GITHUB_STEP_SUMMARY"
           done
           if [ "$status" = 0 ]; then echo "RUST_RESULTS_COMPLETE=true" >> "$GITHUB_ENV"; fi
