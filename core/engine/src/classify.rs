@@ -2808,7 +2808,9 @@ impl Trees {
 
     pub(crate) fn approve(&mut self, ids: impl IntoIterator<Item = NodeId>) {
         for id in ids {
-            if self.reverted.remove(&id) {
+            let reverted = self.reverted.remove(&id);
+            let discarded = self.discarded.remove(&id).is_some();
+            if reverted || discarded {
                 self.mark(&id);
             }
         }

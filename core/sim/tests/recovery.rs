@@ -3718,3 +3718,68 @@ fn a_file_a_store_rollback_forgot_that_its_user_renamed_while_another_device_edi
     assert_eq!(written(&world, "a"), edited);
     assert_eq!(written(&world, "b"), renamed);
 }
+
+fn live_writes(world: &World) -> Vec<i64> {
+    let mut writes: Vec<i64> = (world.space().nodes().into_iter())
+        .filter(|node| node.status == NodeStatus::Live as i32)
+        .filter_map(|node| Some(tag(node.current?.content.as_ref()?)))
+        .collect();
+    writes.sort();
+    writes
+}
+
+#[test]
+fn a_keep_after_a_discard_of_the_same_file_sends_it() {
+    let mut world = synced(1, &[vec![(0, Step::Backup), (0, file("a"))]]);
+    let recover = [(0, Step::Rewind), (0, Step::Connect), (0, DELIVER)];
+    let discard = [(0, Step::Answer(1)), (0, COMMIT)];
+    let keep = [(0, Step::Answer(0))];
+    world
+        .run(1, &[&recover[..], &discard, &recover, &keep].concat())
+        .unwrap();
+    world.phase(2, &[]).unwrap();
+    assert_eq!(live(&world), ["a"]);
+    assert!(!world.devices[0].disk.binned(1));
+}
+
+#[test]
+fn a_kept_file_another_device_keeps_with_other_bytes_first_is_asked_about_again() {
+    let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("c.txt"))]]);
+    world
+        .run(
+            1,
+            &[
+                (1, overwrite(0)),
+                (1, SCAN),
+                (1, COMMIT),
+                (1, COMMIT),
+                (1, DELIVER),
+                (0, Step::Rewind),
+                (0, Step::Connect),
+                (0, DELIVER),
+                (1, Step::Connect),
+                (1, DELIVER),
+                (1, Step::Answer(0)),
+                (0, Step::Answer(0)),
+                (0, COMMIT),
+                (0, COMMIT),
+                (0, DELIVER),
+                (1, DELIVER),
+                (1, DELIVER),
+                (1, COMMIT),
+            ],
+        )
+        .unwrap();
+    let held = only_entry(&world, 1, "c.txt");
+    let node = &world.devices[1].disk.entries()[&held];
+    assert_eq!(node.content.as_ref().map(tag), Some(2));
+    let open = (world.devices[1].engine.commits.questions().iter())
+        .filter(|question| question.answer.is_none())
+        .filter(|question| matches!(question.kind, QuestionKind::Recovery { .. }))
+        .count();
+    assert_eq!(open, 1, "the Keep given before the other device's Keep is asked again");
+    world.run(2, &[(1, Step::Answer(0))]).unwrap();
+    world.phase(3, &[]).unwrap();
+    assert_eq!(live_writes(&world), [1, 2]);
+}
+
