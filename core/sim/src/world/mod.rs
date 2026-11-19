@@ -1407,6 +1407,16 @@ impl World {
             .filter_map(|id| content(trees.remote().live(id)))
             .collect();
         let ids: BTreeSet<NodeId> = question.holds().cloned().collect();
+        let shown: BTreeMap<&NodeId, intents::Shown> = (question.holds())
+            .filter_map(|id| {
+                let shape = trees.remote().live(id)?;
+                let digest = (shape.content.as_ref()).map(|c| c.manifest_digest.as_slice());
+                Some((id, (Some(&shape.parent), shape.name.as_str(), digest)))
+            })
+            .collect();
+        let writes: BTreeSet<i64> = remote.iter().copied().collect();
+        let root = NodeId::from(self.space.space_id());
+        (self.intents).showed(d, self.moment, &shown, &writes, &root, &ids);
         let mut published: Vec<(u128, Value, Answered)> = Vec::new();
         if matches!(answer, Answer::Publish | Answer::Keep) {
             for (id, write, ino) in &held {
