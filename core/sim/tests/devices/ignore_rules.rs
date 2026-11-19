@@ -127,3 +127,90 @@ fn a_folder_the_server_refuses_waits_to_be_removed_around_the_files_its_rules_ex
     ];
     converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
 }
+
+#[test]
+fn a_folder_another_device_deletes_stays_parked_around_a_file_its_rules_came_to_exclude() {
+    let _red = expect_red(
+        Check::RemoveLeftOut,
+        "device 1 is quiet, but it keeps the folders of [\"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\"] parked, which hold entries its rules leave out",
+    );
+    let phases = [
+        vec![
+            (0, folder("a")),
+            (0, user(1, 0, 5117382378431579780, "\u{df}")),
+            (2, folder("a")),
+            (0, overwrite(0)),
+        ],
+        vec![
+            (2, delete(5752264358636203358)),
+            (
+                2,
+                act(0, 397382682828019, 13755243886006184495, "\u{e9}", 3),
+            ),
+            (
+                2,
+                act(3, 10926111558922868753, 14156498429036113526, "A", 2),
+            ),
+            (
+                1,
+                act(3, 2311634670425845215, 5908466150070952589, "c.txt", 2),
+            ),
+        ],
+    ];
+    converge_excluding(&[vec![], vec!["*.txt"], vec![]], &phases).unwrap();
+}
+
+#[test]
+fn a_folder_another_device_deletes_waits_around_a_new_file_moved_to_where_its_rules_exclude() {
+    let _red = expect_red(
+        Check::RemoveLeftOut,
+        "device 1 is quiet, but it waits to settle the folders of [\"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\"], which hold only nodes its rules leave out",
+    );
+    let phases = [
+        vec![(0, folder("\u{c9}"))],
+        vec![
+            (0, delete(0)),
+            (1, user(1, 0, 1, "a")),
+            (1, folder("b")),
+            (1, Step::Work(0)),
+            (1, rename(1, 2, "ss")),
+        ],
+    ];
+    converge_excluding(&[vec![], vec!["/b"]], &phases).unwrap();
+}
+
+#[test]
+fn a_folder_made_at_the_name_l_keeps_for_a_file_moved_into_an_excluded_folder_waits_for_it() {
+    let _red = expect_red(
+        Check::NameLeftOut,
+        "device 1 is quiet, but nodes [\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"] wait for names that entries its rules leave out hold",
+    );
+    let phases = [
+        vec![(0, file("a")), (1, folder("c.txt"))],
+        vec![
+            (1, act(3, 451136702324572615, 2740734820468211981, "a", 0)),
+            (0, rename(0, 0, "b")),
+            (2, folder("a")),
+            (0, act(0, 13001166, 13484083470633789766, "E\u{301}", 2)),
+        ],
+    ];
+    converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
+}
+
+#[test]
+fn a_folder_made_at_the_name_of_a_file_renamed_to_an_excluded_name_waits_with_what_it_holds() {
+    let _red = expect_red(
+        Check::NameLeftOut,
+        "device 0 is quiet, but nodes [\"01a1c2c0-39a0-7504-af4d-4d6a531020af\", \"01a1c2c0-39a0-796a-8df8-fb6da7904e2f\"] wait for names that entries its rules leave out hold",
+    );
+    let phases = [
+        vec![(0, file("\u{c9}"))],
+        vec![
+            (1, rename(0, 0, "c.txt")),
+            (0, folder("a")),
+            (1, folder("\u{c9}")),
+            (1, user(0, 0, 5931057209777015375, "a")),
+        ],
+    ];
+    converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+}

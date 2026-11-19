@@ -211,19 +211,34 @@ impl World {
             }
         }
         let keys = |path: &[String]| path.iter().map(|name| name_key(name)).collect::<Vec<_>>();
-        let copies_left_out: BTreeMap<Vec<String>, u128> = (held.iter())
-            .filter(|(ino, _)| out.inos.contains(ino))
-            .filter_map(|(ino, _)| Some((keys(&disk.path(*ino)?), *ino)))
+        let holders: BTreeMap<Vec<String>, &NodeId> = (held.iter())
+            .filter(|(ino, id)| out.inos.contains(ino) || out.nodes.contains(*id))
+            .flat_map(|(ino, id)| {
+                [disk.path(*ino), path_in(local, root, id)]
+                    .into_iter()
+                    .flatten()
+                    .map(move |path| (keys(&path), *id))
+            })
             .collect();
         out.waiting = (live.keys())
             .filter(|id| quiet && !out.nodes.contains(**id))
             .filter(|id| {
-                let own = trees.local().get(id).map(|node| node.identity.ino);
-                (server_path(id).and_then(|path| copies_left_out.get(&keys(&path))))
-                    .is_some_and(|holder| Some(*holder) != own)
+                (server_path(id).and_then(|path| holders.get(&keys(&path))))
+                    .is_some_and(|holder| holder.as_str() != **id)
             })
             .map(|id| (*id).to_owned())
             .collect();
+        let below_waiting: Vec<NodeId> = (live.keys())
+            .filter(|id| {
+                std::iter::successors(live.get(**id).map(|node| node.parent_id.as_str()), |id| {
+                    live.get(id).map(|node| node.parent_id.as_str())
+                })
+                .take(live.len())
+                .any(|id| out.waiting.contains(id))
+            })
+            .map(|id| (*id).to_owned())
+            .collect();
+        out.waiting.extend(below_waiting);
         out
     }
 }

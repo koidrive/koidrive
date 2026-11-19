@@ -3250,7 +3250,26 @@ impl World {
                     "committing has problems {problems:?} or has stopped: {halted:?}"
                 ));
             }
-            if let Some((id, _)) = engine.trees.local().iter().find(|(_, node)| node.parked) {
+            let parked: Vec<(&NodeId, u128)> = (engine.trees.local().iter())
+                .filter(|(_, node)| node.parked)
+                .map(|(id, node)| (id, node.identity.ino))
+                .collect();
+            let holds_left_out = |(_, ino): &(&NodeId, u128)| {
+                let folder = Place::In(*ino);
+                let mut children = device.disk.children(&folder).peekable();
+                children.peek().is_some() && children.all(|child| unsynced[d].inos.contains(&child))
+            };
+            if !parked.is_empty() && parked.iter().all(holds_left_out) {
+                let nodes: Vec<&NodeId> = parked.iter().map(|(id, _)| *id).collect();
+                let why = format!(
+                    "device {d} is quiet, but it keeps the folders of {nodes:?} parked, which hold entries its rules leave out"
+                );
+                if intents::expected(Check::RemoveLeftOut, &why) {
+                    continue;
+                }
+                return Err(Failure::Diverged(why));
+            }
+            if let Some((id, _)) = parked.first() {
                 return fail(format!("node {id} is parked"));
             }
             let state = engine.trees.state();
@@ -3287,6 +3306,20 @@ impl World {
                     "device {d} is quiet, but nodes {waiting:?} wait for names that entries its rules leave out hold"
                 );
                 if intents::expected(Check::NameLeftOut, &why) {
+                    continue;
+                }
+                return Err(Failure::Diverged(why));
+            }
+            let holds_only_left_out = |id: &NodeId| {
+                let mut children = trees.local_children(id).peekable();
+                children.peek().is_some() && children.all(|child| left_out.holds(&trees, child))
+            };
+            if !unsettled.is_empty() && unsettled.iter().all(|(id, _)| holds_only_left_out(id)) {
+                let nodes: Vec<&NodeId> = unsettled.iter().map(|(id, _)| id).collect();
+                let why = format!(
+                    "device {d} is quiet, but it waits to settle the folders of {nodes:?}, which hold only nodes its rules leave out"
+                );
+                if intents::expected(Check::RemoveLeftOut, &why) {
                     continue;
                 }
                 return Err(Failure::Diverged(why));

@@ -173,6 +173,7 @@ impl Engine {
             })
             .collect();
         let mut left_out: BTreeSet<NodeId> = BTreeSet::new();
+        let mut placed: BTreeSet<NodeId> = BTreeSet::new();
         while let Some(ino) = queue.pop_front() {
             let entry = &disk.entries()[&ino];
             let kind = match entry.content {
@@ -186,7 +187,9 @@ impl Engine {
                 queue.extend(disk.children(&Place::In(ino)));
                 if let Some(id) = known.get(&ino) {
                     left_out.insert(id.clone());
-                    self.leave_out(disk, (ino, id), &nodes, &known);
+                    if self.leave_out(disk, (ino, id), &nodes, &known) {
+                        placed.insert(id.clone());
+                    }
                 }
                 continue;
             }
@@ -238,7 +241,7 @@ impl Engine {
         let missing: BTreeSet<NodeId> = (reached.into_iter())
             .filter(|id| !on_disk.contains(id))
             .collect();
-        let reported: BTreeSet<NodeId> = nodes.into_values().collect();
+        let reported: BTreeSet<NodeId> = nodes.into_values().chain(placed).collect();
         self.displace(&reported);
         let gone = self.gone(&missing);
         for id in missing.iter().filter(|id| gone.contains(id)) {
@@ -258,7 +261,7 @@ impl Engine {
         (ino, id): (u128, &NodeId),
         nodes: &BTreeMap<u128, NodeId>,
         known: &BTreeMap<u128, NodeId>,
-    ) {
+    ) -> bool {
         let entry = &disk.entries()[&ino];
         let held = self.trees.local().get(id).expect("known in L").clone();
         let (parent, folder_left_out) = match &entry.place {
@@ -267,7 +270,7 @@ impl Engine {
                 nodes.get(parent).or_else(|| known.get(parent)).cloned(),
                 (disk.path(*parent)).is_some_and(|path| self.trees.ignores(&path, Kind::Dir)),
             ),
-            Place::Parked(_) => return,
+            Place::Parked(_) => return false,
         };
         let stays = parent.as_ref() == Some(&held.shape.parent) && entry.name == held.shape.name;
         if stays {
@@ -276,13 +279,14 @@ impl Engine {
                 node.parked = false;
                 self.trees.set_local_changed(id.clone(), node);
             }
-            return;
+            return false;
         }
         match (folder_left_out, parent) {
             (true, _) | (false, None) => {
                 if !self.trees.recorded_local(id) {
                     self.trees.ignore_local(id);
                 }
+                false
             }
             (false, Some(parent)) => {
                 let mut node = held;
@@ -290,6 +294,7 @@ impl Engine {
                 node.shape.parent = parent;
                 node.shape.name = entry.name.clone();
                 self.trees.set_local_changed(id.clone(), node);
+                true
             }
         }
     }
@@ -327,7 +332,7 @@ impl Engine {
             .filter(|(id, node)| {
                 !node.parked
                     && !reported.contains(*id)
-                    && self.trees.ignored_local().contains(*id)
+                    && (self.trees.ignored_local().contains(*id) || self.left_out_in_l(id))
                     && taken(id, node)
             })
             .map(|(id, _)| id.clone())
@@ -339,8 +344,14 @@ impl Engine {
                 doomed.extend(self.trees.local_children(&current).cloned());
                 next += 1;
             }
-            for id in doomed.iter().rev() {
-                self.trees.displace_local(id);
+            let recorded: Vec<bool> = (doomed.iter())
+                .map(|id| self.trees.recorded_local(id))
+                .collect();
+            for (id, recorded) in doomed.iter().zip(recorded).rev() {
+                match recorded {
+                    true => self.trees.displace_local(id),
+                    false => self.trees.remove_local(id),
+                }
             }
         }
     }
