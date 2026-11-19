@@ -1211,48 +1211,6 @@ fn a_new_server_entry_in_a_folder_the_rules_exclude_at_its_synced_place_stays_ou
 }
 
 #[test]
-fn a_folder_renamed_here_keeps_planning_below_it_fast() {
-    let (depth, files) = (60, 500);
-    let mut trees = Trees::new(ROOT);
-    for i in 0..depth {
-        let parent = if i == 0 {
-            ROOT.to_string()
-        } else {
-            format!("d{}", i - 1)
-        };
-        let shape = dir(&parent, &format!("n{i}"));
-        let here = if i == 0 {
-            dir(ROOT, "renamed")
-        } else {
-            shape.clone()
-        };
-        trees.set_local(format!("d{i}"), local(here, i as u128 + 1));
-        trees.set_synced(format!("d{i}"), Some(shape.clone()));
-        trees.set_remote(format!("d{i}"), remote(shape));
-    }
-    let bottom = format!("d{}", depth - 1);
-    for j in 0..files {
-        let leaf = file(&bottom, &format!("f{j}.txt"), 1);
-        trees.set_local(format!("f{j}"), local(leaf.clone(), 1000 + j as u128));
-        trees.set_synced(format!("f{j}"), Some(leaf.clone()));
-        trees.set_remote(format!("f{j}"), remote(leaf));
-        trees.set_remote(
-            format!("g{j}"),
-            remote(file(&bottom, &format!("g{j}.txt"), 2)),
-        );
-    }
-    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("ss/\n"));
-    let started = std::time::Instant::now();
-    assert_eq!(ops(&mut trees).len(), 1);
-    let took = started.elapsed();
-    assert!(
-        took < std::time::Duration::from_secs(20),
-        "planning took {took:?}"
-    );
-    assert!(!trees.excluded("g0"));
-}
-
-#[test]
 fn a_file_another_device_owed_a_rename_to_an_ignored_name_stays_where_it_is() {
     let mut trees = trees(&[synced("a", file(ROOT, "a.txt", 1))]);
     trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));

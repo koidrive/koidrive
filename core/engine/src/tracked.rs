@@ -8,9 +8,11 @@
 //! contents only, and a value built `From` its contents has no changes.
 
 use std::borrow::Borrow;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map, btree_set};
 use std::fmt;
-use std::ops::Deref;
+use std::ops::{Deref, RangeBounds};
+
+use crate::tree::{Counting, counted, read_entries};
 
 /// A [`BTreeSet`] that records the keys whose membership changed.
 #[derive(Clone)]
@@ -79,6 +81,57 @@ impl<K: Ord + Clone> Extend<K> for TrackedSet<K> {
         for key in keys {
             self.insert(key);
         }
+    }
+}
+
+impl<K: Ord> TrackedSet<K> {
+    pub fn contains<Q: Ord + ?Sized>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
+        read_entries(1);
+        self.set.contains(key)
+    }
+
+    pub fn get<Q: Ord + ?Sized>(&self, key: &Q) -> Option<&K>
+    where
+        K: Borrow<Q>,
+    {
+        read_entries(1);
+        self.set.get(key)
+    }
+
+    pub fn iter(&self) -> Counting<btree_set::Iter<'_, K>> {
+        counted(self.set.iter())
+    }
+
+    pub fn range<Q: Ord + ?Sized, R: RangeBounds<Q>>(
+        &self,
+        range: R,
+    ) -> Counting<btree_set::Range<'_, K>>
+    where
+        K: Borrow<Q>,
+    {
+        counted(self.set.range(range))
+    }
+
+    pub fn first(&self) -> Option<&K> {
+        read_entries(1);
+        self.set.first()
+    }
+
+    pub fn last(&self) -> Option<&K> {
+        read_entries(1);
+        self.set.last()
+    }
+}
+
+impl<'a, K: Ord> IntoIterator for &'a TrackedSet<K> {
+    type Item = &'a K;
+    type IntoIter = Counting<btree_set::Iter<'a, K>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -232,6 +285,73 @@ impl<K: Ord + Clone, V: Clone + PartialEq> Extend<(K, V)> for TrackedMap<K, V> {
         for (key, value) in entries {
             self.insert(key, value);
         }
+    }
+}
+
+impl<K: Ord, V> TrackedMap<K, V> {
+    pub fn get<Q: Ord + ?Sized>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+    {
+        read_entries(1);
+        self.map.get(key)
+    }
+
+    pub fn get_key_value<Q: Ord + ?Sized>(&self, key: &Q) -> Option<(&K, &V)>
+    where
+        K: Borrow<Q>,
+    {
+        read_entries(1);
+        self.map.get_key_value(key)
+    }
+
+    pub fn contains_key<Q: Ord + ?Sized>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
+        read_entries(1);
+        self.map.contains_key(key)
+    }
+
+    pub fn iter(&self) -> Counting<btree_map::Iter<'_, K, V>> {
+        counted(self.map.iter())
+    }
+
+    pub fn keys(&self) -> Counting<btree_map::Keys<'_, K, V>> {
+        counted(self.map.keys())
+    }
+
+    pub fn values(&self) -> Counting<btree_map::Values<'_, K, V>> {
+        counted(self.map.values())
+    }
+
+    pub fn range<Q: Ord + ?Sized, R: RangeBounds<Q>>(
+        &self,
+        range: R,
+    ) -> Counting<btree_map::Range<'_, K, V>>
+    where
+        K: Borrow<Q>,
+    {
+        counted(self.map.range(range))
+    }
+
+    pub fn first_key_value(&self) -> Option<(&K, &V)> {
+        read_entries(1);
+        self.map.first_key_value()
+    }
+
+    pub fn last_key_value(&self) -> Option<(&K, &V)> {
+        read_entries(1);
+        self.map.last_key_value()
+    }
+}
+
+impl<'a, K: Ord, V> IntoIterator for &'a TrackedMap<K, V> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = Counting<btree_map::Iter<'a, K, V>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 

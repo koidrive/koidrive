@@ -36,12 +36,18 @@ pub(crate) fn read_entries(count: usize) {
 }
 
 #[cfg(test)]
-pub(crate) fn counted<I: Iterator>(entries: I) -> impl Iterator<Item = I::Item> {
+pub(crate) type Counting<I> = std::iter::Inspect<I, fn(&<I as Iterator>::Item)>;
+
+#[cfg(not(test))]
+pub(crate) type Counting<I> = I;
+
+#[cfg(test)]
+pub(crate) fn counted<I: Iterator>(entries: I) -> Counting<I> {
     entries.inspect(|_| read_entries(1))
 }
 
 #[cfg(not(test))]
-pub(crate) fn counted<I: Iterator>(entries: I) -> I {
+pub(crate) fn counted<I: Iterator>(entries: I) -> Counting<I> {
     entries
 }
 
@@ -59,6 +65,7 @@ impl<K: Ord, V> CountedMap<K, V> {
     where
         K: Borrow<Q>,
     {
+        read_entries(1);
         self.0.get(key)
     }
 
@@ -66,6 +73,7 @@ impl<K: Ord, V> CountedMap<K, V> {
     where
         K: Borrow<Q>,
     {
+        read_entries(1);
         self.0.get_mut(key)
     }
 
@@ -73,6 +81,7 @@ impl<K: Ord, V> CountedMap<K, V> {
     where
         K: Borrow<Q>,
     {
+        read_entries(1);
         self.0.contains_key(key)
     }
 
