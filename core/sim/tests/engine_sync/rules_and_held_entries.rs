@@ -321,7 +321,7 @@ fn a_local_delete_keeps_a_recorded_entry_and_the_folders_above_it_as_the_driver_
         removed_from: BTreeMap::new(),
         kept_back: BTreeSet::new(),
         relocated: BTreeMap::new(),
-        in_ignored_folders: BTreeMap::new(),
+        ignored: IgnoredDisk::default(),
     };
     for (id, parent, name) in [("d", "root", "d"), ("m", "d", "m"), ("c", "m", "c")] {
         let shape = koidrive_engine::tree::Shape {
@@ -581,7 +581,7 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
         removed_from: BTreeMap::new(),
         kept_back: BTreeSet::new(),
         relocated: BTreeMap::new(),
-        in_ignored_folders: BTreeMap::new(),
+        ignored: IgnoredDisk::default(),
     };
     let remote = |shape: koidrive_engine::tree::Shape| RemoteNode { made_over: Vec::new(),
         shape,
@@ -641,10 +641,7 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
     assert!(acted_below(&device, &"k".into(), &BTreeMap::new()));
 }
 
-fn local_writes_check_after_an_edit(
-    moved_into_b: bool,
-    b_included_again: bool,
-) -> Result<(), TestCaseError> {
+fn an_edit_moved_into_b(b_is_a_node: bool, moved: bool) -> Device {
     let mut device = Device {
         trees: Trees::new("root"),
         ids: IdGen::new(7),
@@ -656,15 +653,18 @@ fn local_writes_check_after_an_edit(
         removed_from: BTreeMap::new(),
         kept_back: BTreeSet::new(),
         relocated: BTreeMap::new(),
-        in_ignored_folders: BTreeMap::new(),
+        ignored: IgnoredDisk::default(),
     };
-    device.rules.file = vec!["/b"];
+    device.rules.file = vec!["b/"];
     device.rules.read(&mut device.trees);
-    for (id, parent, name, content) in [
-        ("a", "root", "a", None),
-        ("b", "root", "b", None),
-        ("c", "a", "c.txt", Some(content(2, 0))),
-    ] {
+    let b = b_is_a_node.then_some(("b", "p", "b", None));
+    let entries = [
+        Some(("a", "root", "a", None)),
+        b,
+        Some(("c", "a", "c.txt", Some(content(2, 0)))),
+        Some(("p", "root", "p", None)),
+    ];
+    for (id, parent, name, content) in entries.into_iter().flatten() {
         let shape = koidrive_engine::tree::Shape {
             parent: parent.into(),
             name: name.into(),
@@ -686,15 +686,37 @@ fn local_writes_check_after_an_edit(
             device.trees.set_synced(id.into(), Some(shape));
         }
     }
-    device.act(&act(2, 2, 0, 0, 1));
-    if moved_into_b {
-        device.act(&act(3, 2, 2, 3, 0));
-        assert!(device.trees.recorded_local("c"));
+    let (c, into) = if b_is_a_node { (2, 2) } else { (1, 3) };
+    device.act(&act(2, c, 0, 0, 1));
+    if !b_is_a_node {
+        device.act(&act(0, 0, 2, 2, 0));
     }
+    if moved {
+        device.act(&act(3, c, into, 3, 0));
+    }
+    device
+}
+
+#[test]
+fn a_node_moved_into_an_ignored_folder_that_is_a_node_is_placed_there() {
+    let device = an_edit_moved_into_b(true, true);
+    let moved = &device.trees.local().get("c").unwrap().shape;
+    assert_eq!((moved.parent.as_str(), moved.name.as_str()), ("b", "c.txt"));
+    assert!(device.trees.excluded("c") && !device.trees.recorded_local("c"));
+    assert!(device.ignored.copies.is_empty());
+}
+
+#[test]
+fn a_node_moved_into_an_ignored_folder_that_is_no_node_keeps_its_entry() {
+    let device = an_edit_moved_into_b(false, true);
+    assert_eq!(device.trees.local().get("c").unwrap().shape.parent, "a");
+    assert!(device.trees.recorded_local("c") && device.ignored.copies.contains_key("c"));
+    assert!(device.ignored.folders.contains_key("p/b"));
+}
+
+fn local_writes_check_after_an_edit(moved: bool) -> Result<(), TestCaseError> {
+    let mut device = an_edit_moved_into_b(false, moved);
     device.trees.remove_local("c");
-    if b_included_again {
-        device.rule(&Ruling::File(vec![]));
-    }
     let server = [("a".to_owned(), None), ("c".to_owned(), None)];
     let edit = written(std::iter::once(Some(content(1, 1))), 1);
     local_writes_check(&device, &server, &BTreeSet::new(), &edit)
@@ -702,17 +724,37 @@ fn local_writes_check_after_an_edit(
 
 #[test]
 fn an_edit_whose_copy_the_user_moved_into_an_excluded_folder_is_kept() {
-    assert!(local_writes_check_after_an_edit(true, false).is_ok());
+    assert!(local_writes_check_after_an_edit(true).is_ok());
 }
 
 #[test]
 fn an_edit_that_left_l_outside_any_excluded_folder_is_a_lost_write() {
-    let error = local_writes_check_after_an_edit(false, false).unwrap_err();
+    let error = local_writes_check_after_an_edit(false).unwrap_err();
     assert!(error.to_string().contains("a local write was lost"));
 }
 
 #[test]
-fn an_edit_moved_into_a_folder_the_rules_include_again_is_a_lost_write() {
-    let error = local_writes_check_after_an_edit(true, true).unwrap_err();
+fn an_edit_moved_into_a_folder_the_rules_let_in_counts_only_once_a_scan_finds_it() {
+    let mut device = an_edit_moved_into_b(false, true);
+    device.trees.remove_local("c");
+    device.rules.file = Vec::new();
+    device.rules.read(&mut device.trees);
+    let server = [("a".to_owned(), None), ("c".to_owned(), None)];
+    let edit = written(std::iter::once(Some(content(1, 1))), 1);
+    let error = local_writes_check(&device, &server, &BTreeSet::new(), &edit).unwrap_err();
     assert!(error.to_string().contains("a local write was lost"));
+}
+
+#[test]
+fn an_ignored_folder_the_rules_let_in_is_found_with_the_copy_the_user_moved_into_it() {
+    let mut device = an_edit_moved_into_b(false, true);
+    device.trees.remove_local("c");
+    device.rule(&Ruling::File(vec![]));
+    let local = device.trees.local();
+    let (folder, _) = (local.iter())
+        .find(|(_, node)| node.shape.parent == "p" && node.shape.name == "b")
+        .unwrap();
+    let found = (local.iter()).find(|(_, node)| node.shape.parent == *folder).unwrap().1;
+    assert_eq!(found.shape.content, Some(content(1, 1)));
+    assert!(device.ignored.folders.is_empty() && device.ignored.copies.is_empty());
 }
