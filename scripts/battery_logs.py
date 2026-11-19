@@ -53,7 +53,7 @@ def unsaved(log, properties):
     saved = {match[2] for match in SAVED.finditer(log)}
     found = []
     for test, body in sections(log):
-        if SAVED.search(body) or test.rsplit("::", 1)[-1] not in properties:
+        if SAVED.search(body):
             continue
         reports = [line for line in body.splitlines() if HARNESS_REPORT.match(line) or NEVER_RAN.match(line)]
         loaded = set(LOADED.findall(body))
@@ -61,7 +61,7 @@ def unsaved(log, properties):
             if not any(COMMITTED.search(line) for line in reports):
                 continue
             zero = True
-        elif loaded:
+        elif loaded and test.rsplit("::", 1)[-1] in properties:
             zero = not loaded & saved
         else:
             continue

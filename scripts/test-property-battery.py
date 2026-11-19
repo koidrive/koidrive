@@ -1058,7 +1058,8 @@ class Triage(unittest.TestCase):
             (shard / "regressions").mkdir()
             (shard / "logs/devices-09cbc274e49e4fd7.log").write_text(log)
             (root / "properties").mkdir()
-            (root / "properties/devices-09cbc274e49e4fd7.txt").write_text(f"{test}\ndevices_lose_no_write\n")
+            (root / "properties/devices-09cbc274e49e4fd7.txt").write_text(
+                "devices_lose_no_write_around_an_owed_rename_across_server_restores\n")
             listed = subprocess.run([sys.executable, str(ROOT / "scripts/battery_logs.py"), str(shard / "logs"),
                                      str(root / "properties")], capture_output=True, text=True, check=True)
             (shard / "result-3.json").write_text(json.dumps({"shard": 3, "failing": [
@@ -1107,7 +1108,7 @@ class Triage(unittest.TestCase):
                                  flagged and shared is failing)
 
     def test_only_a_property_that_failed_on_a_loaded_case_counts_as_generating_nothing(self):
-        properties = {"a", "b", "devices_lose_no_write", "rewinds_converge_from_seed_122"}
+        properties = {"a", "b", "rewinds_converge_from_seed_122", "prints_help_twice"}
         def unsaved(log):
             return [(test["test"], test["zero"]) for test in battery_logs.unsaved(log, properties)]
         committed = "---- a stdout ----\nproptest regression: cc cc2e\nthread 'a' panicked at t.rs:3:1:\nTest failed: 0 is small.\n"
@@ -1126,6 +1127,7 @@ class Triage(unittest.TestCase):
         self.assertEqual(unsaved(fixed_seed), [])
         self.assertEqual(unsaved(recorded), [])
         self.assertEqual(unsaved(plain), [])
+        self.assertEqual(unsaved(plain.replace("prints_help", "prints_help_twice")), [("prints_help_twice", True)])
         self.assertEqual(unsaved(FAILING_LOG.format(case="a" * 64)), [])
 
     def test_failure_message_falls_back_to_the_panic(self):
