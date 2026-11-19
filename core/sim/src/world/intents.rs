@@ -704,7 +704,9 @@ impl Intents {
                         || saw_the_value
                         || merged
                         || field != Field::Content && intent.lost && other.made > intent.made
-                        || intent.restore_answer() && other.author != intent.author);
+                        || intent.restore_answer()
+                            && other.author != intent.author
+                            && (!other.lost || other.carried.is_some()));
                 match dropped {
                     true => field == Field::Content && deleted,
                     false => replaced || looped || deleted,
