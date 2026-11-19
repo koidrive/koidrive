@@ -367,6 +367,12 @@ async fn a_progress_change_waiting_out_the_interval_survives_a_dropped_wait() {
     driver.inner.progressed.send_replace(());
     let dropped = tokio::time::timeout(PROGRESS_INTERVAL / 5, changes.next()).await;
     assert!(dropped.is_err(), "the interval holds the change back");
+    let kept = tokio::time::timeout(PROGRESS_INTERVAL * 2, changes.next()).await;
+    assert_eq!(kept.ok().map(Result::unwrap), Some(Change::Progress));
+
+    driver.inner.progressed.send_replace(());
+    let dropped = tokio::time::timeout(PROGRESS_INTERVAL / 5, changes.next()).await;
+    assert!(dropped.is_err(), "the interval holds the change back");
     driver.inner.progressed.send_replace(());
     let kept = tokio::time::timeout(PROGRESS_INTERVAL * 2, changes.next()).await;
     assert_eq!(kept.ok().map(Result::unwrap), Some(Change::Progress));
