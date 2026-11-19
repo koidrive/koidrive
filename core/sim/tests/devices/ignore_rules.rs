@@ -365,3 +365,46 @@ fn a_folder_renamed_elsewhere_to_the_case_of_a_refused_folder_beside_it_is_renam
     );
     refused_beside_a((1, rename(0, 0, "A"))).unwrap();
 }
+
+fn deleted_while_its_rules_leave_a_file_out(during: Vec<(usize, Step)>) -> Result<World, Failure> {
+    let mut deleting = vec![(1, Step::CopyStore), (0, delete(0))];
+    deleting.extend(during);
+    let phases = [
+        vec![
+            (0, folder("a")),
+            (0, user(1, 0, 1, "c.txt")),
+            (0, user(1, 0, 1, "b")),
+        ],
+        deleting,
+        vec![],
+    ];
+    let rulings = [
+        (1, 1, Ruling::Exclude(vec!["*.txt"])),
+        (2, 1, Ruling::Exclude(vec![])),
+    ];
+    converge_ruled(&[vec![], vec![]], &rulings, &phases)
+}
+
+#[test]
+fn a_folder_another_device_deletes_goes_once_its_rules_let_the_file_they_left_out_back_in() {
+    let world = deleted_while_its_rules_leave_a_file_out(Vec::new()).unwrap();
+    assert_eq!(live_node_at(&world, &["a"]), None);
+    assert!(files_on(&world, 1).is_empty());
+}
+
+#[test]
+fn a_folder_deleted_while_its_rules_leave_a_file_out_goes_through_crashes_and_rollbacks() {
+    for n in 0..16 {
+        for tail in [
+            None,
+            Some(Step::Crash),
+            Some(Step::Effect(Outcome::Crash(Cut::Quarantined))),
+            Some(Step::RollBack),
+        ] {
+            let mut during: Vec<(usize, Step)> =
+                std::iter::repeat_n((1, Step::Work(0)), n).collect();
+            during.extend(tail.map(|step| (1, step)));
+            deleted_while_its_rules_leave_a_file_out(during).unwrap();
+        }
+    }
+}

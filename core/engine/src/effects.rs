@@ -1294,10 +1294,18 @@ impl<'a> View<'a> {
     }
 
     fn left_out(&self, id: &NodeId) -> bool {
+        let owed = (self.trees.local().get(id).zip(self.trees.synced().live(id)))
+            .is_some_and(|(local, synced)| local.shape.same_position(synced))
+            && self
+                .trees
+                .remote()
+                .get(id)
+                .is_some_and(|remote| remote.trashed);
         self.trees.under_kept_entry(id)
             || self.trees.recorded_local(id)
-            || crate::classify::path(self.trees.local(), id)
-                .is_some_and(|(names, kind)| self.trees.ignores(&names, kind))
+            || !owed
+                && crate::classify::path(self.trees.local(), id)
+                    .is_some_and(|(names, kind)| self.trees.ignores(&names, kind))
     }
 
     fn goes_home(&self, id: &NodeId, remote: &Shape) -> bool {
