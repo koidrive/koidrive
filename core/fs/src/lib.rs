@@ -3540,6 +3540,16 @@ impl NativeWatcher {
             })
     }
 
+    fn barrier_left(&self, barrier: &Barrier) -> Duration {
+        let left = BARRIER_TIMEOUT.saturating_sub(barrier.written.elapsed());
+        #[cfg(target_os = "linux")]
+        let left = (barrier.holds.iter())
+            .filter_map(|path| self.held_since.get(path))
+            .map(|since| MOVING_HOLD.saturating_sub(since.elapsed()))
+            .fold(left, Duration::min);
+        left
+    }
+
     fn lift_barrier(&mut self) {
         let Some(barrier) = self.barrier.take() else {
             return;
@@ -3849,16 +3859,12 @@ impl Watcher for NativeWatcher {
                     left.min(REMOUNT_CHECK)
                 };
                 let wait = match &self.barrier {
-                    Some(barrier) => {
-                        wait.min(BARRIER_TIMEOUT.saturating_sub(barrier.written.elapsed()))
-                    }
+                    Some(barrier) => wait.min(self.barrier_left(barrier)),
                     None => wait,
                 };
                 self.receive(wait)?;
             }
-            if (self.barrier.as_ref())
-                .is_some_and(|barrier| barrier.written.elapsed() >= BARRIER_TIMEOUT)
-            {
+            if (self.barrier.as_ref()).is_some_and(|barrier| self.barrier_left(barrier).is_zero()) {
                 self.lift_barrier();
             }
             if !self.snapshot.detached.is_empty() && self.remount_checked.elapsed() >= REMOUNT_CHECK

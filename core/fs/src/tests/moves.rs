@@ -1033,6 +1033,32 @@ fn a_removal_held_for_moves_is_reported_once_the_moves_outlast_the_hold() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn a_removal_held_for_moves_is_reported_at_the_hold_while_its_barrier_goes_unheard() {
+    let (_dir, root, _) = one_file();
+    fs::create_dir(root.join(".koidrive")).unwrap();
+    let mut watcher = quiet_watcher(&root, &["x/g.txt"]);
+    fs::remove_file(root.join("x/g.txt")).unwrap();
+    assert_eq!(watcher.poll(Duration::ZERO).unwrap().changes, []);
+    let renamed = EventKind::Modify(ModifyKind::Name(notify::event::RenameMode::Both));
+    let event = notify::Event::new(renamed)
+        .add_path(root.join("y"))
+        .add_path(root.join("z"));
+    watcher.sender.send(Ok(event)).unwrap();
+    hear_barrier(&watcher);
+    assert_eq!(watcher.poll(Duration::ZERO).unwrap().changes, []);
+    assert!(watcher.barrier.is_some());
+    *watcher.held_since.get_mut(Path::new("x/g.txt")).unwrap() -= MOVING_HOLD;
+    assert_eq!(
+        watcher.poll(Duration::ZERO).unwrap().changes,
+        [Change::Removed {
+            path: "x/g.txt".into(),
+            kind: EntryKind::File
+        }]
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn a_removal_that_joins_a_held_barrier_late_is_held_for_its_own_time() {
     use std::sync::{Arc, Mutex};
     let (_dir, root, _) = one_file();
