@@ -18,7 +18,9 @@ function content(value: Content | undefined): Content | undefined {
   });
 }
 
-export type DigestVersion = 1 | 2 | 3 | 4 | 5 | 6;
+export const DIGEST_VERSIONS = [1, 2, 3, 4, 5, 6] as const;
+
+export type DigestVersion = (typeof DIGEST_VERSIONS)[number];
 
 export const DIGEST_VERSION: DigestVersion = 6;
 
@@ -98,12 +100,12 @@ export async function commitDigest(commit: Commit, version: DigestVersion = DIGE
 }
 
 export async function commitDigests(commit: Commit): Promise<Digests> {
-  return {
-    1: await commitDigest(commit, 1),
-    2: await commitDigest(commit, 2),
-    3: await commitDigest(commit, 3),
-    4: await commitDigest(commit, 4),
-    5: await commitDigest(commit, 5),
-    6: await commitDigest(commit, 6),
-  };
+  const digests = await Promise.all(DIGEST_VERSIONS.map((version) => commitDigest(commit, version)));
+  return Object.fromEntries(DIGEST_VERSIONS.map((version, index) => [version, digests[index]!])) as Digests;
+}
+
+export function digestVersion(stored: number): DigestVersion {
+  const known = DIGEST_VERSIONS.find((version) => version === stored);
+  if (known === undefined) throw new Error(`stored digest version ${stored} is unknown to this server`);
+  return known;
 }

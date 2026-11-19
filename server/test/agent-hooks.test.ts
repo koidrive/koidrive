@@ -199,6 +199,18 @@ describe("RFC 0006 section 8: stored results", () => {
     expect(code(await a.commitRaw(serverOps, { commitId: server }))).toBe(Error_Code.INVALID_ARGUMENT);
   });
 
+  it("checks a resend against the digest version its result was stored with", async () => {
+    const { a, root } = await setup();
+    const [first, second] = [await createFile(a, root, "a"), await createFile(a, root, "b")];
+    const opening = uuidv7();
+    await a.commit([op.delete(first)], { commitId: opening });
+    const [joined, ops] = [uuidv7(), [op.delete(second, `${opening}:0`)]];
+    const stored = await a.commit(ops, { commitId: joined });
+    for (const table of ["commits", "device_commits"]) await sql(a, `UPDATE ${table} SET digest_version = 6 WHERE commit_id = ?`, joined);
+    expect(await a.commit(ops, { commitId: joined })).toEqual(stored);
+    expect(code(await a.commitRaw([op.delete(second)], { commitId: joined }))).toBe(Error_Code.INVALID_ARGUMENT);
+  });
+
   it("returns a result stored before RFC 0006 to its own device without the body check", async () => {
     const { a, b, root } = await setup();
     const commitId = uuidv7();
