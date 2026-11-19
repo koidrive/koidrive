@@ -88,16 +88,20 @@ fn migrations_apply_from_empty() {
         include_str!("../src/restore.rs"),
     ]
     .concat();
-    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let words: Vec<&str> = source
+        .split_whitespace()
+        .map(|word| word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_'))
+        .collect();
+    let queried: BTreeSet<&str> = words
+        .windows(2)
+        .filter(|pair| ["FROM", "INTO", "UPDATE", "JOIN", "TABLE"].contains(&pair[0]))
+        .map(|pair| pair[1])
+        .collect();
     let unnamed: Vec<String> = tables(&conn)
         .into_iter()
-        .filter(|table| {
-            !source.match_indices(table.as_str()).any(|(at, _)| {
-                !source[..at].ends_with(word) && !source[at + table.len()..].starts_with(word)
-            })
-        })
+        .filter(|table| !queried.contains(table.as_str()))
         .collect();
-    assert_eq!(unnamed, Vec::<String>::new(), "tables no store code names");
+    assert_eq!(unnamed, Vec::<String>::new(), "tables no store query names");
     let journal: String = conn
         .pragma_query_value(None, "journal_mode", |row| row.get(0))
         .unwrap();
