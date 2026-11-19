@@ -157,20 +157,21 @@ def collect(failures):
             mapped.update(saved_here)
             for test, message in unsaved:
                 other = others.setdefault((binary, test), {"shards": set(), "cases": set(), "messages": {},
-                                                           "property": False, "zero": False})
+                                                           "by_shard": []})
+                if shard not in other["shards"]:
+                    other["by_shard"].append({"shard": shard, "cases": sorted(saved_here),
+                                              "property": (binary, test) in listed,
+                                              "zero": listed.get((binary, test), False)})
                 other["shards"].add(shard)
                 other["cases"].update(saved_here)
                 other["messages"].setdefault(message, shard)
-                other["property"] = other["property"] or (binary, test) in listed
-                other["zero"] = other["zero"] or listed.get((binary, test), False)
                 for path in saved_here:
                     add(path, test, binary, shard, message, True)
         for path in sorted(set(files) - mapped):
             add(path, None, None, shard, None, False)
     return (sorted(cases.values(), key=lambda case: (case["path"], case["test"] or "")),
             [{"binary": binary, "test": test, "shards": sorted(other["shards"]), "cases": sorted(other["cases"]),
-              "message": min(other["messages"].items(), key=lambda item: item[1])[0], "property": other["property"],
-              "zero": other["zero"]}
+              "message": min(other["messages"].items(), key=lambda item: item[1])[0], "by_shard": other["by_shard"]}
              for (binary, test), other in sorted(others.items())])
 
 
@@ -444,9 +445,15 @@ def caseless(spec, rows):
 
 
 def starved(spec, rows):
-    unexplained = caseless(spec, rows)
-    return [other for other in spec["others"]
-            if other.get("zero") or (other.get("property") and other in unexplained)]
+    reproduced = {(row["path"], row["test"]) for row in rows}
+    found = []
+    for other in spec["others"]:
+        shards = [entry["shard"] for entry in other.get("by_shard", [])
+                  if entry["zero"] or (entry["property"]
+                                       and not any((path, other["test"]) in reproduced for path in entry["cases"]))]
+        if shards:
+            found.append({**other, "shards": shards})
+    return found
 
 
 def cell(text):
@@ -522,7 +529,8 @@ masked, and for an entry that lists cases, only by those cases, which come befor
               f"{results_cell(row['base'])} | {messages_cell(row['head'])} | {messages_cell(row['base'])} | "
               f"{row['verdict']} | {row['class'] or ''} | {row['issue'] or ''} |"
               for row in rows]
-    others = [other for other in others if other not in zero]
+    others = [other for other in others
+              if (other["binary"], other["test"]) not in {(each["binary"], each["test"]) for each in zero}]
     if others:
         lines += ["", "These tests failed without saving a new case, and every case their shards saved in the same "
                   "binary passes them on every head run, so they are not in the table:", ""]

@@ -954,7 +954,10 @@ class Triage(unittest.TestCase):
         self.assertEqual(cases[1]["battery_message"], "a committed case fails.")
         self.assertEqual(others, [{"binary": "devices", "test": "devices_lose_no_write", "shards": [4, 10],
                                    "cases": [cases[0]["path"], cases[2]["path"]],
-                                   "message": "a committed case fails.", "property": False, "zero": False}])
+                                   "message": "a committed case fails.",
+                                   "by_shard": [{"shard": 4, "cases": [cases[0]["path"]], "property": False, "zero": False},
+                                                {"shard": 10, "cases": [cases[0]["path"], cases[2]["path"]],
+                                                 "property": False, "zero": False}]}])
 
     def test_collect_reads_a_single_artifact_extracted_without_its_directory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1090,12 +1093,13 @@ class Triage(unittest.TestCase):
                 "cases": [{"case": "a" * 64, "path": path, "binary": "devices", "test": test, "shards": [2],
                            "shared": shared} for test, shared in (("converge", False), ("lose_no_write", True))],
                 "others": [{"binary": "devices", "test": "lose_no_write", "shards": [2], "cases": [path],
-                            "message": "write 1 is lost.", "property": True, "zero": False}]}
+                            "message": "write 1 is lost.",
+                            "by_shard": [{"shard": 2, "cases": [path], "property": True, "zero": False}]}]}
         failing = {"runs": [{"result": "fail", "message": "lost"}] * 2, "target": "sim --test devices"}
         passing = {"runs": [{"result": "pass", "message": None}] * 2, "target": "sim --test devices"}
         for zero, property, shared, flagged in ((True, True, failing, True), (False, True, failing, False),
                                                 (False, True, passing, True), (False, False, passing, False)):
-            spec["others"][0].update(zero=zero, property=property)
+            spec["others"][0]["by_shard"][0].update(zero=zero, property=property)
             with self.subTest(zero=zero, property=property, shared=shared["runs"][0]["result"]):
                 replays = {"head": {"results": [failing, shared]}, "base": {"results": [failing, failing]}}
                 rows = triage.combine(spec, replays)
@@ -1106,6 +1110,25 @@ class Triage(unittest.TestCase):
                 self.assertEqual([other["test"] for other in starved], ["lose_no_write"] if flagged else [])
                 self.assertEqual("§lose_no_write§ (generated 0 cases on some shards)".replace("§", chr(96)) in text,
                                  flagged and shared is failing)
+
+    def test_each_shard_of_a_test_that_saved_nothing_is_judged_by_its_own_cases(self):
+        explaining = "core/sim/tests/devices.cases/cc-" + "a" * 64 + ".txt"
+        unrelated = "core/sim/tests/devices.cases/cc-" + "b" * 64 + ".txt"
+        def entry(shard, cases, zero=False):
+            return {"shard": shard, "cases": cases, "property": True, "zero": zero}
+        spec = {"cases": [{"case": path[-68:-4], "path": path, "binary": "devices", "test": "lose_no_write",
+                           "shards": [shard], "shared": True} for path, shard in ((explaining, 5), (unrelated, 2))]}
+        failing = {"runs": [{"result": "fail", "message": "lost"}] * 2, "target": "sim --test devices"}
+        passing = {"runs": [{"result": "pass", "message": None}] * 2, "target": "sim --test devices"}
+        rows = triage.combine(spec, {"head": {"results": [failing, passing]}, "base": {"results": [failing, failing]}})
+        for by_shard, shards in (([entry(2, [unrelated]), entry(5, [explaining])], [2]),
+                                 ([entry(2, [explaining]), entry(5, [], zero=True)], [5]),
+                                 ([entry(2, [explaining]), entry(5, [explaining])], [])):
+            with self.subTest(shards=shards):
+                spec["others"] = [{"binary": "devices", "test": "lose_no_write", "shards": [2, 5],
+                                   "cases": sorted({path for each in by_shard for path in each["cases"]}),
+                                   "message": "lost", "by_shard": by_shard}]
+                self.assertEqual([other["shards"] for other in triage.starved(spec, rows)], [shards] if shards else [])
 
     def test_only_a_property_that_failed_on_a_loaded_case_counts_as_generating_nothing(self):
         properties = {"a", "b", "rewinds_converge_from_seed_122", "prints_help_twice"}
