@@ -184,7 +184,8 @@ fn renamed_folder_above(depth: usize, files: usize, budget: u64) -> u64 {
 #[test]
 fn planning_below_a_folder_renamed_here_is_linear_in_its_files_and_at_most_quadratic_in_its_depth()
 {
-    let fifty_files = renamed_folder_above(60, 50, u64::MAX);
+    let two_hundred = renamed_folder_above(3, 200, u64::MAX);
+    renamed_folder_above(3, 2000, two_hundred * 11);
     let half_as_deep = renamed_folder_above(30, 500, u64::MAX);
-    renamed_folder_above(60, 500, (fifty_files * 11).min(half_as_deep * 4));
+    renamed_folder_above(60, 500, half_as_deep * 4);
 }
