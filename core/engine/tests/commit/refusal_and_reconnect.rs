@@ -206,9 +206,13 @@ fn a_policy_halt_lifted_to_replan_plans_the_changes_into_a_new_commit_in_the_sam
         .unwrap();
     assert!(!engine.trees.state().watched_positions.is_empty());
     let rules = Rules::default();
-    engine = engine.reload(&rules).unwrap();
+    engine = engine
+        .reload(&rules, engine.ids.clone(), &engine.ids)
+        .unwrap();
     assert_eq!(engine.commits.lift(&mut engine.trees, Lift::Replan), Ok(()));
-    let mut engine = engine.reload(&rules).unwrap();
+    let mut engine = engine
+        .reload(&rules, engine.ids.clone(), &engine.ids)
+        .unwrap();
     assert_eq!(
         (engine.commits.halted(), engine.commits.in_flight()),
         (None, None)

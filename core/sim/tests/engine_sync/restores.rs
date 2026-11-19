@@ -248,6 +248,7 @@ struct Bench {
     trees: Trees,
     commits: Commits,
     ids: IdGen,
+    loads: IdGen,
     other: IdGen,
     last_seq: u64,
     cut: Cut,
@@ -264,6 +265,7 @@ impl Bench {
             trees: Trees::new(root.clone(), &IdGen::new(0)),
             commits: Commits::default(),
             ids: IdGen::new(7),
+            loads: IdGen::new(8),
             space,
             other,
             last_seq: 0,
@@ -374,7 +376,14 @@ impl Bench {
 
     fn restart(&mut self) {
         let effects = Effects::default();
-        let (trees, commits, _) = reload(&self.trees, &self.commits, &effects, &rules()).unwrap();
+        let (trees, commits, _) = reload(
+            &self.trees,
+            &self.commits,
+            &effects,
+            &rules(),
+            &mut self.loads,
+        )
+        .unwrap();
         (self.trees, self.commits) = (trees, commits);
         self.commits.connected(&self.space.welcome(&session("me")));
     }
