@@ -362,12 +362,8 @@ fn converge_ruled(
     rulings: &[(usize, usize, Ruling)],
     phases: &[Vec<(usize, Step)>],
 ) -> Result<World, Failure> {
-    run_in(
-        configured(World::excluding(exclude)),
-        rulings,
-        phases,
-        |_| true,
-    )
+    let world = configured(World::excluding(exclude));
+    run_in(world, rulings, phases, |_| true)
 }
 
 fn keep_ruled(
@@ -375,12 +371,10 @@ fn keep_ruled(
     rulings: &[(usize, usize, Ruling)],
     phases: &[Vec<(usize, Step)>],
 ) -> Result<World, Failure> {
-    run_in(
-        configured(World::excluding(exclude)),
-        rulings,
-        phases,
-        |failure| matches!(failure, Failure::Broken(_)),
-    )
+    let world = configured(World::excluding(exclude));
+    run_in(world, rulings, phases, |failure| {
+        matches!(failure, Failure::Broken(_))
+    })
 }
 
 const EXCLUDED: &[&str] = &["a", "/b", "*.txt", "ss/", "c.txt", "\u{e9}"];

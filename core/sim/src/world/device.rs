@@ -90,7 +90,9 @@ impl Engine {
             behind: self.behind,
             history: self.history.clone(),
         };
-        if loaded != *self {
+        let mut stored = self.clone();
+        rules.read(&mut stored.trees);
+        if loaded != stored {
             return Err(Failure::Broken(
                 "the stored state did not come back equal".into(),
             ));

@@ -256,9 +256,13 @@ fn files_its_rules_left_out_sync_once_its_rules_let_them_back() {
     ];
     let phases = [vec![(1, file("c.txt")), (1, file("a"))], vec![]];
     for (exclude, rulings) in [(vec!["*.txt"], &lifted[..]), (vec![], &included[..])] {
-        let world = converge_ruled(&[vec![], exclude.clone()], rulings, &phases[..1]).unwrap();
+        let mut world = converge_ruled(&[vec![], exclude.clone()], rulings, &phases[..1]).unwrap();
         assert_eq!(live_node_at(&world, &["c.txt"]), None);
         assert!(live_node_at(&world, &["a"]).is_some());
+        world.run(1, &[(1, Step::Crash)]).unwrap();
+        world.rule(1, &rulings[rulings.len() - 1].2).unwrap();
+        world.phase(1, &[]).unwrap();
+        assert_eq!(c_txt(&world, 0), c_txt(&world, 1));
         let world = converge_ruled(&[vec![], exclude], rulings, &phases).unwrap();
         assert_eq!(c_txt(&world, 0), c_txt(&world, 1));
     }
