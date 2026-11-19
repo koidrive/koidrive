@@ -19,7 +19,7 @@ import {
 import { ClientMessageSchema, RpcRequestSchema, RpcResponseSchema, type ServerMessage, ServerMessageSchema } from "../src/gen/koidrive/v1/messages_pb";
 import { ChunkBundleResultSchema, ChunkBundleSchema } from "../src/gen/koidrive/v1/rpc_pb";
 import { estimateMonthlyCost } from "../src/report/cost";
-import { CARRIED_HEADER, countedBucket, countedEgress, countedState, meteredObject, meteredReply, meteredStub } from "../src/report/meter";
+import { CARRIED_HEADER, countedBucket, countedEgress, countedState, meteredObject, meteredReply, meteredStub, type Reply } from "../src/report/meter";
 import { reportBatch } from "../src/report/payload";
 import type { SpaceDO } from "../src/space-do";
 import { uuidv7 } from "../src/ids";
@@ -1837,7 +1837,9 @@ describe("reply latency", () => {
   async function slowAccount(method: "checkSessions" | "recordUsage", delayMs: number) {
     const prototype = (await runInDurableObject(account(), (instance: AccountDO) => Object.getPrototypeOf(instance))) as Record<string, (...args: unknown[]) => Promise<unknown>>;
     const original = prototype[method]!;
+    const metered = prototype.metered!;
     const calls = { started: 0, answered: 0 };
+    const replies: Reply<unknown>[] = [];
     prototype[method] = async function (this: AccountDO, ...args: unknown[]) {
       calls.started++;
       await scheduler.wait(delayMs);
@@ -1847,11 +1849,17 @@ describe("reply latency", () => {
         calls.answered++;
       }
     };
+    prototype.metered = async function (this: AccountDO, ...args: unknown[]) {
+      const reply = (await metered.apply(this, args)) as Reply<unknown>;
+      if (args[0] === method) replies.push(reply);
+      return reply;
+    };
     const restore = () => {
       prototype[method] = original;
+      prototype.metered = metered;
     };
     restorers.push(restore);
-    return { calls, restore };
+    return { calls, replies, restore };
   }
 
   it("answers an HTTP RPC as fast with reports on as with reports off while the Account DO takes 2 s to renew the RPC's lease", { timeout: 30_000 }, async () => {
@@ -1938,20 +1946,12 @@ describe("reply latency", () => {
     await socket.listTree();
     const parkedActiveMs = async () => billingOf(((await attachments(stub))[0]!.usage as { hours: UsageHours } | undefined)?.hours ?? {}).do_account_active_ms ?? 0;
     const slow = await slowAccount("checkSessions", 500);
-    const received: Carried[] = [];
     await runInDurableObject(stub, (instance: SpaceDO) => {
       instance.clock = () => Date.now() + 3_000;
-      const prototype = Object.getPrototypeOf(instance) as { received(carried: Carried): void };
-      const original = prototype.received;
-      vi.spyOn(prototype, "received").mockImplementation(function (this: unknown, carried: Carried) {
-        received.push(carried);
-        original.call(this, carried);
-      });
     });
     await socket.listTree();
-    await vi.waitFor(() => expect(slow.calls).toEqual({ started: 1, answered: 1 }), { timeout: 5_000 });
-    await vi.waitFor(() => expect(received).toHaveLength(1));
-    const answered = billingOf(received[0]!.usage!.hours).do_account_active_ms!;
+    await vi.waitFor(() => expect(slow.replies).toHaveLength(1), { timeout: 5_000 });
+    const answered = billingOf(slow.replies[0]!.usage!.hours).do_account_active_ms!;
     expect(answered).toBeGreaterThan(0);
     await vi.waitFor(async () => expect(await parkedActiveMs()).toBeGreaterThanOrEqual(answered));
     socket.ws.close(1000, "done");
