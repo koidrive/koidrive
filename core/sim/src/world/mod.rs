@@ -1420,7 +1420,8 @@ impl World {
                 for (id, write, ino) in &held {
                     uncredit(&mut self.kept[d], id, *ino, *write);
                 }
-                self.intents.give_up(d, &ids);
+                let server = Server::of(self.space.space_id(), self.space.nodes());
+                self.intents.give_up(&server, d, &ids);
                 self.discards[d].extend(&local);
                 self.discarded.extend(local);
             }

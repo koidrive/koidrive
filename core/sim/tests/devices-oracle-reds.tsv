@@ -512,6 +512,7 @@ devices::devices_with_rules_lose_no_write	case-42	NameLeftOut	device 1 is quiet,
 devices::devices_with_rules_lose_no_write	case-72	SentLeftOut	a commit of device 0 places node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 at ["c.txt"], which the rules of device 0 leave out
 devices::rewinds_converge_from_seed_122	case-1013	DeleteUndone	the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_122	case-1021	DeleteUndone	the delete of node 01a1c2c0-39a0-76b6-8f17-7744bb83aba9 on device 0 came undone, and no change its user did not see brought the node back
+devices::rewinds_converge_from_seed_122	case-1037	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_122	case-106	DeleteUndone	the delete of node 01a1c2c0-39a0-76b6-8f17-7744bb83aba9 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_122	case-1079	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_122	case-1144	DeleteUndone	the delete of node 01a1c2c0-39a0-753e-807a-44e7920b02c1 on device 0 came undone, and no change its user did not see brought the node back

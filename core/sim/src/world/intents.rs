@@ -175,7 +175,6 @@ pub(super) struct Intent {
     pub(super) lost: bool,
     pub(super) dropped: bool,
     kept: bool,
-    given_up: bool,
     restored: bool,
     pub(super) forgotten: bool,
     pub(super) answer: bool,
@@ -188,7 +187,7 @@ impl Intent {
     }
 
     pub(super) fn stands(&self) -> bool {
-        !self.given_up && (!self.dropped || self.kept)
+        !self.dropped || self.kept
     }
 }
 
@@ -293,7 +292,6 @@ impl Intents {
             lost: false,
             dropped: false,
             kept: false,
-            given_up: false,
             restored: false,
             forgotten: false,
             answer: false,
@@ -583,15 +581,18 @@ impl Intents {
         }
     }
 
+    fn drop_unless_held(&mut self, i: usize, server: &Server) {
+        let kept = self.holds(i, server, true);
+        let intent = &mut self.list[i];
+        intent.kept = kept && (intent.kept || !intent.dropped);
+        intent.dropped = true;
+    }
+
     pub(super) fn rewound(&mut self, server: &Server, clock: u64) {
         for i in 0..self.list.len() {
-            if self.list[i].made >= clock {
-                continue;
+            if self.list[i].made < clock {
+                self.drop_unless_held(i, server);
             }
-            let kept = self.holds(i, server, true);
-            let intent = &mut self.list[i];
-            intent.kept = kept && (intent.kept || !intent.dropped);
-            intent.dropped = true;
         }
     }
 
@@ -601,11 +602,11 @@ impl Intents {
         }
     }
 
-    pub(super) fn give_up(&mut self, d: usize, nodes: &BTreeSet<NodeId>) {
+    pub(super) fn give_up(&mut self, server: &Server, d: usize, nodes: &BTreeSet<NodeId>) {
         for i in 0..self.list.len() {
-            let given_up = self.list[i].author == d && self.nodes(i).any(|id| nodes.contains(id));
-            self.list[i].dropped |= given_up;
-            self.list[i].given_up |= given_up;
+            if self.list[i].author == d && self.nodes(i).any(|id| nodes.contains(id)) {
+                self.drop_unless_held(i, server);
+            }
         }
     }
 
@@ -910,8 +911,14 @@ mod tests {
         assert!(a_delete_of_another_devices_write(
             |intents, node| intents.restore_deleted(0, node)
         ));
-        assert!(!a_delete_of_another_devices_write(
-            |intents, node| intents.give_up(0, node)
-        ));
+        assert!(!a_delete_of_another_devices_write(|intents, node| {
+            let live = NodeState {
+                node_id: "n".to_owned(),
+                parent_id: "root".to_owned(),
+                status: NodeStatus::Live as i32,
+                ..NodeState::default()
+            };
+            intents.give_up(&Server::of("root", vec![live]), 0, node)
+        }));
     }
 }
