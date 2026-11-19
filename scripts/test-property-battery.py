@@ -623,6 +623,9 @@ cases = ["{1:064}"]
         ibbe9 = "bbe992fee5c28fa0abb7884bb237dd12671d433ed2b378dbeaf1453af43501ec"
         s968b = "968b4030b16bb0cfd7da2c1467fdbdf9f0f88f7357e9e6f5ae12c3749f0a4e12"
         d67bb = "67bbb9cfd49eeba66ea83618bbd588e0dcc37bd78a0acf6b5c249eb05e11bd3e"
+        d1f04 = "1f04d494189c5d7d60cf2a415e091dfa6f219d41865ccbe15fa953fa9980776c"
+        tb5bf = "b5bf582a739d8550f5b2ca632da13e912e07e6844bd1640ffd05e801fc57ec25"
+        takes_along = "a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone"
         coarse_once = "devices_on_coarse_volumes_converge_once_the_faults_stop"
         lose_server_restores = "devices_lose_no_write_across_server_restores"
         taken = ("after phase 2: a restore took write 2 from the server while a disk held it, and the server does not hold it "
@@ -705,6 +708,16 @@ cases = ["{1:064}"]
             (coarse_once, head_only_undone(coarse_once, s968b), s968b, []),
             (lose_server_restores, taken, d67bb, [("D", "GUN-984", None)]),
             (server_restores, taken, d67bb, [("D", "GUN-984", None)]),
+            (lose_coarse, example(d1f04), d1f04, [("D", "GUN-984", ["1f04d494189c"])]),
+            (lose_coarse, example(d1f04), other, []),
+            (lose_restores, example(d1f04), d1f04, []),
+            (lose_coarse, example(d1f04) + "\n" + undone, d1f04, []),
+            (lose_coarse, head_only_undone(lose_coarse, d1f04), d1f04, []),
+            (lose_coarse, taken, d1f04, [("D", "GUN-984", None)]),
+            (takes_along, example(tb5bf), tb5bf, [("T", "GUN-1046", ["b5bf582a739d"])]),
+            (takes_along, example(tb5bf), other, []),
+            (rewinds_and_rollbacks, example(tb5bf), tb5bf, []),
+            (takes_along, example(tb5bf) + "\n" + undone, tb5bf, []),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):
                 found = triage.matches(entries, test, message, case)
