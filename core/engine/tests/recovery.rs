@@ -5817,7 +5817,7 @@ fn recovered_from_log(trees: &mut Trees, log: Option<Log>) -> Commits {
     let read = LogRead::new(trees, &cause, log);
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
-    commits.enter_recovery(cause.clone());
+    commits.enter_recovery(cause);
     commits.recover(trees, 0, false, &cause, &read, &Marks::new(), &mut ids, NOW);
     commits
 }

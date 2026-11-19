@@ -269,6 +269,37 @@ fn a_device_back_after_another_devices_keep_is_asked_about_its_own_write() {
 }
 
 #[test]
+fn a_rewind_of_an_edit_to_a_file_the_restore_point_held_is_asked_about_only_when_the_log_is_gone() {
+    for truncated in [false, true] {
+        let mut remote = Remote::new();
+        let (site_a, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site_a.root.join("c.txt"), b"one");
+        let (site_b, mut b) = linked(&mut remote, "b");
+        b.rest(&mut remote);
+        let backup = remote.space.clone();
+        b.create(&mut remote, &site_b.root.join("c.txt"), b"two");
+        remote.space.rewind(&backup, NOW);
+        if truncated {
+            a.pull(&remote);
+            assert_eq!(a.run(&mut remote).first(), Some(&"reconnect"));
+            a.settle();
+            a.run(&mut remote);
+            a.create(&mut remote, &site_a.root.join("other.txt"), b"other");
+            let head = remote.space.head_seq();
+            remote.space.truncate_log(head);
+        }
+
+        b.pull(&remote);
+        assert_eq!(b.run(&mut remote).first(), Some(&"reconnect"));
+        b.settle();
+        b.rest(&mut remote);
+        assert_eq!(shown(&site_b).len(), usize::from(truncated), "truncated {truncated}");
+        let kept: &[u8] = if truncated { b"two" } else { b"one" };
+        assert_eq!(fs::read(site_b.root.join("c.txt")).unwrap(), kept, "truncated {truncated}");
+    }
+}
+
+#[test]
 fn an_upload_that_ends_after_a_recovery_leaves_the_next_commit_in_flight() {
     use koidrive_proto::v1::error::Code;
     let mut remote = Remote::new();

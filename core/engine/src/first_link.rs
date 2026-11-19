@@ -27,7 +27,7 @@ pub type Marks = BTreeMap<NodeId, NodeId>;
 /// Each state the server's log gave a node, in seq order.
 pub type Log = BTreeMap<NodeId, Vec<RemoteNode>>;
 
-/// What a recovery learns from the server's log (design section 6.4).
+/// What a recovery learns from the server's log.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LogRead {
     /// After a store rollback within one history: the shape R₀ gives each live node, then each
@@ -40,7 +40,7 @@ pub struct LogRead {
 impl LogRead {
     /// `log` is the log since the store's cursor when `cause` names no restore point, and the
     /// new history's log from its first seq when it does; `None` when the log no longer reaches
-    /// back that far. `trees` still holds R₀ and S₀.
+    /// back that far.
     pub fn new(trees: &Trees, cause: &RecoveryCause, log: Option<Log>) -> LogRead {
         let Some(restore_point_ms) = cause.restore_point_ms else {
             let Some(log) = log else {
