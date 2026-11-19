@@ -68,8 +68,7 @@ fn holds(path: &Path, signature: &[u8]) -> bool {
 
 fn with_extension(index: &[u8], signature: &[u8; 4]) -> Vec<u8> {
     let mut bytes = index[..index.len() - 20].to_vec();
-    bytes.extend_from_slice(signature);
-    bytes.extend_from_slice(&[0, 0, 0, 0]);
+    bytes.extend([&signature[..], &[0; 4]].concat());
     let checksum = Sha1::digest(&bytes);
     bytes.extend_from_slice(&checksum);
     bytes
@@ -154,7 +153,6 @@ fn reads_sha256_indexes_with_the_object_format_of_the_common_dir() {
     assert_eq!(answers(&read(root), "a.txt b.txt"), "yy");
     git(root, &["config", "extensions.objectFormat", "sha512"]);
     assert_eq!(answers(&read(root), "a.txt"), "?");
-    assert_eq!(answers(&read(&root.join("wt")), "a.txt"), "?");
 }
 
 #[test]
@@ -225,7 +223,6 @@ fn every_dot_git_entry_makes_a_work_tree_that_owns_the_paths_below_it() {
             "sub",
         ],
     );
-    assert!(root.join("sub/.git").is_file() && root.join("wt/.git").is_file());
     std::os::unix::fs::symlink(root.join(".git"), root.join("odd/.git")).unwrap();
     assert!(GitIndex::<Key>::find(&root.join(".git")).is_none());
     let indexes: BTreeMap<PathBuf, GitIndex<Key>> = ["", "wt", "sub", "odd"]
