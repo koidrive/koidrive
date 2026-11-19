@@ -20,6 +20,10 @@ on:
         description: Number of mutant shards, 1 to 40; at most 10 run at once
         type: string
         default: '8'
+      only:
+        description: Comma-separated shard indexes to run, to redo failed shards of an earlier run (empty runs every shard)
+        type: string
+        default: ''
       slow:
         description: Baseline seconds from which a test runs only on the mutants the faster tests miss
         type: string
@@ -67,9 +71,14 @@ jobs:
         id: pin
         env:
           SHARDS: ${{ inputs.shards }}
+          ONLY: ${{ inputs.only }}
         run: |
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "shards=$(seq 0 $((SHARDS - 1)) | jq -cs .)" >> "$GITHUB_OUTPUT"
+          if [[ "$ONLY" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+            echo "shards=$(jq -cn --arg only "$ONLY" '$only | split(",") | map(tonumber)')" >> "$GITHUB_OUTPUT"
+          else
+            echo "shards=$(seq 0 $((SHARDS - 1)) | jq -cs .)" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
