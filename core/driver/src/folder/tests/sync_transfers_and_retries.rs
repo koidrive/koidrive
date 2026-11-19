@@ -663,7 +663,7 @@ fn an_upgraded_store_reports_only_files_changed_after_its_last_write_before_the_
     edit_keeping_the_size_and_mtime(&path);
 
     let mut a = site.start();
-    let mut snapshot = a.folder.snapshot();
+    let mut snapshot = a.folder.engine.snapshot();
     let found = snapshot.rescan(&site.root, [PathBuf::new()]).unwrap();
     assert_eq!(
         found.changes,
@@ -701,7 +701,7 @@ fn an_uploaded_file_is_read_again_only_once_for_an_attribute_another_app_wrote()
     assert_eq!(reads(&a), uploaded + 1);
     assert!(a.run(&mut remote).is_empty());
     drop(a);
-    let mut snapshot = site.start().folder.snapshot();
+    let mut snapshot = site.start().folder.engine.snapshot();
     assert_eq!(
         snapshot
             .rescan(&site.root, [PathBuf::new()])

@@ -7,7 +7,7 @@ fn opened(site: &Site) -> Result<Folder, Stop> {
         .unwrap()
         .expect("the folder is not locked");
     let local = local_rules(&SyncRules::default()).unwrap();
-    Folder::open(link, &lock, &site.db, local)
+    Folder::open(Folder::load(&site.db, &link, local)?, link, &lock).map(|(folder, _)| folder)
 }
 
 fn halts_as_a_copy(site: &Site) -> bool {
@@ -1712,3 +1712,30 @@ fn an_effect_logs_a_pending_token_the_start_could_not_write_before_its_marker_ca
     fs::copy(&saved, &site.db).unwrap();
     assert!(recovers(&site));
 }
+
+#[test]
+fn a_start_that_finishes_an_interrupted_delete_gives_the_observer_the_tree_without_the_file() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("kept.txt"), b"one");
+    let (other, mut b) = linked(&mut remote, "b");
+    b.settle();
+    b.run(&mut remote);
+    fs::remove_file(other.root.join("kept.txt")).unwrap();
+    b.rescan();
+    b.scan_until(|b| !b.work.is_empty());
+    b.run(&mut remote);
+    a.folder.disk.set_hook(crash_at(disk::Cut::BeforeAck));
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        a.pull(&remote);
+        a.run(&mut remote);
+    }));
+    assert!(crashed.is_err());
+    drop(a);
+    assert_eq!(site.stored().effects.in_flight().len(), 1);
+
+    let a = site.start();
+    assert!(a.folder.engine.effects.in_flight().is_empty());
+    assert!(!a.observer.snapshot().entries.contains_key(Path::new("kept.txt")));
+}
+

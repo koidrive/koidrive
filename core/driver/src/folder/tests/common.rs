@@ -271,7 +271,9 @@ impl Site {
             .unwrap()
             .expect("the folder is not locked");
         let local = local_rules(sync).unwrap();
-        let mut folder = Folder::open(link, &lock, &self.db, local).unwrap();
+        let loaded = Folder::load(&self.db, &link, local).unwrap();
+        let (mut folder, snapshot) = Folder::open(loaded, link, &lock).unwrap();
+        assert_eq!(snapshot, folder.engine.snapshot());
         folder.engine.commits.set_device_name(&self.link.device_id);
         let reports: Arc<Mutex<Vec<Observing>>> = Arc::default();
         let reported = reports.clone();
@@ -279,7 +281,7 @@ impl Site {
             &self.root,
             &self.link.space_id,
             folder.link.root_at(),
-            folder.snapshot(),
+            snapshot,
             folder.sections().marks(),
             matcher(sync).unwrap(),
             || false,

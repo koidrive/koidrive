@@ -65,7 +65,7 @@ pub(crate) use task::FolderTask;
 #[cfg(test)]
 use task::reporter;
 #[cfg(test)]
-pub(crate) use task::{BEFORE_OPEN, ObserveFault};
+pub(crate) use task::{BEFORE_OPEN, ObserveFault, WHILE_LOADING};
 #[cfg(test)]
 use tokio::sync::watch;
 #[cfg(test)]
@@ -116,6 +116,13 @@ const REPLACED: &str = "the folder at this path is no longer the folder this tas
 /// Why a folder halts when the folder at its path after a root halt is not the one the task locked before.
 const OTHER_FOLDER: &str = "the folder at this path is not the one this device synced before (it was replaced); run \
                             koi folder restart to sync the folder that is there now";
+
+pub(crate) struct Loaded {
+    timing: Timing,
+    store: Store,
+    engine: Engine,
+    snapshot: Snapshot,
+}
 
 /// One linked folder while it syncs.
 pub(crate) struct Folder {
@@ -330,17 +337,37 @@ pub(crate) struct View {
 }
 
 impl Folder {
-    /// Opens the folder's store, loads the engine and starts the disk through `lock`, the descriptor the task
-    /// locked. [`Disk::start`] recovers an effect that was in flight before anything is observed or planned. The
-    /// engine then takes the restores asked for while no task ran. Every node whose effect failed is unblocked, so each
-    /// is planned again once after the first scan of this start. The trees take `local`, this device's `[sync]` list,
-    /// which the store does not hold; the rules files follow with the observer's first batch, and nothing is planned
-    /// before that (design §5.10).
-    pub fn open(link: Link, lock: &File, store: &Path, local: LocalRules) -> Result<Folder, Stop> {
+    pub fn load(store: &Path, link: &Link, local: LocalRules) -> Result<Loaded, Stop> {
+        #[cfg(test)]
+        if let Some(parked) = WHILE_LOADING.lock().unwrap().remove(store) {
+            parked();
+        }
         let timing = Timing::open(store, link.linked_at_ms);
         let mut store = Store::open_existing(store)?;
-        let mut engine = store.transaction(|tx| Engine::load(tx, &link.space_id))?;
+        let mut engine = store.read(|tx| Engine::load(tx, &link.space_id))?;
         engine.trees.set_local_rules(local);
+        engine.trees.settle(engine.commits.aliases());
+        Ok(Loaded {
+            timing,
+            store,
+            snapshot: engine.snapshot(),
+            engine,
+        })
+    }
+
+    /// Starts the disk of what [`Folder::load`] loaded through `lock`, the descriptor the task locked. [`Disk::start`]
+    /// recovers an effect that was in flight before anything is observed or planned. The engine then takes the
+    /// restores asked for while no task ran. Every node whose effect failed is unblocked, so each is planned again
+    /// once after the first scan of this start. The rules files follow with the observer's first batch, and nothing is
+    /// planned before that (design §5.10). It also gives the snapshot the observer starts from: the disk as L
+    /// describes it.
+    pub fn open(loaded: Loaded, link: Link, lock: &File) -> Result<(Folder, Snapshot), Stop> {
+        let Loaded {
+            timing,
+            mut store,
+            mut engine,
+            snapshot,
+        } = loaded;
         let disk = Disk::start(lock, &link, &mut engine, &mut store)?;
         for node in engine.effects.blocked().clone().into_keys() {
             engine.effects.unblock(&node);
@@ -360,7 +387,11 @@ impl Folder {
         let asked = (engine.commits.questions().iter())
             .map(|question| question.id.clone())
             .collect();
-        Ok(Folder {
+        let snapshot = match engine.local_written_since_load {
+            true => engine.snapshot(),
+            false => snapshot,
+        };
+        let folder = Folder {
             timing,
             link,
             engine,
@@ -396,17 +427,13 @@ impl Folder {
             retry_at: None,
             #[cfg(test)]
             crash_after: None,
-        })
+        };
+        Ok((folder, snapshot))
     }
 
     /// What the observer's thread shares with the effect sections.
     pub fn sections(&self) -> Arc<Sections> {
         self.disk.sections()
-    }
-
-    /// The snapshot the observer starts from: the disk as L describes it.
-    pub fn snapshot(&self) -> Snapshot {
-        self.engine.snapshot()
     }
 
     /// Reclaims the local trash, evicting the oldest entries while it holds more than `cap` bytes. An entry written

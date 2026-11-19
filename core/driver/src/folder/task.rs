@@ -90,6 +90,11 @@ pub(crate) struct ObserveFault {
 }
 
 #[cfg(test)]
+pub(crate) static WHILE_LOADING: Mutex<
+    std::collections::BTreeMap<PathBuf, Box<dyn FnOnce() + Send>>,
+> = Mutex::new(std::collections::BTreeMap::new());
+
+#[cfg(test)]
 thread_local! {
     pub(crate) static BEFORE_OPEN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
@@ -222,11 +227,21 @@ impl FolderTask {
         if let Some(before_open) = BEFORE_OPEN.with(|hook| hook.borrow_mut().take()) {
             before_open();
         }
-        let local = self.local.clone();
-        let mut folder = match Folder::open(link, &lock, &self.store, local) {
-            Ok(folder) => folder,
-            Err(stop) => return stop.into(),
-        };
+        let (sent, loading) = tokio::sync::oneshot::channel();
+        std::thread::spawn({
+            let (store, link, local) = (self.store.clone(), link.clone(), self.local.clone());
+            move || {
+                let _ = sent.send(Folder::load(&store, &link, local));
+            }
+        });
+        let loaded = loading
+            .await
+            .expect("the thread that loads a folder sends unless it panics");
+        let (mut folder, snapshot) =
+            match loaded.and_then(|loaded| Folder::open(loaded, link, &lock)) {
+                Ok(opened) => opened,
+                Err(stop) => return stop.into(),
+            };
         if let Err(error) = self.status.opened() {
             return Halt::Person(
                 Halted::Io,
@@ -262,7 +277,7 @@ impl FolderTask {
             folder.link.clone(),
             lock.clone(),
             folder.sections(),
-            folder.snapshot(),
+            snapshot,
         );
         let mut config = SessionConfig::new(
             &self.link.space_id,

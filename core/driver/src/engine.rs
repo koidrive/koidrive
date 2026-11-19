@@ -52,6 +52,7 @@ pub(crate) struct Engine {
     pub mounts: BTreeMap<PathBuf, Mount>,
     stored_ctimes: BTreeMap<NodeId, i64>,
     unstored_ctimes: BTreeMap<NodeId, i64>,
+    pub local_written_since_load: bool,
 }
 
 /// What applying a batch of the log did.
@@ -127,6 +128,7 @@ impl Engine {
             mounts: tx.volume_mounts()?,
             stored_ctimes: tx.local_ctimes()?,
             unstored_ctimes: BTreeMap::new(),
+            local_written_since_load: false,
         })
     }
 
@@ -138,6 +140,7 @@ impl Engine {
     pub fn checkpoint(&mut self, tx: &Tx<'_>) -> Result<(), Error> {
         self.trees.settle(self.commits.aliases());
         let changed = self.trees.take_changed();
+        self.local_written_since_load |= !changed.local.is_empty();
         for id in &changed.local {
             match self.trees.local().get(id) {
                 Some(node) => tx.put_local_node(&stored(id, node))?,
@@ -164,6 +167,7 @@ impl Engine {
             if self.trees.local().get(&id).is_some() {
                 tx.set_local_ctime(&id, ctime)?;
                 self.stored_ctimes.insert(id, ctime);
+                self.local_written_since_load = true;
             }
         }
         for id in &changed.synced {
@@ -183,6 +187,7 @@ impl Engine {
             commits: self.commits.take_changes(),
             effects: self.effects.take_changes(),
         };
+        self.local_written_since_load |= !changes.trees.outside.is_empty();
         tx.write_engine_changes(&changes)?;
         if let Some(questions) = changes.commits.questions {
             self.stored_questions = questions;
@@ -2311,6 +2316,7 @@ mod tests {
             mounts: BTreeMap::new(),
             stored_ctimes: BTreeMap::new(),
             unstored_ctimes: BTreeMap::new(),
+            local_written_since_load: false,
         };
         Case {
             name,
