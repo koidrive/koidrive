@@ -2495,7 +2495,7 @@ impl Driver {
             .root
             .clone();
         let local = self.inner.rules.lock().unwrap().local.clone();
-        crate::ignore::gitignore_only(&root, local).map_err(io_error(&root))
+        Ok(crate::ignore::gitignore_only(&root, local))
     }
 
     /// Starts the task of `folder` unless it is being unlinked or its task still runs. `all` are the roots of every
@@ -10829,5 +10829,35 @@ mod tests {
             driver.gitignore_only(&base.join("elsewhere")),
             Err(DriverError::NotLinked(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn gitignore_only_counts_a_linked_root_it_cannot_open_as_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        fs::write(root.join("a.log"), "abc").unwrap();
+        let driver = Driver::open(paths).unwrap();
+        let blocked = GitignoreOnly {
+            files: 0,
+            bytes: 0,
+            unreadable: vec![root.clone()],
+        };
+
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+        let counted = driver.gitignore_only(&root);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(counted.unwrap(), blocked);
+
+        fs::rename(&root, base.join("Moved")).unwrap();
+        assert_eq!(driver.gitignore_only(&root).unwrap(), blocked);
     }
 }

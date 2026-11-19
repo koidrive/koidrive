@@ -8,7 +8,6 @@
 //! the engine excludes.
 
 use std::ffi::{OsStr, OsString};
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -199,32 +198,36 @@ impl Ignore for Counted {
     }
 }
 
-pub(crate) fn gitignore_only(root: &Path, local: LocalRules) -> io::Result<GitignoreOnly> {
+pub(crate) fn gitignore_only(root: &Path, local: LocalRules) -> GitignoreOnly {
     let both = Arc::new(Mutex::new(Both {
         with: Rules::new(local.clone().with_gitignore(true)),
         without: Rules::new(local.with_gitignore(false)),
     }));
     let mut rules = koidrive_fs::Rules::new(Box::new(Counted(both.clone())));
     let mut snapshot = Snapshot::default();
-    let rescan = snapshot
-        .rescan_with_rules(root, [PathBuf::new()], &mut rules)
-        .map_err(|error| match error {
-            koidrive_fs::Error::Io(error) => error,
-            other => io::Error::other(other),
-        })?;
+    let rescan = match snapshot.rescan_with_rules(root, [PathBuf::new()], &mut rules) {
+        Ok(rescan) => rescan,
+        Err(error) => {
+            tracing::warn!(%error, root = %root.display(), "the .gitignore count cannot read a linked folder");
+            return GitignoreOnly {
+                unreadable: vec![root.to_path_buf()],
+                ..GitignoreOnly::default()
+            };
+        }
+    };
     let both = both.lock().unwrap();
     let only = (snapshot.entries.iter())
         .filter(|(path, entry)| {
             entry.kind == EntryKind::File && status(&both.with, path, false) != Status::Included
         })
         .map(|(_, entry)| entry.size);
-    Ok(GitignoreOnly {
+    GitignoreOnly {
         files: only.clone().count() as u64,
         bytes: only.sum(),
         unreadable: (rescan.unreadable.iter())
             .map(|folder| root.join(folder).components().collect())
             .collect(),
-    })
+    }
 }
 
 #[cfg(test)]
@@ -400,7 +403,7 @@ mod tests {
                 bytes: 2,
                 unreadable: vec![root.join("private")],
             };
-            assert_eq!(counted.unwrap(), only, "{locked:?}");
+            assert_eq!(counted, only, "{locked:?}");
         }
     }
 
