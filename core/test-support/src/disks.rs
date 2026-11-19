@@ -516,7 +516,7 @@ impl Disks {
                     if !self
                         .mounted
                         .iter()
-                        .any(|known| known.device == image.device)
+                        .any(|known| known.device == image.device && known.image == image.image)
                     {
                         let _ = writeln!(
                             std::io::stderr(),
@@ -550,8 +550,13 @@ fn created(
         if created
             .as_ref()
             .is_err_and(|failure| failure.contains("Resource busy"))
+            && let Err(failure) = eject_strays(image)
         {
-            eject_strays(image)?;
+            let _ = writeln!(
+                std::io::stderr(),
+                "A refused create could not eject the drives on {}: {failure}",
+                image.display()
+            );
         }
         created
     })
@@ -1128,7 +1133,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn an_image_attached_without_a_record_is_ejected_on_drop() {
-        let disks = Disks::new().unwrap();
+        let mut disks = Disks::new().unwrap();
         let image = disks.image("Unrecorded");
         let at = disks.base().join("at");
         fs::create_dir(&at).unwrap();
@@ -1146,6 +1151,11 @@ mod tests {
             image,
             device: whole_device(&attached).unwrap(),
         };
+        disks.mounted.push(Mounted {
+            at: disks.base().join("earlier"),
+            image: disks.base().join("Earlier.dmg"),
+            device: unrecorded.device.clone(),
+        });
         close_ejects_or_keeps_busy(disks, &unrecorded.image, &unrecorded.device);
     }
 
@@ -1247,7 +1257,11 @@ mod tests {
             long.push(" ".repeat(100));
         }
         fs::create_dir_all(&long).unwrap();
-        let name = "x".repeat(1023 - url_length(&long) - "/.dmg".len());
+        let name = 1023usize
+            .checked_sub(url_length(&long) + "/.dmg".len())
+            .filter(|&length| length > 0)
+            .unwrap_or_else(|| panic!("{} leaves no room for a 1023-byte URL", long.display()));
+        let name = "x".repeat(name);
         long.push(format!("{name}.dmg"));
         assert_eq!(url_length(&long), 1023);
         fs::rename(&image, &long).unwrap();
@@ -1412,7 +1426,7 @@ mod tests {
         let earlier = Mounted {
             at: disks.base().join("earlier"),
             image,
-            device: "/dev/disk0".to_owned(),
+            device: "/dev/disk999999".to_owned(),
         };
         assert_eq!(still_attached(&earlier), Ok(false));
         assert_eq!(
