@@ -51,7 +51,11 @@
 //! [`NativeWatcher`] keeps every removal that neither a move nor the rules
 //! explain the same way and ends the poll, so a file replaced at its path in
 //! two steps reads as modified, and a move whose two ends reach it in
-//! different polls reads as a rename.
+//! different polls reads as a rename. On Linux, where a rescan cannot look an
+//! entry up by its identity, a held removal is published only once a rescan
+//! of the paths that moves named was followed by a barrier with no move heard
+//! in between, for at most 30 seconds, so a file that was still moving when
+//! the rescans looked reads as a rename.
 //!
 //! A confirmation is a point in time, and these windows remain:
 //!
@@ -134,6 +138,8 @@ const REMOUNT_CHECK: Duration = Duration::from_secs(1);
 /// A sync cookie, as in <https://meta.github.io/watchman/docs/cookies>.
 const BARRIER: &str = "watch-barrier";
 const BARRIER_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(target_os = "linux")]
+const MOVING_HOLD: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -3403,6 +3409,10 @@ struct Barrier {
     file: PathBuf,
     written: Instant,
     holds: BTreeSet<PathBuf>,
+    #[cfg(target_os = "linux")]
+    moved: BTreeSet<PathBuf>,
+    #[cfg(target_os = "linux")]
+    stirred: bool,
 }
 
 /// Watches with FSEvents on macOS and inotify on Linux.
@@ -3422,6 +3432,8 @@ pub struct NativeWatcher {
     view: OnceCell<Snapshot>,
     dirty: BTreeSet<PathBuf>,
     waiting: BTreeSet<PathBuf>,
+    #[cfg(target_os = "linux")]
+    held_since: BTreeMap<PathBuf, Instant>,
     barrier: Option<Barrier>,
     barriers: u64,
     listed: BTreeSet<PathBuf>,
@@ -3450,6 +3462,8 @@ pub struct NativeWatcher {
     watcher: RecommendedWatcher,
     #[cfg(all(test, target_os = "linux"))]
     before_register: Option<Box<dyn FnMut()>>,
+    #[cfg(test)]
+    cut: Box<dyn FnMut(Cut<'_>) + Send>,
 }
 
 impl NativeWatcher {
@@ -3485,6 +3499,8 @@ impl NativeWatcher {
             view: OnceCell::new(),
             dirty: BTreeSet::from([PathBuf::new()]),
             waiting: BTreeSet::new(),
+            #[cfg(target_os = "linux")]
+            held_since: BTreeMap::new(),
             barrier: None,
             barriers: 0,
             listed: BTreeSet::new(),
@@ -3507,6 +3523,8 @@ impl NativeWatcher {
             watcher,
             #[cfg(all(test, target_os = "linux"))]
             before_register: None,
+            #[cfg(test)]
+            cut: Box::new(|_| {}),
         })
     }
 
@@ -3555,6 +3573,22 @@ impl NativeWatcher {
                 | EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Any)
                 | EventKind::Access(AccessKind::Close(AccessMode::Write))
         );
+        #[cfg(target_os = "linux")]
+        if matches!(
+            event.kind,
+            EventKind::Create(notify::event::CreateKind::Folder)
+                | EventKind::Modify(ModifyKind::Name(_))
+        ) && let Some(barrier) = self.barrier.as_mut()
+        {
+            let private = self.root.join(PRIVATE_DIR);
+            let moved: Vec<PathBuf> = (event.paths.iter())
+                .filter(|path| !path.starts_with(&private))
+                .filter_map(|path| path.strip_prefix(&self.root).ok())
+                .map(Path::to_path_buf)
+                .collect();
+            barrier.stirred |= !moved.is_empty();
+            barrier.moved.extend(moved);
+        }
         if written
             && (self.barrier.as_ref()).is_some_and(|barrier| event.paths.contains(&barrier.file))
         {
@@ -3604,14 +3638,49 @@ impl NativeWatcher {
             })
     }
 
+    #[cfg(target_os = "linux")]
+    fn release_held_out(&mut self) {
+        let Some(barrier) = self.barrier.as_mut() else {
+            return;
+        };
+        let out: Vec<PathBuf> = (barrier.holds.iter())
+            .filter(|path| {
+                (self.held_since.get(*path)).is_some_and(|since| since.elapsed() >= MOVING_HOLD)
+            })
+            .cloned()
+            .collect();
+        for path in out {
+            barrier.holds.remove(&path);
+            if self.waiting.remove(&path) {
+                self.held_since.remove(&path);
+                self.dirty.insert(path);
+            }
+        }
+    }
+
     fn lift_barrier(&mut self) {
         let Some(barrier) = self.barrier.take() else {
             return;
         };
-        for path in barrier.holds {
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        let mut released = barrier.holds;
+        #[cfg(target_os = "linux")]
+        if barrier.stirred {
+            released.retain(|path| {
+                (self.held_since.get(path)).is_none_or(|since| since.elapsed() >= MOVING_HOLD)
+            });
+            self.dirty.extend(barrier.moved);
+        }
+        for path in released {
             if self.waiting.remove(&path) {
+                #[cfg(target_os = "linux")]
+                self.held_since.remove(&path);
                 self.dirty.insert(path);
             }
+        }
+        #[cfg(target_os = "linux")]
+        if barrier.stirred {
+            return;
         }
         self.raise_barrier();
     }
@@ -3639,6 +3708,10 @@ impl NativeWatcher {
             file: self.root.join(PRIVATE_DIR).join(name),
             written: Instant::now(),
             holds: self.waiting.clone(),
+            #[cfg(target_os = "linux")]
+            moved: BTreeSet::new(),
+            #[cfg(target_os = "linux")]
+            stirred: false,
         });
     }
 
@@ -3895,7 +3968,14 @@ impl Watcher for NativeWatcher {
                 };
                 let wait = match &self.barrier {
                     Some(barrier) => {
-                        wait.min(BARRIER_TIMEOUT.saturating_sub(barrier.written.elapsed()))
+                        let wait =
+                            wait.min(BARRIER_TIMEOUT.saturating_sub(barrier.written.elapsed()));
+                        #[cfg(target_os = "linux")]
+                        let wait = (barrier.holds.iter())
+                            .filter_map(|path| self.held_since.get(path))
+                            .map(|since| MOVING_HOLD.saturating_sub(since.elapsed()))
+                            .fold(wait, Duration::min);
+                        wait
                     }
                     None => wait,
                 };
@@ -3906,6 +3986,8 @@ impl Watcher for NativeWatcher {
             {
                 self.lift_barrier();
             }
+            #[cfg(target_os = "linux")]
+            self.release_held_out();
             if !self.snapshot.detached.is_empty() && self.remount_checked.elapsed() >= REMOUNT_CHECK
             {
                 self.remount_checked = Instant::now();
@@ -3936,6 +4018,10 @@ impl Watcher for NativeWatcher {
                 .chain(uncovered.iter().flatten())
                 .cloned()
                 .collect();
+            #[cfg(test)]
+            let cut = &mut *self.cut;
+            #[cfg(not(test))]
+            let cut = &mut |_: Cut<'_>| {};
             let rescan = match self.snapshot.rescan_under(
                 &self.root,
                 scopes.iter().cloned(),
@@ -3947,7 +4033,7 @@ impl Watcher for NativeWatcher {
                 Keep::Unexplained {
                     waiting: &self.waiting,
                 },
-                &mut |_| {},
+                cut,
                 &self.marks,
             ) {
                 Ok(rescan) => rescan,
@@ -3971,6 +4057,15 @@ impl Watcher for NativeWatcher {
             }
             self.waiting
                 .extend(self.snapshot.unplaced.difference(&held).cloned());
+            #[cfg(target_os = "linux")]
+            {
+                let now = Instant::now();
+                self.held_since
+                    .retain(|path, _| self.waiting.contains(path));
+                for path in &self.waiting {
+                    self.held_since.entry(path.clone()).or_insert(now);
+                }
+            }
             self.dirty = (rescan.unsettled.into_iter())
                 .filter(|path| !self.waiting.contains(path))
                 .collect();
