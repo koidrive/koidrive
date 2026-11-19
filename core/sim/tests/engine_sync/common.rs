@@ -22,7 +22,9 @@ use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 
 use koidrive_engine::state::StateError;
 
-use koidrive_engine::tree::{ContentKey, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, same};
+use koidrive_engine::tree::{
+    ContentKey, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, same,
+};
 
 use koidrive_proto::v1::{
     ChangeRecord, ChunkRef, Commit, Content, CreateDir, CreateFile, Delete, Error, ListVersions,
@@ -1178,7 +1180,10 @@ fn aim(
 }
 
 fn written(contents: impl Iterator<Item = Option<ContentKey>>, device: u8) -> BTreeSet<Vec<u8>> {
-    own(contents.flatten().map(|c| c.manifest_digest().to_vec()), device)
+    own(
+        contents.flatten().map(|c| c.manifest_digest().to_vec()),
+        device,
+    )
 }
 
 /// The digests among `digests` that `device` wrote.
@@ -1969,14 +1974,7 @@ fn run_ignoring_answering_after(
         device.trees.settle(commits.aliases());
         commits.first_link(&mut device.trees, &mut device.ids, NOW as u64, prior);
     }
-    let mut local_writes = written(
-        device
-            .trees
-            .local()
-            .iter()
-            .map(|(_, n)| n.shape.content),
-        1,
-    );
+    let mut local_writes = written(device.trees.local().iter().map(|(_, n)| n.shape.content), 1);
     for action in remote {
         remote_action(&mut space, &mut other, 2, action);
     }

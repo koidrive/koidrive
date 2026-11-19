@@ -812,7 +812,10 @@ fn a_lost_update_is_not_the_effects_base_while_it_cannot_fit() {
         trees.settle(commits.aliases());
     }
     assert_eq!(
-        trees.local().get(&"n".into()).map(|node| &node.shape.content),
+        trees
+            .local()
+            .get(&"n".into())
+            .map(|node| &node.shape.content),
         Some(&Some(key(&content(1))))
     );
 }

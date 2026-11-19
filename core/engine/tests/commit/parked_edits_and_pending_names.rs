@@ -955,7 +955,10 @@ fn a_finish_another_device_makes_keeps_a_remote_write_this_device_never_took() {
     );
     trees.settle(&Default::default());
     assert_eq!(
-        trees.synced().live(&"a".into()).and_then(|shape| shape.content),
+        trees
+            .synced()
+            .live(&"a".into())
+            .and_then(|shape| shape.content),
         Some(key(&content(1)))
     );
     assert_eq!(trees.class(&"a".into()), Class::Concurrent);
