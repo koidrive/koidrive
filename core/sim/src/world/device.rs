@@ -704,12 +704,13 @@ impl Device {
         Ok(())
     }
 
-    pub fn relist_kept_folders(&mut self) {
+    pub fn relist_kept_folders(&mut self, listed: &BTreeSet<u128>) {
         let trees = &mut self.engine.trees;
         let emptied: Vec<NodeId> = (trees.local().iter())
             .filter(|(id, node)| {
                 node.shape.kind == Kind::Dir
                     && !node.parked
+                    && listed.contains(&node.identity.ino)
                     && trees.remote().live(id).is_none()
                     && trees.local_children(id).next().is_none()
                     && (self.disk.entries().get(&node.identity.ino))

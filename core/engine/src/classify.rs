@@ -3889,12 +3889,16 @@ impl Trees {
 
     fn unedited_kept_rules_file(&self, id: &NodeId) -> bool {
         self.kept_rules_file(id)
-            && (self.l.get(id).zip(self.r.get(id))).is_some_and(|(local, remote)| {
-                match (&local.shape.content, &remote.shape.content) {
-                    (Some(local), Some(remote)) => same_content(local, remote),
-                    _ => false,
-                }
-            })
+            && (!self.unsent_edits.contains(id) || self.holds_remote_content(id))
+    }
+
+    fn holds_remote_content(&self, id: &NodeId) -> bool {
+        (self.l.get(id).zip(self.r.get(id))).is_some_and(|(local, remote)| {
+            match (&local.shape.content, &remote.shape.content) {
+                (Some(local), Some(remote)) => same_content(local, remote),
+                _ => false,
+            }
+        })
     }
 
     /// Takes up the delete of the kept folder `id` again once a listing finds it holding nothing but platform files and
@@ -3927,6 +3931,9 @@ impl Trees {
                 let shape = self.l.get(&id).map(|node| node.shape.clone());
                 if !self.fits_synced(&id, shape.as_ref()) {
                     return;
+                }
+                if self.holds_remote_content(&id) {
+                    self.unsent_edits.remove(&id);
                 }
                 self.end_kept_folder(&id);
                 self.set_synced(id, shape);

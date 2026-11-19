@@ -75,6 +75,34 @@ fn a_folder_kept_for_excluded_entries_goes_once_they_go_while_its_device_is_stop
 }
 
 #[test]
+fn a_folder_kept_for_excluded_entries_waits_for_a_scan_of_itself_once_they_go() {
+    let (_, mut phases) = kept_by_its_rules();
+    phases.push(vec![(1, folder("ss"))]);
+    let mut world = converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
+    let kept = |world: &World| {
+        let trees = &world.devices[1].engine.trees;
+        (trees.local().iter()).any(|(id, node)| node.shape.name == "a" && trees.kept_folder(id))
+    };
+    assert!(kept(&world));
+    let txt = target(&world, 1, &["a", "c.txt"]);
+    let other = folder_number(&world, 1, &["ss"]);
+    let own = folder_number(&world, 1, &["a"]);
+
+    world
+        .run(
+            phases.len(),
+            &[(1, delete(txt)), (1, Step::ScanFolder(other))],
+        )
+        .unwrap();
+    assert!(kept(&world));
+
+    world
+        .run(phases.len(), &[(1, Step::ScanFolder(own))])
+        .unwrap();
+    assert!(!kept(&world));
+}
+
+#[test]
 fn a_file_made_at_the_name_of_a_folder_its_rules_exclude_waits_for_that_name() {
     let _red = expect_red(
         Check::NameLeftOut,

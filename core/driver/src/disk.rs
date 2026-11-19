@@ -846,11 +846,11 @@ impl Disk {
         self.unscanned.batch = observation.pending;
         let dropped: Vec<PathBuf> = dropped.into_iter().collect();
         let pending = pending(&self.unscanned.all(&dropped), &observation.waiting);
-        let emptied = emptied_kept_folders(&self.space, &engine.trees, &listed)?;
+        let emptied = |trees: &Trees| emptied_kept_folders(&self.space, trees, &listed);
         if !changes.is_empty()
             || mounts.is_some()
             || !ctimes.is_empty()
-            || !emptied.is_empty()
+            || !emptied(&engine.trees)?.is_empty()
             || engine.sees_unobserved(&listed, &pending)
         {
             let now_ms = crate::clock::unix_ms();
@@ -862,8 +862,8 @@ impl Disk {
                 engine.observe(&changes, now_ms);
                 engine.read(&read, &observation.unreadable);
                 engine.listed(&listed, pending);
-                for folder in &emptied {
-                    engine.trees.recheck_kept_folder(folder);
+                for folder in emptied(&engine.trees)? {
+                    engine.trees.recheck_kept_folder(&folder);
                 }
                 engine.read_ctimes(ctimes);
                 Ok(engine.checkpoint(tx)?)

@@ -1848,3 +1848,156 @@ fn a_kept_folder_goes_to_the_trash_with_the_rules_files_it_kept_unedited() {
         assert!(remote.names().is_empty(), "{rules}");
     }
 }
+
+#[test]
+fn a_kept_folder_goes_to_the_trash_with_a_rules_file_another_device_edited_before_deleting_it() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("app/.koiignore"), b".env\n");
+    a.create(&mut remote, &site_a.root.join("app/README.md"), b"synced");
+    let site = Site::new(&remote, "b");
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    fs::write(site.root.join("app/.env"), b"SECRET=local").unwrap();
+    b.settle();
+    fs::write(site_a.root.join("app/.koiignore"), b".env\n*.tmp\n").unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    fs::remove_dir_all(site_a.root.join("app")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    for _ in 0..3 {
+        b.pull(&remote);
+        b.run(&mut remote);
+        b.settle();
+    }
+    assert_eq!(
+        fs::read(site.root.join("app/.koiignore")).unwrap(),
+        b".env\n"
+    );
+
+    fs::remove_file(site.root.join("app/.env")).unwrap();
+    for _ in 0..3 {
+        b.settle();
+        b.run(&mut remote);
+    }
+
+    assert!(!site.root.join("app").exists());
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert!(remote.names().is_empty());
+}
+
+#[test]
+fn a_kept_folder_goes_to_the_trash_with_a_rules_file_edited_back_to_what_the_server_holds() {
+    let (mut remote, _, _, site, mut b, _) =
+        deleted_with_rules_files(&[(".koiignore", ".env\n")], &["README.md"], &[".env"]);
+    let rules = site.root.join("app/.koiignore");
+    for content in [".env\n*.tmp\n", ".env\n"] {
+        fs::write(&rules, content).unwrap();
+        b.settle();
+        b.run(&mut remote);
+    }
+
+    fs::remove_file(site.root.join("app/.env")).unwrap();
+    for _ in 0..3 {
+        b.settle();
+        b.run(&mut remote);
+    }
+
+    assert!(!site.root.join("app").exists());
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert!(remote.names().is_empty());
+}
+
+#[test]
+fn a_kept_folder_whose_kept_subfolder_empties_stays_kept_for_its_own_ignored_entries() {
+    let ignored = [".env", "sub/.env"];
+    let (mut remote, _, _, site, mut b, _) =
+        deleted_with_ignored_entries(&["README.md", "sub/notes.txt"], &ignored);
+
+    fs::remove_file(site.root.join("app/sub/.env")).unwrap();
+    for _ in 0..3 {
+        b.settle();
+        b.run(&mut remote);
+    }
+
+    assert!(!site.root.join("app/sub").exists());
+    assert_kept(&site, &b, &ignored[..1]);
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert!(remote.names().is_empty());
+
+    fs::remove_file(site.root.join("app/.env")).unwrap();
+    for _ in 0..3 {
+        b.settle();
+        b.run(&mut remote);
+    }
+    assert!(!site.root.join("app").exists());
+}
+
+#[test]
+fn a_kept_folder_goes_to_the_trash_when_one_batch_removes_its_edited_rules_file_and_ignored_entry()
+{
+    let (mut remote, _, _, site, mut b, _) =
+        deleted_with_rules_files(&[(".koiignore", ".env\n")], &["README.md"], &[".env"]);
+    fs::write(site.root.join("app/.koiignore"), ".env\n*.tmp\n").unwrap();
+    b.settle();
+    b.run(&mut remote);
+    assert!(site.root.join("app").exists());
+
+    fs::remove_file(site.root.join("app/.koiignore")).unwrap();
+    fs::remove_file(site.root.join("app/.env")).unwrap();
+    for _ in 0..3 {
+        b.settle();
+        b.run(&mut remote);
+    }
+
+    assert!(!site.root.join("app").exists());
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert!(remote.names().is_empty());
+}
+
+#[test]
+fn a_kept_folder_goes_to_the_trash_when_one_batch_empties_it_and_renames_the_folder_above() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir_all(site_a.root.join("proj/app")).unwrap();
+    a.create(&mut remote, &site_a.root.join("proj/notes.txt"), b"synced");
+    a.create(
+        &mut remote,
+        &site_a.root.join("proj/app/README.md"),
+        b"synced",
+    );
+    let site = Site::new(&remote, "b");
+    let mut b = site.start_with(&ignore_rules());
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    fs::write(site.root.join("proj/app/.env"), b"SECRET=local").unwrap();
+    b.settle();
+    fs::remove_dir_all(site_a.root.join("proj/app")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    b.pull(&remote);
+    b.run(&mut remote);
+    b.settle();
+    b.run(&mut remote);
+    assert!(site.root.join("proj/app/.env").exists());
+
+    fs::remove_file(site.root.join("proj/app/.env")).unwrap();
+    fs::rename(site.root.join("proj"), site.root.join("renamed")).unwrap();
+    for _ in 0..3 {
+        b.settle();
+        b.run(&mut remote);
+    }
+
+    assert!(!site.root.join("renamed/app").exists());
+    assert_eq!(
+        remote.tree().keys().map(String::as_str).collect::<Vec<_>>(),
+        ["renamed", "renamed/notes.txt"]
+    );
+}
