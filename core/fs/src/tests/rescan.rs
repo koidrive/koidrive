@@ -693,3 +693,208 @@ fn swaps_through_a_temporary_name_during_scans_publish_only_renames_and_settle_t
         );
     }
 }
+fn review_probe(files: &[&str], hook: &mut dyn FnMut(&Path, &Path)) -> (Result<Vec<Change>>, Vec<Change>) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    for f in files {
+        let p = root.join(f);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, f).unwrap();
+    }
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    let straddling = snapshot
+        .rescan_with(&root, [PathBuf::new()], None, &mut |cut| {
+            if let Cut::Stating(path) = cut {
+                hook(&root, path)
+            }
+        })
+        .map(|r| r.changes);
+    hook(&root, Path::new("<after>"));
+    let next = snapshot.rescan(&root, [PathBuf::new()]).unwrap().changes;
+    eprintln!("straddling: {straddling:?}\nnext: {next:?}");
+    (straddling, next)
+}
+
+fn review_no_removal(out: &(Result<Vec<Change>>, Vec<Change>)) {
+    let removed = |changes: &[Change]| {
+        (changes.iter()).any(|c| matches!(c, Change::Removed { .. } | Change::Created { kind: EntryKind::File, .. }))
+    };
+    assert!(
+        !out.0.as_ref().is_ok_and(|c| removed(c)) && !removed(&out.1),
+        "a rename was read as removed and created"
+    );
+}
+
+#[test]
+fn review_p1_plain_rename_between_list_and_stat() {
+    let mut done = false;
+    review_no_removal(&review_probe(&["a.txt", "b.txt"], &mut |root, path| {
+        if path == Path::new("a.txt") && !done {
+            done = true;
+            fs::rename(root.join("a.txt"), root.join("c.txt")).unwrap();
+        }
+    }));
+}
+
+#[test]
+fn review_p2_swap_with_a_stated_between_its_first_and_second_rename() {
+    let mut step = 0;
+    review_no_removal(&review_probe(&["a.txt", "b.txt"], &mut |root, path| {
+        if path == Path::new("a.txt") && step == 0 {
+            step = 1;
+            fs::rename(root.join("a.txt"), root.join("t.tmp")).unwrap();
+        }
+        if path == Path::new("<after>") && step == 1 {
+            step = 2;
+            fs::rename(root.join("b.txt"), root.join("a.txt")).unwrap();
+            fs::rename(root.join("t.tmp"), root.join("b.txt")).unwrap();
+        }
+    }));
+}
+
+#[test]
+fn review_p3_move_into_an_already_listed_folder() {
+    let mut done = false;
+    review_no_removal(&review_probe(&["x/keep.txt", "y/c.txt"], &mut |root, path| {
+        if path == Path::new("y") && !done {
+            done = true;
+            fs::rename(root.join("y/c.txt"), root.join("x/c.txt")).unwrap();
+        }
+    }));
+}
+
+#[test]
+fn review_p4_rotation_of_three() {
+    let mut done = false;
+    review_no_removal(&review_probe(&["a.txt", "b.txt", "c.txt"], &mut |root, path| {
+        if path == Path::new("b.txt") && !done {
+            done = true;
+            for (f, t) in [("a.txt", "t.tmp"), ("b.txt", "a.txt"), ("c.txt", "b.txt"), ("t.tmp", "c.txt")] {
+                fs::rename(root.join(f), root.join(t)).unwrap();
+            }
+        }
+    }));
+}
+
+
+#[test]
+fn review_p6_hard_linked_file_renamed_between_list_and_stat() {
+    let mut done = false;
+    review_no_removal(&review_probe(&["a.txt", "b.txt"], &mut |root, path| {
+        if path == Path::new("<after>") {
+            return;
+        }
+        if !done && path == Path::new("a.txt") {
+            done = true;
+            fs::rename(root.join("a.txt"), root.join("c.txt")).unwrap();
+        }
+    }));
+}
+
+#[test]
+fn review_p7_move_into_a_folder_made_during_the_scan() {
+    let mut done = false;
+    review_no_removal(&review_probe(&["x/keep.txt", "y/c.txt"], &mut |root, path| {
+        if path == Path::new("y") && !done {
+            done = true;
+            fs::create_dir_all(root.join("x/n/m")).unwrap();
+            fs::rename(root.join("y/c.txt"), root.join("x/n/m/c.txt")).unwrap();
+        }
+    }));
+}
+
+#[test]
+fn review_p8_folder_moved_into_a_listed_folder() {
+    let mut done = false;
+    review_no_removal(&review_probe(&["x/keep.txt", "y/c.txt", "y/d.txt"], &mut |root, path| {
+        if path == Path::new("y") && !done {
+            done = true;
+            fs::rename(root.join("y"), root.join("x/y2")).unwrap();
+        }
+    }));
+}
+
+#[test]
+fn review_p9_real_delete_during_the_scan_is_published() {
+    let mut done = false;
+    let out = review_probe(&["a.txt", "b.txt"], &mut |root, path| {
+        if path == Path::new("a.txt") && !done {
+            done = true;
+            fs::remove_file(root.join("a.txt")).unwrap();
+        }
+    });
+    let removed = |c: &[Change]| c.iter().any(|c| matches!(c, Change::Removed { path, .. } if path == Path::new("a.txt")));
+    assert!(out.0.as_ref().is_ok_and(|c| removed(c)) || removed(&out.1), "{out:?}");
+}
+
+#[test]
+fn review_p10_real_delete_beside_a_new_folder_settles_on_the_next_scan() {
+    let mut done = false;
+    let out = review_probe(&["a.txt", "b.txt"], &mut |root, path| {
+        if path == Path::new("a.txt") && !done {
+            done = true;
+            fs::remove_file(root.join("a.txt")).unwrap();
+            fs::create_dir(root.join("made")).unwrap();
+        }
+    });
+    let removed = |c: &[Change]| c.iter().any(|c| matches!(c, Change::Removed { path, .. } if path == Path::new("a.txt")));
+    assert!(out.0.as_ref().is_ok_and(|c| removed(c)) || removed(&out.1), "{out:?}");
+}
+
+#[test]
+fn review_p11_scoped_rescan_with_a_rename_between_list_and_stat() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(root.join("a.txt"), "a").unwrap();
+    fs::write(root.join("b.txt"), "b").unwrap();
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    let mut done = false;
+    let first = snapshot
+        .rescan_with(root, [PathBuf::from("a.txt"), PathBuf::from("c.txt")], None, &mut |cut| {
+            if matches!(cut, Cut::Stating(p) if p == Path::new("a.txt")) && !done {
+                done = true;
+                fs::rename(root.join("a.txt"), root.join("c.txt")).unwrap();
+            }
+        })
+        .map(|r| r.changes);
+    let next = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
+    eprintln!("straddling: {first:?}\nnext: {next:?}");
+    review_no_removal(&(first, next));
+}
+
+
+#[test]
+fn review_p6b_hard_linked_file_renamed_between_list_and_stat() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(root.join("a.txt"), "a").unwrap();
+    fs::write(root.join("b.txt"), "b").unwrap();
+    fs::hard_link(root.join("a.txt"), root.join("h.txt")).unwrap();
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    let mut done = false;
+    let first = snapshot
+        .rescan_with(root, [PathBuf::new()], None, &mut |cut| {
+            if matches!(cut, Cut::Stating(p) if p == Path::new("a.txt")) && !done {
+                done = true;
+                fs::rename(root.join("a.txt"), root.join("c.txt")).unwrap();
+            }
+        })
+        .map(|r| r.changes);
+    let next = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
+    eprintln!("straddling: {first:?}\nnext: {next:?}");
+    review_no_removal(&(first, next));
+}
+
+
+#[test]
+fn review_p6c_hard_linked_file_renamed_while_quiet() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(root.join("a.txt"), "a").unwrap();
+    fs::hard_link(root.join("a.txt"), root.join("h.txt")).unwrap();
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    fs::rename(root.join("a.txt"), root.join("c.txt")).unwrap();
+    let next = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
+    eprintln!("quiet: {next:?}");
+}
+

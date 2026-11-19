@@ -691,3 +691,213 @@ async fn a_started_folder_reclaims_its_local_trash_by_age_and_by_the_configured_
     assert_eq!(names, [".koidrive"], "nothing came back to the root");
     a.stop().await;
 }
+
+fn review_find(dir: &Path, name: &str) -> Option<PathBuf> {
+    for entry in fs::read_dir(dir).ok()? {
+        let path = entry.ok()?.path();
+        if path.file_name().is_some_and(|n| n == name) {
+            return Some(path);
+        }
+        if path.is_dir() && !path.ends_with("folder") {
+            if let Some(found) = review_find(&path, name) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn review_rows(store: &Path) -> Vec<(String, String, Option<i64>, Option<i64>)> {
+    let conn = rusqlite::Connection::open(store).unwrap();
+    let mut stmt = conn.prepare("SELECT node_id, name, ino, handle FROM local_nodes ORDER BY name").unwrap();
+    stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+fn review_run(root: &Path, steps: &str) {
+    for step in steps.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+        match step.split(' ').collect::<Vec<_>>()[..] {
+            ["mkdir", p] => fs::create_dir(root.join(p)).unwrap(),
+            ["write", p, text] => fs::write(root.join(p), text).unwrap(),
+            ["mv", a, b] => fs::rename(root.join(a), root.join(b)).unwrap(),
+            ["rm", p] => fs::remove_file(root.join(p)).unwrap(),
+            ["rmdir", p] => fs::remove_dir(root.join(p)).unwrap(),
+            ["ln", a, b] => fs::hard_link(root.join(a), root.join(b)).unwrap(),
+            ["chmod", p, m] => fs::set_permissions(root.join(p), fs::Permissions::from_mode(u32::from_str_radix(m, 8).unwrap())).unwrap(),
+            _ => panic!("{step}"),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a local Worker; run core/driver/scripts/integration-test.sh"]
+async fn review_scenario() {
+    log();
+    let setup = std::env::var("REVIEW_SETUP").unwrap();
+    let stopped = std::env::var("REVIEW_STOPPED").unwrap();
+    let owner = owner().await;
+    let space = new_space(&owner, "review").await;
+    let mut a = Device::linked(&owner, &space, "a").await;
+    let mut b = Device::linked(&owner, &space, "b").await;
+    converged(&a, &b).await;
+    review_run(&a.folder(), &setup);
+    converged(&a, &b).await;
+    a.stop().await;
+    let store = review_find(a.home.path(), "store.sqlite").expect("a store");
+    if std::env::var("REVIEW_NULL_HANDLES").is_ok() {
+        let conn = rusqlite::Connection::open(&store).unwrap();
+        conn.execute_batch("UPDATE local_nodes SET handle = NULL; UPDATE recorded_nodes SET handle = NULL;").unwrap();
+    }
+    eprintln!("REVIEW before: {:?}", review_rows(&store));
+    if let Ok(first) = std::env::var("REVIEW_FIRST_START") {
+        review_run(&a.folder(), &first);
+        a.start();
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        a.stop().await;
+        eprintln!("REVIEW after first start: {:?}", review_rows(&store));
+    }
+    review_run(&a.folder(), &stopped);
+    a.start();
+    let (synced, _) = converged(&a, &b).await;
+    eprintln!("REVIEW synced: {synced:?}");
+    a.stop().await;
+    eprintln!("REVIEW after: {:?}", review_rows(&store));
+    let trash = trashed(&owner, &space).await;
+    eprintln!("REVIEW trash: {trash:?}");
+    b.stop().await;
+}
+
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a local Worker; run core/driver/scripts/integration-test.sh"]
+async fn review_torture_swaps() {
+    log();
+    let secs: u64 = std::env::var("REVIEW_TORTURE").unwrap().parse().unwrap();
+    let owner = owner().await;
+    let space = new_space(&owner, "torture").await;
+    let a = Device::linked(&owner, &space, "a").await;
+    let b = Device::linked(&owner, &space, "b").await;
+    converged(&a, &b).await;
+    let root = a.folder();
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+        fs::write(root.join(name), name).unwrap();
+    }
+    converged(&a, &b).await;
+    let looping = root.clone();
+    let swaps = std::thread::spawn(move || {
+        let started = Instant::now();
+        let mut n = 0u64;
+        while started.elapsed() < Duration::from_secs(secs) {
+            for (x, y) in [("a.txt", "b.txt"), ("c.txt", "d.txt")] {
+                fs::rename(looping.join(x), looping.join("t.tmp")).unwrap();
+                fs::rename(looping.join(y), looping.join(x)).unwrap();
+                fs::rename(looping.join("t.tmp"), looping.join(y)).unwrap();
+            }
+            n += 1;
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        n
+    });
+    let n = tokio::task::spawn_blocking(move || swaps.join().unwrap()).await.unwrap();
+    let (synced, _) = converged(&a, &b).await;
+    eprintln!("REVIEW swaps: {n} synced: {synced:?}");
+    let trash = trashed(&owner, &space).await;
+    eprintln!("REVIEW trash: {} {trash:?}", trash.len());
+    let mut a = a;
+    let mut b = b;
+    a.stop().await;
+    b.stop().await;
+}
+
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a local Worker; run core/driver/scripts/integration-test.sh"]
+async fn review_torture_gap_swaps() {
+    log();
+    let secs: u64 = std::env::var("REVIEW_TORTURE").unwrap().parse().unwrap();
+    let gap: u64 = std::env::var("REVIEW_GAP_US").unwrap().parse().unwrap();
+    let owner = owner().await;
+    let space = new_space(&owner, "torture").await;
+    let a = Device::linked(&owner, &space, "a").await;
+    let b = Device::linked(&owner, &space, "b").await;
+    converged(&a, &b).await;
+    let root = a.folder();
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+        fs::write(root.join(name), name).unwrap();
+    }
+    converged(&a, &b).await;
+    let looping = root.clone();
+    let swaps = std::thread::spawn(move || {
+        let started = Instant::now();
+        let mut n = 0u64;
+        while started.elapsed() < Duration::from_secs(secs) {
+            for (x, y) in [("a.txt", "b.txt"), ("c.txt", "d.txt")] {
+                fs::rename(looping.join(x), looping.join("t.tmp")).unwrap();
+                std::thread::sleep(Duration::from_micros(gap));
+                fs::rename(looping.join(y), looping.join(x)).unwrap();
+                fs::rename(looping.join("t.tmp"), looping.join(y)).unwrap();
+            }
+            n += 1;
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        n
+    });
+    let n = tokio::task::spawn_blocking(move || swaps.join().unwrap()).await.unwrap();
+    let (synced, _) = converged(&a, &b).await;
+    eprintln!("REVIEW swaps: {n} synced: {synced:?}");
+    let trash = trashed(&owner, &space).await;
+    eprintln!("REVIEW trash: {} {trash:?}", trash.len());
+    let mut a = a;
+    let mut b = b;
+    a.stop().await;
+    b.stop().await;
+}
+
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a local Worker; run core/driver/scripts/integration-test.sh"]
+async fn review_torture_linked_renames() {
+    log();
+    let secs: u64 = std::env::var("REVIEW_TORTURE").unwrap().parse().unwrap();
+    let gap: u64 = std::env::var("REVIEW_GAP_US").unwrap().parse().unwrap();
+    let linked = std::env::var("REVIEW_LINKED").is_ok();
+    let owner = owner().await;
+    let space = new_space(&owner, "torture").await;
+    let a = Device::linked(&owner, &space, "a").await;
+    let b = Device::linked(&owner, &space, "b").await;
+    converged(&a, &b).await;
+    let root = a.folder();
+    fs::write(root.join("a.txt"), "a.txt").unwrap();
+    fs::write(root.join("b.txt"), "b.txt").unwrap();
+    if linked {
+        fs::create_dir(root.join("links")).unwrap();
+        fs::hard_link(root.join("a.txt"), root.join("links/h.txt")).unwrap();
+    }
+    converged(&a, &b).await;
+    eprintln!("REVIEW trash before: {:?}", trashed(&owner, &space).await);
+    let looping = root.clone();
+    let renames = std::thread::spawn(move || {
+        let started = Instant::now();
+        let mut n = 0u64;
+        while started.elapsed() < Duration::from_secs(secs) {
+            fs::rename(looping.join("a.txt"), looping.join("c.txt")).unwrap();
+            std::thread::sleep(Duration::from_micros(gap));
+            fs::rename(looping.join("c.txt"), looping.join("a.txt")).unwrap();
+            n += 1;
+            std::thread::sleep(Duration::from_micros(gap));
+        }
+        n
+    });
+    let n = tokio::task::spawn_blocking(move || renames.join().unwrap()).await.unwrap();
+    let (synced, _) = converged(&a, &b).await;
+    eprintln!("REVIEW renames: {n} linked: {linked} synced: {synced:?}");
+    let trash = trashed(&owner, &space).await;
+    eprintln!("REVIEW trash: {} {trash:?}", trash.len());
+    let mut a = a;
+    let mut b = b;
+    a.stop().await;
+    b.stop().await;
+}
+
