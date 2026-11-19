@@ -231,12 +231,16 @@ impl FolderTask {
         std::thread::spawn({
             let (store, link, local) = (self.store.clone(), link.clone(), self.local.clone());
             move || {
-                let _ = sent.send(Folder::load(&store, &link, local));
+                if let Some(loaded) =
+                    Folder::load(&store, &link, local, &|| sent.is_closed()).transpose()
+                {
+                    let _ = sent.send(loaded);
+                }
             }
         });
         let loaded = loading
             .await
-            .expect("the thread that loads a folder sends unless it panics");
+            .expect("the thread that loads a folder sends unless it panics or the task is gone");
         let (mut folder, snapshot) =
             match loaded.and_then(|loaded| Folder::open(loaded, link, &lock)) {
                 Ok(opened) => opened,

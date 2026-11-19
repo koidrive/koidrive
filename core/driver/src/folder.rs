@@ -337,22 +337,37 @@ pub(crate) struct View {
 }
 
 impl Folder {
-    pub fn load(store: &Path, link: &Link, local: LocalRules) -> Result<Loaded, Stop> {
+    pub fn load(
+        store: &Path,
+        link: &Link,
+        local: LocalRules,
+        abandoned: &dyn Fn() -> bool,
+    ) -> Result<Option<Loaded>, Stop> {
         #[cfg(test)]
         if let Some(parked) = WHILE_LOADING.lock().unwrap().remove(store) {
             parked();
         }
         let timing = Timing::open(store, link.linked_at_ms);
         let mut store = Store::open_existing(store)?;
-        let mut engine = store.read(|tx| Engine::load(tx, &link.space_id))?;
+        let Some(mut engine) =
+            store.read(|tx| Engine::load_unless(tx, &link.space_id, abandoned))?
+        else {
+            return Ok(None);
+        };
+        if abandoned() {
+            return Ok(None);
+        }
         engine.trees.set_local_rules(local);
         engine.trees.settle(engine.commits.aliases());
-        Ok(Loaded {
+        if abandoned() {
+            return Ok(None);
+        }
+        Ok(Some(Loaded {
             timing,
             store,
             snapshot: engine.snapshot(),
             engine,
-        })
+        }))
     }
 
     /// Starts the disk of what [`Folder::load`] loaded through `lock`, the descriptor the task locked. [`Disk::start`]

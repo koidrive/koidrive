@@ -7,7 +7,8 @@ fn opened(site: &Site) -> Result<Folder, Stop> {
         .unwrap()
         .expect("the folder is not locked");
     let local = local_rules(&SyncRules::default()).unwrap();
-    Folder::open(Folder::load(&site.db, &link, local)?, link, &lock).map(|(folder, _)| folder)
+    let loaded = Folder::load(&site.db, &link, local, &|| false)?.unwrap();
+    Folder::open(loaded, link, &lock).map(|(folder, _)| folder)
 }
 
 fn halts_as_a_copy(site: &Site) -> bool {
@@ -1738,4 +1739,31 @@ fn a_start_that_finishes_an_interrupted_delete_gives_the_observer_the_tree_witho
     assert!(a.folder.engine.effects.in_flight().is_empty());
     let entries = &a.observer.snapshot().entries;
     assert!(!entries.contains_key(Path::new("kept.txt")));
+}
+
+#[test]
+fn a_load_abandoned_between_any_two_parts_of_the_store_gives_up_there() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("kept.txt"), b"one");
+    drop(a);
+    let local = local_rules(&SyncRules::default()).unwrap();
+    let checks = std::cell::Cell::new(0);
+    let count = || {
+        checks.set(checks.get() + 1);
+        false
+    };
+    let loaded = Folder::load(&site.db, &site.link, local.clone(), &count).unwrap();
+    assert!(loaded.is_some());
+    assert!(checks.get() >= 4, "{} checks", checks.get());
+    for at in 1..=checks.get() {
+        let seen = std::cell::Cell::new(0);
+        let abandoned = || {
+            seen.set(seen.get() + 1);
+            seen.get() == at
+        };
+        let loaded = Folder::load(&site.db, &site.link, local.clone(), &abandoned).unwrap();
+        assert!(loaded.is_none(), "abandoned at check {at}");
+        assert_eq!(seen.get(), at);
+    }
 }

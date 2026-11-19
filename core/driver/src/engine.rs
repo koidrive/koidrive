@@ -68,6 +68,15 @@ impl Engine {
     /// The engine state of the space whose root node is `root`, as the store holds it. A space that never stored an
     /// ID generator gets one with a random seed.
     pub fn load(tx: &Tx<'_>, root: &str) -> Result<Self, Error> {
+        Self::load_unless(tx, root, &|| false)
+            .map(|engine| engine.expect("a load nobody abandons ends with the engine"))
+    }
+
+    pub fn load_unless(
+        tx: &Tx<'_>,
+        root: &str,
+        abandoned: &dyn Fn() -> bool,
+    ) -> Result<Option<Self>, Error> {
         let mut trees = Trees::new(root);
         for state in tx.remote_nodes()? {
             if state.node_id == root {
@@ -77,10 +86,16 @@ impl Engine {
                 .map_err(|error| invalid(format!("remote node {}: {error:?}", state.node_id)))?;
             trees.set_remote(id, node);
         }
+        if abandoned() {
+            return Ok(None);
+        }
         for node in tx.synced_nodes()? {
             trees.set_synced(node.node_id.clone(), Some(shape(node.shape)?));
             let mark = Some(node.pending_for).filter(|name| !name.is_empty());
             trees.set_synced_mark(node.node_id, mark);
+        }
+        if abandoned() {
+            return Ok(None);
         }
         for node in tx.local_nodes()? {
             let local = LocalNode {
@@ -91,6 +106,9 @@ impl Engine {
                 content_from_server: node.content_from_server,
             };
             trees.set_local(node.node_id, local);
+        }
+        if abandoned() {
+            return Ok(None);
         }
         let stored = tx.engine_state()?;
         trees
@@ -115,7 +133,7 @@ impl Engine {
                     .hash_one(std::time::SystemTime::now()),
             ),
         };
-        Ok(Engine {
+        Ok(Some(Engine {
             trees,
             effects,
             commits,
@@ -129,7 +147,7 @@ impl Engine {
             stored_ctimes: tx.local_ctimes()?,
             unstored_ctimes: BTreeMap::new(),
             local_written_since_load: false,
-        })
+        }))
     }
 
     /// Ends a step that changed the engine, inside the step's transaction. It settles the trees, then writes the L

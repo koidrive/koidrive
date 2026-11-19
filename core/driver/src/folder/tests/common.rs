@@ -271,7 +271,9 @@ impl Site {
             .unwrap()
             .expect("the folder is not locked");
         let local = local_rules(sync).unwrap();
-        let loaded = Folder::load(&self.db, &link, local).unwrap();
+        let loaded = Folder::load(&self.db, &link, local, &|| false)
+            .unwrap()
+            .unwrap();
         let (mut folder, snapshot) = Folder::open(loaded, link, &lock).unwrap();
         assert_eq!(snapshot, folder.engine.snapshot());
         folder.engine.commits.set_device_name(&self.link.device_id);
