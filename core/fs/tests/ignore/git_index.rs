@@ -3,6 +3,8 @@
 fn git(root: &Path, args: &[&str]) {
     let out = std::process::Command::new("git")
         .current_dir(root)
+        .env_clear()
+        .envs(std::env::vars_os().filter(|(name, _)| !name.to_string_lossy().starts_with("GIT_")))
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .args(["-c", "user.name=koi", "-c", "user.email=koi@example.com"])
         .args(args)
@@ -61,6 +63,12 @@ fn a_watcher_scans_the_files_a_git_index_lists_below_a_folder_a_gitignore_exclud
     assert_eq!(settle(&mut watcher), (Vec::new(), now.into()));
     assert!(!known(watcher.snapshot()).contains(&"dist/app.js"));
     assert!(root.join("dist/app.js").exists());
+    fs::rename(root.join("dist/sub/deep.js"), root.join("dist/sub/Deep.js")).unwrap();
+    settle(&mut watcher);
+    git(root, &["rm", "-q", "--cached", "dist/sub/deep.js"]);
+    settle(&mut watcher);
+    let left = known(watcher.snapshot());
+    assert!(!left.iter().any(|path| path.starts_with("dist")));
     fs::rename(root.join("repo"), root.join("moved")).unwrap();
     let now = r#""moved":["dist/x.js"] "repo":[]"#;
     assert_eq!(settle(&mut watcher).1, now);
@@ -96,58 +104,52 @@ fn an_outer_index_answers_nothing_below_a_nested_work_tree() {
 }
 
 #[test]
-fn a_watcher_reads_an_index_outside_the_root_only_after_an_event_for_it_or_its_lock() {
-    let main = tempfile::tempdir().unwrap();
-    write(main.path(), ".gitignore", "dist/\n");
-    git(main.path(), &["init", "-q"]);
-    git(main.path(), &["add", "."]);
-    git(main.path(), &["commit", "-qm", "main"]);
+fn a_watcher_reads_an_index_outside_the_root_after_an_event_for_it_or_its_lock() {
+    let main_dir = tempfile::tempdir().unwrap();
+    let main = main_dir.path();
+    git(main, &["init", "-q"]);
+    git(main, &["commit", "-q", "--allow-empty", "-m", "main"]);
     let dir = tempfile::tempdir().unwrap();
-    let root = &dir.path().join("wt");
-    git(
-        main.path(),
-        &["worktree", "add", "-q", root.to_str().unwrap()],
-    );
-    write(root, "dist/app.js", "a");
-    write(root, "dist/b.js", "b");
-    git(root, &["add", "-f", "dist/app.js"]);
+    let root = dir.path();
+    let wt = &root.join("wt");
+    git(main, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+    write(root, ".gitignore", "dist/\n");
+    write(root, "wt/dist/b.js", "b");
+    write(root, "copy/dist/b.js", "b");
+    fs::copy(wt.join(".git"), root.join("copy/.git")).unwrap();
+    let git_dir = main.join(".git/worktrees/wt");
+    git(wt, &["add", "-f", "dist/b.js"]);
+    fs::copy(git_dir.join("index"), git_dir.join("next-index")).unwrap();
+    git(wt, &["rm", "-q", "--cached", "dist/b.js"]);
     let mut rules = rules();
     let mut snapshot = Snapshot::default();
     snapshot
         .rescan_with_rules(root, whole(), &mut rules)
         .unwrap();
     let mut watcher = NativeWatcher::start_with_rules(root, snapshot, rules).unwrap();
+    let listed = |watcher: &NativeWatcher| {
+        let known = known(watcher.snapshot());
+        ["wt/dist/b.js", "copy/dist/b.js"].map(|path| known.contains(&path))
+    };
     let read = |watcher: &mut NativeWatcher, wait: Duration| {
         let mut read = Vec::new();
         let deadline = Instant::now() + wait;
-        while Instant::now() < deadline && !known(watcher.snapshot()).contains(&"dist/b.js") {
+        while Instant::now() < deadline && listed(watcher) != [true, true] {
             read.extend(watcher.poll(Duration::from_millis(300)).unwrap().read);
         }
         read
     };
     read(&mut watcher, Duration::from_secs(1));
-    let git_dir = main.path().join(".git/worktrees/wt");
     for n in 0..5 {
         write(&git_dir, &format!("noise{n}"), "x");
     }
-    assert_eq!(
-        read(&mut watcher, Duration::from_secs(2)),
-        Vec::<PathBuf>::new()
-    );
-    let next = git_dir.join("next-index");
-    fs::copy(git_dir.join("index"), &next).unwrap();
-    let out = std::process::Command::new("git")
-        .current_dir(root)
-        .env("GIT_INDEX_FILE", &next)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .args(["add", "-f", "dist/b.js"])
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{out:?}");
-    fs::rename(&next, git_dir.join("index")).unwrap();
+    let noise = read(&mut watcher, Duration::from_secs(2));
+    assert_eq!(noise, Vec::<PathBuf>::new());
     fs::write(git_dir.join("index.lock"), "").unwrap();
+    fs::rename(git_dir.join("next-index"), git_dir.join("index")).unwrap();
     read(&mut watcher, Duration::from_millis(1500));
+    assert_eq!(listed(&watcher), [false, false], "while the lock is held");
     fs::remove_file(git_dir.join("index.lock")).unwrap();
     read(&mut watcher, WAIT);
-    assert!(known(watcher.snapshot()).contains(&"dist/b.js"));
+    assert_eq!(listed(&watcher), [true, true]);
 }

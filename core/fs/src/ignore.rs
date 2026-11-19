@@ -390,6 +390,10 @@ impl<'r> Pending<'r> {
         self.rules.status(path, kind)
     }
 
+    pub(crate) fn key(&self, name: &OsStr) -> OsString {
+        self.rules.ignore.key(name)
+    }
+
     pub(crate) fn read(
         &mut self,
         dir: BorrowedFd<'_>,

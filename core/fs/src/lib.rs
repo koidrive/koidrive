@@ -89,7 +89,7 @@
 //! [`PRIVATE_DIR`] or in the built-in platform files.
 //!
 //! [`GitIndex`] reads which files the git index of a work tree lists (RFC
-//! 0033 §3), and [`owner`] finds the work tree a path belongs to.
+//! 0033 §3).
 //!
 //! The engine's private folder [`PRIVATE_DIR`] at the root is never scanned.
 //! The [`check_root`] of design §6.2, the root [`Marker`] and the rename that
@@ -862,6 +862,10 @@ impl Scan<'_> {
         names: &BTreeSet<OsString>,
     ) -> RulesRead {
         (self.rules.as_mut()).map_or(RulesRead::Same, |rules| rules.read(dir, rel, names))
+    }
+
+    fn key(&self, name: &OsStr) -> OsString {
+        (self.rules.as_ref()).map_or_else(|| name.to_os_string(), |rules| rules.key(name))
     }
 
     /// Records `rel` as unreadable and succeeds when `result` failed because
@@ -2226,9 +2230,13 @@ impl Snapshot {
             read => read == RulesRead::Changed,
         };
         names.retain(|name| !private(parent, name));
+        let missing: BTreeSet<OsString> = (focus.difference(&names))
+            .map(|name| scan.key(name))
+            .collect();
         for name in &names {
             let child = parent.join(name);
-            if widen || focus.contains(name) || !self.entries.contains_key(&child) {
+            let respelled = !missing.is_empty() && missing.contains(&scan.key(name));
+            if widen || focus.contains(name) || respelled || !self.entries.contains_key(&child) {
                 scan.replaced.push(child.clone());
                 scan.entry(dir, dev, name, child)?;
             }
@@ -3445,7 +3453,7 @@ pub struct NativeWatcher {
     /// The rules changes of the scans since the last poll returned.
     changed_rules: Vec<(PathBuf, Source, Option<Vec<u8>>)>,
     changed_tracked: Vec<(PathBuf, Vec<String>)>,
-    git_dirs: BTreeMap<PathBuf, PathBuf>,
+    git_dirs: BTreeMap<PathBuf, ((u64, FileId), Vec<PathBuf>)>,
     /// The folders whose rules the scans since the last poll established.
     read: BTreeSet<PathBuf>,
     /// Folders whose subfolders may be unwatched, which are registered once a
@@ -3593,13 +3601,13 @@ impl NativeWatcher {
             _ => false,
         };
         for path in event.paths {
-            if let Some(tree) = path
+            if let Some((_, trees)) = path
                 .parent()
                 .and_then(|dir| self.git_dirs.get(dir))
                 .cloned()
             {
                 if path.ends_with("index") || path.ends_with("index.lock") {
-                    self.read_index(tree);
+                    trees.into_iter().for_each(|tree| self.read_index(tree));
                 }
                 if !path.starts_with(&self.root) {
                     continue;
@@ -3631,11 +3639,17 @@ impl NativeWatcher {
             let now = rules.tracked(&tree).to_vec();
             let before: BTreeSet<&String> = before.iter().collect();
             let after: BTreeSet<&String> = now.iter().collect();
-            (self.dirty).extend(
-                before
-                    .symmetric_difference(&after)
-                    .map(|path| tree.join(path)),
-            );
+            for path in before
+                .symmetric_difference(&after)
+                .map(|path| tree.join(path))
+            {
+                let left_out = (path.ancestors().skip(1))
+                    .filter(|folder| self.snapshot.entries.contains_key(*folder))
+                    .filter(|folder| rules.status(folder, EntryKind::Dir) != Ignored::No)
+                    .last()
+                    .map(Path::to_path_buf);
+                self.dirty.insert(left_out.unwrap_or(path));
+            }
             self.changed_tracked.push((tree, now));
         }
     }
@@ -3644,19 +3658,40 @@ impl NativeWatcher {
         let Some(rules) = &self.rules else {
             return;
         };
-        let now: BTreeMap<PathBuf, PathBuf> = (rules.git_dirs())
-            .filter_map(|(tree, dir)| Some((std::fs::canonicalize(dir).ok()?, tree.clone())))
-            .collect();
+        let mut now: BTreeMap<PathBuf, ((u64, FileId), Vec<PathBuf>)> = BTreeMap::new();
+        for (tree, dir) in rules.git_dirs() {
+            let Ok(dir) = std::fs::canonicalize(dir) else {
+                continue;
+            };
+            let Ok(stat) = stat_path(&dir) else {
+                continue;
+            };
+            let id = (stat.dev, stat.id);
+            now.entry(dir)
+                .or_insert((id, Vec::new()))
+                .1
+                .push(tree.clone());
+        }
         let root = self.root.clone();
         let uncovered = |dir: &Path| cfg!(target_os = "linux") || !dir.starts_with(&root);
-        for dir in now.keys().filter(|dir| !self.git_dirs.contains_key(*dir)) {
-            if uncovered(dir)
-                && let Err(err) =
-                    notify::Watcher::watch(&mut self.watcher, dir, RecursiveMode::NonRecursive)
-                && !gone(dir)
-            {
-                self.failed = Some(watch_error(err));
+        let mut fresh = Vec::new();
+        for (dir, (id, trees)) in &now {
+            let watched = self.git_dirs.get(dir).map(|(watched, _)| watched);
+            if watched == Some(id) {
+                continue;
             }
+            if uncovered(dir) {
+                if watched.is_some() {
+                    let _ = notify::Watcher::unwatch(&mut self.watcher, dir);
+                }
+                if let Err(err) =
+                    notify::Watcher::watch(&mut self.watcher, dir, RecursiveMode::NonRecursive)
+                    && !gone(dir)
+                {
+                    self.failed = Some(watch_error(err));
+                }
+            }
+            fresh.extend(trees.iter().cloned());
         }
         for dir in self.git_dirs.keys().filter(|dir| !now.contains_key(*dir)) {
             if uncovered(dir) {
@@ -3664,6 +3699,7 @@ impl NativeWatcher {
             }
         }
         self.git_dirs = now;
+        fresh.into_iter().for_each(|tree| self.read_index(tree));
     }
 
     fn folder_as_scanned(&self, path: &Path, rel: &Path) -> bool {
@@ -4040,7 +4076,6 @@ impl Watcher for NativeWatcher {
             root = Some(rescan.root);
             self.changed_rules.extend(rescan.rules);
             self.changed_tracked.extend(rescan.tracked);
-            self.watch_git_dirs();
             self.settled.extend(rescan.settled);
             self.waiting
                 .retain(|path| self.snapshot.unplaced.contains(path));
@@ -4052,6 +4087,7 @@ impl Watcher for NativeWatcher {
             self.dirty = (rescan.unsettled.into_iter())
                 .filter(|path| !self.waiting.contains(path))
                 .collect();
+            self.watch_git_dirs();
             self.raise_barrier();
             #[cfg(target_os = "linux")]
             let readable = self.unblock(&scopes, &rescan.unreadable);
