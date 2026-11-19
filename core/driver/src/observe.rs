@@ -90,6 +90,7 @@ pub struct Observation {
     pub mounts: BTreeMap<PathBuf, Mount>,
     pub detached: BTreeMap<PathBuf, Detached>,
     pub ctimes: BTreeMap<PathBuf, i64>,
+    pub unread: Option<BTreeMap<PathBuf, i64>>,
 }
 
 /// The rules of the rules file of kind `source` in `dir`, a folder relative to the root and empty for the root, or
@@ -1019,6 +1020,14 @@ impl Observer for FsObserver {
                 .collect(),
             detached: self.watcher.snapshot().detached.clone(),
             ctimes,
+            unread: (self.watcher.snapshot().unread.as_ref()).map(|unread| {
+                (unread.iter())
+                    .filter(|(_, unread)| unread.waiting.is_empty())
+                    .filter_map(|(dir, unread)| {
+                        Some((dir.clone(), i64::try_from(unread.ctime_ns?).ok()?))
+                    })
+                    .collect()
+            }),
         }))
     }
 

@@ -422,6 +422,11 @@ fn tick_of(at: i128, measured: Option<i128>) -> i128 {
     }
 }
 
+fn settled_ctime(ctime_ns: i128, started: i128, seen: i128, tick: Option<i128>) -> Option<i128> {
+    let during = ctime_ns + tick_of(ctime_ns, tick) > started && ctime_ns <= seen;
+    (!during).then_some(ctime_ns)
+}
+
 fn now_ns() -> i128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -864,6 +869,9 @@ struct Scan<'c> {
     racy: BTreeMap<PathBuf, Ctime>,
     marks: &'c MarkLog,
     listed: Vec<(PathBuf, [i128; 2], i128)>,
+    denied: Vec<PathBuf>,
+    unread: BTreeMap<PathBuf, Option<i128>>,
+    unseen: Vec<PathBuf>,
 }
 
 impl Scan<'_> {
@@ -939,6 +947,7 @@ impl Scan<'_> {
             return Ok(());
         }
         if locked {
+            self.denied.push(rel.clone());
             self.unreadable.push(rel);
             return Ok(());
         }
@@ -972,6 +981,7 @@ impl Scan<'_> {
             Ok(sub) => sub,
             Err(err) if is_gone(&err) => return Err(Error::Changed),
             Err(err) if denied(&err) => {
+                self.denied.push(rel.clone());
                 self.unreadable.push(rel);
                 return Ok(());
             }
@@ -1027,6 +1037,7 @@ impl Scan<'_> {
     fn unless_denied(&mut self, rel: &Path, result: Result<()>) -> Result<()> {
         match result {
             Err(Error::Io(err)) if denied(&err) => {
+                self.denied.push(rel.to_path_buf());
                 self.unreadable.push(rel.to_path_buf());
                 Ok(())
             }
@@ -1099,6 +1110,20 @@ pub struct Snapshot {
     /// and the scope of a [`Snapshot::reset`]. A [`NativeWatcher`] keeps a path it waits for until it has heard
     /// every event from before the scan that kept it. A kept path keeps what was known at and below it.
     pub unplaced: BTreeSet<PathBuf>,
+    /// The folders the last scan of each was not allowed to read, or `None` until a scan of the whole tree records
+    /// them. That scan takes each folder it may not read as settled.
+    pub unread: Option<BTreeMap<PathBuf, Unread>>,
+}
+
+/// A folder the last scan of it was not allowed to read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Unread {
+    /// Its change time when a scan last looked at it, or `None` when that look came within one timestamp tick of the
+    /// change, so a later change could carry the same time. A folder whose change time moves may have taken in an entry.
+    pub ctime_ns: Option<i128>,
+    /// Paths whose entries disappeared after the folder's change time moved, on a system that cannot look an
+    /// identity up. Each keeps its place until a scan reads the folder, since the entry may have moved into it.
+    pub waiting: BTreeSet<PathBuf>,
 }
 
 /// What one [`Snapshot::rescan`] found.
@@ -1447,7 +1472,11 @@ impl Snapshot {
                     .map(|(path, entry)| (path.clone(), entry.ctime))
                     .collect(),
                 marks,
+                denied: Vec::new(),
+                unread: BTreeMap::new(),
+                unseen: Vec::new(),
             };
+            let started = now_ns();
             let scanned =
                 (self.scan_scopes(root, &paths, listed, expected, &mut scan)).and_then(|stat| {
                     match bound {
@@ -1455,13 +1484,25 @@ impl Snapshot {
                         _ => Ok(stat),
                     }
                 });
-            if scanned.is_ok() {
+            let mut unestablished = false;
+            let scanned = scanned.and_then(|stat| {
                 self.learn_handles(&scan);
-            }
-            let (unscanned, hidden, moving, unsure) = match &scanned {
+                match self.unread_now(root, &scan, started) {
+                    Some(unread) => {
+                        scan.unread = unread;
+                        scan.unseen = self.left_unseen(root, &scan)?;
+                    }
+                    None => unestablished = true,
+                }
+                Ok(stat)
+            });
+            let (mut unscanned, hidden, moving, unsure) = match &scanned {
                 Ok(_) => self.other_ends(root, &mut scan, &paths),
                 Err(_) => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
             };
+            if unestablished {
+                unscanned.push(PathBuf::new());
+            }
             let whole = paths.iter().any(|path| path.as_os_str().is_empty());
             if let Ok(stat) = &scanned
                 && !unscanned.is_empty()
@@ -1518,6 +1559,80 @@ impl Snapshot {
         }
     }
 
+    fn unread_now(
+        &self,
+        root: &Path,
+        scan: &Scan<'_>,
+        started: i128,
+    ) -> Option<BTreeMap<PathBuf, Option<i128>>> {
+        let covered = |path: &Path| (scan.replaced.iter()).any(|scope| path.starts_with(scope));
+        let none = BTreeMap::new();
+        let known = self.unread.as_ref().unwrap_or(&none);
+        let at = open_root(root).ok();
+        let tick = at.as_ref().map(|at| timestamp_tick(at.as_fd()));
+        let readable = |dir: &Path| {
+            at.as_ref().is_some_and(|at| {
+                matches!(open_attached(at.as_fd(), dir, &mut |_| {}), Ok(Some((sub, _))) if list(sub.as_fd()).is_ok())
+            })
+        };
+        let settled = |dir: &Path| {
+            (known.get(dir)).is_some_and(|known| known.waiting.is_empty()) && readable(dir)
+        };
+        let mut unread = BTreeMap::new();
+        for dir in
+            (scan.denied.iter()).chain((known.keys()).filter(|dir| !covered(dir) && !settled(dir)))
+        {
+            let ctime_ns = match at.as_ref().map(|at| stat_rel(at.as_fd(), dir)) {
+                Some(Ok(stat)) if stat.file_type == FileType::Directory => {
+                    settled_ctime(stat.ctime_ns, started, now_ns(), tick)
+                }
+                _ if !covered(dir) => return None,
+                Some(Ok(_)) => continue,
+                Some(Err(err)) if is_gone(&err) => continue,
+                _ => None,
+            };
+            unread.insert(dir.clone(), ctime_ns);
+        }
+        Some(unread)
+    }
+
+    fn left_unseen(&self, root: &Path, scan: &Scan<'_>) -> Result<Vec<PathBuf>> {
+        let Some(known) = &self.unread else {
+            return Ok(Vec::new());
+        };
+        let changed = (scan.unread.iter()).any(|(dir, now)| {
+            now.is_none() || (known.get(dir)).is_none_or(|known| known.ctime_ns != *now)
+        });
+        let Some(at) = (!LOOKS_UP_IDENTITIES && changed)
+            .then(|| open_root(root).ok())
+            .flatten()
+        else {
+            return Ok(Vec::new());
+        };
+        let judged = |path: &Path| {
+            (scan
+                .replaced
+                .iter()
+                .chain(&scan.unreadable)
+                .chain(known.keys()))
+            .any(|above| path.starts_with(above))
+        };
+        let mut gone: Vec<PathBuf> = Vec::new();
+        for (path, entry) in &self.entries {
+            if (scan.stopped)() {
+                return Err(Error::Stopped);
+            }
+            if judged(path) || gone.last().is_some_and(|last| path.starts_with(last)) {
+                continue;
+            }
+            let here = (stat_at(at.as_fd(), path.as_os_str()).ok()).and_then(|stat| stat.entry());
+            if !here.is_some_and(|now| now.id.same(&entry.id) && now.kind == entry.kind) {
+                gone.push(path.clone());
+            }
+        }
+        Ok(gone)
+    }
+
     fn other_ends(
         &self,
         root: &Path,
@@ -1533,6 +1648,18 @@ impl Snapshot {
             |entry: &Entry, other: &Entry| entry.id.same(&other.id) && entry.kind == other.kind;
         let missed = |at: &Path| {
             covered(at) && !(at.ancestors()).any(|above| scan.left_out.contains_key(above))
+        };
+        let waits = |path: &Path| {
+            let unread = self.unread.as_ref()?;
+            let waits = (scan.unread.iter()).filter_map(|(dir, ctime_ns)| match unread.get(dir) {
+                Some(known) if ctime_ns.is_some() && known.ctime_ns == *ctime_ns => {
+                    let whole = (known.waiting.iter()).any(|held| path.starts_with(held));
+                    (whole || (known.waiting.iter()).any(|held| held.starts_with(path)))
+                        .then_some(whole)
+                }
+                _ => Some(true),
+            });
+            waits.filter(|_| !LOOKS_UP_IDENTITIES).max()
         };
         let mut arrived: HashMap<(FileId, EntryKind), Vec<&PathBuf>> = HashMap::new();
         for (path, now) in &scan.new {
@@ -1617,6 +1744,12 @@ impl Snapshot {
                 Whereabouts::At(at) if missed(&at) => {
                     moving.push(path.clone());
                     moved = Some(path);
+                }
+                Whereabouts::Nowhere if let Some(whole) = waits(path) => {
+                    hidden.push(path.clone());
+                    if whole {
+                        moved = Some(path);
+                    }
                 }
                 Whereabouts::At(at) => {
                     if !covered(&at) {
@@ -2315,6 +2448,44 @@ impl Snapshot {
             }
             _ => true,
         });
+        let covered = |path: &Path| (scan.replaced.iter()).any(|scope| path.starts_with(scope));
+        let recorded = self.unread.is_some();
+        let mut before = self.unread.take().unwrap_or_default();
+        self.unread = (recorded || covered(Path::new(""))).then(|| {
+            (std::mem::take(&mut scan.unread).into_iter())
+                .map(|(dir, ctime_ns)| {
+                    let known = before.remove(&dir);
+                    let took_in = recorded
+                        && (ctime_ns.is_none()
+                            || known
+                                .as_ref()
+                                .is_none_or(|known| known.ctime_ns != ctime_ns));
+                    let mut waiting: BTreeSet<PathBuf> =
+                        (known.map(|known| known.waiting).into_iter().flatten())
+                            .filter_map(|path| {
+                                if !covered(&path)
+                                    || (unreadable.iter()).any(|blocked| path.starts_with(blocked))
+                                {
+                                    return Some(path);
+                                }
+                                let (gone, place) =
+                                    (holding.iter()).find(|(gone, _)| path.starts_with(gone))?;
+                                let at = place.join(
+                                    path.strip_prefix(gone).expect("held below the gone path"),
+                                );
+                                (at.ancestors())
+                                    .any(|above| still_hidden.contains(above))
+                                    .then_some(at)
+                            })
+                            .collect();
+                    if took_in {
+                        waiting.extend(still_hidden.iter().cloned());
+                        waiting.extend(scan.unseen.iter().cloned());
+                    }
+                    (dir, Unread { ctime_ns, waiting })
+                })
+                .collect()
+        });
         unsettled.extend(unplaced.iter().cloned());
         unsettled.extend(still_hidden);
         unsettled.sort();
@@ -2832,6 +3003,8 @@ fn whereabouts(
         },
     }
 }
+
+const LOOKS_UP_IDENTITIES: bool = cfg!(target_os = "macos");
 
 #[cfg(target_os = "macos")]
 fn linked_anywhere(dev: u64, entry: &Entry) -> Option<bool> {

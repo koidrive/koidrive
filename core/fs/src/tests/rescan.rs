@@ -1174,3 +1174,108 @@ fn a_folder_still_moving_out_of_a_renamed_folder_keeps_a_child_the_scan_found_el
         ]
     );
 }
+
+#[test]
+fn a_folder_change_time_is_settled_unless_it_falls_during_the_scan() {
+    let started = 1_795_000_000_123_456_789;
+    let seen = started + 5_000_000;
+    let tick = Some(KERNEL_TICK);
+    for ahead in [1, 3_600_000_000_000] {
+        assert_eq!(
+            settled_ctime(seen + ahead, started, seen, tick),
+            Some(seen + ahead)
+        );
+    }
+    for during in [seen, started, started - KERNEL_TICK + 1] {
+        assert_eq!(settled_ctime(during, started, seen, tick), None);
+    }
+    let before = started - KERNEL_TICK;
+    assert_eq!(settled_ctime(before, started, seen, tick), Some(before));
+}
+
+#[test]
+fn a_file_moved_into_an_unreadable_folder_while_a_scan_runs_keeps_its_place() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for folder in ["box", "src", "z"] {
+        fs::create_dir(root.join(folder)).unwrap();
+    }
+    fs::write(root.join("src/report.docx"), "report").unwrap();
+    let lock =
+        |mode| fs::set_permissions(root.join("box"), fs::Permissions::from_mode(mode)).unwrap();
+    lock(0o000);
+    if !blocks_reads(
+        "a_file_moved_into_an_unreadable_folder_while_a_scan_runs_keeps_its_place",
+        fs::read_dir(root.join("box")).map(|_| ()),
+    ) {
+        lock(0o755);
+        return;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let during = snapshot.rescan_with(root, [PathBuf::new()], None, &mut |cut| {
+        if matches!(cut, Cut::OpeningDir(path) if path == Path::new("z")) {
+            lock(0o755);
+            fs::rename(root.join("src/report.docx"), root.join("box/report.docx")).unwrap();
+            lock(0o000);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let after = snapshot.rescan(root, [PathBuf::new()]);
+    lock(0o755);
+    assert_eq!(during.unwrap().changes, []);
+    assert_eq!(after.unwrap().changes, []);
+    let read = snapshot.rescan(root, [PathBuf::from("box")]).unwrap();
+    assert_eq!(
+        read.changes,
+        [Change::Renamed {
+            from: PathBuf::from("src/report.docx"),
+            to: PathBuf::from("box/report.docx"),
+            kind: EntryKind::File,
+        }]
+    );
+}
+
+#[test]
+fn a_scan_stopped_while_it_looks_for_entries_an_unreadable_folder_took_in_publishes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join("box")).unwrap();
+    fs::write(root.join("notes.txt"), "notes").unwrap();
+    let lock =
+        |mode| fs::set_permissions(root.join("box"), fs::Permissions::from_mode(mode)).unwrap();
+    lock(0o000);
+    let blocked = blocks_reads(
+        "a_scan_stopped_while_it_looks_for_entries_an_unreadable_folder_took_in_publishes_nothing",
+        fs::read_dir(root.join("box")).map(|_| ()),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    lock(0o000);
+    let before = snapshot.clone();
+    let stop = std::cell::Cell::new(false);
+    let result = snapshot.rescan_under(
+        root,
+        [PathBuf::from("notes.txt")],
+        &BTreeSet::new(),
+        None,
+        None,
+        &|| stop.get(),
+        &|_| {},
+        Keep::Unplaced,
+        &mut |cut| stop.set(stop.get() || matches!(cut, Cut::Stating(_))),
+        &MarkLog::default(),
+    );
+    lock(0o755);
+    if blocked && cfg!(target_os = "linux") {
+        assert!(matches!(result, Err(Error::Stopped)), "{result:?}");
+        assert_eq!(snapshot, before);
+    }
+}

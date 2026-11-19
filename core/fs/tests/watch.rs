@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use koidrive_fs::{
     Change, Ctime, Entry, EntryKind, Error, FileId, Known, NativeWatcher, Poll, Rescan,
-    RescanWatcher, Snapshot, Space, Watcher,
+    RescanWatcher, Snapshot, Space, Unread, Watcher,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -1791,4 +1791,379 @@ fn a_file_moved_back_into_the_unreadable_folder_its_folder_left_is_not_removed()
         snapshot.entries.contains_key(Path::new("x/d/sub/s.txt")),
         "{changes:?}"
     );
+}
+
+fn moved_into_a_folder_that_turns_unreadable(into: &str) -> (tempfile::TempDir, PathBuf, Snapshot) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    fs::create_dir_all(root.join(into)).unwrap();
+    fs::write(root.join("report.docx"), b"report").unwrap();
+    let snapshot = Snapshot::scan(&root).unwrap();
+    fs::rename(
+        root.join("report.docx"),
+        root.join(into).join("report.docx"),
+    )
+    .unwrap();
+    fs::set_permissions(root.join("box"), fs::Permissions::from_mode(0o000)).unwrap();
+    (dir, root, snapshot)
+}
+
+#[test]
+fn a_file_moved_into_a_folder_that_turns_unreadable_keeps_its_place_until_the_folder_is_read() {
+    for into in ["box", "box/inner"] {
+        let (_dir, root, mut snapshot) = moved_into_a_folder_that_turns_unreadable(into);
+        let blocked = blocks_reads(
+            "a_file_moved_into_a_folder_that_turns_unreadable_keeps_its_place_until_the_folder_is_read",
+            fs::read_dir(root.join("box")),
+        );
+        let while_blocked = blocked.then(|| {
+            [PathBuf::new(), PathBuf::from("report.docx")]
+                .map(|scope| snapshot.rescan(&root, [scope]))
+        });
+        fs::set_permissions(root.join("box"), fs::Permissions::from_mode(0o755)).unwrap();
+        let Some(while_blocked) = while_blocked else {
+            return;
+        };
+        for rescan in while_blocked {
+            let rescan = rescan.unwrap();
+            assert_eq!(rescan.changes, vec![], "{into}");
+            assert_eq!(
+                rescan.unsettled,
+                vec![PathBuf::from("report.docx")],
+                "{into}"
+            );
+        }
+
+        let rescan = snapshot.rescan(&root, [PathBuf::from("box")]).unwrap();
+        let to = format!("{into}/report.docx");
+        assert_eq!(
+            rescan.changes,
+            vec![renamed("report.docx", &to, File)],
+            "{into}"
+        );
+        assert_eq!(snapshot, Snapshot::scan(&root).unwrap(), "{into}");
+    }
+}
+
+#[test]
+fn a_file_removed_while_a_folder_stays_unreadable_is_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    fs::create_dir(root.join("box")).unwrap();
+    fs::write(root.join("report.docx"), b"report").unwrap();
+    fs::set_permissions(root.join("box"), fs::Permissions::from_mode(0o000)).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    let scanned = Snapshot::scan(&root).unwrap();
+    fs::remove_file(root.join("report.docx")).unwrap();
+    let blocked = blocks_reads(
+        "a_file_removed_while_a_folder_stays_unreadable_is_removed",
+        fs::read_dir(root.join("box")),
+    );
+    let rescans = blocked.then(|| {
+        [scanned.clone(), restarted(&scanned)]
+            .map(|mut snapshot| snapshot.rescan(&root, [PathBuf::new()]))
+    });
+    fs::set_permissions(root.join("box"), fs::Permissions::from_mode(0o755)).unwrap();
+    let Some(rescans) = rescans else {
+        return;
+    };
+    for rescan in rescans {
+        assert_eq!(rescan.unwrap().changes, vec![removed("report.docx", File)]);
+    }
+}
+
+fn restarted(snapshot: &Snapshot) -> Snapshot {
+    Snapshot {
+        entries: snapshot.entries.clone(),
+        unread: (snapshot.unread.as_ref()).map(|unread| {
+            (unread.iter())
+                .filter(|(_, unread)| unread.waiting.is_empty() && unread.ctime_ns.is_some())
+                .map(|(dir, unread)| {
+                    let ctime_ns = unread.ctime_ns;
+                    (
+                        dir.clone(),
+                        Unread {
+                            ctime_ns,
+                            ..Unread::default()
+                        },
+                    )
+                })
+                .collect()
+        }),
+        ..Snapshot::default()
+    }
+}
+
+#[test]
+fn a_file_moved_into_a_folder_that_turns_unreadable_keeps_its_place_across_a_restart() {
+    let (_dir, root, mut snapshot) = moved_into_a_folder_that_turns_unreadable("box");
+    let blocked = blocks_reads(
+        "a_file_moved_into_a_folder_that_turns_unreadable_keeps_its_place_across_a_restart",
+        fs::read_dir(root.join("box")),
+    );
+    let while_blocked = blocked.then(|| {
+        let first = snapshot.rescan(&root, [PathBuf::new()]);
+        std::thread::sleep(Duration::from_millis(50));
+        let again = snapshot.rescan(&root, [PathBuf::new()]);
+        let mut restarted = restarted(&snapshot);
+        let after = restarted.rescan(&root, [PathBuf::new()]);
+        (restarted, [first, again, after])
+    });
+    fs::set_permissions(root.join("box"), fs::Permissions::from_mode(0o755)).unwrap();
+    let Some((mut restarted, rescans)) = while_blocked else {
+        return;
+    };
+    for rescan in rescans {
+        assert_eq!(rescan.unwrap().changes, vec![]);
+    }
+    let rescan = restarted.rescan(&root, [PathBuf::from("box")]).unwrap();
+    assert_eq!(
+        rescan.changes,
+        vec![renamed("report.docx", "box/report.docx", File)]
+    );
+}
+fn moved_into_a_settled_unreadable_folder(test: &str, then: &[&str]) -> Option<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    for folder in ["box", "src"] {
+        fs::create_dir(root.join(folder)).unwrap();
+    }
+    fs::write(root.join("src/report.docx"), b"report").unwrap();
+    fs::write(root.join("notes.txt"), b"notes").unwrap();
+    let lock =
+        |mode| fs::set_permissions(root.join("box"), fs::Permissions::from_mode(mode)).unwrap();
+    lock(0o000);
+    let blocked = blocks_reads(test, fs::read_dir(root.join("box")));
+    std::thread::sleep(Duration::from_millis(50));
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    lock(0o755);
+    if !blocked {
+        return None;
+    }
+    fs::rename(root.join("src/report.docx"), root.join("box/report.docx")).unwrap();
+    lock(0o000);
+    std::thread::sleep(Duration::from_millis(50));
+    let mut seen = Vec::new();
+    for step in then {
+        std::thread::sleep(Duration::from_millis(50));
+        match step.split_once(' ') {
+            Some(("rename", to)) => fs::rename(root.join("src"), root.join(to)).unwrap(),
+            Some(("remove", _)) => fs::remove_dir(root.join("src")).unwrap(),
+            Some(("create", _)) => fs::create_dir(root.join("src")).unwrap(),
+            Some(("deny", _)) => {
+                fs::set_permissions(root.join("src"), fs::Permissions::from_mode(0o000)).unwrap()
+            }
+            Some(("allow", _)) => {
+                fs::set_permissions(root.join("src"), fs::Permissions::from_mode(0o755)).unwrap()
+            }
+            _ => seen.push(snapshot.rescan(&root, [PathBuf::from(step)])),
+        }
+    }
+    lock(0o755);
+    let read = snapshot.rescan(&root, [PathBuf::from("box")]);
+    let seen: Vec<Vec<Change>> = (seen.into_iter().chain([read]))
+        .map(|rescan| rescan.unwrap().changes)
+        .collect();
+    let (read, blocked) = seen.split_last().unwrap();
+    let removes_the_report = |changes: &Vec<Change>| {
+        (changes.iter()).any(|change| matches!(change, Change::Removed { path, .. } if path.ends_with("report.docx")))
+    };
+    let renamed = (read.iter()).any(
+        |change| matches!(change, Change::Renamed { to, .. } if to == Path::new("box/report.docx")),
+    );
+    let settled = snapshot == Snapshot::scan(&root).unwrap();
+    (blocked.iter().any(removes_the_report) || !renamed || !settled)
+        .then(|| format!("{test}: settled {settled}, {seen:?}"))
+}
+
+#[test]
+fn a_move_into_an_unreadable_folder_that_a_scan_elsewhere_saw_first_keeps_its_place() {
+    let failed =
+        moved_into_a_settled_unreadable_folder("a scan elsewhere first", &["notes.txt", "src", ""]);
+    assert_eq!(failed, None);
+}
+
+#[test]
+fn a_file_waiting_on_an_unreadable_folder_keeps_waiting_when_its_old_folder_is_renamed_or_removed()
+{
+    let failed: Vec<String> = [
+        ("old folder renamed", &["", "rename dst", "", ""][..]),
+        ("old folder removed", &["", "remove src", "", ""]),
+        (
+            "old folder made again",
+            &["", "remove src", "", "create src", "", ""],
+        ),
+        (
+            "old folder renamed before a narrow scan",
+            &["rename dst", "notes.txt", "", ""],
+        ),
+        (
+            "old folder unreadable for a scan",
+            &["", "deny src", "", "allow src", "", ""],
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(test, then)| moved_into_a_settled_unreadable_folder(test, then))
+    .collect();
+    assert_eq!(failed, Vec::<String>::new());
+}
+
+#[test]
+fn a_file_waiting_on_an_unreadable_folder_is_removed_once_a_file_takes_the_folder_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    for folder in ["root/box", "root/src", "away"] {
+        fs::create_dir_all(dir.path().join(folder)).unwrap();
+    }
+    fs::write(root.join("src/report.docx"), b"report").unwrap();
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    fs::rename(root.join("src/report.docx"), root.join("box/report.docx")).unwrap();
+    fs::set_permissions(root.join("box"), fs::Permissions::from_mode(0o000)).unwrap();
+    let blocked = blocks_reads(
+        "a file in the folder's place",
+        fs::read_dir(root.join("box")),
+    );
+    std::thread::sleep(Duration::from_millis(50));
+    let held = snapshot.rescan(&root, [PathBuf::new()]).unwrap().changes;
+    fs::set_permissions(root.join("box"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::rename(root.join("box"), dir.path().join("away/box")).unwrap();
+    if !blocked {
+        return;
+    }
+    fs::write(root.join("box"), b"box").unwrap();
+    let read = snapshot
+        .rescan(&root, [PathBuf::from("src/report.docx")])
+        .unwrap()
+        .changes;
+    let removed = (held.iter().chain(&read)).any(
+        |change| matches!(change, Change::Removed { path, .. } if path.ends_with("report.docx")),
+    );
+    assert!(removed, "{held:?} {read:?}");
+    snapshot.rescan(&root, [PathBuf::new()]).unwrap();
+    assert_eq!(snapshot, Snapshot::scan(&root).unwrap());
+}
+
+#[test]
+fn a_delete_made_across_an_upgrade_next_to_a_folder_that_stays_unreadable_is_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    fs::create_dir(root.join("box")).unwrap();
+    fs::write(root.join("report.docx"), b"report").unwrap();
+    fs::write(root.join("notes.txt"), b"notes").unwrap();
+    let lock =
+        |mode| fs::set_permissions(root.join("box"), fs::Permissions::from_mode(mode)).unwrap();
+    lock(0o000);
+    let blocked = blocks_reads("an upgrade", fs::read_dir(root.join("box")));
+    std::thread::sleep(Duration::from_millis(50));
+    let scanned = Snapshot::scan(&root).unwrap();
+    fs::remove_file(root.join("report.docx")).unwrap();
+    let mut upgraded = Snapshot {
+        entries: scanned.entries.clone(),
+        ..Snapshot::default()
+    };
+    let first = upgraded.rescan(&root, [PathBuf::new()]).unwrap().changes;
+    let mut snapshot = restarted(&upgraded);
+    let after_a_restart = snapshot.rescan(&root, [PathBuf::new()]).unwrap().changes;
+    lock(0o755);
+    fs::rename(root.join("notes.txt"), root.join("box/notes.txt")).unwrap();
+    lock(0o000);
+    std::thread::sleep(Duration::from_millis(50));
+    let moved_in = snapshot.rescan(&root, [PathBuf::new()]).unwrap().changes;
+    lock(0o755);
+    if blocked {
+        assert_eq!(first, vec![removed("report.docx", File)]);
+        assert_eq!(after_a_restart, vec![]);
+        assert_eq!(moved_in, vec![]);
+    }
+}
+
+#[test]
+fn a_file_waiting_on_an_unreadable_folder_keeps_its_place_when_a_narrow_scan_cannot_find_the_folder()
+ {
+    let failed: Vec<String> = [
+        "renamed",
+        "renamed and replaced by a file",
+        "parent made unreadable",
+        "moved out of the tree",
+    ]
+    .into_iter()
+    .filter_map(waiting_folder_out_of_reach)
+    .collect();
+    assert_eq!(failed, Vec::<String>::new());
+}
+
+fn waiting_folder_out_of_reach(case: &str) -> Option<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    let folder = match case {
+        "parent made unreadable" => PathBuf::from("p/box"),
+        _ => PathBuf::from("box"),
+    };
+    fs::create_dir_all(root.join(&folder)).unwrap();
+    fs::create_dir(root.join("src")).unwrap();
+    fs::write(root.join("src/report.docx"), b"report").unwrap();
+    let mode =
+        |path: &Path, mode| fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    mode(&root.join(&folder), 0o000);
+    let blocked = blocks_reads(case, fs::read_dir(root.join(&folder)));
+    std::thread::sleep(Duration::from_millis(50));
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    mode(&root.join(&folder), 0o755);
+    if !blocked {
+        return None;
+    }
+    fs::rename(
+        root.join("src/report.docx"),
+        root.join(&folder).join("report.docx"),
+    )
+    .unwrap();
+    mode(&root.join(&folder), 0o000);
+    std::thread::sleep(Duration::from_millis(50));
+    let held = match case {
+        "parent made unreadable" => Vec::new(),
+        _ => snapshot.rescan(&root, [PathBuf::new()]).unwrap().changes,
+    };
+    mode(&root.join(&folder), 0o755);
+    let place = match case {
+        "parent made unreadable" => {
+            mode(&root.join(&folder), 0o000);
+            mode(&root.join("p"), 0o000);
+            Some(folder.join("report.docx"))
+        }
+        "moved out of the tree" => {
+            fs::rename(root.join(&folder), dir.path().join("box")).unwrap();
+            None
+        }
+        _ => {
+            fs::rename(root.join(&folder), root.join("box2")).unwrap();
+            mode(&root.join("box2"), 0o000);
+            if case.ends_with("a file") {
+                fs::write(root.join(&folder), b"box").unwrap();
+            }
+            Some(PathBuf::from("box2/report.docx"))
+        }
+    };
+    std::thread::sleep(Duration::from_millis(50));
+    let narrow = snapshot
+        .rescan(&root, [PathBuf::from("src/report.docx")])
+        .unwrap()
+        .changes;
+    for path in ["p", "p/box", "box2"] {
+        let _ = fs::set_permissions(root.join(path), fs::Permissions::from_mode(0o755));
+    }
+    let read = snapshot.rescan(&root, [PathBuf::new()]).unwrap().changes;
+    let removed = |changes: &[Change]| {
+        (changes.iter()).any(|change| matches!(change, Change::Removed { path, .. } if path.ends_with("report.docx")))
+    };
+    let placed = match &place {
+        Some(place) => {
+            !removed(&narrow)
+                && (read.iter())
+                    .any(|change| matches!(change, Change::Renamed { to, .. } if to == place))
+        }
+        None => removed(&narrow) || removed(&read),
+    };
+    let settled = snapshot == Snapshot::scan(&root).unwrap();
+    (removed(&held) || !placed || !settled)
+        .then(|| format!("{case}: settled {settled}, {held:?} {narrow:?} {read:?}"))
 }

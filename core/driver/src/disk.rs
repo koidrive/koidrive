@@ -896,6 +896,7 @@ impl Disk {
             .cloned()
             .collect();
         let mounts = (observation.mounts != engine.mounts).then_some(observation.mounts);
+        let unread = (observation.unread).filter(|unread| engine.unread.as_ref() != Some(unread));
         let mut ctimes = observation.ctimes;
         ctimes.retain(|path, _| !dropped.contains(path));
         self.unscanned.batch = observation.pending;
@@ -904,6 +905,7 @@ impl Disk {
         let emptied = |trees: &Trees| emptied_kept_folders(&self.space, trees, &listed);
         if !changes.is_empty()
             || mounts.is_some()
+            || unread.is_some()
             || !ctimes.is_empty()
             || !emptied(&engine.trees)?.is_empty()
             || engine.sees_unobserved(&listed, &pending)
@@ -913,6 +915,10 @@ impl Disk {
                 if let Some(mounts) = mounts {
                     tx.set_volume_mounts(&mounts)?;
                     engine.mounts = mounts;
+                }
+                if let Some(unread) = unread {
+                    tx.set_unread_folders(&unread)?;
+                    engine.unread = Some(unread);
                 }
                 engine.observe(&changes, now_ms);
                 engine.read(&read, &observation.unreadable);

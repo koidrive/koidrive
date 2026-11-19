@@ -1759,3 +1759,57 @@ fn attack_r11_kept_env_deleted_while_its_folder_is_removed() {
     );
     assert_eq!(b.folder.view().problem, None, "{report}");
 }
+
+#[test]
+fn a_kept_env_moved_to_a_folder_no_rule_excludes_it_in_stays_off_the_server() {
+    let (mut remote, _site_a, _a, site, mut b) = r9_taken_over_without_rules();
+    fs::create_dir(site.root.join("other")).unwrap();
+    fs::write(site.root.join("other/notes.txt"), b"synced").unwrap();
+    r9_round(&mut b, &mut remote);
+    assert!(remote.tree().contains_key("other/notes.txt"));
+
+    fs::rename(site.root.join("app/.env"), site.root.join("other/.env")).unwrap();
+    r9_round(&mut b, &mut remote);
+    fs::write(site.root.join("other/.env"), b"SECRET=edited").unwrap();
+    r9_round(&mut b, &mut remote);
+
+    let report = r9_report(&site, &b, &remote);
+    assert!(
+        !remote.tree().keys().any(|k| k.ends_with(".env")),
+        "{report}"
+    );
+    assert_eq!(
+        fs::read(site.root.join("other/.env")).unwrap(),
+        b"SECRET=edited",
+        "{report}"
+    );
+    assert_eq!(
+        b.folder.engine.trees.kept_entry_paths(),
+        [vec!["other", ".env"]],
+        "{report}"
+    );
+}
+
+#[test]
+fn a_kept_env_moved_into_a_folder_the_scan_may_not_read_stays_off_the_server() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (mut remote, _site_a, _a, site, mut b) = r9_taken_over_without_rules();
+    fs::create_dir(site.root.join("vault")).unwrap();
+    fs::rename(site.root.join("app/.env"), site.root.join("vault/.env")).unwrap();
+    fs::set_permissions(site.root.join("vault"), fs::Permissions::from_mode(0o000)).unwrap();
+    for _ in 0..5 {
+        b.scan(Duration::from_millis(100));
+        b.pull(&remote);
+        b.run(&mut remote);
+    }
+    fs::set_permissions(site.root.join("vault"), fs::Permissions::from_mode(0o755)).unwrap();
+    r9_round(&mut b, &mut remote);
+
+    let report = r9_report(&site, &b, &remote);
+    assert!(
+        !remote.tree().keys().any(|k| k.ends_with(".env")),
+        "{report}"
+    );
+    assert!(site.root.join("vault/.env").exists(), "{report}");
+}
