@@ -371,7 +371,10 @@ async fn a_progress_change_waiting_out_the_interval_survives_a_dropped_wait() {
     let kept = tokio::time::timeout(PROGRESS_INTERVAL * 2, changes.next()).await;
     assert_eq!(kept.ok().map(Result::unwrap), Some(Change::Progress));
     let quiet = tokio::time::timeout(PROGRESS_INTERVAL * 2, changes.next()).await;
-    assert!(quiet.is_err(), "the change took the marks of its wait with it");
+    assert!(
+        quiet.is_err(),
+        "the change took the marks of its wait with it"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
