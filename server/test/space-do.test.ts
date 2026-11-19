@@ -214,7 +214,8 @@ describe("RFC 0001 name and move rules", () => {
 
 describe("conflict rules", () => {
   it("R1: renames an incoming node whose name clashes case-insensitively", async () => {
-    const { a, b, root } = await setup();
+    const { a, b, root, stub } = await setup();
+    await runInDurableObject(stub, (instance: SpaceDO) => freezeClock(instance, Date.now()));
     await createFile(a, root, "Notes.txt", "a");
     const { nodeId, result } = await createFile(b, root, "notes.TXT", "b");
     const committedAt = Number((await b.tree()).get(nodeId)!.current!.createdAtMs);
