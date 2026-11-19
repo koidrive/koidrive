@@ -1490,12 +1490,8 @@ impl Commits {
             self.questions.get_mut().insert(at, question);
         }
         self.hold(trees);
-        (self.split).retain(|id| {
-            trees.synced().live(id).is_some()
-                || trees.built_in(id) && trees.remote().live(id).is_some()
-        });
-        self.trash_groups
-            .retain(|id, _| trees.synced().live(id).is_some() && trees.local().get(id).is_none());
+        self.split.retain(|id| deletable(trees, id));
+        (self.trash_groups).retain(|id, _| deletable(trees, id) && trees.local().get(id).is_none());
         self.published.retain(|id| trees.local().get(id).is_some());
         self.aliases.retain(|id, _| trees.holds_merge(id));
         let held_restores: BTreeSet<&RestoreId> = self.asked_again().collect();
@@ -3212,8 +3208,12 @@ fn deletes(trees: &Trees, id: &str, needed: &BTreeSet<NodeId>) -> bool {
         && !needed.contains(id)
 }
 
+fn deletable(trees: &Trees, id: &str) -> bool {
+    trees.synced().live(id).is_some() || trees.built_in(id) && trees.remote().live(id).is_some()
+}
+
 fn deleted_shape<'a>(trees: &'a Trees, id: &str) -> Option<&'a Shape> {
-    trees.synced().live(id).or(trees.remote().live(id))
+    trees.remote().live(id).or(trees.synced().live(id))
 }
 
 fn deleted_bytes<'a>(trees: &Trees, members: impl IntoIterator<Item = &'a NodeId>) -> usize {
@@ -3225,9 +3225,8 @@ fn deleted_bytes<'a>(trees: &Trees, members: impl IntoIterator<Item = &'a NodeId
 fn built_in_below(trees: &Trees, deleted: &mut BTreeSet<NodeId>) {
     let mut below: Vec<NodeId> = deleted.iter().cloned().collect();
     while let Some(id) = below.pop() {
-        let built_in: Vec<NodeId> = (trees.synced_children(&id))
-            .chain(trees.remote_children(&id))
-            .filter(|child| trees.built_in(child))
+        let built_in: Vec<NodeId> = (trees.remote_children(&id))
+            .filter(|child| trees.built_in(child) && trees.local().get(child).is_none())
             .cloned()
             .collect();
         for child in built_in {

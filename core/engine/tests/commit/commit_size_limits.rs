@@ -807,3 +807,131 @@ fn a_folder_the_server_lost_moved_into_a_new_folder_it_merges_is_created_again()
         Some(&create_dir("b", "a", "b"))
     );
 }
+fn deleted_here(id: &'static str, s: Shape, r: Shape) -> Row {
+    (id, None, Some(s), Some(remote(r)))
+}
+
+fn on_server(id: &'static str, r: Shape) -> Row {
+    (id, None, None, Some(remote(r)))
+}
+
+fn sent_after_a_refusal(trees: &mut Trees) -> Vec<Vec<op::Op>> {
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let mut sent = vec![ops(&build(&mut commits, trees, &mut ids).unwrap())];
+    commits
+        .failed(trees, &refusal(error::Code::LimitExceeded, 0))
+        .unwrap();
+    while let Some(commit) = build(&mut commits, trees, &mut ids) {
+        for op in ops(&commit) {
+            let mut below = match op {
+                op::Op::Delete(deleted) => vec![deleted.node_id],
+                op::Op::Move(moved) => {
+                    let mut node = trees.remote().get(&moved.node_id).unwrap().clone();
+                    (node.shape.parent, node.shape.name) = (moved.new_parent_id, moved.new_name);
+                    trees.set_remote(moved.node_id, node);
+                    continue;
+                }
+                _ => continue,
+            };
+            while let Some(id) = below.pop() {
+                let live = trees.remote().iter().filter(|(_, node)| !node.trashed);
+                below.extend(
+                    live.filter(|(_, node)| node.shape.parent == id)
+                        .map(|(kid, _)| kid.clone())
+                        .collect::<Vec<_>>(),
+                );
+                let node = trees.remote().get(&id).unwrap().clone();
+                trees.set_remote(id, trashed(node.shape));
+            }
+        }
+        acknowledge(
+            &mut commits,
+            trees,
+            vec![outcome(op_result::Code::Applied); commit.ops.len()],
+        );
+        sent.push(ops(&commit));
+        assert!(sent.len() < 10, "{sent:?}");
+    }
+    assert!(commits.problems().is_empty());
+    sent
+}
+
+fn deletes(sent: &[Vec<op::Op>], node: &str) -> bool {
+    sent.iter()
+        .flatten()
+        .any(|op| matches!(op, op::Op::Delete(deleted) if deleted.node_id == node))
+}
+
+#[test]
+fn a_system_folder_only_the_server_holds_keeps_one_trash_group_when_deleted_in_pieces() {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "Disk")),
+        synced("log", file("d", "a.log", 1)),
+        on_server("t", dir("d", ".Trashes")),
+        on_server("u", dir("t", "501")),
+        on_server("old", file("u", "old.docx", 2)),
+        on_server("v", dir("t", "502")),
+    ]);
+    trees.set_rules::<&str>(
+        &[],
+        koidrive_engine::ignore::Source::Koiignore,
+        Some(RuleFile::parse(b"*.log\n")),
+    );
+    trees.settle(&Default::default());
+    trees.remove_local("log");
+    trees.remove_local("d");
+    let sent = sent_after_a_refusal(&mut trees);
+    let groups: Vec<&str> = (sent[1..].iter().flatten())
+        .filter_map(|op| match op {
+            op::Op::Delete(deleted) => Some(deleted.trash_group.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(groups.len(), 3, "{sent:?}");
+    assert!(groups.iter().all(|group| *group == groups[0]), "{sent:?}");
+    assert_eq!(
+        (trees.remote().live("d").is_some(), trees.remote().live("t")),
+        (true, None)
+    );
+}
+
+#[test]
+fn a_deleted_folder_leaves_a_system_folder_another_device_moved_out_of_it() {
+    let mut trees = trees(&[
+        synced("o", dir(ROOT, "Other")),
+        deleted_here("d", dir(ROOT, "Disk"), dir(ROOT, "Disk")),
+        deleted_here("doc", file("d", "a.docx", 1), file("d", "a.docx", 1)),
+        deleted_here("t", dir("d", ".Trashes"), dir("o", ".Trashes")),
+        deleted_here("old", file("t", "old.docx", 2), file("t", "old.docx", 2)),
+    ]);
+    let sent = sent_after_a_refusal(&mut trees);
+    assert!(!deletes(&sent, "t") && !deletes(&sent, "old"), "{sent:?}");
+    assert_eq!(
+        (
+            trees.remote().live("d"),
+            trees.remote().live("old").is_some()
+        ),
+        (None, true)
+    );
+}
+
+#[test]
+fn a_system_file_moved_out_of_a_deleted_folder_is_moved_and_never_deleted() {
+    let mut trees = trees(&[
+        deleted_here("d", dir(ROOT, "Disk"), dir(ROOT, "Disk")),
+        deleted_here("t", dir("d", ".Trashes"), dir("d", ".Trashes")),
+        (
+            "old",
+            Some(file(ROOT, "o.docx", 2)),
+            Some(file("t", "o.docx", 2)),
+            Some(remote(file("t", "o.docx", 2))),
+        ),
+    ]);
+    let sent = sent_after_a_refusal(&mut trees);
+    assert_eq!(sent[0], [mv("old", ROOT, "o.docx"), delete("d")]);
+    assert!(!deletes(&sent, "old"), "{sent:?}");
+    assert_eq!(
+        trees.remote().live("old").map(|old| old.parent.as_str()),
+        Some(ROOT)
+    );
+}
