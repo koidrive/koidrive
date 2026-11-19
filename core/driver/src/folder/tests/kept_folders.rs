@@ -2102,3 +2102,76 @@ fn a_kept_folder_stays_with_a_rules_file_edited_after_the_server_purges_it() {
     assert!(b.sent.is_empty(), "{:?}", b.sent);
     assert!(remote.names().is_empty());
 }
+
+#[test]
+fn a_rules_file_edited_after_a_purge_stays_beside_a_folder_made_at_its_kept_folders_place() {
+    for rules in [".koiignore", ".gitignore"] {
+        let (mut remote, site_a, mut a, site, mut b, old) =
+            deleted_with_rules_files(&[(rules, ".env\n")], &["README.md"], &[".env"]);
+        for (name, id, _) in server_nodes(&remote) {
+            assert!(name == "app" || remote.space.purge(&id, NOW), "{name}");
+        }
+        assert!(remote.space.purge(&old, NOW));
+        b.pull(&remote);
+        settled(&mut b, &mut remote);
+        fs::write(site.root.join("app").join(rules), b".env\n*.log\n").unwrap();
+        settled(&mut b, &mut remote);
+
+        a.pull(&remote);
+        a.run(&mut remote);
+        fs::create_dir(site_a.root.join("app")).unwrap();
+        a.create(
+            &mut remote,
+            &site_a.root.join("app").join(rules),
+            b".env\nbuild/\n",
+        );
+        a.create(
+            &mut remote,
+            &site_a.root.join("app/README.md"),
+            b"cloned again",
+        );
+        for _ in 0..3 {
+            b.pull(&remote);
+            b.run(&mut remote);
+            b.settle();
+        }
+
+        let tree = remote.tree();
+        let names: Vec<&str> = tree.keys().map(String::as_str).collect();
+        let prefix = format!("app/{rules} (conflict from b");
+        let copy = (names.iter()).find(|name| name.starts_with(&prefix));
+        let copy = copy.unwrap_or_else(|| panic!("{rules}: {names:?}"));
+        assert_eq!(names.len(), 4, "{rules}: {names:?}");
+        let local = fs::read(site.root.join("app").join(rules)).unwrap();
+        assert_eq!(local, b".env\nbuild/\n", "{rules}");
+        let kept = fs::read(site.root.join("app").join(&copy["app/".len()..])).unwrap();
+        assert_eq!(kept, b".env\n*.log\n", "{rules}");
+    }
+}
+
+#[test]
+fn a_rules_file_edited_while_its_emptied_kept_folder_waits_to_go_survives_a_purge() {
+    for rules in [".koiignore", ".gitignore"] {
+        let (mut remote, _, _, site, mut b, old) =
+            deleted_with_rules_files(&[(rules, ".env\n")], &["README.md"], &[".env"]);
+        let file = site.root.join("app").join(rules);
+        let target = file.clone();
+        let mut edited = false;
+        b.folder.disk.set_hook(Box::new(move |cut| {
+            if cut == crate::disk::Cut::AfterPlan && !edited {
+                edited = true;
+                fs::write(&target, b".env\n*.log\n").unwrap();
+            }
+        }));
+        fs::remove_file(site.root.join("app/.env")).unwrap();
+        b.settle();
+        for (name, id, _) in server_nodes(&remote) {
+            assert!(name == "app" || remote.space.purge(&id, NOW), "{name}");
+        }
+        assert!(remote.space.purge(&old, NOW));
+        b.pull(&remote);
+        settled(&mut b, &mut remote);
+
+        assert_eq!(fs::read(&file).unwrap(), b".env\n*.log\n", "{rules}");
+    }
+}
