@@ -2214,7 +2214,7 @@ impl Driver {
     /// until the problem is cleared. The store keeps the last 1,000 that ended and drops older ones.
     pub fn restores(&self, space_id: &str) -> Result<Vec<RestoreStatus>, DriverError> {
         self.read_store(space_id, |store| {
-            store.transaction(|tx| restore::list(tx, space_id))
+            store.read(|tx| restore::list(tx, space_id))
         })?
         .ok_or_else(|| DriverError::SpaceNotLinked(space_id.to_owned()))
     }
