@@ -572,7 +572,6 @@ fn image_on(device: &str) -> Result<Option<PathBuf>, String> {
 
     const NO_DEVICE: i32 = 0xe000_02c0_u32 as i32;
     let name = device.strip_prefix("/dev/").unwrap_or(device);
-    let node = Path::new("/dev").join(name);
     let name = CString::new(name).map_err(|error| error.to_string())?;
     let property = |entry: u32, key: &CStr| unsafe {
         let key = CFStringCreateWithCString(std::ptr::null(), key.as_ptr(), 0x0800_0100);
@@ -583,13 +582,7 @@ fn image_on(device: &str) -> Result<Option<PathBuf>, String> {
     unsafe {
         let media = IOServiceGetMatchingService(0, IOBSDNameMatching(0, 0, name.as_ptr()));
         if media == 0 {
-            return if node.exists() {
-                Err(format!(
-                    "{device} exists but the IO registry has no entry for it"
-                ))
-            } else {
-                Ok(None)
-            };
+            return Ok(None);
         }
         let bsd_name = property(media, c"BSD Name");
         if bsd_name.is_null() {
