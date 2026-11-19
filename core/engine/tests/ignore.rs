@@ -696,7 +696,7 @@ fn a_folder_the_user_deleted_comes_back_for_a_parked_node_the_rules_now_exclude(
         ..local(file("d", "a.txt", 1), 1)
     };
     trees.set_local("a".into(), parked);
-    trees.set_rules(&AT_ROOT, rules("a.txt\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("a.txt\n"));
     trees.remove_local("e");
     trees.remove_local("d");
     assert_eq!(ops(&mut trees), [delete("e")]);
@@ -2308,8 +2308,8 @@ fn excluded_folder_released_with_its_file() -> Trees {
     trees.set_local("y".into(), local(file(ROOT, "x", 2), 4));
     trees.set_synced("y".into(), Some(file("x", "f", 2)));
     trees.set_remote("y".into(), remote(file(ROOT, "x", 2)));
-    trees.set_rules(&AT_ROOT, rules("/far/\n"));
-    trees.settle();
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/far/\n"));
+    trees.settle(&Default::default());
     trees
 }
 
@@ -2325,7 +2325,7 @@ fn another_devices_trash_of_an_excluded_folder_is_not_undone() {
 fn an_unchanged_excluded_file_takes_the_remote_edit_when_included_again() {
     let mut trees = excluded_folder_released_with_its_file();
     set_content(&mut trees, "z", 9);
-    trees.set_rules(&AT_ROOT, None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
     effects(&mut trees);
     assert_eq!(ops(&mut trees), []);
     assert_eq!(

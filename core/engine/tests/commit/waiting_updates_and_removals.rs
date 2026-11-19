@@ -431,10 +431,14 @@ fn a_remote_move_of_a_node_whose_update_waits_reaches_the_disk() {
 #[test]
 fn a_node_whose_update_waits_stays_where_it_is_when_moved_into_an_ignored_folder() {
     let (mut trees, mut commits, mut ids) = a_move_and_edit_whose_s_update_waits();
-    trees.set_rules::<&str>(&[], Some(RuleFile::parse(b"/build/\n")));
+    trees.set_rules::<&str>(
+        &[],
+        koidrive_engine::ignore::Source::Koiignore,
+        Some(RuleFile::parse(b"/build/\n")),
+    );
     trees.set_remote("build".into(), remote(dir(ROOT, "build")));
     trees.set_remote("n".into(), remote(file("build", "x", 5)));
-    trees.settle();
+    trees.settle(&Default::default());
     assert!(trees.excluded("n"));
     assert_eq!(effects_for(&mut trees, &mut ids, "n"), []);
     assert_eq!(
