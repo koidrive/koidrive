@@ -115,6 +115,8 @@ pub(super) fn expected(check: Check, why: &str) -> bool {
     })
 }
 
+pub(super) const RESTORE_ANSWER: &str = "restore answer";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Field {
     Place,
@@ -164,6 +166,12 @@ pub(super) struct Intent {
     pub(super) forgotten: bool,
     pub(super) answer: bool,
     pub(super) carried: Option<Carried>,
+}
+
+impl Intent {
+    pub(super) fn restore_answer(&self) -> bool {
+        self.kind == RESTORE_ANSWER
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -695,7 +703,10 @@ impl Intents {
                     && (saw_the_action
                         || saw_the_value
                         || merged
-                        || field != Field::Content && intent.lost && other.made > intent.made);
+                        || field != Field::Content && intent.lost && other.made > intent.made
+                        || intent.restore_answer()
+                            && other.author != intent.author
+                            && (!other.lost || other.carried.is_some()));
                 match dropped {
                     true => field == Field::Content && deleted,
                     false => replaced || looped || deleted,

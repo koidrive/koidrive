@@ -1002,3 +1002,41 @@ fn file_deletes_sent_one_by_one_stay_checked_after_the_deleting_device_leaves() 
     )
     .unwrap();
 }
+
+#[test]
+fn a_restore_answer_brings_back_the_file_its_user_deleted() {
+    let mut world = on(&[Precision::Fine; 2]);
+    world.phase(0, &[(0, u(1, 0, 0, 0, 0))]).unwrap();
+    world.phase(1, &[(0, Step::Backup)]).unwrap();
+    let mut schedule = vec![
+        (0, u(4, 0, 0, 0, 0)),
+        (0, Step::Scan),
+        (0, Step::Rewind),
+        (0, Step::Connect),
+    ];
+    schedule.extend([(0, Step::Work(0)); 12]);
+    schedule.push((0, Step::Answer(1)));
+    world.run(2, &schedule).unwrap();
+    world.phase(3, &[]).unwrap();
+}
+
+#[test]
+fn a_restore_answer_is_not_settled_by_a_delete_the_server_lost_from_a_device_that_left() {
+    let mut world = on(&[Precision::Fine; 2]);
+    world.phase(0, &[(0, file("a"))]).unwrap();
+    world.phase(1, &[(0, Step::Backup)]).unwrap();
+    let mut schedule = vec![
+        (0, delete(0)),
+        (0, Step::Scan),
+        (0, Step::Rewind),
+        (1, Step::Connect),
+    ];
+    schedule.extend([(1, Step::Work(0)); 12]);
+    schedule.extend([(1, Step::Backup), (1, delete(0))]);
+    schedule.extend([(1, Step::Work(0)); 12]);
+    schedule.extend([(1, Step::Restore), (1, Step::Leave), (0, Step::Connect)]);
+    schedule.extend([(0, Step::Work(0)); 12]);
+    schedule.push((0, Step::Answer(1)));
+    world.run(2, &schedule).unwrap();
+    world.phase(3, &[]).unwrap();
+}

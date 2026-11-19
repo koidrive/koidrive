@@ -95,7 +95,7 @@ use self::device::{Device, Engine, Link, Message};
 pub use self::disk::Cut;
 use self::disk::{Applied, Disk, Place, Precision, Refused};
 pub use self::intents::{Check, ExpectedRed, allow_red, expect_red};
-use self::intents::{Intents, Server, Value};
+use self::intents::{Intents, RESTORE_ANSWER, Server, Value};
 use crate::space::{Role, Session, SpaceDo};
 
 const NOW: i64 = 1_794_268_740_000;
@@ -1405,6 +1405,11 @@ impl World {
             device.persist()?;
         }
         if matches!(answer, Answer::Restore) {
+            for id in question.holds() {
+                if let Some(ino) = self.intents.ino_of(d, id) {
+                    (self.intents).record(d, self.moment, ino, RESTORE_ANSWER, Value::Live);
+                }
+            }
             self.forget_restored_deletes(d, question.holds());
         }
         Ok(true)
