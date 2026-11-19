@@ -20,7 +20,7 @@ struct Record {
 
 pub fn recorded(paths: &Paths, id: &RequestId, key: &Key) -> Result<Option<Value>, CliError> {
     let path = request_file(paths, id);
-    let record = match std::fs::read(&path) {
+    let record = match koidrive_state_file::read(&path) {
         Ok(bytes) => serde_json::from_slice::<Record>(&bytes).ok(),
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(CliError {

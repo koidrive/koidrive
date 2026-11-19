@@ -115,6 +115,22 @@ fn a_folder_loses_its_koidrive_records_and_keeps_every_file() {
 }
 
 #[test]
+fn a_folder_whose_owner_record_is_not_a_file_keeps_its_records_without_waiting_on_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let ours = owner("d1");
+    let private = linked(dir.path(), &ours);
+    fs::remove_file(private.join("device.json")).unwrap();
+    koidrive_test_support::make_fifo(&private.join("device.json"));
+
+    let cleaned = koidrive_test_support::without_waiting({
+        let private = private.clone();
+        move || folder_data(&private, Some(&ours)).map_err(|error| error.kind())
+    });
+    assert_eq!(cleaned, Err(io::ErrorKind::InvalidInput));
+    assert!(private.join("space.json").exists());
+}
+
+#[test]
 fn files_in_the_local_trash_and_other_holding_folders_stay() {
     let dir = tempfile::tempdir().unwrap();
     let ours = owner("d1");

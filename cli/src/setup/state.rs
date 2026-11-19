@@ -81,7 +81,7 @@ impl StateFile {
     }
 
     pub fn load(&self) -> Result<Option<SetupState>, CliError> {
-        match fs::read(&self.path) {
+        match koidrive_state_file::read(&self.path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|error| {
                 CliError::from(format!(
                     "{} is not a valid setup state ({error}); delete it to start over",

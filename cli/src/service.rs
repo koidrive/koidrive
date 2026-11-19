@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -291,12 +290,9 @@ async fn lock_service(paths: &Paths, within: Duration) -> Result<Option<Flock>, 
     let path = paths.service_lock();
     let deadline = Instant::now() + within;
     loop {
-        let file = match fs::File::options()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)
-        {
+        let flags = rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::CREATE;
+        let mode = rustix::fs::Mode::from_raw_mode(0o666);
+        let file = match koidrive_state_file::create_regular(rustix::fs::CWD, &path, flags, mode) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(format!("{} cannot be opened: {error}", path.display())),

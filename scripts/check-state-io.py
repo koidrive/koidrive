@@ -4,7 +4,6 @@
 import argparse
 from collections import Counter
 import difflib
-import hashlib
 import importlib.util
 import json
 import os
@@ -28,17 +27,7 @@ LEXER_SPEC = importlib.util.spec_from_file_location("rust_comments", ROOT / "scr
 LEXER = importlib.util.module_from_spec(LEXER_SPEC)
 LEXER_SPEC.loader.exec_module(LEXER)
 
-# Lifecycle and historical setup cleanup follow-ups: GUN-928 and GUN-930.
-LIFECYCLE_EXCEPTION = {
-    "name": "lifecycle checkpoint publication",
-    "file": "core/driver/src/lifecycle.rs",
-    "line": 329,
-    "function_start": 318,
-    "function_end": 339,
-    "function_sha256": "d20e0e9b5bb3459a257713f4fd5d1b56f798c65ee8571311081248754427e66f",
-    "follow_up": "GUN-928",
-    "reason": "The restart regression faults the legacy staging name; migrate both after the protected driver changes land.",
-}
+# Historical setup cleanup follow-up: GUN-930.
 SETUP_LEGACY_EXCEPTION = {
     "name": "historical setup stage",
     "file": "cli/src/setup/state.rs",
@@ -226,16 +215,6 @@ def new_suppressions(before, after):
             yield line
 
 
-def lifecycle_exception(span, diagnostic, text):
-    policy = LIFECYCLE_EXCEPTION
-    if span["file_name"] != policy["file"] or span["line_start"] != policy["line"]:
-        return False
-    if diagnostic.get("message") != "use of a disallowed method `std::fs::rename`":
-        return False
-    function = "\n".join(text.splitlines()[policy["function_start"] - 1:policy["function_end"]])
-    return hashlib.sha256(function.encode()).hexdigest() == policy["function_sha256"]
-
-
 def span_chains(diagnostic):
     for span in diagnostic["spans"]:
         if not span["is_primary"]:
@@ -260,11 +239,6 @@ def introduced(diagnostic, files, build_script=False):
         path = span["file_name"]
         if path == HELPER or build_script:
             continue
-        if path == LIFECYCLE_EXCEPTION["file"]:
-            text = files[path][1] if path in files else (ROOT / path).read_text()
-            if lifecycle_exception(span, diagnostic, text):
-                continue
-            return True
         if path not in files:
             continue
         before, after = files[path]
@@ -323,8 +297,7 @@ def compiler_introduced(message, files, baseline):
         return True
     if (diagnostic.get("code") or {}).get("code") != IO_LINT or build_script:
         return False
-    if all(span["file_name"] in {HELPER, LIFECYCLE_EXCEPTION["file"]}
-           for chain in span_chains(diagnostic) for span in chain):
+    if all(span["file_name"] == HELPER for chain in span_chains(diagnostic) for span in chain):
         return False
     key = diagnostic_key(message, files)
     if key is None or not baseline[key]:
@@ -418,7 +391,7 @@ def check(base, inventory=None):
     if inventory is not None:
         Path(inventory).write_text(json.dumps({
             "diagnostics": recorded,
-            "exceptions": [LIFECYCLE_EXCEPTION, SETUP_LEGACY_EXCEPTION],
+            "exceptions": [SETUP_LEGACY_EXCEPTION],
         }, indent=2) + "\n")
     print(f"State I/O: {diagnostics} introduced violations; {legacy} existing or helper/build-output diagnostics.")
     return bool(failures)

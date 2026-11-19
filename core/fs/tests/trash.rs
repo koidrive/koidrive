@@ -11,7 +11,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use common::{bind, rewrite_keeping_mtime, same};
 use koidrive_fs::{
-    Base, Location, PRIVATE_DIR, Reclaimed, Space, TRASH_DIR, TRASH_RETENTION, recovered_name,
+    Base, BroughtBack, Location, PRIVATE_DIR, Reclaimed, Space, TRASH_DIR, TRASH_RETENTION,
+    recovered_name,
 };
 
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
@@ -543,35 +544,53 @@ fn trash_names_must_be_single_components() {
 }
 
 #[test]
+fn private_records_that_are_not_files_are_unreadable_without_waiting_on_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    fs::write(root.join("a.txt"), "a").unwrap();
+    put(&root, &bind(&root), "a.txt", "e1", at(T0));
+    let private = root.join(PRIVATE_DIR);
+    fs::remove_file(private.join("trash.json")).unwrap();
+    for record in ["trash.json", "brought-back.json"] {
+        koidrive_test_support::make_fifo(&private.join(record));
+    }
+
+    let (reclaimed, brought_back) = koidrive_test_support::without_waiting(move || {
+        let space = bind(&root);
+        let reclaimed = space.reclaim_trash(at(T0) + TRASH_RETENTION, u64::MAX, &mut same);
+        (
+            reclaimed.map_err(|err| err.kind()),
+            space.brought_back().unwrap(),
+        )
+    });
+    assert_eq!(reclaimed.err(), Some(std::io::ErrorKind::InvalidInput));
+    assert_eq!(brought_back, BroughtBack::Unreadable);
+}
+
+#[test]
 fn trash_moved_out_of_the_root_during_reclamation_is_left_alone() {
     let outside = tempfile::tempdir().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     fs::write(root.join("a.txt"), "a").unwrap();
+    fs::write(root.join("b.txt"), "b").unwrap();
     let space = bind(root);
     put(root, &space, "a.txt", "e1", at(T0));
-    let index_path = root.join(PRIVATE_DIR).join("trash.json");
-    let index = fs::read(&index_path).unwrap();
-    fs::remove_file(&index_path).unwrap();
-    let made = std::process::Command::new("mkfifo")
-        .arg(&index_path)
-        .status()
-        .unwrap();
-    assert!(made.success());
+    put(root, &space, "b.txt", "e2", at(T0));
 
-    let reclaim = std::thread::spawn({
-        let root = root.to_path_buf();
-        move || bind(&root).reclaim_trash(at(T0) + TRASH_RETENTION, u64::MAX, &mut same)
-    });
-    let mut fifo = OpenOptions::new().write(true).open(&index_path).unwrap();
-    fs::rename(trash_dir(root), outside.path().join("trash")).unwrap();
-    fifo.write_all(&index).unwrap();
-    drop(fifo);
+    let mut moved = false;
+    let mut move_out = |file: &fs::File, content: &[u8]| {
+        if !std::mem::replace(&mut moved, true) {
+            fs::rename(trash_dir(root), outside.path().join("trash")).unwrap();
+        }
+        same(file, content)
+    };
+    let reclaimed = bind(root).reclaim_trash(at(T0) + TRASH_RETENTION, u64::MAX, &mut move_out);
 
-    assert!(reclaim.join().unwrap().is_err());
+    assert!(reclaimed.is_err());
     assert_eq!(
-        fs::read(outside.path().join("trash").join("e1")).unwrap(),
-        b"a"
+        fs::read(outside.path().join("trash").join("e2")).unwrap(),
+        b"b"
     );
     assert_eq!(names(outside.path()), ["trash"]);
 }

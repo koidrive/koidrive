@@ -169,7 +169,7 @@ async fn a_rotation_reaches_linking_and_signing_out_through_the_one_auth() {
     .save_new(&paths.credential())
     .unwrap();
     let two_days_ago = SystemTime::now() - Duration::from_secs(2 * 24 * 3600);
-    OpenOptions::new()
+    fs::OpenOptions::new()
         .write(true)
         .open(paths.credential())
         .unwrap()

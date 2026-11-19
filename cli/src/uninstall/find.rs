@@ -32,9 +32,8 @@ pub(super) async fn find(paths: &Paths, home: &Path) -> Found {
             server: saved.server,
             device_id: saved.device_id,
         }),
-        Err(_) => {
-            (fs::read(&credential).ok()).and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        }
+        Err(_) => (koidrive_state_file::read(&credential).ok())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok()),
     }
     .or(recorded.owner);
     let mut folders = recorded.folders;
@@ -252,11 +251,13 @@ fn command_locations(home: &Path, also: &[PathBuf], binary: &Path) -> Vec<PathBu
 }
 
 pub(super) fn is_koi(binary: &Path) -> bool {
-    fs::read(binary).is_ok_and(|bytes| {
-        bytes
-            .windows(KOI_MARK.len())
-            .any(|window| window == KOI_MARK)
-    })
+    fs::canonicalize(binary)
+        .and_then(|binary| koidrive_state_file::read(&binary))
+        .is_ok_and(|bytes| {
+            bytes
+                .windows(KOI_MARK.len())
+                .any(|window| window == KOI_MARK)
+        })
 }
 
 fn profiles(home: &Path) -> Vec<PathBuf> {
@@ -285,7 +286,7 @@ pub(super) fn is_path_line(line: &str) -> bool {
 }
 
 fn has_path_line(profile: &Path) -> bool {
-    fs::read_to_string(profile).is_ok_and(|text| text.lines().any(is_path_line))
+    koidrive_state_file::read_following(profile).is_ok_and(|text| text.lines().any(is_path_line))
 }
 
 pub(super) fn kept_programs(programs: &[Program]) -> Vec<Kept> {

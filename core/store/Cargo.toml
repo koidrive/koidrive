@@ -19,5 +19,6 @@ rusqlite = { version = "0.41.1", features = ["bundled", "fallible_uint", "functi
 thiserror = "2.0.21"
 
 [dev-dependencies]
+koidrive-test-support = { path = "../test-support" }
 proptest = "1.12.0"
 tempfile = "3.27.0"

@@ -215,23 +215,18 @@ pub(super) async fn lock(
     control: &Control,
 ) -> Result<InstallerLock, AppInstallError> {
     let name = ".koidrive-app-install.lock";
-    let fd = match rustix::fs::openat(
+    let file = match rustix::fs::openat(
         root,
         name,
         OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::from_raw_mode(0o644),
     ) {
-        Ok(fd) => fd,
-        Err(rustix::io::Errno::EXIST) => rustix::fs::openat(
-            root,
-            name,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(io_error)?,
+        Ok(fd) => File::from(fd),
+        Err(rustix::io::Errno::EXIST) => {
+            koidrive_state_file::open_regular(root, name, OFlags::RDONLY).map_err(io_error)?
+        }
         Err(error) => return Err(io_error(error)),
     };
-    let file = File::from(fd);
     let metadata = file.metadata().map_err(io_error)?;
     if !metadata.is_file() || metadata.nlink() != 1 {
         return Err(failure(
@@ -305,15 +300,8 @@ pub(super) fn private_work(path: &Path, create: bool) -> Result<File, AppInstall
     Ok(file)
 }
 pub(super) fn regular_at(root: &File, name: &OsStr) -> Result<File, AppInstallError> {
-    let file = File::from(
-        rustix::fs::openat(
-            root,
-            name,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|error| failure(AppInstallFailure::UnsafePath, error))?,
-    );
+    let file = koidrive_state_file::open_regular(root, name, OFlags::RDONLY | OFlags::NOFOLLOW)
+        .map_err(|error| failure(AppInstallFailure::UnsafePath, error))?;
     let metadata = file.metadata().map_err(io_error)?;
     if !metadata.is_file()
         || metadata.nlink() != 1

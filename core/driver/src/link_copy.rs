@@ -78,7 +78,7 @@ pub(crate) fn write(store: &Path, link: &Link) -> io::Result<()> {
 }
 
 pub(crate) fn read(store: &Path, space_id: &str) -> Option<Link> {
-    let copy: Copy = serde_json::from_slice(&std::fs::read(path(store)).ok()?).ok()?;
+    let copy: Copy = serde_json::from_slice(&koidrive_state_file::read(&path(store)).ok()?).ok()?;
     let root = match copy.root {
         Root::Text(text) => PathBuf::from(text),
         Root::Bytes(bytes) => PathBuf::from(OsString::from_vec(bytes)),

@@ -18,6 +18,7 @@ koidrive-fs = { path = "../fs" }
 koidrive-ipc = { path = "../ipc" }
 koidrive-net = { path = "../net" }
 koidrive-proto = { path = "../proto" }
+koidrive-state-file = { path = "../state-file" }
 koidrive-telemetry = { path = "../telemetry" }
 rustix = { version = "1.1.6", features = ["process"] }
 serde = { version = "1.0.229", features = ["derive"] }

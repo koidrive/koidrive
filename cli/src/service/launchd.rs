@@ -58,7 +58,7 @@ impl Manager for Launchd {
     }
 
     fn installed(&self, service: &Service) -> Option<String> {
-        plist_binary(&fs::read_to_string(service.plist_file()).ok()?)
+        plist_binary(&koidrive_state_file::read_following(&service.plist_file()).ok()?)
     }
 
     fn crashed(&self, service: &Service) -> Option<String> {

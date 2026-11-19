@@ -26,6 +26,15 @@ fn a_quiet_echo_holds_child_lines_until_a_failure_replays_them() {
 }
 
 #[test]
+fn an_update_log_at_a_link_writes_nothing_through_it_without_waiting() {
+    let (dir, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let log = dir.path().join("update.log");
+    std::os::unix::fs::symlink(outside.path().join("update.log"), &log).unwrap();
+    koidrive_test_support::without_waiting(move || Echo::open(&log, true, false).log("line"));
+    assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn a_later_update_keeps_the_log_of_the_attempt_before_it() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("logs/update.log");

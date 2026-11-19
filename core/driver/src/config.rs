@@ -177,7 +177,7 @@ impl Config {
     /// Reads the file, or returns the default configuration when there is none. Unknown keys and rules that cannot
     /// be turned into matcher input are refused, so a typo never silently syncs more than intended.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let text = match std::fs::read_to_string(path) {
+        let text = match koidrive_state_file::read_following(path) {
             Ok(text) => text,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Config::default()),
             Err(source) => {
@@ -462,5 +462,20 @@ mod tests {
             load("[updates]\ncheck = \"no\"\n"),
             Err(ConfigError::Invalid { .. })
         ));
+    }
+
+    #[test]
+    fn a_linked_config_is_read_through_the_link_and_a_fifo_behind_it_without_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let kept = dir.path().join("dotfiles.toml");
+        std::os::unix::fs::symlink(&kept, &path).unwrap();
+        std::fs::write(&kept, "[sync]\ngitignore = false\n").unwrap();
+        assert!(!Config::load(&path).unwrap().sync.gitignore);
+        std::fs::remove_file(&kept).unwrap();
+        koidrive_test_support::make_fifo(&kept);
+        assert!(koidrive_test_support::without_waiting(move || {
+            Config::load(&path).is_err()
+        }));
     }
 }

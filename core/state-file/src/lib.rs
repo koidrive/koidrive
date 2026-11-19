@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
 use std::fs::{DirBuilder, File};
 use std::io::{self, Read, Write};
+use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::Path;
@@ -257,6 +258,86 @@ impl Drop for FailingSyncs {
     }
 }
 
+/// Opens `path`, relative to `dir`, with the access and options in `flags`, and returns it only when it is a regular
+/// file. The open never waits, as an open of a FIFO would for its other end, never takes a terminal as the controlling
+/// terminal, and never follows a symlink at the last component. A folder fails with [`io::ErrorKind::IsADirectory`],
+/// as [`std::fs::read`] does, and an entry of any other kind, a symlink included, with
+/// [`io::ErrorKind::InvalidInput`].
+pub fn open_regular(
+    dir: impl AsFd,
+    path: impl rustix::path::Arg,
+    flags: OFlags,
+) -> io::Result<File> {
+    create_regular(dir, path, flags, Mode::empty())
+}
+
+/// [`open_regular`] that gives a file that `flags` creates the permissions `mode`.
+pub fn create_regular(
+    dir: impl AsFd,
+    path: impl rustix::path::Arg,
+    flags: OFlags,
+    mode: Mode,
+) -> io::Result<File> {
+    regular(fs::openat(
+        dir,
+        path,
+        flags | OFlags::NOFOLLOW | NEVER_WAITING,
+        mode,
+    ))
+}
+
+const NEVER_WAITING: OFlags = OFlags::NONBLOCK
+    .union(OFlags::NOCTTY)
+    .union(OFlags::CLOEXEC);
+
+fn regular(opened: rustix::io::Result<std::os::fd::OwnedFd>) -> io::Result<File> {
+    let not_regular = || io::Error::new(io::ErrorKind::InvalidInput, "not a regular file");
+    let file = match opened {
+        Ok(file) => File::from(file),
+        Err(rustix::io::Errno::NXIO | rustix::io::Errno::LOOP | rustix::io::Errno::OPNOTSUPP) => {
+            return Err(not_regular());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let metadata = file.metadata()?;
+    if metadata.is_dir() {
+        return Err(rustix::io::Errno::ISDIR.into());
+    }
+    if !metadata.is_file() {
+        return Err(not_regular());
+    }
+    Ok(file)
+}
+
+/// [`std::fs::read`] through [`open_regular`].
+pub fn read(path: &Path) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    open_regular(fs::CWD, path, OFlags::RDONLY)?.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// [`std::fs::read_to_string`] through [`open_regular`].
+pub fn read_to_string(path: &Path) -> io::Result<String> {
+    utf8(read(path)?)
+}
+
+/// [`read_to_string`] that follows a symlink at the last component, for a file the user keeps and may link from
+/// elsewhere, as dotfile managers do.
+pub fn read_following(path: &Path) -> io::Result<String> {
+    let mut bytes = Vec::new();
+    regular(fs::open(
+        path,
+        OFlags::RDONLY | NEVER_WAITING,
+        Mode::empty(),
+    ))?
+    .read_to_end(&mut bytes)?;
+    utf8(bytes)
+}
+
+fn utf8(bytes: Vec<u8>) -> io::Result<String> {
+    String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
 /// Replaces a state file with complete, synced bytes using [`AtomicFile`].
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<Published> {
     write_with_legacy(path, bytes, &[])
@@ -322,7 +403,10 @@ pub fn create_dir(root: &Path, dir: &Path) -> io::Result<()> {
 pub fn made(root: &Path) -> bool {
     let record = root.join(MADE);
     std::fs::symlink_metadata(&record).is_ok_and(|meta| meta.is_file())
-        && match (std::fs::metadata(root), File::open(&record)) {
+        && match (
+            std::fs::metadata(root),
+            open_regular(fs::CWD, &record, OFlags::RDONLY),
+        ) {
             (Ok(folder), Ok(file)) => {
                 let expected = made_record(&folder);
                 let mut text = String::new();
@@ -462,7 +546,9 @@ fn matching_legacy(
     Ok(names)
 }
 
-fn open_directory(dir: &Path) -> io::Result<File> {
+/// Opens the folder `dir`, to sync it. An entry that is not a folder fails without being opened, so the open never
+/// waits on a FIFO.
+pub fn open_directory(dir: &Path) -> io::Result<File> {
     Ok(File::from(fs::open(
         dir,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,

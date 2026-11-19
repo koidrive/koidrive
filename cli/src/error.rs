@@ -641,6 +641,9 @@ fn driver_human(error: &DriverError) -> Option<String> {
             | koidrive_store::Error::NotAStore => {
                 "Koidrive cannot use its saved sync state because the saved data cannot be read safely. Keep the folder's files in place and run koi diagnose before changing local sync data."
             }
+            koidrive_store::Error::Unopenable { source, .. } => {
+                return local_io_human(source).map(str::to_owned);
+            }
             koidrive_store::Error::Sqlite(_) => return None,
         },
         DriverError::PausedUnsaved { error, .. } => {

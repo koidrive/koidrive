@@ -525,6 +525,25 @@ fn marker_behind_a_symlink_is_not_read() {
 }
 
 #[test]
+fn a_marker_that_is_not_a_file_is_unreadable_without_waiting_on_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    fs::create_dir(root.join(PRIVATE_DIR)).unwrap();
+    koidrive_test_support::make_fifo(&root.join(PRIVATE_DIR).join("space.json"));
+    let linked = RootAt {
+        dev: fs::metadata(&root).unwrap().dev(),
+        volume: None,
+    };
+
+    let checked =
+        koidrive_test_support::without_waiting(move || check_root(&root, "space-1", &linked));
+    assert!(
+        matches!(checked, Err(RootProblem::BadMarker(_))),
+        "{checked:?}"
+    );
+}
+
+#[test]
 fn rename_never_replaces_its_target() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();

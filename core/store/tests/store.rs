@@ -3272,3 +3272,58 @@ fn an_upgrade_bounds_change_times_by_the_last_write_before_it_on_every_open() {
         }
     }
 }
+
+#[test]
+fn a_store_whose_files_are_not_files_is_refused_without_waiting_on_them() {
+    for companion in ["", "-wal", "-shm", "-journal"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.sqlite");
+        drop(Store::open(&path).unwrap());
+        let fifo = dir.path().join(format!("store.sqlite{companion}"));
+        let _ = std::fs::remove_file(&fifo);
+        koidrive_test_support::make_fifo(&fifo);
+        let refused = koidrive_test_support::without_waiting(move || {
+            [
+                Store::open(&path).is_err(),
+                Store::open_existing(&path).is_err(),
+                Store::open_read_only(&path).is_err(),
+            ]
+        });
+        assert_eq!(refused, [true; 3], "store.sqlite{companion}");
+    }
+}
+
+#[test]
+fn opening_a_store_again_keeps_another_connections_write_lock() {
+    const TEST: &str = "opening_a_store_again_keeps_another_connections_write_lock";
+    if let Some(path) = std::env::var_os("KOIDRIVE_STORE_LOCKED") {
+        let other = rusqlite::Connection::open(path).unwrap();
+        other.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let busy = other.execute_batch("BEGIN IMMEDIATE").unwrap_err();
+        assert_eq!(
+            busy.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseBusy)
+        );
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.sqlite");
+    drop(Store::open(&path).unwrap());
+    let writer = rusqlite::Connection::open(&path).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let locked = |when: &str| {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("KOIDRIVE_STORE_LOCKED", &path)
+            .output()
+            .unwrap();
+        let shown = String::from_utf8_lossy(&child.stdout);
+        assert!(
+            child.status.success() && shown.contains("1 passed"),
+            "{when}: {shown}"
+        );
+    };
+    locked("before");
+    drop(Store::open_existing(&path));
+    locked("after a second open");
+}

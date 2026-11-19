@@ -183,3 +183,22 @@ fn plutil_accepts_the_launch_agent() {
         String::from_utf8_lossy(&lint.stdout)
     );
 }
+
+#[test]
+fn a_linked_launch_agent_is_read_through_the_link_and_a_fifo_behind_it_without_waiting() {
+    let home = tempfile::tempdir().unwrap();
+    let agents = home.path().join("Library/LaunchAgents");
+    fs::create_dir_all(&agents).unwrap();
+    let kept = home.path().join("dotfiles.plist");
+    fs::write(&kept, "<plist/>").unwrap();
+    std::os::unix::fs::symlink(&kept, agents.join("dev.koidrive.koi.plist")).unwrap();
+    let found = installed_services(ServiceManager::Launchd, home.path()).unwrap();
+    assert_eq!(found.len(), 1);
+    fs::remove_file(&kept).unwrap();
+    koidrive_test_support::make_fifo(&kept);
+    let home = home.path().to_path_buf();
+    let read = koidrive_test_support::without_waiting(move || {
+        installed_services(ServiceManager::Launchd, &home).is_err()
+    });
+    assert!(read);
+}

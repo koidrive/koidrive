@@ -638,7 +638,7 @@ fn plan(found: &Found, options: &Options) -> Vec<String> {
 }
 
 fn read_record(paths: &Paths) -> Record {
-    let mut record: Record = fs::read(paths.state_dir.join(RECORD))
+    let mut record: Record = koidrive_state_file::read(&paths.state_dir.join(RECORD))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();

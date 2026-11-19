@@ -2,7 +2,7 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -11,8 +11,108 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use koidrive_state_file::{
-    AtomicFile, Publish, recover, remove_with_legacy_matching, write, write_with_legacy,
+    AtomicFile, Publish, create_regular, open_directory, open_regular, read, read_following,
+    recover, remove_with_legacy_matching, write, write_with_legacy,
 };
+use rustix::fs::{CWD, Mode, OFlags};
+
+#[test]
+fn opens_refuse_anything_but_a_regular_file_without_waiting() {
+    let dir = tempfile::tempdir().unwrap();
+    let (file, fifo) = (dir.path().join("file"), dir.path().join("fifo"));
+    let (linked, dangling) = (dir.path().join("linked"), dir.path().join("dangling"));
+    let outside = dir.path().join("outside");
+    fs::write(&file, "kept").unwrap();
+    koidrive_test_support::make_fifo(&fifo);
+    symlink(&file, &linked).unwrap();
+    symlink(&outside, &dangling).unwrap();
+
+    assert_eq!(read(&file).unwrap(), b"kept");
+    assert_eq!(read_following(&linked).unwrap(), "kept");
+    let missing = read(&dir.path().join("missing")).unwrap_err();
+    assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+    let refused = koidrive_test_support::without_waiting({
+        let dir = dir.path().to_path_buf();
+        move || {
+            [
+                read(&fifo).map(drop),
+                read(&dir).map(drop),
+                open_regular(CWD, &fifo, OFlags::WRONLY).map(drop),
+                create_regular(CWD, &fifo, OFlags::RDWR | OFlags::CREATE, Mode::empty()).map(drop),
+                read(&linked).map(drop),
+                create_regular(
+                    CWD,
+                    &dangling,
+                    OFlags::WRONLY | OFlags::CREATE,
+                    Mode::empty(),
+                )
+                .map(drop),
+                read_following(&dir.join("fifo")).map(drop),
+                open_directory(&fifo).map(drop),
+            ]
+            .map(|opened| opened.map_err(|error| error.kind()))
+        }
+    });
+    let invalid = Err(io::ErrorKind::InvalidInput);
+    let folder = Err(io::ErrorKind::IsADirectory);
+    let not_dir = Err(io::ErrorKind::NotADirectory);
+    assert_eq!(
+        refused,
+        [
+            invalid, folder, invalid, invalid, invalid, invalid, invalid, not_dir
+        ]
+    );
+    assert!(!outside.exists());
+    let made = dir.path().join("made");
+    create_regular(
+        CWD,
+        &made,
+        OFlags::WRONLY | OFlags::CREATE,
+        Mode::from_raw_mode(0o600),
+    )
+    .unwrap();
+    assert_eq!(
+        fs::metadata(&made).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_refused_terminal_never_becomes_the_controlling_terminal() {
+    use std::os::unix::ffi::OsStrExt;
+    const TEST: &str = "a_refused_terminal_never_becomes_the_controlling_terminal";
+    if std::env::var_os("KOIDRIVE_TERMINAL_CHILD").is_none() {
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("KOIDRIVE_TERMINAL_CHILD", "1")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let shown = String::from_utf8_lossy(&child.stdout);
+        assert!(
+            child.status.success() && shown.contains("1 passed"),
+            "{shown}"
+        );
+        return;
+    }
+    rustix::process::setsid().unwrap();
+    let pty =
+        rustix::pty::openpt(rustix::pty::OpenptFlags::RDWR | rustix::pty::OpenptFlags::NOCTTY)
+            .unwrap();
+    rustix::pty::grantpt(&pty).unwrap();
+    rustix::pty::unlockpt(&pty).unwrap();
+    let terminal = rustix::pty::ptsname(&pty, Vec::new()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let link = dir.path().join("config.toml");
+    symlink(OsStr::from_bytes(terminal.as_bytes()), &link).unwrap();
+    let refused = read_following(&link).unwrap_err();
+    assert_eq!(refused.kind(), io::ErrorKind::InvalidInput);
+    assert!(
+        fs::File::open("/dev/tty").is_err(),
+        "the terminal became the controlling terminal"
+    );
+}
 
 #[cfg(target_os = "macos")]
 #[test]

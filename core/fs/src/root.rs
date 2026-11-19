@@ -113,13 +113,18 @@ impl Lineage {
 const LINEAGE_BYTES: u64 = (2 * LINEAGE_KEPT as u64 + 1) * 16;
 
 fn open_lineage(private: BorrowedFd<'_>, flags: OFlags) -> io::Result<Option<File>> {
-    let flags = flags | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let file = match rustix::fs::openat(private, LINEAGE, flags, Mode::empty()) {
-        Ok(file) => File::from(file),
-        Err(Errno::NOENT) => return Ok(None),
-        Err(err) => return Err(err.into()),
-    };
-    Ok(file.metadata()?.is_file().then_some(file))
+    match koidrive_state_file::open_regular(private, LINEAGE, flags | OFlags::NOFOLLOW) {
+        Ok(file) => Ok(Some(file)),
+        Err(err)
+            if matches!(
+                err.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::IsADirectory | io::ErrorKind::InvalidInput
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn token_bits(token: &str) -> Option<u128> {
@@ -670,14 +675,14 @@ fn read_marker_at(root: BorrowedFd<'_>) -> io::Result<Option<Marker>> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),
     };
-    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let file = match rustix::fs::openat(&private, MARKER, flags, Mode::empty()) {
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW;
+    let mut file = match koidrive_state_file::open_regular(&private, MARKER, flags) {
         Ok(file) => file,
-        Err(Errno::NOENT) => return Ok(None),
-        Err(err) => return Err(err.into()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
     };
     let mut text = String::new();
-    File::from(file).read_to_string(&mut text)?;
+    file.read_to_string(&mut text)?;
     serde_json::from_str(&text)
         .map(Some)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))

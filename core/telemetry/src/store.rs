@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -216,11 +216,12 @@ impl Store {
 
     fn flock(&self, name: &str, wait: bool) -> io::Result<Flock> {
         self.create_dir(&self.dir)?;
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(self.dir.join(name))?;
+        let file = koidrive_state_file::create_regular(
+            rustix::fs::CWD,
+            self.dir.join(name),
+            rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::CREATE,
+            rustix::fs::Mode::from_raw_mode(0o666),
+        )?;
         if wait {
             return Flock::wait(file);
         }
@@ -233,7 +234,7 @@ fn new_generation() -> String {
 }
 
 fn read<T: Default + for<'de> Deserialize<'de>>(path: &Path) -> io::Result<T> {
-    match fs::read(path) {
+    match koidrive_state_file::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(T::default()),

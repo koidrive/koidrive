@@ -462,8 +462,7 @@ impl Space {
     pub fn open_staged(&self, id: &str) -> io::Result<File> {
         check_name(OsStr::new(id))?;
         let staging = self.private(&[STAGING_DIR])?;
-        let flags = OFlags::WRONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        Ok(rustix::fs::openat(staging.fd(), id, flags, Mode::empty())?.into())
+        koidrive_state_file::open_regular(staging.fd(), id, OFlags::WRONLY | OFlags::NOFOLLOW)
     }
 
     /// Sets the staged file's executable bit and flushes it, which design
@@ -473,8 +472,8 @@ impl Space {
     pub fn finish_staged(&self, id: &str, executable: bool) -> io::Result<()> {
         check_name(OsStr::new(id))?;
         let staging = self.private(&[STAGING_DIR])?;
-        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        let file = rustix::fs::openat(staging.fd(), id, flags, Mode::empty())?;
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW;
+        let file = koidrive_state_file::open_regular(staging.fd(), id, flags)?;
         let mode = rustix::fs::fstat(&file)?.st_mode & 0o7777;
         let mode = if executable {
             mode | (mode & 0o444) >> 2
@@ -595,15 +594,16 @@ impl Space {
     /// stop between bringing entries back and recovering keeps it. A record that cannot be read
     /// is [`BroughtBack::Unreadable`], and a later bring-back leaves it so.
     pub fn brought_back(&self) -> io::Result<BroughtBack> {
-        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW;
         let file =
-            match rustix::fs::openat(self.private(&[])?.fd(), BROUGHT_BACK, flags, Mode::empty()) {
+            match koidrive_state_file::open_regular(self.private(&[])?.fd(), BROUGHT_BACK, flags) {
                 Ok(file) => file,
-                Err(Errno::NOENT) => return Ok(BroughtBack::Entries(HashSet::new())),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    return Ok(BroughtBack::Entries(HashSet::new()));
+                }
                 Err(_) => return Ok(BroughtBack::Unreadable),
             };
-        let Ok(ids) =
-            serde_json::from_reader::<_, Vec<(IgnoredAny, u128, Option<i64>)>>(File::from(file))
+        let Ok(ids) = serde_json::from_reader::<_, Vec<(IgnoredAny, u128, Option<i64>)>>(file)
         else {
             return Ok(BroughtBack::Unreadable);
         };
@@ -1267,8 +1267,7 @@ fn lookup(dir: BorrowedFd<'_>, name: &OsStr) -> io::Result<Option<Stat>> {
 }
 
 fn open_file(dir: BorrowedFd<'_>, name: &OsStr) -> io::Result<File> {
-    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    Ok(rustix::fs::openat(dir, name, flags, Mode::empty())?.into())
+    koidrive_state_file::open_regular(dir, name, OFlags::RDONLY | OFlags::NOFOLLOW)
 }
 
 fn folder_entry(id: FileId) -> Entry {

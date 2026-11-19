@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::ffi::OsStr;
-use std::fs::{self, File};
+use std::fs;
 use std::future::Future;
 use std::io::{self, Write};
 use std::os::unix::fs::MetadataExt;
@@ -99,7 +99,7 @@ struct LegacyClaim {
 }
 
 fn legacy_claims(path: &Path) -> Vec<LegacyClaim> {
-    (fs::read(path).ok())
+    (koidrive_state_file::read(path).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
 }
@@ -156,7 +156,11 @@ impl PendingCreate {
             if let Some(request_id) = self.save_if_absent()? {
                 wrote = Some(request_id);
             }
-            let file = match File::open(&self.path) {
+            let file = match koidrive_state_file::open_regular(
+                rustix::fs::CWD,
+                &self.path,
+                rustix::fs::OFlags::RDONLY,
+            ) {
                 Ok(file) => file,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error),
@@ -194,7 +198,11 @@ impl PendingCreate {
                 if let Some(hook) = AFTER_AN_UNREADABLE_LOAD.take() {
                     hook();
                 }
-                let file = match File::open(&self.path) {
+                let file = match koidrive_state_file::open_regular(
+                    rustix::fs::CWD,
+                    &self.path,
+                    rustix::fs::OFlags::RDONLY,
+                ) {
                     Ok(file) => file,
                     Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
                     Err(error) => return Err(error),
@@ -285,7 +293,11 @@ impl PendingCreate {
             }
             return self.hold();
         }
-        let file = match File::open(&self.path) {
+        let file = match koidrive_state_file::open_regular(
+            rustix::fs::CWD,
+            &self.path,
+            rustix::fs::OFlags::RDONLY,
+        ) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return self.hold(),
             Err(error) => return Err(error),
@@ -333,7 +345,7 @@ fn refused_for_good(error: &ApiError) -> bool {
 }
 
 fn load(path: &Path) -> io::Result<Option<Saved>> {
-    match fs::read(path) {
+    match koidrive_state_file::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map(Some)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),

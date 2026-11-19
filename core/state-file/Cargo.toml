@@ -23,3 +23,4 @@ tempfile = "3.27.0"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 libc = "0.2.191"
+rustix = { version = "1.1.6", features = ["pty"] }

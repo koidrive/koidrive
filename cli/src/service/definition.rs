@@ -242,7 +242,8 @@ pub(super) fn suffixed(name: &str, stem: &str, end: &str) -> bool {
 
 pub fn installed_services(manager: ServiceManager, home: &Path) -> Result<Vec<Installed>, String> {
     let read = |path: &Path| {
-        fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", path.display()))
+        koidrive_state_file::read_following(path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))
     };
     let mut found = Vec::new();
     match manager {
@@ -294,7 +295,7 @@ pub fn installed_services(manager: ServiceManager, home: &Path) -> Result<Vec<In
                         else {
                             continue;
                         };
-                        let text = match fs::read_to_string(entry.path()) {
+                        let text = match koidrive_state_file::read_following(&entry.path()) {
                             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                             text => text.map_err(|error| {
                                 format!("cannot read {}: {error}", entry.path().display())

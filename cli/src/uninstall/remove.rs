@@ -200,7 +200,11 @@ pub(super) async fn released(paths: &Paths) -> Result<Option<Flock>, String> {
     let lock = paths.lock();
     let deadline = Instant::now() + RELEASE;
     loop {
-        let file = match fs::File::open(&lock) {
+        let file = match koidrive_state_file::open_regular(
+            rustix::fs::CWD,
+            &lock,
+            rustix::fs::OFlags::RDONLY,
+        ) {
             Err(error)
                 if matches!(
                     error.kind(),
@@ -294,7 +298,7 @@ pub(super) fn folder_data(private: &Path, owner: Option<&Owner>) -> io::Result<C
         Ok(meta) if !meta.is_dir() => return Ok(Cleaned::Kept(vec![private.to_path_buf()])),
         Ok(_) => {}
     }
-    match fs::read(private.join("device.json")) {
+    match koidrive_state_file::read(&private.join("device.json")) {
         Ok(bytes) => {
             let linked = serde_json::from_slice::<Owner>(&bytes).ok();
             if linked.is_none() || linked.as_ref() != owner {
@@ -373,7 +377,7 @@ pub(super) fn prune_runtime(paths: &Paths) {
 
 pub(super) fn strip_path_line(profile: &Path) -> io::Result<bool> {
     crate::lifeline::confine(profile)?;
-    let text = match fs::read_to_string(profile) {
+    let text = match koidrive_state_file::read_following(profile) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         other => other?,
     };

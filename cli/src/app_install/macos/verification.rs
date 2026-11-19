@@ -5,7 +5,7 @@ use crate::app_install::macos::control::{Control, io_error, passed, process};
 use crate::app_install::macos::filesystem::{directory, identity, unchanged_directory};
 use crate::app_install::macos::state::{PinnedDirectory, VerifiedBundle};
 use crate::program::Arg;
-use rustix::fs::{Mode, OFlags};
+use rustix::fs::OFlags;
 use semver::Version;
 use std::fs::{self, File};
 use std::os::unix::fs::MetadataExt;
@@ -46,14 +46,9 @@ impl VerifiedHelper {
         unchanged_directory(self.app.path.parent().unwrap(), &self.root.file)?;
         unchanged_directory(&self.app.path, &self.bundle.file)?;
         unchanged_bundle(&self.config, &self.app, &control).await?;
-        let helper = File::from(
-            rustix::fs::open(
-                &self.binary,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            )
-            .map_err(io_error)?,
-        );
+        let helper =
+            koidrive_state_file::open_regular(rustix::fs::CWD, &self.binary, OFlags::RDONLY)
+                .map_err(io_error)?;
         if identity(&helper.metadata().map_err(io_error)?)
             != identity(&self.helper_file.metadata().map_err(io_error)?)
         {
@@ -147,14 +142,8 @@ pub(in crate::app_install) async fn verify_helper(
     let path = helper.ancestors().nth(3).unwrap();
     let root = PinnedDirectory::new(directory(path.parent().unwrap(), false)?)?;
     let bundle = PinnedDirectory::new(directory(path, false)?)?;
-    let helper_file = File::from(
-        rustix::fs::open(
-            helper,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(io_error)?,
-    );
+    let helper_file = koidrive_state_file::open_regular(rustix::fs::CWD, helper, OFlags::RDONLY)
+        .map_err(io_error)?;
     let metadata = helper_file.metadata().map_err(io_error)?;
     if !metadata.is_file() || metadata.mode() & 0o111 == 0 {
         return Err(failure(

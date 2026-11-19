@@ -5,9 +5,9 @@ use crate::app_install::macos::filesystem::identity;
 use crate::app_install::macos::state::{OwnedPath, VerifiedDmg};
 use semver::Version;
 use sha2::{Digest, Sha256};
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -82,11 +82,9 @@ pub(super) async fn download(
     .await?;
     let expected = checksum(&sums, &asset)?;
     let path = image.path.clone();
-    let file = OpenOptions::new()
-        .write(true)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(&path)
-        .map_err(io_error)?;
+    let flags = rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::NOFOLLOW;
+    let file =
+        koidrive_state_file::open_regular(rustix::fs::CWD, &path, flags).map_err(io_error)?;
     let metadata = file.metadata().map_err(io_error)?;
     if identity(&metadata) != image.identity || metadata.nlink() != 1 || !metadata.is_file() {
         return Err(failure(

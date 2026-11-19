@@ -37,13 +37,10 @@ struct Unreported {
 }
 
 pub(super) fn unreported_set_aside(record: &Path) -> SetAside {
-    use rustix::fs::{Mode, OFlags};
     use std::os::unix::ffi::OsStringExt;
-    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
-    let recorded = (rustix::fs::open(record, flags, Mode::empty()).ok())
-        .and_then(|file| {
-            serde_json::from_reader::<_, Unreported>(io::BufReader::new(File::from(file))).ok()
-        })
+    let flags = rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW;
+    let recorded = (koidrive_state_file::open_regular(rustix::fs::CWD, record, flags).ok())
+        .and_then(|file| serde_json::from_reader::<_, Unreported>(io::BufReader::new(file)).ok())
         .unwrap_or_default();
     let paths = |paths: Vec<Vec<u8>>| {
         (paths.into_iter())
@@ -84,22 +81,15 @@ pub(super) fn forget_unreported_set_aside(paths: &Paths) {
 }
 
 pub(super) fn recorded_brought_back(store: &Path) -> Vec<PathBuf> {
-    use rustix::fs::{Mode, OFlags};
     use std::os::unix::ffi::OsStringExt;
-    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
-    (rustix::fs::open(
-        store.with_file_name(UNLINK_BROUGHT_BACK),
-        flags,
-        Mode::empty(),
-    )
-    .ok())
-    .and_then(|file| {
-        serde_json::from_reader::<_, Vec<Vec<u8>>>(io::BufReader::new(File::from(file))).ok()
-    })
-    .unwrap_or_default()
-    .into_iter()
-    .map(|path| PathBuf::from(std::ffi::OsString::from_vec(path)))
-    .collect()
+    let flags = rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW;
+    let record = store.with_file_name(UNLINK_BROUGHT_BACK);
+    (koidrive_state_file::open_regular(rustix::fs::CWD, &record, flags).ok())
+        .and_then(|file| serde_json::from_reader::<_, Vec<Vec<u8>>>(io::BufReader::new(file)).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| PathBuf::from(std::ffi::OsString::from_vec(path)))
+        .collect()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -365,7 +355,7 @@ impl Driver {
         }
         claim::set_owner(&root, &owner).map_err(io_error(&root))?;
         let linked_started = crate::timing::Time::now();
-        let found = fs::File::open(&root)
+        let found = koidrive_state_file::open_directory(&root)
             .and_then(|dir| root_at(dir.as_fd()))
             .map_err(io_error(&root))?;
         let link = Link {
