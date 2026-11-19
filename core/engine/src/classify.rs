@@ -326,10 +326,9 @@ impl<V: Placed + Clone + PartialEq> From<BTreeMap<NodeId, V>> for ByParent<V> {
 struct ByName(CountedMap<(NodeId, u32), Holders>);
 
 fn key_hash(key: &str) -> u32 {
-    use std::hash::Hasher;
-    let mut hasher = std::hash::DefaultHasher::new();
-    hasher.write(key.as_bytes());
-    hasher.finish() as u32
+    key.bytes().fold(0x811c_9dc5, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    })
 }
 
 impl ByName {
@@ -966,7 +965,7 @@ impl Trees {
         }
     }
 
-    /// The placed nodes of L under `parent`, by the `name_key` of their names.
+    /// The placed nodes of L under `parent`.
     pub fn local_children<'a>(
         &'a self,
         parent: &'a NodeId,
@@ -6482,9 +6481,10 @@ impl Trees {
             self.s.touch(id);
         }
         if let Some(old) = old {
-            let kept = self.s.get(id).is_some_and(|new| {
-                new.parent == old.parent && name_key(&new.name) == name_key(&old.name)
-            });
+            let kept = self
+                .s
+                .get(id)
+                .is_some_and(|new| ByName::key(new) == ByName::key(&old));
             if !kept {
                 self.s_names.remove(id, &old);
             }

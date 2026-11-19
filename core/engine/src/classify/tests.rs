@@ -1494,3 +1494,29 @@ fn names_whose_keys_share_a_hash_stay_apart() {
         [&NodeId::from("b")]
     );
 }
+
+#[test]
+fn a_synced_rename_between_names_whose_keys_share_a_hash_keeps_the_node_held() {
+    let mut seen = std::collections::HashMap::new();
+    let (a, b) = (0u32..)
+        .map(|i| format!("c{i}"))
+        .find_map(|name| {
+            seen.insert(key_hash(&name), name.clone())
+                .map(|other| (other, name))
+        })
+        .unwrap();
+    let file = |name: &str| Shape {
+        parent: "root".into(),
+        name: name.into(),
+        kind: Kind::File,
+        content: None,
+    };
+    let mut trees = Trees::new("root");
+    trees.set_synced("n".into(), Some(file(&a)));
+    trees.set_synced("n".into(), Some(file(&b)));
+    assert_eq!(
+        trees.synced_holders(&"root".into(), &b).collect::<Vec<_>>(),
+        [&NodeId::from("n")]
+    );
+    assert!(!trees.set_synced_if_valid("m".into(), Some(file(&b))));
+}
