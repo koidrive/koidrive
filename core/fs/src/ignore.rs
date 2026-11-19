@@ -156,12 +156,25 @@ struct Folder {
 }
 
 impl Folder {
-    fn open(dir: PathBuf, id: FileId, fd: OwnedFd) -> Option<Self> {
-        let mut entries = Dir::new(fd).ok()?;
-        let mut names: Vec<OsString> = std::iter::from_fn(|| entries.read()?.ok())
-            .map(|item| OsStr::from_bytes(item.file_name().to_bytes()).to_os_string())
-            .filter(|name| *name != "." && *name != "..")
-            .collect();
+    fn open(
+        dir: PathBuf,
+        id: FileId,
+        fd: OwnedFd,
+        unopened: &mut BTreeSet<PathBuf>,
+    ) -> Option<Self> {
+        let Ok(mut entries) = Dir::new(fd) else {
+            unopened.insert(dir);
+            return None;
+        };
+        let mut names: Vec<OsString> = Vec::new();
+        for item in std::iter::from_fn(|| entries.read()) {
+            let Ok(item) = item else {
+                unopened.insert(dir.clone());
+                break;
+            };
+            names.push(OsStr::from_bytes(item.file_name().to_bytes()).to_os_string());
+        }
+        names.retain(|name| *name != "." && *name != "..");
         names.sort_unstable_by(|a, b| b.cmp(a));
         Some(Self {
             dir,
@@ -595,8 +608,7 @@ impl<'r> Pending<'r> {
                             if confirm {
                                 continue;
                             }
-                            let Some(folder) = Folder::open(dir.clone(), id, fd) else {
-                                walk.unopened.insert(dir);
+                            let Some(folder) = Folder::open(dir, id, fd, &mut walk.unopened) else {
                                 continue;
                             };
                             seen.pop();
@@ -701,8 +713,7 @@ impl<'r> Pending<'r> {
                         continue;
                     }
                 };
-                let Some(folder) = Folder::open(path.clone(), entry.id, sub) else {
-                    walk.unopened.insert(path);
+                let Some(folder) = Folder::open(path, entry.id, sub, &mut walk.unopened) else {
                     continue;
                 };
                 if walk.folders.is_empty() {
