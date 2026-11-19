@@ -1214,11 +1214,11 @@ impl World {
             return false;
         }
         let live = |node: &NodeState| node.status == NodeStatus::Live as i32;
-        let parents: BTreeMap<&str, &str> = (held.iter())
-            .map(|node| (node.node_id.as_str(), node.parent_id.as_str()))
+        let parents: BTreeMap<String, String> = (self.space.nodes().into_iter())
+            .map(|node| (node.node_id, node.parent_id))
             .collect();
         let under = |node: &str| {
-            std::iter::successors(Some(node), |at| parents.get(at).copied())
+            std::iter::successors(Some(node), |at| parents.get(*at).map(String::as_str))
                 .take(parents.len() + 1)
                 .any(|at| at == id)
         };
