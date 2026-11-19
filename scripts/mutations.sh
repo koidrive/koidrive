@@ -74,11 +74,49 @@ failure_output() {
   done < <(git ls-files -z --modified --others --exclude-standard -- '*.proptest-regressions' '*.cases/*.txt')
 }
 
+run_within() {
+  python3 -c '
+import os, signal, subprocess, sys
+child = subprocess.Popen(sys.argv[2:], start_new_session=True)
+def stop(signum, frame):
+    os.killpg(child.pid, signal.SIGKILL)
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+signal.signal(signal.SIGINT, stop)
+signal.signal(signal.SIGTERM, stop)
+try:
+    sys.exit(child.wait(timeout=int(sys.argv[1])))
+except subprocess.TimeoutExpired:
+    os.killpg(child.pid, signal.SIGKILL)
+    child.wait()
+    sys.exit(124)
+' "$@"
+}
+
+run_mutant_suite() {
+  local label=$1 limit=$2 code=0
+  shift 2
+  run_within "$limit" "$@" > "$log" 2>&1 || code=$?
+  if [ "$code" -eq 130 ] || [ "$code" -eq 143 ]; then
+    exit "$code"
+  elif [ "$code" -eq 124 ]; then
+    caught="$label (timed out after ${limit}s, 3 times the baseline run)"
+  elif [ "$code" -ne 0 ]; then
+    caught=$label
+  fi
+}
+
 echo "Baseline: building and running the unit, property and device tests without mutations (seed $PROPTEST_RNG_SEED)"
 caught=""
+start=$SECONDS
 if ! "${unit[@]}" > "$log" 2>&1; then caught="unit tests"; fi
+unit_limit=$((3 * (SECONDS - start) + 5))
+start=$SECONDS
 if [ -z "$caught" ] && ! "${property[@]}" > "$log" 2>&1; then caught="property tests"; fi
+property_limit=$((3 * (SECONDS - start) + 5))
+start=$SECONDS
 if [ -z "$caught" ] && ! "${devices[@]}" > "$log" 2>&1; then caught="device tests"; fi
+devices_limit=$((3 * (SECONDS - start) + 5))
 if [ -n "$caught" ]; then
   echo "Baseline: the $caught fail without any mutation. Fix that before running mutations."
   failure_output
@@ -110,13 +148,13 @@ for i in "${!names[@]}"; do
   fi
   caught=""
   if [ "$kind" = unit ] || [ "$kind" = both ]; then
-    if ! "${unit[@]}" > "$log" 2>&1; then caught="unit tests"; fi
+    run_mutant_suite "unit tests" "$unit_limit" "${unit[@]}"
   fi
   if [ -z "$caught" ] && { [ "$kind" = prop ] || [ "$kind" = both ]; }; then
-    if ! "${property[@]}" > "$log" 2>&1; then caught="property tests"; fi
+    run_mutant_suite "property tests" "$property_limit" "${property[@]}"
   fi
   if [ "$kind" = devices ]; then
-    if ! "${devices[@]}" > "$log" 2>&1; then caught="device tests"; fi
+    run_mutant_suite "device tests" "$devices_limit" "${devices[@]}"
   fi
   if [ -n "$caught" ]; then
     echo "$name: failure output from $caught (seed $PROPTEST_RNG_SEED)"

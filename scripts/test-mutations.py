@@ -6,9 +6,11 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import textwrap
+import time
 import unittest
 
 
@@ -115,6 +117,10 @@ class MutationRunner(unittest.TestCase):
             if not fixtures or not fresh or not clean:
                 print("fixture inputs changed between runs")
                 sys.exit(90)
+            if not compile_only and state == suite == os.environ.get("HANG"):
+                import subprocess, time
+                Path("hang.pid").write_text(str(subprocess.Popen(["sleep", "300"]).pid))
+                time.sleep(300)
             if compile_only:
                 if state == "unit" and suite == os.environ.get("FAIL_COMPILE"):
                     print("error[E0001]: complete compile reason " + "detail " * 30)
@@ -144,12 +150,16 @@ class MutationRunner(unittest.TestCase):
         path.write_text("#!/usr/bin/env python3\n" + textwrap.dedent(body))
         path.chmod(0o755)
 
-    def run_runner(self, *args, expect_guard=True, **overrides):
+    def runner_env(self, **overrides):
         env = os.environ.copy()
-        for key in ["MUTATION_SEED", "PROPTEST_RNG_SEED", "FAIL_BASELINE", "FAIL_COMPILE", "SURVIVE"]:
+        for key in ["MUTATION_SEED", "PROPTEST_RNG_SEED", "FAIL_BASELINE", "FAIL_COMPILE", "SURVIVE", "HANG"]:
             env.pop(key, None)
         env.update(PATH=str(self.root / "bin") + os.pathsep + env["PATH"], REAL_GIT=self.git, MUTATION_CASES="8")
         env.update(overrides)
+        return env
+
+    def run_runner(self, *args, expect_guard=True, **overrides):
+        env = self.runner_env(**overrides)
         (self.root / "calls.jsonl").unlink(missing_ok=True)
         result = subprocess.run(["bash", "scripts/mutations.sh", *args], cwd=self.root, env=env, capture_output=True, text=True)
         log = self.root / "calls.jsonl"
@@ -238,6 +248,38 @@ class MutationRunner(unittest.TestCase):
         self.assert_inputs(calls, "0")
         self.assertEqual(len(calls), 20)
         self.assertEqual(result.stdout.count("SURVIVED"), 4)
+
+    def test_a_hanging_suite_is_caught_by_its_time_limit_and_killed(self):
+        result, calls = self.run_runner(HANG="unit")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_inputs(calls, "0")
+        self.assertRegex(result.stdout, r"unit-mut: caught by unit tests \(timed out after [0-9]+s, 3 times the baseline run\)")
+        self.assertEqual(result.stdout.count("caught by"), 4)
+        self.assert_stopped(int((self.root / "hang.pid").read_text()))
+
+    def test_an_interrupt_during_a_suite_stops_the_run_and_its_suite(self):
+        env = self.runner_env(HANG="unit")
+        runner = subprocess.Popen(["bash", "scripts/mutations.sh"], cwd=self.root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+        pid_file = self.root / "hang.pid"
+        deadline = time.monotonic() + 60
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        time.sleep(0.5)
+        os.killpg(runner.pid, signal.SIGINT)
+        output, _ = runner.communicate(timeout=60)
+        self.assertNotEqual(runner.returncode, 0, output)
+        self.assertNotIn("unit-mut: caught", output)
+        self.assertNotIn("prop-mut", output)
+        self.assert_stopped(int(pid_file.read_text()))
+
+    def assert_stopped(self, pid):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+            if not state or state.startswith("Z"):
+                return
+            time.sleep(0.1)
+        self.fail(f"process {pid} still runs")
 
     def test_sharding_does_not_change_the_seed(self):
         result, calls = self.run_runner("--shard", "1/2", MUTATION_SEED="371")

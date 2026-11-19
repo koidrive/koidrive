@@ -1014,6 +1014,8 @@ jobs:
         run: python3 scripts/test-property-battery.py -v
       - name: Test the test-value harness
         run: python3 scripts/test-test-value.py -v
+      - name: Check that every engine hand mutant still applies
+        run: bash scripts/test-engine-mutations.sh
       - name: Fail on comments that this change adds
         env:
           EVENT: ${{ github.event_name }}
