@@ -2393,3 +2393,36 @@ fn a_delete_refused_after_its_folder_was_given_up_is_sent_again_once_included() 
     });
     assert_eq!(sent, [delete("z")]);
 }
+
+#[test]
+fn a_file_deleted_here_that_another_device_moved_out_of_a_given_up_folder_comes_back_there() {
+    let mut trees = trees(&[
+        incoming("far", dir(ROOT, "far")),
+        (
+            "x",
+            Some(dir(ROOT, "x")),
+            Some(dir(ROOT, "x")),
+            Some(dir("far", "x")),
+        ),
+        synced("z", file("x", "g", 1)),
+    ]);
+    trees.remove_local("z");
+    trees.settle(&Default::default());
+    let parked = LocalNode {
+        parked: true,
+        ..local(dir(ROOT, "x"), 2)
+    };
+    trees.set_local("x".into(), parked);
+    trees.set_local("y".into(), local(file(ROOT, "x", 2), 4));
+    trees.set_synced("y".into(), Some(file("x", "f", 2)));
+    trees.set_remote("y".into(), remote(file(ROOT, "x", 2)));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/far/\n"));
+    trees.settle(&Default::default());
+    let mut moved = trees.remote().get("z").unwrap().clone();
+    moved.shape.parent = ROOT.into();
+    moved.shape.name = "zz".into();
+    trees.set_remote("z".into(), moved);
+    assert_eq!(ops(&mut trees), []);
+    effects(&mut trees);
+    assert_eq!(trees.local().live("z"), Some(&file(ROOT, "zz", 1)));
+}

@@ -2845,7 +2845,7 @@ impl Commits {
     ) -> BTreeSet<NodeId> {
         let mut waited: BTreeMap<NodeId, Waiting> = (trees.take_waiting().into_iter())
             .filter_map(|(id, Waiting { shape, origin })| {
-                let shape = outstanding(trees, &id, shape)?;
+                let shape = outstanding(trees, &id, shape, origin)?;
                 Some((id, Waiting { shape, origin }))
             })
             .collect();
@@ -3880,7 +3880,12 @@ pub(crate) fn changed_locally(trees: &Trees, id: &str) -> bool {
 /// holds the node, only as long as what S holds under it leaves S with L's next commits
 /// ([`leaves_s`]), so that R taking the node back meanwhile does not read as L removing it. Once
 /// it cannot leave, the removal could never be made, and the keep rule brings the node back.
-fn outstanding(trees: &Trees, id: &str, waiting: Option<Shape>) -> Option<Option<Shape>> {
+fn outstanding(
+    trees: &Trees,
+    id: &str,
+    waiting: Option<Shape>,
+    origin: Origin,
+) -> Option<Option<Shape>> {
     let local = trees.local().get(id).map(|node| &node.shape);
     let synced = trees.synced().live(id);
     let Some(remote) = trees.remote().live(id) else {
@@ -3890,7 +3895,11 @@ fn outstanding(trees: &Trees, id: &str, waiting: Option<Shape>) -> Option<Option
     let Some(mut left) = waiting else {
         return leaves_s(trees, id).then_some(None);
     };
-    if !left.same_position(remote) && !local.is_some_and(|local| local.same_position(&left)) {
+    let base = synced.is_none() && matches!(origin, Origin::Other);
+    if !base
+        && !left.same_position(remote)
+        && !local.is_some_and(|local| local.same_position(&left))
+    {
         let base = synced.unwrap_or(remote);
         left.parent = base.parent.clone();
         left.name = base.name.clone();
