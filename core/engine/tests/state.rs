@@ -346,7 +346,10 @@ fn commits_state() -> CommitsState {
             }),
         }),
         problems: ["p".into()].into(),
-        halted: Some(Halt::Recovery(RecoveryCause::rewind(4, 1_700_000_000_000))),
+        halted: Some(Halt::Recovery {
+            cause: RecoveryCause::rewind(4, 1_700_000_000_000),
+            policy: None,
+        }),
         cap: Some(4),
         split: ["s".into()].into(),
         trash_groups: [("s".into(), "commit:0".into())].into(),

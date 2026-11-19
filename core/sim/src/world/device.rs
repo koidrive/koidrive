@@ -196,7 +196,7 @@ impl Engine {
                 continue;
             }
             let marked = (entry.mark.as_ref())
-                .filter(|_| !matches!(self.commits.halted(), Some(Halt::Recovery(_))))
+                .filter(|_| !matches!(self.commits.halted(), Some(Halt::Recovery { .. })))
                 .filter(|mark| mark.ino == ino)
                 .map(|mark| mark.node.clone())
                 .filter(|node| {
@@ -642,7 +642,7 @@ impl Device {
     /// Whether the device started a recovery and has not classified the trees for it yet.
     pub fn recovering(&self) -> bool {
         let engine = if self.down { &self.store } else { &self.engine };
-        matches!(engine.commits.halted(), Some(Halt::Recovery(_)))
+        matches!(engine.commits.halted(), Some(Halt::Recovery { .. }))
     }
 
     /// The end of one call into the engine: what needs no decision is settled, and the state goes

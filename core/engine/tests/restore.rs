@@ -915,7 +915,7 @@ fn restore_intent_in_flight() {
         };
         assert_eq!(commits.connected(&rewound), Reconnect::Recovery);
         for _ in 0..2 {
-            assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
+            assert!(matches!(commits.halted(), Some(Halt::Recovery { .. })));
             assert_eq!(
                 commits.in_flight().map(|flight| &flight.commit),
                 Some(&commit)

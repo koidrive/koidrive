@@ -635,11 +635,12 @@ fn a_held_file_changed_on_the_server_leaves_the_question_and_is_downloaded() {
 fn nothing_is_counted_while_committing_has_stopped() {
     let mut trees = space(10, 15);
     let mut commits = Commits::from_state(CommitsState {
-        halted: Some(koidrive_engine::commit::Halt::Recovery(
-            koidrive_engine::question::RecoveryCause::of(
+        halted: Some(koidrive_engine::commit::Halt::Recovery {
+            cause: koidrive_engine::question::RecoveryCause::of(
                 koidrive_engine::question::RecoveryTrigger::StoreRolledBack,
             ),
-        )),
+            policy: None,
+        }),
         ..Default::default()
     })
     .unwrap();

@@ -120,6 +120,7 @@ fn recovered_after(trees: &mut Trees, device_seq: u64, cause: RecoveryCause) -> 
     commits.recover(
         trees,
         device_seq,
+        false,
         &cause,
         &History::new(),
         &Marks::new(),
@@ -1095,6 +1096,7 @@ fn an_entry_like_the_servers_at_a_name_s_gives_another_node_is_held_and_s_stays_
     commits.recover(
         &mut trees,
         0,
+        false,
         &rewind(),
         &History::new(),
         &Marks::new(),
@@ -1196,6 +1198,7 @@ fn the_commit_in_flight_before_the_reset_is_never_sent_again() {
     commits.recover(
         &mut trees,
         4,
+        false,
         &rewind(),
         &History::new(),
         &Marks::new(),
@@ -1242,6 +1245,7 @@ fn a_result_that_arrives_after_the_recovery_starts_leaves_the_change_held() {
     commits.recover(
         &mut trees,
         0,
+        false,
         &rewind(),
         &History::new(),
         &Marks::new(),
@@ -1270,6 +1274,7 @@ fn a_restore_asked_for_before_the_reset_is_held_until_it_is_answered() {
         commits.recover(
             &mut trees,
             0,
+            false,
             &rewind(),
             &History::new(),
             &Marks::new(),
@@ -1314,6 +1319,7 @@ fn a_restore_asked_for_again_after_the_reset_waits_for_the_answer_about_the_firs
     commits.recover(
         &mut trees,
         0,
+        false,
         &rewind(),
         &History::new(),
         &Marks::new(),
@@ -1365,6 +1371,7 @@ fn a_restore_the_rewound_tree_already_shows_is_done() {
     commits.recover(
         &mut trees,
         0,
+        false,
         &rewind(),
         &History::new(),
         &Marks::new(),
@@ -1759,6 +1766,7 @@ fn a_repeated_restore_is_sent_only_against_the_head_it_was_answered_at() {
     commits.recover(
         &mut trees,
         0,
+        false,
         &rewind(),
         &History::new(),
         &Marks::new(),
@@ -2105,6 +2113,7 @@ fn a_folder_whose_removal_from_s_waits_is_held_with_its_new_children_after_a_rew
     commits.recover(
         &mut trees,
         0,
+        false,
         &rewind(),
         &History::new(),
         &Marks::new(),
@@ -2383,7 +2392,7 @@ fn a_rewind_a_refused_commit_found_takes_its_restore_point_from_the_next_welcome
     };
     assert!(matches!(
         commits.failed(&mut trees, &mismatch),
-        Ok(Failure::Halted(Halt::Recovery(_)))
+        Ok(Failure::Halted(Halt::Recovery { .. }))
     ));
     let welcome = Welcome {
         history_id: NEW.into(),
@@ -2394,7 +2403,10 @@ fn a_rewind_a_refused_commit_found_takes_its_restore_point_from_the_next_welcome
     assert_eq!(commits.connected(&welcome), Reconnect::Recovery);
     assert_eq!(
         commits.halted(),
-        Some(Halt::Recovery(RecoveryCause::rewind(4, NOW as i64)))
+        Some(Halt::Recovery {
+            cause: RecoveryCause::rewind(4, NOW as i64),
+            policy: None
+        })
     );
 }
 
@@ -2511,6 +2523,7 @@ fn a_removal_planned_before_a_rewind() -> Stale {
     commits.recover(
         &mut trees,
         0,
+        false,
         &rewind(),
         &History::new(),
         &Marks::new(),
@@ -2649,6 +2662,7 @@ fn a_removal_planned_before_a_rewind_stays_refused_after_a_second_rewind() {
     commits.recover(
         trees,
         0,
+        false,
         &rewind(),
         &History::new(),
         &Marks::new(),
@@ -2669,6 +2683,7 @@ fn a_download_planned_after_a_rewind_is_still_taken_after_a_reload() {
     commits.recover(
         &mut trees,
         0,
+        false,
         &rewind(),
         &History::new(),
         &Marks::new(),
@@ -3016,7 +3031,16 @@ fn recovered_by_marks(
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
     commits.enter_recovery(rewind());
-    commits.recover(&mut trees, 0, &rewind(), &logged, &marks, &mut ids, NOW);
+    commits.recover(
+        &mut trees,
+        0,
+        false,
+        &rewind(),
+        &logged,
+        &marks,
+        &mut ids,
+        NOW,
+    );
     trees.settle(commits.aliases());
     (trees, commits, ids)
 }
@@ -3460,7 +3484,16 @@ fn a_marked_file_moved_into_a_new_folder_named_like_a_files_pending_name_follows
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
     commits.enter_recovery(rewind());
-    commits.recover(&mut trees, 0, &rewind(), &logged, &marks, &mut ids, NOW);
+    commits.recover(
+        &mut trees,
+        0,
+        false,
+        &rewind(),
+        &logged,
+        &marks,
+        &mut ids,
+        NOW,
+    );
     trees.settle(commits.aliases());
     assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "f", 1)));
     assert_eq!(local_shape(&trees, "n"), Some(&file("new", "f", 1)));
@@ -3555,7 +3588,16 @@ fn a_marked_folder_the_server_holds_under_its_pending_name_is_adopted_and_moved_
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
     commits.enter_recovery(rewind());
-    commits.recover(&mut trees, 0, &rewind(), &logged, &marks, &mut ids, NOW);
+    commits.recover(
+        &mut trees,
+        0,
+        false,
+        &rewind(),
+        &logged,
+        &marks,
+        &mut ids,
+        NOW,
+    );
     trees.settle(commits.aliases());
     assert_eq!(groups(&commits), []);
     assert_eq!(local_shape(&trees, "p"), Some(&dir(ROOT, "x")));
@@ -3583,7 +3625,16 @@ fn a_marked_folder_named_like_its_pending_name_in_another_normal_form_is_adopted
     let mut commits = Commits::default();
     let mut ids = IdGen::new(7);
     commits.enter_recovery(rewind());
-    commits.recover(&mut trees, 0, &rewind(), &logged, &marks, &mut ids, NOW);
+    commits.recover(
+        &mut trees,
+        0,
+        false,
+        &rewind(),
+        &logged,
+        &marks,
+        &mut ids,
+        NOW,
+    );
     trees.settle(commits.aliases());
     assert_eq!(groups(&commits), []);
     assert_eq!(local_shape(&trees, "p"), Some(&dir(ROOT, "cafe\u{301}")));
@@ -4341,7 +4392,16 @@ fn recovered_with_history(trees: &mut Trees, history: &[(&str, Shape)]) -> (Comm
     let mut ids = IdGen::new(7);
     commits.enter_recovery(rewind());
     assert_eq!(commits.build(trees, &mut ids, NOW, OLD, "me", 9), None);
-    commits.recover(trees, 0, &rewind(), &log, &Marks::new(), &mut ids, NOW);
+    commits.recover(
+        trees,
+        0,
+        false,
+        &rewind(),
+        &log,
+        &Marks::new(),
+        &mut ids,
+        NOW,
+    );
     trees.settle(commits.aliases());
     for question in commits.questions().to_vec() {
         assert!(

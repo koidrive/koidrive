@@ -281,7 +281,7 @@ impl Folder {
                 self.commit_ended();
                 self.list_again(work);
             }
-            Failure::Halted(CommitHalt::Recovery(cause)) => {
+            Failure::Halted(CommitHalt::Recovery { cause, .. }) => {
                 tracing::warn!(
                     space_id = self.link.space_id,
                     described,

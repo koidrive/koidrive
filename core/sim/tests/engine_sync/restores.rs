@@ -91,7 +91,7 @@ fn a_store_rolled_back_past_a_sent_restore_starts_recovery_and_sends_nothing() {
     let mut commits = Commits::from_state(backup).unwrap();
     assert_eq!(commits.connected(&space.welcome(&me)), Reconnect::Recovery);
     for _ in 0..2 {
-        assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
+        assert!(matches!(commits.halted(), Some(Halt::Recovery { .. })));
         assert_eq!(commits.restores().values().collect::<Vec<_>>(), [&intent]);
         let built = commits.build(&mut trees, &mut ids, NOW as u64, &history, "me", head);
         assert_eq!(built, None);

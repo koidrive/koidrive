@@ -142,6 +142,7 @@ pub(crate) struct Folder {
     history_id: String,
     /// The server's count of this device's commits in that history, from the same `Welcome`.
     device_seq: u64,
+    read_only: bool,
     head_seq: Option<u64>,
     local_entries: Option<u64>,
     remote_nodes: u64,
@@ -421,6 +422,7 @@ impl Folder {
             disconnected: None,
             history_id: String::new(),
             device_seq: 0,
+            read_only: false,
             head_seq: None,
             local_entries: None,
             remote_nodes,
@@ -602,7 +604,10 @@ impl Folder {
             seq = staging.last_seq(),
             "read the space's tree"
         );
-        let recovering = matches!(self.engine.commits.halted(), Some(CommitHalt::Recovery(_)));
+        let recovering = matches!(
+            self.engine.commits.halted(),
+            Some(CommitHalt::Recovery { .. })
+        );
         let since = (self.engine.cursor.as_ref()).filter(|cursor| {
             recovering
                 && cursor.history_id == self.history_id
@@ -879,6 +884,7 @@ impl Folder {
         self.head_seq = Some(welcome.head_seq);
         self.history_id.clone_from(&welcome.history_id);
         self.device_seq = welcome.device_seq;
+        self.read_only = welcome.read_only;
         if let Some(cursor) = &self.engine.cursor
             && cursor.history_id != welcome.history_id
         {
@@ -911,7 +917,7 @@ impl Folder {
         })?;
         match reconnect {
             Reconnect::Recovery => {
-                let Some(CommitHalt::Recovery(cause)) = self.engine.commits.halted() else {
+                let Some(CommitHalt::Recovery { cause, .. }) = self.engine.commits.halted() else {
                     unreachable!("connected halts for a recovery");
                 };
                 self.recover(cause, work)?;
@@ -1032,7 +1038,10 @@ impl Folder {
             return Ok(());
         }
         let first_link = self.engine.cursor.is_none();
-        let recovering = matches!(self.engine.commits.halted(), Some(CommitHalt::Recovery(_)));
+        let recovering = matches!(
+            self.engine.commits.halted(),
+            Some(CommitHalt::Recovery { .. })
+        );
         if (first_link || recovering) && !self.scanned {
             return Ok(());
         }
@@ -1044,10 +1053,10 @@ impl Folder {
         };
         let now_ms = crate::clock::unix_ms();
         let cause = match self.engine.commits.halted() {
-            Some(CommitHalt::Recovery(cause)) => cause,
+            Some(CommitHalt::Recovery { cause, .. }) => cause,
             _ => RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
         };
-        let device_seq = self.device_seq;
+        let (device_seq, read_only) = (self.device_seq, self.read_only);
         let prior = match device_seq > 0 || self.link.found_marker {
             true => PriorSync::Shown,
             false => PriorSync::Fresh,
@@ -1068,6 +1077,7 @@ impl Folder {
                 (engine.commits).recover(
                     &mut engine.trees,
                     device_seq,
+                    read_only,
                     &cause,
                     &history,
                     &marks,

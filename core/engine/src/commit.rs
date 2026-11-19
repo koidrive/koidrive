@@ -108,8 +108,12 @@ pub enum Halt {
     /// allows writes lifts it.
     ReadOnly,
     /// The store cannot account for the server's state (sections 2.8 and 6.4). The commit in flight
-    /// is kept as evidence and nothing is planned from this store.
-    Recovery(RecoveryCause),
+    /// is kept as evidence and nothing is planned from this store. `policy` is the code of the
+    /// policy halt the recovery interrupted, which holds again once it ends.
+    Recovery {
+        cause: RecoveryCause,
+        policy: Option<i32>,
+    },
     /// A policy halt (RFC 0006 section 1): the server refused the commit with `code`, which only
     /// the user or a client update can resolve. The commit in flight is kept with its slot and
     /// never resent, nothing more is planned, and downloads continue. No `Welcome` lifts it, and
@@ -727,9 +731,15 @@ impl Commits {
     }
 
     /// Stops committing for a recovery (section 6.4). The commit in flight is never sent again, and
-    /// nothing is planned until [`Commits::recover`].
+    /// nothing is planned until [`Commits::recover`]. A policy halt it interrupts holds again once
+    /// the recovery ends.
     pub fn enter_recovery(&mut self, cause: RecoveryCause) {
-        self.halted.set(Some(Halt::Recovery(cause)));
+        let policy = match *self.halted {
+            Some(Halt::Policy { code }) => Some(code),
+            Some(Halt::Recovery { policy, .. }) => policy,
+            Some(Halt::ReadOnly) | None => None,
+        };
+        self.halted.set(Some(Halt::Recovery { cause, policy }));
     }
 
     /// Recovers once R holds the server's tree in the history the device recovers into, and L a
@@ -740,19 +750,28 @@ impl Commits {
     /// device changed it since S. What is certain is left to the planner, and the rest is held, one
     /// question per group, with S kept as it was, so a held node is classified again against the
     /// same S whenever L or R changes. A restore asked for before the reset that R shows done ends
-    /// as restored, and the others are held under one question.
+    /// as restored, and the others are held under one question. Committing then stays halted by
+    /// the policy halt the recovery interrupted, else by `read_only`, which the latest `Welcome`
+    /// carries.
     #[allow(clippy::too_many_arguments)]
     pub fn recover(
         &mut self,
         trees: &mut Trees,
         device_seq: u64,
+        read_only: bool,
         cause: &RecoveryCause,
         history: &History,
         marks: &Marks,
         ids: &mut IdGen,
         now_ms: u64,
     ) {
-        self.halted.set(None);
+        self.halted.set(match *self.halted {
+            Some(Halt::Recovery {
+                policy: Some(code), ..
+            }) => Some(Halt::Policy { code }),
+            _ if read_only => Some(Halt::ReadOnly),
+            _ => None,
+        });
         self.in_flight.set(None);
         self.accepted.set(device_seq);
         self.slots.clear();
@@ -840,6 +859,7 @@ impl Commits {
         let intents = recovery::ask_intents(self.restores.keys(), Some(cause), ids, now_ms);
         self.questions.get_mut().extend(intents);
         self.hold(trees);
+        self.reject_unsent_when_read_only();
     }
 
     /// Takes the person's answer to the open question `id`, routed by its kind. [`Answer::Dismiss`]
@@ -2029,7 +2049,7 @@ impl Commits {
     /// that drops the commit before its result then sends those changes again as this device's own
     /// ([`Trees::forget_lost`]).
     pub fn acknowledge(&mut self, trees: &mut Trees, last_seq: u64) -> bool {
-        let recovering = matches!(*self.halted, Some(Halt::Recovery(_)));
+        let recovering = matches!(*self.halted, Some(Halt::Recovery { .. }));
         if !recovering {
             self.record_served(trees, last_seq);
         }
@@ -2869,12 +2889,14 @@ impl Commits {
         };
         let head_moved = (error.code == Code::HeadMoved as i32).then_some(flight.commit.base_seq);
         let failure = match Code::try_from(error.code) {
-            Ok(Code::HistoryMismatch) => Failure::Halted(Halt::Recovery(RecoveryCause::of(
-                RecoveryTrigger::SpaceRewound,
-            ))),
-            Ok(Code::StaleDeviceState) => Failure::Halted(Halt::Recovery(RecoveryCause::of(
-                RecoveryTrigger::StoreRolledBack,
-            ))),
+            Ok(Code::HistoryMismatch) => Failure::Halted(Halt::Recovery {
+                cause: RecoveryCause::of(RecoveryTrigger::SpaceRewound),
+                policy: None,
+            }),
+            Ok(Code::StaleDeviceState) => Failure::Halted(Halt::Recovery {
+                cause: RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
+                policy: None,
+            }),
             Ok(Code::ReadOnly) => Failure::Halted(Halt::ReadOnly),
             Ok(Code::AheadOfServer) => Failure::Resync,
             Ok(Code::LimitExceeded) => Failure::Split,
@@ -2886,7 +2908,7 @@ impl Commits {
             _ => Failure::Halted(Halt::Policy { code: error.code }),
         };
         match failure {
-            Failure::Halted(halt @ (Halt::Recovery(_) | Halt::Policy { .. })) => {
+            Failure::Halted(halt @ (Halt::Recovery { .. } | Halt::Policy { .. })) => {
                 self.halted.set(Some(halt))
             }
             Failure::Resend => {}
@@ -3031,7 +3053,7 @@ impl Commits {
         let reconnect = match &*self.in_flight {
             _ if policy && w >= a => return Reconnect::Idle,
             _ if policy => Reconnect::AheadOfServer,
-            _ if matches!(*self.halted, Some(Halt::Recovery(_))) => Reconnect::Recovery,
+            _ if matches!(*self.halted, Some(Halt::Recovery { .. })) => Reconnect::Recovery,
             Some(flight) if flight.commit.history_id != welcome.history_id => Reconnect::Recovery,
             _ if another_commit => Reconnect::Recovery,
             None if w == a => Reconnect::Idle,
@@ -3046,7 +3068,7 @@ impl Commits {
             let rewound = (self.in_flight.as_ref())
                 .is_some_and(|flight| flight.commit.history_id != welcome.history_id);
             let cause = match *self.halted {
-                Some(Halt::Recovery(cause))
+                Some(Halt::Recovery { cause, .. })
                     if !(rewound
                         && cause.trigger == RecoveryTrigger::SpaceRewound
                         && cause.restore_seq.is_none()) =>
@@ -3058,7 +3080,7 @@ impl Commits {
                 }
                 _ => RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
             };
-            self.halted.set(Some(Halt::Recovery(cause)));
+            self.enter_recovery(cause);
             return reconnect;
         }
         if reconnect == Reconnect::AheadOfServer {

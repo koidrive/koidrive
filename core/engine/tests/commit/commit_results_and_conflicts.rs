@@ -911,7 +911,16 @@ fn a_folder_moved_into_a_merged_folder_is_no_longer_reverted_once_a_rewind_forge
     let (mut trees, mut commits, mut ids) = moved_into_the_folder_merged_into_it(false);
     let cause = RecoveryCause::of(RecoveryTrigger::SpaceRewound);
     commits.enter_recovery(cause);
-    commits.recover(&mut trees, 0, &cause, &History::new(), &Marks::new(), &mut ids, NOW);
+    commits.recover(
+        &mut trees,
+        0,
+        false,
+        &cause,
+        &History::new(),
+        &Marks::new(),
+        &mut ids,
+        NOW,
+    );
     trees.settle(commits.aliases());
     assert!(commits.aliases().is_empty());
     assert!(!trees.reverted().contains("b"));

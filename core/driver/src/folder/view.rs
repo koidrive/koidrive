@@ -219,7 +219,7 @@ impl Folder {
                 "the server refused this device's changes (code {code}); nothing more is sent{}",
                 lift_hint(code)
             )),
-            Some(CommitHalt::Recovery(cause)) => Some(describe(&cause)),
+            Some(CommitHalt::Recovery { cause, .. }) => Some(describe(&cause)),
             None if !stuck.is_empty() => {
                 let (count, fixed) = match stuck.len() {
                     1 => ("1 item".to_owned(), "it is"),
@@ -244,7 +244,7 @@ impl Folder {
         };
         let last_seq = self.engine.cursor.as_ref().map(|c| c.last_seq);
         let recovery = match self.engine.commits.halted() {
-            Some(CommitHalt::Recovery(cause)) => Some(cause),
+            Some(CommitHalt::Recovery { cause, .. }) => Some(cause),
             _ => (self.engine.commits.questions().iter())
                 .find_map(koidrive_engine::question::Question::cause)
                 .cloned(),
