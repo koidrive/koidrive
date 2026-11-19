@@ -30,5 +30,5 @@ An older build that starts while `credential.next` exists uses `credential.json`
 
 - `server/test/rotation.test.ts`: deadlines, a clock that moves backward, malformed and revoked proposals, and two proposals from one credential.
 - `core/net/src/auth/rotation_tests.rs`: a stub server that drops, holds and delays answers for each step of RFC 0011 §2, and a reader that reloads.
-- `core/driver/src/credential.rs` and `core/driver/src/driver.rs`: file age, private files, a reader that starts over, a crash between the two writes of a promotion, and one `Auth` shared by linking and sign-out.
+- `core/driver/src/credential.rs` and `core/driver/src/driver/tests/credentials.rs`: file age, private files, a reader that starts over, a crash between the two writes of a promotion, and one `Auth` shared by linking and sign-out.
 - `cli/tests/server.rs`, against `wrangler dev`: a command that reads the credential again after a rotation, and two copies of one credential where only the one that rotates keeps working.
