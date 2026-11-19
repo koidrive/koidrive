@@ -160,6 +160,7 @@ pub(super) struct Intent {
     pub(super) applied: u64,
     pub(super) lost: bool,
     pub(super) dropped: bool,
+    restored: bool,
     pub(super) forgotten: bool,
     pub(super) answer: bool,
     pub(super) carried: Option<Carried>,
@@ -261,6 +262,7 @@ impl Intents {
             applied: 0,
             lost: false,
             dropped: false,
+            restored: false,
             forgotten: false,
             answer: false,
             carried: None,
@@ -494,13 +496,20 @@ impl Intents {
         }
     }
 
-    pub(super) fn give_up(&mut self, d: usize, nodes: &BTreeSet<NodeId>, deletes_only: bool) {
+    pub(super) fn give_up(&mut self, d: usize, nodes: &BTreeSet<NodeId>) {
         for i in 0..self.list.len() {
-            let delete = matches!(self.list[i].value, Value::Trashed { .. });
-            let given_up = self.list[i].author == d
-                && (delete || !deletes_only)
-                && self.nodes(i).any(|id| nodes.contains(id));
+            let given_up = self.list[i].author == d && self.nodes(i).any(|id| nodes.contains(id));
             self.list[i].dropped |= given_up;
+        }
+    }
+
+    pub(super) fn restore_deleted(&mut self, d: usize, nodes: &BTreeSet<NodeId>) {
+        for i in 0..self.list.len() {
+            let restored = self.list[i].author == d
+                && matches!(self.list[i].value, Value::Trashed { .. })
+                && self.nodes(i).any(|id| nodes.contains(id));
+            self.list[i].dropped |= restored;
+            self.list[i].restored |= restored;
         }
     }
 
@@ -606,7 +615,8 @@ impl Intents {
         into_itself
             || (0..self.list.len()).any(|j| {
                 let other = &self.list[j];
-                if j == i || other.dropped && !other.held {
+                let dropped = other.dropped && !other.held;
+                if j == i || dropped && !other.restored {
                     return false;
                 }
                 let later = field == Field::Place
@@ -686,7 +696,10 @@ impl Intents {
                         || saw_the_value
                         || merged
                         || field != Field::Content && intent.lost && other.made > intent.made);
-                replaced || looped || deleted
+                match dropped {
+                    true => field == Field::Content && deleted,
+                    false => replaced || looped || deleted,
+                }
             })
     }
 
@@ -771,5 +784,40 @@ mod tests {
         assert!(!named("A (pending)", "A"));
         assert!(!named("b", "a"));
         assert!(!named("ab (conflict from device-1 2026-11-09)", "a"));
+    }
+
+    fn a_delete_of_another_devices_write(
+        give_up: impl Fn(&mut Intents, &BTreeSet<NodeId>),
+    ) -> bool {
+        let mut intents = Intents::new(2);
+        let node: BTreeSet<NodeId> = ["n".to_owned()].into();
+        for nodes in &mut intents.nodes {
+            nodes.insert(1, node.clone());
+        }
+        let content = Value::Content {
+            write: 1,
+            digest: vec![1],
+        };
+        let write = intents.record(1, 1, 1, "write", content);
+        intents.seen[0].insert(write, 1);
+        let deleted = Value::Trashed {
+            subtree: vec![1],
+            replaced_by: None,
+        };
+        intents.record(0, 2, 1, "delete", deleted);
+        give_up(&mut intents, &node);
+        intents
+            .check(&Server::of("root", Vec::new()), |_| false)
+            .is_ok()
+    }
+
+    #[test]
+    fn only_a_restore_answer_keeps_a_given_up_delete_settling_the_writes_it_saw() {
+        assert!(a_delete_of_another_devices_write(
+            |intents, node| intents.restore_deleted(0, node)
+        ));
+        assert!(!a_delete_of_another_devices_write(
+            |intents, node| intents.give_up(0, node)
+        ));
     }
 }

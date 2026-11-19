@@ -1373,7 +1373,7 @@ impl World {
                 for (id, write, ino) in &held {
                     uncredit(&mut self.kept[d], id, *ino, *write);
                 }
-                self.intents.give_up(d, &ids, false);
+                self.intents.give_up(d, &ids);
                 self.discards[d].extend(&local);
                 self.discarded.extend(local);
             }
@@ -1394,7 +1394,7 @@ impl World {
                     }
                 }
             }
-            Answer::Restore => self.intents.give_up(d, &ids, true),
+            Answer::Restore => self.intents.restore_deleted(d, &ids),
             _ => {}
         }
         for (ino, value) in published {

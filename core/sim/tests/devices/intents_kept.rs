@@ -179,3 +179,27 @@ fn a_same_bytes_rewrite_of_a_restored_value_counts_as_held_when_another_devices_
     keep(2, &phases).unwrap();
     converge(2, &phases).unwrap();
 }
+
+#[test]
+fn a_restore_answer_to_a_file_its_user_wrote_and_deleted_settles_the_write() {
+    use Step::*;
+    let phases = vec![
+        vec![(0, u(0, 0, 0, 0)), (1, u(1, 0, 0, 0))],
+        vec![
+            (0, u(1, 0, 1056978756788217528, 1)),
+            (0, u(0, 0, 791140932447120422, 2)),
+            (0, u(3, 3252944353893610552, 1191256286020652927, 0)),
+            (1, u(1, 0, 0, 1)),
+        ],
+        vec![
+            (0, Backup),
+            (0, u(4, 538865608399718080, 0, 0)),
+            (0, u(2, 3101528685789730419, 0, 0)),
+            (0, Rewind),
+            (0, u(2, 5364182254041305409, 0, 0)),
+            (0, u(2, 0, 0, 0)),
+            (0, u(4, 1840357175477560216, 0, 0)),
+        ],
+    ];
+    keep(2, &phases).unwrap();
+}
