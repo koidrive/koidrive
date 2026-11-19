@@ -190,10 +190,10 @@ describe("RFC 0033 section 2 rule 6: digest v7", () => {
 
 describe("RFC 0033 section 2 rule 9: the git_tracked feature", () => {
   it("is on by default and follows KOIDRIVE_FEATURES", () => {
-    expect([...configuredFeatures(undefined)]).toEqual(["git_tracked"]);
-    expect([...configuredFeatures("-git_tracked")]).toEqual([]);
-    expect([...configuredFeatures("-git_tracked, git_tracked")]).toEqual(["git_tracked"]);
-    expect([...configuredFeatures("unknown,-other")]).toEqual(["git_tracked"]);
+    expect([...configuredFeatures(undefined)]).toEqual(["chunk_bundles", "git_tracked"]);
+    expect([...configuredFeatures("-git_tracked")]).toEqual(["chunk_bundles"]);
+    expect([...configuredFeatures("-git_tracked, git_tracked")]).toEqual(["chunk_bundles", "git_tracked"]);
+    expect([...configuredFeatures("unknown,-other")]).toEqual(["chunk_bundles", "git_tracked"]);
   });
 
   it("refuses a commit that holds the op with INVALID_ARGUMENT while off and applies nothing", async () => {

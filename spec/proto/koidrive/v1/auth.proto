@@ -24,6 +24,8 @@ message ServerInfo {
   // True when the Account DO runs code that handles ClaimRequest.setup_attempt. The Account DO, not the Worker, reports
   // it, because after an upgrade the Durable Object can keep its old code for up to 300 seconds.
   bool setup_attempts = 6;
+  // The effective features (RFC 0022): each configured feature that the Account DO's code implements.
+  repeated string features = 7;
   // The storage schema versions this server's code migrates its Durable Objects to (RFC 0025). Unset on a server that
   // does not report them.
   Storage storage = 8;

@@ -9,11 +9,13 @@ import { ChunkBundleResultSchema, ChunkBundleSchema, ChunkPlan_Action, Error_Cau
 import { type ServerKey } from "../src/auth";
 import { sha256 } from "../src/crypto";
 import { toHex, uuidv7 } from "../src/ids";
-import { HOLD_MS, type SpaceDO } from "../src/space-do";
+import { HOLD_MS, SpaceDO } from "../src/space-do";
+import { Close } from "../src/space/session";
 import { chunkKey } from "../src/space/store";
 import worker from "../src/worker";
 import { countBundledChunks, decodeChunkBundle } from "../src/chunk-bundle";
 import { BadRequest } from "../src/http";
+import { configuredFeatures } from "../src/features";
 import { content, op, storedObjects, targetIncarnation } from "./helpers";
 import { BASE, account, body, getOwner, pairDevice, createSpace, Socket, put, prepared } from "./session";
 
@@ -313,6 +315,34 @@ describe("chunk bundles", () => {
       [200, undefined, undefined],
     ]);
     expect(await env.BUCKET.head(keys[2]!)).not.toBeNull();
+  });
+
+  it("answers 404, writes nothing, and is left out of Welcome while chunk_bundles is off", async () => {
+    const { spaceId, file, targets } = await planned("one", "two");
+    const BUCKET = new Proxy({}, { get: () => { throw new Error("R2 was used while chunk_bundles is off"); } });
+    const off = (request: Request) => worker.fetch(request as Parameters<typeof worker.fetch>[0], { ...env, BUCKET, KOIDRIVE_FEATURES: "-chunk_bundles" } as unknown as Env, {} as ExecutionContext);
+    const sent = bundleBody(targets.map((target, i) => ({ target: target.url, data: file.bytes[i]! })));
+    const response = await off(new Request(bundlePath(spaceId), { method: "POST", body: sent, headers: { "Content-Type": "application/x-protobuf", "Content-Length": String(sent.length) } }));
+    expect([response.status, await response.text()]).toEqual([404, "Not Found"]);
+    expect((await off(new Request(bundlePath(spaceId)))).status).toBe(404);
+
+    const owner = await getOwner();
+    const listing = await Socket.connect(spaceId, owner);
+    expect((await listing.start()).features).toContain("chunk_bundles");
+    const stub = env.SPACE.get(env.SPACE.idFromName(spaceId));
+    const prototype = await runInDurableObject(stub, (instance: SpaceDO) => Object.getPrototypeOf(instance) as { features(): ReadonlySet<string> });
+    const original = prototype.features;
+    prototype.features = () => configuredFeatures("-chunk_bundles");
+    try {
+      await runInDurableObject(stub, (_instance, state) => {
+        new SpaceDO(state, env);
+      });
+      expect((await listing.waitClosed()).code).toBe(Close.TRY_AGAIN_LATER);
+      const socket = await Socket.connect(spaceId, owner);
+      expect((await socket.start()).features).not.toContain("chunk_bundles");
+    } finally {
+      prototype.features = original;
+    }
   });
 
   it("refuses a malformed or oversized bundle whole and writes nothing", async () => {

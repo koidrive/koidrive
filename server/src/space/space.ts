@@ -137,8 +137,6 @@ import {
   fitPage,
 } from "./requests";
 
-const CHUNK_BUNDLES = "chunk_bundles";
-
 function welcomed(ws: Socket): ReadonlySet<string> {
   return new Set((ws.deserializeAttachment() as Attachment).features ?? []);
 }
@@ -518,9 +516,10 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     }
 
     protected closeStaleWelcomes(): void {
-      const on = this.features().has(GIT_TRACKED);
+      const features = this.features();
       for (const ws of this.state.getWebSockets()) {
-        if (!(ws.deserializeAttachment() as Attachment).hello || welcomed(ws).has(GIT_TRACKED) === on) continue;
+        const sent = welcomed(ws);
+        if (!(ws.deserializeAttachment() as Attachment).hello || (sent.size === features.size && [...sent].every((name) => features.has(name)))) continue;
         this.goodbye(ws, Close.TRY_AGAIN_LATER, "the server's features changed; connect again");
       }
     }
@@ -566,7 +565,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       if (proto < Math.max(PROTO_MIN, hello.protoMin)) {
         return this.goodbye(ws, Close.UNSUPPORTED_VERSION, "this server speaks protocol 1." + PROTO_MIN + " to 1." + PROTO_MAX);
       }
-      const features = [CHUNK_BUNDLES, ...this.features()];
+      const features = [...this.features()];
       ws.serializeAttachment({ ...(ws.deserializeAttachment() as Attachment), hello: true, maxFormat: hello.maxFormat, features });
       const { identity } = attachment;
       this.sql.exec(

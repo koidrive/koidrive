@@ -6,6 +6,7 @@ import { ACCESS_TOKEN_MS, type ServerKey, signAccessToken } from "../auth";
 import { base64url, deriveSpaceKey, sha256 } from "../crypto";
 import { causeOf } from "../cause";
 import { errorText } from "../errors";
+import { IMPLEMENTED } from "../features";
 import {
   type AccessToken,
   AccessTokenSchema,
@@ -214,6 +215,10 @@ export function accountLogic<B extends abstract new (...args: any[]) => object>(
 
     async handlesSetupAttempts(): Promise<boolean> {
       return true;
+    }
+
+    async implementedFeatures(): Promise<readonly string[]> {
+      return IMPLEMENTED;
     }
 
     async issueClaimCode(): Promise<string | undefined> {
