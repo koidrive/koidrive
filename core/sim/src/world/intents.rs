@@ -247,6 +247,7 @@ pub(super) struct Intents {
     nodes: Vec<BTreeMap<u128, BTreeSet<NodeId>>>,
     merged: BTreeMap<NodeId, NodeId>,
     copies: BTreeMap<NodeId, BTreeSet<NodeId>>,
+    detached: Vec<BTreeMap<u128, BTreeMap<NodeId, u64>>>,
 }
 
 impl Intents {
@@ -257,6 +258,7 @@ impl Intents {
             nodes: vec![BTreeMap::new(); devices],
             merged: BTreeMap::new(),
             copies: BTreeMap::new(),
+            detached: vec![BTreeMap::new(); devices],
         }
     }
 
@@ -311,8 +313,16 @@ impl Intents {
 
     pub(super) fn ino_of(&self, d: usize, node: &str) -> Option<u128> {
         (self.nodes[d].iter())
-            .find(|(_, nodes)| nodes.contains(node))
+            .find(|(ino, nodes)| nodes.contains(node) && !self.detached(d, **ino, node))
             .map(|(ino, _)| *ino)
+    }
+
+    pub(super) fn detach(&mut self, d: usize, ino: u128, node: &str, since: u64) {
+        (self.detached[d].entry(ino).or_default()).insert(node.to_owned(), since);
+    }
+
+    pub(super) fn detached(&self, d: usize, ino: u128, node: &str) -> bool {
+        (self.detached[d].get(&ino)).is_some_and(|nodes| nodes.contains_key(node))
     }
 
     pub(super) fn merged(&mut self, from: &str, into: &str) {
@@ -338,13 +348,24 @@ impl Intents {
         self.nodes(i).flat_map(|id| self.with_copies(id))
     }
 
-    pub(super) fn nodes_of(&self, device: usize, ino: u128) -> impl Iterator<Item = &NodeId> {
-        let ids = self.nodes[device].get(&ino).into_iter().flatten();
+    pub(super) fn nodes_of(
+        &self,
+        device: usize,
+        ino: u128,
+        made: u64,
+    ) -> impl Iterator<Item = &NodeId> {
+        let detached = self.detached[device].get(&ino);
+        let ids = (self.nodes[device].get(&ino).into_iter().flatten()).filter(move |id| {
+            detached
+                .and_then(|nodes| nodes.get(*id))
+                .is_none_or(|since| made < *since)
+        });
         ids.flat_map(|id| std::iter::once(id).chain(self.merged.get(id)))
     }
 
     pub(super) fn nodes(&self, i: usize) -> impl Iterator<Item = &NodeId> {
-        self.nodes_of(self.list[i].author, self.list[i].ino)
+        let intent = &self.list[i];
+        self.nodes_of(intent.author, intent.ino, intent.made)
     }
 
     fn on(&self, i: usize, node: &str) -> bool {
@@ -354,7 +375,9 @@ impl Intents {
     fn parent_is(&self, i: usize, parent: Option<u128>, held: &str, root: &str) -> bool {
         match parent {
             None => held == root,
-            Some(ino) => self.nodes_of(self.list[i].author, ino).any(|id| id == held),
+            Some(ino) => {
+                (self.nodes_of(self.list[i].author, ino, self.list[i].made)).any(|id| id == held)
+            }
         }
     }
 
@@ -373,6 +396,9 @@ impl Intents {
     ) {
         for (ino, node) in inos {
             self.nodes[d].entry(*ino).or_default().insert(node.clone());
+            if let Some(nodes) = self.detached[d].get_mut(ino) {
+                nodes.remove(node);
+            }
         }
         type Shown<'a> = (Option<&'a str>, &'a str, Option<&'a [u8]>);
         let shown: BTreeMap<&NodeId, Shown> = (disk.entries().iter())
@@ -584,8 +610,9 @@ impl Intents {
             let Value::Trashed { subtree, .. } = &self.list[i].value else {
                 return false;
             };
+            let made = self.list[i].made;
             self.list[i].author == d
-                && (subtree.iter()).any(|ino| self.nodes_of(d, *ino).any(|id| id == node))
+                && (subtree.iter()).any(|ino| self.nodes_of(d, *ino, made).any(|id| id == node))
         })
     }
 
@@ -610,9 +637,9 @@ impl Intents {
             let Value::Trashed { subtree, .. } = &self.list[j].value else {
                 return false;
             };
-            let author = self.list[j].author;
+            let (author, made) = (self.list[j].author, self.list[j].made);
             let deleted: BTreeSet<&NodeId> = (subtree.iter())
-                .flat_map(|ino| self.nodes_of(author, *ino))
+                .flat_map(|ino| self.nodes_of(author, *ino, made))
                 .collect();
             self.holders(i).any(|id| {
                 deleted.contains(id)
@@ -623,10 +650,12 @@ impl Intents {
             Value::Place {
                 parent: Some(parent),
                 ..
-            } => self.nodes_of(intent.author, parent).any(|above| {
-                self.nodes(i)
-                    .any(|id| id == above || server.above(above).contains(&id.as_str()))
-            }),
+            } => self
+                .nodes_of(intent.author, parent, intent.made)
+                .any(|above| {
+                    self.nodes(i)
+                        .any(|id| id == above || server.above(above).contains(&id.as_str()))
+                }),
             _ => false,
         };
         into_itself
@@ -663,13 +692,14 @@ impl Intents {
                         else {
                             return false;
                         };
-                        self.nodes_of(intent.author, parent).any(|above| {
-                            let chain = server.above(above);
-                            chain.contains(&id.as_str())
-                                && self
-                                    .nodes(j)
-                                    .any(|moved| moved == above || chain.contains(&moved.as_str()))
-                        })
+                        self.nodes_of(intent.author, parent, intent.made)
+                            .any(|above| {
+                                let chain = server.above(above);
+                                chain.contains(&id.as_str())
+                                    && self.nodes(j).any(|moved| {
+                                        moved == above || chain.contains(&moved.as_str())
+                                    })
+                            })
                     });
                 let saw_the_action = (0..self.list.len()).any(|k| {
                     let part = &self.list[k];
@@ -689,12 +719,12 @@ impl Intents {
                     };
                     let same_parent = match (parent, seen_parent) {
                         (None, None) => true,
-                        (Some(parent), Some(seen_parent)) => {
-                            self.nodes_of(intent.author, *parent).any(|id| {
-                                self.nodes_of(self.list[k].author, *seen_parent)
+                        (Some(parent), Some(seen_parent)) => self
+                            .nodes_of(intent.author, *parent, intent.made)
+                            .any(|id| {
+                                self.nodes_of(self.list[k].author, *seen_parent, self.list[k].made)
                                     .any(|seen| seen == id)
-                            })
-                        }
+                            }),
                         _ => false,
                     };
                     k != i

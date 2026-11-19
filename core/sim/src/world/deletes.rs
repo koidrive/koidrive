@@ -130,12 +130,13 @@ impl Deletion {
             return Vec::new();
         }
         let roots: BTreeSet<&NodeId> = intents.nodes(i).collect();
-        let saved = (replaced_by.iter()).flat_map(|ino| intents.nodes_of(author, *ino));
+        let saved =
+            (replaced_by.iter()).flat_map(|ino| intents.nodes_of(author, *ino, delete.made));
         if roots.is_empty() || saved.into_iter().any(|id| roots.contains(id)) {
             return Vec::new();
         }
         let deleted: Vec<&NodeId> = (subtree.iter())
-            .flat_map(|ino| intents.nodes_of(author, *ino))
+            .flat_map(|ino| intents.nodes_of(author, *ino, delete.made))
             .collect();
         let kept_for_left_out = |node: &NodeId| {
             (self.left_out.iter()).any(|out| {
