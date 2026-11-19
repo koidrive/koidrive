@@ -10283,11 +10283,10 @@ fn a_file_kept_after_its_discard_and_a_second_rewind_must_reach_the_server() {
             (0, Answer(0)),
         ],
     ];
-    let failure = keep(1, &phases).map(drop).unwrap_err();
-    assert!(
-        matches!(&failure, Failure::Broken(message) if message.contains("write 1 of the publish")),
-        "{failure:?}"
-    );
+    let world = converge(1, &phases).unwrap();
+    let writes =
+        (world.space().nodes().into_iter()).filter_map(|node| Some(tag(&node.current?.content?)));
+    assert_eq!(writes.collect::<Vec<_>>(), [1]);
 }
 
 #[test]
