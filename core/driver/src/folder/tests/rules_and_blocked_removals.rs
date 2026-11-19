@@ -1738,17 +1738,29 @@ fn a_left_out_copy_replaced_by_a_hard_link_of_a_synced_file_while_stopped_downlo
     drop(b);
     let mut b = started(&site, &mut remote, &dist_left_out());
     fs::create_dir(site.root.join("dist")).unwrap();
-    fs::rename(site.root.join("report.docx"), site.root.join("dist/report.docx")).unwrap();
+    fs::rename(
+        site.root.join("report.docx"),
+        site.root.join("dist/report.docx"),
+    )
+    .unwrap();
     for _ in 0..3 {
         b.settle();
         b.rest(&mut remote);
     }
     drop(b);
     fs::remove_file(site.root.join("dist/report.docx")).unwrap();
-    fs::hard_link(site.root.join("notes.docx"), site.root.join("dist/report.docx")).unwrap();
+    fs::hard_link(
+        site.root.join("notes.docx"),
+        site.root.join("dist/report.docx"),
+    )
+    .unwrap();
     settled_after_a_start(&site, &mut remote, &dist_left_out());
     settled_after_a_start(&site, &mut remote, &SyncRules::default());
-    assert!(files(&site.root).contains(&("report.docx".to_owned(), "report".to_owned())), "{:?}", files(&site.root));
+    assert!(
+        files(&site.root).contains(&("report.docx".to_owned(), "report".to_owned())),
+        "{:?}",
+        files(&site.root)
+    );
 }
 
 #[test]
