@@ -1092,7 +1092,7 @@ fn marker_standing(
         .admits(&space.root_at()?)
         .map_err(Stop::Root)?;
     let (tokens, minted) =
-        store.transaction(|tx| Ok::<_, Stop>((tx.root_tokens()?, tx.root_minted()?)))?;
+        store.read(|tx| Ok::<_, Stop>((tx.root_tokens()?, tx.root_minted()?)))?;
     let found = marker_of(space, &link.space_id)?;
     let own = [minted.as_deref(), tokens.pending.as_deref()];
     let standing = standing(&found, &tokens, effects, || descends(space, &own, &found))?;
@@ -1532,7 +1532,7 @@ struct FoundRoot {
 }
 
 fn find_root(link: &mut Link, store: &mut Store) -> Result<FoundRoot, Stop> {
-    if let Some(stored) = store.transaction(|tx| tx.link())? {
+    if let Some(stored) = store.read(|tx| tx.link())? {
         link.root_dev = stored.root_dev;
         link.root_volume = stored.root_volume;
         link.found_marker = stored.found_marker;
@@ -1546,7 +1546,7 @@ fn find_root(link: &mut Link, store: &mut Store) -> Result<FoundRoot, Stop> {
     } = open_linked_root(link).map_err(Stop::Root)?;
     let space = Space::bind(dir, &link.root).map_err(unreadable)?;
     let adopted = if renumbered {
-        let engine = store.transaction(|tx| Engine::load(tx, &link.space_id))?;
+        let engine = store.read(|tx| Engine::load(tx, &link.space_id))?;
         match matching_children(&space, &engine.trees).map_err(unreadable)? {
             0 => return Err(Stop::Root(RootProblem::Renumbered)),
             matched => Some(Adopted::Children(matched)),
@@ -1566,8 +1566,8 @@ fn find_root(link: &mut Link, store: &mut Store) -> Result<FoundRoot, Stop> {
 pub(crate) fn admitted(link: &Link, store: &mut Store) -> Result<Space, Stop> {
     let mut link = link.clone();
     let FoundRoot { space, .. } = find_root(&mut link, store)?;
-    let engine = store.transaction(|tx| Engine::load(tx, &link.space_id))?;
-    marker_standing(&space, &link, &engine.effects, store)?;
+    let effects = store.read(|tx| crate::engine::effects_of(tx.engine_state()?.effects))?;
+    marker_standing(&space, &link, &effects, store)?;
     Ok(space)
 }
 

@@ -293,3 +293,26 @@ async fn gitignore_only_counts_a_linked_root_only_when_its_marker_admits_it() {
         .unwrap();
     assert_eq!(stored, tokens);
 }
+
+#[tokio::test]
+async fn gitignore_only_does_not_wait_for_the_folders_write_transaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = fs::canonicalize(dir.path()).unwrap();
+    let root = base.join("Koidrive");
+    let driver = gitignore_only_of(&base, &root);
+    let mut store = Store::open(driver.paths().store(SPACE).unwrap()).unwrap();
+    let (counted, took) = store
+        .transaction(|_| {
+            let started = Instant::now();
+            let counted = driver.gitignore_only(SPACE).unwrap();
+            Ok::<_, koidrive_store::Error>((counted, started.elapsed()))
+        })
+        .unwrap();
+    let only = GitignoreOnly {
+        files: 1,
+        bytes: 3,
+        unreadable: Vec::new(),
+    };
+    assert_eq!(counted, only);
+    assert!(took < Duration::from_secs(1), "took {took:?}");
+}
