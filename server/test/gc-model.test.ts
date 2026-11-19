@@ -817,6 +817,7 @@ const scenarios: Step[][] = [
     { t: "drop", version: 0 },
     { t: "clock", ms: 31 * DAY },
     { t: "targets", chunk: 0 },
+    { t: "clock", ms: 59 * MINUTE },
     gc,
     { t: "download", target: 0 },
   ],
