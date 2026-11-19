@@ -267,8 +267,9 @@ pub struct Store {
 
 impl Store {
     /// Opens the database at `path`, creating it if needed, and applies any
-    /// migrations it lacks. Fails with [`Error::UnknownMigration`] if a newer build
-    /// already migrated it.
+    /// migrations it lacks in one transaction, so a failed upgrade leaves the store
+    /// as it was. Fails with [`Error::UnknownMigration`] if a newer build already
+    /// migrated it.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_with(path.as_ref(), OpenFlags::default())
     }
@@ -436,12 +437,7 @@ fn migrate(conn: &mut Connection, written_ns: Option<i128>) -> Result<()> {
         }
         tx.pragma_update(None, "user_version", NAMED)?;
     }
-    tx.commit()?;
-    if MIGRATIONS.iter().all(|m| applied.contains(m.name)) {
-        return Ok(());
-    }
     for migration in MIGRATIONS {
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let done: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM migrations WHERE name = ?1)",
             [migration.name],
@@ -454,8 +450,8 @@ fn migrate(conn: &mut Connection, written_ns: Option<i128>) -> Result<()> {
                 [migration.name],
             )?;
         }
-        tx.commit()?;
     }
+    tx.commit()?;
     Ok(())
 }
 
