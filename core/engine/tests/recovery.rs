@@ -5907,10 +5907,7 @@ fn a_file_the_log_no_longer_reaches_back_to_is_held_when_its_synced_version_post
         let mut trees = synced_at(synced_ms);
         let log = floor.map(|floor| logged(&trees, floor, &[(floor + 1, first_ms.unwrap(), 2, 6)]));
         let commits = recovered_from_log(&mut trees, log);
-        let expected = match asked {
-            true => vec![RecoveryGroup::CreatedAfterRestorePoint],
-            false => vec![],
-        };
+        let expected = &[RecoveryGroup::CreatedAfterRestorePoint][..usize::from(asked)];
         assert_eq!(
             groups(&commits),
             expected,

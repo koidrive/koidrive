@@ -269,12 +269,7 @@ fn a_device_back_after_another_devices_keep_is_asked_about_its_own_write() {
         assert_eq!(b.run(&mut remote).first(), Some(&"reconnect"));
         b.settle();
         b.run(&mut remote);
-        let questions = shown(&site_b);
-        assert_eq!(
-            questions.len(),
-            1,
-            "rewound again {rewound_again}: {questions:?}"
-        );
+        assert_eq!(shown(&site_b).len(), 1, "rewound again {rewound_again}");
         assert_eq!(fs::read(site_b.root.join("c.txt")).unwrap(), b"two");
     }
 }
