@@ -2968,8 +2968,11 @@ impl Trees {
                     !same(Some(remote), synced) && same(local, synced)
                 });
             let unfetched = applies
-                && (self.remote_children(id))
-                    .any(|child| self.l.get(child).is_none() && self.s.get(child).is_none());
+                && (self.remote_children(id)).any(|child| {
+                    self.l.get(child).is_none()
+                        && self.s.get(child).is_none()
+                        && !self.ignored_in_remote(child)
+                });
             let waiting = self.waiting.children(id).next().is_some();
             if pending || unfetched || waiting {
                 return false;

@@ -5621,6 +5621,25 @@ mod a_server_file_moved_into_an_asked_folder {
     }
 
     #[test]
+    fn a_discard_answered_while_the_rules_leave_out_a_new_entry_in_its_server_folder_is_recorded() {
+        let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
+        set_rules(
+            &mut t,
+            Some(
+                b"skipped
+",
+            ),
+        );
+        on_the_server(&mut t, "sn", |node| node.shape = file("sf", "skipped", 5));
+        quiet(&mut c, &mut t, &mut i);
+        assert!(c.decide(&mut t, &question(&c).id, Answer::Discard));
+        assert_eq!(
+            c.questions().first().map(|q| q.frozen.is_some()),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn a_discard_answered_before_a_download_into_its_server_folder_decides_at_the_build() {
         let (mut c, mut t, mut i) = server_folder_moved_in_while_left_out();
         on_the_server(&mut t, "sn", |node| node.shape = file("sf", "new", 5));
