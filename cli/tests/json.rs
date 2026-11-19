@@ -215,6 +215,25 @@ fn a_reader_that_went_away_does_not_crash_koi() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn a_result_that_cannot_be_written_fails_the_command() {
+    let profile = Profile::new();
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
+    let output = (profile.command(&["--version", "--json"]))
+        .stdout(full)
+        .output()
+        .expect("run koi");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("koi: could not write the result:"),
+        "{output:?}"
+    );
+}
+
 #[test]
 fn app_policy_skips_installation_without_changing_the_service_report() {
     let profile = Profile::new();

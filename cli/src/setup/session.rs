@@ -55,7 +55,7 @@ pub(super) async fn with_session(
         } else {
             &error.message
         };
-        crate::output::print(
+        let _ = crate::output::print(
             "setup",
             crate::output::Presentation::Text,
             crate::output::Tone::Attention,

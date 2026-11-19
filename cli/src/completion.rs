@@ -6,6 +6,7 @@ use crate::report::{Decision, Done, Envelope};
 use crate::resolve::banner;
 use crate::{output, report};
 use koidrive_driver::Question;
+use koidrive_ipc::Code;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
@@ -65,36 +66,42 @@ pub(crate) fn finish(
             )
         }
     };
-    if json && command == "_daemon" {
-        let _ = writeln!(
+    let shown = match json {
+        true if command == "_daemon" => writeln!(
             io::stdout(),
             "{}",
             serde_json::to_string(&envelope).expect("the envelope serializes")
-        );
-        return ExitCode::from(exit);
-    }
-    if json {
-        let mut envelope = envelope;
-        if envelope.decisions.is_empty() {
-            envelope.decisions = pending.iter().map(Decision::of).collect();
+        )
+        .and_then(|()| io::stdout().flush()),
+        true => {
+            let mut envelope = envelope;
+            if envelope.decisions.is_empty() {
+                envelope.decisions = pending.iter().map(Decision::of).collect();
+            }
+            writeln!(
+                io::stdout(),
+                "{}",
+                serde_json::to_string_pretty(&envelope).expect("the envelope serializes")
+            )
+            .and_then(|()| io::stdout().flush())
         }
-        let _ = writeln!(
-            io::stdout(),
-            "{}",
-            serde_json::to_string_pretty(&envelope).expect("the envelope serializes")
-        );
-        return ExitCode::from(exit);
+        false => output::print(
+            command,
+            presentation,
+            tone,
+            &text,
+            match outcome {
+                report::Outcome::Error => output::Note::Error(&stderr),
+                _ => output::Note::Information(&stderr),
+            },
+            banner(&pending).as_deref(),
+        ),
+    };
+    match output::delivered(shown) {
+        Ok(()) => ExitCode::from(exit),
+        Err(error) => {
+            let _ = writeln!(io::stderr(), "koi: could not write the result: {error}");
+            ExitCode::from(Code::Failed.exit())
+        }
     }
-    output::print(
-        command,
-        presentation,
-        tone,
-        &text,
-        match outcome {
-            report::Outcome::Error => output::Note::Error(&stderr),
-            _ => output::Note::Information(&stderr),
-        },
-        banner(&pending).as_deref(),
-    );
-    ExitCode::from(exit)
 }

@@ -290,7 +290,7 @@ fn parse_failure(error: clap::Error, args: &[OsString], command: &str, json: boo
     }
     let rendered = escape_echoed(&error, args);
     if !json && !bare_group {
-        output::print(
+        let _ = output::print(
             command,
             output::Presentation::Text,
             output::Tone::Attention,
