@@ -3407,7 +3407,15 @@ impl NativeWatcher {
         {
             return Ok(());
         }
-        if (self.barrier.as_ref()).is_some_and(|barrier| event.paths.contains(&barrier.file)) {
+        let written = matches!(
+            event.kind,
+            EventKind::Create(_)
+                | EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Any)
+                | EventKind::Access(AccessKind::Close(AccessMode::Write))
+        );
+        if written
+            && (self.barrier.as_ref()).is_some_and(|barrier| event.paths.contains(&barrier.file))
+        {
             self.lift_barrier();
         }
         let listing_only = match event.kind {

@@ -700,7 +700,8 @@ fn many_files_moved_out_of_removed_folders_are_matched_in_linear_work() {
 
 fn hear_barrier(watcher: &NativeWatcher) {
     if let Some(barrier) = &watcher.barrier {
-        let event = notify::Event::new(EventKind::Any).add_path(barrier.file.clone());
+        let written = EventKind::Create(notify::event::CreateKind::File);
+        let event = notify::Event::new(written).add_path(barrier.file.clone());
         watcher.sender.send(Ok(event)).unwrap();
     }
 }
@@ -786,10 +787,15 @@ fn a_held_removal_is_reported_once_its_barrier_is_heard_or_times_out() {
             );
         }
         let barrier = watcher.barrier.as_ref().unwrap().file.clone();
-        let opened = EventKind::Access(AccessKind::Open(AccessMode::Any));
-        let opened = notify::Event::new(opened).add_path(barrier);
-        watcher.sender.send(Ok(opened)).unwrap();
-        assert_eq!(watcher.poll(Duration::ZERO).unwrap().changes, []);
+        for other in [
+            EventKind::Access(AccessKind::Open(AccessMode::Any)),
+            EventKind::Remove(notify::event::RemoveKind::File),
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any)),
+        ] {
+            let other = notify::Event::new(other).add_path(barrier.clone());
+            watcher.sender.send(Ok(other)).unwrap();
+            assert_eq!(watcher.poll(Duration::ZERO).unwrap().changes, []);
+        }
         match heard {
             true => hear_barrier(&watcher),
             false => watcher.barrier.as_mut().unwrap().written -= BARRIER_TIMEOUT,
