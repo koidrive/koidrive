@@ -1124,8 +1124,9 @@ impl World {
                     })
                     .collect();
                 let deleted = disk.delete(ino);
-                self.removed[d].extend(deleted.iter().map(tag));
-                self.record_delete(d, ino, (gone, under), unsynced);
+                let removed: BTreeSet<i64> = deleted.iter().map(tag).collect();
+                self.removed[d].extend(&removed);
+                self.record_delete(d, ino, (gone, under), removed, unsynced);
                 return;
             }
             (Act::Copy, Some(ino)) => {
@@ -1162,11 +1163,9 @@ impl World {
             let trashed = matches!(value, Value::Trashed { .. });
             let intent = self.intents.record(d, self.moment, ino, kind, value);
             if trashed {
-                self.deletions.push(Deletion {
-                    intent,
-                    device: d,
-                    left_out: BTreeSet::new(),
-                });
+                let deletion =
+                    Deletion::new(&self.space, d, intent, BTreeSet::new(), BTreeSet::new());
+                self.deletions.push(deletion);
             }
         }
     }
@@ -1593,11 +1592,13 @@ impl World {
                 for id in &ids {
                     if let Some(ino) = self.intents.ino_of(d, id) {
                         let intent = self.intents.answered_delete(d, self.moment, ino, id);
-                        self.deletions.push(Deletion {
+                        (self.deletions).push(Deletion::new(
+                            &self.space,
+                            d,
                             intent,
-                            device: d,
-                            left_out: BTreeSet::new(),
-                        });
+                            BTreeSet::new(),
+                            BTreeSet::new(),
+                        ));
                     }
                 }
             }

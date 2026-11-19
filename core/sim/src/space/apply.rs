@@ -24,6 +24,7 @@ pub(super) struct Context<'a> {
     pub now_ms: i64,
     pub committer: &'a Session,
     pub copies_created_files: bool,
+    pub copies_deleted_files: bool,
     pub results: &'a HashMap<String, StoredResult>,
 }
 
@@ -1046,23 +1047,27 @@ impl<'a> Applier<'a> {
             self.set_incoming(&op.node_id, field);
         }
         if self.ctx.copies_created_files {
-            let copy = self.st.ids.uuid_v7(self.ctx.now_ms as u64);
-            let copy_name = self.pick_conflict_copy_name(&parent.node_id, &name);
-            let version_id = self.insert_version(&copy, content, &content.chunks);
-            self.insert_node(
-                &copy,
-                &parent.node_id,
-                &copy_name,
-                NodeKind::File,
-                Some(version_id),
-                &dev,
-            );
-            for field in FIELDS {
-                let intent = self.minted(&dev, false);
-                self.set_intent(&copy, field, intent);
-            }
+            self.insert_conflict_copy(&parent.node_id, &name, content, &dev);
         }
         Ok(applied(renamed, &name))
+    }
+
+    fn insert_conflict_copy(&mut self, parent_id: &str, name: &str, content: &Content, dev: &str) {
+        let copy = self.st.ids.uuid_v7(self.ctx.now_ms as u64);
+        let copy_name = self.pick_conflict_copy_name(parent_id, name);
+        let version_id = self.insert_version(&copy, content, &content.chunks);
+        self.insert_node(
+            &copy,
+            parent_id,
+            &copy_name,
+            NodeKind::File,
+            Some(version_id),
+            dev,
+        );
+        for field in FIELDS {
+            let intent = self.minted(dev, false);
+            self.set_intent(&copy, field, intent);
+        }
     }
 
     fn update_content(
@@ -1382,9 +1387,19 @@ impl<'a> Applier<'a> {
         stored.meta_rev = seq;
         stored.meta_edit_rev = seq;
         stored.meta_edit_dev = dev.clone();
-        stored.meta_dev = dev;
+        stored.meta_dev = dev.clone();
         self.set_incoming(node_id, Field::Status);
         self.report(node_id);
+        let node = &self.st.nodes[node_id];
+        if let (true, Some(parent_id), Some(version)) = (
+            self.ctx.copies_deleted_files,
+            node.parent_id.clone(),
+            node.cur_version_id.as_ref(),
+        ) {
+            let content = self.st.versions[version].content.clone();
+            let name = node.name.clone();
+            self.insert_conflict_copy(&parent_id, &name, &content, &dev);
+        }
     }
 
     fn trash_subtree(&mut self, node: &Node, group: &str) -> bool {
