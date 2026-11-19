@@ -1,4 +1,4 @@
-# RFC 0032: Files git tracks sync when a .gitignore file matches them
+# RFC 0033: Files git tracks sync when a .gitignore file matches them
 
 Status: proposed. Applies to spec v0 (format_version 1). Amends RFC 0006 §8, RFC 0022 §2 and the sync-engine design §5.10. Adds a field to `NodeState`, an op to `Op` and the feature `git_tracked`.
 
@@ -12,7 +12,7 @@ New fields only. No field is removed or renumbered.
 
 ```proto
 message NodeState {
-  // True when a device's git index listed this file (RFC 0032). Only a file carries it.
+  // True when a device's git index listed this file (RFC 0033). Only a file carries it.
   bool git_tracked = 16;
 }
 
