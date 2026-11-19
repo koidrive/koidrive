@@ -5241,7 +5241,7 @@ fn a_file_a_restore_moves_back_stays_deleted_when_a_user_deletes_it_after() {
 
 #[test]
 fn an_own_lost_create_under_a_folder_deleted_after_the_loss_leaves_the_folder_deleted() {
-    let _red = expect_red(
+    let _red = expect_red_without_intents(
         Check::DeleteUndone,
         "the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back",
     );
