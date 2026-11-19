@@ -767,7 +767,6 @@ fn populate(path: &Path) {
                 answer: None,
             })?;
             tx.put_chunk(&[1; 32], 100, 10)?;
-            tx.set_id_generator(&[1, 2, 3])?;
             tx.request_restore(&id(103), &from_trash(1))?;
             Ok::<_, Error>(())
         })
@@ -1499,7 +1498,6 @@ fn journal_state() -> JournalState {
         )]
         .into(),
         listed: true,
-        ids: Some(0x0123_4567_89ab_cdef),
         absent: [("b".to_owned(), 1_700)].into(),
     }
 }
@@ -3262,26 +3260,6 @@ fn a_stored_content_whose_digest_no_content_key_holds_is_not_loaded() {
     assert!(
         matches!(loaded, Err(Error::InvalidEngineState(_))),
         "{loaded:?}"
-    );
-}
-
-#[test]
-fn id_generator_persists() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("state.db");
-    let mut store = Store::open(&path).unwrap();
-    store
-        .transaction(|tx| {
-            assert_eq!(tx.id_generator()?, None);
-            tx.set_id_generator(&[1, 2, 3])
-        })
-        .unwrap();
-    drop(store);
-
-    let mut store = Store::open(&path).unwrap();
-    assert_eq!(
-        store.transaction(|tx| tx.id_generator()).unwrap(),
-        Some(vec![1, 2, 3])
     );
 }
 

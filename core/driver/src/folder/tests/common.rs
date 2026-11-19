@@ -384,7 +384,6 @@ impl Device {
         assert_eq!(stored.commits.state(), held.commits.state());
         assert_eq!(stored.effects.state(), held.effects.state());
         assert_eq!(stored.cursor, held.cursor);
-        assert_eq!(stored.ids.state, held.ids.state);
         Ok(())
     }
 

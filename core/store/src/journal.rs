@@ -119,28 +119,14 @@ impl Tx<'_> {
         while let Some(row) = rows.next()? {
             state.absent.insert(row.get(0)?, row.get(1)?);
         }
-        if let Some((listed, ids)) = self
+        if let Some(listed) = self
             .0
-            .query_row(
-                "SELECT listed, ids FROM journal_state WHERE id = 1",
-                [],
-                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
-            )
+            .query_row("SELECT listed FROM journal_state WHERE id = 1", [], |row| {
+                row.get::<_, bool>(0)
+            })
             .optional()?
         {
             state.listed = listed;
-            state.ids = ids
-                .map(|bytes| {
-                    <[u8; 8]>::try_from(bytes.as_slice())
-                        .map(u64::from_le_bytes)
-                        .map_err(|_| {
-                            invalid(format!(
-                                "a journal generator state of {} bytes",
-                                bytes.len()
-                            ))
-                        })
-                })
-                .transpose()?;
         }
         Ok(state)
     }
@@ -151,7 +137,6 @@ impl Tx<'_> {
             history,
             seen,
             listed,
-            ids,
             absent,
         } = changes;
         let mut remove = self
@@ -259,13 +244,6 @@ impl Tx<'_> {
                 "INSERT INTO journal_state (id, listed, backfill_owed) VALUES (1, ?1, 1)
                  ON CONFLICT (id) DO UPDATE SET listed = excluded.listed",
                 [listed],
-            )?;
-        }
-        if let Some(ids) = ids {
-            self.0.execute(
-                "INSERT INTO journal_state (id, listed, backfill_owed, ids) VALUES (1, 0, 1, ?1)
-                 ON CONFLICT (id) DO UPDATE SET ids = excluded.ids",
-                [ids.map(|state| state.to_le_bytes().to_vec())],
             )?;
         }
         Ok(())
