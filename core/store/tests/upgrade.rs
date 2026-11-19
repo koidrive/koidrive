@@ -146,24 +146,4 @@ upgrade_case!(schema_alpha6_baseline, |store| {
         .unwrap();
 });
 
-include!("upgrade_cases/unseen_changes.rs");
-include!("upgrade_cases/removed_from.rs");
-include!("upgrade_cases/root_identity.rs");
-include!("upgrade_cases/root_token.rs");
-include!("upgrade_cases/volume_mounts.rs");
-include!("upgrade_cases/lost_shapes.rs");
-include!("upgrade_cases/content_provenance.rs");
-include!("upgrade_cases/unsent_creates.rs");
-include!("upgrade_cases/schema_open_existing.rs");
-include!("upgrade_cases/schema_remote_nodes_without_intents.rs");
-include!("upgrade_cases/kept_folders.rs");
-include!("upgrade_cases/kept_causes.rs");
-include!("upgrade_cases/file_handles.rs");
-include!("upgrade_cases/commit_slot_tokens.rs");
-include!("upgrade_cases/schema_node_upserts.rs");
-include!("upgrade_cases/schema_forget_sync_state.rs");
-include!("upgrade_cases/commit_slot_given_up.rs");
-include!("upgrade_cases/unobserved.rs");
-include!("upgrade_cases/given_up.rs");
-include!("upgrade_cases/local_nodes_ctime.rs");
-include!("upgrade_cases/root_minted.rs");
+include!(concat!(env!("OUT_DIR"), "/upgrade_cases.rs"));
