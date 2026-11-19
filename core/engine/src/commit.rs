@@ -206,6 +206,8 @@ pub struct Commits {
     guard: Guard,
     granted: Unstored<Vec<NodeId>>,
     confirmed: Unstored<Option<u64>>,
+    published_checked: Unstored<bool>,
+    published_left: Unstored<BTreeSet<NodeId>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -255,6 +257,8 @@ impl Commits {
             guard,
             granted: _,
             confirmed: _,
+            published_checked: _,
+            published_left: _,
         } = self;
         CommitsChanges {
             accepted: accepted.take_changed().copied(),
@@ -352,6 +356,8 @@ impl Commits {
             guard: guard.into(),
             granted: Unstored::default(),
             confirmed: Unstored::default(),
+            published_checked: Unstored::default(),
+            published_left: Unstored::default(),
         })
     }
 
@@ -582,6 +588,7 @@ impl Commits {
             PriorSync::Fresh => tops.into_iter().partition(first_link::trashed_there(trees)),
         };
         self.published.extend(first_link::below(trees, &sent));
+        self.published_checked.0 = false;
         if let Some(question) = first_link::ask(trees, held, None, None, ids, now_ms) {
             self.questions.get_mut().push(question);
         }
@@ -851,6 +858,7 @@ impl Commits {
                             }
                         }
                         self.published.extend(question.shown.into_keys());
+                        self.published_checked.0 = false;
                     }
                 }
                 None => {
@@ -1118,6 +1126,9 @@ impl Commits {
         device_id: &str,
         base: Base,
     ) -> Option<&proto::Commit> {
+        let published = &self.published;
+        (self.published_left.0)
+            .extend((trees.take_left_local().into_iter()).filter(|id| published.contains(id)));
         if self.in_flight.is_some() {
             return None;
         }
@@ -1204,7 +1215,15 @@ impl Commits {
         }
         self.hold(trees);
         self.split.retain(|id| trees.synced().live(id).is_some());
-        self.published.retain(|id| trees.local().get(id).is_some());
+        let left = std::mem::take(&mut self.published_left.0);
+        if self.published_checked.0 {
+            for id in left.iter().filter(|id| trees.local().get(id).is_none()) {
+                self.published.remove(id);
+            }
+        } else {
+            self.published.retain(|id| trees.local().get(id).is_some());
+            self.published_checked.0 = true;
+        }
         self.aliases.retain(|id, _| trees.holds_merge(id));
         let intents = RecoveryGroup::RequestedBeforeReset;
         let held_restores: BTreeSet<&RestoreId> = (self.questions.iter())
@@ -4964,5 +4983,113 @@ mod ancestry_size_tests {
         }
         assert!(encoded <= estimated, "{encoded} > {estimated}");
         assert!(estimated <= MAX_COMMIT_BYTES, "{estimated}");
+    }
+}
+
+#[cfg(test)]
+mod build_work_tests {
+    use super::*;
+    use crate::tree::{FileIdentity, LocalNode, RemoteNode, visits};
+
+    const NOW: u64 = 1_794_268_740_000;
+
+    fn linked(folders: usize) -> (Trees, Commits, IdGen) {
+        let mut trees = Trees::new("root");
+        trees.rules_scanned();
+        for n in 0..folders {
+            let parent = match n {
+                0..10 => "root".to_owned(),
+                n => format!("d{:06}", n / 10 - 1),
+            };
+            let node = LocalNode {
+                shape: Shape {
+                    parent,
+                    name: format!("folder {n}"),
+                    kind: Kind::Dir,
+                    content: None,
+                },
+                identity: FileIdentity {
+                    ino: n as u128 + 1,
+                    birth_ns: Some(0),
+                },
+                parked: false,
+                left_out_when_placed: false,
+                content_from_server: false,
+            };
+            trees.set_local(format!("d{n:06}"), node);
+        }
+        trees.settle(&BTreeMap::new());
+        let state = CommitsState {
+            cap: Some(50),
+            ..Default::default()
+        };
+        let mut commits = Commits::from_state(state).unwrap();
+        let mut ids = IdGen::new(1);
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Fresh);
+        assert_eq!(commits.published.len(), folders);
+        (trees, commits, ids)
+    }
+
+    fn sent(trees: &mut Trees, commits: &mut Commits, seq: u64) {
+        let commit = commits.in_flight().unwrap().commit.clone();
+        for op in commit.ops.iter().filter_map(|op| op.op.as_ref()) {
+            let op::Op::CreateDir(create) = op else {
+                panic!("a first link of folders only creates folders: {op:?}");
+            };
+            let node = RemoteNode {
+                made_over: Vec::new(),
+                shape: Shape {
+                    parent: create.parent_id.clone(),
+                    name: create.name.clone(),
+                    kind: Kind::Dir,
+                    content: None,
+                },
+                trashed: false,
+                content_rev: seq,
+                meta_rev: seq,
+                trash_group: String::new(),
+                version_id: String::new(),
+                edit_rev: seq,
+                meta_edit_rev: seq,
+                pending_for: None,
+                pending_by: None,
+            };
+            trees.set_remote_made_here(create.node_id.clone(), node);
+        }
+        let applied = proto::OpResult {
+            code: op_result::Code::Applied as i32,
+            ..Default::default()
+        };
+        let result = proto::CommitResult {
+            seq,
+            results: vec![applied; commit.ops.len()],
+            ..Default::default()
+        };
+        commits.received(result).unwrap();
+        assert!(commits.acknowledge(trees, seq));
+        trees.settle(commits.aliases());
+    }
+
+    fn visits_of_a_build(folders: usize) -> u64 {
+        let (mut trees, mut commits, mut ids) = linked(folders);
+        let mut visited = 0;
+        for seq in 1..=3 {
+            let before = visits();
+            let built = commits.build(&mut trees, &mut ids, NOW, "history", "me", seq - 1);
+            assert_eq!(built.map(|commit| commit.ops.len()), Some(50 << (seq - 1)));
+            visited = visits() - before;
+            sent(&mut trees, &mut commits, seq);
+        }
+        visited
+    }
+
+    #[test]
+    fn a_build_of_a_first_link_visits_as_many_nodes_whatever_the_size_of_the_tree() {
+        let small = visits_of_a_build(2_000);
+        let large = visits_of_a_build(20_000);
+        assert!(
+            (large as f64) < 1.5 * small as f64,
+            "the third build visited {small} nodes in a tree of 2000 folders and {large} in one of 20000"
+        );
     }
 }

@@ -235,15 +235,18 @@ impl<N: Node> Tree<N> {
     }
 
     pub fn get(&self, id: &str) -> Option<&N> {
+        visit();
         self.nodes.get(id)
     }
 
     pub fn get_mut(&mut self, id: &str) -> Option<&mut N> {
+        visit();
         self.nodes.get_mut(id)
     }
 
     /// The node's shape if it is live here, ⊥ otherwise.
     pub fn live(&self, id: &str) -> Option<&Shape> {
+        visit();
         self.nodes
             .get(id)
             .filter(|node| node.is_live())
@@ -259,7 +262,7 @@ impl<N: Node> Tree<N> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&NodeId, &N)> {
-        self.nodes.iter()
+        self.nodes.iter().inspect(|_| visit())
     }
 
     pub fn len(&self) -> usize {
@@ -342,6 +345,21 @@ impl<N: Node> Tree<N> {
         }
         false
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn visits() -> u64 {
+    VISITS.with(std::cell::Cell::get)
+}
+
+fn visit() {
+    #[cfg(test)]
+    VISITS.with(|visits| visits.set(visits.get() + 1));
 }
 
 #[derive(Clone, Debug)]

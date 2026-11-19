@@ -534,6 +534,7 @@ pub struct Trees {
     /// The live files of R that are rules files.
     remote_rules_files: BTreeSet<NodeId>,
     marked: BTreeSet<NodeId>,
+    left_local: BTreeSet<NodeId>,
 }
 
 /// Equal when R, L, S and the state the store keeps are equal. What the trees track only until the
@@ -624,6 +625,7 @@ impl Trees {
             orphaned: BTreeSet::new(),
             remote_rules_files: BTreeSet::new(),
             marked: BTreeSet::new(),
+            left_local: BTreeSet::new(),
         }
     }
 
@@ -783,6 +785,10 @@ impl Trees {
 
     pub(crate) fn dirty_others(&self) -> &BTreeSet<NodeId> {
         &self.others
+    }
+
+    pub(crate) fn take_left_local(&mut self) -> BTreeSet<NodeId> {
+        std::mem::take(&mut self.left_local)
     }
 
     /// The nodes whose L, S or R entry changed since the last call, which empties the three sets.
@@ -2063,6 +2069,7 @@ impl Trees {
         self.reverted.remove(id);
         self.unsent_marks.remove(id);
         if let Some(old) = self.l.remove(id) {
+            self.left_local.insert(id.to_owned());
             note_move(
                 self.rescope.get_mut(),
                 |rescope| &mut rescope.local,
@@ -5158,6 +5165,7 @@ impl Trees {
             s_names: _,
             s_marks: _,
             marked: _,
+            left_local: _,
             r_names: _,
             r_trashed: _,
             creates: _,
