@@ -5196,3 +5196,83 @@ fn a_mass_delete_made_while_the_answer_is_in_flight_is_still_asked() {
 fn a_mass_delete_made_in_the_last_round_that_trashes_given_up_members_is_still_asked() {
     removal_beside_revived_files_is_asked(2500, Some(2));
 }
+
+#[test]
+fn files_another_device_changes_after_an_answer_gave_them_up_count_in_the_space_again() {
+    let files: Vec<(String, Shape)> = (0..600)
+        .map(|i| (format!("f{i}"), file("d", &format!("c{i}"), 1)))
+        .collect();
+    let real: Vec<(String, Shape)> = (0..300)
+        .map(|i| (format!("g{i}"), file(ROOT, &format!("real{i}"), 1)))
+        .collect();
+    let synced: Vec<(&str, Shape)> = [("d", dir(ROOT, "old"))]
+        .into_iter()
+        .chain(files.iter().map(|(id, s)| (id.as_str(), s.clone())))
+        .chain(real.iter().map(|(id, s)| (id.as_str(), s.clone())))
+        .collect();
+    let remote: Vec<Remote> = (synced.iter())
+        .map(|(id, s)| Remote(id, s.clone(), !id.starts_with('g'), 1))
+        .collect();
+    let local: Vec<(&str, Shape)> = [("d", dir(ROOT, "new"))]
+        .into_iter()
+        .chain(real.iter().map(|(id, s)| (id.as_str(), s.clone())))
+        .collect();
+    let mut trees = trees(&local, &synced, &remote);
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "d".into())]
+    );
+    let revived: Vec<(&str, Shape, bool)> = [("d", dir(ROOT, "new"), false)]
+        .into_iter()
+        .chain(files.iter().map(|(id, s)| (id.as_str(), s.clone(), false)))
+        .collect();
+    applied(&mut commits, &mut trees, 2, &revived);
+    let changed = (files.iter().map(|(id, s)| (id, s, false)))
+        .chain(real.iter().take(160).map(|(id, s)| (id, s, true)));
+    for (id, shape, trashed) in changed {
+        let node = RemoteNode {
+            made_over: Vec::new(),
+            shape: shape.clone(),
+            trashed,
+            content_rev: 2,
+            edit_rev: 2,
+            meta_rev: 3,
+            meta_edit_rev: 3,
+            trash_group: if trashed { id.clone() } else { String::new() },
+            version_id: String::new(),
+            pending_for: None,
+            pending_by: None,
+        };
+        trees.set_remote(id.clone(), node);
+    }
+    trees.settle(commits.aliases());
+    let mut effects = Effects::default();
+    for ino in 100.. {
+        let Some(record) = (effects
+            .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+            .first())
+        .cloned() else {
+            break;
+        };
+        let identity = FileIdentity {
+            ino,
+            birth_ns: Some(0),
+            handle: None,
+        };
+        let removal = (effects.done(&mut trees, None, &record.effect_id, Some(identity))).unwrap();
+        if let Some(removal) = removal {
+            commits.count_remote(removal, &mut trees, 3, &mut ids, NOW);
+        }
+        trees.settle(commits.aliases());
+    }
+    assert_eq!(trees.local().live("g0"), None);
+    assert!(
+        !(commits.questions().iter())
+            .any(|q| matches!(q.kind, QuestionKind::RemoteMassDelete { .. })),
+        "{:?}",
+        commits.questions()
+    );
+}

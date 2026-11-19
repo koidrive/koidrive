@@ -1155,9 +1155,23 @@ impl Commits {
     }
 
     fn given_up_files(&self, trees: &Trees) -> u64 {
-        (self.given_up_nodes.keys())
-            .filter(|id| (trees.synced().live(id)).is_some_and(|shape| shape.kind == Kind::File))
+        (self.given_up_nodes.iter())
+            .filter(|(id, given)| Self::still_given_up(trees, id, given))
+            .filter(|(id, _)| {
+                (trees.synced().live(id)).is_some_and(|shape| shape.kind == Kind::File)
+            })
             .count() as u64
+    }
+
+    fn still_given_up(trees: &Trees, id: &NodeId, given: &GivenUp) -> bool {
+        let Some(remote) = trees.remote().get(id).filter(|node| !node.trashed) else {
+            return false;
+        };
+        remote.content_rev == given.revisions.content_rev
+            && remote.meta_rev == given.revisions.meta_rev
+            && (trees.local().get(id)).is_none_or(|local| {
+                given.held_here && same(Some(&local.shape), Some(&remote.shape))
+            })
     }
 
     fn resolve(&mut self, id: RestoreId, outcome: Outcome) {
@@ -1339,16 +1353,8 @@ impl Commits {
         let mut asked = index.map(|index| self.questions.get_mut().remove(index));
         let open = asked.as_ref().map(|question| question.id.clone());
         skip.extend(self.questions.iter().flat_map(Question::holds).cloned());
-        self.given_up_nodes.retain(|id, given| {
-            let Some(remote) = trees.remote().get(id).filter(|node| !node.trashed) else {
-                return false;
-            };
-            remote.content_rev == given.revisions.content_rev
-                && remote.meta_rev == given.revisions.meta_rev
-                && (trees.local().get(id)).is_none_or(|local| {
-                    given.held_here && same(Some(&local.shape), Some(&remote.shape))
-                })
-        });
+        self.given_up_nodes
+            .retain(|id, given| Self::still_given_up(trees, id, given));
         loop {
             let holding: Vec<NodeId> = (self.given_up_nodes.keys())
                 .filter(|id| {
