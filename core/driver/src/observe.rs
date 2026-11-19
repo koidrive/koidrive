@@ -304,6 +304,12 @@ impl Unread {
     }
 }
 
+struct FileRead {
+    content: Content,
+    marked_node: Option<String>,
+    linked: bool,
+}
+
 /// The reads of one observation.
 #[derive(Default)]
 struct Reads {
@@ -485,13 +491,15 @@ impl FsObserver {
             Change::Created { path, kind } => {
                 let Some(entry) = entry(&path) else { return };
                 let must = reads.replaced.iter().any(|dir| path.starts_with(dir));
-                let (content, marked_node) = match kind {
-                    EntryKind::File => self.content(&path, &entry, reads, must).unzip(),
-                    EntryKind::Dir => (None, Some(self.marked_node(&path, &entry, reads))),
+                let (content, marked_node, linked) = match kind {
+                    EntryKind::File => match self.content(&path, &entry, reads, must) {
+                        Some(read) => (Some(read.content), read.marked_node, read.linked),
+                        None => (None, None, self.linked(&path, kind)),
+                    },
+                    EntryKind::Dir => (None, self.marked_node(&path, &entry, reads), false),
                 };
-                let marked_node = marked_node.flatten();
                 out.push(Observed::Created {
-                    linked: self.linked(&path, kind),
+                    linked,
                     path,
                     kind,
                     id: entry.id,
@@ -504,12 +512,16 @@ impl FsObserver {
                 if entry.kind != EntryKind::File {
                     return;
                 }
-                let (content, marked_node) = self.content(&path, &entry, reads, false).unzip();
+                let (content, marked_node, linked) = match self.content(&path, &entry, reads, false)
+                {
+                    Some(read) => (Some(read.content), read.marked_node, read.linked),
+                    None => (None, None, self.linked(&path, entry.kind)),
+                };
                 out.push(Observed::Modified {
                     content,
-                    marked_node: marked_node.flatten(),
+                    marked_node,
                     id: entry.id,
-                    linked: self.linked(&path, entry.kind),
+                    linked,
                     path,
                 });
             }
@@ -609,14 +621,14 @@ impl FsObserver {
                 continue;
             }
             match self.read(&path, &entry, reads) {
-                Ok(Some((content, marked_node))) => {
+                Ok(Some(read)) => {
                     self.unread.remove(&path);
                     out.push(Observed::Modified {
-                        linked: self.linked(&path, entry.kind),
-                        marked_node,
+                        linked: read.linked,
+                        marked_node: read.marked_node,
                         path,
                         id: entry.id,
-                        content: Some(content),
+                        content: Some(read.content),
                     });
                 }
                 Err(_) if (self.stopped)() => break,
@@ -635,12 +647,7 @@ impl FsObserver {
             && std::fs::symlink_metadata(self.root.join(path)).is_ok_and(|meta| meta.nlink() > 1)
     }
 
-    fn read(
-        &self,
-        path: &Path,
-        entry: &Entry,
-        reads: &mut Reads,
-    ) -> io::Result<Option<(Content, Option<String>)>> {
+    fn read(&self, path: &Path, entry: &Entry, reads: &mut Reads) -> io::Result<Option<FileRead>> {
         let (files, bytes) = (reads.left_files, reads.left_bytes);
         let mut read = 0;
         let content = reads.beneath.open(&self.root, path).and_then(|file| {
@@ -649,7 +656,11 @@ impl FsObserver {
                 let bytes = bytes.saturating_sub(read);
                 (self.progress)(Observing::Reading { files, bytes });
             })?;
-            Ok(content.map(|content| (content, mark_of(&file, path))))
+            Ok(content.map(|(content, after)| FileRead {
+                content,
+                marked_node: mark_of(&file, path),
+                linked: after.nlink() > 1,
+            }))
         });
         if let Ok(Some(_)) = content {
             reads.left_files = files.saturating_sub(1);
@@ -670,7 +681,7 @@ impl FsObserver {
         entry: &Entry,
         reads: &mut Reads,
         must: bool,
-    ) -> Option<(Content, Option<String>)> {
+    ) -> Option<FileRead> {
         if matches!(entry.ctime, Ctime::Racy { .. }) || !reads.take(entry.size, must) {
             reads.deferred.push(path.to_path_buf());
             return None;
@@ -1115,7 +1126,8 @@ pub(crate) fn read_content(
     stopped: &dyn Fn() -> bool,
     chunked: &mut dyn FnMut(u64),
 ) -> io::Result<Option<Content>> {
-    read_file(&open_beneath(root, path)?, path, entry, stopped, chunked)
+    let read = read_file(&open_beneath(root, path)?, path, entry, stopped, chunked)?;
+    Ok(read.map(|(content, _)| content))
 }
 
 #[cfg_attr(not(test), allow(unused_variables))]
@@ -1125,7 +1137,7 @@ fn read_file(
     entry: &Entry,
     stopped: &dyn Fn() -> bool,
     chunked: &mut dyn FnMut(u64),
-) -> io::Result<Option<Content>> {
+) -> io::Result<Option<(Content, std::fs::Metadata)>> {
     #[cfg(test)]
     READS.with_borrow_mut(|reads| reads.push(path.to_path_buf()));
     let before = file.metadata()?;
@@ -1147,12 +1159,9 @@ fn read_file(
     if !same_version(&after, entry) {
         return Ok(None);
     }
-    Ok(Some(koidrive_chunk::content(
-        chunks,
-        mtime_ns(&after) as i64,
-        entry.executable,
-        &config,
-    )))
+    let content =
+        koidrive_chunk::content(chunks, mtime_ns(&after) as i64, entry.executable, &config);
+    Ok(Some((content, after)))
 }
 
 fn mark_of(file: &File, path: &Path) -> Option<String> {
