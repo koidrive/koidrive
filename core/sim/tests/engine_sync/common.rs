@@ -1288,7 +1288,8 @@ fn release_taken_along(
     let home = |id: &String| {
         (trees.local().get(id)).is_some_and(|local| {
             !local.parked
-                && (trees.remote().live(id)).is_some_and(|remote| remote.same_position(&local.shape))
+                && (trees.remote().live(id))
+                    .is_some_and(|remote| remote.same_position(&local.shape))
         })
     };
     let released: Vec<String> = (kept_with.iter())
