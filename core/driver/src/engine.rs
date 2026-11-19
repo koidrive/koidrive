@@ -55,6 +55,7 @@ pub(crate) struct Engine {
     unstored_ctimes: BTreeMap<NodeId, i64>,
     pub local_written_since_load: bool,
     removed_at: BTreeMap<NodeId, u64>,
+    owed: BTreeSet<NodeId>,
 }
 
 const DELETE_WAIT_MS: u64 = 2_000;
@@ -152,6 +153,7 @@ impl Engine {
             unstored_ctimes: BTreeMap::new(),
             local_written_since_load: false,
             removed_at: BTreeMap::new(),
+            owed: BTreeSet::new(),
         }))
     }
 
@@ -1330,6 +1332,22 @@ impl Engine {
         self.removed_at.clear();
     }
 
+    pub fn owe_removals(&mut self) {
+        self.owed
+            .extend(std::mem::take(&mut self.removed_at).into_keys());
+    }
+
+    pub fn owed_deletes(&mut self) -> BTreeSet<NodeId> {
+        let trees = &self.trees;
+        let problems = self.commits.problems();
+        self.owed.retain(|id| {
+            trees.local().get(id).is_none()
+                && trees.synced().live(id).is_some()
+                && !problems.contains(id)
+        });
+        self.owed.clone()
+    }
+
     pub fn deletes_due(&self) -> Option<u64> {
         (self.removed_at.values().min()).map(|at| at + DELETE_WAIT_MS)
     }
@@ -2436,6 +2454,7 @@ mod tests {
             unstored_ctimes: BTreeMap::new(),
             local_written_since_load: false,
             removed_at: BTreeMap::new(),
+            owed: BTreeSet::new(),
         };
         Case {
             name,

@@ -1353,10 +1353,12 @@ impl Commits {
             device_id,
             base,
             &BTreeSet::new(),
+            &BTreeSet::new(),
         )
     }
 
-    /// [`Commits::build`], leaving the deletion of each node of `deferred` to a later build.
+    /// [`Commits::build`], leaving the deletion of each node of `deferred` to a later build and deleting each node of
+    /// `owed` that the rules leave out.
     #[allow(clippy::too_many_arguments)]
     pub fn build_deferring(
         &mut self,
@@ -1367,10 +1369,13 @@ impl Commits {
         device_id: &str,
         base: impl Into<Base>,
         deferred: &BTreeSet<NodeId>,
+        owed: &BTreeSet<NodeId>,
     ) -> Option<&proto::Commit> {
         let base = base.into();
         trees.in_one_build(|trees| {
-            self.build_in_one_pass(trees, ids, now_ms, history_id, device_id, base, deferred)
+            self.build_in_one_pass(
+                trees, ids, now_ms, history_id, device_id, base, deferred, owed,
+            )
         })
     }
 
@@ -1384,6 +1389,7 @@ impl Commits {
         device_id: &str,
         base: Base,
         deferred: &BTreeSet<NodeId>,
+        owed: &BTreeSet<NodeId>,
     ) -> Option<&proto::Commit> {
         if self.in_flight.is_some() {
             return None;
@@ -1431,7 +1437,7 @@ impl Commits {
         let (needed, agreed) = rebase(trees, ids, now_ms, &skip);
         skip.extend(parked_until_moved(trees).cloned());
         let excluded: Vec<NodeId> = (trees.dirty_others().iter())
-            .filter(|id| trees.excluded(id) || trees.held(id))
+            .filter(|id| (trees.excluded(id) && !owed.contains(*id)) || trees.held(id))
             .cloned()
             .collect();
         skip.extend(excluded);

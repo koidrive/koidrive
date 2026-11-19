@@ -960,3 +960,49 @@ fn a_file_written_at_a_conflict_copy_whose_delete_is_out_is_kept() {
     );
 }
 
+#[test]
+fn a_file_removed_before_a_rule_while_another_change_waits_to_be_sent_leaves_the_server() {
+    let mut remote = Remote::new();
+    let (site, mut a, before) = report_removed(&mut remote);
+    fs::write(site.root.join("other.txt"), b"other").unwrap();
+    a.scan_until(|_| local_holds(&site, "other.txt"));
+    fs::write(site.root.join(".koiignore"), b"report.txt\n").unwrap();
+    a.scan_until(|_| local_holds(&site, ".koiignore"));
+    a.rest(&mut remote);
+    let nodes = server_nodes(&remote);
+    assert!(
+        !nodes.contains(&("report.txt".to_owned(), before, true)),
+        "{nodes:?}"
+    );
+    assert!(
+        remote.names().contains(&"other.txt".to_owned()),
+        "{nodes:?}"
+    );
+}
+
+#[test]
+fn a_file_removed_while_a_commit_is_out_before_a_rule_leaves_it_out_leaves_the_server() {
+    clock::freeze();
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::create_dir_all(site.root.join("docs")).unwrap();
+    a.create(
+        &mut remote,
+        &site.root.join("docs/report.txt"),
+        b"version one",
+    );
+    a.rest(&mut remote);
+    let before = live_id(&server_nodes(&remote), "report.txt");
+    fs::write(site.root.join("other.txt"), b"other").unwrap();
+    a.scan_until(|a| a.folder.engine.commits.in_flight().is_some());
+    fs::remove_file(site.root.join("docs/report.txt")).unwrap();
+    a.scan_until(|a| a.folder.engine.trees.local().get(&before).is_none());
+    fs::write(site.root.join(".koiignore"), b"report.txt\n").unwrap();
+    a.scan_until(|_| local_holds(&site, ".koiignore"));
+    a.rest(&mut remote);
+    let nodes = server_nodes(&remote);
+    assert!(
+        !nodes.contains(&("report.txt".to_owned(), before, true)),
+        "{nodes:?}"
+    );
+}

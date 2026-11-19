@@ -618,14 +618,12 @@ impl Folder {
         Ok(work)
     }
 
-    /// One observation batch, with the number of entries the folder holds after it. A batch that changes the rules
-    /// first ends the wait for removed files, so their deletion is built before the rules apply.
+    /// One observation batch, with the number of entries the folder holds after it.
     pub fn observed(&mut self, batch: Batch, entries: u64) -> Result<Vec<Work>, Stop> {
         let mut work = Vec::new();
         let rules = batch.observation.all_rules || !batch.observation.rules.is_empty();
-        if rules && self.engine.deletes_due().is_some() {
-            self.engine.forget_removals();
-            self.drive(&mut work)?;
+        if rules {
+            self.engine.owe_removals();
         }
         self.local_entries = Some(entries);
         self.unread = batch.unread;
@@ -1171,6 +1169,7 @@ impl Folder {
         };
         let built = self.step(|engine, tx| {
             let deferred = engine.deferred_deletes(now_ms);
+            let owed = engine.owed_deletes();
             let cursor = engine.cursor.as_ref().expect("R follows the log");
             let built = engine.commits.build_deferring(
                 &mut engine.trees,
@@ -1180,6 +1179,7 @@ impl Folder {
                 &device_id,
                 cursor.base(),
                 &deferred,
+                &owed,
             );
             if built.is_some() {
                 tx.commit_root_token(token)?;
