@@ -643,16 +643,6 @@ impl Device {
         self.trees.listed(&moved, Pending::default());
     }
 
-    /// One change the user makes on disk, as the next rescan reports it. The user sees no parked
-    /// node and nothing under one. A scan leaves out ignored paths, so a change at one is not
-    /// reported, except a move across the boundary: a node moved to an ignored name keeps its
-    /// identity and is reported at that name, one moved into an ignored folder is found there by
-    /// its identity, and one moved out is reported where it now is. L keeps the entries of
-    /// ignored nodes until another entry takes their name, and `in_ignored_folders` keeps what
-    /// the user moved into ignored folders, so together they stand for the disk; a node moved
-    /// into an ignored folder is out of the user's reach after that, and the user puts nothing
-    /// where it was: an entry that takes the path of such a node replaces it, which is a
-    /// deletion the user made.
     fn act(&mut self, action: &Action) {
         let root = self.trees.local().root.clone();
         let local = self.trees.local();
