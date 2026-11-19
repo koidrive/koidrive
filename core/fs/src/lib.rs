@@ -1132,34 +1132,45 @@ impl Snapshot {
         );
     }
 
-    fn missing(
+    fn look_for(
         &self,
         root: &Path,
         rules: Option<&mut Rules>,
         wanted: &BTreeMap<PathBuf, Known>,
-    ) -> Result<Vec<PathBuf>> {
+    ) -> Result<Unfound> {
         let held: HashSet<Key> = (self.entries.values())
             .chain(self.left_out.values())
             .map(|entry| (entry.id.without_handle(), entry.kind))
             .collect();
-        let unseen = |known: &Known| !held.contains(&(known.id.without_handle(), known.kind));
         let mut search: Wanted = (wanted.values())
-            .filter(|known| unseen(known))
+            .filter(|known| !held.contains(&(known.id.without_handle(), known.kind)))
             .map(|known| ((known.id, known.kind), None))
             .collect();
+        let mut unproven = HashSet::new();
         if let Some(rules) = rules
             && !search.is_empty()
         {
             let root = open_root(root)?;
             let fresh: HashSet<Key> = search.keys().copied().collect();
             let mut rules = Pending::new(rules);
-            rules.search(root.as_fd(), &mut search, &fresh, false, &mut |_| {});
+            let undecided = rules.search(root.as_fd(), &mut search, &fresh, false, &mut |_| {});
+            unproven = (search.keys().copied())
+                .filter(|key| undecided.contains(key) || rules.unproven(*key))
+                .collect();
             rules.hold(BTreeMap::new());
         }
-        Ok((wanted.iter())
-            .filter(|(_, known)| unseen(known) && search[&(known.id, known.kind)].is_none())
-            .map(|(path, _)| path.clone())
-            .collect())
+        let mut unfound = Unfound::default();
+        for (path, known) in wanted {
+            let key = (known.id, known.kind);
+            if search.get(&key) != Some(&None) {
+                continue;
+            }
+            match unproven.contains(&key) {
+                true => unfound.unproven.push(path.clone()),
+                false => unfound.gone.push(path.clone()),
+            }
+        }
+        Ok(unfound)
     }
 
     /// [`Snapshot::rescan`], failing with [`Error::RootReplaced`] and
@@ -3324,9 +3335,18 @@ pub trait Watcher {
     /// Asks the next poll to scan `paths` again, such as files whose change time has not settled.
     fn revisit(&mut self, paths: Vec<PathBuf>);
 
-    /// The paths of `wanted` whose entry, by kind and identity, is neither in the snapshot nor at or below an entry
-    /// the rules leave out. The search below left-out entries runs to its end.
-    fn missing(&mut self, wanted: &BTreeMap<PathBuf, Known>) -> Result<Vec<PathBuf>>;
+    /// Looks for the entry of each path of `wanted`, by kind and identity, in the snapshot and at and below every
+    /// entry the rules leave out, with a search that runs to its end, and returns those it did not find.
+    fn look_for(&mut self, wanted: &BTreeMap<PathBuf, Known>) -> Result<Unfound>;
+}
+
+/// The entries [`Watcher::look_for`] did not find, by their paths in what it was given. Each `gone` one is not on the
+/// disk. The search could not look everywhere for each `unproven` one ([`Rules::coverage`]), so it may still be in a
+/// left-out folder: look for it again later.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Unfound {
+    pub gone: Vec<PathBuf>,
+    pub unproven: Vec<PathBuf>,
 }
 
 /// Watches with FSEvents on macOS and inotify on Linux.
@@ -3850,8 +3870,8 @@ impl Watcher for NativeWatcher {
         self.dirty.extend(paths);
     }
 
-    fn missing(&mut self, wanted: &BTreeMap<PathBuf, Known>) -> Result<Vec<PathBuf>> {
-        (self.snapshot).missing(&self.root, self.rules.as_mut(), wanted)
+    fn look_for(&mut self, wanted: &BTreeMap<PathBuf, Known>) -> Result<Unfound> {
+        (self.snapshot).look_for(&self.root, self.rules.as_mut(), wanted)
     }
 }
 
@@ -3982,8 +4002,8 @@ impl Watcher for RescanWatcher {
 
     fn revisit(&mut self, _paths: Vec<PathBuf>) {}
 
-    fn missing(&mut self, wanted: &BTreeMap<PathBuf, Known>) -> Result<Vec<PathBuf>> {
-        (self.snapshot).missing(&self.root, self.rules.as_mut(), wanted)
+    fn look_for(&mut self, wanted: &BTreeMap<PathBuf, Known>) -> Result<Unfound> {
+        (self.snapshot).look_for(&self.root, self.rules.as_mut(), wanted)
     }
 }
 

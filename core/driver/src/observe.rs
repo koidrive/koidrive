@@ -27,7 +27,8 @@ use koidrive_chunk::ChunkerConfig;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_fs::{
     Change, Ctime, Detached, Entry, EntryKind, Error as FsError, FileId, Known, MarkLog, Mount,
-    NativeWatcher, RescanWatcher, RootAt, RootProblem, Snapshot, Source, Watcher, check_root,
+    NativeWatcher, RescanWatcher, RootAt, RootProblem, Snapshot, Source, Unfound, Watcher,
+    check_root,
 };
 use koidrive_proto::v1::{ChunkRef, Content};
 use rustix::fs::{Mode, OFlags};
@@ -775,15 +776,20 @@ impl Observer for FsObserver {
         changes.extend(retried);
         if poll.root.is_some() && poll.pending.is_empty() && !self.recorded.is_empty() {
             let recorded = std::mem::take(&mut self.recorded);
-            match self.watcher.missing(&recorded) {
-                Ok(missing) => changes.extend(
-                    (missing.into_iter())
-                        .filter(|path| !self.watcher.snapshot().entries.contains_key(path))
-                        .map(|path| Observed::Removed {
-                            kind: recorded[&path].kind,
-                            path,
-                        }),
-                ),
+            match self.watcher.look_for(&recorded) {
+                Ok(Unfound { gone, unproven }) => {
+                    changes.extend(
+                        (gone.into_iter())
+                            .filter(|path| !self.watcher.snapshot().entries.contains_key(path))
+                            .map(|path| Observed::Removed {
+                                kind: recorded[&path].kind,
+                                path,
+                            }),
+                    );
+                    self.recorded = (recorded.into_iter())
+                        .filter(|(path, _)| unproven.contains(path))
+                        .collect();
+                }
                 Err(error) => {
                     tracing::debug!(%error, "the entries moved into left-out folders could not be looked for");
                     self.recorded = recorded;
@@ -2023,8 +2029,8 @@ mod tests {
 
         fn revisit(&mut self, _paths: Vec<PathBuf>) {}
 
-        fn missing(&mut self, _: &BTreeMap<PathBuf, Known>) -> Result<Vec<PathBuf>, FsError> {
-            Ok(Vec::new())
+        fn look_for(&mut self, _: &BTreeMap<PathBuf, Known>) -> Result<Unfound, FsError> {
+            Ok(Unfound::default())
         }
     }
 
