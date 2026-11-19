@@ -12999,16 +12999,17 @@ fn a_change_answered_discard_never_excuses_undoing_a_delete() {
 }
 
 #[test]
-fn a_held_folder_its_user_deletes_settles_the_never_sent_folder_inside_it() {
+fn a_folder_its_user_deletes_after_a_rewind_settles_the_never_sent_file_inside_it() {
     converge(
         2,
         &[
-            vec![(0, Step::Backup), (1, folder("a"))],
+            vec![(0, folder("A"))],
             vec![
+                (0, Step::Backup),
+                (0, file("a")),
                 (0, Step::Rewind),
-                (0, user(0, 0, 1, "c.txt")),
-                (0, Step::Connect),
-                (0, DELIVER),
+                (0, user(1, 0, 1, "a")),
+                (0, Step::Work(0)),
                 (0, delete(0)),
             ],
         ],
