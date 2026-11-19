@@ -334,6 +334,6 @@ pub(crate) fn release(
 fn seen_here(trees: &Trees, id: &str) -> bool {
     trees.remote_seen_here(id)
         && (trees.remote_children(id))
-            .filter(|child| trees.remote().live(child).is_some())
+            .filter(|child| trees.remote_synced_here(child).is_some())
             .all(|child| seen_here(trees, child))
 }

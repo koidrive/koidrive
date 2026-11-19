@@ -5504,3 +5504,33 @@ fn system_files_an_answer_gave_up_are_not_counted_again_when_their_folder_is_del
     );
     assert_eq!(commits.questions(), []);
 }
+
+#[test]
+fn a_folder_answered_delete_with_an_excluded_file_in_it_stays_deleted() {
+    let tmp = || vec![live("z", file("d", "z.tmp", 2))];
+    let subfolder = || vec![live("e", dir("d", "e")), live("f", file("e", "f", 3))];
+    let excluded: [(&[&str], Source, &[u8], _); 3] = [
+        (&[], Source::Koiignore, b"*.tmp\n", tmp()),
+        (&["d"], Source::Gitignore, b"*.tmp\n", tmp()),
+        (&[], Source::Koiignore, b"e/\n", subfolder()),
+    ];
+    for (folder, source, rules, below) in excluded {
+        let mut remote = vec![live("d", dir(ROOT, "d")), live("c", file("d", "c", 1))];
+        remote.extend(below);
+        let mut trees = trees(
+            &[],
+            &[("d", dir(ROOT, "d")), ("c", file("d", "c", 1))],
+            &remote,
+        );
+        trees.set_rules(folder, source, Some(RuleFile::parse(rules)));
+        trees.settle(&Default::default());
+        let (mut commits, mut ids) = recovered(&mut trees, 0);
+        let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["c", "d"]);
+        assert!(commits.decide(&question.id, Answer::Delete));
+        assert_eq!(
+            ops(&mut commits, &mut trees, &mut ids),
+            [("delete", "c".to_owned())]
+        );
+        assert_eq!(effects(&mut trees, &mut ids), []);
+    }
+}

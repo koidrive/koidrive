@@ -1410,6 +1410,10 @@ impl Trees {
         })
     }
 
+    pub(crate) fn remote_synced_here(&self, id: &str) -> Option<&Shape> {
+        self.r.live(id).filter(|_| !self.excluded(id))
+    }
+
     pub(crate) fn remote_seen_here(&self, id: &str) -> bool {
         let remote = self.r.get(id).filter(|remote| !remote.trashed);
         let (Some(synced), Some(remote)) = (self.acknowledged(id), remote) else {
@@ -2597,9 +2601,8 @@ impl Trees {
         let goes_back = (self.l.get(id))
             .is_some_and(|node| node.parked || self.reverted.contains(id))
             || self.is_discarded(id);
-        let starts = !self.excluded(id)
-            && (self.r.live(id))
-                .is_some_and(|remote| goes_back || !same(Some(remote), self.acknowledged(id)));
+        let starts = (self.remote_synced_here(id))
+            .is_some_and(|remote| goes_back || !same(Some(remote), self.acknowledged(id)));
         let mut next = starts.then_some(id);
         let mut steps = 0;
         std::iter::from_fn(move || {
