@@ -184,11 +184,7 @@ fn a_folder_another_device_deletes_waits_around_a_new_file_moved_to_where_its_ru
 }
 
 #[test]
-fn a_folder_made_at_the_name_l_keeps_for_a_file_moved_into_an_excluded_folder_waits_for_it() {
-    let _red = expect_red(
-        Check::NameLeftOut,
-        "device 1 is quiet, but nodes [\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"] wait for names that entries its rules leave out hold",
-    );
+fn a_folder_made_at_the_name_l_keeps_for_a_file_moved_into_an_excluded_folder_takes_it() {
     let phases = [
         vec![(0, file("a")), (1, folder("c.txt"))],
         vec![

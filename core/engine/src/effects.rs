@@ -624,19 +624,24 @@ impl Effects {
         let content = (trees.local().get(&record.node)).map(|node| node.shape.content.clone());
         match record.after {
             None => trees.drop_local(&record.node),
-            Some(shape) => trees.place_local(
-                record.node.clone(),
-                LocalNode {
-                    left_out_when_placed: false,
-                    content_from_server: false,
-                    shape: match (&record.effect, content) {
-                        (Effect::Move { .. }, Some(content)) => Shape { content, ..shape },
-                        _ => shape,
+            Some(shape) => {
+                if !parked {
+                    trees.displace_recorded_at(&record.node, &shape);
+                }
+                trees.place_local(
+                    record.node.clone(),
+                    LocalNode {
+                        left_out_when_placed: false,
+                        content_from_server: false,
+                        shape: match (&record.effect, content) {
+                            (Effect::Move { .. }, Some(content)) => Shape { content, ..shape },
+                            _ => shape,
+                        },
+                        identity,
+                        parked,
                     },
-                    identity,
-                    parked,
-                },
-            ),
+                )
+            }
         }
         if matches!(record.effect, Effect::WriteFile { .. }) {
             trees.set_content_from_server(&record.node, true);
@@ -1271,6 +1276,7 @@ impl<'a> View<'a> {
             && self.location_in(&after.parent, &after.name).is_some()
             && !(self.trees.local_holders(&after.parent, &after.name)).any(|other| {
                 *other != record.node
+                    && !self.trees.ignored_local().contains(other)
                     && local
                         .get(other)
                         .is_some_and(|node| node.shape.name == after.name)
@@ -1365,7 +1371,7 @@ impl<'a> View<'a> {
         }
         self.trees
             .local_holders(&remote.parent, &remote.name)
-            .find(|other| *other != id)
+            .find(|other| *other != id && !self.trees.ignored_local().contains(*other))
             .map(|holder| Step::Blocked(Some(holder.clone())))
     }
 

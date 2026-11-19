@@ -3072,6 +3072,24 @@ impl Trees {
         }
     }
 
+    pub(crate) fn displace_recorded_at(&mut self, id: &str, shape: &Shape) {
+        let holders: Vec<NodeId> = (self.local_holders(&shape.parent, &shape.name))
+            .filter(|holder| *holder != id && self.outside.contains(*holder))
+            .cloned()
+            .collect();
+        for holder in holders {
+            let mut doomed = vec![holder];
+            let mut next = 0;
+            while let Some(current) = doomed.get(next).cloned() {
+                doomed.extend(self.l_names.children(&current).cloned());
+                next += 1;
+            }
+            for node in doomed.iter().rev() {
+                self.displace_local(node);
+            }
+        }
+    }
+
     /// The nodes [`Trees::displace_local`] took out of L, each with the identity L held for it.
     pub fn displaced_local(&self) -> &BTreeMap<NodeId, FileIdentity> {
         &self.displaced
