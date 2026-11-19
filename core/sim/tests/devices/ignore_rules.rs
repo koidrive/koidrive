@@ -1068,6 +1068,30 @@ fn settle_claim(world: &mut World) {
 }
 
 #[test]
+fn a_node_whose_conflict_rename_is_in_flight_when_the_rules_let_the_kept_name_in_follows_that_rename()
+ {
+    let folder_with_a_file = vec![(1, folder("b")), (1, user(1, 0, 1, "a"))];
+    let steps: Vec<(usize, Step)> = (0..3).flat_map(|_| commit(1)).collect();
+    for made in [vec![(1, file("b"))], folder_with_a_file] {
+        for lift in 0..=steps.len() {
+            let mut world = claimed_a_kept_name(made.clone(), 0);
+            world.run(2, &steps[..lift]).unwrap();
+            world.rule(1, &Ruling::Exclude(vec![])).unwrap();
+            world.run(2, &steps[lift..]).unwrap();
+            (2..5)
+                .try_for_each(|phase| world.phase(phase, &[]))
+                .unwrap();
+            assert_eq!(paths_on(&world, 0), paths_on(&world, 1), "{lift}");
+            let renamed = spelled_like(&world, 1, "A");
+            assert!(
+                renamed == ["A"] || renamed == [CLAIMED],
+                "{lift}: {renamed:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_file_renamed_to_the_name_an_excluded_folder_keeps_is_not_renamed_again_while_its_rename_is_a_problem()
  {
     let mut world = claimed_a_kept_name(vec![(1, file("b"))], 4);
