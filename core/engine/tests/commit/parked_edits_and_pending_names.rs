@@ -123,7 +123,7 @@ fn an_edit_made_while_an_unsent_edit_is_out_stays_unsent_when_that_edit_is_ackno
     };
     trees.set_remote("n".into(), resent);
     trees.settle(commits.aliases());
-    assert_eq!(trees.class("n"), Class::Concurrent);
+    assert_eq!(trees.class(&"n".into()), Class::Concurrent);
 }
 
 #[test]
@@ -148,8 +148,8 @@ fn an_edit_of_a_file_whose_chunk_list_r_leaves_out_counts_for_loss_recovery() {
     };
     let sent = listed.content.clone();
     let mut trees = trees(&[("n", Some(listed.clone()), Some(listed), Some(unlisted))]);
-    trees.record_edited("n", sent.as_ref());
-    assert_eq!(trees.edited_here(), [("n".to_owned(), 4)]);
+    trees.record_edited(&"n".into(), sent.as_ref());
+    assert_eq!(trees.edited_here(), [(NodeId::from("n"), 4)]);
 }
 
 #[test]
@@ -182,7 +182,7 @@ fn an_edit_of_a_file_in_the_trash_after_a_loss_is_kept_from_a_resend_after_a_res
     };
     trees.set_remote("n".into(), resent);
     trees.settle(commits.aliases());
-    assert_eq!(trees.class("n"), Class::Concurrent);
+    assert_eq!(trees.class(&"n".into()), Class::Concurrent);
 }
 
 #[test]
@@ -215,13 +215,13 @@ fn a_parked_edit_whose_name_goes_to_a_folder_this_device_excludes_is_not_held_ba
     effects
         .done(&mut trees, None, &park.effect_id, None)
         .unwrap();
-    let mut edited = trees.local().get("h").unwrap().clone();
+    let mut edited = trees.local().get(&"h".into()).unwrap().clone();
     edited.shape.content = Some(content(2));
     trees.set_local("h".into(), edited);
     trees.set_remote("h".into(), trashed(file(ROOT, "X", 1)));
     trees.set_remote("n".into(), remote(dir(ROOT, "x")));
     trees.settle(&Default::default());
-    assert!(trees.excluded("n") && !trees.excluded("h"));
+    assert!(trees.excluded(&"n".into()) && !trees.excluded(&"h".into()));
     let back = effects
         .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
         .first()
@@ -457,7 +457,7 @@ fn a_remote_move_waits_exactly_while_a_commit_in_flight_moves_the_node() {
         assert_eq!(to, Some("remote"), "{name}");
         (effects.done(&mut trees, commits.in_flight(), &next.effect_id, None)).unwrap();
         trees.settle(commits.aliases());
-        assert_eq!(trees.class("n"), Class::InSync, "{name}");
+        assert_eq!(trees.class(&"n".into()), Class::InSync, "{name}");
         released.push(name);
     }
     assert_eq!(
@@ -505,11 +505,11 @@ fn a_rename_of_a_node_whose_update_waits_is_kept_from_an_effect_planned_before_i
     );
     trees.set_local("n".into(), local(file(ROOT, "c", 1), 2));
     trees.settle(commits.aliases());
-    assert!(trees.waiting().contains_key("n"));
+    assert!(trees.waiting().contains_key(&"n".into()));
     assert!(!record.applies(&trees, commits.in_flight()));
     let done = effects.done(&mut trees, commits.in_flight(), &record.effect_id, None);
     assert!(done.is_err(), "{done:?}");
-    assert_eq!(trees.local().live("n"), Some(&file(ROOT, "c", 1)));
+    assert_eq!(trees.local().live(&"n".into()), Some(&file(ROOT, "c", 1)));
 }
 
 #[test]
@@ -579,7 +579,7 @@ fn an_excluded_node_at_a_pending_name_gets_no_rename() {
         Some(RuleFile::parse(b"a (pending)/\n")),
     );
     trees.settle(commits.aliases());
-    assert!(trees.excluded("a"));
+    assert!(trees.excluded(&"a".into()));
     assert!(!commits.due(&trees, "me"));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
@@ -590,9 +590,9 @@ fn a_held_node_at_a_pending_name_gets_no_rename() {
         synced("d", dir(ROOT, "d")),
         synced("a", dir("d", "a (pending)")),
     ]);
-    trees.set_rules_unknown("d");
+    trees.set_rules_unknown(&"d".into());
     trees.settle(commits.aliases());
-    assert!(trees.held("a"));
+    assert!(trees.held(&"a".into()));
     assert!(!commits.due(&trees, "me"));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
@@ -707,8 +707,8 @@ fn a_rename_another_device_makes_once_a_pending_create_lands_ends_the_owed_renam
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let first = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(first.ops.len(), 2);
-    trees.remove_local("h");
-    trees.remove_local("n");
+    trees.remove_local(&"h".into());
+    trees.remove_local(&"n".into());
     trees.set_remote("n".into(), remote_at(dir(ROOT, "a (pending)"), 8));
     trees.set_remote("h".into(), remote_at(file("n", "child", 1), 8));
     assert!(!commits.acknowledge(&mut trees, 8));
@@ -748,7 +748,7 @@ fn a_marked_node_gets_its_name_only_once_it_is_restored_from_the_trash() {
         vec![outcome(op_result::Code::Applied)],
     );
 
-    let mut node = trees.remote().get("a").unwrap().clone();
+    let mut node = trees.remote().get(&"a".into()).unwrap().clone();
     node.trashed = false;
     node.trash_group = String::new();
     trees.set_remote("a".into(), node);
@@ -771,8 +771,11 @@ fn a_free_name_is_taken_on_disk_before_the_rename_is_sent() {
         matches!(planned.as_slice(), [Effect::Move { .. }]),
         "{planned:?}"
     );
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "a")));
-    assert_eq!(trees.synced().live("a"), Some(&dir(ROOT, "a (pending)")));
+    assert_eq!(trees.local().live(&"a".into()), Some(&dir(ROOT, "a")));
+    assert_eq!(
+        trees.synced().live(&"a".into()),
+        Some(&dir(ROOT, "a (pending)"))
+    );
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&sent), [owed_mv("a", ROOT, "a", "a (pending)")]);
     assert!(!sent.require_head);
@@ -782,8 +785,8 @@ fn a_free_name_is_taken_on_disk_before_the_rename_is_sent() {
         .unwrap();
     assert!(commits.acknowledge(&mut trees, 9));
     trees.settle(commits.aliases());
-    assert_eq!(trees.synced().live("a"), Some(&dir(ROOT, "a")));
-    assert_eq!(trees.synced_mark("a"), None);
+    assert_eq!(trees.synced().live(&"a".into()), Some(&dir(ROOT, "a")));
+    assert_eq!(trees.synced_mark(&"a".into()), None);
 }
 
 #[test]
@@ -794,7 +797,7 @@ fn a_size_refusal_releases_the_finishes_its_commit_carried() {
         synced("c", dir(ROOT, "c (pending)")),
         synced("d", dir(ROOT, "c")),
     ]);
-    let mut other = trees.remote().get("c").unwrap().clone();
+    let mut other = trees.remote().get(&"c".into()).unwrap().clone();
     other.pending_for = Some("c".into());
     other.pending_by = Some("me".into());
     trees.set_remote("c".into(), other);
@@ -845,7 +848,7 @@ fn a_rewind_releases_a_finish_held_at_the_old_history_head() {
     ]);
     let first = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(first.base_seq, 7);
-    let mut after_rewind = trees.remote().get("a").unwrap().clone();
+    let mut after_rewind = trees.remote().get(&"a".into()).unwrap().clone();
     after_rewind.meta_rev = 2;
     trees.set_remote("a".into(), after_rewind);
     commits.recover(
@@ -874,14 +877,14 @@ fn a_rename_taken_on_disk_follows_the_server_when_another_user_renames_the_node_
     let (mut commits, mut trees, mut ids) =
         owing_its_name(&[synced("a", dir(ROOT, "a (pending)"))]);
     effects_for(&mut trees, &mut ids, "a");
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "a")));
+    assert_eq!(trees.local().live(&"a".into()), Some(&dir(ROOT, "a")));
     trees.set_remote("a".into(), remote_at(dir(ROOT, "c"), 9));
     trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     effects_for(&mut trees, &mut ids, "a");
     trees.settle(commits.aliases());
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "c")));
-    assert_eq!(trees.synced().live("a"), Some(&dir(ROOT, "c")));
+    assert_eq!(trees.local().live(&"a".into()), Some(&dir(ROOT, "c")));
+    assert_eq!(trees.synced().live(&"a".into()), Some(&dir(ROOT, "c")));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
@@ -896,7 +899,7 @@ fn a_rename_taken_on_disk_is_not_sent_again_once_the_setter_finished_it() {
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     effects_for(&mut trees, &mut ids, "a");
     trees.settle(commits.aliases());
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "c")));
+    assert_eq!(trees.local().live(&"a".into()), Some(&dir(ROOT, "c")));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
@@ -907,14 +910,14 @@ fn a_rename_taken_on_disk_follows_a_later_rename_when_s_could_not_take_the_sette
         synced("f", file(ROOT, "x", 1)),
     ]);
     effects_for(&mut trees, &mut ids, "a");
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "a")));
+    assert_eq!(trees.local().live(&"a".into()), Some(&dir(ROOT, "a")));
     trees.set_local("f".into(), local(file(ROOT, "A", 1), 2));
     trees.set_remote("f".into(), remote_at(file(ROOT, "A", 1), 8));
     trees.settle(commits.aliases());
     trees.set_local("f".into(), local(file(ROOT, "b", 1), 2));
     trees.set_remote("a".into(), remote_at(dir(ROOT, "a"), 9));
     trees.settle(commits.aliases());
-    assert_eq!(trees.synced().live("f"), Some(&file(ROOT, "A", 1)));
+    assert_eq!(trees.synced().live(&"f".into()), Some(&file(ROOT, "A", 1)));
     trees.set_remote("a".into(), remote_at(dir(ROOT, "c"), 10));
     trees.settle(commits.aliases());
     let sent = build(&mut commits, &mut trees, &mut ids);
@@ -923,7 +926,7 @@ fn a_rename_taken_on_disk_follows_a_later_rename_when_s_could_not_take_the_sette
         "{sent:?}"
     );
     effects_for(&mut trees, &mut ids, "a");
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "c")));
+    assert_eq!(trees.local().live(&"a".into()), Some(&dir(ROOT, "c")));
 }
 
 #[test]
@@ -931,7 +934,7 @@ fn a_finish_another_device_makes_keeps_a_remote_write_this_device_never_took() {
     let (_commits, mut trees, mut ids) =
         owing_its_name(&[synced("a", file(ROOT, "a (pending)", 1))]);
     effects_for(&mut trees, &mut ids, "a");
-    assert_eq!(trees.local().live("a"), Some(&file(ROOT, "a", 1)));
+    assert_eq!(trees.local().live(&"a".into()), Some(&file(ROOT, "a", 1)));
     trees.set_local("a".into(), local(file(ROOT, "a", 2), 1));
     trees.set_remote(
         "a".into(),
@@ -944,7 +947,7 @@ fn a_finish_another_device_makes_keeps_a_remote_write_this_device_never_took() {
         },
     );
     trees.settle(&Default::default());
-    assert_eq!(trees.class("a"), Class::Concurrent);
+    assert_eq!(trees.class(&"a".into()), Class::Concurrent);
     trees.set_remote(
         "a".into(),
         RemoteNode {
@@ -957,10 +960,13 @@ fn a_finish_another_device_makes_keeps_a_remote_write_this_device_never_took() {
     );
     trees.settle(&Default::default());
     assert_eq!(
-        trees.synced().live("a").and_then(|shape| shape.content.clone()),
+        trees
+            .synced()
+            .live(&"a".into())
+            .and_then(|shape| shape.content.clone()),
         Some(content(1))
     );
-    assert_eq!(trees.class("a"), Class::Concurrent);
+    assert_eq!(trees.class(&"a".into()), Class::Concurrent);
 }
 
 #[test]
@@ -1038,11 +1044,11 @@ fn a_folder_created_under_a_pending_name_for_a_decomposed_name_keeps_its_finish_
         .unwrap();
     assert!(commits.acknowledge(&mut trees, 8));
     trees.settle(commits.aliases());
-    let finish = trees.state().pending_finishes.get("n").cloned();
+    let finish = trees.state().pending_finishes.get(&"n".into()).cloned();
     assert!(finish.as_ref().is_some_and(|finish| finish.disk_first), "{finish:?}");
     effects_for(&mut trees, &mut ids, "n");
     build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert!(trees.state().pending_finishes["n"].sending);
+    assert!(trees.state().pending_finishes[&"n".into()].sending);
 }
 
 #[test]
@@ -1090,12 +1096,12 @@ fn a_finish_to_a_decomposed_name_that_ends_while_its_move_is_on_disk_starts_agai
         },
     );
     trees.settle(&Default::default());
-    assert!(!trees.state().pending_finishes.contains_key("a"));
+    assert!(!trees.state().pending_finishes.contains_key(&"a".into()));
     effects
         .done(&mut trees, None, &record.effect_id, None)
         .unwrap();
     trees.settle(&Default::default());
-    assert!(trees.state().pending_finishes.contains_key("a"));
+    assert!(trees.state().pending_finishes.contains_key(&"a".into()));
 }
 
 #[test]
@@ -1117,13 +1123,16 @@ fn a_rename_the_setter_finishes_beside_a_node_holding_its_name_keeps_the_mark_in
     commits.received(result(9, vec![renamed])).unwrap();
     assert!(commits.acknowledge(&mut trees, 9));
     trees.settle(commits.aliases());
-    assert_eq!(trees.synced().live("a"), Some(&dir(ROOT, "a (pending)")));
-    assert_eq!(trees.synced_mark("a"), Some("a"));
+    assert_eq!(
+        trees.synced().live(&"a".into()),
+        Some(&dir(ROOT, "a (pending)"))
+    );
+    assert_eq!(trees.synced_mark(&"a".into()), Some("a"));
     effects_for(&mut trees, &mut ids, "a");
     trees.settle(commits.aliases());
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "a 2")));
-    assert_eq!(trees.synced().live("a"), Some(&dir(ROOT, "a 2")));
-    assert_eq!(trees.synced_mark("a"), None);
+    assert_eq!(trees.local().live(&"a".into()), Some(&dir(ROOT, "a 2")));
+    assert_eq!(trees.synced().live(&"a".into()), Some(&dir(ROOT, "a 2")));
+    assert_eq!(trees.synced_mark(&"a".into()), None);
 }
 
 #[test]
@@ -1132,7 +1141,7 @@ fn a_rename_owed_from_before_marks_taken_on_disk_is_sent_requiring_the_head() {
     owing_a_rename_from_before_marks(&mut trees);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     effects_for(&mut trees, &mut ids, "a");
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "a")));
+    assert_eq!(trees.local().live(&"a".into()), Some(&dir(ROOT, "a")));
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&sent), [owed_mv("a", ROOT, "a", "a (pending)")]);
     assert!(sent.require_head);
@@ -1152,7 +1161,7 @@ fn the_setters_owed_rename_its_disk_already_holds_is_a_finish_that_a_delete_reti
     commits
         .failed(&mut trees, &refusal(error::Code::HeadMoved, 0))
         .unwrap();
-    let mut deleted = trees.remote().get("a").unwrap().clone();
+    let mut deleted = trees.remote().get(&"a".into()).unwrap().clone();
     deleted.trashed = true;
     deleted.meta_rev = 9;
     trees.set_remote("a".into(), deleted);
@@ -1160,7 +1169,7 @@ fn the_setters_owed_rename_its_disk_already_holds_is_a_finish_that_a_delete_reti
     let after = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 8);
     assert_eq!(after, None);
     effects_for(&mut trees, &mut ids, "a");
-    assert_eq!(trees.local().live("a"), None);
+    assert_eq!(trees.local().live(&"a".into()), None);
 }
 
 #[test]
@@ -1195,7 +1204,7 @@ fn a_folder_deleted_before_its_setter_builds_the_owed_rename_is_not_revived() {
         None
     );
     effects_for(&mut trees, &mut ids, "a");
-    assert_eq!(trees.local().live("a"), None);
+    assert_eq!(trees.local().live(&"a".into()), None);
 }
 
 #[test]
@@ -1213,7 +1222,7 @@ fn a_rename_owed_from_before_marks_taken_on_disk_follows_a_newer_move_by_another
     effects_for(&mut trees, &mut ids, "a");
     trees.settle(commits.aliases());
     assert_eq!(
-        trees.local().live("a"),
+        trees.local().live(&"a".into()),
         Some(&dir(ROOT, "chosen by another user"))
     );
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
@@ -1226,7 +1235,7 @@ fn a_rename_taken_on_disk_follows_a_newer_mark_that_moves_the_node_to_another_fo
         synced("a", dir(ROOT, "a (pending)")),
     ]);
     effects_for(&mut trees, &mut ids, "a");
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "a")));
+    assert_eq!(trees.local().live(&"a".into()), Some(&dir(ROOT, "a")));
     let mut moved = remote_at(dir("d", "a (pending)"), 9);
     moved.pending_for = Some("a".into());
     moved.pending_by = Some("other".into());
@@ -1236,8 +1245,8 @@ fn a_rename_taken_on_disk_follows_a_newer_mark_that_moves_the_node_to_another_fo
     effects_for(&mut trees, &mut ids, "a");
     trees.settle(commits.aliases());
     assert_eq!(
-        (trees.local().live("a")).map(|local| local.parent.as_str()),
-        Some("d")
+        (trees.local().live(&"a".into())).map(|local| &local.parent),
+        Some(&"d".into())
     );
 }
 
@@ -1255,7 +1264,7 @@ fn a_rename_taken_on_disk_is_not_sent_once_another_user_deletes_the_node() {
     );
     effects_for(&mut trees, &mut ids, "a");
     trees.settle(commits.aliases());
-    assert_eq!(trees.local().live("a"), None);
+    assert_eq!(trees.local().live(&"a".into()), None);
 }
 
 #[test]
@@ -1278,7 +1287,7 @@ fn a_create_a_store_from_before_marks_owed_a_rename_for_is_finished_after_its_re
     trees.set_remote("a".into(), remote_at(dir(ROOT, "a (pending)"), 8));
     trees.settle(commits.aliases());
     effects_for(&mut trees, &mut ids, "a");
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "a")));
+    assert_eq!(trees.local().live(&"a".into()), Some(&dir(ROOT, "a")));
     let finish = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&finish), [owed_mv("a", ROOT, "a", "a (pending)")]);
 }
@@ -1302,7 +1311,7 @@ fn a_rename_owed_from_before_marks_ends_when_another_user_renames_the_node_befor
     effects_for(&mut trees, &mut ids, "a");
     trees.settle(commits.aliases());
     assert_eq!(
-        trees.local().live("a"),
+        trees.local().live(&"a".into()),
         Some(&dir(ROOT, "chosen by another user"))
     );
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
@@ -1329,7 +1338,10 @@ fn a_marked_node_takes_its_name_once_the_node_holding_it_moves_away() {
     trees.settle(commits.aliases());
     effects_for(&mut trees, &mut ids, "a");
     assert_eq!(
-        trees.local().live("a").map(|shape| shape.name.as_str()),
+        trees
+            .local()
+            .live(&"a".into())
+            .map(|shape| shape.name.as_str()),
         Some("a")
     );
     let finish = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -1378,7 +1390,7 @@ fn a_rename_away_and_back_seen_in_one_batch_ends_the_finish() {
     let (mut commits, mut trees, mut ids) =
         owing_its_name(&[synced("a", dir(ROOT, "a (pending)"))]);
     effects_for(&mut trees, &mut ids, "a");
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "a")));
+    assert_eq!(trees.local().live(&"a".into()), Some(&dir(ROOT, "a")));
     trees.set_remote("a".into(), remote_at(dir(ROOT, "chosen by user"), 9));
     trees.set_remote("a".into(), remote_at(dir(ROOT, "a (pending)"), 10));
     trees.settle(commits.aliases());
@@ -1391,7 +1403,10 @@ fn a_rename_away_and_back_seen_in_one_batch_ends_the_finish() {
     );
     effects_for(&mut trees, &mut ids, "a");
     trees.settle(commits.aliases());
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "a (pending)")));
+    assert_eq!(
+        trees.local().live(&"a".into()),
+        Some(&dir(ROOT, "a (pending)"))
+    );
 }
 
 #[test]
@@ -1400,7 +1415,7 @@ fn a_rename_owed_from_before_marks_taken_on_disk_sends_the_users_move_back_after
     owing_a_rename_from_before_marks(&mut trees);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     effects_for(&mut trees, &mut ids, "a");
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "a")));
+    assert_eq!(trees.local().live(&"a".into()), Some(&dir(ROOT, "a")));
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&sent), [owed_mv("a", ROOT, "a", "a (pending)")]);
     trees.set_local("a".into(), local(dir(ROOT, "a (pending)"), 1));
@@ -1425,7 +1440,7 @@ fn a_finish_the_disk_took_first_sends_the_users_move_back_after_a_result_with_no
     let (mut commits, mut trees, mut ids) =
         owing_its_name(&[synced("a", dir(ROOT, "a (pending)"))]);
     effects_for(&mut trees, &mut ids, "a");
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "a")));
+    assert_eq!(trees.local().live(&"a".into()), Some(&dir(ROOT, "a")));
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&sent), [owed_mv("a", ROOT, "a", "a (pending)")]);
     trees.set_local("a".into(), local(dir(ROOT, "a (pending)"), 1));
@@ -1435,7 +1450,7 @@ fn a_finish_the_disk_took_first_sends_the_users_move_back_after_a_result_with_no
         meta_rev: 8,
         pending_for: None,
         pending_by: None,
-        ..trees.remote().get("a").unwrap().clone()
+        ..trees.remote().get(&"a".into()).unwrap().clone()
     };
     trees.set_remote("a".into(), finished);
     commits
@@ -1466,7 +1481,7 @@ fn a_finish_sent_before_the_disk_took_it_is_placed_on_disk_after_a_result_with_n
         meta_rev: 9,
         pending_for: None,
         pending_by: None,
-        ..trees.remote().get("a").unwrap().clone()
+        ..trees.remote().get(&"a".into()).unwrap().clone()
     };
     trees.set_remote("a".into(), finished);
     commits
@@ -1483,7 +1498,7 @@ fn a_finish_sent_before_the_disk_took_it_is_placed_on_disk_after_a_result_with_n
     );
     effects_for(&mut trees, &mut ids, "b");
     effects_for(&mut trees, &mut ids, "a");
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "a")));
+    assert_eq!(trees.local().live(&"a".into()), Some(&dir(ROOT, "a")));
 }
 
 #[test]
@@ -1501,7 +1516,7 @@ fn a_finish_refused_then_taken_on_disk_sends_the_users_move_back_after_it() {
     assert!(!commits.acknowledge(&mut trees, 8));
     trees.settle(commits.aliases());
     effects_for(&mut trees, &mut ids, "a");
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "a")));
+    assert_eq!(trees.local().live(&"a".into()), Some(&dir(ROOT, "a")));
     let sent = commits
         .build(&mut trees, &mut ids, NOW, HISTORY, "me", 8)
         .cloned()
@@ -1611,8 +1626,8 @@ fn a_folder_another_device_moves_while_its_owed_name_is_still_taken_keeps_that_p
     if let Some(commit) = build(&mut commits, &mut trees, &mut ids) {
         assert_eq!(n_moves(&commit), [], "{:?}", ops(&commit));
     }
-    let n = &trees.local().get("n").unwrap().shape;
-    assert_eq!((n.parent.as_str(), n.name.as_str()), ("x", "A (pending)"));
+    let n = &trees.local().get(&"n".into()).unwrap().shape;
+    assert_eq!((&n.parent, n.name.as_str()), (&"x".into(), "A (pending)"));
 }
 
 #[test]
@@ -1653,9 +1668,9 @@ fn a_folder_another_device_moves_takes_that_place_once_the_node_on_its_owed_name
     assert_eq!(sent.as_ref().map(ops), None);
     effects_for(&mut trees, &mut ids, "n");
     trees.settle(commits.aliases());
-    let n = &trees.local().get("n").unwrap().shape;
-    assert_eq!((n.parent.as_str(), n.name.as_str()), ("x", "A (pending)"));
-    assert_eq!(trees.class("n"), Class::InSync);
+    let n = &trees.local().get(&"n".into()).unwrap().shape;
+    assert_eq!((&n.parent, n.name.as_str()), (&"x".into(), "A (pending)"));
+    assert_eq!(trees.class(&"n".into()), Class::InSync);
 }
 
 #[test]
@@ -1701,8 +1716,8 @@ fn a_folder_another_device_deletes_is_deleted_once_the_node_on_its_owed_name_sta
     assert_eq!(sent.as_ref().map(ops), None);
     effects_for(&mut trees, &mut ids, "n");
     trees.settle(commits.aliases());
-    assert!(trees.local().get("n").is_none());
-    assert_eq!(trees.class("n"), Class::InSync);
+    assert!(trees.local().get(&"n".into()).is_none());
+    assert_eq!(trees.class(&"n".into()), Class::InSync);
 }
 
 #[test]
@@ -1732,10 +1747,10 @@ fn a_folder_another_device_deletes_keeps_its_owed_name_while_a_parked_file_in_it
     assert!(!commits.acknowledge(&mut trees, 1));
     trees.settle(commits.aliases());
     assert_eq!(
-        (trees.remote().get("a")).and_then(|remote| remote.pending_for.as_deref()),
+        (trees.remote().get(&"a".into())).and_then(|remote| remote.pending_for.as_deref()),
         Some("a")
     );
-    assert_eq!(trees.class("a"), Class::Concurrent);
+    assert_eq!(trees.class(&"a".into()), Class::Concurrent);
     let _ = build(&mut commits, &mut trees, &mut ids);
 }
 
@@ -1826,11 +1841,11 @@ fn a_finish_the_disk_holds_in_another_unicode_form_is_sent_at_its_name() {
     trees.restore(state).unwrap();
     trees.rules_scanned();
     trees.settle(&Default::default());
-    assert!(trees.state().pending_finishes.contains_key("a"));
+    assert!(trees.state().pending_finishes.contains_key(&"a".into()));
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&sent), [owed_mv("a", ROOT, decomposed, pending)]);
-    assert!(trees.state().pending_finishes["a"].sending);
+    assert!(trees.state().pending_finishes[&"a".into()].sending);
 }
 
 #[test]
@@ -1852,7 +1867,7 @@ fn a_folder_the_disk_holds_at_its_owed_name_in_another_unicode_form_finishes_dis
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&sent), [owed_mv("a", ROOT, decomposed, pending)]);
-    let finish = &trees.state().pending_finishes["a"];
+    let finish = &trees.state().pending_finishes[&"a".into()];
     assert!(finish.disk_first && finish.sending, "{finish:?}");
 }
 
@@ -1883,7 +1898,7 @@ fn a_folder_the_user_moves_to_its_owed_name_in_another_unicode_form_finishes_dis
     });
     trees.restore(state).unwrap();
     trees.set_local("a".into(), local(dir(ROOT, decomposed), 1));
-    assert!(trees.state().pending_finishes["a"].disk_first);
+    assert!(trees.state().pending_finishes[&"a".into()].disk_first);
 }
 
 #[test]
@@ -1913,7 +1928,7 @@ fn a_folder_this_device_puts_back_at_its_pending_name_takes_the_name_the_server_
     trees.revert("a".into());
     trees.settle(commits.aliases());
     effects_for(&mut trees, &mut ids, "a");
-    let at = |trees: &Trees| (trees.local().get("a")).map(|local| local.shape.name.clone());
+    let at = |trees: &Trees| (trees.local().get(&"a".into())).map(|local| local.shape.name.clone());
     assert_eq!(at(&trees).as_deref(), Some("a (pending)"));
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&sent), [owed_mv("a", ROOT, "a", "a (pending)")]);
@@ -2067,9 +2082,9 @@ fn a_superseded_owed_rename_ends_the_debt_and_leaves_the_change_it_met_to_reach_
         &mut trees,
         vec![outcome(op_result::Code::Superseded)],
     );
-    assert!(!trees.state().pending_finishes.contains_key("a"));
-    assert_eq!(trees.synced().live("a"), Some(&dir(ROOT, "a")));
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert!(!trees.state().pending_finishes.contains_key(&"a".into()));
+    assert_eq!(trees.synced().live(&"a".into()), Some(&dir(ROOT, "a")));
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
@@ -2090,7 +2105,7 @@ fn a_superseded_owed_rename_of_a_node_another_device_deleted_keeps_the_debt() {
         &mut trees,
         vec![outcome(op_result::Code::Superseded)],
     );
-    assert!(!trees.state().pending_finishes.contains_key("a"));
+    assert!(!trees.state().pending_finishes.contains_key(&"a".into()));
     trees.set_remote("a".into(), marked(remote_at(dir(ROOT, "a (pending)"), 3)));
     trees.settle(commits.aliases());
     effects_for(&mut trees, &mut ids, "a");
@@ -2128,7 +2143,7 @@ fn a_folder_another_device_deletes_and_brings_back_at_its_pending_name_takes_its
     trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     effects_for(&mut trees, &mut ids, "a");
-    assert!(trees.local().get("a").is_none());
+    assert!(trees.local().get(&"a".into()).is_none());
     trees.set_remote("a".into(), marked(remote_at(dir(ROOT, "a (pending)"), 3)));
     commits.acknowledge(&mut trees, 3);
     trees.settle(commits.aliases());
@@ -2140,7 +2155,7 @@ fn a_folder_another_device_deletes_and_brings_back_at_its_pending_name_takes_its
 #[test]
 fn s_takes_the_mark_r_gives_the_position_s_already_holds() {
     let (_, mut trees, _) = owing_its_name(&[synced("a", dir(ROOT, "a (pending)"))]);
-    assert_eq!(trees.synced_mark("a"), Some("a"));
+    assert_eq!(trees.synced_mark(&"a".into()), Some("a"));
     let cleared = RemoteNode {
         pending_for: None,
         pending_by: None,
@@ -2148,7 +2163,7 @@ fn s_takes_the_mark_r_gives_the_position_s_already_holds() {
     };
     trees.set_remote("a".into(), cleared);
     trees.settle(&Default::default());
-    assert_eq!(trees.synced_mark("a"), None);
+    assert_eq!(trees.synced_mark(&"a".into()), None);
 }
 
 #[test]
@@ -2159,7 +2174,7 @@ fn a_size_refusal_leaves_the_finishes_of_its_commit_due() {
         synced("c", dir(ROOT, "c (pending)")),
         synced("d", dir(ROOT, "c")),
     ]);
-    let mut other = trees.remote().get("c").unwrap().clone();
+    let mut other = trees.remote().get(&"c".into()).unwrap().clone();
     other.pending_for = Some("c".into());
     other.pending_by = Some("me".into());
     trees.set_remote("c".into(), other);
@@ -2181,7 +2196,7 @@ fn a_finish_kept_through_a_rewind_takes_the_name_the_rewound_server_marks() {
     ]);
     let first = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&first), [owed_mv("a", ROOT, "a", "a (pending)")]);
-    let mut after_rewind = trees.remote().get("a").unwrap().clone();
+    let mut after_rewind = trees.remote().get(&"a".into()).unwrap().clone();
     after_rewind.pending_for = Some("c".into());
     trees.set_remote("a".into(), after_rewind);
     commits.recover(
@@ -2208,7 +2223,7 @@ fn a_folder_the_user_moves_while_it_is_parked_for_a_swap_drops_the_mark_it_kept(
     state.unsent_marks.insert("n".into(), "a".into());
     trees.restore(state).unwrap();
     trees.rules_scanned();
-    let held = trees.local().get("n").unwrap().clone();
+    let held = trees.local().get(&"n".into()).unwrap().clone();
     trees.set_local(
         "n".into(),
         LocalNode {
@@ -2286,7 +2301,7 @@ fn a_folder_named_like_the_pending_name_of_a_held_finish_is_created_under_a_pend
     let (mut commits, mut trees, mut ids) =
         owing_its_name(&[synced("a", dir(ROOT, "a (pending)"))]);
     effects_for(&mut trees, &mut ids, "a");
-    assert_eq!(trees.local().live("a"), Some(&dir(ROOT, "a")));
+    assert_eq!(trees.local().live(&"a".into()), Some(&dir(ROOT, "a")));
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&sent), [owed_mv("a", ROOT, "a", "a (pending)")]);
     commits
@@ -2350,7 +2365,7 @@ fn an_owed_folder_deleted_while_an_edit_below_it_waits(marked: bool) -> (Commits
             trashed: true,
             meta_rev: 9,
             trash_group: "9:0".into(),
-            ..trees.remote().get(id).unwrap().clone()
+            ..trees.remote().get(&NodeId::from(id)).unwrap().clone()
         };
         trees.set_remote(id.into(), deleted);
     }
@@ -2416,15 +2431,15 @@ fn a_folder_an_edit_revives_takes_its_owed_name(marked: bool) {
 #[test]
 fn a_folder_an_edit_revives_takes_its_owed_name_once_the_held_edit_is_released() {
     let (mut commits, mut trees, mut ids) = an_owed_folder_deleted_while_an_edit_below_it_waits(false);
-    trees.set_rules_unknown("n");
+    trees.set_rules_unknown(&"n".into());
     let held = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 9).cloned();
     assert!(
         !held.as_ref().is_some_and(|commit| (ops(commit).iter())
             .any(|op| matches!(op, op::Op::UpdateContent(update) if update.node_id == "h"))),
         "{held:?}"
     );
-    assert!(trees.state().pending_finishes.contains_key("n"));
-    trees.set_rules_known("n");
+    assert!(trees.state().pending_finishes.contains_key(&"n".into()));
+    trees.set_rules_known(&"n".into());
     trees.settle(commits.aliases());
     let sent = revive(&mut commits, &mut trees, &mut ids);
     trees.set_remote("n".into(), owed_at(false, 10));
@@ -2440,7 +2455,7 @@ fn an_owed_rename_ends_when_another_device_revives_the_folder_first() {
     let sent = revive(&mut commits, &mut trees, &mut ids);
     trees.set_remote("n".into(), owed_at(false, 10));
     acknowledge_revival(&mut commits, &mut trees, &sent, 11);
-    assert!(!trees.state().pending_finishes.contains_key("n"));
+    assert!(!trees.state().pending_finishes.contains_key(&"n".into()));
     effects_for(&mut trees, &mut ids, "n");
     let next = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 11).cloned();
     assert!(
@@ -2452,10 +2467,10 @@ fn an_owed_rename_ends_when_another_device_revives_the_folder_first() {
 #[test]
 fn an_owed_rename_ends_when_the_user_deletes_the_folder_an_edit_would_revive() {
     let (mut commits, mut trees, mut ids) = an_owed_folder_deleted_while_an_edit_below_it_waits(false);
-    trees.remove_local("h");
-    trees.remove_local("n");
+    trees.remove_local(&"h".into());
+    trees.remove_local(&"n".into());
     trees.settle(commits.aliases());
-    assert!(!trees.state().pending_finishes.contains_key("n"));
+    assert!(!trees.state().pending_finishes.contains_key(&"n".into()));
     let next = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 9).cloned();
     assert_eq!(next.as_ref().map(ops), None);
 }

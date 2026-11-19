@@ -1,9 +1,9 @@
 use super::*;
 use crate::tree::FileIdentity;
 
-fn dir(parent: &str, name: &str) -> Shape {
+fn dir(parent: &NodeId, name: &str) -> Shape {
     Shape {
-        parent: parent.into(),
+        parent: parent.clone(),
         name: name.into(),
         kind: Kind::Dir,
         content: None,
@@ -67,12 +67,12 @@ fn ancestry_tree() -> Trees {
         },
     );
     trees.set_synced("f".into(), Some(ancestry_file(1)));
-    trees.set_content_from_server("f", true);
+    trees.set_content_from_server(&"f".into(), true);
     trees
 }
 
 fn ancestry_write(trees: &mut Trees, value: u8) {
-    let mut local = trees.l.get("f").unwrap().clone();
+    let mut local = trees.l.get(&"f".into()).unwrap().clone();
     local.shape = ancestry_file(value);
     trees.set_local_changed("f".into(), local);
 }
@@ -82,10 +82,10 @@ fn ancestry_of_an_edit_is_its_foreign_base_and_the_chain_r_reported_for_it() {
     let mut trees = ancestry_tree();
     trees.set_remote("f".into(), ancestry_remote(3, "unheld", &["unrelated"]));
     ancestry_write(&mut trees, 2);
-    assert_eq!(trees.edit_bases("f"), ["held", "foreign-base"]);
-    assert_eq!(trees.source_version_id("f"), None);
+    assert_eq!(trees.edit_bases(&"f".into()), ["held", "foreign-base"]);
+    assert_eq!(trees.source_version_id(&"f".into()), None);
     ancestry_write(&mut trees, 4);
-    assert_eq!(trees.edit_bases("f"), ["held", "foreign-base"]);
+    assert_eq!(trees.edit_bases(&"f".into()), ["held", "foreign-base"]);
 }
 
 #[test]
@@ -95,9 +95,9 @@ fn ancestry_of_own_edits_includes_held_versions_but_no_uncommitted_ids() {
     trees.set_remote_edited_here("f".into(), ancestry_remote(2, "own-2", &["held"]));
     ancestry_write(&mut trees, 3);
     ancestry_write(&mut trees, 4);
-    assert_eq!(trees.edit_bases("f"), ["own-2", "held"]);
+    assert_eq!(trees.edit_bases(&"f".into()), ["own-2", "held"]);
     trees.set_remote_edited_here("f".into(), ancestry_remote(3, "own-3", &["own-2", "held"]));
-    assert_eq!(trees.edit_bases("f"), ["own-3", "own-2", "held"]);
+    assert_eq!(trees.edit_bases(&"f".into()), ["own-3", "own-2", "held"]);
 }
 
 #[test]
@@ -106,14 +106,14 @@ fn ancestry_does_not_recover_an_old_own_base_after_a_foreign_download() {
     ancestry_write(&mut trees, 2);
     ancestry_write(&mut trees, 3);
     trees.set_remote("f".into(), ancestry_remote(4, "foreign-4", &[]));
-    let mut local = trees.l.get("f").unwrap().clone();
+    let mut local = trees.l.get(&"f".into()).unwrap().clone();
     local.shape = ancestry_file(4);
     trees.set_local("f".into(), local);
     trees.set_synced("f".into(), Some(ancestry_file(4)));
-    trees.set_content_from_server("f", true);
+    trees.set_content_from_server(&"f".into(), true);
     ancestry_write(&mut trees, 5);
     trees.set_remote_edited_here("f".into(), ancestry_remote(2, "late-own-2", &["held"]));
-    assert_eq!(trees.edit_bases("f"), ["foreign-4"]);
+    assert_eq!(trees.edit_bases(&"f".into()), ["foreign-4"]);
 }
 
 #[test]
@@ -128,11 +128,11 @@ fn ancestry_record_give_way_uses_the_resent_value_not_an_older_listing() {
         "f".into(),
         ancestry_remote(2, "unrelated", &["older-listing"]),
     );
-    assert!(trees.resends.contains("f"));
-    assert_eq!(trees.source_version_id("f"), Some("held"));
+    assert!(trees.resends.contains(&"f".into()));
+    assert_eq!(trees.source_version_id(&"f".into()), Some("held"));
     trees.set_remote("f".into(), ancestry_remote(3, "continuation", &["held"]));
-    assert!(!trees.resends.contains("f"));
-    assert_eq!(trees.s.get("f"), Some(&ancestry_file(1)));
+    assert!(!trees.resends.contains(&"f".into()));
+    assert_eq!(trees.s.get(&"f".into()), Some(&ancestry_file(1)));
 }
 
 #[test]
@@ -158,8 +158,8 @@ fn ancestry_listing_give_way_uses_the_snapshot_source() {
             0,
             0,
         );
-        assert_eq!(trees.s.get("f").is_some(), carries_source);
-        assert_eq!(trees.source_version_id("f"), Some("held"));
+        assert_eq!(trees.s.get(&"f".into()).is_some(), carries_source);
+        assert_eq!(trees.source_version_id(&"f".into()), Some("held"));
     }
 }
 
@@ -204,7 +204,7 @@ fn ancestry_unknown_relationships_keep_sequence_based_survival() {
         let listed = if matching_source {
             "unrelated"
         } else {
-            records.get_mut("f").unwrap().source_version_id = Some("other-source".into());
+            records.get_mut(&"f".into()).unwrap().source_version_id = Some("other-source".into());
             "foreign-base"
         };
         trees.set_listed_remote("f".into(), ancestry_remote(0, listed, &[]));
@@ -219,8 +219,8 @@ fn ancestry_unknown_relationships_keep_sequence_based_survival() {
             10,
             0,
         );
-        assert_eq!(trees.s.get("f"), Some(&ancestry_file(1)));
-        assert!(!trees.resends.contains("f"));
+        assert_eq!(trees.s.get(&"f".into()), Some(&ancestry_file(1)));
+        assert!(!trees.resends.contains(&"f".into()));
     }
 }
 
@@ -231,7 +231,7 @@ fn ancestry_old_store_without_provenance_does_not_guess_a_base() {
     state.content_provenance.clear();
     trees.restore(state).unwrap();
     ancestry_write(&mut trees, 2);
-    assert!(trees.edit_bases("f").is_empty());
+    assert!(trees.edit_bases(&"f".into()).is_empty());
 }
 
 #[test]
@@ -241,14 +241,14 @@ fn ancestry_is_newest_first_deduplicated_and_bounded() {
         ancestry_write(&mut trees, n);
         let mut node = ancestry_remote(n, &format!("own-{n}"), &[]);
         node.made_over = trees
-            .edit_bases("f")
+            .edit_bases(&"f".into())
             .into_iter()
             .flat_map(|base| [base.clone(), base])
             .collect();
         trees.set_remote_edited_here("f".into(), node);
     }
     ancestry_write(&mut trees, 100);
-    let bases = trees.edit_bases("f");
+    let bases = trees.edit_bases(&"f".into());
     assert_eq!(bases.len(), 64);
     assert_eq!(&bases[..3], ["own-99", "own-98", "own-97"]);
     assert_eq!(bases.last().unwrap(), "own-36");
@@ -264,7 +264,7 @@ fn ancestry_of_an_own_version_is_the_chain_r_reported_for_it() {
     );
     ancestry_write(&mut trees, 3);
     assert_eq!(
-        trees.edit_bases("f"),
+        trees.edit_bases(&"f".into()),
         ["own-2", "held", "foreign-base", "expanded"]
     );
 }
@@ -279,7 +279,11 @@ fn ancestry_restore_rejects_an_unbounded_or_ambiguous_chain() {
         vec![String::new()],
     ] {
         let mut state = before.clone();
-        state.content_provenance.get_mut("f").unwrap().edit_bases = bases;
+        state
+            .content_provenance
+            .get_mut(&"f".into())
+            .unwrap()
+            .edit_bases = bases;
         assert_eq!(
             trees.restore(state),
             Err(StateError::InvalidContentProvenance("f".into()))
@@ -322,26 +326,26 @@ fn ancestry_internal_rekey_preserves_the_value_and_leaves_the_old_synced_source(
             ancestry_write(&mut trees, 2);
             ancestry_write(&mut trees, 3);
         }
-        let before = trees.state().content_provenance["f"].clone();
-        crate::commit::rekey(&mut trees, "f", "copy");
+        let before = trees.state().content_provenance[&"f".into()].clone();
+        crate::commit::rekey(&mut trees, &"f".into(), &"copy".into());
         let state = trees.state();
-        let moved = &state.content_provenance["copy"];
+        let moved = &state.content_provenance[&"copy".into()];
         assert_eq!(moved.local, before.local);
         assert_eq!(moved.edit_bases, before.edit_bases);
         assert_eq!(moved.unversioned_bases, before.unversioned_bases);
         assert_eq!(moved.synced, None);
-        assert_eq!(state.content_provenance["f"].synced, before.synced);
-        assert_eq!(state.content_provenance["f"].local, None);
+        assert_eq!(state.content_provenance[&"f".into()].synced, before.synced);
+        assert_eq!(state.content_provenance[&"f".into()].local, None);
     }
 }
 
 #[test]
 fn ancestry_an_explicit_local_copy_does_not_claim_the_originals_source() {
     let mut trees = ancestry_tree();
-    let node = trees.l.get("f").unwrap().clone();
+    let node = trees.l.get(&"f".into()).unwrap().clone();
     trees.set_local_changed("copy".into(), node);
-    assert_eq!(trees.source_version_id("copy"), None);
-    assert!(trees.edit_bases("copy").is_empty());
+    assert_eq!(trees.source_version_id(&"copy".into()), None);
+    assert!(trees.edit_bases(&"copy".into()).is_empty());
 }
 
 fn waiting(shape: Shape) -> Waiting {
@@ -351,12 +355,12 @@ fn waiting(shape: Shape) -> Waiting {
     }
 }
 
-fn reclaimable(child_to: &str, own_wait: bool) -> Trees {
+fn reclaimable(child_to: &NodeId, own_wait: bool) -> Trees {
     let mut trees = Trees::new("root");
     let synced = [
-        ("f", dir("root", "a")),
-        ("c", dir("f", "child")),
-        ("u", dir("root", "u")),
+        ("f", dir(&"root".into(), "a")),
+        ("c", dir(&"f".into(), "child")),
+        ("u", dir(&"root".into(), "u")),
     ];
     for (ino, (id, shape)) in synced.into_iter().enumerate() {
         trees.set_synced(id.into(), Some(shape.clone()));
@@ -376,52 +380,62 @@ fn reclaimable(child_to: &str, own_wait: bool) -> Trees {
     }
     let moved = [
         ("c", dir(child_to, "a")),
-        ("u", dir("q", "u")),
-        ("q", dir("root", "q")),
+        ("u", dir(&"q".into(), "u")),
+        ("q", dir(&"root".into(), "q")),
     ];
     for (id, shape) in moved {
         trees.set_remote(id.into(), remote(shape));
     }
     trees.settle(&Default::default());
     let mut state = trees.state();
-    state.discarded.insert("f".into(), dir("root", "a"));
+    state.discarded.insert("f".into(), dir(&"root".into(), "a"));
     state
         .waiting
         .insert("c".into(), waiting(dir(child_to, "a")));
-    state.waiting.insert("u".into(), waiting(dir("q", "u")));
+    state
+        .waiting
+        .insert("u".into(), waiting(dir(&"q".into(), "u")));
     if own_wait {
-        state.waiting.insert("f".into(), waiting(dir("q", "a")));
+        state
+            .waiting
+            .insert("f".into(), waiting(dir(&"q".into(), "a")));
     }
     trees.restore(state).unwrap();
     trees.rules_scanned();
-    assert!(trees.reclaimed("f"));
+    assert!(trees.reclaimed(&"f".into()));
     trees
 }
 
 #[test]
 fn a_reclaimed_folder_leaves_s_with_only_the_waiting_update_its_removal_needs() {
-    let mut trees = reclaimable("root", false);
-    let unrelated = trees.waiting().get("u").cloned();
+    let mut trees = reclaimable(&"root".into(), false);
+    let unrelated = trees.waiting().get(&"u".into()).cloned();
     assert_eq!(trees.reclaim(|_| true), ["f"]);
-    assert_eq!(trees.synced().live("f"), None);
-    assert_eq!(trees.synced().live("c"), Some(&dir("root", "a")));
-    assert_eq!(trees.synced().live("u"), Some(&dir("root", "u")));
-    assert_eq!(trees.waiting().get("u").cloned(), unrelated);
+    assert_eq!(trees.synced().live(&"f".into()), None);
+    assert_eq!(
+        trees.synced().live(&"c".into()),
+        Some(&dir(&"root".into(), "a"))
+    );
+    assert_eq!(
+        trees.synced().live(&"u".into()),
+        Some(&dir(&"root".into(), "u"))
+    );
+    assert_eq!(trees.waiting().get(&"u".into()).cloned(), unrelated);
     assert_eq!(trees.check(), Ok(()));
 }
 
 #[test]
 fn a_reclaimed_folders_own_waiting_update_does_not_keep_it_in_s() {
-    let mut trees = reclaimable("root", true);
+    let mut trees = reclaimable(&"root".into(), true);
     assert_eq!(trees.reclaim(|_| true), ["f"]);
-    assert_eq!(trees.synced().live("f"), None);
-    assert!(!trees.waiting().contains_key("f"));
-    assert!(trees.waiting().contains_key("u"));
+    assert_eq!(trees.synced().live(&"f".into()), None);
+    assert!(!trees.waiting().contains_key(&"f".into()));
+    assert!(trees.waiting().contains_key(&"u".into()));
 }
 
 #[test]
 fn a_reclaim_that_cannot_keep_s_valid_changes_nothing() {
-    let mut trees = reclaimable("q", true);
+    let mut trees = reclaimable(&"q".into(), true);
     let before = trees.state();
     assert_eq!(trees.reclaim(|_| true), Vec::<NodeId>::new());
     assert_eq!(trees.state(), before);
@@ -430,7 +444,7 @@ fn a_reclaim_that_cannot_keep_s_valid_changes_nothing() {
 fn a_server_folder_in_a_discarded_folder(folders: usize, waiting: bool) -> (Trees, Vec<NodeId>) {
     let mut trees = Trees::new("root");
     let mut ino = 0;
-    let mut add = |trees: &mut Trees, id: String, shape: Shape, server: bool| {
+    let mut add = |trees: &mut Trees, id: NodeId, shape: Shape, server: bool| {
         ino += 1;
         let identity = FileIdentity {
             ino,
@@ -453,13 +467,18 @@ fn a_server_folder_in_a_discarded_folder(folders: usize, waiting: bool) -> (Tree
         };
         trees.set_local(id, local);
     };
-    add(&mut trees, "f".into(), dir("root", "new"), false);
-    add(&mut trees, "x".into(), dir("f", "ignored"), true);
-    let mut ids = vec!["x".to_string()];
+    add(&mut trees, "f".into(), dir(&"root".into(), "new"), false);
+    add(&mut trees, "x".into(), dir(&"f".into(), "ignored"), true);
+    let mut ids = vec![NodeId::from("x")];
     for i in 0..folders {
         let folder = format!("d{i}");
-        add(&mut trees, folder.clone(), dir("x", &folder), true);
-        ids.push(folder.clone());
+        add(
+            &mut trees,
+            folder.clone().into(),
+            dir(&"x".into(), &folder),
+            true,
+        );
+        ids.push(folder.clone().into());
         for j in 0..500 {
             let content = Content {
                 size: 1,
@@ -471,12 +490,12 @@ fn a_server_folder_in_a_discarded_folder(folders: usize, waiting: bool) -> (Tree
                 chunker: String::new(),
             };
             let shape = Shape {
-                parent: folder.clone(),
+                parent: NodeId::from(&folder),
                 name: format!("f{j}"),
                 kind: Kind::File,
                 content: Some(content),
             };
-            let id = format!("c{i}-{j}");
+            let id = NodeId::from(format!("c{i}-{j}"));
             add(&mut trees, id.clone(), shape, true);
             ids.push(id);
         }
@@ -486,10 +505,10 @@ fn a_server_folder_in_a_discarded_folder(folders: usize, waiting: bool) -> (Tree
         koidrive_ignore::Source::Koiignore,
         Some(RuleFile::parse(b"ignored/\n")),
     );
-    trees.discard_server_entries_below(&BTreeMap::from([("f".into(), dir("root", "new"))]));
+    trees.discard_server_entries_below(&BTreeMap::from([("f".into(), dir(&"root".into(), "new"))]));
     trees.discard(
-        ["f".to_string()],
-        &BTreeMap::from([("f".into(), dir("root", "new"))]),
+        ["f".into()],
+        &BTreeMap::from([("f".into(), dir(&"root".into(), "new"))]),
     );
     assert_eq!(trees.discarded.len(), ids.len() + 1);
     (trees, ids)
@@ -503,7 +522,7 @@ fn a_server_folder_of_fifty_thousand_files_in_a_discarded_folder_is_checked_in_l
         let before = ENTRIES_READ.with(Cell::get);
         ENTRIES_BUDGET.with(|limit| limit.set(before.saturating_add(budget)));
         assert!(ids.iter().all(|id| trees.is_discarded(id)));
-        assert!(trees.discard_state("f") == Some(Discard::Kept));
+        assert!(trees.discard_state(&"f".into()) == Some(Discard::Kept));
         ENTRIES_BUDGET.with(|limit| limit.set(u64::MAX));
         ENTRIES_READ.with(Cell::get) - before
     };
@@ -517,10 +536,10 @@ fn a_server_folder_of_fifty_thousand_files_in_a_discarded_folder_is_checked_in_l
 fn two_server_folders_swapped_below_a_discarded_folder_stay_discarded() {
     let mut trees = Trees::new("root");
     let mut ino = 0;
-    let mut place = |trees: &mut Trees, id: &str, shape: Shape, server: bool| {
+    let mut place = |trees: &mut Trees, id: &NodeId, shape: Shape, server: bool| {
         ino += 1;
         if server {
-            trees.set_remote(id.into(), remote(shape.clone()));
+            trees.set_remote(id.clone(), remote(shape.clone()));
         }
         let identity = FileIdentity {
             ino,
@@ -534,15 +553,15 @@ fn two_server_folders_swapped_below_a_discarded_folder_stay_discarded() {
             identity,
             parked: false,
         };
-        trees.set_local(id.into(), local);
+        trees.set_local(id.clone(), local);
     };
-    place(&mut trees, "f", dir("root", "new"), false);
+    place(&mut trees, &"f".into(), dir(&"root".into(), "new"), false);
     for (id, shape) in [
-        ("x", dir("f", "ignored")),
-        ("y", dir("x", "y")),
-        ("z", dir("y", "z")),
+        ("x", dir(&"f".into(), "ignored")),
+        ("y", dir(&"x".into(), "y")),
+        ("z", dir(&"y".into(), "z")),
     ] {
-        place(&mut trees, id, shape.clone(), true);
+        place(&mut trees, &NodeId::from(id), shape.clone(), true);
         trees.set_synced(id.into(), Some(shape));
     }
     trees.set_rules(
@@ -550,19 +569,23 @@ fn two_server_folders_swapped_below_a_discarded_folder_stay_discarded() {
         koidrive_ignore::Source::Koiignore,
         Some(RuleFile::parse(b"ignored/\n")),
     );
-    let shown = BTreeMap::from([("f".into(), dir("root", "new"))]);
+    let shown = BTreeMap::from([("f".into(), dir(&"root".into(), "new"))]);
     trees.discard_server_entries_below(&shown);
-    trees.discard(["f".to_string()], &shown);
-    place(&mut trees, "z", dir("x", "z"), true);
-    place(&mut trees, "y", dir("z", "y"), true);
-    assert!(["x", "y", "z"].iter().all(|id| trees.is_discarded(id)));
-    assert!(trees.discard_state("f") == Some(Discard::Kept));
+    trees.discard(["f".into()], &shown);
+    place(&mut trees, &"z".into(), dir(&"x".into(), "z"), true);
+    place(&mut trees, &"y".into(), dir(&"z".into(), "y"), true);
+    assert!(
+        ["x", "y", "z"]
+            .iter()
+            .all(|id| trees.is_discarded(&NodeId::from(*id)))
+    );
+    assert!(trees.discard_state(&"f".into()) == Some(Discard::Kept));
 }
 
 #[test]
 fn a_discarded_node_drops_its_unsent_move_and_follows_the_server() {
     let mut trees = Trees::new("root");
-    let shape = dir("root", "c");
+    let shape = dir(&"root".into(), "c");
     let local = LocalNode {
         left_out_when_placed: false,
         content_from_server: false,
@@ -585,15 +608,15 @@ fn a_discarded_node_drops_its_unsent_move_and_follows_the_server() {
     );
     trees.settle(&Default::default());
     trees.hold_unsent_move("c".into());
-    assert_eq!(trees.class("c"), Class::Concurrent);
-    trees.discard(["c".to_string()], &BTreeMap::new());
-    assert_eq!(trees.class("c"), Class::Remote);
+    assert_eq!(trees.class(&"c".into()), Class::Concurrent);
+    trees.discard(["c".into()], &BTreeMap::new());
+    assert_eq!(trees.class(&"c".into()), Class::Remote);
 }
 
 #[test]
 fn a_resend_that_yields_to_the_server_trash_drops_its_unsent_move() {
     let mut trees = Trees::new("root");
-    let shape = dir("root", "c");
+    let shape = dir(&"root".into(), "c");
     let local = LocalNode {
         left_out_when_placed: false,
         content_from_server: false,
@@ -618,7 +641,7 @@ fn a_resend_that_yields_to_the_server_trash_drops_its_unsent_move() {
     trees.hold_unsent_move("c".into());
     trees.resends.insert("c".into());
     trees.yield_resends();
-    assert_eq!(trees.class("c"), Class::Remote);
+    assert_eq!(trees.class(&"c".into()), Class::Remote);
 }
 
 #[test]
@@ -635,20 +658,20 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_a_loss_follows() {
         },
         parked: false,
     };
-    trees.set_local("f".into(), local(dir("root", "f"), 1));
-    trees.set_synced("f".into(), Some(dir("root", "f")));
+    trees.set_local("f".into(), local(dir(&"root".into(), "f"), 1));
+    trees.set_synced("f".into(), Some(dir(&"root".into(), "f")));
     trees.set_remote(
         "f".into(),
         RemoteNode {
             trashed: true,
-            ..remote(dir("root", "f"))
+            ..remote(dir(&"root".into(), "f"))
         },
     );
-    trees.set_local("c".into(), local(dir("f", "c"), 2));
+    trees.set_local("c".into(), local(dir(&"f".into(), "c"), 2));
     trees.settle(&Default::default());
     trees.resends.insert("c".into());
     trees.yield_resends();
-    assert_eq!(trees.class("c"), Class::Remote);
+    assert_eq!(trees.class(&"c".into()), Class::Remote);
     trees.forget_lost(
         Vec::new(),
         Vec::new(),
@@ -661,8 +684,8 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_a_loss_follows() {
         0,
     );
     trees.settle(&Default::default());
-    assert!(!trees.lost_creates.contains("c"));
-    assert_eq!(trees.class("c"), Class::Remote);
+    assert!(!trees.lost_creates.contains(&"c".into()));
+    assert_eq!(trees.class(&"c".into()), Class::Remote);
 }
 
 #[test]
@@ -679,21 +702,21 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_the_loss_also_takes_th
         },
         parked: false,
     };
-    trees.set_local("f".into(), local(dir("root", "f"), 1));
-    trees.set_synced("f".into(), Some(dir("root", "f")));
+    trees.set_local("f".into(), local(dir(&"root".into(), "f"), 1));
+    trees.set_synced("f".into(), Some(dir(&"root".into(), "f")));
     trees.set_remote(
         "f".into(),
         RemoteNode {
             trashed: true,
-            ..remote(dir("root", "f"))
+            ..remote(dir(&"root".into(), "f"))
         },
     );
-    trees.set_local("c".into(), local(dir("f", "c"), 2));
+    trees.set_local("c".into(), local(dir(&"f".into(), "c"), 2));
     trees.settle(&Default::default());
     trees.resends.insert("c".into());
     trees.yield_resends();
-    assert_eq!(trees.class("c"), Class::Remote);
-    trees.set_remote("f".into(), remote(dir("root", "f")));
+    assert_eq!(trees.class(&"c".into()), Class::Remote);
+    trees.set_remote("f".into(), remote(dir(&"root".into(), "f")));
     trees.forget_lost(
         Vec::new(),
         Vec::new(),
@@ -706,8 +729,8 @@ fn a_resend_that_gave_way_to_a_delete_stays_a_resend_when_the_loss_also_takes_th
         0,
     );
     trees.settle(&Default::default());
-    assert!(trees.resends.contains("c"));
-    assert!(!trees.lost_creates.contains("c"));
+    assert!(trees.resends.contains(&"c".into()));
+    assert!(!trees.lost_creates.contains(&"c".into()));
 }
 
 #[test]
@@ -724,20 +747,20 @@ fn a_discard_check_over_a_deep_chain_of_taken_along_server_folders_finishes() {
         },
         parked: false,
     };
-    trees.set_local("f".into(), local(dir("root", "new"), 100, false));
+    trees.set_local("f".into(), local(dir(&"root".into(), "new"), 100, false));
     let mut parent = "root".to_string();
     for k in 0..40 {
         let id = format!("x{k}");
-        let shape = dir(&parent, &id);
-        trees.set_remote(id.clone(), remote(shape.clone()));
-        let placed = if k == 0 { dir("f", &id) } else { shape };
-        trees.set_local(id.clone(), local(placed, k + 1, k == 0));
+        let shape = dir(&NodeId::from(&parent), &id);
+        trees.set_remote(NodeId::from(&id), remote(shape.clone()));
+        let placed = if k == 0 { dir(&"f".into(), &id) } else { shape };
+        trees.set_local(NodeId::from(&id), local(placed, k + 1, k == 0));
         parent = id;
     }
-    let shown = BTreeMap::from([("f".into(), dir("root", "new"))]);
+    let shown = BTreeMap::from([("f".into(), dir(&"root".into(), "new"))]);
     trees.discard(["f".into()], &shown);
     trees.discard_server_entries_below(&shown);
-    assert!(trees.in_one_pass(|| trees.is_discarded("x0")));
+    assert!(trees.in_one_pass(|| trees.is_discarded(&"x0".into())));
 }
 
 #[test]
@@ -746,8 +769,8 @@ fn a_discard_check_over_a_deep_chain_of_kept_back_folders_finishes() {
     let mut parent = "root".to_string();
     for k in 0..40 {
         let (x, c) = (format!("x{k}"), format!("c{k}"));
-        trees.set_remote(x.clone(), remote(dir(&parent, &x)));
-        trees.set_remote(c.clone(), remote(dir(&x, &c)));
+        trees.set_remote(NodeId::from(&x), remote(dir(&NodeId::from(&parent), &x)));
+        trees.set_remote(NodeId::from(&c), remote(dir(&NodeId::from(&x), &c)));
         let identity = FileIdentity {
             ino: k + 1,
             birth_ns: Some(0),
@@ -756,18 +779,22 @@ fn a_discard_check_over_a_deep_chain_of_kept_back_folders_finishes() {
         let local = LocalNode {
             left_out_when_placed: false,
             content_from_server: false,
-            shape: dir("root", &x),
+            shape: dir(&"root".into(), &x),
             identity,
             parked: false,
         };
-        trees.set_local(x.clone(), local);
-        trees.discarded.insert(x.clone(), dir("root", &x));
-        trees.discarded.insert(c.clone(), dir(&x, &c));
+        trees.set_local(NodeId::from(&x), local);
+        trees
+            .discarded
+            .insert(NodeId::from(&x), dir(&"root".into(), &x));
+        trees
+            .discarded
+            .insert(NodeId::from(&c), dir(&NodeId::from(&x), &c));
         parent = c;
     }
-    trees.set_remote("f".into(), remote(dir(&parent, "f")));
+    trees.set_remote("f".into(), remote(dir(&NodeId::from(&parent), "f")));
     trees.others = BTreeSet::from(["f".into()]);
-    assert!(trees.is_discarded("x0"));
+    assert!(trees.is_discarded(&"x0".into()));
 }
 
 #[test]
@@ -812,29 +839,41 @@ fn nodes_sharing_an_identity_or_a_name_key_are_found_in_id_order_as_they_come_an
         .collect();
     assert_eq!(reversed, ["c", "b", "a"]);
     assert_eq!(
-        trees.local_with_identity(&identity).map(String::as_str),
+        trees
+            .local_with_identity(&identity)
+            .map(NodeId::to_string)
+            .as_deref(),
         Some("c")
     );
     assert_eq!(
-        trees.local_child("root", "notes").map(String::as_str),
+        trees
+            .local_child(&"root".into(), "notes")
+            .map(NodeId::to_string)
+            .as_deref(),
         Some("c")
     );
     assert_eq!(
-        trees.local_child("root", "Notes").map(String::as_str),
+        trees
+            .local_child(&"root".into(), "Notes")
+            .map(NodeId::to_string)
+            .as_deref(),
         Some("b")
     );
-    trees.remove_local("c");
-    trees.remove_local("a");
+    trees.remove_local(&"c".into());
+    trees.remove_local(&"a".into());
     assert_eq!(held(&trees), ["b"]);
-    assert_eq!(trees.local_child("root", "notes"), None);
+    assert_eq!(trees.local_child(&"root".into(), "notes"), None);
     assert_eq!(
-        trees.local_child("root", "Notes").map(String::as_str),
+        trees
+            .local_child(&"root".into(), "Notes")
+            .map(NodeId::to_string)
+            .as_deref(),
         Some("b")
     );
-    trees.remove_local("b");
+    trees.remove_local(&"b".into());
     assert!(held(&trees).is_empty());
     assert_eq!(trees.local_with_identity(&identity), None);
-    assert_eq!(trees.local_child("root", "Notes"), None);
+    assert_eq!(trees.local_child(&"root".into(), "Notes"), None);
 }
 
 mod holders_against_a_rebuild {
@@ -890,7 +929,7 @@ mod holders_against_a_rebuild {
     }
 
     fn id(i: u8) -> NodeId {
-        format!("n{i}")
+        format!("n{i}").into()
     }
 
     fn check_index(index: &ByName, expected: &[(NodeId, &LocalNode)]) {
@@ -922,14 +961,14 @@ mod holders_against_a_rebuild {
             assert_eq!(back, want);
         }
         for name in NAMES {
-            let got: Vec<NodeId> = index.holders("root", name).cloned().collect();
+            let got: Vec<NodeId> = index.holders(&"root".into(), name).cloned().collect();
             let want = keys
-                .get(&("root".to_owned(), name_key(name)))
+                .get(&("root".to_owned().into(), name_key(name)))
                 .cloned()
                 .unwrap_or_default();
             assert_eq!(got, want);
         }
-        let children: Vec<NodeId> = index.children("root").cloned().collect();
+        let children: Vec<NodeId> = index.children(&"root".into()).cloned().collect();
         let want: Vec<NodeId> = keys.values().flatten().cloned().collect();
         assert_eq!(children, want);
     }
@@ -938,7 +977,7 @@ mod holders_against_a_rebuild {
         let all: Vec<(NodeId, &LocalNode)> = trees
             .l
             .iter()
-            .filter(|(id, _)| id.as_str() != "root")
+            .filter(|(id, _)| *id != "root")
             .map(|(id, n)| (id.clone(), n))
             .collect();
         let placed: Vec<_> = all.iter().filter(|(_, n)| !n.parked).cloned().collect();
@@ -966,11 +1005,7 @@ mod holders_against_a_rebuild {
             assert_eq!(trees.local_with_identity(&ident(k)), want.last());
             live += usize::from(!want.is_empty());
         }
-        let root_identities = trees
-            .l
-            .iter()
-            .filter(|(id, _)| id.as_str() == "root")
-            .count();
+        let root_identities = trees.l.iter().filter(|(id, _)| *id == "root").count();
         assert!(
             trees.l_identities.len() <= live + root_identities,
             "stale identities: {:?}",
@@ -1016,10 +1051,10 @@ fn holders_take_no_more_room_than_a_set() {
     );
 }
 
-fn kept_local(parent: &str, name: &str, kind: Kind, ino: u128) -> LocalNode {
+fn kept_local(parent: &NodeId, name: &str, kind: Kind, ino: u128) -> LocalNode {
     LocalNode {
         shape: Shape {
-            parent: parent.into(),
+            parent: parent.clone(),
             name: name.into(),
             kind,
             content: None,
@@ -1037,7 +1072,10 @@ fn kept_local(parent: &str, name: &str, kind: Kind, ino: u128) -> LocalNode {
 
 fn with_a_kept_env() -> Trees {
     let mut trees = Trees::new("root");
-    trees.set_local("app".into(), kept_local("root", "app", Kind::Dir, 1));
+    trees.set_local(
+        "app".into(),
+        kept_local(&"root".into(), "app", Kind::Dir, 1),
+    );
     trees.kept_entries.insert(
         "app".into(),
         KeptEntries {
@@ -1047,23 +1085,30 @@ fn with_a_kept_env() -> Trees {
             causes: BTreeMap::new(),
         },
     );
-    trees.set_local("env".into(), kept_local("app", ".env", Kind::File, 2));
+    trees.set_local(
+        "env".into(),
+        kept_local(&"app".into(), ".env", Kind::File, 2),
+    );
     trees
 }
 
 #[test]
 fn a_node_at_a_reserved_name_stays_kept_under_a_new_id_and_keeps_the_name_reserved() {
     let mut trees = with_a_kept_env();
-    assert!(trees.kept_nodes.contains_key("env"));
+    assert!(trees.kept_nodes.contains_key(&"env".into()));
 
-    trees.rekey_local("env", "env-2", kept_local("app", ".env", Kind::File, 2));
+    trees.rekey_local(
+        &"env".into(),
+        &"env-2".into(),
+        kept_local(&"app".into(), ".env", Kind::File, 2),
+    );
 
-    assert!(trees.ignored("env-2"));
+    assert!(trees.ignored(&"env-2".into()));
     assert_eq!(trees.kept_nodes.keys().collect::<Vec<_>>(), ["env-2"]);
     assert!(
         trees
             .kept_entries
-            .get("app")
+            .get(&"app".into())
             .unwrap()
             .names
             .contains(".env")
@@ -1073,29 +1118,42 @@ fn a_node_at_a_reserved_name_stays_kept_under_a_new_id_and_keeps_the_name_reserv
 #[test]
 fn a_kept_node_moved_off_its_reserved_name_stays_kept_under_a_new_id() {
     let mut trees = with_a_kept_env();
-    trees.set_local("other".into(), kept_local("root", "other", Kind::Dir, 3));
-    trees.set_local("env".into(), kept_local("other", "env", Kind::File, 2));
+    trees.set_local(
+        "other".into(),
+        kept_local(&"root".into(), "other", Kind::Dir, 3),
+    );
+    trees.set_local(
+        "env".into(),
+        kept_local(&"other".into(), "env", Kind::File, 2),
+    );
 
-    trees.rekey_local("env", "env-2", kept_local("other", "env", Kind::File, 2));
+    trees.rekey_local(
+        &"env".into(),
+        &"env-2".into(),
+        kept_local(&"other".into(), "env", Kind::File, 2),
+    );
 
-    assert!(trees.ignored("env-2"));
+    assert!(trees.ignored(&"env-2".into()));
     assert_eq!(trees.kept_nodes.keys().collect::<Vec<_>>(), ["env-2"]);
 }
 
 #[test]
 fn a_kept_node_stays_kept_wherever_it_moves_until_l_drops_it() {
     let mut trees = with_a_kept_env();
-    trees.set_local("other".into(), kept_local("root", "other", Kind::Dir, 3));
+    trees.set_local(
+        "other".into(),
+        kept_local(&"root".into(), "other", Kind::Dir, 3),
+    );
 
     trees.set_local(
         "env".into(),
-        kept_local("other", ".env.local", Kind::File, 2),
+        kept_local(&"other".into(), ".env.local", Kind::File, 2),
     );
-    trees.remove_local("app");
+    trees.remove_local(&"app".into());
 
-    assert!(trees.ignored("env"));
+    assert!(trees.ignored(&"env".into()));
     assert_eq!(trees.kept_entry_paths(), [vec!["other", ".env.local"]]);
-    trees.remove_local("env");
+    trees.remove_local(&"env".into());
     assert!(trees.kept_nodes.is_empty());
     assert!(trees.kept_entry_paths().is_empty());
 }
@@ -1103,10 +1161,13 @@ fn a_kept_node_stays_kept_wherever_it_moves_until_l_drops_it() {
 #[test]
 fn a_synced_node_moved_onto_a_reserved_name_stays_synced() {
     let mut trees = with_a_kept_env();
-    trees.set_remote("notes".into(), remote(dir("root", "notes")));
-    trees.set_local("notes".into(), kept_local("root", "notes", Kind::Dir, 4));
+    trees.set_remote("notes".into(), remote(dir(&"root".into(), "notes")));
+    trees.set_local(
+        "notes".into(),
+        kept_local(&"root".into(), "notes", Kind::Dir, 4),
+    );
 
-    trees.remove_local("env");
+    trees.remove_local(&"env".into());
     trees.kept_entries.insert(
         "app".into(),
         KeptEntries {
@@ -1116,10 +1177,13 @@ fn a_synced_node_moved_onto_a_reserved_name_stays_synced() {
             causes: BTreeMap::new(),
         },
     );
-    trees.set_local("notes".into(), kept_local("app", "notes", Kind::Dir, 4));
+    trees.set_local(
+        "notes".into(),
+        kept_local(&"app".into(), "notes", Kind::Dir, 4),
+    );
 
-    assert!(!trees.ignored("notes"));
-    assert!(!trees.kept_nodes.contains_key("notes"));
+    assert!(!trees.ignored(&"notes".into()));
+    assert!(!trees.kept_nodes.contains_key(&"notes".into()));
 }
 
 #[test]
@@ -1132,15 +1196,15 @@ fn a_kept_node_renamed_to_an_included_name_while_an_unrelated_rule_changes_stays
     trees.set_local_rules(LocalRules::new(&none, &[".env", "*.log"]).unwrap());
     trees.set_local(
         "env".into(),
-        kept_local("app", "settings.txt", Kind::File, 2),
+        kept_local(&"app".into(), "settings.txt", Kind::File, 2),
     );
     trees.settle(&BTreeMap::new());
 
-    assert!(trees.kept_nodes.contains_key("env"));
-    assert!(trees.ignored("env"));
+    assert!(trees.kept_nodes.contains_key(&"env".into()));
+    assert!(trees.ignored(&"env".into()));
 }
 
-fn rules_file(parent: &str, version: u8, ino: u128) -> LocalNode {
+fn rules_file(parent: &NodeId, version: u8, ino: u128) -> LocalNode {
     let mut node = kept_local(parent, ".koiignore", Kind::File, ino);
     node.shape.content = Some(Content {
         size: 1,
@@ -1156,10 +1220,13 @@ fn a_kept_entry_stays_kept_when_another_device_lets_it_in_while_the_person_edits
     let mut trees = with_a_kept_env();
     trees.set_synced(
         "app".into(),
-        Some(kept_local("root", "app", Kind::Dir, 1).shape),
+        Some(kept_local(&"root".into(), "app", Kind::Dir, 1).shape),
     );
-    trees.set_local("root-rules".into(), rules_file("root", 0, 3));
-    trees.set_synced("root-rules".into(), Some(rules_file("root", 0, 3).shape));
+    trees.set_local("root-rules".into(), rules_file(&"root".into(), 0, 3));
+    trees.set_synced(
+        "root-rules".into(),
+        Some(rules_file(&"root".into(), 0, 3).shape),
+    );
     trees.set_rules(
         &[] as &[&str],
         koidrive_ignore::Source::Koiignore,
@@ -1167,15 +1234,18 @@ fn a_kept_entry_stays_kept_when_another_device_lets_it_in_while_the_person_edits
     );
     trees.settle(&BTreeMap::new());
 
-    trees.set_local_changed("root-rules".into(), rules_file("root", 1, 3));
+    trees.set_local_changed("root-rules".into(), rules_file(&"root".into(), 1, 3));
     trees.set_rules(
         &[] as &[&str],
         koidrive_ignore::Source::Koiignore,
         Some(RuleFile::parse(b".env\n*.tmp\n")),
     );
     trees.settle(&BTreeMap::new());
-    trees.set_local("app-rules".into(), rules_file("app", 2, 4));
-    trees.set_synced("app-rules".into(), Some(rules_file("app", 2, 4).shape));
+    trees.set_local("app-rules".into(), rules_file(&"app".into(), 2, 4));
+    trees.set_synced(
+        "app-rules".into(),
+        Some(rules_file(&"app".into(), 2, 4).shape),
+    );
     trees.set_rules(
         &["app"],
         koidrive_ignore::Source::Koiignore,
@@ -1184,15 +1254,15 @@ fn a_kept_entry_stays_kept_when_another_device_lets_it_in_while_the_person_edits
     trees.settle(&BTreeMap::new());
 
     assert!(!trees.ignores(&["app", ".env"], Kind::File));
-    assert!(trees.kept_nodes.contains_key("env"));
-    assert!(trees.ignored("env"));
+    assert!(trees.kept_nodes.contains_key(&"env".into()));
+    assert!(trees.ignored(&"env".into()));
 }
 
 #[test]
 fn a_kept_entry_is_released_when_the_person_deletes_the_rules_file_that_left_it_out_and_only_this_device_held()
  {
     let mut trees = with_a_kept_env();
-    trees.set_local_changed("root-rules".into(), rules_file("root", 0, 3));
+    trees.set_local_changed("root-rules".into(), rules_file(&"root".into(), 0, 3));
     trees.set_rules(
         &[] as &[&str],
         koidrive_ignore::Source::Koiignore,
@@ -1200,19 +1270,25 @@ fn a_kept_entry_is_released_when_the_person_deletes_the_rules_file_that_left_it_
     );
     trees.settle(&BTreeMap::new());
 
-    trees.remove_local("root-rules");
+    trees.remove_local(&"root-rules".into());
     trees.set_rules(&[] as &[&str], koidrive_ignore::Source::Koiignore, None);
     trees.settle(&BTreeMap::new());
 
-    assert!(!trees.kept_nodes.contains_key("env"));
+    assert!(!trees.kept_nodes.contains_key(&"env".into()));
 }
 
 #[test]
 fn a_kept_entry_stays_kept_when_the_server_drops_the_rules_file_that_left_it_out() {
     let mut trees = with_a_kept_env();
-    trees.set_local("root-rules".into(), rules_file("root", 0, 3));
-    trees.set_synced("root-rules".into(), Some(rules_file("root", 0, 3).shape));
-    trees.set_remote("root-rules".into(), remote(rules_file("root", 0, 3).shape));
+    trees.set_local("root-rules".into(), rules_file(&"root".into(), 0, 3));
+    trees.set_synced(
+        "root-rules".into(),
+        Some(rules_file(&"root".into(), 0, 3).shape),
+    );
+    trees.set_remote(
+        "root-rules".into(),
+        remote(rules_file(&"root".into(), 0, 3).shape),
+    );
     trees.set_rules(
         &[] as &[&str],
         koidrive_ignore::Source::Koiignore,
@@ -1220,17 +1296,17 @@ fn a_kept_entry_stays_kept_when_the_server_drops_the_rules_file_that_left_it_out
     );
     trees.settle(&BTreeMap::new());
 
-    trees.remove_remote("root-rules");
-    trees.remove_local("root-rules");
+    trees.remove_remote(&"root-rules".into());
+    trees.remove_local(&"root-rules".into());
     trees.set_rules(&[] as &[&str], koidrive_ignore::Source::Koiignore, None);
     trees.settle(&BTreeMap::new());
 
-    assert!(trees.kept_nodes.contains_key("env"));
+    assert!(trees.kept_nodes.contains_key(&"env".into()));
 }
 
 #[test]
 fn a_kept_entry_stays_kept_when_the_server_drops_the_gitignore_file_that_left_it_out() {
-    let mut gitignore = rules_file("root", 0, 3);
+    let mut gitignore = rules_file(&"root".into(), 0, 3);
     gitignore.shape.name = ".gitignore".into();
     let mut trees = with_a_kept_env();
     trees.set_local("root-rules".into(), gitignore.clone());
@@ -1243,20 +1319,23 @@ fn a_kept_entry_stays_kept_when_the_server_drops_the_gitignore_file_that_left_it
     );
     trees.settle(&BTreeMap::new());
 
-    trees.remove_remote("root-rules");
-    trees.remove_local("root-rules");
+    trees.remove_remote(&"root-rules".into());
+    trees.remove_local(&"root-rules".into());
     trees.set_rules(&[] as &[&str], koidrive_ignore::Source::Gitignore, None);
     trees.settle(&BTreeMap::new());
 
-    assert!(trees.kept_nodes.contains_key("env"));
+    assert!(trees.kept_nodes.contains_key(&"env".into()));
 }
 
 #[test]
 fn a_kept_entry_stays_kept_when_another_devices_negation_lands_in_the_settle_the_person_edits_the_rules_that_left_it_out()
  {
     let mut trees = with_a_kept_env();
-    trees.set_local("root-rules".into(), rules_file("root", 0, 3));
-    trees.set_synced("root-rules".into(), Some(rules_file("root", 0, 3).shape));
+    trees.set_local("root-rules".into(), rules_file(&"root".into(), 0, 3));
+    trees.set_synced(
+        "root-rules".into(),
+        Some(rules_file(&"root".into(), 0, 3).shape),
+    );
     trees.set_rules(
         &[] as &[&str],
         koidrive_ignore::Source::Koiignore,
@@ -1264,14 +1343,17 @@ fn a_kept_entry_stays_kept_when_another_devices_negation_lands_in_the_settle_the
     );
     trees.settle(&BTreeMap::new());
 
-    trees.set_local_changed("root-rules".into(), rules_file("root", 1, 3));
+    trees.set_local_changed("root-rules".into(), rules_file(&"root".into(), 1, 3));
     trees.set_rules(
         &[] as &[&str],
         koidrive_ignore::Source::Koiignore,
         Some(RuleFile::parse(b".env\n*.tmp\n")),
     );
-    trees.set_local("app-rules".into(), rules_file("app", 2, 4));
-    trees.set_synced("app-rules".into(), Some(rules_file("app", 2, 4).shape));
+    trees.set_local("app-rules".into(), rules_file(&"app".into(), 2, 4));
+    trees.set_synced(
+        "app-rules".into(),
+        Some(rules_file(&"app".into(), 2, 4).shape),
+    );
     trees.set_rules(
         &["app"],
         koidrive_ignore::Source::Koiignore,
@@ -1280,18 +1362,27 @@ fn a_kept_entry_stays_kept_when_another_devices_negation_lands_in_the_settle_the
     trees.settle(&BTreeMap::new());
     trees.settle(&BTreeMap::new());
 
-    assert!(trees.kept_nodes.contains_key("env"));
+    assert!(trees.kept_nodes.contains_key(&"env".into()));
 }
 
 #[test]
 fn a_listing_reserves_an_entry_whose_name_differs_from_a_held_one_only_in_case() {
     let mut trees = Trees::new("root");
-    trees.set_local("app".into(), kept_local("root", "app", Kind::Dir, 1));
-    trees.set_local("foo".into(), kept_local("app", "foo", Kind::File, 2));
-    trees.set_local("cafe".into(), kept_local("app", "caf\u{e9}", Kind::File, 3));
+    trees.set_local(
+        "app".into(),
+        kept_local(&"root".into(), "app", Kind::Dir, 1),
+    );
+    trees.set_local(
+        "foo".into(),
+        kept_local(&"app".into(), "foo", Kind::File, 2),
+    );
+    trees.set_local(
+        "cafe".into(),
+        kept_local(&"app".into(), "caf\u{e9}", Kind::File, 3),
+    );
 
     trees.list_kept_folder(
-        "app",
+        &"app".into(),
         [
             ("foo".to_owned(), Some(Kind::File)),
             ("FOO".to_owned(), Some(Kind::File)),
@@ -1300,14 +1391,20 @@ fn a_listing_reserves_an_entry_whose_name_differs_from_a_held_one_only_in_case()
     );
 
     assert_eq!(
-        trees.kept_entries.get("app").unwrap().names,
+        trees.kept_entries.get(&"app".into()).unwrap().names,
         BTreeSet::from(["FOO".to_owned()])
     );
 
-    trees.set_local("lib".into(), kept_local("root", "lib", Kind::Dir, 4));
-    trees.set_local("bar".into(), kept_local("lib", "bar", Kind::File, 5));
+    trees.set_local(
+        "lib".into(),
+        kept_local(&"root".into(), "lib", Kind::Dir, 4),
+    );
+    trees.set_local(
+        "bar".into(),
+        kept_local(&"lib".into(), "bar", Kind::File, 5),
+    );
     trees.list_kept_folder(
-        "lib",
+        &"lib".into(),
         [
             ("BaR".to_owned(), Some(Kind::File)),
             ("BAR".to_owned(), Some(Kind::File)),
@@ -1315,7 +1412,7 @@ fn a_listing_reserves_an_entry_whose_name_differs_from_a_held_one_only_in_case()
     );
 
     assert_eq!(
-        trees.kept_entries.get("lib").unwrap().names,
+        trees.kept_entries.get(&"lib".into()).unwrap().names,
         BTreeSet::from(["BAR".to_owned(), "BaR".to_owned()])
     );
 }
@@ -1328,14 +1425,17 @@ fn a_restored_node_moved_out_of_an_ignored_folder_is_not_excluded_while_its_remo
         koidrive_ignore::Source::Koiignore,
         Some(RuleFile::parse(b"/build/\n")),
     );
-    trees.set_synced("build".into(), Some(dir("root", "build")));
-    trees.set_remote("build".into(), remote(dir("root", "build")));
-    trees.set_local("build".into(), kept_local("root", "build", Kind::Dir, 1));
+    trees.set_synced("build".into(), Some(dir(&"root".into(), "build")));
+    trees.set_remote("build".into(), remote(dir(&"root".into(), "build")));
+    trees.set_local(
+        "build".into(),
+        kept_local(&"root".into(), "build", Kind::Dir, 1),
+    );
     trees.set_synced(
         "n".into(),
-        Some(kept_local("build", "x", Kind::File, 2).shape),
+        Some(kept_local(&"build".into(), "x", Kind::File, 2).shape),
     );
-    trees.set_local("n".into(), kept_local("root", "x", Kind::File, 2));
+    trees.set_local("n".into(), kept_local(&"root".into(), "x", Kind::File, 2));
     trees.wait("n".into(), None, Origin::Other);
-    assert!(!trees.excluded("n"));
+    assert!(!trees.excluded(&"n".into()));
 }

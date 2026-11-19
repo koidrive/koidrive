@@ -3,6 +3,7 @@
 /// The user moves n back into h. Its content agrees with the waiting shape, not with S, so S does
 /// not take that content as both sides' and drop the waiting update, and the move is sent instead
 /// of the effects undoing it.
+
 #[test]
 fn a_file_moved_back_into_a_trashed_folder_while_its_update_waits_stays_there() {
     let (mut trees, mut commits, mut ids) =
@@ -13,7 +14,7 @@ fn a_file_moved_back_into_a_trashed_folder_while_its_update_waits_stays_there() 
     assert_eq!(ops(&commit), [mv("n", "h", "old")]);
     effects_for(&mut trees, &mut ids, "n");
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.local().live("n"), Some(&file("h", "old", 1)));
+    assert_eq!(trees.local().live(&"n".into()), Some(&file("h", "old", 1)));
 }
 
 /// As above, with an edit of n on the other device and a move of n into h on this one. The move is
@@ -47,8 +48,8 @@ fn a_waiting_file_put_back_as_s_still_holds_it_is_uploaded_after_a_remote_delete
         );
         trees.set_remote("n".into(), trashed(file(ROOT, "x", 1)));
         trees.settle(commits.aliases());
-        assert_eq!(trees.class("n"), Class::Remote, "L matches S");
-        assert!(trees.edited("n"));
+        assert_eq!(trees.class(&"n".into()), Class::Remote, "L matches S");
+        assert!(trees.edited(&"n".into()));
         if effects_first {
             let effects = effects_for(&mut trees, &mut ids, "n");
             assert!(
@@ -57,7 +58,10 @@ fn a_waiting_file_put_back_as_s_still_holds_it_is_uploaded_after_a_remote_delete
                     .all(|effect| matches!(effect, Effect::Move { .. })),
                 "{effects:?}"
             );
-            assert_eq!(trees.local().get("n").map(|node| node.parked), Some(false));
+            assert_eq!(
+                trees.local().get(&"n".into()).map(|node| node.parked),
+                Some(false)
+            );
             let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
             assert_eq!(ops(&commit), [mv("n", ROOT, "old"), update("n", 0)]);
             continue;
@@ -75,7 +79,15 @@ fn a_waiting_file_put_back_as_s_still_holds_it_is_uploaded_after_a_remote_delete
             (ROOT, "old", Some(content(0)))
         );
         assert_eq!(effects_for(&mut trees, &mut ids, &create.node_id), []);
-        assert_eq!(trees.local().get(&create.node_id).unwrap().identity.ino, 2);
+        assert_eq!(
+            trees
+                .local()
+                .get(&NodeId::from(&create.node_id))
+                .unwrap()
+                .identity
+                .ino,
+            2
+        );
     }
 }
 
@@ -106,11 +118,11 @@ fn a_waiting_update_whose_place_r_gave_away_does_not_hold_the_node_for_good() {
     }
     assert_eq!(trees.waiting(), &Default::default());
     assert_eq!(
-        trees.local().get("n").map(|node| &node.shape),
+        trees.local().get(&"n".into()).map(|node| &node.shape),
         Some(&file(ROOT, "q", 1))
     );
-    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "q", 1)));
-    assert_eq!(trees.synced().live("m"), Some(&dir(ROOT, "x")));
+    assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, "q", 1)));
+    assert_eq!(trees.synced().live(&"m".into()), Some(&dir(ROOT, "x")));
 }
 
 /// n is parked as it was before the update, with the content S still holds, while R has n as the
@@ -127,7 +139,7 @@ fn a_parked_waiting_file_with_the_content_s_still_holds_keeps_it() {
         },
     );
     trees.settle(commits.aliases());
-    assert_eq!(trees.class("n"), Class::Remote, "L matches S");
+    assert_eq!(trees.class(&"n".into()), Class::Remote, "L matches S");
     let effects = effects_for(&mut trees, &mut ids, "n");
     assert!(
         effects
@@ -138,7 +150,7 @@ fn a_parked_waiting_file_with_the_content_s_still_holds_keeps_it() {
     assert_eq!(
         trees
             .local()
-            .get("n")
+            .get(&"n".into())
             .map(|node| (&node.shape, node.parked)),
         Some((&file(ROOT, "x", 0), false))
     );
@@ -171,7 +183,7 @@ fn a_parked_waiting_file_takes_remote_content_while_committing_is_halted() {
     effects_for(&mut trees, &mut ids, "n");
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     effects_for(&mut trees, &mut ids, "n");
-    assert_eq!(trees.local().live("n"), Some(&file(ROOT, "q", 3)));
+    assert_eq!(trees.local().live(&"n".into()), Some(&file(ROOT, "q", 3)));
 }
 
 /// As above, but the user edited n while it was parked. That edit is the user's, so n is only
@@ -195,7 +207,7 @@ fn a_parked_waiting_file_the_user_edited_keeps_the_edit_when_the_other_device_mo
             .all(|effect| matches!(effect, Effect::Move { .. })),
         "{effects:?}"
     );
-    assert_eq!(trees.local().live("n"), Some(&file(ROOT, "q", 2)));
+    assert_eq!(trees.local().live(&"n".into()), Some(&file(ROOT, "q", 2)));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     let [op::Op::CreateFile(copy)] = <[op::Op; 1]>::try_from(ops(&commit)).unwrap() else {
         panic!("{commit:?}");
@@ -216,7 +228,7 @@ fn a_waiting_update_settling_replaced_is_not_made_afterwards() {
     trees.settle(commits.aliases());
     assert_eq!(trees.waiting(), &Default::default());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
-    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "z", 2)));
+    assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, "z", 2)));
 }
 
 /// The server renames n's move, so n is reverted as well as waiting, and then the user puts n back
@@ -263,14 +275,14 @@ fn a_renamed_waiting_file_put_back_as_s_still_holds_it_keeps_its_content() {
             outcome(op_result::Code::Applied),
         ],
     );
-    assert!(trees.waiting().contains_key("n") && trees.reverted().contains("n"));
+    assert!(trees.waiting().contains_key(&"n".into()) && trees.reverted().contains(&"n".into()));
     trees.set_local("n".into(), local(file(ROOT, "old", 0), 2));
     trees.settle(commits.aliases());
-    assert_eq!(trees.class("n"), Class::Remote, "L matches S");
-    assert!(!trees.reverted().contains("n"));
+    assert_eq!(trees.class(&"n".into()), Class::Remote, "L matches S");
+    assert!(!trees.reverted().contains(&"n".into()));
     assert_eq!(effects_for(&mut trees, &mut ids, "n"), []);
     assert_eq!(
-        trees.local().get("n").map(|node| &node.shape),
+        trees.local().get(&"n".into()).map(|node| &node.shape),
         Some(&file(ROOT, "old", 0))
     );
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -319,7 +331,7 @@ fn a_new_folder_takes_the_name_a_waiting_node_moves_to_in_the_same_commit() {
     trees.set_local("n".into(), local(file(ROOT, "old", 0), 2));
     trees.set_local("p".into(), local(dir(ROOT, "OLD"), 3));
     trees.settle(commits.aliases());
-    assert!(trees.waiting().contains_key("n"));
+    assert!(trees.waiting().contains_key(&"n".into()));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(
         (ops(&commit).iter()).any(|op| matches!(op, op::Op::CreateDir(create) if create.node_id == "p" && create.name == "OLD" && create.pending_for.is_empty())),
@@ -357,7 +369,7 @@ fn a_waiting_blocker_whose_parking_failed_is_not_parked_again_unchanged() {
             .first(),
         None
     );
-    assert!(effects.blocked().contains_key("n"));
+    assert!(effects.blocked().contains_key(&"n".into()));
 }
 
 /// Committing is halted, read-only, while n's update waits. Once the update fits, building makes it
@@ -374,10 +386,10 @@ fn a_waiting_update_is_made_while_committing_is_halted() {
         Ok(Failure::Halted(Halt::ReadOnly))
     );
     effects_for(&mut trees, &mut ids, "");
-    assert_eq!(trees.synced().live("h"), Some(&file(ROOT, "y", 9)));
+    assert_eq!(trees.synced().live(&"h".into()), Some(&file(ROOT, "y", 9)));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     assert_eq!(trees.waiting(), &Default::default());
-    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "x", 1)));
+    assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, "x", 1)));
     assert_eq!(effects_for(&mut trees, &mut ids, "n"), []);
 }
 
@@ -402,12 +414,12 @@ fn a_waiting_update_is_made_while_committing_is_halted_under_a_local_edit() {
         Ok(Failure::Halted(Halt::ReadOnly))
     );
     effects_for(&mut trees, &mut ids, "");
-    assert_eq!(trees.synced().live("h"), Some(&file(ROOT, "y", 9)));
-    assert!(trees.waiting().contains_key("n"));
+    assert_eq!(trees.synced().live(&"h".into()), Some(&file(ROOT, "y", 9)));
+    assert!(trees.waiting().contains_key(&"n".into()));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     assert!(trees.waiting().is_empty());
-    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "x", 1)));
-    assert_eq!(trees.local().live("n"), Some(&file(ROOT, "x", 2)));
+    assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, "x", 1)));
+    assert_eq!(trees.local().live(&"n".into()), Some(&file(ROOT, "x", 2)));
 }
 
 /// The other device moves n on while n's update waits behind h. Against the waiting shape that is
@@ -420,12 +432,12 @@ fn a_remote_move_of_a_node_whose_update_waits_reaches_the_disk() {
     let planned = effects_for(&mut trees, &mut ids, "n");
     assert!(matches!(&planned[..], [Effect::Move { .. }]), "{planned:?}");
     assert_eq!(
-        trees.local().get("n").map(|node| &node.shape),
+        trees.local().get(&"n".into()).map(|node| &node.shape),
         Some(&file(ROOT, "q", 1))
     );
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     assert_eq!(trees.waiting(), &Default::default());
-    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "q", 1)));
+    assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, "q", 1)));
 }
 
 #[test]
@@ -439,10 +451,10 @@ fn a_node_whose_update_waits_stays_where_it_is_when_moved_into_an_ignored_folder
     trees.set_remote("build".into(), remote(dir(ROOT, "build")));
     trees.set_remote("n".into(), remote(file("build", "x", 5)));
     trees.settle(&Default::default());
-    assert!(trees.excluded("n"));
+    assert!(trees.excluded(&"n".into()));
     assert_eq!(effects_for(&mut trees, &mut ids, "n"), []);
     assert_eq!(
-        trees.local().get("n").map(|node| &node.shape),
+        trees.local().get(&"n".into()).map(|node| &node.shape),
         Some(&file(ROOT, "x", 1))
     );
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
@@ -481,20 +493,20 @@ fn a_waiting_folder_the_user_deleted_is_brought_back_for_a_remote_move_into_it()
         &mut trees,
         vec![outcome(op_result::Code::Applied); 2],
     );
-    assert!(trees.waiting().contains_key("d") && trees.waiting().contains_key("m"));
+    assert!(trees.waiting().contains_key(&"d".into()) && trees.waiting().contains_key(&"m".into()));
     trees.set_remote("h".into(), remote(file("d", "h", 9)));
-    trees.remove_local("m");
-    trees.remove_local("d");
+    trees.remove_local(&"m".into());
+    trees.remove_local(&"d".into());
     trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     effects_for(&mut trees, &mut ids, "");
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [delete("m")]);
     assert_eq!(
-        trees.local().get("d").map(|node| &node.shape),
+        trees.local().get(&"d".into()).map(|node| &node.shape),
         Some(&dir(ROOT, "X"))
     );
-    let h = trees.local().get("h").unwrap();
+    let h = trees.local().get(&"h".into()).unwrap();
     assert_eq!((&h.shape, h.parked), (&file("d", "h", 9), false));
 }
 
@@ -544,7 +556,7 @@ fn a_removal_r_undid_whose_s_update_does_not_fit_yet_waits() {
         "{effects:?}"
     );
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
-    assert_eq!(trees.class("d"), Class::InSync);
+    assert_eq!(trees.class(&"d".into()), Class::InSync);
 }
 
 /// S still holds parked h at x when d's move to X is acknowledged, so d's update waits, and S
@@ -586,7 +598,10 @@ fn a_needed_folder_whose_move_waits_is_brought_back() {
         vec![outcome(op_result::Code::Applied)],
     );
     assert_eq!(
-        trees.waiting().get("d").map(|waiting| &waiting.shape),
+        trees
+            .waiting()
+            .get(&"d".into())
+            .map(|waiting| &waiting.shape),
         Some(&Some(dir(ROOT, "X")))
     );
     trees.set_local(
@@ -596,7 +611,7 @@ fn a_needed_folder_whose_move_waits_is_brought_back() {
             ..local(file("d", "c", 1), 3)
         },
     );
-    trees.remove_local("d");
+    trees.remove_local(&"d".into());
     trees.set_remote("h".into(), remote(file("d", "h", 9)));
     trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
@@ -605,7 +620,7 @@ fn a_needed_folder_whose_move_waits_is_brought_back() {
         matches!(effects[..], [Effect::CreateDir { .. }]),
         "{effects:?}"
     );
-    assert_eq!(trees.local().live("d"), Some(&dir(ROOT, "X")));
+    assert_eq!(trees.local().live(&"d".into()), Some(&dir(ROOT, "X")));
 }
 
 #[test]
@@ -635,7 +650,10 @@ fn a_removal_that_waits_after_both_sides_dropped_the_node_is_kept_until_it_fits(
         .unwrap();
     trees.settle(commits.aliases());
     assert_eq!(
-        trees.waiting().get("d").map(|waiting| &waiting.shape),
+        trees
+            .waiting()
+            .get(&"d".into())
+            .map(|waiting| &waiting.shape),
         Some(&None)
     );
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
@@ -682,7 +700,7 @@ fn a_kept_removal_is_made_once_s_no_longer_holds_anything_under_it() {
     );
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     assert!(trees.waiting().is_empty());
-    assert_eq!(trees.synced().live("d"), None);
+    assert_eq!(trees.synced().live(&"d".into()), None);
 }
 
 #[test]
@@ -707,7 +725,7 @@ fn a_folder_delete_waits_while_a_resent_answer_delete_below_it_requires_the_orig
     trees.restore(state).unwrap();
     trees.set_rules::<&str>(&[], koidrive_engine::ignore::Source::Koiignore, None);
     trees.rules_scanned();
-    let held = trees.remote().get("f").unwrap();
+    let held = trees.remote().get(&"f".into()).unwrap();
     let required = delete_copy_requiring(held.content_rev, held.meta_rev);
     let commit = build(&mut Commits::default(), &mut trees, &mut IdGen::new(1)).unwrap();
     assert_eq!(ops(&commit), [required]);
@@ -761,11 +779,11 @@ fn d_comes_back_for_h(commits: &mut Commits, trees: &mut Trees, ids: &mut IdGen)
         "{effects:?}"
     );
     assert_eq!(trees.waiting(), &Default::default());
-    let h = trees.local().get("h").unwrap();
+    let h = trees.local().get(&"h".into()).unwrap();
     assert_eq!((&h.shape, h.parked), (&file("d", "h", 9), false));
     assert_eq!(build(commits, trees, ids), None);
     for id in ["d", "c", "h"] {
-        assert_eq!(trees.class(id), Class::InSync, "{id}");
+        assert_eq!(trees.class(&NodeId::from(id)), Class::InSync, "{id}");
     }
 }
 

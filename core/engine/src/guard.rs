@@ -387,8 +387,8 @@ impl Guard {
     }
 }
 
-fn made_in_window(id: &str, now_ms: u64) -> bool {
-    unix_ms(id).is_some_and(|made| made <= now_ms && now_ms < made + WINDOW_MS)
+fn made_in_window(id: &NodeId, now_ms: u64) -> bool {
+    unix_ms(&id.to_string()).is_some_and(|made| made <= now_ms && now_ms < made + WINDOW_MS)
 }
 
 fn not_after<K: Ord + Clone>(counts: &mut TrackedMap<K, Counted>, now_ms: u64) {
@@ -404,17 +404,17 @@ fn not_after<K: Ord + Clone>(counts: &mut TrackedMap<K, Counted>, now_ms: u64) {
 }
 
 pub(crate) fn deletions(trees: &Trees, deleted: &BTreeSet<NodeId>) -> BTreeMap<NodeId, Held> {
-    let mut children: BTreeMap<&str, Vec<&NodeId>> = BTreeMap::new();
+    let mut children: BTreeMap<&NodeId, Vec<&NodeId>> = BTreeMap::new();
     let mut tops = Vec::new();
     for id in deleted {
-        match trees.synced().live(id).map(|shape| shape.parent.as_str()) {
+        match trees.synced().live(id).map(|shape| &shape.parent) {
             Some(parent) if deleted.contains(parent) => {
                 children.entry(parent).or_default().push(id)
             }
             _ => tops.push(id),
         }
     }
-    let revisions = |node: &str| {
+    let revisions = |node: &NodeId| {
         (trees.remote().get(node)).map(|remote| Revisions {
             content_rev: remote.content_rev,
             meta_rev: remote.meta_rev,
@@ -426,7 +426,7 @@ pub(crate) fn deletions(trees: &Trees, deleted: &BTreeSet<NodeId>) -> BTreeMap<N
             let mut below = vec![top];
             while let Some(node) = below.pop() {
                 members.insert(node.clone(), revisions(node));
-                below.extend(children.get(node.as_str()).into_iter().flatten());
+                below.extend(children.get(node).into_iter().flatten());
             }
             let files = (members.keys())
                 .filter(|node| {

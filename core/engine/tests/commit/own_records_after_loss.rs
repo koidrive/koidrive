@@ -26,7 +26,7 @@ fn served_at_5_then_lost(
         commits.received(result(5, results)).unwrap();
     }
     assert!(commits.own_record(5, &commit.commit_id, 0));
-    if commits.edits_in_flight(&commit.commit_id, "n") {
+    if commits.edits_in_flight(&commit.commit_id, &"n".into()) {
         trees.set_remote_edited_here("n".into(), applied);
     } else {
         trees.set_remote_made_here("n".into(), applied);
@@ -54,11 +54,11 @@ fn served_at_5_then_lost(
         meta_rev: 2,
         ..remote(file(ROOT, "p", 7))
     };
-    let listed: BTreeMap<String, RemoteNode> = (listed.iter())
-        .map(|(id, node)| ((*id).to_owned(), node.clone()))
-        .chain([("p".to_owned(), p)])
+    let listed: BTreeMap<NodeId, RemoteNode> = (listed.iter())
+        .map(|(id, node)| (NodeId::from(*id), node.clone()))
+        .chain([("p".into(), p)])
         .collect();
-    let gone: Vec<String> = (trees.remote().iter())
+    let gone: Vec<NodeId> = (trees.remote().iter())
         .map(|(id, _)| id.clone())
         .filter(|id| !listed.contains_key(id))
         .collect();
@@ -185,7 +185,7 @@ fn a_delete_the_server_lost_is_sent_again_whether_or_not_its_result_arrived() {
     };
     let (effects, sent) = served_at_5_then_lost_with_or_without_its_result(
         &[synced("n", file(ROOT, "n", 1))],
-        |trees| trees.remove_local("n"),
+        |trees| trees.remove_local(&"n".into()),
         deleted,
         &[("n", remote(file(ROOT, "n", 1)))],
     );
@@ -209,13 +209,13 @@ fn a_move_the_server_lost_is_sent_again_whether_or_not_its_result_arrived() {
 fn a_lost_own_move_the_server_holds_again_as_l_and_s_do_is_no_change() {
     let mut trees = trees(&[synced("n", file(ROOT, "a", 1))]);
     trees.set_remote("n".into(), remote_at(file(ROOT, "a", 1), 5));
-    trees.record_moved("n", 5);
+    trees.record_moved(&"n".into(), 5);
     let moved = trees.moved_here();
     assert_eq!(moved.len(), 1);
     trees.set_remote("n".into(), remote_at(file(ROOT, "a", 1), 6));
     trees.forget_lost(vec![], vec![], vec![], moved, vec![], Default::default(), &Default::default(), 3, 0);
     trees.settle(&Default::default());
-    assert_eq!(trees.class("n"), Class::InSync);
+    assert_eq!(trees.class(&"n".into()), Class::InSync);
     assert!(trees.state().local_changes.is_empty());
 }
 

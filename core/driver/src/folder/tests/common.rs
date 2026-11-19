@@ -854,7 +854,7 @@ fn ask(site: &Site, intent: &RestoreIntent) -> String {
     id
 }
 
-fn local_named(device: &Device, name: &str) -> String {
+fn local_named(device: &Device, name: &str) -> NodeId {
     let local = device.folder.engine.trees.local();
     (device.folder.engine.trees)
         .local_child(&local.root, name)
@@ -863,7 +863,7 @@ fn local_named(device: &Device, name: &str) -> String {
 }
 
 /// The node R holds under `name`.
-fn node_named(device: &Device, name: &str) -> String {
+fn node_named(device: &Device, name: &str) -> NodeId {
     let remote = device.folder.engine.trees.remote();
     let (id, _) = (remote.iter())
         .find(|(_, node)| node.shape.name == name)
@@ -885,7 +885,7 @@ fn ended(site: &Site) -> Vec<(String, Outcome)> {
 
 /// Device `a` synced `notes.txt` and then deleted it, so the space holds the file in its trash. Returns the file's
 /// node.
-fn with_a_trashed_file(remote: &mut Remote) -> (Site, Device, String) {
+fn with_a_trashed_file(remote: &mut Remote) -> (Site, Device, NodeId) {
     let (site, mut a) = linked(remote, "a");
     let path = site.root.join("notes.txt");
     a.create(remote, &path, b"written on a");
@@ -1338,7 +1338,10 @@ fn a_file_parked_behind_an_excluded_folder() -> (Remote, Site, Device, PathBuf) 
     fs::rename(site_a.root.join("x"), site_a.root.join("a/ß")).unwrap();
     a.settle();
     a.run(&mut remote);
-    let parked = site.root.join(".koidrive/parked").join(node_named(&b, "a"));
+    let parked = site
+        .root
+        .join(".koidrive/parked")
+        .join(node_named(&b, "a").to_string());
     b.pull_at_once(&remote);
     while !site.root.join("a").is_dir() {
         let work = b.work.pop_front().expect("the folder is created");

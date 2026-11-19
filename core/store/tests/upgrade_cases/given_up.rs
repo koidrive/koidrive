@@ -9,13 +9,13 @@ upgrade_case!(given_up, |store| {
             let report = tx.local_nodes()?.into_iter().find(|node| node.shape.name == "report.txt").unwrap();
             let mut after = before.clone();
             after.commits.given_up_nodes.insert(
-                report.node_id.clone(),
+                NodeId::from(&report.node_id),
                 koidrive_engine::state::GivenUp {
                     revisions: koidrive_engine::question::Revisions { content_rev: 3, meta_rev: 7 },
                     held_here: true,
                 },
             );
-            after.commits.answer_moves.insert(report.node_id.clone());
+            after.commits.answer_moves.insert(NodeId::from(&report.node_id));
             tx.update_engine_state(&before, &after)?;
             assert_eq!(tx.engine_state()?, after);
             Ok::<_, koidrive_store::Error>(())

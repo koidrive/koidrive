@@ -10,6 +10,7 @@ use koidrive_engine::commit::InFlight;
 use koidrive_engine::ids::uuid_v7;
 use koidrive_engine::restore::{RestoreId, RestoreIntent};
 use koidrive_engine::state::{CommitsState, EffectsState};
+use koidrive_engine::tree::NodeId;
 use koidrive_fs::FileId;
 use koidrive_proto::v1::{Commit, NodeKind, NodeState, NodeStatus, Op, op};
 use koidrive_store::{Cursor, EngineState, Error, LocalNode, Shape, Store, SyncedNode, Tx};
@@ -42,7 +43,7 @@ fn shape(n: u64) -> Shape {
 
 fn request(seq: u64) -> (RestoreId, RestoreIntent) {
     let node = uuid_v7(1, u128::from(seq));
-    let intent = RestoreIntent::from_trash(node, None, None).unwrap();
+    let intent = RestoreIntent::from_trash(NodeId::from(node), None, None).unwrap();
     (uuid_v7(2, u128::from(seq)), intent)
 }
 

@@ -31,7 +31,7 @@ fn a_create_refused_because_another_device_created_and_deleted_the_node_again_is
     acknowledge(&mut commits, &mut trees, vec![exists]);
     assert!(commits.problems().is_empty());
     trees.settle(commits.aliases());
-    assert_eq!(trees.class("n"), Class::Remote);
+    assert_eq!(trees.class(&"n".into()), Class::Remote);
     assert!(build(&mut commits, &mut trees, &mut ids).is_none());
 }
 
@@ -64,7 +64,7 @@ fn a_create_refused_for_a_node_another_device_renamed_and_deleted_follows_the_de
     };
     acknowledge(&mut commits, &mut trees, vec![exists]);
     trees.settle(commits.aliases());
-    assert_eq!(trees.class("n"), Class::Remote);
+    assert_eq!(trees.class(&"n".into()), Class::Remote);
     assert!(build(&mut commits, &mut trees, &mut ids).is_none());
 }
 
@@ -82,7 +82,7 @@ fn a_create_refused_for_a_node_another_device_created_edited_and_deleted_follows
     };
     acknowledge(&mut commits, &mut trees, vec![exists]);
     trees.settle(commits.aliases());
-    assert_eq!(trees.class("n"), Class::Remote);
+    assert_eq!(trees.class(&"n".into()), Class::Remote);
     assert!(build(&mut commits, &mut trees, &mut ids).is_none());
 }
 
@@ -112,7 +112,7 @@ fn resent_where_another_device_renamed_it(edit: Option<u8>) -> (Trees, Commits, 
     let synced = trees.taken_from_others(|_| false);
     let untaken = trees.untaken_changes(|_| false);
     let records = trees.remote_records(|_| false);
-    trees.remove_remote("f");
+    trees.remove_remote(&"f".into());
     trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), untaken, records, &Default::default(), 0, 0);
     trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
@@ -141,7 +141,7 @@ fn a_resend_refused_for_a_node_another_device_renamed_and_deleted_revives_the_ed
     trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     effects_for(&mut trees, &mut ids, "f");
-    assert_eq!(trees.local().live("f"), Some(&file(ROOT, "b", 2)));
+    assert_eq!(trees.local().live(&"f".into()), Some(&file(ROOT, "b", 2)));
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn a_resend_refused_for_a_node_another_device_renamed_and_sent_again_with_the_sa
     acknowledge(&mut commits, &mut trees, vec![id_exists()]);
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     effects_for(&mut trees, &mut ids, "f");
-    assert_eq!(trees.local().live("f"), Some(&file(ROOT, "b", 2)));
+    assert_eq!(trees.local().live(&"f".into()), Some(&file(ROOT, "b", 2)));
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn a_resend_refused_for_a_node_another_device_renamed_edited_and_sent_again_keep
         .collect();
     assert_eq!(copies.iter().map(|(_, digest)| *digest).collect::<Vec<_>>(), [2]);
     assert!(!ops(&commit).iter().any(|op| matches!(op, op::Op::UpdateContent(update) if update.node_id == "f")));
-    assert_eq!(trees.remote().live("f"), Some(&file(ROOT, "b", 3)));
+    assert_eq!(trees.remote().live(&"f".into()), Some(&file(ROOT, "b", 3)));
 }
 
 #[test]
@@ -178,8 +178,8 @@ fn a_resend_refused_for_a_node_another_device_renamed_and_deleted_follows_the_de
     let (mut trees, mut commits, mut ids) = resent_where_another_device_renamed_it(None);
     trees.set_remote("f".into(), trashed(file(ROOT, "b", 1)));
     acknowledge(&mut commits, &mut trees, vec![id_exists()]);
-    assert_eq!(trees.class("f"), Class::Remote);
+    assert_eq!(trees.class(&"f".into()), Class::Remote);
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     effects_for(&mut trees, &mut ids, "f");
-    assert!(trees.local().get("f").is_none());
+    assert!(trees.local().get(&"f".into()).is_none());
 }

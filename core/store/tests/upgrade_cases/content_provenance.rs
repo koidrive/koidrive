@@ -26,11 +26,11 @@ upgrade_case!(content_provenance, |store| {
             state
                 .trees
                 .content_provenance
-                .insert(report.node_id.clone(), provenance.clone());
+                .insert(NodeId::from(&report.node_id), provenance.clone());
             tx.set_engine_state(&state)?;
             assert_eq!(
                 tx.engine_state()?.trees.content_provenance,
-                std::collections::BTreeMap::from([(report.node_id, provenance)])
+                std::collections::BTreeMap::from([(NodeId::from(report.node_id), provenance)])
             );
             Ok::<_, koidrive_store::Error>(())
         })

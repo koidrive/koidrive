@@ -55,7 +55,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
     );
     trees.settle(&Default::default());
     let synced = trees.taken_from_others(|_| false);
-    trees.remove_remote("f");
+    trees.remove_remote(&"f".into());
     trees.forget_lost(
         Vec::new(),
         Vec::new(),
@@ -68,7 +68,7 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
         0,
     );
     trees.settle(&Default::default());
-    assert!(trees.state().lost_shapes.contains_key("f"));
+    assert!(trees.state().lost_shapes.contains_key(&"f".into()));
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.db");
     Store::open(&path)

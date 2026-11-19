@@ -242,7 +242,14 @@ fn a_kept_folder_whose_node_the_server_purges_stays_kept() {
     b.settle();
     b.run(&mut remote);
 
-    assert!(b.folder.engine.trees.remote().get(&old).is_none());
+    assert!(
+        b.folder
+            .engine
+            .trees
+            .remote()
+            .get(&NodeId::from(&old))
+            .is_none()
+    );
     assert!(b.sent.is_empty(), "{:?}", b.sent);
     assert!(remote.names().is_empty());
     assert_kept(&site, &b, &ignored);

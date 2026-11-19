@@ -11,7 +11,7 @@ use crate::ids::IdGen;
 use crate::ignore::{RuleFile, Source};
 use crate::question::Answer;
 use crate::tree::{
-    Content, ENTRIES_BUDGET, ENTRIES_READ, FileIdentity, Kind, LocalNode, RemoteNode, Shape,
+    Content, ENTRIES_BUDGET, ENTRIES_READ, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape,
 };
 
 const ROOT: &str = "root";
@@ -90,8 +90,8 @@ fn discarded_server_folder_let_in(files: usize, budget: u64) -> u64 {
     let mut trees = Trees::new(ROOT);
     trees.set_local("f".into(), local(dir(ROOT, "new"), 1));
     for (ino, (id, shape)) in server.enumerate() {
-        trees.set_local(id.clone(), local(shape.clone(), ino as u128 + 2));
-        trees.set_remote(id, remote(shape));
+        trees.set_local(NodeId::from(&id), local(shape.clone(), ino as u128 + 2));
+        trees.set_remote(NodeId::from(id), remote(shape));
     }
     trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
@@ -110,7 +110,7 @@ fn discarded_server_folder_let_in(files: usize, budget: u64) -> u64 {
         Source::Koiignore,
         Some(RuleFile::parse(b"ignored\n")),
     );
-    let mut moved = trees.local().get("x").unwrap().clone();
+    let mut moved = trees.local().get(&"x".into()).unwrap().clone();
     moved.shape.parent = "f".into();
     moved.shape.name = "ignored".into();
     trees.set_local_changed("x".into(), moved);
@@ -152,18 +152,21 @@ fn renamed_folder_above(depth: usize, files: usize, budget: u64) -> u64 {
         } else {
             shape.clone()
         };
-        trees.set_local(format!("d{i}"), local(here, i as u128 + 1));
-        trees.set_synced(format!("d{i}"), Some(shape.clone()));
-        trees.set_remote(format!("d{i}"), remote(shape));
+        trees.set_local(format!("d{i}").into(), local(here, i as u128 + 1));
+        trees.set_synced(format!("d{i}").into(), Some(shape.clone()));
+        trees.set_remote(format!("d{i}").into(), remote(shape));
     }
     let bottom = format!("d{}", depth - 1);
     for j in 0..files {
         let leaf = file(&bottom, &format!("f{j}.txt"), 1);
-        trees.set_local(format!("f{j}"), local(leaf.clone(), 1000 + j as u128));
-        trees.set_synced(format!("f{j}"), Some(leaf.clone()));
-        trees.set_remote(format!("f{j}"), remote(leaf));
+        trees.set_local(
+            format!("f{j}").into(),
+            local(leaf.clone(), 1000 + j as u128),
+        );
+        trees.set_synced(format!("f{j}").into(), Some(leaf.clone()));
+        trees.set_remote(format!("f{j}").into(), remote(leaf));
         trees.set_remote(
-            format!("g{j}"),
+            format!("g{j}").into(),
             remote(file(&bottom, &format!("g{j}.txt"), 2)),
         );
     }
@@ -177,7 +180,7 @@ fn renamed_folder_above(depth: usize, files: usize, budget: u64) -> u64 {
         ops(&mut Commits::default(), &mut trees, &mut IdGen::new(1))
     });
     assert_eq!(ops.len(), 1);
-    assert!(!trees.excluded("g0"));
+    assert!(!trees.excluded(&"g0".into()));
     read
 }
 

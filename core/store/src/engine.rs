@@ -91,7 +91,7 @@ impl Tx<'_> {
                 .iter_mut()
                 .find(|(set, _)| *set == name)
                 .ok_or_else(|| invalid(format!("unknown node set {name:?}")))?;
-            set.insert(row.get(1)?);
+            set.insert(NodeId::from(row.get::<_, String>(1)?));
         }
         let mut maps = node_maps(&mut state);
         let mut stmt = self
@@ -104,7 +104,10 @@ impl Tx<'_> {
                 .iter_mut()
                 .find(|(map, _)| *map == name)
                 .ok_or_else(|| invalid(format!("unknown node map {name:?}")))?;
-            map.insert(row.get(1)?, row.get(2)?);
+            map.insert(
+                NodeId::from(row.get::<_, String>(1)?),
+                NodeId::from(row.get::<_, String>(2)?),
+            );
         }
 
         let mut stmt = self.0.prepare_cached(
@@ -115,7 +118,7 @@ impl Tx<'_> {
             let shape = match row.get::<_, Option<String>>(2)? {
                 None => None,
                 Some(name) => Some(Shape {
-                    parent: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    parent: NodeId::from(row.get::<_, Option<String>>(1)?.unwrap_or_default()),
                     name,
                     kind: kind(row.get(3)?)?,
                     content: decode(row.get(4)?)?,
@@ -126,17 +129,20 @@ impl Tx<'_> {
                 (None, true) => Origin::Released,
                 (None, false) => Origin::Other,
             };
-            state
-                .trees
-                .waiting
-                .insert(row.get(0)?, Waiting { shape, origin });
+            state.trees.waiting.insert(
+                NodeId::from(row.get::<_, String>(0)?),
+                Waiting { shape, origin },
+            );
         }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id, changed FROM watched_contents")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.watched.insert(row.get(0)?, row.get(1)?);
+            state
+                .trees
+                .watched
+                .insert(NodeId::from(row.get::<_, String>(0)?), row.get(1)?);
         }
         let mut stmt = self
             .0
@@ -146,22 +152,35 @@ impl Tx<'_> {
             let parent = row.get::<_, Option<String>>(2)?.unwrap_or_default();
             let agreed = (row.get::<_, Option<u64>>(1)?)
                 .zip(row.get::<_, Option<String>>(3)?)
-                .map(|(rev, name)| Agreed { rev, parent, name });
-            state.trees.watched_positions.insert(row.get(0)?, agreed);
+                .map(|(rev, name)| Agreed {
+                    rev,
+                    parent: NodeId::from(parent),
+                    name,
+                });
+            state
+                .trees
+                .watched_positions
+                .insert(NodeId::from(row.get::<_, String>(0)?), agreed);
         }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id, seq FROM trashed_here")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.trashed_here.insert(row.get(0)?, row.get(1)?);
+            state
+                .trees
+                .trashed_here
+                .insert(NodeId::from(row.get::<_, String>(0)?), row.get(1)?);
         }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id, seq FROM removed_here")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.removed_here.insert(row.get(0)?, row.get(1)?);
+            state
+                .trees
+                .removed_here
+                .insert(NodeId::from(row.get::<_, String>(0)?), row.get(1)?);
         }
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, parent_id, name, kind, content FROM discarded_nodes",
@@ -169,19 +188,25 @@ impl Tx<'_> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let shape = Shape {
-                parent: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                parent: NodeId::from(row.get::<_, Option<String>>(1)?.unwrap_or_default()),
                 name: row.get(2)?,
                 kind: kind(row.get(3)?)?,
                 content: decode(row.get(4)?)?,
             };
-            state.trees.discarded.insert(row.get(0)?, shape);
+            state
+                .trees
+                .discarded
+                .insert(NodeId::from(row.get::<_, String>(0)?), shape);
         }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id, parent_id FROM removed_from")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.removed_from.insert(row.get(0)?, row.get(1)?);
+            state.trees.removed_from.insert(
+                NodeId::from(row.get::<_, String>(0)?),
+                NodeId::from(row.get::<_, String>(1)?),
+            );
         }
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, parent_id, name, kind, content FROM forgotten_shapes",
@@ -189,12 +214,15 @@ impl Tx<'_> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let shape = Shape {
-                parent: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                parent: NodeId::from(row.get::<_, Option<String>>(1)?.unwrap_or_default()),
                 name: row.get(2)?,
                 kind: kind(row.get(3)?)?,
                 content: decode(row.get(4)?)?,
             };
-            state.trees.forgotten_shapes.insert(row.get(0)?, shape);
+            state
+                .trees
+                .forgotten_shapes
+                .insert(NodeId::from(row.get::<_, String>(0)?), shape);
         }
         let mut stmt = self
             .0
@@ -202,19 +230,25 @@ impl Tx<'_> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let shape = Shape {
-                parent: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                parent: NodeId::from(row.get::<_, Option<String>>(1)?.unwrap_or_default()),
                 name: row.get(2)?,
                 kind: kind(row.get(3)?)?,
                 content: decode(row.get(4)?)?,
             };
-            state.trees.lost_shapes.insert(row.get(0)?, shape);
+            state
+                .trees
+                .lost_shapes
+                .insert(NodeId::from(row.get::<_, String>(0)?), shape);
         }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id FROM published_nodes")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.commits.published.insert(row.get(0)?);
+            state
+                .commits
+                .published
+                .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = (self.0)
             .prepare_cached("SELECT node_id, content_rev, meta_rev, held_here FROM given_up")?;
@@ -227,19 +261,25 @@ impl Tx<'_> {
                 },
                 held_here: row.get(3)?,
             };
-            state.commits.given_up_nodes.insert(row.get(0)?, given);
+            state
+                .commits
+                .given_up_nodes
+                .insert(NodeId::from(row.get::<_, String>(0)?), given);
         }
         let mut stmt = (self.0).prepare_cached("SELECT node_id FROM answer_moves")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.commits.answer_moves.insert(row.get(0)?);
+            state
+                .commits
+                .answer_moves
+                .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, ino, ino_high, birth_ns, lost, handle FROM recorded_nodes",
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            let node: NodeId = row.get(0)?;
+            let node: NodeId = NodeId::from(row.get::<_, String>(0)?);
             match row.get::<_, Option<i64>>(1)? {
                 Some(ino) => {
                     let identity = FileIdentity {
@@ -262,7 +302,10 @@ impl Tx<'_> {
             .prepare_cached("SELECT node_id, seq FROM edited_here")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.edited_here.insert(row.get(0)?, row.get(1)?);
+            state
+                .trees
+                .edited_here
+                .insert(NodeId::from(row.get::<_, String>(0)?), row.get(1)?);
         }
         let mut stmt = self
             .0
@@ -273,7 +316,10 @@ impl Tx<'_> {
                 seq: row.get(1)?,
                 upgraded: row.get(2)?,
             };
-            state.trees.moved_here.insert(row.get(0)?, moved);
+            state
+                .trees
+                .moved_here
+                .insert(NodeId::from(row.get::<_, String>(0)?), moved);
         }
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, rev, parent_id, name FROM past_positions ORDER BY node_id, position",
@@ -282,10 +328,10 @@ impl Tx<'_> {
         while let Some(row) = rows.next()? {
             let past = Agreed {
                 rev: row.get(1)?,
-                parent: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                parent: NodeId::from(row.get::<_, Option<String>>(2)?.unwrap_or_default()),
                 name: row.get(3)?,
             };
-            let node: NodeId = row.get(0)?;
+            let node: NodeId = NodeId::from(row.get::<_, String>(0)?);
             state
                 .trees
                 .past_positions
@@ -299,10 +345,10 @@ impl Tx<'_> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let position = SyncedPosition {
-                parent: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                parent: NodeId::from(row.get::<_, Option<String>>(1)?.unwrap_or_default()),
                 name: row.get(2)?,
             };
-            let node: NodeId = row.get(0)?;
+            let node = NodeId::from(row.get::<_, String>(0)?);
             state
                 .trees
                 .synced_positions
@@ -313,46 +359,70 @@ impl Tx<'_> {
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM unsent_edits")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.unsent_edits.insert(row.get(0)?);
+            state
+                .trees
+                .unsent_edits
+                .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM dropped_edits")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.dropped_edits.insert(row.get(0)?);
+            state
+                .trees
+                .dropped_edits
+                .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id FROM cycle_reverted")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.cycle_reverted.insert(row.get(0)?);
+            state
+                .trees
+                .cycle_reverted
+                .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM unobserved")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.unobserved.insert(row.get(0)?);
+            state
+                .trees
+                .unobserved
+                .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM missing_nodes")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.missing.insert(row.get(0)?);
+            state
+                .trees
+                .missing
+                .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM unsent_moves")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.unsent_moves.insert(row.get(0)?);
+            state
+                .trees
+                .unsent_moves
+                .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM kept_folders")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.kept_folders.insert(row.get(0)?);
+            state
+                .trees
+                .kept_folders
+                .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id FROM unsent_creates")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.unsent_creates.insert(row.get(0)?);
+            state
+                .trees
+                .unsent_creates
+                .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = self
             .0
@@ -362,7 +432,10 @@ impl Tx<'_> {
             let bytes: Vec<u8> = row.get(1)?;
             let kept = serde_json::from_slice(&bytes)
                 .map_err(|error| invalid(format!("kept entries: {error}")))?;
-            state.trees.kept_entries.insert(row.get(0)?, kept);
+            state
+                .trees
+                .kept_entries
+                .insert(NodeId::from(row.get::<_, String>(0)?), kept);
         }
         let mut stmt = self
             .0
@@ -371,14 +444,20 @@ impl Tx<'_> {
         while let Some(row) = rows.next()? {
             let bytes: Option<Vec<u8>> = row.get(1)?;
             let cause = bytes.and_then(|bytes| serde_json::from_slice(&bytes).ok());
-            state.trees.kept_nodes.insert(row.get(0)?, cause);
+            state
+                .trees
+                .kept_nodes
+                .insert(NodeId::from(row.get::<_, String>(0)?), cause);
         }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id FROM unseen_changes")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.unseen_changes.insert(row.get(0)?);
+            state
+                .trees
+                .unseen_changes
+                .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, version_id FROM replaced_versions ORDER BY node_id, position",
@@ -388,14 +467,17 @@ impl Tx<'_> {
             (state
                 .trees
                 .replaced_versions
-                .entry(row.get(0)?)
+                .entry(NodeId::from(row.get::<_, String>(0)?))
                 .or_default())
             .push(row.get(1)?);
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM resends")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.resends.insert(row.get(0)?);
+            state
+                .trees
+                .resends
+                .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = self
             .0
@@ -408,12 +490,15 @@ impl Tx<'_> {
             state
                 .trees
                 .content_provenance
-                .insert(row.get(0)?, provenance);
+                .insert(NodeId::from(row.get::<_, String>(0)?), provenance);
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM local_changes")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.local_changes.insert(row.get(0)?);
+            state
+                .trees
+                .local_changes
+                .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = self
             .0
@@ -421,29 +506,41 @@ impl Tx<'_> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let at = LostPosition {
-                parent: row.get(1)?,
+                parent: NodeId::from(row.get::<_, String>(1)?),
                 name: row.get(2)?,
             };
-            state.trees.lost_positions.insert(row.get(0)?, at);
+            state
+                .trees
+                .lost_positions
+                .insert(NodeId::from(row.get::<_, String>(0)?), at);
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM lost_creates")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.lost_creates.insert(row.get(0)?);
+            state
+                .trees
+                .lost_creates
+                .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id, kept FROM kept_originals")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.kept_originals.insert(row.get(0)?, row.get(1)?);
+            state.trees.kept_originals.insert(
+                NodeId::from(row.get::<_, String>(0)?),
+                NodeId::from(row.get::<_, String>(1)?),
+            );
         }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id, trash_group FROM trash_groups")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.commits.trash_groups.insert(row.get(0)?, row.get(1)?);
+            state
+                .commits
+                .trash_groups
+                .insert(NodeId::from(row.get::<_, String>(0)?), row.get(1)?);
         }
         let mut stmt = (self.0).prepare_cached(
             "SELECT restore_id, trash_group, parent_id, name, folders, landed_parent_id, landed_name FROM split_restores",
@@ -453,11 +550,14 @@ impl Tx<'_> {
             let folders: String = row.get(4)?;
             let split = SplitRestore {
                 trash_group: row.get(1)?,
-                parent: row.get(2)?,
+                parent: NodeId::from(row.get::<_, String>(2)?),
                 name: row.get(3)?,
                 folders: serde_json::from_str(&folders)
                     .map_err(|error| invalid(format!("split restore folders: {error}")))?,
-                landed: Option::zip(row.get(5)?, row.get(6)?),
+                landed: Option::zip(
+                    row.get::<_, Option<String>>(5)?.map(NodeId::from),
+                    row.get(6)?,
+                ),
             };
             state.commits.split_restores.insert(row.get(0)?, split);
         }
@@ -466,7 +566,10 @@ impl Tx<'_> {
             .prepare_cached("SELECT node_id, pending_for FROM unsent_marks")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            state.trees.unsent_marks.insert(row.get(0)?, row.get(1)?);
+            state
+                .trees
+                .unsent_marks
+                .insert(NodeId::from(row.get::<_, String>(0)?), row.get(1)?);
         }
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, parent_id, pending_name, name, meta_rev, disk_first, base, sending FROM pending_finishes",
@@ -474,7 +577,7 @@ impl Tx<'_> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let finish = PendingFinish {
-                parent: row.get(1)?,
+                parent: NodeId::from(row.get::<_, String>(1)?),
                 pending: row.get(2)?,
                 name: row.get(3)?,
                 origin: match row.get(4)? {
@@ -485,7 +588,10 @@ impl Tx<'_> {
                 base: row.get(6)?,
                 sending: row.get(7)?,
             };
-            state.trees.pending_finishes.insert(row.get(0)?, finish);
+            state
+                .trees
+                .pending_finishes
+                .insert(NodeId::from(row.get::<_, String>(0)?), finish);
         }
 
         if let Some((accepted, halt, cap)) = self
@@ -565,10 +671,10 @@ impl Tx<'_> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let effect = StoredEffect::decode(row.get::<_, Vec<u8>>(1)?.as_slice())?;
-            state
-                .effects
-                .failed
-                .insert(row.get(0)?, Effect::try_from(effect)?);
+            state.effects.failed.insert(
+                NodeId::from(row.get::<_, String>(0)?),
+                Effect::try_from(effect)?,
+            );
         }
         Ok(state)
     }
@@ -677,6 +783,7 @@ impl Tx<'_> {
         ];
         for (name, changes) in sets {
             for (node, held) in changes {
+                let node = node.to_string();
                 match held {
                     true => insert.execute(params![name, node])?,
                     false => remove.execute(params![name, node])?,
@@ -691,13 +798,14 @@ impl Tx<'_> {
         )?;
         for (name, changes) in [("parked_as", parked_as), ("aliases", aliases)] {
             for (node, target) in changes {
+                let node = node.to_string();
                 match target {
-                    Some(target) => put.execute(params![name, node, target])?,
+                    Some(target) => put.execute(params![name, node, target.to_string()])?,
                     None => remove.execute(params![name, node])?,
                 };
             }
         }
-        self.write_map(
+        self.write_node_map(
             waiting,
             "DELETE FROM waiting_updates WHERE node_id = ?1",
             "INSERT OR REPLACE INTO waiting_updates (node_id, parent_id, name, kind, content, slot, released)
@@ -709,7 +817,10 @@ impl Tx<'_> {
                 };
                 put.execute(params![
                     node,
-                    shape.as_ref().and_then(|shape| non_empty(&shape.parent)),
+                    shape
+                        .as_ref()
+                        .map(|shape| shape.parent.to_string())
+                        .filter(|parent| !parent.is_empty()),
                     shape.as_ref().map(|shape| &shape.name),
                     shape.as_ref().map(|shape| node_kind(shape.kind)),
                     shape
@@ -721,13 +832,13 @@ impl Tx<'_> {
                 ])
             },
         )?;
-        self.write_map(
+        self.write_node_map(
             watched,
             "DELETE FROM watched_contents WHERE node_id = ?1",
             "INSERT OR REPLACE INTO watched_contents (node_id, changed) VALUES (?1, ?2)",
             |put, node, took| put.execute(params![node, took]),
         )?;
-        self.write_map(
+        self.write_node_map(
             watched_positions,
             "DELETE FROM watched_positions WHERE node_id = ?1",
             "INSERT OR REPLACE INTO watched_positions (node_id, rev, parent_id, name)
@@ -736,24 +847,27 @@ impl Tx<'_> {
                 put.execute(params![
                     node,
                     agreed.as_ref().map(|agreed| agreed.rev),
-                    agreed.as_ref().and_then(|agreed| non_empty(&agreed.parent)),
+                    agreed
+                        .as_ref()
+                        .map(|agreed| agreed.parent.to_string())
+                        .filter(|parent| !parent.is_empty()),
                     agreed.as_ref().map(|agreed| &agreed.name),
                 ])
             },
         )?;
-        self.write_map(
+        self.write_node_map(
             trashed_here,
             "DELETE FROM trashed_here WHERE node_id = ?1",
             "INSERT OR REPLACE INTO trashed_here (node_id, seq) VALUES (?1, ?2)",
             |put, node, seq| put.execute(params![node, seq]),
         )?;
-        self.write_map(
+        self.write_node_map(
             removed_here,
             "DELETE FROM removed_here WHERE node_id = ?1",
             "INSERT OR REPLACE INTO removed_here (node_id, seq) VALUES (?1, ?2)",
             |put, node, seq| put.execute(params![node, seq]),
         )?;
-        self.write_map(
+        self.write_node_map(
             discarded,
             "DELETE FROM discarded_nodes WHERE node_id = ?1",
             "INSERT OR REPLACE INTO discarded_nodes (node_id, parent_id, name, kind, content)
@@ -761,20 +875,20 @@ impl Tx<'_> {
             |put, node, shape| {
                 put.execute(params![
                     node,
-                    non_empty(&shape.parent),
+                    non_empty(&shape.parent.to_string()),
                     shape.name,
                     node_kind(shape.kind),
                     shape.content.as_ref().map(Content::encode_to_vec),
                 ])
             },
         )?;
-        self.write_map(
+        self.write_node_map(
             removed_from,
             "DELETE FROM removed_from WHERE node_id = ?1",
             "INSERT OR REPLACE INTO removed_from (node_id, parent_id) VALUES (?1, ?2)",
-            |put, node, folder| put.execute(params![node, folder]),
+            |put, node, folder| put.execute(params![node, folder.to_string()]),
         )?;
-        self.write_map(
+        self.write_node_map(
             forgotten_shapes,
             "DELETE FROM forgotten_shapes WHERE node_id = ?1",
             "INSERT OR REPLACE INTO forgotten_shapes (node_id, parent_id, name, kind, content)
@@ -782,14 +896,14 @@ impl Tx<'_> {
             |put, node, shape| {
                 put.execute(params![
                     node,
-                    non_empty(&shape.parent),
+                    non_empty(&shape.parent.to_string()),
                     shape.name,
                     node_kind(shape.kind),
                     shape.content.as_ref().map(Content::encode_to_vec),
                 ])
             },
         )?;
-        self.write_map(
+        self.write_node_map(
             lost_shapes,
             "DELETE FROM lost_shapes WHERE node_id = ?1",
             "INSERT OR REPLACE INTO lost_shapes (node_id, parent_id, name, kind, content)
@@ -797,7 +911,7 @@ impl Tx<'_> {
             |put, node, shape| {
                 put.execute(params![
                     node,
-                    non_empty(&shape.parent),
+                    non_empty(&shape.parent.to_string()),
                     shape.name,
                     node_kind(shape.kind),
                     shape.content.as_ref().map(Content::encode_to_vec),
@@ -810,7 +924,7 @@ impl Tx<'_> {
             "DELETE FROM missing_nodes WHERE node_id = ?1",
             "INSERT OR IGNORE INTO missing_nodes (node_id) VALUES (?1)",
         )?;
-        self.write_map(
+        self.write_node_map(
             edited_here,
             "DELETE FROM edited_here WHERE node_id = ?1",
             "INSERT OR REPLACE INTO edited_here (node_id, seq) VALUES (?1, ?2)",
@@ -858,6 +972,7 @@ impl Tx<'_> {
             "INSERT OR REPLACE INTO kept_entries (node_id, entries) VALUES (?1, ?2)",
         )?;
         for (node, kept) in kept_entries {
+            let node = node.to_string();
             match kept {
                 Some(kept) => {
                     let bytes = serde_json::to_vec(kept)
@@ -876,6 +991,7 @@ impl Tx<'_> {
             .0
             .prepare_cached("INSERT OR REPLACE INTO kept_nodes (node_id, cause) VALUES (?1, ?2)")?;
         for (node, kept) in kept_nodes {
+            let node = node.to_string();
             match kept {
                 Some(cause) => {
                     let bytes = (cause.as_ref().map(serde_json::to_vec).transpose())
@@ -892,7 +1008,7 @@ impl Tx<'_> {
             "DELETE FROM unseen_changes WHERE node_id = ?1",
             "INSERT OR IGNORE INTO unseen_changes (node_id) VALUES (?1)",
         )?;
-        self.write_map(
+        self.write_node_map(
             moved_here,
             "DELETE FROM moved_here WHERE node_id = ?1",
             "INSERT OR REPLACE INTO moved_here (node_id, seq, upgraded) VALUES (?1, ?2, ?3)",
@@ -906,13 +1022,14 @@ impl Tx<'_> {
              VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
         for (node, past) in past_positions {
-            remove.execute([node])?;
+            let node = node.to_string();
+            remove.execute([&node])?;
             for (index, position) in past.iter().flatten().enumerate() {
                 put.execute(params![
                     node,
                     index,
                     position.rev,
-                    non_empty(&position.parent),
+                    non_empty(&position.parent.to_string()),
                     &position.name
                 ])?;
             }
@@ -924,12 +1041,13 @@ impl Tx<'_> {
             "INSERT INTO synced_positions (node_id, position, parent_id, name) VALUES (?1, ?2, ?3, ?4)",
         )?;
         for (node, positions) in synced_positions {
-            remove.execute([node])?;
+            let node = node.to_string();
+            remove.execute([&node])?;
             for (index, position) in positions.iter().flatten().enumerate() {
                 put.execute(params![
                     node,
                     index,
-                    non_empty(&position.parent),
+                    non_empty(&position.parent.to_string()),
                     &position.name
                 ])?;
             }
@@ -941,7 +1059,8 @@ impl Tx<'_> {
             "INSERT INTO replaced_versions (node_id, position, version_id) VALUES (?1, ?2, ?3)",
         )?;
         for (node, versions) in replaced_versions {
-            remove.execute([node])?;
+            let node = node.to_string();
+            remove.execute([&node])?;
             for (position, version) in versions.iter().flatten().enumerate() {
                 put.execute(params![node, position, version])?;
             }
@@ -953,6 +1072,7 @@ impl Tx<'_> {
             "INSERT OR REPLACE INTO content_provenance (node_id, provenance) VALUES (?1, ?2)",
         )?;
         for (node, provenance) in content_provenance {
+            let node = node.to_string();
             match provenance {
                 Some(provenance) => {
                     let bytes = serde_json::to_vec(provenance)
@@ -979,25 +1099,27 @@ impl Tx<'_> {
             "DELETE FROM lost_creates WHERE node_id = ?1",
             "INSERT OR IGNORE INTO lost_creates (node_id) VALUES (?1)",
         )?;
-        self.write_map(
+        self.write_node_map(
             lost_positions,
             "DELETE FROM lost_positions WHERE node_id = ?1",
             "INSERT OR REPLACE INTO lost_positions (node_id, parent_id, name) VALUES (?1, ?2, ?3)",
-            |put, node, at: &LostPosition| put.execute(params![node, at.parent, at.name]),
+            |put, node, at: &LostPosition| {
+                put.execute(params![node, at.parent.to_string(), at.name])
+            },
         )?;
-        self.write_map(
+        self.write_node_map(
             kept_originals,
             "DELETE FROM kept_originals WHERE node_id = ?1",
             "INSERT OR REPLACE INTO kept_originals (node_id, kept) VALUES (?1, ?2)",
-            |put, node, kept| put.execute(params![node, kept]),
+            |put, node, kept| put.execute(params![node, kept.to_string()]),
         )?;
-        self.write_map(
+        self.write_node_map(
             unsent_marks,
             "DELETE FROM unsent_marks WHERE node_id = ?1",
             "INSERT OR REPLACE INTO unsent_marks (node_id, pending_for) VALUES (?1, ?2)",
             |put, node, name| put.execute(params![node, name]),
         )?;
-        self.write_map(
+        self.write_node_map(
             pending_finishes,
             "DELETE FROM pending_finishes WHERE node_id = ?1",
             "INSERT OR REPLACE INTO pending_finishes
@@ -1006,7 +1128,7 @@ impl Tx<'_> {
             |put, node, finish| {
                 put.execute(params![
                     node,
-                    finish.parent,
+                    finish.parent.to_string(),
                     finish.pending,
                     finish.name,
                     match finish.origin {
@@ -1078,9 +1200,10 @@ impl Tx<'_> {
                     "INSERT INTO commit_in_flight_delete_members (target, position, node_id) VALUES (?1, ?2, ?3)",
                 )?;
                 for (target, nodes) in &flight.deletes {
-                    targets.execute([target])?;
+                    let target = target.to_string();
+                    targets.execute([&target])?;
                     for (position, node) in nodes.iter().enumerate() {
-                        members.execute(params![target, position, node])?;
+                        members.execute(params![target, position, node.to_string()])?;
                     }
                 }
                 let mut restored = self.0.prepare_cached(
@@ -1088,7 +1211,7 @@ impl Tx<'_> {
                 )?;
                 for (index, nodes) in &flight.restores {
                     for (position, node) in nodes.iter().enumerate() {
-                        restored.execute(params![index, position, node])?;
+                        restored.execute(params![index, position, node.to_string()])?;
                     }
                 }
                 let mut owners = self.0.prepare_cached(
@@ -1128,7 +1251,7 @@ impl Tx<'_> {
         if let Some(questions) = questions {
             self.set_open_questions(questions)?;
         }
-        self.write_map(
+        self.write_node_map(
             trash_groups,
             "DELETE FROM trash_groups WHERE node_id = ?1",
             "INSERT OR REPLACE INTO trash_groups (node_id, trash_group) VALUES (?1, ?2)",
@@ -1141,7 +1264,7 @@ impl Tx<'_> {
             |put, id, split| {
                 let folders = serde_json::to_string(&split.folders).expect("node ids encode");
                 let (landed_parent, landed_name) = split.landed.clone().unzip();
-                put.execute(params![id, split.trash_group, split.parent, split.name, folders, landed_parent, landed_name])
+                put.execute(params![id, split.trash_group, split.parent.to_string(), split.name, folders, landed_parent.map(String::from), landed_name])
             },
         )?;
         self.write_set(
@@ -1149,7 +1272,7 @@ impl Tx<'_> {
             "DELETE FROM published_nodes WHERE node_id = ?1",
             "INSERT OR IGNORE INTO published_nodes (node_id) VALUES (?1)",
         )?;
-        self.write_map(
+        self.write_node_map(
             given_up_nodes,
             "DELETE FROM given_up WHERE node_id = ?1",
             "INSERT OR REPLACE INTO given_up (node_id, content_rev, meta_rev, held_here) VALUES (?1, ?2, ?3, ?4)",
@@ -1189,7 +1312,7 @@ impl Tx<'_> {
                 ])?;
             }
         }
-        self.write_map(
+        self.write_node_map(
             failed,
             "DELETE FROM failed_effects WHERE node_id = ?1",
             "INSERT OR REPLACE INTO failed_effects (node_id, effect) VALUES (?1, ?2)",
@@ -1215,7 +1338,7 @@ impl Tx<'_> {
         let gone =
             (displaced.iter().filter(|(_, held)| held.is_none())).map(|(node, _)| (node, true));
         for (node, displaced) in left.chain(gone) {
-            remove.execute(params![node, displaced])?;
+            remove.execute(params![node.to_string(), displaced])?;
         }
         let mut put = self.0.prepare_cached(
             "INSERT OR REPLACE INTO recorded_nodes (node_id, displaced, ino, ino_high, birth_ns, lost, handle)
@@ -1225,7 +1348,7 @@ impl Tx<'_> {
             if let Some(held) = held {
                 let (ino, ino_high) = ino_columns(held.ino);
                 put.execute(params![
-                    node,
+                    node.to_string(),
                     ino,
                     ino_high,
                     held.birth_ns,
@@ -1237,12 +1360,14 @@ impl Tx<'_> {
             "INSERT OR IGNORE INTO recorded_nodes (node_id, displaced, ino_high, lost) VALUES (?1, 0, 0, 0)",
         )?;
         for (node, _) in outside.iter().filter(|(_, held)| *held) {
+            let node = node.to_string();
             put.execute([node])?;
         }
         let mut mark = self.0.prepare_cached(
             "UPDATE recorded_nodes SET lost = ?2 WHERE node_id = ?1 AND displaced = 0",
         )?;
         for (node, held) in lost {
+            let node = node.to_string();
             mark.execute(params![node, held])?;
         }
         Ok(())
@@ -1253,8 +1378,8 @@ impl Tx<'_> {
         let mut insert = self.0.prepare_cached(insert)?;
         for (node, held) in changes {
             match held {
-                true => insert.execute([node])?,
-                false => remove.execute([node])?,
+                true => insert.execute([node.to_string()])?,
+                false => remove.execute([node.to_string()])?,
             };
         }
         Ok(())
@@ -1280,6 +1405,25 @@ impl Tx<'_> {
         Ok(())
     }
 
+    pub(crate) fn write_node_map<V>(
+        &self,
+        changes: &MapChanges<NodeId, V>,
+        remove: &str,
+        insert: &str,
+        mut put: impl FnMut(&mut CachedStatement<'_>, &str, &V) -> rusqlite::Result<usize>,
+    ) -> Result<()> {
+        let mut remove = self.0.prepare_cached(remove)?;
+        let mut insert = self.0.prepare_cached(insert)?;
+        for (key, value) in changes {
+            let key = key.to_string();
+            match value {
+                Some(value) => put(&mut insert, &key, value)?,
+                None => remove.execute([&key])?,
+            };
+        }
+        Ok(())
+    }
+
     fn in_flight(&self) -> Result<Option<InFlight>> {
         let Some((commit, result)) = self
             .0
@@ -1295,20 +1439,22 @@ impl Tx<'_> {
         let mut deletes: BTreeMap<NodeId, Vec<NodeId>> = self
             .0
             .prepare_cached("SELECT target FROM commit_in_flight_deletes")?
-            .query_map([], |row| Ok((row.get(0)?, Vec::new())))?
+            .query_map([], |row| {
+                Ok((NodeId::from(row.get::<_, String>(0)?), Vec::new()))
+            })?
             .collect::<rusqlite::Result<_>>()?;
         let mut stmt = self.0.prepare_cached(
             "SELECT target, node_id FROM commit_in_flight_delete_members ORDER BY target, position",
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            let target: NodeId = row.get(0)?;
+            let target: NodeId = NodeId::from(row.get::<_, String>(0)?);
             let Some(nodes) = deletes.get_mut(&target) else {
                 return Err(invalid(format!(
                     "delete members for {target}, which is not a delete target"
                 )));
             };
-            nodes.push(row.get(1)?);
+            nodes.push(NodeId::from(row.get::<_, String>(1)?));
         }
         let mut restores: BTreeMap<usize, Vec<NodeId>> = BTreeMap::new();
         let mut stmt = self.0.prepare_cached(
@@ -1316,7 +1462,10 @@ impl Tx<'_> {
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            restores.entry(row.get(0)?).or_default().push(row.get(1)?);
+            restores
+                .entry(row.get(0)?)
+                .or_default()
+                .push(NodeId::from(row.get::<_, String>(1)?));
         }
         let owners = self
             .0
@@ -1571,11 +1720,11 @@ impl From<&EffectRecord> for StoredRecord {
     fn from(record: &EffectRecord) -> Self {
         Self {
             effect_id: record.effect_id.clone(),
-            node: record.node.clone(),
+            node: record.node.to_string(),
             counter: record.counter,
             effect: Some((&record.effect).into()),
             after: record.after.as_ref().map(|shape| StoredShape {
-                parent: shape.parent.clone(),
+                parent: shape.parent.to_string(),
                 name: shape.name.clone(),
                 kind: node_kind(shape.kind),
                 content: shape.content.clone(),
@@ -1591,7 +1740,7 @@ impl TryFrom<StoredRecord> for EffectRecord {
         let after = match record.after {
             None => None,
             Some(shape) => Some(Shape {
-                parent: shape.parent,
+                parent: NodeId::from(shape.parent),
                 name: shape.name,
                 kind: kind(shape.kind)?,
                 content: shape.content,
@@ -1599,7 +1748,7 @@ impl TryFrom<StoredRecord> for EffectRecord {
         };
         Ok(Self {
             effect_id: record.effect_id,
-            node: record.node,
+            node: NodeId::from(record.node),
             counter: record.counter,
             effect: required(record.effect, "the effect")?.try_into()?,
             after,
@@ -1698,12 +1847,12 @@ impl TryFrom<StoredDisplaced> for Displaced {
 impl From<&Location> for StoredLocation {
     fn from(location: &Location) -> Self {
         let place = match location {
-            Location::Parked(node) => Place::Parked(node.clone()),
+            Location::Parked(node) => Place::Parked(node.to_string()),
             Location::At { base, dirs, name } => Place::At(StoredAt {
                 parked: match base {
                     Base::Root => None,
                     Base::Parked { node, identity } => Some(StoredDir {
-                        name: node.clone(),
+                        name: node.to_string(),
                         identity: Some(identity.into()),
                     }),
                 },
@@ -1726,12 +1875,12 @@ impl TryFrom<StoredLocation> for Location {
 
     fn try_from(location: StoredLocation) -> Result<Self> {
         Ok(match required(location.place, "the location")? {
-            Place::Parked(node) => Location::Parked(node),
+            Place::Parked(node) => Location::Parked(NodeId::from(node)),
             Place::At(at) => Location::At {
                 base: match at.parked {
                     None => Base::Root,
                     Some(dir) => Base::Parked {
-                        node: dir.name,
+                        node: NodeId::from(dir.name),
                         identity: required(dir.identity, "the parked directory's identity")?.into(),
                     },
                 },

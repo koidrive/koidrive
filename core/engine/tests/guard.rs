@@ -7,7 +7,7 @@ use koidrive_engine::guard::{WINDOW_MS, Window};
 use koidrive_engine::ids::{IdGen, uuid_v7};
 use koidrive_engine::question::{Answer, Held, Limit, Question, QuestionKind, RecoveryGroup};
 use koidrive_engine::state::CommitsState;
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
 use koidrive_proto::v1::{CommitResult, OpResult, op, op_result};
 
 const ROOT: &str = "root";
@@ -35,7 +35,7 @@ fn space(loose: usize, inside: usize) -> Trees {
         .extend((0..inside).map(|i| (format!("d/g{i}"), shape("d", &format!("g{i}"), Kind::File))));
     for (ino, (id, shape)) in nodes.into_iter().enumerate() {
         put_back(&mut trees, &id, shape.clone(), ino as u128 + 1);
-        trees.set_synced(id.clone(), Some(shape.clone()));
+        trees.set_synced(NodeId::from(&id), Some(shape.clone()));
         serve(&mut trees, id, shape);
     }
     trees.settle(&Default::default());
@@ -44,7 +44,7 @@ fn space(loose: usize, inside: usize) -> Trees {
 
 fn serve(trees: &mut Trees, id: String, shape: Shape) {
     trees.set_remote(
-        id,
+        NodeId::from(id),
         RemoteNode {
             made_over: Vec::new(),
             shape,
@@ -81,14 +81,14 @@ fn put_back(trees: &mut Trees, id: &str, shape: Shape, ino: u128) {
 
 fn remove(trees: &mut Trees, ids: &[&str]) {
     for id in ids {
-        let below: Vec<String> = (trees.local().iter())
-            .filter(|(other, _)| other.starts_with(&format!("{id}/")))
+        let below: Vec<NodeId> = (trees.local().iter())
+            .filter(|(other, _)| other.to_string().starts_with(&format!("{id}/")))
             .map(|(other, _)| other.clone())
             .collect();
         for other in below {
             trees.remove_local(&other);
         }
-        trees.remove_local(id);
+        trees.remove_local(&NodeId::from(*id));
     }
     trees.settle(&Default::default());
 }
@@ -166,7 +166,7 @@ fn exceeded(question: &Question) -> &[Limit] {
     }
 }
 
-fn held(commits: &Commits) -> Vec<String> {
+fn held(commits: &Commits) -> Vec<NodeId> {
     asked(commits)
         .map(|question| question.held.keys().cloned().collect())
         .unwrap_or_default()
@@ -199,7 +199,7 @@ fn a_removed_folder_holding_most_of_the_space_is_held_while_the_rest_syncs() {
         "a folder is one deletion of the files it holds"
     );
     assert_eq!(held(&commits), ["d"]);
-    assert_eq!(question.held["d"].members.len(), 16);
+    assert_eq!(question.held[&"d".into()].members.len(), 16);
 }
 
 #[test]
@@ -539,8 +539,16 @@ fn restoring_answers_the_question_and_downloads_the_held_nodes_again() {
     );
 
     for node in ["d", "d/g0", "d/g14"] {
-        assert_eq!(trees.synced().live(node), None, "{node} left S");
-        assert_eq!(trees.class(node), Class::Remote, "{node} is downloaded");
+        assert_eq!(
+            trees.synced().live(&NodeId::from(node)),
+            None,
+            "{node} left S"
+        );
+        assert_eq!(
+            trees.class(&NodeId::from(node)),
+            Class::Remote,
+            "{node} is downloaded"
+        );
     }
     assert_eq!(asked(&commits), None);
     assert!(commits.state().guard.ledger.is_empty());
@@ -622,10 +630,10 @@ fn a_held_file_changed_on_the_server_leaves_the_question_and_is_downloaded() {
     build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
 
     let question = asked(&commits).expect("12 of 25 files are still held");
-    assert!(!question.held.contains_key("f0"));
+    assert!(!question.held.contains_key(&"f0".into()));
     assert_eq!(question.held.len(), 12);
     assert_ne!(
-        trees.class("f0"),
+        trees.class(&"f0".into()),
         Class::Local,
         "f0 is not a local delete any more"
     );
@@ -652,7 +660,7 @@ fn nothing_is_counted_while_committing_has_stopped() {
 
 fn recovery_question(trees: &Trees) -> CommitsState {
     let members = (trees.synced().iter())
-        .filter(|(id, _)| id.as_str() == "d" || id.starts_with("d/"))
+        .filter(|(id, _)| *id == "d" || id.to_string().starts_with("d/"))
         .map(|(id, _)| (id.clone(), None))
         .collect();
     CommitsState {
@@ -716,7 +724,7 @@ fn a_held_node_carries_the_revisions_r_held_when_it_was_asked() {
     remove(&mut trees, &["d"]);
     build_at(&mut commits, &mut trees, &mut ids, NOW);
 
-    let members = &asked(&commits).unwrap().held["d"].members;
+    let members = &asked(&commits).unwrap().held[&"d".into()].members;
     assert!(
         members.values().all(|revisions| revisions
             .is_some_and(|revisions| revisions.content_rev == 1 && revisions.meta_rev == 1)),
@@ -805,9 +813,9 @@ fn a_confirmed_folder_deleted_over_several_commits_takes_one_answer() {
     let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
     assert_eq!(deleted(&ops).len(), 1, "one op per commit");
     for node in deleted(&ops) {
-        let mut remote = trees.remote().get(&node).unwrap().clone();
+        let mut remote = trees.remote().get(&NodeId::from(&node)).unwrap().clone();
         remote.trashed = true;
-        trees.set_remote(node, remote);
+        trees.set_remote(NodeId::from(node), remote);
     }
     trees.settle(commits.aliases());
     acknowledge(&mut commits, &mut trees, 8);
@@ -834,7 +842,11 @@ fn a_restore_answer_brings_back_its_question_and_holds_a_deletion_made_since() {
     let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
 
     assert_eq!(deleted(&ops), Vec::<String>::new());
-    assert_eq!(trees.class("d/g0"), Class::Remote, "d is downloaded");
+    assert_eq!(
+        trees.class(&"d/g0".into()),
+        Class::Remote,
+        "d is downloaded"
+    );
     let question = asked(&commits).expect("a new question");
     assert_ne!(question.id, first);
     assert_eq!(held(&commits), ["f0"]);
@@ -855,7 +867,11 @@ fn a_restore_answer_brings_back_held_children_whose_folder_was_put_back() {
 
     assert_eq!(deleted(&ops), Vec::<String>::new());
     for node in ["d/g0", "d/g14"] {
-        assert_eq!(trees.class(node), Class::Remote, "{node} is downloaded");
+        assert_eq!(
+            trees.class(&NodeId::from(node)),
+            Class::Remote,
+            "{node} is downloaded"
+        );
     }
     assert_eq!(asked(&commits), None);
 }
@@ -911,15 +927,15 @@ fn a_confirmed_folder_whose_rest_changed_after_some_commits_is_asked_about_again
         let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 1 + step);
         assert!(!deleted(&ops).is_empty());
         for node in deleted(&ops) {
-            let mut remote = trees.remote().get(&node).unwrap().clone();
+            let mut remote = trees.remote().get(&NodeId::from(&node)).unwrap().clone();
             remote.trashed = true;
-            trees.set_remote(node, remote);
+            trees.set_remote(NodeId::from(node), remote);
         }
         trees.settle(commits.aliases());
         acknowledge(&mut commits, &mut trees, 8 + step);
     }
-    let left: Vec<String> = (trees.synced().iter())
-        .filter(|(id, node)| id.starts_with("d/") && node.kind == Kind::File)
+    let left: Vec<NodeId> = (trees.synced().iter())
+        .filter(|(id, node)| id.to_string().starts_with("d/") && node.kind == Kind::File)
         .map(|(id, _)| id.clone())
         .collect();
     assert_eq!(left.len(), 8, "8 of 18 files are left, below the limits");
@@ -939,10 +955,11 @@ fn a_confirmed_folder_whose_rest_changed_after_some_commits_is_asked_about_again
 }
 
 fn trash_remotely(trees: &mut Trees, ids: &[&str]) {
-    let gone: Vec<(String, Shape, &str)> = (trees.synced().iter())
+    let gone: Vec<(NodeId, Shape, &str)> = (trees.synced().iter())
         .filter(|(id, _)| trees.remote().live(id).is_some())
         .filter_map(|(id, shape)| {
-            let top = (ids.iter()).find(|top| *id == **top || id.starts_with(&format!("{top}/")));
+            let top = (ids.iter())
+                .find(|top| *id == **top || id.to_string().starts_with(&format!("{top}/")));
             top.map(|top| (id.clone(), shape.clone(), *top))
         })
         .collect();
@@ -1013,14 +1030,14 @@ fn another_device_making_and_deleting_files_over_and_over_opens_no_notice() {
         let id = uuid_v7(now, u128::from(cycle));
         let made = shape(ROOT, "a", Kind::File);
         put_back(&mut trees, &id, made.clone(), 1000 + u128::from(cycle));
-        trees.set_synced(id.clone(), Some(made.clone()));
+        trees.set_synced(NodeId::from(&id), Some(made.clone()));
         serve(&mut trees, id.clone(), made);
         trees.settle(commits.aliases());
         trash_remotely(&mut trees, &[&id]);
 
         apply_effects(&mut commits, &mut trees, &mut ids, now);
 
-        assert_eq!(trees.local().get(&id), None, "cycle {cycle}");
+        assert_eq!(trees.local().get(&NodeId::from(&id)), None, "cycle {cycle}");
         assert_eq!(
             notice(&commits).map(|(_, window, _)| window),
             None,
@@ -1037,7 +1054,11 @@ fn another_devices_deletion_of_most_of_the_space_is_applied_and_noticed() {
 
     apply_effects(&mut commits, &mut trees, &mut ids, NOW);
 
-    assert_eq!(trees.local().get("d"), None, "the folder is removed");
+    assert_eq!(
+        trees.local().get(&"d".into()),
+        None,
+        "the folder is removed"
+    );
     assert_eq!(commits.questions().len(), 1);
     let (question, window, exceeded) = notice(&commits).expect("a notice");
     assert_eq!(
@@ -1130,7 +1151,11 @@ fn the_rest_of_a_folder_removed_after_its_notice_was_dismissed_is_not_noticed_ag
 
     apply_effects(&mut commits, &mut trees, &mut ids, NOW + 1);
 
-    assert_eq!(trees.local().get("d"), None, "the folder is removed");
+    assert_eq!(
+        trees.local().get(&"d".into()),
+        None,
+        "the folder is removed"
+    );
     assert_eq!(
         commits.questions(),
         [],
@@ -1151,7 +1176,7 @@ fn the_rest_of_a_folder_removed_after_its_notice_was_dismissed_is_not_noticed_ag
 #[test]
 fn a_folder_restored_after_its_notice_was_dismissed_is_noticed_when_deleted_again() {
     let mut trees = space(0, 50);
-    let original: Vec<(String, Shape)> = (trees.synced().iter())
+    let original: Vec<(NodeId, Shape)> = (trees.synced().iter())
         .map(|(id, shape)| (id.clone(), shape.clone()))
         .collect();
     let set_remote = |trees: &mut Trees, trashed: bool, rev: u64| {
@@ -1248,7 +1273,7 @@ fn an_open_notice_holds_back_neither_uploads_nor_local_deletions() {
     apply_effects(&mut commits, &mut trees, &mut ids, NOW);
     let id = notice(&commits).unwrap().0.id.clone();
     put_back(&mut trees, "new", shape(ROOT, "new", Kind::File), 999);
-    trees.remove_local("f0");
+    trees.remove_local(&"f0".into());
     trees.settle(commits.aliases());
 
     let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
@@ -1284,7 +1309,7 @@ fn a_dismissed_folder_stays_dismissed_when_r_forgets_its_trashed_nodes() {
     }
     let id = notice(&commits).unwrap().0.id.clone();
     assert!(commits.decide(&id, Answer::Dismiss));
-    let trashed: Vec<String> = (trees.remote().iter())
+    let trashed: Vec<NodeId> = (trees.remote().iter())
         .filter(|(_, node)| node.trashed)
         .map(|(id, _)| id.clone())
         .collect();
@@ -1296,7 +1321,11 @@ fn a_dismissed_folder_stays_dismissed_when_r_forgets_its_trashed_nodes() {
     build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
     apply_effects(&mut commits, &mut trees, &mut ids, NOW + 1);
 
-    assert_eq!(trees.local().get("d"), None, "the folder is removed");
+    assert_eq!(
+        trees.local().get(&"d".into()),
+        None,
+        "the folder is removed"
+    );
     assert_eq!(
         commits.questions(),
         [],
@@ -1304,8 +1333,8 @@ fn a_dismissed_folder_stays_dismissed_when_r_forgets_its_trashed_nodes() {
     );
 }
 
-fn forget_trashed(trees: &mut Trees) -> Vec<(String, RemoteNode)> {
-    let trashed: Vec<(String, RemoteNode)> = (trees.remote().iter())
+fn forget_trashed(trees: &mut Trees) -> Vec<(NodeId, RemoteNode)> {
+    let trashed: Vec<(NodeId, RemoteNode)> = (trees.remote().iter())
         .filter(|(_, node)| node.trashed)
         .map(|(id, node)| (id.clone(), node.clone()))
         .collect();
@@ -1356,7 +1385,11 @@ fn a_dismissed_folder_stays_dismissed_when_r_learns_its_trashed_nodes() {
     build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
     apply_effects(&mut commits, &mut trees, &mut ids, NOW + 1);
 
-    assert_eq!(trees.local().get("d"), None, "the folder is removed");
+    assert_eq!(
+        trees.local().get(&"d".into()),
+        None,
+        "the folder is removed"
+    );
     assert_eq!(
         commits.questions(),
         [],
@@ -1393,7 +1426,7 @@ fn a_folder_trashed_again_after_a_dismissal_without_its_record_is_noticed() {
 #[test]
 fn a_folder_restored_after_a_dismissal_without_its_record_is_noticed_when_deleted_again() {
     let mut trees = space(0, 50);
-    let original: Vec<(String, Shape)> = (trees.synced().iter())
+    let original: Vec<(NodeId, Shape)> = (trees.synced().iter())
         .map(|(id, shape)| (id.clone(), shape.clone()))
         .collect();
     let set_remote = |trees: &mut Trees, trashed: bool, rev: u64| {
@@ -1484,7 +1517,7 @@ fn nested() -> Trees {
     let mut trees = Trees::new(ROOT);
     for (ino, (id, shape)) in nodes.into_iter().enumerate() {
         put_back(&mut trees, &id, shape.clone(), ino as u128 + 1);
-        trees.set_synced(id.clone(), Some(shape.clone()));
+        trees.set_synced(NodeId::from(&id), Some(shape.clone()));
         let node = RemoteNode {
             made_over: Vec::new(),
             shape,
@@ -1498,7 +1531,7 @@ fn nested() -> Trees {
             pending_for: None,
             pending_by: None,
         };
-        trees.set_remote(id, node);
+        trees.set_remote(NodeId::from(id), node);
     }
     trees.settle(&Default::default());
     trees
@@ -1514,7 +1547,11 @@ fn a_folder_deleted_above_a_dismissed_one_counts_only_its_own_files() {
 
     apply_effects(&mut commits, &mut trees, &mut ids, NOW + 1);
 
-    assert_eq!(trees.local().get("p"), None, "the folder is removed");
+    assert_eq!(
+        trees.local().get(&"p".into()),
+        None,
+        "the folder is removed"
+    );
     assert_eq!(commits.questions(), []);
 }
 
@@ -1542,7 +1579,11 @@ fn a_folder_removal_that_stops_past_the_window_is_noticed() {
 
     apply_effects(&mut commits, &mut trees, &mut ids, NOW + WINDOW_MS);
 
-    assert_eq!(trees.local().get("d"), None, "the folder is removed");
+    assert_eq!(
+        trees.local().get(&"d".into()),
+        None,
+        "the folder is removed"
+    );
     let (_, window, _) = notice(&commits).expect("the folder is noticed");
     assert_eq!((window.deletions, window.affected_files), (1, 60));
 }
@@ -1603,7 +1644,7 @@ fn a_folder_with_old_system_files(files: usize) -> Trees {
     }));
     for (ino, (id, shape)) in nodes.into_iter().enumerate() {
         put_back(&mut trees, &id, shape.clone(), ino as u128 + 1);
-        trees.set_synced(id.clone(), Some(shape.clone()));
+        trees.set_synced(NodeId::from(&id), Some(shape.clone()));
         serve(&mut trees, id, shape);
     }
     trees.settle(&Default::default());
@@ -1649,6 +1690,11 @@ fn a_deleted_folder_whose_system_files_pass_the_commit_limit_is_sent_in_pieces()
         sent += 1;
     }
     assert!(sent > 1, "{sent} commits");
-    assert_eq!(trees.synced().live("d"), None);
-    assert!(trees.synced().iter().all(|(id, _)| !id.starts_with("d/")));
+    assert_eq!(trees.synced().live(&"d".into()), None);
+    assert!(
+        trees
+            .synced()
+            .iter()
+            .all(|(id, _)| !id.to_string().starts_with("d/"))
+    );
 }

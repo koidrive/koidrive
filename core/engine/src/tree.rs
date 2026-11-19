@@ -13,7 +13,7 @@ use koidrive_proto::v1::{self as proto, NodeKind, NodeStatus};
 
 use crate::names::{name_key, same_name};
 
-pub type NodeId = String;
+pub use crate::node_id::NodeId;
 
 #[cfg(test)]
 thread_local! {
@@ -245,7 +245,7 @@ impl RemoteNode {
         };
         let node = RemoteNode {
             shape: Shape {
-                parent: state.parent_id.clone(),
+                parent: NodeId::from(&state.parent_id),
                 name: state.name.clone(),
                 kind,
                 content,
@@ -271,7 +271,7 @@ impl RemoteNode {
             pending_for: Some(state.pending_for.clone()).filter(|name| !name.is_empty()),
             pending_by: Some(state.pending_by.clone()).filter(|device| !device.is_empty()),
         };
-        Ok((state.node_id.clone(), node))
+        Ok((NodeId::from(&state.node_id), node))
     }
 }
 
@@ -351,16 +351,16 @@ impl<N: Node> Tree<N> {
         }
     }
 
-    pub fn get(&self, id: &str) -> Option<&N> {
+    pub fn get(&self, id: &NodeId) -> Option<&N> {
         self.nodes.get(id)
     }
 
-    pub fn get_mut(&mut self, id: &str) -> Option<&mut N> {
+    pub fn get_mut(&mut self, id: &NodeId) -> Option<&mut N> {
         self.nodes.get_mut(id)
     }
 
     /// The node's shape if it is live here, ⊥ otherwise.
-    pub fn live(&self, id: &str) -> Option<&Shape> {
+    pub fn live(&self, id: &NodeId) -> Option<&Shape> {
         self.nodes
             .get(id)
             .filter(|node| node.is_live())
@@ -371,7 +371,7 @@ impl<N: Node> Tree<N> {
         self.nodes.insert(id, node)
     }
 
-    pub fn remove(&mut self, id: &str) -> Option<N> {
+    pub fn remove(&mut self, id: &NodeId) -> Option<N> {
         self.nodes.remove(id)
     }
 
@@ -389,10 +389,10 @@ impl<N: Node> Tree<N> {
 
     /// The path of `id` relative to the root, through the parents the tree holds, live or not. `None` when a node on
     /// the way is missing or not placed, or the parents loop.
-    pub fn path(&self, id: &str) -> Option<PathBuf> {
+    pub fn path(&self, id: &NodeId) -> Option<PathBuf> {
         let mut names = Vec::new();
         let mut current = id;
-        while current != self.root {
+        while *current != self.root {
             let node = self.get(current).filter(|node| node.is_placed())?;
             names.push(node.shape().name.as_str());
             current = &node.shape().parent;
@@ -427,7 +427,7 @@ impl<N: Node> Tree<N> {
                 Names::ByKey => name_key(&shape.name),
                 Names::Exact => shape.name.clone(),
             };
-            if !seen.insert((shape.parent.as_str(), key)) {
+            if !seen.insert((&shape.parent, key)) {
                 return Err(TreeError::NameTaken {
                     parent: shape.parent.clone(),
                     name: shape.name.clone(),
@@ -444,10 +444,10 @@ impl<N: Node> Tree<N> {
 
     /// True when following live parents from `id` reaches the root, or a node that is not placed,
     /// within as many steps as there are nodes.
-    pub fn reaches_root(&self, id: &str) -> bool {
+    pub fn reaches_root(&self, id: &NodeId) -> bool {
         let mut current = id;
         for _ in 0..=self.nodes.len() {
-            if current == self.root {
+            if *current == self.root {
                 return true;
             }
             match self.nodes.get(current).filter(|node| node.is_live()) {
@@ -481,13 +481,13 @@ impl<N: Node + PartialEq + Clone> TrackedTree<N> {
         self.tree.insert(id, node)
     }
 
-    pub(crate) fn remove(&mut self, id: &str) -> Option<N> {
+    pub(crate) fn remove(&mut self, id: &NodeId) -> Option<N> {
         let old = self.tree.remove(id)?;
         self.changed.insert(id.to_owned());
         Some(old)
     }
 
-    pub(crate) fn update(&mut self, id: &str, change: impl FnOnce(&mut N)) {
+    pub(crate) fn update(&mut self, id: &NodeId, change: impl FnOnce(&mut N)) {
         let Some(node) = self.tree.get_mut(id) else {
             return;
         };
@@ -498,7 +498,7 @@ impl<N: Node + PartialEq + Clone> TrackedTree<N> {
         }
     }
 
-    pub(crate) fn touch(&mut self, id: &str) {
+    pub(crate) fn touch(&mut self, id: &NodeId) {
         self.changed.insert(id.to_owned());
     }
 

@@ -8,10 +8,10 @@ upgrade_case!(split_trash, |store| {
             assert!(before.commits.split_restores.is_empty());
             let report = tx.local_nodes()?.into_iter().find(|node| node.shape.name == "report.txt").unwrap();
             let mut after = before.clone();
-            after.commits.trash_groups.insert(report.node_id.clone(), "0190a6b2-0000-7000-8000-000000000001:3".into());
+            after.commits.trash_groups.insert(NodeId::from(&report.node_id), "0190a6b2-0000-7000-8000-000000000001:3".into());
             let split = koidrive_engine::restore::SplitRestore {
                 trash_group: "0190a6b2-0000-7000-8000-000000000003:0".into(),
-                parent: report.shape.parent_id.clone(),
+                parent: NodeId::from(&report.shape.parent_id),
                 name: "report.txt".into(),
                 folders: ["0190a6b2-0000-7000-8000-000000000004".into()].into(),
                 landed: None,

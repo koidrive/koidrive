@@ -19,20 +19,20 @@ pub(super) struct Unsynced {
 }
 
 impl Unsynced {
-    pub(super) fn holds(&self, trees: &Trees, id: &str) -> bool {
+    pub(super) fn holds(&self, trees: &Trees, id: &NodeId) -> bool {
         self.nodes.contains(id)
             || (trees.local().get(id)).is_some_and(|node| self.inos.contains(&node.identity.ino))
     }
 }
 
 fn path_in<'a>(
-    shape: impl Fn(&str) -> Option<&'a Shape>,
-    root: &str,
-    id: &str,
+    shape: impl Fn(&NodeId) -> Option<&'a Shape>,
+    root: &NodeId,
+    id: &NodeId,
 ) -> Option<Vec<String>> {
     let mut names = Vec::new();
-    let mut current = id.to_owned();
-    while current != root {
+    let mut current = id.clone();
+    while current != *root {
         let above = shape(&current)?;
         names.push(above.name.clone());
         current = above.parent.clone();
@@ -42,10 +42,10 @@ fn path_in<'a>(
 }
 
 pub(super) fn excluded_op(trees: &Trees, op: &Op) -> Option<String> {
-    let local = |id: &str| trees.local().get(id).map(|node| &node.shape);
-    let remote = |id: &str| trees.remote().live(id);
-    let root = trees.local().root.as_str();
-    let at = |parent: &str, name: &str, kind: Kind| {
+    let local = |id: &NodeId| trees.local().get(id).map(|node| &node.shape);
+    let remote = |id: &NodeId| trees.remote().live(id);
+    let root = &trees.local().root;
+    let at = |parent: &NodeId, name: &str, kind: Kind| {
         [path_in(local, root, parent), path_in(remote, root, parent)]
             .into_iter()
             .flatten()
@@ -58,26 +58,30 @@ pub(super) fn excluded_op(trees: &Trees, op: &Op) -> Option<String> {
     let (id, path) = match op.op.as_ref()? {
         op::Op::CreateFile(create) => (
             &create.node_id,
-            at(&create.parent_id, &create.name, Kind::File),
+            at(&NodeId::from(&create.parent_id), &create.name, Kind::File),
         ),
         op::Op::CreateDir(create) => (
             &create.node_id,
-            at(&create.parent_id, &create.name, Kind::Dir),
+            at(&NodeId::from(&create.parent_id), &create.name, Kind::Dir),
         ),
         op::Op::Move(moved) => {
-            let shape = local(&moved.node_id).or_else(|| remote(&moved.node_id));
+            let node = NodeId::from(&moved.node_id);
+            let shape = local(&node).or_else(|| remote(&node));
             let kind = shape.map_or(Kind::File, |shape| shape.kind);
             (
                 &moved.node_id,
-                at(&moved.new_parent_id, &moved.new_name, kind),
+                at(&NodeId::from(&moved.new_parent_id), &moved.new_name, kind),
             )
         }
         op::Op::UpdateContent(update) => (
             &update.node_id,
-            [local(&update.node_id), remote(&update.node_id)]
-                .into_iter()
-                .flatten()
-                .find_map(|shape| at(&shape.parent, &shape.name, Kind::File)),
+            [
+                local(&NodeId::from(&update.node_id)),
+                remote(&NodeId::from(&update.node_id)),
+            ]
+            .into_iter()
+            .flatten()
+            .find_map(|shape| at(&shape.parent, &shape.name, Kind::File)),
         ),
         _ => return None,
     };
@@ -160,23 +164,23 @@ impl World {
 
     pub(super) fn waiting_on(&self, d: usize, holders: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
         let trees = &self.devices[d].engine.trees;
-        let root = self.space.space_id();
+        let root = NodeId::from(self.space.space_id());
         let nodes = self.space.nodes();
-        let live: BTreeMap<&str, &NodeState> = (nodes.iter())
+        let live: BTreeMap<NodeId, &NodeState> = (nodes.iter())
             .filter(|node| node.status == NodeStatus::Live as i32 && node.node_id != root)
-            .map(|node| (node.node_id.as_str(), node))
+            .map(|node| (NodeId::from(&node.node_id), node))
             .collect();
         let keys = |path: Vec<String>| path.iter().map(|name| name_key(name)).collect::<Vec<_>>();
-        let local = |id: &str| trees.local().get(id).map(|node| &node.shape);
-        let remote = |id: &str| {
+        let local = |id: &NodeId| trees.local().get(id).map(|node| &node.shape);
+        let remote = |id: &NodeId| {
             live.get(id)
-                .map(|node| (node.parent_id.as_str(), node.name.as_str()))
+                .map(|node| (NodeId::from(&node.parent_id), node.name.as_str()))
         };
-        let server_path = |id: &str| {
+        let server_path = |id: &NodeId| {
             let mut names = Vec::new();
-            let mut current = id;
+            let mut current = id.clone();
             while current != root {
-                let (parent, name) = remote(current).filter(|_| names.len() <= live.len())?;
+                let (parent, name) = remote(&current).filter(|_| names.len() <= live.len())?;
                 names.push(name.to_owned());
                 current = parent;
             }
@@ -184,13 +188,13 @@ impl World {
             Some(names)
         };
         let held: BTreeSet<Vec<String>> = (holders.iter())
-            .filter_map(|id| path_in(local, root, id))
+            .filter_map(|id| path_in(local, &root, id))
             .map(keys)
             .collect();
         (live.keys())
-            .filter(|id| !holders.contains(**id))
+            .filter(|id| !holders.contains(*id))
             .filter(|id| server_path(id).is_some_and(|path| held.contains(&keys(path))))
-            .map(|id| (*id).to_owned())
+            .cloned()
             .collect()
     }
 
@@ -198,12 +202,10 @@ impl World {
         let device = &self.devices[d];
         let (disk, trees) = (&device.disk, &device.engine.trees);
         let nodes = self.space.nodes();
-        let parents: Vec<(&str, &str)> = (nodes.iter())
+        let parents: Vec<(NodeId, NodeId)> = (nodes.iter())
             .filter(|node| node.status == NodeStatus::Live as i32)
-            .map(|node| (node.node_id.as_str(), node.parent_id.as_str()))
-            .chain(
-                (trees.local().iter()).map(|(id, node)| (id.as_str(), node.shape.parent.as_str())),
-            )
+            .map(|node| (NodeId::from(&node.node_id), NodeId::from(&node.parent_id)))
+            .chain((trees.local().iter()).map(|(id, node)| (id.clone(), node.shape.parent.clone())))
             .collect();
         let mut out = Unsynced {
             nodes: top.clone(),
@@ -211,8 +213,8 @@ impl World {
         };
         loop {
             let more: Vec<NodeId> = (parents.iter())
-                .filter(|(id, parent)| out.nodes.contains(*parent) && !out.nodes.contains(*id))
-                .map(|(id, _)| (*id).to_owned())
+                .filter(|(id, parent)| out.nodes.contains(parent) && !out.nodes.contains(id))
+                .map(|(id, _)| id.clone())
                 .collect();
             if more.is_empty() {
                 break;
@@ -240,23 +242,23 @@ impl World {
             return out;
         }
         let (disk, trees) = (&device.disk, &device.engine.trees);
-        let root = self.space.space_id();
+        let root = NodeId::from(self.space.space_id());
         let nodes = self.space.nodes();
-        let live: BTreeMap<&str, &NodeState> = (nodes.iter())
+        let live: BTreeMap<NodeId, &NodeState> = (nodes.iter())
             .filter(|node| node.status == NodeStatus::Live as i32 && node.node_id != root)
-            .map(|node| (node.node_id.as_str(), node))
+            .map(|node| (NodeId::from(&node.node_id), node))
             .collect();
         let kind = |node: &NodeState| match node.kind == NodeKind::Dir as i32 {
             true => Kind::Dir,
             false => Kind::File,
         };
-        let server_path = |id: &str| {
+        let server_path = |id: &NodeId| {
             let mut names = Vec::new();
-            let mut current = id;
+            let mut current = id.clone();
             while current != root {
-                let node = live.get(current).filter(|_| names.len() <= live.len())?;
+                let node = live.get(&current).filter(|_| names.len() <= live.len())?;
                 names.push(node.name.clone());
-                current = &node.parent_id;
+                current = NodeId::from(&node.parent_id);
             }
             names.reverse();
             Some(names)
@@ -268,7 +270,7 @@ impl World {
                 continue;
             };
             if trees.ignores(&path, kind(node)) {
-                out.nodes.insert((*id).to_owned());
+                out.nodes.insert(id.clone());
             }
             on_server.insert(normal(&path));
         }
@@ -286,11 +288,11 @@ impl World {
             }
             on_disk.insert(normal(&path));
         }
-        let local = |id: &str| trees.local().get(id).map(|node| &node.shape);
+        let local = |id: &NodeId| trees.local().get(id).map(|node| &node.shape);
         let kept_in_l = (trees.local().iter())
             .filter(|(id, node)| {
                 trees.recorded_local(id)
-                    || path_in(local, root, id)
+                    || path_in(local, &root, id)
                         .is_some_and(|path| trees.ignores(&path, node.shape.kind))
             })
             .map(|(id, _)| id)
@@ -302,7 +304,7 @@ impl World {
         loop {
             let size = (out.inos.len(), out.nodes.len());
             for (ino, id) in &held {
-                if out.inos.contains(ino) && live.contains_key(id.as_str()) {
+                if out.inos.contains(ino) && live.contains_key(*id) {
                     out.nodes.insert((*id).clone());
                 }
                 if out.nodes.contains(*id) && disk.entries().contains_key(ino) {
@@ -328,17 +330,15 @@ impl World {
                 .map(|(ino, _)| *ino)
                 .collect();
             out.inos.extend(kept);
-            let above = |id: &str| {
-                std::iter::successors(live.get(id).map(|node| node.parent_id.as_str()), |id| {
-                    live.get(id).map(|node| node.parent_id.as_str())
-                })
+            let above = |id: &NodeId| {
+                std::iter::successors(
+                    live.get(id).map(|node| NodeId::from(&node.parent_id)),
+                    |id| live.get(id).map(|node| NodeId::from(&node.parent_id)),
+                )
                 .take(live.len())
-                .any(|id| out.nodes.contains(id))
+                .any(|id| out.nodes.contains(&id))
             };
-            let below: Vec<NodeId> = (live.keys())
-                .filter(|id| above(id))
-                .map(|id| (*id).to_owned())
-                .collect();
+            let below: Vec<NodeId> = (live.keys()).filter(|id| above(id)).cloned().collect();
             out.nodes.extend(below);
             let kept: Vec<NodeId> = (live.iter())
                 .filter(|(id, node)| {
@@ -350,9 +350,9 @@ impl World {
                         && self.intents.deleted(d, id)
                         && server_path(id).is_some_and(|path| !on_disk.contains(&normal(&path)))
                         && children.peek().is_some()
-                        && children.all(|child| out.nodes.contains(&child.node_id))
+                        && children.all(|child| out.nodes.contains(&NodeId::from(&child.node_id)))
                 })
-                .map(|(id, _)| (*id).to_owned())
+                .map(|(id, _)| id.clone())
                 .collect();
             out.nodes.extend(kept);
             if (out.inos.len(), out.nodes.len()) == size {
@@ -363,29 +363,30 @@ impl World {
         let holders: BTreeMap<Vec<String>, &NodeId> = (held.iter())
             .filter(|(ino, id)| out.inos.contains(ino) || out.nodes.contains(*id))
             .flat_map(|(ino, id)| {
-                [disk.path(*ino), path_in(local, root, id)]
+                [disk.path(*ino), path_in(local, &root, id)]
                     .into_iter()
                     .flatten()
                     .map(move |path| (keys(&path), *id))
             })
             .collect();
         out.waiting = (live.keys())
-            .filter(|id| quiet && !out.nodes.contains(**id))
+            .filter(|id| quiet && !out.nodes.contains(*id))
             .filter(|id| {
                 (server_path(id).and_then(|path| holders.get(&keys(&path))))
-                    .is_some_and(|holder| holder.as_str() != **id)
+                    .is_some_and(|holder| holder != id)
             })
-            .map(|id| (*id).to_owned())
+            .cloned()
             .collect();
         let below_waiting: Vec<NodeId> = (live.keys())
             .filter(|id| {
-                std::iter::successors(live.get(**id).map(|node| node.parent_id.as_str()), |id| {
-                    live.get(id).map(|node| node.parent_id.as_str())
-                })
+                std::iter::successors(
+                    live.get(*id).map(|node| NodeId::from(&node.parent_id)),
+                    |id| live.get(id).map(|node| NodeId::from(&node.parent_id)),
+                )
                 .take(live.len())
-                .any(|id| out.waiting.contains(id))
+                .any(|id| out.waiting.contains(&id))
             })
-            .map(|id| (*id).to_owned())
+            .cloned()
             .collect();
         out.waiting.extend(below_waiting);
         out

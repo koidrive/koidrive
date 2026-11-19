@@ -39,7 +39,7 @@ fn a_commit_holds_at_most_the_op_limit_with_parents_first() {
     rows.extend((0..MAX_OPS).map(|i| (format!("f{i:04}"), file("d", &format!("{i}"), 1))));
     let mut trees = Trees::new(ROOT);
     for (i, (id, shape)) in rows.into_iter().enumerate() {
-        trees.set_local(id, local(shape, i as u128 + 1));
+        trees.set_local(NodeId::from(id), local(shape, i as u128 + 1));
     }
     trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
@@ -79,7 +79,10 @@ fn finishes_sent_on_their_own_stop_before_their_change_records_outgrow_one_messa
 fn a_commit_stops_before_its_change_records_outgrow_one_message() {
     let mut trees = Trees::new(ROOT);
     for i in 0..8 {
-        trees.set_local(format!("f{i}"), local(large(ROOT, &format!("{i}")), i + 1));
+        trees.set_local(
+            format!("f{i}").into(),
+            local(large(ROOT, &format!("{i}")), i + 1),
+        );
     }
     trees.settle(&Default::default());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
@@ -126,7 +129,10 @@ fn a_conflict_answer_counts_toward_the_change_records_of_its_commit() {
         trees.set_synced(id.into(), Some(shape));
     }
     for i in 0..4 {
-        trees.set_local(format!("g{i}"), local(large(ROOT, &format!("{i}")), i + 3));
+        trees.set_local(
+            format!("g{i}").into(),
+            local(large(ROOT, &format!("{i}")), i + 3),
+        );
     }
     trees.settle(commits.aliases());
     let question = commits.questions()[0].id.clone();
@@ -185,7 +191,7 @@ fn a_commit_that_does_not_fit_is_planned_again_in_halves_and_grows_back() {
     let mut trees = Trees::new(ROOT);
     for i in 0..12 {
         trees.set_local(
-            format!("f{i:02}"),
+            format!("f{i:02}").into(),
             local(file(ROOT, &format!("{i}"), 1), i + 1),
         );
     }
@@ -261,7 +267,7 @@ fn a_delete_that_does_not_fit_alone_deletes_the_folder_contents_first() {
         ("s", dir("d", "s")),
         ("t", file("s", "t", 1)),
     ] {
-        assert_eq!(trees.synced().live(id), None, "{id}");
+        assert_eq!(trees.synced().live(&NodeId::from(id)), None, "{id}");
         trees.set_remote(id.into(), trashed(shape));
     }
     let third = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -271,7 +277,7 @@ fn a_delete_that_does_not_fit_alone_deletes_the_folder_contents_first() {
         &mut trees,
         vec![outcome(op_result::Code::Applied)],
     );
-    assert_eq!(trees.synced().live("d"), None);
+    assert_eq!(trees.synced().live(&"d".into()), None);
     assert!(commits.problems().is_empty());
 }
 
@@ -301,7 +307,7 @@ fn an_op_that_does_not_fit_alone_and_cannot_be_split_is_a_problem() {
             .unwrap();
     }
     assert!(build(&mut commits, &mut trees, &mut ids).is_none());
-    let problems: Vec<&str> = commits.problems().iter().map(String::as_str).collect();
+    let problems: Vec<&NodeId> = commits.problems().iter().collect();
     assert_eq!(problems, ["a", "e"]);
 }
 
@@ -397,9 +403,12 @@ fn a_trashed_folder_moved_into_a_new_folder_comes_back_with_its_trash_group_afte
     trees.set_remote_made_here("d".into(), remote_at(dir("b", "d"), 2));
     trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
-    assert_eq!(trees.synced().live("b"), Some(&dir("a", "b")));
-    assert_eq!(trees.synced().live("d"), Some(&dir("b", "d")));
-    assert_eq!(trees.local().get("d").map(|node| &node.shape), Some(&dir("b", "d")));
+    assert_eq!(trees.synced().live(&"b".into()), Some(&dir("a", "b")));
+    assert_eq!(trees.synced().live(&"d".into()), Some(&dir("b", "d")));
+    assert_eq!(
+        trees.local().get(&"d".into()).map(|node| &node.shape),
+        Some(&dir("b", "d"))
+    );
 }
 
 #[test]
@@ -583,9 +592,12 @@ fn split_ends_like_the_whole_commit(a: Row) -> Class {
     split.set_remote_made_here("c".into(), remote_at(file("a", "c", 2), 2));
     split.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut split, &mut ids), None);
-    assert_eq!(split.synced().live("c"), whole.synced().live("c"));
-    assert_eq!(split.class("c"), whole.class("c"));
-    split.class("c")
+    assert_eq!(
+        split.synced().live(&"c".into()),
+        whole.synced().live(&"c".into())
+    );
+    assert_eq!(split.class(&"c".into()), whole.class(&"c".into()));
+    split.class(&"c".into())
 }
 
 #[test]
@@ -720,7 +732,7 @@ fn a_trashed_file_moved_into_a_new_folder_comes_back_when_the_commit_after_its_m
                 op::Op::CreateFile(create) => (&create.node_id, file(&create.parent_id, &create.name, 1)),
                 other => panic!("{other:?}"),
             };
-            trees.set_remote_made_here(id.clone(), remote_at(shape, seq));
+            trees.set_remote_made_here(NodeId::from(id), remote_at(shape, seq));
             sent.push(op);
         }
         commits
@@ -730,7 +742,7 @@ fn a_trashed_file_moved_into_a_new_folder_comes_back_when_the_commit_after_its_m
         trees.settle(commits.aliases());
     }
     assert!(sent.contains(&mv("c", "a", "c")), "{sent:?}");
-    assert_eq!(trees.remote().live("c"), Some(&file("a", "c", 1)));
+    assert_eq!(trees.remote().live(&"c".into()), Some(&file("a", "c", 1)));
 }
 
 #[test]
@@ -829,11 +841,13 @@ fn sent_after_a_refusal(trees: &mut Trees, rejected: &str) -> Vec<Vec<op::Op>> {
                     *result = outcome(op_result::Code::Rejected);
                     continue;
                 }
-                op::Op::Delete(deleted) => vec![deleted.node_id],
+                op::Op::Delete(deleted) => vec![NodeId::from(deleted.node_id)],
                 op::Op::Move(moved) => {
-                    let mut node = trees.remote().get(&moved.node_id).unwrap().clone();
-                    (node.shape.parent, node.shape.name) = (moved.new_parent_id, moved.new_name);
-                    trees.set_remote(moved.node_id, node);
+                    let id = NodeId::from(moved.node_id);
+                    let mut node = trees.remote().get(&id).unwrap().clone();
+                    (node.shape.parent, node.shape.name) =
+                        (moved.new_parent_id.into(), moved.new_name);
+                    trees.set_remote(id, node);
                     continue;
                 }
                 _ => continue,
@@ -879,8 +893,8 @@ fn a_system_folder_only_the_server_holds_keeps_one_trash_group_when_deleted_in_p
         Some(RuleFile::parse(b"*.log\n")),
     );
     trees.settle(&Default::default());
-    trees.remove_local("log");
-    trees.remove_local("d");
+    trees.remove_local(&"log".into());
+    trees.remove_local(&"d".into());
     let sent = sent_after_a_refusal(&mut trees, "");
     let groups: Vec<&str> = (sent[1..].iter().flatten())
         .filter_map(|op| match op {
@@ -890,8 +904,8 @@ fn a_system_folder_only_the_server_holds_keeps_one_trash_group_when_deleted_in_p
         .collect();
     assert_eq!(groups.len(), 3, "{sent:?}");
     assert!(groups.iter().all(|group| *group == groups[0]), "{sent:?}");
-    assert!(trees.remote().live("d").is_some(), "{sent:?}");
-    assert!(trees.remote().live("t").is_none(), "{sent:?}");
+    assert!(trees.remote().live(&"d".into()).is_some(), "{sent:?}");
+    assert!(trees.remote().live(&"t".into()).is_none(), "{sent:?}");
 }
 
 #[test]
@@ -905,8 +919,8 @@ fn a_deleted_folder_leaves_a_system_folder_another_device_moved_out_of_it() {
     ]);
     let sent = sent_after_a_refusal(&mut trees, "");
     assert!(!deletes(&sent, "t") && !deletes(&sent, "old"), "{sent:?}");
-    assert!(trees.remote().live("d").is_none(), "{sent:?}");
-    assert!(trees.remote().live("old").is_some(), "{sent:?}");
+    assert!(trees.remote().live(&"d".into()).is_none(), "{sent:?}");
+    assert!(trees.remote().live(&"old".into()).is_some(), "{sent:?}");
 }
 
 #[test]
@@ -924,7 +938,7 @@ fn a_system_file_moved_out_of_a_deleted_folder_is_moved_and_never_deleted() {
     let sent = sent_after_a_refusal(&mut trees, "");
     assert_eq!(sent[0], [mv("old", ROOT, "o.docx"), delete("d")]);
     assert!(!deletes(&sent, "old"), "{sent:?}");
-    assert_eq!(trees.remote().live("old").unwrap().parent, ROOT);
+    assert_eq!(trees.remote().live(&"old".into()).unwrap().parent, ROOT);
 }
 
 #[test]
@@ -933,7 +947,7 @@ fn a_system_folder_the_server_rejects_waits_with_the_folder_deleted_above_it() {
         synced("d", dir(ROOT, "Disk")),
         on_server("t", dir("d", ".Trashes")),
     ]);
-    trees.remove_local("d");
+    trees.remove_local(&"d".into());
     let sent = sent_after_a_refusal(&mut trees, "t");
     assert_eq!(sent.len(), 2, "{sent:?}");
 }

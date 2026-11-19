@@ -26,7 +26,7 @@ enum Op {
 }
 
 fn id(i: u8) -> NodeId {
-    format!("n{i}")
+    format!("n{i}").into()
 }
 
 fn shape(i: u8, v: u8) -> Shape {

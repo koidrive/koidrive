@@ -611,7 +611,7 @@ fn a_file_whose_place_an_excluded_folder_holds_is_reported_while_its_folder_sync
     assert_eq!(remote.names(), ["a", "a", "ß"]);
 
     let file = node_named(&b, "a");
-    let parked = site.root.join(".koidrive/parked").join(&file);
+    let parked = site.root.join(".koidrive/parked").join(file.to_string());
     b.pull_at_once(&remote);
     while !site.root.join("a").is_dir() {
         let work = b.work.pop_front().expect("the folder is created");
@@ -2029,7 +2029,7 @@ fn a_copy_rebuilt_while_excluded_whose_content_a_later_batch_reads_takes_back_it
     fs::write(site.root.join(".koiignore"), b"other.txt\n").unwrap();
     b.rescan();
     b.rest(&mut remote);
-    assert_eq!(remote.tree().get("zzz.txt"), Some(&id));
+    assert_eq!(remote.tree().get("zzz.txt"), Some(&id.to_string()));
     assert_eq!(fs::read(site.root.join("zzz.txt")).unwrap(), b"rebuilt");
     assert_eq!(files(&site.root).len(), crate::observe::READ_FILES + 2);
     assert!(shown(&site).is_empty());

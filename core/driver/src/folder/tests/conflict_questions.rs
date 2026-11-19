@@ -31,7 +31,7 @@ fn an_edit_that_became_a_conflict_copy_is_asked_about_with_both_files() {
         .map(|item| {
             (
                 item.path.unquoted(),
-                item.node_id.as_str(),
+                NodeId::from(&item.node_id),
                 item.device_id.as_deref(),
                 item.size,
                 item.modified_at_ms,
@@ -43,17 +43,17 @@ fn an_edit_that_became_a_conflict_copy_is_asked_about_with_both_files() {
         [
             (
                 COPY,
-                copy.node_id.as_str(),
+                copy.node_id.clone(),
                 Some("b"),
                 Some(6),
-                modified_at_ms(&copy.node_id),
+                modified_at_ms(&copy.node_id.to_string()),
             ),
             (
                 "main.go",
-                original.node_id.as_str(),
+                original.node_id.clone(),
                 Some("a"),
                 Some(6),
-                modified_at_ms(&original.node_id),
+                modified_at_ms(&original.node_id.to_string()),
             ),
         ]
     );

@@ -40,20 +40,20 @@ fn results_set_s_to_what_was_sent() {
             outcome(Code::Superseded),
         ],
     );
-    assert_eq!(trees.synced().live("a"), Some(&file(ROOT, "x", 1)));
+    assert_eq!(trees.synced().live(&"a".into()), Some(&file(ROOT, "x", 1)));
     assert_eq!(
-        trees.class("a"),
+        trees.class(&"a".into()),
         Class::Remote,
         "the conflict name reaches the disk"
     );
-    assert_eq!(trees.synced().live("d"), None);
+    assert_eq!(trees.synced().live(&"d".into()), None);
     assert_eq!(
-        trees.class("d"),
+        trees.class(&"d".into()),
         Class::Remote,
         "the folder the server kept comes back"
     );
-    assert_eq!(trees.class("m"), Class::InSync);
-    assert_eq!(trees.class("u"), Class::InSync);
+    assert_eq!(trees.class(&"m".into()), Class::InSync);
+    assert_eq!(trees.class(&"u".into()), Class::InSync);
     assert_eq!(commits.accepted(), 1);
     assert!(commits.problems().is_empty());
 }
@@ -83,14 +83,14 @@ fn a_folder_merged_into_one_l_holds_elsewhere_is_removed_once_its_files_follow_i
         vec![merged, outcome(Code::Applied)],
     );
     trees.set_remote("c".into(), remote(file("b", "f", 1)));
-    assert_eq!(trees.synced().live("a"), None);
-    assert_eq!(trees.synced().live("c"), Some(&file("b", "f", 1)));
+    assert_eq!(trees.synced().live(&"a".into()), None);
+    assert_eq!(trees.synced().live(&"c".into()), Some(&file("b", "f", 1)));
     trees.set_local("g".into(), local(file("a", "g", 2), 9));
     let later = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(matches!(&ops(&later)[..], [op::Op::CreateFile(c)] if c.parent_id == "b"));
     acknowledge(&mut commits, &mut trees, vec![outcome(Code::Applied)]);
     trees.set_remote("g".into(), remote(file("b", "g", 2)));
-    let reverted: Vec<&str> = trees.reverted().iter().map(String::as_str).collect();
+    let reverted: Vec<&NodeId> = trees.reverted().iter().collect();
     assert_eq!(reverted, ["a", "c", "g"]);
     let mut effects = Effects::default();
     while let Some(record) = effects
@@ -103,10 +103,16 @@ fn a_folder_merged_into_one_l_holds_elsewhere_is_removed_once_its_files_follow_i
             .unwrap();
         trees.settle(commits.aliases());
     }
-    assert_eq!(trees.local().get("a"), None);
-    assert_eq!(trees.local().get("c").unwrap().shape, file("b", "f", 1));
-    assert_eq!(trees.local().get("g").unwrap().shape, file("b", "g", 2));
-    let b = trees.local().get("b").unwrap();
+    assert_eq!(trees.local().get(&"a".into()), None);
+    assert_eq!(
+        trees.local().get(&"c".into()).unwrap().shape,
+        file("b", "f", 1)
+    );
+    assert_eq!(
+        trees.local().get(&"g".into()).unwrap().shape,
+        file("b", "g", 2)
+    );
+    let b = trees.local().get(&"b".into()).unwrap();
     assert_eq!((&b.shape, b.identity.ino), (&dir(ROOT, "e"), 2));
     assert!(trees.reverted().is_empty());
     trees.settle(commits.aliases());
@@ -131,7 +137,7 @@ fn a_folder_the_user_moves_into_the_folder_merged_into_it_goes_back_to_its_place
         ..outcome(op_result::Code::MergedInto)
     };
     acknowledge(&mut commits, &mut trees, vec![merged]);
-    let mut moved = trees.local().get("b").unwrap().clone();
+    let mut moved = trees.local().get(&"b".into()).unwrap().clone();
     let identity = moved.identity;
     moved.shape = dir("a", "e");
     trees.set_local_changed("b".into(), moved);
@@ -178,8 +184,8 @@ fn a_folder_the_user_moves_into_the_folder_merged_into_it_goes_back_to_its_place
             trees.settle(commits.aliases());
         }
     }
-    assert_eq!(trees.local().get("a"), None);
-    let b = trees.local().get("b").unwrap();
+    assert_eq!(trees.local().get(&"a".into()), None);
+    let b = trees.local().get(&"b".into()).unwrap();
     assert_eq!((&b.shape, &b.identity), (&dir(ROOT, "d"), &identity));
     assert!(
         matches!(
@@ -221,7 +227,7 @@ fn a_new_folder_takes_the_name_of_a_left_out_file_placed_by_a_merged_folder() {
     trees.set_local("c".into(), local(file("a", "f", 2), 3));
     trees.settle(commits.aliases());
     build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert!(commits.leave_out("c"));
+    assert!(commits.leave_out(&"c".into()));
     trees.set_local("n".into(), local(dir("b", "f"), 4));
     trees.settle(commits.aliases());
     let created = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -249,20 +255,23 @@ fn a_conflict_copy_takes_the_local_file_and_the_original_is_downloaded_again() {
         ..outcome(op_result::Code::ConflictCopy)
     };
     acknowledge(&mut commits, &mut trees, vec![copy]);
-    assert_eq!(trees.local().get("y").unwrap().identity.ino, 1);
-    assert_eq!(trees.synced().live("y"), Some(&file(ROOT, "f", 2)));
-    assert_eq!(trees.class("y"), Class::Remote);
+    assert_eq!(trees.local().get(&"y".into()).unwrap().identity.ino, 1);
+    assert_eq!(trees.synced().live(&"y".into()), Some(&file(ROOT, "f", 2)));
+    assert_eq!(trees.class(&"y".into()), Class::Remote);
     assert_eq!(
-        (trees.local().get("f"), trees.synced().live("f")),
+        (
+            trees.local().get(&"f".into()),
+            trees.synced().live(&"f".into())
+        ),
         (None, None)
     );
-    assert_eq!(trees.class("f"), Class::Remote);
+    assert_eq!(trees.class(&"f".into()), Class::Remote);
 }
 
 #[test]
 fn a_file_create_kept_as_a_conflict_copy_settles_as_the_copy() {
     let mut trees = trees(&[("f", Some(file(ROOT, "f", 2)), None, None)]);
-    let ino = trees.local().get("f").unwrap().identity.ino;
+    let ino = trees.local().get(&"f".into()).unwrap().identity.ino;
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(
@@ -276,17 +285,17 @@ fn a_file_create_kept_as_a_conflict_copy_settles_as_the_copy() {
         ..outcome(op_result::Code::ConflictCopy)
     };
     acknowledge(&mut commits, &mut trees, vec![copy]);
-    assert_eq!(trees.local().get("y").unwrap().identity.ino, ino);
-    assert_eq!(trees.synced().live("y"), Some(&file(ROOT, "f", 2)));
-    assert_eq!(trees.class("y"), Class::Remote);
-    assert_eq!(trees.local().get("f"), None);
+    assert_eq!(trees.local().get(&"y".into()).unwrap().identity.ino, ino);
+    assert_eq!(trees.synced().live(&"y".into()), Some(&file(ROOT, "f", 2)));
+    assert_eq!(trees.class(&"y".into()), Class::Remote);
+    assert_eq!(trees.local().get(&"f".into()), None);
     assert!(build(&mut commits, &mut trees, &mut ids).is_none());
 }
 
 #[test]
 fn a_file_create_whose_conflict_copy_was_downloaded_before_its_result_keeps_both_files() {
     let mut trees = trees(&[("f", Some(file(ROOT, "f", 2)), None, None)]);
-    let ino = trees.local().get("f").unwrap().identity.ino;
+    let ino = trees.local().get(&"f".into()).unwrap().identity.ino;
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     build(&mut commits, &mut trees, &mut ids).unwrap();
     trees.set_remote("y".into(), remote(file(ROOT, "f (conflict)", 2)));
@@ -319,7 +328,7 @@ fn a_file_create_whose_conflict_copy_was_downloaded_before_its_result_keeps_both
     acknowledge(&mut commits, &mut trees, vec![copy]);
     let planned = effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE);
     assert!(planned.is_empty(), "{planned:?}");
-    let y = trees.local().get("y").unwrap();
+    let y = trees.local().get(&"y".into()).unwrap();
     assert_eq!(
         (&y.shape, y.identity.ino),
         (&file(ROOT, "f (conflict)", 2), 9)
@@ -333,7 +342,7 @@ fn a_file_create_whose_conflict_copy_was_downloaded_before_its_result_keeps_both
         .collect();
     assert_eq!(created.len(), 1, "{:?}", ops(&sent));
     assert!(!["f", "y"].contains(&created[0].as_str()), "{created:?}");
-    let again = trees.local().get(&created[0]).unwrap();
+    let again = trees.local().get(&NodeId::from(&created[0])).unwrap();
     assert_eq!(
         (&again.shape, again.identity.ino),
         (&file(ROOT, "f", 2), ino)
@@ -367,8 +376,8 @@ fn a_conflict_copy_keeps_s_s_position_when_another_device_wrote_s_s_bytes_back_b
         ..outcome(op_result::Code::ConflictCopy)
     };
     acknowledge(&mut commits, &mut trees, vec![copy]);
-    assert_eq!(trees.synced().live("y"), Some(&file(ROOT, "f", 2)));
-    assert_eq!(trees.class("y"), Class::Remote);
+    assert_eq!(trees.synced().live(&"y".into()), Some(&file(ROOT, "f", 2)));
+    assert_eq!(trees.class(&"y".into()), Class::Remote);
 }
 
 #[test]
@@ -388,7 +397,7 @@ fn a_conflict_copy_another_device_deleted_before_its_result_is_deleted_here() {
         ..outcome(op_result::Code::ConflictCopy)
     };
     acknowledge(&mut commits, &mut trees, vec![copy]);
-    assert_eq!(trees.class("y"), Class::Remote);
+    assert_eq!(trees.class(&"y".into()), Class::Remote);
     assert!(build(&mut commits, &mut trees, &mut ids).is_none());
 }
 
@@ -420,7 +429,7 @@ fn a_conflict_copy_of_a_file_whose_synced_shape_a_restore_dropped_in_flight_send
         })
         .collect();
     acknowledge(&mut commits, &mut trees, results);
-    assert_eq!(trees.synced().live("y"), None);
+    assert_eq!(trees.synced().live(&"y".into()), None);
     let next = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&next), vec![mv("y", ROOT, "g")]);
 }
@@ -485,12 +494,15 @@ fn a_conflict_copy_downloaded_before_its_result_is_kept_once() {
         ino += 1;
         trees.settle(commits.aliases());
     }
-    let y = trees.local().get("y").unwrap();
+    let y = trees.local().get(&"y".into()).unwrap();
     assert_eq!(
         (&y.shape, y.identity.ino),
         (&file(ROOT, "f (conflict)", 2), 9)
     );
-    assert_eq!(trees.local().get("f").unwrap().shape, file(ROOT, "f", 3));
+    assert_eq!(
+        trees.local().get(&"f".into()).unwrap().shape,
+        file(ROOT, "f", 3)
+    );
     assert_eq!(trees.local().iter().count(), 2);
     trees.settle(commits.aliases());
     assert!(trees.work().is_empty());
@@ -530,7 +542,7 @@ fn a_conflict_copy_whose_result_arrives_during_its_download_keeps_the_local_file
         ..outcome(op_result::Code::ConflictCopy)
     };
     acknowledge(&mut commits, &mut trees, vec![copy]);
-    assert_eq!(trees.local().get("y").unwrap().identity.ino, 1);
+    assert_eq!(trees.local().get(&"y".into()).unwrap().identity.ino, 1);
     assert!(!download.applies(&trees, commits.in_flight()));
     assert_eq!(
         effects.done(
@@ -542,7 +554,7 @@ fn a_conflict_copy_whose_result_arrives_during_its_download_keeps_the_local_file
         Err(EffectError::DoesNotApply(download.effect_id.clone()))
     );
     effects.failed(&mut trees, &download.effect_id).unwrap();
-    effects.unblock("y");
+    effects.unblock(&"y".into());
     trees.settle(commits.aliases());
     let mut ino = 10;
     while let Some(record) = effects
@@ -561,12 +573,15 @@ fn a_conflict_copy_whose_result_arrives_during_its_download_keeps_the_local_file
         ino += 1;
         trees.settle(commits.aliases());
     }
-    let y = trees.local().get("y").unwrap();
+    let y = trees.local().get(&"y".into()).unwrap();
     assert_eq!(
         (&y.shape, y.identity.ino),
         (&file(ROOT, "f (conflict)", 2), 1)
     );
-    assert_eq!(trees.local().get("f").unwrap().shape, file(ROOT, "f", 3));
+    assert_eq!(
+        trees.local().get(&"f".into()).unwrap().shape,
+        file(ROOT, "f", 3)
+    );
     assert_eq!(trees.local().iter().count(), 2);
     trees.settle(commits.aliases());
     assert!(trees.work().is_empty());
@@ -606,7 +621,7 @@ fn a_conflict_copy_whose_s_update_waits_behind_a_new_folder_is_moved_to_its_name
         })
         .collect();
     acknowledge(&mut commits, &mut trees, results);
-    assert!(trees.waiting().contains_key("y"));
+    assert!(trees.waiting().contains_key(&"y".into()));
     let mut effects = Effects::default();
     let mut ino = 10;
     while let Some(record) = effects
@@ -632,10 +647,13 @@ fn a_conflict_copy_whose_s_update_waits_behind_a_new_folder_is_moved_to_its_name
         assert!(ino < 20, "the effects do not end");
     }
     assert_eq!(
-        trees.local().get("y").unwrap().shape,
+        trees.local().get(&"y".into()).unwrap().shape,
         file(ROOT, "b (conflict)", 2)
     );
-    assert_eq!(trees.local().get("n").unwrap().shape, file(ROOT, "b", 3));
+    assert_eq!(
+        trees.local().get(&"n".into()).unwrap().shape,
+        file(ROOT, "b", 3)
+    );
     assert!(trees.waiting().is_empty());
     trees.settle(commits.aliases());
     assert!(trees.work().is_empty());
@@ -735,7 +753,7 @@ fn a_resent_answer_delete_keeps_its_precondition_when_another_device_removed_the
     trees.set_local("f".into(), local(file(ROOT, "f", 1), 1));
     trees.set_synced("f".into(), Some(file(ROOT, "f", 1)));
     trees.settle(commits.aliases());
-    let held = trees.remote().get("f").unwrap();
+    let held = trees.remote().get(&"f".into()).unwrap();
     let required = delete_copy_requiring(held.content_rev, held.meta_rev);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [required]);
@@ -758,7 +776,7 @@ fn a_resent_answer_delete_drops_its_precondition_once_a_delete_of_this_device_tr
     trees.restore(state).unwrap();
     trees.set_rules::<&str>(&[], koidrive_engine::ignore::Source::Koiignore, None);
     trees.rules_scanned();
-    trees.remove_local("f");
+    trees.remove_local(&"f".into());
     let state = koidrive_engine::state::CommitsState {
         cap: Some(1),
         ..Commits::default().state()
@@ -829,14 +847,14 @@ fn moved_into_the_folder_merged_into_it(renamed: bool) -> (Trees, Commits, IdGen
         ..outcome(op_result::Code::MergedInto)
     };
     acknowledge(&mut commits, &mut trees, vec![merged]);
-    let mut moved = trees.local().get("b").unwrap().clone();
+    let mut moved = trees.local().get(&"b".into()).unwrap().clone();
     moved.shape = dir("a", "e");
     trees.set_local_changed("b".into(), moved);
     trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
-    assert!(trees.reverted().contains("b"));
+    assert!(trees.reverted().contains(&"b".into()));
     if renamed {
-        let mut renamed = trees.local().get("a").unwrap().clone();
+        let mut renamed = trees.local().get(&"a".into()).unwrap().clone();
         renamed.shape = dir(ROOT, "f");
         trees.set_local_changed("a".into(), renamed);
     }
@@ -848,7 +866,7 @@ fn a_folder_moved_into_the_folder_merged_into_it_stays_reverted_when_the_server_
     let (mut trees, commits, _) = moved_into_the_folder_merged_into_it(false);
     trees.set_remote("z".into(), remote(file(ROOT, "z", 1)));
     trees.settle(commits.aliases());
-    assert!(trees.reverted().contains("b"));
+    assert!(trees.reverted().contains(&"b".into()));
 }
 
 #[test]
@@ -857,7 +875,7 @@ fn a_folder_moved_into_a_merged_folder_is_sent_there_once_the_user_renames_it() 
     trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(ops(&commit).contains(&mv("b", "a", "e")), "{:?}", ops(&commit));
-    assert!(!trees.reverted().contains("b"));
+    assert!(!trees.reverted().contains(&"b".into()));
 }
 
 #[test]
@@ -867,7 +885,7 @@ fn a_folder_moved_into_a_merged_folder_is_sent_there_once_the_user_renames_it_wh
     trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(ops(&commit).contains(&mv("b", "a", "e")), "{:?}", ops(&commit));
-    assert!(!trees.reverted().contains("b"));
+    assert!(!trees.reverted().contains(&"b".into()));
 }
 
 #[test]
@@ -891,18 +909,25 @@ fn a_folder_moved_into_a_folder_merged_into_one_under_it_stays_reverted_when_the
         ..outcome(op_result::Code::MergedInto)
     };
     acknowledge(&mut commits, &mut trees, vec![merged("b"), merged("x")]);
-    assert_eq!(commits.aliases().get("c").map(String::as_str), Some("x"));
-    let mut moved = trees.local().get("b").unwrap().clone();
+    assert_eq!(
+        commits
+            .aliases()
+            .get(&"c".into())
+            .map(NodeId::to_string)
+            .as_deref(),
+        Some("x")
+    );
+    let mut moved = trees.local().get(&"b".into()).unwrap().clone();
     moved.shape = dir("c", "e");
     trees.set_local_changed("b".into(), moved);
     trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
-    assert!(trees.reverted().contains("b"));
+    assert!(trees.reverted().contains(&"b".into()));
     for (i, name) in ["z1", "z2", "z3", "z4"].into_iter().enumerate() {
         trees.set_remote(name.into(), remote(file(ROOT, name, i as u8)));
         trees.settle(commits.aliases());
         assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
-        assert!(trees.reverted().contains("b"));
+        assert!(trees.reverted().contains(&"b".into()));
     }
 }
 
@@ -923,7 +948,7 @@ fn a_folder_moved_into_a_merged_folder_is_no_longer_reverted_once_a_rewind_forge
     );
     trees.settle(commits.aliases());
     assert!(commits.aliases().is_empty());
-    assert!(!trees.reverted().contains("b"));
+    assert!(!trees.reverted().contains(&"b".into()));
 }
 
 #[test]

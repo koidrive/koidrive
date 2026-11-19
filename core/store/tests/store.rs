@@ -19,7 +19,7 @@ use koidrive_engine::state::{
     KeptRulesFile, LostPosition, MovedHere, PendingFinish, SyncedPosition, TreesState,
 };
 use koidrive_engine::tree::{
-    FileIdentity, Kind, LocalNode as EngineLocalNode, RemoteNode, Shape as EngineShape,
+    FileIdentity, Kind, LocalNode as EngineLocalNode, NodeId, RemoteNode, Shape as EngineShape,
 };
 use koidrive_fs::{FileId, VolumeId};
 use koidrive_proto::v1::{
@@ -368,7 +368,7 @@ fn a_store_written_by_alpha_1_upgrades_and_keeps_every_row() {
     let mut store = Store::open(&path).unwrap();
     let mut expected = legacy_state();
     expected.trees.lost.clear();
-    expected.trees.outside.remove("lost");
+    expected.trees.outside.remove(&"lost".into());
     expected.trees.resends.clear();
     expected.trees.lost_positions.clear();
     expected.trees.lost_creates.clear();
@@ -1205,8 +1205,8 @@ fn kept_cause(rules: &[u8]) -> KeptCause {
     }
 }
 
-fn nodes<const N: usize>(ids: [&str; N]) -> BTreeSet<String> {
-    ids.into_iter().map(String::from).collect()
+fn nodes<const N: usize>(ids: [&str; N]) -> BTreeSet<NodeId> {
+    ids.into_iter().map(NodeId::from).collect()
 }
 
 /// A node, version or restore ID.
@@ -1215,15 +1215,16 @@ fn id(n: u128) -> String {
 }
 
 fn from_trash(node: u128) -> RestoreIntent {
-    RestoreIntent::from_trash(id(node), None, None).unwrap()
+    RestoreIntent::from_trash(id(node).into(), None, None).unwrap()
 }
 
 /// A restore from the trash to a named position, and one of a version.
 fn placed_and_version() -> [RestoreIntent; 2] {
-    let placed = RestoreIntent::from_trash(id(2), Some(id(3)), Some("back.txt".into()));
+    let placed =
+        RestoreIntent::from_trash(id(2).into(), Some(id(3).into()), Some("back.txt".into()));
     [
         placed.unwrap(),
-        RestoreIntent::version(id(4), id(5)).unwrap(),
+        RestoreIntent::version(id(4).into(), id(5)).unwrap(),
     ]
 }
 
@@ -1292,7 +1293,7 @@ fn engine_state() -> EngineState {
             name: "back (conflict).txt".into(),
         },
         Outcome::Copied {
-            node: id(6),
+            node: id(6).into(),
             name: "copy.txt".into(),
         },
         Outcome::Rejected(Rejection::NotFound),
@@ -1386,7 +1387,7 @@ fn engine_state() -> EngineState {
                     },
                     Agreed {
                         rev: 8,
-                        parent: String::new(),
+                        parent: String::new().into(),
                         name: "before.txt".into(),
                     },
                 ],
@@ -1399,7 +1400,7 @@ fn engine_state() -> EngineState {
                         name: "old.txt".into(),
                     },
                     SyncedPosition {
-                        parent: String::new(),
+                        parent: "".into(),
                         name: "before.txt".into(),
                     },
                 ],
@@ -1724,28 +1725,28 @@ fn engine_state_of(n: usize) -> EngineState {
     let mut state = engine_state();
     for i in 0..n {
         let node = format!("node-{i}");
-        state.trees.dirty.insert(node.clone());
-        state.trees.unsearched.insert(node.clone());
-        state.trees.reverted.insert(node.clone());
+        state.trees.dirty.insert(NodeId::from(&node));
+        state.trees.unsearched.insert(NodeId::from(&node));
+        state.trees.reverted.insert(NodeId::from(&node));
         state
             .trees
             .parked_as
-            .insert(node.clone(), format!("parked-{i}"));
+            .insert(NodeId::from(&node), format!("parked-{i}").into());
         let shape = engine_shape("p", &format!("{i}.txt"));
         state
             .trees
             .waiting
-            .insert(node.clone(), from_commit(4, Some(shape)));
-        state.commits.problems.insert(node.clone());
-        state.commits.split.insert(node.clone());
+            .insert(NodeId::from(&node), from_commit(4, Some(shape)));
+        state.commits.problems.insert(NodeId::from(&node));
+        state.commits.split.insert(NodeId::from(&node));
         state
             .commits
             .aliases
-            .insert(node.clone(), format!("alias-{i}"));
+            .insert(NodeId::from(&node), format!("alias-{i}").into());
         let effect = Effect::CreateDir {
-            at: Location::Parked(node.clone()),
+            at: Location::Parked(NodeId::from(&node)),
         };
-        state.effects.failed.insert(node, effect);
+        state.effects.failed.insert(NodeId::from(node), effect);
     }
     state
 }
@@ -1798,13 +1799,13 @@ fn an_engine_state_update_writes_rows_for_the_change_alone() {
         let path = dir.path().join("state.db");
         let before = engine_state_of(n);
         let mut after = before.clone();
-        after.trees.dirty.remove("node-0");
+        after.trees.dirty.remove(&"node-0".into());
         after.trees.dirty.insert("node-new".into());
         after
             .trees
             .parked_as
             .insert("node-1".into(), "parked-new".into());
-        after.trees.waiting.remove("node-2");
+        after.trees.waiting.remove(&"node-2".into());
         after
             .trees
             .waiting
@@ -1815,7 +1816,7 @@ fn an_engine_state_update_writes_rows_for_the_change_alone() {
         after.commits.resolved.pop();
         after.effects.cleared += 1;
         after.effects.in_flight = Vec::new();
-        after.effects.failed.remove("node-4");
+        after.effects.failed.remove(&"node-4".into());
         Store::open(&path)
             .unwrap()
             .transaction(|tx| tx.set_engine_state(&before))
@@ -2431,7 +2432,7 @@ fn a_store_from_before_waiting_updates_kept_their_origin_takes_the_accepted_slot
             },
         ),
     ]);
-    assert!(before.trees.discarded.contains_key("d"));
+    assert!(before.trees.discarded.contains_key(&"d".into()));
     assert_eq!(before.commits.accepted, 4);
     Store::open(&path)
         .unwrap()

@@ -8,9 +8,9 @@ fn a_new_folder_takes_its_name_when_sync_drains_before_the_held_back_rename_clea
     let holder = nodes_with(&space, 1, Some(1))[0].clone();
     let (_, old) = RemoteNode::from_state(&space.node(&holder).unwrap()).unwrap();
     let mut trees = Trees::new(root.clone());
-    trees.set_synced(holder.clone(), Some(old.shape.clone()));
+    trees.set_synced(NodeId::from(&holder), Some(old.shape.clone()));
     trees.set_local(
-        holder.clone(),
+        NodeId::from(&holder),
         LocalNode {
             left_out_when_placed: false,
             content_from_server: false,
@@ -19,13 +19,13 @@ fn a_new_folder_takes_its_name_when_sync_drains_before_the_held_back_rename_clea
             parked: false,
         },
     );
-    trees.set_remote(holder.clone(), old);
+    trees.set_remote(NodeId::from(&holder), old);
     trees.settle(&Default::default());
     trees.rules_scanned();
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(55));
-    let mut renamed = trees.local().get(&holder).unwrap().clone();
+    let mut renamed = trees.local().get(&NodeId::from(&holder)).unwrap().clone();
     renamed.shape.name = "b".into();
-    trees.set_local(holder.clone(), renamed);
+    trees.set_local(NodeId::from(&holder), renamed);
     trees.settle(commits.aliases());
     commits
         .build(
@@ -46,15 +46,15 @@ fn a_new_folder_takes_its_name_when_sync_drains_before_the_held_back_rename_clea
             },
         )
         .unwrap();
-    assert!(commits.problems().contains(&holder));
+    assert!(commits.problems().contains(&NodeId::from(&holder)));
     let new = ids.uuid_v7(NOW as u64);
     trees.set_local(
-        new.clone(),
+        NodeId::from(&new),
         LocalNode {
             left_out_when_placed: false,
             content_from_server: false,
             shape: koidrive_engine::tree::Shape {
-                parent: root.clone(),
+                parent: NodeId::from(&root),
                 name: "a".into(),
                 kind: Kind::Dir,
                 content: None,
@@ -78,7 +78,7 @@ fn a_new_folder_takes_its_name_when_sync_drains_before_the_held_back_rename_clea
     assert!(matches!(&sent.ops[0].op, Some(op::Op::CreateDir(c)) if c.pending_for == "a"));
     commit_served(&mut space, &mut trees, &mut commits, &sent);
     sync_until_quiet(&mut space, &mut trees, &mut commits, &mut ids);
-    assert!(commits.clear_problem(&holder));
+    assert!(commits.clear_problem(&NodeId::from(&holder)));
     sync_until_quiet(&mut space, &mut trees, &mut commits, &mut ids);
     assert_eq!(space.node(&holder).unwrap().name, "b");
     assert_eq!(space.node(&new).unwrap().name, "a");

@@ -95,9 +95,9 @@ impl Engine {
             return Ok(None);
         }
         for node in tx.synced_nodes()? {
-            trees.set_synced(node.node_id.clone(), Some(shape(node.shape)?));
+            trees.set_synced(NodeId::from(&node.node_id), Some(shape(node.shape)?));
             let mark = Some(node.pending_for).filter(|name| !name.is_empty());
-            trees.set_synced_mark(node.node_id, mark);
+            trees.set_synced_mark(NodeId::from(node.node_id), mark);
         }
         if abandoned() {
             return Ok(None);
@@ -110,7 +110,7 @@ impl Engine {
                 left_out_when_placed: node.left_out_when_placed,
                 content_from_server: node.content_from_server,
             };
-            trees.set_local(node.node_id, local);
+            trees.set_local(NodeId::from(node.node_id), local);
         }
         if abandoned() {
             return Ok(None);
@@ -149,7 +149,9 @@ impl Engine {
             recovery_cause: None,
             unscanned: None,
             mounts: tx.volume_mounts()?,
-            stored_ctimes: tx.local_ctimes()?,
+            stored_ctimes: (tx.local_ctimes()?.into_iter())
+                .map(|(id, ctime)| (NodeId::from(id), ctime))
+                .collect(),
             unstored_ctimes: BTreeMap::new(),
             local_written_since_load: false,
             removed_at: BTreeMap::new(),
@@ -170,7 +172,7 @@ impl Engine {
             match self.trees.local().get(id) {
                 Some(node) => tx.put_local_node(&stored(id, node))?,
                 None => {
-                    tx.remove_local_node(id)?;
+                    tx.remove_local_node(&id.to_string())?;
                 }
             }
         }
@@ -190,7 +192,7 @@ impl Engine {
         }
         for (id, ctime) in std::mem::take(&mut self.unstored_ctimes) {
             if self.trees.local().get(&id).is_some() {
-                tx.set_local_ctime(&id, ctime)?;
+                tx.set_local_ctime(&id.to_string(), ctime)?;
                 self.stored_ctimes.insert(id, ctime);
                 self.local_written_since_load = true;
             }
@@ -198,12 +200,12 @@ impl Engine {
         for id in &changed.synced {
             match self.trees.synced().get(id) {
                 Some(shape) => tx.put_synced_node(&SyncedNode {
-                    node_id: id.clone(),
+                    node_id: id.to_string(),
                     shape: stored_shape(shape),
                     pending_for: self.trees.synced_mark(id).unwrap_or_default().to_owned(),
                 })?,
                 None => {
-                    tx.remove_synced_node(id)?;
+                    tx.remove_synced_node(&id.to_string())?;
                 }
             }
         }
@@ -393,7 +395,7 @@ impl Engine {
                 .into_iter()
                 .map(|file| {
                     let mut item = HeldItem {
-                        node_id: file.node_id.clone(),
+                        node_id: file.node_id.to_string(),
                         path: path(self.trees.remote(), &file.node_id).into(),
                         kind: self.kind(&file.node_id),
                         files: 1,
@@ -403,7 +405,7 @@ impl Engine {
                         modified_at_ms: None,
                         restore: None,
                     };
-                    item.show_current(tx.remote_current(&file.node_id)?);
+                    item.show_current(tx.remote_current(&file.node_id.to_string())?);
                     Ok(item)
                 })
                 .collect::<Result<_, Error>>()?,
@@ -414,21 +416,22 @@ impl Engine {
                 let noted = tx.asked_restores()?;
                 (asked.held.keys())
                     .map(|id| {
-                        let intent = self.commits.restores().get(id);
-                        let noted = noted.get(id);
+                        let restore = id.to_string();
+                        let intent = self.commits.restores().get(&restore);
+                        let noted = noted.get(&restore);
                         let node = intent.map(RestoreIntent::node);
                         let rooted = |path: Option<PathBuf>| {
                             Some(path?.to_str()?.to_owned()).filter(|path| !path.is_empty())
                         };
                         let path = node
                             .and_then(|node| {
-                                rooted(self.trees.local().path(node))
-                                    .or_else(|| rooted(self.trees.remote().path(node)))
-                                    .or_else(|| rooted(self.trees.synced().path(node)))
+                                rooted(self.trees.local().path(&node))
+                                    .or_else(|| rooted(self.trees.remote().path(&node)))
+                                    .or_else(|| rooted(self.trees.synced().path(&node)))
                             })
                             .or_else(|| noted.and_then(|noted| noted.path.clone()))
                             .or_else(|| intent.and_then(RestoreIntent::name).map(str::to_owned))
-                            .unwrap_or_else(|| id.clone());
+                            .unwrap_or(restore);
                         let saved_at_ms = (noted.and_then(|noted| noted.version_saved_at_ms))
                             .or_else(|| {
                                 let version = intent.and_then(RestoreIntent::version_id)?;
@@ -441,13 +444,13 @@ impl Engine {
                                 (Some(ItemKind::File), Some(1))
                             }
                             Some(intent) => (
-                                self.kind(intent.node()).or(seen_kind),
-                                self.trashed_with(intent.node()).or(seen_files),
+                                self.kind(&intent.node()).or(seen_kind),
+                                self.trashed_with(&intent.node()).or(seen_files),
                             ),
                             None => (seen_kind, seen_files),
                         };
                         HeldItem {
-                            node_id: id.clone(),
+                            node_id: id.to_string(),
                             path: path.into(),
                             kind,
                             files: files.unwrap_or(1),
@@ -462,7 +465,7 @@ impl Engine {
             }
             kind => (asked.held.iter())
                 .map(|(id, held)| HeldItem {
-                    node_id: id.clone(),
+                    node_id: id.to_string(),
                     path: match kind {
                         engine::QuestionKind::AmbiguousDisappearance => {
                             path(self.trees.remote(), id)
@@ -502,7 +505,7 @@ impl Engine {
         })
     }
 
-    fn kind(&self, id: &str) -> Option<ItemKind> {
+    fn kind(&self, id: &NodeId) -> Option<ItemKind> {
         let trees = &self.trees;
         let kind = (trees.local().get(id).map(|node| node.shape.kind))
             .or_else(|| trees.synced().get(id).map(|shape| shape.kind))
@@ -510,7 +513,7 @@ impl Engine {
         Some(kind.into())
     }
 
-    fn trashed_with(&self, id: &str) -> Option<u64> {
+    fn trashed_with(&self, id: &NodeId) -> Option<u64> {
         let remote = self.trees.remote();
         let top = remote.get(id).filter(|node| node.trashed)?;
         let files = (remote.iter())
@@ -518,8 +521,8 @@ impl Engine {
                 node.trashed
                     && node.trash_group == top.trash_group
                     && node.shape.kind == Kind::File
-                    && std::iter::successors(Some(member.as_str()), |current| {
-                        Some(remote.get(current)?.shape.parent.as_str())
+                    && std::iter::successors(Some(member), |current| {
+                        Some(&remote.get(current)?.shape.parent)
                     })
                     .take(remote.len() + 1)
                     .any(|current| current == id)
@@ -530,9 +533,9 @@ impl Engine {
 
     /// The path of a node relative to the linked folder: where L holds it, or where S holds it when L does not, as
     /// for a deletion the guard holds.
-    fn path(&self, id: &str) -> String {
+    fn path(&self, id: &NodeId) -> String {
         let (local, synced) = (self.trees.local(), self.trees.synced());
-        let shape = |id: &str| match local.get(id) {
+        let shape = |id: &NodeId| match local.get(id) {
             Some(node) => Some(&node.shape),
             None => synced.live(id),
         };
@@ -624,7 +627,7 @@ impl Engine {
                 }
                 Some(change_record::Change::Purged(purged)) => {
                     tx.remove_remote_node(&purged.node_id)?;
-                    self.trees.remove_remote(&purged.node_id);
+                    self.trees.remove_remote(&NodeId::from(&purged.node_id));
                 }
                 Some(change_record::Change::Space(_) | change_record::Change::Member(_)) | None => {
                 }
@@ -814,7 +817,7 @@ impl Engine {
 
     /// The path of a node L holds, relative to the root. `None` for a node L does not hold under the root, such as
     /// a parked one.
-    pub fn path_of(&self, id: &str) -> Option<PathBuf> {
+    pub fn path_of(&self, id: &NodeId) -> Option<PathBuf> {
         self.trees.local().path(id)
     }
 
@@ -1216,7 +1219,7 @@ impl Engine {
                                 })
                                 .map(|(node, _, _)| node.clone())
                         })
-                        .or_else(|| self.unclaimed(marked_node.as_ref(), *linked))
+                        .or_else(|| self.unclaimed(marked_node.as_deref(), *linked))
                         .or_else(|| self.written_again(path, *kind, *linked));
                     self.place(
                         node,
@@ -1247,7 +1250,7 @@ impl Engine {
                         &identity,
                         *linked,
                     )
-                    .or_else(|| self.unclaimed(marked_node.as_ref(), *linked));
+                    .or_else(|| self.unclaimed(marked_node.as_deref(), *linked));
                     self.place(
                         node,
                         path,
@@ -1279,18 +1282,16 @@ impl Engine {
         touched
     }
 
-    fn unclaimed(&self, marked_node: Option<&NodeId>, linked: bool) -> Option<NodeId> {
+    fn unclaimed(&self, marked_node: Option<&str>, linked: bool) -> Option<NodeId> {
         let recovering = matches!(self.commits.halted(), Some(Halt::Recovery { .. }));
-        marked_node
-            .filter(|node| {
-                !linked
-                    && !recovering
-                    && self.cursor.is_some()
-                    && self.trees.local().get(node).is_none()
-                    && self.trees.synced().get(node).is_none()
-                    && self.trees.remote().get(node).is_none()
-            })
-            .cloned()
+        marked_node.map(NodeId::from).filter(|node| {
+            !linked
+                && !recovering
+                && self.cursor.is_some()
+                && self.trees.local().get(node).is_none()
+                && self.trees.synced().get(node).is_none()
+                && self.trees.remote().get(node).is_none()
+        })
     }
 
     fn written_again(&self, path: &Path, kind: EntryKind, linked: bool) -> Option<NodeId> {
@@ -1303,7 +1304,7 @@ impl Engine {
             return None;
         }
         let sent =
-            |id: &str| (self.commits.in_flight()).is_some_and(|flight| flight.deletes_node(id));
+            |id: &NodeId| (self.commits.in_flight()).is_some_and(|flight| flight.deletes_node(id));
         (self.trees.synced_holders(&parent, name))
             .find(|id| {
                 (self.trees.synced().live(id))
@@ -1352,7 +1353,7 @@ impl Engine {
         (self.removed_at.values().min()).map(|at| at + DELETE_WAIT_MS)
     }
 
-    fn scanned(&self, id: &str) -> bool {
+    fn scanned(&self, id: &NodeId) -> bool {
         (self.path_of(id).as_deref())
             .and_then(names)
             .is_some_and(|names| !self.trees.ignores(&names, Kind::Dir))
@@ -1490,7 +1491,7 @@ impl Engine {
         if kind == Kind::File && shape.content.is_none() {
             return;
         }
-        let mut id = node.unwrap_or_else(|| self.ids.uuid_v7(now_ms));
+        let mut id = node.unwrap_or_else(|| NodeId::from(self.ids.uuid_v7(now_ms)));
         if let Some(holder) =
             (self.trees.local_child(&parent, name)).filter(|holder| **holder != id)
         {
@@ -1621,7 +1622,7 @@ impl Engine {
 type Gone = BTreeMap<PathBuf, (NodeId, FileIdentity, EntryKind)>;
 
 /// The path of a node `tree` holds live, relative to the linked folder.
-fn path<N: Node>(tree: &Tree<N>, id: &str) -> String {
+fn path<N: Node>(tree: &Tree<N>, id: &NodeId) -> String {
     let mut names = Vec::new();
     let mut current = id;
     while let Some(shape) = tree.live(current).filter(|_| names.len() <= tree.len()) {
@@ -1734,7 +1735,7 @@ fn shape(shape: koidrive_store::Shape) -> Result<Shape, Error> {
         _ => return Err(invalid(format!("node kind {}", shape.kind))),
     };
     Ok(Shape {
-        parent: shape.parent_id,
+        parent: NodeId::from(shape.parent_id),
         name: shape.name,
         kind,
         content: shape.content,
@@ -1743,7 +1744,7 @@ fn shape(shape: koidrive_store::Shape) -> Result<Shape, Error> {
 
 fn stored(id: &NodeId, node: &LocalNode) -> koidrive_store::LocalNode {
     koidrive_store::LocalNode {
-        node_id: id.clone(),
+        node_id: id.to_string(),
         shape: stored_shape(&node.shape),
         identity: file_id(node.identity),
         parked: node.parked,
@@ -1758,7 +1759,7 @@ fn stored_shape(shape: &Shape) -> koidrive_store::Shape {
         Kind::File => NodeKind::File,
     };
     koidrive_store::Shape {
-        parent_id: shape.parent.clone(),
+        parent_id: shape.parent.to_string(),
         name: shape.name.clone(),
         kind: kind as i32,
         content: shape.content.clone(),
@@ -2602,7 +2603,7 @@ mod tests {
                 "write a file",
                 &inside,
                 0,
-                |trees| trees.remove_local("d"),
+                |trees| trees.remove_local(&"d".into()),
                 false,
             ),
             case(
@@ -2645,7 +2646,7 @@ mod tests {
                 "replace a file",
                 &edit,
                 0,
-                |trees| trees.remove_local("n"),
+                |trees| trees.remove_local(&"n".into()),
                 true,
             ),
             case(
@@ -2713,7 +2714,7 @@ mod tests {
                 &rename,
                 0,
                 |trees| {
-                    trees.remove_local("n");
+                    trees.remove_local(&"n".into());
                     trees.set_local("u".into(), held(file(ROOT, "x", 1), 1));
                 },
                 false,
@@ -2757,7 +2758,7 @@ mod tests {
                 "move",
                 &into,
                 0,
-                |trees| trees.remove_local("d"),
+                |trees| trees.remove_local(&"d".into()),
                 false,
             ),
             case(
@@ -2789,7 +2790,7 @@ mod tests {
                 &swap,
                 0,
                 |trees| {
-                    trees.remove_local("a");
+                    trees.remove_local(&"a".into());
                     trees.set_local("u".into(), held(file(ROOT, "x", 1), 1));
                 },
                 false,
@@ -2842,7 +2843,7 @@ mod tests {
                 "remove a file",
                 &gone_file,
                 0,
-                |trees| trees.remove_local("n"),
+                |trees| trees.remove_local(&"n".into()),
                 true,
             ),
             case(
@@ -2866,7 +2867,7 @@ mod tests {
                 "remove a folder",
                 &gone_folder,
                 0,
-                |trees| trees.remove_local("n"),
+                |trees| trees.remove_local(&"n".into()),
                 true,
             ),
         ]
@@ -3326,8 +3327,8 @@ mod tests {
                     for (id, shape) in local {
                         engine.trees.set_synced(id, Some(shape));
                     }
-                    let origin: BTreeMap<String, Option<PathBuf>> = (engine.trees.local().iter())
-                        .map(|(id, _)| (id.to_string(), engine.path_of(id)))
+                    let origin: BTreeMap<NodeId, Option<PathBuf>> = (engine.trees.local().iter())
+                        .map(|(id, _)| (id.clone(), engine.path_of(id)))
                         .collect();
                     setup(&root);
                     for _ in 0..40 {
@@ -3341,7 +3342,7 @@ mod tests {
                             format!(
                                 "{:?} {:?} {:?} {} {}",
                                 engine.path_of(id),
-                                origin.get(id.as_str()),
+                                origin.get(id),
                                 names.get(&node.identity.ino),
                                 node.shape
                                     .content
@@ -3376,7 +3377,9 @@ mod tests {
         engine.cursor = Some(cursor(1));
         engine.observe(&[marked("a", 1, "lost")], 0);
         assert_eq!(
-            holding(&engine, "a").map(|(id, ..)| id).as_deref(),
+            holding(&engine, "a")
+                .map(|(id, ..)| id.to_string())
+                .as_deref(),
             Some("lost")
         );
     }
@@ -3387,7 +3390,7 @@ mod tests {
         engine.cursor = Some(cursor(1));
         engine.observe(&[created("b", ino(2), false, 1)], 0);
         let (held, ..) = holding(&engine, "b").unwrap();
-        engine.observe(&[marked("a", 1, &held)], 0);
+        engine.observe(&[marked("a", 1, &held.to_string())], 0);
         let (taken, ..) = holding(&engine, "a").unwrap();
         assert_ne!(taken, held);
         assert_eq!(holding(&engine, "b").map(|(id, ..)| id), Some(held));
@@ -3404,7 +3407,9 @@ mod tests {
             ));
         engine.observe(&[marked("a", 1, "lost")], 0);
         assert_ne!(
-            holding(&engine, "a").map(|(id, ..)| id).as_deref(),
+            holding(&engine, "a")
+                .map(|(id, ..)| id.to_string())
+                .as_deref(),
             Some("lost")
         );
     }
@@ -3414,7 +3419,9 @@ mod tests {
         let (_dir, mut engine) = mapper();
         engine.observe(&[marked("a", 1, "lost")], 0);
         assert_ne!(
-            holding(&engine, "a").map(|(id, ..)| id).as_deref(),
+            holding(&engine, "a")
+                .map(|(id, ..)| id.to_string())
+                .as_deref(),
             Some("lost")
         );
     }
@@ -3443,7 +3450,9 @@ mod tests {
         };
         engine.observe(&[linked], 0);
         assert_ne!(
-            holding(&engine, "a").map(|(id, ..)| id).as_deref(),
+            holding(&engine, "a")
+                .map(|(id, ..)| id.to_string())
+                .as_deref(),
             Some("lost")
         );
     }
@@ -4452,7 +4461,10 @@ mod tests {
                 assert_eq!(staging.replay(&[record(5, vec![claim])])?, Applied::Through);
                 staging.caught_up(5);
                 engine.replace_remote(tx, staging)?;
-                assert_eq!(engine.trees.remote().get("f").map(|f| f.edit_rev), Some(5));
+                assert_eq!(
+                    engine.trees.remote().get(&"f".into()).map(|f| f.edit_rev),
+                    Some(5)
+                );
                 assert_eq!(
                     tx.remote_nodes()?
                         .iter()
@@ -4531,7 +4543,7 @@ mod tests {
                 left_out_when_placed: false,
                 content_from_server: false,
             };
-            engine.trees.set_local(id.clone(), local);
+            engine.trees.set_local(NodeId::from(id), local);
         }
         store.transaction(|tx| engine.checkpoint(tx)).unwrap();
         let conn = rusqlite::Connection::open(dir.path().join("store.sqlite")).unwrap();
@@ -4554,7 +4566,7 @@ mod tests {
             };
             let node = RemoteNode {
                 shape: Shape {
-                    parent: create.parent_id.clone(),
+                    parent: NodeId::from(&create.parent_id),
                     name: create.name.clone(),
                     kind: Kind::Dir,
                     content: None,
@@ -4572,7 +4584,7 @@ mod tests {
             };
             engine
                 .trees
-                .set_remote_made_here(create.node_id.clone(), node);
+                .set_remote_made_here(NodeId::from(&create.node_id), node);
         }
         let applied = proto::OpResult {
             code: proto::op_result::Code::Applied as i32,
@@ -4589,7 +4601,7 @@ mod tests {
 
         let synced: Vec<&String> = ids
             .iter()
-            .filter(|id| engine.trees.synced().get(id).is_some())
+            .filter(|id| engine.trees.synced().get(&NodeId::from(*id)).is_some())
             .collect();
         assert_eq!(synced.len(), ids.len(), "the ack put every folder in S");
         let written: i64 =
@@ -4713,7 +4725,7 @@ mod tests {
                 let id = crate::restore::new_id(1);
                 let intent = RestoreIntent::from_trash(file.into(), None, None).unwrap();
                 assert!(engine.commits.restore(id.clone(), intent));
-                let members = BTreeMap::from([(id.clone(), None)]);
+                let members = BTreeMap::from([(NodeId::from(&id), None)]);
                 let asked = engine::Question {
                     id: "q".into(),
                     asked_at_ms: 1,
@@ -4722,7 +4734,7 @@ mod tests {
                         sent_in: None,
                         cause: None,
                     },
-                    held: BTreeMap::from([(id, engine::Held { members, files: 0 })]),
+                    held: BTreeMap::from([(NodeId::from(id), engine::Held { members, files: 0 })]),
                     shown: BTreeMap::new(),
                     answer: None,
                 };
@@ -4764,15 +4776,17 @@ mod tests {
         (dir, engine, file)
     }
 
-    fn built_ops(engine: &mut Engine) -> Vec<(&'static str, String)> {
+    fn built_ops(engine: &mut Engine) -> Vec<(&'static str, NodeId)> {
         let commit =
             (engine.commits).build(&mut engine.trees, &mut engine.ids, 2_000, "h", "me", 0);
         (commit.into_iter().flat_map(|commit| &commit.ops))
             .filter_map(|op| match op.op.as_ref()? {
-                op::Op::UpdateContent(update) => Some(("update content", update.node_id.clone())),
-                op::Op::Delete(delete) => Some(("delete", delete.node_id.clone())),
-                op::Op::Move(moved) => Some(("move", moved.node_id.clone())),
-                op::Op::CreateFile(_) | op::Op::CreateDir(_) => Some(("create", String::new())),
+                op::Op::UpdateContent(update) => {
+                    Some(("update content", NodeId::from(&update.node_id)))
+                }
+                op::Op::Delete(delete) => Some(("delete", NodeId::from(&delete.node_id))),
+                op::Op::Move(moved) => Some(("move", NodeId::from(&moved.node_id))),
+                op::Op::CreateFile(_) | op::Op::CreateDir(_) => Some(("create", NodeId::from(""))),
                 _ => None,
             })
             .collect()

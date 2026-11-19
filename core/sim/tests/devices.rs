@@ -15,7 +15,7 @@ use std::fs;
 
 use koidrive_engine::question::{Answer, QuestionKind};
 use koidrive_engine::restore::RestoreIntent;
-use koidrive_engine::tree::Content;
+use koidrive_engine::tree::{Content, NodeId};
 use koidrive_proto::v1::{NodeStatus, error};
 use koidrive_sim::world::device::Ruling;
 use koidrive_sim::world::disk::{Place, Precision};
@@ -3094,7 +3094,7 @@ fn an_edit_of_a_trashed_conflict_named_file() -> (World, koidrive_proto::v1::Nod
     world.devices[0]
         .engine
         .trees
-        .set_synced(conflict.node_id.clone(), None);
+        .set_synced(NodeId::from(&conflict.node_id), None);
     world.devices[0].persist().unwrap();
     (world, conflict)
 }
@@ -7292,7 +7292,7 @@ fn a_file_its_user_removed_and_then_restores_from_the_trash_stays_restored() {
         .find(|(_, node)| node.shape.name == "b")
         .map(|(id, _)| id.clone())
         .unwrap();
-    world.restored_from_trash(1, &b);
+    world.restored_from_trash(1, &b.to_string());
     let engine = &mut world.devices[1].engine;
     let request = engine.ids.uuid_v7(1_700_000_000_000);
     let intent = RestoreIntent::from_trash(b, None, None).unwrap();
@@ -7319,7 +7319,7 @@ fn a_file_restored_after_its_user_removed_it_keeps_a_rename_made_before_the_rest
         .find(|(_, node)| node.shape.name == "b")
         .map(|(id, _)| id.clone())
         .unwrap();
-    world.restored_from_trash(1, &b);
+    world.restored_from_trash(1, &b.to_string());
     let engine = &mut world.devices[1].engine;
     let request = engine.ids.uuid_v7(1_700_000_000_000);
     let intent = RestoreIntent::from_trash(b, None, None).unwrap();
@@ -7393,7 +7393,7 @@ fn a_file_restored_while_another_device_deletes_its_folder_stays_restored() {
         .find(|(_, node)| node.shape.name == "b")
         .map(|(id, _)| id.clone())
         .unwrap();
-    world.restored_from_trash(1, &b);
+    world.restored_from_trash(1, &b.to_string());
     let engine = &mut world.devices[1].engine;
     let request = engine.ids.uuid_v7(1_700_000_000_000);
     let intent = RestoreIntent::from_trash(b, None, None).unwrap();
@@ -7994,7 +7994,7 @@ fn a_rename_inside_a_deleted_lost_folder_the_bootstrap_has_not_scanned_converges
     ]);
 }
 
-fn recorded_in_sync(world: &World, device: usize) -> Vec<String> {
+fn recorded_in_sync(world: &World, device: usize) -> Vec<NodeId> {
     let trees = &world.devices[device].engine.trees;
     (trees.state().local_changes.into_iter())
         .filter(|id| {
@@ -12223,7 +12223,7 @@ fn live_node_at(world: &World, path: &[&str]) -> Option<String> {
     })
 }
 
-fn held_at(world: &World, device: usize, path: &[&str]) -> Option<String> {
+fn held_at(world: &World, device: usize, path: &[&str]) -> Option<NodeId> {
     let local = world.devices[device].engine.trees.local();
     (path.iter()).try_fold(local.root.clone(), |parent, name| {
         (local.iter())
@@ -12293,7 +12293,7 @@ fn moved_out_of_a_removed_folder(
         for ((_, to), node) in kept.iter().zip(&nodes) {
             assert_eq!(
                 held_at(&world, 0, to).as_ref(),
-                Some(node),
+                Some(&NodeId::from(node)),
                 "{to:?} after rescanning {folder} of {scans:?}"
             );
         }
@@ -12456,7 +12456,7 @@ mod planned_against_the_server {
     use koidrive_engine::classify::Trees;
     use koidrive_engine::commit::Commits;
     use koidrive_engine::ids::IdGen;
-    use koidrive_engine::tree::{FileIdentity, Kind, LocalNode, RemoteNode, Shape};
+    use koidrive_engine::tree::{FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
     use koidrive_proto::v1::{self as proto, NodeState, NodeStatus, op, op_result};
     use koidrive_sim::space::{Role, Session, SpaceDo};
 
@@ -12566,7 +12566,7 @@ mod planned_against_the_server {
                 handle: None,
             };
             trees.set_local(
-                id.clone(),
+                NodeId::from(id),
                 LocalNode {
                     shape: local,
                     identity,
@@ -12575,9 +12575,9 @@ mod planned_against_the_server {
                     content_from_server: false,
                 },
             );
-            trees.set_synced(id.clone(), synced);
+            trees.set_synced(NodeId::from(id), synced);
             if let Some(held) = held {
-                trees.set_remote(id.clone(), held);
+                trees.set_remote(NodeId::from(id), held);
             }
         }
         trees.settle(&Default::default());
@@ -12704,12 +12704,15 @@ mod planned_against_the_server {
             let parent = if at == 0 { &d } else { created[at - 1] };
             assert_eq!(&server.node(id).parent_id, parent);
         }
-        assert_eq!(trees.synced().live(&a), Some(&dir(&root, "b")));
         assert_eq!(
-            trees.local().get(&a).map(|node| &node.shape),
+            trees.synced().live(&NodeId::from(&a)),
             Some(&dir(&root, "b"))
         );
-        assert!(!trees.reverted().contains(&a));
+        assert_eq!(
+            trees.local().get(&NodeId::from(&a)).map(|node| &node.shape),
+            Some(&dir(&root, "b"))
+        );
+        assert!(!trees.reverted().contains(&NodeId::from(&a)));
     }
 
     #[test]

@@ -17,7 +17,7 @@ use koidrive_engine::guard::{WINDOW_MS, Window};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::question::{Answer, QuestionKind};
 use koidrive_engine::state::{CommitsChanges, TreesChanges};
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
 
 const ROOT: &str = "root";
 const NOW: u64 = 1_794_268_740_000;
@@ -168,14 +168,16 @@ impl World {
             world.ino += 1;
             world
                 .trees
-                .set_local(id.clone(), local(shape.clone(), world.ino));
-            world.trees.set_synced(id.clone(), Some(shape.clone()));
+                .set_local(NodeId::from(&id), local(shape.clone(), world.ino));
+            world
+                .trees
+                .set_synced(NodeId::from(&id), Some(shape.clone()));
             let node = ServerNode {
                 shape,
                 trash: None,
                 meta_rev: 1,
             };
-            world.trees.set_remote(id.clone(), remote(&node));
+            world.trees.set_remote(NodeId::from(&id), remote(&node));
             world.server.nodes.insert(id, node);
         }
         world.trees.settle(world.commits.aliases());
@@ -217,7 +219,7 @@ impl World {
                     let purged = self.purge(target);
                     if purged
                         .iter()
-                        .all(|(id, _)| self.trees.local().get(id).is_none())
+                        .all(|(id, _)| self.trees.local().get(&NodeId::from(id)).is_none())
                     {
                         events.push(Event::Purge(target));
                     }
@@ -278,7 +280,7 @@ impl World {
                 let mut kept = BTreeSet::new();
                 let mut id = edited.map(|(id, _)| id.clone());
                 while let Some(node) = id.filter(|id| below(id, target)) {
-                    id = Some(nodes[&node].shape.parent.clone());
+                    id = Some(nodes[&node].shape.parent.to_string());
                     kept.insert(node);
                 }
                 let deletion = self.next_deletion;
@@ -351,7 +353,7 @@ impl World {
             .counted
             .retain(|deletion, _| trashing.contains(deletion));
         let unfinished: BTreeSet<u64> = (self.trees.local().iter())
-            .filter_map(|(id, _)| self.truth(id).map(|(_, deletion)| deletion))
+            .filter_map(|(id, _)| self.truth(&id.to_string()).map(|(_, deletion)| deletion))
             .collect();
         (self.model.dismissed)
             .retain(|deletion| trashing.contains(deletion) && unfinished.contains(deletion));
@@ -419,8 +421,8 @@ impl World {
         }
         for id in changed {
             match self.server.nodes.get(&id) {
-                Some(node) => self.trees.set_remote(id, remote(node)),
-                None => self.trees.remove_remote(&id),
+                Some(node) => self.trees.set_remote(NodeId::from(id), remote(node)),
+                None => self.trees.remove_remote(&NodeId::from(&id)),
             }
         }
         self.trees.settle(self.commits.aliases());
@@ -428,7 +430,7 @@ impl World {
     }
 
     fn bootstrap(&mut self) {
-        let held: Vec<String> = (self.trees.remote().iter())
+        let held: Vec<NodeId> = (self.trees.remote().iter())
             .map(|(id, _)| id.clone())
             .filter(|id| id != ROOT)
             .collect();
@@ -436,7 +438,7 @@ impl World {
             self.trees.remove_remote(&id);
         }
         for (id, node) in &self.server.nodes {
-            self.trees.set_remote(id.clone(), remote(node));
+            self.trees.set_remote(NodeId::from(id), remote(node));
         }
         self.trees.settle(self.commits.aliases());
         self.last_seq = self.server.seq;
@@ -473,7 +475,9 @@ impl World {
                 .unwrap();
             if let Some(removal) = removal {
                 let node = &removal.within[0];
-                let (kind, deletion) = self.truth(node).expect("a removed node is trashed");
+                let (kind, deletion) = self
+                    .truth(&node.to_string())
+                    .expect("a removed node is trashed");
                 let files = u64::from(kind == Kind::File);
                 assert_eq!(
                     removal.files,
@@ -487,7 +491,7 @@ impl World {
                     "R holds the trash group of every removed node"
                 );
                 let unfinished: BTreeSet<u64> = (self.trees.local().iter())
-                    .filter_map(|(id, _)| self.truth(id).map(|(_, deletion)| deletion))
+                    .filter_map(|(id, _)| self.truth(&id.to_string()).map(|(_, deletion)| deletion))
                     .collect();
                 let trashing = self.trashing();
                 let synced_files = self.trees.synced_files();
@@ -668,10 +672,10 @@ impl Model {
 /// server/src/space/commit.ts).
 fn revive(server: &mut Server, id: &str, changed: &mut Vec<String>) {
     let mut above = Vec::new();
-    let mut parent = server.nodes[id].shape.parent.clone();
+    let mut parent = server.nodes[id].shape.parent.to_string();
     while (server.nodes.get(&parent)).is_some_and(|node| node.trash.is_some()) {
         above.push(parent.clone());
-        parent = server.nodes[&parent].shape.parent.clone();
+        parent = server.nodes[&parent].shape.parent.to_string();
     }
     for folder in above.into_iter().rev() {
         let node = server.nodes.get_mut(&folder).unwrap();

@@ -7,8 +7,8 @@ use koidrive_engine::ignore::{RuleFile, Source};
 use koidrive_engine::names::{name_key, nfc};
 use koidrive_engine::state::MovedHere;
 use koidrive_engine::tree::{
-    Content, FileIdentity, Kind, LocalNode, Names, RemoteNode, Shape, StateError, Tree, TreeError,
-    same_content,
+    Content, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, StateError, Tree,
+    TreeError, same_content,
 };
 use koidrive_proto::v1::{NodeKind, NodeState, NodeStatus, VersionInfo};
 use proptest::prelude::*;
@@ -172,8 +172,8 @@ fn trashed_remote_nodes_count_as_absent() {
     child.trashed = true;
     tree.insert("c".into(), child);
     assert_eq!(tree.check(Names::ByKey), Ok(()));
-    assert!(tree.live("t").is_none());
-    assert!(tree.get("t").is_some());
+    assert!(tree.live(&"t".into()).is_none());
+    assert!(tree.get(&"t".into()).is_some());
 }
 
 #[test]
@@ -251,7 +251,7 @@ fn settling_records_matching_changes_and_drops_nodes_in_sync() {
     trees.set_local("same".into(), local(edited.clone().with_name("same"), 1));
     trees.set_remote("same".into(), remote(edited.clone().with_name("same")));
     trees.set_remote("remote".into(), remote(edited.clone().with_name("remote")));
-    trees.remove_local("local");
+    trees.remove_local(&"local".into());
 
     trees.settle(&Default::default());
 
@@ -259,11 +259,14 @@ fn settling_records_matching_changes_and_drops_nodes_in_sync() {
     assert_eq!(
         work,
         [
-            ("local".to_owned(), Class::Local),
-            ("remote".to_owned(), Class::Remote)
+            (NodeId::from("local"), Class::Local),
+            (NodeId::from("remote"), Class::Remote)
         ]
     );
-    assert_eq!(trees.synced().get("same"), Some(&edited.with_name("same")));
+    assert_eq!(
+        trees.synced().get(&"same".into()),
+        Some(&edited.with_name("same"))
+    );
     assert_eq!(trees.dirty().len(), 2);
     assert_eq!(trees.check(), Ok(()));
     trees.settle(&Default::default());
@@ -311,8 +314,8 @@ fn settling_never_orphans_a_child_in_s() {
     trees.set_local("x".into(), local(file(ROOT, "a", 1), 1));
     trees.set_remote("x".into(), remote(file(ROOT, "b", 1)));
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.class("p"), Class::Same);
-    assert_eq!(trees.class("x"), Class::Concurrent);
+    assert_eq!(trees.class(&"p".into()), Class::Same);
+    assert_eq!(trees.class(&"x".into()), Class::Concurrent);
 
     trees.settle(&Default::default());
 
@@ -321,17 +324,17 @@ fn settling_never_orphans_a_child_in_s() {
     assert_eq!(
         work,
         [
-            ("p".to_owned(), Class::Same),
-            ("x".to_owned(), Class::Concurrent)
+            (NodeId::from("p"), Class::Same),
+            (NodeId::from("x"), Class::Concurrent)
         ]
     );
-    assert!(trees.synced().get("p").is_some());
+    assert!(trees.synced().get(&"p".into()).is_some());
 
     trees.set_synced("x".into(), Some(file(ROOT, "b", 1)));
     trees.set_local("x".into(), local(file(ROOT, "b", 1), 1));
     trees.settle(&Default::default());
     assert_eq!(trees.work(), []);
-    assert!(trees.synced().get("p").is_none());
+    assert!(trees.synced().get(&"p".into()).is_none());
     assert_eq!(trees.check(), Ok(()));
 }
 
@@ -349,8 +352,8 @@ fn settling_waits_for_the_updates_it_depends_on() {
     trees.settle(&Default::default());
     assert_eq!(trees.work(), []);
     assert_eq!(trees.check(), Ok(()));
-    assert!(trees.synced().get("p").is_none());
-    assert_eq!(trees.synced().get("y"), Some(&file("q", "y", 1)));
+    assert!(trees.synced().get(&"p".into()).is_none());
+    assert_eq!(trees.synced().get(&"y".into()), Some(&file("q", "y", 1)));
 }
 
 #[test]
@@ -367,8 +370,8 @@ fn settling_never_gives_two_siblings_one_name_key() {
     assert_eq!(
         trees.work(),
         [
-            ("a".to_owned(), Class::Concurrent),
-            ("b".to_owned(), Class::Same)
+            (NodeId::from("a"), Class::Concurrent),
+            (NodeId::from("b"), Class::Same)
         ]
     );
     assert_eq!(trees.check(), Ok(()));
@@ -390,8 +393,8 @@ fn settling_takes_a_name_swap_made_on_both_sides_together() {
     trees.settle(&Default::default());
     assert_eq!(trees.work(), []);
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.synced().get("a"), Some(&file(ROOT, "y", 1)));
-    assert_eq!(trees.synced().get("b"), Some(&file(ROOT, "x", 2)));
+    assert_eq!(trees.synced().get(&"a".into()), Some(&file(ROOT, "y", 1)));
+    assert_eq!(trees.synced().get(&"b".into()), Some(&file(ROOT, "x", 2)));
 }
 
 #[test]
@@ -409,11 +412,11 @@ fn settling_releases_an_excluded_folder_together_with_a_child_taking_its_name() 
         Some(RuleFile::parse(b"x/\n")),
     );
     assert_eq!(trees.check(), Ok(()));
-    assert!(trees.ignored("e") && !trees.ignored("c"));
+    assert!(trees.ignored(&"e".into()) && !trees.ignored(&"c".into()));
     trees.settle(&Default::default());
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.synced().get("c"), Some(&dir(ROOT, "A")));
-    assert_eq!(trees.synced().live("e"), None);
+    assert_eq!(trees.synced().get(&"c".into()), Some(&dir(ROOT, "A")));
+    assert_eq!(trees.synced().live(&"e".into()), None);
     assert!(trees.work().iter().all(|(id, _)| id != "c"));
 }
 
@@ -444,9 +447,9 @@ fn settling_a_released_folder_alone_does_not_stop_a_name_swap_settling_after_it(
     assert_eq!(trees.check(), Ok(()));
     trees.settle(&Default::default());
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.synced().live("0e"), None);
-    assert_eq!(trees.synced().live("a"), Some(&dir(ROOT, "w")));
-    assert_eq!(trees.synced().live("b"), Some(&dir(ROOT, "v")));
+    assert_eq!(trees.synced().live(&"0e".into()), None);
+    assert_eq!(trees.synced().live(&"a".into()), Some(&dir(ROOT, "w")));
+    assert_eq!(trees.synced().live(&"b".into()), Some(&dir(ROOT, "v")));
 }
 
 #[test]
@@ -469,7 +472,7 @@ fn settling_a_rotation_beside_a_released_folder_searches_the_rotation_on_its_own
         Some(RuleFile::parse(b"x/\n")),
     );
     trees.settle(&Default::default());
-    assert_eq!(trees.synced().get("r00"), Some(&dir(ROOT, "y1")));
+    assert_eq!(trees.synced().get(&"r00".into()), Some(&dir(ROOT, "y1")));
     assert!(trees.unsearched().is_empty(), "{:?}", trees.unsearched());
 }
 
@@ -491,7 +494,7 @@ fn settling_moves_a_released_folder_to_a_remote_position_freed_in_the_same_settl
     );
     trees.settle(&Default::default());
     trees.settle(&Default::default());
-    assert_eq!(trees.synced().get("e"), Some(&dir(ROOT, "b")));
+    assert_eq!(trees.synced().get(&"e".into()), Some(&dir(ROOT, "b")));
     trees.set_rules(
         &[] as &[&str],
         Source::Koiignore,
@@ -499,7 +502,9 @@ fn settling_moves_a_released_folder_to_a_remote_position_freed_in_the_same_settl
     );
     trees.settle(&Default::default());
     assert!(
-        trees.work().contains(&("e".to_owned(), Class::Local)),
+        trees
+            .work()
+            .contains(&("e".to_owned().into(), Class::Local)),
         "{:?}",
         trees.work()
     );
@@ -518,9 +523,9 @@ fn settling_takes_a_three_way_rotation_made_on_both_sides_together() {
     trees.settle(&Default::default());
     assert_eq!(trees.work(), []);
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.synced().get("a"), Some(&file("d", "Y", 1)));
-    assert_eq!(trees.synced().get("b"), Some(&file("d", "z", 2)));
-    assert_eq!(trees.synced().get("c"), Some(&file("d", "x", 3)));
+    assert_eq!(trees.synced().get(&"a".into()), Some(&file("d", "Y", 1)));
+    assert_eq!(trees.synced().get(&"b".into()), Some(&file("d", "z", 2)));
+    assert_eq!(trees.synced().get(&"c".into()), Some(&file("d", "x", 3)));
 }
 
 #[test]
@@ -537,13 +542,13 @@ fn a_cycle_elsewhere_does_not_stop_a_swap_below_it() {
     assert_eq!(
         trees.work(),
         [
-            ("c".to_owned(), Class::Same),
-            ("z".to_owned(), Class::Concurrent)
+            (NodeId::from("c"), Class::Same),
+            (NodeId::from("z"), Class::Concurrent)
         ]
     );
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.synced().get("a"), Some(&dir("c", "y")));
-    assert_eq!(trees.synced().get("b"), Some(&dir("c", "x")));
+    assert_eq!(trees.synced().get(&"a".into()), Some(&dir("c", "y")));
+    assert_eq!(trees.synced().get(&"b".into()), Some(&dir("c", "x")));
 }
 
 #[test]
@@ -563,15 +568,15 @@ fn a_cycle_through_one_swap_does_not_stop_another_swap_that_fits() {
     assert_eq!(
         trees.work(),
         [
-            ("a".to_owned(), Class::Same),
-            ("b".to_owned(), Class::Same),
-            ("p".to_owned(), Class::Concurrent),
-            ("q".to_owned(), Class::Concurrent),
+            (NodeId::from("a"), Class::Same),
+            (NodeId::from("b"), Class::Same),
+            (NodeId::from("p"), Class::Concurrent),
+            (NodeId::from("q"), Class::Concurrent),
         ]
     );
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.synced().get("y"), Some(&dir("q", "x")));
-    assert_eq!(trees.synced().get("z"), Some(&dir("p", "x")));
+    assert_eq!(trees.synced().get(&"y".into()), Some(&dir("q", "x")));
+    assert_eq!(trees.synced().get(&"z".into()), Some(&dir("p", "x")));
 }
 
 #[test]
@@ -595,13 +600,16 @@ fn a_create_and_a_move_into_it_settle_together_beside_a_cycle() {
     assert_eq!(
         trees.work(),
         [
-            ("mid".to_owned(), Class::Concurrent),
-            ("top".to_owned(), Class::Same)
+            (NodeId::from("mid"), Class::Concurrent),
+            (NodeId::from("top"), Class::Same)
         ]
     );
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.synced().get("new"), Some(&dir("mid", "x")));
-    assert_eq!(trees.synced().get("old"), Some(&file("new", "x", 1)));
+    assert_eq!(trees.synced().get(&"new".into()), Some(&dir("mid", "x")));
+    assert_eq!(
+        trees.synced().get(&"old".into()),
+        Some(&file("new", "x", 1))
+    );
 }
 
 /// Renames `n` files in one directory in a ring, the same way on both sides, so that no update
@@ -662,9 +670,9 @@ fn a_swap_that_would_clash_with_an_unsettled_sibling_waits() {
     assert_eq!(
         trees.work(),
         [
-            ("a".to_owned(), Class::Same),
-            ("b".to_owned(), Class::Same),
-            ("c".to_owned(), Class::Concurrent)
+            (NodeId::from("a"), Class::Same),
+            (NodeId::from("b"), Class::Same),
+            (NodeId::from("c"), Class::Concurrent)
         ]
     );
     assert_eq!(trees.check(), Ok(()));
@@ -740,7 +748,7 @@ fn apply(i: usize, s: &[Option<Shape>], change: &Change, out: &[Option<Shape>]) 
         Change::Edit(_) => base,
         Change::Move { parent, name } => Shape {
             parent: if *parent < i && out[*parent].as_ref().is_some_and(|p| p.kind == Kind::Dir) {
-                format!("n{parent}")
+                format!("n{parent}").into()
             } else {
                 ROOT.into()
             },
@@ -749,7 +757,7 @@ fn apply(i: usize, s: &[Option<Shape>], change: &Change, out: &[Option<Shape>]) 
         },
     };
     if shape.parent != ROOT {
-        let parent: usize = shape.parent[1..].parse().unwrap();
+        let parent: usize = shape.parent.to_string()[1..].parse().unwrap();
         if out[parent].as_ref()?.kind != Kind::Dir {
             shape.parent = ROOT.into();
         }
@@ -772,8 +780,8 @@ fn forgetting_what_the_server_lost_keeps_the_rest_of_s() {
         ("same", file(ROOT, "same", 1)),
     ];
     for (ino, (id, shape)) in shapes.iter().enumerate() {
-        trees.set_local(id.to_string(), local(shape.clone(), ino as u128));
-        trees.set_synced(id.to_string(), Some(shape.clone()));
+        trees.set_local(id.to_string().into(), local(shape.clone(), ino as u128));
+        trees.set_synced(id.to_string().into(), Some(shape.clone()));
     }
     trees.set_remote("photos".into(), remote(dir(ROOT, "photos")));
     trees.set_remote("two".into(), remote(file(ROOT, "two", 0)));
@@ -797,7 +805,7 @@ fn forgetting_what_the_server_lost_keeps_the_rest_of_s() {
         0,
     );
     assert_eq!(trees.check(), Ok(()));
-    let classes = shapes.map(|(id, _)| (id, trees.class(id)));
+    let classes = shapes.map(|(id, _)| (id, trees.class(&NodeId::from(id))));
     assert_eq!(
         classes,
         [
@@ -822,8 +830,8 @@ fn a_remote_delete_below_a_folder_the_server_lost_stays_a_remote_delete() {
         ("two", file("albums", "two", 1)),
     ];
     for (ino, (id, shape)) in shapes.iter().enumerate() {
-        trees.set_local(id.to_string(), local(shape.clone(), ino as u128));
-        trees.set_synced(id.to_string(), Some(shape.clone()));
+        trees.set_local(id.to_string().into(), local(shape.clone(), ino as u128));
+        trees.set_synced(id.to_string().into(), Some(shape.clone()));
     }
     trees.set_remote(
         "one".into(),
@@ -844,10 +852,13 @@ fn a_remote_delete_below_a_folder_the_server_lost_stays_a_remote_delete() {
         0,
     );
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.class("one"), Class::Remote);
-    assert_eq!(trees.class("two"), Class::Local);
+    assert_eq!(trees.class(&"one".into()), Class::Remote);
+    assert_eq!(trees.class(&"two".into()), Class::Local);
     assert_eq!(
-        trees.waiting().get("albums").map(|waiting| &waiting.shape),
+        trees
+            .waiting()
+            .get(&"albums".into())
+            .map(|waiting| &waiting.shape),
         Some(&None)
     );
 }
@@ -858,7 +869,7 @@ fn forgotten_after_a_loss() -> Trees {
     trees.set_local("a".into(), local(shape.clone(), 1));
     trees.set_synced("a".into(), Some(shape.clone()));
     trees.set_remote("a".into(), remote(shape.clone()));
-    trees.remove_remote("a");
+    trees.remove_remote(&"a".into());
     trees.forget_lost(
         Vec::new(),
         Vec::new(),
@@ -870,7 +881,7 @@ fn forgotten_after_a_loss() -> Trees {
         0,
         0,
     );
-    assert_eq!(trees.class("a"), Class::Local);
+    assert_eq!(trees.class(&"a".into()), Class::Local);
     trees
 }
 
@@ -879,7 +890,7 @@ fn a_node_another_device_creates_again_after_a_loss_takes_its_position() {
     let mut trees = forgotten_after_a_loss();
     trees.set_remote("a".into(), remote(file(ROOT, "c", 1)));
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
 }
 
 #[test]
@@ -887,7 +898,7 @@ fn a_node_a_later_listing_holds_again_after_a_loss_takes_its_position() {
     let mut trees = forgotten_after_a_loss();
     trees.set_listed_remote("a".into(), remote(file(ROOT, "c", 1)));
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
 }
 
 #[test]
@@ -895,7 +906,7 @@ fn a_node_another_device_creates_again_after_a_loss_with_other_content_is_not_ta
     let mut trees = forgotten_after_a_loss();
     trees.set_remote("a".into(), remote(file(ROOT, "c", 2)));
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.class("a"), Class::Concurrent);
+    assert_eq!(trees.class(&"a".into()), Class::Concurrent);
 }
 
 fn a_folder_resent_after_a_loss_with_a_file_marked_as_nothing() -> Trees {
@@ -917,8 +928,8 @@ fn a_folder_resent_after_a_loss_with_a_file_scanned_as(digests: &[u8]) -> Trees 
         trees.set_local_changed("g".into(), local(file("f", "g", digest), 3));
     }
     trees.settle(&Default::default());
-    trees.remove_remote("g");
-    trees.remove_remote("f");
+    trees.remove_remote(&"g".into());
+    trees.remove_remote(&"f".into());
     trees.forget_lost(
         Vec::new(),
         Vec::new(),
@@ -930,7 +941,7 @@ fn a_folder_resent_after_a_loss_with_a_file_scanned_as(digests: &[u8]) -> Trees 
         0,
         0,
     );
-    assert_eq!(trees.class("g"), Class::Local);
+    assert_eq!(trees.class(&"g".into()), Class::Local);
     trees
 }
 
@@ -948,7 +959,7 @@ fn a_file_a_loss_left_unmarked_does_not_keep_its_resent_folder_from_a_delete() {
     let mut trees = a_folder_resent_after_a_loss_with_a_file_marked_as_nothing();
     trees.set_remote("p".into(), deleted(dir(ROOT, "p")));
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.class("f"), Class::Remote);
+    assert_eq!(trees.class(&"f".into()), Class::Remote);
 }
 
 #[test]
@@ -956,7 +967,7 @@ fn a_file_whose_edit_the_user_undid_does_not_keep_its_resent_folder_from_a_delet
     let mut trees = a_folder_resent_after_a_loss_with_a_file_scanned_as(&[2, 1]);
     trees.set_remote("p".into(), deleted(dir(ROOT, "p")));
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.class("f"), Class::Remote);
+    assert_eq!(trees.class(&"f".into()), Class::Remote);
 }
 
 #[test]
@@ -965,16 +976,16 @@ fn a_file_the_user_makes_in_a_resent_folder_keeps_it_from_a_delete() {
     trees.set_local_changed("n".into(), local(file("f", "n", 2), 4));
     trees.set_remote("p".into(), deleted(dir(ROOT, "p")));
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.class("f"), Class::Local);
+    assert_eq!(trees.class(&"f".into()), Class::Local);
 }
 
-fn created_here_and_lost(moved: Vec<(String, MovedHere)>) -> Trees {
+fn created_here_and_lost(moved: Vec<(NodeId, MovedHere)>) -> Trees {
     let mut trees = Trees::new(ROOT);
     let shape = file(ROOT, "b", 1);
     trees.set_local("a".into(), local(shape.clone(), 1));
     trees.set_synced("a".into(), Some(shape.clone()));
     trees.set_remote("a".into(), remote(shape));
-    trees.remove_remote("a");
+    trees.remove_remote(&"a".into());
     trees.forget_lost(
         Vec::new(),
         Vec::new(),
@@ -986,7 +997,7 @@ fn created_here_and_lost(moved: Vec<(String, MovedHere)>) -> Trees {
         0,
         0,
     );
-    assert_eq!(trees.class("a"), Class::Local);
+    assert_eq!(trees.class(&"a".into()), Class::Local);
     trees
 }
 
@@ -995,7 +1006,7 @@ fn a_node_this_device_created_that_another_device_creates_again_after_a_loss_tak
     let mut trees = created_here_and_lost(Vec::new());
     trees.set_remote("a".into(), remote(file(ROOT, "c", 1)));
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
     assert!(trees.state().lost_creates.is_empty());
 }
 
@@ -1008,7 +1019,7 @@ fn a_node_this_device_moved_that_another_device_creates_again_after_a_loss_keeps
     let mut trees = created_here_and_lost(vec![("a".into(), moved)]);
     trees.set_remote("a".into(), remote(file(ROOT, "c", 1)));
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.class("a"), Class::Concurrent);
+    assert_eq!(trees.class(&"a".into()), Class::Concurrent);
 }
 
 #[test]
@@ -1017,7 +1028,7 @@ fn a_node_this_device_created_and_renamed_after_a_loss_keeps_its_new_name() {
     trees.set_local("a".into(), local(file(ROOT, "d", 1), 1));
     trees.set_remote("a".into(), remote(file(ROOT, "c", 1)));
     assert_eq!(trees.check(), Ok(()));
-    assert_eq!(trees.class("a"), Class::Concurrent);
+    assert_eq!(trees.class(&"a".into()), Class::Concurrent);
 }
 
 fn spaces() -> impl Strategy<Value = Vec<(bool, Change, Change)>> {
@@ -1068,12 +1079,12 @@ proptest! {
         let mut trees = Trees::new(ROOT);
         for i in 0..space.len() {
             let id = format!("n{i}");
-            trees.set_synced(id.clone(), s[i].clone());
+            trees.set_synced(NodeId::from(&id), s[i].clone());
             if let Some(shape) = r[i].clone() {
-                trees.set_remote(id.clone(), remote(shape));
+                trees.set_remote(NodeId::from(&id), remote(shape));
             }
             if let Some(shape) = l[i].clone() {
-                trees.set_local(id.clone(), local(shape, i as u128));
+                trees.set_local(NodeId::from(&id), local(shape, i as u128));
             }
         }
         prop_assert_eq!(trees.check(), Ok(()));
@@ -1082,7 +1093,7 @@ proptest! {
         prop_assert_eq!(trees.check(), Ok(()));
         for i in 0..space.len() {
             let id = format!("n{i}");
-            let class = trees.class(&id);
+            let class = trees.class(&NodeId::from(&id));
             match work.iter().find(|(w, _)| *w == id) {
                 Some((_, listed)) => {
                     prop_assert_eq!(*listed, class);
@@ -1117,10 +1128,10 @@ proptest! {
         for (i, shape) in draw_tree(&start).into_iter().enumerate() {
             let id = format!("n{i}");
             if let Some(shape) = &shape {
-                trees.set_remote(id.clone(), remote(shape.clone()));
-                trees.set_local(id.clone(), local(shape.clone(), i as u128));
+                trees.set_remote(NodeId::from(&id), remote(shape.clone()));
+                trees.set_local(NodeId::from(&id), local(shape.clone(), i as u128));
             }
-            trees.set_synced(id, shape);
+            trees.set_synced(NodeId::from(id), shape);
         }
         trees.settle(&Default::default());
         for (step, rules, at) in steps {
@@ -1137,28 +1148,28 @@ proptest! {
                     if directory { dir(&parent, name) } else { file(&parent, name, digest) }
                 });
                 if side != 1 {
-                    let before = trees.local().get(&id).cloned();
+                    let before = trees.local().get(&NodeId::from(&id)).cloned();
                     match &shape {
-                        Some(shape) => trees.set_local(id.clone(), local(shape.clone(), 0)),
-                        None => trees.remove_local(&id),
+                        Some(shape) => trees.set_local(NodeId::from(&id), local(shape.clone(), 0)),
+                        None => trees.remove_local(&NodeId::from(&id)),
                     }
                     if trees.check().is_err() {
                         match before {
-                            Some(node) => trees.set_local(id.clone(), node),
-                            None => trees.remove_local(&id),
+                            Some(node) => trees.set_local(NodeId::from(&id), node),
+                            None => trees.remove_local(&NodeId::from(&id)),
                         }
                     }
                 }
                 if side != 0 {
-                    let before = trees.remote().get(&id).cloned();
+                    let before = trees.remote().get(&NodeId::from(&id)).cloned();
                     match shape {
-                        Some(shape) => trees.set_remote(id.clone(), remote(shape)),
-                        None => trees.remove_remote(&id),
+                        Some(shape) => trees.set_remote(NodeId::from(&id), remote(shape)),
+                        None => trees.remove_remote(&NodeId::from(&id)),
                     }
                     if trees.check().is_err() {
                         match before {
-                            Some(node) => trees.set_remote(id.clone(), node),
-                            None => trees.remove_remote(&id),
+                            Some(node) => trees.set_remote(NodeId::from(&id), node),
+                            None => trees.remove_remote(&NodeId::from(&id)),
                         }
                     }
                 }
@@ -1265,9 +1276,9 @@ proptest! {
         let mut trees = Trees::new(ROOT);
         for (i, (_, _, choice)) in space.iter().enumerate() {
             let id = format!("n{i}");
-            trees.set_synced(id.clone(), s[i].clone());
+            trees.set_synced(NodeId::from(&id), s[i].clone());
             if let Some(shape) = r[i].clone() {
-                trees.set_remote(id.clone(), remote(shape));
+                trees.set_remote(NodeId::from(&id), remote(shape));
             }
             let l = match choice {
                 0 => s[i].clone(),
@@ -1275,7 +1286,7 @@ proptest! {
                 _ => r[i].clone(),
             };
             if let Some(shape) = l {
-                trees.set_local(id, local(shape, i as u128));
+                trees.set_local(NodeId::from(id), local(shape, i as u128));
             }
         }
         prop_assert_eq!(trees.synced().check(Names::ByKey), Ok(()));
@@ -1284,14 +1295,14 @@ proptest! {
         let work = trees.work();
         prop_assert_eq!(trees.synced().check(Names::ByKey), Ok(()));
         prop_assert!(trees.unsearched().is_empty());
-        let same: Vec<&String> = work
+        let same: Vec<&NodeId> = work
             .iter()
             .filter(|(_, class)| *class == Class::Same)
             .map(|(id, _)| id)
             .collect();
         for set in 1..1u32 << same.len() {
             let mut synced = trees.synced().clone();
-            let chosen: Vec<&String> = same
+            let chosen: Vec<&NodeId> = same
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| set >> i & 1 == 1)
@@ -1329,11 +1340,11 @@ fn a_release_below_a_folder_whose_copy_went(hold: impl FnOnce(&mut Trees)) -> Tr
     trees.settle(&Default::default());
     trees.set_rules(&["y"], Source::Koiignore, Some(RuleFile::parse(b"x\n")));
     trees.set_local("n1".into(), local(dir("n0", "x"), 0));
-    trees.remove_local("n1");
+    trees.remove_local(&"n1".into());
     trees.settle(&Default::default());
     hold(&mut trees);
     trees.set_remote("n1".into(), remote(dir("n0", "y")));
-    trees.remove_local("n0");
+    trees.remove_local(&"n0".into());
     trees.settle(&Default::default());
     assert_eq!(trees.check(), Ok(()));
     trees
@@ -1361,10 +1372,10 @@ fn known_rules_above_a_folder_whose_copy_went_retry_the_release_below_it() {
             Some(RuleFile::parse(b"y\n")),
         );
     });
-    trees.set_rules_unknown(ROOT);
+    trees.set_rules_unknown(&ROOT.into());
     trees.set_rules(&[] as &[&str], Source::Koiignore, None);
     trees.settle(&Default::default());
     assert_eq!(trees.check(), Ok(()));
-    trees.set_rules_known(ROOT);
+    trees.set_rules_known(&ROOT.into());
     assert_eq!(trees.check(), Ok(()));
 }

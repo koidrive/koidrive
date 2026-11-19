@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use koidrive_engine::classify::Trees;
 use koidrive_engine::ignore::{RuleFile, Source};
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
 
 const ROOT: &str = "root";
 const ROUNDS: usize = 21;
@@ -26,7 +26,7 @@ fn shape(parent: &str, name: &str, kind: Kind, digest: u8) -> Shape {
 fn add(trees: &mut Trees, id: String, shape: Shape) {
     let ino = trees.remote().len() as u128 + 1;
     trees.set_remote(
-        id.clone(),
+        NodeId::from(&id),
         RemoteNode {
             made_over: Vec::new(),
             shape: shape.clone(),
@@ -42,7 +42,7 @@ fn add(trees: &mut Trees, id: String, shape: Shape) {
         },
     );
     trees.set_local(
-        id.clone(),
+        NodeId::from(&id),
         LocalNode {
             left_out_when_placed: false,
             content_from_server: false,
@@ -55,7 +55,7 @@ fn add(trees: &mut Trees, id: String, shape: Shape) {
             parked: false,
         },
     );
-    trees.set_synced(id, Some(shape));
+    trees.set_synced(NodeId::from(id), Some(shape));
 }
 
 fn median(trees: &mut Trees, mut change: impl FnMut(&mut Trees, usize)) -> Duration {
@@ -74,7 +74,7 @@ fn median(trees: &mut Trees, mut change: impl FnMut(&mut Trees, usize)) -> Durat
 fn report(trees: &mut Trees, nodes: usize, label: &str) {
     let idle = median(trees, |_, _| {});
     let one_file = median(trees, |trees, _| {
-        let mut node = trees.local().get("w0").unwrap().clone();
+        let mut node = trees.local().get(&"w0".into()).unwrap().clone();
         let edited = shape(ROOT, "w0", Kind::File, 2).content;
         let digest = if node.shape.content == edited { 3 } else { 2 };
         node.shape.content = shape(ROOT, "w0", Kind::File, digest).content;
@@ -127,10 +127,10 @@ fn settle_cost_while_the_rules_leave_out_a_large_folder() {
         Some(RuleFile::parse(b"big/\n")),
     );
     trees.settle(&Default::default());
-    assert!(trees.excluded("f0"));
+    assert!(trees.excluded(&"f0".into()));
     report(&mut trees, big.len(), "excluded");
     for id in big.iter().rev() {
-        trees.remove_local(id);
+        trees.remove_local(&NodeId::from(id));
     }
     trees.settle(&Default::default());
     report(&mut trees, big.len(), "excluded_and_removed");

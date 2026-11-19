@@ -986,7 +986,14 @@ fn an_edit_whose_commit_is_abandoned_after_the_server_reported_a_loss_is_sent_ag
         .sent(Err(CallError::Server(put_off(Code::HeadMoved))));
     a.take(step).unwrap();
     assert!(a.folder.engine.commits.in_flight().is_none());
-    assert!(a.folder.engine.trees.state().dropped_edits.contains(&update.node_id));
+    assert!(
+        a.folder
+            .engine
+            .trees
+            .state()
+            .dropped_edits
+            .contains(&NodeId::from(&update.node_id))
+    );
     a.run(&mut remote);
     a.settle();
     a.run(&mut remote);

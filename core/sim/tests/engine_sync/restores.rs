@@ -3,6 +3,7 @@
 /// The person edits a file and then restores an earlier version of it, before the edit was sent.
 /// The edit goes first and becomes a version, the earlier version becomes current, and the file
 /// keeps its node. Nothing is a conflict copy.
+
 #[test]
 fn an_edited_file_restored_to_an_earlier_version_keeps_the_edit_as_a_version() {
     let seed = [act(1, 0, 0, 3, 0)];
@@ -78,7 +79,7 @@ fn a_store_rolled_back_past_a_sent_restore_starts_recovery_and_sends_nothing() {
         trees.set_remote(id, node);
     }
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    let intent = RestoreIntent::from_trash(trashed[0].clone(), None, None).unwrap();
+    let intent = RestoreIntent::from_trash(trashed[0].clone().into(), None, None).unwrap();
     commits.restore(ids.uuid_v7(NOW as u64), intent.clone());
     let backup = commits.state();
 
@@ -179,7 +180,7 @@ fn a_version_restore_follows_an_edit_of_a_file_left_out_of_planning() {
         let node = ran.resolved[0].intent.node();
         let digest = |text| content(1, text).manifest_digest;
         assert_eq!(
-            version_digests(&ran.space, node),
+            version_digests(&ran.space, &node.to_string()),
             [digest(1), digest(0), digest(1)],
             "{cut:?}"
         );
@@ -452,7 +453,7 @@ impl Bench {
     }
 
     fn remove(&mut self, folder: &str) {
-        let mut below = vec![folder.to_owned()];
+        let mut below = vec![NodeId::from(folder)];
         while let Some(id) = below.pop() {
             below.extend(self.trees.local_children(&id).cloned());
             self.trees.remove_local(&id);
@@ -468,7 +469,7 @@ impl Bench {
     }
 
     fn restore(&mut self, node: &str, between: impl FnMut(&mut Bench)) {
-        let intent = RestoreIntent::from_trash(node.to_owned(), None, None).unwrap();
+        let intent = RestoreIntent::from_trash(node.to_owned().into(), None, None).unwrap();
         assert!(self.commits.restore(self.ids.uuid_v7(NOW as u64), intent));
         self.sync(between);
     }
@@ -538,7 +539,7 @@ fn two_requests_for_big_folders_bring_back_every_file() {
     for (path, asked) in [(&["big"][..], 0), (&["big", "sub"], 1)] {
         let (mut bench, folders) = Bench::large_files(path, 8);
         bench.delete(&folders[0], |_| {});
-        let intent = RestoreIntent::from_trash(folders[0].clone(), None, None).unwrap();
+        let intent = RestoreIntent::from_trash(folders[0].clone().into(), None, None).unwrap();
         let id = bench.ids.uuid_v7(NOW as u64);
         assert!(bench.commits.restore(id, intent));
         let ended_with = |bench: &mut Bench| {

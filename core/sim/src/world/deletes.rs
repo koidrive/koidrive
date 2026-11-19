@@ -17,7 +17,9 @@ pub(super) fn live_nodes(space: &SpaceDo) -> BTreeMap<i64, BTreeSet<NodeId>> {
             continue;
         }
         if let Some(content) = node.current.and_then(|version| version.content) {
-            live.entry(tag(&content)).or_default().insert(node.node_id);
+            live.entry(tag(&content))
+                .or_default()
+                .insert(NodeId::from(node.node_id));
         }
     }
     live
@@ -64,16 +66,16 @@ impl Deletion {
     pub(super) fn carried(
         &mut self,
         seq: u64,
-        deleted: &BTreeSet<&str>,
-        parents: &BTreeMap<&str, &str>,
+        deleted: &BTreeSet<NodeId>,
+        parents: &BTreeMap<NodeId, NodeId>,
     ) {
         for file in &mut self.files {
             let above = (file.path.last()).into_iter().flat_map(|root| {
-                std::iter::successors(Some(root.as_str()), |id| {
-                    parents.get(id).copied().filter(|parent| parent != id)
+                std::iter::successors(Some(root), |id| {
+                    parents.get(*id).filter(|parent| parent != id)
                 })
             });
-            if (file.path.iter().map(|id| id.as_str()))
+            if (file.path.iter())
                 .chain(above)
                 .any(|id| deleted.contains(id))
             {
@@ -140,8 +142,7 @@ impl Deletion {
             .collect();
         let kept_for_left_out = |node: &NodeId| {
             (self.left_out.iter()).any(|out| {
-                out == node
-                    || server.live(out).is_some() && server.above(out).contains(&node.as_str())
+                out == node || server.live(out).is_some() && server.above(out).contains(node)
             })
         };
         let live = deleted.iter().filter(|id| server.live(id).is_some());
@@ -153,11 +154,8 @@ impl Deletion {
                     let carries = other.value.field() != Field::Content && other.answer.is_none();
                     intents.nodes(j).any(|id| {
                         id == node
-                            || server.live(id).is_some()
-                                && server.above(id).contains(&node.as_str())
-                            || carries
-                                && deleted.contains(&id)
-                                && server.above(node).contains(&id.as_str())
+                            || server.live(id).is_some() && server.above(id).contains(node)
+                            || carries && deleted.contains(&id) && server.above(node).contains(id)
                     })
                 };
                 let excused = (0..intents.len()).any(|j| {

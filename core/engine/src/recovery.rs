@@ -35,10 +35,10 @@ pub(crate) fn asks(question: &Question) -> bool {
 /// The group that holds `id`, or `None` when its outcome is certain.
 pub(crate) fn group(
     trees: &Trees,
-    id: &str,
+    id: &NodeId,
     cause: Option<&RecoveryCause>,
 ) -> Option<RecoveryGroup> {
-    if id == trees.local().root || trees.missing().contains(id) {
+    if *id == trees.local().root || trees.missing().contains(id) {
         return None;
     }
     let local = trees.local().get(id).map(|node| &node.shape);
@@ -116,7 +116,7 @@ pub(crate) fn regroup(
     groups
 }
 
-fn parent<'a>(trees: &'a Trees, id: &str) -> Option<&'a str> {
+fn parent<'a>(trees: &'a Trees, id: &NodeId) -> Option<&'a NodeId> {
     let shape = (trees.local().get(id).map(|node| &node.shape))
         .or_else(|| trees.synced().live(id))
         .or_else(|| trees.remote().get(id).map(|node| &node.shape))?;
@@ -173,7 +173,7 @@ pub(crate) fn ask(
 /// member at when it was asked.
 fn items(trees: &Trees, members: BTreeMap<NodeId, Option<Revisions>>) -> BTreeMap<NodeId, Held> {
     let mut held: BTreeMap<NodeId, Held> = BTreeMap::new();
-    let top = |id: &str| {
+    let top = |id: &NodeId| {
         let mut top = id;
         while let Some(above) = parent(trees, top).filter(|above| members.contains_key(*above)) {
             top = above;
@@ -201,7 +201,7 @@ fn items(trees: &Trees, members: BTreeMap<NodeId, Option<Revisions>>) -> BTreeMa
 pub(crate) fn narrow(
     trees: &Trees,
     mut question: Question,
-    kept: impl Fn(&str) -> bool,
+    kept: impl Fn(&NodeId) -> bool,
 ) -> Option<Question> {
     let members = (question.held.values())
         .flat_map(|item| item.members.iter())
@@ -229,6 +229,7 @@ pub(crate) fn ask_intents<'a>(
 ) -> Option<Question> {
     let held: BTreeMap<NodeId, Held> = (restores.into_iter())
         .map(|id| {
+            let id = NodeId::from(id);
             let members = BTreeMap::from([(id.clone(), None)]);
             (id.clone(), Held { members, files: 0 })
         })
@@ -253,7 +254,7 @@ pub(crate) fn ask_intents<'a>(
 /// Whether R shows a trash restore done: the node is live, at the position it asked for if any.
 /// A version restore is never shown done, since R does not say which version a file holds.
 pub(crate) fn done(trees: &Trees, intent: &RestoreIntent) -> bool {
-    let Some(live) = trees.remote().live(intent.node()) else {
+    let Some(live) = trees.remote().live(&intent.node()) else {
         return false;
     };
     intent.version_id().is_none()
@@ -275,9 +276,9 @@ pub(crate) fn release(
     let QuestionKind::Recovery { group, .. } = question.kind else {
         return Vec::new();
     };
-    let remote = |id: &str| trees.remote().get(id).map(|node| node.shape.clone());
-    let local = |id: &str| trees.local().get(id).map(|node| node.shape.clone());
-    let published = |id: &str| {
+    let remote = |id: &NodeId| trees.remote().get(id).map(|node| node.shape.clone());
+    let local = |id: &NodeId| trees.local().get(id).map(|node| node.shape.clone());
+    let published = |id: &NodeId| {
         let server = remote(id)?;
         let newer_than = |version: Option<&str>| {
             version.is_some_and(|version| trees.remote_made_over(id, version))
@@ -331,7 +332,7 @@ pub(crate) fn release(
     released.into_iter().chain(carried).collect()
 }
 
-fn seen_here(trees: &Trees, id: &str) -> bool {
+fn seen_here(trees: &Trees, id: &NodeId) -> bool {
     trees.remote_seen_here(id)
         && (trees.remote_children(id))
             .filter(|child| trees.remote_synced_here(child).is_some())

@@ -21,7 +21,9 @@ use koidrive_engine::names::{MAX_NAME_BYTES, nfc, normalize_name};
 
 use koidrive_engine::state::{CommitsState, FinishOrigin, MovedHere, PendingFinish, TreesState};
 
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape, same_content};
+use koidrive_engine::tree::{
+    Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape, same_content,
+};
 
 use koidrive_proto::v1::{self as proto, CommitResult, OpResult, Welcome, error, op, op_result};
 
@@ -230,8 +232,8 @@ fn moves_back(trees: &mut Trees, ids: &mut IdGen, node: &str) {
     effects.done(trees, None, &record.effect_id, None).unwrap();
     trees.settle(&Default::default());
     assert_eq!(
-        trees.local().get(node).map(|n| &n.shape),
-        trees.remote().live(node)
+        trees.local().get(&NodeId::from(node)).map(|n| &n.shape),
+        trees.remote().live(&NodeId::from(node))
     );
     assert!(trees.reverted().is_empty());
 }
@@ -260,7 +262,7 @@ fn deleted_at_5_then_lost(rows: &[Row]) -> (Commits, Trees, IdGen, Vec<op::Op>) 
     assert!(commits.acknowledge(&mut trees, 2));
     trees.settle(commits.aliases());
     for (id, ..) in rows.iter().rev() {
-        trees.remove_local(id);
+        trees.remove_local(&NodeId::from(*id));
     }
     trees.settle(commits.aliases());
     let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
@@ -412,7 +414,10 @@ fn a_move_and_edit_whose_s_update_waits() -> (Trees, Commits, IdGen) {
         vec![outcome(op_result::Code::Applied); 2],
     );
     assert_eq!(
-        trees.waiting().get("n").map(|waiting| &waiting.shape),
+        trees
+            .waiting()
+            .get(&"n".into())
+            .map(|waiting| &waiting.shape),
         Some(&Some(file(ROOT, "x", 1)))
     );
     (trees, commits, ids)
@@ -477,7 +482,10 @@ fn a_move_and_edit_whose_s_update_waits_lost_at_5() -> (Trees, Commits, IdGen) {
     assert!(commits.acknowledge(&mut trees, 5));
     trees.settle(commits.aliases());
     assert_eq!(
-        trees.waiting().get("n").map(|waiting| &waiting.shape),
+        trees
+            .waiting()
+            .get(&"n".into())
+            .map(|waiting| &waiting.shape),
         Some(&Some(file(ROOT, "x", 1)))
     );
     assert_eq!(commits.connected(&welcome_holding(&commits, 1)), Reconnect::AheadOfServer);
@@ -578,7 +586,7 @@ fn take_remote_move(name: &str, rev: u64, trees: &mut Trees) {
 
 fn past_revisions_of_n(trees: &Trees) -> Vec<u64> {
     let past = trees.state().past_positions;
-    (past.get("n").into_iter().flatten())
+    (past.get(&"n".into()).into_iter().flatten())
         .map(|position| position.rev)
         .collect()
 }
@@ -595,7 +603,7 @@ fn an_edit_to_the_content_a_lost_commit_replaced() -> (Trees, Commits, IdGen) {
         Some(file(ROOT, "n", 3)),
         Some(edited),
     )]);
-    assert_eq!(trees.class("n"), Class::InSync);
+    assert_eq!(trees.class(&"n".into()), Class::InSync);
     trees.set_local("n".into(), local(file(ROOT, "n", 2), 1));
     trees.settle(&Default::default());
     let commits = Commits::default();
@@ -668,7 +676,7 @@ fn a_move_and_edit_lost_while_r_holds_it_in_the_trash() -> (Trees, Commits, IdGe
         commits.accepted(),
     );
     trees.settle(commits.aliases());
-    assert!(!trees.waiting().contains_key("n"));
+    assert!(!trees.waiting().contains_key(&"n".into()));
     (trees, commits, ids)
 }
 
@@ -700,7 +708,10 @@ fn a_file_moved_out_of_a_trashed_folder_whose_update_waits() -> (Trees, Commits,
         vec![outcome(op_result::Code::Applied); 2],
     );
     assert_eq!(
-        trees.waiting().get("n").map(|waiting| &waiting.shape),
+        trees
+            .waiting()
+            .get(&"n".into())
+            .map(|waiting| &waiting.shape),
         Some(&Some(file(ROOT, "X", 1)))
     );
     (trees, commits, ids)
@@ -756,7 +767,7 @@ fn a_late_acknowledgement_keeps_the_content_s_took_since(restart: bool, overtake
     trees.set_local("n".into(), local(file(ROOT, "a", 2), 1));
     trees.set_remote("n".into(), remote(file(ROOT, "a", 2)));
     trees.settle(commits.aliases());
-    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "a", 2)));
+    assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, "a", 2)));
     trees.set_local("n".into(), local(file(ROOT, "a", 1), 1));
     if overtaken {
         trees.set_remote("n".into(), remote(file(ROOT, "a", 3)));
@@ -772,7 +783,7 @@ fn a_late_acknowledgement_keeps_the_content_s_took_since(restart: bool, overtake
         &mut trees,
         vec![outcome(op_result::Code::Applied)],
     );
-    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "a", 2)));
+    assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, "a", 2)));
     trees.set_remote("n".into(), remote(file(ROOT, "a", 3)));
     trees.settle(commits.aliases());
     assert_eq!(effects_for(&mut trees, &mut ids, "n"), []);
@@ -809,7 +820,7 @@ fn a_late_acknowledgement_keeps_the_content_s_took_back(restart: bool) {
         matches!(&download[..], [Effect::WriteFile { content: written, .. }] if *written == content(0)),
         "{download:?}"
     );
-    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "a", 0)));
+    assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, "a", 0)));
     trees.set_local("n".into(), local(file(ROOT, "a", 1), 100));
     if restart {
         commits = Commits::from_state(commits.state()).unwrap();
@@ -821,7 +832,7 @@ fn a_late_acknowledgement_keeps_the_content_s_took_back(restart: bool) {
         &mut trees,
         vec![outcome(op_result::Code::Applied)],
     );
-    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "a", 0)));
+    assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, "a", 0)));
     assert_eq!(effects_for(&mut trees, &mut ids, "n"), []);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("n", 1)]);
@@ -848,7 +859,7 @@ fn a_late_acknowledgement_keeps_the_position_s_took_after_the_commit(restart: bo
     trees.set_local("n".into(), local(file(ROOT, "c", 1), 1));
     trees.set_remote("n".into(), remote_at(file(ROOT, "c", 1), 3));
     trees.settle(commits.aliases());
-    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "c", 1)));
+    assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, "c", 1)));
     trees.set_local("n".into(), local(file(ROOT, "b", 1), 1));
     if restart {
         commits = Commits::from_state(commits.state()).unwrap();
@@ -865,12 +876,12 @@ fn a_late_acknowledgement_keeps_the_position_s_took_after_the_commit(restart: bo
     commits.received(result(2, vec![applied])).unwrap();
     assert!(commits.acknowledge(&mut trees, 3));
     trees.settle(commits.aliases());
-    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "c", 1)));
-    assert!(!trees.reverted().contains("n"));
+    assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, "c", 1)));
+    assert!(!trees.reverted().contains(&"n".into()));
     trees.set_remote("n".into(), remote_at(file(ROOT, "d", 1), 4));
     trees.settle(commits.aliases());
     assert_eq!(effects_for(&mut trees, &mut ids, "n"), []);
-    assert_eq!(trees.local().live("n"), Some(&file(ROOT, "b", 1)));
+    assert_eq!(trees.local().live(&"n".into()), Some(&file(ROOT, "b", 1)));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("n", ROOT, "b")]);
 }
@@ -900,10 +911,10 @@ fn a_late_acknowledgement_takes_the_sent_position_when_only_r_returned(stops: &[
         .unwrap();
     assert!(commits.acknowledge(&mut trees, last));
     trees.settle(commits.aliases());
-    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "b", 1)));
+    assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, "b", 1)));
     let effects = effects_for(&mut trees, &mut ids, "n");
     assert!(matches!(&effects[..], [Effect::Move { .. }]), "{effects:?}");
-    assert_eq!(trees.local().live("n"), Some(&file(ROOT, "a", 1)));
+    assert_eq!(trees.local().live(&"n".into()), Some(&file(ROOT, "a", 1)));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
@@ -937,12 +948,12 @@ fn a_late_create_acknowledgement_keeps_the_position_s_took_after_the_commit(
     trees.set_remote("n".into(), remote_at(at(created), 2));
     if settled {
         trees.settle(commits.aliases());
-        assert_eq!(trees.synced().live("n"), Some(&at("b")));
+        assert_eq!(trees.synced().live(&"n".into()), Some(&at("b")));
     }
     trees.set_local("n".into(), local(at("c"), 1));
     trees.set_remote("n".into(), remote_at(at("c"), 3));
     trees.settle(commits.aliases());
-    assert_eq!(trees.synced().live("n"), Some(&at("c")));
+    assert_eq!(trees.synced().live(&"n".into()), Some(&at("c")));
     trees.set_local("n".into(), local(at("b"), 1));
     if restart {
         commits = Commits::from_state(commits.state()).unwrap();
@@ -959,12 +970,12 @@ fn a_late_create_acknowledgement_keeps_the_position_s_took_after_the_commit(
     commits.received(result(2, vec![applied])).unwrap();
     assert!(commits.acknowledge(&mut trees, 3));
     trees.settle(commits.aliases());
-    assert_eq!(trees.synced().live("n"), Some(&at("c")));
-    assert!(!trees.reverted().contains("n"));
+    assert_eq!(trees.synced().live(&"n".into()), Some(&at("c")));
+    assert!(!trees.reverted().contains(&"n".into()));
     trees.set_remote("n".into(), remote_at(at("d"), 4));
     trees.settle(commits.aliases());
     assert_eq!(effects_for(&mut trees, &mut ids, "n"), []);
-    assert_eq!(trees.local().live("n"), Some(&at("b")));
+    assert_eq!(trees.local().live(&"n".into()), Some(&at("b")));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("n", ROOT, "b")]);
 }
@@ -1021,8 +1032,8 @@ fn a_late_acknowledgement_converges_on_a_remote_edit_made_at_the_position_l_took
         let commit = build(&mut commits, &mut trees, &mut ids);
         assert_eq!(commit.as_ref().map(ops), None);
     }
-    assert_eq!(trees.local().live("n"), Some(&file(ROOT, at, 2)));
-    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, at, 2)));
+    assert_eq!(trees.local().live(&"n".into()), Some(&file(ROOT, at, 2)));
+    assert_eq!(trees.synced().live(&"n".into()), Some(&file(ROOT, at, 2)));
 }
 
 fn owing_its_name(rows: &[Row]) -> (Commits, Trees, IdGen) {
@@ -1040,7 +1051,7 @@ fn downloaded_at_5() -> (Commits, Trees, IdGen) {
     trees.set_remote("a".into(), edited);
     trees.set_local("a".into(), local(file(ROOT, "a", 2), 1));
     trees.settle(&Default::default());
-    assert_eq!(trees.class("a"), Class::InSync);
+    assert_eq!(trees.class(&"a".into()), Class::InSync);
     (Commits::default(), trees, IdGen::new(1))
 }
 
@@ -1056,7 +1067,7 @@ fn downloaded_then_deleted() -> (Commits, Trees, IdGen) {
     };
     trees.set_remote("a".into(), deleted);
     trees.settle(commits.aliases());
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
     (commits, trees, ids)
 }
 
@@ -1141,11 +1152,14 @@ fn kept_original_recorded() -> Trees {
         &mut trees,
         vec![outcome(op_result::Code::Applied)],
     );
-    assert_eq!(kept_originals(&trees), [("y".into(), "f".into())]);
+    assert_eq!(
+        kept_originals(&trees),
+        [(NodeId::from("y"), NodeId::from("f"))]
+    );
     trees
 }
 
-fn kept_originals(trees: &Trees) -> Vec<(String, String)> {
+fn kept_originals(trees: &Trees) -> Vec<(NodeId, NodeId)> {
     trees.state().kept_originals.into_iter().collect()
 }
 
@@ -1196,9 +1210,9 @@ fn reparent_a_folder_at_its_pending_name(answer_first: bool) {
     assert_eq!(
         trees
             .local()
-            .get("n")
-            .map(|n| (n.shape.parent.as_str(), n.shape.name.as_str())),
-        Some(("x", "A (pending)"))
+            .get(&"n".into())
+            .map(|n| (&n.shape.parent, n.shape.name.as_str())),
+        Some((&"x".into(), "A (pending)"))
     );
 }
 use koidrive_engine::first_link::{History, Marks};
@@ -1231,7 +1245,7 @@ fn an_edit_in_flight_of_a_file_another_device_moved() -> (Commits, Trees, IdGen)
     trees.set_remote("a".into(), moved);
     trees.set_local("a".into(), local(file(ROOT, "b", 2), 1));
     trees.settle(commits.aliases());
-    assert_eq!(trees.class("a"), Class::InSync);
+    assert_eq!(trees.class(&"a".into()), Class::InSync);
     trees.set_local("a".into(), local(file(ROOT, "b", 3), 1));
     trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -1249,7 +1263,7 @@ fn list_a_at_its_old_place_after_a_loss(trees: &mut Trees, commits: &Commits) {
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
     let records = trees.remote_records(|seq| commits.lost_here(seq));
     trees.set_listed_remote("a".into(), version(remote(file(ROOT, "a", 1)), "v1"));
-    trees.remove_remote("pad");
+    trees.remove_remote(&"pad".into());
     trees.forget_lost(
         trashed,
         edited,
@@ -1262,7 +1276,7 @@ fn list_a_at_its_old_place_after_a_loss(trees: &mut Trees, commits: &Commits) {
         commits.accepted(),
     );
     trees.settle(commits.aliases());
-    assert_eq!(trees.synced().live("a"), Some(&file(ROOT, "b", 1)));
+    assert_eq!(trees.synced().live(&"a".into()), Some(&file(ROOT, "b", 1)));
 }
 
 fn after_an_edit_dropped_in_flight(undo: bool, restored: RemoteNode) -> (Class, Vec<Effect>, Vec<op::Op>) {
@@ -1289,7 +1303,7 @@ fn after_an_edit_dropped_in_flight(undo: bool, restored: RemoteNode) -> (Class, 
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
     let records = trees.remote_records(|seq| commits.lost_here(seq));
     trees.set_listed_remote("a".into(), restored);
-    trees.remove_remote("pad");
+    trees.remove_remote(&"pad".into());
     trees.forget_lost(
         trashed,
         edited,
@@ -1302,7 +1316,7 @@ fn after_an_edit_dropped_in_flight(undo: bool, restored: RemoteNode) -> (Class, 
         commits.accepted(),
     );
     trees.settle(commits.aliases());
-    let class = trees.class("a");
+    let class = trees.class(&"a".into());
     let effects = effects_for(&mut trees, &mut ids, "a");
     let built = build(&mut commits, &mut trees, &mut ids).map(|c| ops(&c)).unwrap_or_default();
     (class, effects, built)
@@ -1326,7 +1340,11 @@ fn edited_after_the_restore() -> RemoteNode {
 
 fn marked_by(rows: &[Row], device: &str) -> (Commits, Trees, IdGen) {
     let mut trees = trees(rows);
-    let mut node = trees.remote().get("a").expect("a node of R").clone();
+    let mut node = trees
+        .remote()
+        .get(&"a".into())
+        .expect("a node of R")
+        .clone();
     node.pending_for = Some("a".into());
     node.pending_by = Some(device.into());
     trees.set_remote("a".into(), node);

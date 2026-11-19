@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sha2::{Digest, Sha256};
 
 use koidrive_engine::effects::{Effect, EffectRecord, Location};
-use koidrive_engine::tree::{RemoteNode, same};
+use koidrive_engine::tree::{NodeId, RemoteNode, same};
 use koidrive_proto::v1::{
     ChangeRecord, Commit, CommitRecord, CommitResult, change_record, op, op_result,
 };
@@ -95,7 +95,7 @@ struct State {
     syncing: Option<Instant>,
     download: Burst,
     upload: Burst,
-    origins: BTreeMap<String, Origin>,
+    origins: BTreeMap<NodeId, Origin>,
     effects: BTreeMap<String, Planned>,
 }
 
@@ -115,7 +115,7 @@ struct Origin {
 }
 
 struct Planned {
-    node: String,
+    node: NodeId,
     wrote_file: bool,
     final_target: bool,
     origin: Option<Origin>,
@@ -329,10 +329,11 @@ impl Timing {
                 Some(change_record::Change::Purged(node)) => (&node.node_id, None),
                 _ => continue,
             };
-            state.origins.remove(node);
+            let node = NodeId::from(node);
+            state.origins.remove(&node);
             if wall_duration(committed_ms, at.unix_ms).is_some() {
                 state.origins.insert(
-                    node.clone(),
+                    node,
                     Origin {
                         seq,
                         revision,
@@ -357,10 +358,10 @@ impl Timing {
         for change in changes {
             match &change.change {
                 Some(change_record::Change::Node(node)) => {
-                    state.origins.remove(&node.node_id);
+                    state.origins.remove(&NodeId::from(&node.node_id));
                 }
                 Some(change_record::Change::Purged(node)) => {
-                    state.origins.remove(&node.node_id);
+                    state.origins.remove(&NodeId::from(&node.node_id));
                 }
                 _ => {}
             }
@@ -433,7 +434,10 @@ impl Timing {
             }
         }
         if planned.wrote_file {
-            state.download.files.insert((planned.node, planned.version));
+            state
+                .download
+                .files
+                .insert((planned.node.to_string(), planned.version));
         }
     }
 

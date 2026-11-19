@@ -447,7 +447,7 @@ fn a_first_link_of_a_folder_another_device_synced_and_unlinked_keeps_what_the_sp
         b.rest(&mut remote);
         let space: Vec<&str> = if kept { vec!["kept.txt"] } else { vec![] };
         assert_eq!(remote.names(), space);
-        assert!(remote.space.purge(&old, NOW));
+        assert!(remote.space.purge(&old.to_string(), NOW));
         assert_eq!(koidrive_fs::read_marker(&site_a.root).unwrap().unwrap().effects, 0);
 
         let dir = tempfile::tempdir().unwrap();

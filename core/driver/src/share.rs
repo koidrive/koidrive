@@ -7,7 +7,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 use koidrive_engine::names::name_key;
-use koidrive_engine::tree::{Kind, RemoteNode, same_content};
+use koidrive_engine::tree::{Kind, NodeId, RemoteNode, same_content};
 use koidrive_fs::{EntryKind, ItemPath, RootAt, Snapshot, check_root};
 use koidrive_net::{ApiError, Auth, ServerError};
 use koidrive_proto::v1::{
@@ -377,7 +377,7 @@ fn verified(
     let local_scope = if node_id == tree.root {
         PathBuf::new()
     } else {
-        let Some(path) = engine.path_of(node_id) else {
+        let Some(path) = engine.path_of(&NodeId::from(node_id)) else {
             return Ok(false);
         };
         path
@@ -406,20 +406,21 @@ fn verified(
         if !remote_path.starts_with(scope) && !scope.starts_with(remote_path) {
             continue;
         }
-        let Some(local) = engine.trees.local().get(id) else {
+        let node = NodeId::from(id);
+        let Some(local) = engine.trees.local().get(&node) else {
             return Ok(false);
         };
         let Ok((_, remote_shape)) = RemoteNode::from_state(remote) else {
             return Ok(false);
         };
         if local.parked
-            || engine.trees.ignored_local().contains(id)
+            || engine.trees.ignored_local().contains(&node)
             || !local.shape.same_position(&remote_shape.shape)
             || local.shape.kind != remote_shape.shape.kind
         {
             return Ok(false);
         }
-        let Some(path) = engine.path_of(id) else {
+        let Some(path) = engine.path_of(&node) else {
             return Ok(false);
         };
         let Some(entry) = disk.entries.get(&path) else {
@@ -1086,7 +1087,7 @@ mod tests {
                     let (_, remote) = RemoteNode::from_state(node).unwrap();
                     tx.put_remote_node(node)?;
                     let shape = koidrive_store::Shape {
-                        parent_id: remote.shape.parent,
+                        parent_id: remote.shape.parent.into(),
                         name: remote.shape.name,
                         kind: node.kind,
                         content: remote.shape.content,
