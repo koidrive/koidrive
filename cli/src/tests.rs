@@ -961,6 +961,7 @@ async fn resume_without_a_daemon_reconciles_without_overriding_background_off() 
 async fn gitignore_off_without_a_terminal_needs_yes_and_each_result_fits_its_schema() {
     use crate::gitignore::GitignoreAction;
     let (_dir, paths, root) = ipc::tests::linked_profile();
+    ipc::tests::linked_at(&paths, ipc::tests::SPACE, &root);
     std::fs::write(root.join(".gitignore"), "*.log\n").unwrap();
     std::fs::write(root.join("x.log"), "12").unwrap();
     let terminal = Arc::new(terminal::Terminal::new(true, false));
@@ -1091,6 +1092,7 @@ async fn gitignore_status_and_off_name_a_folder_they_cannot_read_and_count_the_r
         return;
     }
     let (_dir, paths, root) = ipc::tests::linked_profile();
+    ipc::tests::linked_at(&paths, ipc::tests::SPACE, &root);
     std::fs::write(root.join(".gitignore"), "pgdata/\n*.log\n").unwrap();
     std::fs::write(root.join("x.log"), "12").unwrap();
     std::fs::create_dir(root.join("pgdata")).unwrap();
@@ -2825,4 +2827,62 @@ fn a_restore_asked_for_before_recovery_is_listed_by_its_file_and_what_it_brings_
             }
         ])
     );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn gitignore_status_counts_each_linked_folder_when_their_paths_print_alike() {
+    use crate::gitignore::GitignoreAction;
+    use std::os::unix::ffi::OsStrExt;
+
+    const OTHER: &str = "0190f0a0-0000-7000-8000-000000000002";
+    let (_dir, paths, root) = ipc::tests::linked_profile();
+    let raw = root.with_file_name(std::ffi::OsStr::from_bytes(b"Koidrive\xff"));
+    let alike = root.with_file_name("Koidrive\u{FFFD}");
+    std::fs::rename(&root, &raw).unwrap();
+    std::fs::create_dir(&alike).unwrap();
+    ipc::tests::linked_at(&paths, ipc::tests::SPACE, &raw);
+    ipc::tests::linked_at(&paths, OTHER, &alike);
+    for (folder, files) in [(&raw, &["a.log"][..]), (&alike, &["b.log", "c.log"][..])] {
+        std::fs::write(folder.join(".gitignore"), "*.log\n").unwrap();
+        for file in files {
+            std::fs::write(folder.join(file), file.as_bytes()).unwrap();
+        }
+    }
+    let server = tokio::spawn(ipc::serve(
+        koidrive_ipc::bind(&paths.socket()).unwrap(),
+        Driver::open(paths.clone()).unwrap(),
+    ));
+    for (folder, expected) in [
+        (None, &[(ipc::tests::SPACE, 1), (OTHER, 2)][..]),
+        (Some(&raw), &[(ipc::tests::SPACE, 1)][..]),
+        (Some(&alike), &[(OTHER, 2)][..]),
+    ] {
+        let status = run(
+            paths.clone(),
+            Command::Gitignore {
+                action: GitignoreAction::Status {
+                    folder: folder.cloned(),
+                },
+            },
+            true,
+            false,
+            Arc::new(terminal::Terminal::new(true, true)),
+        )
+        .await
+        .map_err(|error| error.message);
+        let counted = status.map(|status| {
+            (status.data["folders"].as_array().unwrap().iter())
+                .map(|folder| {
+                    let space_id = folder["space_id"].as_str().unwrap().to_owned();
+                    (space_id, folder["files"].as_u64().unwrap())
+                })
+                .collect::<Vec<_>>()
+        });
+        let expected = expected
+            .iter()
+            .map(|(space_id, files)| (space_id.to_string(), *files));
+        assert_eq!(counted, Ok(expected.collect()), "{folder:?}");
+    }
+    server.abort();
 }

@@ -318,12 +318,13 @@ fn write_gitignore(path: &Path, follow: bool) -> Result<(), DriverError> {
     let sync = (document.entry("sync").or_insert_with(toml_edit::table))
         .as_table_like_mut()
         .ok_or_else(|| invalid("sync is not a table".into()))?;
-    if sync.get("gitignore").and_then(toml_edit::Item::as_bool) == Some(follow) {
-        return Ok(());
-    }
+    let already = sync.get("gitignore").and_then(toml_edit::Item::as_bool) == Some(follow);
     sync.insert("gitignore", toml_edit::value(follow));
     let text = document.to_string();
-    toml::from_str::<Config>(&text).map_err(|error| invalid(error.to_string()))?;
+    Config::parse(path, &text)?;
+    if already {
+        return Ok(());
+    }
     if let Some(dir) = path.parent() {
         DirBuilder::new()
             .recursive(true)
@@ -2454,15 +2455,16 @@ impl Driver {
     /// `gitignore` under `[sync]` in the profile's configuration file, with the rest of the file as it was. Each folder
     /// whose task runs restarts with the new rules. What the change leaves out stays on disk and on the server, and
     /// what it includes again syncs (design §5.10). The file is written first, so a driver opened after a crash
-    /// applies the choice. Setting the value the driver already follows restarts nothing.
-    pub async fn set_gitignore(&self, follow: bool) -> Result<(), DriverError> {
+    /// applies the choice. Setting the value the driver already follows restarts nothing. Returns whether the driver
+    /// followed the other value before this call.
+    pub async fn set_gitignore(&self, follow: bool) -> Result<bool, DriverError> {
         let _lifecycle = self.inner.lifecycle.lock().await;
         let _pausing = self.inner.pausing.lock().await;
         write_gitignore(&self.inner.paths.config_file, follow)?;
         {
             let mut rules = self.inner.rules.lock().unwrap();
             if rules.local.follows_gitignore() == follow {
-                return Ok(());
+                return Ok(false);
             }
             let local = rules.local.clone().with_gitignore(follow);
             *rules = DeviceRules {
@@ -2502,21 +2504,28 @@ impl Driver {
         }
         drop(folders);
         self.changed();
-        Ok(())
+        Ok(true)
     }
 
-    /// Counts the regular files in the linked folder at `folder` that its `.gitignore` files alone leave out: those
+    /// Counts the regular files in the linked folder of `space_id` that its `.gitignore` files alone leave out: those
     /// the folder excludes while it follows `.gitignore` files and includes while it does not. It reads the disk as it
     /// is now, as a scan does, whatever [`Driver::follows_gitignore`] says, and never follows a symbolic link. What it
     /// holds below a folder it cannot list, or whose rules file it cannot read, is left out of the count, and the folder
     /// is in [`GitignoreOnly::unreadable`].
-    pub fn gitignore_only(&self, folder: &Path) -> Result<GitignoreOnly, DriverError> {
-        let root = find(&mut self.inner.folders.lock().unwrap(), folder)?
+    /// The space of the linked folder at `folder`.
+    pub fn linked_space(&self, folder: &Path) -> Result<String, DriverError> {
+        Ok(find(&mut self.inner.folders.lock().unwrap(), folder)?
             .link
-            .root
-            .clone();
+            .space_id
+            .clone())
+    }
+
+    pub fn gitignore_only(&self, space_id: &str) -> Result<GitignoreOnly, DriverError> {
+        let link = (self.inner.folders.lock().unwrap().get(space_id))
+            .map(|folder| folder.link.clone())
+            .ok_or_else(|| DriverError::SpaceNotLinked(space_id.to_owned()))?;
         let local = self.inner.rules.lock().unwrap().local.clone();
-        crate::ignore::gitignore_only(&root, local).map_err(io_error(&root))
+        Ok(crate::ignore::gitignore_only(&link, local))
     }
 
     /// Starts the task of `folder` unless it is being unlinked or its task still runs. `all` are the roots of every
@@ -11136,12 +11145,127 @@ mod tests {
             bytes: 18,
             unreadable: Vec::new(),
         };
-        assert_eq!(driver.gitignore_only(&root).unwrap(), only);
+        assert_eq!(driver.gitignore_only(SPACE).unwrap(), only);
         driver.set_gitignore(false).await.unwrap();
-        assert_eq!(driver.gitignore_only(&root).unwrap(), only);
+        assert_eq!(driver.gitignore_only(SPACE).unwrap(), only);
         assert!(matches!(
-            driver.gitignore_only(&base.join("elsewhere")),
-            Err(DriverError::NotLinked(_))
+            driver.gitignore_only("0190f0a0-0000-7000-8000-000000000002"),
+            Err(DriverError::SpaceNotLinked(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn gitignore_only_counts_a_linked_root_it_cannot_open_as_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        linked(&paths, &root, "d1");
+        fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        fs::write(root.join("a.log"), "abc").unwrap();
+        let driver = Driver::open(paths).unwrap();
+        let blocked = GitignoreOnly {
+            files: 0,
+            bytes: 0,
+            unreadable: vec![root.clone()],
+        };
+
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+        let counted = driver.gitignore_only(SPACE);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(counted.unwrap(), blocked);
+
+        fs::rename(&root, base.join("Moved")).unwrap();
+        assert_eq!(driver.gitignore_only(SPACE).unwrap(), blocked);
+    }
+
+    #[tokio::test]
+    async fn setting_gitignore_refuses_a_configuration_file_the_next_start_would_refuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let driver = Driver::open(paths.clone()).unwrap();
+        fs::create_dir_all(paths.config_file.parent().unwrap()).unwrap();
+        for text in [
+            "[sync]\nexclude = [\"!keep\"]\n",
+            "[sync]\nexclude = [\"!keep\"]\ngitignore = false\n",
+        ] {
+            fs::write(&paths.config_file, text).unwrap();
+            assert!(Config::load(&paths.config_file).is_err());
+            assert!(matches!(
+                driver.set_gitignore(false).await,
+                Err(DriverError::Config(ConfigError::Invalid { .. }))
+            ));
+            assert_eq!(fs::read_to_string(&paths.config_file).unwrap(), text);
+        }
+        assert!(driver.follows_gitignore());
+    }
+
+    fn gitignore_only_of(base: &Path, root: &Path) -> Driver {
+        let paths = Paths::under(&base.join("profile"));
+        linked(&paths, root, "d1");
+        fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        fs::write(root.join("a.log"), "abc").unwrap();
+        Driver::open(paths).unwrap()
+    }
+
+    #[tokio::test]
+    async fn gitignore_only_does_not_count_a_folder_made_where_the_linked_root_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let root = base.join("Koidrive");
+        let driver = gitignore_only_of(&base, &root);
+        fs::rename(&root, base.join("Moved")).unwrap();
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        fs::write(root.join("b.log"), "12345").unwrap();
+        let blocked = GitignoreOnly {
+            files: 0,
+            bytes: 0,
+            unreadable: vec![root],
+        };
+        assert_eq!(driver.gitignore_only(SPACE).unwrap(), blocked);
+    }
+
+    #[tokio::test]
+    async fn gitignore_only_does_not_count_the_folder_a_symbolic_link_puts_above_a_linked_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let root = base.join("Parent/Koidrive");
+        let driver = gitignore_only_of(&base, &root);
+        fs::rename(base.join("Parent"), base.join("Moved")).unwrap();
+        let other = base.join("Other/Koidrive");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join(".gitignore"), "*.log\n").unwrap();
+        fs::write(other.join("b.log"), "12345").unwrap();
+        std::os::unix::fs::symlink(base.join("Other"), base.join("Parent")).unwrap();
+        let blocked = GitignoreOnly {
+            files: 0,
+            bytes: 0,
+            unreadable: vec![root],
+        };
+        assert_eq!(driver.gitignore_only(SPACE).unwrap(), blocked);
+    }
+
+    #[tokio::test]
+    async fn gitignore_only_counts_a_linked_root_a_symbolic_link_leads_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let root = base.join("Koidrive");
+        let driver = gitignore_only_of(&base, &root);
+        let moved = base.join("Documents/Koidrive");
+        fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        fs::rename(&root, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &root).unwrap();
+        let counted = GitignoreOnly {
+            files: 1,
+            bytes: 3,
+            unreadable: Vec::new(),
+        };
+        assert_eq!(driver.gitignore_only(SPACE).unwrap(), counted);
     }
 }

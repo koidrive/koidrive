@@ -13,7 +13,8 @@ use koidrive_driver::{
 };
 use koidrive_engine::commit::Lift;
 use koidrive_ipc::{
-    Blocked, Code, Key, Request, RequestId, Response, read_line, write_json, write_line,
+    Blocked, Code, GitignoreFolder, Key, Request, RequestId, Response, read_line, write_json,
+    write_line,
 };
 use rustix::io::Errno;
 use tokio::io::AsyncReadExt;
@@ -250,16 +251,23 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
             follows: driver.follows_gitignore(),
         }),
         Request::SetGitignore { follow } => {
-            let already = driver.follows_gitignore() == follow;
-            (driver.set_gitignore(follow).await).map(|()| Response::GitignoreSet {
+            (driver.set_gitignore(follow).await).map(|changed| Response::GitignoreSet {
                 follows: follow,
-                already,
+                already: !changed,
             })
         }
-        Request::GitignoreOnly { folder } => {
+        Request::GitignoreOnly { of } => {
             let driver = driver.clone();
-            match tokio::task::spawn_blocking(move || driver.gitignore_only(&folder)).await {
-                Ok(counted) => counted.map(|only| Response::GitignoreOnly {
+            let count = move || {
+                let space_id = match of {
+                    GitignoreFolder::Space(space_id) => space_id,
+                    GitignoreFolder::Folder(folder) => driver.linked_space(&folder)?,
+                };
+                (driver.gitignore_only(&space_id)).map(|only| (space_id, only))
+            };
+            match tokio::task::spawn_blocking(count).await {
+                Ok(counted) => counted.map(|(space_id, only)| Response::GitignoreOnly {
+                    space_id,
                     files: only.files,
                     bytes: only.bytes,
                     unreadable: only.unreadable,
@@ -607,6 +615,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn the_gitignore_setting_is_read_set_and_counted_through_the_daemon() {
         let (_dir, paths, root) = linked_profile();
+        linked_at(&paths, SPACE, &root);
         fs::write(root.join(".gitignore"), "node_modules/\n").unwrap();
         fs::create_dir_all(root.join("node_modules")).unwrap();
         fs::write(root.join("node_modules/a.js"), "abc").unwrap();
@@ -615,6 +624,7 @@ pub(crate) mod tests {
         let server = tokio::spawn(serve(bind(&paths.socket()).unwrap(), driver.clone()));
         let ask = |request| run(&paths, request);
         let counted = Response::GitignoreOnly {
+            space_id: SPACE.into(),
             files: 1,
             bytes: 3,
             unreadable: Vec::new(),
@@ -625,7 +635,7 @@ pub(crate) mod tests {
             Response::Gitignore { follows: true }
         );
         let count = || Request::GitignoreOnly {
-            folder: root.clone(),
+            of: GitignoreFolder::Space(SPACE.into()),
         };
         assert_eq!(ask(count()).await.unwrap(), counted);
         for already in [false, true] {
@@ -643,15 +653,54 @@ pub(crate) mod tests {
         );
         assert_eq!(ask(count()).await.unwrap(), counted);
         let not_linked = Request::GitignoreOnly {
-            folder: root.join("node_modules"),
+            of: GitignoreFolder::Space("0190f0a0-0000-7000-8000-000000000002".into()),
         };
         let error = ask(not_linked).await.unwrap_err();
         assert!(
-            error.message.ends_with("is not a linked folder"),
+            error
+                .message
+                .starts_with("no linked folder syncs the space"),
             "{}",
             error.message
         );
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn queued_gitignore_requests_each_report_whether_they_changed_the_setting() {
+        let (_dir, paths, _root) = linked_profile();
+        koidrive_driver::Credential {
+            server: "https://files.example.com/".into(),
+            user_id: "u1".into(),
+            user_name: None,
+            device_id: "d1".into(),
+            device_name: "Mac".into(),
+            refresh_credential: "not-a-secret".into(),
+        }
+        .save_new(&paths.credential())
+        .unwrap();
+        let driver = Driver::open(paths).unwrap();
+        driver.start();
+        let set = |follow| handle(&driver, Request::SetGitignore { follow });
+        let mut queued = [
+            Box::pin(set(false)),
+            Box::pin(set(true)),
+            Box::pin(set(false)),
+        ];
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        for request in &mut queued {
+            assert!(request.as_mut().poll(&mut context).is_pending());
+        }
+        let mut reported = Vec::new();
+        for request in queued {
+            reported.push(request.await);
+        }
+        let changed = |follows| Response::GitignoreSet {
+            follows,
+            already: false,
+        };
+        assert_eq!(reported, [changed(false), changed(true), changed(false)]);
+        driver.stop().await;
     }
 
     #[tokio::test]
@@ -1040,6 +1089,31 @@ pub(crate) mod tests {
             })
             .unwrap();
         (dir, paths, root)
+    }
+
+    pub(crate) fn linked_at(paths: &Paths, space_id: &str, root: &Path) {
+        let marker = koidrive_fs::Marker {
+            space_id: space_id.into(),
+            effects: 0,
+            token: None,
+        };
+        koidrive_fs::write_marker(root, &marker).unwrap();
+        let store = paths.store(space_id).unwrap();
+        fs::create_dir_all(store.parent().unwrap()).unwrap();
+        let link = koidrive_store::Link {
+            space_id: space_id.into(),
+            space_name: "Projects".into(),
+            root: root.to_path_buf(),
+            root_dev: std::os::unix::fs::MetadataExt::dev(&fs::metadata(root).unwrap()),
+            root_volume: None,
+            server_url: "https://files.example.com/".into(),
+            device_id: "d1".into(),
+            linked_at_ms: 1,
+            found_marker: false,
+        };
+        (koidrive_store::Store::open(store).unwrap())
+            .transaction(|tx| tx.set_link(&link))
+            .unwrap();
     }
 
     #[tokio::test]

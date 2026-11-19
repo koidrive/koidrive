@@ -187,11 +187,15 @@ impl Config {
                 });
             }
         };
+        Config::parse(path, &text)
+    }
+
+    pub(crate) fn parse(path: &Path, text: &str) -> Result<Self, ConfigError> {
         let invalid = |reason: String| ConfigError::Invalid {
             path: path.to_path_buf(),
             reason,
         };
-        let config: Config = toml::from_str(&text).map_err(|err| invalid(err.to_string()))?;
+        let config: Config = toml::from_str(text).map_err(|err| invalid(err.to_string()))?;
         config.sync.lines().map_err(invalid)?;
         Ok(config)
     }
