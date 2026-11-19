@@ -144,6 +144,10 @@ fn a_read_refuses_to_write() {
     let mut store = Store::open(dir.path().join("state.db")).unwrap();
     let cursor = unsynced_cursor();
     assert!(store.read(|tx| tx.set_cursor(&cursor)).is_err());
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        store.read(|_| -> Result<(), Error> { panic!("a reader panics") })
+    }));
+    assert!(panicked.is_err());
     store.transaction(|tx| tx.set_cursor(&cursor)).unwrap();
     assert_eq!(store.read(|tx| tx.cursor()).unwrap(), Some(cursor));
 }

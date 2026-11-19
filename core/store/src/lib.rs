@@ -379,22 +379,15 @@ impl Store {
         &mut self,
         f: impl FnOnce(&Tx<'_>) -> Result<T, E>,
     ) -> Result<T, E> {
-        self.conn
-            .pragma_update(None, "query_only", true)
-            .map_err(Error::from)?;
-        let read = (|| {
-            let tx = Tx(self
-                .conn
-                .transaction_with_behavior(TransactionBehavior::Deferred)
-                .map_err(Error::from)?);
-            let value = f(&tx)?;
-            tx.0.commit().map_err(Error::from)?;
-            Ok(value)
-        })();
-        self.conn
-            .pragma_update(None, "query_only", false)
-            .map_err(Error::from)?;
-        read
+        let _query_only = QueryOnly::set(&self.conn)?;
+        let tx = Tx(rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            TransactionBehavior::Deferred,
+        )
+        .map_err(Error::from)?);
+        let value = f(&tx)?;
+        tx.0.commit().map_err(Error::from)?;
+        Ok(value)
     }
 }
 
@@ -456,6 +449,21 @@ fn migrate(conn: &mut Connection, written_ns: Option<i128>) -> Result<()> {
         tx.commit()?;
     }
     Ok(())
+}
+
+struct QueryOnly<'a>(&'a Connection);
+
+impl<'a> QueryOnly<'a> {
+    fn set(conn: &'a Connection) -> Result<Self> {
+        conn.pragma_update(None, "query_only", true)?;
+        Ok(Self(conn))
+    }
+}
+
+impl Drop for QueryOnly<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.pragma_update(None, "query_only", false);
+    }
 }
 
 /// An open transaction. Obtain one with [`Store::transaction`].
