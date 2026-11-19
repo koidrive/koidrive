@@ -183,7 +183,7 @@ pub enum Change {
 pub struct Changes {
     changed: watch::Receiver<()>,
     progressed: watch::Receiver<()>,
-    last: Option<Instant>,
+    last: Option<tokio::time::Instant>,
     pending: bool,
 }
 
@@ -208,7 +208,7 @@ impl Changes {
             let state = tokio::select! {
                 biased;
                 changed = self.changed.changed() => changed.map(|()| true)?,
-                () = tokio::time::sleep_until(due.into()) => false,
+                () = tokio::time::sleep_until(due) => false,
             };
             if state {
                 return Ok(self.returned(Change::State));
@@ -220,7 +220,7 @@ impl Changes {
     fn returned(&mut self, change: Change) -> Change {
         self.pending = false;
         self.progressed.mark_unchanged();
-        self.last = Some(Instant::now());
+        self.last = Some(tokio::time::Instant::now());
         change
     }
 }
