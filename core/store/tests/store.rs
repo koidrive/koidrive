@@ -3267,7 +3267,7 @@ fn an_upgrade_bounds_change_times_by_the_last_write_before_it_on_every_open() {
 
 #[test]
 fn a_store_whose_files_are_not_files_is_refused_without_waiting_on_them() {
-    for companion in ["", "-wal", "-shm"] {
+    for companion in ["", "-wal", "-shm", "-journal"] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store.sqlite");
         drop(Store::open(&path).unwrap());

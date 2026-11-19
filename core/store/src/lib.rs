@@ -1175,7 +1175,7 @@ fn read_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<CachedChunk> {
 }
 
 fn refuse_non_files(path: &Path) -> Result<()> {
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", "-journal"] {
         let mut file = path.as_os_str().to_owned();
         file.push(suffix);
         let file = PathBuf::from(file);
