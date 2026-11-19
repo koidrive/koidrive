@@ -309,7 +309,7 @@ async fn watchers_wake_when_status_or_questions_change() {
     assert!(watch.has_changed().unwrap());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn progress_alone_wakes_a_watcher_at_most_once_an_interval_and_a_state_change_at_once() {
     let dir = tempfile::tempdir().unwrap();
     let driver = Driver::open(Paths::under(dir.path())).unwrap();
@@ -319,7 +319,7 @@ async fn progress_alone_wakes_a_watcher_at_most_once_an_interval_and_a_state_cha
 
     let progressed = driver.inner.progressed.clone();
     let marking = tokio::spawn(async move {
-        let started = Instant::now();
+        let started = tokio::time::Instant::now();
         let mut marks = 0;
         while started.elapsed() < Duration::from_secs(1) {
             progressed.send_replace(());
@@ -328,19 +328,18 @@ async fn progress_alone_wakes_a_watcher_at_most_once_an_interval_and_a_state_cha
         }
         marks
     });
-    let started = Instant::now();
-    let mut wakes: u128 = 0;
+    let started = tokio::time::Instant::now();
+    let mut woke = Vec::new();
     while started.elapsed() < Duration::from_secs(1) {
         assert_eq!(changes.next().await.unwrap(), Change::Progress);
-        wakes += 1;
+        woke.push(started.elapsed());
     }
-    let elapsed = started.elapsed();
     let marks = marking.await.unwrap();
-    let most = 1 + elapsed.as_millis() / PROGRESS_INTERVAL.as_millis();
-    assert!(marks > 100, "{marks} marks");
-    assert!(
-        (3..=most).contains(&wakes),
-        "{wakes} wakes for {marks} marks in {elapsed:?}"
+    assert_eq!(marks, 1000);
+    assert_eq!(
+        woke,
+        [0, 1, 2, 3, 4].map(|n| PROGRESS_INTERVAL * n),
+        "{marks} marks"
     );
 
     driver.inner.progressed.send_replace(());
@@ -349,14 +348,14 @@ async fn progress_alone_wakes_a_watcher_at_most_once_an_interval_and_a_state_cha
         tokio::time::sleep(Duration::from_millis(20)).await;
         changed.send_replace(());
     });
-    let asked = Instant::now();
+    let asked = tokio::time::Instant::now();
     assert_eq!(changes.next().await.unwrap(), Change::State);
-    assert!(asked.elapsed() < PROGRESS_INTERVAL, "{:?}", asked.elapsed());
+    assert_eq!(asked.elapsed(), Duration::from_millis(20));
     let after = tokio::time::timeout(Duration::from_secs(1), changes.next()).await;
     assert!(after.is_err(), "the state change took the progress with it");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_progress_change_waiting_out_the_interval_survives_a_dropped_wait() {
     let dir = tempfile::tempdir().unwrap();
     let driver = Driver::open(Paths::under(dir.path())).unwrap();
