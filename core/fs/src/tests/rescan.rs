@@ -860,7 +860,6 @@ fn swaps_through_a_temporary_name_during_scans_publish_only_renames_and_settle_t
     }
 }
 
-
 #[test]
 fn a_folder_renamed_over_its_moved_out_child_reports_the_child_removed() {
     let scopes: [&[&str]; 3] = [&[""], &["s/a"], &["s/a/s", "s/s", "s/a"]];
@@ -872,7 +871,9 @@ fn a_folder_renamed_over_its_moved_out_child_reports_the_child_removed() {
             let mut snapshot = Snapshot::scan(root).unwrap();
             fs::rename(root.join("s/a/s"), root.join("s/s")).unwrap();
             fs::rename(root.join("s/a"), root.join("s/s")).unwrap();
-            let rescan = snapshot.rescan(root, scope.iter().map(PathBuf::from)).unwrap();
+            let rescan = snapshot
+                .rescan(root, scope.iter().map(PathBuf::from))
+                .unwrap();
             assert_eq!(
                 (rescan.changes, rescan.unsettled),
                 (
@@ -891,7 +892,11 @@ fn a_folder_renamed_over_its_moved_out_child_reports_the_child_removed() {
                 ),
                 "{scope:?}"
             );
-            assert_eq!(snapshot.entries, Snapshot::scan(root).unwrap().entries, "{scope:?}");
+            assert_eq!(
+                snapshot.entries,
+                Snapshot::scan(root).unwrap().entries,
+                "{scope:?}"
+            );
         }
     }
 }
