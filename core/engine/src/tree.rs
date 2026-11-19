@@ -162,8 +162,22 @@ impl<K: fmt::Debug> fmt::Debug for CountedSet<K> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct CountedMap<K, V>(BTreeMap<K, V>);
+
+impl<K: Clone, V: Clone> Clone for CountedMap<K, V> {
+    fn clone(&self) -> Self {
+        read_entries(self.0.len());
+        Self(self.0.clone())
+    }
+}
+
+impl<K: PartialEq, V: PartialEq> PartialEq for CountedMap<K, V> {
+    fn eq(&self, other: &Self) -> bool {
+        read_entries(self.0.len().min(other.0.len()));
+        self.0 == other.0
+    }
+}
 
 impl<K, V> Default for CountedMap<K, V> {
     fn default() -> Self {

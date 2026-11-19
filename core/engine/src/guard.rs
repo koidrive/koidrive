@@ -269,7 +269,7 @@ impl Guard {
             }
             Some(question) if question.answer == Some(Answer::Restore) => {
                 let answered: BTreeSet<&NodeId> = question.holds().collect();
-                let (restored, left): (BTreeSet<NodeId>, BTreeSet<NodeId>) = (open.values())
+                let (restored, left): (TrackedSet<NodeId>, TrackedSet<NodeId>) = (open.values())
                     .flat_map(|held| held.members.keys().cloned())
                     .partition(|node| answered.contains(node));
                 self.ledger.retain(|top, _| !open.contains_key(top));
@@ -404,7 +404,7 @@ fn not_after<K: Ord + Clone>(counts: &mut TrackedMap<K, Counted>, now_ms: u64) {
     }
 }
 
-pub(crate) fn deletions(trees: &Trees, deleted: &BTreeSet<NodeId>) -> BTreeMap<NodeId, Held> {
+pub(crate) fn deletions(trees: &Trees, deleted: &TrackedSet<NodeId>) -> BTreeMap<NodeId, Held> {
     let mut children: BTreeMap<&NodeId, Vec<&NodeId>> = BTreeMap::new();
     let mut tops = Vec::new();
     for id in deleted {

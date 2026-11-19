@@ -1040,7 +1040,7 @@ impl Commits {
             .position(|question| question.kind == QuestionKind::AmbiguousDisappearance);
         let asked = index.map(|index| self.questions.get_mut().remove(index));
         let at = index.unwrap_or(self.questions.len());
-        let mut open = guard::deletions(trees, &trees.missing().to_set());
+        let mut open = guard::deletions(trees, trees.missing());
         match asked {
             Some(question) if question.held == open && question.answer.is_none() => {
                 self.questions.get_mut().insert(at, question);
@@ -1076,7 +1076,7 @@ impl Commits {
                 for (id, shape) in update_synced(trees, updates) {
                     trees.wait(id, shape, Origin::Other);
                 }
-                open = guard::deletions(trees, &trees.missing().to_set());
+                open = guard::deletions(trees, trees.missing());
             }
             _ => {}
         }
@@ -1575,7 +1575,7 @@ impl Commits {
                 self.given_up_nodes.remove(&id);
             }
         }
-        let mut deleted = (trees.dirty_others().iter())
+        let mut deleted: BTreeSet<NodeId> = (trees.dirty_others().iter())
             .filter(|id| {
                 !skip.contains(*id)
                     && !self.given_up_nodes.contains_key(*id)
@@ -1587,7 +1587,7 @@ impl Commits {
         deleted.retain(|id| {
             trees.synced().live(id).is_some() && !self.given_up_nodes.contains_key(id)
         });
-        let pending = guard::deletions(trees, &deleted);
+        let pending = guard::deletions(trees, &deleted.into());
         let given_up_files = self.given_up_files(trees);
         let checked = (self.guard).check(&mut asked, pending, trees, given_up_files, ids, now_ms);
         skip.extend(checked.held);
@@ -3371,7 +3371,7 @@ fn deleted_bytes<'a>(trees: &Trees, members: impl IntoIterator<Item = &'a NodeId
         .sum()
 }
 
-fn built_in_below(trees: &Trees, problems: &BTreeSet<NodeId>, deleted: &mut BTreeSet<NodeId>) {
+fn built_in_below(trees: &Trees, problems: &TrackedSet<NodeId>, deleted: &mut BTreeSet<NodeId>) {
     let mut below: Vec<NodeId> = deleted.iter().cloned().collect();
     while let Some(id) = below.pop() {
         let built_in: Vec<NodeId> = (trees.remote_children(&id))
