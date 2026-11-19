@@ -1853,7 +1853,14 @@ fn run_ignoring_answering_after(
                         after.same_position(&local.shape)
                             || remote.is_some_and(|remote| remote.same_position(after))
                     }
-                    None => remote.is_none(),
+                    None => {
+                        let discarded = device.trees.state().discarded;
+                        let taken_along = std::iter::successors(Some(&local.shape.parent), |id| {
+                            device.trees.local().get(id).map(|node| &node.shape.parent)
+                        })
+                        .any(|id| discarded.contains_key(id));
+                        remote.is_none() && (local.parked || taken_along)
+                    }
                 };
                 prop_assert!(
                     left_or_taken_to_r,
