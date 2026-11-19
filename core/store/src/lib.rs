@@ -45,6 +45,15 @@ use prost::Message;
 pub use restore::AskedRestore;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
+macro_rules! next_row {
+    ($rows:ident, $abandoned:ident) => {
+        match $rows.next()? {
+            Some(_) if $abandoned() => return Ok(false),
+            row => row,
+        }
+    };
+}
+
 mod engine;
 mod questions;
 mod restore;

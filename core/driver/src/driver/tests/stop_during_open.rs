@@ -97,14 +97,22 @@ async fn pauses_and_resumes_never_load_twice_at_once(hook: &Mutex<BTreeMap<PathB
     linked(&paths, &root, "d1");
     let store = paths.store(SPACE).unwrap();
     let parked = Arc::new(AtomicBool::new(true));
+    let probed = Arc::new(AtomicBool::new(false));
     let (entered, loading) = mpsc::channel();
     hook.lock().unwrap().insert(
         store.clone(),
         Box::new({
-            let parked = parked.clone();
-            move |_: &dyn Fn() -> bool| {
+            let (parked, probed) = (parked.clone(), probed.clone());
+            move |abandoned: &dyn Fn() -> bool| {
                 entered.send(()).unwrap();
-                std::thread::sleep(Duration::from_millis(500));
+                let until = |done: &dyn Fn() -> bool, within: Duration| {
+                    let deadline = Instant::now() + within;
+                    while !done() && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                };
+                until(abandoned, Duration::from_secs(30));
+                until(&|| probed.load(Ordering::SeqCst), Duration::from_secs(2));
                 parked.store(false, Ordering::SeqCst);
             }
         }),
@@ -117,7 +125,10 @@ async fn pauses_and_resumes_never_load_twice_at_once(hook: &Mutex<BTreeMap<PathB
         store.clone(),
         Box::new({
             let parked = parked.clone();
-            move |_: &dyn Fn() -> bool| again.send(parked.load(Ordering::SeqCst)).unwrap()
+            move |_: &dyn Fn() -> bool| {
+                again.send(parked.load(Ordering::SeqCst)).unwrap();
+                probed.store(true, Ordering::SeqCst);
+            }
         }),
     );
 

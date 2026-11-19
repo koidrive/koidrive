@@ -15,17 +15,26 @@ use crate::{Error, Result, Tx, decode};
 type HeldBy = BTreeMap<String, BTreeMap<NodeId, Held>>;
 
 impl Tx<'_> {
-    pub(crate) fn open_questions(&self) -> Result<Vec<Question>> {
-        let mut held = self.held(
+    pub(crate) fn open_questions(
+        &self,
+        questions: &mut Vec<Question>,
+        abandoned: &mut dyn FnMut() -> bool,
+    ) -> Result<bool> {
+        let mut held = HeldBy::new();
+        if !self.held(
+            &mut held,
             "SELECT question_id, top_id, files FROM open_question_items",
             "SELECT question_id, top_id, node_id, content_rev, meta_rev FROM open_question_members",
-        )?;
+            abandoned,
+        )? {
+            return Ok(false);
+        }
         let mut shown: BTreeMap<String, BTreeMap<NodeId, Shape>> = BTreeMap::new();
         let mut stmt = self.0.prepare_cached(
             "SELECT question_id, node_id, parent_id, name, kind, content FROM open_question_shapes",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let shape = Shape {
                 parent: NodeId::from(row.get::<_, String>(2)?),
                 name: row.get(3)?,
@@ -39,8 +48,7 @@ impl Tx<'_> {
             "SELECT question_id, asked_at_ms, kind, answer FROM open_questions ORDER BY position",
         )?;
         let mut rows = stmt.query([])?;
-        let mut questions = Vec::new();
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let id: String = row.get(0)?;
             let kind = serde_json::from_str::<QuestionKind>(&row.get::<_, String>(2)?).map_err(
                 |error| {
@@ -67,7 +75,7 @@ impl Tx<'_> {
                 "items held by an unknown question {id:?}"
             )));
         }
-        Ok(questions)
+        Ok(true)
     }
 
     pub(crate) fn set_open_questions(&self, questions: &[Question]) -> Result<()> {
@@ -130,13 +138,16 @@ impl Tx<'_> {
         Ok(())
     }
 
-    pub(crate) fn guard(&self) -> Result<GuardState> {
-        let mut guard = GuardState::default();
+    pub(crate) fn guard(
+        &self,
+        guard: &mut GuardState,
+        abandoned: &mut dyn FnMut() -> bool,
+    ) -> Result<bool> {
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id, at_ms, files FROM guard_ledger")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let counted = Counted {
                 at_ms: row.get(1)?,
                 files: row.get(2)?,
@@ -145,16 +156,21 @@ impl Tx<'_> {
                 .ledger
                 .insert(NodeId::from(row.get::<_, String>(0)?), counted);
         }
-        let mut confirmed = self.held(
+        let mut confirmed = HeldBy::new();
+        if !self.held(
+            &mut confirmed,
             "SELECT '', top_id, files FROM guard_confirmed",
             "SELECT '', top_id, node_id, content_rev, meta_rev FROM guard_confirmed_members",
-        )?;
+            abandoned,
+        )? {
+            return Ok(false);
+        }
         guard.confirmed = confirmed.remove("").unwrap_or_default();
         let mut stmt = self
             .0
             .prepare_cached("SELECT limit_crossed FROM guard_confirmed_limits")?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let name: String = row.get(0)?;
             let limit = serde_json::from_value::<Limit>(serde_json::Value::String(name))
                 .map_err(|error| Error::InvalidEngineState(format!("unknown limit: {error}")))?;
@@ -164,7 +180,7 @@ impl Tx<'_> {
             "SELECT top_id, known, trash_group, trashed_seq, at_ms, files FROM guard_remote",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let deletion = RemoteDeletion {
                 top: NodeId::from(row.get::<_, String>(0)?),
                 trash: trash(row.get(1)?, row.get(2)?, row.get(3)?),
@@ -179,13 +195,13 @@ impl Tx<'_> {
             "SELECT top_id, known, trash_group, trashed_seq FROM guard_remote_dismissed",
         )?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             guard.dismissed.insert(RemoteDeletion {
                 top: NodeId::from(row.get::<_, String>(0)?),
                 trash: trash(row.get(1)?, row.get(2)?, row.get(3)?),
             });
         }
-        Ok(guard)
+        Ok(true)
     }
 
     pub(crate) fn write_guard(&self, changes: &GuardChanges) -> Result<()> {
@@ -279,11 +295,16 @@ impl Tx<'_> {
         Ok(())
     }
 
-    fn held(&self, items: &str, members: &str) -> Result<HeldBy> {
-        let mut held = HeldBy::new();
+    fn held(
+        &self,
+        held: &mut HeldBy,
+        items: &str,
+        members: &str,
+        abandoned: &mut dyn FnMut() -> bool,
+    ) -> Result<bool> {
         let mut stmt = self.0.prepare_cached(items)?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let item = Held {
                 members: BTreeMap::new(),
                 files: row.get(2)?,
@@ -294,7 +315,7 @@ impl Tx<'_> {
         }
         let mut stmt = self.0.prepare_cached(members)?;
         let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
+        while let Some(row) = next_row!(rows, abandoned) {
             let (owner, top): (String, NodeId) =
                 (row.get(0)?, NodeId::from(row.get::<_, String>(1)?));
             let item = (held.get_mut(&owner))
@@ -305,7 +326,7 @@ impl Tx<'_> {
             item.members
                 .insert(NodeId::from(row.get::<_, String>(2)?), revisions(row)?);
         }
-        Ok(held)
+        Ok(true)
     }
 }
 

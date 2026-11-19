@@ -1726,6 +1726,33 @@ fn an_effect_record_from_before_staged_identities_loads_without_one() {
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), state);
 }
 
+#[test]
+fn an_abandoned_engine_state_read_stops_in_every_commit_part() {
+    let full = engine_state().commits;
+    let parts: [fn(&mut CommitsState, &CommitsState); 5] = [
+        |part, full| part.in_flight = full.in_flight.clone(),
+        |part, full| part.restores = full.restores.clone(),
+        |part, full| part.questions = full.questions[2..].to_vec(),
+        |part, full| part.guard.ledger = full.guard.ledger.clone(),
+        |part, full| part.guard.confirmed = full.guard.confirmed.clone(),
+    ];
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path().join("state.db")).unwrap();
+    store
+        .transaction(|tx| {
+            assert!(tx.engine_state_unless(&mut EngineState::default(), &mut || true)?);
+            for fill in parts {
+                let mut state = EngineState::default();
+                fill(&mut state.commits, &full);
+                tx.set_engine_state(&state)?;
+                let read = tx.engine_state_unless(&mut EngineState::default(), &mut || true)?;
+                assert!(!read, "{:?}", state.commits);
+            }
+            Ok::<_, Error>(())
+        })
+        .unwrap();
+}
+
 fn count_writes_to_every_table(path: &Path) {
     let conn = Connection::open(path).unwrap();
     let tables = tables(&conn);

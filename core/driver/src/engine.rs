@@ -691,11 +691,11 @@ impl Engine {
         let mut pending = vec![(PathBuf::new(), local.root.clone())];
         let mut walked = 0;
         while let Some((path, id)) = pending.pop() {
-            walked += 1;
-            if walked % CHECK_EVERY == 0 && abandoned() {
-                return None;
-            }
             for child in self.trees.local_children(&id) {
+                walked += 1;
+                if walked % CHECK_EVERY == 0 && abandoned() {
+                    return None;
+                }
                 let Some(node) = local.get(child) else {
                     continue;
                 };
