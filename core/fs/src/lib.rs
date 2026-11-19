@@ -691,6 +691,8 @@ enum Cut<'a> {
     Stating(&'a Path),
     #[cfg(target_os = "macos")]
     Locating(&'a Path),
+    #[cfg(target_os = "macos")]
+    Located(&'a Path),
 }
 
 /// The entries one rescan observed, and the parts of the snapshot they replace.
@@ -1452,7 +1454,7 @@ impl Snapshot {
             let links = (links.get(&(entry.id, entry.kind))).map_or(&[][..], Vec::as_slice);
             #[cfg(target_os = "macos")]
             (scan.cut)(Cut::Locating(path));
-            match whereabouts(dir.as_fd(), dev, entry, links) {
+            match whereabouts(dir.as_fd(), dev, entry, links, &mut *scan.cut) {
                 Whereabouts::At(at) if blocked(&at) => {
                     hidden.push(path.clone());
                     moved = Some(path);
@@ -1827,10 +1829,15 @@ impl Snapshot {
             })
             .flat_map(|(first, second)| [first, second])
             .collect();
-        fresh.extend(moving.into_iter().filter(|path| {
-            (scan.new.get(path))
-                .is_some_and(|now| !old.get(path).is_some_and(|before| before.id.same(&now.id)))
-        }));
+        fresh.extend(
+            (moving.iter())
+                .filter(|path| {
+                    (scan.new.get(*path)).is_some_and(|now| {
+                        !old.get(*path).is_some_and(|before| before.id.same(&now.id))
+                    })
+                })
+                .cloned(),
+        );
         if !vanished.is_empty() {
             let (found, unsure) = missed_moves(
                 again.as_fd(),
@@ -2101,7 +2108,7 @@ impl Snapshot {
                 .cloned()
                 .collect();
             let proven = hidden.contains(&path);
-            if (proven && !occupant.is_empty())
+            if (proven && !moving.contains(&path) && !occupant.is_empty())
                 || moves.iter().any(|(_, to)| to.starts_with(&place))
                 || (occupant.iter())
                     .any(|inside| !inside.ancestors().any(|above| created.contains(above)))
@@ -2626,7 +2633,13 @@ enum Whereabouts {
     Nowhere,
 }
 
-fn whereabouts(root: BorrowedFd<'_>, root_dev: u64, entry: &Entry, links: &[&Path]) -> Whereabouts {
+fn whereabouts(
+    root: BorrowedFd<'_>,
+    root_dev: u64,
+    entry: &Entry,
+    links: &[&Path],
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] cut: &mut dyn FnMut(Cut<'_>),
+) -> Whereabouts {
     let is_it = |stat: &Stat| {
         stat.dev == root_dev
             && (stat.entry()).is_some_and(|now| now.id.same(&entry.id) && now.kind == entry.kind)
@@ -2640,6 +2653,8 @@ fn whereabouts(root: BorrowedFd<'_>, root_dev: u64, entry: &Entry, links: &[&Pat
     if private(Path::new(""), rel.iter().next().unwrap_or_default()) {
         return Whereabouts::Nowhere;
     }
+    #[cfg(target_os = "macos")]
+    cut(Cut::Located(&rel));
     match stat_rel(root, &rel) {
         Ok(stat) if is_it(&stat) && links.contains(&rel.as_path()) => Whereabouts::Nowhere,
         Ok(stat) if is_it(&stat) => Whereabouts::At(rel),

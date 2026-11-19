@@ -996,3 +996,144 @@ fn a_swap_seen_halfway_by_a_scoped_rescan_is_not_read_as_a_move_over_the_other_f
         ]
     );
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_file_still_moving_out_of_a_renamed_folder_is_held_over_a_file_at_its_carried_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for folder in ["a", "c"] {
+        fs::create_dir(root.join(folder)).unwrap();
+    }
+    fs::write(root.join("a/x"), "x").unwrap();
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    fs::rename(root.join("a"), root.join("b")).unwrap();
+    fs::rename(root.join("b/x"), root.join("c/x")).unwrap();
+    fs::write(root.join("b/x"), "y").unwrap();
+    let mut again = Some(());
+    let scopes = [PathBuf::from("a"), PathBuf::from("b")];
+    let rescan = snapshot
+        .rescan_with(root, scopes, None, &mut |cut| {
+            if matches!(cut, Cut::Located(at) if at == Path::new("c/x")) && again.take().is_some() {
+                fs::rename(root.join("c/x"), root.join("c/w")).unwrap();
+            }
+        })
+        .unwrap();
+    assert_eq!(
+        (rescan.changes, rescan.unsettled.clone()),
+        (
+            vec![Change::Renamed {
+                from: "a".into(),
+                to: "b".into(),
+                kind: EntryKind::Dir,
+            }],
+            vec![PathBuf::from("b/x")]
+        )
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn settle_and_compare(snapshot: &mut Snapshot, root: &Path, first: Rescan) -> Vec<Change> {
+    let mut changes = first.changes;
+    let mut unsettled = first.unsettled;
+    for _ in 0..4 {
+        if unsettled.is_empty() {
+            break;
+        }
+        let rescan = snapshot.rescan(root, unsettled).unwrap();
+        changes.extend(rescan.changes);
+        unsettled = rescan.unsettled;
+    }
+    let whole = snapshot.rescan(root, [PathBuf::new()]).unwrap();
+    let ids = |entries: &BTreeMap<PathBuf, Entry>| -> Vec<(PathBuf, u128)> {
+        (entries.iter())
+            .map(|(path, entry)| (path.clone(), entry.id.ino))
+            .collect()
+    };
+    assert_eq!(
+        (
+            unsettled,
+            whole.changes,
+            whole.unsettled,
+            ids(&snapshot.entries)
+        ),
+        (
+            vec![],
+            vec![],
+            vec![],
+            ids(&Snapshot::scan(root).unwrap().entries)
+        ),
+        "{changes:?}"
+    );
+    changes
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_file_still_moving_out_of_a_folder_renamed_onto_a_removed_folder_is_not_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for folder in ["a", "b", "c"] {
+        fs::create_dir(root.join(folder)).unwrap();
+    }
+    fs::write(root.join("a/x"), "x").unwrap();
+    fs::write(root.join("b/x"), "z").unwrap();
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    fs::remove_file(root.join("b/x")).unwrap();
+    fs::remove_dir(root.join("b")).unwrap();
+    fs::rename(root.join("a"), root.join("b")).unwrap();
+    fs::rename(root.join("b/x"), root.join("c/x")).unwrap();
+    fs::write(root.join("b/x"), "y").unwrap();
+    let mut again = Some(());
+    let scopes = [PathBuf::from("a"), PathBuf::from("b")];
+    let first = snapshot
+        .rescan_with(root, scopes, None, &mut |cut| {
+            if matches!(cut, Cut::Located(at) if at == Path::new("c/x")) && again.take().is_some() {
+                fs::rename(root.join("c/x"), root.join("c/w")).unwrap();
+            }
+        })
+        .unwrap();
+    let changes = settle_and_compare(&mut snapshot, root, first);
+    assert!(
+        changes.contains(&Change::Renamed {
+            from: "a/x".into(),
+            to: "c/w".into(),
+            kind: EntryKind::File,
+        }),
+        "{changes:?}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_folder_still_moving_out_of_a_renamed_folder_keeps_a_child_the_scan_found_elsewhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for folder in ["a", "a/d", "c", "e", "f"] {
+        fs::create_dir(root.join(folder)).unwrap();
+    }
+    fs::write(root.join("a/d/k"), "k").unwrap();
+    fs::write(root.join("a/d/m"), "m").unwrap();
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    fs::rename(root.join("a"), root.join("b")).unwrap();
+    fs::rename(root.join("b/d/k"), root.join("f/k")).unwrap();
+    fs::rename(root.join("b/d"), root.join("c/d")).unwrap();
+    fs::create_dir(root.join("b/d")).unwrap();
+    fs::write(root.join("b/d/n"), "n").unwrap();
+    let mut again = Some(());
+    let scopes = [PathBuf::from("a"), PathBuf::from("b"), PathBuf::from("f")];
+    let first = snapshot
+        .rescan_with(root, scopes, None, &mut |cut| {
+            if matches!(cut, Cut::Located(at) if at == Path::new("c/d")) && again.take().is_some() {
+                fs::rename(root.join("c/d"), root.join("e/d")).unwrap();
+            }
+        })
+        .unwrap();
+    let changes = settle_and_compare(&mut snapshot, root, first);
+    for (from, to) in [("a/d/k", "f/k"), ("b/d", "e/d")] {
+        assert!(
+            (changes.iter()).any(|change| matches!(change, Change::Renamed { from: f, to: t, .. } if f.ends_with(from.rsplit('/').next().unwrap()) && t == Path::new(to))),
+            "{from} -> {to}: {changes:?}"
+        );
+    }
+}
