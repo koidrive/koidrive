@@ -3873,8 +3873,9 @@ pub(crate) fn changed_locally(trees: &Trees, id: &str) -> bool {
 
 /// What is left of a waiting S update. Its position is stale once R no longer has the node there
 /// and L has left it too: it then falls back to the position S holds, or to R's when S does not
-/// hold the node, so L's and R's positions are compared with the S they came from, as for any
-/// change both sides made. Its content stays, so the acknowledged content remains the base L's
+/// hold the node and the update belongs to a commit, so L's and R's positions are compared with the
+/// S they came from, as for any change both sides made. An update with no commit behind it for a
+/// node S does not hold stands in for S, such as a given-up node's base, and keeps its position. Its content stays, so the acknowledged content remains the base L's
 /// content is compared with. None when nothing is left: the update comes to what S holds, or
 /// neither L nor R holds the node. A removal of a node S still holds stays, even then and while R
 /// holds the node, only as long as what S holds under it leaves S with L's next commits
@@ -3895,8 +3896,8 @@ fn outstanding(
     let Some(mut left) = waiting else {
         return leaves_s(trees, id).then_some(None);
     };
-    let base = synced.is_none() && matches!(origin, Origin::Other);
-    if !base
+    let stands_for_s = synced.is_none() && matches!(origin, Origin::Other);
+    if !stands_for_s
         && !left.same_position(remote)
         && !local.is_some_and(|local| local.same_position(&left))
     {
