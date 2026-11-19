@@ -65,8 +65,7 @@ public final class GitignoreSettingModel {
 
     private var phase = Phase.idle
     public private(set) var count: GitignoreCount?
-    /// How many files stopped syncing when the switch was last turned on.
-    public private(set) var noLongerSyncing: UInt64?
+    private var stoppedSyncing: UInt64?
     public private(set) var failure: SessionError?
     @ObservationIgnored private var walk: Walk?
     @ObservationIgnored private var changes = 0
@@ -86,13 +85,16 @@ public final class GitignoreSettingModel {
         if case .applying(let follow) = phase { follow } else { nil }
     }
 
+    /// How many files stopped syncing when the switch was last turned on, while the setting stays on.
+    public var noLongerSyncing: UInt64? { app.followsGitignore ? stoppedSyncing : nil }
+
     public var follows: Bool { applying ?? app.followsGitignore }
 
     public func set(follow: Bool) async {
         guard phase == .idle, follow != app.followsGitignore else { return }
         changes += 1
         failure = nil
-        noLongerSyncing = nil
+        stoppedSyncing = nil
         if follow {
             await apply(true)
         } else {
@@ -166,7 +168,7 @@ public final class GitignoreSettingModel {
         let change = changes
         let fresh = await counted(startedAfterMs: Self.nowMs())
         if changes == change, let fresh {
-            noLongerSyncing = fresh.files
+            stoppedSyncing = fresh.files
         }
     }
 

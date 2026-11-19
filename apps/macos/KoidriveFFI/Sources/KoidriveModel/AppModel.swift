@@ -349,13 +349,15 @@ public final class AppModel {
     /// whichever way the setting is. Nil when a folder can't be counted in full or the caller is cancelled before the
     /// last folder. The count is as old as its oldest folder.
     public func gitignoreOnly() async -> GitignoreCount? {
+        let folders = state.folders
         var counts: [(name: String, only: GitignoreOnly)] = []
-        for folder in state.folders {
+        for folder in folders {
             let spaceID = folder.spaceId
             guard !Task.isCancelled, let only = try? await run({ try $0.gitignoreOnly(spaceId: spaceID) }),
                   only.unreadable.isEmpty else { return nil }
             counts.append((folder.spaceName, only))
         }
+        guard state.folders.map(\.spaceId) == folders.map(\.spaceId) else { return nil }
         return GitignoreCount(
             files: counts.reduce(0) { $0 + $1.only.files },
             bytes: counts.reduce(0) { $0 + $1.only.bytes },

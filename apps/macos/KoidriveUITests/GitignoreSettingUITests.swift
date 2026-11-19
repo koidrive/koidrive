@@ -35,6 +35,8 @@ final class GitignoreSettingUITests: XCTestCase {
         syncFiles.click()
         XCTAssert(syncFiles.waitForNonExistence(timeout: 10))
         XCTAssert(wait(for: follow, on: false))
+        let applying = window.staticTexts.matching(NSPredicate(format: "value BEGINSWITH %@ OR label BEGINSWITH %@", "Applying", "Applying")).firstMatch
+        XCTAssert(applying.waitForNonExistence(timeout: 10))
 
         follow.click()
         let stopped = text("55,026 files no longer sync from this Mac. They stay on this Mac and on the server.", in: window)

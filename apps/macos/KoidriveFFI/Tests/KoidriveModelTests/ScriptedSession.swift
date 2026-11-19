@@ -101,6 +101,10 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
         try run(.setGitignore) { try base.setGitignore(follow: follow) }
     }
 
+    override func linkFolder(spaceId: String, path: String) throws -> LinkedFolder {
+        try base.linkFolder(spaceId: spaceId, path: path)
+    }
+
     override func gitignoreOnly(spaceId: String) throws -> GitignoreOnly {
         var only = try run(.gitignoreOnly) { try base.gitignoreOnly(spaceId: spaceId) }
         only.unreadable += lock.withLock { unreadable }
