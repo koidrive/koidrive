@@ -100,10 +100,11 @@ impl<K: NameKey> GitIndex<K> {
     /// directory entry.
     pub fn lists(&self, path: &Path) -> Option<bool> {
         let answers = self.answers.as_ref()?;
+        let utf8 = path.to_str().is_some();
         let path = key::<K>(&path.as_os_str().to_string_lossy());
         let sparse =
             (path.match_indices('/')).any(|(end, _)| answers.sparse.contains(&path[..end]));
-        (!sparse).then(|| answers.listed.contains(&path))
+        (!sparse).then(|| utf8 && answers.listed.contains(&path))
     }
 
     /// The keys of the paths the index lists.

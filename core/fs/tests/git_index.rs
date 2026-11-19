@@ -328,16 +328,16 @@ fn an_unreadable_index_keeps_the_last_answers() {
 #[test]
 fn a_name_git_refuses_is_not_listed() {
     let dir = repo(&[]);
-    let names = b"../x /abs a//b a/./b dir/ dist/../../x .git/config a/.GIT/x bad\xff dist/ok.js";
+    let names = b"../x /abs a//b a/./b dir/ dist/../../x .git/config a/.GIT/x b\xff o\xef\xbf\xbd";
     let entries: Vec<(&[u8], u16)> = names
         .split(|byte| *byte == b' ')
         .map(|name| (name, 0))
         .collect();
     fs::write(dir.path().join(".git/index"), index(2, &entries, &[])).unwrap();
-    assert_eq!(
-        read(dir.path()).listed().collect::<Vec<_>>(),
-        ["dist/ok.js"]
-    );
+    let index = read(dir.path());
+    assert_eq!(index.listed().collect::<Vec<_>>(), ["o\u{fffd}"]);
+    let lossy = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"o\xff");
+    assert_eq!(index.lists(Path::new(lossy)), Some(false));
 }
 
 #[test]
