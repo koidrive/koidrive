@@ -1470,7 +1470,7 @@ impl Commits {
             })
             .cloned()
             .collect();
-        built_in_below(trees, &mut deleted);
+        built_in_below(trees, &self.problems, &mut deleted);
         deleted.retain(|id| trees.synced().live(id).is_some());
         let pending = guard::deletions(trees, &deleted);
         let given_up_files = self.given_up_files(trees);
@@ -3222,11 +3222,12 @@ fn deleted_bytes<'a>(trees: &Trees, members: impl IntoIterator<Item = &'a NodeId
         .sum()
 }
 
-fn built_in_below(trees: &Trees, deleted: &mut BTreeSet<NodeId>) {
+fn built_in_below(trees: &Trees, problems: &BTreeSet<NodeId>, deleted: &mut BTreeSet<NodeId>) {
     let mut below: Vec<NodeId> = deleted.iter().cloned().collect();
     while let Some(id) = below.pop() {
         let built_in: Vec<NodeId> = (trees.remote_children(&id))
             .filter(|child| trees.built_in(child) && trees.local().get(child).is_none())
+            .filter(|child| !problems.contains(*child))
             .cloned()
             .collect();
         for child in built_in {
@@ -4393,7 +4394,7 @@ fn plan(
             });
         }
     }
-    built_in_below(trees, &mut deleted);
+    built_in_below(trees, problems, &mut deleted);
     deleted.extend(given_up.keys().filter(|id| !skip.contains(*id)).cloned());
     let within = within.unwrap_or(wants.len());
     let mut scratch = Scratch::new(trees);

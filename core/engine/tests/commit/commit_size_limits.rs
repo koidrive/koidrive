@@ -815,15 +815,20 @@ fn on_server(id: &'static str, r: Shape) -> Row {
     (id, None, None, Some(remote(r)))
 }
 
-fn sent_after_a_refusal(trees: &mut Trees) -> Vec<Vec<op::Op>> {
+fn sent_after_a_refusal(trees: &mut Trees, rejected: &str) -> Vec<Vec<op::Op>> {
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let mut sent = vec![ops(&build(&mut commits, trees, &mut ids).unwrap())];
     commits
         .failed(trees, &refusal(error::Code::LimitExceeded, 0))
         .unwrap();
     while let Some(commit) = build(&mut commits, trees, &mut ids) {
-        for op in ops(&commit) {
+        let mut results = vec![outcome(op_result::Code::Applied); commit.ops.len()];
+        for (op, result) in ops(&commit).into_iter().zip(&mut results) {
             let mut below = match op {
+                op::Op::Delete(deleted) if deleted.node_id == rejected => {
+                    *result = outcome(op_result::Code::Rejected);
+                    continue;
+                }
                 op::Op::Delete(deleted) => vec![deleted.node_id],
                 op::Op::Move(moved) => {
                     let mut node = trees.remote().get(&moved.node_id).unwrap().clone();
@@ -844,15 +849,11 @@ fn sent_after_a_refusal(trees: &mut Trees) -> Vec<Vec<op::Op>> {
                 trees.set_remote(id, trashed(node.shape));
             }
         }
-        acknowledge(
-            &mut commits,
-            trees,
-            vec![outcome(op_result::Code::Applied); commit.ops.len()],
-        );
+        acknowledge(&mut commits, trees, results);
         sent.push(ops(&commit));
         assert!(sent.len() < 10, "{sent:?}");
     }
-    assert!(commits.problems().is_empty());
+    assert!(commits.problems().iter().all(|node| node == rejected));
     sent
 }
 
@@ -880,7 +881,7 @@ fn a_system_folder_only_the_server_holds_keeps_one_trash_group_when_deleted_in_p
     trees.settle(&Default::default());
     trees.remove_local("log");
     trees.remove_local("d");
-    let sent = sent_after_a_refusal(&mut trees);
+    let sent = sent_after_a_refusal(&mut trees, "");
     let groups: Vec<&str> = (sent[1..].iter().flatten())
         .filter_map(|op| match op {
             op::Op::Delete(deleted) => Some(deleted.trash_group.as_str()),
@@ -889,10 +890,8 @@ fn a_system_folder_only_the_server_holds_keeps_one_trash_group_when_deleted_in_p
         .collect();
     assert_eq!(groups.len(), 3, "{sent:?}");
     assert!(groups.iter().all(|group| *group == groups[0]), "{sent:?}");
-    assert_eq!(
-        (trees.remote().live("d").is_some(), trees.remote().live("t")),
-        (true, None)
-    );
+    assert!(trees.remote().live("d").is_some(), "{sent:?}");
+    assert!(trees.remote().live("t").is_none(), "{sent:?}");
 }
 
 #[test]
@@ -904,15 +903,10 @@ fn a_deleted_folder_leaves_a_system_folder_another_device_moved_out_of_it() {
         deleted_here("t", dir("d", ".Trashes"), dir("o", ".Trashes")),
         deleted_here("old", file("t", "old.docx", 2), file("t", "old.docx", 2)),
     ]);
-    let sent = sent_after_a_refusal(&mut trees);
+    let sent = sent_after_a_refusal(&mut trees, "");
     assert!(!deletes(&sent, "t") && !deletes(&sent, "old"), "{sent:?}");
-    assert_eq!(
-        (
-            trees.remote().live("d"),
-            trees.remote().live("old").is_some()
-        ),
-        (None, true)
-    );
+    assert!(trees.remote().live("d").is_none(), "{sent:?}");
+    assert!(trees.remote().live("old").is_some(), "{sent:?}");
 }
 
 #[test]
@@ -927,11 +921,19 @@ fn a_system_file_moved_out_of_a_deleted_folder_is_moved_and_never_deleted() {
             Some(remote(file("t", "o.docx", 2))),
         ),
     ]);
-    let sent = sent_after_a_refusal(&mut trees);
+    let sent = sent_after_a_refusal(&mut trees, "");
     assert_eq!(sent[0], [mv("old", ROOT, "o.docx"), delete("d")]);
     assert!(!deletes(&sent, "old"), "{sent:?}");
-    assert_eq!(
-        trees.remote().live("old").map(|old| old.parent.as_str()),
-        Some(ROOT)
-    );
+    assert_eq!(trees.remote().live("old").unwrap().parent, ROOT);
+}
+
+#[test]
+fn a_system_folder_the_server_rejects_waits_with_the_folder_deleted_above_it() {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "Disk")),
+        on_server("t", dir("d", ".Trashes")),
+    ]);
+    trees.remove_local("d");
+    let sent = sent_after_a_refusal(&mut trees, "t");
+    assert_eq!(sent.len(), 2, "{sent:?}");
 }
