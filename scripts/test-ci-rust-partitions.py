@@ -60,6 +60,7 @@ def sim_command(workflow):
     if len(builds) != 1 or len(runs) != 2:
         raise ValueError("The sim job must have one checked build, one listing and one execution command")
     listing, execution = runs
+    execution = execution[:execution.index("--")] if "--" in execution else execution
     if listing[listing.index("--") + 1:listing.index("--") + 2] != ["--list"] or listing[:listing.index("--")] != execution:
         raise ValueError("Inventory and execution must use identical Cargo arguments")
     if [arg for arg in builds[0] if arg != "--no-run" and not arg.startswith("--message-format=")] != execution:
