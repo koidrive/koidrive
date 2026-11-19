@@ -296,4 +296,36 @@ mod tests {
             [(SPACE.to_owned(), root.to_string_lossy().into_owned(), 1, 3)]
         );
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_folder_asked_for_while_it_is_being_unlinked_is_left_out() {
+        let (_dir, paths, root) = linked_profile();
+        linked_at(&paths, SPACE, &root);
+        let parked = (root.join(koidrive_fs::PRIVATE_DIR)).join(koidrive_fs::PARKED_DIR);
+        fs::create_dir_all(&parked).unwrap();
+        fs::write(parked.join("held.txt"), "held").unwrap();
+        let driver = Driver::open(paths.clone()).unwrap();
+        let store = paths.store(SPACE).unwrap();
+        let busy = rusqlite::Connection::open(&store).unwrap();
+        (busy.execute_batch("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE; COMMIT;")).unwrap();
+        let server = tokio::spawn(crate::ipc::serve(
+            bind(&paths.socket()).unwrap(),
+            driver.clone(),
+        ));
+        let unlinking = tokio::spawn({
+            let (driver, root) = (driver.clone(), root.clone());
+            async move { driver.unlink(&root).await.map(drop) }
+        });
+        while !store.with_file_name("unlinking").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let rows = counted(&paths, Some(&root)).await;
+        let still_linked = (driver.status().folders.iter()).any(|folder| folder.space_id == SPACE);
+        drop(busy);
+        unlinking.await.unwrap().unwrap();
+        server.abort();
+        assert!(still_linked);
+        assert_eq!(rows.unwrap().len(), 0);
+    }
 }

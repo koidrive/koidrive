@@ -267,25 +267,27 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
             })
         }
         Request::GitignoreOnly { of } => {
-            let listed = matches!(of, GitignoreFolder::Space(_));
             let driver = driver.clone();
             let count = move || {
                 let space_id = match of {
                     GitignoreFolder::Space(space_id) => space_id,
                     GitignoreFolder::Folder(folder) => driver.linked_space(&folder)?,
                 };
-                (driver.gitignore_only(&space_id)).map(|only| (space_id, only))
+                match driver.gitignore_only(&space_id) {
+                    Ok(only) => Ok(Response::GitignoreOnly {
+                        space_id,
+                        files: only.files,
+                        bytes: only.bytes,
+                        unreadable: only.unreadable,
+                    }),
+                    Err(DriverError::SpaceNotLinked(_)) => {
+                        Ok(Response::GitignoreUnlinked { space_id })
+                    }
+                    Err(error) => Err(error),
+                }
             };
             match tokio::task::spawn_blocking(count).await {
-                Ok(Err(DriverError::SpaceNotLinked(space_id))) if listed => {
-                    Ok(Response::GitignoreUnlinked { space_id })
-                }
-                Ok(counted) => counted.map(|(space_id, only)| Response::GitignoreOnly {
-                    space_id,
-                    files: only.files,
-                    bytes: only.bytes,
-                    unreadable: only.unreadable,
-                }),
+                Ok(answered) => answered,
                 Err(error) => {
                     return Response::from(CliError::from(format!(
                         "counting the files failed: {error}"
