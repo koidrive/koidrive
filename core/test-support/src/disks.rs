@@ -569,6 +569,7 @@ fn image_on(device: &str) -> Result<Option<PathBuf>, String> {
         fn CFRelease(object: *const c_void);
     }
 
+    const NO_DEVICE: i32 = 0xe000_02c0_u32 as i32;
     let name = device.strip_prefix("/dev/").unwrap_or(device);
     let node = Path::new("/dev").join(name);
     let name = CString::new(name).map_err(|error| error.to_string())?;
@@ -600,8 +601,14 @@ fn image_on(device: &str) -> Result<Option<PathBuf>, String> {
             let mut parent = 0;
             let status = IORegistryEntryGetParentEntry(entry, c"IOService".as_ptr(), &mut parent);
             IOObjectRelease(entry);
-            if status != 0 {
-                return Ok(None);
+            match status {
+                0 => {}
+                NO_DEVICE => return Ok(None),
+                status => {
+                    return Err(format!(
+                        "looking up the parent of {device} in the IO registry failed with {status:#x}"
+                    ));
+                }
             }
             entry = parent;
         }
