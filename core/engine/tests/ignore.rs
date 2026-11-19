@@ -5,8 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use koidrive_engine::classify::{Origin, Pending, Trees, Waiting};
 use koidrive_engine::commit::Commits;
 use koidrive_engine::effects::{self, Base, BatchLimit, Effect, Effects, Location, Stuck};
+use koidrive_engine::first_link::{History, Marks};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::{LocalRules, RuleFile, Source};
+use koidrive_engine::question::RecoveryCause;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
 use koidrive_proto::v1::{self as proto, op};
 
@@ -2307,7 +2309,11 @@ fn an_excluded_file_the_server_moves_keeps_its_synced_entry_while_its_place_in_r
 }
 
 fn excluded_folder_released_with_its_file() -> Trees {
-    let mut trees = trees(&[
+    excluded_folder_holding(&[])
+}
+
+fn excluded_folder_holding(more: &[Row]) -> Trees {
+    let rows = [
         incoming("far", dir(ROOT, "far")),
         (
             "x",
@@ -2316,7 +2322,8 @@ fn excluded_folder_released_with_its_file() -> Trees {
             Some(dir("far", "x")),
         ),
         synced("z", file("x", "g", 1)),
-    ]);
+    ];
+    let mut trees = trees(&[&rows[..], more].concat());
     let parked = LocalNode {
         parked: true,
         ..local(dir(ROOT, "x"), 2)
@@ -2349,4 +2356,256 @@ fn an_unchanged_excluded_file_takes_the_remote_edit_when_included_again() {
         trees.local().get("z").map(|node| &node.shape),
         Some(&file("x", "g", 9))
     );
+}
+
+#[test]
+fn an_excluded_folder_gives_up_its_synced_place_with_its_file_to_a_node_l_and_r_put_there() {
+    let trees = excluded_folder_released_with_its_file();
+    assert_eq!(trees.synced().live("y"), Some(&file(ROOT, "x", 2)));
+    assert_eq!(trees.synced().live("x"), None);
+    assert_eq!(trees.synced().live("z"), None);
+    assert!(!trees.work().iter().any(|(id, _)| id == "y"));
+}
+
+#[test]
+fn an_excluded_file_given_up_with_its_folder_downloads_again_once_its_copy_vanished_while_excluded()
+{
+    let mut trees = excluded_folder_released_with_its_file();
+    trees.remove_local("z");
+    trees.settle(&Default::default());
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
+    effects(&mut trees);
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(
+        trees.local().get("z").map(|node| &node.shape),
+        Some(&file("x", "g", 1))
+    );
+}
+
+#[test]
+fn an_excluded_file_edited_after_it_was_given_up_uploads_the_edit_once_included_again() {
+    let mut trees = excluded_folder_released_with_its_file();
+    let mut edited = trees.local().get("z").unwrap().clone();
+    edited.shape.content = Some(content(5));
+    trees.set_local_changed("z".into(), edited);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
+    effects(&mut trees);
+    let sent = ops(&mut trees);
+    assert!(
+        matches!(&sent[..], [op::Op::UpdateContent(update)] if update.node_id == "z"),
+        "{sent:?}"
+    );
+}
+
+#[test]
+fn an_excluded_folder_that_holds_an_included_node_keeps_its_synced_place() {
+    let moved_out = (
+        "k",
+        Some(file("x", "k", 3)),
+        Some(file("x", "k", 3)),
+        Some(file(ROOT, "k", 3)),
+    );
+    let trees = excluded_folder_holding(&[moved_out]);
+    assert!(!trees.ignored("k"));
+    assert_eq!(trees.synced().live("x"), Some(&dir(ROOT, "x")));
+    assert_eq!(trees.synced().live("z"), Some(&file("x", "g", 1)));
+    assert_eq!(trees.synced().live("y"), Some(&file("x", "f", 2)));
+}
+
+#[test]
+fn a_delete_refused_after_its_folder_was_given_up_is_sent_again_once_included() {
+    let mut trees = trees(&[
+        incoming("far", dir(ROOT, "far")),
+        (
+            "x",
+            Some(dir(ROOT, "x")),
+            Some(dir(ROOT, "x")),
+            Some(dir("far", "x")),
+        ),
+        synced("z", file("x", "g", 1)),
+    ]);
+    trees.remove_local("z");
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let built = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 7);
+    assert_eq!(
+        built.map(|c| c.ops[0].op.clone().unwrap()),
+        Some(delete("z"))
+    );
+    let parked = LocalNode {
+        parked: true,
+        ..local(dir(ROOT, "x"), 2)
+    };
+    trees.set_local("x".into(), parked);
+    trees.set_local("y".into(), local(file(ROOT, "x", 2), 4));
+    trees.set_synced("y".into(), Some(file("x", "f", 2)));
+    trees.set_remote("y".into(), remote(file(ROOT, "x", 2)));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/far/\n"));
+    trees.settle(&Default::default());
+    let head_moved = proto::Error {
+        code: proto::error::Code::HeadMoved as i32,
+        ..Default::default()
+    };
+    commits.failed(&mut trees, &head_moved).unwrap();
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
+    effects(&mut trees);
+    let built = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 7);
+    let sent: Vec<op::Op> = built.map_or_else(Vec::new, |c| {
+        c.ops.iter().map(|o| o.op.clone().unwrap()).collect()
+    });
+    assert_eq!(sent, [delete("z")]);
+}
+
+#[test]
+fn a_file_deleted_here_that_another_device_moved_out_of_a_given_up_folder_comes_back_there() {
+    let mut trees = deleted_here_then_given_up();
+    moved_out_comes_back(&mut trees);
+}
+
+#[test]
+fn a_file_deleted_here_keeps_its_base_through_a_rewind_and_comes_back_where_another_device_moved_it()
+ {
+    let mut trees = deleted_here_then_given_up();
+    let cause = RecoveryCause::rewind(4, NOW as i64);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.enter_recovery(cause);
+    assert_eq!(
+        commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 9),
+        None
+    );
+    let (history, marks) = (History::new(), Marks::new());
+    commits.recover(
+        &mut trees, 9, false, &cause, &history, &marks, &mut ids, NOW,
+    );
+    trees.settle(commits.aliases());
+    moved_out_comes_back(&mut trees);
+}
+
+fn deleted_here_then_given_up() -> Trees {
+    let mut trees = trees(&[
+        incoming("far", dir(ROOT, "far")),
+        (
+            "x",
+            Some(dir(ROOT, "x")),
+            Some(dir(ROOT, "x")),
+            Some(dir("far", "x")),
+        ),
+        synced("z", file("x", "g", 1)),
+    ]);
+    trees.remove_local("z");
+    trees.settle(&Default::default());
+    let parked = LocalNode {
+        parked: true,
+        ..local(dir(ROOT, "x"), 2)
+    };
+    trees.set_local("x".into(), parked);
+    trees.set_local("y".into(), local(file(ROOT, "x", 2), 4));
+    trees.set_synced("y".into(), Some(file("x", "f", 2)));
+    trees.set_remote("y".into(), remote(file(ROOT, "x", 2)));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/far/\n"));
+    trees.settle(&Default::default());
+    trees
+}
+
+fn moved_out_comes_back(trees: &mut Trees) {
+    let mut moved = trees.remote().get("z").unwrap().clone();
+    moved.shape.parent = ROOT.into();
+    moved.shape.name = "zz".into();
+    trees.set_remote("z".into(), moved);
+    assert_eq!(ops(trees), []);
+    effects(trees);
+    assert_eq!(trees.local().live("z"), Some(&file(ROOT, "zz", 1)));
+}
+
+fn holder_beside(rows: &[Row]) -> Trees {
+    let mut all = vec![
+        incoming("far", dir(ROOT, "far")),
+        (
+            "x",
+            Some(dir(ROOT, "x")),
+            Some(dir(ROOT, "x")),
+            Some(dir("far", "x")),
+        ),
+    ];
+    all.extend_from_slice(rows);
+    let mut trees = trees(&all);
+    let parked = LocalNode {
+        parked: true,
+        ..local(dir(ROOT, "x"), 2)
+    };
+    trees.set_local("x".into(), parked);
+    trees.set_local("y".into(), local(file(ROOT, "x", 2), 100));
+    trees.set_synced("y".into(), Some(file("x", "f", 2)));
+    trees.set_remote("y".into(), remote(file(ROOT, "x", 2)));
+    trees
+}
+
+fn given_up_beside(rows: &[Row]) -> Trees {
+    let mut trees = holder_beside(rows);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/far/\n"));
+    trees.settle(&Default::default());
+    trees
+}
+
+fn given_up_and_removed(same_batch: bool, stopped: bool) -> Trees {
+    let mut trees = holder_beside(&[synced("z", file("x", "g", 1))]);
+    if stopped {
+        trees = restarted(&trees);
+    }
+    if !same_batch {
+        trees.remove_local("z");
+        trees.settle(&Default::default());
+    }
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/far/\n"));
+    trees.rules_scanned();
+    trees.remove_local("z");
+    trees.settle(&Default::default());
+    assert_eq!(trees.synced().live("x"), None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
+    trees.listed(&[ROOT.into()], Pending::default());
+    effects(&mut trees);
+    trees
+}
+
+#[test]
+fn a_file_removed_in_the_batch_whose_rules_give_up_its_folder_downloads_once_included() {
+    for stopped in [false, true] {
+        let mut trees = given_up_and_removed(true, stopped);
+        assert_eq!(ops(&mut trees), [], "stopped: {stopped}");
+        let z = trees.local().live("z");
+        assert_eq!(z, Some(&file("x", "g", 1)), "stopped: {stopped}");
+    }
+}
+
+#[test]
+fn a_file_removed_in_the_batch_before_the_rules_give_up_its_folder_is_deleted_once_included() {
+    for stopped in [false, true] {
+        let mut trees = given_up_and_removed(false, stopped);
+        assert_eq!(ops(&mut trees), [delete("z")], "stopped: {stopped}");
+    }
+}
+
+#[test]
+fn a_folder_given_up_with_more_unchanged_files_than_one_search_takes_loads_after_a_restart() {
+    const FILES: [&str; 12] = [
+        "c00", "c01", "c02", "c03", "c04", "c05", "c06", "c07", "c08", "c09", "c10", "c11",
+    ];
+    let rows: Vec<Row> = (FILES.iter())
+        .map(|id| synced(id, file("x", id, 1)))
+        .collect();
+    let trees = given_up_beside(&rows);
+    let mut restored = trees.clone();
+    assert_eq!(restored.restore(trees.state()), Ok(()));
+}
+
+#[test]
+fn a_given_up_file_removed_while_a_commit_watches_its_position_downloads_once_included() {
+    let mut trees = given_up_beside(&[synced("z", file("x", "g", 1))]);
+    trees.watch_positions(["z".into()]);
+    trees.remove_local("z");
+    trees.settle(&Default::default());
+    trees.watch_positions([]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
+    assert_eq!(ops(&mut trees), []);
+    effects(&mut trees);
+    assert_eq!(trees.local().live("z"), Some(&file("x", "g", 1)));
 }

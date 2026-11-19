@@ -1,0 +1,4 @@
+26
+# Engine: the base a given-up node keeps is new state (Origin::Released), and each way it is kept, used or ended has its own test: a refused delete sent again, a deleted file coming back where another device moved it (also through a rewind), a removal while a commit watches its position, a lost edit sent again, a lost edit's base staying released when the copy vanishes while excluded, and a restart with more files than one search takes.
+# Engine: KOI-1007 made its §5.10 sign-off depend on a removal in the batch whose rules give up its folder, which no existing test covers for a given-up node, run with and without a restart. Its contrast case, a removal in the batch before, sends a delete.
+# Store: the released column is new, so it gets a migration test and an upgrade case.

@@ -1351,3 +1351,43 @@ fn owing_a_rename_from_before_marks(trees: &mut Trees) {
     trees.restore(state).unwrap();
     trees.rules_scanned();
 }
+
+fn edited_at_5_then_lost_below(folder: &'static str) -> (Commits, Trees, IdGen) {
+    let mut trees = trees(&[
+        ("far", None, None, Some(remote(dir(ROOT, "far")))),
+        synced(folder, dir(ROOT, folder)),
+        synced("a", file(folder, "a", 1)),
+    ]);
+    trees.set_local("pad".into(), local(file(ROOT, "pad", 9), 99));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    let pad = RemoteNode {
+        content_rev: 2,
+        edit_rev: 2,
+        meta_rev: 2,
+        meta_edit_rev: 2,
+        ..remote(file(ROOT, "pad", 9))
+    };
+    trees.set_remote("pad".into(), pad);
+    commits
+        .received(result(2, vec![outcome(op_result::Code::Applied)]))
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 2));
+    trees.set_local("a".into(), local(file(folder, "a", 2), 2));
+    trees.settle(commits.aliases());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [update("a", 2)]);
+    let edited = RemoteNode {
+        content_rev: 5,
+        edit_rev: 5,
+        ..remote(file(folder, "a", 2))
+    };
+    trees.set_remote("a".into(), edited);
+    commits
+        .received(result(5, vec![outcome(op_result::Code::Applied)]))
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 5));
+    trees.settle(commits.aliases());
+    (commits, trees, ids)
+}

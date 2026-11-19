@@ -2673,3 +2673,63 @@ fn a_folder_merged_while_s_held_it_stays_merged_after_a_loss_keeps_the_folder_it
     assert!(trees.reverted().contains("n"));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
+
+fn edit_lost_on_a_file_given_up_with_its_folder() -> (Commits, Trees, IdGen) {
+    let (mut commits, mut trees, ids) = edited_at_5_then_lost_below("x");
+    trees.set_remote("x".into(), remote_at(dir("far", "x"), 6));
+    let parked = LocalNode {
+        parked: true,
+        ..local(dir(ROOT, "x"), 3)
+    };
+    trees.set_local("x".into(), parked);
+    trees.set_local("y".into(), local(file(ROOT, "x", 7), 100));
+    trees.set_synced("y".into(), Some(file("x", "f", 7)));
+    trees.set_remote("y".into(), remote(file(ROOT, "x", 7)));
+    let far = Some(RuleFile::parse(b"/far/\n"));
+    trees.set_rules::<&str>(&[], koidrive_engine::ignore::Source::Koiignore, far);
+    trees.settle(commits.aliases());
+    assert_eq!(trees.synced().live("a"), None);
+    let welcome = welcome_holding(&commits, 1);
+    assert_eq!(commits.connected(&welcome), Reconnect::AheadOfServer);
+    let edited = trees.edited_here();
+    trees.set_remote("a".into(), remote(file("x", "a", 1)));
+    trees.forget_lost(
+        Vec::new(),
+        edited,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Default::default(),
+        &Default::default(),
+        commits.held_through(),
+        commits.accepted(),
+    );
+    (commits, trees, ids)
+}
+
+#[test]
+fn an_edit_the_server_lost_on_a_file_given_up_with_its_folder_is_sent_again() {
+    let (mut commits, mut trees, mut ids) = edit_lost_on_a_file_given_up_with_its_folder();
+    trees.set_rules::<&str>(&[], koidrive_engine::ignore::Source::Koiignore, None);
+    trees.settle(commits.aliases());
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [update("a", 2)]);
+    assert_eq!(effects_for(&mut trees, &mut ids, "a"), []);
+}
+
+#[test]
+fn a_file_given_up_after_a_lost_edit_and_removed_while_excluded_downloads_once_included() {
+    let (mut commits, mut trees, mut ids) = edit_lost_on_a_file_given_up_with_its_folder();
+    trees.remove_local("a");
+    trees.settle(commits.aliases());
+    trees.set_rules::<&str>(&[], koidrive_engine::ignore::Source::Koiignore, None);
+    trees.settle(commits.aliases());
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    let effects = effects_for(&mut trees, &mut ids, "a");
+    assert!(
+        matches!(&effects[..], [Effect::WriteFile { .. }]),
+        "{effects:?}"
+    );
+    assert_eq!(trees.local().live("a"), Some(&file("x", "a", 1)));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+}
