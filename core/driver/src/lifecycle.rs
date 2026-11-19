@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LockResult, Mutex, MutexGuard};
@@ -318,12 +317,11 @@ impl Lifecycle {
     fn save(&self, checkpoint: &Checkpoint) -> io::Result<()> {
         let temp = self.path.with_extension("json.tmp");
         let result = (|| {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&temp)?;
+            let flags =
+                rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::CREATE | rustix::fs::OFlags::TRUNC;
+            let mode = rustix::fs::Mode::from_raw_mode(0o600);
+            let mut file =
+                koidrive_state_file::create_regular(rustix::fs::CWD, &temp, flags, mode)?;
             file.write_all(&serde_json::to_vec(checkpoint)?)?;
             file.sync_all()?;
             fs::rename(&temp, &self.path)?;

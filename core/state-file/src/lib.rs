@@ -259,7 +259,7 @@ impl Drop for FailingSyncs {
 }
 
 /// Opens `path`, relative to `dir`, with the access and options in `flags`, and returns it only when it is a regular
-/// file. The open never waits, as an open of a FIFO with no writer would. A folder fails with
+/// file. The open never waits, as an open of a FIFO would for its other end. A folder fails with
 /// [`io::ErrorKind::IsADirectory`], as [`std::fs::read`] does, and an entry of any other kind with
 /// [`io::ErrorKind::InvalidInput`].
 pub fn open_regular(
@@ -267,17 +267,29 @@ pub fn open_regular(
     path: impl rustix::path::Arg,
     flags: OFlags,
 ) -> io::Result<File> {
+    create_regular(dir, path, flags, Mode::empty())
+}
+
+/// [`open_regular`] that gives a file that `flags` creates the permissions `mode`.
+pub fn create_regular(
+    dir: impl AsFd,
+    path: impl rustix::path::Arg,
+    flags: OFlags,
+    mode: Mode,
+) -> io::Result<File> {
     let flags = flags | OFlags::NONBLOCK | OFlags::CLOEXEC;
-    let file = File::from(fs::openat(dir, path, flags, Mode::empty())?);
+    let not_regular = || io::Error::new(io::ErrorKind::InvalidInput, "not a regular file");
+    let file = match fs::openat(dir, path, flags, mode) {
+        Ok(file) => File::from(file),
+        Err(rustix::io::Errno::NXIO) => return Err(not_regular()),
+        Err(error) => return Err(error.into()),
+    };
     let metadata = file.metadata()?;
     if metadata.is_dir() {
         return Err(rustix::io::Errno::ISDIR.into());
     }
     if !metadata.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "not a regular file",
-        ));
+        return Err(not_regular());
     }
     Ok(file)
 }

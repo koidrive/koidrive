@@ -11,13 +11,13 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use koidrive_state_file::{
-    AtomicFile, Publish, open_regular, read, recover, remove_with_legacy_matching, write,
-    write_with_legacy,
+    AtomicFile, Publish, create_regular, open_regular, read, recover, remove_with_legacy_matching,
+    write, write_with_legacy,
 };
-use rustix::fs::{CWD, OFlags};
+use rustix::fs::{CWD, Mode, OFlags};
 
 #[test]
-fn reads_refuse_anything_but_a_regular_file_without_waiting() {
+fn opens_refuse_anything_but_a_regular_file_without_waiting() {
     let dir = tempfile::tempdir().unwrap();
     let (file, fifo) = (dir.path().join("file"), dir.path().join("fifo"));
     fs::write(&file, "kept").unwrap();
@@ -33,17 +33,25 @@ fn reads_refuse_anything_but_a_regular_file_without_waiting() {
                 read(&fifo).map(drop),
                 read(&dir).map(drop),
                 open_regular(CWD, &fifo, OFlags::WRONLY).map(drop),
+                create_regular(CWD, &fifo, OFlags::RDWR | OFlags::CREATE, Mode::empty()).map(drop),
             ]
             .map(|opened| opened.map_err(|error| error.kind()))
         }
     });
-    assert!(refused.iter().all(Result::is_err), "{refused:?}");
+    let not_a_file = Err(io::ErrorKind::InvalidInput);
+    let folder = Err(io::ErrorKind::IsADirectory);
+    assert_eq!(refused, [not_a_file, folder, not_a_file, not_a_file]);
+    let made = dir.path().join("made");
+    create_regular(
+        CWD,
+        &made,
+        OFlags::WRONLY | OFlags::CREATE,
+        Mode::from_raw_mode(0o600),
+    )
+    .unwrap();
     assert_eq!(
-        refused[..2],
-        [
-            Err(io::ErrorKind::InvalidInput),
-            Err(io::ErrorKind::IsADirectory)
-        ]
+        fs::metadata(&made).unwrap().permissions().mode() & 0o777,
+        0o600
     );
 }
 

@@ -71,6 +71,21 @@ async fn a_service_lock_another_koi_holds_past_the_deadline_is_a_problem() {
     );
 }
 
+#[test]
+fn a_service_lock_that_is_not_a_file_is_a_problem_without_waiting_on_it() {
+    let (_dir, paths, _root) = crate::ipc::tests::linked_profile();
+    fs::create_dir_all(paths.service_lock().parent().unwrap()).unwrap();
+    koidrive_test_support::make_fifo(&paths.service_lock());
+    let locked = koidrive_test_support::without_waiting(move || {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime
+            .block_on(lock_service(&paths, Duration::from_secs(1)))
+            .map(|lock| lock.is_some())
+    });
+    let problem = locked.unwrap_err();
+    assert!(problem.contains("cannot be opened"), "{problem}");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn waiting_for_the_service_lock_lets_the_other_tasks_of_the_command_run() {
     let (_dir, paths, _root) = crate::ipc::tests::linked_profile();

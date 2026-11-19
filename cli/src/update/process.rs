@@ -1,4 +1,4 @@
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, IsTerminal, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
@@ -31,8 +31,13 @@ impl Echo {
         if fs::metadata(path).is_ok_and(|metadata| metadata.len() > KEPT_LOG) {
             let _ = koidrive_state_file::rename(path, &path.with_extension("log.1"));
         }
-        let log = (path.parent().map(fs::create_dir_all).transpose().ok())
-            .and_then(|_| OpenOptions::new().create(true).append(true).open(path).ok());
+        let log = (path.parent().map(fs::create_dir_all).transpose().ok()).and_then(|_| {
+            let flags = rustix::fs::OFlags::WRONLY
+                | rustix::fs::OFlags::CREATE
+                | rustix::fs::OFlags::APPEND;
+            let mode = rustix::fs::Mode::from_raw_mode(0o666);
+            koidrive_state_file::create_regular(rustix::fs::CWD, path, flags, mode).ok()
+        });
         Echo {
             log,
             ..Echo::console(json, verbose)

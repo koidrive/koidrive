@@ -26,6 +26,19 @@ fn commands(batch: &Batch) -> BTreeMap<String, u64> {
 }
 
 #[test]
+fn a_lock_that_is_not_a_file_fails_without_waiting_on_it() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("telemetry")).unwrap();
+    koidrive_test_support::make_fifo(&dir.path().join("telemetry/lock"));
+    let state = dir.path().to_path_buf();
+    let set = koidrive_test_support::without_waiting(move || Store::new(&state).set(true).err());
+    assert_eq!(
+        set.map(|error| error.kind()),
+        Some(io::ErrorKind::InvalidInput)
+    );
+}
+
+#[test]
 fn a_yes_queues_what_was_held_under_the_id_the_preview_showed() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path());

@@ -2,11 +2,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
-use std::fs::{self, DirBuilder, OpenOptions};
+use std::fs::{self, DirBuilder};
 use std::io::{self, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
@@ -271,14 +271,13 @@ impl Driver {
             .create_state_dir(&paths.state_dir)
             .map_err(io_error(&paths.state_dir))?;
         let lock_path = paths.lock();
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(&lock_path)
-            .map_err(io_error(&lock_path))?;
+        let lock = koidrive_state_file::create_regular(
+            rustix::fs::CWD,
+            &lock_path,
+            rustix::fs::OFlags::RDWR | rustix::fs::OFlags::CREATE,
+            rustix::fs::Mode::from_raw_mode(0o600),
+        )
+        .map_err(io_error(&lock_path))?;
         let Some(lock) = Flock::take(lock).map_err(io_error(&lock_path))? else {
             return Err(DriverError::Busy(lock_path));
         };

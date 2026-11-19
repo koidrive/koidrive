@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
+use rustix::fs::{Mode, OFlags};
 use tracing_subscriber::fmt::MakeWriter;
 
 pub const MAX: u64 = 10 * 1024 * 1024;
@@ -25,7 +26,8 @@ impl CappedLog {
         if (stderr.st_dev as u64, stderr.st_ino as u64) != (log.dev(), log.ino()) {
             return None;
         }
-        let file = OpenOptions::new().append(true).open(&path).ok()?;
+        let flags = OFlags::WRONLY | OFlags::APPEND;
+        let file = koidrive_state_file::open_regular(rustix::fs::CWD, &path, flags).ok()?;
         Some(CappedLog::new(path, MAX, file, redirect))
     }
 
@@ -52,10 +54,13 @@ impl CappedLog {
 
     fn rotate(&self) -> io::Result<File> {
         fs::rename(&self.path, previous(&self.path))?;
-        let new = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
+        let flags = OFlags::WRONLY | OFlags::APPEND | OFlags::CREATE;
+        let new = koidrive_state_file::create_regular(
+            rustix::fs::CWD,
+            &self.path,
+            flags,
+            Mode::from_raw_mode(0o666),
+        )?;
         let _ = (self.redirect)(&new);
         Ok(new)
     }
@@ -100,7 +105,7 @@ mod tests {
 
     fn log(dir: &Path, max: u64) -> CappedLog {
         let path = dir.join("dev.koidrive.koi.log");
-        let file = OpenOptions::new()
+        let file = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
