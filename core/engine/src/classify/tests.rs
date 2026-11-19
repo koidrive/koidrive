@@ -933,9 +933,9 @@ mod holders_against_a_rebuild {
     }
 
     fn check_index(index: &ByName, expected: &[(NodeId, &LocalNode)]) {
-        let mut keys: BTreeMap<(NodeId, String), Vec<NodeId>> = BTreeMap::new();
+        let mut keys: BTreeMap<(NodeId, u32), Vec<NodeId>> = BTreeMap::new();
         for (id, n) in expected {
-            keys.entry((n.shape.parent.clone(), name_key(&n.shape.name)))
+            keys.entry(ByName::key(&n.shape))
                 .or_default()
                 .push(id.clone());
         }
@@ -960,12 +960,23 @@ mod holders_against_a_rebuild {
             want.reverse();
             assert_eq!(back, want);
         }
+        let names: BTreeMap<&NodeId, &str> = (expected.iter())
+            .map(|(id, n)| (id, n.shape.name.as_str()))
+            .collect();
         for name in NAMES {
-            let got: Vec<NodeId> = index.holders(&"root".into(), name).cloned().collect();
-            let want = keys
-                .get(&("root".to_owned().into(), name_key(name)))
-                .cloned()
-                .unwrap_or_default();
+            let got: Vec<NodeId> = (index
+                .holders(&"root".into(), name, |id| names.get(id).copied()))
+            .cloned()
+            .collect();
+            let want: Vec<NodeId> = (names.iter())
+                .filter(|(id, held)| {
+                    expected
+                        .iter()
+                        .any(|(e, n)| e == **id && n.shape.parent == "root")
+                        && name_key(held) == name_key(name)
+                })
+                .map(|(id, _)| (*id).clone())
+                .collect();
             assert_eq!(got, want);
         }
         let children: Vec<NodeId> = index.children(&"root".into()).cloned().collect();
@@ -1438,4 +1449,48 @@ fn a_restored_node_moved_out_of_an_ignored_folder_is_not_excluded_while_its_remo
     trees.set_local("n".into(), kept_local(&"root".into(), "x", Kind::File, 2));
     trees.wait("n".into(), None, Origin::Other);
     assert!(!trees.excluded(&"n".into()));
+}
+
+#[test]
+fn names_whose_keys_share_a_hash_stay_apart() {
+    let mut seen = std::collections::HashMap::new();
+    let (a, b) = (0u32..)
+        .map(|i| format!("c{i}"))
+        .find_map(|name| {
+            seen.insert(key_hash(&name), name.clone())
+                .map(|other| (other, name))
+        })
+        .unwrap();
+    let root = NodeId::from("root");
+    let shape = |name: &str| Shape {
+        parent: root.clone(),
+        name: name.into(),
+        kind: Kind::File,
+        content: None,
+    };
+    let names = BTreeMap::from([
+        (NodeId::from("a"), a.as_str()),
+        (NodeId::from("b"), b.as_str()),
+    ]);
+    let mut index = ByName::default();
+    for (id, name) in &names {
+        index.insert(id, &shape(name));
+    }
+    for (id, name) in &names {
+        let held: Vec<&NodeId> = index
+            .holders(&root, name, |id| names.get(id).copied())
+            .collect();
+        assert_eq!(held, [id], "{name}");
+    }
+    index.remove(&NodeId::from("a"), &shape(&a));
+    assert_eq!(
+        index
+            .holders(&root, &a, |id| names.get(id).copied())
+            .count(),
+        0
+    );
+    assert_eq!(
+        index.children(&root).collect::<Vec<_>>(),
+        [&NodeId::from("b")]
+    );
 }

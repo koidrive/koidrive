@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::classify::Trees;
 use crate::first_link::placed_here;
 use crate::ids::IdGen;
-use crate::names::same_name;
+use crate::names::{name_key, same_name};
 use crate::question::{
     Answer, Held, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger, Revisions,
 };
@@ -313,7 +313,13 @@ pub(crate) fn release(
         .collect();
     let carried: Vec<(NodeId, Option<Shape>)> = (released.iter())
         .filter(|(_, shape)| shape.is_none())
-        .flat_map(|(id, _)| trees.synced_children(id))
+        .flat_map(|(id, _)| {
+            let mut children: Vec<&NodeId> = trees.synced_children(id).collect();
+            children.sort_by_cached_key(|child| {
+                (trees.synced().get(child)).map(|shape| name_key(&shape.name))
+            });
+            children
+        })
         .filter(|child| !released.contains_key(*child) && !trees.held(child))
         .filter_map(|child| {
             let synced = trees.synced().live(child)?;

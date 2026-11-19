@@ -322,36 +322,59 @@ impl<V: Placed + Clone + PartialEq> From<BTreeMap<NodeId, V>> for ByParent<V> {
     }
 }
 
-/// The nodes of a tree by parent and the `name_key` of their name.
 #[derive(Clone, Debug, Default)]
-struct ByName(CountedMap<(NodeId, String), Holders>);
+struct ByName(CountedMap<(NodeId, u32), Holders>);
+
+fn key_hash(key: &str) -> u32 {
+    use std::hash::Hasher;
+    let mut hasher = std::hash::DefaultHasher::new();
+    hasher.write(key.as_bytes());
+    hasher.finish() as u32
+}
 
 impl ByName {
+    fn key(shape: &Shape) -> (NodeId, u32) {
+        (shape.parent.clone(), key_hash(&name_key(&shape.name)))
+    }
+
     fn insert(&mut self, id: &NodeId, shape: &Shape) {
-        let key = (shape.parent.clone(), name_key(&shape.name));
-        (self.0.entry(key))
+        (self.0.entry(Self::key(shape)))
             .and_modify(|ids| ids.insert(id.to_owned()))
             .or_insert_with(|| Holders::One(id.to_owned()));
     }
 
     fn remove(&mut self, id: &NodeId, shape: &Shape) {
-        let key = (shape.parent.clone(), name_key(&shape.name));
+        let key = Self::key(shape);
         if self.0.get_mut(&key).is_some_and(|ids| ids.remove(id)) {
             self.0.remove(&key);
         }
     }
 
-    /// The nodes under `parent` whose name has the `name_key` of `name`.
-    fn holders<'a>(&'a self, parent: &NodeId, name: &str) -> impl Iterator<Item = &'a NodeId> + 'a {
-        let key = (parent.to_owned(), name_key(name));
-        counted(self.0.get(&key).into_iter().flat_map(Holders::iter))
+    fn holders<'a, F: Fn(&NodeId) -> Option<&'a str> + 'a>(
+        &'a self,
+        parent: &NodeId,
+        name: &str,
+        name_of: F,
+    ) -> impl Iterator<Item = &'a NodeId> + use<'a, F> {
+        self.holders_of_key(parent, name_key(name), name_of)
     }
 
-    fn children<'a>(&'a self, parent: &'a NodeId) -> impl Iterator<Item = &'a NodeId> + 'a {
-        self.0
-            .range((parent.to_owned(), String::new())..)
-            .take_while(move |((of, _), _)| of == parent)
-            .flat_map(|(_, ids)| ids.iter())
+    fn holders_of_key<'a, F: Fn(&NodeId) -> Option<&'a str> + 'a>(
+        &'a self,
+        parent: &NodeId,
+        key: String,
+        name_of: F,
+    ) -> impl Iterator<Item = &'a NodeId> + use<'a, F> {
+        let ids = self.0.get(&(parent.clone(), key_hash(&key)));
+        counted(ids.into_iter().flat_map(Holders::iter))
+            .filter(move |id| name_of(id).is_some_and(|held| held == key || name_key(held) == key))
+    }
+
+    fn children<'a>(&'a self, parent: &NodeId) -> impl Iterator<Item = &'a NodeId> + 'a {
+        (self
+            .0
+            .range((parent.clone(), 0)..=(parent.clone(), u32::MAX)))
+        .flat_map(|(_, ids)| ids.iter())
     }
 }
 
@@ -1023,8 +1046,10 @@ impl Trees {
             }
             let key = (&new.parent, name_key(&new.name));
             named[&key] == 1
-                && !(self.s_names.holders(&new.parent, &new.name))
-                    .any(|other| other != id && !next.contains_key(other))
+                && !(self.s_names.holders(&new.parent, &new.name, |id| {
+                    self.s.get(id).map(|shape| shape.name.as_str())
+                }))
+                .any(|other| other != id && !next.contains_key(other))
         })
     }
 
@@ -1033,8 +1058,9 @@ impl Trees {
         parent: &NodeId,
         key: &str,
     ) -> impl Iterator<Item = &'a NodeId> + use<'a> {
-        let key = (parent.to_owned(), key.to_owned());
-        self.r_names.0.get(&key).into_iter().flat_map(Holders::iter)
+        self.r_names.holders_of_key(parent, key.to_owned(), |id| {
+            self.r.get(id).map(|node| node.shape.name.as_str())
+        })
     }
 
     /// The nodes of S under `parent` whose name has the `name_key` of `name`.
@@ -1043,14 +1069,18 @@ impl Trees {
         parent: &NodeId,
         name: &str,
     ) -> impl Iterator<Item = &'a NodeId> + 'a {
-        self.s_names.holders(parent, name)
+        self.s_names.holders(parent, name, |id| {
+            self.s.get(id).map(|shape| shape.name.as_str())
+        })
     }
 
     /// The placed node of L under `parent` named exactly `name`.
     pub fn local_child(&self, parent: &NodeId, name: &str) -> Option<&NodeId> {
-        (self.l_names.holders(parent, name))
-            .filter(|id| self.l.get(id).is_some_and(|node| node.shape.name == name))
-            .last()
+        (self.l_names.holders(parent, name, |id| {
+            self.l.get(id).map(|node| node.shape.name.as_str())
+        }))
+        .filter(|id| self.l.get(id).is_some_and(|node| node.shape.name == name))
+        .last()
     }
 
     /// A node of L, placed or parked, with `identity`: the greatest ID when several have it.
@@ -1082,7 +1112,9 @@ impl Trees {
         parent: &NodeId,
         name: &str,
     ) -> impl Iterator<Item = &'a NodeId> + 'a {
-        self.l_names.holders(parent, name)
+        self.l_names.holders(parent, name, |id| {
+            self.l.get(id).map(|node| node.shape.name.as_str())
+        })
     }
 
     fn mark(&mut self, id: &NodeId) {
@@ -3557,26 +3589,36 @@ impl Trees {
 
     fn below_rules(&self, dir: &[String]) -> BTreeSet<NodeId> {
         type Holds = fn(&Trees, &NodeId) -> bool;
-        let trees: [(&ByName, Option<&ByName>, &NodeId, Holds); 3] = [
+        type NameOf = for<'t> fn(&'t Trees, &NodeId) -> Option<&'t str>;
+        let trees: [(&ByName, Option<&ByName>, &NodeId, Holds, NameOf); 3] = [
             (
                 &self.l_names,
                 Some(&self.l_parked),
                 &self.l.root,
                 |trees, id| trees.l.get(id).is_some(),
+                |trees, id| trees.l.get(id).map(|node| node.shape.name.as_str()),
             ),
-            (&self.s_names, None, &self.s.root, |trees, id| {
-                trees.s.live(id).is_some()
-            }),
-            (&self.r_names, None, &self.r.root, |trees, id| {
-                trees.r.live(id).is_some()
-            }),
+            (
+                &self.s_names,
+                None,
+                &self.s.root,
+                |trees, id| trees.s.live(id).is_some(),
+                |trees, id| trees.s.get(id).map(|shape| shape.name.as_str()),
+            ),
+            (
+                &self.r_names,
+                None,
+                &self.r.root,
+                |trees, id| trees.r.live(id).is_some(),
+                |trees, id| trees.r.get(id).map(|node| node.shape.name.as_str()),
+            ),
         ];
         let mut below = BTreeSet::new();
-        for (names, parked, root, holds) in trees {
+        for (names, parked, root, holds, name_of) in trees {
             let mut tops = vec![root.to_owned()];
             for part in dir {
                 tops = (tops.iter())
-                    .flat_map(|top| names.holders(top, part))
+                    .flat_map(|top| names.holders(top, part, |id| name_of(self, id)))
                     .filter(|id| holds(self, id))
                     .cloned()
                     .collect();
@@ -3706,10 +3748,14 @@ impl Trees {
         name: &str,
         kind: Kind,
     ) -> Option<&'a NodeId> {
-        self.r_names.holders(parent, name).find(|id| {
-            (self.vanished(id) || self.missing.contains(*id))
-                && (self.r.live(id)).is_some_and(|remote| remote.kind == kind)
-        })
+        self.r_names
+            .holders(parent, name, |id| {
+                self.r.get(id).map(|node| node.shape.name.as_str())
+            })
+            .find(|id| {
+                (self.vanished(id) || self.missing.contains(*id))
+                    && (self.r.live(id)).is_some_and(|remote| remote.kind == kind)
+            })
     }
 
     /// Whether the node is unobserved: the rules excluded it since a scan last reported its local
@@ -5975,7 +6021,9 @@ impl Trees {
         if taken.is_empty() {
             let mut released = Vec::new();
             for shape in pending.iter().filter_map(|id| self.r.live(id)) {
-                for holder in self.s_names.holders(&shape.parent, &shape.name) {
+                for holder in self.s_names.holders(&shape.parent, &shape.name, |id| {
+                    self.s.get(id).map(|shape| shape.name.as_str())
+                }) {
                     if !targets.contains_key(holder)
                         && let Some(options) = self.released(holder)
                         && let Some(dropped) = self.release_subtree(holder, &targets)
@@ -6069,7 +6117,9 @@ impl Trees {
                                 .is_some_and(|p| p.kind == Kind::Dir))
                         || self
                             .s_names
-                            .holders(&shape.parent, &shape.name)
+                            .holders(&shape.parent, &shape.name, |id| {
+                                self.s.get(id).map(|shape| shape.name.as_str())
+                            })
                             .any(|h| h != id && fixed(&h))
                         || self
                             .above(&shape.parent, &candidates)
@@ -6098,7 +6148,9 @@ impl Trees {
                 links.entry(up).or_default().push(id);
             }
             if let Some(shape) = target(id) {
-                for other in self.s_names.holders(&shape.parent, &shape.name) {
+                for other in self.s_names.holders(&shape.parent, &shape.name, |id| {
+                    self.s.get(id).map(|shape| shape.name.as_str())
+                }) {
                     if other != id && candidates.contains(other) {
                         links.entry(id).or_default().push(other);
                         links.entry(other).or_default().push(id);
@@ -6152,7 +6204,9 @@ impl Trees {
                     if taken(id)
                         && self
                             .s_names
-                            .holders(&shape.parent, &shape.name)
+                            .holders(&shape.parent, &shape.name, |id| {
+                                self.s.get(id).map(|shape| shape.name.as_str())
+                            })
                             .any(|h| h != id && !taken(h))
                     {
                         return false;
@@ -6235,7 +6289,9 @@ impl Trees {
         }
         !self
             .s_names
-            .holders(&shape.parent, &shape.name)
+            .holders(&shape.parent, &shape.name, |id| {
+                self.s.get(id).map(|shape| shape.name.as_str())
+            })
             .any(|other| other != id)
     }
 
