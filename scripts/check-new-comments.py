@@ -301,7 +301,7 @@ def clap_items(src, comments):
             attrs[code[e] + 1] = (code[k], k, e)
             k = e
         k += 1
-    ends = {e: s for s, e in comments if is_doc(src[s:e], "rust")}
+    ends = {e: s for s, e in comments}
     items = []
     for end, (start, _, last) in attrs.items():
         if not CLAP_DERIVE.search(src[start:end]):

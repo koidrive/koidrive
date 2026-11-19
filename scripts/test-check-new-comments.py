@@ -213,7 +213,7 @@ class NewComments(unittest.TestCase):
 
     def test_comments_only_protects_only_docs_on_clap_items(self):
         src = (
-            '/// Syncs folders.\n#[derive(Parser)]\n#[command(name = "koi {")]\nstruct Cli {\n    /// Print JSON.\n    #[arg(long)]\n    json: bool,\n}\n\n'
+            '/// Syncs folders.\n// Parsed once.\n#[derive(Parser)]\n#[command(name = "koi {")]\nstruct Cli {\n    /// Print JSON.\n    #[arg(long)]\n    json: bool,\n}\n\n'
             "#[derive(Subcommand)]\nenum Command {\n    /// Show sync history.\n    History {\n        /// The folder to show.\n        folder: String,\n    },\n}\n\n"
             "/// One line per space.\nfn table() {}\n\n/// A found server.\n#[derive(Debug)]\nstruct Found;\n"
         )
