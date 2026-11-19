@@ -578,6 +578,13 @@ struct Device {
     removed_from: BTreeMap<NodeId, NodeId>,
     kept_back: BTreeSet<NodeId>,
     relocated: BTreeMap<NodeId, Relocation>,
+    in_ignored_folders: BTreeMap<NodeId, IgnoredCopy>,
+}
+
+struct IgnoredCopy {
+    path: Vec<String>,
+    kind: Kind,
+    content: Option<Content>,
 }
 
 struct Relocation {
@@ -761,6 +768,9 @@ impl Device {
                     (false, true) if into_ignored => {
                         self.touched.insert(id.clone());
                         self.acted.insert(id.clone());
+                        let mut path = local_path(&self.trees, &parent);
+                        path.push(name.to_owned());
+                        self.put_in_ignored_folder(&id, path);
                         self.trees.ignore_local(&id)
                     }
                     _ => {
@@ -820,6 +830,26 @@ impl Device {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn put_in_ignored_folder(&mut self, id: &NodeId, path: Vec<String>) {
+        let Some(node) = self.trees.local().get(id) else {
+            return;
+        };
+        let copy = IgnoredCopy {
+            path: path.clone(),
+            kind: node.shape.kind,
+            content: node.shape.content.clone(),
+        };
+        let children: Vec<(NodeId, String)> = (self.trees.local_children(id))
+            .filter_map(|child| Some((child.clone(), self.trees.local().get(child)?.shape.name.clone())))
+            .collect();
+        self.in_ignored_folders.insert(id.to_owned(), copy);
+        for (child, name) in children {
+            let mut path = path.clone();
+            path.push(name);
+            self.put_in_ignored_folder(&child, path);
         }
     }
 
@@ -1702,6 +1732,7 @@ fn run_ignoring_answering_after(
         removed_from: BTreeMap::new(),
         kept_back: BTreeSet::new(),
         relocated: BTreeMap::new(),
+        in_ignored_folders: BTreeMap::new(),
     };
     for state in space.nodes().iter().filter(|n| n.node_id != root) {
         let (id, node) = RemoteNode::from_state(state).unwrap();
@@ -2445,17 +2476,7 @@ fn run_ignoring_answering_after(
             id
         );
     }
-    let unsent = (device.trees.local().iter())
-        .filter(|(id, _)| device.trees.ignored(id) || waiting.contains(*id))
-        .map(|(_, node)| node.shape.content.clone());
-    let kept = written(
-        server
-            .iter()
-            .map(|(_, s)| s.clone().and_then(|s| s.content))
-            .chain(unsent),
-        1,
-    );
-    prop_assert!(local_writes.is_subset(&kept), "a local write was lost");
+    local_writes_check(&device, &server, &waiting, &local_writes)?;
     let kept = written(
         server
             .iter()
@@ -2484,6 +2505,33 @@ const CUTS: [Cut; 5] = [
     Cut::Answered,
     Cut::Effect,
 ];
+
+fn local_writes_check(
+    device: &Device,
+    server: &[(NodeId, Option<koidrive_engine::tree::Shape>)],
+    waiting: &BTreeSet<NodeId>,
+    local_writes: &BTreeSet<Vec<u8>>,
+) -> Result<(), TestCaseError> {
+    let unsent = (device.trees.local().iter())
+        .filter(|(id, _)| device.trees.ignored(id) || waiting.contains(*id))
+        .map(|(_, node)| node.shape.content.clone());
+    let in_ignored_folders = (device.in_ignored_folders.iter())
+        .filter(|(id, copy)| {
+            device.trees.ignores(&copy.path, copy.kind)
+                && (device.trees.local().get(*id).is_none() || device.trees.recorded_local(id))
+        })
+        .map(|(_, copy)| copy.content.clone());
+    let kept = written(
+        server
+            .iter()
+            .map(|(_, s)| s.clone().and_then(|s| s.content))
+            .chain(unsent)
+            .chain(in_ignored_folders),
+        1,
+    );
+    prop_assert!(local_writes.is_subset(&kept), "a local write was lost");
+    Ok(())
+}
 
 fn act_tracked(
     device: &mut Device,
