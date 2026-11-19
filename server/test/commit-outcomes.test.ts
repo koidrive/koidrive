@@ -3,10 +3,11 @@
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CommitResultSchema, type Op, OpResult_Code, type UploadReceipt } from "../src/gen/koidrive/v1/commit_pb";
 import { ChunkPlan_Action, Error_Code } from "../src/gen/koidrive/v1/rpc_pb";
 import { toHex, uuidv7 } from "../src/ids";
+import { policy } from "../src/policy";
 import { HOLD_MS, MAX_HEAD_CHECKS, type SpaceDO } from "../src/space-do";
 import { ChunkState } from "../src/space/schema";
 import { client, content, newSpace, op, targetIncarnation, type TestClient } from "./helpers";
@@ -426,6 +427,19 @@ describe("RFC 0032 section 3 rule 4", () => {
     const sent = await resendUntilCommitted(a, [op.create(uuidv7(), root, "many", parts.content)], parts, [...expired, ...valid]);
     expect(sent).toEqual({ rounds: 2, uploaded: MAX_HEAD_CHECKS });
   }, RESEND_TIMEOUT_MS);
+
+  it("records the chunks a commit confirmed by receipt when the commit is refused for another reason", async () => {
+    const { a, root } = await setup();
+    const gone = uuidv7();
+    await a.commit([op.mkdir(gone, root, "to delete")]);
+    const parts = await content("receipted before a refusal");
+    const receipts = await a.uploadParts(parts);
+    vi.spyOn(policy, "deletes").mockReturnValue(false);
+    const refused = await a.commitRaw([op.create(uuidv7(), root, "kept", parts.content), op.delete(gone)], { receipts });
+    vi.restoreAllMocks();
+    expect(code(refused)).toBe(Error_Code.CONFIRMATION_REQUIRED);
+    expect((await prepare(a, parts))[0]!.action).toBe(ChunkPlan_Action.PRESENT);
+  });
 
   it("takes a commit whose chunks answered PRESENT outnumber MAX_HEAD_CHECKS without checking them again", async () => {
     const { a, root } = await setup();

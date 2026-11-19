@@ -1043,7 +1043,8 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           referenced.set(hex, chunk);
         }
       }
-      const confirmed = await this.confirmUploads(referenced, commit.receipts, this.clock());
+      const nowMs = this.clock();
+      const { confirmed, receipted } = await this.confirmUploads(referenced, commit.receipts, nowMs);
 
       const done = await this.inStampOrder(() => this.db.transactionSync((): { result: CommitResult; record?: CommitRecord; rearm?: boolean } => {
         if (this.revoked(session.deviceId)) fail(Error_Code.UNAUTHENTICATED, "device revoked");
@@ -1102,7 +1103,10 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           DIGEST_VERSION,
         );
         return { result, record, rearm: noteCommitted(this.sql, record) };
-      }));
+      })).catch((error: unknown) => {
+        this.recordConfirmed(receipted, nowMs);
+        throw error;
+      });
       if (done.rearm || !done.record || this.alarmStale) await this.armAfterCommit();
       return { result: done.result, record: done.record };
     }
@@ -1117,16 +1121,18 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       }
     }
 
-    private async confirmUploads(referenced: Map<string, ChunkRef>, receipts: readonly UploadReceipt[], nowMs: number): Promise<Map<string, string>> {
+    private async confirmUploads(
+      referenced: Map<string, ChunkRef>,
+      receipts: readonly UploadReceipt[],
+      nowMs: number,
+    ): Promise<{ confirmed: Map<string, string>; receipted: ChunkObject[] }> {
       const spaceId = this.spaceId;
       const confirmed = new Map<string, string>();
       const unconfirmed: { object: ChunkObject; size: number }[] = [];
       const receipted: ChunkObject[] = [];
-      let live = 0;
       const receiptsByHash = Map.groupBy(receipts, (receipt) => toHex(receipt.hash));
       for (const [hex, chunk] of referenced) {
         const row = this.sql.exec("SELECT size, state, incarnation, head_checked FROM chunks WHERE hash = ?", chunk.hash).toArray()[0];
-        if (row?.state === ChunkState.LIVE && row.size === chunk.size) live++;
         if (!row || row.size !== chunk.size || row.state !== ChunkState.PENDING || row.incarnation === null) continue;
         const object = { spaceId, hashHex: hex, incarnation: String(row.incarnation) };
         if (confirmedPending(row)) {
@@ -1150,21 +1156,23 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         confirmed.set(object.hashHex, object.incarnation);
         checked.push(object);
       }
-      const recorded = live + confirmed.size < referenced.size ? [...checked, ...receipted] : checked;
-      if (recorded.length > 0) {
-        this.db.transactionSync(() => {
-          for (const object of recorded) {
-            this.sql.exec(
-              "UPDATE chunks SET hold_until_ms = MAX(hold_until_ms, ?), head_checked = 1 WHERE hash = ? AND state = ? AND incarnation = ?",
-              nowMs + HOLD_MS,
-              fromHex(object.hashHex)!,
-              ChunkState.PENDING,
-              object.incarnation,
-            );
-          }
-        });
-      }
-      return confirmed;
+      this.recordConfirmed(checked, nowMs);
+      return { confirmed, receipted };
+    }
+
+    private recordConfirmed(objects: readonly ChunkObject[], nowMs: number): void {
+      if (objects.length === 0) return;
+      this.db.transactionSync(() => {
+        for (const object of objects) {
+          this.sql.exec(
+            "UPDATE chunks SET hold_until_ms = MAX(hold_until_ms, ?), head_checked = 1 WHERE hash = ? AND state = ? AND incarnation = ?",
+            nowMs + HOLD_MS,
+            fromHex(object.hashHex)!,
+            ChunkState.PENDING,
+            object.incarnation,
+          );
+        }
+      });
     }
 
     private chunkUrl(session: Session, object: ChunkObject, ticket: string): string {
