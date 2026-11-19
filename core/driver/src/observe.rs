@@ -684,6 +684,7 @@ impl FsObserver {
         &mut self,
         gone: BTreeMap<PathBuf, Known>,
         unsettled: &[&PathBuf],
+        learned: &mut Vec<Observed>,
     ) -> Vec<PathBuf> {
         if unsettled.is_empty() {
             self.search = None;
@@ -698,7 +699,7 @@ impl FsObserver {
                     Search::new(vec![known]).step(&self.root, &[at], &mut 0, &|| false)
                 && let [Some(at)] = hits.as_slice()
             {
-                self.found.insert(path, at.clone());
+                self.report_found(path, at.clone(), learned);
                 continue;
             }
             sought.push((path, known));
@@ -726,7 +727,7 @@ impl FsObserver {
                     }
                     match hit {
                         Some(at) => {
-                            self.found.insert(path, at);
+                            self.report_found(path, at, learned);
                         }
                         None => gone.push(path),
                     }
@@ -738,6 +739,16 @@ impl FsObserver {
                 self.search = None;
                 Vec::new()
             }
+        }
+    }
+
+    fn report_found(&mut self, path: PathBuf, at: PathBuf, learned: &mut Vec<Observed>) {
+        if self.found.get(&path) != Some(&at) {
+            learned.push(Observed::Found {
+                path: path.clone(),
+                at: at.clone(),
+            });
+            self.found.insert(path, at);
         }
     }
 
@@ -902,30 +913,22 @@ impl Observer for FsObserver {
                 .map(|(path, known)| (path.clone(), *known))
                 .collect();
             let mut gone = BTreeMap::new();
+            let mut replacements = BTreeMap::new();
+            let mut learned = Vec::new();
             match self.watcher.look_for(&wanted, &self.found) {
                 Ok(looked) => {
                     for (path, looked) in looked {
                         match looked {
                             Looked::Found(at) => {
-                                if self.found.get(&path) != Some(&at) {
-                                    changes.push(Observed::Found {
-                                        path: path.clone(),
-                                        at: at.clone(),
-                                    });
-                                    self.found.insert(path, at);
-                                }
+                                self.report_found(path, at, &mut learned);
                             }
-                            Looked::Gone => {
+                            Looked::Gone | Looked::Replaced(_) => {
                                 if let Some(known) = self.recorded.get(&path) {
+                                    if let Looked::Replaced(id) = looked {
+                                        replacements.insert(path.clone(), id);
+                                    }
                                     gone.insert(path, *known);
                                 }
-                            }
-                            Looked::Replaced(id) => {
-                                let Some(known) = self.recorded.get_mut(&path) else {
-                                    continue;
-                                };
-                                known.id = id;
-                                changes.push(Observed::Reidentified { path, id });
                             }
                         }
                     }
@@ -934,15 +937,23 @@ impl Observer for FsObserver {
                     tracing::debug!(%error, "the entries moved into left-out folders could not be looked for");
                 }
             }
-            for path in self.find_unsettled(gone, &unsettled) {
+            for path in self.find_unsettled(gone, &unsettled, &mut learned) {
+                if let Some(id) = replacements.remove(&path)
+                    && let Some(known) = self.recorded.get_mut(&path)
+                {
+                    known.id = id;
+                    learned.push(Observed::Reidentified { path, id });
+                    continue;
+                }
                 self.found.remove(&path);
                 let Some(Known { kind, .. }) = self.recorded.remove(&path) else {
                     continue;
                 };
                 if !self.watcher.snapshot().entries.contains_key(&path) {
-                    changes.push(Observed::Removed { kind, path });
+                    learned.push(Observed::Removed { kind, path });
                 }
             }
+            changes.splice(0..0, learned);
         }
         if (self.stopped)() {
             return Ok(None);

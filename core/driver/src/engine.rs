@@ -1142,6 +1142,11 @@ impl Engine {
                     });
                     if let Some((node, local)) = outside {
                         let identity = file_identity(*id);
+                        if (self.trees.local_with_identity(&identity))
+                            .is_some_and(|other| *other != node)
+                        {
+                            continue;
+                        }
                         let at = self.trees.found_local().get(&node).cloned();
                         self.trees
                             .set_local(node.clone(), LocalNode { identity, ..local });
@@ -1176,7 +1181,6 @@ impl Engine {
                             .is_none()
                         {
                             self.trees.ignore_local(node);
-                            self.trees.find_local(node, to.clone());
                             continue;
                         }
                     }
@@ -4041,6 +4045,27 @@ mod tests {
         let (node, identity, _) = holding(&engine, "x").unwrap();
         assert_ne!(node, removed);
         assert_eq!(identity, file_identity(ino(1)));
+    }
+
+    #[test]
+    fn a_recorded_node_never_takes_an_identity_another_node_holds() {
+        let (_dir, mut engine) = mapper();
+        engine.observe(
+            &[
+                created("a", ino(1), false, 1),
+                created("b", ino(2), false, 2),
+            ],
+            0,
+        );
+        let (a, _, _) = holding(&engine, "a").unwrap();
+        engine.trees.ignore_local(&a);
+        let reidentified = Observed::Reidentified {
+            path: "a".into(),
+            id: ino(2),
+        };
+        engine.observe(&[reidentified], 1);
+        let identity = holding(&engine, "a").map(|(_, identity, _)| identity);
+        assert_eq!(identity, Some(file_identity(ino(1))));
     }
 
     /// Names that the edits of [`batches`] pick from, few enough that entries often take each other's names.
