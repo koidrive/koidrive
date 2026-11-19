@@ -11,7 +11,7 @@ use koidrive_engine::commit::{Base, Commits, GIVEN_UP_KEPT, Halt};
 use koidrive_engine::effects::Effects;
 use koidrive_engine::first_link::History;
 use koidrive_engine::ids::IdGen;
-use koidrive_engine::ignore::LocalRules;
+use koidrive_engine::ignore::{LocalRules, RuleFile, Source};
 use koidrive_engine::names::name_key;
 use koidrive_engine::state::{CommitsChanges, EffectsChanges, TreesChanges};
 use koidrive_engine::tree::{Kind, LocalNode, NodeId, RemoteNode, Shape};
@@ -20,7 +20,7 @@ use koidrive_proto::v1::{
 };
 
 use super::disk::{Disk, Place, identity};
-use super::{Failure, NOW};
+use super::{Failure, NOW, RULES_FILE};
 use crate::space::Session;
 
 /// Everything the store keeps for a space (docs/design/sync-engine.md section 2.8).
@@ -535,21 +535,39 @@ struct Reach {
     nodes: BTreeSet<NodeId>,
 }
 
-/// What a device leaves out of sync by its own exclude list, which it keeps for the whole run.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rules {
     pub exclude: Vec<&'static str>,
+    pub include: Vec<&'static str>,
+    pub file: Vec<&'static str>,
+    pub changed: bool,
 }
 
 impl Rules {
     pub fn read(&self, trees: &mut Trees) {
-        if !self.exclude.is_empty() {
-            let include: [&str; 0] = [];
-            let local = LocalRules::new(&include, &self.exclude).expect("a valid exclude list");
+        if self.changed {
+            let root: [&str; 0] = [];
+            let file =
+                (!self.file.is_empty()).then(|| RuleFile::parse(self.file.join("\n").as_bytes()));
+            trees.set_rules(&root, Source::Koiignore, file);
+        }
+        if self.changed || !self.exclude.is_empty() {
+            let local = LocalRules::new(&self.include, &self.exclude).expect("valid local rules");
             trees.set_local_rules(local);
         }
         trees.rules_scanned();
     }
+
+    pub fn leave_out(&self) -> bool {
+        !self.exclude.is_empty() || !self.include.is_empty() || !self.file.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Ruling {
+    File(Vec<&'static str>),
+    Exclude(Vec<&'static str>),
+    Include(Vec<&'static str>),
 }
 
 /// A message on its way from the server to a device.
@@ -605,6 +623,20 @@ pub struct Device {
 }
 
 impl Device {
+    pub fn read_rules_file(&mut self, texts: &BTreeMap<Vec<u8>, Vec<&'static str>>) -> bool {
+        let file = (self.disk.child(&Place::Root, RULES_FILE))
+            .and_then(|ino| self.disk.entries()[&ino].content.as_ref())
+            .and_then(|content| texts.get(&content.manifest_digest).cloned())
+            .unwrap_or_default();
+        if file == self.rules.file {
+            return false;
+        }
+        self.rules.file = file;
+        self.rules.changed = true;
+        self.rules.read(&mut self.engine.trees);
+        true
+    }
+
     /// Whether the device started a recovery and has not classified the trees for it yet.
     pub fn recovering(&self) -> bool {
         let engine = if self.down { &self.store } else { &self.engine };

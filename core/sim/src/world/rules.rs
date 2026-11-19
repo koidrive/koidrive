@@ -7,8 +7,9 @@ use koidrive_engine::names::{name_key, nfc};
 use koidrive_engine::tree::{Content, Kind, NodeId, Shape};
 use koidrive_proto::v1::{NodeKind, NodeState, NodeStatus, Op, op};
 
-use super::World;
+use super::device::Ruling;
 use super::disk::Place;
+use super::{Act, Action, Failure, TEXTS, World, content};
 
 #[derive(Default)]
 pub(super) struct Unsynced {
@@ -86,6 +87,52 @@ pub(super) fn excluded_op(trees: &Trees, op: &Op) -> Option<String> {
 pub(super) type LeftOutOnDisk = BTreeMap<u128, (Vec<String>, Option<Content>)>;
 
 impl World {
+    pub fn rule(&mut self, d: usize, ruling: &Ruling) -> Result<(), Failure> {
+        if self.devices[d].left {
+            return Ok(());
+        }
+        let rules = &mut self.devices[d].rules;
+        match ruling {
+            Ruling::File(lines) => {
+                let text = (!lines.is_empty()).then(|| {
+                    let known = self.rule_texts.iter().position(|text| text == lines);
+                    let text = TEXTS + known.unwrap_or(self.rule_texts.len()) as u8;
+                    if known.is_none() {
+                        self.rule_texts.push(lines.clone());
+                    }
+                    let digest = content(d as u8, text, 0).manifest_digest;
+                    self.rules_files.insert(digest, lines.clone());
+                    text
+                });
+                let action = Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                };
+                self.act(d, &action, Act::Rules(text));
+                return Ok(());
+            }
+            Ruling::Exclude(lines) => rules.exclude = lines.clone(),
+            Ruling::Include(paths) => rules.include = paths.clone(),
+        }
+        rules.changed = true;
+        self.left_out[d].clear();
+        if self.devices[d].down {
+            return Ok(());
+        }
+        let device = &mut self.devices[d];
+        device.rules.read(&mut device.engine.trees);
+        self.scan(d).map(drop)
+    }
+
+    pub(super) fn read_rules_file(&mut self, d: usize) {
+        if self.devices[d].read_rules_file(&self.rules_files) {
+            self.left_out[d].clear();
+        }
+    }
+
     pub(super) fn left_out_on_disk(&self, d: usize) -> LeftOutOnDisk {
         let device = &self.devices[d];
         let (disk, trees) = (&device.disk, &device.engine.trees);
@@ -189,7 +236,7 @@ impl World {
     pub(super) fn unsynced(&self, d: usize, quiet: bool) -> Unsynced {
         let device = &self.devices[d];
         let mut out = Unsynced::default();
-        if device.rules.exclude.is_empty() {
+        if !device.rules.leave_out() {
             return out;
         }
         let (disk, trees) = (&device.disk, &device.engine.trees);

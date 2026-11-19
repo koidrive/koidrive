@@ -80,6 +80,7 @@ use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::{self, Base, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, location_of};
 use koidrive_engine::first_link::{self, History, Marks};
+use koidrive_engine::ignore::Source;
 use koidrive_engine::names::{conflict_name, name_key, nfc, same_name};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{
@@ -116,6 +117,7 @@ pub const TEXTS: u8 = 4;
 /// The rounds the devices get to become quiet once the faults stop.
 const ROUNDS: usize = 200;
 const BATCH: u64 = 4;
+const RULES_FILE: &str = Source::Koiignore.file_name();
 const WRITE_SLOT_NS: i64 = 2_000_000_000;
 
 /// A broken property, with what broke it.
@@ -192,6 +194,7 @@ enum Act {
     Delete,
     Copy,
     Save { keeps_mark: bool },
+    Rules(Option<u8>),
 }
 
 impl Act {
@@ -603,6 +606,8 @@ pub struct World {
     removed: Vec<BTreeSet<i64>>,
     kept_for_left_out: Vec<BTreeSet<NodeId>>,
     left_out: Vec<LeftOutOnDisk>,
+    rules_files: BTreeMap<Vec<u8>, Vec<&'static str>>,
+    rule_texts: Vec<Vec<&'static str>>,
     overwrote: BTreeMap<i64, i64>,
     /// The writes the server's live tree has held at some time.
     published: BTreeSet<i64>,
@@ -695,6 +700,8 @@ impl World {
             removed: vec![BTreeSet::new(); count],
             kept_for_left_out: vec![BTreeSet::new(); count],
             left_out: vec![BTreeMap::new(); count],
+            rules_files: BTreeMap::new(),
+            rule_texts: Vec::new(),
             overwrote: BTreeMap::new(),
             kept: vec![BTreeMap::new(); devices.len()],
             devices,
@@ -734,13 +741,12 @@ impl World {
         }
     }
 
-    /// Devices with empty disks, each of which leaves out of sync what its own exclude list in
-    /// `exclude` names, for the whole run.
     pub fn excluding(exclude: &[Vec<&'static str>]) -> Self {
         let mut world = Self::new(exclude.len());
         for (device, exclude) in world.devices.iter_mut().zip(exclude) {
             device.rules = Rules {
                 exclude: exclude.clone(),
+                ..Rules::default()
             };
             device.rules.read(&mut device.engine.trees);
             device.store = device.engine.clone();
@@ -972,13 +978,36 @@ impl World {
                     .map(|ino| Place::In(*ino)),
             )
             .collect();
-        let place = dirs[action.parent % dirs.len()].clone();
+        let rules_file = disk.child(&Place::Root, RULES_FILE);
+        let (act, place, name, target, texts) = match act {
+            Act::Rules(text) => {
+                let act = match (text, rules_file) {
+                    (None, _) => Act::Delete,
+                    (Some(_), Some(_)) => Act::Overwrite,
+                    (Some(_), None) => Act::MakeFile,
+                };
+                (
+                    act,
+                    Place::Root,
+                    RULES_FILE,
+                    rules_file,
+                    Vec::from_iter(text),
+                )
+            }
+            act => (
+                act,
+                dirs[action.parent % dirs.len()].clone(),
+                NAMES.get(action.name).copied().unwrap_or(PENDING_NAME),
+                (!visible.is_empty()).then(|| visible[action.target % visible.len()]),
+                (0..TEXTS)
+                    .map(|i| (action.text % TEXTS + i) % TEXTS)
+                    .collect(),
+            ),
+        };
         let parent = match place {
             Place::In(ino) => Some(ino),
             _ => None,
         };
-        let name = NAMES.get(action.name).copied().unwrap_or(PENDING_NAME);
-        let target = (!visible.is_empty()).then(|| visible[action.target % visible.len()]);
         let write = self.writes + 1;
         let made = |ino: u128, parent: Option<u128>, name: &str, content: Option<&Content>| {
             let place = Value::Place {
@@ -1001,7 +1030,7 @@ impl World {
                 None => return,
             },
             (Act::MakeFile, _) => {
-                let content = content(d as u8, action.text % TEXTS, write);
+                let content = content(d as u8, texts[0], write);
                 let Some(new) = disk.create(place, name, Some(content.clone())) else {
                     return;
                 };
@@ -1011,8 +1040,8 @@ impl World {
             }
             (Act::Overwrite, Some(ino)) => {
                 let entry = &disk.entries()[&ino];
-                let fresh = (0..TEXTS)
-                    .map(|i| content(d as u8, (action.text % TEXTS + i) % TEXTS, write))
+                let fresh = (texts.iter())
+                    .map(|text| content(d as u8, *text, write))
                     .find(|content| !entry.held.contains(&content.manifest_digest));
                 let (Some(_), Some(fresh)) = (&entry.content, fresh) else {
                     return;
@@ -1612,6 +1641,7 @@ impl World {
 
     /// A full rescan. True when L changed.
     fn scan(&mut self, d: usize) -> Result<bool, Failure> {
+        self.read_rules_file(d);
         if self.devices[d].rescan() > 0 {
             note(
                 &mut self.seen,
@@ -1622,6 +1652,7 @@ impl World {
     }
 
     fn scan_folder(&mut self, d: usize, pick: usize) -> Result<bool, Failure> {
+        self.read_rules_file(d);
         let device = &mut self.devices[d];
         let folders: Vec<u128> = (device.disk.visible().into_iter())
             .filter(|ino| device.disk.entries()[ino].content.is_none())
@@ -1859,6 +1890,8 @@ impl World {
             }
         }
         device.persist()?;
+        self.read_rules_file(d);
+        let device = &mut self.devices[d];
         device.engine.scan(&device.disk);
         device.persist()?;
         Ok(true)

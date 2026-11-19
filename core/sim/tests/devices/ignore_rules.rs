@@ -244,3 +244,57 @@ fn a_file_renamed_to_a_name_its_rules_exclude_stays_when_another_device_deletes_
     assert_eq!(live_node_at(&world, &["a", "b"]), None);
     ino_at(&world, 1, &["a", "c.txt"]);
 }
+
+#[test]
+fn a_rules_file_another_device_writes_leaves_out_what_it_names_until_it_goes() {
+    let rulings = [
+        (0, 0, Ruling::File(vec!["*.txt"])),
+        (2, 0, Ruling::File(vec![])),
+    ];
+    let phases = [vec![(0, file("a"))], vec![(1, file("c.txt"))], vec![]];
+    let world = converge_ruled(&[vec![], vec![]], &rulings, &phases[..2]).unwrap();
+    assert_eq!(live_node_at(&world, &["c.txt"]), None);
+    ino_at(&world, 1, &[".koiignore"]);
+    let world = converge_ruled(&[vec![], vec![]], &rulings, &phases).unwrap();
+    assert_eq!(
+        content_on(&world, 0, "c.txt"),
+        content_on(&world, 1, "c.txt")
+    );
+}
+
+#[test]
+fn files_its_rules_left_out_sync_once_its_rules_let_them_back() {
+    let lifted = [(1, 1, Ruling::Exclude(vec![]))];
+    let included = [
+        (0, 1, Ruling::Include(vec!["a"])),
+        (1, 1, Ruling::Include(vec!["a", "c.txt"])),
+    ];
+    let phases = [vec![(1, file("c.txt")), (1, file("a"))], vec![]];
+    for (exclude, rulings) in [(vec!["*.txt"], &lifted[..]), (vec![], &included[..])] {
+        let world = converge_ruled(&[vec![], exclude.clone()], rulings, &phases[..1]).unwrap();
+        assert_eq!(live_node_at(&world, &["c.txt"]), None);
+        assert!(live_node_at(&world, &["a"]).is_some());
+        let world = converge_ruled(&[vec![], exclude], rulings, &phases).unwrap();
+        assert_eq!(
+            content_on(&world, 0, "c.txt"),
+            content_on(&world, 1, "c.txt")
+        );
+    }
+}
+
+#[test]
+fn a_synced_file_its_rules_come_to_exclude_keeps_its_bytes_when_another_device_overwrites_it() {
+    let rulings = [(1, 1, Ruling::Exclude(vec!["*.txt"]))];
+    let phases = [vec![(0, file("c.txt"))], vec![]];
+    let before = converge_ruled(&[vec![], vec![]], &rulings, &phases).unwrap();
+    let phases = [vec![(0, file("c.txt"))], vec![(0, overwrite(0))]];
+    let world = converge_ruled(&[vec![], vec![]], &rulings, &phases).unwrap();
+    assert_eq!(
+        content_on(&world, 1, "c.txt"),
+        content_on(&before, 1, "c.txt")
+    );
+    assert_ne!(
+        content_on(&world, 0, "c.txt"),
+        content_on(&world, 1, "c.txt")
+    );
+}

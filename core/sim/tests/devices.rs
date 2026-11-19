@@ -17,6 +17,7 @@ use koidrive_engine::question::{Answer, QuestionKind};
 use koidrive_engine::restore::RestoreIntent;
 use koidrive_engine::tree::Content;
 use koidrive_proto::v1::{NodeStatus, error};
+use koidrive_sim::world::device::Ruling;
 use koidrive_sim::world::disk::{Place, Precision};
 use koidrive_sim::world::{
     Action, Check, Cut, Failure, NAMES, Outcome, PENDING_NAME, Reply, Step, TEXTS, World,
@@ -307,16 +308,21 @@ fn run(
     phases: &[Vec<(usize, Step)>],
     stops: fn(&Failure) -> bool,
 ) -> Result<World, Failure> {
-    run_in(on(volumes), phases, stops)
+    run_in(on(volumes), &[], phases, stops)
 }
 
 fn run_in(
     mut world: World,
+    rulings: &[(usize, usize, Ruling)],
     phases: &[Vec<(usize, Step)>],
     stops: fn(&Failure) -> bool,
 ) -> Result<World, Failure> {
     for (phase, schedule) in phases.iter().enumerate() {
-        match world.phase(phase, schedule) {
+        let devices = world.devices.len();
+        let ruled = (rulings.iter())
+            .filter(|(at, d, _)| *at == phase && *d < devices)
+            .try_for_each(|(_, d, ruling)| world.rule(*d, ruling));
+        match ruled.and_then(|()| world.phase(phase, schedule)) {
             Err(failure) if stops(&failure) => return Err(failure),
             _ => {}
         }
@@ -348,19 +354,51 @@ fn converge_excluding(
     exclude: &[Vec<&'static str>],
     phases: &[Vec<(usize, Step)>],
 ) -> Result<World, Failure> {
-    run_in(configured(World::excluding(exclude)), phases, |_| true)
+    converge_ruled(exclude, &[], phases)
 }
 
-fn keep_excluding(
+fn converge_ruled(
     exclude: &[Vec<&'static str>],
+    rulings: &[(usize, usize, Ruling)],
     phases: &[Vec<(usize, Step)>],
 ) -> Result<World, Failure> {
-    run_in(configured(World::excluding(exclude)), phases, |failure| {
-        matches!(failure, Failure::Broken(_))
-    })
+    run_in(
+        configured(World::excluding(exclude)),
+        rulings,
+        phases,
+        |_| true,
+    )
+}
+
+fn keep_ruled(
+    exclude: &[Vec<&'static str>],
+    rulings: &[(usize, usize, Ruling)],
+    phases: &[Vec<(usize, Step)>],
+) -> Result<World, Failure> {
+    run_in(
+        configured(World::excluding(exclude)),
+        rulings,
+        phases,
+        |failure| matches!(failure, Failure::Broken(_)),
+    )
 }
 
 const EXCLUDED: &[&str] = &["a", "/b", "*.txt", "ss/", "c.txt", "\u{e9}"];
+
+const RULED: &[&str] = &["a", "/b", "*.txt", "ss/", "c.txt", "\u{e9}", "!a"];
+
+const INCLUDED: &[&str] = &["a", "b/", "c.txt", "ss/"];
+
+fn rulings() -> impl Strategy<Value = Vec<(usize, usize, Ruling)>> {
+    let lines =
+        |pool: &'static [&'static str]| prop::collection::vec(prop::sample::select(pool), 0..3);
+    let ruling = prop_oneof![
+        lines(RULED).prop_map(Ruling::File),
+        lines(RULED).prop_map(Ruling::Exclude),
+        lines(INCLUDED).prop_map(Ruling::Include),
+    ];
+    prop::collection::vec((0..3usize, 0..3usize, ruling), 0..4)
+}
 
 fn excludes() -> impl Strategy<Value = Vec<Vec<&'static str>>> {
     let list = prop_oneof![
@@ -680,8 +718,10 @@ fn devices_with_rules_lose_no_write() {
     holds(
         test_name!(devices_with_rules_lose_no_write),
         None,
-        (2..=3usize, excludes(), phases(Losses::None)),
-        |(devices, exclude, phases)| keep_excluding(&exclude[..devices], &phases).map(drop),
+        (2..=3usize, excludes(), phases(Losses::None), rulings()),
+        |(devices, exclude, phases, rulings)| {
+            keep_ruled(&exclude[..devices], &rulings, &phases).map(drop)
+        },
     );
 }
 
@@ -690,8 +730,10 @@ fn devices_with_rules_converge_once_the_faults_stop() {
     holds(
         test_name!(devices_with_rules_converge_once_the_faults_stop),
         None,
-        (2..=3usize, excludes(), phases(Losses::None)),
-        |(devices, exclude, phases)| converge_excluding(&exclude[..devices], &phases).map(drop),
+        (2..=3usize, excludes(), phases(Losses::None), rulings()),
+        |(devices, exclude, phases, rulings)| {
+            converge_ruled(&exclude[..devices], &rulings, &phases).map(drop)
+        },
     );
 }
 
