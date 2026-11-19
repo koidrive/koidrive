@@ -1250,6 +1250,7 @@ fn revive(
     let trees = &device.trees;
     let reclaimed = |id: &&String| {
         let changed = device.touched.contains(*id)
+            && !asked.contains(*id)
             && !trees.excluded(id)
             && (trees.local().get(id))
                 .is_some_and(|local| !discarded.get(*id).is_some_and(|shown| local.shape.same(shown)));
