@@ -1244,13 +1244,17 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     private async downloadTargets(session: Session, request: GetDownloadTargets) {
       if (request.hashes.length > MAX_CHUNKS_PER_CALL) fail(Error_Code.LIMIT_EXCEEDED, `at most ${MAX_CHUNKS_PER_CALL} chunks per call`);
       const spaceId = this.spaceId;
-      const found = request.hashes.map((hash) => {
-        const row = this.sql.exec("SELECT state, incarnation FROM chunks WHERE hash = ?", hash).toArray()[0];
-        return row?.state === ChunkState.LIVE && row.incarnation !== null ? { spaceId, hashHex: toHex(hash), incarnation: String(row.incarnation) } : undefined;
-      });
+      const expiresAtMs = this.clock() + GRANT_MS;
+      const found = this.db.transactionSync(() =>
+        request.hashes.map((hash) => {
+          const row = this.sql.exec("SELECT state, incarnation FROM chunks WHERE hash = ?", hash).toArray()[0];
+          if (row?.state !== ChunkState.LIVE || row.incarnation === null) return undefined;
+          this.sql.exec("UPDATE chunks SET hold_until_ms = MAX(hold_until_ms, ?) WHERE hash = ? AND refcount = 0", expiresAtMs, hash);
+          return { spaceId, hashHex: toHex(hash), incarnation: String(row.incarnation) };
+        }),
+      );
       const missing = request.hashes.filter((_hash, i) => !found[i]);
       if (missing.length > 0) throw new CallFailure(Error_Code.MISSING_CHUNKS, "some chunks are not stored", missing);
-      const expiresAtMs = this.clock() + GRANT_MS;
       const targets = [];
       for (const [i, hash] of request.hashes.entries()) {
         const object = found[i]!;
