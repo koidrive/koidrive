@@ -357,16 +357,18 @@ fn errors_forget_the_commit_only_when_nothing_was_applied() {
         (Code::ReadOnly, Failure::Halted(Halt::ReadOnly), false),
         (
             Code::HistoryMismatch,
-            Failure::Halted(Halt::Recovery { cause: RecoveryCause::of(
-                RecoveryTrigger::SpaceRewound,
-            ), policy: None }),
+            Failure::Halted(Halt::Recovery {
+                cause: RecoveryCause::of(RecoveryTrigger::SpaceRewound),
+                policy: None,
+            }),
             true,
         ),
         (
             Code::StaleDeviceState,
-            Failure::Halted(Halt::Recovery { cause: RecoveryCause::of(
-                RecoveryTrigger::StoreRolledBack,
-            ), policy: None }),
+            Failure::Halted(Halt::Recovery {
+                cause: RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
+                policy: None,
+            }),
             true,
         ),
     ];
@@ -1001,7 +1003,8 @@ fn a_recovery_forgets_the_commits_its_slots_were_given_before_a_loss() {
     let (mut trees, mut ids) = (trees(&[]), IdGen::new(1));
     commits.recover(
         &mut trees,
-        0, false,
+        0,
+        false,
         &cause,
         &History::new(),
         &Marks::new(),
@@ -1134,9 +1137,14 @@ fn a_recovery_keeps_the_policy_halt_it_interrupted() {
     };
     assert_eq!(commits.connected(&rewound), Reconnect::Recovery);
     let (history, marks) = (History::new(), Marks::new());
-    commits.recover(&mut trees, 0, false, &cause, &history, &marks, &mut ids, NOW);
+    commits.recover(
+        &mut trees, 0, false, &cause, &history, &marks, &mut ids, NOW,
+    );
     assert_eq!(commits.halted(), halt);
-    assert_eq!(commits.lift(Lift::Resend), Err(LiftError::NeedsConfirmation));
+    assert_eq!(
+        commits.lift(Lift::Resend),
+        Err(LiftError::NeedsConfirmation)
+    );
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
