@@ -1,6 +1,6 @@
 # Koidrive for macOS
 
-Koidrive for macOS is the full Koidrive sync client for macOS 26 or later on Apple silicon. Use the setup window to connect to your server, sign in this Mac and link a folder. The menu bar shows sync status and notices, opens folders in Finder and lets you pause or resume sync. **Needs You** asks for decisions before risky changes. **Settings** has **Folders**, **Account**, **Storage**, **Problems** and **General** tabs. See the [Mac app guide](../../docs/guide/macos.md) for setup and everyday use.
+Koidrive for macOS is the full Koidrive sync client for macOS 26 or later on Apple silicon. Use the setup window to connect to your server, sign in this Mac and link a folder. The menu bar shows sync status and notices, opens folders in Finder and lets you pause or resume sync. **Needs You** asks for decisions before risky changes. **Settings** has **Folders**, **Account**, **Storage**, **Problems**, **General** and **Advanced** tabs. See the [Mac app guide](../../docs/guide/macos.md) for setup and everyday use.
 
 While files sync, the menu shows how many are left to upload and download and how many bytes are done. Every synced file is a full copy on disk.
 

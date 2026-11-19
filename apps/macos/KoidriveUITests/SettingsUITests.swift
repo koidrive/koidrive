@@ -30,7 +30,7 @@ final class SettingsUITests: XCTestCase {
         let toolbar = window.toolbars.firstMatch
         XCTAssert(toolbar.waitForExistence(timeout: 10), "no toolbar in \(scenario)")
 
-        let titles = ["Folders", "Account", "Storage", "Problems", "General"]
+        let titles = ["Folders", "Account", "Storage", "Problems", "General", "Advanced"]
         XCTAssertEqual(toolbar.buttons.allElementsBoundByIndex.map(\.label), titles, scenario)
         let frames = titles.map { toolbar.buttons[$0].frame }
         for (title, frame) in zip(titles, frames) {

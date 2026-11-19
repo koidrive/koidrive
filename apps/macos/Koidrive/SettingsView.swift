@@ -7,12 +7,13 @@ import ServiceManagement
 import SwiftUI
 
 enum SettingsTab: String {
-    case folders, account, storage, problems, general
+    case folders, account, storage, problems, general, advanced
 
     static let storageKey = "settingsTab"
 }
 
 struct SettingsView: View {
+    @Environment(AppModel.self) private var model
     @AppStorage(SettingsTab.storageKey) private var tab = SettingsTab.folders
 
     var body: some View {
@@ -32,6 +33,9 @@ struct SettingsView: View {
             GeneralSettings()
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag(SettingsTab.general)
+            AdvancedSettings(app: model)
+                .tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
+                .tag(SettingsTab.advanced)
         }
         .frame(width: 600, height: 440)
     }
@@ -772,6 +776,89 @@ struct GeneralSettings: View {
             }
         }
     }
+}
+
+struct AdvancedSettings: View {
+    let app: AppModel
+    @State private var gitignore: GitignoreSettingModel
+
+    init(app: AppModel, gitignore: GitignoreSettingModel? = nil) {
+        self.app = app
+        _gitignore = State(initialValue: gitignore ?? GitignoreSettingModel(app: app))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            GroupBand("Sync")
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Follow .gitignore files")
+                        .foregroundStyle(Color.text)
+                    Text("Files a .gitignore excludes don’t sync from this Mac.")
+                        .font(.callout)
+                        .foregroundStyle(Color.text2)
+                    outcome
+                        .font(.callout)
+                        .padding(.top, 4)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Toggle("Follow .gitignore files", isOn: Binding(get: { gitignore.follows }, set: { follow in
+                    Task { await gitignore.set(follow: follow) }
+                }))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .tint(.koi)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            Spacer()
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.panel)
+        .task { await gitignore.recount() }
+        .alert("Sync ignored files?", isPresented: Binding(get: { gitignore.confirmingOff }, set: { shown in
+            if !shown { gitignore.cancelOff() }
+        })) {
+            Button("Sync Files") { gitignore.confirmOff() }
+            Button("Cancel", role: .cancel) { gitignore.cancelOff() }
+        } message: {
+            if let count = gitignore.count, count.files > 0 {
+                Text("\(fileCount(count.files)) (\(count.bytes.formatted(.byteCount(style: .file)))) in \(count.folderNames.formatted(.list(type: .and))) will upload.")
+            } else {
+                Text("Files your .gitignore files exclude will start syncing from this Mac.")
+            }
+        }
+    }
+
+    @ViewBuilder private var outcome: some View {
+        if gitignore.applying != nil {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.mini)
+                if app.state.folders.isEmpty {
+                    Text("Applying…")
+                } else {
+                    Text("Applying to \(app.state.folders.map(\.spaceName).formatted(.list(type: .and)))…")
+                }
+            }
+            .foregroundStyle(Color.text2)
+        } else if let failure = gitignore.failure {
+            Text(failure.message)
+                .foregroundStyle(Color.statusRed)
+        } else if let files = gitignore.noLongerSyncing, files > 0 {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: "info.circle")
+                Text("\(files) files no longer sync from this Mac. They stay on this Mac and on the server.")
+            }
+            .foregroundStyle(Color.ink)
+        }
+    }
+}
+
+#Preview("Advanced") {
+    AdvancedSettings(app: AppModel.preview(.upToDate)).frame(width: 600, height: 440)
 }
 
 #Preview("Folders") {

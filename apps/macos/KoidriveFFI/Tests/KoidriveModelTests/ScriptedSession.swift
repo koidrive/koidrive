@@ -16,6 +16,8 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
         case pause
         case resume
         case setTelemetry
+        case setGitignore
+        case gitignoreOnly
     }
 
     let base: SyncSession
@@ -26,6 +28,8 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
     private var holding: Read?
     private var held = false
     private var onMainThread: [Read] = []
+    private var made: [Read: Int] = [:]
+    private var unreadable: [String] = []
 
     init(base: SyncSession) {
         self.base = base
@@ -39,6 +43,8 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
     func holdNext(_ read: Read) { lock.withLock { holding = read; held = false } }
     var isHolding: Bool { lock.withLock { held } }
     var callsOnMainThread: [Read] { lock.withLock { onMainThread } }
+    func calls(_ read: Read) -> Int { lock.withLock { made[read, default: 0] } }
+    func countLeavesOut(_ paths: [String]) { lock.withLock { unreadable = paths } }
 
     override func state() -> SessionState { base.state() }
     override func start() { base.start() }
@@ -46,6 +52,7 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
     override func resume() throws { try run(.resume) { try base.resume() } }
     override func setTelemetry(enabled: Bool) throws { try run(.setTelemetry) { try base.setTelemetry(enabled: enabled) } }
     override func telemetry() -> TelemetrySetting { base.telemetry() }
+    override func gitignore() -> Bool { base.gitignore() }
     override func fakeCore() -> FakeCore? { base.fakeCore() }
     override func unlinkFolder(spaceId: String) throws { try base.unlinkFolder(spaceId: spaceId) }
 
@@ -90,8 +97,23 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
         try run(.answer) { try base.answer(questionId: questionId, answer: answer) }
     }
 
+    override func setGitignore(follow: Bool) throws {
+        try run(.setGitignore) { try base.setGitignore(follow: follow) }
+    }
+
+    override func linkFolder(spaceId: String, path: String) throws -> LinkedFolder {
+        try base.linkFolder(spaceId: spaceId, path: path)
+    }
+
+    override func gitignoreOnly(spaceId: String) throws -> GitignoreOnly {
+        var only = try run(.gitignoreOnly) { try base.gitignoreOnly(spaceId: spaceId) }
+        only.unreadable += lock.withLock { unreadable }
+        return only
+    }
+
     private func run<T>(_ read: Read, _ call: () throws -> T) throws -> T {
         if Thread.isMainThread { lock.withLock { onMainThread.append(read) } }
+        lock.withLock { made[read, default: 0] += 1 }
         if lock.withLock({ failing.remove(read) != nil }) {
             throw SessionError.ServerUnreachable(reason: "scripted")
         }
