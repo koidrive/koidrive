@@ -56,7 +56,7 @@ extension Question {
         case .massDelete(let deletions, let affectedFiles, let spaceFiles, _):
             String(localized: "\(deletionCount(deletions)) would remove \(affectedFiles.formatted()) of \(fileCount(spaceFiles)).")
         case .ambiguousDisappearance:
-            String(localized: "These went missing while Koidrive wasn't running. Other devices keep them until you decide.")
+            String(localized: "Koidrive couldn't tell whether these were moved or deleted. Other devices keep them until you decide.")
         case .recovery(_, let group):
             group.explanation
         case .conflict:
