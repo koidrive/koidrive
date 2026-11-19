@@ -72,6 +72,9 @@ pub enum Origin {
     /// No commit: a Discard, a restore the mass-delete guard made, an effect, an update both sides
     /// agree on, or loss recovery.
     Other,
+    /// The shape S held for a node it gave up together with an excluded folder (design section
+    /// 5.10). It stands in for S until S can hold the node again.
+    Released,
 }
 
 /// Where a node stands against its merge base S.
@@ -2246,14 +2249,14 @@ impl Trees {
             self.forget_identity(id, &old.identity);
             self.mark(id);
         }
-        if self.s.get(id).is_none() && !self.watched_positions.contains_key(id) {
-            let base = (self.waiting.get(id)).is_some_and(|waiting| {
-                matches!(waiting.origin, Origin::Other) && waiting.shape.is_some()
-            });
-            if base && self.unobserved.contains(id) {
+        if self.s.get(id).is_none() {
+            let released = (self.waiting.get(id)).is_some_and(|w| w.origin == Origin::Released);
+            if released && self.unobserved.contains(id) {
                 self.waiting.remove(id);
             }
-            self.clear_unobserved(id);
+            if !self.watched_positions.contains_key(id) {
+                self.clear_unobserved(id);
+            }
         }
     }
 
@@ -2430,7 +2433,9 @@ impl Trees {
         self.cycles_may_end = true;
         let waiting: Vec<NodeId> = self.waiting.keys().cloned().collect();
         for id in waiting {
-            if let Some(mut waiting) = self.waiting.get(&id).cloned() {
+            if let Some(mut waiting) = self.waiting.get(&id).cloned()
+                && matches!(waiting.origin, Origin::Commit(_))
+            {
                 waiting.origin = Origin::Other;
                 self.waiting.insert(id, waiting);
             }
@@ -5924,7 +5929,8 @@ impl Trees {
             .map(|id| (id.clone(), targets[id.as_str()].cloned()))
             .collect();
         self.unsearched.clear();
-        self.unsearched.extend(unsearched);
+        self.unsearched
+            .extend(unsearched.into_iter().filter(|id| pending.contains(id)));
         let bases: Vec<(NodeId, Shape)> = (drops.values())
             .flat_map(|dropped| dropped.nodes())
             .filter(|(id, _)| self.l.get(id).is_some() || !self.unobserved.contains(id))
@@ -5940,7 +5946,7 @@ impl Trees {
         }
         for (id, base) in bases {
             if self.s.get(&id).is_none() {
-                self.wait(id, Some(base), Origin::Other);
+                self.wait(id, Some(base), Origin::Released);
             }
         }
         debug_assert_eq!(self.s.check(Names::ByKey), Ok(()));

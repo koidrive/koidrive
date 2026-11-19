@@ -108,7 +108,7 @@ impl Tx<'_> {
         }
 
         let mut stmt = self.0.prepare_cached(
-            "SELECT node_id, parent_id, name, kind, content, slot FROM waiting_updates",
+            "SELECT node_id, parent_id, name, kind, content, slot, released FROM waiting_updates",
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
@@ -121,9 +121,10 @@ impl Tx<'_> {
                     content: decode(row.get(4)?)?,
                 }),
             };
-            let origin = match row.get::<_, Option<u64>>(5)? {
-                None => Origin::Other,
-                Some(slot) => Origin::Commit(slot),
+            let origin = match (row.get::<_, Option<u64>>(5)?, row.get::<_, bool>(6)?) {
+                (Some(slot), _) => Origin::Commit(slot),
+                (None, true) => Origin::Released,
+                (None, false) => Origin::Other,
             };
             state
                 .trees
@@ -681,12 +682,12 @@ impl Tx<'_> {
         self.write_map(
             waiting,
             "DELETE FROM waiting_updates WHERE node_id = ?1",
-            "INSERT OR REPLACE INTO waiting_updates (node_id, parent_id, name, kind, content, slot)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT OR REPLACE INTO waiting_updates (node_id, parent_id, name, kind, content, slot, released)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             |put, node, Waiting { shape, origin }| {
                 let slot = match origin {
                     Origin::Commit(slot) => Some(*slot),
-                    Origin::Other => None,
+                    Origin::Other | Origin::Released => None,
                 };
                 put.execute(params![
                     node,
@@ -698,6 +699,7 @@ impl Tx<'_> {
                         .and_then(|shape| shape.content.as_ref())
                         .map(Content::encode_to_vec),
                     slot,
+                    *origin == Origin::Released,
                 ])
             },
         )?;

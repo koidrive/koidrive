@@ -2426,3 +2426,54 @@ fn a_file_deleted_here_that_another_device_moved_out_of_a_given_up_folder_comes_
     effects(&mut trees);
     assert_eq!(trees.local().live("z"), Some(&file(ROOT, "zz", 1)));
 }
+
+fn given_up_beside(rows: &[Row]) -> Trees {
+    let mut all = vec![
+        incoming("far", dir(ROOT, "far")),
+        (
+            "x",
+            Some(dir(ROOT, "x")),
+            Some(dir(ROOT, "x")),
+            Some(dir("far", "x")),
+        ),
+    ];
+    all.extend_from_slice(rows);
+    let mut trees = trees(&all);
+    let parked = LocalNode {
+        parked: true,
+        ..local(dir(ROOT, "x"), 2)
+    };
+    trees.set_local("x".into(), parked);
+    trees.set_local("y".into(), local(file(ROOT, "x", 2), 100));
+    trees.set_synced("y".into(), Some(file("x", "f", 2)));
+    trees.set_remote("y".into(), remote(file(ROOT, "x", 2)));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/far/\n"));
+    trees.settle(&Default::default());
+    trees
+}
+
+#[test]
+fn a_folder_given_up_with_more_unchanged_files_than_one_search_takes_loads_after_a_restart() {
+    const FILES: [&str; 12] = [
+        "c00", "c01", "c02", "c03", "c04", "c05", "c06", "c07", "c08", "c09", "c10", "c11",
+    ];
+    let rows: Vec<Row> = (FILES.iter())
+        .map(|id| synced(id, file("x", id, 1)))
+        .collect();
+    let trees = given_up_beside(&rows);
+    let mut restored = trees.clone();
+    assert_eq!(restored.restore(trees.state()), Ok(()));
+}
+
+#[test]
+fn a_given_up_file_removed_while_a_commit_watches_its_position_downloads_once_included() {
+    let mut trees = given_up_beside(&[synced("z", file("x", "g", 1))]);
+    trees.watch_positions(["z".into()]);
+    trees.remove_local("z");
+    trees.settle(&Default::default());
+    trees.watch_positions([]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
+    assert_eq!(ops(&mut trees), []);
+    effects(&mut trees);
+    assert_eq!(trees.local().live("z"), Some(&file("x", "g", 1)));
+}
