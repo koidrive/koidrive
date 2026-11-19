@@ -1345,7 +1345,8 @@ impl Commits {
     /// an excluded node in R is not deleted, since that would trash the excluded node on the
     /// server: each topmost deleted node below it with no excluded node in its subtree gets its
     /// own delete, and the folder stays (section 5.10). A node only a built-in exclusion leaves out
-    /// ([`Trees::built_in`]) does not count: no device syncs it, so it goes with the folder.
+    /// ([`Trees::built_in`]) below a deleted folder is deleted with it, since no device syncs it: it
+    /// does not keep the folder, the guard counts its files, and the splitter can cut its subtree.
     ///
     /// A node an open question holds gets no op. Every other deletion that could be planned now goes
     /// through the mass-delete guard first (section 6.1), and the commit carries the changes it
@@ -1460,7 +1461,7 @@ impl Commits {
                 self.given_up_nodes.remove(&id);
             }
         }
-        let deleted = (trees.dirty_others().iter())
+        let mut deleted = (trees.dirty_others().iter())
             .filter(|id| {
                 !skip.contains(*id)
                     && !self.given_up_nodes.contains_key(*id)
@@ -1468,6 +1469,7 @@ impl Commits {
             })
             .cloned()
             .collect();
+        built_in_below(trees, &mut deleted);
         let pending = guard::deletions(trees, &deleted);
         let given_up_files = self.given_up_files(trees);
         let checked = (self.guard).check(&mut asked, pending, trees, given_up_files, ids, now_ms);
@@ -3205,6 +3207,20 @@ fn deletes(trees: &Trees, id: &str, needed: &BTreeSet<NodeId>) -> bool {
         && !needed.contains(id)
 }
 
+fn built_in_below(trees: &Trees, deleted: &mut BTreeSet<NodeId>) {
+    let mut below: Vec<NodeId> = deleted.iter().cloned().collect();
+    while let Some(id) = below.pop() {
+        for child in trees
+            .synced_children(&id)
+            .filter(|child| trees.built_in(child))
+        {
+            if deleted.insert(child.clone()) {
+                below.push(child.clone());
+            }
+        }
+    }
+}
+
 /// Makes the S updates, the last for each node, that leave S a valid tree: all of them together
 /// when they fit together, otherwise those left once each update that a node outside the batch
 /// blocks is taken out ([`blocked`]), otherwise each that fits on its own and then the rest together
@@ -4364,6 +4380,7 @@ fn plan(
             });
         }
     }
+    built_in_below(trees, &mut deleted);
     deleted.extend(given_up.keys().filter(|id| !skip.contains(*id)).cloned());
     let within = within.unwrap_or(wants.len());
     let mut scratch = Scratch::new(trees);
@@ -4386,7 +4403,6 @@ fn plan(
             members.insert(node.clone());
             below.extend(children.get(node.as_str()).into_iter().flatten());
         }
-        members.extend((scratch.subtree(id).into_iter()).filter(|node| trees.built_in(node)));
         let bytes: usize = members
             .iter()
             .map(|node| record_cost(trees.synced().live(node)) + held_ancestry_cost(trees, node))

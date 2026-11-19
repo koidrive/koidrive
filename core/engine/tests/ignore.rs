@@ -610,7 +610,7 @@ fn deleting_a_folder_whose_excluded_nodes_are_all_built_in_deletes_it_with_them(
 }
 
 #[test]
-fn a_deleted_folder_that_also_holds_a_node_the_rules_exclude_stays() {
+fn a_deleted_folder_that_also_holds_a_node_the_rules_exclude_stays_and_its_system_folders_go() {
     let mut trees = trees(&[
         synced("d", dir(ROOT, "Disk")),
         synced("trashes", dir("d", ".Trashes")),
@@ -620,7 +620,7 @@ fn a_deleted_folder_that_also_holds_a_node_the_rules_exclude_stays() {
     for id in ["trashes", "log", "d"] {
         trees.remove_local(id);
     }
-    assert_eq!(ops(&mut trees), []);
+    assert_eq!(ops(&mut trees), [delete("trashes")]);
     assert_eq!(effects(&mut trees), []);
 }
 
