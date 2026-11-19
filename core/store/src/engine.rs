@@ -15,7 +15,7 @@ use koidrive_engine::restore::SplitRestore;
 use koidrive_engine::state::{
     Agreed, CommitsChanges, CommitsState, ContentProvenance, EffectsChanges, EffectsState,
     FinishOrigin, GivenUp, LostPosition, MapChanges, MovedHere, PendingFinish, SetChanges,
-    TreesChanges, TreesState,
+    SyncedPosition, TreesChanges, TreesState,
 };
 use koidrive_engine::tree::{FileIdentity, Kind, NodeId, Shape};
 use koidrive_proto::v1::{Commit, CommitResult, Content, NodeKind};
@@ -292,6 +292,23 @@ impl Tx<'_> {
                 .entry(node)
                 .or_default()
                 .push(past);
+        }
+        let mut stmt = self.0.prepare_cached(
+            "SELECT node_id, parent_id, name FROM synced_positions ORDER BY node_id, position",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let position = SyncedPosition {
+                parent: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                name: row.get(2)?,
+            };
+            let node: NodeId = row.get(0)?;
+            state
+                .trees
+                .synced_positions
+                .entry(node)
+                .or_default()
+                .push(position);
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM unsent_edits")?;
         let mut rows = stmt.query([])?;
@@ -599,6 +616,7 @@ impl Tx<'_> {
             edited_here,
             moved_here,
             past_positions,
+            synced_positions,
             unsent_edits,
             dropped_edits,
             cycle_reverted,
@@ -894,6 +912,23 @@ impl Tx<'_> {
                     node,
                     index,
                     position.rev,
+                    non_empty(&position.parent),
+                    &position.name
+                ])?;
+            }
+        }
+        let mut remove = self
+            .0
+            .prepare_cached("DELETE FROM synced_positions WHERE node_id = ?1")?;
+        let mut put = self.0.prepare_cached(
+            "INSERT INTO synced_positions (node_id, position, parent_id, name) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        for (node, positions) in synced_positions {
+            remove.execute([node])?;
+            for (index, position) in positions.iter().flatten().enumerate() {
+                put.execute(params![
+                    node,
+                    index,
                     non_empty(&position.parent),
                     &position.name
                 ])?;

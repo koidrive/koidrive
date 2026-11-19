@@ -29,6 +29,13 @@ pub struct Agreed {
     pub name: String,
 }
 
+/// A position S held of a node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyncedPosition {
+    pub parent: NodeId,
+    pub name: String,
+}
+
 /// A position a create or a move of this device set: the seq of its commit, and whether the store
 /// upgrade recorded it, without the positions R held before it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -264,6 +271,9 @@ pub struct TreesState {
     /// [`PAST_POSITIONS_KEPT`](crate::classify::PAST_POSITIONS_KEPT), and the one a move of
     /// `moved_here` replaced, which shows that a move and not a create set that position.
     pub past_positions: BTreeMap<NodeId, Vec<Agreed>>,
+    /// The earlier positions S held of each node R holds, oldest first: the newest
+    /// [`SYNCED_POSITIONS_KEPT`](crate::classify::SYNCED_POSITIONS_KEPT).
+    pub synced_positions: BTreeMap<NodeId, Vec<SyncedPosition>>,
     /// The files whose content in L is an edit of this device that the server does not hold,
     /// although S and R may hold the same bytes (section 4.4).
     pub unsent_edits: BTreeSet<NodeId>,
@@ -485,6 +495,7 @@ pub struct TreesChanges {
     pub edited_here: MapChanges<NodeId, u64>,
     pub moved_here: MapChanges<NodeId, MovedHere>,
     pub past_positions: MapChanges<NodeId, Vec<Agreed>>,
+    pub synced_positions: MapChanges<NodeId, Vec<SyncedPosition>>,
     pub unsent_edits: SetChanges<NodeId>,
     pub dropped_edits: SetChanges<NodeId>,
     pub unsent_moves: SetChanges<NodeId>,
@@ -530,6 +541,7 @@ impl TreesChanges {
             edited_here,
             moved_here,
             past_positions,
+            synced_positions,
             unsent_edits,
             dropped_edits,
             unsent_moves,
@@ -571,6 +583,7 @@ impl TreesChanges {
             edited_here: map_changes(&before.edited_here, edited_here),
             moved_here: map_changes(&before.moved_here, moved_here),
             past_positions: map_changes(&before.past_positions, past_positions),
+            synced_positions: map_changes(&before.synced_positions, synced_positions),
             unsent_edits: set_changes(&before.unsent_edits, unsent_edits),
             dropped_edits: set_changes(&before.dropped_edits, dropped_edits),
             unsent_moves: set_changes(&before.unsent_moves, unsent_moves),
@@ -771,6 +784,8 @@ pub enum StateError {
     NotMovedHere(NodeId),
     /// Earlier records are kept for a node R does not hold.
     NotPastPosition(NodeId),
+    /// Earlier positions of S are kept for a node R does not hold.
+    NotSyncedPosition(NodeId),
     /// A file is recorded with an edit the server does not hold, but L does not hold it.
     NotUnsentEdit(NodeId),
     /// A node is recorded with a change R took since S took its shape, but S does not hold it.

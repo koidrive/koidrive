@@ -993,6 +993,242 @@ fn a_node_deleted_on_this_device_is_held_until_the_delete_is_confirmed() {
     }
 }
 
+fn lose_a_rename(trees: &mut Trees, id: &str, renamed: Shape, before: Shape) {
+    trees.set_synced(id.into(), Some(before.clone()));
+    trees.set_remote(id.into(), server_version(renamed.clone(), "", &[], 2));
+    trees.set_synced(id.into(), Some(renamed));
+    trees.settle(&Default::default());
+    trees.set_remote(id.into(), server_version(before, "", &[], 1));
+    trees.settle(&Default::default());
+}
+
+#[test]
+fn a_file_deleted_on_this_device_stays_held_when_the_rewind_lost_its_rename() {
+    let mut trees = trees(
+        &[],
+        &[("n", file(ROOT, "a", 1))],
+        &[live("n", file(ROOT, "é", 1))],
+    );
+    lose_a_rename(&mut trees, "n", file(ROOT, "a", 1), file(ROOT, "é", 1));
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    for _ in 0..2 {
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+        assert_eq!(effects(&mut trees, &mut ids), []);
+    }
+    let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
+    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "a", 1)));
+    assert!(commits.decide(&question.id, Answer::Delete));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("delete", "n".to_owned())]
+    );
+    assert_eq!(effects(&mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_folder_deleted_on_this_device_stays_held_while_a_file_in_it_lost_its_rename() {
+    let mut trees = trees(
+        &[],
+        &[("d", dir(ROOT, "d")), ("c", file("d", "c", 1))],
+        &[live("d", dir(ROOT, "d")), live("c", file("d", "b", 1))],
+    );
+    lose_a_rename(&mut trees, "c", file("d", "c", 1), file("d", "b", 1));
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    for _ in 0..2 {
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+        assert_eq!(effects(&mut trees, &mut ids), []);
+    }
+    let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["c", "d"]);
+    assert_eq!(trees.synced().live("d"), Some(&dir(ROOT, "d")));
+    assert!(commits.decide(&question.id, Answer::Delete));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("delete", "d".to_owned())]
+    );
+    assert_eq!(effects(&mut trees, &mut ids), []);
+}
+
+fn deleted_after_a_rewind_to_an_older_version() -> (Trees, Commits, IdGen) {
+    let mut trees = trees(&[], &[], &[]);
+    trees.set_remote(
+        "n".into(),
+        server_version(file(ROOT, "a", 2), "v2", &["v1"], 2),
+    );
+    trees.set_synced("n".into(), Some(file(ROOT, "a", 2)));
+    trees.settle(&Default::default());
+    trees.set_remote("n".into(), server_version(file(ROOT, "a", 1), "v1", &[], 1));
+    trees.settle(&Default::default());
+    let (commits, ids) = recovered(&mut trees, 0);
+    asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
+    (trees, commits, ids)
+}
+
+#[test]
+fn a_delete_answered_after_a_rewind_to_an_older_version_deletes_it() {
+    let (mut trees, mut commits, mut ids) = deleted_after_a_rewind_to_an_older_version();
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Delete));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("delete", "n".to_owned())]
+    );
+    assert_eq!(effects(&mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_delete_answered_after_a_rewind_keeps_another_devices_edit_of_either_version() {
+    for over in ["v1", "v2"] {
+        let (mut trees, mut commits, mut ids) = deleted_after_a_rewind_to_an_older_version();
+        trees.set_remote(
+            "n".into(),
+            server_version(file(ROOT, "a", 3), "v3", &[over], 3),
+        );
+        trees.settle(commits.aliases());
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+        let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
+        assert!(commits.decide(&question.id, Answer::Delete));
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{over}");
+        let done = effects(&mut trees, &mut ids);
+        assert!(
+            matches!(&done[..], [(node, Effect::WriteFile { content: written, .. })] if node == "n" && *written == content(3)),
+            "{over}: {done:?}"
+        );
+    }
+}
+
+#[test]
+fn a_delete_answered_while_an_update_of_s_waits_deletes_only_a_version_s_held() {
+    for (server, deleted) in [
+        (server_version(file(ROOT, "b", 4), "v4", &[], 3), true),
+        (server_version(file(ROOT, "b", 8), "v8", &["v4"], 3), false),
+    ] {
+        let mut trees = trees(
+            &[("m", file(ROOT, "b", 1))],
+            &[("m", file(ROOT, "b", 1))],
+            &[live("m", file(ROOT, "c", 1))],
+        );
+        trees.set_remote("n".into(), server_version(file(ROOT, "a", 4), "v4", &[], 1));
+        trees.set_synced("n".into(), Some(file(ROOT, "a", 4)));
+        trees.settle(&Default::default());
+        let mut state = trees.state();
+        let waiting = Waiting {
+            shape: Some(file(ROOT, "b", 7)),
+            origin: Origin::Other,
+        };
+        state.waiting.insert("n".into(), waiting);
+        trees.restore(state).unwrap();
+        trees.rules_scanned();
+        trees.set_remote("n".into(), server);
+        trees.settle(&Default::default());
+        let (mut commits, mut ids) = recovered(&mut trees, 0);
+        let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
+        assert!(trees.waiting().contains_key("n"), "{deleted}");
+        assert!(commits.decide(&question.id, Answer::Delete));
+        let sent = ops(&mut commits, &mut trees, &mut ids);
+        let done: Vec<Effect> = (effects(&mut trees, &mut ids).into_iter())
+            .filter(|(node, _)| node == "n")
+            .map(|(_, effect)| effect)
+            .collect();
+        match deleted {
+            true => assert_eq!((sent, done), (vec![("delete", "n".to_owned())], vec![])),
+            false => assert!(
+                sent.is_empty()
+                    && matches!(&done[..], [Effect::WriteFile { content: written, .. }] if *written == content(8)),
+                "{sent:?} {done:?}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn a_delete_answered_after_another_device_moved_the_file_downloads_it_where_it_went() {
+    for moves in [&[][..], &["c.txt"], &["b", "c", "b"]] {
+        let mut trees = trees(
+            &[],
+            &[("n", file(ROOT, "a", 1))],
+            &[live(
+                "n",
+                file(ROOT, if moves.is_empty() { "É" } else { "a" }, 1),
+            )],
+        );
+        let (mut commits, mut ids) = recovered(&mut trees, 0);
+        for (rev, name) in (2..).zip(moves) {
+            trees.set_remote(
+                "n".into(),
+                server_version(file(ROOT, name, 1), "", &[], rev),
+            );
+            trees.settle(commits.aliases());
+        }
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{moves:?}");
+        let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
+        assert!(commits.decide(&question.id, Answer::Delete));
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{moves:?}");
+        let done = effects(&mut trees, &mut ids);
+        assert!(
+            matches!(&done[..], [(node, Effect::WriteFile { .. })] if node == "n"),
+            "{moves:?}: {done:?}"
+        );
+    }
+}
+
+#[test]
+fn a_delete_answered_after_a_rewind_past_two_renames_deletes_it_once_r_forgot_the_first() {
+    let mut trees = trees(
+        &[],
+        &[("n", file(ROOT, "é", 1))],
+        &[live("n", file(ROOT, "é", 1))],
+    );
+    for (rev, name) in [(2, "x"), (3, "a")] {
+        trees.set_remote(
+            "n".into(),
+            server_version(file(ROOT, name, 1), "", &[], rev),
+        );
+        trees.set_synced("n".into(), Some(file(ROOT, name, 1)));
+    }
+    trees.forget_past_positions_below(10);
+    trees.set_remote("n".into(), server_version(file(ROOT, "é", 1), "", &[], 1));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
+    assert!(commits.decide(&question.id, Answer::Delete));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("delete", "n".to_owned())]
+    );
+    assert_eq!(effects(&mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_folder_deleted_on_this_device_comes_back_with_a_file_another_device_adds_and_stays_once_it_is_removed()
+ {
+    let mut trees = trees(&[], &[("d", dir(ROOT, "d"))], &[live("d", dir(ROOT, "d"))]);
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    trees.set_remote("e".into(), server_version(file("d", "e", 2), "", &[], 2));
+    trees.settle(commits.aliases());
+    for _ in 0..2 {
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    }
+    assert_eq!(groups(&commits), []);
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(d, Effect::CreateDir { .. }), (e, Effect::WriteFile { .. })] if d == "d" && e == "e"),
+        "{done:?}"
+    );
+    let mut removed = server_version(file("d", "e", 2), "", &[], 3);
+    removed.trashed = true;
+    trees.set_remote("e".into(), removed);
+    trees.settle(commits.aliases());
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let done = effects(&mut trees, &mut ids);
+    assert!(
+        matches!(&done[..], [(e, Effect::RemoveFile { .. })] if e == "e"),
+        "{done:?}"
+    );
+    assert!(trees.local().get("d").is_some());
+}
+
 #[test]
 fn an_entry_new_on_this_device_is_held_as_created_on_this_device() {
     let mut trees = trees(
@@ -5373,4 +5609,34 @@ fn system_files_an_answer_gave_up_are_not_counted_again_when_their_folder_is_del
         [("delete", "d".into())]
     );
     assert_eq!(commits.questions(), []);
+}
+
+#[test]
+fn a_folder_answered_delete_with_an_excluded_file_in_it_stays_deleted() {
+    let tmp = || vec![live("z", file("d", "z.tmp", 2))];
+    let subfolder = || vec![live("e", dir("d", "e")), live("f", file("e", "f", 3))];
+    let excluded: [(&[&str], Source, &[u8], _); 3] = [
+        (&[], Source::Koiignore, b"*.tmp\n", tmp()),
+        (&["d"], Source::Gitignore, b"*.tmp\n", tmp()),
+        (&[], Source::Koiignore, b"e/\n", subfolder()),
+    ];
+    for (folder, source, rules, below) in excluded {
+        let mut remote = vec![live("d", dir(ROOT, "d")), live("c", file("d", "c", 1))];
+        remote.extend(below);
+        let mut trees = trees(
+            &[],
+            &[("d", dir(ROOT, "d")), ("c", file("d", "c", 1))],
+            &remote,
+        );
+        trees.set_rules(folder, source, Some(RuleFile::parse(rules)));
+        trees.settle(&Default::default());
+        let (mut commits, mut ids) = recovered(&mut trees, 0);
+        let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["c", "d"]);
+        assert!(commits.decide(&question.id, Answer::Delete));
+        assert_eq!(
+            ops(&mut commits, &mut trees, &mut ids),
+            [("delete", "c".to_owned())]
+        );
+        assert_eq!(effects(&mut trees, &mut ids), []);
+    }
 }

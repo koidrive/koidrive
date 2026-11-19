@@ -539,6 +539,14 @@ fn a_lost_folder_keeps_each_write_in_one_file_from_seed_710440() {
 
 #[test]
 fn a_lost_folder_leaves_no_node_parked_from_seed_706476() {
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-796a-8df8-fb6da7904e2f on device 1 came undone, and no change its user did not see brought the node back",
+    );
+    let _also = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7e9e-ae9b-07bf468dbcfe on device 1 came undone, and no change its user did not see brought the node back",
+    );
     converge(
         3,
         &[

@@ -264,7 +264,9 @@ pub(crate) fn done(trees: &Trees, intent: &RestoreIntent) -> bool {
 /// The S updates that carry out `answer` for the nodes `question` holds, so the planner
 /// does the rest: a node published or kept is committed against R, under its own ID when R does
 /// not hold it, a node discarded follows R with its local version going to the local trash, a
-/// deletion is committed through the mass-delete guard, and a restored one is downloaded.
+/// deletion is committed through the mass-delete guard, and a restored one is downloaded, as is a
+/// deleted one that holds anything this device did not see: a version S's was not made over, or
+/// a node below it that S never held.
 pub(crate) fn release(
     trees: &Trees,
     question: &Question,
@@ -298,8 +300,10 @@ pub(crate) fn release(
             let shape = match (group, answer) {
                 (RecoveryGroup::CreatedAfterRestorePoint, Answer::Keep) => None,
                 (RecoveryGroup::ChangedOnThisDevice, Answer::Publish) => published(id),
-                (RecoveryGroup::DeletedOnThisDevice, Answer::Delete) => remote(id),
-                (RecoveryGroup::DeletedOnThisDevice, Answer::Restore) => None,
+                (RecoveryGroup::DeletedOnThisDevice, Answer::Delete) if seen_here(trees, id) => {
+                    remote(id)
+                }
+                (RecoveryGroup::DeletedOnThisDevice, Answer::Delete | Answer::Restore) => None,
                 (_, Answer::Discard) => local(id),
                 _ => return None,
             };
@@ -325,4 +329,11 @@ pub(crate) fn release(
         })
         .collect();
     released.into_iter().chain(carried).collect()
+}
+
+fn seen_here(trees: &Trees, id: &str) -> bool {
+    trees.remote_seen_here(id)
+        && (trees.remote_children(id))
+            .filter(|child| trees.remote_synced_here(child).is_some())
+            .all(|child| seen_here(trees, child))
 }
