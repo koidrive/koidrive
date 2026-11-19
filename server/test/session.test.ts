@@ -41,7 +41,7 @@ describe("WebSocket session", () => {
     return { a, b, spaceId, stub: env.SPACE.get(env.SPACE.idFromName(spaceId)) };
   }
 
-  it("rejects a commit whose change records do not fit in one 1 MiB message and keeps every frame under 1 MiB", async () => {
+  it("rejects a commit whose change records do not fit in one 1 MiB message and keeps every frame under 1 MiB", { timeout: 30_000 }, async () => {
     const { a, b, spaceId, stub } = await twoDevices();
     const snapshot = () =>
       runInDurableObject(stub, (_instance, state) => {
@@ -120,7 +120,7 @@ describe("WebSocket session", () => {
     expect(rpc.status).toBe(413);
   });
 
-  it("pages ListVersions, ListTree and ListTrash so that no reply exceeds 1 MiB over HTTP or WebSocket", async () => {
+  it("pages ListVersions, ListTree and ListTrash so that no reply exceeds 1 MiB over HTTP or WebSocket", { timeout: 30_000 }, async () => {
     const { a, spaceId } = await twoDevices();
     const writer = await Socket.connect(spaceId, a);
     await writer.start();

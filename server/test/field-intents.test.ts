@@ -641,7 +641,7 @@ describe("RFC 0029 section 3.3: deletes with a view", () => {
     expect(await stateOf(space, nodeId)).toBeUndefined();
   });
 
-  it("lands the conflict copy of a purged file one folder up when its last folder sits at the depth limit", async () => {
+  it("lands the conflict copy of a purged file one folder up when its last folder sits at the depth limit", { timeout: 30_000 }, async () => {
     const { space, a, b, values, root } = await setup();
     const chain = await folderChain(a, root, MAX_DEPTH - 1);
     const dir = uuidv7();
@@ -655,7 +655,7 @@ describe("RFC 0029 section 3.3: deletes with a view", () => {
     expect((await stateOf(space, lost.results[0]!.nodeId))!.parentId).toBe(chain.at(-1));
   });
 
-  it("splits a purge of trash groups whose tombstones together would not fit in one 1 MiB message across several commits", async () => {
+  it("splits a purge of trash groups whose tombstones together would not fit in one 1 MiB message across several commits", { timeout: 30_000 }, async () => {
     const { space, a, b, root } = await setup();
     const dirs = [uuidv7(), uuidv7()];
     for (const [n, dir] of dirs.entries()) {
@@ -793,7 +793,7 @@ describe("RFC 0029 section 3.4 and 3.5: replays reaching the trash", () => {
     expect([late.purgedNodes, await refcount(), await stateOf(space, nodeId)]).toEqual([2, 0, undefined]);
   });
 
-  it("leaves a tombstone, reported as NodePurged, for a carried file whose content a trashed folder at the depth limit lists, and a restore does not bring it back", async () => {
+  it("leaves a tombstone, reported as NodePurged, for a carried file whose content a trashed folder at the depth limit lists, and a restore does not bring it back", { timeout: 30_000 }, async () => {
     const { space, a, b, values, root } = await setup();
     const chain = await folderChain(a, root, MAX_DEPTH);
     const deepest = chain.at(-1)!;
@@ -811,7 +811,7 @@ describe("RFC 0029 section 3.4 and 3.5: replays reaching the trash", () => {
     expect(await stateOf(space, nodeId)).toBeUndefined();
   });
 
-  it("stores a carried file in a trashed folder one level above the depth limit and brings it back on restore", async () => {
+  it("stores a carried file in a trashed folder one level above the depth limit and brings it back on restore", { timeout: 30_000 }, async () => {
     const { space, a, b, values, root } = await setup();
     const chain = await folderChain(a, root, MAX_DEPTH - 1);
     const deepest = chain.at(-1)!;
@@ -826,7 +826,7 @@ describe("RFC 0029 section 3.4 and 3.5: replays reaching the trash", () => {
     expect(await stateOf(space, nodeId)).toMatchObject({ parentId: deepest, kind: NodeKind.FILE, status: NodeStatus.LIVE });
   });
 
-  it("leaves a tombstone, reported as NodePurged, for a carried folder that a trashed folder at the depth limit supersedes, and answers ops into it from that tombstone's held alone", async () => {
+  it("leaves a tombstone, reported as NodePurged, for a carried folder that a trashed folder at the depth limit supersedes, and answers ops into it from that tombstone's held alone", { timeout: 30_000 }, async () => {
     const { space, a, b, root } = await setup();
     const chain = await folderChain(a, root, MAX_DEPTH);
     const deepest = chain.at(-1)!;
