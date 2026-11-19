@@ -829,20 +829,20 @@ describe("hourly server report", () => {
   });
 
   it("hands everything over instead of parking past 8 KiB on one socket", async () => {
+    holdHour();
     const { owner, spaceId, stub } = await reportingSpace();
     const usage = await watchUsage();
     const socket = await connect(spaceId, owner, stub);
-    const hour = Math.floor(Date.now() / HOUR_MS);
     await runInDurableObject(stub, (_instance, state) => {
       const ws = state.getWebSockets()[0]!;
       const attachment = ws.deserializeAttachment() as { usage?: { openedMs: number; hours: UsageHours } };
       const counts: Record<string, number> = {};
-      for (let n = 0; JSON.stringify({ ...attachment, usage: { openedMs: Date.now(), hours: { [hour]: { counts, latency: {} } } } }).length < 8150; n++) counts["rpc_pad_" + n + ".ok"] = 1;
-      ws.serializeAttachment({ ...attachment, usage: { openedMs: Date.now(), hours: { [hour]: { counts, latency: {} } } } });
+      for (let n = 0; JSON.stringify({ ...attachment, usage: { openedMs: Date.now(), hours: { [Math.floor(Date.now() / HOUR_MS)]: { counts, latency: {} } } } }).length < 8150; n++) counts["rpc_pad_" + n + ".ok"] = 1;
+      ws.serializeAttachment({ ...attachment, usage: { openedMs: Date.now(), hours: { [Math.floor(Date.now() / HOUR_MS)]: { counts, latency: {} } } } });
     });
     await socket.listTree();
     await vi.waitFor(() => expect(listed(spaceCalls(usage.calls))).toBe(1));
-    expect(Object.keys(spaceCalls(usage.calls)[0]![hour]!.counts).length).toBeGreaterThan(100);
+    expect(Object.keys(spaceCalls(usage.calls)[0]![Math.floor(Date.now() / HOUR_MS)]!.counts).length).toBeGreaterThan(100);
     expect(await parkedCounts(stub)).toEqual([0]);
     await socket.listTree();
     await vi.waitFor(async () => expect(await parkedCounts(stub)).toEqual([1]));
