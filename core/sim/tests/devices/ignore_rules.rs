@@ -334,3 +334,15 @@ fn a_folder_its_include_list_takes_under_a_pending_name_is_sent() {
 fn c_txt(world: &World, device: usize) -> Content {
     content_on(world, device, "c.txt")
 }
+
+#[test]
+fn a_folder_kept_for_excluded_entries_goes_at_the_restart_after_they_go() {
+    let (mut world, phases) = kept_by_its_rules();
+    let txt = target(&world, 1, &["a", "c.txt"]);
+    let steps = [(1, Step::Crash), (1, delete(txt)), (1, Step::Connect)];
+    world.run(phases.len(), &steps).unwrap();
+    let trees = &world.devices[1].engine.trees;
+    let kept =
+        (trees.local().iter()).any(|(id, node)| node.shape.name == "a" && trees.kept_folder(id));
+    assert!(!kept);
+}

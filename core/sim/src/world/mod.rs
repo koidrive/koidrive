@@ -2134,6 +2134,8 @@ impl World {
                 "rescan lets a problem node be planned again",
             );
         }
+        let listed = device.disk.entries().keys().copied().collect();
+        device.relist_kept_folders(&listed);
         device.persist()
     }
 
