@@ -2499,23 +2499,34 @@ fn whereabouts(root: BorrowedFd<'_>, root_dev: u64, entry: &Entry, links: &[&Pat
         stat.dev == root_dev
             && (stat.entry()).is_some_and(|now| now.id.same(&entry.id) && now.kind == entry.kind)
     };
-    let rel = match located(root, entry) {
-        Ok(Some(rel)) => rel,
-        Ok(None) => return Whereabouts::Nowhere,
-        Err(err) if denied(&err) => return Whereabouts::Hidden,
-        Err(_) => return Whereabouts::Nowhere,
-    };
-    if private(Path::new(""), rel.iter().next().unwrap_or_default()) {
-        return Whereabouts::Nowhere;
+    let mut missed: Option<PathBuf> = None;
+    for _ in 0..2 {
+        let rel = match located(root, entry) {
+            Ok(Some(rel)) => rel,
+            Ok(None) => return Whereabouts::Nowhere,
+            Err(err) if denied(&err) => return Whereabouts::Hidden,
+            Err(_) => return Whereabouts::Nowhere,
+        };
+        if private(Path::new(""), rel.iter().next().unwrap_or_default()) {
+            return Whereabouts::Nowhere;
+        }
+        match stat_rel(root, &rel) {
+            Ok(stat) if is_it(&stat) && links.contains(&rel.as_path()) => {
+                return Whereabouts::Nowhere;
+            }
+            Ok(stat) if is_it(&stat) => return Whereabouts::At(rel),
+            Ok(_) => {}
+            Err(err) if denied(&err) => return Whereabouts::Hidden,
+            Err(err) if is_gone(&err) => {}
+            Err(_) => return Whereabouts::Nowhere,
+        }
+        // APFS's fsgetpath can keep returning the last path of an entry a rename destroyed.
+        if missed.as_ref() == Some(&rel) {
+            return Whereabouts::Nowhere;
+        }
+        missed = Some(rel);
     }
-    match stat_rel(root, &rel) {
-        Ok(stat) if is_it(&stat) && links.contains(&rel.as_path()) => Whereabouts::Nowhere,
-        Ok(stat) if is_it(&stat) => Whereabouts::At(rel),
-        Ok(_) => Whereabouts::Unsure,
-        Err(err) if denied(&err) => Whereabouts::Hidden,
-        Err(err) if is_gone(&err) => Whereabouts::Unsure,
-        Err(_) => Whereabouts::Nowhere,
-    }
+    Whereabouts::Unsure
 }
 
 #[cfg(target_os = "macos")]
