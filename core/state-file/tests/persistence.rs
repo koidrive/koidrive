@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::ffi::OsStr;
-use std::fs::{self, File};
+use std::fs;
 use std::io::Write;
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::MetadataExt;
@@ -11,7 +11,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use koidrive_state_file::{
-    AtomicFile, Flock, Publish, recover, remove_with_legacy_matching, write, write_with_legacy,
+    AtomicFile, Publish, recover, remove_with_legacy_matching, write, write_with_legacy,
 };
 
 #[cfg(target_os = "macos")]
@@ -467,13 +467,11 @@ fn destination_inode_alias_cannot_replace_a_live_stage() {
         .path();
     let alias = dir.path().join("ordinary.json");
     fs::hard_link(&live, &alias).unwrap();
-    let result = AtomicFile::prepare(&alias);
+    let error = AtomicFile::prepare(&alias).err().unwrap();
     assert_eq!(fs::read(&live).unwrap(), b"first");
     assert_eq!(fs::read(&alias).unwrap(), b"first");
-    assert_eq!(
-        result.err().unwrap().kind(),
-        std::io::ErrorKind::InvalidInput
-    );
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("a live writer holds that stage"));
     first.finish(Publish::Create).unwrap();
     assert_eq!(fs::read(&first_path).unwrap(), b"first");
     assert_eq!(fs::read(&alias).unwrap(), b"first");
@@ -574,11 +572,7 @@ fn interrupted_create_recovers_its_stage_without_removing_the_destination() {
         let retry = AtomicFile::prepare(&path)
             .unwrap_or_else(|error| panic!("recovery rejected publication: {error}"));
         assert_eq!(fs::read(&path).unwrap(), b"published");
-        assert!(
-            !abandoned.exists(),
-            "recovery left the abandoned stage; a fresh lock attempt on it gives {:?}",
-            File::open(&abandoned).and_then(|file| Flock::take(file).map(|lock| lock.is_some()))
-        );
+        assert!(!abandoned.exists());
         retry.as_file().write_all(b"replacement").unwrap();
         match publish {
             Publish::Create => {

@@ -50,10 +50,10 @@ impl AtomicFile {
         }
         let directory = open_directory(parent(path))?;
         let lock = DirectoryLock::new(&directory)?;
-        recover_locked(&directory)?;
-        if aliases_stage(&directory, &destination)? {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+        let recovery = recover_locked(&directory)?;
+        if let Some(stage) = aliased_stage(&directory, &destination)? {
+            return Err(recovery.alias_error(
+                &stage,
                 "a state-file destination cannot alias a helper stage",
             ));
         }
@@ -127,14 +127,14 @@ impl AtomicFile {
         validate_legacy(&self.destination, legacy)?;
         self.file.sync_all()?;
         let _lock = DirectoryLock::new(&self.directory)?;
-        if aliases_stage(&self.directory, &self.destination)? {
+        if aliased_stage(&self.directory, &self.destination)?.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "a state-file destination cannot alias a helper stage",
             ));
         }
         for name in legacy {
-            if aliases_stage(&self.directory, name)? {
+            if aliased_stage(&self.directory, name)?.is_some() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "a legacy name cannot alias a helper stage",
@@ -283,16 +283,13 @@ pub fn remove_with_legacy_matching(
         Err(error) => return Err(error),
     };
     let _lock = DirectoryLock::new(&directory)?;
-    recover_locked(&directory)?;
+    let recovery = recover_locked(&directory)?;
     let names = matching_legacy(&directory, legacy)?;
     let legacy: Vec<_> = names.iter().map(OsString::as_os_str).collect();
     validate_legacy(destination, &legacy)?;
     for name in std::iter::once(&destination).chain(&legacy) {
-        if aliases_stage(&directory, name)? {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "a removed name cannot alias a helper stage",
-            ));
+        if let Some(stage) = aliased_stage(&directory, name)? {
+            return Err(recovery.alias_error(&stage, "a removed name cannot alias a helper stage"));
         }
     }
     match fs::unlinkat(&directory, destination, AtFlags::empty()) {
@@ -316,9 +313,9 @@ pub fn recover(dir: &Path) -> io::Result<usize> {
         Err(error) => return Err(error),
     };
     let _lock = DirectoryLock::new(&directory)?;
-    let recovered = recover_locked(&directory)?;
+    let recovery = recover_locked(&directory)?;
     directory.sync_all()?;
-    Ok(recovered)
+    Ok(recovery.removed)
 }
 
 fn parent(path: &Path) -> &Path {
@@ -402,10 +399,10 @@ fn same_inode(directory: &File, name: &std::ffi::OsStr, file: &File) -> io::Resu
     Ok((named.st_dev, named.st_ino) == (opened.st_dev, opened.st_ino))
 }
 
-fn aliases_stage(directory: &File, name: &OsStr) -> io::Result<bool> {
+fn aliased_stage(directory: &File, name: &OsStr) -> io::Result<Option<OsString>> {
     let named = match fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(named) => named,
-        Err(rustix::io::Errno::NOENT) => return Ok(false),
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
     for entry in Dir::read_from(directory)? {
@@ -420,10 +417,10 @@ fn aliases_stage(directory: &File, name: &OsStr) -> io::Result<bool> {
             Err(error) => return Err(error.into()),
         };
         if (named.st_dev, named.st_ino) == (stage.st_dev, stage.st_ino) {
-            return Ok(true);
+            return Ok(Some(OsStr::from_bytes(name.to_bytes()).to_owned()));
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 fn is_reserved_stage(name: &[u8]) -> bool {
@@ -453,8 +450,43 @@ fn unlink_obsolete(directory: &File, name: &OsStr) -> io::Result<bool> {
     }
 }
 
-fn recover_locked(directory: &File) -> io::Result<usize> {
-    let mut recovered = 0;
+struct Recovery {
+    removed: usize,
+    left: Vec<(OsString, Left)>,
+}
+
+enum Left {
+    Held,
+    Failed(io::Error),
+}
+
+enum Recovered {
+    Removed,
+    Held,
+    Untouched,
+}
+
+impl Recovery {
+    fn alias_error(&self, stage: &OsStr, problem: &str) -> io::Error {
+        match self.left.iter().find(|(name, _)| name == stage) {
+            Some((_, Left::Held)) => io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{problem}: a live writer holds that stage"),
+            ),
+            Some((_, Left::Failed(error))) => io::Error::new(
+                error.kind(),
+                format!("{problem}: recovery could not clear that stage: {error}"),
+            ),
+            None => io::Error::new(io::ErrorKind::InvalidInput, problem.to_owned()),
+        }
+    }
+}
+
+fn recover_locked(directory: &File) -> io::Result<Recovery> {
+    let mut recovery = Recovery {
+        removed: 0,
+        left: Vec::new(),
+    };
     for entry in Dir::read_from(directory)? {
         let entry = entry?;
         let name = OsStr::from_bytes(entry.file_name().to_bytes());
@@ -462,25 +494,28 @@ fn recover_locked(directory: &File) -> io::Result<usize> {
             continue;
         }
         match recover_stage(directory, name) {
-            Ok(removed) => recovered += usize::from(removed),
+            Ok(Recovered::Removed) => recovery.removed += 1,
+            Ok(Recovered::Held) => recovery.left.push((name.to_owned(), Left::Held)),
+            Ok(Recovered::Untouched) => {}
             Err(error) => {
                 tracing::warn!(%error, stage = ?name, "an abandoned state-file stage was left in place");
+                recovery.left.push((name.to_owned(), Left::Failed(error)));
             }
         }
     }
-    Ok(recovered)
+    Ok(recovery)
 }
 
-fn recover_stage(directory: &File, name: &OsStr) -> io::Result<bool> {
+fn recover_stage(directory: &File, name: &OsStr) -> io::Result<Recovered> {
     let named = match fs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(named) => named,
-        Err(rustix::io::Errno::NOENT) => return Ok(false),
+        Err(rustix::io::Errno::NOENT) => return Ok(Recovered::Untouched),
         Err(error) => return Err(error.into()),
     };
     if FileType::from_raw_mode(named.st_mode) != FileType::RegularFile
         || named.st_uid != rustix::process::getuid().as_raw()
     {
-        return Ok(false);
+        return Ok(Recovered::Untouched);
     }
     let mut file = None;
     for access in [OFlags::RDONLY, OFlags::WRONLY] {
@@ -500,18 +535,19 @@ fn recover_stage(directory: &File, name: &OsStr) -> io::Result<bool> {
         }
     }
     let Some(file) = file else {
-        return Ok(false);
+        return Ok(Recovered::Untouched);
     };
     let metadata = fs::fstat(&file)?;
     if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
         || metadata.st_uid != rustix::process::getuid().as_raw()
     {
-        return Ok(false);
+        return Ok(Recovered::Untouched);
     }
-    match Flock::take(file)? {
-        Some(abandoned) if same_inode(directory, name, &abandoned)? => {
-            unlink_obsolete(directory, name)
-        }
-        _ => Ok(false),
+    let Some(abandoned) = Flock::take(file)? else {
+        return Ok(Recovered::Held);
+    };
+    if !same_inode(directory, name, &abandoned)? || !unlink_obsolete(directory, name)? {
+        return Ok(Recovered::Untouched);
     }
+    Ok(Recovered::Removed)
 }
