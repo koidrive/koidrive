@@ -851,9 +851,11 @@ impl Device {
                     _ => (Kind::File, Some(content(1, action.text))),
                 };
                 if lands_unseen(kind) {
-                    if kind == Kind::Dir {
+                    if kind == Kind::Dir && lands_unseen(Kind::File) {
                         let folder = format!("{parent}/{name}");
-                        self.ignored.folders.insert(folder, (parent, name.to_owned()));
+                        self.ignored
+                            .folders
+                            .insert(folder, (parent, name.to_owned()));
                     }
                     return;
                 }

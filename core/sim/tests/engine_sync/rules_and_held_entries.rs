@@ -655,7 +655,7 @@ fn an_edit_moved_into_b(b_is_a_node: bool, moved: bool) -> Device {
         relocated: BTreeMap::new(),
         ignored: IgnoredDisk::default(),
     };
-    device.rules.file = vec!["b/"];
+    device.rules.file = vec!["b"];
     device.rules.read(&mut device.trees);
     let b = b_is_a_node.then_some(("b", "p", "b", None));
     let entries = [
@@ -707,6 +707,17 @@ fn a_node_moved_into_an_ignored_folder_that_is_a_node_is_placed_there() {
 }
 
 #[test]
+fn a_folder_made_where_the_rules_leave_out_only_folders_stays_off_the_modelled_disk() {
+    let mut device = an_edit_moved_into_b(true, false);
+    device.rules.file = vec!["b/"];
+    device.rules.read(&mut device.trees);
+    let before = device.trees.local().iter().count();
+    device.act(&act(0, 0, 0, 2, 0));
+    assert!(device.ignored.folders.is_empty());
+    assert_eq!(device.trees.local().iter().count(), before);
+}
+
+#[test]
 fn a_node_moved_into_an_ignored_folder_that_is_no_node_keeps_its_entry() {
     let device = an_edit_moved_into_b(false, true);
     assert_eq!(device.trees.local().get("c").unwrap().shape.parent, "a");
@@ -754,7 +765,10 @@ fn an_ignored_folder_the_rules_let_in_is_found_with_the_copy_the_user_moved_into
     let (folder, _) = (local.iter())
         .find(|(_, node)| node.shape.parent == "p" && node.shape.name == "b")
         .unwrap();
-    let found = (local.iter()).find(|(_, node)| node.shape.parent == *folder).unwrap().1;
+    let found = (local.iter())
+        .find(|(_, node)| node.shape.parent == *folder)
+        .unwrap()
+        .1;
     assert_eq!(found.shape.content, Some(content(1, 1)));
     assert!(device.ignored.folders.is_empty() && device.ignored.copies.is_empty());
 }
