@@ -2714,6 +2714,75 @@ fn a_file_moved_into_an_ignored_folder_keeps_its_entry_in_l() {
     assert!(planned.unwrap().is_none());
 }
 
+#[test]
+fn a_found_place_dropped_with_a_stale_batch_is_reported_again() {
+    let seek = |watching: &mut FsObserver, sections: &Sections| {
+        if let Some((recorded, found)) = sections.recorded.lock().unwrap().take() {
+            watching.seek(recorded, found);
+        }
+    };
+    let found = |changes: &[Observed]| {
+        (changes.iter()).any(|change| matches!(change, Observed::Found { path, .. } if path == Path::new("report.txt")))
+    };
+    let folder = Folder::new();
+    let report = folder.root.join("report.txt");
+    fs::write(&report, SYNCED).unwrap();
+    fs::write(folder.root.join(".koiignore"), "/build/\n").unwrap();
+    fs::create_dir(folder.root.join("build")).unwrap();
+    folder.seed(
+        &[remote(NODE, "report.txt", Some(disk_content(&report)))],
+        &[(NODE, SPACE, "report.txt")],
+        0,
+    );
+    let mut running = folder.start_unobserved(no_hook()).unwrap();
+    let sections = running.disk.sections();
+    let mut watching = observer(&folder.root, Snapshot::default());
+    let first = observe_until(&mut watching, sections.stamp(), |_| true);
+    running
+        .disk
+        .observed(first, &mut running.engine, &mut running.store)
+        .unwrap();
+    fs::rename(&report, folder.root.join("build/report.txt")).unwrap();
+    let moved = observe_until(&mut watching, sections.stamp(), |seen| {
+        renamed(seen, "report.txt", "build/report.txt")
+    });
+    running
+        .disk
+        .observed(moved, &mut running.engine, &mut running.store)
+        .unwrap();
+    seek(&mut watching, &sections);
+    let stale = sections.stamp();
+    let looked = observe_until(&mut watching, stale, |seen| found(seen));
+    running
+        .disk
+        .spans
+        .push_back((stale.0 + 1, vec![PathBuf::from("report.txt")]));
+    running
+        .disk
+        .observed(looked, &mut running.engine, &mut running.store)
+        .unwrap();
+    assert_eq!(running.engine.found(), BTreeMap::new());
+
+    seek(&mut watching, &sections);
+    let stamp = Stamp(stale.0 + 1);
+    let again = (0..10)
+        .filter_map(|_| watching.observe(Duration::from_millis(200)).unwrap())
+        .find(|observation| found(&observation.changes))
+        .expect("the search reports the found place again");
+    let again = Batch {
+        stamp,
+        unread: (0, 0),
+        answered: Default::default(),
+        observation: again,
+    };
+    running
+        .disk
+        .observed(again, &mut running.engine, &mut running.store)
+        .unwrap();
+    let place = BTreeMap::from([("report.txt".into(), "build/report.txt".into())]);
+    assert_eq!(running.engine.found(), place);
+}
+
 /// A file the disk trashed whose metadata alone changed afterwards, as `chmod -R` on the folder does, still holds
 /// the content its effect recorded, so reclamation deletes it when it is due instead of bringing it back.
 #[test]

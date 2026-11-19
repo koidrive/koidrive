@@ -899,6 +899,7 @@ impl Disk {
                 .sections
                 .request(engine.resets(dropped.iter().cloned()));
             self.unscanned.dropped.push((requested, dropped));
+            (self.recorded, self.found) = Default::default();
         }
         self.record(engine);
         Ok(())
