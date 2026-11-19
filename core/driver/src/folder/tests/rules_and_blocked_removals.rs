@@ -1764,7 +1764,7 @@ fn a_left_out_copy_replaced_by_a_hard_link_of_a_synced_file_while_stopped_downlo
 }
 
 #[test]
-fn a_synced_file_moved_over_a_left_out_copy_while_stopped_in_a_folder_the_rules_let_in_downloads_the_copy_again() {
+fn a_synced_file_moved_over_a_left_out_copy_in_a_folder_let_in_at_start_downloads_it_again() {
     let mut remote = Remote::new();
     let (site, b) = moved_into_a_left_out_folder(&mut remote, "dist/report.docx");
     let id = remote.tree()["report.docx"].clone();
