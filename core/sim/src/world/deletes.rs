@@ -166,8 +166,9 @@ impl Deletion {
                         && !other.dropped
                         && !other.restore_answer()
                         && !matches!(other.value, Value::Trashed { .. })
-                        && (!other.answer || other.made > delete.made)
-                        && (intents.saw(j, i) || !intents.saw(i, j) && !other.lost)
+                        && !intents.saw(i, j)
+                        && !(other.answer && intents.saw_value(i, j))
+                        && (intents.saw(j, i) || !other.lost)
                         && brings_back(j)
                 });
                 (!excused).then(|| node.clone())

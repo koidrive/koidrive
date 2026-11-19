@@ -384,6 +384,41 @@ impl Intents {
         self.nodes(i).any(|id| id == node)
     }
 
+    fn same_value(&self, a: usize, b: usize) -> bool {
+        let same = match (&self.list[a].value, &self.list[b].value) {
+            (Value::Content { digest, .. }, Value::Content { digest: other, .. }) => {
+                digest == other
+            }
+            (Value::Live, Value::Live) => true,
+            (
+                Value::Place { parent, name },
+                Value::Place {
+                    parent: other_parent,
+                    name: other_name,
+                },
+            ) => {
+                let same_parent = match (parent, other_parent) {
+                    (None, None) => true,
+                    (Some(parent), Some(other_parent)) => {
+                        let (a, b) = (&self.list[a], &self.list[b]);
+                        self.nodes_of(a.author, *parent, a.made).any(|id| {
+                            self.nodes_of(b.author, *other_parent, b.made)
+                                .any(|other| other == id)
+                        })
+                    }
+                    _ => false,
+                };
+                nfc(name) == nfc(other_name) && same_parent
+            }
+            _ => false,
+        };
+        same && self.nodes(a).any(|id| self.on(b, id))
+    }
+
+    pub(super) fn saw_value(&self, i: usize, j: usize) -> bool {
+        (0..self.list.len()).any(|k| self.saw(i, k) && (k == j || self.same_value(j, k)))
+    }
+
     fn parent_is(&self, i: usize, parent: Option<u128>, held: &str, root: &str) -> bool {
         match parent {
             None => held == root,
@@ -720,31 +755,10 @@ impl Intents {
                         && self.saw(j, k)
                 });
                 let saw_the_value = (0..self.list.len()).any(|k| {
-                    let Value::Place { parent, name } = &intent.value else {
-                        return false;
-                    };
-                    let Value::Place {
-                        parent: seen_parent,
-                        name: seen_name,
-                    } = &self.list[k].value
-                    else {
-                        return false;
-                    };
-                    let same_parent = match (parent, seen_parent) {
-                        (None, None) => true,
-                        (Some(parent), Some(seen_parent)) => self
-                            .nodes_of(intent.author, *parent, intent.made)
-                            .any(|id| {
-                                self.nodes_of(self.list[k].author, *seen_parent, self.list[k].made)
-                                    .any(|seen| seen == id)
-                            }),
-                        _ => false,
-                    };
                     k != i
+                        && matches!(intent.value, Value::Place { .. })
                         && self.saw(j, k)
-                        && nfc(name) == nfc(seen_name)
-                        && same_parent
-                        && self.nodes(i).any(|id| self.on(k, id))
+                        && self.same_value(i, k)
                 });
                 let merged = self.nodes(i).any(|id| {
                     self.merged.contains_key(id)
