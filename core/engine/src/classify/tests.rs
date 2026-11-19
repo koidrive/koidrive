@@ -1319,3 +1319,23 @@ fn a_listing_reserves_an_entry_whose_name_differs_from_a_held_one_only_in_case()
         BTreeSet::from(["BAR".to_owned(), "BaR".to_owned()])
     );
 }
+
+#[test]
+fn a_restored_node_moved_out_of_an_ignored_folder_is_not_excluded_while_its_removal_from_s_waits() {
+    let mut trees = Trees::new("root");
+    trees.set_rules(
+        &[] as &[&str],
+        koidrive_ignore::Source::Koiignore,
+        Some(RuleFile::parse(b"/build/\n")),
+    );
+    trees.set_synced("build".into(), Some(dir("root", "build")));
+    trees.set_remote("build".into(), remote(dir("root", "build")));
+    trees.set_local("build".into(), kept_local("root", "build", Kind::Dir, 1));
+    trees.set_synced(
+        "n".into(),
+        Some(kept_local("build", "x", Kind::File, 2).shape),
+    );
+    trees.set_local("n".into(), kept_local("root", "x", Kind::File, 2));
+    trees.wait("n".into(), None, Origin::Other);
+    assert!(!trees.excluded("n"));
+}

@@ -4235,7 +4235,10 @@ impl Trees {
             |path: Option<(Vec<&str>, Kind)>| path.map(|(names, kind)| self.ignores(&names, kind));
         let placed = path(&self.l, id);
         let local = ignored(placed.clone());
-        let moved = match (self.l.get(id), self.acknowledged(id)) {
+        let moved = match (
+            self.l.get(id),
+            self.acknowledged(id).or_else(|| self.s.live(id)),
+        ) {
             (Some(local), Some(synced)) => !local.shape.same_position(synced),
             _ => false,
         };
