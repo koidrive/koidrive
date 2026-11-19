@@ -413,8 +413,9 @@ pub struct SpaceDo {
     /// The bucket: the size of every chunk object a `PUT` stored, by hash. A commit counts a
     /// `pending` chunk without a valid receipt as uploaded when its object is here with the row's
     /// size, the `head` check of RFC 0002 section 11, which one call runs for at most
-    /// [`MAX_HEAD_CHECKS`] chunks and the row keeps. Nothing deletes objects, so the object cannot
-    /// go between that check and the commit.
+    /// [`MAX_HEAD_CHECKS`] chunks and the row keeps, as it keeps a valid receipt a refused commit
+    /// presented; `prepare_upload` answers `PRESENT` for a row either confirmed. Nothing deletes
+    /// objects, so the object cannot go between that check and the commit.
     objects: HashMap<Vec<u8>, u32>,
     head_seq: u64,
     restore_seq: u64,
@@ -890,7 +891,11 @@ impl SpaceDo {
                     state: ChunkState::Live,
                     ..
                 }) => true,
-                Some(row) if row.head_checked || receipted.contains(chunk.hash.as_slice()) => true,
+                Some(row) if row.head_checked => true,
+                Some(row) if receipted.contains(chunk.hash.as_slice()) => {
+                    row.head_checked = true;
+                    true
+                }
                 Some(row) if head_checks > 0 => {
                     head_checks -= 1;
                     row.head_checked = self.objects.get(&chunk.hash) == Some(&row.size);
@@ -1029,7 +1034,7 @@ impl SpaceDo {
                     ));
                 }
                 Some(row) => {
-                    if row.state == ChunkState::Live {
+                    if row.state == ChunkState::Live || row.head_checked {
                         chunk_plan::Action::Present
                     } else {
                         chunk_plan::Action::Upload
