@@ -804,7 +804,11 @@ fn a_rename_back_after_a_rename_out_of_the_trash_the_server_lost_is_sent() {
     let (mut trees, mut commits, mut ids) = renamed_in_place_out_of_the_trash();
     trees.set_local_changed("f".into(), local(file("p", "a", 1), 2));
     trees.settle(commits.aliases());
-    lose_and_list(&mut trees, &mut commits, &[("f", trashed_at(file("p", "a", 1), 2))]);
+    lose_and_list(
+        &mut trees,
+        &mut commits,
+        &[("f", trashed_at(file("p", "a", 1), 2))],
+    );
     let effects = effects_for(&mut trees, &mut ids, "f");
     let commit = build(&mut commits, &mut trees, &mut ids).map(|c| ops(&c));
     assert_eq!(effects, []);
