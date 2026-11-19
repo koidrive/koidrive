@@ -495,7 +495,8 @@ class SplitTests(unittest.TestCase):
     def replay(self, branch):
         sources = {"base": self.REPLAY_BASE, "branch": branch}
         with patch.object(split, "git_source", side_effect=lambda ref, path: sources[ref]):
-            split.replay_onto_split(self.executable, "driver.rs", "base", "branch")
+            for file, source in split.replay_onto_split(self.executable, "driver.rs", "base", "branch").items():
+                file.write_bytes(source)
 
     def test_replay_merges_a_changed_method_where_the_split_moved_it(self):
         self.split_driver()
@@ -530,6 +531,27 @@ class SplitTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "removes .use:std :: fmt., which the split rewrote"):
             self.replay(self.REPLAY_BASE.replace(b"use std::fmt;\n", b"use std::fmt::Write;\n"))
         self.assertEqual(before, {path: path.read_bytes() for path in self.root.rglob("*.rs")})
+
+    def test_replay_keeps_the_lines_of_a_multiline_literal_when_it_dedents_a_test(self):
+        self.split_driver()
+        added = b'    }\n\n    #[test]\n    fn second() {\n        let text = r#"keep\n    build/\n"#;\n        assert!(!text.is_empty());\n    }\n}\n'
+        self.replay(self.REPLAY_BASE.removesuffix(b"    }\n}\n") + added)
+        self.assertIn(b'#[test]\nfn second() {\n    let text = r#"keep\n    build/\n"#;\n    assert!(!text.is_empty());\n}\n',
+                      (self.root / "driver/tests/cases.rs").read_bytes())
+
+    def test_replay_refuses_a_key_that_repeats(self):
+        before = self.split_driver()
+        repeated = b"const _: () = assert!(true);\n\nconst _: () = assert!(!false);\n\npub struct Driver;"
+        with self.assertRaisesRegex(ValueError, "const:_ appears 2 times"):
+            self.replay(self.REPLAY_BASE.replace(b"pub struct Driver;", repeated))
+        self.assertEqual(before, {name: (self.root / name).read_bytes() for name in before})
+
+    def test_replay_refuses_to_remove_an_item_the_split_tree_holds_under_another_key(self):
+        self.split_driver()
+        parts = self.root / "driver/parts.rs"
+        parts.write_bytes(parts.read_bytes().replace(b"    pub(super) fn two", b"    #[cfg(unix)]\n    pub(super) fn two"))
+        with self.assertRaisesRegex(ValueError, "removes impl::Driver/fn:two, which the split tree lacks"):
+            self.replay(self.REPLAY_BASE.replace(b"    }\n\n    fn two(&self) -> u8 {\n        2\n    }\n}", b"    }\n}"))
 
     def test_replay_refuses_overlapping_edits_without_writes(self):
         before = self.split_driver()

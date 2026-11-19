@@ -415,10 +415,12 @@ def indent(source, offset):
     return offset - (source.rfind(b"\n", 0, offset) + 1)
 
 
-def reindent(text, delta):
-    lines = text.split(b"\n")
-    for number, line in enumerate(lines[1:], 1):
-        if not line.strip():
+def reindent(place, text, delta):
+    lines, start = text.split(b"\n"), 0
+    for number, line in enumerate(lines):
+        inside = any(begin < place["lead"] + start <= end for begin, end in place["literals"])
+        start += len(line) + 1
+        if number == 0 or inside or not line.strip():
             continue
         if delta > 0:
             lines[number] = b" " * delta + line
@@ -469,7 +471,7 @@ def gather(executable, read, path, base=None, atomic=frozenset()):
             lead = entry["start"] - len(gap.lstrip()) if previous is not None else entry["start"]
             tree["items"].setdefault(key, []).append({
                 "file": file, "lead": lead, "end": entry["end"], "indent": indent(source, lead),
-                "newlines": max(gap.count(b"\n"), 1), "use": kind == "use"})
+                "newlines": max(gap.count(b"\n"), 1), "use": kind == "use", "literals": entry.get("literals", [])})
             tree["order"].setdefault("/".join(prefix + list(parent)), []).append(key)
             residual.append(source[kept:lead])
             kept = entry["end"]
@@ -501,9 +503,11 @@ def replay_onto_split(executable, path, base_ref, branch_ref):
                  for tree in (base, branch)]
         shown = "\n".join(difflib.unified_diff(lines[0].split("\n"), lines[1].split("\n"), "base", "branch", n=1, lineterm=""))
         raise ValueError(f"{path}: the branch edits text outside any item; apply it by hand:\n{shown}")
-    for key, places in current["items"].items():
-        if len(places) > 1 and not places[0]["use"]:
-            raise ValueError(f"{path}: {key} appears in {[place['file'] for place in places]}")
+    for tree in (base, branch, current):
+        for key, places in tree["items"].items():
+            if len(places) > 1 and not places[0]["use"]:
+                raise ValueError(f"{path}: {key} appears {len(places)} times in {sorted({place['file'] for place in places})}; "
+                                 "replay cannot tell the copies apart, so apply this branch by hand")
 
     edits = {}
     removed = set()
@@ -515,10 +519,11 @@ def replay_onto_split(executable, path, base_ref, branch_ref):
         if not found:
             if places[0]["use"]:
                 raise ValueError(f"{path}: the branch removes `{key}`, which the split rewrote; apply that import change by hand")
-            continue
+            raise ValueError(f"{path}: the branch removes {key}, which the split tree lacks; main removed or renamed it, "
+                             "so remove it by hand if it is still there")
         for place in found:
             moved = region(current, place)
-            if moved != visibility(reindent(text, place["indent"] - places[0]["indent"]), moved):
+            if moved != visibility(reindent(places[0], text, place["indent"] - places[0]["indent"]), moved):
                 raise ValueError(f"{path}: the branch removes {key}, which also changed since its base; resolve it by hand")
             source = current["sources"][place["file"]]
             before = source[:place["lead"]].rstrip()
@@ -552,16 +557,17 @@ def replay_onto_split(executable, path, base_ref, branch_ref):
                 raise ValueError(f"{path}: the branch rewrites `{key}`; apply that import change by hand")
             target = found[0]
             moved = region(current, target)
-            original = reindent(original, target["indent"] - base["items"][key][0]["indent"])
-            text = reindent(text, target["indent"] - place["indent"])
+            original = reindent(base["items"][key][0], original, target["indent"] - base["items"][key][0]["indent"])
+            text = reindent(place, text, target["indent"] - place["indent"])
             if visibility(text, original) == text:
                 original, text = visibility(original, moved), visibility(text, moved)
             merged = merge(original, text, moved, key)
             edits.setdefault(target["file"], []).append((target["lead"], target["end"], merged))
             print(f"changed {key} in {target['file']}")
             continue
-        if key in current["items"]:
-            if region(current, current["items"][key][0]) != reindent(text, current["items"][key][0]["indent"] - place["indent"]):
+        held = [found for found in current["items"].get(key, []) if not found["use"] or found["file"] == path]
+        if held:
+            if region(current, held[0]) != reindent(place, text, held[0]["indent"] - place["indent"]):
                 raise ValueError(f"{path}: {key} was added on both sides with different text; resolve it by hand")
             continue
         parent, _, _ = key.rpartition("/")
@@ -575,7 +581,7 @@ def replay_onto_split(executable, path, base_ref, branch_ref):
         anchor = present(neighbour)
         bucket = anchor["bucket"] if "bucket" in anchor else (anchor["file"], anchor["end"] if mode == "after" else anchor["lead"], mode)
         width = anchor["indent"]
-        entry = (b"\n" * place["newlines"] + b" " * width, reindent(text, width - place["indent"]))
+        entry = (b"\n" * place["newlines"] + b" " * width, reindent(place, text, width - place["indent"]))
         buckets.setdefault(bucket, []).append(entry)
         inserted[key] = {**anchor, "bucket": bucket}
         print(f"added {key} to {bucket[0]} {mode} {neighbour}")
@@ -598,8 +604,7 @@ def replay_onto_split(executable, path, base_ref, branch_ref):
             source = source[:start] + text + source[end:]
             limit = start if start < end else start + 1
         written[ROOT / file] = source
-    for file, source in written.items():
-        file.write_bytes(source)
+    return written
 
 
 def compare_lists(before, after):
@@ -640,8 +645,11 @@ def main():
         return
     executable = parser()
     if args.command == "replay":
+        written = {}
         for path in args.sources:
-            replay_onto_split(executable, path, args.base_ref, args.branch_ref)
+            written |= replay_onto_split(executable, path, args.base_ref, args.branch_ref)
+        for file, source in written.items():
+            file.write_bytes(source)
         return
     if args.command == "check-format":
         diff = subprocess.check_output(["git", "diff", "-U0", "--inter-hunk-context=0", "--text", "--no-color", "--no-ext-diff", "--src-prefix=a/",

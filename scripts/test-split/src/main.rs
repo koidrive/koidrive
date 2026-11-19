@@ -125,6 +125,27 @@ fn entry(parent: &[String], name: String, kind: &str, (start, end): (usize, usiz
     json!({"parent": parent, "name": name, "kind": kind, "start": start, "end": end})
 }
 
+fn literals(tokens: proc_macro2::TokenStream, offsets: &Offsets, out: &mut Vec<(usize, usize)>) {
+    for token in tokens {
+        match token {
+            proc_macro2::TokenTree::Group(group) => literals(group.stream(), offsets, out),
+            proc_macro2::TokenTree::Literal(literal)
+                if literal.span().start().line != literal.span().end().line =>
+            {
+                out.push(offsets.span(literal.span()));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn spanned(mut found: Value, tokens: proc_macro2::TokenStream, offsets: &Offsets) -> Value {
+    let mut spans = Vec::new();
+    literals(tokens, offsets, &mut spans);
+    found["literals"] = json!(spans);
+    found
+}
+
 fn nested_item(item: &syn::Item, parent: &[String], offsets: &Offsets, out: &mut Vec<Value>) {
     let span = offsets.span(item.span());
     let named = |name: String, attrs: &[syn::Attribute]| format!("{name}{}", conditions(attrs));
@@ -194,13 +215,18 @@ fn nested_item(item: &syn::Item, parent: &[String], offsets: &Offsets, out: &mut
                     }
                     other => format!("member:{}", other.to_token_stream()),
                 };
-                out.push(entry(&inner, name, "item", offsets.span(member.span())));
+                let found = entry(&inner, name, "item", offsets.span(member.span()));
+                out.push(spanned(found, member.to_token_stream(), offsets));
             }
             return;
         }
         other => (format!("item:{}", other.to_token_stream()), "item"),
     };
-    out.push(entry(parent, name, kind, span));
+    out.push(spanned(
+        entry(parent, name, kind, span),
+        item.to_token_stream(),
+        offsets,
+    ));
 }
 
 fn main() {
