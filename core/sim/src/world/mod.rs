@@ -1999,6 +1999,9 @@ impl World {
                             writes.insert(tag(found), found.manifest_digest.clone());
                         }
                         self.published.insert(tag(found));
+                        if let Some(content) = download.filter(|c| device.disk.holds(tag(c))) {
+                            self.copied.insert(tag(content));
+                        }
                     }
                     note(
                         &mut self.seen,
