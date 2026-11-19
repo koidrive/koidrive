@@ -427,6 +427,7 @@ async function act(world: World, step: Step): Promise<boolean> {
       await until(() => outerGate.reached || outerDone);
       pauses.clear();
       const outerOutcomes = { put: r2.put, retire: r2.retire, del: r2.del };
+      Object.assign(r2, { put: "ok", retire: "ok", del: "ok" });
       for (const inner of step.inner.slice(0, -1)) await act(world, inner);
       const innerGate: Gate = { reached: false, released: false };
       if (step.innerAt !== undefined) pauses.set(step.innerAt, innerGate);
