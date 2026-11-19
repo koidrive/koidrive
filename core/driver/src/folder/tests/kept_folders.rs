@@ -213,7 +213,8 @@ fn a_restart_neither_uploads_nor_brings_back_a_kept_folder() {
 
 #[test]
 fn a_kept_folder_goes_to_the_trash_once_its_ignored_entries_go() {
-    let (mut remote, _, _, site, mut b, _) = deleted_with_ignored_entries(&["README.md"], &[".env"]);
+    let (mut remote, _, _, site, mut b, _) =
+        deleted_with_ignored_entries(&["README.md"], &[".env"]);
 
     fs::rename(site.root.join("app/.env"), site.root.join("moved.env")).unwrap();
     b.settle();
