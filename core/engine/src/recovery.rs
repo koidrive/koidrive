@@ -264,7 +264,8 @@ pub(crate) fn done(trees: &Trees, intent: &RestoreIntent) -> bool {
 /// The S updates that carry out `answer` for the nodes `question` holds, so the planner
 /// does the rest: a node published or kept is committed against R, under its own ID when R does
 /// not hold it, a node discarded follows R with its local version going to the local trash, a
-/// deletion is committed through the mass-delete guard, and a restored one is downloaded.
+/// deletion is committed through the mass-delete guard, and a restored one is downloaded, as is a
+/// deleted one whose server version was made over the version S holds.
 pub(crate) fn release(
     trees: &Trees,
     question: &Question,
@@ -275,18 +276,21 @@ pub(crate) fn release(
     };
     let remote = |id: &str| trees.remote().get(id).map(|node| node.shape.clone());
     let local = |id: &str| trees.local().get(id).map(|node| node.shape.clone());
+    let newer_than = |id: &str, version: Option<&str>| {
+        version.is_some_and(|version| trees.remote_made_over(id, version))
+    };
     let published = |id: &str| {
         let server = remote(id)?;
-        let newer_than = |version: Option<&str>| {
-            version.is_some_and(|version| trees.remote_made_over(id, version))
-        };
         let on_disk = trees.local().get(id).map(|node| &node.shape);
         let synced = trees.synced().live(id);
         let content = if trees.made_over_remote(id) {
             server.content.clone()
-        } else if let Some(on_disk) = on_disk.filter(|_| newer_than(trees.source_version_id(id))) {
+        } else if let Some(on_disk) =
+            on_disk.filter(|_| newer_than(id, trees.source_version_id(id)))
+        {
             on_disk.content.clone()
-        } else if let Some(synced) = synced.filter(|_| newer_than(trees.synced_version_id(id))) {
+        } else if let Some(synced) = synced.filter(|_| newer_than(id, trees.synced_version_id(id)))
+        {
             synced.content.clone()
         } else {
             server.content.clone()
@@ -298,8 +302,12 @@ pub(crate) fn release(
             let shape = match (group, answer) {
                 (RecoveryGroup::CreatedAfterRestorePoint, Answer::Keep) => None,
                 (RecoveryGroup::ChangedOnThisDevice, Answer::Publish) => published(id),
-                (RecoveryGroup::DeletedOnThisDevice, Answer::Delete) => remote(id),
-                (RecoveryGroup::DeletedOnThisDevice, Answer::Restore) => None,
+                (RecoveryGroup::DeletedOnThisDevice, Answer::Delete)
+                    if !newer_than(id, trees.synced_version_id(id)) =>
+                {
+                    remote(id)
+                }
+                (RecoveryGroup::DeletedOnThisDevice, Answer::Delete | Answer::Restore) => None,
                 (_, Answer::Discard) => local(id),
                 _ => return None,
             };

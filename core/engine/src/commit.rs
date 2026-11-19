@@ -1444,20 +1444,21 @@ impl Commits {
         }
         self.ask_missing(trees, ids, now_ms);
         let waiting = (trees.waiting().keys()).filter(|id| !changed_locally(trees, id));
+        let asked: BTreeSet<NodeId> = (self.questions.iter())
+            .filter(|q| recovery::asks(q) || first_link::asks(q))
+            .flat_map(Question::holds)
+            .cloned()
+            .collect();
         let mut skip: BTreeSet<NodeId> = self
             .problems
             .iter()
             .chain(waiting)
             .chain(trees.held_finishes())
             .chain(parked_until_moved(trees))
-            .chain(
-                (self.questions.iter())
-                    .filter(|q| recovery::asks(q) || first_link::asks(q))
-                    .flat_map(Question::holds),
-            )
+            .chain(&asked)
             .cloned()
             .collect();
-        let (needed, agreed) = rebase(trees, ids, now_ms, &skip);
+        let (needed, agreed) = rebase(trees, ids, now_ms, &skip, &asked);
         skip.extend(parked_until_moved(trees).cloned());
         let excluded: Vec<NodeId> = (trees.dirty_others().iter())
             .filter(|id| (trees.excluded(id) && !owed.contains(*id)) || trees.held(id))
@@ -3529,7 +3530,8 @@ fn rekey_copy(trees: &mut Trees, from: &str, to: &str) {
 /// The rebase of section 2.4, before ops are planned. A reverted file that R no longer has but that
 /// holds an edit not uploaded yet becomes a new node, so the edit is uploaded as a create instead
 /// of being removed with the node. Nodes in `skip` are not rebased otherwise, though what they changed
-/// remotely still keeps their ancestors. An excluded node is not rebased and keeps nothing; S
+/// remotely still keeps their ancestors. No change keeps a node an open question holds (`asked`),
+/// so S keeps it until the person answers. An excluded node is not rebased and keeps nothing; S
 /// still takes what both sides agree on for it. Returns the nodes the keep rule could
 /// not clear from S yet, and the S updates both sides agree on, which are made together with the
 /// waiting ones.
@@ -3538,6 +3540,7 @@ fn rebase(
     ids: &mut IdGen,
     now_ms: u64,
     skip: &BTreeSet<NodeId>,
+    asked: &BTreeSet<NodeId>,
 ) -> (BTreeSet<NodeId>, Vec<(NodeId, Option<Shape>)>) {
     settle_kept_folders(trees, ids, now_ms);
     let dirty: Vec<NodeId> = trees.dirty_others().iter().cloned().collect();
@@ -3590,7 +3593,7 @@ fn rebase(
     let mut needed = BTreeSet::new();
     let mut agreed = Vec::new();
     for id in &dirty {
-        keep(trees, id, &mut needed);
+        keep(trees, id, asked, &mut needed);
         if skip.contains(id) {
             continue;
         }
@@ -3784,9 +3787,9 @@ fn parked_until_moved(trees: &Trees) -> impl Iterator<Item = &NodeId> {
         .map(|(id, _)| id)
 }
 
-fn keep(trees: &mut Trees, id: &str, needed: &mut BTreeSet<NodeId>) {
+fn keep(trees: &mut Trees, id: &str, asked: &BTreeSet<NodeId>, needed: &mut BTreeSet<NodeId>) {
     let deleted: Vec<NodeId> = (trees.keep_walk(id))
-        .filter(|(_, deleted)| *deleted)
+        .filter(|(node, deleted)| *deleted && !asked.contains(*node))
         .map(|(node, _)| node.to_owned())
         .collect();
     for node in deleted {

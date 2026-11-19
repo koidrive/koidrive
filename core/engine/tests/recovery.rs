@@ -994,6 +994,44 @@ fn a_node_deleted_on_this_device_is_held_until_the_delete_is_confirmed() {
 }
 
 #[test]
+fn a_file_deleted_on_this_device_stays_held_when_the_rewind_lost_its_rename() {
+    let mut trees = trees(
+        &[],
+        &[("n", file(ROOT, "a", 1))],
+        &[live("n", file(ROOT, "é", 1))],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    for _ in 0..2 {
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+        assert_eq!(effects(&mut trees, &mut ids), []);
+    }
+    let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
+    assert_eq!(trees.synced().live("n"), Some(&file(ROOT, "a", 1)));
+    assert!(commits.decide(&question.id, Answer::Delete));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("delete", "n".to_owned())]
+    );
+    assert_eq!(effects(&mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_folder_deleted_on_this_device_stays_held_while_the_server_holds_a_file_in_it() {
+    let mut trees = trees(
+        &[],
+        &[("d", dir(ROOT, "d"))],
+        &[live("d", dir(ROOT, "d")), live("c", file("d", "c", 1))],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    for _ in 0..2 {
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+        assert_eq!(effects(&mut trees, &mut ids), []);
+    }
+    asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["d"]);
+    assert_eq!(trees.synced().live("d"), Some(&dir(ROOT, "d")));
+}
+
+#[test]
 fn an_entry_new_on_this_device_is_held_as_created_on_this_device() {
     let mut trees = trees(
         &[
