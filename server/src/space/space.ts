@@ -67,7 +67,7 @@ import { refusalOutcome } from "../http";
 import type { MeteredCall } from "../report/meter";
 import { batchDue, type Carried, type Counted, mergeBatch, nextHourMs, type UsageBatch, UsageTally } from "../report/usage";
 import { type ApplyContext, CallFailure, CommitApplier } from "./commit";
-import { DIGEST_VERSION, type DigestVersion, type Digests, commitDigests } from "./digest";
+import { DIGEST_VERSION, type Digests, commitDigests, digestVersion } from "./digest";
 import { descriptorDurable, Exporter, noteCommitted, startExport } from "./export";
 import type { ShareInfo, ShareListing } from "../gen/koidrive/v1/share_pb";
 import type { ShareOutcome } from "../share/links";
@@ -830,7 +830,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
 
     private storedResult(
       commitId: string,
-    ): { result: CommitResult; deviceId: string; digest: Uint8Array | null; digestVersion: DigestVersion } | undefined {
+    ): { result: CommitResult; deviceId: string; digest: Uint8Array | null; digestVersion: number } | undefined {
       const row =
         this.sql.exec("SELECT results, device_id, request_digest, digest_version FROM commits WHERE commit_id = ?", commitId).toArray()[0] ??
         this.sql
@@ -842,12 +842,11 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         const logged = this.sql.exec("SELECT committed_at_ms FROM commits WHERE commit_id = ?", commitId).toArray()[0];
         result.committedAtMs = BigInt(Number(logged?.committed_at_ms ?? 0));
       }
-      const version = Number(row.digest_version);
       return {
         result,
         deviceId: String(row.device_id ?? ""),
         digest: row.request_digest === null ? null : new Uint8Array(row.request_digest as ArrayBuffer),
-        digestVersion: version === 1 || version === 2 || version === 3 || version === 4 ? version : 5,
+        digestVersion: Number(row.digest_version),
       };
     }
 
@@ -911,7 +910,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const stored = this.storedResult(commit.commitId);
       if (stored) {
         if (stored.deviceId !== deviceId) fail(Error_Code.INVALID_ARGUMENT, "commit_id belongs to a commit of another device");
-        if (stored.digest && !sameBytes(stored.digest, digests[stored.digestVersion])) fail(Error_Code.INVALID_ARGUMENT, "commit_id belongs to a different commit");
+        if (stored.digest && !sameBytes(stored.digest, digests[digestVersion(stored.digestVersion)])) fail(Error_Code.INVALID_ARGUMENT, "commit_id belongs to a different commit");
         return stored.result;
       }
       const accepted = this.acceptedDeviceSeq(deviceId);

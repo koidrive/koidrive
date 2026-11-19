@@ -22,6 +22,18 @@ afterEach(() => {
 });
 
 describe("WebSocket session", () => {
+  it("welcomes a device whose latest commit has an unknown digest version", async () => {
+    const owner = await getOwner();
+    const spaceId = await createSpace(owner);
+    const first = await Socket.connect(spaceId, owner);
+    await first.commit((await first.hello()).headSeq, [op.mkdir(uuidv7(), spaceId, "D")]);
+    first.ws.close();
+    await runInDurableObject(env.SPACE.get(env.SPACE.idFromName(spaceId)), (_instance, state) => {
+      for (const table of ["commits", "device_commits"]) state.storage.sql.exec(`UPDATE ${table} SET digest_version = 99`);
+    });
+    expect((await (await Socket.connect(spaceId, owner)).hello()).deviceSeq).toBe(1n);
+  });
+
   async function twoDevices() {
     const a = await getOwner();
     const b = await pairDevice(a, "Desktop B");
