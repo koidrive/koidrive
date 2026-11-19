@@ -1179,8 +1179,6 @@ fn a_move_r_undid_while_it_was_in_flight_is_moved_back() {
     assert_in_sync(&mut trees);
 }
 
-/// A reverted file's move to R's position is in flight when R moves the file on. The move is this
-/// device's effect, not the user's, so no commit moves the file, and the effects move it on.
 #[test]
 fn a_reverted_move_r_moved_on_from_while_it_was_in_flight_is_moved_on() {
     let (mut trees, mut disk) = space(&[("f", Some(file(ROOT, "b", 1)), Some(file(ROOT, "c", 1)))]);
