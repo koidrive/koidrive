@@ -1106,12 +1106,14 @@ impl Engine {
                 parked.push(holder);
             }
             match change {
-                Observed::Removed { .. } | Observed::Missing { .. } => {
+                Observed::Removed { path, .. } | Observed::Missing { path, .. } => {
                     if let Some(id) = before {
                         let missing = matches!(change, Observed::Missing { .. });
                         if !missing
                             && (self.trees.local().get(&id))
                                 .is_some_and(|node| node.shape.kind == Kind::File)
+                            && names(path)
+                                .is_some_and(|names| !self.trees.ignores(&names, Kind::File))
                         {
                             self.removed_at.insert(id.clone(), now_ms);
                         }

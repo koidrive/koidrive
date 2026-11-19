@@ -618,8 +618,15 @@ impl Folder {
         Ok(work)
     }
 
-    /// One observation batch, with the number of entries the folder holds after it.
+    /// One observation batch, with the number of entries the folder holds after it. A batch that changes the rules
+    /// first ends the wait for removed files, so their deletion is built before the rules apply.
     pub fn observed(&mut self, batch: Batch, entries: u64) -> Result<Vec<Work>, Stop> {
+        let mut work = Vec::new();
+        let rules = batch.observation.all_rules || !batch.observation.rules.is_empty();
+        if rules && self.engine.deletes_due().is_some() {
+            self.engine.forget_removals();
+            self.drive(&mut work)?;
+        }
         self.local_entries = Some(entries);
         self.unread = batch.unread;
         let detached = batch.observation.detached.clone();
@@ -657,7 +664,6 @@ impl Folder {
             .map(|(node, _)| node.clone())
             .collect();
         self.let_back_in(&changed)?;
-        let mut work = Vec::new();
         self.drive(&mut work)?;
         Ok(work)
     }

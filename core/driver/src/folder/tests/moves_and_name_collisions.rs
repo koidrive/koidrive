@@ -911,3 +911,22 @@ fn an_edit_from_another_device_during_the_wait_is_kept_beside_the_file_written_a
         assert!(!a.sent.iter().flat_map(kinds).any(|kind| kind == "delete"));
     }
 }
+
+#[test]
+fn a_file_removed_before_a_rule_leaves_it_out_leaves_the_server() {
+    let cases = [
+        (".koiignore", "report.txt"),
+        (".gitignore", "docs/"),
+        (".koiignore", "*.txt"),
+    ];
+    for (rules_file, rule) in cases {
+        let mut remote = Remote::new();
+        let (site, mut a, before) = report_removed(&mut remote);
+        fs::write(site.root.join(rules_file), format!("{rule}\n")).unwrap();
+        a.settle();
+        a.rest(&mut remote);
+        let nodes = server_nodes(&remote);
+        let kept = (nodes.iter()).any(|(_, id, live)| *id == before && *live);
+        assert!(!kept, "{rules_file} {rule}: {nodes:?}");
+    }
+}
