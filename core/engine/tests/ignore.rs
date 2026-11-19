@@ -5,8 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use koidrive_engine::classify::{Origin, Pending, Trees, Waiting};
 use koidrive_engine::commit::Commits;
 use koidrive_engine::effects::{self, Base, BatchLimit, Effect, Effects, Location, Stuck};
+use koidrive_engine::first_link::{History, Marks};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::{LocalRules, RuleFile, Source};
+use koidrive_engine::question::RecoveryCause;
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
 use koidrive_proto::v1::{self as proto, op};
 
@@ -2396,6 +2398,30 @@ fn a_delete_refused_after_its_folder_was_given_up_is_sent_again_once_included() 
 
 #[test]
 fn a_file_deleted_here_that_another_device_moved_out_of_a_given_up_folder_comes_back_there() {
+    let mut trees = deleted_here_then_given_up();
+    moved_out_comes_back(&mut trees);
+}
+
+#[test]
+fn a_file_deleted_here_keeps_its_base_through_a_rewind_and_comes_back_where_another_device_moved_it()
+ {
+    let mut trees = deleted_here_then_given_up();
+    let cause = RecoveryCause::rewind(4, NOW as i64);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.enter_recovery(cause);
+    assert_eq!(
+        commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 9),
+        None
+    );
+    let (history, marks) = (History::new(), Marks::new());
+    commits.recover(
+        &mut trees, 9, false, &cause, &history, &marks, &mut ids, NOW,
+    );
+    trees.settle(commits.aliases());
+    moved_out_comes_back(&mut trees);
+}
+
+fn deleted_here_then_given_up() -> Trees {
     let mut trees = trees(&[
         incoming("far", dir(ROOT, "far")),
         (
@@ -2418,12 +2444,16 @@ fn a_file_deleted_here_that_another_device_moved_out_of_a_given_up_folder_comes_
     trees.set_remote("y".into(), remote(file(ROOT, "x", 2)));
     trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/far/\n"));
     trees.settle(&Default::default());
+    trees
+}
+
+fn moved_out_comes_back(trees: &mut Trees) {
     let mut moved = trees.remote().get("z").unwrap().clone();
     moved.shape.parent = ROOT.into();
     moved.shape.name = "zz".into();
     trees.set_remote("z".into(), moved);
-    assert_eq!(ops(&mut trees), []);
-    effects(&mut trees);
+    assert_eq!(ops(trees), []);
+    effects(trees);
     assert_eq!(trees.local().live("z"), Some(&file(ROOT, "zz", 1)));
 }
 

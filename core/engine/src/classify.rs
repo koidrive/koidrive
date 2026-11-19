@@ -4601,7 +4601,10 @@ impl Trees {
             .filter(|(id, _)| {
                 let content = |shape: Option<&Shape>| shape.and_then(|shape| shape.content.clone());
                 let remote = content(self.r.live(id));
-                let synced = content(self.s.live(id));
+                let released = (self.waiting.get(id))
+                    .filter(|waiting| waiting.origin == Origin::Released)
+                    .and_then(|waiting| waiting.shape.as_ref());
+                let synced = content(self.s.live(id).or(released));
                 matches!((remote, synced), (Some(remote), Some(synced)) if same_content(&remote, &synced))
             })
             .map(|(id, seq)| (id.clone(), *seq))
@@ -4996,16 +4999,20 @@ impl Trees {
         }
         for (id, _) in edited {
             let replaced = self.replaced_versions.get(&id);
+            let released = (self.waiting.get(&id))
+                .filter(|waiting| waiting.origin == Origin::Released)
+                .and_then(|waiting| waiting.shape.as_ref());
             let waits_at = (self.waiting.get(&id))
                 .filter(|_| queued.contains(&id))
                 .and_then(|waiting| waiting.shape.as_ref());
+            let base_released = released.is_some() && self.s.get(&id).is_none();
             let Some(remote) = (self.r.get(&id))
                 .filter(|remote| {
                     remote.content_rev <= held_through
                         || replaced.is_some_and(|versions| versions.contains(&remote.version_id))
                 })
                 .and_then(|remote| {
-                    let s = waits_at.or(self.s.live(&id))?;
+                    let s = waits_at.or(self.s.live(&id)).or(released)?;
                     Some(Shape {
                         parent: s.parent.clone(),
                         name: s.name.clone(),
@@ -5015,7 +5022,9 @@ impl Trees {
             else {
                 continue;
             };
-            if !self.set_synced_if_valid(id.clone(), Some(remote.clone())) {
+            if base_released {
+                self.wait(id, Some(remote), Origin::Released);
+            } else if !self.set_synced_if_valid(id.clone(), Some(remote.clone())) {
                 queued.insert(id.clone());
                 self.wait(id, Some(remote), Origin::Other);
             }
