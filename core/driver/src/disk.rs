@@ -1025,12 +1025,15 @@ impl Disk {
         Some((at, file_id(trees.local().get(id)?.identity)))
     }
 
-    /// Asks the observer to reset `paths` to L and scan them again, and holds what is at or below them until a
-    /// scan answers.
-    pub fn rescan(&mut self, engine: &mut Engine, paths: Vec<PathBuf>) {
-        let requested = self.sections.request(engine.resets(paths.iter().cloned()));
-        self.awaited_scans.push((requested, paths));
-        self.hold(engine);
+    /// Asks the observer to reset `scope` to L and scan it again, and holds what is at or below it until a scan
+    /// answers. Without a scope it rescans the whole tree and holds nothing, since no node can be named.
+    pub fn rescan(&mut self, engine: &mut Engine, scope: Option<PathBuf>) {
+        let paths = vec![scope.clone().unwrap_or_default()];
+        let requested = self.sections.request(engine.resets(paths));
+        if let Some(scope) = scope {
+            self.awaited_scans.push((requested, vec![scope]));
+            self.hold(engine);
+        }
     }
 
     /// The chunks `commit` adds, with where the bytes of each are: for every content the commit creates or

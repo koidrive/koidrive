@@ -2445,15 +2445,17 @@ impl Trees {
         self.asked = asked;
     }
 
-    /// Whether an open question holds the node's local entry ([`Trees::set_asked`]), or L, S or R
-    /// places it below a folder whose rules are unknown ([`Trees::set_rules_unknown`]) or at or below a node
-    /// that awaits a scan ([`Trees::await_scan`]). Neither an effect nor a commit is planned for it, and no
-    /// effect parks it to make room for another node.
+    /// Whether the node is set aside ([`Trees::set_aside`]), or L, S or R places it at or below a node that awaits a
+    /// scan ([`Trees::await_scan`]). Neither an effect nor a commit is planned for it, and no effect parks it to make
+    /// room for another node.
     pub fn held(&self, id: &NodeId) -> bool {
-        self.asked.contains(id)
-            || self.vanished(id)
-            || self.below_unknown_rules(id)
-            || self.awaits_scan(id)
+        self.set_aside(id) || self.awaits_scan(id)
+    }
+
+    /// Whether an open question holds the node's local entry ([`Trees::set_asked`]), or L, S or R places it below a
+    /// folder whose rules are unknown ([`Trees::set_rules_unknown`]).
+    pub fn set_aside(&self, id: &NodeId) -> bool {
+        self.asked.contains(id) || self.vanished(id) || self.below_unknown_rules(id)
     }
 
     /// Sets the nodes whose place on disk a scan must report before anything is planned at or below them, as after
