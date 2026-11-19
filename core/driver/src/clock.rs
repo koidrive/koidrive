@@ -3,7 +3,7 @@
 #[cfg(not(test))]
 pub(crate) use real_time::{instant, system};
 #[cfg(test)]
-pub(crate) use virtual_time::{advance_to, instant, system};
+pub(crate) use virtual_time::{advance_to, freeze, instant, system};
 
 pub(crate) fn unix_ms() -> u64 {
     (system().duration_since(std::time::UNIX_EPOCH)).map_or(0, |since| since.as_millis() as u64)
@@ -29,21 +29,29 @@ mod virtual_time {
 
     thread_local! {
         static AHEAD: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+        static FROZEN: Cell<Option<(Instant, SystemTime)>> = const { Cell::new(None) };
+    }
+
+    fn now() -> (Instant, SystemTime) {
+        FROZEN
+            .get()
+            .unwrap_or_else(|| (Instant::now(), SystemTime::now()))
     }
 
     pub(crate) fn instant() -> Instant {
-        Instant::now() + AHEAD.get()
+        now().0 + AHEAD.get()
     }
 
     pub(crate) fn system() -> SystemTime {
-        SystemTime::now() + AHEAD.get()
+        now().1 + AHEAD.get()
     }
 
     pub(crate) fn advance_to(at: Instant) {
-        AHEAD.set(
-            AHEAD
-                .get()
-                .max(at.saturating_duration_since(Instant::now())),
-        );
+        AHEAD.set(AHEAD.get().max(at.saturating_duration_since(now().0)));
+    }
+
+    pub(crate) fn freeze() {
+        FROZEN.set(Some((instant(), system())));
+        AHEAD.set(Duration::ZERO);
     }
 }

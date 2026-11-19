@@ -54,7 +54,11 @@ pub(crate) struct Engine {
     stored_ctimes: BTreeMap<NodeId, i64>,
     unstored_ctimes: BTreeMap<NodeId, i64>,
     pub local_written_since_load: bool,
+    removed_at: BTreeMap<NodeId, u64>,
+    owed: BTreeSet<NodeId>,
 }
+
+const DELETE_WAIT_MS: u64 = 2_000;
 
 /// What applying a batch of the log did.
 #[derive(Debug, PartialEq)]
@@ -148,6 +152,8 @@ impl Engine {
             stored_ctimes: tx.local_ctimes()?,
             unstored_ctimes: BTreeMap::new(),
             local_written_since_load: false,
+            removed_at: BTreeMap::new(),
+            owed: BTreeSet::new(),
         }))
     }
 
@@ -931,8 +937,10 @@ impl Engine {
     /// node, so it does not bring back a folder another device deleted. Any other entry that arrives where L keeps a
     /// recorded node has taken its name: the recorded node leaves L with what L holds under it, and each stays
     /// recorded ([`Trees::displace_local`]), so the server keeps it. An entry with the identity of such a node is the
-    /// node placed again. A file whose content could not be read is left out until the observer reports it with its
-    /// content.
+    /// node placed again. A created file that takes no node by identity or mark, where L holds nothing under its name,
+    /// is the file S holds there that L no longer holds and whose Delete is not in flight, written again: it keeps that
+    /// node, so the next commit uploads a new version instead of deleting it. A file whose content could not be read is
+    /// left out until the observer reports it with its content.
     /// A rename to a path the rules exclude is a move out of what this device syncs: the node takes that position
     /// when its folder is in L or arrives in the batch, and keeps its entry otherwise ([`Trees::ignore_local`]); an
     /// entry L never held stays out.
@@ -1100,9 +1108,17 @@ impl Engine {
                 parked.push(holder);
             }
             match change {
-                Observed::Removed { .. } | Observed::Missing { .. } => {
+                Observed::Removed { path, .. } | Observed::Missing { path, .. } => {
                     if let Some(id) = before {
                         let missing = matches!(change, Observed::Missing { .. });
+                        if !missing
+                            && (self.trees.local().get(&id))
+                                .is_some_and(|node| node.shape.kind == Kind::File)
+                            && names(path)
+                                .is_some_and(|names| !self.trees.ignores(&names, Kind::File))
+                        {
+                            self.removed_at.insert(id.clone(), now_ms);
+                        }
                         self.remove(&id, &moving, true, missing, &mut touched, &mut gone);
                     }
                 }
@@ -1204,7 +1220,8 @@ impl Engine {
                                 })
                                 .map(|(node, _, _)| node.clone())
                         })
-                        .or_else(|| self.unclaimed(marked_node.as_ref(), *linked));
+                        .or_else(|| self.unclaimed(marked_node.as_ref(), *linked))
+                        .or_else(|| self.written_again(path, *kind, *linked));
                     self.place(
                         node,
                         path,
@@ -1278,6 +1295,65 @@ impl Engine {
                     && self.trees.remote().get(node).is_none()
             })
             .cloned()
+    }
+
+    fn written_again(&self, path: &Path, kind: EntryKind, linked: bool) -> Option<NodeId> {
+        let parent = local_at(&self.trees, path.parent()?)?;
+        let name = path.file_name()?.to_str()?;
+        if kind != EntryKind::File
+            || linked
+            || self.trees.local_holders(&parent, name).next().is_some()
+        {
+            return None;
+        }
+        let sent =
+            |id: &str| (self.commits.in_flight()).is_some_and(|flight| flight.deletes_node(id));
+        (self.trees.synced_holders(&parent, name))
+            .find(|id| {
+                (self.trees.synced().live(id))
+                    .is_some_and(|synced| synced.kind == Kind::File && synced.name == name)
+                    && self.trees.local().get(id).is_none()
+                    && !self.trees.displaced_local().contains_key(*id)
+                    && !sent(id)
+            })
+            .cloned()
+    }
+
+    pub fn deferred_deletes(&mut self, now_ms: u64) -> BTreeSet<NodeId> {
+        let trees = &self.trees;
+        let root = &trees.local().root;
+        self.removed_at.retain(|id, at| {
+            (*at..at.saturating_add(DELETE_WAIT_MS)).contains(&now_ms)
+                && trees.local().get(id).is_none()
+                && trees.synced().live(id).is_some_and(|synced| {
+                    (synced.parent == *root || trees.local().get(&synced.parent).is_some())
+                        && trees
+                            .local_holders(&synced.parent, &synced.name)
+                            .next()
+                            .is_none()
+                })
+        });
+        self.removed_at.keys().cloned().collect()
+    }
+
+    pub fn forget_removals(&mut self) {
+        self.removed_at.clear();
+    }
+
+    pub fn owe_removals(&mut self) {
+        self.owed
+            .extend(std::mem::take(&mut self.removed_at).into_keys());
+    }
+
+    pub fn owed_deletes(&mut self) -> BTreeSet<NodeId> {
+        let trees = &self.trees;
+        self.owed
+            .retain(|id| trees.local().get(id).is_none() && trees.synced().live(id).is_some());
+        self.owed.clone()
+    }
+
+    pub fn deletes_due(&self) -> Option<u64> {
+        (self.removed_at.values().min()).map(|at| at + DELETE_WAIT_MS)
     }
 
     fn scanned(&self, id: &str) -> bool {
@@ -2400,6 +2476,8 @@ mod tests {
             stored_ctimes: BTreeMap::new(),
             unstored_ctimes: BTreeMap::new(),
             local_written_since_load: false,
+            removed_at: BTreeMap::new(),
+            owed: BTreeSet::new(),
         };
         Case {
             name,
@@ -4660,5 +4738,121 @@ mod tests {
                 Ok::<_, Stop>(())
             })
             .unwrap();
+    }
+
+    fn removed_report() -> (tempfile::TempDir, Engine, NodeId) {
+        let (dir, mut engine) = mapper();
+        engine.trees.rules_scanned();
+        let docs = Observed::Created {
+            path: "docs".into(),
+            kind: EntryKind::Dir,
+            id: ino(1),
+            linked: false,
+            content: None,
+            marked_node: None,
+        };
+        let draft = created("docs/draft.txt", ino(4), false, 4);
+        engine.observe(
+            &[docs, created("docs/report.txt", ino(2), false, 1), draft],
+            0,
+        );
+        synced_everywhere(&mut engine);
+        let (file, _, _) = holding(&engine, "docs/report.txt").unwrap();
+        let removed = Observed::Removed {
+            path: "docs/report.txt".into(),
+            kind: EntryKind::File,
+        };
+        engine.observe(&[removed], 1_000);
+        (dir, engine, file)
+    }
+
+    fn built_ops(engine: &mut Engine) -> Vec<(&'static str, String)> {
+        let commit =
+            (engine.commits).build(&mut engine.trees, &mut engine.ids, 2_000, "h", "me", 0);
+        (commit.into_iter().flat_map(|commit| &commit.ops))
+            .filter_map(|op| match op.op.as_ref()? {
+                op::Op::UpdateContent(update) => Some(("update content", update.node_id.clone())),
+                op::Op::Delete(delete) => Some(("delete", delete.node_id.clone())),
+                op::Op::Move(moved) => Some(("move", moved.node_id.clone())),
+                op::Op::CreateFile(_) | op::Op::CreateDir(_) => Some(("create", String::new())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_file_written_again_at_its_path_in_a_later_batch_keeps_its_node() {
+        let (_dir, mut engine, file) = removed_report();
+        engine.observe(&[created("docs/report.txt", ino(3), false, 7)], 1_500);
+        assert_eq!(
+            holding(&engine, "docs/report.txt"),
+            Some((file.clone(), file_identity(ino(3)), 7))
+        );
+        assert_eq!(built_ops(&mut engine), [("update content", file)]);
+    }
+
+    #[test]
+    fn an_entry_at_the_path_of_a_removed_file_is_a_new_node_after_its_delete_or_as_a_folder_link_or_rename()
+     {
+        for case in ["sent", "folder", "link", "rename"] {
+            let (_dir, mut engine, file) = removed_report();
+            let sent = (case == "sent").then(|| built_ops(&mut engine));
+            let draft = holding(&engine, "docs/draft.txt").unwrap().0;
+            let arrives = match case {
+                "folder" => Observed::Created {
+                    path: "docs/report.txt".into(),
+                    kind: EntryKind::Dir,
+                    id: ino(3),
+                    linked: false,
+                    content: None,
+                    marked_node: None,
+                },
+                "rename" => renamed("docs/draft.txt", "docs/report.txt", ino(4), false),
+                _ => created("docs/report.txt", ino(3), case == "link", 7),
+            };
+            engine.observe(&[arrives], 1_500);
+            let at = holding(&engine, "docs/report.txt").unwrap().0;
+            assert_ne!(at, file, "{case}");
+            assert!(engine.trees.local().get(&file).is_none(), "{case}");
+            let ops = sent.unwrap_or_else(|| built_ops(&mut engine));
+            assert!(ops.contains(&("delete", file.clone())), "{case}: {ops:?}");
+            if case == "rename" {
+                assert_eq!(at, draft);
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_file_at_the_path_of_a_displaced_file_is_a_node_of_its_own() {
+        let (_dir, mut engine) = mapper();
+        engine.trees.rules_scanned();
+        let dir = |path: &str, id: u64| Observed::Created {
+            path: path.into(),
+            kind: EntryKind::Dir,
+            id: ino(id),
+            linked: false,
+            content: None,
+            marked_node: None,
+        };
+        engine.observe(
+            &[dir("docs", 1), created("docs/f.txt", ino(2), false, 1)],
+            0,
+        );
+        synced_everywhere(&mut engine);
+        let (file, _, _) = holding(&engine, "docs/f.txt").unwrap();
+        engine.trees.ignore_local(&file);
+        engine.observe(&[dir("docs/f.txt", 3)], 1_000);
+        assert!(engine.trees.displaced_local().contains_key(&file));
+        let removed = Observed::Removed {
+            path: "docs/f.txt".into(),
+            kind: EntryKind::Dir,
+        };
+        engine.observe(&[removed], 1_100);
+        engine.observe(&[created("docs/f.txt", ino(4), false, 7)], 1_200);
+        assert_ne!(
+            holding(&engine, "docs/f.txt").map(|held| held.0),
+            Some(file.clone())
+        );
+        assert!(engine.trees.displaced_local().contains_key(&file));
     }
 }

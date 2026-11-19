@@ -861,7 +861,7 @@ fn with_a_trashed_file(remote: &mut Remote) -> (Site, Device, String) {
     let node = node_named(&a, "notes.txt");
     fs::remove_file(&path).unwrap();
     a.scan_until(|a| !a.work.is_empty());
-    assert_eq!(a.run(remote), ["send"]);
+    assert_eq!(a.run(remote), ["retry", "send"]);
     assert!(remote.names().is_empty());
     (site, a, node)
 }

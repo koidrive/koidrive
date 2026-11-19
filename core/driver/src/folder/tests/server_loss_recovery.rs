@@ -450,7 +450,7 @@ fn a_delete_the_server_lost_is_sent_again() {
     let mut restored = backup(&remote, &a);
     fs::remove_file(site.root.join("one.txt")).unwrap();
     a.scan_until(|a| !a.work.is_empty());
-    assert_eq!(a.run(&mut remote), ["send"]);
+    assert_eq!(a.run(&mut remote), ["retry", "send"]);
     assert_eq!(remote.names(), ["two.txt"]);
     a.event(Event::Connected(restored.space.welcome(&a.caller)))
         .unwrap();
@@ -472,7 +472,7 @@ fn a_delete_the_server_lost_is_not_sent_again_over_another_devices_edit() {
     let mut restored = backup(&remote, &a);
     fs::remove_file(site.root.join("one.txt")).unwrap();
     a.scan_until(|a| !a.work.is_empty());
-    assert_eq!(a.run(&mut remote), ["send"]);
+    assert_eq!(a.run(&mut remote), ["retry", "send"]);
     let (other, mut b) = linked(&mut restored, "b");
     b.create(&mut restored, &other.root.join("one.txt"), b"edited");
     a.event(Event::Connected(restored.space.welcome(&a.caller)))
@@ -500,7 +500,7 @@ fn a_restore_after_the_server_lost_a_delete_is_kept() {
     }
     fs::remove_file(site.root.join("one.txt")).unwrap();
     a.scan_until(|a| !a.work.is_empty());
-    assert_eq!(a.run(&mut remote), ["send"]);
+    assert_eq!(a.run(&mut remote), ["retry", "send"]);
     assert_eq!(remote.space.head_seq(), 5);
     let (other, mut b) = linked(&mut restored, "b");
     let node = (b.folder.engine.trees.local().iter())
@@ -510,7 +510,7 @@ fn a_restore_after_the_server_lost_a_delete_is_kept() {
         .clone();
     fs::remove_file(other.root.join("one.txt")).unwrap();
     b.scan_until(|b| !b.work.is_empty());
-    assert_eq!(b.run(&mut restored), ["send"]);
+    assert_eq!(b.run(&mut restored), ["retry", "send"]);
     let intent = RestoreIntent::from_trash(node.clone(), None, None).unwrap();
     let request = ask(&other, &intent);
     let step = b.folder.requested();
@@ -547,7 +547,7 @@ fn a_restore_after_the_server_lost_a_delete_under_a_policy_halt_is_kept() {
     }
     fs::remove_file(site.root.join("one.txt")).unwrap();
     a.scan_until(|a| !a.work.is_empty());
-    assert_eq!(a.run(&mut remote), ["send"]);
+    assert_eq!(a.run(&mut remote), ["retry", "send"]);
     assert_eq!(remote.space.head_seq(), 5);
     fs::write(site.root.join("refused.txt"), b"refused").unwrap();
     a.scan_until(|a| !a.work.is_empty());
@@ -570,7 +570,7 @@ fn a_restore_after_the_server_lost_a_delete_under_a_policy_halt_is_kept() {
         .clone();
     fs::remove_file(other.root.join("one.txt")).unwrap();
     b.scan_until(|b| !b.work.is_empty());
-    assert_eq!(b.run(&mut restored), ["send"]);
+    assert_eq!(b.run(&mut restored), ["retry", "send"]);
     let intent = RestoreIntent::from_trash(node, None, None).unwrap();
     let request = ask(&other, &intent);
     let step = b.folder.requested();
@@ -635,7 +635,7 @@ fn an_edit_the_server_lost_revives_a_file_another_device_deleted() {
     let (other, mut b) = linked(&mut restored, "b");
     fs::remove_file(other.root.join("one.txt")).unwrap();
     b.scan_until(|b| !b.work.is_empty());
-    assert_eq!(b.run(&mut restored), ["send"]);
+    assert_eq!(b.run(&mut restored), ["retry", "send"]);
     assert!(restored.names().is_empty());
     a.event(Event::Connected(restored.space.welcome(&a.caller)))
         .unwrap();
@@ -832,7 +832,7 @@ fn a_file_another_device_deleted_after_the_server_lost_commits_is_removed_here()
     let (other, mut b) = linked(&mut restored, "b");
     fs::remove_file(other.root.join("one.txt")).unwrap();
     b.scan_until(|b| !b.work.is_empty());
-    assert_eq!(b.run(&mut restored), ["send"]);
+    assert_eq!(b.run(&mut restored), ["retry", "send"]);
     a.event(Event::Connected(restored.space.welcome(&a.caller)))
         .unwrap();
     a.run(&mut restored);

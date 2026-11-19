@@ -482,6 +482,8 @@ fn a_held_folder_that_takes_the_place_of_its_held_children_continues_their_quest
     for i in 0..11 {
         fs::remove_file(site.root.join(format!("d/{i}.txt"))).unwrap();
     }
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
     a.scan_until(|a| a.folder.view().questions == 1);
     let [first] = &shown(&site)[..] else {
         panic!("one question");
@@ -522,6 +524,8 @@ fn a_question_asked_again_about_the_same_files_after_an_answer_starts_its_own_li
     for i in 0..11 {
         fs::remove_file(site.root.join(format!("{i}.txt"))).unwrap();
     }
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
     a.scan_until(|a| a.folder.view().questions == 1);
     let first = answer(&site, Answer::Restore);
     let step = a.folder.requested();
@@ -535,6 +539,8 @@ fn a_question_asked_again_about_the_same_files_after_an_answer_starts_its_own_li
     for i in 0..11 {
         fs::remove_file(site.root.join(format!("{i}.txt"))).unwrap();
     }
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
     a.scan_until(|a| a.folder.view().questions == 1);
 
     let [second] = &shown(&site)[..] else {

@@ -99,6 +99,13 @@ impl InFlight {
     pub(crate) fn positions(&self, id: &str) -> bool {
         (self.commit.ops.iter()).any(|op| op.op.as_ref().and_then(positioned) == Some(id))
     }
+
+    /// Whether the commit deletes `id`, by a `Delete` of it or of a folder above it.
+    pub fn deletes_node(&self, id: &str) -> bool {
+        (self.deletes.iter()).any(|(top, members)| top == id || members.iter().any(|m| m == id))
+            || (self.commit.ops.iter())
+                .any(|op| matches!(&op.op, Some(op::Op::Delete(delete)) if delete.node_id == id))
+    }
 }
 
 /// Why no commit is built or resent.
@@ -1358,12 +1365,41 @@ impl Commits {
         device_id: &str,
         base: impl Into<Base>,
     ) -> Option<&proto::Commit> {
+        self.build_deferring(
+            trees,
+            ids,
+            now_ms,
+            history_id,
+            device_id,
+            base,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )
+    }
+
+    /// [`Commits::build`], leaving the deletion of each node of `deferred` to a later build and deleting each node of
+    /// `owed` that the rules leave out.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_deferring(
+        &mut self,
+        trees: &mut Trees,
+        ids: &mut IdGen,
+        now_ms: u64,
+        history_id: &str,
+        device_id: &str,
+        base: impl Into<Base>,
+        deferred: &BTreeSet<NodeId>,
+        owed: &BTreeSet<NodeId>,
+    ) -> Option<&proto::Commit> {
         let base = base.into();
         trees.in_one_build(|trees| {
-            self.build_in_one_pass(trees, ids, now_ms, history_id, device_id, base)
+            self.build_in_one_pass(
+                trees, ids, now_ms, history_id, device_id, base, deferred, owed,
+            )
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_in_one_pass(
         &mut self,
         trees: &mut Trees,
@@ -1372,6 +1408,8 @@ impl Commits {
         history_id: &str,
         device_id: &str,
         base: Base,
+        deferred: &BTreeSet<NodeId>,
+        owed: &BTreeSet<NodeId>,
     ) -> Option<&proto::Commit> {
         if self.in_flight.is_some() {
             return None;
@@ -1419,7 +1457,7 @@ impl Commits {
         let (needed, agreed) = rebase(trees, ids, now_ms, &skip);
         skip.extend(parked_until_moved(trees).cloned());
         let excluded: Vec<NodeId> = (trees.dirty_others().iter())
-            .filter(|id| trees.excluded(id) || trees.held(id))
+            .filter(|id| (trees.excluded(id) && !owed.contains(*id)) || trees.held(id))
             .cloned()
             .collect();
         skip.extend(excluded);
@@ -1438,6 +1476,7 @@ impl Commits {
         let mut asked = index.map(|index| self.questions.get_mut().remove(index));
         let open = asked.as_ref().map(|question| question.id.clone());
         skip.extend(self.questions.iter().flat_map(Question::holds).cloned());
+        skip.extend(deferred.iter().cloned());
         self.given_up_nodes
             .retain(|id, given| Self::still_given_up(trees, id, given));
         loop {

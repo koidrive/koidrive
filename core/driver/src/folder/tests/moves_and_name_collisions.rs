@@ -812,3 +812,231 @@ fn stored_before_handles(site: &Site) {
         )
         .unwrap();
 }
+
+fn report_removed(remote: &mut Remote) -> (Site, Device, String) {
+    clock::freeze();
+    let (site, mut a) = linked(remote, "a");
+    fs::create_dir_all(site.root.join("docs")).unwrap();
+    a.create(remote, &site.root.join("docs/report.txt"), b"version one");
+    a.rest(remote);
+    let before = live_id(&server_nodes(remote), "report.txt");
+    fs::remove_file(site.root.join("docs/report.txt")).unwrap();
+    a.scan_until(|a| a.folder.engine.trees.local().get(&before).is_none());
+    (site, a, before)
+}
+
+#[test]
+fn a_file_replaced_at_its_path_in_a_later_scan_keeps_its_node() {
+    let mut remote = Remote::new();
+    let (site, mut a, before) = report_removed(&mut remote);
+    clock::advance_to(clock::instant() + Duration::from_millis(1_999));
+    fs::write(site.root.join("docs/report.txt"), b"version two").unwrap();
+    a.scan_until(|a| {
+        let local = a.folder.engine.trees.local();
+        local
+            .iter()
+            .any(|(_, node)| node.shape.name == "report.txt")
+    });
+    a.rest(&mut remote);
+    assert_eq!(live_id(&server_nodes(&remote), "report.txt"), before);
+    assert_eq!(server_bytes(&remote, &before), b"version two");
+    assert!(!a.sent.iter().flat_map(kinds).any(|kind| kind == "delete"));
+}
+
+#[test]
+fn a_file_written_again_once_the_wait_ended_is_a_new_node_after_the_delete() {
+    let mut remote = Remote::new();
+    let (site, mut a, before) = report_removed(&mut remote);
+    let waits: Vec<Duration> = (a.work.iter())
+        .map(|work| match work {
+            Work::RetryAfter(wait) => *wait,
+            _ => Duration::MAX,
+        })
+        .collect();
+    assert_eq!(waits, [Duration::from_secs(2)]);
+    assert_eq!(a.run(&mut remote), ["retry", "send"]);
+    assert_eq!(remote.names(), ["docs"]);
+    fs::write(site.root.join("docs/report.txt"), b"version two").unwrap();
+    a.rest(&mut remote);
+    assert_ne!(live_id(&server_nodes(&remote), "report.txt"), before);
+}
+
+#[test]
+fn a_file_removed_with_its_folder_leaves_the_server_without_a_wait() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::create_dir_all(site.root.join("docs")).unwrap();
+    a.create(
+        &mut remote,
+        &site.root.join("docs/report.txt"),
+        b"version one",
+    );
+    a.rest(&mut remote);
+    fs::remove_dir_all(site.root.join("docs")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    assert_eq!(a.run(&mut remote), ["send"]);
+    assert!(remote.names().is_empty());
+}
+
+#[test]
+fn an_edit_from_another_device_during_the_wait_is_kept_beside_the_file_written_again() {
+    for written_again in [false, true] {
+        let mut remote = Remote::new();
+        let (site, mut a, before) = report_removed(&mut remote);
+        let (site_b, mut b) = linked(&mut remote, "b");
+        b.rest(&mut remote);
+        fs::write(site_b.root.join("docs/report.txt"), b"edited on b").unwrap();
+        b.rescan();
+        b.rest(&mut remote);
+        a.pull(&remote);
+        if written_again {
+            fs::write(site.root.join("docs/report.txt"), b"version two").unwrap();
+        }
+        for _ in 0..6 {
+            while let Some(at) =
+                (a.work.iter()).position(|work| !matches!(work, Work::RetryAfter(_)))
+            {
+                let work = a.work.remove(at).unwrap();
+                a.perform(work, &mut remote).unwrap();
+            }
+            a.settle();
+        }
+        a.rest(&mut remote);
+        let report = ("docs/report.txt".to_owned(), "edited on b".to_owned());
+        let disk = files(&site.root);
+        assert!(disk.contains(&report), "{written_again}: {disk:?}");
+        assert_eq!(disk.len(), 1 + usize::from(written_again), "{disk:?}");
+        assert_eq!(live_id(&server_nodes(&remote), "report.txt"), before);
+        assert_eq!(server_bytes(&remote, &before), b"edited on b");
+        assert!(!a.sent.iter().flat_map(kinds).any(|kind| kind == "delete"));
+    }
+}
+
+#[test]
+fn a_file_removed_before_a_rule_leaves_it_out_leaves_the_server() {
+    let cases = [
+        (".koiignore", "report.txt"),
+        (".gitignore", "docs/"),
+        (".koiignore", "*.txt"),
+    ];
+    for (rules_file, rule) in cases {
+        let mut remote = Remote::new();
+        let (site, mut a, before) = report_removed(&mut remote);
+        fs::write(site.root.join(rules_file), format!("{rule}\n")).unwrap();
+        a.settle();
+        a.rest(&mut remote);
+        let nodes = server_nodes(&remote);
+        let kept = (nodes.iter()).any(|(_, id, live)| *id == before && *live);
+        assert!(!kept, "{rules_file} {rule}: {nodes:?}");
+    }
+}
+
+#[test]
+fn a_file_written_at_a_conflict_copy_whose_delete_is_out_is_kept() {
+    let mut remote = Remote::new();
+    let ((site_a, mut a), (site_b, mut b)) = edited_on_both(&mut remote);
+    let trashed = live_id(&server_nodes(&remote), COPY);
+    answer(&site_b, Answer::KeepOriginal);
+    let step = b.folder.requested();
+    b.take(step).unwrap();
+    let at = (b.work.iter()).position(|work| matches!(work, Work::Send(_)));
+    let send = b.work.remove(at.unwrap()).unwrap();
+    let copy = site_b.root.join(COPY);
+    fs::remove_file(&copy).unwrap();
+    b.scan_until(|_| !local_holds(&site_b, COPY));
+    fs::write(&copy, b"written again").unwrap();
+    b.scan_until(|_| local_holds(&site_b, COPY));
+    b.perform(send, &mut remote).unwrap();
+    sync(&mut remote, (&site_a, &mut a), (&site_b, &mut b));
+    assert_eq!(fs::read(&copy).ok(), Some(b"written again".to_vec()));
+    let nodes = server_nodes(&remote);
+    assert!(
+        nodes.contains(&(COPY.to_owned(), trashed, false)),
+        "{nodes:?}"
+    );
+    assert_eq!(
+        server_bytes(&remote, &live_id(&nodes, COPY)),
+        b"written again"
+    );
+}
+
+#[test]
+fn a_file_removed_before_a_rule_while_another_change_waits_to_be_sent_leaves_the_server() {
+    let mut remote = Remote::new();
+    let (site, mut a, before) = report_removed(&mut remote);
+    fs::write(site.root.join("other.txt"), b"other").unwrap();
+    a.scan_until(|_| local_holds(&site, "other.txt"));
+    fs::write(site.root.join(".koiignore"), b"report.txt\n").unwrap();
+    a.scan_until(|_| local_holds(&site, ".koiignore"));
+    a.rest(&mut remote);
+    let nodes = server_nodes(&remote);
+    assert!(
+        !nodes.contains(&("report.txt".to_owned(), before, true)),
+        "{nodes:?}"
+    );
+    assert!(
+        remote.names().contains(&"other.txt".to_owned()),
+        "{nodes:?}"
+    );
+}
+
+#[test]
+fn a_file_removed_while_a_commit_is_out_before_a_rule_leaves_it_out_leaves_the_server() {
+    clock::freeze();
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::create_dir_all(site.root.join("docs")).unwrap();
+    a.create(
+        &mut remote,
+        &site.root.join("docs/report.txt"),
+        b"version one",
+    );
+    a.rest(&mut remote);
+    let before = live_id(&server_nodes(&remote), "report.txt");
+    fs::write(site.root.join("other.txt"), b"other").unwrap();
+    a.scan_until(|a| a.folder.engine.commits.in_flight().is_some());
+    fs::remove_file(site.root.join("docs/report.txt")).unwrap();
+    a.scan_until(|a| a.folder.engine.trees.local().get(&before).is_none());
+    fs::write(site.root.join(".koiignore"), b"report.txt\n").unwrap();
+    a.scan_until(|_| local_holds(&site, ".koiignore"));
+    a.rest(&mut remote);
+    let nodes = server_nodes(&remote);
+    assert!(
+        !nodes.contains(&("report.txt".to_owned(), before, true)),
+        "{nodes:?}"
+    );
+}
+
+#[test]
+fn a_delete_the_server_refused_after_a_rule_left_its_file_out_is_sent_again_after_a_rescan() {
+    let mut remote = Remote::new();
+    let (site, mut a, before) = report_removed(&mut remote);
+    fs::write(site.root.join(".koiignore"), b"report.txt\n").unwrap();
+    a.scan_until(|_| local_holds(&site, ".koiignore"));
+    let commit = loop {
+        match a.work.pop_front() {
+            Some(Work::Send(commit)) => break commit,
+            Some(work) => a.perform(work, &mut remote).unwrap(),
+            None => panic!("the delete is sent"),
+        }
+    };
+    assert!(kinds(&commit).contains(&"delete"), "{:?}", kinds(&commit));
+    let mut refused = commit.clone();
+    for op in &mut refused.ops {
+        if let Some(koidrive_proto::v1::op::Op::Delete(delete)) = &mut op.op {
+            delete.node_id = "00000000-0000-7000-8000-000000000000".into();
+        }
+    }
+    let result = remote.commit(&a.caller, &refused).unwrap();
+    let step = a.folder.sent(Ok(result));
+    a.take(step).unwrap();
+    assert!(a.folder.engine.commits.problems().contains(&before));
+    let step = a.folder.scanned();
+    a.take(step).unwrap();
+    a.rest(&mut remote);
+    let nodes = server_nodes(&remote);
+    assert!(
+        nodes.contains(&("report.txt".to_owned(), before, false)),
+        "{nodes:?}"
+    );
+}

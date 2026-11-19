@@ -659,7 +659,7 @@ fn a_file_another_device_brings_back_after_a_rewind_at_a_seq_this_device_used_is
     fs::remove_file(&path).unwrap();
     fs::remove_file(other.root.join("notes.txt")).unwrap();
     b.scan_until(|b| !b.work.is_empty());
-    assert_eq!(b.run(&mut remote), ["send"]);
+    assert_eq!(b.run(&mut remote), ["retry", "send"]);
     let mut a = restarted(&site, &mut remote);
     a.settle();
     a.run(&mut remote);
@@ -713,7 +713,7 @@ fn a_rewind_that_takes_back_another_devices_delete_of_a_file_this_device_created
     fs::remove_file(&path).unwrap();
     fs::remove_file(other.root.join("notes.txt")).unwrap();
     b.scan_until(|b| !b.work.is_empty());
-    assert_eq!(b.run(&mut remote), ["send"]);
+    assert_eq!(b.run(&mut remote), ["retry", "send"]);
     let mut a = restarted(&site, &mut remote);
     a.settle();
     a.run(&mut remote);
@@ -744,7 +744,7 @@ fn a_slot_another_store_of_this_device_reused_after_a_rewind_claims_no_restore_o
     fs::remove_file(&path).unwrap();
     fs::remove_file(other.root.join("notes.txt")).unwrap();
     b.scan_until(|b| !b.work.is_empty());
-    assert_eq!(b.run(&mut remote), ["send"]);
+    assert_eq!(b.run(&mut remote), ["retry", "send"]);
     let mut a = restarted(&site, &mut remote);
     a.settle();
     a.run(&mut remote);
@@ -811,7 +811,7 @@ fn a_slot_another_store_of_this_device_reused_before_two_rewinds_claims_no_resto
     fs::remove_file(&path).unwrap();
     fs::remove_file(other.root.join("notes.txt")).unwrap();
     b.scan_until(|b| !b.work.is_empty());
-    assert_eq!(b.run(&mut remote), ["send"]);
+    assert_eq!(b.run(&mut remote), ["retry", "send"]);
     let mut a = restarted(&site, &mut remote);
     a.settle();
     a.run(&mut remote);
