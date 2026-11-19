@@ -62,12 +62,12 @@ jobs:
           [[ "$REF" != -* ]] || errors+=("ref must be a branch, tag or commit, not an option: '$REF'.")
           [[ "$SHARDS" =~ ^([1-9]|[1-3][0-9]|40)$ ]] || errors+=("shards must be a whole number from 1 to 40, got '$SHARDS'.")
           if [[ -n "$ONLY" ]]; then
-            if [[ "$ONLY" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+            if [[ ! "$ONLY" =~ ^(0|[1-9][0-9]?)(,(0|[1-9][0-9]?))*$ ]]; then
+              errors+=("only must be shard indexes without leading zeros, separated by commas, got '$ONLY'.")
+            elif [[ "$SHARDS" =~ ^([1-9]|[1-3][0-9]|40)$ ]]; then
               for shard in ${ONLY//,/ }; do
-                (( shard < SHARDS )) || errors+=("only names shard $shard, but shards run from 0 to $((SHARDS - 1)).")
+                (( 10#$shard < 10#$SHARDS )) || errors+=("only names shard $shard, but shards run from 0 to $((10#$SHARDS - 1)).")
               done
-            else
-              errors+=("only must be shard indexes separated by commas, got '$ONLY'.")
             fi
           fi
           [[ "$SLOW" =~ ^[0-9]{1,4}(\.[0-9]+)?$ ]] || errors+=("slow must be a number of seconds, got '$SLOW'.")

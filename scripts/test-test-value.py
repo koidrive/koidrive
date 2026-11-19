@@ -194,10 +194,11 @@ class Analysis(unittest.TestCase):
 
     def test_a_test_from_one_pooled_sample_names_it(self):
         runs = [(planned("guard", 1), {"durations": {"b x": 1}, "flaky": []}, records([["b x"]])),
-                (planned("driver", 1), {"durations": {"b x": 1, "b y": 1}, "flaky": []}, records([["b y"]]))]
+                (planned("driver", 1), {"durations": {"b x": 1, "b y": 1}, "flaky": []}, records([["b y", "b z"]]))]
         rows, _, _, _, _ = test_value.analyse(runs, set(), 10, 0)
         rows = {row["test"]: row for row in rows}
-        self.assertEqual((rows["b x"]["ran_on"], rows["b y"]["ran_on"]), ("every mutant", "every mutant in driver"))
+        self.assertEqual((rows["b x"]["ran_on"], rows["b y"]["ran_on"], rows["b z"]["ran_on"]),
+                         ("every mutant", "every mutant in driver", "every mutant"))
 
     def test_a_test_flaky_in_one_sample_keeps_its_kills_from_the_others(self):
         runs = [(planned("guard", 1), {"durations": {"b x": 1, "b y": 1}, "flaky": ["b x"]}, records([["b y"]])),

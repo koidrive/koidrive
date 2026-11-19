@@ -387,7 +387,7 @@ def analyse(runs, properties, slow_seconds, few):
         tiers = {sample: "no mutant" if sample in flaky.get(test, ()) else
                  "mutants the faster tests missed" if seconds >= slow_seconds else "every mutant"
                  for sample, seconds in sorted(timings.get(test, {}).items())}
-        if len(set(tiers.values())) <= 1 and len(tiers) == len(samples):
+        if len(set(tiers.values())) <= 1 and len(tiers) in (0, len(samples)):
             return next(iter(tiers.values()), "every mutant")
         return "; ".join(f"{tier} in {sample}" for sample, tier in tiers.items())
 
