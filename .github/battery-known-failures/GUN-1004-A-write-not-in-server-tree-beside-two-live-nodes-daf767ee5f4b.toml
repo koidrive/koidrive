@@ -1,0 +1,10 @@
+class = "A"
+issue = "GUN-1004"
+tests = ["devices_lose_no_write_across_server_restores"]
+message = '''not recorded: devices::devices_lose_no_write_across_server_restores \S+ WriteKept write <n> of the write of node <id> on device <n> is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it not recorded: devices::devices_lose_no_write_across_server_restores \S+ OneWriteOneNode write <n> is in <n> live nodes on the server: \[\["C\.TXT"\], \["ss"\]\] not recorded: devices::devices_lose_no_write_across_server_restores \S+ OneWriteOneNode write <n> is in <n> live nodes on the server: \[\["ss"\], \["ss \(conflict from device\-<n> <n>\-<n>\-<n>\)"\]\]'''
+examples = [
+  "not recorded: devices::devices_lose_no_write_across_server_restores\tcc-daf767ee5f4b042ed5f7c82db0b24a146d83a14cc9a408fa0e084d942e14a616\tWriteKept\twrite 4 of the write of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it\nnot recorded: devices::devices_lose_no_write_across_server_restores\tcc-daf767ee5f4b042ed5f7c82db0b24a146d83a14cc9a408fa0e084d942e14a616\tOneWriteOneNode\twrite 5 is in 2 live nodes on the server: [[\"C.TXT\"], [\"ss\"]]\nnot recorded: devices::devices_lose_no_write_across_server_restores\tcc-daf767ee5f4b042ed5f7c82db0b24a146d83a14cc9a408fa0e084d942e14a616\tOneWriteOneNode\twrite 5 is in 2 live nodes on the server: [[\"ss\"], [\"ss (conflict from device-2 2026-11-09)\"]]",
+]
+cases = [
+  "daf767ee5f4b",
+]
