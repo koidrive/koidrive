@@ -227,3 +227,35 @@ fn a_stale_resend_from_a_device_that_never_saw_the_authors_rename_keeps_the_auth
         assert_eq!(names, ["b"], "device {device}");
     }
 }
+
+#[test]
+fn a_write_a_rewind_took_stays_unsent_when_the_device_crashes_while_placing_it() {
+    let act = |kind, target, parent, name| {
+        Step::User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text: 0,
+        })
+    };
+    let phases = [
+        vec![(2, act(0, 0, 0, 3)), (0, act(1, 0, 0, 5))],
+        vec![
+            (0, Step::Backup),
+            (2, act(4, 9614619854247417842, 0, 0)),
+            (0, act(3, 2564659630315289460, 11878576693270418400, 0)),
+            (0, act(2, 1306322373503834592, 0, 0)),
+        ],
+        vec![
+            (0, Step::Rewind),
+            (0, Step::Connect),
+            (0, Step::Work(0)),
+            (0, act(1, 0, 0, 5)),
+            (0, Step::Deliver(0)),
+            (0, Step::Work(5595721357874797788)),
+            (0, Step::Crash),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}

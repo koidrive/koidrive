@@ -1061,9 +1061,12 @@ impl Space {
                 Some(Some(stat)) if stat.file_type == FileType::Directory => Some(stat.id),
                 _ => return Ok(None),
             },
+            Action::WriteFile {
+                replaces: Some(_), ..
+            } if !trashed()? => return Ok(None),
             Action::WriteFile { at, replaces } => match self.written_at(at, contents)? {
                 Some(identity) => Some(identity),
-                None if replaces.is_some() && trashed()? => {
+                None if replaces.is_some() => {
                     return Ok(Some(failed(Reason::Overtaken)));
                 }
                 None => return Ok(None),
