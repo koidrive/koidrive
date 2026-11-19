@@ -11,12 +11,15 @@ public struct GitignoreCount: Equatable, Sendable {
     /// The folders that hold at least one of the files.
     public let folderNames: [String]
     public let countedAtMs: UInt64
+    /// The linked folders the count walked, by space id.
+    public let spaceIDs: [String]
 
-    public init(files: UInt64, bytes: UInt64, folderNames: [String], countedAtMs: UInt64) {
+    public init(files: UInt64, bytes: UInt64, folderNames: [String], countedAtMs: UInt64, spaceIDs: [String]) {
         self.files = files
         self.bytes = bytes
         self.folderNames = folderNames
         self.countedAtMs = countedAtMs
+        self.spaceIDs = spaceIDs
     }
 }
 
@@ -64,7 +67,7 @@ public final class GitignoreSettingModel {
     }
 
     private var phase = Phase.idle
-    public private(set) var count: GitignoreCount?
+    private var newest: GitignoreCount?
     private var stoppedSyncing: UInt64?
     public private(set) var failure: SessionError?
     @ObservationIgnored private var walk: Walk?
@@ -87,6 +90,11 @@ public final class GitignoreSettingModel {
 
     /// How many files stopped syncing when the switch was last turned on, while the setting stays on.
     public var noLongerSyncing: UInt64? { app.followsGitignore ? stoppedSyncing : nil }
+
+    /// The newest complete count, while it covers the folders linked now.
+    public var count: GitignoreCount? {
+        newest.flatMap { $0.spaceIDs == app.state.folders.map(\.spaceId) ? $0 : nil }
+    }
 
     public var follows: Bool { applying ?? app.followsGitignore }
 
@@ -150,8 +158,8 @@ public final class GitignoreSettingModel {
         }
         let fresh = await current.wait()
         if walk === current { walk = nil }
-        if let fresh, fresh.countedAtMs >= count?.countedAtMs ?? 0 {
-            count = fresh
+        if let fresh, fresh.countedAtMs >= newest?.countedAtMs ?? 0 {
+            newest = fresh
         }
         return fresh
     }

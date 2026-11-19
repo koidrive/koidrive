@@ -357,12 +357,12 @@ public final class AppModel {
                   only.unreadable.isEmpty else { return nil }
             counts.append((folder.spaceName, only))
         }
-        guard state.folders.map(\.spaceId) == folders.map(\.spaceId) else { return nil }
         return GitignoreCount(
             files: counts.reduce(0) { $0 + $1.only.files },
             bytes: counts.reduce(0) { $0 + $1.only.bytes },
             folderNames: counts.filter { $0.only.files > 0 }.map(\.name),
-            countedAtMs: counts.map(\.only.countedAtMs).min() ?? 0
+            countedAtMs: counts.map(\.only.countedAtMs).min() ?? 0,
+            spaceIDs: folders.map(\.spaceId)
         )
     }
 

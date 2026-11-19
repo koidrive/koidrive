@@ -235,6 +235,24 @@ struct GitignoreSettingTests {
         #expect(gitignore.count == nil)
     }
 
+    @Test func anOlderCountDoesNotCoverAFolderLinkedSince() async throws {
+        let (app, session) = scripted()
+        let gitignore = GitignoreSettingModel(app: app)
+        try await app.unlinkFolder(spaceID: "space-photos")
+        await gitignore.recount()
+        #expect(gitignore.count?.folderNames == ["Documents"])
+
+        let photos = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: photos) }
+        _ = try await app.linkFolder(spaceID: "space-photos", path: photos.path(percentEncoded: false))
+        session.countLeavesOut(["/Users/ada/Photos/private"])
+
+        await gitignore.set(follow: false)
+        #expect(gitignore.confirmingOff)
+        #expect(gitignore.count == nil)
+    }
+
     @Test func aChangeThatIsNotSavedKeepsTheSettingAndSaysWhy() async throws {
         let (app, _) = scripted()
         let gitignore = GitignoreSettingModel(app: app)
