@@ -434,7 +434,14 @@ impl Disk {
         store: &mut Store,
         hook: Hook,
     ) -> Result<Disk, Stop> {
-        let space = Space::bind(OwnedFd::from(lock.try_clone()?), &link.root)?;
+        let bound =
+            (lock.try_clone()).and_then(|root| Space::bind(OwnedFd::from(root), &link.root));
+        let space = match bound {
+            Err(error) if error.raw_os_error() == Some(rustix::io::Errno::BADF.raw_os_error()) => {
+                return Err(Stop::Withdrawn(link.root.clone()));
+            }
+            bound => bound?,
+        };
         let sections = Arc::new(Sections {
             marks: space.marks(),
             ..Sections::default()

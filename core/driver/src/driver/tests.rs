@@ -24,6 +24,7 @@ use crate::question::{HeldItem, QuestionKind};
 use crate::restore::{RestoreRejection, RestoreState, RestoreWait};
 
 mod root_token;
+mod stop_during_open;
 
 use super::link::{
     UNLINK_BROUGHT_BACK, held_aside, record_unreported_set_aside, recorded_brought_back,

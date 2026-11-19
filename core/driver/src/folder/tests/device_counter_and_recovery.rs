@@ -478,7 +478,10 @@ fn a_store_older_than_the_disk_recovers_even_when_the_server_lost_its_commits() 
         .unwrap()
         .expect("the folder is not locked");
     let local = local_rules(&SyncRules::default()).unwrap();
-    let folder = Folder::open(site.link.clone(), &lock, &site.db, local).unwrap();
+    let loaded = Folder::load(&site.db, &site.link, local, &|| false)
+        .unwrap()
+        .unwrap();
+    let (folder, _) = Folder::open(loaded, site.link.clone(), &lock).unwrap();
     assert!(matches!(
         folder.engine.commits.halted(),
         Some(CommitHalt::Recovery(_))

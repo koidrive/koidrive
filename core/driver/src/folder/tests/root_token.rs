@@ -7,7 +7,8 @@ fn opened(site: &Site) -> Result<Folder, Stop> {
         .unwrap()
         .expect("the folder is not locked");
     let local = local_rules(&SyncRules::default()).unwrap();
-    Folder::open(link, &lock, &site.db, local)
+    let loaded = Folder::load(&site.db, &link, local, &|| false)?.unwrap();
+    Folder::open(loaded, link, &lock).map(|(folder, _)| folder)
 }
 
 fn halts_as_a_copy(site: &Site) -> bool {
@@ -1711,4 +1712,58 @@ fn an_effect_logs_a_pending_token_the_start_could_not_write_before_its_marker_ca
     drop(opened(&site).unwrap());
     fs::copy(&saved, &site.db).unwrap();
     assert!(recovers(&site));
+}
+
+#[test]
+fn a_start_that_finishes_an_interrupted_delete_gives_the_observer_the_tree_without_the_file() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("kept.txt"), b"one");
+    let (other, mut b) = linked(&mut remote, "b");
+    b.settle();
+    b.run(&mut remote);
+    fs::remove_file(other.root.join("kept.txt")).unwrap();
+    b.rescan();
+    b.scan_until(|b| !b.work.is_empty());
+    b.run(&mut remote);
+    a.folder.disk.set_hook(crash_at(disk::Cut::BeforeAck));
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        a.pull(&remote);
+        a.run(&mut remote);
+    }));
+    assert!(crashed.is_err());
+    drop(a);
+    assert_eq!(site.stored().effects.in_flight().len(), 1);
+
+    let a = site.start();
+    assert!(a.folder.engine.effects.in_flight().is_empty());
+    let entries = &a.observer.snapshot().entries;
+    assert!(!entries.contains_key(Path::new("kept.txt")));
+}
+
+#[test]
+fn a_load_abandoned_between_any_two_parts_of_the_store_gives_up_there() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("kept.txt"), b"one");
+    drop(a);
+    let local = local_rules(&SyncRules::default()).unwrap();
+    let checks = std::cell::Cell::new(0);
+    let count = || {
+        checks.set(checks.get() + 1);
+        false
+    };
+    let loaded = Folder::load(&site.db, &site.link, local.clone(), &count).unwrap();
+    assert!(loaded.is_some());
+    assert!(checks.get() >= 4, "{} checks", checks.get());
+    for at in 1..=checks.get() {
+        let seen = std::cell::Cell::new(0);
+        let abandoned = || {
+            seen.set(seen.get() + 1);
+            seen.get() == at
+        };
+        let loaded = Folder::load(&site.db, &site.link, local.clone(), &abandoned).unwrap();
+        assert!(loaded.is_none(), "abandoned at check {at}");
+        assert_eq!(seen.get(), at);
+    }
 }
