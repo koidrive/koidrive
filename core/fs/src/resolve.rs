@@ -118,6 +118,10 @@ impl Folder {
         self.id
     }
 
+    pub(crate) fn route(&self) -> &[Dir] {
+        &self.route
+    }
+
     /// The folder's path from the root.
     pub fn path(&self) -> PathBuf {
         self.route.iter().map(|dir| dir.name.as_os_str()).collect()
@@ -315,10 +319,14 @@ impl Space {
 }
 
 fn descend(folder: Folder, dir: &Dir) -> Result<Folder, Unresolved> {
+    child(&folder, dir)
+}
+
+pub(crate) fn child(folder: &Folder, dir: &Dir) -> Result<Folder, Unresolved> {
     check_name(&dir.name)?;
     let fd = open_dir(folder.fd(), &dir.name, &folder.route)?;
     let found = identity(&fd, &folder.route, &dir.name)?;
-    let mut route = folder.route;
+    let mut route = folder.route.clone();
     route.push(dir.clone());
     if found != dir.id {
         return Err(Unresolved::Replaced {

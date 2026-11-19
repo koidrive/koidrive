@@ -230,3 +230,51 @@ fn a_refused_mark_write_removes_the_previous_mark() {
     assert_eq!(mark_of(root, "a.txt"), None);
     assert_eq!(fs::read(root.join("a.txt")).unwrap(), b"bytes");
 }
+
+#[test]
+fn a_batch_of_marks_marks_each_entry_a_single_mark_would() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for folder in ["a/b", "a/c", "d", "gone", "swapped"] {
+        fs::create_dir_all(root.join(folder)).unwrap();
+    }
+    for file in [
+        "a/b/1.txt",
+        "a/b/2.txt",
+        "a/c/3.txt",
+        "d/4.txt",
+        "5.txt",
+        "gone/6.txt",
+        "swapped/7.txt",
+    ] {
+        fs::write(root.join(file), file).unwrap();
+    }
+    let paths = [
+        "d/4.txt",
+        "a/b/2.txt",
+        "a",
+        "a/c/3.txt",
+        "5.txt",
+        "a/b/1.txt",
+        "gone/6.txt",
+        "swapped/7.txt",
+    ];
+    let marks = paths
+        .map(|path| {
+            (
+                location(root, path),
+                entries(root, &[path])[0].id,
+                path.to_owned(),
+            )
+        })
+        .to_vec();
+    fs::remove_dir_all(root.join("gone")).unwrap();
+    fs::rename(root.join("swapped"), root.join("old")).unwrap();
+    fs::create_dir(root.join("swapped")).unwrap();
+    fs::rename(root.join("old/7.txt"), root.join("swapped/7.txt")).unwrap();
+    assert!(bind(root).mark_all(marks).is_empty());
+    for path in &paths[..6] {
+        assert_eq!(mark_of(root, path).as_deref(), Some(*path), "{path}");
+    }
+    assert_eq!(mark_of(root, "swapped/7.txt"), None);
+}

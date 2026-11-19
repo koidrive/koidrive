@@ -7,7 +7,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use rustix::fs::{Mode, OFlags, XattrFlags};
 use rustix::io::Errno;
 
-use crate::resolve::{Location, Space, Unresolved};
+use crate::resolve::{Base, Folder, Location, Space, Unresolved, check_name, child};
 use crate::{FileId, stat_fd};
 
 #[cfg(target_vendor = "apple")]
@@ -39,6 +39,67 @@ impl Space {
         }
     }
 
+    /// Marks each entry as [`Space::mark`] does, and opens each folder on the way to them once. Returns the node and
+    /// the error of each mark that failed.
+    pub fn mark_all(&self, mut marks: Vec<(Location, FileId, String)>) -> Vec<(String, io::Error)> {
+        let mut failed = Vec::new();
+        let root = match self.root_folder() {
+            Ok(root) => root,
+            Err(err) => {
+                let err = io::Error::from(err);
+                return (marks.into_iter())
+                    .map(|(.., node)| (node, io::Error::new(err.kind(), err.to_string())))
+                    .collect();
+            }
+        };
+        let names = |at: &Location| {
+            folders_of(at)
+                .iter()
+                .map(|dir| dir.name.clone())
+                .collect::<Vec<_>>()
+        };
+        marks.sort_by_cached_key(|(at, ..)| names(at));
+        let mut open: Vec<Folder> = vec![root];
+        for (at, expected, node) in marks {
+            let Location::At {
+                base: Base::Root,
+                dirs,
+                name,
+            } = &at
+            else {
+                if let Err(err) = self.mark(&at, expected, &node) {
+                    failed.push((node, err));
+                }
+                continue;
+            };
+            let shared = (open[1..].iter().zip(dirs))
+                .take_while(|(folder, dir)| folder.route().last() == Some(*dir))
+                .count();
+            open.truncate(shared + 1);
+            let reached = check_name(name).and_then(|()| {
+                for dir in &dirs[shared..] {
+                    let next = child(open.last().expect("the root stays open"), dir)?;
+                    open.push(next);
+                }
+                Ok(())
+            });
+            let marked = match reached {
+                Ok(()) => open_checked(open.last().expect("the root stays open"), name, expected)
+                    .map(|entry| entry.map(|entry| write(entry.as_fd(), &node))),
+                Err(
+                    Unresolved::Missing(_)
+                    | Unresolved::NotAFolder(_)
+                    | Unresolved::Replaced { .. },
+                ) => Ok(None),
+                Err(err) => Err(err.into()),
+            };
+            if let Err(err) = marked {
+                failed.push((node, err));
+            }
+        }
+        failed
+    }
+
     fn open_entry(&self, at: &Location, expected: FileId) -> io::Result<Option<OwnedFd>> {
         let (parent, name) = match self.parent(at) {
             Ok(found) => found,
@@ -49,10 +110,25 @@ impl Space {
             }
             Err(err) => return Err(err.into()),
         };
-        let Some(entry) = open(parent.fd(), name)? else {
-            return Ok(None);
-        };
-        Ok((stat_fd(entry.as_fd())?.id == expected).then_some(entry))
+        open_checked(&parent, name, expected)
+    }
+}
+
+fn open_checked(parent: &Folder, name: &OsStr, expected: FileId) -> io::Result<Option<OwnedFd>> {
+    let Some(entry) = open(parent.fd(), name)? else {
+        return Ok(None);
+    };
+    Ok((stat_fd(entry.as_fd())?.id == expected).then_some(entry))
+}
+
+fn folders_of(at: &Location) -> &[crate::resolve::Dir] {
+    match at {
+        Location::At {
+            base: Base::Root,
+            dirs,
+            ..
+        } => dirs,
+        _ => &[],
     }
 }
 

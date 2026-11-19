@@ -759,13 +759,14 @@ impl Disk {
     }
 
     pub fn mark(&self, trees: &Trees, entries: impl IntoIterator<Item = (NodeId, NodeId)>) {
-        for (id, node) in entries {
-            let Some((at, expected)) = self.place_of(trees, &id) else {
-                continue;
-            };
-            if let Err(err) = self.space.mark(&at, expected, &node) {
-                tracing::warn!(space_id = self.space_id, node, %err, "could not mark an entry");
-            }
+        let marks = (entries.into_iter())
+            .filter_map(|(id, node)| {
+                let (at, expected) = self.place_of(trees, &id)?;
+                Some((at, expected, node))
+            })
+            .collect();
+        for (node, err) in self.space.mark_all(marks) {
+            tracing::warn!(space_id = self.space_id, node, %err, "could not mark an entry");
         }
     }
 
