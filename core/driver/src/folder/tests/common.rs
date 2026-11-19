@@ -289,8 +289,7 @@ impl Site {
             || false,
             move |report| reported.lock().unwrap().push(report),
         )
-        .unwrap()
-        .looking_for(folder.engine.recorded(Path::new("")));
+        .unwrap();
         Device {
             folder,
             observer,

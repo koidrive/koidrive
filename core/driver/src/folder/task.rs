@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::BTreeMap;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use koidrive_engine::ignore::LocalRules;
-use koidrive_fs::{Known, Snapshot};
+use koidrive_fs::Snapshot;
 use koidrive_net::{
     Auth, Backoff, CallError, ChunkError, Session, SessionConfig, Transfer, UploadGate,
 };
@@ -285,7 +284,6 @@ impl FolderTask {
             lock.clone(),
             folder.sections(),
             snapshot,
-            folder.engine.recorded(Path::new("")),
         );
         let mut config = SessionConfig::new(
             &self.link.space_id,
@@ -492,7 +490,6 @@ impl FolderTask {
         lock: Arc<Flock>,
         sections: Arc<Sections>,
         previous: Snapshot,
-        recorded: BTreeMap<PathBuf, Known>,
     ) -> mpsc::UnboundedReceiver<FromDisk> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let matcher = self.matcher.clone();
@@ -520,7 +517,7 @@ impl FolderTask {
                 report,
             );
             let mut observer = match started {
-                Ok(observer) => observer.looking_for(recorded),
+                Ok(observer) => observer,
                 Err(error) => {
                     tracing::warn!(space_id = link.space_id, %error, "the folder cannot be observed");
                     let _ = sender.send(FromDisk::Failed(format!(

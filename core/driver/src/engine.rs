@@ -1107,11 +1107,19 @@ impl Engine {
                     }
                 }
                 Observed::Reidentified { path, id } => {
+                    let outside = (local_at(&self.trees, path))
+                        .filter(|node| self.trees.ignored_local().contains(node))
+                        .and_then(|node| {
+                            Some((node.clone(), self.trees.local().get(&node)?.clone()))
+                        });
                     let folder = local_at(&self.trees, path).filter(|node| {
                         (self.trees.local().get(node))
                             .is_some_and(|held| held.shape.kind == Kind::Dir)
                     });
-                    if folder.is_some() {
+                    if let Some((node, local)) = outside {
+                        let identity = file_identity(*id);
+                        self.trees.set_local(node, LocalNode { identity, ..local });
+                    } else if folder.is_some() {
                         self.place(
                             folder,
                             path,
@@ -1311,21 +1319,19 @@ impl Engine {
                         }
                     }
                 }
-                let recorded = self.recorded(&scope);
-                Reset {
-                    scope,
-                    known,
-                    recorded,
-                }
+                Reset { scope, known }
             })
             .collect()
     }
 
-    pub fn recorded(&self, scope: &Path) -> BTreeMap<PathBuf, Known> {
+    pub fn recorded(&self) -> BTreeMap<PathBuf, Known> {
+        if !self.trees.unknown_rules().is_empty() {
+            return BTreeMap::new();
+        }
         (self.trees.ignored_local().iter())
             .filter(|id| !self.trees.lost_local().contains(*id))
             .filter_map(|id| {
-                let path = self.path_of(id).filter(|path| path.starts_with(scope))?;
+                let path = self.path_of(id)?;
                 let node = self.trees.local().get(id)?;
                 let kind = match node.shape.kind {
                     Kind::Dir => EntryKind::Dir,

@@ -26,8 +26,9 @@ use std::time::{Duration, Instant};
 use koidrive_chunk::ChunkerConfig;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_fs::{
-    Change, Ctime, Detached, Entry, EntryKind, Error as FsError, FileId, Known, MarkLog, Mount,
-    NativeWatcher, RescanWatcher, RootAt, RootProblem, Snapshot, Source, Watcher, check_root,
+    Change, Ctime, Detached, Entry, EntryKind, Error as FsError, FileId, Known, Looked, MarkLog,
+    Mount, NativeWatcher, RescanWatcher, RootAt, RootProblem, Snapshot, Source, Watcher,
+    check_root,
 };
 use koidrive_proto::v1::{ChunkRef, Content};
 use rustix::fs::{Mode, OFlags};
@@ -146,7 +147,6 @@ pub enum Observed {
 pub struct Reset {
     pub scope: PathBuf,
     pub known: BTreeMap<PathBuf, Known>,
-    pub recorded: BTreeMap<PathBuf, Known>,
 }
 
 /// A source of observations for one linked folder.
@@ -178,6 +178,7 @@ pub struct FsObserver {
     /// Whether a reset still waits for the batch of a scan made after it.
     reset: bool,
     recorded: BTreeMap<PathBuf, Known>,
+    found: BTreeMap<PathBuf, PathBuf>,
     /// Files whose content could not be read, or that an observation left to a later one, with when to read them.
     unread: Unread,
     /// Whether the caller has stopped waiting for observations.
@@ -392,14 +393,16 @@ impl FsObserver {
             delivered: Vec::new(),
             reset: false,
             recorded: BTreeMap::new(),
+            found: BTreeMap::new(),
             unread: Unread::default(),
             stopped,
             progress,
         })
     }
 
-    pub fn looking_for(self, recorded: BTreeMap<PathBuf, Known>) -> Self {
-        Self { recorded, ..self }
+    pub fn seek(&mut self, recorded: BTreeMap<PathBuf, Known>) {
+        self.found.retain(|path, _| recorded.contains_key(path));
+        self.recorded = recorded;
     }
 
     /// The files whose content is still to be read, left to a later observation or busy and read again later, and
@@ -439,18 +442,11 @@ impl FsObserver {
     /// reset is returned also when it holds nothing, so the caller learns that the disk was read after the reset.
     pub fn reset(&mut self, resets: Vec<Reset>) {
         self.reset |= !resets.is_empty();
-        for Reset {
-            scope,
-            known,
-            recorded,
-        } in resets
-        {
+        for Reset { scope, known } in resets {
             let below: Vec<PathBuf> = self.unread.below(&scope).cloned().collect();
             for path in below {
                 self.unread.remove(&path);
             }
-            self.recorded.retain(|path, _| !path.starts_with(&scope));
-            self.recorded.extend(recorded);
             self.watcher.reset(&scope, known);
         }
     }
@@ -773,26 +769,6 @@ impl Observer for FsObserver {
             self.observed(change, &mut changes, &mut reads);
         }
         changes.extend(retried);
-        if poll.root.is_some() && poll.pending.is_empty() && !self.recorded.is_empty() {
-            let recorded = std::mem::take(&mut self.recorded);
-            match self.watcher.look_for(&recorded) {
-                Ok(gone) => {
-                    self.recorded = recorded;
-                    for path in gone {
-                        let Some(Known { kind, .. }) = self.recorded.remove(&path) else {
-                            continue;
-                        };
-                        if !self.watcher.snapshot().entries.contains_key(&path) {
-                            changes.push(Observed::Removed { kind, path });
-                        }
-                    }
-                }
-                Err(error) => {
-                    tracing::debug!(%error, "the entries moved into left-out folders could not be looked for");
-                    self.recorded = recorded;
-                }
-            }
-        }
         if (self.stopped)() {
             return Ok(None);
         }
@@ -830,6 +806,38 @@ impl Observer for FsObserver {
                     .cloned(),
             );
             self.settling = !poll.pending.is_empty();
+        }
+        if self.scanned.is_some() && poll.pending.is_empty() && unreadable.is_empty() {
+            match self.watcher.look_for(&self.recorded, &self.found) {
+                Ok(looked) => {
+                    for (path, looked) in looked {
+                        match looked {
+                            Looked::Found(at) => {
+                                self.found.insert(path, at);
+                            }
+                            Looked::Gone => {
+                                self.found.remove(&path);
+                                let Some(Known { kind, .. }) = self.recorded.remove(&path) else {
+                                    continue;
+                                };
+                                if !self.watcher.snapshot().entries.contains_key(&path) {
+                                    changes.push(Observed::Removed { kind, path });
+                                }
+                            }
+                            Looked::Replaced(id) => {
+                                let Some(known) = self.recorded.get_mut(&path) else {
+                                    continue;
+                                };
+                                known.id = id;
+                                changes.push(Observed::Reidentified { path, id });
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "the entries moved into left-out folders could not be looked for");
+                }
+            }
         }
         if !first
             && !answers
@@ -2026,7 +2034,11 @@ mod tests {
 
         fn revisit(&mut self, _paths: Vec<PathBuf>) {}
 
-        fn look_for(&mut self, _: &BTreeMap<PathBuf, Known>) -> Result<Vec<PathBuf>, FsError> {
+        fn look_for(
+            &mut self,
+            _: &BTreeMap<PathBuf, Known>,
+            _: &BTreeMap<PathBuf, PathBuf>,
+        ) -> Result<Vec<(PathBuf, Looked)>, FsError> {
             Ok(Vec::new())
         }
     }

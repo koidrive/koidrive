@@ -1834,7 +1834,6 @@ fn a_stale_batch_does_not_undo_an_effect_and_the_rescan_reports_its_result() {
     let reset = Reset {
         scope: "report.txt".into(),
         known: BTreeMap::from([(PathBuf::from("report.txt"), known)]),
-        recorded: BTreeMap::new(),
     };
     let resets = catch_up(&mut watching, &sections);
     assert_eq!(
