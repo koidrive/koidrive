@@ -294,3 +294,43 @@ fn a_move_the_server_renamed_is_sent_again_after_each_of_two_restores_loses_the_
         live_names(&world)
     );
 }
+
+#[test]
+fn a_rename_another_device_makes_after_a_restore_at_a_reused_seq_beats_a_server_renamed_move_the_restore_lost()
+ {
+    let first = vec![
+        (1, folder("a")),
+        (1, user(1, 0, 1, "b")),
+        (1, folder("\u{df}")),
+    ];
+    let mut world = converge(3, &[first]).unwrap();
+    let visible = |world: &World, device: usize, path: &[&str]| {
+        let ino = ino_at(world, device, path);
+        (world.devices[device].disk.visible().into_iter())
+            .position(|visible| visible == ino)
+            .unwrap()
+    };
+    let mut steps = vec![
+        (0, BACKUP),
+        (2, rename(visible(&world, 2, &["a", "b"]), 0, "c.txt")),
+    ];
+    steps.extend(commit(2));
+    steps.push((2, Step::Leave));
+    steps.extend(take(1));
+    world.run(1, &steps).unwrap();
+    let mut steps = vec![(1, rename(visible(&world, 1, &["c.txt"]), 0, "ss"))];
+    steps.extend(commit(1));
+    steps.extend([(1, DELIVER); 4]);
+    steps.extend([(0, RESTORE), (0, Step::Connect)]);
+    steps.extend(take(0));
+    world.run(1, &steps).unwrap();
+    let mut steps = vec![(0, rename(visible(&world, 0, &["a", "b"]), 0, "c.txt"))];
+    steps.extend(commit(0));
+    reconnect(&mut steps, 1, true);
+    world.phase(2, &steps).unwrap();
+    assert!(
+        live_names(&world).contains(&"c.txt".to_owned()),
+        "{:?}",
+        live_names(&world)
+    );
+}

@@ -5223,8 +5223,8 @@ impl Trees {
     /// position L holds. A reverted node that S, a waiting S update or R held and R no longer holds at all stops being
     /// reverted, since the server's rename that reverted it was lost too. So does one whose record
     /// R held at a position a lost commit of this device set, when R now holds it as before that
-    /// commit: at a revision at or below `held_through`, or with a record R held earlier. A later
-    /// change by another device keeps the revert. A folder this device
+    /// commit, at a revision at or below `held_through`. A later change by another device keeps the
+    /// revert. A folder this device
     /// merged into another (`merged`, by the folder it went into) stops being reverted only when R
     /// no longer holds that folder, since the merge was lost too. One whose content differs from
     /// R's is kept beside R's as a conflict copy instead of being replaced by R's older content. A
@@ -5452,10 +5452,7 @@ impl Trees {
                     .get(*id)
                     .is_some_and(|record| record.moved_in_lost_commit)
             })
-            .filter(|id| {
-                (self.r.get(id))
-                    .is_some_and(|remote| remote.meta_rev <= held_through || seen(id, remote))
-            })
+            .filter(|id| (self.r.get(id)).is_some_and(|remote| remote.meta_rev <= held_through))
             .cloned()
             .collect();
         let lost_edits: BTreeSet<NodeId> = (edited.iter())
