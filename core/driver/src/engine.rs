@@ -1357,7 +1357,9 @@ impl Engine {
                 && old.shape.name == shape.name
                 && old.shape.kind == shape.kind
                 && match (&old.shape.content, &shape.content) {
-                    (Some(old), Some(new)) => same_content(old, new),
+                    (Some(old), Some(new)) => {
+                        same_content(old, new) && old.mtime_ns == new.mtime_ns
+                    }
                     (old, new) => old.is_none() && new.is_none(),
                 }
         });
