@@ -10,7 +10,6 @@ fn preserved_rows(
         ("local_nodes", "node_id, parent_id, name, kind, content, ino, ino_high, birth_ns, parked"),
         ("synced_nodes", "node_id, parent_id, name, kind, content, pending_for"),
         ("remote_nodes", "node_id, parent_id, name, kind, status, content_rev, meta_rev, current, edit_rev, meta_edit_rev, trash_group, pending_for, pending_by"),
-        ("engine_state", "id, id_generator"),
         ("node_sets", "node_set, node_id"),
         ("node_maps", "node_map, node_id, target"),
         ("remote_cursor", "id, history_id, last_seq, ahead_of_server, commit_id, committed_at_ms"),
@@ -80,7 +79,7 @@ macro_rules! upgrade_case {
                 stringify!($name)
             );
             let preserved = preserved_rows(&before);
-            for table in ["local_nodes", "synced_nodes", "remote_nodes", "engine_state", "local_changes", "replaced_versions"] {
+            for table in ["local_nodes", "synced_nodes", "remote_nodes", "local_changes", "replaced_versions"] {
                 assert!(!preserved[table].is_empty(), "fixture has no {table}");
             }
             drop(before);

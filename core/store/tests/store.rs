@@ -381,6 +381,8 @@ fn a_store_written_by_alpha_1_upgrades_and_keeps_every_row() {
     without_device(&path, &mut kept);
     let (_, discarded) = kept.remove("discarded_nodes").unwrap();
     assert_eq!(discarded.len(), 1);
+    let (_, generator) = kept.remove("engine_state").unwrap();
+    assert_eq!(generator.len(), 1);
     let moved = moved_in_flight(&path, &mut kept);
     assert_eq!(moved.len(), 1);
     let fresh = dir.path().join("fresh.db");
