@@ -115,6 +115,10 @@ class MutationRunner(unittest.TestCase):
             if not fixtures or not fresh or not clean:
                 print("fixture inputs changed between runs")
                 sys.exit(90)
+            if not compile_only and state == suite == os.environ.get("HANG"):
+                import subprocess, time
+                Path("hang.pid").write_text(str(subprocess.Popen(["sleep", "300"]).pid))
+                time.sleep(300)
             if compile_only:
                 if state == "unit" and suite == os.environ.get("FAIL_COMPILE"):
                     print("error[E0001]: complete compile reason " + "detail " * 30)
@@ -146,7 +150,7 @@ class MutationRunner(unittest.TestCase):
 
     def run_runner(self, *args, expect_guard=True, **overrides):
         env = os.environ.copy()
-        for key in ["MUTATION_SEED", "PROPTEST_RNG_SEED", "FAIL_BASELINE", "FAIL_COMPILE", "SURVIVE"]:
+        for key in ["MUTATION_SEED", "PROPTEST_RNG_SEED", "FAIL_BASELINE", "FAIL_COMPILE", "SURVIVE", "HANG"]:
             env.pop(key, None)
         env.update(PATH=str(self.root / "bin") + os.pathsep + env["PATH"], REAL_GIT=self.git, MUTATION_CASES="8")
         env.update(overrides)
@@ -238,6 +242,15 @@ class MutationRunner(unittest.TestCase):
         self.assert_inputs(calls, "0")
         self.assertEqual(len(calls), 20)
         self.assertEqual(result.stdout.count("SURVIVED"), 4)
+
+    def test_a_hanging_suite_is_caught_by_its_time_limit_and_killed(self):
+        result, calls = self.run_runner(HANG="unit")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_inputs(calls, "0")
+        self.assertRegex(result.stdout, r"unit-mut: caught by unit tests \(timed out after [0-9]+s, 3 times the baseline run\)")
+        self.assertEqual(result.stdout.count("caught by"), 4)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int((self.root / "hang.pid").read_text()), 0)
 
     def test_sharding_does_not_change_the_seed(self):
         result, calls = self.run_runner("--shard", "1/2", MUTATION_SEED="371")
