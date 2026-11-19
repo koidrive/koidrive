@@ -2105,3 +2105,85 @@ fn a_synced_folder_deleted_in_an_ignored_folder_while_stopped_comes_back_and_a_f
         expected.map(|(path, bytes)| (path.to_owned(), bytes.to_owned()))
     );
 }
+
+#[test]
+fn a_copy_below_an_unreadable_left_out_folder_is_not_downloaded_again() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    fs::write(site.root.join("report.docx"), "report").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    drop(b);
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    fs::create_dir_all(site.root.join("dist/locked")).unwrap();
+    fs::rename(
+        site.root.join("report.docx"),
+        site.root.join("dist/locked/report.docx"),
+    )
+    .unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    assert!(b.sent.is_empty());
+    drop(b);
+    let locked = site.root.join("dist/locked");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let b = started(&site, &mut remote, &dist_left_out());
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+    assert!(!sent.contains(&"delete"), "{sent:?}");
+    assert_eq!(
+        files(&site.root),
+        [("dist/locked/report.docx".to_owned(), "report".to_owned())],
+        "{sent:?}"
+    );
+}
+
+#[test]
+fn a_copy_below_a_left_out_folder_that_turns_readable_again_comes_back_only_if_it_was_deleted() {
+    use std::os::unix::fs::PermissionsExt;
+    for deleted in [false, true] {
+        let mut remote = Remote::new();
+        let (site, mut b) = linked(&mut remote, "b");
+        fs::write(site.root.join("report.docx"), "report").unwrap();
+        b.rescan();
+        b.rest(&mut remote);
+        drop(b);
+        let mut b = started(&site, &mut remote, &dist_left_out());
+        fs::create_dir_all(site.root.join("dist/locked")).unwrap();
+        let copy = site.root.join("dist/locked/report.docx");
+        fs::rename(site.root.join("report.docx"), &copy).unwrap();
+        b.rescan();
+        b.rest(&mut remote);
+        let locked = site.root.join("dist/locked");
+        let mode = |mode| fs::set_permissions(&locked, fs::Permissions::from_mode(mode)).unwrap();
+        mode(0o000);
+        b.rescan();
+        b.rest(&mut remote);
+        if deleted {
+            mode(0o755);
+            fs::remove_file(&copy).unwrap();
+            mode(0o000);
+            b.rescan();
+            b.rest(&mut remote);
+        }
+        assert!(
+            !site.root.join("report.docx").exists(),
+            "deleted: {deleted}"
+        );
+        mode(0o755);
+        b.rescan();
+        b.rest(&mut remote);
+        let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+        assert!(!sent.contains(&"delete"), "deleted: {deleted}: {sent:?}");
+        let expected = match deleted {
+            false => ("dist/locked/report.docx", "report"),
+            true => ("report.docx", "report"),
+        };
+        assert_eq!(
+            files(&site.root),
+            [(expected.0.to_owned(), expected.1.to_owned())],
+            "deleted: {deleted}"
+        );
+    }
+}
