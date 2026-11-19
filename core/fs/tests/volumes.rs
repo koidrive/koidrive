@@ -43,10 +43,12 @@ fn paths_of(change: &Change) -> impl Iterator<Item = &Path> {
 }
 
 fn mounted(snapshot: &Snapshot, path: &str) -> bool {
-    matches!(
-        snapshot.entries[Path::new(path)].mount,
-        Some(Mount::Volume(_))
-    )
+    let mount = snapshot.entries[Path::new(path)].mount;
+    assert_eq!(
+        snapshot.entries.mounts().get(Path::new(path)),
+        mount.as_ref()
+    );
+    matches!(mount, Some(Mount::Volume(_)))
 }
 
 fn away(snapshot: &Snapshot) -> Vec<&str> {
@@ -460,7 +462,10 @@ fn a_stick_taken_back_by_a_rescan_of_one_of_its_files_is_recorded_before_the_nex
             plain[..4].copy_from_slice(&0x4b4f_1095_u32.to_le_bytes());
             plain[15] = 4;
             let recorded = Some(Mount::Volume(koidrive_fs::VolumeId::Uuid(plain)));
-            snapshot.entries.get_mut(Path::new("Disk")).unwrap().mount = recorded;
+            assert!(snapshot.entries.contains_key(Path::new("Disk")));
+            snapshot
+                .entries
+                .update(Path::new("Disk"), |entry| entry.mount = recorded);
         }
         disks.detach(&at);
         rescan(&mut snapshot, &root, &[""]);
@@ -1030,7 +1035,9 @@ fn a_volume_known_as_a_plain_folder_is_taken_as_that_volume() {
     disks.attach(&disk, &root.join("Disk"));
     fill(&root.join("Disk"));
     let mut snapshot = Snapshot::scan(&root).unwrap();
-    snapshot.entries.get_mut(Path::new("Disk")).unwrap().mount = None;
+    let mut disk = snapshot.entries[Path::new("Disk")];
+    disk.mount = None;
+    snapshot.entries.insert("Disk".into(), disk);
     assert_eq!(rescan(&mut snapshot, &root, &[""]).changes, []);
     assert!(mounted(&snapshot, "Disk"));
     assert!(snapshot.detached.is_empty());
