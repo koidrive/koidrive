@@ -64,6 +64,28 @@ fn a_store_copied_before_the_listing_takes_the_kept_slot_below_one_the_server_ga
 }
 
 #[test]
+fn a_store_copied_before_the_listing_starts_no_recovery_when_a_restore_brings_back_the_resend_at_its_kept_slot()
+ {
+    let mut world = converge(
+        2,
+        &[vec![(0, file("a"))], vec![(0, BACKUP), (0, file("b"))]],
+    )
+    .unwrap();
+    world
+        .phase(2, &[(0, RESTORE), (0, Step::Connect), (0, Step::CopyStore)])
+        .unwrap();
+    world
+        .phase(3, &[(0, BACKUP), (0, Step::RollBack), (0, Step::Connect)])
+        .unwrap();
+    assert_eq!(world.devices[0].engine.commits.accepted(), 2);
+    let mut lost = vec![(0, file("c.txt"))];
+    lost.extend(commit(0));
+    world.run(4, &lost).unwrap();
+    assert_eq!(world.devices[0].engine.commits.accepted(), 3);
+    world.phase(5, &[(0, RESTORE), (0, Step::Connect)]).unwrap();
+}
+
+#[test]
 fn a_store_copied_before_the_listing_takes_another_devices_delete_of_a_file_it_edited_before_the_loss()
  {
     let mut world = converge(2, &[vec![(0, file("a"))], vec![(0, overwrite(0))]]).unwrap();

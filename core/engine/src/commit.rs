@@ -539,18 +539,20 @@ impl Commits {
         self.made_here(seq) && seq > self.held_through()
     }
 
-    /// Forgets the slots above the accepted counter, those of the commits a loss took, once R is
-    /// listed again and [`Trees::forget_lost`] no longer needs them.
+    /// Forgets the slots of the commits a loss took, once R is listed again and
+    /// [`Trees::forget_lost`] no longer needs them: those above the accepted counter, and the kept
+    /// slot for which the last `Welcome` named another application ([`Commits::connected`]), which
+    /// *a* took over without this store knowing the server's commit there.
     pub fn forget_lost_slots(&mut self) {
-        let accepted = *self.accepted;
-        let lost: Vec<(u64, String)> = (self.slots.range(accepted + 1..))
+        let held = (self.confirmed.0).map_or(*self.accepted, |slot| slot.min(*self.accepted));
+        let lost: Vec<(u64, String)> = (self.slots.range(held + 1..))
             .filter(|(_, made)| !made.commit_id.is_empty())
             .map(|(slot, made)| (*slot, made.commit_id.clone()))
             .collect();
         for (slot, commit_id) in lost {
             self.give_up(slot, commit_id);
         }
-        self.slots.retain(|slot, _| *slot <= accepted);
+        self.slots.retain(|slot, _| *slot <= held);
     }
 
     fn give_up(&mut self, slot: u64, commit_id: String) {
