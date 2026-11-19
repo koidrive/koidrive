@@ -138,9 +138,9 @@ pub enum Request {
     SetGitignore {
         follow: bool,
     },
-    /// `Driver::gitignore_only`: what only the `.gitignore` files of the linked folder of `space_id` leave out.
+    /// `Driver::gitignore_only`: what only the `.gitignore` files of the linked folder `of` names leave out.
     GitignoreOnly {
-        space_id: String,
+        of: GitignoreFolder,
     },
     /// Runs `run` once for `request_id`: a later request with the same ID and key gets the first response, and one
     /// with another key fails as stale.
@@ -162,6 +162,43 @@ impl Request {
             },
             None => self,
         }
+    }
+}
+
+/// A linked folder, by its space or by its root. A root whose name is not UTF-8 travels as its bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitignoreFolder {
+    Space(String),
+    Folder(#[serde(with = "raw_path")] PathBuf),
+}
+
+mod raw_path {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    use std::path::{Path, PathBuf};
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Wire {
+        Text(String),
+        Bytes(Vec<u8>),
+    }
+
+    pub fn serialize<S: Serializer>(path: &Path, serializer: S) -> Result<S::Ok, S::Error> {
+        match path.to_str() {
+            Some(text) => serializer.serialize_str(text),
+            None => path.as_os_str().as_bytes().serialize(serializer),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<PathBuf, D::Error> {
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::Text(text) => text.into(),
+            Wire::Bytes(bytes) => OsString::from_vec(bytes).into(),
+        })
     }
 }
 
@@ -263,6 +300,7 @@ pub enum Response {
         already: bool,
     },
     GitignoreOnly {
+        space_id: String,
         files: u64,
         bytes: u64,
         /// The folders whose files the count leaves out because they cannot be read.
@@ -688,6 +726,7 @@ mod tests {
 
         let bytes = b"/home/ada/Code/data-\xff";
         let response = Response::GitignoreOnly {
+            space_id: "s1".into(),
             files: 3,
             bytes: 12,
             unreadable: vec![PathBuf::from(OsString::from_vec(bytes.to_vec()))],
@@ -700,6 +739,7 @@ mod tests {
         assert_eq!(
             parse(&line).unwrap(),
             Response::GitignoreOnly {
+                space_id: "s1".into(),
                 files: 3,
                 bytes: 12,
                 unreadable: vec!["/home/ada/Code/data-\u{fffd}".into()],
@@ -1054,9 +1094,23 @@ mod tests {
         );
         pinned(
             Request::GitignoreOnly {
-                space_id: "0190f0a0-0000-7000-8000-000000000001".into(),
+                of: GitignoreFolder::Space("0190f0a0-0000-7000-8000-000000000001".into()),
             },
-            r#"{"request":"gitignore_only","space_id":"0190f0a0-0000-7000-8000-000000000001"}"#,
+            r#"{"request":"gitignore_only","of":{"space":"0190f0a0-0000-7000-8000-000000000001"}}"#,
+        );
+        pinned(
+            Request::GitignoreOnly {
+                of: GitignoreFolder::Folder("/home/ada/Code".into()),
+            },
+            r#"{"request":"gitignore_only","of":{"folder":"/home/ada/Code"}}"#,
+        );
+        pinned(
+            Request::GitignoreOnly {
+                of: GitignoreFolder::Folder(
+                    <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"/a\xff").into(),
+                ),
+            },
+            r#"{"request":"gitignore_only","of":{"folder":[47,97,255]}}"#,
         );
         pinned(
             Response::Gitignore { follows: true },
@@ -1071,19 +1125,21 @@ mod tests {
         );
         pinned(
             Response::GitignoreOnly {
+                space_id: "s1".into(),
                 files: 18_342,
                 bytes: 412_000_000,
                 unreadable: Vec::new(),
             },
-            r#"{"response":"gitignore_only","files":18342,"bytes":412000000}"#,
+            r#"{"response":"gitignore_only","space_id":"s1","files":18342,"bytes":412000000}"#,
         );
         pinned(
             Response::GitignoreOnly {
+                space_id: "s1".into(),
                 files: 1,
                 bytes: 2,
                 unreadable: vec!["/home/ada/Code/pgdata".into()],
             },
-            r#"{"response":"gitignore_only","files":1,"bytes":2,"unreadable":["/home/ada/Code/pgdata"]}"#,
+            r#"{"response":"gitignore_only","space_id":"s1","files":1,"bytes":2,"unreadable":["/home/ada/Code/pgdata"]}"#,
         );
         pinned(
             Request::Leave {

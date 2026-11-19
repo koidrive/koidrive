@@ -2491,6 +2491,14 @@ impl Driver {
     /// is now, as a scan does, whatever [`Driver::follows_gitignore`] says, and never follows a symbolic link. What it
     /// holds below a folder it cannot list, or whose rules file it cannot read, is left out of the count, and the folder
     /// is in [`GitignoreOnly::unreadable`].
+    /// The space of the linked folder at `folder`.
+    pub fn linked_space(&self, folder: &Path) -> Result<String, DriverError> {
+        Ok(find(&mut self.inner.folders.lock().unwrap(), folder)?
+            .link
+            .space_id
+            .clone())
+    }
+
     pub fn gitignore_only(&self, space_id: &str) -> Result<GitignoreOnly, DriverError> {
         let link = (self.inner.folders.lock().unwrap().get(space_id))
             .map(|folder| folder.link.clone())

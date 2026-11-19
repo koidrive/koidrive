@@ -2849,23 +2849,40 @@ async fn gitignore_status_counts_each_linked_folder_when_their_paths_print_alike
             std::fs::write(folder.join(file), file.as_bytes()).unwrap();
         }
     }
-    let status = run(
-        paths.clone(),
-        Command::Gitignore {
-            action: GitignoreAction::Status { folder: None },
-        },
-        true,
-        false,
-        Arc::new(terminal::Terminal::new(true, true)),
-    )
-    .await
-    .unwrap();
-
-    let counted: Vec<(&str, u64)> = (status.data["folders"].as_array().unwrap().iter())
-        .map(|folder| {
-            let space_id = folder["space_id"].as_str().unwrap();
-            (space_id, folder["files"].as_u64().unwrap())
-        })
-        .collect();
-    assert_eq!(counted, [(ipc::tests::SPACE, 1), (OTHER, 2)]);
+    let server = tokio::spawn(ipc::serve(
+        koidrive_ipc::bind(&paths.socket()).unwrap(),
+        Driver::open(paths.clone()).unwrap(),
+    ));
+    for (folder, expected) in [
+        (None, &[(ipc::tests::SPACE, 1), (OTHER, 2)][..]),
+        (Some(&raw), &[(ipc::tests::SPACE, 1)][..]),
+        (Some(&alike), &[(OTHER, 2)][..]),
+    ] {
+        let status = run(
+            paths.clone(),
+            Command::Gitignore {
+                action: GitignoreAction::Status {
+                    folder: folder.cloned(),
+                },
+            },
+            true,
+            false,
+            Arc::new(terminal::Terminal::new(true, true)),
+        )
+        .await
+        .map_err(|error| error.message);
+        let counted = status.map(|status| {
+            (status.data["folders"].as_array().unwrap().iter())
+                .map(|folder| {
+                    let space_id = folder["space_id"].as_str().unwrap().to_owned();
+                    (space_id, folder["files"].as_u64().unwrap())
+                })
+                .collect::<Vec<_>>()
+        });
+        let expected = expected
+            .iter()
+            .map(|(space_id, files)| (space_id.to_string(), *files));
+        assert_eq!(counted, Ok(expected.collect()), "{folder:?}");
+    }
+    server.abort();
 }

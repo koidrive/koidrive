@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
-use koidrive_driver::{DriverError, Paths};
-use koidrive_ipc::{Request, Response};
+use koidrive_driver::Paths;
+use koidrive_ipc::{GitignoreFolder, Request, Response};
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -115,35 +116,36 @@ fn set_done(follows: bool, already: bool) -> Done {
 }
 
 async fn counted(paths: &Paths, only: Option<&Path>) -> Result<Vec<GitignoreFolderData>, CliError> {
-    let mut folders: Vec<(String, String)> = match ipc::run(paths, Request::Status).await? {
+    let folders: BTreeMap<String, String> = match ipc::run(paths, Request::Status).await? {
         Response::Status { status } => (status.folders.into_iter())
             .filter_map(|folder| Some((folder.space_id, folder.path?)))
             .collect(),
         other => return Err(unexpected(other)),
     };
-    if let Some(only) = only {
-        let canonical = std::fs::canonicalize(only).ok();
-        folders.retain(|(_, path)| {
-            let path = Path::new(path);
-            path == only || canonical.as_deref() == Some(path)
-        });
-        if folders.is_empty() {
-            return Err(CliError::from(DriverError::NotLinked(only.to_path_buf())));
-        }
-    }
+    let linked = match only {
+        Some(only) => vec![GitignoreFolder::Folder(only.to_path_buf())],
+        None => folders
+            .keys()
+            .cloned()
+            .map(GitignoreFolder::Space)
+            .collect(),
+    };
     let mut counted = Vec::new();
-    for (space_id, path) in folders {
-        let request = Request::GitignoreOnly {
-            space_id: space_id.clone(),
-        };
-        match ipc::run(paths, request).await? {
+    for of in linked {
+        match ipc::run(paths, Request::GitignoreOnly { of }).await? {
             Response::GitignoreOnly {
+                space_id,
                 files,
                 bytes,
                 unreadable,
             } => counted.push(GitignoreFolderData {
+                path: match (folders.get(&space_id), only) {
+                    (Some(path), _) => path.clone(),
+                    (None, only) => {
+                        only.map_or_else(String::new, |only| only.to_string_lossy().into_owned())
+                    }
+                },
                 space_id,
-                path,
                 files,
                 bytes,
                 unreadable: (unreadable.iter())

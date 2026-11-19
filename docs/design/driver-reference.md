@@ -60,7 +60,7 @@ background = true         # the default
 | `pause()`, `resume()` | Stops every folder and writes the paused file. Removes it and starts the folders |
 | `restart(folder)`, `lift(folder, lift)` | Syncs the folder again from the start. `lift` also clears a refusal's halt by resending the commit or planning it again |
 | `follows_gitignore()`, `set_gitignore(follow)` | Whether the folders follow their `.gitignore` files. Writes `gitignore` under `[sync]`, keeping the rest of the file, and restarts each running folder with the new rules; the same value restarts nothing |
-| `gitignore_only(space)` | The regular files and bytes of the space's folder on disk that only its `.gitignore` files leave out, whatever the setting is |
+| `gitignore_only(space)`, `linked_space(folder)` | The regular files and bytes of the space's folder on disk that only its `.gitignore` files leave out, whatever the setting is. The space of the linked folder at a path |
 | `watch()` | A receiver marked whenever `status`, `questions` or `restores` may have changed |
 | `signed_in()` | The profile's one `Auth`, for calls the driver does not make |
 

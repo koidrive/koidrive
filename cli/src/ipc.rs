@@ -13,7 +13,8 @@ use koidrive_driver::{
 };
 use koidrive_engine::commit::Lift;
 use koidrive_ipc::{
-    Blocked, Code, Key, Request, RequestId, Response, read_line, write_json, write_line,
+    Blocked, Code, GitignoreFolder, Key, Request, RequestId, Response, read_line, write_json,
+    write_line,
 };
 use rustix::io::Errno;
 use tokio::io::AsyncReadExt;
@@ -255,10 +256,18 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
                 already: !changed,
             })
         }
-        Request::GitignoreOnly { space_id } => {
+        Request::GitignoreOnly { of } => {
             let driver = driver.clone();
-            match tokio::task::spawn_blocking(move || driver.gitignore_only(&space_id)).await {
-                Ok(counted) => counted.map(|only| Response::GitignoreOnly {
+            let count = move || {
+                let space_id = match of {
+                    GitignoreFolder::Space(space_id) => space_id,
+                    GitignoreFolder::Folder(folder) => driver.linked_space(&folder)?,
+                };
+                (driver.gitignore_only(&space_id)).map(|only| (space_id, only))
+            };
+            match tokio::task::spawn_blocking(count).await {
+                Ok(counted) => counted.map(|(space_id, only)| Response::GitignoreOnly {
+                    space_id,
                     files: only.files,
                     bytes: only.bytes,
                     unreadable: only.unreadable,
@@ -615,6 +624,7 @@ pub(crate) mod tests {
         let server = tokio::spawn(serve(bind(&paths.socket()).unwrap(), driver.clone()));
         let ask = |request| run(&paths, request);
         let counted = Response::GitignoreOnly {
+            space_id: SPACE.into(),
             files: 1,
             bytes: 3,
             unreadable: Vec::new(),
@@ -625,7 +635,7 @@ pub(crate) mod tests {
             Response::Gitignore { follows: true }
         );
         let count = || Request::GitignoreOnly {
-            space_id: SPACE.into(),
+            of: GitignoreFolder::Space(SPACE.into()),
         };
         assert_eq!(ask(count()).await.unwrap(), counted);
         for already in [false, true] {
@@ -643,7 +653,7 @@ pub(crate) mod tests {
         );
         assert_eq!(ask(count()).await.unwrap(), counted);
         let not_linked = Request::GitignoreOnly {
-            space_id: "0190f0a0-0000-7000-8000-000000000002".into(),
+            of: GitignoreFolder::Space("0190f0a0-0000-7000-8000-000000000002".into()),
         };
         let error = ask(not_linked).await.unwrap_err();
         assert!(
