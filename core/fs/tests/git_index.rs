@@ -313,19 +313,11 @@ fn an_unreadable_index_keeps_the_last_answers() {
 #[test]
 fn a_name_git_refuses_is_not_listed() {
     let dir = repo(&[]);
-    let names: [&[u8]; 10] = [
-        b"../x",
-        b"/abs",
-        b"a//b",
-        b"a/./b",
-        b"dir/",
-        b"dist/../../x",
-        b".git/config",
-        b"a/.GIT/x",
-        b"bad\xff",
-        b"dist/ok.js",
-    ];
-    let entries: Vec<(&[u8], u16)> = names.iter().map(|name| (*name, 0)).collect();
+    let names = b"../x /abs a//b a/./b dir/ dist/../../x .git/config a/.GIT/x bad\xff dist/ok.js";
+    let entries: Vec<(&[u8], u16)> = names
+        .split(|byte| *byte == b' ')
+        .map(|name| (name, 0))
+        .collect();
     fs::write(dir.path().join(".git/index"), index(2, &entries, &[])).unwrap();
     assert_eq!(
         read(dir.path()).listed().collect::<Vec<_>>(),
@@ -374,21 +366,14 @@ fn an_index_git_refuses_to_read_is_unreadable() {
 
 #[test]
 fn reads_only_regular_git_files_of_a_bounded_size() {
-    let cases = [
-        "index fifo",
-        "index link",
-        "index large",
-        "sharedindex fifo",
-        "sharedindex link",
-        "commondir fifo",
-        "commondir link",
-        "commondir large",
-        "config fifo",
-        "config link",
-        "config large",
-    ];
-    for case in cases {
-        let (name, kind) = case.split_once(' ').unwrap();
+    let names = ["index", "sharedindex", "commondir", "config"];
+    let cases = names.map(|name| ["fifo", "link", "large"].map(|kind| (name, kind)));
+    for (name, kind) in cases
+        .into_iter()
+        .flatten()
+        .filter(|case| *case != ("sharedindex", "large"))
+    {
+        let case = format!("{name} {kind}");
         let dir = repo(&["a.txt"]);
         let root = dir.path().to_path_buf();
         git(&root, &["add", "."]);
