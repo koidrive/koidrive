@@ -4,6 +4,7 @@ use super::link::{find, owner_of, recorded_brought_back, roots};
 use super::*;
 
 fn write_gitignore(path: &Path, follow: bool) -> Result<(), DriverError> {
+    let path = &link_target(path).map_err(io_error(path))?;
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
@@ -37,6 +38,25 @@ fn write_gitignore(path: &Path, follow: bool) -> Result<(), DriverError> {
         .map_err(io_error(path))?
         .warn_unless_durable(path);
     Ok(())
+}
+
+pub(super) fn link_target(path: &Path) -> io::Result<PathBuf> {
+    let mut path = path.to_path_buf();
+    for _ in 0..40 {
+        match fs::read_link(&path) {
+            Ok(target) => path = path.parent().unwrap_or(Path::new("")).join(target),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::InvalidInput | io::ErrorKind::NotFound
+                ) =>
+            {
+                return Ok(path);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(rustix::io::Errno::LOOP.into())
 }
 
 enum Fix {
