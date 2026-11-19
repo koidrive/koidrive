@@ -31,14 +31,12 @@ runs:
           echo "The runner image already has ${packages[*]}."
         fi
     - if: github.ref == 'refs/heads/main'
-      id: cache-main
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.plan.outputs.dir }}
         key: ${{ steps.plan.outputs.key }}
         restore-keys: ${{ steps.plan.outputs.prefix }}
     - if: github.ref != 'refs/heads/main'
-      id: cache
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.plan.outputs.dir }}
@@ -49,7 +47,6 @@ runs:
       env:
         MISSING: ${{ steps.plan.outputs.missing }}
         DIR: ${{ steps.plan.outputs.dir }}
-        MATCHED: ${{ steps.cache-main.outputs.cache-matched-key || steps.cache.outputs.cache-matched-key }}
       run: |
         read -ra missing <<<"$MISSING"
         apt=(sudo apt-get -y -q -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o DPkg::Lock::Timeout=120 -o APT::Sandbox::User=root)
@@ -60,16 +57,16 @@ runs:
             installed "$package" || return 1
           done
         }
-        if [ -n "$MATCHED" ]; then
+        if compgen -G "$DIR/*.deb" > /dev/null; then
           debs=()
           for deb in "$DIR"/*.deb; do
             installed "$(dpkg-deb -f "$deb" Package)" || debs+=("$deb")
           done
           if [ ${#debs[@]} -gt 0 ] && sudo dpkg -i "${debs[@]}" && all_installed; then
-            echo "Installed ${missing[*]} from the cached .debs in $MATCHED without the Ubuntu mirror."
+            echo "Installed ${missing[*]} from the cached .debs without the Ubuntu mirror."
             exit 0
           fi
-          echo "::warning::The cached .debs in $MATCHED did not install ${missing[*]}, so they are downloaded from the Ubuntu mirror."
+          echo "::warning::The cached .debs did not install ${missing[*]}, so they are downloaded from the Ubuntu mirror."
         fi
         rm -rf "$DIR"
         mkdir -p "$DIR/partial"
