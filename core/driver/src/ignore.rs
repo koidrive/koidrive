@@ -19,14 +19,14 @@ use koidrive_ignore::{Kind, LocalRulesError, Reason, Status};
 
 use crate::config::SyncRules;
 
-/// Decides whether a path of a linked folder is excluded on this device, before any rules file is read.
+/// Decides whether a path of a linked folder is excluded on this device whatever the folder's rules files say.
 pub trait Matcher: Send + Sync {
     /// `path` is relative to the folder's root; `dir` says whether it names a folder.
     fn is_excluded(&self, path: &Path, dir: bool) -> bool;
 
-    /// Whether the folder's `.gitignore` files apply along with its `.koiignore` files.
-    fn follows_gitignore(&self) -> bool {
-        true
+    /// This device's lists and `gitignore` setting, which a scan applies together with the folder's rules files.
+    fn local(&self) -> LocalRules {
+        LocalRules::default()
     }
 }
 
@@ -56,23 +56,26 @@ fn status(rules: &Rules, path: &Path, dir: bool) -> Status {
 /// The built-in exclusions and this device's list.
 struct Device {
     rules: Rules,
-    gitignore: bool,
+    local: LocalRules,
 }
 
 impl Matcher for Device {
     fn is_excluded(&self, path: &Path, dir: bool) -> bool {
-        status(&self.rules, path, dir) != Status::Included
+        match status(&self.rules, path, dir) {
+            Status::Excluded(Reason::BuiltIn | Reason::Local) => true,
+            Status::Excluded(Reason::Default | Reason::Rule { .. }) | Status::Included => false,
+        }
     }
 
-    fn follows_gitignore(&self) -> bool {
-        self.gitignore
+    fn local(&self) -> LocalRules {
+        self.local.clone()
     }
 }
 
 pub(crate) fn device(local: LocalRules) -> Arc<dyn Matcher> {
     Arc::new(Device {
-        gitignore: local.follows_gitignore(),
-        rules: Rules::new(local),
+        rules: Rules::new(local.clone()),
+        local,
     })
 }
 
@@ -109,6 +112,7 @@ pub fn has_sync_entries(root: &Path) -> std::io::Result<bool> {
 struct Scanned {
     device: Arc<dyn Matcher>,
     files: Rules,
+    gitignore: bool,
 }
 
 impl Ignore for Scanned {
@@ -122,7 +126,9 @@ impl Ignore for Scanned {
         let dir = kind == EntryKind::Dir;
         match status(&self.files, path, dir) {
             Status::Excluded(Reason::BuiltIn) => Ignored::BuiltIn,
-            Status::Excluded(_) => Ignored::Rule,
+            Status::Excluded(Reason::Local | Reason::Default | Reason::Rule { .. }) => {
+                Ignored::Rule
+            }
             Status::Included if self.device.is_excluded(path, dir) => Ignored::Rule,
             Status::Included => Ignored::No,
         }
@@ -133,16 +139,18 @@ impl Ignore for Scanned {
     }
 
     fn follows(&self, source: Source) -> bool {
-        source == Source::Koiignore || self.device.follows_gitignore()
+        source == Source::Koiignore || self.gitignore
     }
 }
 
 /// The rules a new watcher of a folder scans with: `device`, the built-in exclusions, and the rules files, of which it
 /// has read none yet. Its first scan reads and reports every one.
 pub(crate) fn scan_rules(device: &Arc<dyn Matcher>) -> koidrive_fs::Rules {
+    let local = device.local();
     koidrive_fs::Rules::new(Box::new(Scanned {
         device: device.clone(),
-        files: Rules::new(LocalRules::default().with_gitignore(device.follows_gitignore())),
+        gitignore: local.follows_gitignore(),
+        files: Rules::new(local),
     }))
 }
 
@@ -179,7 +187,9 @@ impl Ignore for Counted {
             kind == EntryKind::Dir,
         ) {
             Status::Excluded(Reason::BuiltIn) => Ignored::BuiltIn,
-            Status::Excluded(_) => Ignored::Rule,
+            Status::Excluded(Reason::Local | Reason::Default | Reason::Rule { .. }) => {
+                Ignored::Rule
+            }
             Status::Included => Ignored::No,
         }
     }
@@ -320,6 +330,7 @@ mod tests {
         let mut scanned = Scanned {
             device,
             files: Rules::new(LocalRules::default()),
+            gitignore: true,
         };
         let status = |scanned: &Scanned, path: &str, kind| scanned.status(Path::new(path), kind);
         assert_eq!(status(&scanned, "private", EntryKind::Dir), Ignored::Rule);
@@ -390,6 +401,50 @@ mod tests {
                 unreadable: vec![root.join("private")],
             };
             assert_eq!(counted.unwrap(), only, "{locked:?}");
+        }
+    }
+
+    #[test]
+    fn a_scan_leaves_out_git_folders_until_a_koiignore_pattern_includes_them_and_keeps_the_device_list()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for path in [
+            "repo/.git/HEAD",
+            "repo/.git/index.lock",
+            "repo/README.md",
+            "repo/sub/.git",
+            "other/.git/HEAD",
+        ] {
+            std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+            std::fs::write(root.join(path), b"x").unwrap();
+        }
+        let scanned = |sync: &SyncRules| -> Vec<String> {
+            let device = matcher(sync).unwrap();
+            assert!(!device.is_excluded(Path::new("repo/.git"), true));
+            let snapshot = Snapshot::scan_with_rules(root, &mut scan_rules(&device)).unwrap();
+            (snapshot.entries.iter())
+                .filter(|(_, entry)| entry.kind == EntryKind::File)
+                .map(|(path, _)| path.to_string_lossy().into_owned())
+                .collect()
+        };
+        for gitignore in [true, false] {
+            let sync = SyncRules {
+                gitignore,
+                ..sync(&[], &["*.lock"])
+            };
+            assert_eq!(scanned(&sync), ["repo/README.md", "repo/sub/.git"]);
+            std::fs::write(root.join("repo/.koiignore"), b"!.git/\n").unwrap();
+            assert_eq!(
+                scanned(&sync),
+                [
+                    "repo/.git/HEAD",
+                    "repo/.koiignore",
+                    "repo/README.md",
+                    "repo/sub/.git"
+                ]
+            );
+            std::fs::remove_file(root.join("repo/.koiignore")).unwrap();
         }
     }
 }

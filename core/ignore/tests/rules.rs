@@ -711,3 +711,104 @@ fn rules_files_of_both_kinds_are_always_included() {
         assert_eq!(status(&m, "sub/a"), rule(0, 1));
     }
 }
+
+const GIT_DIR: Status = Status::Excluded(Reason::Default);
+
+#[test]
+fn git_directories_are_left_out_at_any_depth_whether_the_device_follows_gitignore_files_or_not() {
+    for gitignore in [true, false] {
+        let m = sourced(LocalRules::default().with_gitignore(gitignore), &[]);
+        for path in [
+            ".git/",
+            ".git/config",
+            ".git/hooks/pre-commit",
+            "app/.git/",
+            "app/vendor/lib/.git/objects/pack/a.pack",
+        ] {
+            assert_eq!(status(&m, path), GIT_DIR, "{path}, gitignore {gitignore}");
+        }
+        for path in [
+            ".git",
+            "app/sub/.git",
+            ".github/",
+            "app.git/",
+            ".git.bak/",
+            ".gitignore",
+            "app/.gitmodules",
+        ] {
+            assert_eq!(
+                status(&m, path),
+                Status::Included,
+                "{path}, gitignore {gitignore}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_git_directory_name_is_compared_by_key_like_the_built_in_names() {
+    fn left_out<K: NameKey>(name: &str, reason: Reason) -> bool {
+        Matcher::<K>::new(LocalRules::default()).status(&[name], Kind::Dir)
+            == Status::Excluded(reason)
+    }
+    struct Exact;
+    impl NameKey for Exact {
+        fn key(name: &str) -> String {
+            name.to_owned()
+        }
+    }
+    for (git, state) in [(".GIT", ".KOIDRIVE"), (".Git", ".Koidrive")] {
+        assert!(left_out::<Folded>(git, Reason::Default), "{git}");
+        assert!(left_out::<Folded>(state, Reason::BuiltIn), "{state}");
+        assert!(!left_out::<Exact>(git, Reason::Default), "{git}");
+        assert!(!left_out::<Exact>(state, Reason::BuiltIn), "{state}");
+    }
+}
+
+#[test]
+fn a_koiignore_pattern_includes_git_directories_again_and_a_gitignore_pattern_does_not() {
+    let root = sourced(
+        LocalRules::default(),
+        &[
+            ("", Source::Koiignore, "!.git/\n"),
+            ("", Source::Gitignore, ".git/\n"),
+        ],
+    );
+    for path in [".git/", ".git/config", "app/.git/", "app/.git/HEAD"] {
+        assert_eq!(status(&root, path), Status::Included, "{path}");
+    }
+
+    let nested = sourced(
+        LocalRules::default(),
+        &[("app", Source::Koiignore, "!.git/\n")],
+    );
+    for path in ["app/.git/", "app/.git/HEAD", "app/lib/.git/"] {
+        assert_eq!(status(&nested, path), Status::Included, "{path}");
+    }
+    for path in [".git/", "other/.git/HEAD"] {
+        assert_eq!(status(&nested, path), GIT_DIR, "{path}");
+    }
+
+    for gitignore in [true, false] {
+        let m = sourced(
+            LocalRules::default().with_gitignore(gitignore),
+            &[
+                ("", Source::Gitignore, "!.git/\n!*\n"),
+                ("app", Source::Gitignore, "!.git\n"),
+            ],
+        );
+        for path in [".git/", "app/.git/", "app/.git/HEAD"] {
+            assert_eq!(status(&m, path), GIT_DIR, "{path}, gitignore {gitignore}");
+        }
+    }
+
+    let m = sourced(
+        LocalRules::default(),
+        &[
+            ("", Source::Koiignore, "!.git/\n"),
+            ("app", Source::Koiignore, ".git/\n"),
+        ],
+    );
+    assert_eq!(status(&m, "app/.git/"), rule(1, 1));
+    assert_eq!(status(&m, "lib/.git/"), Status::Included);
+}

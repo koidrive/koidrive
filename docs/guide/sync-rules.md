@@ -12,6 +12,7 @@ It doesn't sync:
 - permissions other than the executable bit, the owner and group, ACLs and extended attributes such as macOS Finder tags.
 - hard links as links. Each name of a hard-linked file syncs as a separate file.
 - the platform files `.DS_Store`, `Thumbs.db`, `desktop.ini` and `Icon\r`, and the `.koidrive/` folder at the top of a linked folder. No rule can bring them back. A `.koidrive` folder deeper down is an ordinary folder and syncs.
+- `.git` folders, at any depth. To sync them, add `!.git/` to a `.koiignore` file ([Folders](folders.md#files-that-gitignore-files-exclude)).
 
 When sync removes a folder that another device deleted, it deletes these platform files in it too, so that the folder can go. If the folder still holds anything else that Koidrive doesn't sync, such as a file your rules leave out or a symbolic link, Koidrive keeps the folder with those entries, and the status names them. Remove them and run `koi folder restart <folder>`, and the folder goes.
 

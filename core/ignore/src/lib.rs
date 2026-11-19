@@ -13,10 +13,11 @@
 //!
 //! For a path, the `.koiignore` files are asked first: the deepest one with a matching pattern
 //! decides, and within that file the last matching pattern does; a `!` pattern includes. When no
-//! `.koiignore` pattern matches the path, the `.gitignore` files decide the same way, which is how
-//! git reads them. So `.koiignore` overrides `.gitignore` in both directions: `!.env` in a
-//! `.koiignore` file syncs the `.env` files a `.gitignore` excludes, and `*.psd` excludes
-//! files no `.gitignore` mentions.
+//! `.koiignore` pattern matches the path, a `.git` directory is excluded (see below), and the
+//! `.gitignore` files decide any other path the same way, which is how git reads them. So
+//! `.koiignore` overrides `.gitignore` in both directions: `!.env` in a `.koiignore` file syncs
+//! the `.env` files a `.gitignore` excludes, and `*.psd` excludes files no `.gitignore`
+//! mentions.
 //!
 //! `.gitignore` files apply only while the device follows them ([`LocalRules::with_gitignore`]),
 //! which it does unless its person turns it off. Git's other sources are not read: `.git/info/exclude`
@@ -28,6 +29,18 @@
 //! `.koidrive` at the root and the platform files `.DS_Store`, `Thumbs.db`, `desktop.ini` and
 //! `Icon\r` in any directory are always excluded, as files or directories. No pattern and no local
 //! include can bring them back.
+//!
+//! # `.git` directories
+//!
+//! A directory named `.git` is excluded at any depth, whether or not the device follows
+//! `.gitignore` files ([`Reason::Default`]). Git's FAQ warns against syncing any part of a
+//! repository (<https://git-scm.com/docs/gitfaq#sync-working-tree>), and `.git/hooks` and
+//! `.git/config` can run code on the device that receives them. A file named `.git`, which points
+//! a worktree or a submodule at its repository, is included.
+//!
+//! This default is a rule, not a built-in exclusion. It decides after the `.koiignore` files and
+//! before the `.gitignore` files, so `!.git/` in a `.koiignore` file includes the `.git`
+//! directories of its subtree, and no `.gitignore` pattern can.
 //!
 //! # The device-local list
 //!
@@ -41,9 +54,10 @@
 //! - The exclude list holds patterns in `.koiignore` syntax, relative to the root.
 //! - Whether the device follows `.gitignore` files.
 //!
-//! A path is excluded when a built-in exclusion, the local list or the rules files exclude it. So
-//! a `!` pattern in a rules file cannot include a path the local list excludes, and a `!` pattern
-//! in the local exclude list cannot include a path a rules file excludes.
+//! A path is excluded when a built-in exclusion, the local list, the rules files or the `.git`
+//! default exclude it. So a `!` pattern in a rules file cannot include a path the local list
+//! excludes, and a `!` pattern in the local exclude list cannot include a path a rules file
+//! excludes.
 //!
 //! # Names
 //!

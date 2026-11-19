@@ -52,6 +52,8 @@ This line doesn't reach into a folder that a `.gitignore` file excludes. If `.gi
 
 Koidrive doesn't read `.git/info/exclude` or git's global excludes file. They hold one person's choices for one clone.
 
+Koidrive leaves every `.git` folder out, whatever the `.gitignore` setting, because syncing a repository's internals can corrupt it. To sync them anyway, add `!.git/` to a `.koiignore` file.
+
 A file that git already tracks stays on this device when a `.gitignore` pattern matches it, even though git keeps tracking it.
 
 Each device has its own setting. To sync what `.gitignore` files exclude on this device:
