@@ -1694,17 +1694,14 @@ impl Snapshot {
         let left_out_ids: HashSet<FileId> = (scan.left_out.values())
             .map(|entry| entry.id.without_handle())
             .collect();
-        let place = |new: &BTreeMap<PathBuf, Entry>| {
-            placements(
-                new,
-                &old,
-                &left_out_ids,
-                &unreadable,
-                &held_from,
-                &self.entries,
-            )
-        };
-        let (twice, vanished) = place(&scan.new);
+        let (twice, vanished) = placements(
+            &scan.new,
+            &old,
+            &left_out_ids,
+            &unreadable,
+            &held_from,
+            &self.entries,
+        );
         let mut fresh = halfway(twice, &scan.new);
         if !vanished.is_empty() {
             let (found, unsure) = missed_moves(
@@ -1737,32 +1734,76 @@ impl Snapshot {
             .map(|(path, _)| path.clone())
             .collect();
         let mut straddled = BTreeSet::new();
-        while !fresh.is_empty() {
-            fresh.sort();
-            fresh.dedup_by(|inner, outer| inner.starts_with(&*outer));
-            for path in &fresh {
-                let below: Vec<PathBuf> = (scan.new.range(path.clone()..))
-                    .take_while(|(inside, _)| inside.starts_with(path))
-                    .map(|(inside, _)| inside.clone())
-                    .collect();
-                for inside in below {
-                    scan.new.remove(&inside);
-                }
-                scan.new.extend(
-                    old.range(path.clone()..)
-                        .take_while(|(inside, _)| inside.starts_with(path))
-                        .map(|(inside, entry)| (inside.clone(), *entry)),
-                );
+        if !fresh.is_empty() {
+            let (moved, _, left) = split(&scan.new, &old);
+            let mut placed: HashMap<_, Vec<(PathBuf, FileId)>> = HashMap::new();
+            let mut placed_at = HashMap::new();
+            for (path, entry) in moved {
+                let volume = volume_of(path, &scan.new, &self.entries).map(Path::to_path_buf);
+                let key = (volume, entry.id.without_handle());
+                (placed.entry(key.clone()).or_default()).push((path.clone(), entry.id));
+                placed_at.insert(path.clone(), key);
             }
-            straddled.extend(fresh);
-            let (twice, now_vanished) = place(&scan.new);
-            fresh = halfway(twice, &scan.new);
-            fresh.extend(
-                (now_vanished.into_values().flatten())
-                    .map(|(path, _)| path)
-                    .filter(|path| !gone.contains(path)),
-            );
-            fresh.retain(|path| !path.ancestors().any(|above| straddled.contains(above)));
+            let mut sources: HashMap<_, Vec<(PathBuf, FileId)>> = HashMap::new();
+            for (path, entry) in left {
+                let volume = volume_now(path, &old, &scan.new, &self.entries);
+                (sources
+                    .entry((volume, entry.id.without_handle()))
+                    .or_default())
+                .push((path.clone(), entry.id));
+            }
+            while !fresh.is_empty() {
+                fresh.sort();
+                fresh.dedup_by(|inner, outer| inner.starts_with(&*outer));
+                straddled.extend(fresh.iter().cloned());
+                let mut next = Vec::new();
+                for path in &fresh {
+                    let below: Vec<(PathBuf, Entry)> = (scan.new.range(path.clone()..))
+                        .take_while(|(inside, _)| inside.starts_with(path))
+                        .map(|(inside, entry)| (inside.clone(), *entry))
+                        .collect();
+                    for (inside, entry) in below {
+                        scan.new.remove(&inside);
+                        let Some(key) = placed_at.remove(&inside) else {
+                            continue;
+                        };
+                        let others = placed.get_mut(&key).expect("indexed at its path");
+                        others.retain(|(at, _)| *at != inside);
+                        if others.iter().any(|(_, id)| id.same(&entry.id))
+                            || left_out_ids.contains(&key.1)
+                        {
+                            continue;
+                        }
+                        next.extend(
+                            (sources.get(&key).into_iter().flatten())
+                                .filter(|(at, id)| id.same(&entry.id) && !gone.contains(at))
+                                .map(|(at, _)| at.clone()),
+                        );
+                    }
+                    let restored: Vec<(PathBuf, Entry)> = (old.range(path.clone()..))
+                        .take_while(|(inside, _)| inside.starts_with(path))
+                        .map(|(inside, entry)| (inside.clone(), *entry))
+                        .collect();
+                    scan.new.extend(restored.iter().cloned());
+                    for (inside, entry) in restored {
+                        let volume =
+                            volume_of(&inside, &scan.new, &self.entries).map(Path::to_path_buf);
+                        let pairs = (placed.get(&(volume, entry.id.without_handle())))
+                            .into_iter()
+                            .flatten()
+                            .filter(|(at, id)| {
+                                id.same(&entry.id)
+                                    && observed(at, &unreadable, &held_from)
+                                    && observed(&inside, &unreadable, &held_from)
+                            })
+                            .map(|(at, _)| (at.clone(), inside.clone()))
+                            .collect();
+                        next.extend(halfway(pairs, &scan.new));
+                    }
+                }
+                next.retain(|path| !path.ancestors().any(|above| straddled.contains(above)));
+                fresh = next;
+            }
         }
         unsettled.extend(straddled);
         let arrived: HashSet<(FileId, EntryKind)> = (scan.new.iter())
@@ -2174,14 +2215,12 @@ type Vanishing = (Option<PathBuf>, FileId, EntryKind);
 
 type Vanished = HashMap<Vanishing, Vec<(PathBuf, FileId)>>;
 
-fn placements<'n>(
+type Placed<'a> = Vec<(&'a PathBuf, &'a Entry)>;
+
+fn split<'n, 'o>(
     new: &'n BTreeMap<PathBuf, Entry>,
-    old: &BTreeMap<PathBuf, Entry>,
-    left_out: &HashSet<FileId>,
-    unreadable: &[PathBuf],
-    held: &BTreeMap<PathBuf, PathBuf>,
-    entries: &BTreeMap<PathBuf, Entry>,
-) -> (Vec<(PathBuf, PathBuf)>, Vanished) {
+    old: &'o BTreeMap<PathBuf, Entry>,
+) -> (Placed<'n>, Placed<'n>, Placed<'o>) {
     let (mut moved, mut kept, mut gone) = (Vec::new(), Vec::new(), Vec::new());
     let mut before = old.iter().peekable();
     for (path, entry) in new {
@@ -2197,17 +2236,32 @@ fn placements<'n>(
         }
     }
     gone.extend(before);
-    let observed = |path: &Path| {
-        !(unreadable.iter()).any(|blocked| {
-            path.starts_with(blocked) && (path != blocked || held.contains_key(path))
-        })
-    };
+    (moved, kept, gone)
+}
+
+fn observed(path: &Path, unreadable: &[PathBuf], held: &BTreeMap<PathBuf, PathBuf>) -> bool {
+    !(unreadable.iter())
+        .any(|blocked| path.starts_with(blocked) && (path != blocked || held.contains_key(path)))
+}
+
+fn placements<'n>(
+    new: &'n BTreeMap<PathBuf, Entry>,
+    old: &BTreeMap<PathBuf, Entry>,
+    left_out: &HashSet<FileId>,
+    unreadable: &[PathBuf],
+    held: &BTreeMap<PathBuf, PathBuf>,
+    entries: &BTreeMap<PathBuf, Entry>,
+) -> (Vec<(PathBuf, PathBuf)>, Vanished) {
+    let (moved, kept, gone) = split(new, old);
     let key =
         |at: &'n Path, entry: &Entry| (volume_of(at, new, entries), entry.id.without_handle());
     let mut first = HashMap::new();
     let mut twice = Vec::new();
     let mut meet = |path: &'n PathBuf, entry: &Entry, other: &'n PathBuf, was: &Entry| {
-        if !observed(path) || !observed(other) || !entry.id.same(&was.id) {
+        if !observed(path, unreadable, held)
+            || !observed(other, unreadable, held)
+            || !entry.id.same(&was.id)
+        {
             return;
         }
         let first = *first.entry(key(path, entry)).or_insert(other);

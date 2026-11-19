@@ -551,7 +551,7 @@ fn a_swap_seen_halfway_through_a_scan_keeps_both_names_for_a_rescan_that_reads_t
 fn a_rename_that_straddles_a_scan_is_never_read_as_a_removal_and_a_creation() {
     type Renames<'a> = &'a [(&'a str, &'a str)];
     let linked: Renames = &[("a.txt", "links/h.txt")];
-    let cases: [(&[&str], Renames, &str, Renames, Renames); 5] = [
+    let cases: [(&[&str], Renames, &str, Renames, Renames); 6] = [
         (
             &["a.txt", "b.txt"],
             &[],
@@ -586,6 +586,19 @@ fn a_rename_that_straddles_a_scan_is_never_read_as_a_removal_and_a_creation() {
             "a.txt",
             &[("a.txt", "t.tmp")],
             &[("b.txt", "a.txt"), ("t.tmp", "b.txt")],
+        ),
+        (
+            &["1.log", "2.log", "3.log", "4.log", "5.log"],
+            &[],
+            "2.log",
+            &[
+                ("5.log", "6.log"),
+                ("4.log", "5.log"),
+                ("3.log", "4.log"),
+                ("2.log", "3.log"),
+                ("1.log", "2.log"),
+            ],
+            &[],
         ),
     ];
     for (kept_handles, (files, links, at, during, after)) in [true, false]
