@@ -13,6 +13,9 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
         case shareLinks
         case createShareLink
         case answer
+        case pause
+        case resume
+        case setTelemetry
     }
 
     let base: SyncSession
@@ -22,6 +25,7 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
     private var failingAfterRestore: Set<Read> = []
     private var holding: Read?
     private var held = false
+    private var onMainThread: [Read] = []
 
     init(base: SyncSession) {
         self.base = base
@@ -34,8 +38,13 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
     func failNextAfterRestore(_ read: Read) { lock.withLock { _ = failingAfterRestore.insert(read) } }
     func holdNext(_ read: Read) { lock.withLock { holding = read; held = false } }
     var isHolding: Bool { lock.withLock { held } }
+    var callsOnMainThread: [Read] { lock.withLock { onMainThread } }
 
     override func state() -> SessionState { base.state() }
+    override func start() { base.start() }
+    override func pause() throws { try run(.pause) { try base.pause() } }
+    override func resume() throws { try run(.resume) { try base.resume() } }
+    override func setTelemetry(enabled: Bool) throws { try run(.setTelemetry) { try base.setTelemetry(enabled: enabled) } }
     override func telemetry() -> TelemetrySetting { base.telemetry() }
     override func fakeCore() -> FakeCore? { base.fakeCore() }
     override func unlinkFolder(spaceId: String) throws { try base.unlinkFolder(spaceId: spaceId) }
@@ -82,6 +91,7 @@ final class ScriptedSession: SyncSession, @unchecked Sendable {
     }
 
     private func run<T>(_ read: Read, _ call: () throws -> T) throws -> T {
+        if Thread.isMainThread { lock.withLock { onMainThread.append(read) } }
         if lock.withLock({ failing.remove(read) != nil }) {
             throw SessionError.ServerUnreachable(reason: "scripted")
         }

@@ -33,6 +33,10 @@ public final class AppModel {
     public private(set) var failedUpdateCheck: FailedUpdateCheck?
     public private(set) var showsUpdateCheck = false
     public private(set) var remainingTime: RemainingTime?
+    /// The pause or resume being saved, while it is.
+    public private(set) var pauseChange: PauseChange?
+    /// The usage-report choice being stored, while it is.
+    public private(set) var telemetryChoice: Bool?
     /// The clock the time-left estimate samples; previews and tests set their own.
     @ObservationIgnored public var clock: @MainActor () -> Date = { .now }
     public let session: SyncSession
@@ -42,6 +46,7 @@ public final class AppModel {
     @ObservationIgnored private var realRoots: [String: String?] = [:]
     @ObservationIgnored private var updateInFlight: Task<UpdateResult, Error>?
     @ObservationIgnored private var updateCheckInFlight: Task<Void, Never>?
+    @ObservationIgnored private var telemetryStoring: Task<Void, Never>?
     @ObservationIgnored private var checkingTotals: [String: UInt64] = [:]
     @ObservationIgnored private var estimator = TransferEstimator()
     @ObservationIgnored private var sampler: Task<Void, Never>?
@@ -303,17 +308,33 @@ public final class AppModel {
     }
 
     /// Pauses a running session or resumes a paused one. Throws `NotSaved` when the pause
-    /// cannot be saved, in which case nothing changes.
-    public func togglePause() throws {
-        defer { refresh() }
-        if isPaused { try session.resume() } else { try session.pause() }
+    /// cannot be saved, in which case nothing changes. A toggle while another runs does nothing.
+    public func togglePause() async throws {
+        guard pauseChange == nil else { return }
+        let change: PauseChange = isPaused ? .resuming : .pausing
+        pauseChange = change
+        defer { pauseChange = nil }
+        try await run { session in
+            switch change {
+            case .pausing: try session.pause()
+            case .resuming: try session.resume()
+            }
+        }
     }
 
     /// Stores the usage-report choice, then reads the setting again. Throws `NotSaved` when the choice cannot be
     /// saved. While the setting is locked, the choice is stored but applies only once the environment variable is gone.
-    public func setTelemetry(enabled: Bool) throws {
-        defer { refresh() }
-        try session.setTelemetry(enabled: enabled)
+    /// A choice made while another is being stored is stored after it.
+    public func setTelemetry(enabled: Bool) async throws {
+        let earlier = telemetryStoring
+        let storing = Task {
+            await earlier?.value
+            telemetryChoice = enabled
+            defer { telemetryChoice = nil }
+            try await run { try $0.setTelemetry(enabled: enabled) }
+        }
+        telemetryStoring = Task { _ = await storing.result }
+        try await storing.value
     }
 
     /// Updates Koidrive to the newest release. When the update replaces this app, the updater quits it and opens the
@@ -545,6 +566,11 @@ public enum Headline: Equatable, Sendable {
     case halted
     case questions
     case status(SyncStatus)
+}
+
+public enum PauseChange: Equatable, Sendable {
+    case pausing
+    case resuming
 }
 
 public enum IconBadge: String, Equatable, Sendable {

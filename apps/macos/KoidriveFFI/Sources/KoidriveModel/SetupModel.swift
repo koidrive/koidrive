@@ -88,7 +88,7 @@ public final class SetupModel {
         await attempt {
             server = try await app.connect(url: serverURL)
             if offered && asksForUsageReports {
-                try? app.setTelemetry(enabled: sendsUsageReports)
+                try? await app.setTelemetry(enabled: sendsUsageReports)
             }
             step = .signIn
         }

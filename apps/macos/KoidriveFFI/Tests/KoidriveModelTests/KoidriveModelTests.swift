@@ -285,48 +285,94 @@ private final class Fetches {
         #expect(storage.error == nil)
     }
 
-    @Test func pauseAndResume() throws {
+    @Test func pauseAndResume() async throws {
         let model = AppModel.fake(scenario: .upToDate)
         model.start()
-        try model.togglePause()
+        try await model.togglePause()
         #expect(model.isPaused)
-        try model.togglePause()
+        try await model.togglePause()
         #expect(!model.isPaused)
 
         try #require(model.session.fakeCore()).failSaves(fail: true)
-        #expect(throws: SessionError.NotSaved(reason: "saving is scripted to fail")) {
-            try model.togglePause()
+        await #expect(throws: SessionError.NotSaved(reason: "saving is scripted to fail")) {
+            try await model.togglePause()
         }
         #expect(!model.isPaused)
+        #expect(model.pauseChange == nil)
         #expect(model.state.problems.count == 1)
         model.stop()
         #expect(model.state.status == .stopped)
     }
 
-    @Test func theUsageReportSwitchTurnsReportsOnAndOff() throws {
+    @Test func aPauseOrResumeWaitsOffTheMainThreadAndShowsWhileItRuns() async throws {
+        let (model, session) = scripted()
+        model.start()
+        for (call, change, paused) in [(ScriptedSession.Read.pause, PauseChange.pausing, true), (.resume, .resuming, false)] {
+            session.holdNext(call)
+            let toggle = Task { try await model.togglePause() }
+            try await untilHeld(session)
+            #expect(model.pauseChange == change)
+            try await model.togglePause()
+            session.release.signal()
+            try await toggle.value
+            #expect(model.isPaused == paused)
+            #expect(model.pauseChange == nil)
+        }
+        #expect(session.callsOnMainThread.isEmpty)
+    }
+
+    @Test func theUsageReportSwitchTurnsReportsOnAndOff() async throws {
         let model = AppModel.fake(scenario: .upToDate)
         model.start()
         #expect(model.telemetry == TelemetrySetting(enabled: true, decided: true, locked: false))
-        try model.setTelemetry(enabled: false)
+        try await model.setTelemetry(enabled: false)
         #expect(model.telemetry == TelemetrySetting(enabled: false, decided: true, locked: false))
-        try model.setTelemetry(enabled: true)
+        try await model.setTelemetry(enabled: true)
         #expect(model.telemetry == TelemetrySetting(enabled: true, decided: true, locked: false))
 
         try #require(model.session.fakeCore()).failSaves(fail: true)
-        #expect(throws: SessionError.NotSaved(reason: "saving is scripted to fail")) {
-            try model.setTelemetry(enabled: false)
+        await #expect(throws: SessionError.NotSaved(reason: "saving is scripted to fail")) {
+            try await model.setTelemetry(enabled: false)
         }
         #expect(model.telemetry.enabled)
+        #expect(model.telemetryChoice == nil)
     }
 
-    @Test func aLockedUsageReportSettingIsReportedLockedAndKeepsItsState() throws {
+    @Test func theUsageReportChoiceIsStoredOffTheMainThreadAndShowsWhileItIs() async throws {
+        let (model, session) = scripted()
+        session.holdNext(.setTelemetry)
+        let choice = Task { try await model.setTelemetry(enabled: false) }
+        try await untilHeld(session)
+        #expect(model.telemetryChoice == false)
+        #expect(model.telemetry.enabled)
+        session.release.signal()
+        try await choice.value
+        #expect(model.telemetryChoice == nil)
+        #expect(!model.telemetry.enabled)
+        #expect(session.callsOnMainThread.isEmpty)
+    }
+
+    @Test func aUsageReportChoiceMadeWhileAnotherIsStoredIsStoredAfterIt() async throws {
+        let (model, session) = scripted()
+        session.holdNext(.setTelemetry)
+        let first = Task { try await model.setTelemetry(enabled: false) }
+        try await untilHeld(session)
+        let second = Task { try await model.setTelemetry(enabled: true) }
+        session.release.signal()
+        try await first.value
+        try await second.value
+        #expect(model.telemetry.enabled)
+        #expect(model.telemetryChoice == nil)
+    }
+
+    @Test func aLockedUsageReportSettingIsReportedLockedAndKeepsItsState() async throws {
         let model = AppModel.fake(scenario: .upToDate)
         try #require(model.session.fakeCore()).setTelemetrySetting(
             setting: TelemetrySetting(enabled: false, decided: false, locked: true))
         model.start()
         #expect(model.telemetry.locked)
 
-        try model.setTelemetry(enabled: true)
+        try await model.setTelemetry(enabled: true)
         #expect(model.telemetry == TelemetrySetting(enabled: false, decided: true, locked: true))
     }
 
