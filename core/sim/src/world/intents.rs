@@ -810,7 +810,8 @@ impl Intents {
                     && (self.saw(j, i)
                         || answered_over
                         || later
-                        || (0..self.list.len()).any(|k| held_as(k) && self.saw(j, k)));
+                        || !held_as(j)
+                            && (0..self.list.len()).any(|k| held_as(k) && self.saw(j, k)));
                 let looped = later
                     && other.held
                     && self.nodes(i).any(|id| {

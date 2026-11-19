@@ -10267,6 +10267,30 @@ fn a_file_published_beside_a_restored_folder_keeps_its_write() {
 }
 
 #[test]
+fn a_file_kept_after_its_discard_and_a_second_rewind_must_reach_the_server() {
+    use Step::*;
+    let phases = vec![
+        vec![(0, Backup), (0, act(1, 0, 0, "a", 0))],
+        vec![
+            (0, Rewind),
+            (0, Connect),
+            (0, Deliver(0)),
+            (0, Answer(1)),
+            (0, Commit(Reply::Served)),
+            (0, Rewind),
+            (0, Connect),
+            (0, Deliver(0)),
+            (0, Answer(0)),
+        ],
+    ];
+    let failure = keep(1, &phases).map(drop).unwrap_err();
+    assert!(
+        matches!(&failure, Failure::Broken(message) if message.contains("write 1 of the publish")),
+        "{failure:?}"
+    );
+}
+
+#[test]
 fn a_recovery_answer_does_not_put_a_disk_first_finish_back_at_its_pending_name() {
     use Reply::*;
     use Step::*;
