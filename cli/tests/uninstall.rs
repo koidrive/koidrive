@@ -1717,7 +1717,11 @@ struct OtherProfile {
 #[cfg(target_os = "macos")]
 impl OtherProfile {
     fn new(machine: &Machine, koi: &Path) -> Self {
-        let (config, state) = (machine.path("other/config"), machine.path("other/state"));
+        Self::with_config(machine, koi, machine.path("other/config"))
+    }
+
+    fn with_config(machine: &Machine, koi: &Path, config: PathBuf) -> Self {
+        let state = machine.path("other/state");
         let other = koidrive_driver::Paths::from_vars(|name| match name {
             "XDG_CONFIG_HOME" => Some(config.clone().into()),
             "XDG_STATE_HOME" => Some(state.clone().into()),
@@ -2027,7 +2031,7 @@ fn a_profile_in_a_folder_unlinked_earlier_loses_its_path_line() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn a_profile_that_registers_its_service_during_the_sign_out_keeps_the_shared_command() {
+fn a_profile_that_registers_its_service_during_the_sign_out_keeps_the_shared_command_and_config() {
     let agent = Arc::new(std::sync::OnceLock::<(PathBuf, String)>::new());
     let server = a_server_that_revokes_and_then({
         let agent = agent.clone();
@@ -2039,7 +2043,7 @@ fn a_profile_that_registers_its_service_during_the_sign_out_keeps_the_shared_com
         }
     });
     let (machine, koi, _) = signed_in_to(&server);
-    let other = OtherProfile::new(&machine, &koi);
+    let other = OtherProfile::with_config(&machine, &koi, machine.path("config"));
     let plist = machine.path(&format!("Library/LaunchAgents/{}.plist", other.label));
     agent.set((plist.clone(), other.agent.clone())).unwrap();
 
@@ -2049,6 +2053,10 @@ fn a_profile_that_registers_its_service_during_the_sign_out_keeps_the_shared_com
     assert!(output.status.success(), "{envelope:#}");
     assert!(plist.exists(), "{envelope:#}");
     assert!(koi.is_file(), "{envelope:#}");
+    assert!(
+        machine.path("config/koidrive/config.toml").is_file(),
+        "{envelope:#}"
+    );
     assert!(
         kept(&envelope).contains(&json!({ "kind": "shared", "path": koi.display().to_string() })),
         "{envelope:#}"

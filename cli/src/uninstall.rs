@@ -25,7 +25,7 @@ mod find;
 mod remove;
 mod text;
 
-use find::{find, is_koi, is_path_line, kept_programs, other_services};
+use find::{find, is_koi, is_path_line, kept_programs, relist};
 use remove::{
     clean_folder, keep_shared, prune_runtime, quit_apps, released, remove_path, remove_programs,
     remove_service, sign_out, unlink,
@@ -512,6 +512,7 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
             return finish(device, run);
         }
     };
+    run.kept.extend(relist(&mut found, paths, &home));
     for folder in &found.folders {
         clean_folder(folder, found.owner.as_ref(), &mut run);
     }
@@ -540,7 +541,6 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
         }
     }
     prune_runtime(paths);
-    (found.others, found.unlisted) = other_services(paths, &home);
     if !found.others.is_empty() || found.unlisted.is_some() {
         keep_shared(&found, &mut run);
         run.problems.extend(found.unlisted.iter().map(|problem| {

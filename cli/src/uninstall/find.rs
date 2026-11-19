@@ -157,10 +157,25 @@ pub(super) async fn find(paths: &Paths, home: &Path) -> Found {
     }
 }
 
-pub(super) fn other_services(
-    paths: &Paths,
-    home: &Path,
-) -> (Vec<service::Installed>, Option<String>) {
+pub(super) fn relist(found: &mut Found, paths: &Paths, home: &Path) -> Option<Kept> {
+    (found.others, found.unlisted) = other_services(paths, home);
+    let config = paths.config_file.parent()?;
+    let shared = found.unlisted.is_some()
+        || (found.others.iter()).any(|other| uses_config(other, home, paths));
+    let listed = (found.files.iter()).position(|file| file == config);
+    if !shared || (listed.is_none() && !found.config_in_state) {
+        return None;
+    }
+    found.config_in_state = false;
+    if let Some(at) = listed {
+        found.files.remove(at);
+    }
+    Some(Kept::Shared {
+        path: config.display().to_string(),
+    })
+}
+
+fn other_services(paths: &Paths, home: &Path) -> (Vec<service::Installed>, Option<String>) {
     let manager = service::system();
     let own = service::this_service(paths)
         .ok()
