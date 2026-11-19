@@ -1844,6 +1844,37 @@ fn run_ignoring_answering_after(
                 record.node
             );
             placement_check(&device, &record, &kept_with, &placed, &revived, &merged_into)?;
+            if let Some(local) = (device.trees.local().get(&record.node))
+                .filter(|local| local.parked || device.trees.ignored(&record.node))
+            {
+                let remote = device.trees.remote().live(&record.node);
+                let left_or_taken_to_r = match &record.after {
+                    Some(after) => {
+                        after.same_position(&local.shape)
+                            || remote.is_some_and(|remote| remote.same_position(after))
+                    }
+                    None => {
+                        let discarded = device.trees.state().discarded;
+                        let parked_or_taken_along =
+                            std::iter::successors(Some(&record.node), |id| {
+                                device.trees.local().get(id).map(|node| &node.shape.parent)
+                            })
+                            .any(|id| {
+                                discarded.contains_key(id)
+                                    || device.trees.local().get(id).is_some_and(|node| node.parked)
+                            });
+                        remote.is_none() && parked_or_taken_along
+                    }
+                };
+                prop_assert!(
+                    left_or_taken_to_r,
+                    "the effects take the local copy of excluded or parked {} from {:?} to {:?}, and R has {:?}",
+                    record.node,
+                    local.shape,
+                    record.after,
+                    remote
+                );
+            }
             if let (
                 Effect::CreateDir {
                     at:
