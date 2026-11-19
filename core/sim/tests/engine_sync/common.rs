@@ -1168,11 +1168,45 @@ fn run_cut(
     )
 }
 
+fn still_discarded_in(
+    device: &Device,
+    id: &str,
+    folder: &str,
+    discarded: &BTreeMap<String, koidrive_engine::tree::Shape>,
+) -> bool {
+    let trees = &device.trees;
+    (discarded.get(id))
+        .zip(trees.local().get(id))
+        .is_some_and(|(shown, local)| shown.parent == folder && local.shape.same(shown))
+        && !removed_by_user_from(device, id)
+        && (trees.local().iter())
+            .filter(|(_, node)| node.shape.parent == id)
+            .all(|(child, _)| still_discarded_in(device, child, id, discarded))
+}
+
+fn removed_by_user_from(device: &Device, id: &str) -> bool {
+    let trees = &device.trees;
+    (trees.remote().iter()).any(|(child, node)| {
+        !node.trashed
+            && node.shape.parent == id
+            && trees.local().get(child).is_none()
+            && (device
+                .removed_from
+                .get(child)
+                .is_some_and(|from| from == id)
+                || device.removed_from.contains_key(child)
+                    && acknowledged_shape(trees, child).is_some_and(|agreed| agreed.parent == id))
+            && acknowledged_shape(trees, child).is_some()
+            && !kept_by_r7(device, child)
+    })
+}
+
 fn server_copy(
     device: &Device,
     id: &str,
     shown: &BTreeMap<String, koidrive_engine::tree::Shape>,
     from_server: &BTreeSet<String>,
+    discarded: &BTreeMap<String, koidrive_engine::tree::Shape>,
     kept: &mut BTreeMap<String, koidrive_engine::tree::Shape>,
 ) -> bool {
     let trees = &device.trees;
@@ -1185,20 +1219,11 @@ fn server_copy(
             koidrive_engine::tree::same_content(local, remote) || from_server.contains(id)
         }
         (None, None) => {
-            let removed = (trees.remote().iter()).any(|(child, node)| {
-                !node.trashed
-                    && node.shape.parent == id
-                    && trees.local().get(child).is_none()
-                    && (device.removed_from.get(child).is_some_and(|from| from == id)
-                        || device.removed_from.contains_key(child)
-                            && acknowledged_shape(trees, child).is_some_and(|agreed| agreed.parent == id))
-                    && acknowledged_shape(trees, child).is_some()
-                    && !kept_by_r7(device, child)
-            });
-            !removed
+            !removed_by_user_from(device, id)
                 && (trees.local_children(id)).all(|child| {
                     shown.contains_key(child)
-                        || server_copy(device, child, shown, from_server, &mut below)
+                        || still_discarded_in(device, child, id, discarded)
+                        || server_copy(device, child, shown, from_server, discarded, &mut below)
                 })
         }
         _ => false,
@@ -1890,7 +1915,7 @@ fn run_ignoring_answering_after(
                     if !shown.contains_key(child)
                         && (device.trees.excluded(child) || placed_left_out.contains(child))
                     {
-                        server_copy(&device, child, &shown, &from_server, &mut taken);
+                        server_copy(&device, child, &shown, &from_server, &discarded, &mut taken);
                     }
                 }
             }
@@ -2042,6 +2067,17 @@ fn run_ignoring_answering_after(
                 && outcome.code == op_result::Code::MergedInto as i32
             {
                 merged_into.insert(create.node_id.clone(), outcome.node_id.clone());
+                for records in [&mut discarded, &mut kept_with] {
+                    if let Some(shape) = records.remove(&create.node_id) {
+                        records.insert(outcome.node_id.clone(), shape);
+                    }
+                    for shape in records
+                        .values_mut()
+                        .filter(|shape| shape.parent == create.node_id)
+                    {
+                        shape.parent = outcome.node_id.clone();
+                    }
+                }
             }
         }
         let ended = commits.resolved().len();

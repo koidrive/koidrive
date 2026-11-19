@@ -174,6 +174,13 @@ impl Tx<'_> {
             };
             state.trees.discarded.insert(row.get(0)?, shape);
         }
+        let mut stmt = self
+            .0
+            .prepare_cached("SELECT node_id, parent_id FROM removed_from")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            state.trees.removed_from.insert(row.get(0)?, row.get(1)?);
+        }
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, parent_id, name, kind, content FROM forgotten_shapes",
         )?;
@@ -536,6 +543,7 @@ impl Tx<'_> {
             "trashed_here",
             "removed_here",
             "discarded_nodes",
+            "removed_from",
             "forgotten_shapes",
             "lost_shapes",
             "published_nodes",
@@ -612,6 +620,7 @@ impl Tx<'_> {
             trashed_here,
             removed_here,
             discarded,
+            removed_from,
             forgotten_shapes,
             lost_shapes,
             outside,
@@ -767,6 +776,12 @@ impl Tx<'_> {
                     shape.content.as_ref().map(Content::encode_to_vec),
                 ])
             },
+        )?;
+        self.write_map(
+            removed_from,
+            "DELETE FROM removed_from WHERE node_id = ?1",
+            "INSERT OR REPLACE INTO removed_from (node_id, parent_id) VALUES (?1, ?2)",
+            |put, node, folder| put.execute(params![node, folder]),
         )?;
         self.write_map(
             forgotten_shapes,

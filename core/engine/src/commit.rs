@@ -3160,6 +3160,7 @@ pub(crate) fn rekey(trees: &mut Trees, from: &str, to: &str) {
     let parked_name = trees.parked_name(from).to_owned();
     let (parked, left_out_when_placed) = (node.parked, node.left_out_when_placed);
     trees.rekey_discarded(from, to);
+    trees.rekey_removed_from(from, to);
     trees.rekey_lost_shapes(from, to);
     trees.sent_create(from);
     trees.rekey_kept_entries(from, to);

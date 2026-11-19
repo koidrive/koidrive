@@ -1161,6 +1161,7 @@ proptest! {
             state.unobserved = (trees.state().unobserved.into_iter())
                 .filter(|id| trees.local().get(id).is_some() || trees.synced().get(id).is_some())
                 .collect();
+            state.removed_from = trees.state().removed_from;
             everything.restore(state).unwrap();
             everything.rules_scanned();
             trees.settle(&Default::default());

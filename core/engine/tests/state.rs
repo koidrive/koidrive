@@ -113,6 +113,7 @@ fn trees_state() -> TreesState {
         trashed_here: [("t".into(), 5)].into(),
         removed_here: [("t".into(), 5)].into(),
         discarded: [("a".into(), dir(ROOT, "x"))].into(),
+        removed_from: [("gone".into(), ROOT.into())].into(),
         forgotten_shapes: [("a".into(), dir(ROOT, "x"))].into(),
         lost_shapes: [("a".into(), dir(ROOT, "x"))].into(),
         outside: ["a".into()].into(),

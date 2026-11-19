@@ -587,7 +587,7 @@ impl Effects {
             });
         for id in below.iter().rev() {
             trees.give_up(id);
-            trees.remove_local(id);
+            trees.drop_local(id);
         }
         let parked = record.parks();
         let base = trees.acknowledged(&record.node);
@@ -622,7 +622,7 @@ impl Effects {
         }
         let content = (trees.local().get(&record.node)).map(|node| node.shape.content.clone());
         match record.after {
-            None => trees.remove_local(&record.node),
+            None => trees.drop_local(&record.node),
             Some(shape) => trees.set_local(
                 record.node.clone(),
                 LocalNode {
@@ -738,7 +738,7 @@ impl Effects {
     /// the bytes S held.
     pub fn overtaken(&mut self, trees: &mut Trees, effect_id: &str) -> Result<(), EffectError> {
         let record = self.take(effect_id)?;
-        trees.remove_local(&record.node);
+        trees.drop_local(&record.node);
         trees.set_synced(record.node, None);
         self.cleared.set(*self.cleared + 1);
         Ok(())
