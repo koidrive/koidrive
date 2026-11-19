@@ -197,6 +197,22 @@ async fn pair_and_claim_read_codes_from_stdin_or_positional_arguments() {
 }
 
 #[test]
+fn a_reader_that_went_away_does_not_crash_koi() {
+    let profile = Profile::new();
+    for stream in ["stdout", "stderr"] {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let mut command = profile.command(&["--version", "--json"]);
+        match stream {
+            "stdout" => command.stdout(writer).stderr(Stdio::piped()),
+            _ => command.stderr(writer).stdout(Stdio::null()),
+        };
+        let output = command.output().expect("run koi");
+        assert_eq!(output.status.code(), Some(0), "{stream}: {output:?}");
+    }
+}
+
+#[test]
 fn app_policy_skips_installation_without_changing_the_service_report() {
     let profile = Profile::new();
     let config = profile.home.path().join("config/koidrive");

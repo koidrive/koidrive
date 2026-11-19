@@ -6,6 +6,7 @@ use crate::report::{Decision, Done, Envelope};
 use crate::resolve::banner;
 use crate::{output, report};
 use koidrive_driver::Question;
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 /// Prints what the command produced and returns its exit status. Without `--json` the text goes to stdout and an error
@@ -65,7 +66,8 @@ pub(crate) fn finish(
         }
     };
     if json && command == "_daemon" {
-        println!(
+        let _ = writeln!(
+            io::stdout(),
             "{}",
             serde_json::to_string(&envelope).expect("the envelope serializes")
         );
@@ -76,7 +78,8 @@ pub(crate) fn finish(
         if envelope.decisions.is_empty() {
             envelope.decisions = pending.iter().map(Decision::of).collect();
         }
-        println!(
+        let _ = writeln!(
+            io::stdout(),
             "{}",
             serde_json::to_string_pretty(&envelope).expect("the envelope serializes")
         );

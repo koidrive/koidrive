@@ -67,15 +67,15 @@ impl Echo {
             self.held.push(line.to_owned());
             return;
         }
-        match self.json || stderr {
-            true => eprintln!("{line}"),
-            false => println!("{line}"),
-        }
+        let _ = match self.json || stderr {
+            true => writeln!(io::stderr(), "{line}"),
+            false => writeln!(io::stdout(), "{line}"),
+        };
     }
 
     pub(super) fn replay(&mut self) {
         for line in self.held.drain(..) {
-            eprintln!("{line}");
+            let _ = writeln!(io::stderr(), "{line}");
         }
     }
 

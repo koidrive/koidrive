@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 
 use cliclack::Theme as _;
@@ -149,12 +149,12 @@ pub fn print(
         ),
     };
     if !rich {
-        print!("{text}");
+        let _ = write!(io::stdout(), "{text}");
         if !note.is_empty() {
-            eprint!("{prefix}{note}");
+            let _ = write!(io::stderr(), "{prefix}{note}");
         }
         if let Some(pending) = pending {
-            eprintln!("koi: {pending}");
+            let _ = writeln!(io::stderr(), "koi: {pending}");
         }
         return;
     }
@@ -165,28 +165,29 @@ pub fn print(
         Tone::Neutral => theme.info_symbol(),
         Tone::Attention => theme.warning_symbol(),
     };
-    match presentation {
-        Presentation::Text if !text.is_empty() => {
-            print!(
-                "{}",
-                theme.format_log_with_spacing(text.trim_end(), &result_symbol, false)
-            );
-        }
-        _ => print!("{text}"),
-    }
+    let _ = match presentation {
+        Presentation::Text if !text.is_empty() => write!(
+            io::stdout(),
+            "{}",
+            theme.format_log_with_spacing(text.trim_end(), &result_symbol, false)
+        ),
+        _ => write!(io::stdout(), "{text}"),
+    };
     if !note.is_empty() {
         let symbol = match (error, tone) {
             (true, _) => theme.error_symbol(),
             (false, Tone::Attention) => theme.warning_symbol(),
             (false, _) => theme.info_symbol(),
         };
-        eprint!(
+        let _ = write!(
+            io::stderr(),
             "{}",
             theme.format_log_with_spacing(note.trim_end(), &symbol, false)
         );
     }
     if let Some(pending) = pending {
-        eprint!(
+        let _ = write!(
+            io::stderr(),
             "{}",
             theme.format_log_with_spacing(pending, &theme.warning_symbol(), false)
         );
