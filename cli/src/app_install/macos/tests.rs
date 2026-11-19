@@ -1,7 +1,7 @@
 use crate::app_install::error::{AppInstallError, AppInstallFailure};
 use crate::app_install::facts::{AppLaunch, CommitChange, CommitFact};
 use crate::app_install::macos::attempt::Attempt;
-use crate::app_install::macos::config::Config;
+use crate::app_install::macos::config::{Config, Limits};
 use crate::app_install::macos::constants::{
     BUNDLE, CLEANUP, IDENTIFIER, INSPECT_RUNNING, REQUIREMENT, SIGNER,
 };
@@ -52,6 +52,7 @@ async fn review_killed_transaction_child() {
         open: base.join("tools/open"),
         updater: base.join("updater"),
         max_download: 1024,
+        limits: Limits::default(),
     };
     ensure_with(
         config,
@@ -309,10 +310,19 @@ impl Drop for Fixture {
     }
 }
 
+async fn journal_to(path: &Path) -> tokio::sync::MutexGuard<'static, ()> {
+    static JOURNALED: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let journaled = JOURNALED.lock().await;
+    crate::app_install::journal(fs::File::create(path).unwrap());
+    journaled
+}
+
 fn script(path: &Path, text: &str) {
     let inspect = if path.file_name() == Some(OsStr::new("osascript")) {
         format!(
-            r#"case "$*" in *inspectedBundlePath*) if [ -e '{}/running' ]; then echo running; else echo stopped; fi; exit 0;; esac"#,
+            r#"base='{}'
+case "$*" in *inspectedBundlePath*) if [ -e "$base/running" ]; then echo running; else echo stopped; fi; exit 0;; esac
+case "$*" in *Date.now*) printf '%s\n' "$5" >> "$base/started.log"; if [ -e "$base/launch-fail" ]; then echo stopped; else echo running; fi; exit 0;; esac"#,
             path.parent().unwrap().parent().unwrap().display()
         )
     } else {
@@ -371,6 +381,8 @@ impl Fixture {
         let address = listener.local_addr().unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let observed = requests.clone();
+        let stall = base.join("download-stall");
+        let trickle = base.join("download-trickle");
         let server = tokio::spawn(async move {
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else {
@@ -379,6 +391,8 @@ impl Fixture {
                 let observed = observed.clone();
                 let sums = sums.clone();
                 let dmg = dmg.clone();
+                let stall = stall.clone();
+                let trickle = trickle.clone();
                 tokio::spawn(async move {
                     let mut request = vec![0; 16 * 1024];
                     let len = socket.read(&mut request).await.unwrap();
@@ -401,6 +415,17 @@ impl Fixture {
                         body.len()
                     );
                     socket.write_all(response.as_bytes()).await.unwrap();
+                    if trickle.exists() && !path.ends_with("/SHA256SUMS") {
+                        for piece in body.chunks(body.len().div_ceil(16)) {
+                            tokio::time::sleep(Duration::from_millis(600)).await;
+                            socket.write_all(piece).await.unwrap();
+                        }
+                        return;
+                    }
+                    if stall.exists() && !path.ends_with("/SHA256SUMS") {
+                        socket.write_all(&body[..body.len() / 2]).await.unwrap();
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                    }
                     socket.write_all(body).await.unwrap();
                 });
             }
@@ -418,6 +443,7 @@ impl Fixture {
             open: tools.join("open"),
             updater: base.join("updater"),
             max_download: 1024,
+            limits: Limits::default(),
         };
         fs::create_dir(&config.system).unwrap();
         fs::write(&config.updater, "signed updater").unwrap();
@@ -462,12 +488,17 @@ attach)
     for image do :; done
     /usr/bin/ditto "$base/incoming/Koidrive.app" "$point/Koidrive.app"
     printf '%s\n%s\n' "$point" "$image" > "$base/mounted"
-    [ ! -e "$base/attach-fail" ] || exit 7
+    if [ -e "$base/attach-fail" ]; then
+        echo "hdiutil: WARNING: 'hdiutil attach -readonly -nobrowse -mountpoint ...' is deprecated. Please use 'diskutil image attach ...' instead." >&2
+        echo 'hdiutil: attach failed - image not recognized' >&2
+        exit 7
+    fi
     if [ -e "$base/attach-sleep" ]; then echo $$ > "$base/child.pid"; exec /bin/sleep 30; fi
     printf '<plist version="1.0"><dict/></plist>\n'
     ;;
 info)
     if [ -e "$base/info-fail" ]; then exit 9; fi
+    [ ! -e "$base/info-warn" ] || echo 'hdiutil: info: cannot find IO media' >&2
     if [ -e "$base/mounted" ]; then
         point=$(/usr/bin/head -n 1 "$base/mounted")
         image=$(/usr/bin/tail -n 1 "$base/mounted")
@@ -499,6 +530,7 @@ esac
 base='{}'
 printf '%s\n' invoked >> "$base/quit.log"
 if [ -e "$base/quit-fail" ]; then exit 5; fi
+if [ -e "$base/quit-hang" ]; then exec /bin/sleep 30; fi
 if [ -e "$base/running" ]; then /bin/rm "$base/running"; echo running; else echo stopped; fi
 "#,
                 base.display()

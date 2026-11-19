@@ -2,7 +2,7 @@ use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
 use crate::app_install::facts::{AppLaunch, CommitChange, CommitFact};
 use crate::app_install::macos::attempt::Attempt;
 use crate::app_install::macos::config::Config;
-use crate::app_install::macos::constants::{BUNDLE, CLEANUP, SIGNER};
+use crate::app_install::macos::constants::{BUNDLE, CLEANUP, DOWNLOAD, SIGNER};
 use crate::app_install::macos::control::{
     CancelOnDrop, Control, Registry, io_error, passed, process,
 };
@@ -49,7 +49,7 @@ pub(in crate::app_install) async fn ensure_registered(
     if deadline <= Instant::now() {
         return Err(failure(
             AppInstallFailure::Deadline,
-            "App installation deadline exceeded",
+            "No time was left to install the app",
         ));
     }
     let (tx, rx) = watch::channel(false);
@@ -111,6 +111,8 @@ pub(super) async fn stage_copy(
     root_fd.sync_all().map_err(io_error)?;
     receipt.save(&data)?;
     process(
+        "Copying Koidrive into place",
+        config.limits.tool,
         &config.ditto,
         &[passed(source)?, passed(&staged_path)?],
         control,
@@ -150,6 +152,8 @@ pub(super) async fn exchange(
     let previous = installed.iter().find(|app| app.path == destination);
     if previous.is_some() {
         process(
+            "Checking the updater's signature",
+            config.limits.tool,
             &config.codesign,
             &signature_args(&config.updater, SIGNER, false)?,
             control,
@@ -271,7 +275,9 @@ async fn upgrade_alternatives(
             attempt.preserved.push(app.path.clone());
             continue;
         }
-        let _root_lock = lock(&root, &work).await.map_err(preserve)?;
+        let _root_lock = lock(&root, config.limits.lock, &work)
+            .await
+            .map_err(preserve)?;
         let receipt =
             begin_receipt(config, work_root, chosen.version.as_ref().unwrap()).map_err(preserve)?;
         attempt.receipts.push(receipt.path());
@@ -391,7 +397,7 @@ async fn transaction_inner(
         Ok(_) => (),
     }
     let work_root = private_work(&config.work, true)?;
-    let _user_lock = lock(&work_root, &control).await?;
+    let _user_lock = lock(&work_root, config.limits.lock, &control).await?;
     unchanged_directory(&config.work, &work_root)?;
     let mut retired = recover(&config, &work_root, &control, attempt).await?;
     let installed = inventory(&config, &control).await?;
@@ -444,13 +450,25 @@ async fn transaction_inner(
     } else {
         (config.user.clone(), directory(&config.user, true)?)
     };
-    let _root_lock = lock(&root_fd, &control).await?;
+    let _root_lock = lock(&root_fd, config.limits.lock, &control).await?;
     let receipt = begin_receipt(&config, &work_root, &target)?;
     attempt.receipts.push(receipt.path());
     let mut data = receipt.data();
     let work = data.work.path.clone();
+    let mut paused = Duration::ZERO;
     let result: Result<AppInstall, AppInstallError> = async {
-        let dmg = download(&config, &target, &data.image, &control).await?;
+        let started = Instant::now();
+        let downloading = Control {
+            deadline: started + DOWNLOAD,
+            cancel: control.cancel.clone(),
+        };
+        let downloaded = download(&config, &target, &data.image, &downloading).await;
+        paused = started.elapsed();
+        let dmg = downloaded?;
+        let control = Control {
+            deadline: control.deadline + paused,
+            cancel: control.cancel.clone(),
+        };
         let mounted = OwnedMount {
             point: data.point.path.clone(),
             image: dmg.0,
@@ -505,6 +523,8 @@ async fn transaction_inner(
         })
     }
     .await;
+    let cleanup_deadline = cleanup_deadline + paused;
+    control.deadline += paused;
     let (_tx, cancel) = watch::channel(false);
     let cleanup_control = Control {
         deadline: cleanup_deadline.min(Instant::now() + CLEANUP),

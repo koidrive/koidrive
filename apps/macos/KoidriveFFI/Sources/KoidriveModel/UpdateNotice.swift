@@ -8,6 +8,13 @@ public struct UpdateFailure: Equatable, Sendable {
     public let reason: String
     public let logPath: String?
     public let fallbackCommand: String?
+
+    /// Why the update failed, as one sentence: the first line of `reason`, which later lines only add detail or a command to.
+    public var summary: String {
+        let line = reason.split(whereSeparator: \.isNewline).first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        guard let last = line.last else { return "" }
+        return ".!?".contains(last) ? line : line + "."
+    }
 }
 
 public enum UpdateCheckFailure: Equatable, Sendable {

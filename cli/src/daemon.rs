@@ -5,6 +5,7 @@ use crate::report::{Done, FolderData, Lifecycle};
 use crate::{ipc, notify, report, telemetry, update};
 use koidrive_driver::{Driver, DriverError, FolderState, FolderStatus, Paths};
 use koidrive_telemetry::schema::{DaemonStart, Failure};
+use std::io::{self, Write};
 use tokio::signal::unix::{SignalKind, signal};
 
 /// The sync daemon, until SIGTERM or SIGINT. With `json` it prints one JSON object per line on stdout as it starts,
@@ -12,7 +13,7 @@ use tokio::signal::unix::{SignalKind, signal};
 pub(crate) async fn daemon(paths: Paths, json: bool) -> Result<Done, CliError> {
     let emit = |event: Lifecycle| {
         if json {
-            println!("{}", event.line());
+            let _ = writeln!(io::stdout(), "{}", event.line());
         }
     };
     let failed = |why| telemetry::failed(Failure::DaemonStart(why));
@@ -121,7 +122,7 @@ async fn folder_states(
                 space_id: data.space_id,
                 state: data.state,
             };
-            println!("{}", event.line());
+            let _ = writeln!(io::stdout(), "{}", event.line());
         }
     }
 }

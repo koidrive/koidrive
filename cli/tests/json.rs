@@ -197,6 +197,44 @@ async fn pair_and_claim_read_codes_from_stdin_or_positional_arguments() {
 }
 
 #[test]
+fn a_reader_that_went_away_does_not_crash_koi() {
+    let profile = Profile::new();
+    for (args, stdout, code) in [
+        (["--version", "--json"], true, 0),
+        (["--not-a-flag", "--quiet"], false, 2),
+    ] {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let mut command = profile.command(&args);
+        match stdout {
+            true => command.stdout(writer).stderr(Stdio::piped()),
+            false => command.stderr(writer).stdout(Stdio::piped()),
+        };
+        let output = command.output().expect("run koi");
+        assert_eq!(output.status.code(), Some(code), "{args:?}: {output:?}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_result_that_cannot_be_written_fails_the_command() {
+    let profile = Profile::new();
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
+    let output = (profile.command(&["--version", "--json"]))
+        .stdout(full)
+        .output()
+        .expect("run koi");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("koi: could not write the result:"),
+        "{output:?}"
+    );
+}
+
+#[test]
 fn app_policy_skips_installation_without_changing_the_service_report() {
     let profile = Profile::new();
     let config = profile.home.path().join("config/koidrive");

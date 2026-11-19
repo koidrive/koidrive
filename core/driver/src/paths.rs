@@ -53,6 +53,7 @@ impl Paths {
                 | "paused"
                 | "update-check.json"
                 | "update.log"
+                | "update.log.1"
                 | "setup-state.json"
                 | "uninstall.json"
                 | "leaving"

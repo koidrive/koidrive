@@ -66,6 +66,7 @@ import Testing
             return
         }
         #expect(failure.version == "0.1.1")
+        #expect(failure.summary == "The download of Koidrive-0.1.1-arm64.dmg stopped at 12.0 of 28.7 MB: no data arrived for 30 seconds.")
         #expect(failure.logPath?.hasSuffix("/Library/Logs/Koidrive/update.log") == true)
         #expect(failure.fallbackCommand == "brew upgrade --cask koidrive")
         #expect(model.popoverUpdateNotice == .failed(failure))

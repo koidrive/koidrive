@@ -1,94 +1,161 @@
 use super::*;
 
-#[tokio::test]
-async fn quiescing_quits_the_app_running_from_the_bundle_and_says_it_was_running() {
-    let dir = tempfile::tempdir().unwrap();
-    let app = dir.path().join(BUNDLE);
-    let run = |program: &str, arguments: &[&OsStr]| {
-        let output = std::process::Command::new(program)
-            .args(arguments)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{program}: {output:?}");
-    };
-    run(
-        "/usr/bin/osacompile",
-        &[
-            OsStr::new("-s"),
-            OsStr::new("-o"),
-            app.as_os_str(),
-            OsStr::new("-e"),
-            OsStr::new("on idle"),
-            OsStr::new("-e"),
-            OsStr::new("return 30"),
-            OsStr::new("-e"),
-            OsStr::new("end idle"),
-        ],
-    );
-    let plist = app.join("Contents/Info.plist");
-    for entry in [
-        format!("Add :CFBundleIdentifier string {IDENTIFIER}"),
-        "Add :LSUIElement bool true".to_owned(),
-    ] {
+struct Probe {
+    dir: tempfile::TempDir,
+    app: PathBuf,
+    config: Config,
+    control: Control,
+    _cancel: watch::Sender<bool>,
+}
+
+impl Probe {
+    async fn launch(script: &[&str]) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join(BUNDLE);
+        let run = |program: &str, arguments: &[&OsStr]| {
+            let output = std::process::Command::new(program)
+                .args(arguments)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{program}: {output:?}");
+        };
+        let mut compile = vec![OsStr::new("-s"), OsStr::new("-o"), app.as_os_str()];
+        for line in script {
+            compile.extend([OsStr::new("-e"), OsStr::new(line)]);
+        }
+        run("/usr/bin/osacompile", &compile);
+        let plist = app.join("Contents/Info.plist");
+        for entry in [
+            format!("Add :CFBundleIdentifier string {IDENTIFIER}"),
+            "Add :LSUIElement bool true".to_owned(),
+        ] {
+            run(
+                "/usr/libexec/PlistBuddy",
+                &[OsStr::new("-c"), OsStr::new(&entry), plist.as_os_str()],
+            );
+        }
         run(
-            "/usr/libexec/PlistBuddy",
-            &[OsStr::new("-c"), OsStr::new(&entry), plist.as_os_str()],
+            "/usr/bin/codesign",
+            &[
+                OsStr::new("-s"),
+                OsStr::new("-"),
+                OsStr::new("--force"),
+                app.as_os_str(),
+            ],
         );
+        let tools = dir.path().join("tools");
+        let config = Config {
+            system: dir.path().join("system"),
+            user: dir.path().join("user"),
+            work: dir.path().join("work"),
+            release: "http://127.0.0.1:9/releases/download".into(),
+            codesign: tools.join("codesign"),
+            spctl: tools.join("spctl"),
+            hdiutil: tools.join("hdiutil"),
+            ditto: "/usr/bin/ditto".into(),
+            osascript: "/usr/bin/osascript".into(),
+            open: "/usr/bin/open".into(),
+            updater: dir.path().join("updater"),
+            max_download: 1024,
+            limits: Limits::default(),
+        };
+        let (cancel_tx, cancel) = watch::channel(false);
+        let control = Control {
+            deadline: Instant::now() + Duration::from_secs(60),
+            cancel,
+        };
+        let probe = Self {
+            dir,
+            app,
+            config,
+            control,
+            _cancel: cancel_tx,
+        };
+        run("/usr/bin/open", &[OsStr::new("-n"), probe.app.as_os_str()]);
+        let launched = Instant::now() + Duration::from_secs(20);
+        while probe.inspect().await != b"running" {
+            assert!(Instant::now() < launched, "the probe app never ran");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        probe
     }
-    run(
-        "/usr/bin/codesign",
-        &[
-            OsStr::new("-s"),
-            OsStr::new("-"),
-            OsStr::new("--force"),
-            app.as_os_str(),
-        ],
-    );
-    let tools = dir.path().join("tools");
-    let config = Config {
-        system: dir.path().join("system"),
-        user: dir.path().join("user"),
-        work: dir.path().join("work"),
-        release: "http://127.0.0.1:9/releases/download".into(),
-        codesign: tools.join("codesign"),
-        spctl: tools.join("spctl"),
-        hdiutil: tools.join("hdiutil"),
-        ditto: "/usr/bin/ditto".into(),
-        osascript: "/usr/bin/osascript".into(),
-        open: "/usr/bin/open".into(),
-        updater: dir.path().join("updater"),
-        max_download: 1024,
-    };
-    let (_tx, cancel) = watch::channel(false);
-    let control = Control {
-        deadline: Instant::now() + Duration::from_secs(60),
-        cancel,
-    };
-    let inspect = async || {
+
+    async fn inspect(&self) -> Vec<u8> {
         process(
-            &config.osascript,
+            "Checking whether the probe app is running",
+            Duration::from_secs(20),
+            &self.config.osascript,
             &[
                 Arg::from("-l"),
                 Arg::from("JavaScript"),
                 Arg::from("-e"),
                 Arg::from(INSPECT_RUNNING),
-                passed(&app).unwrap(),
+                passed(&self.app).unwrap(),
             ],
-            &control,
+            &self.control,
         )
         .await
         .unwrap()
-    };
-    run("/usr/bin/open", &[OsStr::new("-n"), app.as_os_str()]);
-    let launched = Instant::now() + Duration::from_secs(20);
-    while inspect().await.trim_ascii() != b"running" {
-        assert!(Instant::now() < launched, "the probe app never ran");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        .stdout
+        .trim_ascii()
+        .to_vec()
     }
+}
 
-    assert!(quiesce(&config, &[&app], &control).await.unwrap());
-    assert_eq!(inspect().await.trim_ascii(), b"stopped");
-    assert!(!quiesce(&config, &[&app], &control).await.unwrap());
+impl Drop for Probe {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("/usr/bin/pkill")
+            .args(["-9", "-f"])
+            .arg(self.dir.path().join(BUNDLE))
+            .status();
+    }
+}
+
+#[tokio::test]
+async fn quiescing_quits_the_app_running_from_the_bundle_and_says_it_was_running() {
+    let probe = Probe::launch(&["on idle", "return 30", "end idle"]).await;
+
+    assert!(
+        quiesce(&probe.config, &[&probe.app], &probe.control)
+            .await
+            .unwrap()
+    );
+    assert_eq!(probe.inspect().await, b"stopped");
+    assert!(
+        !quiesce(&probe.config, &[&probe.app], &probe.control)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn an_app_that_ignores_the_quit_request_fails_quiescing_when_the_install_window_ends() {
+    let probe = Probe::launch(&[
+        "on idle",
+        "return 30",
+        "end idle",
+        "on quit",
+        "return",
+        "end quit",
+    ])
+    .await;
+    let window = Control {
+        deadline: Instant::now() + Duration::from_secs(2),
+        cancel: probe.control.cancel.clone(),
+    };
+    let started = Instant::now();
+
+    let error = quiesce(&probe.config, &[&probe.app], &window)
+        .await
+        .unwrap_err();
+
+    assert!(started.elapsed() < Duration::from_secs(15));
+    assert_eq!(error.kind, AppInstallFailure::InUse);
+    assert_eq!(
+        error.message,
+        "Koidrive did not quit before the app update ran out of time"
+    );
+    assert_eq!(probe.inspect().await, b"running");
 }
 
 #[tokio::test]
@@ -106,6 +173,7 @@ async fn lifecycle_failed_swap_restores_only_previously_running_ui() {
         f.preserved();
         f.unmounted();
         assert_eq!(f.base().join("open.log").exists(), running);
+        assert_eq!(f.base().join("started.log").exists(), running);
     }
 }
 

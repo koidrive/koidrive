@@ -1,5 +1,5 @@
 use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
-use crate::app_install::macos::control::{Control, io_error};
+use crate::app_install::macos::control::{Control, io_error, step};
 use crate::app_install::macos::state::{Identity, OwnedPath, PinnedDirectory};
 use rustix::fs::{AtFlags, FlockOperation, Mode, OFlags};
 use std::ffi::OsStr;
@@ -209,7 +209,11 @@ pub(super) fn unchanged_directory(path: &Path, fd: &File) -> Result<(), AppInsta
     }
     Ok(())
 }
-pub(super) async fn lock(root: &File, control: &Control) -> Result<InstallerLock, AppInstallError> {
+pub(super) async fn lock(
+    root: &File,
+    within: Duration,
+    control: &Control,
+) -> Result<InstallerLock, AppInstallError> {
     let name = ".koidrive-app-install.lock";
     let fd = match rustix::fs::openat(
         root,
@@ -235,21 +239,30 @@ pub(super) async fn lock(root: &File, control: &Control) -> Result<InstallerLock
             "Unsafe installer lock",
         ));
     }
-    loop {
-        control.check()?;
-        match rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive) {
-            Ok(()) => break,
-            Err(rustix::io::Errno::WOULDBLOCK) => {
-                control
-                    .bounded(async {
-                        tokio::time::sleep(Duration::from_millis(40)).await;
-                        Ok(())
-                    })
-                    .await?
+    let acquire = async {
+        loop {
+            match rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => return Ok(()),
+                Err(rustix::io::Errno::WOULDBLOCK) => {
+                    tokio::time::sleep(Duration::from_millis(40)).await
+                }
+                Err(error) => return Err(io_error(error)),
             }
-            Err(error) => return Err(io_error(error)),
         }
-    }
+    };
+    let waiting = "Waiting for another Koidrive install to finish";
+    step(waiting, control.bounded(waiting, within, acquire))
+        .await
+        .map_err(|error| match error.kind {
+            AppInstallFailure::Stalled => failure(
+                AppInstallFailure::InUse,
+                format!(
+                    "Another Koidrive install held the install lock for {} seconds",
+                    within.as_secs()
+                ),
+            ),
+            _ => error,
+        })?;
     let guard = InstallerLock(file);
     let current = rustix::fs::statat(root, name, AtFlags::SYMLINK_NOFOLLOW).map_err(io_error)?;
     if current.st_ino != metadata.ino() || current.st_dev as u64 != metadata.dev() {

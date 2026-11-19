@@ -1,6 +1,6 @@
 use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
 use crate::app_install::macos::config::Config;
-use crate::app_install::macos::constants::{BUNDLE, INSPECT_RUNNING, QUIESCE};
+use crate::app_install::macos::constants::{AWAIT_RUNNING, BUNDLE, INSPECT_RUNNING, QUIESCE};
 use crate::app_install::macos::control::{Control, io_error, passed, process};
 use crate::app_install::macos::filesystem::observed;
 use crate::app_install::macos::state::{
@@ -83,6 +83,8 @@ pub(super) async fn capture_ui(
     let mut running = Vec::new();
     for app in installed {
         let output = process(
+            "Checking whether Koidrive is running",
+            config.limits.tool,
             &config.osascript,
             &[
                 Arg::from("-l"),
@@ -94,7 +96,7 @@ pub(super) async fn capture_ui(
             control,
         )
         .await?;
-        match output.trim_ascii() {
+        match output.stdout.trim_ascii() {
             b"running" => running.push(RunningApp {
                 root: OwnedPath::capture(app.path.parent().unwrap().to_path_buf())?,
                 bundle: OwnedPath {
@@ -135,6 +137,26 @@ async fn restore_ui(
             open(config, &running.bundle.path, true, control).await
         {
             return Err(failure(AppInstallFailure::Command, error));
+        }
+        let started = process(
+            "Checking that Koidrive started again",
+            config.limits.tool,
+            &config.osascript,
+            &[
+                Arg::from("-l"),
+                Arg::from("JavaScript"),
+                Arg::from("-e"),
+                Arg::from(AWAIT_RUNNING),
+                passed(&running.bundle.path)?,
+            ],
+            control,
+        )
+        .await?;
+        if started.stdout.trim_ascii() != b"running" {
+            return Err(failure(
+                AppInstallFailure::Command,
+                "Koidrive was reopened after the failed update but did not start",
+            ));
         }
     }
     Ok(())
@@ -269,16 +291,23 @@ pub(super) async fn quiesce(
     for path in paths {
         parameters.push(passed(path)?);
     }
-    let output = process(&config.osascript, &parameters, control)
-        .await
-        .map_err(|error| {
-            if error.kind == AppInstallFailure::Command {
-                failure(AppInstallFailure::InUse, error)
-            } else {
-                error
-            }
-        })?;
-    match output.trim_ascii() {
+    let output = process(
+        "Asking Koidrive to quit",
+        control.remaining(),
+        &config.osascript,
+        &parameters,
+        control,
+    )
+    .await
+    .map_err(|error| match error.kind {
+        AppInstallFailure::Command => failure(AppInstallFailure::InUse, error),
+        AppInstallFailure::Deadline => failure(
+            AppInstallFailure::InUse,
+            "Koidrive did not quit before the app update ran out of time",
+        ),
+        _ => error,
+    })?;
+    match output.stdout.trim_ascii() {
         b"running" => Ok(true),
         b"stopped" => Ok(false),
         _ => Err(failure(
@@ -297,7 +326,16 @@ pub(super) async fn open(
         return AppLaunchResult::NotRequested;
     }
     let launched = match passed(path) {
-        Ok(path) => process(&config.open, &[Arg::from("-a"), path], control).await,
+        Ok(path) => {
+            process(
+                "Opening Koidrive",
+                config.limits.tool,
+                &config.open,
+                &[Arg::from("-a"), path],
+                control,
+            )
+            .await
+        }
         Err(error) => Err(error),
     };
     match launched {

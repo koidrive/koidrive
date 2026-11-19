@@ -20,7 +20,9 @@ const NEWEST: &str = "0.1.1";
 pub(super) fn update_failure() -> SessionError {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/me".to_owned());
     SessionError::UpdateFailed {
-        reason: format!("App signature verification failed for the downloaded Koidrive {NEWEST}"),
+        reason: format!(
+            "The download of Koidrive-{NEWEST}-arm64.dmg stopped at 12.0 of 28.7 MB: no data arrived for 30 seconds\nTo update, run: brew upgrade --cask koidrive"
+        ),
         log_path: format!("{home}/Library/Logs/Koidrive/update.log"),
         fallback_command: Some("brew upgrade --cask koidrive".to_owned()),
     }

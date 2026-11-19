@@ -205,7 +205,7 @@ impl Helper {
         let timeout = match args {
             ["status"] | ["device", "list"] | ["space", "list" | "usage"] => Duration::from_secs(5),
             ["share", ..] | ["gitignore", ..] => Duration::from_secs(600),
-            ["update"] => Duration::from_secs(15 * 60),
+            ["update"] => Duration::from_secs(5 * 60 * 60),
             _ => Duration::from_secs(60),
         };
         let output = finish(&mut child, input, timeout)

@@ -1,4 +1,4 @@
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, IsTerminal, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
@@ -18,6 +18,8 @@ pub(super) struct Echo {
 
 pub(super) struct Steps(Option<Terminal>);
 
+const KEPT_LOG: u64 = 1024 * 1024;
+
 #[derive(Clone, Copy)]
 pub(super) enum Child {
     Progress,
@@ -26,12 +28,20 @@ pub(super) enum Child {
 
 impl Echo {
     pub(super) fn open(path: &Path, json: bool, verbose: bool) -> Echo {
+        if fs::metadata(path).is_ok_and(|metadata| metadata.len() > KEPT_LOG) {
+            let _ = koidrive_state_file::rename(path, &path.with_extension("log.1"));
+        }
         let log = (path.parent().map(fs::create_dir_all).transpose().ok())
-            .and_then(|_| File::create(path).ok());
+            .and_then(|_| OpenOptions::new().create(true).append(true).open(path).ok());
         Echo {
             log,
             ..Echo::console(json, verbose)
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn journal(&self) -> Option<File> {
+        self.log.as_ref().and_then(|log| log.try_clone().ok())
     }
 
     pub(super) fn console(json: bool, verbose: bool) -> Echo {
@@ -57,20 +67,21 @@ impl Echo {
             self.held.push(line.to_owned());
             return;
         }
-        match self.json || stderr {
-            true => eprintln!("{line}"),
-            false => println!("{line}"),
-        }
+        let _ = match self.json || stderr {
+            true => writeln!(io::stderr(), "{line}"),
+            false => writeln!(io::stdout(), "{line}"),
+        };
     }
 
     pub(super) fn replay(&mut self) {
         for line in self.held.drain(..) {
-            eprintln!("{line}");
+            let _ = writeln!(io::stderr(), "{line}");
         }
     }
 
     pub(super) fn finish(&mut self, step: Option<Progress<'_>>, message: &str) {
         self.held.clear();
+        self.log(message);
         if let Some(step) = step {
             step.finish(message);
         }
