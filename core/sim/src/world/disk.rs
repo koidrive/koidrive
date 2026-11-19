@@ -125,8 +125,7 @@ pub struct Disk {
     precision: Precision,
     entries: BTreeMap<u128, Entry>,
     inos: u128,
-    /// The effects in flight whose download is staged and has no name in the folder yet, with the
-    /// staged file's inode.
+    /// The effects in flight whose download is staged and has no name in the folder yet.
     pub(super) staged: BTreeMap<String, u128>,
     /// The entries that effects in flight displaced and have not sent to the local trash yet.
     pub(super) quarantine: BTreeMap<String, (u128, Entry)>,
@@ -429,8 +428,7 @@ impl Disk {
         Some(Applied { outcome, trashed })
     }
 
-    /// Stages the download of a write before the effect section that applies it, and returns the
-    /// staged file's identity.
+    /// Stages the download of a write before the effect section that applies it.
     pub fn stage(&mut self, record: &EffectRecord) -> Option<FileIdentity> {
         if !matches!(record.effect, Effect::WriteFile { .. }) {
             return None;
@@ -440,7 +438,6 @@ impl Disk {
         Some(identity(self.inos))
     }
 
-    /// Drops what is staged, once the outcomes of the effects in flight are recorded.
     pub fn unstage(&mut self) {
         self.staged.clear();
     }
@@ -568,11 +565,9 @@ impl Disk {
     /// is done when its target is in the effect's final state, which for a removal or a write that
     /// replaces an entry also takes that entry in the local trash. A removal whose name is empty
     /// without that entry fails, since the user moved or deleted the entry before the effect
-    /// reached it. A write whose record holds its staged file's identity is done with it once
-    /// nothing is staged. A write whose replaced entry went to the local trash while its download
-    /// is still staged, or, without that identity, while its target does not hold the new content,
-    /// is overtaken. Anything else is an effect that stopped early or whose target the user has
-    /// changed since.
+    /// reached it. A write whose replaced entry goes or went to the local trash while its target
+    /// does not hold the new content is overtaken. Anything else is an effect that stopped early
+    /// or whose target the user has changed since.
     pub fn recover(&mut self, record: &EffectRecord) -> Applied {
         self.marker = record.counter;
         let staged = self.staged.contains_key(&record.effect_id);

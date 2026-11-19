@@ -1144,8 +1144,7 @@ impl Space {
         }
     }
 
-    /// Deletes the staged file of effect `id`, which the caller does once the
-    /// effect's outcome is recorded (design §5.3).
+    /// Deletes the staged file of effect `id`.
     pub fn drop_staged(&self, id: &str) -> io::Result<()> {
         let dropped = (self.private(&[STAGING_DIR]).map_err(io::Error::from))
             .and_then(|staging| remove_if_present(staging.fd(), id));

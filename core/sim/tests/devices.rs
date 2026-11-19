@@ -1633,9 +1633,6 @@ fn a_download_cut_by_a_crash_is_not_done_twice() {
     assert_eq!(world.devices[1].disk.entries().len(), 1);
 }
 
-/// As above, and the user renames the downloaded file while the device is down. The record holds
-/// the staged file's identity, so the restart reports the download done with it, and the rename
-/// reaches the other device (section 5.3).
 #[test]
 fn a_file_renamed_while_the_device_was_down_after_its_download_keeps_its_new_name() {
     let mut schedule = vec![(0, file("a"))];
@@ -1651,8 +1648,6 @@ fn a_file_renamed_while_the_device_was_down_after_its_download_keeps_its_new_nam
     assert_eq!(sorted_names(&world), [vec!["b"], vec!["b"]]);
 }
 
-/// As above, with an overwrite of a downloaded replacement instead of a rename. The overwrite is an
-/// edit of the file's node.
 #[test]
 fn a_file_overwritten_while_the_device_was_down_after_its_download_is_an_edit_of_it() {
     let synced = vec![(0, file("a"))];
