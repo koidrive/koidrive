@@ -150,6 +150,7 @@ async fn an_unfinished_unlink_stays_halted_after_reopen_resume_and_restart() {
         );
         gate.open();
         driver.pause().await.unwrap();
+        driver.stop().await;
         drop(driver);
 
         let driver = Driver::open(paths.clone()).unwrap();
@@ -191,6 +192,7 @@ async fn a_pause_cannot_report_success_until_its_halt_is_saved() {
     fs::remove_dir(&temporary).unwrap();
     assert!(!driver.pause().await.unwrap());
     let problem = driver.status().folders[0].problem.clone();
+    driver.stop().await;
     drop(driver);
     let reopened = Driver::open(paths).unwrap();
     assert!(reopened.status().paused);
