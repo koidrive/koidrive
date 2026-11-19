@@ -80,7 +80,8 @@ import os, signal, subprocess, sys
 child = subprocess.Popen(sys.argv[2:], start_new_session=True)
 def stop(signum, frame):
     os.killpg(child.pid, signal.SIGKILL)
-    sys.exit(128 + signum)
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
 signal.signal(signal.SIGINT, stop)
 signal.signal(signal.SIGTERM, stop)
 try:
@@ -96,7 +97,9 @@ run_mutant_suite() {
   local label=$1 limit=$2 code=0
   shift 2
   run_within "$limit" "$@" > "$log" 2>&1 || code=$?
-  if [ "$code" -eq 124 ]; then
+  if [ "$code" -eq 130 ] || [ "$code" -eq 143 ]; then
+    exit "$code"
+  elif [ "$code" -eq 124 ]; then
     caught="$label (timed out after ${limit}s, 3 times the baseline run)"
   elif [ "$code" -ne 0 ]; then
     caught=$label
