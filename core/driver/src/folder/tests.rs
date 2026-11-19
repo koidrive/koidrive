@@ -5,6 +5,7 @@
 //! the order results arrive in. After every step the store is loaded again and compared with the engine in memory.
 
 include!("tests/common.rs");
+include!("tests/busy_folders.rs");
 include!("tests/conflict_questions.rs");
 include!("tests/device_counter_and_recovery.rs");
 include!("tests/ejected_volumes.rs");
