@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use koidrive_fs::{
-    Change, EntryKind, FileId, Ignore, Ignored, Known, NativeWatcher, Poll, RescanWatcher, Rules,
-    Snapshot, Source, Watcher,
+    Change, EntryKind, FileId, Ignore, Ignored, Known, Looked, NativeWatcher, Poll, RescanWatcher,
+    Rules, Snapshot, Source, Watcher,
 };
 
 use koidrive_ignore::{Kind, LocalRules, Matcher, NameKey, Reason, RuleFile, Status};

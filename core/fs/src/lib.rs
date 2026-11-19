@@ -1136,6 +1136,83 @@ impl Snapshot {
         );
     }
 
+    fn look_for(
+        &self,
+        root: &Path,
+        rules: Option<&mut Rules>,
+        wanted: &BTreeMap<PathBuf, Known>,
+        found: &BTreeMap<PathBuf, PathBuf>,
+    ) -> Result<Vec<(PathBuf, Looked)>> {
+        let Some(rules) = rules else {
+            return Ok(Vec::new());
+        };
+        let mut rules = Pending::new(rules);
+        rules.seek(
+            wanted
+                .values()
+                .map(|known| (known.id, known.kind))
+                .collect(),
+        );
+        if wanted.is_empty() {
+            return Ok(Vec::new());
+        }
+        let root = open_root(root)?;
+        let entry_at = |path: &Path| -> io::Result<Option<Entry>> {
+            let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+                return Ok(None);
+            };
+            let Some((dir, _)) = open_attached(root.as_fd(), parent, &mut |_| {})? else {
+                return Ok(None);
+            };
+            match stat_at(dir.as_fd(), name) {
+                Ok(stat) => Ok(stat.entry()),
+                Err(err) if is_gone(&err) => Ok(None),
+                Err(err) => Err(err),
+            }
+        };
+        let mut looked = Vec::new();
+        let mut search = Wanted::new();
+        for (path, known) in wanted {
+            match found.get(path).map(|at| entry_at(at)) {
+                Some(Err(_)) => {}
+                Some(Ok(Some(entry))) if entry.kind == known.kind && !entry.id.same(&known.id) => {
+                    looked.push((path.clone(), Looked::Replaced(entry.id)));
+                }
+                _ => {
+                    search.insert((known.id, known.kind), None);
+                }
+            }
+        }
+        let fresh: HashSet<Key> = (search.keys().copied())
+            .filter(|key| rules.unproven(*key))
+            .collect();
+        let undecided = rules.search(root.as_fd(), &mut search, &fresh, true, &mut |_| {});
+        looked.extend((wanted.iter()).filter_map(|(path, known)| {
+            let at = search.get(&(known.id, known.kind))?.clone()?;
+            Some((path.clone(), Looked::Found(at)))
+        }));
+        search.retain(|key, at| at.is_none() && !undecided.contains(key) && !rules.unproven(*key));
+        if search.is_empty() {
+            return Ok(looked);
+        }
+        let mut held: HashMap<Key, Vec<FileId>> = HashMap::new();
+        for entry in self.entries.values().chain(self.left_out.values()) {
+            (held.entry((entry.id.without_handle(), entry.kind)))
+                .or_default()
+                .push(entry.id);
+        }
+        looked.extend(
+            (wanted.iter())
+                .filter(|(_, known)| search.contains_key(&(known.id, known.kind)))
+                .filter(|(_, known)| {
+                    !(held.get(&(known.id.without_handle(), known.kind)))
+                        .is_some_and(|ids| ids.iter().any(|id| id.same(&known.id)))
+                })
+                .map(|(path, _)| (path.clone(), Looked::Gone)),
+        );
+        Ok(looked)
+    }
+
     /// [`Snapshot::rescan`], failing with [`Error::RootReplaced`] and
     /// changing nothing when `root` opens a folder other than `expected`.
     fn rescan_with(
@@ -3299,6 +3376,27 @@ pub trait Watcher {
 
     /// Asks the next poll to scan `paths` again, such as files whose change time has not settled.
     fn revisit(&mut self, paths: Vec<PathBuf>);
+
+    /// Looks for the entry of each path of `wanted` by kind and identity at and below every entry the rules leave out,
+    /// and returns what it learned about each. `found` holds where an earlier call found each entry. The search goes
+    /// on from one call to the next within the budget of a scan, and seeks only what the last call wanted.
+    fn look_for(
+        &mut self,
+        wanted: &BTreeMap<PathBuf, Known>,
+        found: &BTreeMap<PathBuf, PathBuf>,
+    ) -> Result<Vec<(PathBuf, Looked)>>;
+}
+
+/// What [`Watcher::look_for`] learned about a wanted entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Looked {
+    /// A search found it at this path.
+    Found(PathBuf),
+    /// A search that looked everywhere ([`Rules::coverage`]) did not find it, and the snapshot does not hold it.
+    Gone,
+    /// Another entry of its kind took the place where an earlier call found it, as a save by rename does, so it is
+    /// the same entry with this identity. A scan counts a file that takes another's path the same way.
+    Replaced(FileId),
 }
 
 struct Barrier {
@@ -3916,6 +4014,14 @@ impl Watcher for NativeWatcher {
     fn revisit(&mut self, paths: Vec<PathBuf>) {
         self.dirty.extend(paths);
     }
+
+    fn look_for(
+        &mut self,
+        wanted: &BTreeMap<PathBuf, Known>,
+        found: &BTreeMap<PathBuf, PathBuf>,
+    ) -> Result<Vec<(PathBuf, Looked)>> {
+        (self.snapshot).look_for(&self.root, self.rules.as_mut(), wanted, found)
+    }
 }
 
 /// Rescans the whole tree every `interval`. Slower than [`NativeWatcher`] on
@@ -4044,6 +4150,14 @@ impl Watcher for RescanWatcher {
     }
 
     fn revisit(&mut self, _paths: Vec<PathBuf>) {}
+
+    fn look_for(
+        &mut self,
+        wanted: &BTreeMap<PathBuf, Known>,
+        found: &BTreeMap<PathBuf, PathBuf>,
+    ) -> Result<Vec<(PathBuf, Looked)>> {
+        (self.snapshot).look_for(&self.root, self.rules.as_mut(), wanted, found)
+    }
 }
 
 fn view<'a>(

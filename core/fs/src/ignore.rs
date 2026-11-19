@@ -72,6 +72,7 @@ struct Search {
     pending: HashMap<Key, u64>,
     decided: HashMap<Key, Decided>,
     held: BTreeMap<PathBuf, Entry>,
+    sought: HashSet<Key>,
     postponed: BTreeSet<PathBuf>,
     scanned: Vec<PathBuf>,
     reseeded: Vec<PathBuf>,
@@ -98,6 +99,7 @@ impl Search {
     fn prune(&mut self) {
         let keys: HashSet<Key> = (self.held.values())
             .map(|entry| (entry.id, entry.kind))
+            .chain(self.sought.iter().copied())
             .collect();
         self.pending.retain(|key, _| keys.contains(key));
         self.decided.retain(|key, _| keys.contains(key));
@@ -230,7 +232,8 @@ impl Rules {
     }
 
     pub(crate) fn searching(&self) -> bool {
-        !self.search.pending.is_empty()
+        let search = &self.search;
+        (search.held.values()).any(|entry| search.pending.contains_key(&(entry.id, entry.kind)))
     }
 
     pub(crate) fn held(&self) -> Option<&BTreeMap<PathBuf, Entry>> {
@@ -683,12 +686,17 @@ impl<'r> Pending<'r> {
                     }
                 };
                 let Some(entry) = entry else { continue };
-                if let Some(key) = keys_of(&entry).find(|key| pending.contains_key(key)) {
+                let keys: Vec<Key> = keys_of(&entry)
+                    .filter(|key| pending.contains_key(key))
+                    .collect();
+                if let Some(&key) = keys.first() {
                     left = left.saturating_sub(path.components().count());
                     if !holds(root, &path, key) {
                         moved = true;
                         break;
                     }
+                }
+                for key in keys {
                     pending.remove(&key);
                     if let Some(found) = wanted.get_mut(&key) {
                         *found = Some(path.clone());
@@ -788,6 +796,12 @@ impl<'r> Pending<'r> {
         });
         *held = kept;
         taken
+    }
+
+    pub(crate) fn seek(&mut self, keys: HashSet<Key>) {
+        let search = &mut self.rules.search;
+        search.sought = keys;
+        search.prune();
     }
 
     pub(crate) fn hold(&mut self, held: BTreeMap<PathBuf, Entry>) {

@@ -26,8 +26,9 @@ use std::time::{Duration, Instant};
 use koidrive_chunk::ChunkerConfig;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_fs::{
-    Change, Ctime, Detached, Entry, EntryKind, Error as FsError, FileId, Known, MarkLog, Mount,
-    NativeWatcher, RescanWatcher, RootAt, RootProblem, Snapshot, Source, Watcher, check_root,
+    Change, Ctime, Detached, Entry, EntryKind, Error as FsError, FileId, Known, Looked, MarkLog,
+    Mount, NativeWatcher, RescanWatcher, RootAt, RootProblem, Snapshot, Source, Watcher,
+    check_root,
 };
 use koidrive_proto::v1::{ChunkRef, Content};
 use rustix::fs::{Mode, OFlags};
@@ -176,6 +177,8 @@ pub struct FsObserver {
     delivered: Vec<PathBuf>,
     /// Whether a reset still waits for the batch of a scan made after it.
     reset: bool,
+    recorded: BTreeMap<PathBuf, Known>,
+    found: BTreeMap<PathBuf, PathBuf>,
     /// Files whose content could not be read, or that an observation left to a later one, with when to read them.
     unread: Unread,
     /// Whether the caller has stopped waiting for observations.
@@ -389,10 +392,17 @@ impl FsObserver {
             settling: true,
             delivered: Vec::new(),
             reset: false,
+            recorded: BTreeMap::new(),
+            found: BTreeMap::new(),
             unread: Unread::default(),
             stopped,
             progress,
         })
+    }
+
+    pub fn seek(&mut self, recorded: BTreeMap<PathBuf, Known>) {
+        self.found.retain(|path, _| recorded.contains_key(path));
+        self.recorded = recorded;
     }
 
     /// The files whose content is still to be read, left to a later observation or busy and read again later, and
@@ -796,6 +806,38 @@ impl Observer for FsObserver {
                     .cloned(),
             );
             self.settling = !poll.pending.is_empty();
+        }
+        if self.scanned.is_some() && poll.pending.is_empty() && unreadable.is_empty() {
+            match self.watcher.look_for(&self.recorded, &self.found) {
+                Ok(looked) => {
+                    for (path, looked) in looked {
+                        match looked {
+                            Looked::Found(at) => {
+                                self.found.insert(path, at);
+                            }
+                            Looked::Gone => {
+                                self.found.remove(&path);
+                                let Some(Known { kind, .. }) = self.recorded.remove(&path) else {
+                                    continue;
+                                };
+                                if !self.watcher.snapshot().entries.contains_key(&path) {
+                                    changes.push(Observed::Removed { kind, path });
+                                }
+                            }
+                            Looked::Replaced(id) => {
+                                let Some(known) = self.recorded.get_mut(&path) else {
+                                    continue;
+                                };
+                                known.id = id;
+                                changes.push(Observed::Reidentified { path, id });
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "the entries moved into left-out folders could not be looked for");
+                }
+            }
         }
         if !first
             && !answers
@@ -1991,6 +2033,14 @@ mod tests {
         fn reset(&mut self, _scope: &Path, _known: BTreeMap<PathBuf, Known>) {}
 
         fn revisit(&mut self, _paths: Vec<PathBuf>) {}
+
+        fn look_for(
+            &mut self,
+            _: &BTreeMap<PathBuf, Known>,
+            _: &BTreeMap<PathBuf, PathBuf>,
+        ) -> Result<Vec<(PathBuf, Looked)>, FsError> {
+            Ok(Vec::new())
+        }
     }
 
     /// The first scan of an observer saw `proj`, a folder it knew, disappear and could not settle it, so it may not

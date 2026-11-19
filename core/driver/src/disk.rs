@@ -55,8 +55,8 @@ use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{Content, Kind, LocalNode, NodeId};
 use koidrive_fs::{
     Action, Base, BroughtBack, Contents, Ctime, Dir, Displaced, Effect, Entry, EntryKind, FileId,
-    Location, Marker, Minted, Outcome, Reason, Reclaimed, Refusal, RootAt, RootProblem, RootTokens,
-    Rotation, Space, Step, Unresolved, check_root_at, open_root_folder, root_at,
+    Known, Location, Marker, Minted, Outcome, Reason, Reclaimed, Refusal, RootAt, RootProblem,
+    RootTokens, Rotation, Space, Step, Unresolved, check_root_at, open_root_folder, root_at,
 };
 use koidrive_net::{CallError, ChunkError, Session, StopReason, Transfer};
 use koidrive_proto::v1::error::Code;
@@ -185,6 +185,7 @@ pub(crate) struct Sections {
     /// Scopes the observer resets to L's view and scans again before its next batch, in the order requested, and
     /// how many requests there have been.
     resets: Mutex<(Vec<Reset>, u64)>,
+    recorded: Mutex<Option<BTreeMap<PathBuf, Known>>>,
     marks: koidrive_fs::MarkLog,
 }
 
@@ -236,6 +237,9 @@ impl Sections {
             Duration::ZERO
         };
         observer.reset(resets);
+        if let Some(recorded) = self.recorded.lock().unwrap().take() {
+            observer.seek(recorded);
+        }
         let stamp = self.stamp();
         let observation = observer.observe(wait)?;
         Ok(observation.map(|observation| Batch {
@@ -302,6 +306,7 @@ pub(crate) struct Disk {
     path: PathBuf,
     space_id: String,
     sections: Arc<Sections>,
+    recorded: BTreeMap<PathBuf, Known>,
     /// The paths of the latest effect sections, each with the epoch its section ended at, oldest first.
     spans: VecDeque<(u64, Vec<PathBuf>)>,
     /// The end epoch of the latest section that `spans` no longer holds.
@@ -451,6 +456,7 @@ impl Disk {
             path: link.root.clone(),
             space_id: link.space_id.clone(),
             sections,
+            recorded: BTreeMap::new(),
             spans: VecDeque::new(),
             forgotten: 0,
             scan_after: None,
@@ -533,7 +539,16 @@ impl Disk {
             disk.sections.request(engine.resets(scopes));
         }
         disk.space.clear_staging(None)?;
+        disk.record(engine);
         Ok(disk)
+    }
+
+    fn record(&mut self, engine: &Engine) {
+        let recorded = engine.recorded();
+        if recorded != self.recorded {
+            *self.sections.recorded.lock().unwrap() = Some(recorded.clone());
+            self.recorded = recorded;
+        }
     }
 
     /// What the observer's thread shares with the effect sections. The observer starts only once [`Disk::start`]
@@ -844,6 +859,7 @@ impl Disk {
             );
             self.drop_after = Some(self.sections.request(engine.resets(dropped)));
         }
+        self.record(engine);
         Ok(())
     }
 
