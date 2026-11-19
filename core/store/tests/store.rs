@@ -3284,3 +3284,38 @@ fn a_store_whose_files_are_not_files_is_refused_without_waiting_on_them() {
         assert_eq!(refused, [true; 3], "store.sqlite{companion}");
     }
 }
+
+#[test]
+fn opening_a_store_again_keeps_another_connections_write_lock() {
+    const TEST: &str = "opening_a_store_again_keeps_another_connections_write_lock";
+    if let Some(path) = std::env::var_os("KOIDRIVE_STORE_LOCKED") {
+        let other = rusqlite::Connection::open(path).unwrap();
+        other.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let busy = other.execute_batch("BEGIN IMMEDIATE").unwrap_err();
+        assert_eq!(
+            busy.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseBusy)
+        );
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.sqlite");
+    drop(Store::open(&path).unwrap());
+    let writer = rusqlite::Connection::open(&path).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let locked = |when: &str| {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("KOIDRIVE_STORE_LOCKED", &path)
+            .output()
+            .unwrap();
+        let shown = String::from_utf8_lossy(&child.stdout);
+        assert!(
+            child.status.success() && shown.contains("1 passed"),
+            "{when}: {shown}"
+        );
+    };
+    locked("before");
+    drop(Store::open_existing(&path));
+    locked("after a second open");
+}

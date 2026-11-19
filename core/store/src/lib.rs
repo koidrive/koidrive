@@ -1179,16 +1179,13 @@ fn refuse_non_files(path: &Path) -> Result<()> {
         let mut file = path.as_os_str().to_owned();
         file.push(suffix);
         let file = PathBuf::from(file);
-        match koidrive_state_file::open_regular(rustix::fs::CWD, &file, rustix::fs::OFlags::RDONLY)
-        {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                return Err(Error::Unopenable {
-                    path: file,
-                    source: error,
-                });
-            }
-            _ => {}
-        }
+        let source = match std::fs::symlink_metadata(&file) {
+            Ok(metadata) if metadata.is_file() => continue,
+            Ok(_) => std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => error,
+        };
+        return Err(Error::Unopenable { path: file, source });
     }
     Ok(())
 }

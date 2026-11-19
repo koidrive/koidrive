@@ -53,20 +53,13 @@ fn opens_refuse_anything_but_a_regular_file_without_waiting() {
             .map(|opened| opened.map_err(|error| error.kind()))
         }
     });
-    let not_a_file = Err(io::ErrorKind::InvalidInput);
+    let invalid = Err(io::ErrorKind::InvalidInput);
     let folder = Err(io::ErrorKind::IsADirectory);
-    let not_a_folder = Err(io::ErrorKind::NotADirectory);
+    let not_dir = Err(io::ErrorKind::NotADirectory);
     assert_eq!(
         refused,
         [
-            not_a_file,
-            folder,
-            not_a_file,
-            not_a_file,
-            not_a_file,
-            not_a_file,
-            not_a_file,
-            not_a_folder
+            invalid, folder, invalid, invalid, invalid, invalid, invalid, not_dir
         ]
     );
     assert!(!outside.exists());
