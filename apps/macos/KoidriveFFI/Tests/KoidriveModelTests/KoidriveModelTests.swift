@@ -352,6 +352,19 @@ private final class Fetches {
         #expect(session.callsOnMainThread.isEmpty)
     }
 
+    @Test func aUsageReportChoiceMadeWhileAnotherIsStoredIsStoredAfterIt() async throws {
+        let (model, session) = scripted()
+        session.holdNext(.setTelemetry)
+        let first = Task { try await model.setTelemetry(enabled: false) }
+        try await untilHeld(session)
+        let second = Task { try await model.setTelemetry(enabled: true) }
+        session.release.signal()
+        try await first.value
+        try await second.value
+        #expect(model.telemetry.enabled)
+        #expect(model.telemetryChoice == nil)
+    }
+
     @Test func aLockedUsageReportSettingIsReportedLockedAndKeepsItsState() async throws {
         let model = AppModel.fake(scenario: .upToDate)
         try #require(model.session.fakeCore()).setTelemetrySetting(

@@ -46,6 +46,7 @@ public final class AppModel {
     @ObservationIgnored private var realRoots: [String: String?] = [:]
     @ObservationIgnored private var updateInFlight: Task<UpdateResult, Error>?
     @ObservationIgnored private var updateCheckInFlight: Task<Void, Never>?
+    @ObservationIgnored private var telemetryStoring: Task<Void, Never>?
     @ObservationIgnored private var checkingTotals: [String: UInt64] = [:]
     @ObservationIgnored private var estimator = TransferEstimator()
     @ObservationIgnored private var sampler: Task<Void, Never>?
@@ -323,12 +324,17 @@ public final class AppModel {
 
     /// Stores the usage-report choice, then reads the setting again. Throws `NotSaved` when the choice cannot be
     /// saved. While the setting is locked, the choice is stored but applies only once the environment variable is gone.
-    /// A choice while another is being stored does nothing.
+    /// A choice made while another is being stored is stored after it.
     public func setTelemetry(enabled: Bool) async throws {
-        guard telemetryChoice == nil else { return }
-        telemetryChoice = enabled
-        defer { telemetryChoice = nil }
-        try await run { try $0.setTelemetry(enabled: enabled) }
+        let earlier = telemetryStoring
+        let storing = Task {
+            await earlier?.value
+            telemetryChoice = enabled
+            defer { telemetryChoice = nil }
+            try await run { try $0.setTelemetry(enabled: enabled) }
+        }
+        telemetryStoring = Task { _ = await storing.result }
+        try await storing.value
     }
 
     /// Updates Koidrive to the newest release. When the update replaces this app, the updater quits it and opens the
