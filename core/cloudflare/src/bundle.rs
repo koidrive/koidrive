@@ -15,6 +15,9 @@ pub const SERVER_TAG: &str = "koidrive-server";
 
 pub const RECOVERY_KEY_SECRET: &str = "KOIDRIVE_RECOVERY_KEY";
 
+/// The Worker variable that switches server features for test deployments (RFC 0022 section 3 rule 7).
+pub const FEATURES_VARIABLE: &str = "KOIDRIVE_FEATURES";
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {

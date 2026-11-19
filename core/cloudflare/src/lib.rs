@@ -13,8 +13,8 @@ pub use api::{
     Script, ScriptSettings,
 };
 pub use bundle::{
-    Asset, Bundle, BundleError, Manifest, NewerDeployment, RECOVERY_KEY_SECRET, SERVER_TAG,
-    Storage, UploadPlan,
+    Asset, Bundle, BundleError, FEATURES_VARIABLE, Manifest, NewerDeployment, RECOVERY_KEY_SECRET,
+    SERVER_TAG, Storage, UploadPlan,
 };
 pub use oauth::{
     AuthorizationCode, CLIENT_ID, Endpoints, Grant, Login, Loopback, OauthError, SCOPES,
