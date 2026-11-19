@@ -82,9 +82,10 @@
 //! listings and stats only. Found there, it was moved and nothing was
 //! deleted, so it is reported as [`Change::Ignored`]. A miss is reported as a
 //! removal, although a file saved again after such a move has a new identity
-//! and is missed. Design §5.10 holds a miss for a question to the user while
-//! any entry is left out, and the engine cannot ask that question yet. The
-//! search does not look in [`PRIVATE_DIR`] or in the built-in platform files.
+//! and is missed. A miss of a search that ended before it looked everywhere
+//! ([`Rules::end_search`]) is reported as [`Change::Missing`], which design
+//! §5.10 holds for a question to the user. The search does not look in
+//! [`PRIVATE_DIR`] or in the built-in platform files.
 //!
 //! The engine's private folder [`PRIVATE_DIR`] at the root is never scanned.
 //! The [`check_root`] of design §6.2, the root [`Marker`] and the rename that
@@ -894,6 +895,13 @@ pub enum Change {
         path: PathBuf,
         kind: EntryKind,
     },
+    /// The entry at `path`, with identity `id`, left the disk, and the search below the left-out entries ended
+    /// before it looked everywhere ([`Rules::end_search`]). The entry may still be in a left-out folder.
+    Missing {
+        path: PathBuf,
+        kind: EntryKind,
+        id: FileId,
+    },
     /// The folder at `path` is another folder on disk that holds the entries the old one held, as after an app
     /// writes a copy of a folder and swaps it in. It is the same folder, with a new identity.
     Reidentified {
@@ -1032,7 +1040,8 @@ impl Snapshot {
     /// and later scans move it to, and that path is returned in
     /// [`Rescan::unsettled`]. The search goes on in the next rescans, of any
     /// paths, and the removal is reported by the next rescan of its path after
-    /// the search has decided it, or as a rename when that rescan finds its
+    /// the search has decided it, as [`Change::Missing`] when the search ended
+    /// before it looked everywhere, or as a rename when that rescan finds its
     /// identity at an included path. A file created at its path is held back
     /// with it, and both are reported once the search has decided: as a
     /// modification when the search did not find the removed entry, and as
@@ -1936,7 +1945,7 @@ impl Snapshot {
         let mut moves = Vec::new();
         for change in &changes {
             match change {
-                Change::Removed { path, .. } => {
+                Change::Removed { path, .. } | Change::Missing { path, .. } => {
                     removed.insert(path.clone());
                 }
                 Change::Created { path, .. } => {
@@ -2024,7 +2033,9 @@ impl Snapshot {
             }
         }
         changes.retain(|change| match change {
-            Change::Removed { path, .. } => !holding.contains_key(path),
+            Change::Removed { path, .. } | Change::Missing { path, .. } => {
+                !holding.contains_key(path)
+            }
             Change::Created { path, .. } => {
                 !(holding.values()).any(|place| path.starts_with(place))
             }
@@ -2722,6 +2733,7 @@ fn find_ignored(
     for change in visiting(changes.iter_mut()) {
         match change {
             Change::Removed { path, .. }
+            | Change::Missing { path, .. }
             | Change::Renamed { from: path, .. }
             | Change::Ignored { from: path, .. } => *path = unaside(path),
             Change::Created { .. } | Change::Modified { .. } | Change::Reidentified { .. } => {}
@@ -2741,6 +2753,11 @@ fn find_ignored(
             Change::Removed {
                 path,
                 kind: EntryKind::File,
+            }
+            | Change::Missing {
+                path,
+                kind: EntryKind::File,
+                ..
             } if created.contains(path) => Some(path.clone()),
             _ => None,
         })
@@ -2748,7 +2765,7 @@ fn find_ignored(
     changes
         .retain(|change| !matches!(change, Change::Created { path, .. } if saved.contains(path)));
     for change in visiting(changes.iter_mut()) {
-        if let Change::Removed { path, .. } = change
+        if let Change::Removed { path, .. } | Change::Missing { path, .. } = change
             && saved.contains(path)
         {
             *change = Change::Modified { path: path.clone() };
@@ -2852,6 +2869,9 @@ fn hold_back(
         .collect();
     wanted.extend(seeded.iter().map(|path| (key(path), None)));
     let undecided = rules.search(root, &mut wanted, &fresh, true, cut);
+    let unproven: HashSet<Key> = (wanted.keys().copied())
+        .filter(|key| rules.unproven(*key))
+        .collect();
     let relocated = |path: &Path| {
         unaside(
             &(path.ancestors().skip(1))
@@ -2960,9 +2980,15 @@ fn hold_back(
         .collect();
     for change in visiting(changes.iter_mut()) {
         match &*change {
-            Change::Removed { path, .. } if !exempt.contains(&path) => {
+            Change::Removed { path, kind } if !exempt.contains(&path) => {
                 if let Some(ignored) = found(path) {
                     *change = ignored;
+                } else if unproven.contains(&key(path)) {
+                    *change = Change::Missing {
+                        path: path.clone(),
+                        kind: *kind,
+                        id: old[path].id,
+                    };
                 }
             }
             Change::Modified { path } if replaced.contains(path) => {

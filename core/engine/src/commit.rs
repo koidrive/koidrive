@@ -854,6 +854,8 @@ impl Commits {
     /// first. [`Answer::Delete`] then makes the held deletions without counting them again.
     /// [`Answer::Restore`] clears S for every node of the question that is still deleted, so the
     /// effects download them again, and holds any other pending deletion under a new question.
+    /// The ambiguous-disappearance question (section 5.10) takes the same answers for the nodes a
+    /// scan missed ([`Trees::miss_local`]), and the guard does not count a deletion it confirms.
     ///
     /// For a first link's question about entries created on this device (section 6.4),
     /// [`Answer::Publish`] lets the build send them as creates, and the server renames one whose
@@ -873,6 +875,7 @@ impl Commits {
                 && (matches!(
                     question.kind,
                     QuestionKind::MassDelete { .. }
+                        | QuestionKind::AmbiguousDisappearance
                         | QuestionKind::RemoteMassDelete { .. }
                         | QuestionKind::Conflict { .. }
                         | QuestionKind::Recovery { .. }
@@ -948,6 +951,56 @@ impl Commits {
                 shown: BTreeMap::new(),
             }),
         }
+    }
+
+    fn ask_missing(&mut self, trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
+        let index = (self.questions.iter())
+            .position(|question| question.kind == QuestionKind::AmbiguousDisappearance);
+        let asked = index.map(|index| self.questions.get_mut().remove(index));
+        let at = index.unwrap_or(self.questions.len());
+        let mut open = guard::deletions(trees, trees.missing());
+        match asked {
+            Some(question) if question.held == open && question.answer.is_none() => {
+                self.questions.get_mut().insert(at, question);
+                return;
+            }
+            Some(question) if question.held == open && question.answer == Some(Answer::Delete) => {
+                for id in question.holds() {
+                    trees.release_missing(id);
+                }
+                self.guard.confirm(open);
+                return;
+            }
+            Some(question) if question.answer == Some(Answer::Restore) => {
+                let restored: Vec<NodeId> = (question.holds())
+                    .filter(|id| trees.missing().contains(*id))
+                    .cloned()
+                    .collect();
+                for id in &restored {
+                    trees.release_missing(id);
+                }
+                let updates = restored.into_iter().map(|id| (id, None)).collect();
+                for (id, shape) in update_synced(trees, updates) {
+                    trees.wait(id, shape, Origin::Other);
+                }
+                open = guard::deletions(trees, trees.missing());
+            }
+            _ => {}
+        }
+        if open.is_empty() {
+            return;
+        }
+        self.questions.get_mut().insert(
+            at,
+            Question {
+                id: ids.uuid_v7(now_ms),
+                asked_at_ms: now_ms,
+                kind: QuestionKind::AmbiguousDisappearance,
+                held: open,
+                answer: None,
+                shown: BTreeMap::new(),
+            },
+        );
     }
 
     fn ask_again(&mut self, trees: &mut Trees, ids: &mut IdGen, now_ms: u64) -> Vec<NodeId> {
@@ -1295,6 +1348,7 @@ impl Commits {
             self.questions.get_mut().push(question);
             self.hold(trees);
         }
+        self.ask_missing(trees, ids, now_ms);
         let waiting = (trees.waiting().keys()).filter(|id| !changed_locally(trees, id));
         let mut skip: BTreeSet<NodeId> = self
             .problems

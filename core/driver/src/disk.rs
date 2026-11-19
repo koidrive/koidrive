@@ -2037,6 +2037,7 @@ fn paths(change: &Observed) -> impl Iterator<Item = &Path> {
         Observed::Created { path, .. }
         | Observed::Modified { path, .. }
         | Observed::Removed { path, .. }
+        | Observed::Missing { path, .. }
         | Observed::Reidentified { path, .. } => (path, None),
         Observed::Renamed { from, to, .. } => (from, Some(to)),
     };

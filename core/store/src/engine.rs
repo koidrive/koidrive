@@ -314,6 +314,11 @@ impl Tx<'_> {
         while let Some(row) = rows.next()? {
             state.trees.unobserved.insert(row.get(0)?);
         }
+        let mut stmt = self.0.prepare_cached("SELECT node_id FROM missing_nodes")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            state.trees.missing.insert(row.get(0)?);
+        }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM unsent_moves")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
@@ -588,6 +593,7 @@ impl Tx<'_> {
             outside,
             lost,
             displaced,
+            missing,
             edited_here,
             moved_here,
             past_positions,
@@ -778,6 +784,11 @@ impl Tx<'_> {
             },
         )?;
         self.write_recorded(outside, lost, displaced)?;
+        self.write_set(
+            missing,
+            "DELETE FROM missing_nodes WHERE node_id = ?1",
+            "INSERT OR IGNORE INTO missing_nodes (node_id) VALUES (?1)",
+        )?;
         self.write_map(
             edited_here,
             "DELETE FROM edited_here WHERE node_id = ?1",

@@ -70,7 +70,7 @@ struct Search {
     walks: u64,
     walk: Option<Walk>,
     pending: HashMap<Key, u64>,
-    decided: HashMap<Key, Option<PathBuf>>,
+    decided: HashMap<Key, Decided>,
     held: BTreeMap<PathBuf, Entry>,
     postponed: BTreeSet<PathBuf>,
     scanned: Vec<PathBuf>,
@@ -88,6 +88,12 @@ impl Search {
             self.walk = None;
         }
     }
+}
+
+enum Decided {
+    Found(PathBuf),
+    Missed,
+    Unproven,
 }
 
 pub(crate) struct Seeded {
@@ -172,6 +178,16 @@ impl Rules {
     pub fn with_search_budget(mut self, budget: usize) -> Self {
         self.budget = budget.max(1);
         self
+    }
+
+    /// Ends the search under way before it has looked everywhere. Each entry it still looks for counts as not
+    /// found without proof: the next scan of its path reports it as [`Change::Missing`](crate::Change::Missing).
+    pub fn end_search(&mut self) {
+        let search = &mut self.search;
+        for (key, _) in search.pending.drain() {
+            search.decided.insert(key, Decided::Unproven);
+        }
+        search.walk = None;
     }
 
     pub(crate) fn searching(&self) -> bool {
@@ -426,8 +442,10 @@ impl<'r> Pending<'r> {
         let next = *walks + 1;
         for (key, found) in wanted.iter_mut() {
             match decided.get(key) {
-                Some(Some(path)) if holds(root, path, *key) => *found = Some(path.clone()),
-                Some(None) if !fresh.contains(key) => {}
+                Some(Decided::Found(path)) if holds(root, path, *key) => {
+                    *found = Some(path.clone())
+                }
+                Some(Decided::Missed | Decided::Unproven) if !fresh.contains(key) => {}
                 _ => {
                     decided.remove(key);
                     let needs = pending.entry(*key).or_insert(next);
@@ -623,7 +641,7 @@ impl<'r> Pending<'r> {
                     if let Some(found) = wanted.get_mut(&key) {
                         *found = Some(path.clone());
                     }
-                    decided.insert(key, Some(path.clone()));
+                    decided.insert(key, Decided::Found(path.clone()));
                 }
                 if entry.kind != EntryKind::Dir {
                     continue;
@@ -664,7 +682,7 @@ impl<'r> Pending<'r> {
                 pending.retain(|key, needs| {
                     let open = *needs > done;
                     if !open {
-                        decided.insert(*key, None);
+                        decided.insert(*key, Decided::Missed);
                     }
                     open
                 });
@@ -677,6 +695,10 @@ impl<'r> Pending<'r> {
             .filter(|key| pending.contains_key(key))
             .copied()
             .collect()
+    }
+
+    pub(crate) fn unproven(&self, key: Key) -> bool {
+        matches!(self.rules.search.decided.get(&key), Some(Decided::Unproven))
     }
 
     pub(crate) fn held_in(&self, scopes: &[PathBuf]) -> BTreeMap<PathBuf, Entry> {

@@ -126,6 +126,12 @@ pub enum Observed {
         path: PathBuf,
         kind: EntryKind,
     },
+    /// The entry at `path` left the disk, and the search of the ignored folders ended before it looked everywhere,
+    /// so the entry may be in one of them.
+    Missing {
+        path: PathBuf,
+        kind: EntryKind,
+    },
     /// The folder at `path` keeps its entries under a new identity, `id`.
     Reidentified {
         path: PathBuf,
@@ -504,6 +510,7 @@ impl FsObserver {
                 })
             }
             Change::Removed { path, kind } => out.push(Observed::Removed { path, kind }),
+            Change::Missing { path, kind, .. } => out.push(Observed::Missing { path, kind }),
             Change::Reidentified { path } => {
                 let Some(entry) = entry(&path) else { return };
                 out.push(Observed::Reidentified { path, id: entry.id });
@@ -518,7 +525,9 @@ impl FsObserver {
                 Change::Renamed { from, to, .. } => {
                     moves.insert(from, Some(to));
                 }
-                Change::Removed { path, .. } | Change::Ignored { from: path, .. } => {
+                Change::Removed { path, .. }
+                | Change::Missing { path, .. }
+                | Change::Ignored { from: path, .. } => {
                     moves.insert(path, None);
                 }
                 Change::Created { .. } | Change::Modified { .. } | Change::Reidentified { .. } => {}
@@ -700,6 +709,11 @@ impl Observer for FsObserver {
                     Change::Removed {
                         path,
                         kind: EntryKind::Dir,
+                    }
+                    | Change::Missing {
+                        path,
+                        kind: EntryKind::Dir,
+                        ..
                     }
                     | Change::Renamed {
                         to: path,
@@ -1947,6 +1961,7 @@ mod tests {
                 Observed::Created { path, .. }
                 | Observed::Modified { path, .. }
                 | Observed::Removed { path, .. }
+                | Observed::Missing { path, .. }
                 | Observed::Reidentified { path, .. } => path.as_path(),
                 Observed::Renamed { to, .. } => to.as_path(),
             })

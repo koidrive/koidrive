@@ -251,6 +251,9 @@ pub struct TreesState {
     /// The nodes whose local copy is in an ignored folder and whose name in L another entry took, each with the
     /// identity L held for it. L holds none of them, and R holds each live.
     pub displaced: BTreeMap<NodeId, FileIdentity>,
+    /// The nodes of `displaced` that a scan missed after a search of the ignored folders that did not look
+    /// everywhere, which the commit planner holds under a question (section 5.10).
+    pub missing: BTreeSet<NodeId>,
     /// The files whose content an edit of this device set, each with the seq of its commit, while
     /// R holds that content.
     pub edited_here: BTreeMap<NodeId, u64>,
@@ -478,6 +481,7 @@ pub struct TreesChanges {
     pub outside: SetChanges<NodeId>,
     pub lost: SetChanges<NodeId>,
     pub displaced: MapChanges<NodeId, FileIdentity>,
+    pub missing: SetChanges<NodeId>,
     pub edited_here: MapChanges<NodeId, u64>,
     pub moved_here: MapChanges<NodeId, MovedHere>,
     pub past_positions: MapChanges<NodeId, Vec<Agreed>>,
@@ -522,6 +526,7 @@ impl TreesChanges {
             outside,
             lost,
             displaced,
+            missing,
             edited_here,
             moved_here,
             past_positions,
@@ -562,6 +567,7 @@ impl TreesChanges {
             outside: set_changes(&before.outside, outside),
             lost: set_changes(&before.lost, lost),
             displaced: map_changes(&before.displaced, displaced),
+            missing: set_changes(&before.missing, missing),
             edited_here: map_changes(&before.edited_here, edited_here),
             moved_here: map_changes(&before.moved_here, moved_here),
             past_positions: map_changes(&before.past_positions, past_positions),
@@ -755,7 +761,7 @@ pub enum StateError {
     /// A node is recorded as moved into an ignored folder, or as a folder the disk lost, but L does not hold it or the
     /// lost folder is not recorded.
     NotIgnoredLocal(NodeId),
-    /// A node is recorded as displaced, but L holds it or R does not hold it live.
+    /// A node is recorded as displaced, but L holds it or R does not hold it live, or as missing but not as displaced.
     NotDisplaced(NodeId),
     /// A file is recorded as edited by this device, but R does not hold the content of that
     /// commit.
