@@ -16,7 +16,7 @@ HARNESS_TESTS = ["schema_alpha6_baseline", "additive_columns_do_not_change_prese
 SCHEMA = {"core/store/build.rs"}
 NAME = r"[a-z][a-z0-9_]*"
 FIXTURE_SHA256 = "13da6745f0976258e12b02d38b9687abe9995c824d3996e472670986c8af40c7"
-HARNESS_SHA256 = "1b720b548a72e517d4940b68f87d981e6852fbf12889113ffeea0f5856a61721"
+HARNESS_SHA256 = "d75c6709ec80a956331a08f4e8c7f6d3ff58bfd2e97202cec1f0012433dcb26a"
 LEXER_SPEC = importlib.util.spec_from_file_location("rust_comments", ROOT / "scripts/check-new-comments.py")
 LEXER = importlib.util.module_from_spec(LEXER_SPEC)
 LEXER_SPEC.loader.exec_module(LEXER)
