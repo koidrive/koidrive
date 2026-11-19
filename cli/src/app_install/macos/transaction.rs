@@ -462,8 +462,9 @@ async fn transaction_inner(
             deadline: started + DOWNLOAD,
             cancel: control.cancel.clone(),
         };
-        let dmg = download(&config, &target, &data.image, &downloading).await?;
+        let downloaded = download(&config, &target, &data.image, &downloading).await;
         paused = started.elapsed();
+        let dmg = downloaded?;
         let control = Control {
             deadline: control.deadline + paused,
             cancel: control.cancel.clone(),
