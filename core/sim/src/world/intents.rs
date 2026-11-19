@@ -189,6 +189,7 @@ pub(super) struct Intent {
     pub(super) answer: Option<Answered>,
     pub(super) carried: Option<Carried>,
     answered_for: Option<NodeId>,
+    restored_without: Option<u64>,
 }
 
 impl Intent {
@@ -313,6 +314,7 @@ impl Intents {
             answer: None,
             carried: None,
             answered_for: None,
+            restored_without: None,
         });
         self.list.len() - 1
     }
@@ -687,6 +689,9 @@ impl Intents {
                 intent.applied = clock;
             }
             intent.lost |= lost && intent.held;
+            if before.is_some() && !holds && intent.made < clock {
+                intent.restored_without.get_or_insert(clock);
+            }
             intent.held = holds;
         }
     }
@@ -880,19 +885,25 @@ impl Intents {
     fn settled(&self, i: usize, server: &Server) -> bool {
         let intent = &self.list[i];
         let field = intent.value.field();
-        let covers = |j: usize, copies: bool| {
+        let trashes = |j: usize, id: &NodeId, above: bool| {
             let Value::Trashed { subtree, .. } = &self.list[j].value else {
                 return false;
             };
-            let deleted: BTreeSet<&NodeId> = (subtree.iter())
-                .flat_map(|ino| self.deleted_at(j, *ino))
-                .collect();
-            match copies {
-                true => self.holders(i).any(|id| {
-                    deleted.contains(id) || (server.above(id).iter()).any(|above| self.on(j, above))
-                }),
-                false => self.nodes(i).any(|id| deleted.contains(id)),
-            }
+            (subtree.iter()).any(|ino| self.deleted_at(j, *ino).any(|deleted| deleted == id))
+                || above && (server.above(id).iter()).any(|above| self.on(j, above))
+        };
+        let covers = |j: usize, copies: bool| match copies {
+            true => self.holders(i).any(|id| trashes(j, id, true)),
+            false => self.nodes(i).any(|id| trashes(j, id, false)),
+        };
+        let into_trashed = |j: usize| match intent.value {
+            Value::Place {
+                parent: Some(parent),
+                ..
+            } => self
+                .nodes_of(intent.author, parent, intent.made)
+                .any(|id| trashes(j, id, true)),
+            _ => false,
         };
         let into_itself = match intent.value {
             Value::Place {
@@ -1005,23 +1016,30 @@ impl Intents {
                                 _ => true,
                             }
                     });
+                let restored_without = field == Field::Place
+                    && intent.restored_without.is_some_and(|at| other.applied > at);
                 let deleted = matches!(other.value, Value::Trashed { .. })
-                    && covers(j, true)
-                    && (!undone
-                        && (saw_the_action
-                            || saw_the_value
-                            || merged
-                            || field != Field::Content && intent.lost && other.made > intent.made
-                            || !answered_restore_first
-                                && match intent.answer {
-                                    Some(_) => covers(j, false),
-                                    None => other.made > intent.made,
-                                }
-                                && (0..self.list.len()).any(|k| held_as(i, k) && self.saw(j, k))
-                            || !answered_restore_first && republished && covers(j, false))
-                        || intent.restore_answer()
-                            && other.author != intent.author
-                            && (!other.lost || other.carried.is_some()));
+                    && (covers(j, true)
+                        && (!undone
+                            && (saw_the_action
+                                || saw_the_value
+                                || merged
+                                || field != Field::Content
+                                    && intent.lost
+                                    && other.made > intent.made
+                                || !answered_restore_first
+                                    && match intent.answer {
+                                        Some(_) => covers(j, false),
+                                        None => other.made > intent.made,
+                                    }
+                                    && (0..self.list.len())
+                                        .any(|k| held_as(i, k) && self.saw(j, k))
+                                || !answered_restore_first && republished && covers(j, false)
+                                || restored_without)
+                            || intent.restore_answer()
+                                && other.author != intent.author
+                                && (!other.lost || other.carried.is_some()))
+                        || restored_without && into_trashed(j));
                 match dropped {
                     true => matches!(field, Field::Content | Field::Place) && deleted,
                     false => replaced || looped || deleted,
@@ -1791,5 +1809,104 @@ mod tests {
             };
             intents.give_up(&Server::of("root", vec![live]), 0, node)
         }));
+    }
+
+    fn node_named(id: &str, name: &str, status: NodeStatus) -> NodeState {
+        NodeState {
+            node_id: id.into(),
+            parent_id: "root".into(),
+            name: name.into(),
+            status: status as i32,
+            ..Default::default()
+        }
+    }
+
+    fn created_in_p_before_a_restore_that_lost_it(trashed: u128) -> (Intents, Server) {
+        let mut intents = Intents::new(2);
+        for (ino, id) in [(1, "n"), (2, "p"), (3, "q")] {
+            for device in &mut intents.nodes {
+                device.insert(ino, BTreeSet::from([id.to_owned()]));
+            }
+        }
+        let place = Value::Place {
+            parent: Some(2),
+            name: "b".into(),
+        };
+        intents.record(0, 1, 1, "create", place);
+        let folders = |status| {
+            let folder = |id: &str| NodeState {
+                kind: koidrive_proto::v1::NodeKind::Dir as i32,
+                ..node_named(id, id, status)
+            };
+            vec![folder("p"), folder("q")]
+        };
+        let restored = Server::of("root", folders(NodeStatus::Live));
+        intents.sync(&restored, 2, Some(&restored));
+        let trashed_folder = Value::Trashed {
+            subtree: vec![trashed],
+            under: BTreeMap::new(),
+            replaced_by: None,
+        };
+        intents.record(1, 3, trashed, "delete", trashed_folder);
+        let mut nodes = folders(NodeStatus::Live);
+        nodes[trashed as usize - 2].status = NodeStatus::Trashed as i32;
+        let server = Server::of("root", nodes);
+        intents.sync(&server, 4, None);
+        (intents, server)
+    }
+
+    #[test]
+    fn a_create_a_restore_lost_is_dropped_by_a_delete_of_its_folder_after_the_restore() {
+        let (intents, server) = created_in_p_before_a_restore_that_lost_it(2);
+        assert_eq!(intents.check(&server, |_| false, |_, _| false), Ok(()));
+    }
+
+    #[test]
+    fn a_create_a_restore_lost_must_stay_when_another_folder_is_deleted() {
+        let (intents, server) = created_in_p_before_a_restore_that_lost_it(3);
+        let (why, _) = intents.check(&server, |_| false, |_, _| false).unwrap_err();
+        assert!(why.contains("puts node n at \"b\""), "{why}");
+    }
+
+    fn renamed_before_a_restore_that_kept_a() -> Intents {
+        let mut intents = Intents::new(2);
+        for device in &mut intents.nodes {
+            device.insert(1, BTreeSet::from(["n".to_owned()]));
+        }
+        let place = Value::Place {
+            parent: None,
+            name: "b".into(),
+        };
+        intents.record(0, 1, 1, "move", place);
+        let restored = Server::of("root", vec![node_named("n", "a", NodeStatus::Live)]);
+        intents.sync(&restored, 2, Some(&restored));
+        intents
+    }
+
+    #[test]
+    fn a_rename_a_restore_lost_must_stay_on_a_live_node() {
+        let mut intents = renamed_before_a_restore_that_kept_a();
+        intents.record(1, 3, 1, "restore", Value::Live);
+        let server = Server::of("root", vec![node_named("n", "a", NodeStatus::Live)]);
+        intents.sync(&server, 4, None);
+        let (why, _) = intents.check(&server, |_| false, |_, _| false).unwrap_err();
+        assert!(
+            why.contains("puts node n at \"b\" is not on the server"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn a_rename_a_restore_lost_is_dropped_by_a_delete_that_reached_the_server_after_the_restore() {
+        let mut intents = renamed_before_a_restore_that_kept_a();
+        let trashed = Value::Trashed {
+            subtree: vec![1],
+            under: BTreeMap::new(),
+            replaced_by: None,
+        };
+        intents.record(1, 3, 1, "delete", trashed);
+        let server = Server::of("root", vec![node_named("n", "a", NodeStatus::Trashed)]);
+        intents.sync(&server, 4, None);
+        assert_eq!(intents.check(&server, |_| false, |_, _| false), Ok(()));
     }
 }
