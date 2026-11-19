@@ -2457,7 +2457,7 @@ fn moved_out_comes_back(trees: &mut Trees) {
     assert_eq!(trees.local().live("z"), Some(&file(ROOT, "zz", 1)));
 }
 
-fn given_up_beside(rows: &[Row]) -> Trees {
+fn holder_beside(rows: &[Row]) -> Trees {
     let mut all = vec![
         incoming("far", dir(ROOT, "far")),
         (
@@ -2477,9 +2477,55 @@ fn given_up_beside(rows: &[Row]) -> Trees {
     trees.set_local("y".into(), local(file(ROOT, "x", 2), 100));
     trees.set_synced("y".into(), Some(file("x", "f", 2)));
     trees.set_remote("y".into(), remote(file(ROOT, "x", 2)));
+    trees
+}
+
+fn given_up_beside(rows: &[Row]) -> Trees {
+    let mut trees = holder_beside(rows);
     trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/far/\n"));
     trees.settle(&Default::default());
     trees
+}
+
+/// The rules exclude x while y, which L and R agree on, waits for x's place, so x is given up with
+/// z. z's removal comes in the batch that brings the rules, which the trees take first, or in the
+/// batch before it. `stopped` restarts the trees before both.
+fn given_up_and_removed(same_batch: bool, stopped: bool) -> Trees {
+    let mut trees = holder_beside(&[synced("z", file("x", "g", 1))]);
+    if stopped {
+        trees = restarted(&trees);
+    }
+    if !same_batch {
+        trees.remove_local("z");
+        trees.settle(&Default::default());
+    }
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/far/\n"));
+    trees.rules_scanned();
+    trees.remove_local("z");
+    trees.settle(&Default::default());
+    assert_eq!(trees.synced().live("x"), None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
+    trees.listed(&[ROOT.into()], Pending::default());
+    effects(&mut trees);
+    trees
+}
+
+#[test]
+fn a_file_removed_in_the_batch_whose_rules_give_up_its_folder_downloads_once_included() {
+    for stopped in [false, true] {
+        let mut trees = given_up_and_removed(true, stopped);
+        assert_eq!(ops(&mut trees), [], "stopped: {stopped}");
+        let z = trees.local().live("z");
+        assert_eq!(z, Some(&file("x", "g", 1)), "stopped: {stopped}");
+    }
+}
+
+#[test]
+fn a_file_removed_in_the_batch_before_the_rules_give_up_its_folder_is_deleted_once_included() {
+    for stopped in [false, true] {
+        let mut trees = given_up_and_removed(false, stopped);
+        assert_eq!(ops(&mut trees), [delete("z")], "stopped: {stopped}");
+    }
 }
 
 #[test]
