@@ -944,3 +944,87 @@ fn a_native_watcher_hears_its_barrier_before_the_timeout() {
         );
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_held_removal_waits_while_the_watcher_hears_moves_and_then_reads_as_a_rename() {
+    use std::sync::{Arc, Mutex};
+    let (_dir, root, _) = one_file();
+    for folder in [".koidrive", "b", "c"] {
+        fs::create_dir(root.join(folder)).unwrap();
+    }
+    let mut watcher = quiet_watcher(&root, &["x/g.txt", "b/g.txt"]);
+    fs::rename(root.join("x/g.txt"), root.join("b/g.txt")).unwrap();
+    let dodging = Arc::new(Mutex::new((true, "b")));
+    let (sender, mover) = (watcher.sender.clone(), Arc::clone(&dodging));
+    let hooked = root.clone();
+    watcher.cut = Box::new(move |cut| {
+        let (Cut::Stating(path) | Cut::Confirming(path)) = cut else {
+            return;
+        };
+        let mut state = mover.lock().unwrap();
+        let (dodge, at) = *state;
+        if !dodge || !(path == Path::new(at) || path == Path::new(at).join("g.txt")) {
+            return;
+        }
+        let to = if at == "b" { "c" } else { "b" };
+        let (from, to_path) = (hooked.join(at).join("g.txt"), hooked.join(to).join("g.txt"));
+        fs::rename(&from, &to_path).unwrap();
+        let moved = EventKind::Modify(ModifyKind::Name(notify::event::RenameMode::Both));
+        let event = notify::Event::new(moved).add_path(from).add_path(to_path);
+        sender.send(Ok(event)).unwrap();
+        *state = (true, to);
+    });
+    let mut changes = watcher.poll(Duration::ZERO).unwrap().changes;
+    for _ in 0..3 {
+        watcher
+            .dirty
+            .extend(["b/g.txt", "c/g.txt"].map(PathBuf::from));
+        hear_barrier(&watcher);
+        changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+    }
+    assert_eq!(changes, []);
+    dodging.lock().unwrap().0 = false;
+    for _ in 0..3 {
+        hear_barrier(&watcher);
+        changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+    }
+    let at = dodging.lock().unwrap().1;
+    assert_eq!(
+        changes,
+        [Change::Renamed {
+            from: "x/g.txt".into(),
+            to: Path::new(at).join("g.txt"),
+            kind: EntryKind::File
+        }]
+    );
+    assert!(watcher.barrier.is_none());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_removal_held_for_moves_is_reported_once_the_moves_outlast_the_hold() {
+    let (_dir, root, _) = one_file();
+    fs::create_dir(root.join(".koidrive")).unwrap();
+    let mut watcher = quiet_watcher(&root, &["x/g.txt"]);
+    fs::remove_file(root.join("x/g.txt")).unwrap();
+    assert_eq!(watcher.poll(Duration::ZERO).unwrap().changes, []);
+    let elsewhere = root.join("y");
+    let moved = |watcher: &NativeWatcher| {
+        let created = EventKind::Create(notify::event::CreateKind::File);
+        let event = notify::Event::new(created).add_path(elsewhere.clone());
+        watcher.sender.send(Ok(event)).unwrap();
+        hear_barrier(watcher);
+    };
+    moved(&watcher);
+    assert_eq!(watcher.poll(Duration::ZERO).unwrap().changes, []);
+    watcher.barrier.as_mut().unwrap().since -= MOVING_HOLD;
+    moved(&watcher);
+    assert_eq!(
+        watcher.poll(Duration::ZERO).unwrap().changes,
+        [Change::Removed {
+            path: "x/g.txt".into(),
+            kind: EntryKind::File
+        }]
+    );
+}

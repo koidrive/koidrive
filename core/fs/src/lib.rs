@@ -51,7 +51,11 @@
 //! [`NativeWatcher`] keeps every removal that neither a move nor the rules
 //! explain the same way and ends the poll, so a file replaced at its path in
 //! two steps reads as modified, and a move whose two ends reach it in
-//! different polls reads as a rename.
+//! different polls reads as a rename. On Linux, where a rescan cannot look an
+//! entry up by its identity, a held removal also waits while the watcher keeps
+//! hearing creations and moves, for at most 30 seconds, and is then rescanned
+//! with the paths those events named, so a file that was still moving when the
+//! rescans looked reads as a rename.
 //!
 //! A confirmation is a point in time, and these windows remain:
 //!
@@ -134,6 +138,9 @@ const REMOUNT_CHECK: Duration = Duration::from_secs(1);
 /// A sync cookie, as in <https://meta.github.io/watchman/docs/cookies>.
 const BARRIER: &str = "watch-barrier";
 const BARRIER_TIMEOUT: Duration = Duration::from_secs(10);
+/// The longest a removal is held while the watcher keeps hearing moves.
+#[cfg(target_os = "linux")]
+const MOVING_HOLD: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -3305,6 +3312,14 @@ struct Barrier {
     file: PathBuf,
     written: Instant,
     holds: BTreeSet<PathBuf>,
+    /// The paths of the creations and moves heard since the first barrier of these holds.
+    #[cfg(target_os = "linux")]
+    moved: BTreeSet<PathBuf>,
+    /// Whether a creation or move was heard since this barrier was written.
+    #[cfg(target_os = "linux")]
+    stirred: bool,
+    #[cfg(target_os = "linux")]
+    since: Instant,
 }
 
 /// Watches with FSEvents on macOS and inotify on Linux.
@@ -3352,6 +3367,8 @@ pub struct NativeWatcher {
     watcher: RecommendedWatcher,
     #[cfg(all(test, target_os = "linux"))]
     before_register: Option<Box<dyn FnMut()>>,
+    #[cfg(test)]
+    cut: Box<dyn FnMut(Cut<'_>) + Send>,
 }
 
 impl NativeWatcher {
@@ -3409,6 +3426,8 @@ impl NativeWatcher {
             watcher,
             #[cfg(all(test, target_os = "linux"))]
             before_register: None,
+            #[cfg(test)]
+            cut: Box::new(|_| {}),
         })
     }
 
@@ -3457,6 +3476,21 @@ impl NativeWatcher {
                 | EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Any)
                 | EventKind::Access(AccessKind::Close(AccessMode::Write))
         );
+        #[cfg(target_os = "linux")]
+        if matches!(
+            event.kind,
+            EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
+        ) && let Some(barrier) = self.barrier.as_mut()
+        {
+            let private = self.root.join(PRIVATE_DIR);
+            let moved: Vec<PathBuf> = (event.paths.iter())
+                .filter(|path| !path.starts_with(&private))
+                .filter_map(|path| path.strip_prefix(&self.root).ok())
+                .map(Path::to_path_buf)
+                .collect();
+            barrier.stirred |= !moved.is_empty();
+            barrier.moved.extend(moved);
+        }
         if written
             && (self.barrier.as_ref()).is_some_and(|barrier| event.paths.contains(&barrier.file))
         {
@@ -3510,6 +3544,18 @@ impl NativeWatcher {
         let Some(barrier) = self.barrier.take() else {
             return;
         };
+        #[cfg(target_os = "linux")]
+        {
+            if barrier.stirred && barrier.since.elapsed() < MOVING_HOLD {
+                self.raise_barrier();
+                if let Some(raised) = self.barrier.as_mut() {
+                    raised.moved = barrier.moved;
+                    raised.since = barrier.since;
+                    return;
+                }
+            }
+            self.dirty.extend(barrier.moved);
+        }
         for path in barrier.holds {
             if self.waiting.remove(&path) {
                 self.dirty.insert(path);
@@ -3541,6 +3587,12 @@ impl NativeWatcher {
             file: self.root.join(PRIVATE_DIR).join(name),
             written: Instant::now(),
             holds: self.waiting.clone(),
+            #[cfg(target_os = "linux")]
+            moved: BTreeSet::new(),
+            #[cfg(target_os = "linux")]
+            stirred: false,
+            #[cfg(target_os = "linux")]
+            since: Instant::now(),
         });
     }
 
@@ -3838,6 +3890,10 @@ impl Watcher for NativeWatcher {
                 .chain(uncovered.iter().flatten())
                 .cloned()
                 .collect();
+            #[cfg(test)]
+            let cut = &mut *self.cut;
+            #[cfg(not(test))]
+            let cut = &mut |_: Cut<'_>| {};
             let rescan = match self.snapshot.rescan_under(
                 &self.root,
                 scopes.iter().cloned(),
@@ -3849,7 +3905,7 @@ impl Watcher for NativeWatcher {
                 Keep::Unexplained {
                     waiting: &self.waiting,
                 },
-                &mut |_| {},
+                cut,
                 &self.marks,
             ) {
                 Ok(rescan) => rescan,
