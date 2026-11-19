@@ -1883,6 +1883,29 @@ fn run_ignoring_answering_after(
             if matches!(record.effect, Effect::WriteFile { .. }) {
                 from_server.insert(record.node.clone());
             }
+            if let Effect::RemoveDir { along, .. } = &record.effect {
+                let held: Vec<(String, Option<Kind>)> = (device.trees.local_children(&record.node))
+                    .filter_map(|child| device.trees.local().get(child))
+                    .filter(|node| !along.iter().any(|file| file.identity.same(&node.identity)))
+                    .map(|node| (node.shape.name.clone(), Some(node.shape.kind)))
+                    .collect();
+                if !held.is_empty() {
+                    let held: Vec<(&str, Option<Kind>)> = held
+                        .iter()
+                        .map(|(name, kind)| (name.as_str(), *kind))
+                        .collect();
+                    if effects.keeps(&device.trees, &record.effect_id, &held) {
+                        effects
+                            .kept(&mut device.trees, &record.effect_id, &held)
+                            .unwrap();
+                    } else {
+                        effects
+                            .failed(&mut device.trees, &record.effect_id)
+                            .unwrap();
+                    }
+                    continue;
+                }
+            }
             let identity = device.identity();
             effects
                 .done(
