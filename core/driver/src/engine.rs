@@ -1646,7 +1646,7 @@ pub(crate) fn pending(scopes: &[PathBuf], waiting: &BTreeMap<PathBuf, bool>) -> 
 }
 
 /// The placed node of L at `path`, or the root for the empty path.
-fn local_at(trees: &Trees, path: &Path) -> Option<NodeId> {
+pub(crate) fn local_at(trees: &Trees, path: &Path) -> Option<NodeId> {
     let mut current = trees.local().root.clone();
     for component in path.components() {
         let Component::Normal(name) = component else {

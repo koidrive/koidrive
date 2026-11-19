@@ -1,9 +1,0 @@
-class = "Z"
-issue = "GUN-1223"
-tests = ["devices_with_rules_converge_once_the_faults_stop", "devices_with_rules_lose_no_write"]
-message = '''(after phase <n>: device <n> is quiet, but the folders of \["<id>"(, "<id>")*\], which it kept for entries its rules leave out, stay out of sync\.|not recorded: devices::\S+ \S+ RemoveLeftOut device <n> is quiet, but the folders of \["<id>"(, "<id>")*\], which it kept for entries its rules leave out, stay out of sync( not recorded: devices::\S+ \S+ RemoveLeftOut (?:(?! not recorded: ).)+?stay out of sync)*)'''
-examples = [
-  "after phase 2: device 1 is quiet, but the folders of [\"01a1c2c0-39a0-7c5c-8466-a7d0954b76a3\"], which it kept for entries its rules leave out, stay out of sync.",
-  "not recorded: devices::devices_with_rules_converge_once_the_faults_stop\tcc-a45cc28d73d5b4184eb385545b38bdea1b1b4dac20e2a7a2887dabd2e2fb7b87\tRemoveLeftOut\tdevice 2 is quiet, but the folders of [\"01a1c2c0-39a0-7cb2-989b-810659c5a8bc\"], which it kept for entries its rules leave out, stay out of sync",
-  "not recorded: devices::devices_with_rules_lose_no_write\tcc-a45cc28d73d5b4184eb385545b38bdea1b1b4dac20e2a7a2887dabd2e2fb7b87\tRemoveLeftOut\tdevice 2 is quiet, but the folders of [\"01a1c2c0-39a0-7cb2-989b-810659c5a8bc\"], which it kept for entries its rules leave out, stay out of sync",
-]

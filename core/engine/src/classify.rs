@@ -3868,6 +3868,35 @@ impl Trees {
             .all(|child| self.left_rules_file(child) || self.excluded(child))
     }
 
+    /// Takes up the delete of the kept folder `id` again once a listing finds it holding nothing but platform files
+    /// (section 5.10): when L holds nothing below it either, S takes it where L has it, so the delete R holds sends it
+    /// to the local trash. Each kept folder above it that holds nothing else is taken up with it.
+    pub fn recheck_kept_folder(&mut self, id: &NodeId) {
+        if !self.kept_folder(id) || self.local_children_placed_or_parked(id).next().is_some() {
+            return;
+        }
+        let mut chain = vec![id.clone()];
+        while let Some(parent) = (chain.last())
+            .and_then(|folder| self.l.get(folder))
+            .map(|node| node.shape.parent.clone())
+            .filter(|parent| {
+                self.kept_folder(parent)
+                    && (self.local_children_placed_or_parked(parent))
+                        .all(|child| chain.last() == Some(child))
+            })
+        {
+            chain.push(parent);
+        }
+        for folder in chain.into_iter().rev() {
+            let shape = self.l.get(&folder).map(|node| node.shape.clone());
+            if !self.fits_synced(&folder, shape.as_ref()) {
+                return;
+            }
+            self.end_kept_folder(&folder);
+            self.set_synced(folder, shape);
+        }
+    }
+
     pub(crate) fn keep_folder(&mut self, id: &NodeId) {
         let carried: Vec<NodeId> = (self.local_children(id))
             .filter(|child| self.carried(child))

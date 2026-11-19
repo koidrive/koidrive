@@ -704,6 +704,26 @@ impl Device {
         Ok(())
     }
 
+    /// Takes up the delete of each kept folder a scan lists empty, as the driver does for the folders a scan reads.
+    pub fn relist_kept_folders(&mut self) {
+        let trees = &mut self.engine.trees;
+        let emptied: Vec<NodeId> = (trees.local().iter())
+            .filter(|(id, node)| {
+                node.shape.kind == Kind::Dir
+                    && !node.parked
+                    && trees.remote().live(id).is_none()
+                    && trees.local_children(id).next().is_none()
+                    && (self.disk.entries().get(&node.identity.ino))
+                        .is_some_and(|entry| entry.content.is_none())
+                    && (self.disk.children(&Place::In(node.identity.ino)).next()).is_none()
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for folder in emptied {
+            trees.recheck_kept_folder(&folder);
+        }
+    }
+
     /// A full rescan. After it the engine plans the nodes again that the server refused an op
     /// for (section 2.7). Returns how many there were.
     pub fn rescan(&mut self) -> usize {

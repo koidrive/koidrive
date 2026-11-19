@@ -212,6 +212,38 @@ fn a_restart_neither_uploads_nor_brings_back_a_kept_folder() {
 }
 
 #[test]
+fn a_kept_folder_goes_to_the_trash_once_its_ignored_entries_go() {
+    let (mut remote, _, _, site, mut b, _) = deleted_with_ignored_entries(&["README.md"], &[".env"]);
+
+    fs::rename(site.root.join("app/.env"), site.root.join("moved.env")).unwrap();
+    b.settle();
+    b.run(&mut remote);
+
+    assert!(!site.root.join("app").exists());
+    assert_eq!(remote.names(), ["moved.env"]);
+    let ops: Vec<_> = (b.sent.iter()).flat_map(|commit| &commit.ops).collect();
+    assert_eq!(ops.len(), 1, "{ops:?}");
+}
+
+#[test]
+fn a_kept_folder_goes_to_the_trash_at_a_restart_once_its_ignored_entries_went() {
+    let (mut remote, _, _, site, b, _) = deleted_with_ignored_entries(&["README.md"], &[".env"]);
+    drop(b);
+    fs::remove_file(site.root.join("app/.env")).unwrap();
+
+    let mut b = site.start_with(&ignore_rules());
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    b.run(&mut remote);
+
+    assert!(!site.root.join("app").exists());
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert!(remote.names().is_empty());
+}
+
+#[test]
 fn a_kept_folder_the_person_renames_sends_nothing() {
     let ignored = [".env"];
     let (mut remote, _, _, site, mut b, _) = deleted_with_ignored_entries(&["README.md"], &ignored);
