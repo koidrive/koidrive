@@ -702,3 +702,17 @@ fn a_file_another_device_renames_after_the_disk_refused_its_name_here_keeps_that
         );
     }
 }
+
+#[test]
+fn a_file_whose_conflict_rename_is_in_flight_when_the_rules_let_its_name_in_follows_that_rename() {
+    for lift in 0..5 {
+        let [_, (mut world, phase)] = left_out_name_shapes();
+        let steps = commit(1);
+        world.run(phase, &steps[..lift]).unwrap();
+        world.rule(1, &Ruling::Exclude(vec![])).unwrap();
+        world.run(phase, &steps[lift..]).unwrap();
+        world.phase(phase + 1, &[]).unwrap();
+        assert_eq!(paths_on(&world, 0), paths_on(&world, 1), "{lift}");
+        assert_eq!(conflict_copies(&world, 1).len(), 1, "{lift}");
+    }
+}

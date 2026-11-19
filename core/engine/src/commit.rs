@@ -2578,7 +2578,7 @@ impl Commits {
                         && applied
                         && target != *id
                         && !finished
-                        && !renamed_off_a_left_out_name(trees, moved)
+                        && !renamed_ahead_of_the_disk(trees, moved)
                     {
                         let shape = Shape {
                             parent: target.clone(),
@@ -3850,24 +3850,16 @@ fn displaced_renames<'a>(
         })
 }
 
-fn renamed_off_a_left_out_name(trees: &Trees, moved: &proto::Move) -> bool {
+fn renamed_ahead_of_the_disk(trees: &Trees, moved: &proto::Move) -> bool {
     let Some(from) = &moved.from else {
         return false;
     };
-    let parent = match path(trees.remote(), &from.parent_id) {
-        Some((names, _)) => Some(names),
-        None => (from.parent_id == trees.remote().root).then(Vec::new),
-    };
-    let left_out = parent.is_some_and(|mut names| {
-        names.push(from.name.as_str());
-        trees.ignores(&names, Kind::Dir)
-    });
-    left_out
-        && !(trees.local().get(&moved.node_id)).is_some_and(|local| {
-            !local.parked
-                && local.shape.parent == moved.new_parent_id
-                && nfc(&local.shape.name) == nfc(&moved.new_name)
-        })
+    trees.local().get(&moved.node_id).is_some_and(|local| {
+        let at = |parent: &str, name: &str| {
+            !local.parked && local.shape.parent == parent && nfc(&local.shape.name) == nfc(name)
+        };
+        !at(&moved.new_parent_id, &moved.new_name) && !at(&from.parent_id, &from.name)
+    })
 }
 
 fn conflict_rename(trees: &Trees, id: &NodeId, device_name: &str, now_ms: u64) -> Option<String> {
