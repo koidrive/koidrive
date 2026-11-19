@@ -30,7 +30,9 @@ use koidrive_proto::v1::{
     CaughtUp, ChangeRecord, ChunkRef, CommitRecord, NodeKind, NodeState, TrashPage, TreePage,
     change_record,
 };
-use koidrive_store::{Cursor, EngineChanges, EngineState, Error, StoredQuestion, SyncedNode, Tx};
+use koidrive_store::{
+    Cursor, EngineChanges, EngineState, Error, Store, StoredQuestion, SyncedNode, Tx,
+};
 
 use crate::ItemKind;
 use crate::disk::Stop;
@@ -88,6 +90,29 @@ impl Engine {
             .expect("a load nobody abandons ends with the engine");
         engine.backfill_journal(tx)?;
         Ok(engine)
+    }
+
+    pub fn load_from(
+        store: &mut Store,
+        root: &str,
+        abandoned: &dyn Fn() -> bool,
+    ) -> Result<Option<Self>, Error> {
+        let load = |tx: &Tx<'_>| {
+            let mut stored = Stored::new(root);
+            if !stored.read_unless(tx, root, abandoned)? {
+                return Ok(None);
+            }
+            let Some(mut engine) = stored.engine_unless(abandoned)? else {
+                return Ok(None);
+            };
+            engine.backfill_journal(tx)?;
+            Ok(Some(engine))
+        };
+        if store.read(|tx| tx.journal_backfill_owed())? {
+            store.transaction(load)
+        } else {
+            store.read(load)
+        }
     }
 
     pub fn backfill_journal(&mut self, tx: &Tx<'_>) -> Result<(), Error> {
