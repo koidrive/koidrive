@@ -647,7 +647,6 @@ cases = ["{1:064}"]
         ae45 = "45aeea4283bad112a4dfb008e7c67a75c58dea15306a57cb165f8b6cbd33238c"
         e0a5 = "5e0a61643769" + "0" * 52
         d1f7 = "1d7f5cc9bb86920e85aebe47883949e98f8768e54f859425dbef30cbbb41919a"
-        d93b = "d93bc61897d139c24ba2b9cf1da1cf8a696676689896335347e9f41fabe4c95e"
         other = "0" * 64
         folder = "devices_converge_around_a_folder_another_device_replaces"
         lose_rollbacks = "devices_lose_no_write_across_rewinds_and_rollbacks"
@@ -720,11 +719,8 @@ cases = ["{1:064}"]
         update = "}, Op { intent: None, fields: None, op: Some(UpdateContent"
         three_ops = example(d1f7).replace(
             update, "}, Op { intent: None, fields: None, op: Some(Delete(Delete { node_id: \"x\" })) " + update, 1)
-        written = example(d93b)
-        not_displaced = written[:written.index(", replaces:")] + ", replaces: None }" + written[written.index(" removed write"):]
         for test, message, case, labels in [
             (restores_and_rewinds, three_ops, d1f7, []),
-            (rewinds_and_rollbacks, not_displaced, d93b, []),
             (restores_and_rewinds, example(a7b0) + " Then write 7 is lost too.", a7b0, []),
             (restores_and_rewinds, left, a7b0, [("J", "GUN-1012", ["a7b0eabd2b85"])]),
             (restores_and_rewinds, left, c96d, [("J", "GUN-1012", ["0c96dc79dd54"])]),

@@ -614,7 +614,7 @@ fn same_write(remote: &Option<Content>, local: &Option<Content>) -> bool {
         && placed_here(remote, local)
 }
 
-fn placed_here(remote: &Option<Content>, local: &Option<Content>) -> bool {
+pub(crate) fn placed_here(remote: &Option<Content>, local: &Option<Content>) -> bool {
     match (remote, local) {
         (Some(remote), Some(local)) => {
             let unit = [

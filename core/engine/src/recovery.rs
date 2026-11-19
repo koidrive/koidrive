@@ -8,13 +8,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::classify::Trees;
+use crate::first_link::placed_here;
 use crate::ids::IdGen;
 use crate::names::same_name;
 use crate::question::{
     Answer, Held, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger, Revisions,
 };
 use crate::restore::RestoreIntent;
-use crate::tree::{Kind, NodeId, Shape, same};
+use crate::tree::{Kind, NodeId, Shape, same, same_content};
 
 /// Whether `question` holds nodes a recovery classified, so that neither an effect nor a commit is
 /// planned for them. The entries created on this device go to a first link's question.
@@ -62,13 +63,14 @@ pub(crate) fn group(
                 && (r.pending_for.as_deref()).is_some_and(|stem| same_name(stem, &local.name))
         })
     };
+    let unchanged = same(local, synced) && !written_again(local, synced);
     match (local, synced) {
         (Some(l), _) if trees.adopted(id) && pending(l) => None,
-        (Some(_), Some(_)) if same(local, synced) && remote.is_none() => {
+        (Some(_), Some(_)) if unchanged && remote.is_none() => {
             Some(RecoveryGroup::CreatedAfterRestorePoint)
         }
         (Some(_), Some(_))
-            if same(local, synced) && !trees.unsent_edits().contains(id) && !server_lost_it() =>
+            if unchanged && !trees.unsent_edits().contains(id) && !server_lost_it() =>
         {
             None
         }
@@ -78,6 +80,13 @@ pub(crate) fn group(
         (None, Some(_)) => live.is_some().then_some(RecoveryGroup::DeletedOnThisDevice),
         (None, None) => None,
     }
+}
+
+fn written_again(local: Option<&Shape>, synced: Option<&Shape>) -> bool {
+    local.zip(synced).is_some_and(|(local, synced)| {
+        matches!((&local.content, &synced.content), (Some(l), Some(s)) if same_content(l, s))
+            && !placed_here(&synced.content, &local.content)
+    })
 }
 
 /// Every node of R, S and L that a group holds, by group.
