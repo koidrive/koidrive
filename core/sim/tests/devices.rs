@@ -3290,7 +3290,9 @@ fn a_copy_of_a_lost_write_during_the_recovery_is_refused() {
         .unwrap();
     let failure = world.phase(2, &[]).unwrap_err();
     assert!(
-        failure.to_string().contains("is in more than one file"),
+        failure
+            .to_string()
+            .contains("write 1 is in 2 live nodes on the server"),
         "{failure}"
     );
 }
