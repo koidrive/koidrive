@@ -923,3 +923,33 @@ fn a_file_another_device_renames_to_a_folder_the_rules_leave_out_here_takes_a_co
         assert_eq!(names, ["ss (conflict from unknown device 2026-11-09)"]);
     }
 }
+
+#[test]
+fn a_parked_file_whose_own_name_the_rules_leave_out_takes_a_conflict_name_when_the_disk_refuses_the_name_another_device_holds()
+ {
+    let ran = run_ignoring(
+        &[act(1, 0, 0, 0, 0)],
+        &[act(0, 0, 0, 6, 0), act(3, 0, 0, 3, 0)],
+        &[act(3, 0, 0, 6, 0), act(0, 0, 0, 3, 0)],
+        MAX_OPS,
+        false,
+        &[
+            (false, vec![act(3, 487716592678468472, 4220595476152624058, 5, 0)]),
+            (false, vec![act(0, 0, 0, 0, 0)]),
+        ],
+        Cut::None,
+        &[
+            Ruling::Exclude(vec!["ss/"]),
+            Ruling::File(vec!["ss/"]),
+            Ruling::Exclude(vec!["*.txt"]),
+        ],
+        Answer::Delete,
+        None,
+    )
+    .unwrap();
+    let names: Vec<String> = (ran.space.nodes().into_iter())
+        .filter(|node| node.status == 1 && node.kind == 2)
+        .map(|node| node.name)
+        .collect();
+    assert_eq!(names, ["ß (conflict from unknown device 2026-11-09)"]);
+}

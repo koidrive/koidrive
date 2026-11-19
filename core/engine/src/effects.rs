@@ -926,7 +926,11 @@ pub(crate) fn kept_out(trees: &Trees, id: &NodeId) -> bool {
 pub(crate) fn displaced_by_excluded(trees: &Trees) -> BTreeSet<NodeId> {
     let view = View::new(trees);
     (trees.dirty_others().iter())
-        .filter(|id| candidate(trees, id) && !trees.held(id) && !trees.ignored(id))
+        .filter(|id| {
+            candidate(trees, id)
+                && !trees.held(id)
+                && (!trees.ignored(id) || trees.name_left_out(id) && !trees.ignored_in_remote(id))
+        })
         .filter(|id| {
             (trees.local().get(id).is_none() || trees.name_left_out(id))
                 && !trees.waiting().contains_key(id)
