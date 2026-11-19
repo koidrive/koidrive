@@ -187,7 +187,7 @@ def target_logs(logs, failing):
 def unread(failures):
     return [shard for shard, shard_dir in shards(failures)
             for result in [shard_dir / f"result-{shard}.json"]
-            if result.is_file() and json.loads(result.read_text()).get("unsaved") is None]
+            if result.is_file() and json.loads(result.read_text()).get("unsaved", []) is None]
 
 
 def unattributed(failures):

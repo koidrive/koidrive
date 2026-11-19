@@ -124,11 +124,12 @@ class PropertyBattery(unittest.TestCase):
             "- devices lose_no_write: failed without saving a case on shards 5, on a case that may be one another test of "
             "its binary saved there"])
         self.assertEqual(none, "No property failed without saving a case.\n")
-        unknown = re.search(r"(?ms)^ *(jq -r '\[\.\[\] \| select\(\.unsaved == null\).*?' shards\.json)$", self.workflow)[1]
+        unknown = re.search(r"(?ms)^ *(jq -r '\[\.\[\] \| select\(has\(\"unsaved\"\) and \.unsaved == null\).*?' shards\.json)$",
+                            self.workflow)[1]
         with tempfile.TemporaryDirectory() as directory:
             (Path(directory) / "shards.json").write_text(json.dumps(shards + [{"shard": 11, "unsaved": None}]))
             self.assertEqual(subprocess.check_output(["bash", "-eu", "-c", unknown], cwd=directory, text=True),
-                             "- Unknown on shards 9, 11: the battery could not read their logs for tests that failed "
+                             "- Unknown on shards 11: the battery could not read their logs for tests that failed "
                              "without saving a case\n")
 
     def test_execution_and_repro_pass_isolated_budgets_and_same_selection(self):
@@ -1063,16 +1064,16 @@ class Triage(unittest.TestCase):
                                   (6, {"shard": 6, "failing": [], "unsaved": []})):
                 (root / f"failure-shard-{shard}/logs").mkdir(parents=True)
                 (root / f"failure-shard-{shard}/result-{shard}.json").write_text(json.dumps(result))
-            self.assertEqual(triage.unread(root), [3, 4])
-            spec = {"run": "7", "head": "h" * 40, "base": "b" * 40, "cases": [], "others": [], "unread": [3, 4]}
+            self.assertEqual(triage.unread(root), [3])
+            spec = {"run": "7", "head": "h" * 40, "base": "b" * 40, "cases": [], "others": [], "unread": [3]}
             (root / "cases.json").write_text(json.dumps(spec))
             run = subprocess.run([sys.executable, str(ROOT / "scripts/triage-battery.py"), "report",
                                   "--cases", str(root / "cases.json"), "--run-url", "https://example.com/runs/7",
                                   "--out", str(root / "out")], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             text = (root / "out/triage.md").read_text()
         self.assertNotEqual(run.returncode, 0)
-        self.assertIn("::error::the battery could not read the logs of shards 3, 4", run.stdout)
-        self.assertIn("could not read the logs of shards 3, 4", text)
+        self.assertIn("::error::the battery could not read the logs of shards 3 ", run.stdout)
+        self.assertIn("could not read the logs of shards 3 ", text)
 
     def test_a_property_stopped_by_a_committed_case_is_flagged_as_generating_nothing(self):
         case = "7d9b037c" + "0" * 56

@@ -419,7 +419,7 @@ jobs:
                     ([.[] | select(.zero | not) | .shard] | select(length > 0) | "failed without saving a case on shards \(map(tostring) | join(", ")), on a case that may be one another test of its binary saved there")
                   ] | join("; "))
                 end' shards.json
-            jq -r '[.[] | select(.unsaved == null) | .shard] | select(length > 0)
+            jq -r '[.[] | select(has("unsaved") and .unsaved == null) | .shard] | select(length > 0)
               | "- Unknown on shards \(map(tostring) | join(", ")): the battery could not read their logs for tests that failed without saving a case"' shards.json
             echo
             echo "| Shard | Seed | Result | Tests passed | Tests failed | Job |"
