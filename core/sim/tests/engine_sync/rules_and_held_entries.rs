@@ -322,7 +322,6 @@ fn a_local_delete_keeps_a_recorded_entry_and_the_folders_above_it_as_the_driver_
         device.trees.set_local(
             id.into(),
             LocalNode {
-                displaced: false,
                 left_out_when_placed: false,
                 content_from_server: false,
                 shape: shape.clone(),
@@ -590,7 +589,6 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
         device.trees.set_local(
             id.into(),
             LocalNode {
-                displaced: false,
                 left_out_when_placed: false,
                 content_from_server: false,
                 shape,
@@ -2276,4 +2274,64 @@ fn renaming_an_entry_the_user_moved_in_from_a_folder_another_device_then_brings_
     device.receive(&[a_dir_record("e", "s", 2)], true);
     renames_after_sync(&mut device, "e", "s");
     assert!(acted_below(&device, &s, &kept, &discarded));
+}
+
+#[test]
+fn a_write_held_by_a_node_displaced_during_an_action_stays_counted() {
+    let mut trees = Trees::new("root");
+    let written = content(1, 1);
+    let shape = koidrive_engine::tree::Shape {
+        parent: "root".into(),
+        name: "a".into(),
+        kind: Kind::File,
+        content: Some(ContentKey::try_from(&written).unwrap()),
+    };
+    let identity = FileIdentity {
+        ino: 1,
+        birth_ns: Some(1),
+        handle: None,
+    };
+    trees.set_local(
+        "f".into(),
+        LocalNode {
+            left_out_when_placed: false,
+            content_from_server: false,
+            shape: shape.clone(),
+            identity,
+            parked: false,
+            chunks: written.chunks.clone().into(),
+        },
+    );
+    trees.set_synced("f".into(), Some(shape.clone()));
+    trees.set_remote(
+        "f".into(),
+        RemoteNode {
+            made_over: Vec::new(),
+            chunks: written.chunks.clone().into(),
+            shape,
+            trashed: false,
+            content_rev: 1,
+            meta_rev: 1,
+            meta_edit_rev: 1,
+            trash_group: String::new(),
+            version_id: String::new(),
+            edit_rev: 1,
+            pending_for: None,
+            pending_by: None,
+        },
+    );
+    trees.ignore_local("f");
+    let mut local_writes = BTreeSet::from([written.manifest_digest.clone()]);
+    let mut remote_writes = BTreeSet::new();
+    let before = held(&trees);
+    trees.displace_local("f");
+    assert!(trees.local().get("f").is_none());
+    let after = held(&trees);
+    rewritten(
+        &before,
+        &after,
+        &trees,
+        [&mut local_writes, &mut remote_writes],
+    );
+    assert!(local_writes.contains(&written.manifest_digest));
 }

@@ -12,7 +12,6 @@ fn a_new_folder_takes_its_name_when_sync_drains_before_the_held_back_rename_clea
     trees.set_local(
         NodeId::from(&holder),
         LocalNode {
-            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: old.shape.clone(),
@@ -53,7 +52,6 @@ fn a_new_folder_takes_its_name_when_sync_drains_before_the_held_back_rename_clea
     trees.set_local(
         NodeId::from(&new),
         LocalNode {
-            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: koidrive_engine::tree::Shape {

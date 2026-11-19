@@ -781,7 +781,6 @@ impl Effects {
                 trees.place_local(
                     record.node.clone(),
                     LocalNode {
-                        displaced: false,
                         left_out_when_placed: false,
                         content_from_server: false,
                         shape,
@@ -1107,7 +1106,10 @@ fn candidate(trees: &Trees, id: &NodeId) -> bool {
         || trees.left_behind(id);
     changed
         && !forgets
-        && (!trees.excluded(id) || trees.trashed_while_parked(id) || trees.left_behind(id))
+        && (!trees.excluded(id)
+            || trees.trashed_while_parked(id)
+            || trees.left_behind(id)
+            || trees.left_for_displaced(id))
         && !trees.reclaimed(id)
 }
 
@@ -1415,6 +1417,11 @@ impl<'a> View<'a> {
 
     fn step(&self, id: &NodeId) -> Step {
         if let Some(local) = (self.trees.local().get(id)).filter(|_| self.trees.left_behind(id)) {
+            return self.remove(id, local);
+        }
+        if let Some(local) =
+            (self.trees.local().get(id)).filter(|_| self.trees.left_for_displaced(id))
+        {
             return self.remove(id, local);
         }
         let destination = match (self.trees.local().get(id), self.trees.remote().live(id)) {

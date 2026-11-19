@@ -39,7 +39,7 @@ pub(crate) fn group(
     held: Option<RecoveryGroup>,
     cause: Option<&RecoveryCause>,
 ) -> Option<RecoveryGroup> {
-    if *id == trees.local().root || trees.missing().contains(id) {
+    if *id == trees.local().root || trees.displaced_local().contains_key(id) {
         return None;
     }
     let local = trees.local().get(id).map(|node| &node.shape);

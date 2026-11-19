@@ -26,7 +26,7 @@ use koidrive_engine::state::{RenamedOver, StateError};
 
 use koidrive_engine::tracked::TrackedMap;
 use koidrive_engine::tree::{
-    ContentKey, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, same,
+    ContentKey, FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, same, same_content,
 };
 
 use koidrive_proto::v1::{
@@ -1095,7 +1095,6 @@ impl Device {
                     content,
                 };
                 let node = LocalNode {
-                    displaced: false,
                     left_out_when_placed: false,
                     content_from_server: false,
                     shape,
@@ -1455,8 +1454,7 @@ fn acknowledged_shape<'a>(trees: &'a Trees, id: &NodeId) -> Option<&'a Shape> {
 
 fn held(trees: &Trees) -> BTreeSet<(String, Vec<u8>)> {
     trees
-        .local()
-        .iter()
+        .local_entries()
         .filter_map(|(id, node)| {
             Some((
                 id.to_string(),
@@ -1502,7 +1500,7 @@ fn reload(
     for (id, node) in trees.remote().iter() {
         loaded.set_remote(id.clone(), node.clone());
     }
-    for (id, node) in trees.local().iter() {
+    for (id, node) in trees.local_entries() {
         loaded.set_local(id.clone(), node.clone());
     }
     for (id, shape) in trees.synced().iter() {
@@ -2357,7 +2355,6 @@ fn run_ignoring_answering_after(
                 .trees
                 .set_synced(id.clone(), Some(node.shape.clone()));
             let local = LocalNode {
-                displaced: false,
                 left_out_when_placed: false,
                 content_from_server: false,
                 shape: node.shape.clone(),
@@ -3221,7 +3218,7 @@ fn run_ignoring_answering_after(
         })
         .collect();
     let mut ids: BTreeSet<&NodeId> = server.iter().map(|(id, _)| id).collect();
-    ids.extend(device.trees.local().iter().map(|(id, _)| id));
+    ids.extend(device.trees.local_entries().map(|(id, _)| id));
     ids.extend(device.trees.synced().iter().map(|(id, _)| id));
     for id in ids {
         let on_server = server
@@ -3252,6 +3249,24 @@ fn run_ignoring_answering_after(
         prop_assert!(
             same(device.trees.remote().live(id), on_server),
             "R of {}",
+            id
+        );
+    }
+    let trees = &device.trees;
+    let owned = |id: &str, node: &LocalNode| {
+        let Some(content) = node.shape.content.as_ref() else {
+            return true;
+        };
+        (trees.remote().live(id))
+            .and_then(|remote| remote.content.as_ref())
+            .is_some_and(|remote| same_content(remote, content))
+            || trees.unsent_edits().contains(id)
+            || trees.remote().get(id).is_none()
+    };
+    for (id, node) in trees.local_entries() {
+        prop_assert!(
+            trees.local().get(id).is_some() || owned(id, node),
+            "displaced {} holds content that neither R nor a write the device owes holds",
             id
         );
     }

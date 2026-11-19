@@ -6831,7 +6831,6 @@ mod ancestry_size_tests {
                 },
             );
             let mut local = LocalNode {
-                displaced: false,
                 shape: shape.clone(),
                 identity: FileIdentity {
                     ino: n as u128 + 1,

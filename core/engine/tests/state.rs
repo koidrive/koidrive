@@ -65,7 +65,6 @@ fn trees() -> Trees {
         trees.set_local(
             id.into(),
             LocalNode {
-                displaced: false,
                 left_out_when_placed: false,
                 content_from_server: false,
                 shape: shape.clone(),
@@ -231,7 +230,6 @@ fn unsent() -> (Trees, TreesState) {
         handle: None,
     };
     let local = LocalNode {
-        displaced: false,
         left_out_when_placed: false,
         content_from_server: false,
         shape: shape.clone(),
@@ -538,7 +536,6 @@ fn trees_restore_a_valid_state_and_refuse_each_broken_one() {
     });
     let uploaded = broken(trees(), |trees| {
         let node = LocalNode {
-            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: dir(ROOT, "n"),
@@ -891,7 +888,6 @@ fn an_identity_without_a_birth_time_round_trips() {
     trees.set_local(
         "u".into(),
         LocalNode {
-            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: shape.clone(),
