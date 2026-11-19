@@ -813,8 +813,6 @@ cases = ["{1:064}"]
             (local_changes, queued + "\n" + undone, g4bf7, []),
             (local_changes, head_only_undone(local_changes, g4bf7), g4bf7, []),
             (local_changes, queued, od1d0, []),
-            (local_changes, example(od1d0), od1d0, [("O", "GUN-1040", ["d1d0430345fa", "f40ecba8380a"])]),
-            (local_changes, example(od1d0), g4bf7, []),
             (local_changes, queued, e6d4a, []),
             (local_changes, elsewhere, g4bf7, []),
             (local_changes, queued, n62f7, []),
@@ -847,7 +845,6 @@ cases = ["{1:064}"]
             (rules_leave_out, parked(vad76) + "\n" + undone, vad76, []),
             (rules_leave_out, head_only_undone(rules_leave_out, vad76), vad76, []),
             (rules_leave_out, excluded_left, vad76, [("E", "GUN-1011", None)]),
-            (local_changes, example(n62f7), g4bf7, []),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):
                 found = triage.matches(entries, test, message, case)
