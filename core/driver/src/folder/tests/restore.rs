@@ -302,7 +302,10 @@ fn a_folder_restore_asked_for_before_a_rewind_shows_as_the_folder_with_the_files
     assert_eq!(a.run(&mut remote), ["send"]);
     let backup = remote.space.clone();
     drop(a);
-    let id = ask(&site, &RestoreIntent::from_trash(photos, None, None).unwrap());
+    let id = ask(
+        &site,
+        &RestoreIntent::from_trash(photos, None, None).unwrap(),
+    );
     remote.space.rewind(&backup, NOW);
     restarted(&site, &mut remote).rest(&mut remote);
 
@@ -312,8 +315,16 @@ fn a_folder_restore_asked_for_before_a_rewind_shows_as_the_folder_with_the_files
     let items: Vec<_> = (question.items.iter())
         .map(|item| {
             let kind = serde_json::to_value(item).unwrap()["kind"].clone();
-            (item.node_id.as_str(), item.path.unquoted(), kind, item.files)
+            (
+                item.node_id.as_str(),
+                item.path.unquoted(),
+                kind,
+                item.files,
+            )
         })
         .collect();
-    assert_eq!(items, [(id.as_str(), "photos", serde_json::json!("folder"), 2)]);
+    assert_eq!(
+        items,
+        [(id.as_str(), "photos", serde_json::json!("folder"), 2)]
+    );
 }

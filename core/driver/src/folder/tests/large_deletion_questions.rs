@@ -606,7 +606,11 @@ fn a_held_folder_of_one_file_shows_as_a_folder() {
     for (dir, count) in [("d", 15), ("e", 1)] {
         fs::create_dir(site.root.join(dir)).unwrap();
         for i in 0..count {
-            fs::write(site.root.join(format!("{dir}/{i}.txt")), format!("in {dir} {i}")).unwrap();
+            fs::write(
+                site.root.join(format!("{dir}/{i}.txt")),
+                format!("in {dir} {i}"),
+            )
+            .unwrap();
         }
     }
     for i in 0..4 {
