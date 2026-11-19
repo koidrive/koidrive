@@ -1049,7 +1049,7 @@ fn a_delete_waiting_at_a_restart_is_sent_whenever_a_rule_leaves_its_file_out() {
             ignore();
         }
         let mut a = site.start();
-        a.connect(&mut remote);
+        a.connect(&remote);
         a.scan_until(|a| a.folder.scanned);
         if rule == "after the start" {
             assert!(a.sent.is_empty());
@@ -1062,6 +1062,8 @@ fn a_delete_waiting_at_a_restart_is_sent_whenever_a_rule_leaves_its_file_out() {
             !nodes.contains(&("report.txt".to_owned(), before, true)),
             "rule {rule}: {nodes:?}"
         );
+        let owed = (a.folder.store).transaction(|tx| tx.owed_deletes());
+        assert!(owed.unwrap().is_empty(), "rule {rule}");
     }
 }
 
