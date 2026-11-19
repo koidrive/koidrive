@@ -1442,8 +1442,7 @@ fn a_rescan_that_finds_nothing_new_writes_nothing_to_the_store_while_nodes_are_u
 }
 
 #[test]
-fn a_synced_file_moved_into_an_ignored_folder_and_deleted_there_stays_on_the_server_and_away_from_here()
- {
+fn a_synced_file_moved_into_an_ignored_folder_and_deleted_there_comes_back() {
     let mut remote = Remote::new();
     let (site, mut b) = linked(&mut remote, "b");
     fs::write(site.root.join("report.docx"), "report").unwrap();
@@ -1470,7 +1469,12 @@ fn a_synced_file_moved_into_an_ignored_folder_and_deleted_there_stays_on_the_ser
         let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
         assert!(!sent.contains(&"delete"), "{:?}: {sent:?}", sync.exclude);
         assert!(remote.names().contains(&"report.docx".to_owned()));
-        assert!(files(&site.root).is_empty(), "{:?}", sync.exclude);
+        assert_eq!(
+            files(&site.root),
+            [("report.docx".to_owned(), "report".to_owned())],
+            "{:?}",
+            sync.exclude
+        );
     }
 }
 
@@ -2065,4 +2069,39 @@ fn a_held_file_after_a_server_rewind_stays_under_its_one_question() {
         assert_eq!(asked, expected, "{case}");
         assert_eq!(shown(&site).len(), 0, "{case}");
     }
+}
+
+#[test]
+fn a_synced_folder_deleted_in_an_ignored_folder_while_stopped_comes_back_and_a_file_still_there_stays()
+ {
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    fs::create_dir(site.root.join("album")).unwrap();
+    fs::write(site.root.join("album/a.jpg"), "a").unwrap();
+    fs::write(site.root.join("kept.docx"), "kept").unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    let server = remote.tree();
+    drop(b);
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    fs::create_dir_all(site.root.join("dist/deep")).unwrap();
+    fs::rename(site.root.join("album"), site.root.join("dist/deep/album")).unwrap();
+    fs::rename(
+        site.root.join("kept.docx"),
+        site.root.join("dist/kept.docx"),
+    )
+    .unwrap();
+    b.rescan();
+    b.rest(&mut remote);
+    drop(b);
+    fs::remove_dir_all(site.root.join("dist/deep/album")).unwrap();
+
+    let b = started(&site, &mut remote, &dist_left_out());
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert_eq!(remote.tree(), server);
+    let expected = [("album/a.jpg", "a"), ("dist/kept.docx", "kept")];
+    assert_eq!(
+        files(&site.root),
+        expected.map(|(path, bytes)| (path.to_owned(), bytes.to_owned()))
+    );
 }

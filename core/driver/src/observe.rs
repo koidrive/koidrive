@@ -146,6 +146,7 @@ pub enum Observed {
 pub struct Reset {
     pub scope: PathBuf,
     pub known: BTreeMap<PathBuf, Known>,
+    pub recorded: BTreeMap<PathBuf, Known>,
 }
 
 /// A source of observations for one linked folder.
@@ -176,6 +177,7 @@ pub struct FsObserver {
     delivered: Vec<PathBuf>,
     /// Whether a reset still waits for the batch of a scan made after it.
     reset: bool,
+    recorded: BTreeMap<PathBuf, Known>,
     /// Files whose content could not be read, or that an observation left to a later one, with when to read them.
     unread: Unread,
     /// Whether the caller has stopped waiting for observations.
@@ -389,10 +391,15 @@ impl FsObserver {
             settling: true,
             delivered: Vec::new(),
             reset: false,
+            recorded: BTreeMap::new(),
             unread: Unread::default(),
             stopped,
             progress,
         })
+    }
+
+    pub fn looking_for(self, recorded: BTreeMap<PathBuf, Known>) -> Self {
+        Self { recorded, ..self }
     }
 
     /// The files whose content is still to be read, left to a later observation or busy and read again later, and
@@ -432,11 +439,18 @@ impl FsObserver {
     /// reset is returned also when it holds nothing, so the caller learns that the disk was read after the reset.
     pub fn reset(&mut self, resets: Vec<Reset>) {
         self.reset |= !resets.is_empty();
-        for Reset { scope, known } in resets {
+        for Reset {
+            scope,
+            known,
+            recorded,
+        } in resets
+        {
             let below: Vec<PathBuf> = self.unread.below(&scope).cloned().collect();
             for path in below {
                 self.unread.remove(&path);
             }
+            self.recorded.retain(|path, _| !path.starts_with(&scope));
+            self.recorded.extend(recorded);
             self.watcher.reset(&scope, known);
         }
     }
@@ -759,6 +773,23 @@ impl Observer for FsObserver {
             self.observed(change, &mut changes, &mut reads);
         }
         changes.extend(retried);
+        if poll.root.is_some() && poll.pending.is_empty() && !self.recorded.is_empty() {
+            let recorded = std::mem::take(&mut self.recorded);
+            match self.watcher.missing(&recorded) {
+                Ok(missing) => changes.extend(
+                    (missing.into_iter())
+                        .filter(|path| !self.watcher.snapshot().entries.contains_key(path))
+                        .map(|path| Observed::Removed {
+                            kind: recorded[&path].kind,
+                            path,
+                        }),
+                ),
+                Err(error) => {
+                    tracing::debug!(%error, "the entries moved into left-out folders could not be looked for");
+                    self.recorded = recorded;
+                }
+            }
+        }
         if (self.stopped)() {
             return Ok(None);
         }
@@ -1991,6 +2022,10 @@ mod tests {
         fn reset(&mut self, _scope: &Path, _known: BTreeMap<PathBuf, Known>) {}
 
         fn revisit(&mut self, _paths: Vec<PathBuf>) {}
+
+        fn missing(&mut self, _: &BTreeMap<PathBuf, Known>) -> Result<Vec<PathBuf>, FsError> {
+            Ok(Vec::new())
+        }
     }
 
     /// The first scan of an observer saw `proj`, a folder it knew, disappear and could not settle it, so it may not

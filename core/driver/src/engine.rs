@@ -1311,7 +1311,28 @@ impl Engine {
                         }
                     }
                 }
-                Reset { scope, known }
+                let recorded = self.recorded(&scope);
+                Reset {
+                    scope,
+                    known,
+                    recorded,
+                }
+            })
+            .collect()
+    }
+
+    pub fn recorded(&self, scope: &Path) -> BTreeMap<PathBuf, Known> {
+        (self.trees.ignored_local().iter())
+            .filter(|id| !self.trees.lost_local().contains(*id))
+            .filter_map(|id| {
+                let path = self.path_of(id).filter(|path| path.starts_with(scope))?;
+                let node = self.trees.local().get(id)?;
+                let kind = match node.shape.kind {
+                    Kind::Dir => EntryKind::Dir,
+                    Kind::File => EntryKind::File,
+                };
+                let id = file_id(node.identity);
+                Some((path, Known { kind, id }))
             })
             .collect()
     }

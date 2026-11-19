@@ -1132,6 +1132,34 @@ impl Snapshot {
         );
     }
 
+    fn missing(
+        &self,
+        root: &Path,
+        rules: Option<&mut Rules>,
+        wanted: &BTreeMap<PathBuf, Known>,
+    ) -> Result<Vec<PathBuf>> {
+        let held: HashSet<Key> = (self.entries.values())
+            .chain(self.left_out.values())
+            .map(|entry| (entry.id.without_handle(), entry.kind))
+            .collect();
+        let unseen = |known: &Known| !held.contains(&(known.id.without_handle(), known.kind));
+        let mut search: Wanted = (wanted.values())
+            .filter(|known| unseen(known))
+            .map(|known| ((known.id, known.kind), None))
+            .collect();
+        if let Some(rules) = rules
+            && !search.is_empty()
+        {
+            let root = open_root(root)?;
+            let fresh: HashSet<Key> = search.keys().copied().collect();
+            Pending::new(rules).search(root.as_fd(), &mut search, &fresh, false, &mut |_| {});
+        }
+        Ok((wanted.iter())
+            .filter(|(_, known)| unseen(known) && search[&(known.id, known.kind)].is_none())
+            .map(|(path, _)| path.clone())
+            .collect())
+    }
+
     /// [`Snapshot::rescan`], failing with [`Error::RootReplaced`] and
     /// changing nothing when `root` opens a folder other than `expected`.
     fn rescan_with(
@@ -3293,6 +3321,10 @@ pub trait Watcher {
 
     /// Asks the next poll to scan `paths` again, such as files whose change time has not settled.
     fn revisit(&mut self, paths: Vec<PathBuf>);
+
+    /// The paths of `wanted` whose entry, by kind and identity, is neither in the snapshot nor at or below an entry
+    /// the rules leave out. The search below left-out entries runs to its end.
+    fn missing(&mut self, wanted: &BTreeMap<PathBuf, Known>) -> Result<Vec<PathBuf>>;
 }
 
 /// Watches with FSEvents on macOS and inotify on Linux.
@@ -3815,6 +3847,10 @@ impl Watcher for NativeWatcher {
     fn revisit(&mut self, paths: Vec<PathBuf>) {
         self.dirty.extend(paths);
     }
+
+    fn missing(&mut self, wanted: &BTreeMap<PathBuf, Known>) -> Result<Vec<PathBuf>> {
+        (self.snapshot).missing(&self.root, self.rules.as_mut(), wanted)
+    }
 }
 
 /// Rescans the whole tree every `interval`. Slower than [`NativeWatcher`] on
@@ -3943,6 +3979,10 @@ impl Watcher for RescanWatcher {
     }
 
     fn revisit(&mut self, _paths: Vec<PathBuf>) {}
+
+    fn missing(&mut self, wanted: &BTreeMap<PathBuf, Known>) -> Result<Vec<PathBuf>> {
+        (self.snapshot).missing(&self.root, self.rules.as_mut(), wanted)
+    }
 }
 
 fn view<'a>(
