@@ -25,13 +25,19 @@ fn a_synced_file_deleted_inside_a_left_out_folder_comes_back_while_another_folde
     let mut remote = Remote::new();
     let (site, mut b) = busy_logs(&mut remote, &dist_left_out());
     fs::create_dir(site.root.join("dist")).unwrap();
-    fs::rename(site.root.join("report.docx"), site.root.join("dist/report.docx")).unwrap();
+    fs::rename(
+        site.root.join("report.docx"),
+        site.root.join("dist/report.docx"),
+    )
+    .unwrap();
     b.settle();
     b.rest(&mut remote);
     b.observer.keep_pending(PathBuf::from("logs"));
 
     fs::remove_file(site.root.join("dist/report.docx")).unwrap();
-    let back = until(&mut b, &mut remote, |_, _| site.root.join("report.docx").exists());
+    let back = until(&mut b, &mut remote, |_, _| {
+        site.root.join("report.docx").exists()
+    });
     let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
     assert!(!sent.contains(&"delete"), "{sent:?}");
     assert!(back, "report.docx comes back while logs stays busy");
@@ -42,7 +48,11 @@ fn a_dropped_batch_waits_only_for_the_folder_that_stays_busy() {
     let mut remote = Remote::new();
     let (site, mut b) = busy_logs(&mut remote, &dist_left_out());
     fs::create_dir(site.root.join("dist")).unwrap();
-    fs::rename(site.root.join("report.docx"), site.root.join("dist/report.docx")).unwrap();
+    fs::rename(
+        site.root.join("report.docx"),
+        site.root.join("dist/report.docx"),
+    )
+    .unwrap();
     b.settle();
     b.rest(&mut remote);
     b.observer.keep_pending(PathBuf::from("logs"));
@@ -56,6 +66,8 @@ fn a_dropped_batch_waits_only_for_the_folder_that_stays_busy() {
     b.take(step).unwrap();
 
     fs::remove_file(site.root.join("dist/report.docx")).unwrap();
-    let back = until(&mut b, &mut remote, |_, _| site.root.join("report.docx").exists());
+    let back = until(&mut b, &mut remote, |_, _| {
+        site.root.join("report.docx").exists()
+    });
     assert!(back, "report.docx comes back while logs stays busy");
 }
