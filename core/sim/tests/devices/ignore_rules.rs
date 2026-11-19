@@ -408,3 +408,56 @@ fn a_folder_deleted_while_its_rules_leave_a_file_out_goes_through_crashes_and_ro
         }
     }
 }
+
+fn edited_then_moved_into_an_ignored_folder(moves_a_folder: bool) {
+    let (made, moved) = if moves_a_folder {
+        (
+            vec![
+                (0, folder("a")),
+                (0, user(0, 0, 1, "ss")),
+                (0, user(1, 0, 2, "c.txt")),
+            ],
+            vec![
+                (0, folder("b")),
+                (0, overwrite(2)),
+                (0, SCAN),
+                (0, rename(1, 3, "ss")),
+                (0, SCAN),
+                (1, delete(0)),
+            ],
+        )
+    } else {
+        (
+            vec![(0, folder("a")), (0, user(1, 0, 1, "c.txt"))],
+            vec![
+                (0, folder("b")),
+                (0, overwrite(1)),
+                (0, SCAN),
+                (0, rename(1, 2, "c.txt")),
+                (0, SCAN),
+                (1, delete(0)),
+            ],
+        )
+    };
+    let world = converge_excluding(&[vec!["b/"], vec![]], &[made, moved]).unwrap();
+    assert_eq!(live_node_at(&world, &["a"]), None);
+    let nodes = world.space().nodes();
+    let held = (nodes.iter()).find(|node| node.name == "c.txt").unwrap();
+    assert_ne!(held.status, NodeStatus::Live as i32);
+    let old = (held.current.as_ref()).and_then(|version| version.content.clone());
+    let edited = c_txt(&world, 0);
+    assert!(
+        old.is_some_and(|old| old != edited),
+        "the server keeps the version it has"
+    );
+}
+
+#[test]
+fn a_file_edited_then_moved_into_an_ignored_folder_keeps_its_edit_there_when_its_old_folder_goes() {
+    edited_then_moved_into_an_ignored_folder(false);
+}
+
+#[test]
+fn a_folder_moved_into_an_ignored_folder_with_an_edit_keeps_it_there_when_its_old_folder_goes() {
+    edited_then_moved_into_an_ignored_folder(true);
+}

@@ -3276,6 +3276,7 @@ impl Trees {
             let mut below = vec![id.to_owned()];
             while let Some(node) = below.pop() {
                 below.extend(self.l_names.children(&node).cloned());
+                self.unsent_edits.remove(&node);
                 self.set_unobserved(node);
             }
         }
@@ -3326,16 +3327,29 @@ impl Trees {
 
     /// Takes the node out of L because another entry took its name, and keeps the record that its local copy is in
     /// an ignored folder: L cannot hold two entries at one name, and the copy is still there. The node stays excluded
-    /// ([`Trees::excluded`]) until an observation places it again or R holds it trashed. This record is part of the
+    /// ([`Trees::excluded`]) until an observation places it again or R no longer holds it live. A node R never held
+    /// gets no record, unless `created_in_flight` says the commit in flight creates it. This record is part of the
     /// stored state, since no scan can find the node again once L has no entry for it. The caller passes only a node
     /// [`Trees::recorded_local`] holds for.
-    pub fn displace_local(&mut self, id: &NodeId) {
+    pub fn displace_local(&mut self, id: &NodeId, created_in_flight: bool) {
         let Some(identity) = self.l.get(id).map(|node| node.identity) else {
             return;
         };
         self.take_out_local(id);
-        if !(self.r.get(id)).is_some_and(|remote| remote.trashed) {
+        if self.r.live(id).is_some() || created_in_flight {
             self.displaced.insert(id.to_owned(), identity);
+        }
+    }
+
+    pub(crate) fn end_unheld_displacements(&mut self) {
+        let unheld: Vec<NodeId> = (self.displaced.keys())
+            .filter(|id| self.r.live(id).is_none())
+            .cloned()
+            .collect();
+        for id in unheld {
+            self.displaced.remove(&id);
+            self.missing.remove(&id);
+            self.mark(&id);
         }
     }
 
@@ -5757,8 +5771,8 @@ impl Trees {
     /// The files whose content in L is an edit of this device that the server does not hold,
     /// although S and R may hold the same bytes. A server loss leaves one ([`Trees::forget_lost`]),
     /// and so does an edit L holds of a file R holds in the trash. It stays until the server
-    /// acknowledges an edit or a create of the file with L's content ([`Trees::sent_edit`]) or
-    /// L no longer holds the file. A later edit in L does not end it,
+    /// acknowledges an edit or a create of the file with L's content ([`Trees::sent_edit`]),
+    /// L no longer holds the file, or the file is recorded in an ignored folder ([`Trees::ignore_local`]). A later edit in L does not end it,
     /// since the server holds none of them until one is acknowledged, and neither does R dropping
     /// the file: the edit beats the removal and the file is created again, as for any edit L holds.
     pub fn unsent_edits(&self) -> &TrackedSet<NodeId> {
@@ -5896,6 +5910,9 @@ impl Trees {
     }
 
     fn mark_unsent_edit(&mut self, id: NodeId) {
+        if self.recorded_local(&id) {
+            return;
+        }
         self.forgotten_shapes.remove(&id);
         self.unsent_edits.insert(id);
     }

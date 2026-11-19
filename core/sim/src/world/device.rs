@@ -354,7 +354,11 @@ impl Engine {
                 .collect();
             for (id, recorded) in doomed.iter().zip(recorded).rev() {
                 match recorded {
-                    true => self.trees.displace_local(id),
+                    true => {
+                        let created =
+                            (self.commits.in_flight()).is_some_and(|flight| flight.creates(id));
+                        self.trees.displace_local(id, created)
+                    }
                     false => self.trees.remove_local(id),
                 }
             }

@@ -600,7 +600,7 @@ impl Effects {
             });
         for id in below.iter().rev() {
             if trees.recorded_local(id) {
-                trees.displace_local(id);
+                trees.displace_local(id, in_flight.is_some_and(|flight| flight.creates(id)));
                 continue;
             }
             trees.give_up(id);
@@ -1298,29 +1298,13 @@ impl<'a> View<'a> {
         let owed = (self.trees.local().get(id).zip(self.trees.synced().live(id)))
             .is_some_and(|(local, synced)| local.shape.same_position(synced))
             && trashed(id);
-        if self.trees.under_kept_entry(id) {
+        if self.trees.under_kept_entry(id) || self.trees.recorded_local(id) {
             return true;
-        }
-        if self.trees.recorded_local(id) {
-            return !self.holds_unsent_edit(id);
         }
         trashed(folder)
             && !owed
             && crate::classify::path(self.trees.local(), id)
                 .is_some_and(|(names, kind)| self.trees.ignores(&names, kind))
-    }
-
-    fn holds_unsent_edit(&self, id: &NodeId) -> bool {
-        let mut below = vec![id];
-        while let Some(at) = below.pop() {
-            if self.trees.unsent_edits().contains(at)
-                || self.trees.remote().get(at).is_some() && self.trees.edited(at)
-            {
-                return true;
-            }
-            below.extend(self.trees.local_children(at).map(String::as_str));
-        }
-        false
     }
 
     fn goes_home(&self, id: &NodeId, remote: &Shape) -> bool {
