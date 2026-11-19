@@ -12720,3 +12720,97 @@ fn a_folder_renamed_out_of_the_trash_takes_along_no_folder_its_user_removed() {
         );
     }
 }
+
+fn at_entry(world: &World, d: usize, starting: &str, kind: u8, name: usize) -> Step {
+    let disk = &world.devices[d].disk;
+    let target = (disk.visible().iter())
+        .position(|ino| disk.entries()[ino].name.starts_with(starting))
+        .expect("a visible entry");
+    Step::User(Action {
+        kind,
+        target,
+        parent: 0,
+        name,
+        text: 0,
+    })
+}
+
+fn two_downloads_of_the_same_bytes_swapped_while_their_device_is_down() -> World {
+    use Step::*;
+    let file = |name| {
+        User(Action {
+            kind: 1,
+            target: 0,
+            parent: 0,
+            name,
+            text: 1,
+        })
+    };
+    let mut world = on(&[Precision::Fine, Precision::Fine]);
+    let made = [
+        (1, file(0)),
+        (1, file(4)),
+        (1, Connect),
+        (1, Work(0)),
+        (1, Work(0)),
+        (1, Work(0)),
+    ];
+    world.run(0, &made).unwrap();
+    world
+        .run(0, &[(0, Connect), (0, Work(0)), (0, CRASH)])
+        .unwrap();
+    for (from, to) in [("a", 3), ("C.TXT", 0)] {
+        let renamed = at_entry(&world, 0, from, 3, to);
+        world.run(0, &[(0, renamed)]).unwrap();
+    }
+    world.phase(0, &[]).unwrap();
+    world
+}
+
+#[test]
+fn a_restart_that_takes_the_other_download_leaves_each_file_to_the_node_it_holds() {
+    for deleted in ["a", "c (conflict from device-0"] {
+        let mut world = two_downloads_of_the_same_bytes_swapped_while_their_device_is_down();
+        assert!(
+            world
+                .seen
+                .contains_key("restart takes a file of the user for the download")
+        );
+        let delete = at_entry(&world, 0, deleted, 4, 0);
+        world.phase(1, &[(0, delete)]).unwrap();
+    }
+}
+
+#[test]
+fn a_download_its_user_moved_before_the_restart_is_a_new_file_to_delete() {
+    use Step::*;
+    let mut world = on(&[Precision::Fine, Precision::Fine]);
+    let file = User(Action {
+        kind: 1,
+        target: 0,
+        parent: 0,
+        name: 0,
+        text: 1,
+    });
+    let made = [
+        (1, file),
+        (1, Connect),
+        (1, Work(0)),
+        (1, Work(0)),
+        (1, Work(0)),
+    ];
+    world.run(0, &made).unwrap();
+    world
+        .run(0, &[(0, Connect), (0, Work(0)), (0, CRASH)])
+        .unwrap();
+    let renamed = at_entry(&world, 0, "a", 3, 2);
+    world.run(0, &[(0, renamed)]).unwrap();
+    world.phase(0, &[]).unwrap();
+    assert!(
+        world
+            .seen
+            .contains_key("restart finds the effect in flight not done")
+    );
+    let delete = at_entry(&world, 0, "b", 4, 0);
+    world.phase(1, &[(0, delete)]).unwrap();
+}

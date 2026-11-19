@@ -1248,7 +1248,9 @@ impl World {
         }
         let mut inos: BTreeMap<u128, NodeId> = (device.disk.entries().iter())
             .filter_map(|(ino, entry)| {
-                let mark = entry.mark.as_ref().filter(|mark| mark.ino == *ino)?;
+                let mark = (entry.mark.as_ref()).filter(|mark| {
+                    mark.ino == *ino && !self.intents.detached(d, *ino, &mark.node)
+                })?;
                 Some((*ino, mark.node.clone()))
             })
             .collect();
@@ -2013,6 +2015,12 @@ impl World {
                 _ => None,
             };
             let applies = record.applies(trees, commits.in_flight());
+            let own = match &applied.outcome {
+                Ok(identity) if applies && !refuted => {
+                    identity.as_ref().map(|identity| identity.ino)
+                }
+                _ => None,
+            };
             let reported = match applied.outcome {
                 Ok(identity) if applies && !refuted => {
                     // A file that the user made with the bytes of the download counts as the
@@ -2034,6 +2042,9 @@ impl World {
                             writes.insert(tag(found), found.manifest_digest.clone());
                         }
                         self.published.insert(tag(found));
+                        if let Some(content) = download.filter(|c| device.disk.holds(tag(c))) {
+                            self.copied.insert(tag(content));
+                        }
                     }
                     note(
                         &mut self.seen,
@@ -2085,6 +2096,22 @@ impl World {
             reported.map_err(|error| {
                 Failure::Broken(format!("the effect's outcome was refused: {error:?}"))
             })?;
+            if matches!(
+                record.effect,
+                Effect::WriteFile { .. } | Effect::CreateDir { .. }
+            ) {
+                let elsewhere: Vec<u128> = (device.disk.entries().iter())
+                    .filter(|(ino, entry)| {
+                        Some(**ino) != own
+                            && (entry.mark.as_ref())
+                                .is_some_and(|mark| mark.ino == **ino && mark.node == record.node)
+                    })
+                    .map(|(ino, _)| *ino)
+                    .collect();
+                for ino in elsewhere {
+                    self.intents.detach(d, ino, &record.node, self.moment + 1);
+                }
+            }
         }
         if batch.len() > 1 {
             note(&mut self.seen, "restart ends a batch of effects");
