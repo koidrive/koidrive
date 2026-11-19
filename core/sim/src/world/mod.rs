@@ -97,7 +97,7 @@ pub use self::disk::Cut;
 use self::disk::{Applied, Disk, Place, Precision, Refused};
 pub use self::intents::{Check, ExpectedRed, allow_red, expect_red};
 use self::intents::{Intents, RESTORE_ANSWER, Server, Value};
-use self::rules::{Unsynced, excluded_op};
+use self::rules::{LeftOutOnDisk, Unsynced, excluded_op};
 use crate::space::{Role, Session, SpaceDo};
 
 const NOW: i64 = 1_794_268_740_000;
@@ -602,6 +602,7 @@ pub struct World {
     /// For each device, the writes its user overwrote or deleted on its disk.
     removed: Vec<BTreeSet<i64>>,
     kept_for_left_out: Vec<BTreeSet<NodeId>>,
+    left_out: Vec<LeftOutOnDisk>,
     overwrote: BTreeMap<i64, i64>,
     /// The writes the server's live tree has held at some time.
     published: BTreeSet<i64>,
@@ -693,6 +694,7 @@ impl World {
             space,
             removed: vec![BTreeSet::new(); count],
             kept_for_left_out: vec![BTreeSet::new(); count],
+            left_out: vec![BTreeMap::new(); count],
             overwrote: BTreeMap::new(),
             kept: vec![BTreeMap::new(); devices.len()],
             devices,
@@ -1705,6 +1707,7 @@ impl World {
             } else {
                 Outcome::Run
             };
+            let kept = self.left_out_on_disk(d);
             let device = &mut self.devices[d];
             let applies = record.applies(&device.engine.trees, device.engine.commits.in_flight());
             let until = match outcome {
@@ -1713,6 +1716,17 @@ impl World {
                 _ => None,
             };
             let applied = device.disk.apply(record, until);
+            if let Some((path, _)) = (kept.iter()).find_map(|(ino, kept)| {
+                (device.disk.entries().get(ino))
+                    .is_none_or(|entry| entry.content != kept.1)
+                    .then_some(kept)
+            }) {
+                return Err(Failure::Broken(format!(
+                    "an effect of device {d} took {path:?} off its disk, which its rules leave out: {:?}",
+                    record.effect
+                )));
+            }
+            self.left_out[d] = kept;
             if let (Effect::WriteFile { content, .. }, Some(Ok(Some(written)))) = (
                 &record.effect,
                 applied.as_ref().map(|applied| &applied.outcome),

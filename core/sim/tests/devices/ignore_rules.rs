@@ -232,3 +232,15 @@ fn a_folder_kept_for_a_file_its_rules_exclude_stays_out_of_sync_once_the_file_le
     ];
     converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
 }
+
+#[test]
+fn a_file_renamed_to_a_name_its_rules_exclude_stays_when_another_device_deletes_it() {
+    let phases = vec![
+        vec![(0, folder("a")), (0, user(1, 0, 1, "b"))],
+        vec![(1, rename(1, 1, "c.txt"))],
+        vec![(0, delete(1))],
+    ];
+    let world = converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
+    assert_eq!(live_node_at(&world, &["a", "b"]), None);
+    ino_at(&world, 1, &["a", "c.txt"]);
+}

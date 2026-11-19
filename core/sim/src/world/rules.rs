@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_engine::classify::Trees;
 use koidrive_engine::names::{name_key, nfc};
-use koidrive_engine::tree::{Kind, NodeId, Shape};
+use koidrive_engine::tree::{Content, Kind, NodeId, Shape};
 use koidrive_proto::v1::{NodeKind, NodeState, NodeStatus, Op, op};
 
 use super::World;
@@ -83,7 +83,34 @@ pub(super) fn excluded_op(trees: &Trees, op: &Op) -> Option<String> {
     path.map(|path| format!("node {id} at {path:?}"))
 }
 
+pub(super) type LeftOutOnDisk = BTreeMap<u128, (Vec<String>, Option<Content>)>;
+
 impl World {
+    pub(super) fn left_out_on_disk(&self, d: usize) -> LeftOutOnDisk {
+        let device = &self.devices[d];
+        let (disk, trees) = (&device.disk, &device.engine.trees);
+        let parked = (self.left_out[d].iter()).filter(|(ino, (_, content))| {
+            disk.path(**ino).is_none()
+                && (disk.entries().get(ino)).is_some_and(|entry| &entry.content == content)
+        });
+        (disk.entries().iter())
+            .filter_map(|(ino, entry)| {
+                let path = disk.path(*ino)?;
+                let kind = match entry.content {
+                    Some(_) => Kind::File,
+                    None => Kind::Dir,
+                };
+                (1..=path.len())
+                    .any(|end| {
+                        let kind = if end == path.len() { kind } else { Kind::Dir };
+                        trees.ignores(&path[..end], kind)
+                    })
+                    .then(|| (*ino, (path, entry.content.clone())))
+            })
+            .chain(parked.map(|(ino, kept)| (*ino, kept.clone())))
+            .collect()
+    }
+
     pub(super) fn waiting_on(&self, d: usize, holders: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
         let trees = &self.devices[d].engine.trees;
         let root = self.space.space_id();
