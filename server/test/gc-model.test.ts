@@ -33,6 +33,7 @@ const DAY = 24 * HOUR;
 const CHUNK_KEY = /^spaces\/[^/]+\/chunks\//;
 const TEXTS = ["alpha", "bravo", "charlie"];
 const FILES = 2;
+const LIST_PAGE = 2;
 
 type Outcome = "ok" | "lostApplied" | "lostInflight";
 type Retirement = "ok" | "refused" | "lostBefore" | "lostAfter";
@@ -72,6 +73,7 @@ interface World {
   receipts: UploadReceipt[];
   targets: { chunk: number; url: string; expiresAtMs: number }[];
   points: number[];
+  history: { atMs: number; keys: string[] }[];
 }
 
 let owner: DeviceCredentials;
@@ -148,11 +150,10 @@ function installModelR2(): void {
   vi.spyOn(bucket, "list").mockImplementation((async (options?: R2ListOptions) => {
     const prefix = options?.prefix ?? "";
     if (!CHUNK_KEY.test(prefix)) return real.list(options);
-    const keys = [...r2.objects.keys()].filter((key) => key.startsWith(prefix)).sort();
-    const start = Number(options?.cursor ?? 0);
-    const end = start + (options?.limit ?? 1000);
-    const truncated = end < keys.length;
-    return { objects: keys.slice(start, end).map(described), truncated, ...(truncated ? { cursor: String(end) } : {}), delimitedPrefixes: [] };
+    const keys = [...r2.objects.keys()].filter((key) => key.startsWith(prefix) && key > (options?.cursor ?? "")).sort();
+    const page = keys.slice(0, Math.min(options?.limit ?? 1000, LIST_PAGE));
+    const truncated = page.length < keys.length;
+    return { objects: page.map(described), truncated, ...(truncated ? { cursor: page.at(-1) } : {}), delimitedPrefixes: [] };
   }) as never);
 }
 
@@ -216,7 +217,7 @@ async function newWorld(): Promise<World> {
   if (!created.ok) throw new Error(created.message);
   const spaceId = created.value.spaceId;
   const session: Session = { deviceId: owner.deviceId, userId: owner.userId, deviceName: "Laptop", kind: "device", scope: null, role: "owner", maxFormat: 1, origin: BASE };
-  const world: World = { spaceId, session, files: Array.from({ length: FILES }, () => uuidv7()), plans: [], receipts: [], targets: [], points: [] };
+  const world: World = { spaceId, session, files: Array.from({ length: FILES }, () => uuidv7()), plans: [], receipts: [], targets: [], points: [], history: [] };
   await snapshot(world);
   return world;
 }
@@ -249,126 +250,132 @@ async function putChunk(url: string, bytes: Uint8Array): Promise<UploadReceipt |
   return response.ok ? fromBinary(UploadReceiptSchema, body) : undefined;
 }
 
-async function act(world: World, step: Step): Promise<void> {
+async function act(world: World, step: Step): Promise<boolean> {
   const { spaceId } = world;
   switch (step.t) {
     case "prepare": {
       const refs = step.chunks.map((i) => ({ hash: fromHex(chunks[i]!.hex)!, size: chunks[i]!.bytes.length }));
       const result = await (await device(world)).call({ case: "prepareUpload", value: { chunks: refs } });
-      if (result.case !== "prepareUpload") return;
+      if (result.case !== "prepareUpload") return false;
       for (const plan of result.value.chunks) {
         if (plan.action === ChunkPlan_Action.UPLOAD) world.plans.push({ chunk: chunks.findIndex((c) => c.hex === toHex(plan.hash)), url: plan.target!.url });
       }
-      return;
+      return true;
     }
     case "put": {
       const plan = pick(world.plans, step.plan);
-      if (!plan) return;
+      if (!plan) return false;
       r2.put = step.outcome;
       const receipt = await putChunk(plan.url, chunks[plan.chunk]!.bytes).finally(() => (r2.put = "ok"));
-      if (receipt) world.receipts.push(receipt);
-      return;
+      if (!receipt) return false;
+      world.receipts.push(receipt);
+      return true;
     }
     case "bundle": {
       const chosen = new Map(step.plans.flatMap((i) => pick(world.plans, i) ?? []).map((plan) => [plan.chunk, plan]));
-      if (chosen.size === 0) return;
+      if (chosen.size === 0) return false;
       const sent = toBinary(ChunkBundleSchema, create(ChunkBundleSchema, { chunks: [...chosen.values()].map((plan) => ({ target: plan.url, data: chunks[plan.chunk]!.bytes })) }));
       r2.put = step.outcome;
       const response = await exports.default
         .fetch(`${BASE}/v1/spaces/${spaceId}/chunks`, { method: "POST", body: sent, headers: { "Content-Type": "application/x-protobuf", "Content-Length": String(sent.length) } })
         .finally(() => (r2.put = "ok"));
       const body = new Uint8Array(await response.arrayBuffer());
-      if (response.ok) for (const result of fromBinary(ChunkBundleResultSchema, body).results) if (result.receipt) world.receipts.push(result.receipt);
-      return;
+      if (!response.ok) return false;
+      for (const result of fromBinary(ChunkBundleResultSchema, body).results) if (result.receipt) world.receipts.push(result.receipt);
+      return true;
     }
     case "commit": {
       const receipts = step.receipts.flatMap((i) => pick(world.receipts, i) ?? []);
       const used = new Set([...receipts.map((receipt) => chunks.findIndex((c) => c.hex === toHex(receipt.hash))), ...step.extra]);
-      if (used.size === 0) return;
+      if (used.size === 0) return false;
       const parts = await content(...[...used].sort().map((i) => TEXTS[i]!));
       const nodeId = world.files[step.file]!;
       const status = await nodeStatus(world, nodeId);
       const change = status === undefined ? op.create(nodeId, spaceId, `file ${step.file}`, parts.content) : op.update(nodeId, parts.content);
-      await (await device(world)).commitRaw([change], { receipts });
-      return;
+      return (await (await device(world)).commitRaw([change], { receipts })).case === "commit";
     }
     case "trash": {
       const nodeId = world.files[step.file]!;
-      if ((await nodeStatus(world, nodeId)) === undefined) return;
-      await (await device(world)).commitRaw([op.delete(nodeId)]);
-      return;
+      if ((await nodeStatus(world, nodeId)) === undefined) return false;
+      return (await (await device(world)).commitRaw([op.delete(nodeId)])).case === "commit";
     }
     case "drop":
-      await runInDurableObject(space(spaceId), (instance, state) => {
+      return runInDurableObject(space(spaceId), (instance, state) => {
         const superseded = state.storage.sql.exec("SELECT * FROM versions WHERE superseded_at_ms IS NOT NULL ORDER BY version_id").toArray() as unknown as VersionRow[];
         const version = pick(superseded, step.version);
-        if (!version) return;
+        if (!version) return false;
         const dropping = instance as unknown as { dropVersion(version: VersionRow, nowMs: number): void };
         state.storage.transactionSync(() => dropping.dropVersion(version, Date.now()));
+        return true;
       });
-      return;
     case "gc":
       r2.retire = step.retire;
       r2.del = step.del;
-      await runInDurableObject(space(spaceId), (instance) => instance.collectGarbage(Date.now()))
-        .catch(() => undefined)
+      return runInDurableObject(space(spaceId), (instance) => instance.collectGarbage(Date.now()))
+        .then(() => true)
+        .catch(() => false)
         .finally(() => {
           r2.retire = "ok";
           r2.del = "ok";
         });
-      return;
     case "land": {
-      if (r2.flights.length === 0) return;
+      if (r2.flights.length === 0) return false;
       land(r2.flights.splice(step.flight % r2.flights.length, 1)[0]!);
-      return;
+      return true;
     }
     case "export":
-      await runInDurableObject(space(spaceId), (instance) => (instance as unknown as { runExport(): Promise<void> }).runExport()).catch(() => undefined);
-      return;
+      return runInDurableObject(space(spaceId), (instance) => (instance as unknown as { runExport(): Promise<void> }).runExport())
+        .then(() => true)
+        .catch(() => false);
     case "crash":
       await space(spaceId)
         .restart()
         .catch(() => undefined);
-      return;
+      return true;
     case "rewind": {
       const nowMs = Date.now();
       const points = [...new Set(world.points)].filter((pointMs) => pointMs <= nowMs - MINUTE && pointMs >= nowMs - 29 * DAY);
       const restorePointMs = pick(points, step.point);
-      if (restorePointMs === undefined) return;
+      if (restorePointMs === undefined) return false;
       await act(world, { t: "export" });
-      const expectedHistoryId = await runInDurableObject(space(spaceId), (_instance, state) =>
-        String(state.storage.sql.exec("SELECT value FROM meta WHERE key = 'history_id'").one().value),
-      );
-      await account().rewind({ userId: owner.userId, spaceId, rewindId: uuidv7(), restorePointMs, expectedHistoryId });
-      return;
+      const rewound = await account().rewind({ userId: owner.userId, spaceId, rewindId: uuidv7(), restorePointMs, expectedHistoryId: await historyId(world) });
+      return rewound.ok && (await historyId(world)) === rewound.value.historyId;
     }
     case "targets": {
       const hash = fromHex(chunks[step.chunk]!.hex)!;
       const result = await (await device(world)).call({ case: "getDownloadTargets", value: { hashes: [hash] } });
-      if (result.case !== "downloadTargets") return;
+      if (result.case !== "downloadTargets") return false;
       for (const { target } of result.value.targets) world.targets.push({ chunk: step.chunk, url: target!.url, expiresAtMs: Number(target!.expiresAtMs) });
-      return;
+      return true;
     }
     case "download": {
       const target = pick(world.targets, step.target);
-      if (!target || Date.now() >= target.expiresAtMs) return;
+      if (!target || Date.now() >= target.expiresAtMs) return false;
       const response = await exports.default.fetch(target.url);
       const bytes = new Uint8Array(await response.arrayBuffer());
       if (response.status !== 200 || toHex(await sha256(bytes)) !== chunks[target.chunk]!.hex) {
         r2.violations.push(`download target ${target.url} answered ${response.status} before it expired`);
       }
-      return;
+      return true;
     }
     case "clock":
       vi.setSystemTime(Date.now() + step.ms);
-      return;
+      return true;
   }
+}
+
+function historyId(world: World): Promise<string> {
+  return runInDurableObject(space(world.spaceId), (_instance, state) => String(state.storage.sql.exec("SELECT value FROM meta WHERE key = 'history_id'").one().value));
 }
 
 async function snapshot(world: World): Promise<void> {
   const atMs = Date.now();
-  await runInDurableObject(space(world.spaceId), (_instance, state) => simulatedPitr.snapshot(state, atMs));
+  const keys = await runInDurableObject(space(world.spaceId), (_instance, state) => {
+    simulatedPitr.snapshot(state, atMs);
+    return state.storage.sql.exec("SELECT hash, incarnation FROM chunks WHERE refcount > 0 AND incarnation IS NOT NULL").toArray().map((row) => chunkKey(world.spaceId, toHex(new Uint8Array(row.hash as ArrayBuffer)), String(row.incarnation)));
+  });
   world.points.push(atMs);
+  world.history.push({ atMs, keys });
 }
 
 interface ChunkRow {
@@ -415,6 +422,10 @@ async function check(world: World): Promise<void> {
     if (row.refcount > 0 && row.state !== ChunkState.LIVE) violations.push(`chunk ${row.hex} has refcount ${row.refcount} in state ${row.state}`);
     if (row.refcount !== (references.get(row.hex) ?? 0)) violations.push(`chunk ${row.hex} has refcount ${row.refcount}, but ${references.get(row.hex) ?? 0} versions use it`);
   }
+  for (const { atMs, keys } of world.history) {
+    if (atMs < Date.now() - 29 * DAY) continue;
+    for (const key of keys) if (retired.has(key) || !r2.objects.has(key)) violations.push(`the state at ${atMs} has a used chunk on ${key}, which is ${retired.has(key) ? "retired" : "gone"}`);
+  }
   for (const hex of references.keys()) if (!rows.some((row) => row.hex === hex)) violations.push(`a version uses chunk ${hex}, which has no row`);
   if (violations.length > 0) throw new Error(violations.join("\n"));
 }
@@ -423,8 +434,12 @@ async function quiesce(world: World): Promise<void> {
   for (const flight of r2.flights.splice(0)) land(flight);
   for (let pass = 0; pass < 3; pass++) {
     await act(world, { t: "clock", ms: 31 * DAY });
-    await act(world, { t: "gc", retire: "ok", del: "ok" });
-    await check(world);
+    for (let runs = 0; ; runs++) {
+      if (runs === 100) throw new Error("garbage collection still reports more work after 100 runs");
+      const report = await runInDurableObject(space(world.spaceId), (instance) => instance.collectGarbage(Date.now()));
+      await check(world);
+      if (!report.more) break;
+    }
   }
   const { rows } = await chunkRows(world);
   const left = rows.filter((row) => row.state !== ChunkState.LIVE || row.refcount === 0).map((row) => `${row.hex} in state ${row.state}`);
@@ -528,18 +543,22 @@ const scenarios: Step[][] = [
 ];
 
 const cases = Number(inject("batteryCases") || 100);
-const settings = { numRuns: cases, examples: [...scenarios, ...(saved as Step[][])].map((sequence): [Step[]] => [sequence]), ...(inject("deterministic") === "true" ? { seed: 0 } : {}) };
+const settings = { numRuns: cases, examples: (saved as Step[][]).map((sequence): [Step[]] => [sequence]), ...(inject("deterministic") === "true" ? { seed: 0 } : {}) };
 
-async function run(sequence: Step[]): Promise<World> {
+async function run(sequence: Step[], directed = false): Promise<World> {
   const world = await newWorld();
-  for (const next of sequence) {
+  for (const [i, next] of sequence.entries()) {
     vi.setSystemTime(Date.now() + 1000);
-    await act(world, next);
+    if (!(await act(world, next)) && directed) throw new Error(`directed step ${i}, ${JSON.stringify(next)}, did not take effect`);
     await snapshot(world);
     await check(world);
   }
   return world;
 }
+
+it("runs each directed scenario with every step taking effect", async () => {
+  for (const scenario of scenarios) await quiesce(await run(scenario, true));
+}, 600_000);
 
 it("keeps every confirmed chunk's object until retirement, whatever order R2, the Account DO, crashes and rewinds take", async () => {
   await fc.assert(fc.asyncProperty(steps, async (sequence) => void (await run(sequence))), settings);
