@@ -589,9 +589,12 @@ mod registry {
     const NO_DEVICE: i32 = 0xe000_02c0_u32 as i32;
     const CHILDREN: u32 = 0b01;
 
-    unsafe fn search(entry: u32, key: &CStr, options: u32) -> Result<Option<Vec<u8>>, String> {
+    unsafe fn search(entry: u32, name: &CStr, options: u32) -> Result<Option<Vec<u8>>, String> {
         unsafe {
-            let key = CFStringCreateWithCString(std::ptr::null(), key.as_ptr(), UTF8);
+            let key = CFStringCreateWithCString(std::ptr::null(), name.as_ptr(), UTF8);
+            if key.is_null() {
+                return Err(format!("{name:?} cannot be made into a registry key"));
+            }
             let found = IORegistryEntrySearchCFProperty(
                 entry,
                 c"IOService".as_ptr(),
@@ -613,9 +616,9 @@ mod registry {
                 let mut buffer = [0 as c_char; 1024];
                 (CFStringGetCString(found, buffer.as_mut_ptr(), buffer.len() as isize, UTF8) != 0)
                     .then(|| Some(CStr::from_ptr(buffer.as_ptr()).to_bytes().to_vec()))
-                    .ok_or_else(|| format!("{key:?} does not fit in {} bytes", buffer.len()))
+                    .ok_or_else(|| format!("{name:?} does not fit in {} bytes", buffer.len()))
             } else {
-                Err(format!("{key:?} is neither data nor a string"))
+                Err(format!("{name:?} is neither data nor a string"))
             };
             CFRelease(found);
             value
@@ -699,7 +702,7 @@ mod registry {
         }
     }
 
-    pub fn attached() -> Result<Vec<(PathBuf, String)>, String> {
+    pub fn attached() -> Result<Vec<(PathBuf, Option<String>)>, String> {
         let mut images = Vec::new();
         for class in [c"IOHDIXHDDrive", c"AppleDiskImageDevice"] {
             let mut drives = 0;
@@ -720,7 +723,10 @@ mod registry {
             .collect::<Result<Vec<_>, String>>();
             unsafe { IOObjectRelease(drives) };
             images.extend(found?.into_iter().filter_map(|(image, name)| {
-                Some((image?, format!("/dev/{}", String::from_utf8_lossy(&name?))))
+                Some((
+                    image?,
+                    name.map(|name| format!("/dev/{}", String::from_utf8_lossy(&name))),
+                ))
             }));
         }
         Ok(images)
@@ -743,15 +749,22 @@ fn resolved(image: &Path) -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn attached_under(base: &Path) -> Result<Vec<Mounted>, String> {
-    Ok(registry::attached()?
+    registry::attached()?
         .into_iter()
         .filter(|(image, _)| resolved(image).is_some_and(|image| image.starts_with(base)))
-        .map(|(image, device)| Mounted {
-            at: base.to_path_buf(),
-            image,
-            device,
+        .map(|(image, device)| {
+            Ok(Mounted {
+                at: base.to_path_buf(),
+                device: device.ok_or_else(|| {
+                    format!(
+                        "{} is attached without a device it can read",
+                        image.display()
+                    )
+                })?,
+                image,
+            })
         })
-        .collect())
+        .collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -1057,7 +1070,9 @@ mod tests {
     fn a_drop_ejects_an_image_of_its_folder_attached_through_another_spelling() {
         let disks = Disks::new().unwrap();
         let image = disks.image("Spelled");
-        let spelled = disks.dir.path().join("Spelled.dmg");
+        let links = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(disks.base(), links.path().join("link")).unwrap();
+        let spelled = links.path().join("link/Spelled.dmg");
         assert_ne!(spelled, image);
         let at = disks.base().join("at");
         fs::create_dir(&at).unwrap();
@@ -1076,12 +1091,8 @@ mod tests {
             device: whole_device(&attached).unwrap(),
         };
         drop(disks);
-        assert_eq!(
-            still_attached(&unrecorded),
-            Ok(false),
-            "{}",
-            unrecorded.device
-        );
+        let backing = image_on(&unrecorded.device).unwrap();
+        assert_ne!(backing, Some(unrecorded.image), "{}", unrecorded.device);
     }
 
     #[cfg(target_os = "macos")]
@@ -1097,7 +1108,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn a_drop_ejects_an_image_of_its_folder_while_a_ram_disk_is_attached() {
-        let ram = disk_images_2_attach("ram://32768".as_ref());
+        let ram = Eject(disk_images_2_attach("ram://32768".as_ref()));
         let disks = Disks::new().unwrap();
         let image = disks.image("BesideRam");
         let at = disks.base().join("at");
@@ -1118,14 +1129,22 @@ mod tests {
         };
         drop(disks);
         let ejected = still_attached(&unrecorded);
-        let ram_image = image_on(&ram);
-        run("diskutil", &["eject".as_ref(), ram.as_ref()]);
         assert_eq!(
-            (ejected, ram_image),
+            (ejected, image_on(&ram.0)),
             (Ok(false), Ok(None)),
             "{}",
             unrecorded.device
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    struct Eject(String);
+
+    #[cfg(target_os = "macos")]
+    impl Drop for Eject {
+        fn drop(&mut self) {
+            let _ = output("diskutil", &["eject".as_ref(), self.0.as_ref()]);
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -1197,8 +1216,8 @@ mod tests {
         );
         disks.detach(&at);
         assert_ne!(
-            image_on(&device),
-            Ok(Some(disks.base().join("Backing.dmg")))
+            image_on(&device).unwrap(),
+            Some(disks.base().join("Backing.dmg"))
         );
         assert_eq!(image_on("/dev/disk999999"), Ok(None));
     }
