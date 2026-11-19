@@ -70,6 +70,10 @@ fn another_devices_edit_after_a_restore_to_an_earlier_backup_leaves_one_file_aft
 
 #[test]
 fn a_rename_after_an_edit_and_a_restore_to_an_earlier_backup_leaves_one_file_after_a_restore() {
+    let _red = expect_red(
+        Check::OneWriteOneNode,
+        "write 2 is in 3 live nodes on the server: [[\"b\"], [\"b (conflict from device-1 2026-11-09)\"], [\"b (conflict from device-2 2026-11-09)\"]]",
+    );
     use Step::*;
     converge(
         3,
@@ -89,6 +93,10 @@ fn a_rename_after_an_edit_and_a_restore_to_an_earlier_backup_leaves_one_file_aft
 
 #[test]
 fn another_devices_rename_before_two_restores_to_earlier_backups_leaves_one_file() {
+    let _red = expect_red(
+        Check::OneWriteOneNode,
+        "write 2 is in 2 live nodes on the server: [[\"a\"], [\"a (conflict from device-0 2026-11-09)\"]]",
+    );
     use Step::*;
     converge(
         3,
@@ -109,6 +117,10 @@ fn another_devices_rename_before_two_restores_to_earlier_backups_leaves_one_file
 
 #[test]
 fn an_edit_after_new_folders_and_a_restore_to_an_earlier_backup_leaves_one_file_after_a_restore() {
+    let _red = expect_red(
+        Check::OneWriteOneNode,
+        "write 2 is in 2 live nodes on the server: [[\"a\"], [\"a (conflict from device-0 2026-11-09 2)\"]]",
+    );
     use Step::*;
     converge(
         2,
@@ -137,6 +149,10 @@ fn an_edit_after_new_folders_and_a_restore_to_an_earlier_backup_leaves_one_file_
 
 #[test]
 fn another_devices_rename_and_edit_leave_one_file_after_two_restores() {
+    let _red = expect_red(
+        Check::OneWriteOneNode,
+        "write 3 is in 2 live nodes on the server: [[\"ß\", \"a\"], [\"ß\", \"a (conflict from device-1 2026-11-09)\"]]",
+    );
     use Step::*;
     converge(
         2,

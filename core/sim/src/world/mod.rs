@@ -51,10 +51,11 @@
 //!   was only in a store that rolled back or on a device that left before sending it, or a server
 //!   commit carried another device's change, unseen by the deleting user, to the file or to a
 //!   folder above it that the delete removed.
-//! - No write is in two files of the server, except one a restore took from the server while a
-//!   disk held it (section 4.4). Until the devices are quiet again, it may be in one file for each
-//!   node that held it, or for each device that held it in a node the restore rolled back to
-//!   other content, and then in the files the server holds it in.
+//! - No write is in two live nodes of the server, unless a user copied it (RFC 0029 section 3.6).
+//!   A restore or a replay excuses none. Where a test records this check as an expected red, a
+//!   write a restore took from the server while a disk held it (section 4.4) may still be in one
+//!   file for each node that held it, or for each device that held it in a node the restore rolled
+//!   back to other content, and then in the files the server holds it in.
 //! - A recovery copy of a write the restore kept shares its source's lineage only when that
 //!   write's retained source version is newer than the copying device's newest own commit the
 //!   server retains from before the server's last restore in the history, and the source holds
@@ -3641,6 +3642,18 @@ impl World {
                 .collect();
             paths.saturating_sub(holders.len() - roots.len())
         };
+        for (write, paths) in &files {
+            if paths.len() < 2 || self.copied.contains(write) {
+                continue;
+            }
+            let why = format!(
+                "write {write} is in {} live nodes on the server: {paths:?}",
+                paths.len()
+            );
+            if !intents::expected(Check::OneWriteOneNode, &why) {
+                return Err(Failure::Diverged(why));
+            }
+        }
         let twice = |(write, paths): &(&i64, &Vec<_>)| {
             lineages(**write, paths.len()) > allowed(**write) && !self.copied.contains(*write)
         };
@@ -3992,6 +4005,13 @@ mod tests {
 
     #[test]
     fn a_recovery_copy_shares_its_source_lineage_only_for_the_write_it_copied() {
+        let in_both = |write: i64| {
+            let why =
+                format!(r#"write {write} is in 2 live nodes on the server: [["b"], ["c.txt"]]"#);
+            expect_red(Check::OneWriteOneNode, &why)
+        };
+        let _copied = in_both(1);
+        let _overwritten = in_both(7);
         let mut world = World::new(1);
         let disk = &mut world.devices[0].disk;
         let copied = content(0, 0, 1);

@@ -270,6 +270,10 @@ fn a_crash_while_a_download_is_quarantined_keeps_writes_across_a_restore() {
 
 #[test]
 fn restores_after_moves_and_edits_on_three_devices_converge() {
+    let _red = expect_red(
+        Check::OneWriteOneNode,
+        "write 2 is in 2 live nodes on the server: [[\"A\"], [\"A (conflict from device-0 2026-11-09 2)\"]]",
+    );
     use koidrive_sim::world::{Reply::*, Step::*};
     converge(
         3,

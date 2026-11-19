@@ -282,6 +282,10 @@ fn a_folder_another_device_renames_after_the_delete_keeps_its_file_once_moved_ou
 
 #[test]
 fn a_deleted_conflict_copy_leaves_the_original_with_the_same_write() {
+    let _red = expect_red(
+        Check::OneWriteOneNode,
+        "write 2 is in 2 live nodes on the server: [[\"c (conflict from device-1 2026-11-09).txt\"], [\"c.txt\"]]",
+    );
     checked(
         3,
         &[
