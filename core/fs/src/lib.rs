@@ -4399,7 +4399,7 @@ mod trash;
 
 pub use effect::{
     Action, BroughtBack, Contents, Displaced, Effect, Outcome, QUARANTINE_DIR, Reason, Refusal,
-    STAGING_DIR, Section, Step,
+    STAGING_DIR, Section, Step, platform_file,
 };
 pub use ignore::{Coverage, Ignore, Ignored, Rules};
 use ignore::{Key, Pending, RulesRead, Seeded, Wanted};

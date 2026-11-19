@@ -56,9 +56,9 @@ use koidrive_engine::tree::{Content, Kind, LocalNode, NodeId};
 use koidrive_fs::{
     Action, Base, BroughtBack, Contents, Ctime, Dir, Displaced, Effect, Entry, EntryKind, FileId,
     Known, Location, Marker, Minted, Outcome, Reason, Reclaimed, Refusal, RootAt, RootProblem,
-    RootTokens, Rotation, Space, Step, Unresolved, check_root_at, open_root_folder, root_at,
+    RootTokens, Rotation, Space, Step, Unresolved, check_root_at, open_root_folder, platform_file,
+    root_at,
 };
-use koidrive_ignore::PLATFORM_FILES;
 use koidrive_net::{CallError, ChunkError, Session, StopReason, Transfer};
 use koidrive_proto::v1::error::Code;
 use koidrive_proto::v1::{ChunkRef, Commit, VersionInfo, op};
@@ -1961,10 +1961,7 @@ fn emptied_kept_folders(
         let Some(id) = local_at(trees, path) else {
             continue;
         };
-        if trees.remote().live(&id).is_some()
-            || trees.local_children(&id).next().is_some()
-            || (trees.local().get(&id)).is_none_or(|node| node.shape.kind != Kind::Dir)
-        {
+        if !trees.kept_folder(&id) {
             continue;
         }
         let Some((base, dirs)) = folder_at(trees, &id) else {
@@ -1977,7 +1974,11 @@ fn emptied_kept_folders(
             ) => continue,
             Err(unresolved) => return Err(Stop::Io(unresolved.into())),
         };
-        if (entries.iter()).all(|(name, _)| PLATFORM_FILES.iter().any(|file| name == file)) {
+        let left: Option<Vec<&str>> = (entries.iter())
+            .filter(|(name, kind)| !platform_file(name, *kind))
+            .map(|(name, kind)| name.to_str().filter(|_| *kind == Some(EntryKind::File)))
+            .collect();
+        if left.is_some_and(|left| trees.emptied_kept_folder(&id, &left)) {
             emptied.push(id);
         }
     }

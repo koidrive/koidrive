@@ -1748,3 +1748,103 @@ fn a_system_folder_the_server_refuses_to_delete_at_once_is_deleted_in_pieces() {
     let refused = (b.sent.iter()).filter(|commit| !remote.results.contains_key(&commit.commit_id));
     assert!(refused.count() > 0);
 }
+
+#[test]
+fn a_kept_folder_goes_to_the_trash_once_only_platform_files_are_left() {
+    let (mut remote, _, _, site, mut b, _) =
+        deleted_with_ignored_entries(&["README.md"], &[".env"]);
+    fs::write(site.root.join("app/.DS_Store"), b"finder").unwrap();
+    b.settle();
+    b.run(&mut remote);
+    assert!(site.root.join("app").exists());
+
+    fs::remove_file(site.root.join("app/.env")).unwrap();
+    b.settle();
+    b.run(&mut remote);
+
+    assert!(!site.root.join("app").exists());
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert!(remote.names().is_empty());
+}
+
+#[test]
+fn a_kept_folder_holding_a_platform_name_that_is_no_file_stays_kept_without_planning_again() {
+    for entry in ["dir", "link"] {
+        let (mut remote, _, _, site, mut b, _) =
+            deleted_with_ignored_entries(&["README.md"], &[".env"]);
+        let held = match entry {
+            "dir" => {
+                let held = site.root.join("app/.DS_Store");
+                fs::create_dir(&held).unwrap();
+                fs::write(held.join("photo.jpg"), b"photo").unwrap();
+                held
+            }
+            _ => {
+                let held = site.root.join("app/Thumbs.db");
+                std::os::unix::fs::symlink("/etc/hosts", &held).unwrap();
+                held
+            }
+        };
+        b.settle();
+        fs::rename(site.root.join("app/.env"), site.root.join("moved.env")).unwrap();
+        b.settle();
+        b.run(&mut remote);
+
+        let plans = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = plans.clone();
+        b.folder.disk.set_hook(Box::new(move |cut| {
+            if cut == crate::disk::Cut::AfterPlan {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }));
+        for _ in 0..10 {
+            b.scan(Duration::from_millis(100));
+            b.run(&mut remote);
+        }
+        assert_eq!(
+            plans.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "{entry}"
+        );
+        assert!(fs::symlink_metadata(&held).is_ok(), "{entry}");
+        assert_eq!(remote.names(), ["moved.env"], "{entry}");
+    }
+}
+
+#[test]
+fn a_kept_folder_goes_to_the_trash_with_the_rules_files_it_kept_unedited() {
+    for (rules, ignored, gone, edited) in [
+        (".koiignore", ".env", "app/.env", false),
+        (
+            ".gitignore",
+            "node_modules/pkg/index.js",
+            "app/node_modules",
+            false,
+        ),
+        (".koiignore", ".env", "app/.env", true),
+    ] {
+        let content = format!("{}\n", ignored.split('/').next().unwrap());
+        let (mut remote, _, _, site, mut b, _) =
+            deleted_with_rules_files(&[(rules, &content)], &["README.md"], &[ignored]);
+        if edited {
+            fs::write(
+                site.root.join("app").join(rules),
+                format!("{content}*.tmp\n"),
+            )
+            .unwrap();
+            b.settle();
+        }
+        let gone = site.root.join(gone);
+        match gone.is_dir() {
+            true => fs::remove_dir_all(&gone).unwrap(),
+            false => fs::remove_file(&gone).unwrap(),
+        }
+        for _ in 0..3 {
+            b.settle();
+            b.run(&mut remote);
+        }
+        assert_eq!(site.root.join("app").exists(), edited, "{rules}");
+        assert!(b.sent.is_empty(), "{rules}: {:?}", b.sent);
+        assert!(remote.names().is_empty(), "{rules}");
+    }
+}

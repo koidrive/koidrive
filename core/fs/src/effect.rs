@@ -1230,21 +1230,25 @@ fn held(parent: BorrowedFd<'_>, name: &OsStr, along: &[Displaced]) -> io::Result
             }
             continue;
         }
-        let platform = PLATFORM_FILES.iter().any(|file| name == OsStr::new(file));
         let Some(stat) = lookup(dir.as_fd(), &name)? else {
             continue;
         };
-        let file_type = stat.file_type;
-        if !platform || file_type != FileType::RegularFile {
-            let kind = match file_type {
-                FileType::Directory => Some(EntryKind::Dir),
-                FileType::RegularFile => Some(EntryKind::File),
-                _ => None,
-            };
+        let kind = match stat.file_type {
+            FileType::Directory => Some(EntryKind::Dir),
+            FileType::RegularFile => Some(EntryKind::File),
+            _ => None,
+        };
+        if !platform_file(&name, kind) {
             held.push((name, kind));
         }
     }
     Ok((!held.is_empty()).then_some(Reason::Holds(held)))
+}
+
+/// Whether a folder's removal clears this entry away with the folder: a regular file named in [`PLATFORM_FILES`].
+/// Any other entry makes the removal refuse with [`Reason::Holds`].
+pub fn platform_file(name: &OsStr, kind: Option<EntryKind>) -> bool {
+    kind == Some(EntryKind::File) && PLATFORM_FILES.iter().any(|file| name == OsStr::new(file))
 }
 
 fn clear_platform_files(quarantine: BorrowedFd<'_>, id: &OsStr) -> io::Result<()> {

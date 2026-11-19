@@ -704,7 +704,6 @@ impl Device {
         Ok(())
     }
 
-    /// Takes up the delete of each kept folder a scan lists empty, as the driver does for the folders a scan reads.
     pub fn relist_kept_folders(&mut self) {
         let trees = &mut self.engine.trees;
         let emptied: Vec<NodeId> = (trees.local().iter())
