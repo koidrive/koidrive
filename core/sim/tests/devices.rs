@@ -12874,13 +12874,13 @@ fn two_downloads_of_the_same_bytes_swapped_while_their_device_is_down() -> World
 
 #[test]
 fn a_restart_that_takes_the_other_download_leaves_each_file_to_the_node_it_holds() {
-    for deleted in ["a", "c (conflict from device-0"] {
+    for deleted in ["a", "c.txt"] {
         let mut world = two_downloads_of_the_same_bytes_swapped_while_their_device_is_down();
         world.phase(0, &[]).unwrap();
         assert!(
             world
                 .seen
-                .contains_key("restart takes a file of the user for the download")
+                .contains_key("restart finds the effect in flight done")
         );
         let delete = at_entry(&world, 0, deleted, 4, 0);
         world.phase(1, &[(0, delete)]).unwrap();
@@ -12889,15 +12889,21 @@ fn a_restart_that_takes_the_other_download_leaves_each_file_to_the_node_it_holds
 
 #[test]
 fn a_server_that_copies_the_download_a_restart_took_for_a_new_file_is_caught() {
-    let mut world = two_downloads_of_the_same_bytes_swapped_while_their_device_is_down();
+    use Step::*;
+    let mut world = on(&[Precision::Fine; 3]);
+    let made = [
+        (0, u(1, 0, 0, 2, 0)),
+        (0, Work(0)),
+        (0, Work(0)),
+        (0, Work(0)),
+    ];
+    let downloaded = [(2, Work(0)), (2, Work(0)), (2, CopyStore)];
+    world.phase(0, &[&made[..], &downloaded].concat()).unwrap();
     world.space_mut().copy_each_created_file();
-    let failure = world.phase(0, &[]).unwrap_err();
-    assert!(
-        failure
-            .to_string()
-            .contains("write 1 is in 3 live nodes on the server"),
-        "{failure}"
-    );
+    let renamed = [(2, RollBack), (2, u(3, 0, 0, 0, 0))];
+    let failure = world.phase(1, &renamed).unwrap_err().to_string();
+    let expected = "write 1 is in 3 live nodes on the server";
+    assert!(failure.contains(expected), "{failure}");
 }
 
 #[test]
@@ -12966,7 +12972,7 @@ fn a_download_its_user_moved_before_the_restart_is_a_new_file_to_delete() {
     assert!(
         world
             .seen
-            .contains_key("restart finds the effect in flight not done")
+            .contains_key("restart finds the effect in flight done")
     );
     let delete = at_entry(&world, 0, "b", 4, 0);
     world.phase(1, &[(0, delete)]).unwrap();

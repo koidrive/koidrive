@@ -112,7 +112,9 @@ fn recover(root: &Path, effects: &[Effect]) -> Vec<Outcome> {
     for effect in effects {
         section.recover(effect, &mut Bytes, now()).unwrap();
     }
-    section.finish().unwrap()
+    let outcomes = section.finish().unwrap();
+    space.clear_staging(None).unwrap();
+    outcomes
 }
 
 fn done(outcomes: &[Outcome]) -> Vec<bool> {
