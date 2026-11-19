@@ -1016,14 +1016,14 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
     }
 
     private async commit(session: Session, commit: Commit): Promise<{ result: CommitResult; record?: CommitRecord }> {
-      const marking = commit.ops.findIndex((each) => each.op.case === "markGitTracked");
-      if (marking >= 0 && !this.features().has(GIT_TRACKED)) fail(Error_Code.INVALID_ARGUMENT, `op ${marking} needs the feature ${GIT_TRACKED}, which this server has off`);
       const digests = await commitDigests(commit);
       const stored = this.checkCommitOrder(session.deviceId, commit, digests);
       if (stored) {
         await this.armAfterCommit();
         return { result: stored };
       }
+      const marking = commit.ops.findIndex((each) => each.op.case === "markGitTracked");
+      if (marking >= 0 && !this.features().has(GIT_TRACKED)) fail(Error_Code.INVALID_ARGUMENT, `op ${marking} needs the feature ${GIT_TRACKED}, which this server has off`);
       this.checkCanWrite(session);
       if (!isUuidV7(commit.commitId)) fail(Error_Code.INVALID_ARGUMENT, "commit_id must be a UUIDv7");
       if (commit.ops.length === 0) fail(Error_Code.INVALID_ARGUMENT, "a commit needs at least one op");

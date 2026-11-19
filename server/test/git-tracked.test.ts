@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { create } from "@bufbuild/protobuf";
+import { clone, create } from "@bufbuild/protobuf";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { type CommitResult, CommitSchema, type Op, OpResult_Code, OpSchema } from "../src/gen/koidrive/v1/commit_pb";
+import { type CommitResult, CommitResultSchema, CommitSchema, type Op, OpResult_Code, OpSchema } from "../src/gen/koidrive/v1/commit_pb";
 import { type ChangeRecord, type NodeState } from "../src/gen/koidrive/v1/model_pb";
 import { Error_Code } from "../src/gen/koidrive/v1/rpc_pb";
 import { configuredFeatures } from "../src/features";
@@ -207,6 +207,22 @@ describe("RFC 0033 section 2 rule 9: the git_tracked feature", () => {
       marked: state.storage.sql.exec("SELECT git_tracked FROM nodes WHERE node_id = ?", nodeId).one().git_tracked,
     }));
     expect(stored).toEqual({ head: Number(result.seq), marked: 0 });
+  });
+
+  it("returns the stored result to a resend of a mark applied while on, and accepts the device's next commit", async () => {
+    const space = await newSpace();
+    const a = await client(space, "Laptop");
+    const { nodeId } = await createFile(a, space.spaceId, "app.js");
+    const marking = uuidv7();
+    const marked = await a.commit([mark(nodeId)], { commitId: marking });
+    const [resent, next] = await withFeatures(space.stub, "-git_tracked", async () => [
+      await a.commitRaw([mark(nodeId)], { commitId: marking }),
+      await a.commitRaw([op.mkdir(uuidv7(), space.spaceId, "x")]),
+    ]);
+    const unmarked = clone(CommitResultSchema, marked);
+    Object.assign(stateOf(unmarked.changes, nodeId)!, { gitTracked: false, gitTrackedRev: 0n });
+    expect(resent).toEqual({ case: "commit", value: unmarked });
+    expect(next.case === "commit" && next.value.seq).toBe(marked.seq + 1n);
   });
 
   it("leaves the fields out of every record and page on a connection whose Welcome lacks the feature", async () => {
