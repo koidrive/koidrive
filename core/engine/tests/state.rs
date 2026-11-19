@@ -118,6 +118,7 @@ fn trees_state() -> TreesState {
         lost_shapes: [("a".into(), dir(ROOT, "x"))].into(),
         outside: ["a".into()].into(),
         lost: ["a".into()].into(),
+        found: [("a".into(), "build/a".into())].into(),
         displaced: Default::default(),
         missing: Default::default(),
         edited_here: [("a".into(), 1)].into(),
@@ -612,6 +613,14 @@ fn trees_restore_a_valid_state_and_refuse_each_broken_one() {
                 state.outside.insert("t".into());
             }),
             StateError::NotIgnoredLocal("t".into()),
+        ),
+        (
+            "a found place of a node that is not recorded",
+            trees(),
+            broken(trees_state(), |state| {
+                state.found.insert("b".into(), "build/b".into());
+            }),
+            StateError::NotIgnoredLocal("b".into()),
         ),
         (
             "a folder the disk lost that is not recorded",

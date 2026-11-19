@@ -6,6 +6,9 @@
 //! and the mass-delete guard in [`crate::questions`].
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
+use std::path::PathBuf;
 
 use koidrive_engine::classify::{Origin, Waiting};
 use koidrive_engine::commit::{Halt, InFlight, Slot};
@@ -275,7 +278,7 @@ impl Tx<'_> {
                 .insert(NodeId::from(row.get::<_, String>(0)?));
         }
         let mut stmt = self.0.prepare_cached(
-            "SELECT node_id, ino, ino_high, birth_ns, lost, handle FROM recorded_nodes",
+            "SELECT node_id, ino, ino_high, birth_ns, lost, handle, found FROM recorded_nodes",
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
@@ -292,6 +295,10 @@ impl Tx<'_> {
                 None => {
                     if row.get(4)? {
                         state.trees.lost.insert(node.clone());
+                    }
+                    if let Some(found) = row.get::<_, Option<Vec<u8>>>(6)? {
+                        let found = PathBuf::from(OsStr::from_bytes(&found));
+                        state.trees.found.insert(node.clone(), found);
                     }
                     state.trees.outside.insert(node);
                 }
@@ -717,6 +724,7 @@ impl Tx<'_> {
             lost_shapes,
             outside,
             lost,
+            found,
             displaced,
             missing,
             edited_here,
@@ -918,7 +926,7 @@ impl Tx<'_> {
                 ])
             },
         )?;
-        self.write_recorded(outside, lost, displaced)?;
+        self.write_recorded(outside, lost, found, displaced)?;
         self.write_set(
             missing,
             "DELETE FROM missing_nodes WHERE node_id = ?1",
@@ -1329,6 +1337,7 @@ impl Tx<'_> {
         &self,
         outside: &SetChanges<NodeId>,
         lost: &SetChanges<NodeId>,
+        found: &MapChanges<NodeId, PathBuf>,
         displaced: &MapChanges<NodeId, FileIdentity>,
     ) -> Result<()> {
         let mut remove = self
@@ -1369,6 +1378,15 @@ impl Tx<'_> {
         for (node, held) in lost {
             let node = node.to_string();
             mark.execute(params![node, held])?;
+        }
+        let mut place = self.0.prepare_cached(
+            "UPDATE recorded_nodes SET found = ?2 WHERE node_id = ?1 AND displaced = 0",
+        )?;
+        for (node, at) in found {
+            place.execute(params![
+                node,
+                at.as_ref().map(|at| at.as_os_str().as_bytes())
+            ])?;
         }
         Ok(())
     }

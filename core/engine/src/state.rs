@@ -12,6 +12,7 @@
 //! [`Trees::set_synced`]: crate::classify::Trees::set_synced
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use crate::classify::Waiting;
 use crate::commit::{Halt, InFlight, Slot};
@@ -255,6 +256,8 @@ pub struct TreesState {
     pub outside: BTreeSet<NodeId>,
     /// The folders of `outside` that the disk lost, which L keeps only for what is recorded below them.
     pub lost: BTreeSet<NodeId>,
+    /// Where the search of the ignored folders last found each node of `outside`, by its path relative to the root.
+    pub found: BTreeMap<NodeId, PathBuf>,
     /// The nodes whose local copy is in an ignored folder and whose name in L another entry took, each with the
     /// identity L held for it. L holds none of them, and R holds each live.
     pub displaced: BTreeMap<NodeId, FileIdentity>,
@@ -490,6 +493,7 @@ pub struct TreesChanges {
     pub lost_shapes: MapChanges<NodeId, Shape>,
     pub outside: SetChanges<NodeId>,
     pub lost: SetChanges<NodeId>,
+    pub found: MapChanges<NodeId, PathBuf>,
     pub displaced: MapChanges<NodeId, FileIdentity>,
     pub missing: SetChanges<NodeId>,
     pub edited_here: MapChanges<NodeId, u64>,
@@ -536,6 +540,7 @@ impl TreesChanges {
             lost_shapes,
             outside,
             lost,
+            found,
             displaced,
             missing,
             edited_here,
@@ -578,6 +583,7 @@ impl TreesChanges {
             lost_shapes: map_changes(&before.lost_shapes, lost_shapes),
             outside: set_changes(&before.outside, outside),
             lost: set_changes(&before.lost, lost),
+            found: map_changes(&before.found, found),
             displaced: map_changes(&before.displaced, displaced),
             missing: set_changes(&before.missing, missing),
             edited_here: map_changes(&before.edited_here, edited_here),

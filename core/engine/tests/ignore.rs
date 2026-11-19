@@ -434,6 +434,22 @@ fn a_displaced_node_r_does_not_hold_live_is_not_recorded() {
 }
 
 #[test]
+fn a_recorded_node_keeps_where_it_was_found_until_it_leaves_the_ignored_folder() {
+    let mut trees = trees(&[synced("a", file(ROOT, "a.txt", 1))]);
+    trees.find_local("a", "build/a.txt".into());
+    assert!(trees.found_local().is_empty());
+    trees.ignore_local("a");
+    trees.find_local("a", "build/a.txt".into());
+    let found = [("a".to_owned(), "build/a.txt".into())].into();
+    assert_eq!(trees.found_local(), &found);
+    trees.ignore_local("a");
+    assert!(trees.found_local().is_empty());
+    trees.find_local("a", "build/a.txt".into());
+    place(&mut trees, "a", ROOT, "back.txt");
+    assert!(trees.found_local().is_empty());
+}
+
+#[test]
 fn a_file_moved_into_an_ignored_folder_that_is_no_node_stays_on_the_server_as_it_was() {
     let mut trees = trees(&[
         synced("d", dir(ROOT, "d")),
