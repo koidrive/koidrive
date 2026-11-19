@@ -188,18 +188,6 @@ class ChangedIo(unittest.TestCase):
         ]:
             self.assertEqual(list(guard.new_suppressions("", text)), [], text)
 
-    def test_the_lifecycle_exception_pins_the_exact_function_and_method(self):
-        policy = guard.LIFECYCLE_EXCEPTION
-        text = (guard.ROOT / policy["file"]).read_text()
-        item = diagnostic(path=policy["file"], start=policy["line"])
-        item["message"] = "use of a disallowed method `std::fs::rename`"
-        self.assertFalse(guard.introduced(item, {policy["file"]: (text, text)}))
-        changed = text.replace('with_extension("json.tmp")', 'with_extension("other.tmp")', 1)
-        self.assertNotEqual(text, changed)
-        self.assertTrue(guard.introduced(item, {policy["file"]: (text, changed)}))
-        item["message"] = "use of a disallowed method `std::fs::write`"
-        self.assertTrue(guard.introduced(item, {policy["file"]: (text, text)}))
-
     def test_state_io_gates_the_required_ci_report(self):
         workflow = (guard.ROOT / ".github/workflows/ci.yml").read_text()
         job = workflow.split("\n  state-io:\n", 1)[1].split("\n  ci-report:\n", 1)[0]

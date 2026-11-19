@@ -377,7 +377,7 @@ pub(super) fn prune_runtime(paths: &Paths) {
 
 pub(super) fn strip_path_line(profile: &Path) -> io::Result<bool> {
     crate::lifeline::confine(profile)?;
-    let text = match fs::read_to_string(profile) {
+    let text = match koidrive_state_file::read_following(profile) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         other => other?,
     };

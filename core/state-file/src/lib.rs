@@ -259,8 +259,9 @@ impl Drop for FailingSyncs {
 }
 
 /// Opens `path`, relative to `dir`, with the access and options in `flags`, and returns it only when it is a regular
-/// file. The open never waits, as an open of a FIFO would for its other end. A folder fails with
-/// [`io::ErrorKind::IsADirectory`], as [`std::fs::read`] does, and an entry of any other kind with
+/// file. The open never waits, as an open of a FIFO would for its other end, never takes a terminal as the controlling
+/// terminal, and never follows a symlink at the last component. A folder fails with [`io::ErrorKind::IsADirectory`],
+/// as [`std::fs::read`] does, and an entry of any other kind, a symlink included, with
 /// [`io::ErrorKind::InvalidInput`].
 pub fn open_regular(
     dir: impl AsFd,
@@ -277,11 +278,25 @@ pub fn create_regular(
     flags: OFlags,
     mode: Mode,
 ) -> io::Result<File> {
-    let flags = flags | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    regular(fs::openat(
+        dir,
+        path,
+        flags | OFlags::NOFOLLOW | NEVER_WAITING,
+        mode,
+    ))
+}
+
+const NEVER_WAITING: OFlags = OFlags::NONBLOCK
+    .union(OFlags::NOCTTY)
+    .union(OFlags::CLOEXEC);
+
+fn regular(opened: rustix::io::Result<std::os::fd::OwnedFd>) -> io::Result<File> {
     let not_regular = || io::Error::new(io::ErrorKind::InvalidInput, "not a regular file");
-    let file = match fs::openat(dir, path, flags, mode) {
+    let file = match opened {
         Ok(file) => File::from(file),
-        Err(rustix::io::Errno::NXIO) => return Err(not_regular()),
+        Err(rustix::io::Errno::NXIO | rustix::io::Errno::LOOP | rustix::io::Errno::OPNOTSUPP) => {
+            return Err(not_regular());
+        }
         Err(error) => return Err(error.into()),
     };
     let metadata = file.metadata()?;
@@ -303,8 +318,24 @@ pub fn read(path: &Path) -> io::Result<Vec<u8>> {
 
 /// [`std::fs::read_to_string`] through [`open_regular`].
 pub fn read_to_string(path: &Path) -> io::Result<String> {
-    String::from_utf8(read(path)?)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    utf8(read(path)?)
+}
+
+/// [`read_to_string`] that follows a symlink at the last component, for a file the user keeps and may link from
+/// elsewhere, as dotfile managers do.
+pub fn read_following(path: &Path) -> io::Result<String> {
+    let mut bytes = Vec::new();
+    regular(fs::open(
+        path,
+        OFlags::RDONLY | NEVER_WAITING,
+        Mode::empty(),
+    ))?
+    .read_to_end(&mut bytes)?;
+    utf8(bytes)
+}
+
+fn utf8(bytes: Vec<u8>) -> io::Result<String> {
+    String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 /// Replaces a state file with complete, synced bytes using [`AtomicFile`].
@@ -515,7 +546,9 @@ fn matching_legacy(
     Ok(names)
 }
 
-fn open_directory(dir: &Path) -> io::Result<File> {
+/// Opens the folder `dir`, to sync it. An entry that is not a folder fails without being opened, so the open never
+/// waits on a FIFO.
+pub fn open_directory(dir: &Path) -> io::Result<File> {
     Ok(File::from(fs::open(
         dir,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,

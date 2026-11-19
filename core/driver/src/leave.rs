@@ -39,7 +39,7 @@ pub(crate) fn sync_dir(dir: &File) -> io::Result<()> {
 
 pub(crate) fn sync_parent(path: &Path) -> io::Result<()> {
     for parent in path.ancestors().skip(1) {
-        match File::open(parent) {
+        match koidrive_state_file::open_directory(parent) {
             Ok(dir) => return sync_dir(&dir),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),

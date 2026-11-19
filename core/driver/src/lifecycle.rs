@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fs::{self, File};
+use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LockResult, Mutex, MutexGuard};
 
-use koidrive_state_file::Published;
 use koidrive_telemetry::schema::Age;
 use koidrive_telemetry::{Event, Recorder};
 use serde::{Deserialize, Serialize};
@@ -317,17 +316,18 @@ impl Lifecycle {
     fn save(&self, checkpoint: &Checkpoint) -> io::Result<()> {
         let temp = self.path.with_extension("json.tmp");
         let result = (|| {
+            match fs::remove_file(&temp) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                _ => {}
+            }
             let flags =
-                rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::CREATE | rustix::fs::OFlags::TRUNC;
+                rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::CREATE | rustix::fs::OFlags::EXCL;
             let mode = rustix::fs::Mode::from_raw_mode(0o600);
             let mut file =
                 koidrive_state_file::create_regular(rustix::fs::CWD, &temp, flags, mode)?;
             file.write_all(&serde_json::to_vec(checkpoint)?)?;
             file.sync_all()?;
-            fs::rename(&temp, &self.path)?;
-            let durable = File::open(self.path.parent().unwrap())
-                .and_then(|dir| koidrive_state_file::sync_published(&dir));
-            Published { value: (), durable }.warn_unless_durable(&self.path);
+            koidrive_state_file::rename(&temp, &self.path)?.warn_unless_durable(&self.path);
             Ok(())
         })();
         if result.is_err() {
@@ -619,6 +619,20 @@ mod tests {
         let reopened = Lifecycle::open(&store, status(), Recorder::off());
         let halt = reopened.health(koidrive_telemetry::now()).halt.unwrap();
         assert_eq!(halt.why, Some(Halted::Store));
+    }
+
+    #[test]
+    fn a_save_never_writes_through_a_link_at_its_stage() {
+        let (dir, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let store = dir.path().join("store.sqlite");
+        let kept = outside.path().join("doc.txt");
+        fs::write(&kept, b"mine").unwrap();
+        std::os::unix::fs::symlink(&kept, store.with_file_name("lifecycle.json.tmp")).unwrap();
+        let lifecycle = Lifecycle::open(&store, status(), Recorder::off());
+        lifecycle.restart().unwrap();
+        assert_eq!(fs::read(&kept).unwrap(), b"mine");
+        let saved = fs::symlink_metadata(store.with_file_name("lifecycle.json")).unwrap();
+        assert!(saved.is_file());
     }
 
     #[test]

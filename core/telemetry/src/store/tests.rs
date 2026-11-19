@@ -27,15 +27,24 @@ fn commands(batch: &Batch) -> BTreeMap<String, u64> {
 
 #[test]
 fn a_lock_that_is_not_a_file_fails_without_waiting_on_it() {
-    let dir = tempfile::tempdir().unwrap();
-    fs::create_dir_all(dir.path().join("telemetry")).unwrap();
-    koidrive_test_support::make_fifo(&dir.path().join("telemetry/lock"));
-    let state = dir.path().to_path_buf();
-    let set = koidrive_test_support::without_waiting(move || Store::new(&state).set(true).err());
-    assert_eq!(
-        set.map(|error| error.kind()),
-        Some(io::ErrorKind::InvalidInput)
-    );
+    let outside = tempfile::tempdir().unwrap();
+    for linked in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("telemetry/lock");
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        match linked {
+            true => std::os::unix::fs::symlink(outside.path().join("lock"), &lock).unwrap(),
+            false => koidrive_test_support::make_fifo(&lock),
+        }
+        let state = dir.path().to_path_buf();
+        let set =
+            koidrive_test_support::without_waiting(move || Store::new(&state).set(true).err());
+        assert_eq!(
+            set.map(|error| error.kind()),
+            Some(io::ErrorKind::InvalidInput)
+        );
+    }
+    assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
 }
 
 #[test]

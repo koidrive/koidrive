@@ -117,6 +117,11 @@ pub enum Error {
         koidrive_fs::quoted(.0)
     )]
     LogNotApplied(PathBuf),
+    #[error("cannot open {}: {source}", koidrive_fs::quoted(.path))]
+    Unopenable {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("the database did not accept the durability settings: {0:?}")]
     NotDurable(Durability),
     #[error("the stored engine state is invalid: {0}")]
@@ -281,6 +286,7 @@ impl Store {
     }
 
     fn open_with(path: &Path, flags: OpenFlags) -> Result<Self> {
+        refuse_non_files(path)?;
         let written_ns = written_ns(path);
         let conn = Connection::open_with_flags(path, flags)?;
         conn.busy_timeout(Duration::from_secs(5))?;
@@ -303,6 +309,7 @@ impl Store {
     /// still holds changes, which only a writable open applies.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
+        refuse_non_files(path)?;
         let mut log = path.as_os_str().to_owned();
         log.push("-wal");
         let log = PathBuf::from(log);
@@ -1165,6 +1172,25 @@ fn read_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<CachedChunk> {
         size: row.get(1)?,
         last_used_ms: row.get(2)?,
     })
+}
+
+fn refuse_non_files(path: &Path) -> Result<()> {
+    for suffix in ["", "-wal", "-shm"] {
+        let mut file = path.as_os_str().to_owned();
+        file.push(suffix);
+        let file = PathBuf::from(file);
+        match koidrive_state_file::open_regular(rustix::fs::CWD, &file, rustix::fs::OFlags::RDONLY)
+        {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(Error::Unopenable {
+                    path: file,
+                    source: error,
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn written_ns(path: &Path) -> Option<i128> {

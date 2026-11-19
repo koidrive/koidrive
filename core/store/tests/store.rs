@@ -3264,3 +3264,23 @@ fn an_upgrade_bounds_change_times_by_the_last_write_before_it_on_every_open() {
         }
     }
 }
+
+#[test]
+fn a_store_whose_files_are_not_files_is_refused_without_waiting_on_them() {
+    for companion in ["", "-wal", "-shm"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.sqlite");
+        drop(Store::open(&path).unwrap());
+        let fifo = dir.path().join(format!("store.sqlite{companion}"));
+        let _ = std::fs::remove_file(&fifo);
+        koidrive_test_support::make_fifo(&fifo);
+        let refused = koidrive_test_support::without_waiting(move || {
+            [
+                Store::open(&path).is_err(),
+                Store::open_existing(&path).is_err(),
+                Store::open_read_only(&path).is_err(),
+            ]
+        });
+        assert_eq!(refused, [true; 3], "store.sqlite{companion}");
+    }
+}

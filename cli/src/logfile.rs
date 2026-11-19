@@ -53,7 +53,7 @@ impl CappedLog {
     }
 
     fn rotate(&self) -> io::Result<File> {
-        fs::rename(&self.path, previous(&self.path))?;
+        let _ = koidrive_state_file::rename(&self.path, &previous(&self.path))?;
         let flags = OFlags::WRONLY | OFlags::APPEND | OFlags::CREATE;
         let new = koidrive_state_file::create_regular(
             rustix::fs::CWD,

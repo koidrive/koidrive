@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -136,7 +136,7 @@ impl Timing {
                 .open(&path)?;
             write!(file, "{linked_ms} {}", fingerprint(&install))?;
             file.sync_all()?;
-            File::open(path.parent().unwrap())?.sync_all()
+            koidrive_state_file::open_directory(path.parent().unwrap())?.sync_all()
         })();
     }
 
@@ -215,7 +215,7 @@ impl Timing {
         if fs::remove_file(&first.path).is_err() {
             return;
         }
-        if File::open(first.path.parent().unwrap())
+        if koidrive_state_file::open_directory(first.path.parent().unwrap())
             .and_then(|dir| dir.sync_all())
             .is_err()
         {

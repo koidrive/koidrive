@@ -417,7 +417,8 @@ impl CredentialFiles {
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
             Err(err) => return Err(err),
         }
-        File::open(self.path.parent().unwrap_or(Path::new(".")))?.sync_all()
+        koidrive_state_file::open_directory(self.path.parent().unwrap_or(Path::new(".")))?
+            .sync_all()
     }
 }
 

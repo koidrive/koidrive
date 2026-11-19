@@ -763,6 +763,7 @@ fn state_records_that_are_not_files_are_refused_without_waiting_on_them() {
         paths.credential(),
         paths.state_dir.join("leaving"),
         owner,
+        paths.store("0123abcd").unwrap(),
     ];
     for record in &records {
         fs::create_dir_all(record.parent().unwrap()).unwrap();
@@ -775,9 +776,11 @@ fn state_records_that_are_not_files_are_refused_without_waiting_on_them() {
             crate::credential::Credential::load(&paths.credential()).is_err(),
             crate::leave::Leaving::load(&paths.state_dir).is_err(),
             claim::owner(&root).is_err(),
+            Driver::linked_folders(&paths)
+                .is_ok_and(|folders| folders.len() == 1 && folders[0].problem.is_some()),
         ]
     });
-    assert_eq!(refused, [true; 4]);
+    assert_eq!(refused, [true; 5]);
 }
 
 #[test]

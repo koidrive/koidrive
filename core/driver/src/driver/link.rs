@@ -355,7 +355,7 @@ impl Driver {
         }
         claim::set_owner(&root, &owner).map_err(io_error(&root))?;
         let linked_started = crate::timing::Time::now();
-        let found = fs::File::open(&root)
+        let found = koidrive_state_file::open_directory(&root)
             .and_then(|dir| root_at(dir.as_fd()))
             .map_err(io_error(&root))?;
         let link = Link {

@@ -251,11 +251,13 @@ fn command_locations(home: &Path, also: &[PathBuf], binary: &Path) -> Vec<PathBu
 }
 
 pub(super) fn is_koi(binary: &Path) -> bool {
-    koidrive_state_file::read(binary).is_ok_and(|bytes| {
-        bytes
-            .windows(KOI_MARK.len())
-            .any(|window| window == KOI_MARK)
-    })
+    fs::canonicalize(binary)
+        .and_then(|binary| koidrive_state_file::read(&binary))
+        .is_ok_and(|bytes| {
+            bytes
+                .windows(KOI_MARK.len())
+                .any(|window| window == KOI_MARK)
+        })
 }
 
 fn profiles(home: &Path) -> Vec<PathBuf> {
@@ -284,7 +286,7 @@ pub(super) fn is_path_line(line: &str) -> bool {
 }
 
 fn has_path_line(profile: &Path) -> bool {
-    fs::read_to_string(profile).is_ok_and(|text| text.lines().any(is_path_line))
+    koidrive_state_file::read_following(profile).is_ok_and(|text| text.lines().any(is_path_line))
 }
 
 pub(super) fn kept_programs(programs: &[Program]) -> Vec<Kept> {
