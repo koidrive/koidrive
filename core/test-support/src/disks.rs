@@ -543,9 +543,11 @@ fn image_on(device: &str) -> Result<Option<PathBuf>, String> {
     unsafe extern "C" {
         fn IOBSDNameMatching(main_port: u32, options: u32, name: *const c_char) -> *mut c_void;
         fn IOServiceGetMatchingService(main_port: u32, matching: *mut c_void) -> u32;
-        fn IORegistryEntrySearchCFProperty(
+        fn IOObjectConformsTo(object: u32, class: *const c_char) -> u32;
+        fn IORegistryEntryGetParentEntry(entry: u32, plane: *const c_char, parent: *mut u32)
+        -> i32;
+        fn IORegistryEntryCreateCFProperty(
             entry: u32,
-            plane: *const c_char,
             key: *const c_void,
             allocator: *const c_void,
             options: u32,
@@ -570,15 +572,9 @@ fn image_on(device: &str) -> Result<Option<PathBuf>, String> {
     let name = device.strip_prefix("/dev/").unwrap_or(device);
     let node = Path::new("/dev").join(name);
     let name = CString::new(name).map_err(|error| error.to_string())?;
-    let property = |entry: u32, key: &CStr, options: u32| unsafe {
+    let property = |entry: u32, key: &CStr| unsafe {
         let key = CFStringCreateWithCString(std::ptr::null(), key.as_ptr(), 0x0800_0100);
-        let found = IORegistryEntrySearchCFProperty(
-            entry,
-            c"IOService".as_ptr(),
-            key,
-            std::ptr::null(),
-            options,
-        );
+        let found = IORegistryEntryCreateCFProperty(entry, key, std::ptr::null(), 0);
         CFRelease(key);
         found
     };
@@ -593,18 +589,28 @@ fn image_on(device: &str) -> Result<Option<PathBuf>, String> {
                 Ok(None)
             };
         }
-        let bsd_name = property(media, c"BSD Name", 0);
-        let found = property(media, c"image-path", 0b11);
-        IOObjectRelease(media);
+        let bsd_name = property(media, c"BSD Name");
         if bsd_name.is_null() {
-            if !found.is_null() {
-                CFRelease(found);
-            }
+            IOObjectRelease(media);
             return Err(format!("the IO registry entry of {device} cannot be read"));
         }
         CFRelease(bsd_name);
+        let mut entry = media;
+        while IOObjectConformsTo(entry, c"IOHDIXHDDrive".as_ptr()) == 0 {
+            let mut parent = 0;
+            let status = IORegistryEntryGetParentEntry(entry, c"IOService".as_ptr(), &mut parent);
+            IOObjectRelease(entry);
+            if status != 0 {
+                return Ok(None);
+            }
+            entry = parent;
+        }
+        let found = property(entry, c"image-path");
+        IOObjectRelease(entry);
         if found.is_null() {
-            return Ok(None);
+            return Err(format!(
+                "{device} is on a disk image whose image-path cannot be read"
+            ));
         }
         let image = (CFGetTypeID(found) == CFDataGetTypeID()).then(|| {
             let bytes = match CFDataGetLength(found) {
@@ -881,6 +887,12 @@ mod tests {
             Ok(Some(disks.base().join("Backing.dmg")))
         );
         assert_eq!(image_on("/dev/disk999999"), Ok(None));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_disk_no_image_backs_has_no_image() {
+        assert_eq!(image_on("/dev/disk0"), Ok(None));
     }
 
     #[cfg(target_os = "macos")]
