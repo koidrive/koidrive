@@ -1059,6 +1059,57 @@ fn a_removal_held_for_moves_is_reported_at_the_hold_while_its_barrier_goes_unhea
 
 #[cfg(target_os = "linux")]
 #[test]
+fn a_hold_that_runs_out_before_its_barrier_is_heard_releases_only_itself() {
+    let (_dir, root, _) = one_file();
+    for folder in [".koidrive", "y", "w"] {
+        fs::create_dir(root.join(folder)).unwrap();
+    }
+    fs::write(root.join("y/h.txt"), "h").unwrap();
+    let mut watcher = quiet_watcher(&root, &["x/g.txt"]);
+    fs::remove_file(root.join("x/g.txt")).unwrap();
+    assert_eq!(watcher.poll(Duration::ZERO).unwrap().changes, []);
+    fs::rename(root.join("y/h.txt"), root.join("w/h.txt")).unwrap();
+    let (sender, at) = (watcher.sender.clone(), root.clone());
+    let half = |mode, path| {
+        let event = notify::Event::new(EventKind::Modify(ModifyKind::Name(mode)));
+        sender.send(Ok(event.add_path(at.join(path)))).unwrap();
+    };
+    half(notify::event::RenameMode::From, "y/h.txt");
+    hear_barrier(&watcher);
+    let mut changes = watcher.poll(Duration::ZERO).unwrap().changes;
+    assert!(
+        watcher
+            .barrier
+            .as_ref()
+            .unwrap()
+            .holds
+            .contains(Path::new("y/h.txt"))
+    );
+    *watcher.held_since.get_mut(Path::new("x/g.txt")).unwrap() -= MOVING_HOLD;
+    changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+    half(notify::event::RenameMode::To, "w/h.txt");
+    for _ in 0..2 {
+        hear_barrier(&watcher);
+        changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+    }
+    assert_eq!(
+        changes,
+        [
+            Change::Removed {
+                path: "x/g.txt".into(),
+                kind: EntryKind::File
+            },
+            Change::Renamed {
+                from: "y/h.txt".into(),
+                to: "w/h.txt".into(),
+                kind: EntryKind::File
+            }
+        ]
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn a_removal_that_joins_a_held_barrier_late_is_held_for_its_own_time() {
     use std::sync::{Arc, Mutex};
     let (_dir, root, _) = one_file();

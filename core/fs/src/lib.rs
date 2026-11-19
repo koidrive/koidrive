@@ -3540,14 +3540,24 @@ impl NativeWatcher {
             })
     }
 
-    fn barrier_left(&self, barrier: &Barrier) -> Duration {
-        let left = BARRIER_TIMEOUT.saturating_sub(barrier.written.elapsed());
-        #[cfg(target_os = "linux")]
-        let left = (barrier.holds.iter())
-            .filter_map(|path| self.held_since.get(path))
-            .map(|since| MOVING_HOLD.saturating_sub(since.elapsed()))
-            .fold(left, Duration::min);
-        left
+    #[cfg(target_os = "linux")]
+    fn release_held_out(&mut self) {
+        let Some(barrier) = self.barrier.as_mut() else {
+            return;
+        };
+        let out: Vec<PathBuf> = (barrier.holds.iter())
+            .filter(|path| {
+                (self.held_since.get(*path)).is_some_and(|since| since.elapsed() >= MOVING_HOLD)
+            })
+            .cloned()
+            .collect();
+        for path in out {
+            barrier.holds.remove(&path);
+            if self.waiting.remove(&path) {
+                self.held_since.remove(&path);
+                self.dirty.insert(path);
+            }
+        }
     }
 
     fn lift_barrier(&mut self) {
@@ -3859,14 +3869,27 @@ impl Watcher for NativeWatcher {
                     left.min(REMOUNT_CHECK)
                 };
                 let wait = match &self.barrier {
-                    Some(barrier) => wait.min(self.barrier_left(barrier)),
+                    Some(barrier) => {
+                        let wait =
+                            wait.min(BARRIER_TIMEOUT.saturating_sub(barrier.written.elapsed()));
+                        #[cfg(target_os = "linux")]
+                        let wait = (barrier.holds.iter())
+                            .filter_map(|path| self.held_since.get(path))
+                            .map(|since| MOVING_HOLD.saturating_sub(since.elapsed()))
+                            .fold(wait, Duration::min);
+                        wait
+                    }
                     None => wait,
                 };
                 self.receive(wait)?;
             }
-            if (self.barrier.as_ref()).is_some_and(|barrier| self.barrier_left(barrier).is_zero()) {
+            if (self.barrier.as_ref())
+                .is_some_and(|barrier| barrier.written.elapsed() >= BARRIER_TIMEOUT)
+            {
                 self.lift_barrier();
             }
+            #[cfg(target_os = "linux")]
+            self.release_held_out();
             if !self.snapshot.detached.is_empty() && self.remount_checked.elapsed() >= REMOUNT_CHECK
             {
                 self.remount_checked = Instant::now();
