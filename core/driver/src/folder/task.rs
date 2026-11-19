@@ -25,7 +25,7 @@ use crate::disk::{self, Adopted, Batch, Pending, Sections, Staged, Stall, Stop};
 use crate::driver::check_placement;
 use crate::failures::{self, Halted};
 use crate::ignore::Matcher;
-use crate::observe::{FsObserver, Observer, Observing};
+use crate::observe::{FsObserver, Observed, Observer, Observing};
 use crate::progress::Tracker;
 use crate::timing::Time;
 
@@ -509,6 +509,9 @@ impl FolderTask {
                 }
             };
             let mut scanned = false;
+            let mut blocked = Duration::ZERO;
+            let (mut files_read, mut files_logged) = (0u64, 0u64);
+            let mut logged = Instant::now();
             while !sender.is_closed() {
                 let observed = sections.observe(&mut observer, Duration::from_secs(1));
                 #[cfg(test)]
@@ -531,8 +534,24 @@ impl FolderTask {
                             root_ok = batch.observation.root.is_ok(),
                             "observed the folder"
                         );
+                        files_read += (batch.observation.changes.iter())
+                            .filter(|change| {
+                                matches!(
+                                    change,
+                                    Observed::Created {
+                                        content: Some(_),
+                                        ..
+                                    } | Observed::Modified {
+                                        content: Some(_),
+                                        ..
+                                    }
+                                )
+                            })
+                            .count() as u64;
                         let entries = observer.snapshot().entries.len() as u64;
+                        let began = Instant::now();
                         let _ = sender.blocking_send(FromDisk::Batch(Box::new(batch), entries));
+                        blocked += began.elapsed();
                     }
                     Err(error) => {
                         tracing::warn!(space_id = link.space_id, %error, "observing the folder failed");
@@ -549,6 +568,20 @@ impl FolderTask {
                             std::thread::sleep(Duration::from_millis(50));
                         }
                     }
+                }
+                if logged.elapsed() >= Duration::from_secs(30) {
+                    let seconds = logged.elapsed().as_secs_f64();
+                    tracing::info!(
+                        ms = blocked.as_millis() as u64,
+                        "measure observer blocked sending"
+                    );
+                    tracing::info!(
+                        files_read,
+                        per_second = ((files_read - files_logged) as f64 / seconds) as u64,
+                        "measure observer reads"
+                    );
+                    files_logged = files_read;
+                    logged = Instant::now();
                 }
                 if !scanned && observer.scanned().is_some() {
                     scanned = true;
