@@ -1,6 +1,6 @@
-32
+105
 # The tests protect when a folder kept for entries this device leaves out goes to the local trash: once the entries leave,
 # at a restart, after a batch that renames the folder above, with platform files or with rules files that hold no local
-# edit, and never while a rules file holds an edit, including one made after the server purged it or saved with
-# unchanged bytes. Each case takes a path in the recheck or in the scan that lists the folder that no other test reaches,
+# edit, and never while a rules file holds an edit, including one made after the server purged it, one made while
+# a purge and the removal race, one kept beside a folder made at its place after a purge, and one saved with unchanged bytes. Each case takes a path in the recheck or in the scan that lists the folder that no other test reaches,
 # and the cases that share setup already run as tables over .koiignore and .gitignore and over edited and unedited files.
