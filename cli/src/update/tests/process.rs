@@ -43,7 +43,10 @@ fn a_later_update_keeps_the_log_of_the_attempt_before_it() {
     let mut fresh = Echo::open(&log, true, false);
     fresh.log("Failed: the download stalled");
     drop(fresh);
-    assert_eq!(fs::read_to_string(&log).unwrap(), "Failed: the download stalled\n");
+    assert_eq!(
+        fs::read_to_string(&log).unwrap(),
+        "Failed: the download stalled\n"
+    );
 }
 
 #[test]
