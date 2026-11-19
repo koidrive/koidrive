@@ -136,7 +136,7 @@ fn a_conflict_answer_counts_toward_the_change_records_of_its_commit() {
     }
     trees.settle(commits.aliases());
     let question = commits.questions()[0].id.clone();
-    assert!(commits.decide(&question, Answer::KeepCopy));
+    assert!(commits.decide(&mut trees, &question, Answer::KeepCopy));
 
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert!(commit.encoded_len() <= MAX_COMMIT_BYTES);

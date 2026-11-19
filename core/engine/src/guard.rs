@@ -304,6 +304,7 @@ impl Guard {
             held: open,
             answer: None,
             shown: BTreeMap::new(),
+            frozen: None,
         });
         checked
     }

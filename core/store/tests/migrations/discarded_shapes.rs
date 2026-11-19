@@ -125,7 +125,7 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
     let mut ids = IdGen::new(333);
     commits.first_link(&mut trees, &mut ids, 1, PriorSync::Shown);
     let question = commits.questions()[0].id.clone();
-    assert!(commits.decide(&question, Answer::Discard));
+    assert!(commits.decide(&mut trees, &question, Answer::Discard));
     assert!(
         commits
             .build(&mut trees, &mut ids, 1, "history", "me", 1)
@@ -213,7 +213,7 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
     } else {
         Answer::Discard
     };
-    assert!(commits.decide(&asked.id.clone(), answer));
+    assert!(commits.decide(&mut trees, &asked.id.clone(), answer));
     let built = commits
         .build(&mut trees, &mut ids, 1, "history", "me", 1)
         .cloned();
@@ -290,7 +290,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
         let mut ids = IdGen::new(335);
         commits.first_link(&mut trees, &mut ids, 1, PriorSync::Shown);
         let question = commits.questions()[0].id.clone();
-        assert!(commits.decide(&question, Answer::Discard));
+        assert!(commits.decide(&mut trees, &question, Answer::Discard));
         assert!(
             commits
                 .build(&mut trees, &mut ids, 1, "history", "me", 1)
@@ -355,7 +355,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
         }
 
         let asked = commits.questions().last().unwrap().id.clone();
-        assert!(commits.decide(&asked, answer));
+        assert!(commits.decide(&mut trees, &asked, answer));
         let sent: Vec<String> = commits
             .build(&mut trees, &mut ids, 1, "history", "me", 1)
             .into_iter()

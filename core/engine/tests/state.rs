@@ -441,6 +441,7 @@ fn questions() -> Vec<Question> {
         .into(),
         answer: Some(Answer::Delete),
         shown: Default::default(),
+        frozen: None,
     }]
 }
 

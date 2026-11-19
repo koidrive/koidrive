@@ -503,8 +503,11 @@ fn deleting_answers_the_question_and_commits_without_counting_again() {
     build_at(&mut commits, &mut trees, &mut ids, NOW);
     let id = asked(&commits).unwrap().id.clone();
 
-    assert!(commits.decide(&id, Answer::Delete));
-    assert!(!commits.decide(&id, Answer::Delete), "answered once");
+    assert!(commits.decide(&mut trees, &id, Answer::Delete));
+    assert!(
+        !commits.decide(&mut trees, &id, Answer::Delete),
+        "answered once"
+    );
     let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
 
     assert_eq!(deleted(&ops), ["d"]);
@@ -532,7 +535,7 @@ fn restoring_answers_the_question_and_downloads_the_held_nodes_again() {
     build_at(&mut commits, &mut trees, &mut ids, NOW);
     let id = asked(&commits).unwrap().id.clone();
 
-    assert!(commits.decide(&id, Answer::Restore));
+    assert!(commits.decide(&mut trees, &id, Answer::Restore));
     assert_eq!(
         deleted(&build_at(&mut commits, &mut trees, &mut ids, NOW + 1)),
         Vec::<String>::new()
@@ -567,7 +570,7 @@ fn more_deletions_replace_the_question_and_an_answer_to_the_old_one_does_nothing
 
     assert_eq!(held(&commits), ["d", "f0"]);
     assert_ne!(asked(&commits).unwrap().id, first);
-    assert!(!commits.decide(&first, Answer::Delete));
+    assert!(!commits.decide(&mut trees, &first, Answer::Delete));
     assert_eq!(held(&commits), ["d", "f0"]);
 }
 
@@ -675,6 +678,7 @@ fn recovery_question(trees: &Trees) -> CommitsState {
             held: [("d".into(), Held { members, files: 15 })].into(),
             answer: None,
             shown: Default::default(),
+            frozen: None,
         }],
         ..Default::default()
     }
@@ -696,12 +700,12 @@ fn nodes_an_open_question_of_any_kind_holds_get_no_op_and_are_not_counted() {
 
 #[test]
 fn an_answer_a_recovery_question_does_not_offer_changes_nothing() {
-    let trees = space(10, 15);
+    let mut trees = space(10, 15);
     let state = recovery_question(&trees);
     let mut commits = Commits::from_state(state.clone()).unwrap();
 
-    assert!(!commits.decide("other", Answer::Delete));
-    assert!(!commits.decide("other", Answer::Keep));
+    assert!(!commits.decide(&mut trees, "other", Answer::Delete));
+    assert!(!commits.decide(&mut trees, "other", Answer::Keep));
     assert_eq!(commits.state(), state);
 }
 
@@ -713,7 +717,7 @@ fn an_answer_the_kind_does_not_offer_changes_nothing() {
     build_at(&mut commits, &mut trees, &mut ids, NOW);
     let id = asked(&commits).unwrap().id.clone();
 
-    assert!(!commits.decide(&id, Answer::Publish));
+    assert!(!commits.decide(&mut trees, &id, Answer::Publish));
     assert_eq!(held(&commits), ["d"]);
 }
 
@@ -782,7 +786,7 @@ fn a_delete_answer_covers_only_the_deletions_its_question_listed() {
     let first = asked(&commits).unwrap().id.clone();
 
     remove(&mut trees, &["f0"]);
-    assert!(commits.decide(&first, Answer::Delete));
+    assert!(commits.decide(&mut trees, &first, Answer::Delete));
     let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
 
     assert_eq!(
@@ -808,7 +812,7 @@ fn a_confirmed_folder_deleted_over_several_commits_takes_one_answer() {
     remove(&mut trees, &["d"]);
     build_at(&mut commits, &mut trees, &mut ids, NOW);
     let id = asked(&commits).unwrap().id.clone();
-    assert!(commits.decide(&id, Answer::Delete));
+    assert!(commits.decide(&mut trees, &id, Answer::Delete));
 
     let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
     assert_eq!(deleted(&ops).len(), 1, "one op per commit");
@@ -838,7 +842,7 @@ fn a_restore_answer_brings_back_its_question_and_holds_a_deletion_made_since() {
     let first = asked(&commits).unwrap().id.clone();
 
     remove(&mut trees, &["f0"]);
-    assert!(commits.decide(&first, Answer::Restore));
+    assert!(commits.decide(&mut trees, &first, Answer::Restore));
     let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
 
     assert_eq!(deleted(&ops), Vec::<String>::new());
@@ -862,7 +866,7 @@ fn a_restore_answer_brings_back_held_children_whose_folder_was_put_back() {
 
     put_back(&mut trees, "d", shape(ROOT, "d", Kind::Dir), 100);
     trees.settle(commits.aliases());
-    assert!(commits.decide(&id, Answer::Restore));
+    assert!(commits.decide(&mut trees, &id, Answer::Restore));
     let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
 
     assert_eq!(deleted(&ops), Vec::<String>::new());
@@ -903,7 +907,7 @@ fn a_restore_answer_holds_a_node_deleted_under_its_folder_since() {
         },
     );
     trees.settle(commits.aliases());
-    assert!(commits.decide(&id, Answer::Restore));
+    assert!(commits.decide(&mut trees, &id, Answer::Restore));
     let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 1);
 
     assert_eq!(deleted(&ops), Vec::<String>::new());
@@ -922,7 +926,7 @@ fn a_confirmed_folder_whose_rest_changed_after_some_commits_is_asked_about_again
     remove(&mut trees, &["d"]);
     build_at(&mut commits, &mut trees, &mut ids, NOW);
     let id = asked(&commits).unwrap().id.clone();
-    assert!(commits.decide(&id, Answer::Delete));
+    assert!(commits.decide(&mut trees, &id, Answer::Delete));
     for step in 0..3 {
         let ops = build_at(&mut commits, &mut trees, &mut ids, NOW + 1 + step);
         assert!(!deleted(&ops).is_empty());
@@ -1109,12 +1113,15 @@ fn dismissing_the_notice_closes_it_and_counting_starts_again() {
     let id = notice(&commits).unwrap().0.id.clone();
 
     assert!(
-        !commits.decide(&id, Answer::Delete),
+        !commits.decide(&mut trees, &id, Answer::Delete),
         "a notice takes only dismiss"
     );
-    assert!(commits.decide(&id, Answer::Dismiss));
+    assert!(commits.decide(&mut trees, &id, Answer::Dismiss));
     assert_eq!(commits.questions(), []);
-    assert!(!commits.decide(&id, Answer::Dismiss), "the notice is gone");
+    assert!(
+        !commits.decide(&mut trees, &id, Answer::Dismiss),
+        "the notice is gone"
+    );
 
     trash_remotely(&mut trees, &["f0"]);
     apply_effects(&mut commits, &mut trees, &mut ids, NOW + 1);
@@ -1147,7 +1154,7 @@ fn the_rest_of_a_folder_removed_after_its_notice_was_dismissed_is_not_noticed_ag
         "the folder is still being removed"
     );
     let id = question.id.clone();
-    assert!(commits.decide(&id, Answer::Dismiss));
+    assert!(commits.decide(&mut trees, &id, Answer::Dismiss));
 
     apply_effects(&mut commits, &mut trees, &mut ids, NOW + 1);
 
@@ -1220,7 +1227,7 @@ fn a_folder_restored_after_its_notice_was_dismissed_is_noticed_when_deleted_agai
         trees.settle(commits.aliases());
     }
     let first = notice(&commits).unwrap().0.id.clone();
-    assert!(commits.decide(&first, Answer::Dismiss));
+    assert!(commits.decide(&mut trees, &first, Answer::Dismiss));
 
     set_remote(&mut trees, false, 3);
     let mut ino = 1000;
@@ -1308,7 +1315,7 @@ fn a_dismissed_folder_stays_dismissed_when_r_forgets_its_trashed_nodes() {
         trees.settle(commits.aliases());
     }
     let id = notice(&commits).unwrap().0.id.clone();
-    assert!(commits.decide(&id, Answer::Dismiss));
+    assert!(commits.decide(&mut trees, &id, Answer::Dismiss));
     let trashed: Vec<NodeId> = (trees.remote().iter())
         .filter(|(_, node)| node.trashed)
         .map(|(id, _)| id.clone())
@@ -1367,7 +1374,7 @@ fn dismiss_while_removing(commits: &mut Commits, trees: &mut Trees, ids: &mut Id
         "the folder is still being removed"
     );
     let id = question.id.clone();
-    assert!(commits.decide(&id, Answer::Dismiss));
+    assert!(commits.decide(trees, &id, Answer::Dismiss));
 }
 
 #[test]

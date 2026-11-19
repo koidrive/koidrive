@@ -776,6 +776,9 @@ impl Commits {
         ids: &mut IdGen,
         now_ms: u64,
     ) {
+        for question in self.questions.get_mut().iter_mut() {
+            question.frozen = None;
+        }
         self.halted.set(match *self.halted {
             Some(Halt::Recovery {
                 policy: Some(code), ..
@@ -898,7 +901,7 @@ impl Commits {
     /// An S update that would leave S invalid, such as for a folder whose child was moved out and
     /// is not acknowledged yet, waits ([`Trees::waiting`]). False, and nothing changes, when no
     /// open question has the ID, its kind does not take the answer, or it already took one.
-    pub fn decide(&mut self, id: &str, answer: Answer) -> bool {
+    pub fn decide(&mut self, trees: &mut Trees, id: &str, answer: Answer) -> bool {
         let Some(index) = (self.questions.iter()).position(|question| {
             question.id == id
                 && question.answer.is_none()
@@ -921,6 +924,20 @@ impl Commits {
             }
             QuestionKind::Conflict { .. } if answer == Answer::KeepBoth => {
                 self.questions.get_mut().remove(index);
+            }
+            _ if answer == Answer::Discard && first_link::asks(&self.questions[index]) => {
+                trees.settle(&self.aliases);
+                let question = &self.questions[index];
+                let settled = trees.rules_known()
+                    && !matches!(*self.halted, Some(Halt::Recovery { .. }))
+                    && !(self.in_flight.as_ref())
+                        .is_some_and(|flight| reaches_into(trees, flight, question))
+                    && first_link::still_shown(trees, question)
+                    && trees.settled_below(&question.shown);
+                let frozen = settled.then(|| trees.below(&question.shown));
+                let question = &mut self.questions.get_mut()[index];
+                question.answer = Some(answer);
+                question.frozen = frozen;
             }
             _ => self.questions.get_mut()[index].answer = Some(answer),
         }
@@ -982,6 +999,7 @@ impl Commits {
                 held: BTreeMap::new(),
                 answer: None,
                 shown: BTreeMap::new(),
+                frozen: None,
             }),
         }
     }
@@ -1043,6 +1061,7 @@ impl Commits {
                 held: open,
                 answer: None,
                 shown: BTreeMap::new(),
+                frozen: None,
             },
         );
     }
@@ -1076,9 +1095,27 @@ impl Commits {
                 Some(question) => {
                     self.questions.get_mut().remove(index);
                     if question.answer == Some(Answer::Discard) {
+                        let taken = match &question.frozen {
+                            Some(frozen) => trees.frozen_server_entries(&question.shown, frozen),
+                            None => Some(trees.server_entries_below(&question.shown)),
+                        };
+                        let Some(taken) = taken else {
+                            self.questions.get_mut().insert(
+                                index,
+                                Question {
+                                    id: ids.uuid_v7(now_ms),
+                                    asked_at_ms: now_ms,
+                                    answer: None,
+                                    frozen: None,
+                                    ..question
+                                },
+                            );
+                            index += 1;
+                            continue;
+                        };
                         let shown: BTreeSet<NodeId> = question.shown.keys().cloned().collect();
                         trees.discard(shown.iter().cloned(), &question.shown);
-                        trees.discard_server_entries_below(&question.shown);
+                        trees.discard_taken(taken);
                         let updates = (question.shown.into_iter())
                             .map(|(id, shape)| (id, Some(shape)))
                             .collect();
@@ -2028,6 +2065,7 @@ impl Commits {
             held: BTreeMap::new(),
             answer: None,
             shown: BTreeMap::new(),
+            frozen: None,
         });
     }
 
@@ -3794,6 +3832,26 @@ fn edited_on_both_sides(trees: &Trees, id: &NodeId) -> bool {
     let s = content(trees.acknowledged(id));
     let changed = |c: &Content| s.as_ref().is_none_or(|s| !same_content(c, s));
     (changed(&l) || trees.unsent_edits().contains(id)) && changed(&r) && !same_content(&l, &r)
+}
+
+fn reaches_into(trees: &Trees, flight: &InFlight, question: &Question) -> bool {
+    let steps = trees.local().len() + trees.remote().len();
+    (flight.commit.ops.iter().filter_map(|op| op.op.as_ref())).any(|op| {
+        let first = op_node(op);
+        let mut at = &first;
+        for _ in 0..=steps {
+            if question.shown.contains_key(at) {
+                return true;
+            }
+            let parent = (trees.local().get(at).map(|node| &node.shape.parent))
+                .or_else(|| trees.remote().get(at).map(|node| &node.shape.parent));
+            match parent {
+                Some(parent) => at = parent,
+                None => return false,
+            }
+        }
+        false
+    })
 }
 
 fn holds_server_entry(trees: &Trees, id: &NodeId) -> bool {

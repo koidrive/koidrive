@@ -321,7 +321,7 @@ impl World {
             Event::Pause => self.now += WINDOW_MS,
             Event::Dismiss => {
                 let id = self.notice().unwrap().0;
-                assert!(self.commits.decide(&id, Answer::Dismiss));
+                assert!(self.commits.decide(&mut self.trees, &id, Answer::Dismiss));
                 let model = &mut self.model;
                 model
                     .dismissed

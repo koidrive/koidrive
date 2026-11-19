@@ -1508,7 +1508,11 @@ impl World {
         for (ino, value, answered) in published {
             self.intents.answered(d, self.moment, ino, value, answered);
         }
-        assert!(engine.commits.decide(&question.id, answer));
+        assert!(
+            engine
+                .commits
+                .decide(&mut engine.trees, &question.id, answer)
+        );
         if !down {
             device.persist()?;
         }

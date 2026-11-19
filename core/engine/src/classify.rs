@@ -10,6 +10,7 @@ use koidrive_ignore::{Scope, Source, Status};
 use crate::first_link;
 use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
 use crate::names::{name_key, nfc, same_name};
+use crate::question::Frozen;
 use crate::state::{
     Agreed, ContentProvenance, ContentValue, ContentVersion, FinishOrigin, KeptCause, KeptEntries,
     KeptRules, KeptRulesFile, LostPosition, MovedHere, PendingFinish, StateError, SyncedPosition,
@@ -2817,7 +2818,10 @@ impl Trees {
         }
     }
 
-    pub(crate) fn discard_server_entries_below(&mut self, shown: &BTreeMap<NodeId, Shape>) {
+    pub(crate) fn server_entries_below(
+        &mut self,
+        shown: &BTreeMap<NodeId, Shape>,
+    ) -> Vec<(NodeId, Shape)> {
         self.forget_reclaims();
         let mut kept = Vec::new();
         for folder in shown.keys() {
@@ -2829,9 +2833,130 @@ impl Trees {
                 }
             }
         }
-        for (id, shape) in kept {
+        kept
+    }
+
+    pub(crate) fn discard_taken(&mut self, taken: Vec<(NodeId, Shape)>) {
+        for (id, shape) in taken {
             self.discarded.insert(id, shape);
         }
+    }
+
+    pub(crate) fn below(&mut self, shown: &BTreeMap<NodeId, Shape>) -> BTreeMap<NodeId, Frozen> {
+        let frozen = |shape: &Shape, taken| Frozen {
+            parent: shape.parent.clone(),
+            name: shape.name.clone(),
+            taken,
+        };
+        let mut below: BTreeMap<NodeId, Frozen> = (self.server_entries_below(shown).iter())
+            .map(|(id, shape)| (id.clone(), frozen(shape, true)))
+            .collect();
+        let mut at: Vec<&NodeId> = shown.keys().collect();
+        while let Some(id) = at.pop() {
+            for child in self.local_children_placed_or_parked(id) {
+                if !shown.contains_key(child) {
+                    let shape = &self.l.get(child).expect("a local child is in L").shape;
+                    below
+                        .entry(child.clone())
+                        .or_insert_with(|| frozen(shape, false));
+                    at.push(child);
+                }
+            }
+        }
+        below
+    }
+
+    pub(crate) fn frozen_server_entries(
+        &mut self,
+        shown: &BTreeMap<NodeId, Shape>,
+        frozen: &BTreeMap<NodeId, Frozen>,
+    ) -> Option<Vec<(NodeId, Shape)>> {
+        self.forget_reclaims();
+        let mut kept = Vec::new();
+        let mut at: Vec<&NodeId> = shown.keys().collect();
+        let mut seen = BTreeSet::new();
+        while let Some(parent) = at.pop() {
+            for id in self.local_children_placed_or_parked(parent) {
+                if shown.contains_key(id) {
+                    continue;
+                }
+                let local = &self.l.get(id).expect("a local child is in L").shape;
+                let remote = self.r.get(id).map(|node| &node.shape);
+                let Some(was) = frozen.get(id) else {
+                    if !remote.is_some_and(|remote| remote.parent == *parent) {
+                        return None;
+                    }
+                    if frozen.get(parent).is_some_and(|parent| parent.taken) {
+                        self.server_copy(id, shown, &mut kept);
+                    }
+                    continue;
+                };
+                let moved = (local.parent != was.parent || !same_name(&local.name, &was.name))
+                    && !remote.is_some_and(|remote| remote.same_position(local));
+                let unchanged = |base: &Shape| {
+                    base.kind == local.kind
+                        && match (&local.content, &base.content) {
+                            (Some(content), Some(base)) => same_content(content, base),
+                            (None, None) => true,
+                            _ => false,
+                        }
+                };
+                let edited = was.taken
+                    && !self.l.get(id).is_some_and(|node| node.content_from_server)
+                    && !remote.is_some_and(unchanged)
+                    && !self.s.get(id).is_some_and(unchanged);
+                if moved || edited {
+                    return None;
+                }
+                seen.insert(id.clone());
+                if was.taken {
+                    kept.push((id.clone(), local.clone()));
+                }
+                at.push(id);
+            }
+        }
+        for (id, was) in frozen.iter().filter(|(id, _)| !seen.contains(*id)) {
+            if self.l.get(id).is_some() {
+                continue;
+            }
+            let removed_here = self.removed_from.get(id);
+            if removed_here
+                .is_some_and(|folder| shown.contains_key(folder) || frozen.contains_key(folder))
+            {
+                return None;
+            }
+            if was.taken
+                && removed_here.is_none()
+                && let Some(remote) = self.r.live(id)
+            {
+                kept.push((id.clone(), remote.clone()));
+            }
+        }
+        kept.extend(self.server_entries_below(shown));
+        Some(kept)
+    }
+
+    pub(crate) fn settled_below(&self, shown: &BTreeMap<NodeId, Shape>) -> bool {
+        let mut below: Vec<&NodeId> = shown.keys().collect();
+        let mut seen = BTreeSet::new();
+        while let Some(id) = below.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let pending = (self.r.live(id)).is_some_and(|remote| {
+                let synced = self.s.get(id);
+                let local = self.l.get(id).map(|node| &node.shape);
+                !same(Some(remote), synced) && same(local, synced)
+            });
+            let unfetched = (self.remote_children(id))
+                .any(|child| self.l.get(child).is_none() && self.s.get(child).is_none());
+            let waiting = self.waiting.children(id).next().is_some();
+            if pending || unfetched || waiting {
+                return false;
+            }
+            below.extend(self.local_children_placed_or_parked(id));
+        }
+        true
     }
 
     fn server_copy(

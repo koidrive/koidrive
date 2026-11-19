@@ -232,7 +232,7 @@ impl Engine {
             else {
                 continue;
             };
-            if (self.commits).decide(&stored.question_id, answer) {
+            if (self.commits).decide(&mut self.trees, &stored.question_id, answer) {
                 tracing::info!(question_id = stored.question_id, %answer, "took an answer to a question");
                 tx.take_answer(&stored.question_id)?;
             }
@@ -2270,6 +2270,7 @@ mod tests {
                 held: BTreeMap::new(),
                 answer: None,
                 shown: BTreeMap::new(),
+                frozen: None,
             };
             store
                 .transaction(|tx| {
@@ -2338,6 +2339,7 @@ mod tests {
             held: BTreeMap::new(),
             answer: None,
             shown: BTreeMap::new(),
+            frozen: None,
         };
         let answered = engine::Question {
             answer: Some(Answer::KeepCopy),
@@ -4737,6 +4739,7 @@ mod tests {
                     held: BTreeMap::from([(NodeId::from(id), engine::Held { members, files: 0 })]),
                     shown: BTreeMap::new(),
                     answer: None,
+                    frozen: None,
                 };
                 let shown = engine.shown(tx, "s", &asked, "q".into(), None).unwrap();
                 let paths: Vec<&str> = shown

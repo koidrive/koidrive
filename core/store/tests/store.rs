@@ -10,8 +10,8 @@ use koidrive_engine::first_link::PriorSync;
 use koidrive_engine::guard::{Counted, GuardState, RemoteDeletion, Trash};
 use koidrive_engine::ids::{IdGen, uuid_v7};
 use koidrive_engine::question::{
-    Answer, Held, Limit, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
-    Revisions,
+    Answer, Frozen, Held, Limit, Question, QuestionKind, RecoveryCause, RecoveryGroup,
+    RecoveryTrigger, Revisions,
 };
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent, SplitRestore};
 use koidrive_engine::state::{
@@ -1540,6 +1540,7 @@ fn engine_state() -> EngineState {
                     )]),
                     answer: Some(Answer::Restore),
                     shown: BTreeMap::new(),
+                    frozen: None,
                 },
                 Question {
                     id: "q2".into(),
@@ -1566,6 +1567,7 @@ fn engine_state() -> EngineState {
                             content: Some(content(9)),
                         },
                     )]),
+                    frozen: None,
                 },
                 Question {
                     id: "q3".into(),
@@ -1579,6 +1581,7 @@ fn engine_state() -> EngineState {
                     held: BTreeMap::new(),
                     answer: None,
                     shown: BTreeMap::new(),
+                    frozen: None,
                 },
             ],
             published: nodes(["published"]),
