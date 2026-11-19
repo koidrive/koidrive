@@ -32,12 +32,12 @@ mutation reverted-no-create $C 's/if !trees\.reverted\(\)\.contains\(id\) && !tr
 mutation reverted-no-move $C 's/\n            && !trees\.reverted\(\)\.contains\(id\)\n            && !trees\.reviving\(id\)/\n            \&\& !trees.reviving(id)/' both
 mutation reverted-parking $E 's/\(candidate\(trees, id\) \|\| trees\.waiting\(\)\.contains_key\(id\) \|\| trees\.reclaimed\(id\)\)/(trees.acknowledged_class(id) == Class::Remote || trees.waiting().contains_key(id) || trees.reclaimed(id))/' both
 mutation pending-truncate $C 's/while nfc\(&named\(&stem\)\)\.len\(\) > MAX_NAME_BYTES/while false \&\& nfc(\&named(\&stem)).len() > MAX_NAME_BYTES/' both
-mutation keep-parked $C 's/\|\| \(trees\.local\(\)\.get\(id\)\)\.is_some_and\(\|node\| node\.parked\)\n                && \(trees\.remote\(\)/|| (trees.local().get(id)).is_some_and(|_| false)\n                \&\& (trees.remote()/' both
+mutation keep-parked $L 's/\.is_some_and\(\|node\| node\.parked \|\| self\.reverted\.contains\(id\)\)/.is_some_and(|_| self.reverted.contains(id))/' both
 mutation parked-reverted-remove $E 's/!\(self\.trees\.reverted\(\)\.contains\(id\)\n                        \|\| self\.trees\.waiting\(\)\.contains_key\(id\)\)/!self.trees.waiting().contains_key(id)/' both
 mutation parked-reverted-edit $E 's/ \|\| self\.trees\.edited\(id\)\) =>/) =>/' both
 mutation reverted-retain $L 's/\(local, remote\) => local\.is_some\(\) \|\| remote\.is_some\(\),/(local, _) => local.is_some(),/' both
 mutation alias-in-place $C 's/if in_alias && \(placed\(agreed\) \|\| placed\(remote\)\) && !trees\.reverted\(\)\.contains\(id\) \{\n            reverts\.push\(id\.clone\(\)\);/if in_alias \&\& (placed(agreed) || placed(remote)) \&\& !trees.reverted().contains(id) {\n            let _ = id;/' both
-mutation rekey-edit $C 's/rekey\(trees, &id, &ids\.uuid_v7\(now_ms\)\);\n                continue;/let _ = (\&ids, now_ms);\n                continue;/' both
+mutation rekey-edit $C 's/            && !trees\.held\(id\)\n        \{\n            rekey_copy\(trees, id, &ids\.uuid_v7\(now_ms\)\);/            \&\& !trees.held(id)\n        {\n            let _ = (\&ids, now_ms);/' both
 mutation keep-revert-blocked $C 's/if !trees\.set_synced_if_valid\(node\.clone\(\), None\) \{\n            trees\.revert\(node\.clone\(\)\);/if !trees.set_synced_if_valid(node.clone(), None) {/' both
 mutation quota-retry $C 's/            Ok\(Code::QuotaExceeded\) if error\.retry_after_ms > 0 => Failure::Resend,\n//' unit
 mutation refused-reconnect $C 's/_ if policy && w >= a => return Reconnect::Idle,/_ if policy \&\& w >= a => return Reconnect::Resend,/' unit
