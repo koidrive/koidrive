@@ -2543,6 +2543,7 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
             planner.commits.recover(
                 &mut planner.trees,
                 0,
+                false,
                 &cause,
                 &History::new(),
                 &Marks::new(),
@@ -3179,6 +3180,7 @@ fn moved_after_a_publish_answer(world: &World, moved: usize, to: Spot) -> (World
     planner.commits.recover(
         &mut planner.trees,
         0,
+        false,
         &cause,
         &History::new(),
         &Marks::new(),

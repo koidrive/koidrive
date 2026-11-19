@@ -175,7 +175,7 @@ fn a_restore_is_neither_lost_nor_sent_twice_wherever_the_process_stops() {
     assert_eq!(commits.connected(&welcome(1)), Reconnect::Recovery);
     save(&backup, &commits);
     let mut commits = load(&backup);
-    assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
+    assert!(matches!(commits.halted(), Some(Halt::Recovery { .. })));
     assert_eq!(queued(&commits), [request]);
     assert_eq!(
         commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 8),

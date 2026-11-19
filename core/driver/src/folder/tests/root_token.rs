@@ -602,7 +602,7 @@ fn a_store_older_than_the_folder_recovers_whatever_token_the_folder_carries() {
     let a = site.start();
     assert!(matches!(
         a.folder.engine.commits.halted(),
-        Some(CommitHalt::Recovery(_))
+        Some(CommitHalt::Recovery { .. })
     ));
     assert_rotated_from(&site, &[]);
 }
@@ -628,7 +628,7 @@ fn a_store_restored_from_before_130_starts_recovers_a_folder_with_more_effects()
     let mut a = site.start();
     assert!(matches!(
         a.folder.engine.commits.halted(),
-        Some(CommitHalt::Recovery(_))
+        Some(CommitHalt::Recovery { .. })
     ));
     a.connect(&remote);
     a.settle();
@@ -785,7 +785,7 @@ fn a_store_from_before_tokens_restored_from_before_a_download_recovers_at_its_fi
     let mut a = site.start();
     assert!(matches!(
         a.folder.engine.commits.halted(),
-        Some(CommitHalt::Recovery(_))
+        Some(CommitHalt::Recovery { .. })
     ));
     assert_rotated_from(&site, &[None]);
     a.connect(&remote);
@@ -1327,7 +1327,7 @@ fn a_store_restored_from_before_a_start_with_no_download_since_recovers_the_fold
     let mut a = site.start();
     assert!(matches!(
         a.folder.engine.commits.halted(),
-        Some(CommitHalt::Recovery(_))
+        Some(CommitHalt::Recovery { .. })
     ));
     a.connect(&remote);
     a.settle();

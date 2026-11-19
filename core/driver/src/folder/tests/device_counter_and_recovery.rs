@@ -56,7 +56,7 @@ fn a_never_synced_store_takes_the_servers_count_only_at_its_first_welcome() {
     a.event(Event::Connected(welcome)).unwrap();
     assert!(matches!(
         a.folder.engine.commits.halted(),
-        Some(CommitHalt::Recovery(_))
+        Some(CommitHalt::Recovery { .. })
     ));
     assert_eq!(a.folder.engine.commits.accepted(), 0);
     a.scan_until(|a| a.folder.scanned);
@@ -87,7 +87,7 @@ fn a_store_that_took_the_servers_count_does_not_take_another() {
     a.event(Event::Connected(welcome)).unwrap();
     assert!(matches!(
         a.folder.engine.commits.halted(),
-        Some(CommitHalt::Recovery(_))
+        Some(CommitHalt::Recovery { .. })
     ));
     assert_eq!(a.folder.engine.commits.accepted(), 1);
     assert!(matches!(a.work.front(), Some(Work::List)));
@@ -123,7 +123,7 @@ fn a_commit_from_the_store_a_new_store_replaced_is_refused_by_the_server() {
     stale.take(step).unwrap();
     assert!(matches!(
         stale.folder.engine.commits.halted(),
-        Some(CommitHalt::Recovery(_))
+        Some(CommitHalt::Recovery { .. })
     ));
     stale.run(&mut remote);
     stale.settle();
@@ -255,7 +255,7 @@ fn an_upload_that_ends_after_a_recovery_leaves_the_next_commit_in_flight() {
     a.connect(&remote);
     assert!(matches!(
         a.folder.engine.commits.halted(),
-        Some(CommitHalt::Recovery(_))
+        Some(CommitHalt::Recovery { .. })
     ));
     fs::remove_file(site.root.join("draft.txt")).unwrap();
     a.run(&mut remote);
@@ -425,7 +425,7 @@ fn a_rewind_on_the_server_holds_the_writes_it_took_until_the_person_keeps_them()
     .unwrap();
     assert!(matches!(
         a.folder.engine.commits.halted(),
-        Some(CommitHalt::Recovery(_))
+        Some(CommitHalt::Recovery { .. })
     ));
     a.run(&mut remote);
     a.settle();
@@ -484,7 +484,7 @@ fn a_store_older_than_the_disk_recovers_even_when_the_server_lost_its_commits() 
     let (folder, _) = Folder::open(loaded, site.link.clone(), &lock).unwrap();
     assert!(matches!(
         folder.engine.commits.halted(),
-        Some(CommitHalt::Recovery(_))
+        Some(CommitHalt::Recovery { .. })
     ));
 }
 
@@ -1287,5 +1287,66 @@ fn a_merged_folder_is_marked_when_late_records_or_a_bootstrap_acknowledge_it() {
         assert_eq!(trees.local().get(&given).unwrap().identity, identity);
         assert_eq!(b.folder.disk.marks(trees, [&given]).get(&given), Some(&given), "bootstrap: {bootstrap}");
         assert!(b.folder.engine.commits.in_flight().is_none());
+    }
+}
+
+#[test]
+fn a_rewind_under_a_policy_halt_keeps_the_halt_once_recovered() {
+    for restart in [false, true] {
+        let mut remote = Remote::new();
+        let (site, _, _) = refused_first_commit(&mut remote, Code::ConfirmationRequired);
+        let halt = site.stored().commits.halted();
+        let backup = remote.space.clone();
+        remote.space.rewind(&backup, NOW);
+        let mut a = site.start();
+        a.connect(&remote);
+        assert!(matches!(
+            a.folder.engine.commits.halted(),
+            Some(CommitHalt::Recovery { .. })
+        ));
+        if restart {
+            drop(a);
+            a = site.start();
+            a.connect(&remote);
+        }
+        a.scan_until(|a| a.folder.scanned);
+        a.run(&mut remote);
+        a.settle();
+        a.run(&mut remote);
+        assert_eq!(a.folder.engine.commits.halted(), halt, "restart: {restart}");
+        assert!(a.sent.is_empty(), "restart: {restart}");
+        assert!(remote.names().is_empty(), "restart: {restart}");
+    }
+}
+
+#[test]
+fn a_rewind_on_a_read_only_device_keeps_it_read_only_once_recovered() {
+    for restart in [false, true] {
+        let mut remote = Remote::new();
+        let (mut site, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site.root.join("kept.txt"), b"before");
+        drop(a);
+        let backup = remote.space.clone();
+        remote.space.rewind(&backup, NOW);
+        site.caller.role = Role::Viewer;
+        fs::write(site.root.join("mine.txt"), b"never sent").unwrap();
+        let mut a = site.start();
+        a.connect(&remote);
+        if restart {
+            drop(a);
+            a = site.start();
+            a.connect(&remote);
+        }
+        a.scan_until(|a| a.folder.scanned);
+        a.run(&mut remote);
+        a.settle();
+        a.run(&mut remote);
+        assert_eq!(
+            a.folder.engine.commits.halted(),
+            Some(CommitHalt::ReadOnly),
+            "restart: {restart}"
+        );
+        assert!(a.sent.is_empty(), "restart: {restart}");
+        assert_eq!(remote.names(), ["kept.txt"], "restart: {restart}");
     }
 }

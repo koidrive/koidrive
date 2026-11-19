@@ -892,7 +892,7 @@ impl World {
                     note(&mut self.seen, "store rolled back");
                     if matches!(
                         device.engine.commits.halted(),
-                        Some(commit::Halt::Recovery(_))
+                        Some(commit::Halt::Recovery { .. })
                     ) {
                         note(&mut self.seen, "store rolled back during a recovery");
                     }
@@ -954,7 +954,7 @@ impl World {
             Step::Crash => {
                 if matches!(
                     self.devices[d].engine.commits.halted(),
-                    Some(commit::Halt::Recovery(_))
+                    Some(commit::Halt::Recovery { .. })
                 ) {
                     note(&mut self.seen, "crash during a recovery");
                 }
@@ -2166,7 +2166,7 @@ impl World {
         let in_flight = self.devices[d].engine.commits.edited_in_flight();
         let commits = &mut self.devices[d].engine.commits;
         let reconnect = match commits.halted() {
-            Some(commit::Halt::Recovery(_)) => Reconnect::Idle,
+            Some(commit::Halt::Recovery { .. }) => Reconnect::Idle,
             _ => commits.connected(&welcome),
         };
         match reconnect {
@@ -2242,7 +2242,7 @@ impl World {
                     ..
                 } = &mut self.devices[d].engine;
                 let recovering = match commits.halted() {
-                    Some(commit::Halt::Recovery(cause)) => Some(cause),
+                    Some(commit::Halt::Recovery { cause, .. }) => Some(cause),
                     _ => None,
                 };
                 let trashed = trees.trashed_here();
@@ -2319,7 +2319,9 @@ impl World {
                             Some((id.clone(), node))
                         })
                         .collect();
-                    commits.recover(trees, device_seq, &cause, &history, &marks, ids, NOW as u64);
+                    commits.recover(
+                        trees, device_seq, false, &cause, &history, &marks, ids, NOW as u64,
+                    );
                     let unheld: BTreeSet<u128> = unheld.into_iter().map(|(_, ino)| ino).collect();
                     let adopted = (trees.local().iter())
                         .filter(|(id, node)| {
@@ -2447,7 +2449,7 @@ impl World {
                             let listed = listing(&self.space);
                             (device.link.as_mut()).expect("answered").inbox.push(listed);
                         }
-                        commit::Failure::Halted(commit::Halt::Recovery(cause)) => {
+                        commit::Failure::Halted(commit::Halt::Recovery { cause, .. }) => {
                             note(&mut self.seen, "recovery starts after a refused commit");
                             device.persist()?;
                             let code = error::Code::try_from(error.code);
@@ -4433,6 +4435,7 @@ mod tests {
         (engine.commits).recover(
             &mut engine.trees,
             0,
+            false,
             &cause,
             &History::new(),
             &Marks::new(),

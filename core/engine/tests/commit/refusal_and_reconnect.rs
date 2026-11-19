@@ -294,7 +294,7 @@ fn a_server_count_above_the_accepted_one_at_a_slot_an_earlier_loss_took_is_a_los
     assert!(reissued.lost_here(7) && reissued.lost_here(3));
     assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
     assert_eq!(commits.connected(&welcome(3)), Reconnect::Recovery);
-    assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
+    assert!(matches!(commits.halted(), Some(Halt::Recovery { .. })));
 }
 
 /// GUN-444: a commit's result arrives, but before it is acknowledged the server loses it, and
@@ -357,16 +357,16 @@ fn errors_forget_the_commit_only_when_nothing_was_applied() {
         (Code::ReadOnly, Failure::Halted(Halt::ReadOnly), false),
         (
             Code::HistoryMismatch,
-            Failure::Halted(Halt::Recovery(RecoveryCause::of(
+            Failure::Halted(Halt::Recovery { cause: RecoveryCause::of(
                 RecoveryTrigger::SpaceRewound,
-            ))),
+            ), policy: None }),
             true,
         ),
         (
             Code::StaleDeviceState,
-            Failure::Halted(Halt::Recovery(RecoveryCause::of(
+            Failure::Halted(Halt::Recovery { cause: RecoveryCause::of(
                 RecoveryTrigger::StoreRolledBack,
-            ))),
+            ), policy: None }),
             true,
         ),
     ];
@@ -411,7 +411,7 @@ fn reconnecting_compares_the_device_counter_and_the_history() {
     for w in [2, 5] {
         let mut commits = fresh();
         assert_eq!(commits.connected(&welcome(w)), Reconnect::Recovery);
-        assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
+        assert!(matches!(commits.halted(), Some(Halt::Recovery { .. })));
         assert!(commits.in_flight().is_some(), "kept as evidence");
         assert_eq!(commits.connected(&welcome(1)), Reconnect::Recovery);
     }
@@ -586,7 +586,7 @@ fn the_servers_token_at_its_count_decides_which_kept_slot_bounds_what_it_holds()
         ..welcome(1)
     };
     assert_eq!(elsewhere.connected(&another), Reconnect::Recovery);
-    assert!(matches!(elsewhere.halted(), Some(Halt::Recovery(_))));
+    assert!(matches!(elsewhere.halted(), Some(Halt::Recovery { .. })));
     assert_eq!(elsewhere.accepted(), 2);
     assert!(elsewhere.lost_here(7) && elsewhere.lost_here(3));
 }
@@ -908,7 +908,7 @@ fn a_server_count_below_the_accepted_one_starts_recovery_when_its_token_names_an
         assert_eq!(commits.connected(&welcome), reconnect, "{welcome:?}");
         let restarted = Commits::from_state(commits.state()).unwrap();
         for commits in [&commits, &restarted] {
-            let recovering = matches!(commits.halted(), Some(Halt::Recovery(_)));
+            let recovering = matches!(commits.halted(), Some(Halt::Recovery { .. }));
             assert_eq!(recovering, reconnect == Reconnect::Recovery, "{welcome:?}");
         }
     }
@@ -1001,7 +1001,7 @@ fn a_recovery_forgets_the_commits_its_slots_were_given_before_a_loss() {
     let (mut trees, mut ids) = (trees(&[]), IdGen::new(1));
     commits.recover(
         &mut trees,
-        0,
+        0, false,
         &cause,
         &History::new(),
         &Marks::new(),
@@ -1089,7 +1089,7 @@ fn another_at(slot: u64) -> Welcome {
 fn a_server_count_at_the_accepted_one_naming_a_commit_the_store_does_not_know_starts_recovery() {
     let mut commits = kept_slots();
     assert_eq!(commits.connected(&another_at(2)), Reconnect::Recovery);
-    assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
+    assert!(matches!(commits.halted(), Some(Halt::Recovery { .. })));
     let mut given_up = given_up_at(kept_slots(), 2, "another");
     assert_eq!(given_up.connected(&another_at(2)), Reconnect::Idle);
 }
@@ -1101,7 +1101,7 @@ fn a_commit_waiting_for_its_result_is_not_resent_when_the_server_names_another_c
     let mut commits = kept_slots();
     build(&mut commits, &mut trees, &mut IdGen::new(1)).unwrap();
     assert_eq!(commits.connected(&another_at(2)), Reconnect::Recovery);
-    assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
+    assert!(matches!(commits.halted(), Some(Halt::Recovery { .. })));
 }
 
 #[test]
@@ -1114,5 +1114,49 @@ fn a_commit_holding_its_result_is_not_dropped_when_the_server_names_another_comm
         .received(result(9, vec![outcome(op_result::Code::Applied)]))
         .unwrap();
     assert_eq!(commits.connected(&another_at(2)), Reconnect::Recovery);
-    assert!(matches!(commits.halted(), Some(Halt::Recovery(_))));
+    assert!(matches!(commits.halted(), Some(Halt::Recovery { .. })));
+}
+
+#[test]
+fn a_recovery_keeps_the_policy_halt_it_interrupted() {
+    let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    commits
+        .failed(&mut trees, &refusal(error::Code::ConfirmationRequired, 0))
+        .unwrap();
+    let halt = commits.halted();
+    let cause = RecoveryCause::rewind(0, 0);
+    commits.enter_recovery(cause);
+    let rewound = Welcome {
+        history_id: "rewound".into(),
+        ..welcome(0)
+    };
+    assert_eq!(commits.connected(&rewound), Reconnect::Recovery);
+    let (history, marks) = (History::new(), Marks::new());
+    commits.recover(&mut trees, 0, false, &cause, &history, &marks, &mut ids, NOW);
+    assert_eq!(commits.halted(), halt);
+    assert_eq!(commits.lift(Lift::Resend), Err(LiftError::NeedsConfirmation));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+}
+
+#[test]
+fn a_recovery_on_a_read_only_device_ends_read_only() {
+    let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    let rewound = Welcome {
+        history_id: "rewound".into(),
+        read_only: true,
+        ..welcome(0)
+    };
+    assert_eq!(commits.connected(&rewound), Reconnect::Recovery);
+    assert_eq!(commits.connected(&rewound), Reconnect::Recovery);
+    let Some(Halt::Recovery { cause, .. }) = commits.halted() else {
+        panic!("the history differs, so the device recovers");
+    };
+    let (history, marks) = (History::new(), Marks::new());
+    commits.recover(&mut trees, 0, true, &cause, &history, &marks, &mut ids, NOW);
+    assert_eq!(commits.halted(), Some(Halt::ReadOnly));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }

@@ -706,7 +706,7 @@ impl Engine {
                 self.trees.set_listed_remote(id.clone(), node.clone());
             }
         }
-        let recovering = matches!(self.commits.halted(), Some(Halt::Recovery(_)));
+        let recovering = matches!(self.commits.halted(), Some(Halt::Recovery { .. }));
         if !recovering {
             let commits = &self.commits;
             (self.trees).listed_removals(removed, |seq| commits.listed_here(seq));
@@ -1259,7 +1259,7 @@ impl Engine {
     }
 
     fn unclaimed(&self, marked_node: Option<&NodeId>, linked: bool) -> Option<NodeId> {
-        let recovering = matches!(self.commits.halted(), Some(Halt::Recovery(_)));
+        let recovering = matches!(self.commits.halted(), Some(Halt::Recovery { .. }));
         marked_node
             .filter(|node| {
                 !linked

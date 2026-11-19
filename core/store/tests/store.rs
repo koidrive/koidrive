@@ -1877,10 +1877,18 @@ fn a_halt_survives_a_reopen_with_its_commit() {
     for halted in [
         None,
         Some(Halt::ReadOnly),
-        Some(Halt::Recovery(RecoveryCause::rewind(4, 1_700_000_000_000))),
-        Some(Halt::Recovery(RecoveryCause::of(
-            RecoveryTrigger::StoreOlderThanDisk,
-        ))),
+        Some(Halt::Recovery {
+            cause: RecoveryCause::rewind(4, 1_700_000_000_000),
+            policy: None,
+        }),
+        Some(Halt::Recovery {
+            cause: RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk),
+            policy: None,
+        }),
+        Some(Halt::Recovery {
+            cause: RecoveryCause::rewind(4, 1_700_000_000_000),
+            policy: Some(7),
+        }),
         Some(Halt::Policy { code: 7 }),
     ] {
         let mut state = engine_state();

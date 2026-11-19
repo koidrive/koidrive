@@ -1254,7 +1254,10 @@ fn a_store_and_marker_from_before_tokens_recover_through_a_crash_at_each_step_of
         let mut running = folder.start(no_hook()).unwrap();
         assert_eq!(running.engine.effects.cleared(), 4, "{step}");
         let halted = running.engine.commits.halted();
-        assert!(matches!(halted, Some(CommitHalt::Recovery(_))), "{step}");
+        assert!(
+            matches!(halted, Some(CommitHalt::Recovery { .. })),
+            "{step}"
+        );
         let tokens = running.store.transaction(|tx| tx.root_tokens()).unwrap();
         let marker = read_marker(&folder.root).unwrap().unwrap();
         assert!(marker.token.is_some(), "{step}");
@@ -1314,7 +1317,7 @@ fn a_marker_above_what_the_store_accounts_for_continues_from_the_marker_and_reco
     assert!(engine.effects.in_flight().is_empty());
     assert!(matches!(
         engine.commits.halted(),
-        Some(CommitHalt::Recovery(_))
+        Some(CommitHalt::Recovery { .. })
     ));
 
     let idle = Folder::new();
@@ -1324,7 +1327,7 @@ fn a_marker_above_what_the_store_accounts_for_continues_from_the_marker_and_reco
     assert_eq!(running.engine.effects.cleared(), 4);
     assert!(matches!(
         running.engine.commits.halted(),
-        Some(CommitHalt::Recovery(_))
+        Some(CommitHalt::Recovery { .. })
     ));
 }
 

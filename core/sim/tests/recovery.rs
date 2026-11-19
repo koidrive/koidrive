@@ -3291,6 +3291,7 @@ fn a_publish_for_a_folder_does_not_count_for_its_unchanged_child() {
     (engine.commits).recover(
         &mut engine.trees,
         seq,
+        false,
         &cause,
         &History::new(),
         &Marks::new(),
