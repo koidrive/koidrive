@@ -93,6 +93,7 @@ After a crash the driver recovers the effects in flight, if any, in one section 
 | a write without a recorded identity, a folder or a move: no quarantine entry, no staging file, target in the effect's final state (the new content or the moved entry), and for a write that replaces an entry, that entry in the local trash under the effect's ID | the effect finished | Report `EffectDone` |
 | a write without a recorded identity, a folder or a move: no quarantine entry, no staging file, the replaced entry in the local trash under the effect's ID, and the target without the new content | the effect finished, and the user changed or removed the file it wrote | Report `EffectFailed` as overtaken |
 | no quarantine entry, a staging file, the replaced entry in the local trash under the effect's ID | the user took the target's name before the file was placed | Report `EffectFailed` as overtaken, then delete the staging file |
+| a write with a recorded identity: no quarantine entry, no staging file | the rename placed the file (first rule below) | Report `EffectDone` with that identity |
 | no quarantine entry, anything else | the effect stopped before step 3, or the user changed the target | Delete the staging file (server bytes, downloadable again) and report `EffectFailed`, so the next plan sees the current disk |
 
 These rules complete the table:

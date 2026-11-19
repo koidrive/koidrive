@@ -443,8 +443,9 @@ impl Disk {
     ///    transaction. An interrupted one is planned again; one that met another state on disk stays blocked, and so
     ///    does one that recovery found done where L shows another entry
     ///    ([`koidrive_engine::effects::Effects::confirms`]).
-    /// 6. Staged files without an effect are deleted. When a recovered effect recorded its staged file's identity,
-    ///    the marker first gets a new token as in step 4, and the files stay until a later startup if it cannot.
+    /// 6. Staged files without an effect are deleted once the marker holds the store's token. When a recovered effect
+    ///    recorded its staged file's identity, the marker first gets a new token as in step 4. Staged files stay until
+    ///    a later startup while the marker cannot take its token.
     ///
     /// The observer then resets the paths of the recovered effects to L, so it reads a file an effect placed before
     /// the crash once, whatever the snapshot it starts from says about that file.
@@ -1135,9 +1136,9 @@ impl Disk {
         if recorded {
             let marker = self.marker()?;
             self.rotate(marker, false, store)?;
-            if self.next.is_some() {
-                return Ok(());
-            }
+        }
+        if self.next.is_some() {
+            return Ok(());
         }
         match only {
             Some(ids) => {
@@ -1152,7 +1153,6 @@ impl Disk {
         Ok(())
     }
 
-    /// The marker, read through the locked descriptor, for a marker that names this space.
     fn marker(&self) -> Result<Marker, Stop> {
         marker_of(&self.space, &self.space_id)
     }

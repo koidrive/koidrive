@@ -3468,9 +3468,16 @@ fn copy_store(from: &Path, to: &Path) {
 
 #[test]
 fn a_store_restored_from_before_a_write_that_failed_does_not_take_its_download_as_placed() {
-    for (scenario, at_startup) in [&SCENARIOS[1], &SCENARIOS[2]]
-        .into_iter()
-        .flat_map(|scenario| [(scenario, false), (scenario, true)])
+    for (scenario, at_startup, unwritable) in
+        [&SCENARIOS[1], &SCENARIOS[2]]
+            .into_iter()
+            .flat_map(|scenario| {
+                [
+                    (scenario, false, false),
+                    (scenario, true, false),
+                    (scenario, false, true),
+                ]
+            })
     {
         let folder = Folder::new();
         let mut server = Server::default();
@@ -3483,8 +3490,13 @@ fn a_store_restored_from_before_a_write_that_failed_does_not_take_its_download_a
             backup.clone(),
         );
         let saved = b"the user's own file";
+        let blocker = folder.root.join(PRIVATE_DIR).join("space.json.tmp");
+        let blocks = blocker.clone();
         let mut first = true;
         let hook: Hook = Box::new(move |reached| {
+            if unwritable && reached == Cut::AfterAck {
+                fs::create_dir(&blocks).unwrap();
+            }
             if first && matches!(reached, Cut::Step(_)) {
                 first = false;
                 if at_startup {
@@ -3508,21 +3520,18 @@ fn a_store_restored_from_before_a_write_that_failed_does_not_take_its_download_a
             });
             drop(folder.start(Some(hook)).unwrap());
         }
+        if unwritable {
+            drop(folder.start(no_hook()).unwrap());
+            fs::remove_dir(&blocker).unwrap();
+        }
         copy_store(&backup, &folder.db);
         let mut running = folder.start(no_hook()).unwrap();
-        assert!(
-            running.engine.effects.in_flight().is_empty(),
-            "{}",
-            scenario.name
+        let halted = matches!(
+            running.engine.commits.halted(),
+            Some(CommitHalt::Recovery { .. })
         );
-        assert!(
-            matches!(
-                running.engine.commits.halted(),
-                Some(CommitHalt::Recovery { .. })
-            ),
-            "{}",
-            scenario.name
-        );
+        let cleared = running.engine.effects.in_flight().is_empty();
+        assert!(unwritable || (halted && cleared), "{}", scenario.name);
         let mut watching = observer(&folder.root, before);
         let seen = observe_until(&mut watching, running.disk.sections().stamp(), |seen| {
             !seen.is_empty()
