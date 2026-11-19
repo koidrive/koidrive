@@ -115,6 +115,8 @@ pub(super) fn expected(check: Check, why: &str) -> bool {
     })
 }
 
+pub(super) const RESTORE_ANSWER: &str = "restore answer";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Field {
     Place,
@@ -695,7 +697,8 @@ impl Intents {
                     && (saw_the_action
                         || saw_the_value
                         || merged
-                        || field != Field::Content && intent.lost && other.made > intent.made);
+                        || field != Field::Content && intent.lost && other.made > intent.made
+                        || intent.kind == RESTORE_ANSWER && other.author != intent.author);
                 match dropped {
                     true => field == Field::Content && deleted,
                     false => replaced || looped || deleted,

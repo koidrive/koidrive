@@ -1002,3 +1002,20 @@ fn file_deletes_sent_one_by_one_stay_checked_after_the_deleting_device_leaves() 
     )
     .unwrap();
 }
+
+#[test]
+fn a_restore_answer_brings_back_the_file_its_user_deleted() {
+    let mut world = on(&[Precision::Fine; 2]);
+    world.phase(0, &[(0, u(1, 0, 0, 0, 0))]).unwrap();
+    world.phase(1, &[(0, Step::Backup)]).unwrap();
+    let mut schedule = vec![
+        (0, u(4, 0, 0, 0, 0)),
+        (0, Step::Scan),
+        (0, Step::Rewind),
+        (0, Step::Connect),
+    ];
+    schedule.extend([(0, Step::Work(0)); 12]);
+    schedule.push((0, Step::Answer(1)));
+    world.run(2, &schedule).unwrap();
+    world.phase(3, &[]).unwrap();
+}
