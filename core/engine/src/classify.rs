@@ -2221,9 +2221,7 @@ impl Trees {
         }
         self.observe_removal_in_held_folder(id);
         self.parked_as.remove(id);
-        if self.unknown_rules.remove(id) {
-            self.forget_reclaims();
-        }
+        self.unknown_rules.remove(id);
         self.outside.remove(id);
         self.lost.remove(id);
         self.count_held_trash(id, false);
