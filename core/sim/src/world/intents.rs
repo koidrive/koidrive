@@ -725,7 +725,10 @@ impl Intents {
         into_itself
             || (0..self.list.len()).any(|j| {
                 let other = &self.list[j];
-                let dropped = !other.stands();
+                let removed_below = matches!(other.value, Value::Trashed { .. })
+                    && covers(j)
+                    && !self.nodes(i).any(|id| self.on(j, id));
+                let dropped = !other.stands() && !removed_below;
                 if j == i || dropped && !other.restored {
                     return false;
                 }

@@ -771,7 +771,6 @@ devices::rewinds_converge_from_seed_605	case-1413	DeleteUndone	the delete of nod
 devices::rewinds_converge_from_seed_605	case-1525	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_605	case-1583	DeleteUndone	the delete of node 01a1c2c0-39a0-7ea7-93f8-3d888a182e12 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_605	case-1590	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back
-devices::rewinds_converge_from_seed_605	case-1611	IntentKept	node 01a1c2c0-39a0-7cad-9211-a25601bc3052 of the create on device 0 is not in the server's tree, and no delete that saw it and no rule for lost changes settles it
 devices::rewinds_converge_from_seed_605	case-1681	DeleteUndone	the delete of node 01a1c2c0-39a0-7cb2-989b-810659c5a8bc on device 2 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_605	case-1829	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_605	case-1879	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back
