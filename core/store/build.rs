@@ -6,19 +6,29 @@ use std::path::{Path, PathBuf};
 #[path = "build/plan.rs"]
 mod plan;
 
-fn sql_files(dir: &Path) -> Vec<(String, PathBuf)> {
+fn files(dir: &Path, extension: &str, subdirs: &[&str]) -> Vec<(String, PathBuf)> {
+    println!("cargo::rerun-if-changed={}", dir.display());
     let mut files: Vec<(String, PathBuf)> = std::fs::read_dir(dir)
         .unwrap_or_else(|error| panic!("reading {}: {error}", dir.display()))
         .map(|entry| entry.unwrap().path())
+        .filter(|path| !path.file_name().unwrap().to_string_lossy().starts_with('.'))
         .filter(|path| {
-            path.is_file() && !path.file_name().unwrap().to_string_lossy().starts_with('.')
+            let name = path.file_name().unwrap().to_string_lossy();
+            if path.is_dir() && !subdirs.contains(&name.as_ref()) {
+                panic!(
+                    "{} is a directory; put {extension} files directly in {}",
+                    path.display(),
+                    dir.display()
+                );
+            }
+            path.is_file()
         })
         .map(|path| {
             let name = path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .and_then(|name| name.strip_suffix(".sql"))
-                .unwrap_or_else(|| panic!("{} is not a .sql migration", path.display()))
+                .and_then(|name| name.strip_suffix(extension))
+                .unwrap_or_else(|| panic!("{} is not a {extension} file", path.display()))
                 .to_owned();
             (name, path)
         })
@@ -28,10 +38,10 @@ fn sql_files(dir: &Path) -> Vec<(String, PathBuf)> {
 }
 
 fn main() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    println!("cargo::rerun-if-changed={}", root.display());
-    let legacy = sql_files(&root.join("legacy"));
-    let named = sql_files(&root);
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.join("migrations");
+    let legacy = files(&root.join("legacy"), ".sql", &[]);
+    let named = files(&root, ".sql", &["legacy"]);
     let sql: Vec<String> = named
         .iter()
         .map(|(_, path)| std::fs::read_to_string(path).unwrap())
@@ -66,6 +76,23 @@ fn main() {
         .unwrap();
     }
     writeln!(out, "];\npub const LEGACY_STEPS: usize = {};", legacy.len()).unwrap();
-    let dest = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("migrations.rs");
-    std::fs::write(dest, out).unwrap();
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    std::fs::write(out_dir.join("migrations.rs"), out).unwrap();
+
+    let mut cases = String::new();
+    for (_, path) in files(&manifest.join("tests/upgrade_cases"), ".rs", &[]) {
+        writeln!(cases, "include!({:?});", path.to_str().unwrap()).unwrap();
+    }
+    std::fs::write(out_dir.join("upgrade_cases.rs"), cases).unwrap();
+
+    let mut tests = String::new();
+    for (name, path) in files(&manifest.join("tests/migrations"), ".rs", &[]) {
+        if !named.iter().any(|(migration, _)| *migration == name) {
+            panic!(
+                "core/store/tests/migrations/{name}.rs holds the store tests of a migration, but core/store/migrations/{name}.sql does not exist"
+            );
+        }
+        writeln!(tests, "#[path = {:?}]\nmod {name};", path.to_str().unwrap()).unwrap();
+    }
+    std::fs::write(out_dir.join("migration_tests.rs"), tests).unwrap();
 }

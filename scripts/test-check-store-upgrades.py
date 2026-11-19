@@ -22,10 +22,10 @@ class GuardTests(unittest.TestCase):
         self.assertIsNotNone(needs, "ci-report must declare its required jobs")
         self.assertIn("store-upgrade", {name.strip() for name in needs.group(1).split(",")})
 
-    def check(self, changes, harness="", cases=None, previous="", migrations=()):
+    def check(self, changes, cases=None, migrations=(), harness=None):
         cases = cases or {}
-        harness = guard.canonical_harness((ROOT / guard.HARNESS).read_text()) + harness
-        return guard.check(changes, harness, list(cases), lambda name: cases[name], previous, lambda name: name in migrations)
+        harness = (ROOT / guard.HARNESS).read_text() if harness is None else harness
+        return guard.check(changes, harness, list(cases), lambda name: cases[name], lambda name: name in migrations)
 
     def test_harness_cannot_skip_the_fixture(self):
         harness = (ROOT / guard.HARNESS).read_text()
@@ -41,13 +41,13 @@ class GuardTests(unittest.TestCase):
     def test_guard_runs_the_additive_columns_regression(self):
         self.assertIn("additive_columns_do_not_change_preserved_release_rows", guard.HARNESS_TESTS)
 
-    def test_harness_only_accepts_new_top_level_includes(self):
+    def test_harness_is_pinned_whole(self):
         harness = (ROOT / guard.HARNESS).read_text()
-        added = 'include!("upgrade_cases/new_migration.rs");\n'
-        self.assertIn("new_migration", guard.validate_harness(harness + added))
+        guard.validate_harness(harness)
         for mutation in ["/*\n" + harness + "*/\n", harness + "fn extra() {}\n",
-                         harness + "/*\n" + added + "*/\n", harness.replace("#[test]", "#[ignore]\n        #[test]"),
-                         harness + 'include!("other.rs");\n']:
+                         harness + 'include!("upgrade_cases/new_migration.rs");\n',
+                         harness.replace("#[test]", "#[ignore]\n        #[test]"),
+                         harness.replace('"/upgrade_cases.rs"', '"/other.rs"')]:
             with self.subTest(mutation=mutation[-80:]), self.assertRaisesRegex(ValueError, "pinned release-state harness"):
                 guard.validate_harness(mutation)
 
@@ -58,15 +58,12 @@ class GuardTests(unittest.TestCase):
 
     def test_each_migration_needs_its_own_new_registered_case(self):
         changes = [("A", "core/store/migrations/volume_mounts.sql"), ("A", "core/store/tests/upgrade_cases/volume_mounts.rs")]
-        harness = 'include!("upgrade_cases/volume_mounts.rs");\n'
         cases = {"volume_mounts": "upgrade_case!(volume_mounts, |store| { assert!(store.is_ok()); });"}
-        self.assertEqual(self.check(changes, harness, cases), ["volume_mounts"])
-        with self.assertRaisesRegex(ValueError, "include"):
-            self.check(changes, "", cases)
+        self.assertEqual(self.check(changes, cases), ["volume_mounts"])
         with self.assertRaisesRegex(ValueError, "exactly"):
-            self.check(changes, harness, {"volume_mounts": "#[ignore] " + cases["volume_mounts"]})
-        with self.assertRaisesRegex(ValueError, "duplicate"):
-            self.check(changes, harness * 2, cases)
+            self.check(changes, {"volume_mounts": "#[ignore] " + cases["volume_mounts"]})
+        with self.assertRaisesRegex(ValueError, "volume_mounts"):
+            self.check(changes[:1], {"other": cases["volume_mounts"].replace("volume_mounts", "other")})
 
     def test_case_rejects_top_level_macro_calls_and_redefinitions(self):
         valid = "upgrade_case!(volume_mounts, |store| { assert!(store.is_ok()); });"
@@ -92,6 +89,8 @@ class GuardTests(unittest.TestCase):
         for path in ["core/store/src/lib.rs", "core/store/src/migrations.rs", "core/store/src/new_schema.rs", "core/store/build/plan.rs", "core/store/build/nested/helpers.rs"]:
             with self.subTest(path=path), self.assertRaisesRegex(ValueError, "schema_"):
                 self.check([("M", path), ("M", "core/store/tests/upgrade_cases/schema_old.rs")])
+        self.check([("M", "core/store/src/lib.rs"), ("A", "core/store/tests/upgrade_cases/schema_new.rs")],
+                   {"schema_new": "upgrade_case!(schema_new, |store| { assert!(store.is_ok()); });"})
 
     def test_legacy_and_unrecognized_migration_additions_fail(self):
         for path in ["core/store/migrations/legacy/99_add.sql", "core/store/migrations/a-b.sql", "core/store/migrations/nested/new.sql"]:
@@ -104,23 +103,19 @@ class GuardTests(unittest.TestCase):
                 self.check([(status, "core/store/migrations/unseen_changes.sql")])
 
     def test_existing_cases_are_validated_and_cannot_lose_coverage(self):
-        harness = 'include!("upgrade_cases/unseen_changes.rs");\n'
         valid = {"unseen_changes": "upgrade_case!(unseen_changes, |store| { assert!(store.is_ok()); });"}
-        self.assertEqual(self.check([], harness, valid), ["unseen_changes"])
+        self.assertEqual(self.check([], valid), ["unseen_changes"])
         with self.assertRaisesRegex(ValueError, "exactly"):
-            self.check([("M", "core/store/tests/upgrade_cases/unseen_changes.rs")], harness,
+            self.check([("M", "core/store/tests/upgrade_cases/unseen_changes.rs")],
                        {"unseen_changes": "#[ignore] " + valid["unseen_changes"]})
-        with self.assertRaisesRegex(ValueError, "include each"):
-            self.check([], harness)
-        with self.assertRaisesRegex(ValueError, "include each"):
-            self.check([], "", valid)
+        removal = [("D", "core/store/tests/upgrade_cases/unseen_changes.rs")]
         with self.assertRaisesRegex(ValueError, "cannot remove upgrade coverage"):
-            self.check([], "", {}, previous=harness, migrations=["unseen_changes"])
+            self.check(removal, migrations=["unseen_changes"])
+        self.assertEqual(self.check(removal), [])
 
-    def test_all_registered_files_are_returned(self):
-        harness = 'include!("upgrade_cases/z.rs");\ninclude!("upgrade_cases/a.rs");\n'
+    def test_all_case_files_are_returned(self):
         cases = {name: f"upgrade_case!({name}, |store| {{ assert!(store.is_ok()); }});" for name in ["z", "a"]}
-        self.assertEqual(self.check([], harness, cases), ["a", "z"])
+        self.assertEqual(self.check([], cases), ["a", "z"])
 
     def test_real_569_diff_is_rejected(self):
         fixture = json.loads((ROOT / "scripts/test-fixtures/store-upgrade-569.json").read_text())

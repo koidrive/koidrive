@@ -16,24 +16,15 @@ HARNESS_TESTS = ["schema_alpha6_baseline", "additive_columns_do_not_change_prese
 SCHEMA = {"core/store/build.rs"}
 NAME = r"[a-z][a-z0-9_]*"
 FIXTURE_SHA256 = "13da6745f0976258e12b02d38b9687abe9995c824d3996e472670986c8af40c7"
-HARNESS_SHA256 = "e7251e7d4b58c5717bf5d8656d76da9fc798204a3b62907f508d7a30428c60c0"
-INCLUDE = re.compile(r'^include!\("upgrade_cases/(' + NAME + r')\.rs"\);\n?', re.M)
+HARNESS_SHA256 = "1b720b548a72e517d4940b68f87d981e6852fbf12889113ffeea0f5856a61721"
 LEXER_SPEC = importlib.util.spec_from_file_location("rust_comments", ROOT / "scripts/check-new-comments.py")
 LEXER = importlib.util.module_from_spec(LEXER_SPEC)
 LEXER_SPEC.loader.exec_module(LEXER)
 
 
-def canonical_harness(harness):
-    return INCLUDE.sub("", harness)
-
-
 def validate_harness(harness):
-    included = INCLUDE.findall(harness)
-    if len(included) != len(set(included)):
-        raise ValueError("duplicate upgrade case includes")
-    if hashlib.sha256(canonical_harness(harness).encode()).hexdigest() != HARNESS_SHA256:
-        raise ValueError("upgrade harness differs from the pinned release-state harness; only case include lines may change")
-    return included
+    if hashlib.sha256(harness.encode()).hexdigest() != HARNESS_SHA256:
+        raise ValueError(f"upgrade harness differs from the pinned release-state harness; add cases as {CASES}<name>.rs")
 
 
 def validate_case(name, text):
@@ -59,7 +50,7 @@ def validate_case(name, text):
     raise ValueError(message)
 
 
-def check(changes, harness, case_files, read_case, previous_harness="", migration_exists=lambda name: False):
+def check(changes, harness, case_files, read_case, migration_exists=lambda name: False):
     additions = {path for status, path in changes if status == "A"}
     modified = [path for status, path in changes if status != "A" and path.startswith("core/store/migrations/")]
     if modified:
@@ -88,14 +79,15 @@ def check(changes, harness, case_files, read_case, previous_harness="", migratio
         case.startswith("schema_") for case in cases
     ):
         raise ValueError("add a new schema_ upgrade case for the changed store schema code")
-    included = validate_harness(harness)
-    previous = re.findall(r'^include!\("upgrade_cases/(' + NAME + r')\.rs"\);$', previous_harness, re.M)
-    removed = sorted(name for name in previous if name not in included and migration_exists(name))
+    validate_harness(harness)
+    removed = sorted(
+        pathlib.PurePosixPath(path).stem
+        for status, path in changes
+        if status == "D" and re.fullmatch(CASES + NAME + r"\.rs", path) and migration_exists(pathlib.PurePosixPath(path).stem)
+    )
     if removed:
         raise ValueError("cannot remove upgrade coverage for migrations that remain: " + ", ".join(removed))
-    if set(case_files) != set(included):
-        raise ValueError(f"include each case file from {HARNESS}; files={sorted(case_files)}, includes={sorted(included)}")
-    for name in included:
+    for name in case_files:
         validate_case(name, read_case(name))
     return sorted(case_files)
 
@@ -114,13 +106,11 @@ def main():
         raise ValueError("alpha6 fixture does not match the pinned release fixture")
     raw = git("diff", "--no-renames", "--name-status", "-z", args.base, args.head).decode().split("\0")
     changes = list(zip(raw[0:-1:2], raw[1:-1:2]))
-    prior = subprocess.run(["git", "cat-file", "-e", f"{args.base}:{HARNESS}"], cwd=ROOT, capture_output=True)
-    previous_harness = git("show", f"{args.base}:{HARNESS}").decode() if prior.returncode == 0 else ""
     case_paths = list((ROOT / CASES).glob("*.rs"))
     if any(not re.fullmatch(NAME, path.stem) for path in case_paths):
         raise ValueError("upgrade case filenames must be lowercase identifiers")
     names = check(changes, (ROOT / HARNESS).read_text(), [path.stem for path in case_paths],
-                  lambda name: (ROOT / CASES / f"{name}.rs").read_text(), previous_harness,
+                  lambda name: (ROOT / CASES / f"{name}.rs").read_text(),
                   lambda name: (ROOT / "core/store/migrations" / f"{name}.sql").is_file())
     for name in [*HARNESS_TESTS, *names]:
         result = subprocess.run(
