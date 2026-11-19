@@ -1751,6 +1751,7 @@ impl World {
             _ => (self.clock.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize % batch.len(),
         };
         let mut ends = Vec::new();
+        let mut recorded = false;
         for (index, record) in batch.iter().enumerate() {
             let outcome = if index == unlucky {
                 outcome
@@ -1771,6 +1772,7 @@ impl World {
                 (device.engine.effects.stage(&record.effect_id, identity))
                     .map_err(|error| Failure::Broken(format!("staging refused: {error:?}")))?;
                 device.persist()?;
+                recorded = true;
             }
             let applied = device.disk.apply(record, until);
             if let Some((path, _)) = (kept.iter()).find_map(|(ino, kept)| {
@@ -1916,6 +1918,9 @@ impl World {
             }
         }
         device.persist()?;
+        if recorded {
+            device.rotate();
+        }
         device.disk.unstage();
         self.read_rules_file(d);
         let device = &mut self.devices[d];
@@ -1936,7 +1941,8 @@ impl World {
         device.engine = device.store.reload(&device.rules)?;
         let effects = &device.engine.effects;
         let (marker, cleared) = (device.disk.marker(), effects.cleared());
-        if marker > cleared + effects.in_flight().len() as u64 {
+        let ahead = marker > cleared + effects.in_flight().len() as u64;
+        if ahead || device.disk.token() > device.engine.token && marker >= cleared {
             let trees = &device.engine.trees;
             device.disk.bring_back_all(|parked| {
                 (trees
@@ -1958,10 +1964,14 @@ impl World {
                 .unwrap_or_else(|| parked.to_owned())
             });
             device.engine.effects.catch_up(marker);
+            device.engine.token = device.disk.token();
             self.recover(
                 d,
                 RecoveryTrigger::StoreOlderThanDisk,
-                format!("the root marker counts {marker} effects, more than the store"),
+                match ahead {
+                    true => format!("the root marker counts {marker} effects, more than the store"),
+                    false => "the root marker holds a token the store does not".to_owned(),
+                },
             )?;
         }
         if marker < cleared {
@@ -2123,6 +2133,9 @@ impl World {
         }
         if !batch.is_empty() {
             device.persist()?;
+        }
+        if batch.iter().any(|record| record.staged.is_some()) {
+            device.rotate();
         }
         device.disk.unstage();
         if device.engine.commits.in_flight().is_some() {

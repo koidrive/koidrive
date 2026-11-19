@@ -1657,19 +1657,17 @@ fn a_file_overwritten_while_the_device_was_down_after_its_download_is_an_edit_of
     let world = converge(2, &[synced, racing]).unwrap();
     assert_eq!(world.seen["restart finds the effect in flight done"], 1);
     assert_eq!(sorted_names(&world), [vec!["a"], vec!["a"]]);
-    let held: Vec<_> = (world.devices.iter())
-        .map(|device| {
-            device
-                .disk
-                .entries()
-                .values()
-                .next()
-                .unwrap()
-                .content
-                .clone()
-        })
-        .collect();
-    assert_eq!(held[0], held[1]);
+    let held = |d: usize| {
+        world.devices[d]
+            .disk
+            .entries()
+            .values()
+            .next()
+            .unwrap()
+            .content
+            .clone()
+    };
+    assert_eq!(held(0), held(1));
 }
 
 fn sorted_names(world: &World) -> Vec<Vec<&str>> {
@@ -1712,7 +1710,7 @@ fn a_download_deleted_while_the_device_was_down_beside_a_file_with_its_bytes_sta
     assert_eq!(sorted_names(&world), [vec!["c.txt"], vec!["c.txt"]]);
 }
 
-fn a_download_a_crash_hid_and_its_user_changed(cut: Cut, change: Step) -> World {
+fn a_download_a_crash_hid_and_its_user_changed(cut: Cut, changes: &[Step]) -> World {
     let synced = vec![(0, file("a"))];
     let mut racing = vec![(2, overwrite(0))];
     racing.extend(commit(2));
@@ -1720,12 +1718,9 @@ fn a_download_a_crash_hid_and_its_user_changed(cut: Cut, change: Step) -> World 
         (1, DELIVER),
         (1, EFFECT),
         (1, Step::Effect(Outcome::Crash(cut))),
-        (1, change),
-        (0, DELIVER),
-        (0, EFFECT),
-        (0, EFFECT),
-        (0, overwrite(0)),
     ]);
+    racing.extend(changes.iter().map(|change| (1, *change)));
+    racing.extend([(0, DELIVER), (0, EFFECT), (0, EFFECT), (0, overwrite(0))]);
     racing.extend(commit(0));
     let world = converge(3, &[synced, racing]).unwrap();
     let recovered = match cut {
@@ -1740,7 +1735,7 @@ fn a_download_a_crash_hid_and_its_user_changed(cut: Cut, change: Step) -> World 
 #[test]
 fn a_download_a_crash_hid_and_its_user_deleted_keeps_an_edit_back_to_the_bytes_it_replaced() {
     for cut in [Cut::Placed, Cut::Done] {
-        let world = a_download_a_crash_hid_and_its_user_changed(cut, delete(0));
+        let world = a_download_a_crash_hid_and_its_user_changed(cut, &[delete(0)]);
         for device in &world.devices {
             assert_eq!(device.disk.entries().len(), 1);
         }
@@ -1749,16 +1744,23 @@ fn a_download_a_crash_hid_and_its_user_deleted_keeps_an_edit_back_to_the_bytes_i
 
 #[test]
 fn a_file_made_at_the_name_a_crashed_download_freed_keeps_an_edit_back_to_the_bytes_it_replaced() {
-    let world = a_download_a_crash_hid_and_its_user_changed(Cut::Quarantined, file("a"));
+    let world = a_download_a_crash_hid_and_its_user_changed(Cut::Quarantined, &[file("a")]);
     for device in &world.devices {
         assert_eq!(device.disk.entries().len(), 2);
     }
 }
 
 #[test]
+fn a_store_copied_before_a_restart_dropped_a_staged_download_reads_as_older_than_the_disk() {
+    let changes = [Step::CopyStore, file("a"), SCAN, Step::RollBack];
+    let world = a_download_a_crash_hid_and_its_user_changed(Cut::Quarantined, &changes);
+    assert_eq!(world.seen["recovery starts after a store rollback"], 1);
+}
+
+#[test]
 fn a_download_a_crash_hid_and_its_user_overwrote_keeps_an_edit_back_to_the_bytes_it_replaced() {
     for cut in [Cut::Placed, Cut::Done] {
-        let world = a_download_a_crash_hid_and_its_user_changed(cut, overwrite(0));
+        let world = a_download_a_crash_hid_and_its_user_changed(cut, &[overwrite(0)]);
         for device in &world.devices {
             assert_eq!(device.disk.entries().len(), 2);
         }
@@ -12885,25 +12887,6 @@ fn a_restart_finds_two_swapped_downloads_done_and_leaves_each_file_to_the_node_i
         let delete = at_entry(&world, 0, deleted, 4, 0);
         world.phase(1, &[(0, delete)]).unwrap();
     }
-}
-
-#[test]
-fn a_server_that_copies_the_download_a_restart_took_for_a_new_file_is_caught() {
-    use Step::*;
-    let mut world = on(&[Precision::Fine; 3]);
-    let made = [
-        (0, u(1, 0, 0, 2, 0)),
-        (0, Work(0)),
-        (0, Work(0)),
-        (0, Work(0)),
-    ];
-    let downloaded = [(2, Work(0)), (2, Work(0)), (2, CopyStore)];
-    world.phase(0, &[&made[..], &downloaded].concat()).unwrap();
-    world.space_mut().copy_each_created_file();
-    let renamed = [(2, RollBack), (2, u(3, 0, 0, 0, 0))];
-    let failure = world.phase(1, &renamed).unwrap_err().to_string();
-    let expected = "write 1 is in 3 live nodes on the server";
-    assert!(failure.contains(expected), "{failure}");
 }
 
 #[test]

@@ -133,6 +133,7 @@ pub struct Disk {
     trash: BTreeSet<String>,
     binned: BTreeSet<i64>,
     marker: u64,
+    token: u64,
     pub(super) brought_back: BTreeSet<u128>,
 }
 
@@ -153,6 +154,15 @@ impl Disk {
 
     pub fn marker(&self) -> u64 {
         self.marker
+    }
+
+    pub fn token(&self) -> u64 {
+        self.token
+    }
+
+    pub fn rotate(&mut self) -> u64 {
+        self.token += 1;
+        self.token
     }
 
     pub fn entries(&self) -> &BTreeMap<u128, Entry> {
