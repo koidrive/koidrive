@@ -37,14 +37,14 @@ pub fn path(path: &Path) -> String {
 
 pub fn folder(folder: &koidrive_driver::FolderStatus) -> String {
     match &folder.path {
-        Some(root) => path(Path::new(root)),
+        Some(root) => path(root),
         None => unplaced(folder),
     }
 }
 
 pub fn folder_path(folder: &koidrive_driver::FolderStatus) -> String {
     match &folder.path {
-        Some(root) => crate::printable(root),
+        Some(root) => crate::printable(&root.to_string_lossy()),
         None => unplaced(folder),
     }
 }

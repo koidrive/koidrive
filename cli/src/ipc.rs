@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -304,7 +304,7 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
     })
 }
 
-static READING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+static READING: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 
 /// The linked folders this process may not read. macOS keeps a launch agent out of the folders that its privacy
 /// settings guard, such as Documents, until the person allows it, and asks while the first read waits. Each read
@@ -331,12 +331,12 @@ async fn unreadable(folders: Vec<FolderStatus>) -> Vec<Blocked> {
     for (folder, read) in reads {
         match tokio::time::timeout_at(deadline, read).await {
             Err(_) | Ok(Err(_)) => blocked.push(Blocked {
-                folder,
+                folder: folder.to_string_lossy().into_owned(),
                 waiting: true,
             }),
             Ok(Ok(Err(error))) if error.raw_os_error() == Some(Errno::PERM.raw_os_error()) => {
                 blocked.push(Blocked {
-                    folder,
+                    folder: folder.to_string_lossy().into_owned(),
                     waiting: false,
                 })
             }

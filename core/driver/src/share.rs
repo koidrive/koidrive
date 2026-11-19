@@ -150,7 +150,7 @@ impl Driver {
         };
         let node_id = node_id.to_owned();
         let store = self.paths().store(&folder.space_id)?;
-        let root = PathBuf::from(folder.path.as_deref().expect("a located folder has a path"));
+        let root = folder.path.clone().expect("a located folder has a path");
         let requested = path.to_owned();
         let space_id = folder.space_id.clone();
         let selected = node_id.clone();
@@ -518,7 +518,8 @@ fn described(
         url: Secret(link.url),
         space_id: link.space_id,
         space_name: space_name.to_owned(),
-        folder: folder.and_then(|folder| folder.path.clone()),
+        folder: (folder.and_then(|folder| folder.path.as_deref()))
+            .map(|path| path.to_string_lossy().into_owned()),
         node_id: link.node_id,
         created_at_ms: link.created_at_ms,
         expires_at_ms,
@@ -596,8 +597,7 @@ fn locate<'a>(
         return Err(DriverError::RelativePath(path.to_owned()));
     }
     let outside = || DriverError::OutsideLinkedFolders(path.to_owned());
-    let placed =
-        || (folders.iter()).filter_map(|folder| Some((folder, Path::new(folder.path.as_deref()?))));
+    let placed = || (folders.iter()).filter_map(|folder| Some((folder, folder.path.as_deref()?)));
     let mut components: VecDeque<_> = path
         .components()
         .map(|component| component.as_os_str().to_owned())
@@ -769,7 +769,7 @@ mod tests {
         FolderStatus {
             space_id: SPACE.into(),
             space_name: "Team".into(),
-            path: Some(path.to_str().unwrap().into()),
+            path: Some(path.to_owned()),
             state: FolderState::UpToDate,
             history_id: None,
             last_seq: None,
@@ -1249,7 +1249,7 @@ mod tests {
                 continue;
             }
             let (found, path) = locate(&folders, &path).unwrap();
-            assert_eq!(found.path.as_deref(), linked.to_str());
+            assert_eq!(found.path.as_deref(), Some(linked.as_path()));
             assert_eq!(path, names("Docs/plan.txt"));
             assert_eq!(
                 locate(&folders, &typed.join("Docs/../server-only.txt"))
@@ -1299,7 +1299,7 @@ mod tests {
 
         let (found, names) = locate(&folders, &root.join("shortcut/a.txt")).unwrap();
 
-        assert_eq!(found.path.as_deref(), linked.to_str());
+        assert_eq!(found.path.as_deref(), Some(linked.as_path()));
         assert_eq!(names, vec!["Docs", "a.txt"]);
     }
 
@@ -1321,11 +1321,11 @@ mod tests {
             linked.join("Docs/../../shortcut/../Sync"),
         ] {
             let (found, names) = locate(&folders, &path).unwrap();
-            assert_eq!(found.path.as_deref(), linked.to_str());
+            assert_eq!(found.path.as_deref(), Some(linked.as_path()));
             assert_eq!(names, vec!["Sync"]);
         }
         let (found, names) = locate(&folders, &linked.join("../Other/Docs/../file")).unwrap();
-        assert_eq!(found.path.as_deref(), other.to_str());
+        assert_eq!(found.path.as_deref(), Some(other.as_path()));
         assert_eq!(names, vec!["file"]);
         for path in [
             "server-only/..",

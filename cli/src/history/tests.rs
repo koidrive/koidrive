@@ -28,7 +28,12 @@ const PHOTOS: &str = "0194f8a2-0000-7000-8000-00000000000b";
 
 #[test]
 fn concise_restore_replay_does_not_assume_a_linked_folder() {
-    let done = asked("/home/ada/Work", "report.docx", "restore-1".into(), None);
+    let done = asked(
+        Path::new("/home/ada/Work"),
+        "report.docx",
+        "restore-1".into(),
+        None,
+    );
     let note = done.output(true).1;
     assert!(!note.contains("waits for the folder to sync"), "{note}");
     assert!(!note.contains("koi history requests"), "{note}");
@@ -36,7 +41,7 @@ fn concise_restore_replay_does_not_assume_a_linked_folder() {
     assert!(done.next.is_empty());
 
     let done = asked(
-        "/home/ada/Work",
+        Path::new("/home/ada/Work"),
         "report.docx",
         "restore-1".into(),
         Some(FolderState::Stopped),
@@ -456,7 +461,7 @@ async fn silent_profile(
         .finish(&Response::Restore {
             id: "restore-1".into(),
             space_id: space_id.into(),
-            folder: root.display().to_string(),
+            folder: root.clone(),
             path: "a.txt".into(),
         })
         .unwrap();
@@ -1112,7 +1117,7 @@ fn a_restore_picks_the_deletion_that_had_the_path() {
 
     let several = trashed_at(&live, &trash, SPACE, &names("docs/old.txt"), None).unwrap_err();
     assert_eq!(
-        several.message("docs/old.txt", "/home/ada/Koidrive"),
+        several.message("docs/old.txt", Path::new("/home/ada/Koidrive")),
         "2 deletions had the path docs/old.txt; pick one with --node: old-a (file, 7 B), old-b (file, 12 B)"
     );
 }

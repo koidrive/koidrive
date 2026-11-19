@@ -151,7 +151,7 @@ fn linked_folders_are_read_without_writing_to_the_profile() {
 
     assert_eq!(folders.len(), 1);
     assert_eq!(folders[0].space_id, SPACE);
-    assert_eq!(folders[0].path, Some(root.display().to_string()));
+    assert_eq!(folders[0].path.as_deref(), Some(root.as_path()));
     assert_eq!(snapshot(&base.join("profile")), before);
 
     let held = Driver::open(paths.clone()).unwrap();

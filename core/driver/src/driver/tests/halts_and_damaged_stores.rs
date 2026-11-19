@@ -1331,7 +1331,7 @@ async fn a_damaged_store_halts_only_its_folder_and_counts_once() {
     for (space_id, root) in [(GARBLED, &roots[0]), (EMPTIED, &roots[3])] {
         let broken = folder(&listed, space_id);
         assert_eq!(broken.state, FolderState::Halted);
-        assert_eq!(broken.path, Some(root.display().to_string()));
+        assert_eq!(broken.path.as_deref(), Some(root.as_path()));
         let problem = broken.problem.unwrap();
         assert!(
             problem.starts_with("the folder's sync database \"")

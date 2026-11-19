@@ -118,7 +118,9 @@ fn set_done(follows: bool, already: bool) -> Done {
 async fn counted(paths: &Paths, only: Option<&Path>) -> Result<Vec<GitignoreFolderData>, CliError> {
     let folders: BTreeMap<String, String> = match ipc::run(paths, Request::Status).await? {
         Response::Status { status } => (status.folders.into_iter())
-            .filter_map(|folder| Some((folder.space_id, folder.path?)))
+            .filter_map(|folder| {
+                Some((folder.space_id, folder.path?.to_string_lossy().into_owned()))
+            })
             .collect(),
         other => return Err(unexpected(other)),
     };

@@ -489,9 +489,16 @@ async fn a_folder_whose_place_is_unknown_gets_no_cleanup() {
     koidrive_state_file::create_dir(&paths.state_dir, &paths.state_dir).unwrap();
     let folder = dir.path().join("Koidrive");
     fs::create_dir(&folder).unwrap();
+    let raw = dir
+        .path()
+        .join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"Koidrive\xff"));
     let status: koidrive_driver::Status = serde_json::from_value(serde_json::json!({
         "account": null, "running": true,
-        "folders": ([folder.to_str().unwrap(), ""].map(|path| serde_json::json!({
+        "folders": ([
+            serde_json::json!(folder),
+            serde_json::json!(""),
+            serde_json::json!(std::os::unix::ffi::OsStrExt::as_bytes(raw.as_os_str())),
+        ].map(|path| serde_json::json!({
             "space_id": "s1", "space_name": "Home", "path": path, "state": "halted",
             "history_id": null, "last_seq": null, "head_seq": null, "remote_nodes": 0,
             "local_entries": null, "questions": 0
@@ -509,8 +516,10 @@ async fn a_folder_whose_place_is_unknown_gets_no_cleanup() {
 
     let found = find::find(&paths, dir.path()).await;
     served.await.unwrap();
+    record(&paths, &found, &mut Run::default());
 
-    assert_eq!(found.folders, [folder]);
+    assert_eq!(found.folders, [folder, raw]);
+    assert_eq!(read_record(&paths).folders, found.folders);
 }
 
 #[tokio::test]

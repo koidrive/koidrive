@@ -19,7 +19,7 @@ fn linked_folders_are_found_in_their_stores() {
     assert_eq!(status.folders.len(), 1);
     let folder = &status.folders[0];
     assert_eq!(folder.space_id, SPACE);
-    assert_eq!(folder.path, Some(root.display().to_string()));
+    assert_eq!(folder.path.as_deref(), Some(root.as_path()));
     assert_eq!(folder.state, FolderState::Stopped);
     assert_eq!(folder.questions, 1);
 }
