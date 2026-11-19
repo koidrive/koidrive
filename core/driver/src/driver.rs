@@ -318,12 +318,13 @@ fn write_gitignore(path: &Path, follow: bool) -> Result<(), DriverError> {
     let sync = (document.entry("sync").or_insert_with(toml_edit::table))
         .as_table_like_mut()
         .ok_or_else(|| invalid("sync is not a table".into()))?;
-    if sync.get("gitignore").and_then(toml_edit::Item::as_bool) == Some(follow) {
-        return Ok(());
-    }
+    let already = sync.get("gitignore").and_then(toml_edit::Item::as_bool) == Some(follow);
     sync.insert("gitignore", toml_edit::value(follow));
     let text = document.to_string();
-    toml::from_str::<Config>(&text).map_err(|error| invalid(error.to_string()))?;
+    Config::parse(path, &text)?;
+    if already {
+        return Ok(());
+    }
     if let Some(dir) = path.parent() {
         DirBuilder::new()
             .recursive(true)
@@ -10860,5 +10861,26 @@ mod tests {
 
         fs::rename(&root, base.join("Moved")).unwrap();
         assert_eq!(driver.gitignore_only(&root).unwrap(), blocked);
+    }
+
+    #[tokio::test]
+    async fn setting_gitignore_refuses_a_configuration_file_the_next_start_would_refuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let driver = Driver::open(paths.clone()).unwrap();
+        fs::create_dir_all(paths.config_file.parent().unwrap()).unwrap();
+        for text in [
+            "[sync]\nexclude = [\"!keep\"]\n",
+            "[sync]\nexclude = [\"!keep\"]\ngitignore = false\n",
+        ] {
+            fs::write(&paths.config_file, text).unwrap();
+            assert!(Config::load(&paths.config_file).is_err());
+            assert!(matches!(
+                driver.set_gitignore(false).await,
+                Err(DriverError::Config(ConfigError::Invalid { .. }))
+            ));
+            assert_eq!(fs::read_to_string(&paths.config_file).unwrap(), text);
+        }
+        assert!(driver.follows_gitignore());
     }
 }
