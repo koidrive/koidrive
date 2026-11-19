@@ -815,8 +815,8 @@ impl Commits {
     /// there, which the next commit continues, `log` what the server's log showed about R, and
     /// `marks` the nodes the disk's entries name, by which an entry the store lost track of is found. An entry whose mark claims a node other than its ID, where R holds that ID, takes a new ID first, so it is never settled as the node its ID names. The commit in flight is dropped: the tree changes it
     /// carried are still differences between L and S. Every node is classified by whether this
-    /// device changed it since S, and a node R holds only since S₀ counts as held as
-    /// created after it. What is certain is left to the planner, and the rest is held, one
+    /// device changed it since S, and a node R holds only since S₀ counts as created after the
+    /// restore point. What is certain is left to the planner, and the rest is held, one
     /// question per group, with S kept as it was, so a held node is classified again against the
     /// same S whenever L or R changes. A restore asked for before the reset that R shows done ends
     /// as restored, and the others are held under one question. Committing then stays halted by

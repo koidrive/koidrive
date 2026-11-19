@@ -44,7 +44,7 @@ pub enum Log {
 
 impl Log {
     /// The log a recovery after a history change reads from `floor_seq`, keeping only the creates of
-    /// the files S holds at a known version, the only ones it can count as held since S₀.
+    /// the files S holds, the only ones it can count as held since S₀.
     pub fn since_floor(floor_seq: u64, trees: &Trees) -> Log {
         Log::SinceFloor {
             floor_seq,
@@ -100,10 +100,9 @@ impl LogRead {
     /// `log` is `None` when the log no longer reaches back to where the recovery asked for it.
     pub fn new(trees: &Trees, cause: &RecoveryCause, log: Option<Log>) -> LogRead {
         let synced_ms = synced_versions(trees);
-        let after_restore_point = |synced_ms: i64| {
-            cause
-                .restore_point_ms
-                .is_some_and(|point| synced_ms > point)
+        let after_restore_point = |synced_ms: Option<i64>| {
+            synced_ms
+                .is_some_and(|synced| cause.restore_point_ms.is_some_and(|point| synced > point))
         };
         match log {
             Some(Log::SinceCursor(log)) => {
@@ -128,12 +127,14 @@ impl LogRead {
                 history: History::new(),
                 recreated: synced_ms
                     .filter(|(id, synced_ms)| {
-                        let reaches_back =
-                            floor_seq == 0 || first_ms.is_some_and(|first| first <= *synced_ms);
-                        created_ms
-                            .get(*id)
-                            .is_some_and(|created| created > synced_ms)
-                            || (!reaches_back && after_restore_point(*synced_ms))
+                        let Some(created) = created_ms.get(*id) else {
+                            let reaches_back = floor_seq == 0
+                                || first_ms
+                                    .zip(*synced_ms)
+                                    .is_some_and(|(first, synced)| first <= synced);
+                            return !reaches_back && after_restore_point(*synced_ms);
+                        };
+                        synced_ms.is_none_or(|synced| *created > synced)
                     })
                     .map(|(id, _)| id.clone())
                     .collect(),
@@ -149,12 +150,12 @@ impl LogRead {
     }
 }
 
-fn synced_versions(trees: &Trees) -> impl Iterator<Item = (&NodeId, i64)> {
+fn synced_versions(trees: &Trees) -> impl Iterator<Item = (&NodeId, Option<i64>)> {
     (trees.synced().iter())
         .filter(|(_, shape)| shape.kind == Kind::File)
-        .filter_map(|(id, _)| {
-            let version_ms = trees.synced_version_id(id).and_then(crate::ids::unix_ms)?;
-            Some((id, i64::try_from(version_ms).ok()?))
+        .map(|(id, _)| {
+            let version_ms = trees.synced_version_id(id).and_then(crate::ids::unix_ms);
+            (id, version_ms.and_then(|ms| i64::try_from(ms).ok()))
         })
 }
 

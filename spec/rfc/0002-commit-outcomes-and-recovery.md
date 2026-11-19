@@ -127,7 +127,7 @@ When the current history began with a rewind, `ResyncRequired` with `HISTORY_CHA
 - `restore_seq`: the `head_seq` right after the rewind;
 - `restore_point_ms`: the point in time it restored, in Unix milliseconds.
 
-Both are 0 when the history began with the creation of the space. The Account DO, which directs the restore (§7.4), writes them to the Space DO's `meta` as `restore_seq` and `restore_point_ms`, in the same step that records the new `history_id`. After several rewinds they describe the latest one. A client that sees a new `history_id` in `Welcome` can still send `Resume` with its stored `history_id` to get this `ResyncRequired`. The fields name the restore point in the recovery notice. Recovery reads `restore_point_ms` only when the current history's log no longer reaches back to a version it compares (design §6.4).
+Both are 0 when the history began with the creation of the space. The Account DO, which directs the restore (§7.4), writes them to the Space DO's `meta` as `restore_seq` and `restore_point_ms`, in the same step that records the new `history_id`. After several rewinds they describe the latest one. A client that sees a new `history_id` in `Welcome` can still send `Resume` with its stored `history_id` to get this `ResyncRequired`. The fields name the restore point in the recovery notice. Recovery reads `restore_point_ms` only for a file whose S₀ version is known, when the current history's log no longer reaches back to that version (design §6.4).
 
 ## 9. Delete kept by a descendant (R7)
 

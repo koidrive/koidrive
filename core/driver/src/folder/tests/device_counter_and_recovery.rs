@@ -1506,3 +1506,57 @@ fn discarding_a_never_sent_folder_trashes_its_rules_when_the_last_excluded_file_
     assert!(a.sent.is_empty());
     assert_eq!(remote.names(), ["note.txt"]);
 }
+
+#[test]
+fn a_file_an_alpha_6_store_synced_is_asked_about_only_when_the_log_creates_it_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("state.db");
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../store/tests/fixtures/alpha6.db"
+    );
+    fs::copy(fixture, &db).unwrap();
+    for created_again in [false, true] {
+        let mut store = Store::open_existing(&db).unwrap();
+        let space = store.transaction(|tx| tx.link()).unwrap().unwrap().space_id;
+        let Engine {
+            mut trees,
+            mut commits,
+            mut ids,
+            ..
+        } = store.transaction(|tx| Engine::load(tx, &space)).unwrap();
+        let id = (trees.synced().iter())
+            .find(|(id, shape)| {
+                shape.kind == Kind::File
+                    && trees
+                        .local()
+                        .get(id)
+                        .is_some_and(|local| local.shape.same(shape))
+            })
+            .map(|(id, _)| id.clone())
+            .unwrap();
+        let mut rewound = trees.remote().get(&id).unwrap().clone();
+        rewound.shape.content.as_mut().unwrap().size += 1;
+        trees.set_remote(id.clone(), rewound);
+        let create = koidrive_proto::v1::NodeState {
+            node_id: id.clone(),
+            content_rev: 9,
+            meta_rev: 9,
+            ..Default::default()
+        };
+        let changes = [koidrive_proto::v1::ChangeRecord {
+            change: Some(koidrive_proto::v1::change_record::Change::Node(create)),
+        }];
+        let mut log = Log::since_floor(0, &trees);
+        log.record(9, NOW, &changes[..usize::from(created_again)]);
+        let cause = RecoveryCause::rewind(1, NOW);
+        let read = LogRead::new(&trees, &cause, Some(log));
+        commits.enter_recovery(cause);
+        let marks = koidrive_engine::first_link::Marks::new();
+        commits.recover(
+            &mut trees, 0, false, &cause, &read, &marks, &mut ids, NOW as u64,
+        );
+        let held = (commits.questions().iter()).any(|question| question.holds().any(|n| *n == id));
+        assert_eq!(held, created_again);
+    }
+}

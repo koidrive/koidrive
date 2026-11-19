@@ -1,0 +1,4 @@
+453
+# The tests hold a device's own write when another device's Keep re-created its file after the device last synced: one rewind, two rewinds, a rewind during the read, a device that synced the Keep, and a store upgraded from alpha.6 with no known synced versions.
+# Each case is a distinct way recovery read the log wrong in review (from the latest restore point, counting records that set no rev, unknown versions); no earlier test covered any of them.
+# The engine tests pin the create rule and the fallback; the sim and driver tests run the device flows end to end.
