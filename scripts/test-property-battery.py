@@ -626,6 +626,10 @@ cases = ["{1:064}"]
         d1f04 = "1f04d494189c5d7d60cf2a415e091dfa6f219d41865ccbe15fa953fa9980776c"
         tb5bf = "b5bf582a739d8550f5b2ca632da13e912e07e6844bd1640ffd05e801fc57ec25"
         takes_along = "a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone"
+        w78f3 = "78f33ddc3d91d9ca24ee8db9ad24f0ca0437d7aef0592e880d853f42fbc7443a"
+        l14fe = "14fe391f4d7b8011cbf4479f6c7a329d79742ba2970f9a9dba0de41bb92f4f40"
+        def replayed(case):
+            return next(text for entry in entries for text in entry["examples"] if f"\tcc-{case}\t" in text)
         coarse_once = "devices_on_coarse_volumes_converge_once_the_faults_stop"
         lose_server_restores = "devices_lose_no_write_across_server_restores"
         taken = ("after phase 2: a restore took write 2 from the server while a disk held it, and the server does not hold it "
@@ -677,7 +681,7 @@ cases = ["{1:064}"]
             ("devices_on_coarse_volumes_converge_across_restores_and_rewinds", never_reached, other, [("I", "GUN-864", None)]),
             (lose_rollbacks, example(x2293), x2293, [("X", "GUN-1199", ["2293e681b3bc"])]),
             (lose_rollbacks, example(x2293), other, []),
-            (lose_coarse, example(w74e3), w74e3, [("W", "GUN-1200", ["74e37aa2bf80"])]),
+            (lose_coarse, example(w74e3), w74e3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91"])]),
             (lose_coarse, example(w74e3), other, []),
             (lose_rollbacks, example(w74e3), w74e3, [("A", "GUN-1004", None)]),
             ("devices_on_coarse_volumes_converge_once_the_faults_stop", undone + "\n" + example(w74e3), other, []),
@@ -718,6 +722,15 @@ cases = ["{1:064}"]
             (takes_along, example(tb5bf), other, []),
             (rewinds_and_rollbacks, example(tb5bf), tb5bf, []),
             (takes_along, example(tb5bf) + "\n" + undone, tb5bf, []),
+            (lose_coarse, replayed(w78f3), w78f3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91"])]),
+            (lose_coarse, replayed(w78f3), other, []),
+            (lose_coarse, replayed(w78f3) + "\n" + undone, w78f3, []),
+            (lose_coarse, head_only_undone(lose_coarse, w78f3), w78f3, []),
+            (folder, replayed(l14fe), l14fe, [("L", "GUN-984", None)]),
+            (folder, replayed(l14fe), other, [("L", "GUN-984", None)]),
+            (folder, replayed(l14fe) + "\n" + undone, l14fe, []),
+            (folder, head_only_undone(folder, l14fe), l14fe, []),
+            (coarse_once, replayed(l14fe), l14fe, []),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):
                 found = triage.matches(entries, test, message, case)
