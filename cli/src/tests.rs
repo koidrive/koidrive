@@ -1797,6 +1797,7 @@ fn held(
             .map(|i| koidrive_driver::HeldItem {
                 node_id: format!("n{i}"),
                 path: format!("old/{i:02}").into(),
+                kind: None,
                 files: 1,
                 device_id: None,
                 device_name: None,
@@ -1826,6 +1827,7 @@ fn conflict(copy_path: &str) -> Question {
     let item = |node_id: &str, path: &str, device_id: &str, name: &str| koidrive_driver::HeldItem {
         node_id: node_id.into(),
         path: path.into(),
+        kind: None,
         files: 1,
         device_id: Some(device_id.into()),
         device_name: Some(name.into()),
@@ -2885,4 +2887,44 @@ async fn gitignore_status_counts_each_linked_folder_when_their_paths_print_alike
         assert_eq!(counted, Ok(expected.collect()), "{folder:?}");
     }
     server.abort();
+}
+
+#[test]
+fn a_folder_is_listed_as_a_folder_with_the_files_it_holds_or_brings_back_from_the_trash() {
+    let question: Question = serde_json::from_value(serde_json::json!({
+        "id": "q1", "space_id": "s1", "asked_at_ms": 1, "lineage": "q1",
+        "kind": { "type": "recovery", "group": "requested_before_reset" },
+        "items": [
+            { "node_id": "n1", "path": "drafts", "kind": "folder", "files": 1 },
+            { "node_id": "n2", "path": "notes.txt", "kind": "file", "files": 1 },
+            {
+                "node_id": "restore-1", "path": "photos", "kind": "folder", "files": 2,
+                "restore": { "type": "from_trash", "node_id": "photos" }
+            }
+        ]
+    }))
+    .unwrap();
+    let text = question_text(&question);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[lines.len() - 3..],
+        [
+            "  drafts/ (1 file)",
+            "  notes.txt (1 file)",
+            "  photos/ (2 files from the trash)"
+        ],
+        "{text}"
+    );
+    let items = serde_json::to_value(crate::report::Decision::of(&question).items).unwrap();
+    let kinds: Vec<_> = (items.as_array().unwrap().iter())
+        .map(|item| item["kind"].clone())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            serde_json::json!("folder"),
+            serde_json::json!("file"),
+            serde_json::json!("folder")
+        ]
+    );
 }

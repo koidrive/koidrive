@@ -5,7 +5,7 @@
 //! Schema 1 may gain optional fields; anything else needs a new schema version.
 
 use koidrive_driver::{
-    Account, FolderState, FolderStatus, Limit, Question, QuestionKind, RecoveryGroup,
+    Account, FolderState, FolderStatus, ItemKind, Limit, Question, QuestionKind, RecoveryGroup,
     RecoveryTrigger, Remedy, RestoreRejection, RestoreRequest, RestoreState, RestoreStatus,
     RestoreWait, Status, Update, Wait, WaitKind,
 };
@@ -395,6 +395,10 @@ pub struct Counts {
 pub struct Item {
     pub node_id: String,
     pub path: String,
+    /// Absent where this device does not know the node.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<NodeType>,
+    /// 1 for a file, the files a folder holds, and for a restore from the trash the files trashed with it.
     pub files: u64,
     /// For a file of a conflict, the device that wrote its current version.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -525,6 +529,10 @@ impl Decision {
                 .map(|item| Item {
                     node_id: item.node_id.clone(),
                     path: item.path.clone().into(),
+                    kind: item.kind.map(|kind| match kind {
+                        ItemKind::File => NodeType::File,
+                        ItemKind::Folder => NodeType::Folder,
+                    }),
                     files: item.files,
                     device_id: item.device_id.clone(),
                     device_name: item.device_name.clone(),
@@ -1601,6 +1609,7 @@ mod tests {
                 HeldItem {
                     node_id: "n1".into(),
                     path: "archive/a".into(),
+                    kind: Some(koidrive_driver::ItemKind::Folder),
                     files: 3,
                     device_id: None,
                     device_name: None,
@@ -1611,6 +1620,7 @@ mod tests {
                 HeldItem {
                     node_id: "n2".into(),
                     path: "archive/b".into(),
+                    kind: Some(koidrive_driver::ItemKind::File),
                     files: 1,
                     device_id: None,
                     device_name: None,
@@ -1709,8 +1719,8 @@ mod tests {
                     "exceeded": ["deletions", "share"],
                 },
                 "items": [
-                    { "node_id": "n1", "path": "archive/a", "files": 3 },
-                    { "node_id": "n2", "path": "archive/b", "files": 1 },
+                    { "node_id": "n1", "path": "archive/a", "kind": "folder", "files": 3 },
+                    { "node_id": "n2", "path": "archive/b", "kind": "file", "files": 1 },
                 ],
                 "answers": [
                     {

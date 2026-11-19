@@ -528,9 +528,21 @@
           ]
         },
         "files": {
+          "description": "1 for a file, the files a folder holds, and for a restore from the trash the files trashed with it.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NodeType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Absent where this device does not know the node."
         },
         "modified_at_ms": {
           "description": "For a file of a conflict, the modification time of its current version, in milliseconds since the epoch.",
@@ -595,6 +607,14 @@
         "argv"
       ],
       "type": "object"
+    },
+    "NodeType": {
+      "enum": [
+        "file",
+        "folder",
+        "symlink"
+      ],
+      "type": "string"
     },
     "OptionInfo": {
       "properties": {

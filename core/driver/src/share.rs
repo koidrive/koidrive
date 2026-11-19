@@ -7,7 +7,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 use koidrive_engine::names::name_key;
-use koidrive_engine::tree::{RemoteNode, same_content};
+use koidrive_engine::tree::{Kind, RemoteNode, same_content};
 use koidrive_fs::{EntryKind, ItemPath, RootAt, Snapshot, check_root};
 use koidrive_net::{ApiError, Auth, ServerError};
 use koidrive_proto::v1::{
@@ -66,9 +66,27 @@ pub enum LinkState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TargetKind {
+pub enum ItemKind {
     File,
     Folder,
+}
+
+impl From<Kind> for ItemKind {
+    fn from(kind: Kind) -> Self {
+        match kind {
+            Kind::Dir => ItemKind::Folder,
+            Kind::File => ItemKind::File,
+        }
+    }
+}
+
+impl From<ItemKind> for Kind {
+    fn from(kind: ItemKind) -> Self {
+        match kind {
+            ItemKind::Folder => Kind::Dir,
+            ItemKind::File => Kind::File,
+        }
+    }
 }
 
 /// The file or folder a link opens, where the space holds it now.
@@ -76,7 +94,7 @@ pub enum TargetKind {
 pub struct Target {
     /// The names from the space's root down to it, joined with `/`; empty for the root.
     pub path: koidrive_fs::ItemPath,
-    pub kind: TargetKind,
+    pub kind: ItemKind,
 }
 
 /// A share link as its owner sees it.
@@ -545,7 +563,7 @@ impl<'a> Tree<'a> {
         if node_id == self.root {
             return Some(Target {
                 path: ItemPath::default(),
-                kind: TargetKind::Folder,
+                kind: ItemKind::Folder,
             });
         }
         let node = self.by_id.get(node_id)?;
@@ -563,8 +581,8 @@ impl<'a> Tree<'a> {
         Some(Target {
             path: names.join("/").into(),
             kind: match node.kind() {
-                NodeKind::Dir => TargetKind::Folder,
-                _ => TargetKind::File,
+                NodeKind::Dir => ItemKind::Folder,
+                _ => ItemKind::File,
             },
         })
     }
@@ -913,14 +931,14 @@ mod tests {
             tree.target("cafe"),
             Some(Target {
                 path: "Docs/Café.txt".into(),
-                kind: TargetKind::File
+                kind: ItemKind::File
             })
         );
         assert_eq!(
             tree.target(SPACE),
             Some(Target {
                 path: ItemPath::default(),
-                kind: TargetKind::Folder
+                kind: ItemKind::Folder
             })
         );
         assert_eq!(tree.target("kept"), None);

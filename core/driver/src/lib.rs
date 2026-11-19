@@ -67,8 +67,10 @@ pub use pending_create::{CreatedSpace, claim_pending, create_space, space_create
 pub use question::{
     Answer, HeldItem, Limit, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
 };
-pub use restore::{RestoreRejection, RestoreRequest, RestoreState, RestoreStatus, RestoreWait};
-pub use share::{Expiry, LinkState, Revoked, Secret, SharedLink, Target, TargetKind};
+pub use restore::{
+    RestoreRejection, RestoreRequest, RestoreState, RestoreStatus, RestoreWait, Seen,
+};
+pub use share::{Expiry, ItemKind, LinkState, Revoked, Secret, SharedLink, Target};
 pub use status::{
     Account, Activity, FolderState, FolderStatus, HeldDisk, HeldDiskKind, Progress, Remedy, Status,
     Totals, Unreachable, Wait, WaitKind, describe, describe_kept,

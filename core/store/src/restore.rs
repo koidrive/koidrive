@@ -12,19 +12,22 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreId, RestoreIntent};
-use koidrive_engine::tree::NodeId;
+use koidrive_engine::tree::{Kind, NodeId};
 use koidrive_proto::v1::Restore;
 use rusqlite::params;
 
 use crate::{Error, Result, Tx};
 
-/// What a person saw when they asked for a restore: the item's path in the space then, and for a
-/// version restore when that version was saved. A restore of a node the folder's copy of the
-/// server's tree never held still shows where it was.
+/// What a person saw when they asked for a restore: the item's path in the space then, whether it
+/// was a file or a folder and the files it held, and for a version restore when that version was
+/// saved. A restore of a node the folder's copy of the server's tree no longer holds still shows
+/// where it was and what it was.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AskedRestore {
     pub path: Option<String>,
     pub version_saved_at_ms: Option<i64>,
+    pub kind: Option<Kind>,
+    pub files: Option<u64>,
 }
 
 const INTENT: &str = "node_id, version_id, target_parent_id, name";
@@ -57,23 +60,33 @@ impl Tx<'_> {
              (SELECT restore_id FROM restore_requests UNION SELECT restore_id FROM restore_intents)",
             [],
         )?;
+        let kind = asked.kind.map(|kind| match kind {
+            Kind::Dir => "dir",
+            Kind::File => "file",
+        });
         self.0.execute(
-            "INSERT OR REPLACE INTO restore_asked (restore_id, path, version_saved_at_ms)
-             VALUES (?1, ?2, ?3)",
-            params![id, asked.path, asked.version_saved_at_ms],
+            "INSERT OR REPLACE INTO restore_asked (restore_id, path, version_saved_at_ms, kind, files)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, asked.path, asked.version_saved_at_ms, kind, asked.files],
         )?;
         Ok(())
     }
 
     /// What [`Tx::note_asked_restore`] recorded, by restore ID.
     pub fn asked_restores(&self) -> Result<BTreeMap<RestoreId, AskedRestore>> {
-        let mut stmt = self
-            .0
-            .prepare_cached("SELECT restore_id, path, version_saved_at_ms FROM restore_asked")?;
+        let mut stmt = self.0.prepare_cached(
+            "SELECT restore_id, path, version_saved_at_ms, kind, files FROM restore_asked",
+        )?;
         let rows = stmt.query_map([], |row| {
             let asked = AskedRestore {
                 path: row.get(1)?,
                 version_saved_at_ms: row.get(2)?,
+                kind: match row.get::<_, Option<String>>(3)?.as_deref() {
+                    Some("dir") => Some(Kind::Dir),
+                    Some("file") => Some(Kind::File),
+                    _ => None,
+                },
+                files: row.get(4)?,
             };
             Ok((row.get(0)?, asked))
         })?;

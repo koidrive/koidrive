@@ -50,7 +50,7 @@ The entry also has `auth`, `output` and `schema`. `auth` is `none`, `device` whe
   "asked_at_ms": 1762900000000,
   "requires_choice": true,
   "counts": { "deletions": 24, "affected_files": 1240, "space_files": 2000, "exceeded": ["deletions"] },
-  "items": [{ "node_id": "019c...", "path": "archive", "files": 1240 }],
+  "items": [{ "node_id": "019c...", "path": "archive", "kind": "folder", "files": 1240 }],
   "answers": [
     { "token": "delete", "consequence": "Delete these files on the server and other devices", "argv": ["koi", "resolve", "019b...", "delete"] },
     { "token": "restore", "consequence": "Download these files to this device again", "argv": ["koi", "resolve", "019b...", "restore"] }
@@ -58,7 +58,7 @@ The entry also has `auth`, `output` and `schema`. `auth` is `none`, `device` whe
 }
 ```
 
-`kind` is `mass_delete`, `remote_mass_delete`, `ambiguous_disappearance`, `recovery` or `conflict`. A `recovery` decision also has a `group`. A `conflict` decision's `items` are its two files, each with the `device_id` of the device that wrote it and its `device_name` when the account's device list has it. Its answers are `keep-node:<id>` for each file's node ID and `keep-both`. A `remote_mass_delete` notice has `requires_choice: false`. It takes only `dismiss` and holds nothing back. [Decisions](status-reference.md#decisions) explains each kind.
+`kind` is `mass_delete`, `remote_mass_delete`, `ambiguous_disappearance`, `recovery` or `conflict`. A `recovery` decision also has a `group`. Each item's `kind` is `file` or `folder`, and `files` counts the files the answer affects through it: those a folder holds, or for a restore from the trash those trashed with it. An item has no `kind` when the node is unknown to this device, as for a restore of a node it never saw. A `conflict` decision's `items` are its two files, each with the `device_id` of the device that wrote it and its `device_name` when the account's device list has it. Its answers are `keep-node:<id>` for each file's node ID and `keep-both`. A `remote_mass_delete` notice has `requires_choice: false`. It takes only `dismiss` and holds nothing back. [Decisions](status-reference.md#decisions) explains each kind.
 
 ## Retries never make a change twice
 

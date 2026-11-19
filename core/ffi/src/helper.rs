@@ -483,6 +483,8 @@ struct Counts {
 struct ItemData {
     node_id: String,
     path: String,
+    #[serde(default)]
+    kind: Option<driver::ItemKind>,
     files: u64,
     #[serde(default)]
     size: Option<u64>,
@@ -545,6 +547,7 @@ impl DecisionData {
                 .map(|item| driver::HeldItem {
                     node_id: item.node_id.clone(),
                     path: item.path.clone().into(),
+                    kind: item.kind,
                     files: item.files,
                     device_id: None,
                     device_name: None,

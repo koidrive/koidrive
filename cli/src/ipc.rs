@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use koidrive_driver::{
     Answered, Change, Driver, DriverError, FolderState, FolderStatus, Linked, Paths, Question,
-    Status, Update,
+    Seen, Status, Update,
 };
 use koidrive_engine::commit::Lift;
 use koidrive_ipc::{
@@ -200,8 +200,18 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
             restore,
             folder,
             path,
+            kind,
+            files,
         } => driver
-            .restore(&space_id, restore, Some(&path))
+            .restore(
+                &space_id,
+                restore,
+                Seen {
+                    path: Some(path.clone()),
+                    kind,
+                    files,
+                },
+            )
             .map(|id| Response::Restore {
                 id,
                 space_id,
@@ -960,6 +970,7 @@ pub(crate) mod tests {
         let item = |node_id: &str, path: &str| HeldItem {
             node_id: node_id.into(),
             path: path.into(),
+            kind: None,
             files: 1,
             device_id: None,
             device_name: None,

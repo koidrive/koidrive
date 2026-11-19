@@ -6,8 +6,8 @@ use crate::profile::unexpected;
 use crate::report::{AnsweredData, Decision, Done};
 use crate::{ipc, output};
 use koidrive_driver::{
-    Answer, Credential, Driver, DriverError, FolderStatus, Limit, MAX_DELETIONS, Paths, Question,
-    QuestionKind, RecoveryGroup, RestoreRequest,
+    Answer, Credential, Driver, DriverError, FolderStatus, ItemKind, Limit, MAX_DELETIONS, Paths,
+    Question, QuestionKind, RecoveryGroup, RestoreRequest,
 };
 use koidrive_ipc::{Request, Response};
 use serde_json::Value;
@@ -370,6 +370,7 @@ fn question_text_presented(question: &Question, presentation: QuestionPresentati
         return text;
     }
     for item in question.items.iter().take(ITEMS_SHOWN) {
+        let folder = item.kind == Some(ItemKind::Folder);
         let what = match item.restore {
             Some(RestoreRequest::Version {
                 saved_at_ms: Some(saved_at_ms),
@@ -379,10 +380,14 @@ fn question_text_presented(question: &Question, presentation: QuestionPresentati
                 local_time(saved_at_ms, now_ms())
             ),
             Some(RestoreRequest::Version { .. }) => "an earlier version".to_owned(),
+            Some(RestoreRequest::FromTrash { .. }) if folder => {
+                format!("{} from the trash", count(item.files, "file"))
+            }
             Some(RestoreRequest::FromTrash { .. }) => "from the trash".to_owned(),
             None => count(item.files, "file"),
         };
-        text += &format!("  {} ({what})\n", printable(item.path.unquoted()));
+        let slash = if folder { "/" } else { "" };
+        text += &format!("  {}{slash} ({what})\n", printable(item.path.unquoted()));
     }
     let more = question.items.len().saturating_sub(ITEMS_SHOWN);
     if more > 0 {

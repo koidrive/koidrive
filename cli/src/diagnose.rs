@@ -123,6 +123,7 @@ fn decisions(redactor: &mut Redactor, decisions: &[Decision]) -> Value {
             items.push(json!({
                 "node_id": item.node_id,
                 "path": redactor.name("path", &item.path),
+                "kind": item.kind,
                 "files": item.files,
             }));
         }
@@ -845,6 +846,7 @@ thread 'tokio-runtime-worker' panicked at /Users/ada/Secret Plans/ledger.rs:1:1:
                 .map(|(index, name)| Item {
                     node_id: format!("n{index}"),
                     path: (*name).to_owned(),
+                    kind: None,
                     files: 1,
                     device_id: None,
                     device_name: None,

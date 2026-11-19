@@ -1953,6 +1953,7 @@ fn a_restore_keeps_what_was_asked_for_while_the_store_holds_the_restore() {
     let asked = |path: &str, version_saved_at_ms| AskedRestore {
         path: Some(path.into()),
         version_saved_at_ms,
+        ..AskedRestore::default()
     };
     Store::open(&path)
         .unwrap()
