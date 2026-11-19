@@ -1095,6 +1095,7 @@ impl Device {
                     content,
                 };
                 let node = LocalNode {
+                    displaced: false,
                     left_out_when_placed: false,
                     content_from_server: false,
                     shape,
@@ -2356,6 +2357,7 @@ fn run_ignoring_answering_after(
                 .trees
                 .set_synced(id.clone(), Some(node.shape.clone()));
             let local = LocalNode {
+                displaced: false,
                 left_out_when_placed: false,
                 content_from_server: false,
                 shape: node.shape.clone(),

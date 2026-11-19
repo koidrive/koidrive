@@ -73,6 +73,7 @@ fn a_new_folder_merges_into_a_folder_that_unknown_rules_hold_away_from_its_name(
         trees.set_local(
             id.clone(),
             LocalNode {
+                displaced: false,
                 left_out_when_placed: false,
                 content_from_server: false,
                 shape: node.shape.clone(),
@@ -98,6 +99,7 @@ fn a_new_folder_merges_into_a_folder_that_unknown_rules_hold_away_from_its_name(
     trees.set_local(
         NodeId::from(&new),
         LocalNode {
+            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: koidrive_engine::tree::Shape {
@@ -142,6 +144,7 @@ fn a_new_folder_takes_its_name_once_a_held_back_rename_frees_it() {
     trees.set_local(
         NodeId::from(&holder),
         LocalNode {
+            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: old.shape.clone(),
@@ -182,6 +185,7 @@ fn a_new_folder_takes_its_name_once_a_held_back_rename_frees_it() {
     trees.set_local(
         NodeId::from(&new),
         LocalNode {
+            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: koidrive_engine::tree::Shape {

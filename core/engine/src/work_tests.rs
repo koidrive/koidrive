@@ -60,6 +60,7 @@ fn local(shape: Shape, ino: u128) -> LocalNode {
         },
         parked: false,
         chunks: Box::default(),
+        displaced: false,
     }
 }
 

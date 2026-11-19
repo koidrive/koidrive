@@ -17,6 +17,7 @@ fn a_store_from_before_missing_nodes_were_recorded_opens_with_none_recorded() {
     assert_eq!(applied(&path), all_migrations());
     let after = before.clone();
     before.trees.missing.clear();
+    before.trees.displaced.clear();
     assert!(!after.trees.missing.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store

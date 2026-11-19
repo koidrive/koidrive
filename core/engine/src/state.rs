@@ -306,7 +306,7 @@ pub struct TreesState {
     /// Where the search of the ignored folders last found each node of `outside`, by its path relative to the root.
     pub found: BTreeMap<NodeId, PathBuf>,
     /// The nodes whose local copy is in an ignored folder and whose name in L another entry took, each with the
-    /// identity L held for it. L holds none of them, and R holds each live unless the commit in flight creates it.
+    /// identity L holds for it. L holds each without a name, and R does not hold it trashed.
     pub displaced: BTreeMap<NodeId, FileIdentity>,
     /// The nodes of `displaced` that a scan missed after a search of the ignored folders that did not look
     /// everywhere, which the commit planner holds under a question (section 5.10).
@@ -846,7 +846,7 @@ pub enum StateError {
     /// A node is recorded as moved into an ignored folder, or as a folder the disk lost, but L does not hold it or the
     /// lost folder is not recorded.
     NotIgnoredLocal(NodeId),
-    /// A node is recorded as displaced, but L holds it or R holds it trashed, or as missing but not as displaced.
+    /// A node is recorded as displaced, but L does not hold it or R holds it trashed, or as missing but not as displaced.
     NotDisplaced(NodeId),
     /// A file is recorded as edited by this device, but R does not hold the content of that
     /// commit.

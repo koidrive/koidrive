@@ -172,9 +172,6 @@ impl Engine {
         let known: BTreeMap<u128, NodeId> = (self.trees.local().iter())
             .map(|(id, node)| (node.identity.ino, id.clone()))
             .collect();
-        let displaced: BTreeMap<u128, NodeId> = (self.trees.displaced_local().iter())
-            .map(|(id, identity)| (identity.ino, id.clone()))
-            .collect();
         let mut nodes: BTreeMap<u128, NodeId> = BTreeMap::new();
         let mut queue: VecDeque<u128> = (entries.iter().copied())
             .filter(|ino| {
@@ -212,7 +209,7 @@ impl Engine {
                         && self.trees.remote().get(node).is_none()
                         && !nodes.values().any(|taken| taken == node)
                 });
-            let id = match known.get(&ino).or_else(|| displaced.get(&ino)) {
+            let id = match known.get(&ino) {
                 Some(id) => id.clone(),
                 None => marked.unwrap_or_else(|| NodeId::from(self.ids.uuid_v7(NOW as u64))),
             };
@@ -232,6 +229,7 @@ impl Engine {
             };
             let (content, chunks) = split(entry.content.clone());
             let node = LocalNode {
+                displaced: false,
                 left_out_when_placed: false,
                 content_from_server: false,
                 shape: Shape {
@@ -408,7 +406,7 @@ impl Engine {
 
     fn drop_lost_folders(&mut self) {
         while let Some(folder) = (self.trees.lost_local().iter())
-            .find(|folder| self.trees.local_children(folder).next().is_none())
+            .find(|folder| !self.trees.holds_local_children(folder))
             .cloned()
         {
             self.trees.remove_local(&folder);

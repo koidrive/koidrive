@@ -75,6 +75,7 @@ fn identity(ino: u128) -> FileIdentity {
 
 fn local(shape: Shape, ino: u128) -> LocalNode {
     LocalNode {
+        displaced: false,
         left_out_when_placed: false,
         content_from_server: false,
         shape,
@@ -388,10 +389,9 @@ fn a_node_whose_name_another_entry_took_stays_excluded_until_it_returns_or_is_tr
             .all(|id| trees.recorded_local(&NodeId::from(*id)))
     );
     for id in ["d", "a", "b"] {
-        trees.displace_local(&NodeId::from(id), false);
-        assert!(
-            trees.local().get(&NodeId::from(id)).is_none() && trees.excluded(&NodeId::from(id))
-        );
+        let id = NodeId::from(id);
+        trees.displace_local(&id);
+        assert!(trees.displaced_local().contains_key(&id) && trees.excluded(&id));
     }
     trees.set_local("new".into(), local(file(ROOT, "d", 3), 9));
     let sent = ops(&mut trees);
@@ -411,21 +411,21 @@ fn a_node_whose_name_another_entry_took_stays_excluded_until_it_returns_or_is_tr
             .all(|id| restored.ignored(&NodeId::from(*id)))
     );
 
-    assert_eq!(
-        trees.displaced_with_identity(&held, Kind::File),
-        Some(&"a".into())
-    );
+    assert_eq!(trees.local_with_identity(&held), Some(&"a".into()));
+    let reused = FileIdentity {
+        birth_ns: held.birth_ns.map(|birth| birth + 1),
+        ..held
+    };
+    assert_eq!(trees.local_with_identity(&reused), None);
     let undated = trees.displaced_local()[&"b".into()];
     assert_eq!(undated.birth_ns, None);
     assert_eq!(
-        trees.displaced_with_identity(&undated, Kind::File),
+        trees.local_with_identity(&undated),
         None,
         "a record without a birth time matches no file"
     );
     trees.set_local("a".into(), local(file(ROOT, "back.txt", 1), 2));
-    assert!(
-        !trees.excluded(&"a".into()) && trees.displaced_with_identity(&held, Kind::File).is_none()
-    );
+    assert!(!trees.excluded(&"a".into()) && !trees.displaced_local().contains_key(&"a".into()));
     trash(&mut trees, "b");
     assert!(!trees.excluded(&"b".into()));
     assert_eq!(

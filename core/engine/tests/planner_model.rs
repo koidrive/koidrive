@@ -928,6 +928,7 @@ fn trees(world: &World, space: &SpaceDo) -> Trees {
                 handle: None,
             };
             let node = LocalNode {
+                displaced: false,
                 shape,
                 identity,
                 parked: false,

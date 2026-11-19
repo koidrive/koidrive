@@ -1108,12 +1108,7 @@ impl Engine {
                     if let Some(node) = local_at(&self.trees, path)
                         && self.trees.ignored_local().contains(&node)
                         && let Some(local) = self.trees.local().get(&node)
-                        && self.replacement_is_held(
-                            &node,
-                            path,
-                            file_identity(*id),
-                            local.shape.kind,
-                        ) =>
+                        && self.replacement_is_held(&node, path, file_identity(*id)) =>
                 {
                     lost = Observed::Removed {
                         path: path.clone(),
@@ -1256,12 +1251,6 @@ impl Engine {
                         .filter(|node| !staying.contains(*node))
                         .filter(|node| same_volume(&self.trees, &self.mounts, node, path))
                         .find(takes)
-                        .or_else(|| {
-                            (self
-                                .trees
-                                .displaced_with_identity(&identity, tree_kind(*kind)))
-                            .filter(takes)
-                        })
                         .cloned()
                         .or_else(|| {
                             (gone.get(path))
@@ -1600,13 +1589,7 @@ impl Engine {
             .collect()
     }
 
-    fn replacement_is_held(
-        &self,
-        node: &NodeId,
-        path: &Path,
-        identity: FileIdentity,
-        kind: Kind,
-    ) -> bool {
+    fn replacement_is_held(&self, node: &NodeId, path: &Path, identity: FileIdentity) -> bool {
         let found = self.trees.found_local();
         let at = found.get(node).map_or(path, PathBuf::as_path);
         self.trees.locals_with_identity(&identity).any(|other| {
@@ -1616,10 +1599,7 @@ impl Engine {
                 } else {
                     same_volume(&self.trees, &self.mounts, other, at)
                 }
-        }) || self
-            .trees
-            .displaced_with_identity(&identity, kind)
-            .is_some()
+        })
     }
 
     pub fn found(&self) -> BTreeMap<PathBuf, PathBuf> {
@@ -1819,6 +1799,7 @@ impl Engine {
         self.trees.set_local_changed(
             id.clone(),
             LocalNode {
+                displaced: false,
                 left_out_when_placed: false,
                 content_from_server: false,
                 shape,
@@ -1833,8 +1814,7 @@ impl Engine {
         touched.insert(id);
         let mut above = left;
         while let Some(folder) = above.filter(|folder| {
-            self.trees.lost_local().contains(folder)
-                && self.trees.local_children(folder).next().is_none()
+            self.trees.lost_local().contains(folder) && !self.trees.holds_local_children(folder)
         }) {
             above = (self.trees.local().get(&folder)).map(|node| node.shape.parent.clone());
             self.remove(&folder, moving, true, false, touched, gone);
@@ -1846,7 +1826,7 @@ impl Engine {
     /// entry (`outside`), a node that [`Trees::ignore_local`] recorded keeps its entry with what is under it, and so
     /// do the folders on its way to `id`, which are recorded too: the node's local copy is in an ignored folder, so
     /// L must keep it and its folders for the server to keep them (design §5.10). When the disk did not lose the
-    /// entry, each recorded node leaves L and stays recorded ([`Trees::displace_local`]).
+    /// entry, each recorded node gives up its name in L and stays recorded ([`Trees::displace_local`]).
     fn remove(
         &mut self,
         id: &NodeId,
@@ -2166,7 +2146,6 @@ fn resolve(
             (trees.locals_with_identity(identity).rev())
                 .filter(|node| holds_kind(trees, node, kind))
                 .find(|node| same_volume(trees, mounts, node, path))
-                .or_else(|| trees.displaced_with_identity(identity, tree_kind(kind)))
                 .filter(|_| !linked)
                 .cloned()
         })
@@ -2937,6 +2916,7 @@ mod tests {
 
     fn held(shape: Shape, ino: u128) -> LocalNode {
         LocalNode {
+            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape,
@@ -5272,6 +5252,7 @@ mod tests {
         let ids: Vec<String> = (0..20).map(|n| format!("dir{n:02}")).collect();
         for (n, id) in ids.iter().enumerate() {
             let local = LocalNode {
+                displaced: false,
                 shape: Shape {
                     parent: ROOT.into(),
                     name: id.clone(),

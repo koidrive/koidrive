@@ -649,6 +649,7 @@ fn other(parent: &str, name: &str, kind: Kind) -> LocalNode {
         })
     });
     LocalNode {
+        displaced: false,
         left_out_when_placed: false,
         content_from_server: false,
         shape: Shape {
@@ -3054,6 +3055,7 @@ fn a_parked_fork_whose_name_is_taken_is_uploaded_from_the_parked_directory() {
         trees.set_local(
             fork.into(),
             LocalNode {
+                displaced: false,
                 left_out_when_placed: false,
                 content_from_server: false,
                 shape: Shape {
