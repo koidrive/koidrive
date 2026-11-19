@@ -34,11 +34,11 @@ fn a_rejected_op_marks_a_problem_but_a_rejected_cycle_moves_the_node_back() {
         &mut trees,
         vec![rejected("CYCLE"), rejected("NOT_FOUND")],
     );
-    assert_eq!(trees.synced().live("p"), Some(&dir(ROOT, "p")));
-    assert!(trees.reverted().contains("p"));
+    assert_eq!(trees.synced().live(&"p".into()), Some(&dir(ROOT, "p")));
+    assert!(trees.reverted().contains(&"p".into()));
     assert_eq!(commits.problems().iter().collect::<Vec<_>>(), ["u"]);
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
-    assert!(commits.clear_problem("u"));
+    assert!(commits.clear_problem(&"u".into()));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("u", 2)]);
     moves_back(&mut trees, &mut ids, "p");
@@ -54,7 +54,7 @@ fn a_result_is_acknowledged_only_once_r_holds_its_records() {
         .received(result(5, vec![outcome(op_result::Code::Applied)]))
         .unwrap();
     assert!(!commits.acknowledge(&mut trees, 4));
-    assert_eq!(trees.synced().live("a"), None);
+    assert_eq!(trees.synced().live(&"a".into()), None);
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     assert_eq!(
         commits.connected(&welcome(1)),
@@ -63,7 +63,7 @@ fn a_result_is_acknowledged_only_once_r_holds_its_records() {
     );
     assert!(!commits.abandon(), "an accepted commit is never forgotten");
     assert!(commits.acknowledge(&mut trees, 5));
-    assert_eq!(trees.synced().live("a"), Some(&file(ROOT, "x", 1)));
+    assert_eq!(trees.synced().live(&"a".into()), Some(&file(ROOT, "x", 1)));
     assert_eq!((commits.accepted(), commits.in_flight()), (1, None));
 }
 
@@ -445,7 +445,7 @@ fn a_file_the_user_deletes_before_the_server_renames_its_create_is_deleted() {
     let mut trees = trees(&[("a", Some(file(ROOT, "x", 1)), None, None)]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     build(&mut commits, &mut trees, &mut ids).unwrap();
-    trees.remove_local("a");
+    trees.remove_local(&"a".into());
     trees.settle(commits.aliases());
     trees.set_remote("a".into(), remote(file(ROOT, "x (conflict)", 1)));
     let renamed = OpResult {
@@ -471,7 +471,7 @@ fn a_folder_the_user_empties_and_deletes_before_the_server_renames_its_create_is
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     build(&mut commits, &mut trees, &mut ids).unwrap();
     trees.set_local("c".into(), local(dir(ROOT, "y"), 2));
-    trees.remove_local("n");
+    trees.remove_local(&"n".into());
     trees.settle(commits.aliases());
     trees.set_remote("n".into(), remote(dir(ROOT, "x (conflict)")));
     trees.set_remote("c".into(), remote(dir("n", "y")));
@@ -523,7 +523,7 @@ fn a_file_left_out_of_a_commit_holds_back_no_other_change() {
         ops(&commit),
         [update("a", 2), update("b", 2), update("c", 2)]
     );
-    assert!(commits.leave_out("b"));
+    assert!(commits.leave_out(&"b".into()));
     assert_eq!(commits.in_flight(), None);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("a", 2), update("c", 2)]);
@@ -532,10 +532,10 @@ fn a_file_left_out_of_a_commit_holds_back_no_other_change() {
         &mut trees,
         vec![outcome(op_result::Code::Applied); 2],
     );
-    assert!(!commits.leave_out("a"), "no commit in flight");
+    assert!(!commits.leave_out(&"a".into()), "no commit in flight");
     assert_eq!(commits.problems().iter().collect::<Vec<_>>(), ["b"]);
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
-    assert!(commits.clear_problem("b"));
+    assert!(commits.clear_problem(&"b".into()));
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("b", 2)]);
 }

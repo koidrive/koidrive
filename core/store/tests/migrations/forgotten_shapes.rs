@@ -37,7 +37,7 @@ fn a_resend_pending_at_the_upgrade_to_forgotten_shapes_is_kept_beside_another_de
     trees.set_synced("f".into(), Some(shape.clone()));
     trees.settle(&Default::default());
     let synced = trees.taken_from_others(|_| false);
-    trees.remove_remote("f");
+    trees.remove_remote(&"f".into());
     trees.forget_lost(
         Vec::new(),
         Vec::new(),

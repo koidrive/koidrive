@@ -382,5 +382,10 @@ fn a_synced_file_moved_into_a_left_out_git_folder_stays_on_the_server() {
         fs::read(site.root.join("repo/.git/notes.txt")).unwrap(),
         b"kept"
     );
-    assert!(b.folder.engine.trees.excluded(&before["repo/notes.txt"]));
+    assert!(
+        b.folder
+            .engine
+            .trees
+            .excluded(&NodeId::from(&before["repo/notes.txt"]))
+    );
 }

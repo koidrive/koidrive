@@ -1128,7 +1128,7 @@ fn a_relink_holds_a_version_restore_whose_result_was_lost_until_the_person_answe
         a.run(&mut remote);
         let node = node_named(&a, "notes.txt");
         let request = ListVersions {
-            node_id: node.clone(),
+            node_id: node.to_string(),
             ..Default::default()
         };
         let first = remote.space.list_versions(&request).unwrap().versions[1]

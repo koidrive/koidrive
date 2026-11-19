@@ -673,7 +673,7 @@ fn a_file_another_device_brings_back_after_a_rewind_at_a_seq_this_device_used_is
         base_seq: remote.space.head_seq(),
         ops: vec![Op {
             op: Some(op::Op::Restore(koidrive_proto::v1::Restore {
-                node_id: notes.clone(),
+                node_id: notes.to_string(),
                 ..Default::default()
             })),
             ..Default::default()
@@ -760,7 +760,7 @@ fn a_slot_another_store_of_this_device_reused_after_a_rewind_claims_no_restore_o
         base_seq: remote.space.head_seq(),
         ops: vec![Op {
             op: Some(op::Op::Restore(koidrive_proto::v1::Restore {
-                node_id: notes.clone(),
+                node_id: notes.to_string(),
                 ..Default::default()
             })),
             ..Default::default()
@@ -827,7 +827,7 @@ fn a_slot_another_store_of_this_device_reused_before_two_rewinds_claims_no_resto
         base_seq: remote.space.head_seq(),
         ops: vec![Op {
             op: Some(op::Op::Restore(koidrive_proto::v1::Restore {
-                node_id: notes.clone(),
+                node_id: notes.to_string(),
                 ..Default::default()
             })),
             ..Default::default()
@@ -928,7 +928,7 @@ fn an_unreadable_entry_a_store_rollback_brought_back_stays_out_of_marks_once_rea
     drop(a);
     let parked = site.root.join(koidrive_fs::PRIVATE_DIR).join("parked");
     fs::create_dir_all(&parked).unwrap();
-    let private = parked.join(&node);
+    let private = parked.join(node.to_string());
     fs::rename(site.root.join("two.txt"), &private).unwrap();
     fs::set_permissions(&private, fs::Permissions::from_mode(0o000)).unwrap();
     fs::copy(&copy, &site.db).unwrap();
@@ -1041,7 +1041,7 @@ fn a_granted_node_l_does_not_hold_leaves_the_sent_entrys_mark() {
         .unwrap();
     let marks = |a: &Device| a.folder.disk.marks(&a.folder.engine.trees, [&id]);
     assert_eq!(marks(&a).get(&id), Some(&id));
-    a.folder.mark_granted(vec!["absent-copy".to_owned()]);
+    a.folder.mark_granted(vec!["absent-copy".to_owned().into()]);
     assert_eq!(marks(&a).get(&id), Some(&id));
 }
 
@@ -1064,7 +1064,7 @@ fn a_second_store_rollback_before_the_download_runs_again_keeps_the_unanswered_e
     drop(a);
     let parked = site.root.join(koidrive_fs::PRIVATE_DIR).join("parked");
     fs::create_dir_all(&parked).unwrap();
-    let private = parked.join(&node);
+    let private = parked.join(node.to_string());
     fs::rename(site.root.join("two.txt"), &private).unwrap();
     fs::set_permissions(&private, fs::Permissions::from_mode(0o444)).unwrap();
     fs::copy(&copy, &site.db).unwrap();
@@ -1115,7 +1115,7 @@ fn a_read_only_download_a_store_rollback_brings_back_keeps_its_server_name() {
     drop(a);
     let parked = site.root.join(koidrive_fs::PRIVATE_DIR).join("parked");
     fs::create_dir_all(&parked).unwrap();
-    let private = parked.join(&node);
+    let private = parked.join(node.to_string());
     fs::rename(site.root.join("two.txt"), &private).unwrap();
     fs::set_permissions(&private, fs::Permissions::from_mode(0o444)).unwrap();
     fs::copy(&copy, &site.db).unwrap();
@@ -1146,10 +1146,10 @@ fn a_stop_between_bringing_back_and_recovering_keeps_the_server_name() {
     drop(a);
     let parked = site.root.join(koidrive_fs::PRIVATE_DIR).join("parked");
     fs::create_dir_all(&parked).unwrap();
-    fs::rename(site.root.join("two.txt"), parked.join(&node)).unwrap();
+    fs::rename(site.root.join("two.txt"), parked.join(node.to_string())).unwrap();
     fs::copy(&copy, &site.db).unwrap();
     drop(site.start());
-    assert!(!parked.join(&node).exists());
+    assert!(!parked.join(node.to_string()).exists());
     let mut a = site.start();
     a.connect(&remote);
     a.run(&mut remote);
@@ -1176,7 +1176,7 @@ fn a_second_store_rollback_keeps_the_server_name_of_an_entry_the_first_brought_b
     drop(a);
     let parked = site.root.join(koidrive_fs::PRIVATE_DIR).join("parked");
     fs::create_dir_all(&parked).unwrap();
-    fs::rename(site.root.join("two.txt"), parked.join(&node)).unwrap();
+    fs::rename(site.root.join("two.txt"), parked.join(node.to_string())).unwrap();
     fs::copy(&copy, &site.db).unwrap();
     let mut a = site.start();
     a.connect(&remote);
@@ -1217,11 +1217,11 @@ fn publishing_a_folder_a_store_rollback_brought_back_moves_no_child_it_did_not_a
     b.rescan();
     b.scan_until(|b| !b.work.is_empty());
     b.run(&mut remote);
-    assert_eq!(remote.tree().get("two.txt"), Some(&child));
+    assert_eq!(remote.tree().get("two.txt"), Some(&child.to_string()));
     drop(a);
     let parked = site.root.join(koidrive_fs::PRIVATE_DIR).join("parked");
     fs::create_dir_all(&parked).unwrap();
-    fs::rename(site.root.join("docs"), parked.join(&folder)).unwrap();
+    fs::rename(site.root.join("docs"), parked.join(folder.to_string())).unwrap();
     fs::copy(&copy, &site.db).unwrap();
     let mut a = site.start();
     a.connect(&remote);
@@ -1235,7 +1235,7 @@ fn publishing_a_folder_a_store_rollback_brought_back_moves_no_child_it_did_not_a
     a.run(&mut remote);
     a.settle();
     a.run(&mut remote);
-    assert_eq!(remote.tree().get("two.txt"), Some(&child));
+    assert_eq!(remote.tree().get("two.txt"), Some(&child.to_string()));
 }
 
 #[test]
@@ -1259,7 +1259,14 @@ fn a_merged_folder_is_marked_when_late_records_or_a_bootstrap_acknowledge_it() {
             op::Op::CreateDir(create) => create.node_id.clone(),
             op => panic!("expected a directory create: {op:?}"),
         };
-        let identity = b.folder.engine.trees.local().get(&sent).unwrap().identity;
+        let identity = b
+            .folder
+            .engine
+            .trees
+            .local()
+            .get(&NodeId::from(&sent))
+            .unwrap()
+            .identity;
         let result = remote.commit(&b.caller, &commit).unwrap();
         assert_eq!(result.results[0].code, koidrive_proto::v1::op_result::Code::MergedInto as i32);
         assert_eq!(result.results[0].node_id, given);
@@ -1276,7 +1283,14 @@ fn a_merged_folder_is_marked_when_late_records_or_a_bootstrap_acknowledge_it() {
         }
         let step = b.folder.sent(Ok(result));
         b.take(step).unwrap();
-        assert!(b.folder.engine.trees.local().get(&sent).is_some());
+        assert!(
+            b.folder
+                .engine
+                .trees
+                .local()
+                .get(&NodeId::from(&sent))
+                .is_some()
+        );
         assert!(b.folder.engine.trees.local().get(&given).is_none());
         if bootstrap {
             b.run(&mut remote);

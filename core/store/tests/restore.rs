@@ -13,6 +13,7 @@ use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::{Commits, Halt, Reconnect};
 use koidrive_engine::ids::{IdGen, uuid_v7};
 use koidrive_engine::restore::{Outcome, Resolved, RestoreId, RestoreIntent};
+use koidrive_engine::tree::NodeId;
 use koidrive_proto::v1::{CommitResult, OpResult, Welcome, op, op_result};
 use koidrive_store::{EngineState, Error, Store};
 use rusqlite::Connection;
@@ -76,7 +77,7 @@ fn a_restore_is_neither_lost_nor_sent_twice_wherever_the_process_stops() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("state.db");
     let (root, node, request) = (uuid_v7(1, 0), uuid_v7(1, 1), uuid_v7(2, 1));
-    let intent = RestoreIntent::from_trash(node, None, None).unwrap();
+    let intent = RestoreIntent::from_trash(NodeId::from(node), None, None).unwrap();
     let (mut trees, mut ids) = (Trees::new(root), IdGen::new(1));
     let queued = |commits: &Commits| commits.restores().keys().cloned().collect::<Vec<_>>();
     let sent = |commits: &Commits| commits.in_flight().map(|flight| flight.commit.clone());

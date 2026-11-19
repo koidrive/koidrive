@@ -14,7 +14,7 @@ use koidrive_engine::ids::IdGen;
 use koidrive_engine::names::name_key;
 use koidrive_engine::state::{EffectsChanges, EffectsState, TreesChanges, TreesState};
 use koidrive_engine::tree::{
-    Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape, same_content,
+    Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape, same_content,
 };
 use proptest::prelude::*;
 
@@ -113,12 +113,12 @@ impl Disk {
 
     fn resolve(&self, at: &Location) -> Result<(Area, String), String> {
         let (base, dirs, name) = match at {
-            Location::Parked(node) => return Ok((Area::Parked, node.clone())),
+            Location::Parked(node) => return Ok((Area::Parked, node.to_string())),
             Location::At { base, dirs, name } => (base, dirs, name),
         };
         let mut area = match base {
             Base::Root => Area::Root,
-            Base::Parked { node, identity } => match self.find(Area::Parked, node) {
+            Base::Parked { node, identity } => match self.find(Area::Parked, &node.to_string()) {
                 Some(ino) if ino == identity.ino => Area::Dir(ino),
                 _ => return Err(format!("parked {node} is not {}", identity.ino)),
             },
@@ -254,7 +254,7 @@ impl Disk {
                 .get(&node.identity.ino)
                 .ok_or_else(|| format!("{id} is not on disk"))?;
             let (area, name) = if node.parked {
-                (Area::Parked, id.clone())
+                (Area::Parked, id.to_string())
             } else if node.shape.parent == ROOT {
                 (Area::Root, node.shape.name.clone())
             } else {
@@ -284,9 +284,10 @@ fn space(nodes: &[(&str, Option<Shape>, Option<Shape>)]) -> (Trees, Disk) {
     for (i, (id, synced, after)) in nodes.iter().enumerate() {
         trees.set_synced((*id).into(), synced.clone());
         if let Some(shape) = synced {
-            let area = match shape.parent.as_str() {
-                ROOT => Area::Root,
-                parent => Area::Dir(ino(parent)),
+            let area = if shape.parent == ROOT {
+                Area::Root
+            } else {
+                Area::Dir(ino(&shape.parent.to_string()))
             };
             disk.entries.insert(
                 i as u128 + 1,
@@ -468,7 +469,10 @@ fn a_file_changed_elsewhere_keeps_the_spelling_of_its_name_on_disk() {
         Some(file(ROOT, "\u{e9}", 2)),
     )]);
     converge(&mut trees, &mut disk, 10).unwrap();
-    let local = trees.local().get("f").map(|node| node.shape.name.as_str());
+    let local = trees
+        .local()
+        .get(&"f".into())
+        .map(|node| node.shape.name.as_str());
     assert_eq!(local, Some("e\u{301}"));
     assert_in_sync(&mut trees);
 }
@@ -619,11 +623,11 @@ fn only_a_node_whose_only_change_is_remote_gets_an_effect_and_one_at_a_time() {
         ("g", Some(file(ROOT, "g", 1)), Some(file(ROOT, "g", 2))),
         ("h", Some(file(ROOT, "h", 1)), Some(file(ROOT, "h", 2))),
     ]);
-    let mut edited = trees.local().get("edited").unwrap().clone();
+    let mut edited = trees.local().get(&"edited".into()).unwrap().clone();
     edited.shape.content = Some(content(3));
     trees.set_local("edited".into(), edited);
     trees.settle(&Default::default());
-    assert_eq!(trees.class("edited"), Class::Concurrent);
+    assert_eq!(trees.class(&"edited".into()), Class::Concurrent);
     let (mut effects, mut ids) = (Effects::default(), IdGen::new(1));
     let first = effects
         .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
@@ -657,7 +661,7 @@ fn a_node_a_user_named_like_a_pending_name_is_never_renamed() {
     )]);
     assert_eq!(converge(&mut trees, &mut disk, 10).unwrap(), []);
     assert_eq!(
-        trees.local().get("d").unwrap().shape,
+        trees.local().get(&"d".into()).unwrap().shape,
         dir(ROOT, "A (pending)")
     );
     assert_in_sync(&mut trees);
@@ -667,7 +671,7 @@ fn a_node_a_user_named_like_a_pending_name_is_never_renamed() {
 fn a_marked_node_that_l_holds_elsewhere_keeps_the_users_move() {
     let (mut trees, mut disk) = space(&[("d", Some(dir(ROOT, "A (pending)")), None)]);
     trees.set_remote("d".into(), marked(dir(ROOT, "A (pending)"), "A"));
-    let local = trees.local().get("d").unwrap().clone();
+    let local = trees.local().get(&"d".into()).unwrap().clone();
     trees.set_local(
         "d".into(),
         LocalNode {
@@ -677,7 +681,10 @@ fn a_marked_node_that_l_holds_elsewhere_keeps_the_users_move() {
     );
     disk.entries.get_mut(&1).unwrap().name = "B".into();
     assert_eq!(converge(&mut trees, &mut disk, 10).unwrap(), []);
-    assert_eq!(trees.local().get("d").unwrap().shape, dir(ROOT, "B"));
+    assert_eq!(
+        trees.local().get(&"d".into()).unwrap().shape,
+        dir(ROOT, "B")
+    );
 }
 
 #[test]
@@ -699,9 +706,9 @@ fn a_failed_effect_is_not_emitted_again_unchanged() {
             .first(),
         None
     );
-    assert_eq!(effects.blocked().get("f"), Some(&first.effect));
+    assert_eq!(effects.blocked().get(&"f".into()), Some(&first.effect));
 
-    let same = trees.local().get("f").unwrap().clone();
+    let same = trees.local().get(&"f".into()).unwrap().clone();
     trees.set_local("f".into(), same.clone());
     assert_eq!(
         effects
@@ -764,7 +771,7 @@ fn a_node_whose_park_failed_gets_no_effect_until_l_changes() {
         ),
         "{planned:?}"
     );
-    let mut found = trees.local().get("d").unwrap().clone();
+    let mut found = trees.local().get(&"d".into()).unwrap().clone();
     found.identity = identity(7);
     trees.set_local("d".into(), found);
     let again = effects
@@ -795,8 +802,8 @@ fn a_blocked_node_can_be_unblocked_by_the_caller() {
             .first(),
         None
     );
-    assert!(effects.unblock("f"));
-    assert!(!effects.unblock("f"));
+    assert!(effects.unblock(&"f".into()));
+    assert!(!effects.unblock(&"f".into()));
     assert!(effects.blocked().is_empty());
     assert_eq!(
         effects
@@ -821,11 +828,11 @@ fn a_failed_create_is_planned_again_once_its_parent_has_a_new_identity() {
         .unwrap()
         .clone();
     effects.failed(&mut trees, &first.effect_id).unwrap();
-    let mut parent = trees.local().get("d").unwrap().clone();
+    let mut parent = trees.local().get(&"d".into()).unwrap().clone();
     parent.identity = identity(7);
     trees.set_local("d".into(), parent);
     trees.settle(&Default::default());
-    assert_eq!(trees.class("f"), Class::Remote);
+    assert_eq!(trees.class(&"f".into()), Class::Remote);
     let again = effects
         .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
         .first()
@@ -869,12 +876,12 @@ fn an_edit_observed_while_parked_is_moved_out_and_never_displaced() {
     effects
         .done(&mut trees, None, &park.effect_id, None)
         .unwrap();
-    let mut observed = trees.local().get("f").unwrap().clone();
+    let mut observed = trees.local().get(&"f".into()).unwrap().clone();
     observed.shape.content = Some(content(3));
     disk.entries.get_mut(&1).unwrap().content = Some(content(3));
     trees.set_local("f".into(), observed);
     trees.settle(&Default::default());
-    assert_eq!(trees.class("f"), Class::Concurrent);
+    assert_eq!(trees.class(&"f".into()), Class::Concurrent);
     let out = effects
         .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
         .first()
@@ -893,9 +900,12 @@ fn an_edit_observed_while_parked_is_moved_out_and_never_displaced() {
         .done(&mut trees, None, &out.effect_id, None)
         .unwrap();
     disk.matches(&trees).unwrap();
-    assert_eq!(trees.local().get("f").unwrap().shape, file(ROOT, "A", 3));
+    assert_eq!(
+        trees.local().get(&"f".into()).unwrap().shape,
+        file(ROOT, "A", 3)
+    );
     trees.settle(&Default::default());
-    assert_eq!(trees.class("f"), Class::Concurrent);
+    assert_eq!(trees.class(&"f".into()), Class::Concurrent);
     assert_eq!(
         effects
             .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
@@ -921,12 +931,12 @@ fn a_parked_edit_whose_node_was_removed_remotely_goes_back_to_its_place() {
     effects
         .done(&mut trees, None, &park.effect_id, None)
         .unwrap();
-    let mut observed = trees.local().get("a").unwrap().clone();
+    let mut observed = trees.local().get(&"a".into()).unwrap().clone();
     observed.shape.content = Some(content(3));
     disk.entries.get_mut(&1).unwrap().content = Some(content(3));
     trees.set_local("a".into(), observed);
-    trees.remove_remote("a");
-    trees.remove_remote("b");
+    trees.remove_remote(&"a".into());
+    trees.remove_remote(&"b".into());
     trees.settle(&Default::default());
     let out = effects
         .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
@@ -957,14 +967,14 @@ fn a_parked_edit_whose_name_the_remote_tree_gives_another_node_stays_parked() {
     trees.set_remote("d".into(), trashed(dir(ROOT, "x")));
     trees.set_remote("k".into(), trashed(file("d", "k", 1)));
     let edit = |trees: &mut Trees, disk: &mut Disk, id: &str, ino: u128| {
-        let mut node = trees.local().get(id).unwrap().clone();
+        let mut node = trees.local().get(&NodeId::from(id)).unwrap().clone();
         node.shape.content = Some(content(9));
         disk.entries.get_mut(&ino).unwrap().content = Some(content(9));
         trees.set_local(id.into(), node);
     };
     edit(&mut trees, &mut disk, "k", 2);
     converge(&mut trees, &mut disk, 8).unwrap();
-    assert!(trees.waiting().contains_key("a"));
+    assert!(trees.waiting().contains_key(&"a".into()));
     edit(&mut trees, &mut disk, "a", 3);
     trees.set_remote("a".into(), trashed(file(ROOT, "x", 1)));
     trees.set_remote("n".into(), remote(dir(ROOT, "x")));
@@ -980,7 +990,7 @@ fn a_parked_edit_whose_name_the_remote_tree_gives_another_node_stays_parked() {
             Effect::CreateDir { at: root_at("x") },
         ]
     );
-    assert!(trees.local().get("a").unwrap().parked);
+    assert!(trees.local().get(&"a".into()).unwrap().parked);
 }
 
 #[test]
@@ -997,15 +1007,15 @@ fn a_parked_edit_that_the_remote_tree_matches_is_still_moved_out() {
     effects
         .done(&mut trees, None, &park.effect_id, None)
         .unwrap();
-    let mut observed = trees.local().get("f").unwrap().clone();
+    let mut observed = trees.local().get(&"f".into()).unwrap().clone();
     observed.shape.content = Some(content(3));
     disk.entries.get_mut(&1).unwrap().content = Some(content(3));
     trees.set_local("f".into(), observed);
     trees.set_remote("f".into(), remote(file(ROOT, "a", 3)));
-    assert_eq!(trees.class("f"), Class::Same);
+    assert_eq!(trees.class(&"f".into()), Class::Same);
     trees.settle(&Default::default());
-    assert_eq!(trees.class("f"), Class::InSync);
-    assert!(trees.dirty().contains("f"));
+    assert_eq!(trees.class(&"f".into()), Class::InSync);
+    assert!(trees.dirty().contains(&"f".into()));
     let out = effects
         .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
         .first()
@@ -1051,7 +1061,10 @@ fn done_takes_only_the_effect_in_flight_and_a_created_entry_needs_its_identity()
         effects.done(&mut trees, None, &id, Some(identity(5))),
         Ok(None)
     );
-    assert_eq!(trees.local().get("d").unwrap().identity, identity(5));
+    assert_eq!(
+        trees.local().get(&"d".into()).unwrap().identity,
+        identity(5)
+    );
     assert_eq!(effects.cleared(), 1);
     assert_in_sync(&mut trees);
 }
@@ -1086,7 +1099,7 @@ fn done_refuses_an_outcome_whose_name_another_node_took() {
         Err(EffectError::DoesNotApply(record.effect_id.clone()))
     );
     assert_eq!(effects.in_flight().first(), Some(&record));
-    assert!(trees.local().get("n").is_none());
+    assert!(trees.local().get(&"n".into()).is_none());
     assert_eq!(trees.check(), Ok(()));
 }
 
@@ -1107,16 +1120,16 @@ fn done_refuses_a_download_or_a_move_whose_node_a_rewind_took_from_r() {
             .cloned()
             .unwrap();
         assert!(record.applies(&trees, None));
-        trees.remove_remote("n");
+        trees.remove_remote(&"n".into());
         trees.settle(&Default::default());
         assert!(!record.applies(&trees, None), "{record:?}");
         assert_eq!(
             effects.done(&mut trees, None, &record.effect_id, Some(identity(5))),
             Err(EffectError::DoesNotApply(record.effect_id.clone()))
         );
-        let local = trees.local().get("n").map(|node| &node.shape);
+        let local = trees.local().get(&"n".into()).map(|node| &node.shape);
         assert_eq!(local, synced.as_ref());
-        assert_eq!(trees.synced().get("n"), synced.as_ref());
+        assert_eq!(trees.synced().get(&"n".into()), synced.as_ref());
     }
 }
 
@@ -1144,7 +1157,7 @@ fn a_file_an_effect_removes_after_the_server_restored_it_is_downloaded_again() {
         .unwrap();
     trees.check().unwrap();
     trees.settle(&Default::default());
-    assert_eq!(trees.class("f"), Class::Remote);
+    assert_eq!(trees.class(&"f".into()), Class::Remote);
 
     let done = converge(&mut trees, &mut disk, 10).unwrap();
     assert!(matches!(done[..], [Effect::WriteFile { .. }]), "{done:?}");
@@ -1172,7 +1185,7 @@ fn a_move_r_undid_while_it_was_in_flight_is_moved_back() {
         .unwrap();
     trees.check().unwrap();
     trees.settle(&Default::default());
-    assert_eq!(trees.class("f"), Class::Remote);
+    assert_eq!(trees.class(&"f".into()), Class::Remote);
 
     let done = converge(&mut trees, &mut disk, 10).unwrap();
     assert!(matches!(done[..], [Effect::Move { .. }]), "{done:?}");
@@ -1182,7 +1195,7 @@ fn a_move_r_undid_while_it_was_in_flight_is_moved_back() {
 #[test]
 fn a_reverted_move_r_moved_on_from_while_it_was_in_flight_is_moved_on() {
     let (mut trees, mut disk) = space(&[("f", Some(file(ROOT, "b", 1)), Some(file(ROOT, "c", 1)))]);
-    let mut local = trees.local().get("f").unwrap().clone();
+    let mut local = trees.local().get(&"f".into()).unwrap().clone();
     local.shape.name = "a".into();
     trees.set_local("f".into(), local);
     disk.entries.get_mut(&1).unwrap().name = "a".into();
@@ -1218,7 +1231,7 @@ fn a_cycle_reverted_move_r_moved_on_from_while_it_was_in_flight_is_moved_on() {
         ("x", Some(dir(ROOT, "x")), Some(dir(ROOT, "c"))),
         ("y", Some(dir(ROOT, "y")), Some(dir("x", "y"))),
     ]);
-    let mut local = trees.local().get("x").unwrap().clone();
+    let mut local = trees.local().get(&"x".into()).unwrap().clone();
     local.shape.parent = "y".into();
     trees.set_local("x".into(), local);
     disk.entries.get_mut(&1).unwrap().area = Area::Dir(2);
@@ -1229,7 +1242,7 @@ fn a_cycle_reverted_move_r_moved_on_from_while_it_was_in_flight_is_moved_on() {
         .build(&mut trees, &mut ids, NOW, "history", "me", 1)
         .map(|commit| commit.ops.clone());
     assert_eq!(first, None);
-    assert!(trees.reverted().contains("x"));
+    assert!(trees.reverted().contains(&"x".into()));
     trees.settle(&Default::default());
     let mut effects = Effects::default();
     let record = effects
@@ -1270,21 +1283,21 @@ fn a_move_r_undid_with_new_content_while_it_was_in_flight_keeps_the_new_content(
     assert!(matches!(record.effect, Effect::Move { .. }));
 
     trees.set_remote("f".into(), remote(file(ROOT, "a", 2)));
-    let mut local = trees.local().get("f").unwrap().clone();
+    let mut local = trees.local().get(&"f".into()).unwrap().clone();
     local.shape.content = Some(content(2));
     trees.set_local("f".into(), local);
     disk.entries.get_mut(&1).unwrap().content = Some(content(2));
     trees.settle(&Default::default());
-    assert_eq!(trees.synced().live("f"), Some(&file(ROOT, "a", 2)));
+    assert_eq!(trees.synced().live(&"f".into()), Some(&file(ROOT, "a", 2)));
     let created = disk.apply(&record.effect).unwrap();
     effects
         .done(&mut trees, None, &record.effect_id, created)
         .unwrap();
-    assert_eq!(trees.synced().live("f"), Some(&file(ROOT, "b", 2)));
-    assert_eq!(trees.local().live("f"), Some(&file(ROOT, "b", 2)));
+    assert_eq!(trees.synced().live(&"f".into()), Some(&file(ROOT, "b", 2)));
+    assert_eq!(trees.local().live(&"f".into()), Some(&file(ROOT, "b", 2)));
     trees.check().unwrap();
     trees.settle(&Default::default());
-    assert_eq!(trees.class("f"), Class::Remote);
+    assert_eq!(trees.class(&"f".into()), Class::Remote);
 
     let done = converge(&mut trees, &mut disk, 10).unwrap();
     assert!(matches!(done[..], [Effect::Move { .. }]), "{done:?}");
@@ -1306,7 +1319,7 @@ fn an_edit_made_while_a_move_r_undid_was_in_flight_is_uploaded_without_the_move(
     assert!(matches!(record.effect, Effect::Move { .. }));
 
     trees.set_remote("f".into(), remote(file(ROOT, "a", 1)));
-    let mut local = trees.local().get("f").unwrap().clone();
+    let mut local = trees.local().get(&"f".into()).unwrap().clone();
     local.shape.content = Some(content(2));
     trees.set_local("f".into(), local);
     disk.entries.get_mut(&1).unwrap().content = Some(content(2));
@@ -1316,8 +1329,8 @@ fn an_edit_made_while_a_move_r_undid_was_in_flight_is_uploaded_without_the_move(
         .done(&mut trees, None, &record.effect_id, created)
         .unwrap();
     trees.settle(&Default::default());
-    assert_eq!(trees.local().live("f"), Some(&file(ROOT, "b", 2)));
-    assert_eq!(trees.synced().live("f"), Some(&file(ROOT, "b", 1)));
+    assert_eq!(trees.local().live(&"f".into()), Some(&file(ROOT, "b", 2)));
+    assert_eq!(trees.synced().live(&"f".into()), Some(&file(ROOT, "b", 1)));
     let mut commits = koidrive_engine::commit::Commits::default();
     let commit = commits
         .build(&mut trees, &mut ids, NOW, "history", "me", 1)
@@ -1337,7 +1350,7 @@ fn an_edit_made_while_a_move_r_undid_was_in_flight_is_uploaded_without_the_move(
 #[test]
 fn a_reverted_move_keeps_an_edit_that_was_not_uploaded() {
     let (mut trees, mut disk) = space(&[("f", Some(file(ROOT, "a", 1)), Some(file(ROOT, "b", 1)))]);
-    let mut local = trees.local().get("f").unwrap().clone();
+    let mut local = trees.local().get(&"f".into()).unwrap().clone();
     local.shape.content = Some(content(2));
     trees.set_local("f".into(), local);
     disk.entries.get_mut(&1).unwrap().content = Some(content(2));
@@ -1355,8 +1368,11 @@ fn a_reverted_move_keeps_an_edit_that_was_not_uploaded() {
         .done(&mut trees, None, &record.effect_id, created)
         .unwrap();
     trees.settle(&Default::default());
-    assert!(trees.edited("f"));
-    assert_eq!(trees.local().live("f").unwrap().content, Some(content(2)));
+    assert!(trees.edited(&"f".into()));
+    assert_eq!(
+        trees.local().live(&"f".into()).unwrap().content,
+        Some(content(2))
+    );
     let mut commits = koidrive_engine::commit::Commits::default();
     let commit = commits
         .build(&mut trees, &mut ids, NOW, "history", "me", 1)
@@ -1377,9 +1393,9 @@ fn a_reverted_file_that_the_user_deleted_is_not_downloaded_again() {
         ("n", Some(renamed.clone()), Some(renamed)),
     ]);
     trees.revert("n".into());
-    trees.remove_local("n");
+    trees.remove_local(&"n".into());
     trees.settle(&Default::default());
-    assert_eq!(trees.class("n"), Class::Local);
+    assert_eq!(trees.class(&"n".into()), Class::Local);
     let (mut effects, mut ids) = (Effects::default(), IdGen::new(1));
     assert_eq!(
         effects
@@ -1402,11 +1418,11 @@ fn a_parked_edit_brings_back_its_deleted_folder_after_a_remote_trash() {
     trashed.trashed = true;
     trashed.trash_group = "other-device".into();
     trees.set_remote("f".into(), trashed);
-    let mut local = trees.local().get("f").unwrap().clone();
+    let mut local = trees.local().get(&"f".into()).unwrap().clone();
     local.parked = true;
     local.shape.content = Some(content(2));
     trees.set_local("f".into(), local);
-    trees.remove_local("d");
+    trees.remove_local(&"d".into());
     trees.revert("d".into());
     disk.entries.remove(&1);
     let entry = disk.entries.get_mut(&2).unwrap();
@@ -1423,9 +1439,12 @@ fn a_parked_edit_brings_back_its_deleted_folder_after_a_remote_trash() {
         ),
         "{done:?}"
     );
-    assert!(!trees.local().get("f").unwrap().parked);
-    assert_eq!(trees.local().live("f").unwrap().content, Some(content(2)));
-    assert!(trees.edited("f"));
+    assert!(!trees.local().get(&"f".into()).unwrap().parked);
+    assert_eq!(
+        trees.local().live(&"f".into()).unwrap().content,
+        Some(content(2))
+    );
+    assert!(trees.edited(&"f".into()));
     let (mut commits, mut ids) = (koidrive_engine::commit::Commits::default(), IdGen::new(1));
     let commit = commits
         .build(&mut trees, &mut ids, NOW, "history", "me", 7)
@@ -1452,11 +1471,11 @@ fn a_parked_edit_brings_back_its_deleted_folder_after_a_remote_move_into_an_igno
         koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"logs/\n")),
     );
-    let mut local = trees.local().get("f").unwrap().clone();
+    let mut local = trees.local().get(&"f".into()).unwrap().clone();
     local.parked = true;
     local.shape.content = Some(content(2));
     trees.set_local("f".into(), local);
-    trees.remove_local("d");
+    trees.remove_local(&"d".into());
     trees.revert("d".into());
     disk.entries.remove(&1);
     let entry = disk.entries.get_mut(&3).unwrap();
@@ -1465,7 +1484,7 @@ fn a_parked_edit_brings_back_its_deleted_folder_after_a_remote_move_into_an_igno
     entry.content = Some(content(2));
     trees.check().unwrap();
     disk.matches(&trees).unwrap();
-    assert!(trees.ignored("f"));
+    assert!(trees.ignored(&"f".into()));
     let done = converge(&mut trees, &mut disk, 10).unwrap();
     assert!(
         matches!(
@@ -1474,7 +1493,7 @@ fn a_parked_edit_brings_back_its_deleted_folder_after_a_remote_move_into_an_igno
         ),
         "{done:?}"
     );
-    let f = trees.local().get("f").unwrap();
+    let f = trees.local().get(&"f".into()).unwrap();
     assert!(!f.parked);
     assert_eq!(f.shape, file("d", "f", 2));
 }
@@ -1491,10 +1510,10 @@ fn a_reverted_folder_whose_r_folder_sits_inside_it_waits_in_place() {
             koidrive_engine::ignore::Source::Koiignore,
             Some(koidrive_engine::ignore::RuleFile::parse(rules)),
         );
-        let mut x = trees.local().get("x").unwrap().clone();
+        let mut x = trees.local().get(&"x".into()).unwrap().clone();
         x.shape = dir(ROOT, "x");
         trees.set_local("x".into(), x);
-        let mut y = trees.local().get("y").unwrap().clone();
+        let mut y = trees.local().get(&"y".into()).unwrap().clone();
         y.shape = dir("x", "a");
         trees.set_local("y".into(), y);
         trees.revert("x".into());
@@ -1520,7 +1539,7 @@ fn a_reverted_folder_whose_r_folder_sits_inside_it_waits_in_place() {
         disk.matches(&trees).unwrap();
         let done = converge(&mut trees, &mut disk, 10).unwrap();
         assert!(done.is_empty(), "{done:?}");
-        assert!(!trees.local().get("x").unwrap().parked);
+        assert!(!trees.local().get(&"x".into()).unwrap().parked);
     }
 }
 
@@ -1541,7 +1560,7 @@ fn a_reverted_folder_whose_inner_folder_an_excluded_node_holds_out_waits_in_plac
         ("x", dir(ROOT, "x"), 3, Area::Root, "x"),
         ("y", dir("x", "a"), 2, Area::Dir(3), "a"),
     ] {
-        let mut local = trees.local().get(id).unwrap().clone();
+        let mut local = trees.local().get(&NodeId::from(id)).unwrap().clone();
         local.shape = shape;
         trees.set_local(id.into(), local);
         let entry = disk.entries.get_mut(&ino).unwrap();
@@ -1552,10 +1571,12 @@ fn a_reverted_folder_whose_inner_folder_an_excluded_node_holds_out_waits_in_plac
     trees.revert("y".into());
     trees.check().unwrap();
     disk.matches(&trees).unwrap();
-    assert!(trees.excluded("e") && !trees.excluded("x") && !trees.excluded("y"));
+    assert!(
+        trees.excluded(&"e".into()) && !trees.excluded(&"x".into()) && !trees.excluded(&"y".into())
+    );
     let done = converge(&mut trees, &mut disk, 10).unwrap();
     assert!(done.is_empty(), "{done:?}");
-    assert!(!trees.local().get("x").unwrap().parked);
+    assert!(!trees.local().get(&"x".into()).unwrap().parked);
 }
 
 #[test]
@@ -1577,7 +1598,7 @@ fn a_name_holder_whose_s_position_the_rules_leave_out_reaches_its_r_position() {
         ("z", file(ROOT, "z", 1), 3, Area::Root, "z"),
         ("e", dir(ROOT, "g"), 4, Area::Root, "g"),
     ] {
-        let mut local = trees.local().get(id).unwrap().clone();
+        let mut local = trees.local().get(&NodeId::from(id)).unwrap().clone();
         local.shape = shape;
         trees.set_local(id.into(), local);
         let entry = disk.entries.get_mut(&ino).unwrap();
@@ -1590,8 +1611,11 @@ fn a_name_holder_whose_s_position_the_rules_leave_out_reaches_its_r_position() {
     disk.matches(&trees).unwrap();
     converge(&mut trees, &mut disk, 10).unwrap();
     assert!(trees.local().iter().all(|(_, node)| !node.parked));
-    assert_eq!(trees.local().get("x").unwrap().shape, dir("y", "c"));
-    assert_eq!(trees.local().get("y").unwrap().shape, dir(ROOT, "x"));
+    assert_eq!(trees.local().get(&"x".into()).unwrap().shape, dir("y", "c"));
+    assert_eq!(
+        trees.local().get(&"y".into()).unwrap().shape,
+        dir(ROOT, "x")
+    );
 }
 
 #[test]
@@ -1605,11 +1629,11 @@ fn a_reverted_parked_file_whose_r_name_an_excluded_node_holds_goes_back_to_its_l
         koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"a\n")),
     );
-    let mut moved = trees.local().get("e").unwrap().clone();
+    let mut moved = trees.local().get(&"e".into()).unwrap().clone();
     moved.shape = file(ROOT, "a", 9);
     trees.set_local("e".into(), moved);
     disk.entries.get_mut(&1).unwrap().name = "a".into();
-    let mut local = trees.local().get("x").unwrap().clone();
+    let mut local = trees.local().get(&"x".into()).unwrap().clone();
     local.parked = true;
     local.shape = file(ROOT, "y", 1);
     trees.set_local("x".into(), local);
@@ -1619,9 +1643,9 @@ fn a_reverted_parked_file_whose_r_name_an_excluded_node_holds_goes_back_to_its_l
     entry.name = "x".into();
     trees.check().unwrap();
     disk.matches(&trees).unwrap();
-    assert!(trees.excluded("e"));
+    assert!(trees.excluded(&"e".into()));
     converge(&mut trees, &mut disk, 10).unwrap();
-    let x = trees.local().get("x").unwrap();
+    let x = trees.local().get(&"x".into()).unwrap();
     assert!(!x.parked);
     assert_eq!(x.shape, file(ROOT, "y", 1));
 }
@@ -1641,7 +1665,7 @@ fn a_reverted_name_cycle_out_of_an_excluded_folder_reaches_its_r_positions() {
         ("x", dir(ROOT, "x"), 2, Area::Root, "x"),
         ("y", dir("x", "a"), 1, Area::Dir(2), "a"),
     ] {
-        let mut local = trees.local().get(id).unwrap().clone();
+        let mut local = trees.local().get(&NodeId::from(id)).unwrap().clone();
         local.shape = shape;
         trees.set_local(id.into(), local);
         let entry = disk.entries.get_mut(&ino).unwrap();
@@ -1654,8 +1678,11 @@ fn a_reverted_name_cycle_out_of_an_excluded_folder_reaches_its_r_positions() {
     disk.matches(&trees).unwrap();
     converge(&mut trees, &mut disk, 10).unwrap();
     assert!(trees.local().iter().all(|(_, node)| !node.parked));
-    assert_eq!(trees.local().get("x").unwrap().shape, dir("y", "c"));
-    assert_eq!(trees.local().get("y").unwrap().shape, dir(ROOT, "x"));
+    assert_eq!(trees.local().get(&"x".into()).unwrap().shape, dir("y", "c"));
+    assert_eq!(
+        trees.local().get(&"y".into()).unwrap().shape,
+        dir(ROOT, "x")
+    );
 }
 
 #[test]
@@ -1675,7 +1702,7 @@ fn a_reverted_case_only_rename_out_of_an_excluded_folder_reaches_its_r_name() {
         ("z", file(ROOT, "z", 1), 2, "z"),
         ("e", dir(ROOT, "g"), 3, "g"),
     ] {
-        let mut local = trees.local().get(id).unwrap().clone();
+        let mut local = trees.local().get(&NodeId::from(id)).unwrap().clone();
         local.shape = shape;
         trees.set_local(id.into(), local);
         let entry = disk.entries.get_mut(&ino).unwrap();
@@ -1687,7 +1714,10 @@ fn a_reverted_case_only_rename_out_of_an_excluded_folder_reaches_its_r_name() {
     disk.matches(&trees).unwrap();
     converge(&mut trees, &mut disk, 10).unwrap();
     assert!(trees.local().iter().all(|(_, node)| !node.parked));
-    assert_eq!(trees.local().get("x").unwrap().shape, dir(ROOT, "a"));
+    assert_eq!(
+        trees.local().get(&"x".into()).unwrap().shape,
+        dir(ROOT, "a")
+    );
 }
 
 #[test]
@@ -1703,7 +1733,7 @@ fn two_reverted_files_moved_out_of_an_excluded_folder_swap_names_into_their_r_po
         Some(koidrive_engine::ignore::RuleFile::parse(b"logs/\n")),
     );
     for (id, name, ino) in [("a", "p", 2), ("b", "q", 3)] {
-        let mut local = trees.local().get(id).unwrap().clone();
+        let mut local = trees.local().get(&NodeId::from(id)).unwrap().clone();
         local.shape = file(ROOT, name, if id == "a" { 1 } else { 2 });
         trees.set_local(id.into(), local);
         let entry = disk.entries.get_mut(&ino).unwrap();
@@ -1714,11 +1744,17 @@ fn two_reverted_files_moved_out_of_an_excluded_folder_swap_names_into_their_r_po
     trees.revert("b".into());
     trees.check().unwrap();
     disk.matches(&trees).unwrap();
-    assert!(!trees.excluded("a") && !trees.excluded("b"));
+    assert!(!trees.excluded(&"a".into()) && !trees.excluded(&"b".into()));
     converge(&mut trees, &mut disk, 20).unwrap();
     assert!(trees.local().iter().all(|(_, node)| !node.parked));
-    assert_eq!(trees.local().get("a").unwrap().shape, file(ROOT, "q", 1));
-    assert_eq!(trees.local().get("b").unwrap().shape, file(ROOT, "p", 2));
+    assert_eq!(
+        trees.local().get(&"a".into()).unwrap().shape,
+        file(ROOT, "q", 1)
+    );
+    assert_eq!(
+        trees.local().get(&"b".into()).unwrap().shape,
+        file(ROOT, "p", 2)
+    );
 }
 
 #[test]
@@ -1734,12 +1770,12 @@ fn a_reverted_parked_file_whose_r_name_an_excluded_node_holds_brings_back_its_de
         koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"logs/\n")),
     );
-    let mut local = trees.local().get("x").unwrap().clone();
+    let mut local = trees.local().get(&"x".into()).unwrap().clone();
     local.parked = true;
     local.shape = file("d", "y", 1);
     trees.set_local("x".into(), local);
     trees.revert("x".into());
-    trees.remove_local("d");
+    trees.remove_local(&"d".into());
     trees.revert("d".into());
     disk.entries.remove(&3);
     let entry = disk.entries.get_mut(&4).unwrap();
@@ -1747,9 +1783,9 @@ fn a_reverted_parked_file_whose_r_name_an_excluded_node_holds_brings_back_its_de
     entry.name = "x".into();
     trees.check().unwrap();
     disk.matches(&trees).unwrap();
-    assert!(trees.excluded("e") && !trees.ignored("x"));
+    assert!(trees.excluded(&"e".into()) && !trees.ignored(&"x".into()));
     converge(&mut trees, &mut disk, 10).unwrap();
-    let x = trees.local().get("x").unwrap();
+    let x = trees.local().get(&"x".into()).unwrap();
     assert!(!x.parked);
     assert_eq!(x.shape, file("d", "y", 1));
 }
@@ -1765,7 +1801,7 @@ fn a_reverted_parked_edit_whose_r_folder_the_rules_exclude_stays_at_its_local_po
         koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"logs/\n")),
     );
-    let mut f = trees.local().get("f").unwrap().clone();
+    let mut f = trees.local().get(&"f".into()).unwrap().clone();
     f.shape = file(ROOT, "a", 2);
     f.parked = true;
     trees.set_local("f".into(), f);
@@ -1776,9 +1812,9 @@ fn a_reverted_parked_edit_whose_r_folder_the_rules_exclude_stays_at_its_local_po
     entry.content = Some(content(2));
     trees.check().unwrap();
     disk.matches(&trees).unwrap();
-    assert!(!trees.ignored("f") && trees.edited("f"));
+    assert!(!trees.ignored(&"f".into()) && trees.edited(&"f".into()));
     converge(&mut trees, &mut disk, 10).unwrap();
-    let f = trees.local().get("f").unwrap();
+    let f = trees.local().get(&"f".into()).unwrap();
     assert!(!f.parked);
     assert_eq!(f.shape, file(ROOT, "a", 2));
     let (mut commits, mut ids) = (koidrive_engine::commit::Commits::default(), IdGen::new(1));
@@ -1804,7 +1840,7 @@ fn an_edit_whose_r_folder_the_rules_exclude_is_not_parked_to_free_its_name() {
         koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"logs/\n")),
     );
-    let mut f = trees.local().get("f").unwrap().clone();
+    let mut f = trees.local().get(&"f".into()).unwrap().clone();
     f.shape = file(ROOT, "a", 2);
     trees.set_local("f".into(), f);
     trees.revert("f".into());
@@ -1815,7 +1851,10 @@ fn an_edit_whose_r_folder_the_rules_exclude_is_not_parked_to_free_its_name() {
     disk.matches(&trees).unwrap();
     let done = converge(&mut trees, &mut disk, 10).unwrap();
     assert!(done.is_empty(), "{done:?}");
-    assert_eq!(trees.local().get("f").unwrap().shape, file(ROOT, "a", 2));
+    assert_eq!(
+        trees.local().get(&"f".into()).unwrap().shape,
+        file(ROOT, "a", 2)
+    );
     let (mut commits, mut ids) = (koidrive_engine::commit::Commits::default(), IdGen::new(1));
     let commit = commits
         .build(&mut trees, &mut ids, NOW, "history", "me", 7)
@@ -1869,7 +1908,7 @@ fn an_ignored_parked_file_whose_local_name_an_excluded_folder_holds_goes_into_it
         koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"A\n")),
     );
-    let mut local = trees.local().get("p").unwrap().clone();
+    let mut local = trees.local().get(&"p".into()).unwrap().clone();
     local.parked = true;
     local.shape = file(ROOT, "A", 1);
     trees.set_local("p".into(), local);
@@ -1879,9 +1918,9 @@ fn an_ignored_parked_file_whose_local_name_an_excluded_folder_holds_goes_into_it
     entry.name = "p".into();
     trees.check().unwrap();
     disk.matches(&trees).unwrap();
-    assert!(trees.excluded("e") && trees.ignored("p"));
+    assert!(trees.excluded(&"e".into()) && trees.ignored(&"p".into()));
     converge(&mut trees, &mut disk, 10).unwrap();
-    let p = trees.local().get("p").unwrap();
+    let p = trees.local().get(&"p".into()).unwrap();
     assert!(!p.parked);
     assert_eq!(p.shape, file("e", "A", 1));
 }
@@ -1906,8 +1945,11 @@ fn a_parked_folder_the_rules_now_exclude_whose_local_name_another_node_took_goes
             .done(&mut trees, None, &record.effect_id, created)
             .unwrap();
     }
-    assert!(trees.local().get("x").unwrap().parked);
-    assert_eq!(trees.local().get("z").unwrap().shape, file(ROOT, "a", 1));
+    assert!(trees.local().get(&"x".into()).unwrap().parked);
+    assert_eq!(
+        trees.local().get(&"z".into()).unwrap().shape,
+        file(ROOT, "a", 1)
+    );
     trees.set_rules(
         &[] as &[&str],
         koidrive_engine::ignore::Source::Koiignore,
@@ -1915,9 +1957,13 @@ fn a_parked_folder_the_rules_now_exclude_whose_local_name_another_node_took_goes
     );
     trees.check().unwrap();
     disk.matches(&trees).unwrap();
-    assert!(trees.ignored("x") && !trees.excluded("z") && !trees.reverted().contains("x"));
+    assert!(
+        trees.ignored(&"x".into())
+            && !trees.excluded(&"z".into())
+            && !trees.reverted().contains(&"x".into())
+    );
     converge(&mut trees, &mut disk, 10).unwrap();
-    let x = trees.local().get("x").unwrap();
+    let x = trees.local().get(&"x".into()).unwrap();
     assert!(!x.parked);
     assert_eq!(x.shape, dir(ROOT, "b"));
 }
@@ -1934,7 +1980,7 @@ fn a_parked_folder_the_server_trashed_is_removed_although_the_rules_leave_it_out
         trashed.trash_group = "other-device".into();
         trees.set_remote(id.into(), trashed);
     }
-    let mut local = trees.local().get("x").unwrap().clone();
+    let mut local = trees.local().get(&"x".into()).unwrap().clone();
     local.parked = true;
     trees.set_local("x".into(), local);
     let entry = disk.entries.get_mut(&2).unwrap();
@@ -1947,16 +1993,16 @@ fn a_parked_folder_the_server_trashed_is_removed_although_the_rules_leave_it_out
     );
     trees.check().unwrap();
     disk.matches(&trees).unwrap();
-    assert!(trees.ignored("x"));
+    assert!(trees.ignored(&"x".into()));
     converge(&mut trees, &mut disk, 10).unwrap();
-    assert_eq!(trees.local().get("x"), None);
+    assert_eq!(trees.local().get(&"x".into()), None);
     trees.set_rules(
         &[] as &[&str],
         koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"")),
     );
     assert_eq!(converge(&mut trees, &mut disk, 10).unwrap(), []);
-    assert_eq!(trees.local().get("x"), None);
+    assert_eq!(trees.local().get(&"x".into()), None);
     assert_in_sync(&mut trees);
 }
 
@@ -1976,14 +2022,14 @@ fn parked_folder_with_a_file_the_server_trashed(edited: bool) -> (Trees, Disk) {
         trashed.trash_group = "other-device".into();
         trees.set_remote(id.into(), trashed);
     }
-    let mut local = trees.local().get("x").unwrap().clone();
+    let mut local = trees.local().get(&"x".into()).unwrap().clone();
     local.parked = true;
     trees.set_local("x".into(), local);
     let entry = disk.entries.get_mut(&2).unwrap();
     entry.area = Area::Parked;
     entry.name = "x".into();
     if edited {
-        let mut local = trees.local().get("f").unwrap().clone();
+        let mut local = trees.local().get(&"f".into()).unwrap().clone();
         local.shape.content = Some(content(2));
         trees.set_local("f".into(), local);
         disk.entries.get_mut(&3).unwrap().content = Some(content(2));
@@ -2002,10 +2048,10 @@ fn parked_folder_with_a_file_the_server_trashed(edited: bool) -> (Trees, Disk) {
 fn a_parked_folder_the_server_trashed_is_removed_with_the_file_in_it_although_the_rules_leave_it_out()
  {
     let (mut trees, mut disk) = parked_folder_with_a_file_the_server_trashed(false);
-    assert!(trees.excluded("f"));
+    assert!(trees.excluded(&"f".into()));
     converge(&mut trees, &mut disk, 10).unwrap();
-    assert_eq!(trees.local().get("x"), None);
-    assert_eq!(trees.local().get("f"), None);
+    assert_eq!(trees.local().get(&"x".into()), None);
+    assert_eq!(trees.local().get(&"f".into()), None);
 }
 
 #[test]
@@ -2013,7 +2059,10 @@ fn a_parked_folder_the_server_trashed_keeps_a_file_edited_in_it_while_the_rules_
     let (mut trees, mut disk) = parked_folder_with_a_file_the_server_trashed(true);
     converge(&mut trees, &mut disk, 10).unwrap();
     assert_eq!(
-        trees.local().live("f").and_then(|f| f.content.clone()),
+        trees
+            .local()
+            .live(&"f".into())
+            .and_then(|f| f.content.clone()),
         Some(content(2))
     );
 }
@@ -2034,7 +2083,7 @@ fn a_reverted_parked_folder_whose_local_name_another_node_took_goes_to_its_exclu
             koidrive_engine::ignore::LocalRules::new(&["a", "k"], &[] as &[&str]).unwrap(),
         );
         trees.set_synced("x".into(), None);
-        let mut local = trees.local().get("x").unwrap().clone();
+        let mut local = trees.local().get(&"x".into()).unwrap().clone();
         local.parked = true;
         local.shape = dir(ROOT, "a");
         trees.set_local("x".into(), local);
@@ -2044,9 +2093,9 @@ fn a_reverted_parked_folder_whose_local_name_another_node_took_goes_to_its_exclu
         entry.name = "x".into();
         trees.check().unwrap();
         disk.matches(&trees).unwrap();
-        assert!(trees.ignored("x") && !trees.excluded("h"));
+        assert!(trees.ignored(&"x".into()) && !trees.excluded(&"h".into()));
         converge(&mut trees, &mut disk, 10).unwrap();
-        let x = trees.local().get("x").unwrap();
+        let x = trees.local().get(&"x".into()).unwrap();
         if taken {
             assert!(x.parked);
             let reported = koidrive_engine::effects::stuck(
@@ -2055,7 +2104,7 @@ fn a_reverted_parked_folder_whose_local_name_another_node_took_goes_to_its_exclu
                 None,
                 &Default::default(),
             );
-            assert!(reported.contains_key("x"), "{reported:?}");
+            assert!(reported.contains_key(&"x".into()), "{reported:?}");
         } else {
             assert!(!x.parked);
             assert_eq!(x.shape, dir(ROOT, renamed));
@@ -2065,7 +2114,7 @@ fn a_reverted_parked_folder_whose_local_name_another_node_took_goes_to_its_exclu
 
 fn park_reverted(trees: &mut Trees, disk: &mut Disk, id: &str, ino: u128, at: Shape) {
     trees.set_synced(id.into(), None);
-    let mut local = trees.local().get(id).unwrap().clone();
+    let mut local = trees.local().get(&NodeId::from(id)).unwrap().clone();
     local.parked = true;
     local.shape = at;
     trees.set_local(id.into(), local);
@@ -2092,7 +2141,11 @@ fn two_reverted_parked_folders_where_one_was_refused_the_others_r_name_both_go_t
         park_reverted(&mut trees, &mut disk, y, 3, dir(ROOT, "b"));
         trees.check().unwrap();
         disk.matches(&trees).unwrap();
-        assert!(trees.ignored(x) && trees.ignored(y) && !trees.excluded("h"));
+        assert!(
+            trees.ignored(&NodeId::from(x))
+                && trees.ignored(&NodeId::from(y))
+                && !trees.excluded(&"h".into())
+        );
         converge(&mut trees, &mut disk, 10).unwrap();
         let reported =
             koidrive_engine::effects::stuck(&trees, &Effects::default(), None, &Default::default());
@@ -2105,8 +2158,14 @@ fn two_reverted_parked_folders_where_one_was_refused_the_others_r_name_both_go_t
             Vec::<String>::new(),
             "{x} planned first: {reported:?}"
         );
-        assert_eq!(trees.local().get(x).unwrap().shape, dir(ROOT, "b"));
-        assert_eq!(trees.local().get(y).unwrap().shape, dir(ROOT, "c"));
+        assert_eq!(
+            trees.local().get(&NodeId::from(x)).unwrap().shape,
+            dir(ROOT, "b")
+        );
+        assert_eq!(
+            trees.local().get(&NodeId::from(y)).unwrap().shape,
+            dir(ROOT, "c")
+        );
     }
 }
 
@@ -2123,7 +2182,7 @@ fn a_parked_node_that_can_go_nowhere_is_reported_beside_a_failed_effect() {
         koidrive_engine::ignore::Source::Koiignore,
         Some(koidrive_engine::ignore::RuleFile::parse(b"archive/\n")),
     );
-    let mut f = trees.local().get("f").unwrap().clone();
+    let mut f = trees.local().get(&"f".into()).unwrap().clone();
     f.shape = file(ROOT, "a", 1);
     f.parked = true;
     trees.set_local("f".into(), f);
@@ -2147,7 +2206,7 @@ fn a_parked_node_that_can_go_nowhere_is_reported_beside_a_failed_effect() {
             .is_empty()
     );
     let reported = koidrive_engine::effects::stuck(&trees, &effects, None, &Default::default());
-    assert!(reported.contains_key("f"), "{reported:?}");
+    assert!(reported.contains_key(&"f".into()), "{reported:?}");
 }
 
 /// A valid tree over `n0`, `n1`, ... from one [`Draw`] per node, as in tests/trees.rs, where each
@@ -2235,8 +2294,8 @@ proptest! {
         trees.settle(&Default::default());
         prop_assert_eq!(trees.work(), []);
         for id in &ids {
-            prop_assert_eq!(trees.class(id), Class::InSync, "{}", id);
-            prop_assert!(!trees.local().get(id).is_some_and(|node| node.parked));
+            prop_assert_eq!(trees.class(&NodeId::from(id)), Class::InSync, "{}", id);
+            prop_assert!(!trees.local().get(&NodeId::from(id)).is_some_and(|node| node.parked));
         }
     }
 
@@ -2262,8 +2321,8 @@ proptest! {
         trees.settle(&Default::default());
         prop_assert_eq!(trees.work(), []);
         for id in &ids {
-            prop_assert_eq!(trees.class(id), Class::InSync, "{}", id);
-            prop_assert!(!trees.local().get(id).is_some_and(|node| node.parked));
+            prop_assert_eq!(trees.class(&NodeId::from(id)), Class::InSync, "{}", id);
+            prop_assert!(!trees.local().get(&NodeId::from(id)).is_some_and(|node| node.parked));
         }
     }
 }
@@ -2353,7 +2412,7 @@ fn an_edit_saved_while_its_file_is_parked_survives_a_folder_taking_its_name() {
         ),
         "{park:?}"
     );
-    let mut node = trees.local().get("a").unwrap().clone();
+    let mut node = trees.local().get(&"a".into()).unwrap().clone();
     node.shape.content = Some(content(9));
     trees.set_local("a".into(), node);
     disk.entries.get_mut(&1).unwrap().content = Some(content(9));
@@ -2361,7 +2420,7 @@ fn an_edit_saved_while_its_file_is_parked_survives_a_folder_taking_its_name() {
     effects
         .done(&mut trees, None, &park.effect_id, created)
         .unwrap();
-    let a = trees.local().get("a").unwrap();
+    let a = trees.local().get(&"a".into()).unwrap();
     assert!(a.parked && a.shape.content == Some(content(9)));
     trees.set_remote(
         "a".into(),
@@ -2394,7 +2453,7 @@ fn an_edit_saved_while_its_file_is_parked_survives_a_folder_taking_its_name() {
     assert!(
         sent || next.is_some(),
         "stuck: effects {done:?}, then no commit ({commit:?}) and no effect; a = {:?}, waiting {:?}",
-        trees.local().get("a"),
+        trees.local().get(&"a".into()),
         trees.waiting().keys().collect::<Vec<_>>()
     );
 }

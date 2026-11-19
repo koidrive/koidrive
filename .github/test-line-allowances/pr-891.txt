@@ -1,0 +1,4 @@
+671
+# Type-conversion churn: tests that built ids as Strings now build NodeId values, mostly where rustfmt splits a call onto more lines. They protect the same behaviour as before.
+# node_id.rs: ids keep their exact text and order as their text, including UUIDs mixed with other text. No other test covers the new id type.
+# schema_node_ids_as_values: a store upgraded from the release fixture reads and writes its local and synced rows and engine state unchanged through the new id type. The store upgrade guard requires a schema_ case for the store code change.

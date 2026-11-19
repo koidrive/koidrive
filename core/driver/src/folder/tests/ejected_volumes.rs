@@ -318,7 +318,7 @@ fn a_stick_of_the_same_size_with_a_sticks_serial_puts_the_first_sticks_files_in_
             .map(|id| {
                 ask(
                     &site_b,
-                    &RestoreIntent::from_trash((*id).clone(), None, None).unwrap(),
+                    &RestoreIntent::from_trash((*id).clone().into(), None, None).unwrap(),
                 )
             })
             .collect();

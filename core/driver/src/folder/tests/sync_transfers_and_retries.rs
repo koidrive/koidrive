@@ -1272,7 +1272,7 @@ fn an_edit_saved_again_unchanged_while_it_waits_to_upload_uploads_once() {
         b.run(&mut remote);
 
         let id = local_named(&b, "notes.txt");
-        assert_eq!(server_bytes(&remote, &id), b"edited", "{again}");
+        assert_eq!(server_bytes(&remote, &id.to_string()), b"edited", "{again}");
         let edits = (b.sent.iter().flat_map(|commit| &commit.ops)).count();
         assert_eq!(edits, 1, "{again}: {:?}", b.sent);
         assert_eq!(idle_plans(&mut b, &mut remote), 0, "{again}");

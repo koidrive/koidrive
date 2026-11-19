@@ -9,7 +9,7 @@ upgrade_case!(missing_nodes, |store| {
             tx.set_engine_state(&state)?;
             assert_eq!(
                 tx.engine_state()?.trees.missing,
-                std::collections::BTreeSet::from(["node".to_owned()])
+                std::collections::BTreeSet::from(["node".into()])
             );
             Ok::<_, koidrive_store::Error>(())
         })

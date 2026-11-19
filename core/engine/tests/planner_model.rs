@@ -11,7 +11,7 @@ use koidrive_engine::first_link::{History, Marks};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::question::{Answer, RecoveryCause};
 use koidrive_engine::restore::RestoreIntent;
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
 use koidrive_proto::v1::{self as proto, ChunkRef, NodeStatus, op, op_result};
 use koidrive_sim::space::{Role, Session, SpaceDo};
 use sha2::{Digest, Sha256};
@@ -166,7 +166,7 @@ fn content_of(hash: [u8; 32]) -> Content {
 
 fn shape(world: &World, root: &str, kind: Kind, (spot, name): (Spot, String)) -> Shape {
     Shape {
-        parent: world.spot_id(root, spot),
+        parent: world.spot_id(root, spot).into(),
         name,
         kind,
         content: (kind == Kind::File).then(content),
@@ -895,11 +895,9 @@ fn settle(planner: &mut Planner, commit_id: &str, result: &proto::CommitResult, 
             planner.trees.set_remote_made_here(id, node);
         }
     }
-    for node in space
-        .nodes()
-        .into_iter()
-        .filter(|node| node.node_id != space.space_id() && !made.contains(&node.node_id))
-    {
+    for node in space.nodes().into_iter().filter(|node| {
+        node.node_id != space.space_id() && !made.contains(&NodeId::from(&node.node_id))
+    }) {
         let (id, held) = RemoteNode::from_state(&node).unwrap();
         planner.trees.set_remote(id, held);
     }
@@ -930,11 +928,11 @@ fn trees(world: &World, space: &SpaceDo) -> Trees {
                 left_out_when_placed: false,
                 content_from_server: false,
             };
-            trees.set_local(world.id(i), node);
+            trees.set_local(world.id(i).into(), node);
         }
         let synced = (i < world.existing())
             .then(|| shape(world, &root, world.kind(i), world.synced_place(i)));
-        trees.set_synced(world.id(i), synced);
+        trees.set_synced(world.id(i).into(), synced);
     }
     learn(&mut trees, space);
     trees.settle(&Default::default());
@@ -2247,8 +2245,8 @@ fn restored(world: &World, i: usize, target: Option<Spot>) -> Intent {
 fn answered(
     told: &World,
     group: &[usize],
-    held: &BTreeSet<String>,
-    kept_back: &BTreeSet<String>,
+    held: &BTreeSet<NodeId>,
+    kept_back: &BTreeSet<NodeId>,
     after: After,
 ) -> Intent {
     let local = |j: usize| told.local_place(j).map(|(spot, _)| spot);
@@ -2263,16 +2261,16 @@ fn answered(
         }
     };
     let mut kept: BTreeSet<usize> = (0..told.len())
-        .filter(|&i| held.contains(&told.id(i)) && local(i).is_some())
+        .filter(|&i| held.contains(&NodeId::from(told.id(i))) && local(i).is_some())
         .collect();
     let mut spared: BTreeSet<usize> = (0..told.len())
-        .filter(|&i| kept_back.contains(&told.id(i)))
+        .filter(|&i| kept_back.contains(&NodeId::from(told.id(i))))
         .collect();
     let mut open = Vec::new();
     if let After::Edit(i) | After::Move(i, _) = after {
         let moved = (0..told.len()).filter(|&j| told.inside(j, i, &local));
-        let published =
-            (0..told.existing()).any(|h| held.contains(&told.id(h)) && told.inside(i, h, &synced));
+        let published = (0..told.existing())
+            .any(|h| held.contains(&NodeId::from(told.id(h))) && told.inside(i, h, &synced));
         if published {
             kept.extend(moved);
         } else {
@@ -2517,7 +2515,9 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
         Story::Restore(i, target) => {
             let mut planner = Planner::new(world, space);
             let parent = target.map(|spot| world.spot_id(&root, spot));
-            let intent = RestoreIntent::from_trash(world.id(i), parent, None).unwrap();
+            let intent =
+                RestoreIntent::from_trash(world.id(i).into(), parent.map(NodeId::from), None)
+                    .unwrap();
             planner.commits.restore(IdGen::new(16).uuid_v7(NOW), intent);
             let intent = restored(world, i, target);
             (world.clone(), space.clone(), planner, intent)
@@ -2576,14 +2576,14 @@ fn tell(world: &World, space: &SpaceDo, story: Story) -> Option<Report> {
                 }
             }
             if let After::Edit(i) | After::Move(i, _) = after {
-                if shown.contains(&told.id(i)) {
+                if shown.contains(&NodeId::from(&told.id(i))) {
                     return None;
                 }
-                let mut node = (planner.trees.local().get(&told.id(i)))
+                let mut node = (planner.trees.local().get(&NodeId::from(&told.id(i))))
                     .expect("the changed node is in L")
                     .clone();
                 node.shape = local_shape(&told, &root, i).expect("the changed node stays in L");
-                planner.trees.set_local(told.id(i), node);
+                planner.trees.set_local(told.id(i).into(), node);
                 planner.trees.settle(planner.commits.aliases());
             }
             let now = trashed(&before);
@@ -3207,9 +3207,14 @@ fn moved_after_a_publish_answer(world: &World, moved: usize, to: Spot) -> (World
     assert!(planner.commits.decide(&question.id, Answer::Publish));
     let mut told = world.clone();
     told.local[moved] = Local::Into(to);
-    let mut node = planner.trees.local().get(&world.id(moved)).unwrap().clone();
-    node.shape.parent = told.spot_id(space.space_id(), to);
-    planner.trees.set_local(world.id(moved), node);
+    let mut node = planner
+        .trees
+        .local()
+        .get(&NodeId::from(&world.id(moved)))
+        .unwrap()
+        .clone();
+    node.shape.parent = told.spot_id(space.space_id(), to).into();
+    planner.trees.set_local(world.id(moved).into(), node);
     planner.trees.settle(planner.commits.aliases());
     let first = planner.build();
     let finished = run(
@@ -3370,7 +3375,8 @@ fn the_known_restores_move_the_folder_out_and_keep_its_old_ancestor_trashed() {
         let root = space.space_id().to_string();
         let mut planner = Planner::new(&world, &space);
         let parent = target.map(|spot| world.spot_id(&root, spot));
-        let intent = RestoreIntent::from_trash(world.id(i), parent, None).unwrap();
+        let intent =
+            RestoreIntent::from_trash(world.id(i).into(), parent.map(NodeId::from), None).unwrap();
         assert!(planner.commits.restore(IdGen::new(16).uuid_v7(NOW), intent));
         let first = planner.build();
         let end = run(
@@ -3422,7 +3428,8 @@ fn a_restore_the_move_of_its_trashed_folder_would_bring_back_in_place_goes_first
     );
     let space = server(&world);
     let mut planner = Planner::new(&world, &space);
-    let intent = RestoreIntent::from_trash(world.id(3), Some(world.id(2)), None).unwrap();
+    let intent =
+        RestoreIntent::from_trash(world.id(3).into(), Some(world.id(2).into()), None).unwrap();
     assert!(planner.commits.restore(IdGen::new(16).uuid_v7(NOW), intent));
     let commit = planner.build().expect("a commit");
     let sent: Vec<(&str, &str)> = (commit.ops.iter())
@@ -3472,7 +3479,9 @@ fn the_story_oracle_follows_the_reference_server() {
     let root = space.space_id().to_string();
     let taken = mkdir(node_id(BURIAL), root.clone(), restored_world.label(0));
     other(&mut space, &mut IdGen::new(17), vec![taken]);
-    let intent = RestoreIntent::from_trash(restored_world.id(0), Some(root.clone()), None).unwrap();
+    let intent =
+        RestoreIntent::from_trash(restored_world.id(0).into(), Some(NodeId::from(&root)), None)
+            .unwrap();
     let commit = proto::Commit {
         commit_id: IdGen::new(18).uuid_v7(NOW),
         history_id: space.history_id().into(),
@@ -3863,8 +3872,12 @@ fn a_restore_into_a_folder_the_disk_moves_into_the_restored_folder_lands() {
     assert_eq!(report.classes, ["restore: clean"], "{}", report.text);
     let root = space.space_id().to_string();
     let mut planner = Planner::new(&world, &space);
-    let intent =
-        RestoreIntent::from_trash(world.id(1), Some(world.spot_id(&root, In(2))), None).unwrap();
+    let intent = RestoreIntent::from_trash(
+        world.id(1).into(),
+        Some(world.spot_id(&root, In(2)).into()),
+        None,
+    )
+    .unwrap();
     planner.commits.restore(IdGen::new(16).uuid_v7(NOW), intent);
     let sent: Vec<String> = (planner.build().iter())
         .flat_map(|commit| &commit.ops)
@@ -3889,14 +3902,24 @@ fn a_restore_into_a_new_file_reverts_no_move_through_the_restored_folder() {
     let space = server(&world);
     let root = space.space_id().to_string();
     let mut planner = Planner::new(&world, &space);
-    let intent =
-        RestoreIntent::from_trash(world.id(1), Some(world.spot_id(&root, In(2))), None).unwrap();
+    let intent = RestoreIntent::from_trash(
+        world.id(1).into(),
+        Some(world.spot_id(&root, In(2)).into()),
+        None,
+    )
+    .unwrap();
     planner.commits.restore(IdGen::new(16).uuid_v7(NOW), intent);
     let sent: Vec<String> = (planner.build().iter())
         .flat_map(|commit| &commit.ops)
         .map(|op| world.show_op(&root, op))
         .collect();
-    assert!(!planner.trees.reverted().contains(&world.id(0)), "{sent:?}");
+    assert!(
+        !planner
+            .trees
+            .reverted()
+            .contains(&NodeId::from(&world.id(0))),
+        "{sent:?}"
+    );
     assert!(sent.iter().any(|op| op == "Move a→n/a"), "{sent:?}");
 }
 

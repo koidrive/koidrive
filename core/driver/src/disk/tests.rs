@@ -72,15 +72,17 @@ fn a_delete_the_user_made_before_a_recovered_removal_stays_local() {
         })
         .unwrap();
     fs::remove_file(folder.root.join("report.txt")).unwrap();
-    batch(&mut running, |trees| trees.remove_local(NODE));
+    batch(&mut running, |trees| {
+        trees.remove_local(&NodeId::from(NODE))
+    });
     assert_eq!(
-        running.engine.trees.class(NODE),
+        running.engine.trees.class(&NodeId::from(NODE)),
         koidrive_engine::classify::Class::Local
     );
     drop((pending, running));
     let running = folder.start(no_hook()).unwrap();
     assert_eq!(
-        running.engine.trees.class(NODE),
+        running.engine.trees.class(&NodeId::from(NODE)),
         koidrive_engine::classify::Class::Local
     );
 }
@@ -122,15 +124,15 @@ fn an_edit_the_user_made_before_a_recovered_download_stays_an_edit() {
     edited.shape.content = Some(disk_content(&folder.root.join("report.txt")));
     batch(&mut running, |trees| trees.set_local(NODE.into(), edited));
     assert_eq!(
-        running.engine.trees.class(NODE),
+        running.engine.trees.class(&NodeId::from(NODE)),
         koidrive_engine::classify::Class::Concurrent
     );
     drop((pending, running));
     let running = folder.start(no_hook()).unwrap();
     assert!(
-        running.engine.trees.edited(NODE),
+        running.engine.trees.edited(&NodeId::from(NODE)),
         "recovery hid the observed user edit: {:?}",
-        running.engine.trees.class(NODE)
+        running.engine.trees.class(&NodeId::from(NODE))
     );
 }
 
@@ -168,12 +170,12 @@ fn a_same_byte_save_before_a_removal_does_not_delete_the_restored_file() {
         .observed(fresh, &mut running.engine, &mut running.store)
         .unwrap();
     assert!(koidrive_engine::tree::same(
-        running.engine.trees.local().live(NODE),
-        running.engine.trees.synced().live(NODE)
+        running.engine.trees.local().live(&NodeId::from(NODE)),
+        running.engine.trees.synced().live(&NodeId::from(NODE))
     ));
     assert_ne!(
-        running.engine.trees.local().live(NODE),
-        running.engine.trees.synced().live(NODE)
+        running.engine.trees.local().live(&NodeId::from(NODE)),
+        running.engine.trees.synced().live(&NodeId::from(NODE))
     );
     let pending = running
         .disk
@@ -257,7 +259,7 @@ impl Folder {
                 let mut dirty = BTreeSet::new();
                 for node in remote {
                     tx.put_remote_node(node)?;
-                    dirty.insert(node.node_id.clone());
+                    dirty.insert(node.node_id.clone().into());
                 }
                 for (id, parent, path) in held {
                     let shape = disk_shape(&self.root, parent, path);
@@ -349,7 +351,7 @@ impl Pending {
     }
 }
 
-fn one(settled: Vec<(String, Settled)>) -> Settled {
+fn one(settled: Vec<(NodeId, Settled)>) -> Settled {
     match <[_; 1]>::try_from(settled) {
         Ok([(_, settled)]) => settled,
         Err(settled) => panic!("a batch of {} effects: {settled:?}", settled.len()),
@@ -361,7 +363,7 @@ impl Running {
         self.step_batch(server).map(one)
     }
 
-    fn step_batch(&mut self, server: &Server) -> Option<Vec<(String, Settled)>> {
+    fn step_batch(&mut self, server: &Server) -> Option<Vec<(NodeId, Settled)>> {
         let pending = self.disk.next(&mut self.engine, &mut self.store).unwrap()?;
         let staged = ready(pending.stage(server)).unwrap();
         Some(
@@ -372,7 +374,7 @@ impl Running {
     }
 
     fn local(&self, id: &str) -> Option<&LocalNode> {
-        self.engine.trees.local().get(id)
+        self.engine.trees.local().get(&NodeId::from(id))
     }
 }
 
@@ -702,7 +704,7 @@ const SCENARIOS: [Scenario; 6] = [
         displaces: Some(SYNCED),
         done_from: Cut::Step(Step::Quarantined),
         refuse: Some(|trees| {
-            let mut renamed = trees.local().get(NODE).unwrap().clone();
+            let mut renamed = trees.local().get(&NodeId::from(NODE)).unwrap().clone();
             renamed.shape.name = "renamed.txt".into();
             trees.set_local(NODE.into(), renamed);
             trees.set_local(OTHER.into(), other(SPACE, "report.txt", Kind::File));
@@ -778,7 +780,7 @@ fn cuts(scenario: &Scenario) -> Vec<Cut> {
 fn assert_done(scenario: &Scenario, folder: &Folder, running: &Running, context: &str) {
     assert!(running.engine.effects.in_flight().is_empty(), "{context}");
     assert!(running.engine.effects.blocked().is_empty(), "{context}");
-    let remote = running.engine.trees.remote().live(NODE);
+    let remote = running.engine.trees.remote().live(&NodeId::from(NODE));
     let local = running.local(NODE).map(|node| &node.shape);
     assert!(
         koidrive_engine::tree::same(local, remote),
@@ -786,11 +788,11 @@ fn assert_done(scenario: &Scenario, folder: &Folder, running: &Running, context:
     );
     // The acknowledgement settles the trees in its own transaction. With S left behind, the node's next change
     // would count as concurrent.
-    let synced = running.engine.trees.synced().get(NODE);
+    let synced = running.engine.trees.synced().get(&NodeId::from(NODE));
     assert_eq!(synced, local, "{context}: S");
     let (_, stored) = folder.open();
     assert_eq!(
-        stored.trees.synced().get(NODE),
+        stored.trees.synced().get(&NodeId::from(NODE)),
         local,
         "{context}: S in the store"
     );
@@ -919,9 +921,17 @@ fn a_replaced_file_the_user_changed_before_the_start_leaves_s() {
         );
         change(&folder.root.join("report.txt"));
         let running = folder.start(no_hook()).unwrap();
-        assert_eq!(running.engine.trees.synced().get(NODE), None, "{cut:?}");
+        assert_eq!(
+            running.engine.trees.synced().get(&NodeId::from(NODE)),
+            None,
+            "{cut:?}"
+        );
         let (_, stored) = folder.open();
-        assert_eq!(stored.trees.synced().get(NODE), None, "{cut:?}");
+        assert_eq!(
+            stored.trees.synced().get(&NodeId::from(NODE)),
+            None,
+            "{cut:?}"
+        );
         assert!(trashed(&folder, SYNCED), "{cut:?}");
     }
 }
@@ -939,7 +949,7 @@ fn a_name_the_user_takes_while_its_replaced_file_is_in_quarantine_leaves_s() {
     }));
     let mut running = folder.start(hook).unwrap();
     assert!(matches!(running.step(&server), Some(Settled::Failed(_))));
-    assert_eq!(running.engine.trees.synced().get(NODE), None);
+    assert_eq!(running.engine.trees.synced().get(&NodeId::from(NODE)), None);
     assert!(trashed(&folder, SYNCED));
 }
 
@@ -1066,7 +1076,7 @@ fn refuse_and_finish(scenario: &Scenario, refuse: fn(&mut Trees), cut: Option<Cu
     );
 
     batch(&mut running, |trees| {
-        let held: Vec<String> = trees.local().iter().map(|(id, _)| id.clone()).collect();
+        let held: Vec<NodeId> = trees.local().iter().map(|(id, _)| id.clone()).collect();
         for id in held {
             trees.remove_local(&id);
         }
@@ -1441,7 +1451,11 @@ fn an_effect_that_met_a_taken_name_or_a_changed_file_stays_blocked() {
         drop((running, pending));
         let mut running = folder.start(no_hook()).unwrap();
         assert!(
-            running.engine.effects.blocked().contains_key(NODE),
+            running
+                .engine
+                .effects
+                .blocked()
+                .contains_key(&NodeId::from(NODE)),
             "{disturb}"
         );
         assert_eq!(running.step(&server), None, "{disturb}");
@@ -1502,13 +1516,13 @@ fn a_remote_edit_never_replaces_a_file_whose_read_was_deferred() {
         .commits
         .build(&mut engine.trees, &mut engine.ids, 1, "history", "me", 2);
     let edit = disk_content(&report);
-    let at_report: Vec<(&String, &LocalNode)> = (running.engine.trees.local().iter())
+    let at_report: Vec<(&NodeId, &LocalNode)> = (running.engine.trees.local().iter())
         .filter(|(_, node)| node.shape.name == "report.txt")
         .collect();
     assert!(
         matches!(
             at_report.as_slice(),
-            [(id, node)] if id.as_str() != NODE
+            [(id, node)] if **id != NODE
                 && node.shape.content.as_ref().map(|content| &content.manifest_digest)
                     == Some(&edit.manifest_digest)
         ),
@@ -1567,7 +1581,10 @@ fn a_file_created_under_a_replaced_folder_is_read_at_once_and_keeps_its_node() {
         .disk
         .observed(first, &mut running.engine, &mut running.store)
         .unwrap();
-    assert_eq!(running.engine.path_of(NODE), Some(PathBuf::from("d/x")));
+    assert_eq!(
+        running.engine.path_of(&NodeId::from(NODE)),
+        Some(PathBuf::from("d/x"))
+    );
 }
 
 /// The user renames a synced file, which has the bytes of a download that stopped before it touched the disk, onto
@@ -1601,7 +1618,13 @@ fn a_restart_does_not_take_a_file_that_l_holds_as_another_node_for_a_download() 
     let running = folder.start(no_hook()).unwrap();
     let held = running.local(OTHER).unwrap().identity;
     assert_ne!(running.local(NODE).map(|node| node.identity), Some(held));
-    assert!(running.engine.effects.blocked().contains_key(NODE));
+    assert!(
+        running
+            .engine
+            .effects
+            .blocked()
+            .contains_key(&NodeId::from(NODE))
+    );
     assert_eq!(fs::read(folder.root.join("a.txt")).unwrap(), REMOTE);
 }
 
@@ -1627,7 +1650,7 @@ fn a_restart_does_not_take_a_renamed_entry_for_removed() {
             .expect("the removal");
         fs::rename(&from, &to).unwrap();
         batch(&mut running, |trees| {
-            let mut renamed = trees.local().get(NODE).unwrap().clone();
+            let mut renamed = trees.local().get(&NodeId::from(NODE)).unwrap().clone();
             renamed.shape.name = "notes".into();
             trees.set_local(NODE.into(), renamed);
         });
@@ -1637,7 +1660,11 @@ fn a_restart_does_not_take_a_renamed_entry_for_removed() {
         let name = running.local(NODE).map(|node| node.shape.name.as_str());
         assert_eq!(name, Some("notes"), "folder: {folder_kind}");
         assert!(
-            running.engine.effects.blocked().contains_key(NODE),
+            running
+                .engine
+                .effects
+                .blocked()
+                .contains_key(&NodeId::from(NODE)),
             "folder: {folder_kind}"
         );
         assert!(to.exists(), "folder: {folder_kind}");
@@ -1866,7 +1893,10 @@ fn a_stale_batch_does_not_undo_an_effect_and_the_rescan_reports_its_result() {
     assert_eq!(running.local(NODE), Some(&written));
     drop(running);
     let (_, engine) = folder.open();
-    assert_eq!(engine.trees.local().get(NODE), Some(&written));
+    assert_eq!(
+        engine.trees.local().get(&NodeId::from(NODE)),
+        Some(&written)
+    );
 }
 
 #[test]
@@ -1959,7 +1989,13 @@ fn a_corrupted_download_fails_the_effect_and_writes_nothing() {
     assert!(!folder.root.join("report.txt").exists());
     assert_eq!(names(&folder, STAGING_DIR), Vec::<String>::new());
     assert_eq!(folder.marker(), 1);
-    assert!(running.engine.effects.blocked().contains_key(NODE));
+    assert!(
+        running
+            .engine
+            .effects
+            .blocked()
+            .contains_key(&NodeId::from(NODE))
+    );
     assert_eq!(running.step(&server), None);
 }
 
@@ -2282,7 +2318,13 @@ fn a_parked_folder_removal_that_an_entry_left_first_stays_stuck_without_holding_
         one(settled),
         Settled::Stuck("an entry left the folder before it was removed".into())
     );
-    assert!(running.engine.effects.blocked().contains_key(NODE));
+    assert!(
+        running
+            .engine
+            .effects
+            .blocked()
+            .contains_key(&NodeId::from(NODE))
+    );
     assert!(!running.disk.awaits_scan());
 }
 
@@ -2431,7 +2473,7 @@ fn a_removal_dropped_with_a_stale_batch_reaches_l_after_the_rescan() {
     assert_eq!(running.local(NODE), None);
     drop(running);
     let (_, engine) = folder.open();
-    assert_eq!(engine.trees.local().get(NODE), None);
+    assert_eq!(engine.trees.local().get(&NodeId::from(NODE)), None);
 }
 
 #[test]
@@ -2454,7 +2496,7 @@ fn a_reset_built_from_an_older_l_repeats_a_change_harmlessly() {
         .observed(removal, &mut running.engine, &mut running.store)
         .unwrap();
     assert_eq!(running.local(NODE), None);
-    let local: Vec<(String, LocalNode)> = running
+    let local: Vec<(NodeId, LocalNode)> = running
         .engine
         .trees
         .local()
@@ -2470,7 +2512,7 @@ fn a_reset_built_from_an_older_l_repeats_a_change_harmlessly() {
         .disk
         .observed(repeated, &mut running.engine, &mut running.store)
         .unwrap();
-    let after: Vec<(String, LocalNode)> = running
+    let after: Vec<(NodeId, LocalNode)> = running
         .engine
         .trees
         .local()
@@ -2559,7 +2601,7 @@ fn l_resets_to_the_kinds_and_identities_the_scan_saw() {
     assert_eq!(resets[0].known, known(""));
     assert_eq!(resets[1].known, known("docs"));
 
-    let held = |running: &Running| -> Vec<(String, LocalNode)> {
+    let held = |running: &Running| -> Vec<(NodeId, LocalNode)> {
         let local = running.engine.trees.local();
         local
             .iter()
@@ -2661,7 +2703,13 @@ fn a_file_moved_into_an_ignored_folder_keeps_its_entry_in_l() {
         .observed(moved, &mut running.engine, &mut running.store)
         .unwrap();
     assert_eq!(running.local(NODE), Some(&synced), "L has no place for it");
-    assert!(running.engine.trees.ignored_local().contains(NODE));
+    assert!(
+        running
+            .engine
+            .trees
+            .ignored_local()
+            .contains(&NodeId::from(NODE))
+    );
     let planned = running.disk.next(&mut running.engine, &mut running.store);
     assert!(planned.unwrap().is_none());
 }
@@ -2753,7 +2801,7 @@ fn a_removal_counts_against_the_files_s_holds_after_it() {
     fs::write(&path, b"temporary user edit").unwrap();
     let edited = disk_content(&path);
     batch(&mut running, |trees| {
-        let mut local = trees.local().get(NODE).unwrap().clone();
+        let mut local = trees.local().get(&NodeId::from(NODE)).unwrap().clone();
         local.shape.content = Some(edited);
         trees.set_local(NODE.into(), local);
     });
@@ -2812,7 +2860,13 @@ fn a_parked_fork_whose_name_is_taken_is_uploaded_from_the_parked_directory() {
     let mut running = folder.start(no_hook()).unwrap();
     let parked = folder.private("parked");
     fs::create_dir_all(&parked).unwrap();
-    let entry = parked.join(running.engine.trees.parked_name(fork));
+    let entry = parked.join(
+        running
+            .engine
+            .trees
+            .parked_name(&NodeId::from(fork))
+            .to_string(),
+    );
     fs::write(&entry, b"the person's own c.txt").unwrap();
     let content = disk_content(&entry);
     let id = koidrive_fs::id_of(fs::File::open(&entry).unwrap().as_fd()).unwrap();
@@ -2899,19 +2953,19 @@ fn assert_all_done(folder: &Folder, running: &Running, context: &str) {
     assert!(running.engine.effects.blocked().is_empty(), "{context}");
     let (_, stored) = folder.open();
     for node in BATCHED {
-        let remote = running.engine.trees.remote().live(node);
+        let remote = running.engine.trees.remote().live(&NodeId::from(node));
         let local = running.local(node).map(|node| &node.shape);
         assert!(
             koidrive_engine::tree::same(local, remote),
             "{context}: {node}: L {local:?}, R {remote:?}"
         );
         assert_eq!(
-            running.engine.trees.synced().get(node),
+            running.engine.trees.synced().get(&NodeId::from(node)),
             local,
             "{context}: {node}: S"
         );
         assert_eq!(
-            stored.trees.synced().get(node),
+            stored.trees.synced().get(&NodeId::from(node)),
             local,
             "{context}: {node}: S in the store"
         );
@@ -2953,7 +3007,7 @@ fn independent_effects_are_applied_in_one_section_and_acknowledged_in_one_transa
 
     let settled = running.step_batch(&server).expect("a batch");
 
-    let mut nodes: Vec<&str> = settled.iter().map(|(node, _)| node.as_str()).collect();
+    let mut nodes: Vec<String> = settled.iter().map(|(node, _)| node.to_string()).collect();
     nodes.sort();
     assert_eq!(nodes, BATCHED);
     assert!(
@@ -3145,7 +3199,13 @@ fn a_chunk_the_server_lost_fails_only_the_writes_of_the_batch_that_list_it() {
     assert_eq!(fs::read(folder.root.join("c.txt")).unwrap(), MOVED);
     assert!(!folder.root.join("b.txt").exists());
     assert_eq!(names(&folder, STAGING_DIR), Vec::<String>::new());
-    assert!(running.engine.effects.blocked().contains_key(lost_node));
+    assert!(
+        running
+            .engine
+            .effects
+            .blocked()
+            .contains_key(&NodeId::from(lost_node))
+    );
 }
 
 #[test]
@@ -3251,7 +3311,13 @@ fn a_chunk_the_server_reports_missing_fails_only_the_writes_of_the_batch_that_li
     assert_eq!(fs::read(folder.root.join("c.txt")).unwrap(), MOVED);
     assert!(!folder.root.join("b.txt").exists());
     assert_eq!(names(&folder, STAGING_DIR), Vec::<String>::new());
-    assert!(running.engine.effects.blocked().contains_key(missing_node));
+    assert!(
+        running
+            .engine
+            .effects
+            .blocked()
+            .contains_key(&NodeId::from(missing_node))
+    );
 }
 
 #[test]
@@ -3279,7 +3345,7 @@ fn a_path_an_effect_changed_after_the_scan_read_it_is_not_listed_from_that_scan(
             koidrive_engine::ignore::Source::Koiignore,
             None,
         );
-        assert!(running.engine.trees.unobserved(NODE));
+        assert!(running.engine.trees.unobserved(&NodeId::from(NODE)));
 
         if !stale {
             batch.stamp = running.disk.sections().stamp();
@@ -3291,7 +3357,7 @@ fn a_path_an_effect_changed_after_the_scan_read_it_is_not_listed_from_that_scan(
             .observed(batch, &mut running.engine, &mut running.store)
             .unwrap();
         assert_eq!(
-            running.engine.trees.unobserved(NODE),
+            running.engine.trees.unobserved(&NodeId::from(NODE)),
             stale,
             "a scan of the root that began before the effect wrote report.txt saw another entry there"
         );

@@ -4,6 +4,7 @@ use std::io;
 use std::path::PathBuf;
 
 use koidrive_engine::effects::Effect as EngineEffect;
+use koidrive_engine::tree::NodeId;
 use koidrive_fs::Unresolved;
 use koidrive_net::{CallError, ChunkError};
 use koidrive_proto::v1::UploadReceipt;
@@ -21,7 +22,7 @@ use super::{
 };
 
 impl Folder {
-    pub(super) fn allowed(&self, node: &str) -> bool {
+    pub(super) fn allowed(&self, node: &NodeId) -> bool {
         (self.engine.effects.blocked().get(node))
             .is_none_or(|effect| self.disk.refuses(effect).is_none())
     }
@@ -34,7 +35,7 @@ impl Folder {
     pub fn retry(&mut self) -> Result<Vec<Work>, Stop> {
         self.retry_at = None;
         let now = clock::instant();
-        let (timed, refused): (Vec<String>, Vec<String>) = (self.engine.effects.blocked().keys())
+        let (timed, refused): (Vec<NodeId>, Vec<NodeId>) = (self.engine.effects.blocked().keys())
             .filter(|node| !self.stuck_effects.contains(*node))
             .filter(|node| (self.denied.get(*node)).is_none_or(|denied| denied.due <= now))
             .cloned()
@@ -56,7 +57,7 @@ impl Folder {
             );
         }
         let problems = self.engine.commits.problems();
-        let due: Vec<String> = (self.unreadable.iter())
+        let due: Vec<NodeId> = (self.unreadable.iter())
             .filter(|(node, unreadable)| {
                 problems.contains(*node)
                     && (unreadable.left_out.as_ref()).is_some_and(|left_out| left_out.due <= now)
@@ -93,7 +94,7 @@ impl Folder {
         Ok(work)
     }
 
-    pub(super) fn let_back_in(&mut self, nodes: &[String]) -> Result<(), Stop> {
+    pub(super) fn let_back_in(&mut self, nodes: &[NodeId]) -> Result<(), Stop> {
         if nodes.is_empty() {
             return Ok(());
         }
@@ -147,7 +148,8 @@ impl Folder {
         failures::transfer_failed(&error, failures::Failure::Upload);
         let disposition = match &error {
             ChunkError::SourceChanged { hash } | ChunkError::Io { hash, .. } => {
-                let (node, path) = sources.get(hash).cloned().unwrap_or_default();
+                let (node, path) =
+                    (sources.get(hash).cloned()).unwrap_or_else(|| (NodeId::from(""), None));
                 self.unreadable(node, path, &error, &mut work)?;
                 return Ok(work);
             }
@@ -199,7 +201,7 @@ impl Folder {
 
     fn unreadable(
         &mut self,
-        node: String,
+        node: NodeId,
         path: Option<PathBuf>,
         error: &ChunkError,
         work: &mut Vec<Work>,
@@ -288,7 +290,7 @@ impl Folder {
         let remote = self.engine.trees.remote();
         let writes = (self.engine.effects.in_flight().iter())
             .filter(|record| matches!(record.effect, EngineEffect::WriteFile { .. }))
-            .filter_map(|record| Some((record.node.as_str(), remote.path(&record.node)?)));
+            .filter_map(|record| Some((&record.node, remote.path(&record.node)?)));
         pending.credit = Credit::download(&self.progress, writes);
         if self.timing.is_on() {
             let at = Time::now();

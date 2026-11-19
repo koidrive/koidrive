@@ -7,15 +7,15 @@ use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::Commits;
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::state::CommitsState;
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
 use koidrive_proto::v1::{ChunkRef, CommitResult, OpResult, op, op_result};
 
 const ROOT: &str = "01a1eab7-d941-7d6a-9e0d-576a24408e65";
 const NOW: u64 = 1_794_268_740_000;
 const PACKAGES: usize = 600;
 const TARGET: u64 = 600;
-const FIRST_UPLOAD_CEILING: u64 = 2_950;
-const RESTART_CEILING: u64 = 3_150;
+const FIRST_UPLOAD_CEILING: u64 = 2_330;
+const RESTART_CEILING: u64 = 2_550;
 
 struct Live;
 
@@ -120,7 +120,7 @@ fn content(n: usize) -> Content {
 
 fn shape(entry: &Entry, n: usize) -> Shape {
     Shape {
-        parent: entry.parent.clone(),
+        parent: NodeId::from(&entry.parent),
         name: entry.name.clone(),
         kind: entry.kind,
         content: (entry.kind == Kind::File).then(|| content(n)),
@@ -144,7 +144,7 @@ fn first_upload() -> (Trees, usize) {
             left_out_when_placed: false,
             content_from_server: false,
         };
-        trees.set_local(entry.id.clone(), local);
+        trees.set_local(NodeId::from(&entry.id), local);
     }
     trees.settle(&Default::default());
     let mut commits = Commits::from_state(CommitsState::default()).unwrap();
@@ -159,7 +159,7 @@ fn first_upload() -> (Trees, usize) {
                 op::Op::CreateDir(create) => (
                     create.node_id.clone(),
                     Shape {
-                        parent: create.parent_id.clone(),
+                        parent: NodeId::from(&create.parent_id),
                         name: create.name.clone(),
                         kind: Kind::Dir,
                         content: None,
@@ -168,7 +168,7 @@ fn first_upload() -> (Trees, usize) {
                 op::Op::CreateFile(create) => (
                     create.node_id.clone(),
                     Shape {
-                        parent: create.parent_id.clone(),
+                        parent: NodeId::from(&create.parent_id),
                         name: create.name.clone(),
                         kind: Kind::File,
                         content: create.content.clone(),
@@ -193,7 +193,7 @@ fn first_upload() -> (Trees, usize) {
                 pending_for: None,
                 pending_by: None,
             };
-            trees.set_remote_made_here(id, node);
+            trees.set_remote_made_here(NodeId::from(id), node);
         }
         let applied = OpResult {
             code: op_result::Code::Applied as i32,

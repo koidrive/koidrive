@@ -26,7 +26,7 @@ async fn a_pause_while_a_folder_loads_its_store_stops_it_at_once_and_leaves_the_
     linked(&paths, &root, "d1");
     let store = paths.store(SPACE).unwrap();
     let node = "0190f0a0-0000-7000-8000-0000000000aa".to_owned();
-    let intent = RestoreIntent::from_trash(node, None, None).unwrap();
+    let intent = RestoreIntent::from_trash(node.into(), None, None).unwrap();
     Store::open(&store)
         .unwrap()
         .transaction(|tx| tx.request_restore("0190f0a0-0000-7000-8000-0000000000bb", &intent))

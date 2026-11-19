@@ -43,7 +43,7 @@ impl Tx<'_> {
             ),
             params![
                 id,
-                intent.node(),
+                intent.op().node_id,
                 intent.version_id(),
                 intent.parent(),
                 intent.name()
@@ -120,7 +120,7 @@ impl Tx<'_> {
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id FROM node_sets WHERE node_set = 'problems'")?;
-        let nodes = stmt.query_map([], |row| row.get(0))?;
+        let nodes = stmt.query_map([], |row| row.get::<_, String>(0).map(NodeId::from))?;
         Ok(nodes.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -147,7 +147,7 @@ impl Tx<'_> {
                     name: text(7)?.unwrap_or_default(),
                 },
                 Some("copied") => Outcome::Copied {
-                    node: text(6)?.unwrap_or_default(),
+                    node: NodeId::from(text(6)?.unwrap_or_default()),
                     name: text(7)?.unwrap_or_default(),
                 },
                 Some("rejected") => {
@@ -186,7 +186,7 @@ impl Tx<'_> {
                 Outcome::Restored => ("restored", None, None, None),
                 Outcome::Renamed { name } => ("renamed", None, Some(name.as_str()), None),
                 Outcome::Copied { node, name } => {
-                    ("copied", Some(node.as_str()), Some(name.as_str()), None)
+                    ("copied", Some(node.to_string()), Some(name.as_str()), None)
                 }
                 Outcome::Rejected(rejection) => ("rejected", None, None, Some(rejection.reason())),
                 Outcome::DoesNotFit => ("does_not_fit", None, None, None),
@@ -194,11 +194,11 @@ impl Tx<'_> {
             let outcome = (Some(position), Some(outcome), node, name, reason);
             (&ended.id, &ended.intent, outcome)
         });
-        let queued = queued.iter().map(|(id, intent)| (id, intent, none));
+        let queued = queued.iter().map(|(id, intent)| (id, intent, none.clone()));
         for (id, intent, (position, outcome, node, name, reason)) in queued.chain(ended) {
             stmt.execute(params![
                 id,
-                intent.node(),
+                intent.op().node_id,
                 intent.version_id(),
                 intent.parent(),
                 intent.name(),

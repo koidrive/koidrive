@@ -28,7 +28,10 @@ fn attack_restore_of_the_kept_folder_from_the_trash_on_another_device() {
     let ignored = [".env", "node_modules/pkg/index.js"];
     let (mut remote, site_a, mut a, site, mut b, old) =
         deleted_with_ignored_entries(&["README.md"], &ignored);
-    ask(&site_a, &RestoreIntent::from_trash(old.clone(), None, None).unwrap());
+    ask(
+        &site_a,
+        &RestoreIntent::from_trash(NodeId::from(&old), None, None).unwrap(),
+    );
     let step = a.folder.requested();
     a.take(step).unwrap();
     a.run(&mut remote);
@@ -952,7 +955,10 @@ fn probe_a_restore_of_the_deleted_folder_brings_its_files_back_into_the_kept_fol
     let (mut remote, site_a, mut a, site, mut b, old) =
         deleted_with_ignored_entries(&["README.md"], &ignored);
 
-    let id = ask(&site_a, &RestoreIntent::from_trash(old.clone(), None, None).unwrap());
+    let id = ask(
+        &site_a,
+        &RestoreIntent::from_trash(NodeId::from(&old), None, None).unwrap(),
+    );
     let step = a.folder.requested();
     a.take(step).unwrap();
     a.run(&mut remote);

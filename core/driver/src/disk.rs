@@ -660,7 +660,7 @@ impl Disk {
         staged: Staged,
         engine: &mut Engine,
         store: &mut Store,
-    ) -> Result<Vec<(String, Settled)>, Stop> {
+    ) -> Result<Vec<(NodeId, Settled)>, Stop> {
         let Staged { mut effects } = staged;
         let records = effects.iter().map(|(planned, _)| &planned.record);
         if !records.eq(engine.effects.in_flight()) {
@@ -915,9 +915,9 @@ impl Disk {
             .filter_map(|id| {
                 let (at, expected) = self.place_of(trees, id)?;
                 match self.space.mark_of(&at, expected) {
-                    Ok(node) => Some((id.clone(), node?)),
+                    Ok(node) => Some((id.clone(), NodeId::from(node?))),
                     Err(err) => {
-                        tracing::warn!(space_id = self.space_id, id, %err, "could not read a node mark");
+                        tracing::warn!(space_id = self.space_id, %id, %err, "could not read a node mark");
                         None
                     }
                 }
@@ -930,13 +930,13 @@ impl Disk {
             let Some((at, expected)) = self.place_of(trees, &id) else {
                 continue;
             };
-            if let Err(err) = self.space.mark(&at, expected, &node) {
-                tracing::warn!(space_id = self.space_id, node, %err, "could not mark an entry");
+            if let Err(err) = self.space.mark(&at, expected, &node.to_string()) {
+                tracing::warn!(space_id = self.space_id, %node, %err, "could not mark an entry");
             }
         }
     }
 
-    fn place_of(&self, trees: &Trees, id: &str) -> Option<(Location, FileId)> {
+    fn place_of(&self, trees: &Trees, id: &NodeId) -> Option<(Location, FileId)> {
         let at = location(&location_of(trees, id)?).ok()?;
         Some((at, file_id(trees.local().get(id)?.identity)))
     }
@@ -968,9 +968,10 @@ impl Disk {
                 _ => continue,
             };
             let Some(content) = content else { continue };
-            let path = engine.path_of(node);
-            let at = location_of(&engine.trees, node).and_then(|at| location(&at).ok());
-            let identity = (engine.trees.local().get(node)).map(|held| file_id(held.identity));
+            let node = NodeId::from(node);
+            let path = engine.path_of(&node);
+            let at = location_of(&engine.trees, &node).and_then(|at| location(&at).ok());
+            let identity = (engine.trees.local().get(&node)).map(|held| file_id(held.identity));
             let mut offset = 0;
             for chunk in &content.chunks {
                 upload.sources.entry(chunk.hash.clone()).or_insert(Source {
@@ -1253,7 +1254,7 @@ pub(crate) fn relink_with_hook(
 }
 
 pub(crate) fn held_name(trees: &Trees, held: &OsStr, found: FileId) -> OsString {
-    let id = held.to_string_lossy();
+    let id = NodeId::from(&*held.to_string_lossy());
     let same = |node: &&LocalNode| {
         let identity = &node.identity;
         (identity.ino, identity.birth_ns) == (found.ino, found.birth_ns)
@@ -1297,7 +1298,7 @@ fn commit_token(token: Minted, store: &mut Store) -> Result<(), Stop> {
     Ok(())
 }
 
-pub(crate) type Sources = BTreeMap<Vec<u8>, (String, Option<PathBuf>)>;
+pub(crate) type Sources = BTreeMap<Vec<u8>, (NodeId, Option<PathBuf>)>;
 
 /// The chunks a commit adds to the server and where the bytes of each are in the folder.
 pub(crate) struct Upload {
@@ -1310,7 +1311,7 @@ pub(crate) struct Upload {
 }
 
 struct Source {
-    node: String,
+    node: NodeId,
     /// `None` when L no longer holds the node under the root.
     path: Option<PathBuf>,
     at: Option<Location>,
@@ -1946,10 +1947,12 @@ fn list_kept_folders(space: &Space, trees: &mut Trees) -> Result<bool, Stop> {
         .collect::<Result<Vec<_>, String>>();
         let base = match base {
             EngineBase::Root => Ok(Base::Root),
-            EngineBase::Parked { node, identity } => name(&node).map(|name| Base::Parked {
-                name,
-                id: file_id(identity),
-            }),
+            EngineBase::Parked { node, identity } => {
+                name(&node.to_string()).map(|name| Base::Parked {
+                    name,
+                    id: file_id(identity),
+                })
+            }
         };
         let (Ok(base), Ok(dirs)) = (base, dirs) else {
             continue;
@@ -2010,7 +2013,7 @@ fn confirmed(outcome: Outcome, record: &EffectRecord, engine: &Engine) -> Outcom
 /// content. `versions` keeps the current version of each node of the store's R once a write of the batch read them.
 fn version_of(
     tx: &Tx<'_>,
-    versions: &mut Option<HashMap<String, VersionInfo>>,
+    versions: &mut Option<HashMap<NodeId, VersionInfo>>,
     record: &EffectRecord,
 ) -> Result<Option<String>, Stop> {
     let EngineEffect::WriteFile { content, .. } = &record.effect else {
@@ -2021,7 +2024,7 @@ fn version_of(
     }
     if versions.is_none() {
         let current = (tx.remote_nodes()?.into_iter())
-            .filter_map(|node| Some((node.node_id, node.current?)))
+            .filter_map(|node| Some((NodeId::from(node.node_id), node.current?)))
             .collect();
         *versions = Some(current);
     }
@@ -2101,7 +2104,7 @@ fn translate(record: &EffectRecord) -> Result<(Effect, Expected), Stop> {
     let (action, contents) = action(&record.effect).map_err(bad)?;
     let effect = Effect {
         id: record.effect_id.clone(),
-        node: record.node.clone(),
+        node: record.node.to_string(),
         action,
     };
     Ok((effect, contents))
@@ -2165,7 +2168,7 @@ fn action(effect: &EngineEffect) -> Result<(Action, Expected), String> {
 
 fn location(location: &EngineLocation) -> Result<Location, String> {
     Ok(match location {
-        EngineLocation::Parked(node) => Location::Parked(name(node)?),
+        EngineLocation::Parked(node) => Location::Parked(name(&node.to_string())?),
         EngineLocation::At {
             base,
             dirs,
@@ -2174,7 +2177,7 @@ fn location(location: &EngineLocation) -> Result<Location, String> {
             base: match base {
                 EngineBase::Root => Base::Root,
                 EngineBase::Parked { node, identity } => Base::Parked {
-                    name: name(node)?,
+                    name: name(&node.to_string())?,
                     id: file_id(*identity),
                 },
             },

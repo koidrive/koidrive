@@ -335,7 +335,7 @@ impl Disk {
         Some(self.inos)
     }
 
-    pub fn mark(&mut self, at: &Location, ino: u128, node: &str) {
+    pub fn mark(&mut self, at: &Location, ino: u128, node: &NodeId) {
         if self.found(at).is_ok_and(|found| found == Some(ino)) {
             self.marked(ino, node);
         }
@@ -349,9 +349,9 @@ impl Disk {
         (mark.ino == ino).then(|| mark.node.clone())
     }
 
-    fn marked(&mut self, ino: u128, node: &str) {
+    fn marked(&mut self, ino: u128, node: &NodeId) {
         let mark = Mark {
-            node: node.to_owned(),
+            node: node.clone(),
             ino,
         };
         self.entries.get_mut(&ino).expect("an entry").mark = Some(mark);
@@ -677,13 +677,15 @@ impl Disk {
     /// is named after the node it is parked as.
     fn locate(&self, at: &Location) -> Result<(Place, String), Refused> {
         let (base, dirs, name) = match at {
-            Location::Parked(node) => return Ok((Place::Parked(node.clone()), node.clone())),
+            Location::Parked(node) => {
+                return Ok((Place::Parked(node.to_string()), node.to_string()));
+            }
             Location::At { base, dirs, name } => (base, dirs, name),
         };
         let mut place = match base {
             Base::Root => Place::Root,
             Base::Parked { node, identity } => {
-                let parked = self.children(&Place::Parked(node.clone())).next();
+                let parked = self.children(&Place::Parked(node.to_string())).next();
                 let ino = parked.filter(|ino| *ino == identity.ino);
                 Place::In(ino.ok_or(Refused::Moved)?)
             }

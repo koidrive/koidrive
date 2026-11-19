@@ -87,7 +87,7 @@ fn a_restore_of_an_earlier_version_rewrites_the_file_in_the_folder() {
     assert_eq!(a.run(&mut remote), ["upload", "send"]);
     let node = node_named(&a, "notes.txt");
     let request = ListVersions {
-        node_id: node.clone(),
+        node_id: node.to_string(),
         ..Default::default()
     };
     let versions = remote.space.list_versions(&request).unwrap().versions;
@@ -136,7 +136,7 @@ fn a_restore_asked_for_before_a_rewind_is_shown_by_its_file_and_answered_by_its_
     a.run(&mut remote);
     let node = node_named(&a, "draft.txt");
     let request = ListVersions {
-        node_id: node.clone(),
+        node_id: node.to_string(),
         ..Default::default()
     };
     let first = remote.space.list_versions(&request).unwrap().versions[1]
@@ -155,11 +155,11 @@ fn a_restore_asked_for_before_a_rewind_is_shown_by_its_file_and_answered_by_its_
             Some("notes.txt"),
         ),
         (
-            RestoreIntent::from_trash(unknown(), None, Some("gone.txt".into())).unwrap(),
+            RestoreIntent::from_trash(unknown().into(), None, Some("gone.txt".into())).unwrap(),
             Some("gone.txt"),
         ),
         (
-            RestoreIntent::from_trash(unknown(), None, None).unwrap(),
+            RestoreIntent::from_trash(unknown().into(), None, None).unwrap(),
             None,
         ),
     ];

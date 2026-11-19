@@ -27,12 +27,13 @@ impl Tx<'_> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let shape = Shape {
-                parent: row.get(2)?,
+                parent: NodeId::from(row.get::<_, String>(2)?),
                 name: row.get(3)?,
                 kind: kind(row.get(4)?)?,
                 content: decode(row.get(5)?)?,
             };
-            (shown.entry(row.get(0)?).or_default()).insert(row.get(1)?, shape);
+            (shown.entry(row.get(0)?).or_default())
+                .insert(NodeId::from(row.get::<_, String>(1)?), shape);
         }
         let mut stmt = self.0.prepare_cached(
             "SELECT question_id, asked_at_ms, kind, answer FROM open_questions ORDER BY position",
@@ -103,17 +104,23 @@ impl Tx<'_> {
                 question.answer.map(Answer::as_str),
             ])?;
             for (top, item) in &question.held {
-                items.execute(params![question.id, top, item.files])?;
+                items.execute(params![question.id, top.to_string(), item.files])?;
                 for (node, revisions) in &item.members {
                     let (content_rev, meta_rev) = split(revisions);
-                    members.execute(params![question.id, top, node, content_rev, meta_rev])?;
+                    members.execute(params![
+                        question.id,
+                        top.to_string(),
+                        node.to_string(),
+                        content_rev,
+                        meta_rev
+                    ])?;
                 }
             }
             for (node, shape) in &question.shown {
                 shapes.execute(params![
                     question.id,
-                    node,
-                    shape.parent,
+                    node.to_string(),
+                    shape.parent.to_string(),
                     shape.name,
                     node_kind(shape.kind),
                     shape.content.as_ref().map(Content::encode_to_vec),
@@ -134,7 +141,9 @@ impl Tx<'_> {
                 at_ms: row.get(1)?,
                 files: row.get(2)?,
             };
-            guard.ledger.insert(row.get(0)?, counted);
+            guard
+                .ledger
+                .insert(NodeId::from(row.get::<_, String>(0)?), counted);
         }
         let mut confirmed = self.held(
             "SELECT '', top_id, files FROM guard_confirmed",
@@ -157,7 +166,7 @@ impl Tx<'_> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let deletion = RemoteDeletion {
-                top: row.get(0)?,
+                top: NodeId::from(row.get::<_, String>(0)?),
                 trash: trash(row.get(1)?, row.get(2)?, row.get(3)?),
             };
             let counted = Counted {
@@ -172,7 +181,7 @@ impl Tx<'_> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             guard.dismissed.insert(RemoteDeletion {
-                top: row.get(0)?,
+                top: NodeId::from(row.get::<_, String>(0)?),
                 trash: trash(row.get(1)?, row.get(2)?, row.get(3)?),
             });
         }
@@ -187,7 +196,7 @@ impl Tx<'_> {
             remote,
             dismissed,
         } = changes;
-        self.write_map(
+        self.write_node_map(
             ledger,
             "DELETE FROM guard_ledger WHERE node_id = ?1",
             "INSERT OR REPLACE INTO guard_ledger (node_id, at_ms, files) VALUES (?1, ?2, ?3)",
@@ -207,15 +216,16 @@ impl Tx<'_> {
              VALUES (?1, ?2, ?3, ?4)",
         )?;
         for (top, item) in confirmed {
-            unlist.execute([top])?;
-            remove.execute([top])?;
+            let top = top.to_string();
+            unlist.execute([&top])?;
+            remove.execute([&top])?;
             let Some(item) = item else {
                 continue;
             };
             items.execute(params![top, item.files])?;
             for (node, revisions) in &item.members {
                 let (content_rev, meta_rev) = split(revisions);
-                members.execute(params![top, node, content_rev, meta_rev])?;
+                members.execute(params![top, node.to_string(), content_rev, meta_rev])?;
             }
         }
         if let Some(limits) = confirmed_limits {
@@ -238,7 +248,7 @@ impl Tx<'_> {
         )?;
         for (deletion, counted) in remote {
             let (known, group, seq) = split_trash(&deletion.trash);
-            let top = &deletion.top;
+            let top = deletion.top.to_string();
             match counted {
                 Some(counted) => put.execute(params![
                     top,
@@ -262,8 +272,8 @@ impl Tx<'_> {
         for (deletion, held) in dismissed {
             let (known, group, seq) = split_trash(&deletion.trash);
             match held {
-                true => put.execute(params![deletion.top, known, group, seq])?,
-                false => remove.execute(params![deletion.top, known, group, seq])?,
+                true => put.execute(params![deletion.top.to_string(), known, group, seq])?,
+                false => remove.execute(params![deletion.top.to_string(), known, group, seq])?,
             };
         }
         Ok(())
@@ -280,18 +290,20 @@ impl Tx<'_> {
             };
             held.entry(row.get(0)?)
                 .or_default()
-                .insert(row.get(1)?, item);
+                .insert(NodeId::from(row.get::<_, String>(1)?), item);
         }
         let mut stmt = self.0.prepare_cached(members)?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            let (owner, top): (String, NodeId) = (row.get(0)?, row.get(1)?);
+            let (owner, top): (String, NodeId) =
+                (row.get(0)?, NodeId::from(row.get::<_, String>(1)?));
             let item = (held.get_mut(&owner))
                 .and_then(|items| items.get_mut(&top))
                 .ok_or_else(|| {
                     Error::InvalidEngineState(format!("a held member of an unknown item {top:?}"))
                 })?;
-            item.members.insert(row.get(2)?, revisions(row)?);
+            item.members
+                .insert(NodeId::from(row.get::<_, String>(2)?), revisions(row)?);
         }
         Ok(held)
     }

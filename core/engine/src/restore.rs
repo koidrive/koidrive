@@ -53,9 +53,9 @@ impl RestoreIntent {
         name: Option<String>,
     ) -> Result<Self, Malformed> {
         Self::from_op(proto::Restore {
-            node_id: node,
+            node_id: node.to_string(),
             version_id: String::new(),
-            target_parent_id: parent.unwrap_or_default(),
+            target_parent_id: parent.map(String::from).unwrap_or_default(),
             name: name.unwrap_or_default(),
         })
     }
@@ -67,7 +67,7 @@ impl RestoreIntent {
             return Err(Malformed("version_id"));
         }
         Self::from_op(proto::Restore {
-            node_id: node,
+            node_id: node.to_string(),
             version_id,
             ..Default::default()
         })
@@ -99,8 +99,8 @@ impl RestoreIntent {
         &self.0
     }
 
-    pub fn node(&self) -> &str {
-        &self.0.node_id
+    pub fn node(&self) -> NodeId {
+        NodeId::from(&self.0.node_id)
     }
 
     /// The version to make current, or None for a restore from the trash.
@@ -123,7 +123,7 @@ impl RestoreIntent {
     /// planner sends nothing for a problem node, and a restore follows the changes of its node,
     /// so it is sent only once the problem is cleared.
     pub fn held_by(&self, problems: &BTreeSet<NodeId>) -> bool {
-        problems.contains(self.node())
+        problems.contains(&self.node())
     }
 }
 
@@ -159,7 +159,7 @@ impl Outcome {
                 name: result.name.clone(),
             },
             Ok(Code::ConflictCopy) => Self::Copied {
-                node: result.node_id.clone(),
+                node: NodeId::from(&result.node_id),
                 name: result.name.clone(),
             },
             Ok(Code::Rejected) => Self::Rejected(Rejection::from_reason(&result.reject_reason)),

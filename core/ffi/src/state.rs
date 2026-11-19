@@ -294,8 +294,10 @@ fn question(question: driver::Question) -> Option<Question> {
                     modified_at_ms: item.modified_at_ms?,
                 })
             };
-            let (Some(original), Some(copy)) = (side(&original.node_id), side(&copy.node_id))
-            else {
+            let (Some(original), Some(copy)) = (
+                side(&original.node_id.to_string()),
+                side(&copy.node_id.to_string()),
+            ) else {
                 tracing::warn!(
                     question_id = question.id,
                     "a conflict lacks the path, size or modification time of a file, so it is not shown"

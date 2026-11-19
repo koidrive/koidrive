@@ -1379,8 +1379,8 @@ mod tests {
         engine.observe(&retried, 0);
         let taken = (engine.trees.local().iter())
             .find(|(_, node)| node.shape.name == "zzz.txt")
-            .map(|(id, _)| id.as_str());
-        assert_eq!(taken, Some("lost"));
+            .map(|(id, _)| id.to_string());
+        assert_eq!(taken.as_deref(), Some("lost"));
     }
 
     #[test]

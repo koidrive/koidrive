@@ -231,7 +231,7 @@ fn an_unsent_edit_restores_while_l_holds_the_file_and_it_is_dirty() {
     let (mut trees, state) = unsent();
     trees.restore(state.clone()).unwrap();
     assert_eq!(trees.state(), state);
-    assert_eq!(trees.class("f"), Class::Local);
+    assert_eq!(trees.class(&"f".into()), Class::Local);
     let (mut trees, state) = unsent();
     let clean = TreesState {
         dirty: Default::default(),
@@ -239,7 +239,7 @@ fn an_unsent_edit_restores_while_l_holds_the_file_and_it_is_dirty() {
     };
     assert_eq!(trees.restore(clean), Err(StateError::NotDirty("f".into())));
     let (mut trees, state) = unsent();
-    trees.remove_local("f");
+    trees.remove_local(&"f".into());
     assert_eq!(
         trees.restore(state),
         Err(StateError::NotUnsentEdit("f".into()))
@@ -305,7 +305,7 @@ fn a_lost_create_restores_only_while_l_holds_the_node_and_r_does_not() {
 
 /// A restore of the trashed node `n`.
 fn restore(n: u128) -> RestoreIntent {
-    RestoreIntent::from_trash(uuid_v7(1, n), None, None).unwrap()
+    RestoreIntent::from_trash(uuid_v7(1, n).into(), None, None).unwrap()
 }
 
 /// A state with one restore in the commit in flight, one that waits and one that ended.
@@ -667,7 +667,7 @@ fn trees_restore_a_valid_state_and_refuse_each_broken_one() {
             "earlier records of a node R does not hold",
             trees(),
             broken(trees_state(), |state| {
-                let past = state.past_positions["a"].clone();
+                let past = state.past_positions[&"a".into()].clone();
                 state.past_positions.insert("gone".into(), past);
             }),
             StateError::NotPastPosition("gone".into()),
@@ -676,7 +676,7 @@ fn trees_restore_a_valid_state_and_refuse_each_broken_one() {
             "earlier positions of S of a node R does not hold",
             trees(),
             broken(trees_state(), |state| {
-                let past = state.synced_positions["a"].clone();
+                let past = state.synced_positions[&"a".into()].clone();
                 state.synced_positions.insert("gone".into(), past);
             }),
             StateError::NotSyncedPosition("gone".into()),
@@ -843,7 +843,7 @@ fn an_identity_without_a_birth_time_round_trips() {
     loaded.rules_scanned();
     assert_eq!(loaded, trees);
     assert_eq!(
-        loaded.local().get("u").map(|node| node.identity),
+        loaded.local().get(&"u".into()).map(|node| node.identity),
         Some(unknown)
     );
 

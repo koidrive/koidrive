@@ -43,11 +43,16 @@ fn ancestry_source_and_unsent_bases_survive_reopen_and_incremental_changes() {
     let mut store = Store::open(&path).unwrap();
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     let mut after = before.clone();
-    after.trees.content_provenance.get_mut("f").unwrap().local = None;
     after
         .trees
         .content_provenance
-        .get_mut("f")
+        .get_mut(&"f".into())
+        .unwrap()
+        .local = None;
+    after
+        .trees
+        .content_provenance
+        .get_mut(&"f".into())
         .unwrap()
         .edit_bases = vec!["new-base".into()];
     store

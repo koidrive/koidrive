@@ -18,7 +18,7 @@ upgrade_case!(kept_causes, |store| {
             tx.set_engine_state(&state)?;
             let stored = tx.engine_state()?.trees.kept_nodes;
             assert_eq!(stored.get(&report.node_id), Some(&Some(cause)));
-            assert_eq!(stored.get("left"), Some(&None));
+            assert_eq!(stored.get(&"left".into()), Some(&None));
             Ok::<_, koidrive_store::Error>(())
         })
         .unwrap();

@@ -293,7 +293,7 @@ fn give_up_claimed_ids(
                         !shapes_to_follow(trees, history, node, &entry.shape).is_empty()
                     })
             })
-            .map(|(local, _)| (local.clone(), ids.uuid_v7(now_ms)))
+            .map(|(local, _)| (local.clone(), NodeId::from(ids.uuid_v7(now_ms))))
             .collect();
         if more.is_empty() {
             return given_up;
@@ -430,10 +430,10 @@ fn folder_places(trees: &Trees, history: &History) -> BTreeSet<(NodeId, String)>
 /// Whether the entry of L `id` is, or is inside, an entry `is_entry` names. A store rollback's
 /// recovery does not find an entry by its node mark there, since the place a brought-back entry
 /// takes is not one the user gave it (design §6.4).
-pub fn at_or_under(trees: &Trees, id: &str, is_entry: impl Fn(&FileIdentity) -> bool) -> bool {
+pub fn at_or_under(trees: &Trees, id: &NodeId, is_entry: impl Fn(&FileIdentity) -> bool) -> bool {
     let mut at = id;
     for _ in 0..=trees.local().len() {
-        let Some(node) = (at != trees.local().root)
+        let Some(node) = (*at != trees.local().root)
             .then(|| trees.local().get(at))
             .flatten()
         else {
@@ -492,7 +492,7 @@ fn claims_to_follow(trees: &Trees, history: &History, marks: &Marks) -> BTreeMap
         .collect()
 }
 
-fn shapes_to_follow(trees: &Trees, history: &History, node: &str, entry: &Shape) -> Vec<Shape> {
+fn shapes_to_follow(trees: &Trees, history: &History, node: &NodeId, entry: &Shape) -> Vec<Shape> {
     let Some(remote) = (trees.remote().get(node))
         .filter(|remote| !remote.trashed && remote.shape.kind == entry.kind)
     else {
@@ -572,7 +572,7 @@ pub(crate) fn link(
     (linked, unfit)
 }
 
-pub(crate) fn equal(trees: &Trees, id: &str, remote_id: &str) -> bool {
+pub(crate) fn equal(trees: &Trees, id: &NodeId, remote_id: &NodeId) -> bool {
     let (Some(local), Some(remote)) = (trees.local().get(id), trees.remote().get(remote_id)) else {
         return false;
     };
@@ -664,11 +664,11 @@ pub(crate) fn trashed_there(trees: &Trees) -> impl Fn(&NodeId) -> bool + '_ {
     }
 }
 
-fn key_path<N: Node>(tree: &Tree<N>, id: &str) -> Option<Vec<String>> {
+fn key_path<N: Node>(tree: &Tree<N>, id: &NodeId) -> Option<Vec<String>> {
     let mut keys = Vec::new();
     let mut current = id;
     for _ in 0..=tree.len() {
-        if current == tree.root {
+        if *current == tree.root {
             keys.reverse();
             return Some(keys);
         }
@@ -748,7 +748,7 @@ pub(crate) fn ask(
     })
 }
 
-fn unsynced(trees: &Trees, top: &str) -> BTreeMap<NodeId, Shape> {
+fn unsynced(trees: &Trees, top: &NodeId) -> BTreeMap<NodeId, Shape> {
     let mut members = BTreeMap::new();
     let mut pending = vec![top.to_owned()];
     while let Some(id) = pending.pop() {
@@ -756,7 +756,7 @@ fn unsynced(trees: &Trees, top: &str) -> BTreeMap<NodeId, Shape> {
             continue;
         };
         let known = trees.acknowledged(&id).is_some() || trees.remote().get(&id).is_some();
-        if known || (id != top && trees.excluded(&id)) {
+        if known || (id != *top && trees.excluded(&id)) {
             continue;
         }
         pending.extend(trees.local_children(&id).cloned());
@@ -765,9 +765,9 @@ fn unsynced(trees: &Trees, top: &str) -> BTreeMap<NodeId, Shape> {
     members
 }
 
-fn holds_no_more(trees: &Trees, remote: &str, local: &str) -> bool {
+fn holds_no_more(trees: &Trees, remote: &NodeId, local: &NodeId) -> bool {
     (trees.remote().iter())
-        .filter(|(_, node)| !node.trashed && node.shape.parent == remote)
+        .filter(|(_, node)| !node.trashed && node.shape.parent == *remote)
         .all(|(remote_id, node)| {
             trees.local_children(local).any(|id| {
                 let Some(mine) = trees.local().get(id).map(|node| &node.shape) else {

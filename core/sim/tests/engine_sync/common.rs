@@ -22,7 +22,9 @@ use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
 
 use koidrive_engine::state::StateError;
 
-use koidrive_engine::tree::{FileIdentity, Kind, LocalNode, Names, RemoteNode, Shape, same};
+use koidrive_engine::tree::{
+    FileIdentity, Kind, LocalNode, Names, NodeId, RemoteNode, Shape, same,
+};
 
 use koidrive_proto::v1::{
     ChangeRecord, ChunkRef, Commit, Content, CreateDir, CreateFile, Delete, Error, ListVersions,
@@ -293,7 +295,9 @@ fn request_restore(
             (parent, NAMES[action.name].to_owned())
         });
         let (parent, name) = position.unzip();
-        node.map(|node| RestoreIntent::from_trash(node, parent, name))
+        node.map(|node| {
+            RestoreIntent::from_trash(NodeId::from(node), parent.map(NodeId::from), name)
+        })
     } else {
         let status = if action.text == 2 { 2 } else { 1 };
         target(&nodes_with(space, status, Some(2))).map(|node| {
@@ -302,7 +306,7 @@ fn request_restore(
                 true => ids.uuid_v7(NOW as u64),
                 false => versions[action.name % versions.len()].version_id.clone(),
             };
-            RestoreIntent::version(node, version)
+            RestoreIntent::version(NodeId::from(node), version)
         })
     };
     let Some(intent) = intent else {
@@ -321,7 +325,7 @@ fn outcome_of(result: &OpResult) -> Outcome {
             name: result.name.clone(),
         },
         Ok(Code::ConflictCopy) => Outcome::Copied {
-            node: result.node_id.clone(),
+            node: NodeId::from(&result.node_id),
             name: result.name.clone(),
         },
         _ => Outcome::Rejected(Rejection::from_reason(&result.reject_reason)),
@@ -438,12 +442,12 @@ fn restored(
         let from_trash =
             matches!(&commit.ops[*index].op, Some(op::Op::Restore(r)) if r.version_id.is_empty());
         for (node, digest) in files {
-            let node = if copied { &result.node_id } else { node };
-            let on_disk = (trees.local().get(node)).and_then(|n| n.shape.content.as_ref());
+            let node = NodeId::from(if copied { &result.node_id } else { node });
+            let on_disk = (trees.local().get(&node)).and_then(|n| n.shape.content.as_ref());
             let edited = from_trash
                 && on_disk.is_some_and(|c| c.manifest_digest != *digest)
-                && acknowledged(trees, node).as_ref() == Some(digest);
-            if after.contains(&(node.clone(), digest.clone())) && !edited {
+                && acknowledged(trees, &node).as_ref() == Some(digest);
+            if after.contains(&(node.to_string(), digest.clone())) && !edited {
                 current.push(digest.clone());
             }
         }
@@ -487,7 +491,9 @@ fn apply(trees: &mut Trees, changes: &[ChangeRecord]) {
                 let (id, node) = RemoteNode::from_state(state).unwrap();
                 trees.set_remote(id, node);
             }
-            Some(change_record::Change::Purged(purged)) => trees.remove_remote(&purged.node_id),
+            Some(change_record::Change::Purged(purged)) => {
+                trees.remove_remote(&NodeId::from(&purged.node_id))
+            }
             _ => {}
         }
     }
@@ -542,7 +548,7 @@ impl Rules {
 }
 
 /// The names from the root to `id` in L.
-fn local_path(trees: &Trees, id: &str) -> Vec<String> {
+fn local_path(trees: &Trees, id: &NodeId) -> Vec<String> {
     let mut names = Vec::new();
     let mut current = id;
     while let Some(node) = trees.local().get(current) {
@@ -560,11 +566,11 @@ struct Device {
     /// Whether the folders the user creates take names nothing else has, so none is merged.
     fresh_dir_names: bool,
     rules: Rules,
-    touched: BTreeSet<String>,
-    acted: BTreeSet<String>,
-    removed_from: BTreeMap<String, String>,
-    kept_back: BTreeSet<String>,
-    relocated: BTreeMap<String, Relocation>,
+    touched: BTreeSet<NodeId>,
+    acted: BTreeSet<NodeId>,
+    removed_from: BTreeMap<NodeId, NodeId>,
+    kept_back: BTreeSet<NodeId>,
+    relocated: BTreeMap<NodeId, Relocation>,
 }
 
 struct Relocation {
@@ -575,7 +581,7 @@ struct Relocation {
 impl Device {
     fn relocate(
         &mut self,
-        id: &str,
+        id: &NodeId,
         before: &koidrive_engine::tree::Shape,
         after: &koidrive_engine::tree::Shape,
     ) {
@@ -594,14 +600,15 @@ impl Device {
             let Some(change_record::Change::Node(state)) = &change.change else {
                 continue;
             };
-            let Some(remote) = self.trees.remote().live(&state.node_id).cloned() else {
+            let node = NodeId::from(&state.node_id);
+            let Some(remote) = self.trees.remote().live(&node).cloned() else {
                 continue;
             };
-            let Some(moved) = self.relocated.get_mut(&state.node_id) else {
+            let Some(moved) = self.relocated.get_mut(&node) else {
                 continue;
             };
             if remote.same_position(&moved.to) {
-                self.relocated.remove(&state.node_id);
+                self.relocated.remove(&node);
             } else if answered {
                 moved.from = remote;
             }
@@ -625,7 +632,7 @@ impl Device {
 
     fn rescan(&mut self) {
         let local = self.trees.local();
-        let folders: Vec<String> = std::iter::once(local.root.clone())
+        let folders: Vec<NodeId> = std::iter::once(local.root.clone())
             .chain(
                 (local.iter())
                     .filter(|(id, node)| node.shape.kind == Kind::Dir && visible(&self.trees, id))
@@ -636,7 +643,7 @@ impl Device {
     }
 
     fn list_moved(&mut self) {
-        let moved: Vec<String> = (self.trees.take_relist().into_iter())
+        let moved: Vec<NodeId> = (self.trees.take_relist().into_iter())
             .filter(|id| visible(&self.trees, id))
             .collect();
         self.trees.listed(&moved, Pending::default());
@@ -653,12 +660,12 @@ impl Device {
     fn act(&mut self, action: &Action) {
         let root = self.trees.local().root.clone();
         let local = self.trees.local();
-        let nodes: Vec<(String, LocalNode)> = local
+        let nodes: Vec<(NodeId, LocalNode)> = local
             .iter()
             .filter(|(id, _)| visible(&self.trees, id))
             .map(|(id, node)| (id.clone(), node.clone()))
             .collect();
-        let dirs: Vec<String> = [root.clone()]
+        let dirs: Vec<NodeId> = [root.clone()]
             .into_iter()
             .chain(
                 nodes
@@ -685,16 +692,16 @@ impl Device {
         } else {
             NAMES[action.name]
         };
-        let taken = |id: &str| {
+        let taken = |id: Option<&NodeId>| {
             local.iter().any(|(other, n)| {
-                other != id
+                Some(other) != id
                     && !n.parked
                     && n.shape.parent == parent
                     && name_key(&n.shape.name) == name_key(name)
             })
         };
         let target = (!nodes.is_empty()).then(|| nodes[action.target % nodes.len()].clone());
-        let unseen = |id: &str, kind| self.trees.ignores(&local_path(&self.trees, id), kind);
+        let unseen = |id: &NodeId, kind| self.trees.ignores(&local_path(&self.trees, id), kind);
         let into_ignored = parent != root && unseen(&parent, Kind::Dir);
         let lands_unseen = |kind| {
             let mut path = local_path(&self.trees, &parent);
@@ -702,7 +709,7 @@ impl Device {
             into_ignored || self.trees.ignores(&path, kind)
         };
         match (action.kind, target) {
-            (0 | 1, _) if !taken("") => {
+            (0 | 1, _) if !taken(None) => {
                 let (kind, content) = match action.kind {
                     0 => (Kind::Dir, None),
                     _ => (Kind::File, Some(content(1, action.text))),
@@ -723,7 +730,7 @@ impl Device {
                     identity: self.identity(),
                     parked: false,
                 };
-                let id = self.ids.uuid_v7(NOW as u64);
+                let id = NodeId::from(self.ids.uuid_v7(NOW as u64));
                 self.acted.insert(id.clone());
                 self.trees.set_local_changed(id, node);
             }
@@ -739,7 +746,7 @@ impl Device {
                 node.shape.content = written;
                 self.trees.set_local_changed(id, node);
             }
-            (3, Some((id, mut node))) if !taken(&id) && !self.holds(&id, &parent) => {
+            (3, Some((id, mut node))) if !taken(Some(&id)) && !self.holds(&id, &parent) => {
                 let kind = node.shape.kind;
                 match (unseen(&id, kind), lands_unseen(kind)) {
                     (true, true) => {}
@@ -808,7 +815,7 @@ impl Device {
     }
 
     /// True when `ancestor` is `id` or holds it in L.
-    fn holds(&self, ancestor: &str, id: &str) -> bool {
+    fn holds(&self, ancestor: &NodeId, id: &NodeId) -> bool {
         let mut current = id;
         loop {
             if current == ancestor {
@@ -822,7 +829,7 @@ impl Device {
     }
 }
 
-fn visible(trees: &Trees, id: &str) -> bool {
+fn visible(trees: &Trees, id: &NodeId) -> bool {
     let (local, hidden) = (trees.local(), trees.ignored_local());
     let mut current = id;
     for _ in 0..=local.len() {
@@ -840,17 +847,18 @@ fn visible(trees: &Trees, id: &str) -> bool {
 
 fn aim(
     trees: &Trees,
-    nodes: &[(String, LocalNode)],
-    dirs: &[String],
+    nodes: &[(NodeId, LocalNode)],
+    dirs: &[NodeId],
     action: &Action,
 ) -> Option<Action> {
-    let ids: Vec<&String> = nodes.iter().map(|(id, _)| id).collect();
-    let at = |id: &str| ids.iter().position(|other| *other == id);
-    let dir_at = |id: &str| dirs.iter().position(|other| other == id);
-    let pick = |list: Vec<String>| (!list.is_empty()).then(|| list[action.target % list.len()].clone());
-    let server_dir = |id: &String| (trees.remote().live(id)).is_some_and(|r| r.kind == Kind::Dir);
-    let local_only = |id: &String| *id != trees.local().root && trees.remote().get(id).is_none();
-    let above = |id: &str| {
+    let ids: Vec<&NodeId> = nodes.iter().map(|(id, _)| id).collect();
+    let at = |id: &NodeId| ids.iter().position(|other| *other == id);
+    let dir_at = |id: &NodeId| dirs.iter().position(|other| other == id);
+    let pick =
+        |list: Vec<NodeId>| (!list.is_empty()).then(|| list[action.target % list.len()].clone());
+    let server_dir = |id: &NodeId| (trees.remote().live(id)).is_some_and(|r| r.kind == Kind::Dir);
+    let local_only = |id: &NodeId| *id != trees.local().root && trees.remote().get(id).is_none();
+    let above = |id: &NodeId| {
         let mut parents = Vec::new();
         let mut current = trees.local().get(id).map(|node| node.shape.parent.clone());
         while let Some(parent) = current.filter(|_| parents.len() <= trees.local().len()) {
@@ -861,7 +869,7 @@ fn aim(
     };
     if action.kind == 8 {
         let target = pick(dirs.iter().filter(|dir| server_dir(dir)).cloned().collect())?;
-        let parents: Vec<&String> = (dirs.iter())
+        let parents: Vec<&NodeId> = (dirs.iter())
             .filter(|dir| local_only(dir) && **dir != target && !above(dir).contains(&target))
             .collect();
         let parent = (*parents.get(action.parent % parents.len().max(1))?).clone();
@@ -883,12 +891,12 @@ fn aim(
             text: action.text,
         });
     }
-    let folders: Vec<String> = (dirs.iter())
+    let folders: Vec<NodeId> = (dirs.iter())
         .filter(|dir| server_dir(dir) && above(dir).iter().any(local_only))
         .cloned()
         .collect();
     let folder = pick(folders)?;
-    let below = |kind: Option<Kind>| -> Vec<String> {
+    let below = |kind: Option<Kind>| -> Vec<NodeId> {
         (nodes.iter())
             .filter(|(_, node)| node.shape.parent == folder)
             .filter(|(_, node)| kind.is_none_or(|kind| node.shape.kind == kind))
@@ -947,12 +955,12 @@ fn stored(space: &SpaceDo) -> BTreeSet<(String, Vec<u8>)> {
 /// The L nodes that hold content, each with its manifest digest.
 /// The content the server acknowledged for a file: its waiting S update's while one waits, and
 /// S's otherwise.
-fn acknowledged(trees: &Trees, id: &str) -> Option<Vec<u8>> {
+fn acknowledged(trees: &Trees, id: &NodeId) -> Option<Vec<u8>> {
     let shape = acknowledged_shape(trees, id)?;
     Some(shape.content.as_ref()?.manifest_digest.clone())
 }
 
-fn acknowledged_shape<'a>(trees: &'a Trees, id: &str) -> Option<&'a Shape> {
+fn acknowledged_shape<'a>(trees: &'a Trees, id: &NodeId) -> Option<&'a Shape> {
     match trees.waiting().get(id) {
         Some(waiting) => waiting.shape.as_ref(),
         None => trees.synced().live(id),
@@ -965,7 +973,7 @@ fn held(trees: &Trees) -> BTreeSet<(String, Vec<u8>)> {
         .iter()
         .filter_map(|(id, node)| {
             Some((
-                id.clone(),
+                id.to_string(),
                 node.shape.content.as_ref()?.manifest_digest.clone(),
             ))
         })
@@ -990,7 +998,7 @@ fn rewritten(
     }
     after
         .difference(before)
-        .filter(|(id, digest)| acknowledged(trees, id).as_ref() != Some(digest))
+        .filter(|(id, digest)| acknowledged(trees, &NodeId::from(id)).as_ref() != Some(digest))
         .map(|(_, digest)| digest.clone())
         .collect()
 }
@@ -1081,11 +1089,11 @@ fn run(
 }
 
 /// Every node a question holds.
-fn members(question: &Question) -> impl Iterator<Item = String> + '_ {
+fn members(question: &Question) -> impl Iterator<Item = NodeId> + '_ {
     (question.held.values()).flat_map(|held| held.members.keys().cloned())
 }
 
-fn held_by(questions: &[Question]) -> BTreeSet<String> {
+fn held_by(questions: &[Question]) -> BTreeSet<NodeId> {
     (questions.iter())
         .flat_map(|question| question.shown.keys().cloned().chain(members(question)))
         .collect()
@@ -1097,16 +1105,16 @@ fn held_by(questions: &[Question]) -> BTreeSet<String> {
 /// excluded and not where R has it. A folder R
 /// no longer holds waits when L still holds such a node in it, since only an empty folder is
 /// removed. Such a node stays as it is, and the driver reports it as a problem (section 5.1).
-fn waits_on_excluded(trees: &Trees, id: &str, waiting: &BTreeSet<String>) -> bool {
+fn waits_on_excluded(trees: &Trees, id: &NodeId, waiting: &BTreeSet<NodeId>) -> bool {
     let mut current = id;
     for _ in 0..=trees.remote().len() {
         let Some(remote) = trees.remote().live(current) else {
-            let stays = |other: &str| trees.ignored(other) || waiting.contains(other);
+            let stays = |other: &NodeId| trees.ignored(other) || waiting.contains(other);
             return current == id
                 && ((trees.local().iter())
-                    .any(|(other, node)| node.shape.parent == id && stays(other))
+                    .any(|(other, node)| node.shape.parent == *id && stays(other))
                     || (trees.synced().iter())
-                        .any(|(other, shape)| shape.parent == id && waiting.contains(other)));
+                        .any(|(other, shape)| shape.parent == *id && waiting.contains(other)));
         };
         let placed = |node: &LocalNode| !node.parked && node.shape.same_position(remote);
         let unplaced = !trees.local().get(current).is_some_and(placed);
@@ -1134,7 +1142,7 @@ fn waits_on_excluded(trees: &Trees, id: &str, waiting: &BTreeSet<String>) -> boo
 /// Whether S cannot take `id` at its R position because the S entry of a node that waits still
 /// holds that name. The entry moves only once its node is placed, which the excluded node keeps
 /// from happening.
-fn waits_on_synced(trees: &Trees, id: &str, waiting: &BTreeSet<String>) -> bool {
+fn waits_on_synced(trees: &Trees, id: &NodeId, waiting: &BTreeSet<NodeId>) -> bool {
     let Some(remote) = trees.remote().live(id) else {
         return false;
     };
@@ -1174,32 +1182,32 @@ fn run_cut(
 
 fn still_discarded_in(
     device: &Device,
-    id: &str,
-    folder: &str,
-    discarded: &BTreeMap<String, koidrive_engine::tree::Shape>,
+    id: &NodeId,
+    folder: &NodeId,
+    discarded: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
 ) -> bool {
     let trees = &device.trees;
     (discarded.get(id))
         .zip(trees.local().get(id))
-        .is_some_and(|(shown, local)| shown.parent == folder && local.shape.same(shown))
+        .is_some_and(|(shown, local)| shown.parent == *folder && local.shape.same(shown))
         && !removed_by_user_from(device, id)
         && (trees.local().iter())
-            .filter(|(_, node)| node.shape.parent == id)
+            .filter(|(_, node)| node.shape.parent == *id)
             .all(|(child, _)| still_discarded_in(device, child, id, discarded))
 }
 
-fn removed_by_user_from(device: &Device, id: &str) -> bool {
+fn removed_by_user_from(device: &Device, id: &NodeId) -> bool {
     let trees = &device.trees;
     (trees.remote().iter()).any(|(child, node)| {
         !node.trashed
-            && node.shape.parent == id
+            && node.shape.parent == *id
             && trees.local().get(child).is_none()
             && (device
                 .removed_from
                 .get(child)
                 .is_some_and(|from| from == id)
                 || device.removed_from.contains_key(child)
-                    && acknowledged_shape(trees, child).is_some_and(|agreed| agreed.parent == id))
+                    && acknowledged_shape(trees, child).is_some_and(|agreed| agreed.parent == *id))
             && acknowledged_shape(trees, child).is_some()
             && !kept_by_r7(device, child)
     })
@@ -1207,11 +1215,11 @@ fn removed_by_user_from(device: &Device, id: &str) -> bool {
 
 fn server_copy(
     device: &Device,
-    id: &str,
-    shown: &BTreeMap<String, koidrive_engine::tree::Shape>,
-    from_server: &BTreeSet<String>,
-    discarded: &BTreeMap<String, koidrive_engine::tree::Shape>,
-    kept: &mut BTreeMap<String, koidrive_engine::tree::Shape>,
+    id: &NodeId,
+    shown: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+    from_server: &BTreeSet<NodeId>,
+    discarded: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+    kept: &mut BTreeMap<NodeId, koidrive_engine::tree::Shape>,
 ) -> bool {
     let trees = &device.trees;
     let (Some(local), Some(remote)) = (trees.local().get(id), trees.remote().get(id)) else {
@@ -1241,14 +1249,14 @@ fn server_copy(
 
 fn revive(
     device: &Device,
-    discarded: &BTreeMap<String, koidrive_engine::tree::Shape>,
-    kept_with: &BTreeMap<String, koidrive_engine::tree::Shape>,
-    asked: &BTreeSet<String>,
-) -> BTreeSet<String> {
+    discarded: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+    kept_with: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+    asked: &BTreeSet<NodeId>,
+) -> BTreeSet<NodeId> {
     // A discarded entry the user changed, or a discarded folder that holds an entry the answer
     // did not discard there, is the user's, and so is every discarded folder above it.
     let trees = &device.trees;
-    let reclaimed = |id: &&String| {
+    let reclaimed = |id: &&NodeId| {
         let changed = device.touched.contains(*id)
             && !asked.contains(*id)
             && !trees.excluded(id)
@@ -1266,7 +1274,7 @@ fn revive(
             })
     };
     let mut revived = BTreeSet::new();
-    let unsent = |id: &&String| trees.remote().get(id).is_none();
+    let unsent = |id: &&NodeId| trees.remote().get(id).is_none();
     for id in discarded.keys().filter(unsent).filter(reclaimed) {
         let mut next = Some(id.clone());
         while let Some(id) = next.take_if(|id| discarded.contains_key(id)) {
@@ -1279,21 +1287,21 @@ fn revive(
 
 fn release_taken_along(
     trees: &Trees,
-    kept_with: &mut BTreeMap<String, Shape>,
-    revived: &BTreeSet<String>,
+    kept_with: &mut BTreeMap<NodeId, Shape>,
+    revived: &BTreeSet<NodeId>,
 ) {
-    let reclaimed = |folder: &String| {
+    let reclaimed = |folder: &NodeId| {
         revived.contains(folder)
             && (trees.synced().get(folder).is_none() || trees.remote().get(folder).is_some())
     };
-    let home = |id: &String| {
+    let home = |id: &NodeId| {
         (trees.local().get(id)).is_some_and(|local| {
             !local.parked
                 && (trees.remote().live(id))
                     .is_some_and(|remote| remote.same_position(&local.shape))
         })
     };
-    let released: Vec<String> = (kept_with.iter())
+    let released: Vec<NodeId> = (kept_with.iter())
         .filter(|(id, shape)| {
             let (mut top, mut folder) = (*id, &shape.parent);
             for _ in 0..=kept_with.len() {
@@ -1311,13 +1319,13 @@ fn release_taken_along(
     }
 }
 
-type Position = (String, String);
+type Position = (NodeId, String);
 
-fn closes_a_cycle(trees: &Trees, id: &str, parent: &str) -> bool {
+fn closes_a_cycle(trees: &Trees, id: &NodeId, parent: &NodeId) -> bool {
     let mut folder = Some(parent.to_owned());
     for _ in 0..=trees.local().len() + trees.remote().len() {
         match folder {
-            Some(at) if at == id => return true,
+            Some(at) if at == *id => return true,
             Some(at) => {
                 folder = (trees.remote().get(&at).map(|node| node.shape.parent.clone()))
                     .or_else(|| trees.local().get(&at).map(|node| node.shape.parent.clone()))
@@ -1338,7 +1346,7 @@ fn sent_move_check(
     synced: Option<&Shape>,
     remote: Option<&RemoteNode>,
     device: &str,
-    merged_into: &BTreeMap<String, String>,
+    merged_into: &BTreeMap<NodeId, NodeId>,
 ) -> Result<(), TestCaseError> {
     let held = position(local);
     let owed_rename = moved.pending_for.is_empty()
@@ -1358,15 +1366,15 @@ fn sent_move_check(
         remote.shape.parent == moved.new_parent_id
             && remote.pending_for.as_ref() == Some(&moved.new_name)
     });
-    let from = (moved.from.as_ref()).map(|from| (&from.parent_id, &from.name));
-    if finishes_mark && from == Some((parent, &local.name)) {
+    let from = (moved.from.as_ref()).map(|from| (NodeId::from(&from.parent_id), &from.name));
+    if finishes_mark && from == Some((parent.clone(), &local.name)) {
         return Ok(());
     }
     let name = Some(&moved.pending_for)
         .filter(|name| !name.is_empty())
         .unwrap_or(&moved.new_name);
     prop_assert_eq!(
-        (&moved.new_parent_id, name),
+        (&NodeId::from(&moved.new_parent_id), name),
         (parent, &local.name),
         "{} is sent to a place the disk does not hold it at",
         moved.node_id
@@ -1377,10 +1385,10 @@ fn sent_move_check(
 fn placement_check(
     device: &Device,
     record: &koidrive_engine::effects::EffectRecord,
-    kept_with: &BTreeMap<String, koidrive_engine::tree::Shape>,
-    placed: &BTreeMap<String, Position>,
-    revived: &BTreeSet<String>,
-    merged_into: &BTreeMap<String, String>,
+    kept_with: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
+    placed: &BTreeMap<NodeId, Position>,
+    revived: &BTreeSet<NodeId>,
+    merged_into: &BTreeMap<NodeId, NodeId>,
 ) -> Result<(), TestCaseError> {
     if let (Effect::Move { .. }, Some(after), Some(local)) = (
         &record.effect,
@@ -1411,7 +1419,7 @@ fn placement_check(
     Ok(())
 }
 
-fn positions(trees: &Trees) -> BTreeMap<String, Position> {
+fn positions(trees: &Trees) -> BTreeMap<NodeId, Position> {
     (trees.local().iter())
         .map(|(id, node)| (id.clone(), position(&node.shape)))
         .collect()
@@ -1419,24 +1427,24 @@ fn positions(trees: &Trees) -> BTreeMap<String, Position> {
 
 fn acted_below(
     device: &Device,
-    id: &str,
-    kept_with: &BTreeMap<String, koidrive_engine::tree::Shape>,
+    id: &NodeId,
+    kept_with: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
 ) -> bool {
     let trees = &device.trees;
-    let reaches = |entry: &str, parent: &dyn Fn(&str) -> Option<String>| {
+    let reaches = |entry: &NodeId, parent: &dyn Fn(&NodeId) -> Option<NodeId>| {
         let mut current = Some(entry.to_owned());
         for _ in 0..=trees.local().len() + device.removed_from.len() {
             match current {
-                Some(at) if at == id => return true,
+                Some(at) if at == *id => return true,
                 Some(at) => current = parent(&at),
                 None => return false,
             }
         }
         false
     };
-    let in_local = |at: &str| trees.local().get(at).map(|node| node.shape.parent.clone());
-    let removed_from = |at: &str| in_local(at).or_else(|| device.removed_from.get(at).cloned());
-    let as_agreed = |entry: &str| {
+    let in_local = |at: &NodeId| trees.local().get(at).map(|node| node.shape.parent.clone());
+    let removed_from = |at: &NodeId| in_local(at).or_else(|| device.removed_from.get(at).cloned());
+    let as_agreed = |entry: &NodeId| {
         let Some(local) = trees.local().get(entry) else {
             return trees.remote().live(entry).is_none();
         };
@@ -1451,7 +1459,7 @@ fn acted_below(
         trees.remote().live(entry).is_some_and(holds)
             || acknowledged_shape(trees, entry).is_some_and(holds)
     };
-    let kept_back = |entry: &str| {
+    let kept_back = |entry: &NodeId| {
         device.kept_back.contains(entry)
             && trees.local().get(entry).is_none()
             && trees.remote().live(entry).is_some()
@@ -1463,24 +1471,24 @@ fn acted_below(
         })
 }
 
-fn kept_by_r7(device: &Device, entry: &str) -> bool {
+fn kept_by_r7(device: &Device, entry: &NodeId) -> bool {
     let trees = &device.trees;
-    let server_changed = |node: &str| {
+    let server_changed = |node: &NodeId| {
         (acknowledged_shape(trees, node))
             .is_some_and(|agreed| (trees.remote().live(node)).is_some_and(|remote| !remote.same(agreed)))
     };
-    let moved_by_the_user = |node: &str| {
+    let moved_by_the_user = |node: &NodeId| {
         (trees.local().get(node)).is_some_and(|local| {
             !trees.reverted().contains(node)
                 && acknowledged_shape(trees, node)
                     .is_none_or(|agreed| !local.shape.same_position(agreed))
         })
     };
-    let below_in_r = |node: &str| {
+    let below_in_r = |node: &NodeId| {
         let mut current = trees.remote().live(node).map(|remote| remote.parent.clone());
         for _ in 0..=trees.remote().len() {
             match current {
-                Some(at) if at == entry => return true,
+                Some(at) if at == *entry => return true,
                 Some(at) => {
                     let moved_here = (device.relocated.get(&at))
                         .is_some_and(|moved| relocation_stands(trees, &at, &moved.to));
@@ -1508,16 +1516,16 @@ fn kept_by_r7(device: &Device, entry: &str) -> bool {
             }))
 }
 
-fn relocation_stands(trees: &Trees, id: &str, to: &koidrive_engine::tree::Shape) -> bool {
+fn relocation_stands(trees: &Trees, id: &NodeId, to: &koidrive_engine::tree::Shape) -> bool {
     (trees.local().get(id)).is_some_and(|local| local.shape.same_position(to))
         && !(trees.remote().live(id)).is_some_and(|remote| remote.same_position(to))
 }
 
 fn note_agreements(
     device: &Device,
-    sent_since: &mut BTreeSet<String>,
-    agreed: &mut BTreeMap<String, Content>,
-    from_server: &mut BTreeSet<String>,
+    sent_since: &mut BTreeSet<NodeId>,
+    agreed: &mut BTreeMap<NodeId, Content>,
+    from_server: &mut BTreeSet<NodeId>,
 ) {
     for (id, local) in device.trees.local().iter() {
         let (Some(content), Some(remote)) = (
@@ -1541,7 +1549,7 @@ fn note_agreements(
 fn note_kept_back(device: &mut Device) {
     let trees = &device.trees;
     (device.relocated).retain(|id, moved| relocation_stands(trees, id, &moved.to));
-    let kept: Vec<String> = (device.removed_from.keys())
+    let kept: Vec<NodeId> = (device.removed_from.keys())
         .filter(|entry| kept_by_r7(device, entry))
         .cloned()
         .collect();
@@ -1550,10 +1558,10 @@ fn note_kept_back(device: &mut Device) {
 
 fn note_unacknowledged_taken_along_kept_back(
     device: &mut Device,
-    kept_with: &BTreeMap<String, koidrive_engine::tree::Shape>,
+    kept_with: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
 ) {
     let trees = &device.trees;
-    let kept: Vec<String> = (kept_with.keys())
+    let kept: Vec<NodeId> = (kept_with.keys())
         .filter(|id| {
             device.removed_from.contains_key(*id)
                 && trees.local().get(id).is_none()
@@ -1653,8 +1661,8 @@ fn run_ignoring_answering_after(
     if let Some(ruling) = rulings.next() {
         device.rule(ruling);
     }
-    let mut placed_left_out: BTreeSet<String> = BTreeSet::new();
-    let mut from_server: BTreeSet<String> = BTreeSet::new();
+    let mut placed_left_out: BTreeSet<NodeId> = BTreeSet::new();
+    let mut from_server: BTreeSet<NodeId> = BTreeSet::new();
     for action in local {
         match action.kind {
             5 | 6 => {
@@ -1710,16 +1718,16 @@ fn run_ignoring_answering_after(
     let (mut steps, mut quiet, mut due, mut parked_reverted) = (0, false, false, 0);
     let (mut deletes, mut removals) = (0, 0);
     let (mut asked, mut held_once, mut confirmed) = (0, BTreeSet::new(), BTreeSet::new());
-    let mut discarded: BTreeMap<String, koidrive_engine::tree::Shape> = BTreeMap::new();
-    let mut kept_with: BTreeMap<String, koidrive_engine::tree::Shape> = BTreeMap::new();
-    let mut placed: BTreeMap<String, Position> = BTreeMap::new();
-    let mut agreed: BTreeMap<String, Content> = BTreeMap::new();
-    let mut sent_since: BTreeSet<String> = BTreeSet::new();
+    let mut discarded: BTreeMap<NodeId, koidrive_engine::tree::Shape> = BTreeMap::new();
+    let mut kept_with: BTreeMap<NodeId, koidrive_engine::tree::Shape> = BTreeMap::new();
+    let mut placed: BTreeMap<NodeId, Position> = BTreeMap::new();
+    let mut agreed: BTreeMap<NodeId, Content> = BTreeMap::new();
+    let mut sent_since: BTreeSet<NodeId> = BTreeSet::new();
     note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
-    let mut merged_into: BTreeMap<String, String> = BTreeMap::new();
-    let mut revived_once: BTreeSet<String> = BTreeSet::new();
-    let mut freed: BTreeSet<String> = BTreeSet::new();
-    let mut sent_nodes: BTreeSet<String> = BTreeSet::new();
+    let mut merged_into: BTreeMap<NodeId, NodeId> = BTreeMap::new();
+    let mut revived_once: BTreeSet<NodeId> = BTreeSet::new();
+    let mut freed: BTreeSet<NodeId> = BTreeSet::new();
+    let mut sent_nodes: BTreeSet<NodeId> = BTreeSet::new();
     let mut pending: Option<Question> = None;
     let mut during = during.iter();
     while !quiet {
@@ -1964,9 +1972,9 @@ fn run_ignoring_answering_after(
         );
         let open = |question: &Question| commits.questions().iter().any(|o| o.id == question.id);
         if let Some(question) = pending.take_if(|question| !open(question)) {
-            let asked_again: BTreeSet<&String> =
+            let asked_again: BTreeSet<&NodeId> =
                 (commits.questions().iter().flat_map(Question::holds)).collect();
-            let shown: BTreeMap<String, koidrive_engine::tree::Shape> = (question.shown)
+            let shown: BTreeMap<NodeId, koidrive_engine::tree::Shape> = (question.shown)
                 .into_iter()
                 .filter(|(id, _)| !asked_again.contains(id))
                 .collect();
@@ -2026,14 +2034,14 @@ fn run_ignoring_answering_after(
         let mut sending = Vec::new();
         let mut positioned = Vec::new();
         for op in &commit.ops {
-            let id = match &op.op {
+            let id = &NodeId::from(match &op.op {
                 Some(op::Op::Delete(delete)) => &delete.node_id,
                 Some(op::Op::CreateFile(create)) => &create.node_id,
                 Some(op::Op::CreateDir(create)) => &create.node_id,
                 Some(op::Op::Move(moved)) => &moved.node_id,
                 Some(op::Op::UpdateContent(update)) => &update.node_id,
                 _ => continue,
-            };
+            });
             if let Some(op::Op::CreateDir(_)) = &op.op
                 && let Some(into) = merged_into.remove(id)
             {
@@ -2138,16 +2146,15 @@ fn run_ignoring_answering_after(
             if let Some(op::Op::CreateDir(create)) = &op.op
                 && outcome.code == op_result::Code::MergedInto as i32
             {
-                merged_into.insert(create.node_id.clone(), outcome.node_id.clone());
+                let created = NodeId::from(&create.node_id);
+                let merged = NodeId::from(&outcome.node_id);
+                merged_into.insert(created.clone(), merged.clone());
                 for records in [&mut discarded, &mut kept_with] {
-                    if let Some(shape) = records.remove(&create.node_id) {
-                        records.insert(outcome.node_id.clone(), shape);
+                    if let Some(shape) = records.remove(&created) {
+                        records.insert(merged.clone(), shape);
                     }
-                    for shape in records
-                        .values_mut()
-                        .filter(|shape| shape.parent == create.node_id)
-                    {
-                        shape.parent = outcome.node_id.clone();
+                    for shape in records.values_mut().filter(|shape| shape.parent == created) {
+                        shape.parent = merged.clone();
                     }
                 }
             }
@@ -2201,14 +2208,14 @@ fn run_ignoring_answering_after(
     device.trees.settle(commits.aliases());
     prop_assert_eq!(device.trees.check(), Ok(()));
     let kept_for_excluded = device.trees.kept_for_excluded();
-    let outside = |id: &str| device.trees.ignored(id) || kept_for_excluded(id);
-    let unsettled: Vec<String> = (device.trees.work().into_iter())
+    let outside = |id: &NodeId| device.trees.ignored(id) || kept_for_excluded(id);
+    let unsettled: Vec<NodeId> = (device.trees.work().into_iter())
         .map(|(id, _)| id)
         .filter(|id| !outside(id))
         .collect();
-    let mut waiting: BTreeSet<String> = BTreeSet::new();
+    let mut waiting: BTreeSet<NodeId> = BTreeSet::new();
     loop {
-        let more: Vec<String> = (unsettled.iter())
+        let more: Vec<NodeId> = (unsettled.iter())
             .filter(|id| {
                 !waiting.contains(*id)
                     && (waits_on_excluded(&device.trees, id, &waiting)
@@ -2221,24 +2228,24 @@ fn run_ignoring_answering_after(
         }
         waiting.extend(more);
     }
-    let unsettled: Vec<&String> = (unsettled.iter())
+    let unsettled: Vec<&NodeId> = (unsettled.iter())
         .filter(|id| !waiting.contains(*id))
         .collect();
-    prop_assert_eq!(unsettled, Vec::<&String>::new());
+    prop_assert_eq!(unsettled, Vec::<&NodeId>::new());
     prop_assert!(commits.problems().is_empty(), "{:?}", commits.problems());
     prop_assert!(effects.blocked().is_empty(), "{:?}", effects.blocked());
     let renaming = commits.renaming(&device.trees, NOW as u64);
     let reported =
         koidrive_engine::effects::stuck(&device.trees, &effects, commits.in_flight(), &renaming);
     let local = device.trees.local();
-    let inside_itself = |id: &str, folder: &str| {
+    let inside_itself = |id: &NodeId, folder: &NodeId| {
         folder == id
             || std::iter::successors(local.get(folder), |node| local.get(&node.shape.parent))
                 .take(local.len())
                 .take_while(|node| !node.parked)
-                .any(|node| node.shape.parent == id)
+                .any(|node| node.shape.parent == *id)
     };
-    let unreachable = |id: &str, shape: &koidrive_engine::tree::Shape| {
+    let unreachable = |id: &NodeId, shape: &koidrive_engine::tree::Shape| {
         let folder = shape.parent == local.root
             || (local.get(&shape.parent)).is_some_and(|node| node.shape.kind == Kind::Dir);
         !folder
@@ -2251,7 +2258,7 @@ fn run_ignoring_answering_after(
             })
     };
     let remote = device.trees.remote();
-    let kept_from_remote = |id: &str| {
+    let kept_from_remote = |id: &NodeId| {
         let mut names = Vec::new();
         let mut current = id;
         while let Some(shape) = remote.live(current).filter(|_| names.len() <= remote.len()) {
@@ -2260,13 +2267,13 @@ fn run_ignoring_answering_after(
         }
         names.reverse();
         let kind = (remote.live(id)).map_or(Kind::File, |shape| shape.kind);
-        device.trees.edited(id) && current == remote.root && device.trees.ignores(&names, kind)
+        device.trees.edited(id) && *current == remote.root && device.trees.ignores(&names, kind)
     };
-    let nowhere = |id: &str| {
+    let nowhere = |id: &NodeId| {
         (local.get(id)).is_some_and(|node| unreachable(id, &node.shape))
             && (remote.live(id)).is_none_or(|shape| unreachable(id, shape) || kept_from_remote(id))
     };
-    let stays_parked = |id: &str| {
+    let stays_parked = |id: &NodeId| {
         waiting.contains(id)
             || device.trees.ignored(id)
                 && reported.contains_key(id)
@@ -2276,7 +2283,7 @@ fn run_ignoring_answering_after(
         (device.trees.local().iter()).all(|(id, node)| !node.parked || stays_parked(id)),
         "a parked node is neither on its way out nor reported"
     );
-    let server: Vec<(String, Option<koidrive_engine::tree::Shape>)> = space
+    let server: Vec<(NodeId, Option<koidrive_engine::tree::Shape>)> = space
         .nodes()
         .iter()
         .filter(|n| n.node_id != root)
@@ -2285,7 +2292,7 @@ fn run_ignoring_answering_after(
             (id, (!node.trashed).then_some(node.shape))
         })
         .collect();
-    let mut ids: BTreeSet<&String> = server.iter().map(|(id, _)| id).collect();
+    let mut ids: BTreeSet<&NodeId> = server.iter().map(|(id, _)| id).collect();
     ids.extend(device.trees.local().iter().map(|(id, _)| id));
     ids.extend(device.trees.synced().iter().map(|(id, _)| id));
     for id in ids {
@@ -2363,15 +2370,15 @@ const CUTS: [Cut; 5] = [
 fn act_tracked(
     device: &mut Device,
     action: &Action,
-    placed_left_out: &mut BTreeSet<String>,
-    from_server: &mut BTreeSet<String>,
+    placed_left_out: &mut BTreeSet<NodeId>,
+    from_server: &mut BTreeSet<NodeId>,
 ) {
     let before_action = positions(&device.trees);
-    let written_before: BTreeMap<String, koidrive_engine::tree::LocalNode> =
+    let written_before: BTreeMap<NodeId, koidrive_engine::tree::LocalNode> =
         (device.trees.local().iter())
             .map(|(id, node)| (id.clone(), node.clone()))
             .collect();
-    let left_out_before: BTreeSet<String> = (written_before.keys())
+    let left_out_before: BTreeSet<NodeId> = (written_before.keys())
         .filter(|id| device.trees.excluded(id))
         .cloned()
         .collect();

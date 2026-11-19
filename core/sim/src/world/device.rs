@@ -124,7 +124,7 @@ impl Engine {
                     }
                 }
                 Some(change_record::Change::Purged(purged)) => {
-                    self.trees.remove_remote(&purged.node_id)
+                    self.trees.remove_remote(&NodeId::from(&purged.node_id))
                 }
                 _ => {}
             }
@@ -207,7 +207,7 @@ impl Engine {
                 });
             let id = match known.get(&ino).or_else(|| displaced.get(&ino)) {
                 Some(id) => id.clone(),
-                None => marked.unwrap_or_else(|| self.ids.uuid_v7(NOW as u64)),
+                None => marked.unwrap_or_else(|| NodeId::from(self.ids.uuid_v7(NOW as u64))),
             };
             nodes.insert(ino, id.clone());
             queue.extend(disk.children(&Place::In(ino)));

@@ -297,7 +297,7 @@ impl Effects {
 
     /// Lets the planner emit the failed effect of `node` again, for a caller that knows the
     /// cause is gone. Returns false when the node was not blocked.
-    pub fn unblock(&mut self, node: &str) -> bool {
+    pub fn unblock(&mut self, node: &NodeId) -> bool {
         self.failed.remove(node).is_some()
     }
 
@@ -398,20 +398,19 @@ impl Effects {
         limit: BatchLimit,
     ) -> Vec<(NodeId, Effect, Option<Shape>)> {
         let view = View::new(trees);
-        let writes_rules = |id: &str| {
+        let writes_rules = |id: &NodeId| {
             let remote = trees.remote().live(id)?;
-            (remote.kind == Kind::File && is_rules_file(&remote.name))
-                .then_some(remote.parent.as_str())
+            (remote.kind == Kind::File && is_rules_file(&remote.name)).then_some(&remote.parent)
         };
-        let gates: BTreeSet<&str> = (trees.remote_rules_files().iter())
+        let gates: BTreeSet<&NodeId> = (trees.remote_rules_files().iter())
             .filter(|id| trees.dirty().contains(*id))
             .filter_map(|id| writes_rules(id).filter(|_| candidate(trees, id)))
             .collect();
-        let gated = |id: &str| {
-            let parent = |id: &str| {
+        let gated = |id: &NodeId| {
+            let parent = |id: &NodeId| {
                 let remote = trees.remote().live(id);
                 let shape = remote.or(trees.local().get(id).map(|node| &node.shape))?;
-                Some(shape.parent.as_str())
+                Some(&shape.parent)
             };
             let mut above = parent(id);
             if writes_rules(id).is_some() {
@@ -426,7 +425,7 @@ impl Effects {
             }
             false
         };
-        let park_failed = |id: &str| {
+        let park_failed = |id: &NodeId| {
             let failed = self.failed.get(id);
             matches!(
                 failed,
@@ -756,7 +755,7 @@ impl Effects {
 /// Whether `effect` of node `id` may share a batch with other effects ([`Effects::plan`]): it names no entry
 /// through the parked directory, moves no folder and touches no rules file, so it changes no path another effect
 /// of the batch takes and no rule another effect was planned under.
-fn batchable(trees: &Trees, id: &str, effect: &Effect) -> bool {
+fn batchable(trees: &Trees, id: &NodeId, effect: &Effect) -> bool {
     let plain = |at: &Location| matches!(at, Location::At { base: Base::Root, name, .. } if !is_rules_file(name));
     match effect {
         Effect::CreateDir { at } | Effect::RemoveDir { at, .. } => plain(at),
@@ -812,11 +811,11 @@ fn within(trees: &Trees, node: &NodeId) -> Vec<NodeId> {
     within
 }
 
-pub(crate) fn held_by_excluded(trees: &Trees, id: &str, target: &Shape) -> bool {
+pub(crate) fn held_by_excluded(trees: &Trees, id: &NodeId, target: &Shape) -> bool {
     View::new(trees).held_by_excluded(id, target)
 }
 
-pub(crate) fn kept_out(trees: &Trees, id: &str) -> bool {
+pub(crate) fn kept_out(trees: &Trees, id: &NodeId) -> bool {
     let view = View::new(trees);
     trees.local().get(id).is_some_and(|node| node.parked)
         && candidate(trees, id)
@@ -864,7 +863,7 @@ pub(crate) fn displaced_by_excluded(trees: &Trees) -> BTreeMap<NodeId, NodeId> {
 /// created again ([`Trees::forget_lost`]), and one L lacks is downloaded again. An excluded node
 /// is one only while it sits in the parked directory unchanged since the server trashed it
 /// ([`Trees::trashed_while_parked`]).
-fn candidate(trees: &Trees, id: &str) -> bool {
+fn candidate(trees: &Trees, id: &NodeId) -> bool {
     let forgets = (trees.waiting().get(id)).is_some_and(|waiting| waiting.shape.is_none())
         && (trees.local().get(id).is_some() || !trees.reverted().contains(id));
     let changed = remote_only(trees, id)
@@ -914,9 +913,9 @@ pub fn stuck(
     let planned: Vec<&NodeId> = (trees.dirty_others().iter())
         .filter(|id| candidate(trees, id) && !trees.held(id) && !renaming.contains(*id))
         .collect();
-    let unplaced: Vec<(&NodeId, &str)> = (planned.iter())
+    let unplaced: Vec<(&NodeId, &NodeId)> = (planned.iter())
         .filter(|id| matches!(view.step(id), Step::Blocked(None)))
-        .filter_map(|id| Some((*id, trees.remote().live(id)?.parent.as_str())))
+        .filter_map(|id| Some((*id, &trees.remote().live(id)?.parent)))
         .collect();
     let mut stuck: BTreeMap<NodeId, Stuck> = (planned.iter())
         .filter_map(|id| {
@@ -940,7 +939,7 @@ pub fn stuck(
         })
         .collect();
     stuck.extend(parked);
-    let root = |stuck: &BTreeMap<NodeId, Stuck>, id: &str| match stuck.get(id)? {
+    let root = |stuck: &BTreeMap<NodeId, Stuck>, id: &NodeId| match stuck.get(id)? {
         Stuck::HeldBy(_) | Stuck::Parked => Some(id.to_owned()),
         Stuck::Behind(root) => Some(root.clone()),
     };
@@ -980,7 +979,7 @@ pub fn stuck(
     }
 }
 
-fn arrives_below(trees: &Trees, id: &str) -> bool {
+fn arrives_below(trees: &Trees, id: &NodeId) -> bool {
     let remote = trees.remote();
     remote.iter().any(|(node, _)| {
         if !remote_only(trees, node) || trees.excluded(node) {
@@ -989,7 +988,7 @@ fn arrives_below(trees: &Trees, id: &str) -> bool {
         let mut up = remote.live(node);
         for _ in 0..=remote.len() {
             match up {
-                Some(shape) if shape.parent == id => return true,
+                Some(shape) if shape.parent == *id => return true,
                 Some(shape) => up = remote.live(&shape.parent),
                 None => return false,
             }
@@ -998,10 +997,10 @@ fn arrives_below(trees: &Trees, id: &str) -> bool {
     })
 }
 
-fn holds_below(trees: &Trees, id: &str) -> bool {
+fn holds_below(trees: &Trees, id: &NodeId) -> bool {
     let (local, remote) = (trees.local(), trees.remote());
     let view = View::new(trees);
-    let parent = |node: &str| {
+    let parent = |node: &NodeId| {
         let home = local.get(node).filter(|held| held.parked).and_then(|held| {
             if trees.ignored(node) {
                 return Some(view.way_out(node, held));
@@ -1013,7 +1012,7 @@ fn holds_below(trees: &Trees, id: &str) -> bool {
         (home
             .or_else(|| remote.live(node))
             .or_else(|| local.live(node)))
-        .map(|shape| shape.parent.as_str())
+        .map(|shape| &shape.parent)
     };
     local.iter().any(|(node, _)| {
         let mut up = parent(node);
@@ -1032,24 +1031,24 @@ fn holds_below(trees: &Trees, id: &str) -> bool {
 /// for S: L still holds the shape the server acknowledged, and only R differs from it. The update
 /// may never fit S while L holds that shape, as when its name key is taken in S, so the effects
 /// take R's shape and the update stops waiting once L leaves it.
-fn remote_only(trees: &Trees, id: &str) -> bool {
+fn remote_only(trees: &Trees, id: &NodeId) -> bool {
     trees.acknowledged_class(id) == Class::Remote
 }
 
 /// Where the disk holds the entry of the node L holds as `id`: in the parked directory, below a
 /// parked folder, or below the root.
-pub fn location_of(trees: &Trees, id: &str) -> Option<Location> {
+pub fn location_of(trees: &Trees, id: &NodeId) -> Option<Location> {
     View::new(trees).location(id)
 }
 
-pub(crate) fn unparks_to(trees: &Trees, id: &str, target: &Shape) -> bool {
+pub(crate) fn unparks_to(trees: &Trees, id: &NodeId, target: &Shape) -> bool {
     let view = View::new(trees);
     view.blocked(id, target).is_none()
         && !forked_aside(trees, id, target)
         && (view.location_in(&target.parent, &target.name)).is_some()
 }
 
-fn forked_aside(trees: &Trees, id: &str, shape: &Shape) -> bool {
+fn forked_aside(trees: &Trees, id: &NodeId, shape: &Shape) -> bool {
     trees.remote().live(id).is_none()
         && trees.edited(id)
         && (trees.remote().iter()).any(|(other, node)| {
@@ -1079,11 +1078,11 @@ impl<'a> View<'a> {
         Self { trees }
     }
 
-    fn root(&self) -> &'a str {
+    fn root(&self) -> &'a NodeId {
         &self.trees.local().root
     }
 
-    fn step(&self, id: &str) -> Step {
+    fn step(&self, id: &NodeId) -> Step {
         let local = self.trees.local().get(id);
         let remote = self.trees.remote().live(id);
         if let Some(local) = local.filter(|local| local.parked && self.trees.ignored(id)) {
@@ -1277,12 +1276,12 @@ impl<'a> View<'a> {
             })
     }
 
-    fn goes_home(&self, id: &str, remote: &Shape) -> bool {
+    fn goes_home(&self, id: &NodeId, remote: &Shape) -> bool {
         self.trees.edited(id) && self.trees.ignored_in_remote(id)
             || self.held_by_excluded(id, remote)
     }
 
-    fn way_out(&self, id: &str, local: &'a LocalNode) -> &'a Shape {
+    fn way_out(&self, id: &NodeId, local: &'a LocalNode) -> &'a Shape {
         let away = self.trees.remote().live(id).filter(|remote| {
             (self.trees.reverted().contains(id) || self.blocked(id, &local.shape).is_some())
                 && !(self.trees.edited(id) && self.trees.ignored_in_remote(id))
@@ -1291,7 +1290,7 @@ impl<'a> View<'a> {
         away.unwrap_or(&local.shape)
     }
 
-    fn held_by_excluded(&self, id: &str, target: &Shape) -> bool {
+    fn held_by_excluded(&self, id: &NodeId, target: &Shape) -> bool {
         matches!(
             self.blocked(id, target),
             Some(Step::Blocked(Some(holder))) if self.trees.excluded(&holder)
@@ -1299,7 +1298,7 @@ impl<'a> View<'a> {
     }
 
     /// Moves a parked node to `target`'s position with its content as L has it.
-    fn unpark(&self, id: &str, local: &LocalNode, target: &Shape) -> Step {
+    fn unpark(&self, id: &NodeId, local: &LocalNode, target: &Shape) -> Step {
         if let Some(blocked) = self.blocked(id, target) {
             return blocked;
         }
@@ -1321,7 +1320,7 @@ impl<'a> View<'a> {
         )
     }
 
-    fn remove(&self, id: &str, local: &LocalNode) -> Step {
+    fn remove(&self, id: &NodeId, local: &LocalNode) -> Step {
         if self.trees.carried(id) || self.trees.kept_folders().contains(id) {
             return Step::Skip;
         }
@@ -1359,7 +1358,7 @@ impl<'a> View<'a> {
     }
 
     /// Why `id` cannot be put at `remote`'s position in L yet, if it cannot.
-    fn blocked(&self, id: &str, remote: &Shape) -> Option<Step> {
+    fn blocked(&self, id: &NodeId, remote: &Shape) -> Option<Step> {
         if let Some(step) = self.blocked_in(id, &remote.parent) {
             return Some(step);
         }
@@ -1371,7 +1370,7 @@ impl<'a> View<'a> {
 
     /// Why `id` cannot be put into `parent` in L yet, if it cannot: `parent` is no folder of L,
     /// or it is `id` or inside it.
-    fn blocked_in(&self, id: &str, parent: &str) -> Option<Step> {
+    fn blocked_in(&self, id: &NodeId, parent: &NodeId) -> Option<Step> {
         if parent == self.root() {
             return None;
         }
@@ -1388,9 +1387,9 @@ impl<'a> View<'a> {
     /// The excluded node that keeps `id` from its place, if one does: the name it moves to is held
     /// by an excluded node, whose local copy no effect moves, or by a node that is stuck the same
     /// way. Parking `id` would hide it for as long as the rules stay as they are.
-    fn stuck(&self, id: &str, depth: usize) -> Option<NodeId> {
+    fn stuck(&self, id: &NodeId, depth: usize) -> Option<NodeId> {
         match self.step(id) {
-            Step::Blocked(Some(holder)) if holder != id => {
+            Step::Blocked(Some(holder)) if holder != *id => {
                 if self.trees.excluded(&holder) {
                     return Some(holder);
                 }
@@ -1401,14 +1400,14 @@ impl<'a> View<'a> {
     }
 
     /// True when `ancestor` is `id` or holds it on disk.
-    fn inside(&self, id: &str, ancestor: &str) -> bool {
+    fn inside(&self, id: &NodeId, ancestor: &NodeId) -> bool {
         let mut current = id;
         for _ in 0..=self.trees.local().len() {
             if current == ancestor {
                 return true;
             }
             match self.trees.local().get(current) {
-                Some(node) if !node.parked && node.shape.parent != self.root() => {
+                Some(node) if !node.parked && node.shape.parent != *self.root() => {
                     current = &node.shape.parent;
                 }
                 _ => return false,
@@ -1417,7 +1416,7 @@ impl<'a> View<'a> {
         false
     }
 
-    fn holds_position(&self, id: &str, after: &Shape, in_flight: Option<&InFlight>) -> bool {
+    fn holds_position(&self, id: &NodeId, after: &Shape, in_flight: Option<&InFlight>) -> bool {
         let trees = self.trees;
         let Some(local) = trees.local().get(id) else {
             return false;
@@ -1432,7 +1431,7 @@ impl<'a> View<'a> {
                 && (trees.acknowledged(id)).is_some_and(|base| !local.shape.same_position(base)))
     }
 
-    fn parkable(&self, id: &str) -> bool {
+    fn parkable(&self, id: &NodeId) -> bool {
         let trees = self.trees;
         (candidate(trees, id) || trees.waiting().contains_key(id) || trees.reclaimed(id))
             && !trees.excluded(id)
@@ -1446,7 +1445,7 @@ impl<'a> View<'a> {
             && !(trees.remote().live(id)).is_some_and(|remote| self.goes_home(id, remote))
     }
 
-    fn park(&self, id: &str) -> Option<(Effect, Option<Shape>)> {
+    fn park(&self, id: &NodeId) -> Option<(Effect, Option<Shape>)> {
         let local = self.trees.local().get(id)?;
         let effect = Effect::Move {
             from: self.location(id)?,
@@ -1464,7 +1463,7 @@ impl<'a> View<'a> {
         })
     }
 
-    fn location(&self, id: &str) -> Option<Location> {
+    fn location(&self, id: &NodeId) -> Option<Location> {
         let node = self.trees.local().get(id)?;
         if node.parked {
             return Some(Location::Parked(self.trees.parked_name(id).to_owned()));
@@ -1472,7 +1471,7 @@ impl<'a> View<'a> {
         self.location_in(&node.shape.parent, &node.shape.name)
     }
 
-    fn location_in(&self, parent: &str, name: &str) -> Option<Location> {
+    fn location_in(&self, parent: &NodeId, name: &str) -> Option<Location> {
         let mut dirs = Vec::new();
         let mut current = parent;
         for _ in 0..=self.trees.local().len() {

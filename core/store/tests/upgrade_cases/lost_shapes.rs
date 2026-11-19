@@ -11,7 +11,7 @@ upgrade_case!(lost_shapes, |store| {
                 .find(|node| node.shape.name == "report.txt")
                 .unwrap();
             let shape = koidrive_engine::tree::Shape {
-                parent: report.shape.parent_id,
+                parent: report.shape.parent_id.into(),
                 name: report.shape.name,
                 kind: koidrive_engine::tree::Kind::File,
                 content: report.shape.content,

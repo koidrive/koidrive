@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 fn assert_each_repeated_report_changes_nothing(mut trees: Trees, label: &str) {
-    let ids: Vec<String> = trees.local().iter().map(|(id, _)| id.clone()).collect();
+    let ids: Vec<NodeId> = trees.local().iter().map(|(id, _)| id.clone()).collect();
     for id in ids {
         let node = trees.local().get(&id).unwrap().clone();
         let before = format!("{:?}", trees.state());
@@ -30,9 +30,9 @@ fn a_scan_that_finds_a_file_back_at_its_place_ends_its_record_in_an_ignored_fold
         Some(file(ROOT, "a", 1)),
         Some(remote(file(ROOT, "a", 1))),
     )]);
-    trees.ignore_local("a");
-    assert!(trees.recorded_local("a"));
-    let node = trees.local().get("a").unwrap().clone();
+    trees.ignore_local(&"a".into());
+    assert!(trees.recorded_local(&"a".into()));
+    let node = trees.local().get(&"a".into()).unwrap().clone();
     trees.set_local_changed("a".into(), node);
-    assert!(!trees.recorded_local("a"));
+    assert!(!trees.recorded_local(&"a".into()));
 }

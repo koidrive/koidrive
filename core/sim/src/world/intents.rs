@@ -213,26 +213,27 @@ pub(super) struct Server {
 impl Server {
     pub(super) fn of(root: &str, nodes: Vec<NodeState>) -> Self {
         Server {
-            root: root.to_owned(),
+            root: NodeId::from(root),
             nodes: (nodes.into_iter())
-                .map(|node| (node.node_id.clone(), node))
+                .map(|node| (NodeId::from(&node.node_id), node))
                 .collect(),
         }
     }
 
-    pub(super) fn live(&self, id: &str) -> Option<&NodeState> {
+    pub(super) fn live(&self, id: &NodeId) -> Option<&NodeState> {
         (self.nodes.get(id)).filter(|node| node.status == NodeStatus::Live as i32)
     }
 
-    pub(super) fn above(&self, id: &str) -> Vec<&str> {
+    pub(super) fn above(&self, id: &NodeId) -> Vec<NodeId> {
         let mut chain = Vec::new();
         let mut at = self.nodes.get(id).map(|node| node.parent_id.as_str());
         while let Some(parent) = at.filter(|parent| !parent.is_empty()) {
+            let parent = NodeId::from(parent);
             if chain.contains(&parent) {
                 break;
             }
+            at = self.nodes.get(&parent).map(|node| node.parent_id.as_str());
             chain.push(parent);
-            at = self.nodes.get(parent).map(|node| node.parent_id.as_str());
         }
         chain
     }
@@ -337,31 +338,31 @@ impl Intents {
         self.list.last_mut().expect("recorded above").answer = Some(answer);
     }
 
-    pub(super) fn ino_of(&self, d: usize, node: &str) -> Option<u128> {
+    pub(super) fn ino_of(&self, d: usize, node: &NodeId) -> Option<u128> {
         (self.nodes[d].iter())
             .find(|(ino, nodes)| nodes.contains(node) && !self.detached(d, **ino, node))
             .map(|(ino, _)| *ino)
     }
 
-    pub(super) fn detach(&mut self, d: usize, ino: u128, node: &str, since: u64) {
+    pub(super) fn detach(&mut self, d: usize, ino: u128, node: &NodeId, since: u64) {
         if !self.detached(d, ino, node) {
             let spans = self.detached[d].entry(ino).or_default();
-            (spans.entry(node.to_owned()).or_default()).push((since, None));
+            (spans.entry(node.clone()).or_default()).push((since, None));
         }
     }
 
-    pub(super) fn detached(&self, d: usize, ino: u128, node: &str) -> bool {
+    pub(super) fn detached(&self, d: usize, ino: u128, node: &NodeId) -> bool {
         (self.detached[d].get(&ino).and_then(|nodes| nodes.get(node)))
             .and_then(|spans| spans.last())
             .is_some_and(|(_, until)| until.is_none())
     }
 
-    pub(super) fn merged(&mut self, from: &str, into: &str) {
-        self.merged.insert(from.to_owned(), into.to_owned());
+    pub(super) fn merged(&mut self, from: &NodeId, into: &NodeId) {
+        self.merged.insert(from.clone(), into.clone());
     }
 
-    pub(super) fn copied(&mut self, from: &str, copy: &str) {
-        (self.copies.entry(from.to_owned()).or_default()).insert(copy.to_owned());
+    pub(super) fn copied(&mut self, from: &NodeId, copy: &NodeId) {
+        (self.copies.entry(from.clone()).or_default()).insert(copy.clone());
     }
 
     pub(super) fn with_copies<'a>(&'a self, node: &'a NodeId) -> impl Iterator<Item = &'a NodeId> {
@@ -401,7 +402,7 @@ impl Intents {
         self.nodes_of(intent.author, intent.ino, intent.made)
     }
 
-    fn on(&self, i: usize, node: &str) -> bool {
+    fn on(&self, i: usize, node: &NodeId) -> bool {
         self.nodes(i).any(|id| id == node)
     }
 
@@ -440,7 +441,7 @@ impl Intents {
         (0..self.list.len()).any(|k| self.saw(i, k) && (k == j || self.same_value(j, k)))
     }
 
-    fn parent_is(&self, i: usize, parent: Option<u128>, held: &str, root: &str) -> bool {
+    fn parent_is(&self, i: usize, parent: Option<u128>, held: &NodeId, root: &NodeId) -> bool {
         match parent {
             None => held == root,
             Some(ino) => {
@@ -460,7 +461,7 @@ impl Intents {
         clock: u64,
         disk: &Disk,
         inos: &BTreeMap<u128, NodeId>,
-        root: &str,
+        root: &NodeId,
     ) {
         for (ino, node) in inos {
             self.nodes[d].entry(*ino).or_default().insert(node.clone());
@@ -469,12 +470,12 @@ impl Intents {
                 *until = Some(clock + 1);
             }
         }
-        type Shown<'a> = (Option<&'a str>, &'a str, Option<&'a [u8]>);
+        type Shown<'a> = (Option<&'a NodeId>, &'a str, Option<&'a [u8]>);
         let shown: BTreeMap<&NodeId, Shown> = (disk.entries().iter())
             .filter_map(|(ino, entry)| {
                 let parent = match &entry.place {
                     Place::Root => Some(root),
-                    Place::In(parent) => inos.get(parent).map(|id| id.as_str()),
+                    Place::In(parent) => inos.get(parent),
                     Place::Parked(_) => return None,
                 };
                 let digest = (entry.content.as_ref()).map(|c| c.manifest_digest.as_slice());
@@ -518,7 +519,7 @@ impl Intents {
     }
 
     fn holds(&self, i: usize, server: &Server, in_trash: bool) -> bool {
-        let there = |id: &str| match in_trash {
+        let there = |id: &NodeId| match in_trash {
             true => server.nodes.get(id),
             false => server.live(id),
         };
@@ -528,7 +529,7 @@ impl Intents {
                 there(id).is_some_and(|node| {
                     (named(&node.name, name)
                         || merged_into && named(&name_key(&node.name), &name_key(name)))
-                        && self.parent_is(i, *parent, &node.parent_id, &server.root)
+                        && self.parent_is(i, *parent, &NodeId::from(&node.parent_id), &server.root)
                 })
             }),
             Value::Content { digest, .. } => self
@@ -549,7 +550,7 @@ impl Intents {
             server.nodes.get(id).is_some_and(|node| {
                 !node.pending_for.is_empty()
                     && named(&node.pending_for, name)
-                    && self.parent_is(i, *parent, &node.parent_id, &server.root)
+                    && self.parent_is(i, *parent, &NodeId::from(&node.parent_id), &server.root)
             })
         })
     }
@@ -690,6 +691,7 @@ impl Intents {
         (node, parent, name, root): (&str, &str, &str, &str),
     ) -> bool {
         let stem = pending_stem(name);
+        let (node, parent, root) = (NodeId::from(node), NodeId::from(parent), NodeId::from(root));
         (0..self.list.len()).any(|i| {
             let Value::Place {
                 parent: above,
@@ -699,9 +701,9 @@ impl Intents {
                 return false;
             };
             keep(&self.list[i])
-                && self.on(i, node)
+                && self.on(i, &node)
                 && (named(name, given) || stem.is_some_and(|stem| named(stem, given)))
-                && self.parent_is(i, *above, parent, root)
+                && self.parent_is(i, *above, &parent, &root)
         })
     }
 
@@ -715,7 +717,7 @@ impl Intents {
         })
     }
 
-    pub(super) fn deleted(&self, d: usize, node: &str) -> bool {
+    pub(super) fn deleted(&self, d: usize, node: &NodeId) -> bool {
         (0..self.list.len()).any(|i| {
             let Value::Trashed { subtree, .. } = &self.list[i].value else {
                 return false;
@@ -762,8 +764,7 @@ impl Intents {
                 .flat_map(|ino| self.nodes_of(author, *ino, made))
                 .collect();
             self.holders(i).any(|id| {
-                deleted.contains(id)
-                    || (server.above(id).into_iter()).any(|above| self.on(j, above))
+                deleted.contains(id) || (server.above(id).iter()).any(|above| self.on(j, above))
             })
         };
         let into_itself = match intent.value {
@@ -774,7 +775,7 @@ impl Intents {
                 .nodes_of(intent.author, parent, intent.made)
                 .any(|above| {
                     self.nodes(i)
-                        .any(|id| id == above || server.above(above).contains(&id.as_str()))
+                        .any(|id| id == above || server.above(above).contains(id))
                 }),
             _ => false,
         };
@@ -829,10 +830,10 @@ impl Intents {
                         self.nodes_of(intent.author, parent, intent.made)
                             .any(|above| {
                                 let chain = server.above(above);
-                                chain.contains(&id.as_str())
-                                    && self.nodes(j).any(|moved| {
-                                        moved == above || chain.contains(&moved.as_str())
-                                    })
+                                chain.contains(id)
+                                    && self
+                                        .nodes(j)
+                                        .any(|moved| moved == above || chain.contains(moved))
                             })
                     });
                 let saw_the_action = (0..self.list.len()).any(|k| {
@@ -957,7 +958,7 @@ mod tests {
         give_up: impl Fn(&mut Intents, &BTreeSet<NodeId>),
     ) -> bool {
         let mut intents = Intents::new(2);
-        let node: BTreeSet<NodeId> = ["n".to_owned()].into();
+        let node: BTreeSet<NodeId> = [NodeId::from("n")].into();
         for nodes in &mut intents.nodes {
             nodes.insert(1, node.clone());
         }
@@ -981,7 +982,7 @@ mod tests {
     #[test]
     fn a_published_write_must_reach_the_server_and_a_discarded_change_counts_as_unasked() {
         let mut intents = Intents::new(1);
-        intents.nodes[0].insert(1, ["n".to_owned()].into());
+        intents.nodes[0].insert(1, [NodeId::from("n")].into());
         let content = |write: i64| Value::Content {
             write,
             digest: vec![write as u8],
@@ -1005,7 +1006,7 @@ mod tests {
         assert!(!ok(&intents));
         intents.record(0, 3, 1, "move", place("a"));
         intents.record(0, 3, 1, "move", place("b"));
-        intents.give_up(&server, 0, &["n".to_owned()].into());
+        intents.give_up(&server, 0, &[NodeId::from("n")].into());
         assert!(intents.placed(Some(0), "n", "root", "a", "root"));
         assert!(!intents.placed(Some(0), "n", "root", "b", "root"));
         assert!(intents.discarded_place(Some(0), "n", "root", "b", "root"));
@@ -1015,7 +1016,7 @@ mod tests {
     #[test]
     fn a_name_is_pending_only_when_the_server_says_what_it_is_pending_for() {
         let mut intents = Intents::new(1);
-        intents.nodes[0].insert(1, ["n".to_owned()].into());
+        intents.nodes[0].insert(1, [NodeId::from("n")].into());
         let named_pending = NodeState {
             node_id: "n".into(),
             parent_id: "root".into(),
@@ -1029,7 +1030,7 @@ mod tests {
             name: "A".to_owned(),
         };
         intents.record(0, 1, 1, "move", place);
-        intents.give_up(&server, 0, &["n".to_owned()].into());
+        intents.give_up(&server, 0, &[NodeId::from("n")].into());
         assert!(!intents.placed(Some(0), "n", "root", "A", "root"));
         assert!(intents.discarded_place(Some(0), "n", "root", "A", "root"));
     }

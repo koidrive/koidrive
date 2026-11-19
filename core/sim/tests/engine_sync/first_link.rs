@@ -44,7 +44,7 @@ fn placement_check_after_a_move(
     }
     assert_eq!(trees.check(), Ok(()));
     trees.revert("x".into());
-    let local = trees.local().get("x").unwrap();
+    let local = trees.local().get(&"x".into()).unwrap();
     let placed = BTreeMap::from([("x".into(), position(&local.shape))]);
     let after = koidrive_engine::tree::Shape {
         parent: destination.into(),
@@ -57,7 +57,7 @@ fn placement_check_after_a_move(
         effect: Effect::Move {
             from: Location::At {
                 base: Base::Root,
-                dirs: local_path(&trees, "p")
+                dirs: local_path(&trees, &"p".into())
                     .into_iter()
                     .map(|name| koidrive_engine::effects::Dir {
                         name,
@@ -113,7 +113,7 @@ fn placement_check_after_a_move(
             )
             .unwrap();
         assert_eq!(
-            device.trees.local().get("x").unwrap().shape.parent,
+            device.trees.local().get(&"x".into()).unwrap().shape.parent,
             destination
         );
         assert_eq!(device.trees.check(), Ok(()));
@@ -890,7 +890,7 @@ fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
         },
     );
     let from = RemoteNode::from_state(&state("m", "k")).unwrap().1.shape;
-    device.relocate("m", &from, &moved);
+    device.relocate(&"m".into(), &from, &moved);
     let mut changes = Vec::new();
     if server_took_the_move {
         changes.push(change("m", "root"));
@@ -898,7 +898,7 @@ fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
     changes.extend([change("k", "root"), change("m", "k"), change("u", "m")]);
     device.receive(&changes, false);
     note_kept_back(&mut device);
-    device.kept_back.contains("k")
+    device.kept_back.contains(&NodeId::from("k"))
 }
 
 #[test]
@@ -935,7 +935,7 @@ fn keep_rule_keeps_a_deleted_folder(server_renames_it: bool) -> bool {
         })),
     };
     device.receive(&[change("k")], false);
-    let held = device.trees.remote().live("k").unwrap().clone();
+    let held = device.trees.remote().live(&"k".into()).unwrap().clone();
     device.trees.set_local(
         "k".into(),
         LocalNode {
@@ -947,10 +947,10 @@ fn keep_rule_keeps_a_deleted_folder(server_renames_it: bool) -> bool {
         },
     );
     device.trees.settle(&Default::default());
-    device.trees.remove_local("k");
+    device.trees.remove_local(&"k".into());
     device.receive(&[change(if server_renames_it { "a" } else { "k" })], false);
     note_kept_back(&mut device);
-    device.kept_back.contains("k")
+    device.kept_back.contains(&NodeId::from("k"))
 }
 
 #[test]
@@ -989,7 +989,12 @@ fn the_keep_rule_keeps_back_a_folder_above_an_entry_it_already_kept_back() {
     };
     device.receive(&[change("k", "root", "k"), change("c", "k", "c")], false);
     for (id, ino) in [("k", 1), ("c", 2)] {
-        let shape = device.trees.remote().live(id).unwrap().clone();
+        let shape = device
+            .trees
+            .remote()
+            .live(&NodeId::from(id))
+            .unwrap()
+            .clone();
         let node = LocalNode {
             left_out_when_placed: false,
             content_from_server: false,
@@ -1000,18 +1005,18 @@ fn the_keep_rule_keeps_back_a_folder_above_an_entry_it_already_kept_back() {
         device.trees.set_local(id.into(), node);
     }
     device.trees.settle(&Default::default());
-    device.trees.remove_local("c");
+    device.trees.remove_local(&"c".into());
     device.removed_from.insert("c".into(), "k".into());
     device.acted.insert("c".into());
     device.receive(&[change("c", "k", "a")], false);
     note_kept_back(&mut device);
-    assert!(device.kept_back.contains("c"));
+    assert!(device.kept_back.contains(&NodeId::from("c")));
     device.trees.set_synced("c".into(), None);
-    device.trees.remove_local("k");
+    device.trees.remove_local(&"k".into());
     device.removed_from.insert("k".into(), "root".into());
     device.acted.insert("k".into());
     note_kept_back(&mut device);
-    assert!(device.kept_back.contains("k"));
+    assert!(device.kept_back.contains(&NodeId::from("k")));
 }
 
 #[test]
@@ -1034,13 +1039,18 @@ fn a_move_out_and_back_leaves_no_relocation_to_stop_the_keep_rule_walk() {
         kind: Kind::Dir,
         content: None,
     };
-    device.relocate("m", &at("h"), &at("k"));
-    assert!(device.relocated.contains_key("m"));
-    device.relocate("m", &at("k"), &at("h"));
-    assert!(!device.relocated.contains_key("m"));
-    device.relocate("m", &at("h"), &at("k"));
-    device.relocate("m", &at("c"), &at("h"));
-    assert!(device.relocated.get("m").is_some_and(|moved| moved.from == at("c")));
+    device.relocate(&"m".into(), &at("h"), &at("k"));
+    assert!(device.relocated.contains_key(&NodeId::from("m")));
+    device.relocate(&"m".into(), &at("k"), &at("h"));
+    assert!(!device.relocated.contains_key(&NodeId::from("m")));
+    device.relocate(&"m".into(), &at("h"), &at("k"));
+    device.relocate(&"m".into(), &at("c"), &at("h"));
+    assert!(
+        device
+            .relocated
+            .get(&NodeId::from("m"))
+            .is_some_and(|moved| moved.from == at("c"))
+    );
 }
 
 #[test]
@@ -1073,10 +1083,15 @@ fn a_move_the_server_answers_at_another_place_is_pending_from_there() {
             ..Default::default()
         })),
     };
-    device.relocate("m", &at("h"), &at("j"));
+    device.relocate(&"m".into(), &at("h"), &at("j"));
     device.receive(&[answer], true);
-    device.relocate("m", &at("j"), &at("h"));
-    assert!(device.relocated.get("m").is_some_and(|moved| moved.from == at("k")));
+    device.relocate(&"m".into(), &at("j"), &at("h"));
+    assert!(
+        device
+            .relocated
+            .get(&NodeId::from("m"))
+            .is_some_and(|moved| moved.from == at("k"))
+    );
 }
 
 #[test]

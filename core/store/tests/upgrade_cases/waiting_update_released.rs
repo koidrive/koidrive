@@ -7,7 +7,7 @@ upgrade_case!(waiting_update_released, |store| {
             let report = tx.local_nodes()?.into_iter().find(|node| node.shape.name == "report.txt").unwrap();
             let mut after = before.clone();
             let base = koidrive_engine::tree::Shape {
-                parent: report.shape.parent_id.clone(),
+                parent: report.shape.parent_id.clone().into(),
                 name: "report.txt".into(),
                 kind: koidrive_engine::tree::Kind::File,
                 content: None,

@@ -8,7 +8,7 @@ use koidrive_engine::commit::Commits;
 use koidrive_engine::effects::{BatchLimit, Effects};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::state::CommitsState;
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
 use koidrive_proto::v1::{CommitResult, OpResult, op, op_result};
 
 const ROOT: &str = "root";
@@ -62,7 +62,7 @@ fn local(parent: String, name: String, kind: Kind, ino: u128) -> LocalNode {
         left_out_when_placed: false,
         content_from_server: false,
         shape: Shape {
-            parent,
+            parent: NodeId::from(parent),
             name,
             kind,
             content,
@@ -81,7 +81,7 @@ fn created(op: &op::Op) -> (String, Shape) {
         op::Op::CreateDir(create) => (
             create.node_id.clone(),
             Shape {
-                parent: create.parent_id.clone(),
+                parent: NodeId::from(&create.parent_id),
                 name: create.name.clone(),
                 kind: Kind::Dir,
                 content: None,
@@ -90,7 +90,7 @@ fn created(op: &op::Op) -> (String, Shape) {
         op::Op::CreateFile(create) => (
             create.node_id.clone(),
             Shape {
-                parent: create.parent_id.clone(),
+                parent: NodeId::from(&create.parent_id),
                 name: create.name.clone(),
                 kind: Kind::File,
                 content: create.content.clone(),
@@ -152,14 +152,14 @@ fn first_upload(upload: Upload) -> u64 {
             false => ROOT.into(),
         };
         trees.set_local(
-            order.id(Kind::Dir, d),
+            order.id(Kind::Dir, d).into(),
             local(parent, format!("folder {d}"), Kind::Dir, d as u128 + 1),
         );
     }
     for f in 0..files {
         let ino = (dirs + f) as u128 + 1;
         trees.set_local(
-            order.id(Kind::File, f),
+            order.id(Kind::File, f).into(),
             local(
                 order.id(Kind::Dir, f / per_dir),
                 format!("file {f}"),
@@ -176,11 +176,11 @@ fn first_upload(upload: Upload) -> u64 {
         for f in 0..files {
             let ino = (dirs + files + f) as u128 + 1;
             trees.set_local(
-                format!("!f{f:06}"),
+                format!("!f{f:06}").into(),
                 local("!d".into(), format!("file {f}"), Kind::File, ino),
             );
         }
-        trees.ignore_local("!d");
+        trees.ignore_local(&"!d".into());
     }
     trees.settle(&Default::default());
     let state = CommitsState {
@@ -211,7 +211,7 @@ fn first_upload(upload: Upload) -> u64 {
                 pending_for: None,
                 pending_by: None,
             };
-            trees.set_remote_made_here(id, node);
+            trees.set_remote_made_here(NodeId::from(id), node);
         }
         sent += commit.ops.len();
         let applied = OpResult {
@@ -274,7 +274,7 @@ fn remote(parent: String, name: String, kind: Kind) -> RemoteNode {
     RemoteNode {
         made_over: Vec::new(),
         shape: Shape {
-            parent,
+            parent: NodeId::from(parent),
             name,
             kind,
             content,
@@ -297,7 +297,7 @@ fn first_download(files: usize, per_dir: usize) -> u64 {
     let dirs = files.div_ceil(per_dir);
     for d in 0..dirs {
         let node = remote(ROOT.into(), format!("folder {d}"), Kind::Dir);
-        trees.set_remote(format!("d{d:06}"), node);
+        trees.set_remote(format!("d{d:06}").into(), node);
     }
     for f in 0..files {
         let node = remote(
@@ -305,7 +305,7 @@ fn first_download(files: usize, per_dir: usize) -> u64 {
             format!("file {f}"),
             Kind::File,
         );
-        trees.set_remote(format!("f{f:06}"), node);
+        trees.set_remote(format!("f{f:06}").into(), node);
     }
     trees.settle(&Default::default());
     let (mut effects, mut ids) = (Effects::default(), IdGen::new(1));
@@ -351,17 +351,17 @@ fn first_link_of_nested_folders(levels: usize, depth: usize) -> u64 {
         let name = format!("folder {level}");
         let ino = 2 * level as u128 + 1;
         trees.set_local(
-            folder.clone(),
+            NodeId::from(&folder),
             local(parent.clone(), name.clone(), Kind::Dir, ino),
         );
-        trees.set_remote(folder.clone(), remote(parent, name, Kind::Dir));
+        trees.set_remote(NodeId::from(&folder), remote(parent, name, Kind::Dir));
         let mut file = local(folder.clone(), "notes".into(), Kind::File, ino + 1);
         (file.shape.content.as_mut()).expect("a file").mtime_ns = 1_794_268_740_123_456_789;
         let shape = file.shape.clone();
-        trees.set_local(format!("l{level:06}"), file);
+        trees.set_local(format!("l{level:06}").into(), file);
         let mut node = remote(folder.clone(), "notes".into(), Kind::File);
         node.shape = shape;
-        trees.set_remote(format!("r{level:06}"), node);
+        trees.set_remote(format!("r{level:06}").into(), node);
         parent = folder;
     }
     let before = allocated();
@@ -379,24 +379,24 @@ fn links_waiting_on_their_folders(folders: usize, settles: usize) -> (u64, u64) 
         let folder = format!("d{f:06}");
         let ino = 2 * f as u128 + 1;
         let local_folder = local(ROOT.into(), format!("mine {f}"), Kind::Dir, ino);
-        trees.set_local(folder.clone(), local_folder);
+        trees.set_local(NodeId::from(&folder), local_folder);
         trees.set_remote(
-            folder.clone(),
+            NodeId::from(&folder),
             remote(ROOT.into(), format!("theirs {f}"), Kind::Dir),
         );
         let mut file = local(folder.clone(), "notes".into(), Kind::File, ino + 1);
         (file.shape.content.as_mut()).expect("a file").mtime_ns = 1_794_268_740_123_456_789;
         let mut node = remote(folder.clone(), "notes".into(), Kind::File);
         node.shape = file.shape.clone();
-        trees.set_local(format!("l{f:06}"), file);
-        trees.set_remote(format!("r{f:06}"), node);
+        trees.set_local(format!("l{f:06}").into(), file);
+        trees.set_remote(format!("r{f:06}").into(), node);
     }
     trees.settle(&Default::default());
     let before = allocated();
     for s in 0..settles {
         let ino = (2 * folders + s) as u128 + 1;
         let other = local(ROOT.into(), format!("other {s}"), Kind::File, ino);
-        trees.set_local(format!("o{s:06}"), other);
+        trees.set_local(format!("o{s:06}").into(), other);
         trees.settle(&Default::default());
     }
     let waiting = allocated() - before;
@@ -408,7 +408,7 @@ fn links_waiting_on_their_folders(folders: usize, settles: usize) -> (u64, u64) 
             Kind::Dir,
             2 * f as u128 + 1,
         );
-        trees.set_local_changed(format!("d{f:06}"), placed);
+        trees.set_local_changed(format!("d{f:06}").into(), placed);
     }
     trees.settle(&Default::default());
     let placing = allocated() - before;

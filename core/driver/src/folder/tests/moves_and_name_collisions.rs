@@ -821,7 +821,14 @@ fn report_removed(remote: &mut Remote) -> (Site, Device, String) {
     a.rest(remote);
     let before = live_id(&server_nodes(remote), "report.txt");
     fs::remove_file(site.root.join("docs/report.txt")).unwrap();
-    a.scan_until(|a| a.folder.engine.trees.local().get(&before).is_none());
+    a.scan_until(|a| {
+        a.folder
+            .engine
+            .trees
+            .local()
+            .get(&NodeId::from(&before))
+            .is_none()
+    });
     (site, a, before)
 }
 
@@ -996,7 +1003,14 @@ fn a_file_removed_while_a_commit_is_out_before_a_rule_leaves_it_out_leaves_the_s
     fs::write(site.root.join("other.txt"), b"other").unwrap();
     a.scan_until(|a| a.folder.engine.commits.in_flight().is_some());
     fs::remove_file(site.root.join("docs/report.txt")).unwrap();
-    a.scan_until(|a| a.folder.engine.trees.local().get(&before).is_none());
+    a.scan_until(|a| {
+        a.folder
+            .engine
+            .trees
+            .local()
+            .get(&NodeId::from(&before))
+            .is_none()
+    });
     fs::write(site.root.join(".koiignore"), b"report.txt\n").unwrap();
     a.scan_until(|_| local_holds(&site, ".koiignore"));
     a.rest(&mut remote);
@@ -1030,7 +1044,13 @@ fn a_delete_the_server_refused_after_a_rule_left_its_file_out_is_sent_again_afte
     let result = remote.commit(&a.caller, &refused).unwrap();
     let step = a.folder.sent(Ok(result));
     a.take(step).unwrap();
-    assert!(a.folder.engine.commits.problems().contains(&before));
+    assert!(
+        a.folder
+            .engine
+            .commits
+            .problems()
+            .contains(&NodeId::from(&before))
+    );
     let step = a.folder.scanned();
     a.take(step).unwrap();
     a.rest(&mut remote);

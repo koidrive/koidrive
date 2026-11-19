@@ -38,7 +38,7 @@ fn an_own_move_whose_earlier_positions_aged_out_before_the_upgrade_is_sent_again
     trees.set_synced("n".into(), Some(engine_shape("root", "x")));
     trees.set_local("n".into(), local("y"));
     trees.set_remote("n".into(), remote("y", 2, false));
-    trees.record_moved("n", 2);
+    trees.record_moved(&"n".into(), 2);
     trees.set_synced("n".into(), Some(engine_shape("root", "y")));
     trees.set_remote("n".into(), remote("y", 3, true));
     trees.set_remote("n".into(), remote("y", 4, false));

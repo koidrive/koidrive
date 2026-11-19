@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+use koidrive_engine::tree::NodeId;
 
 fn take(device: usize) -> Vec<(usize, Step)> {
     let mut steps = vec![(device, DELIVER); 4];
@@ -148,7 +149,7 @@ fn a_delete_made_after_a_restore_from_the_trash_stays_when_a_backup_from_before_
     world.restored_from_trash(0, &file);
     let engine = &mut world.devices[0].engine;
     let request = engine.ids.uuid_v7(1_700_000_000_000);
-    let intent = RestoreIntent::from_trash(file, None, None).unwrap();
+    let intent = RestoreIntent::from_trash(NodeId::from(file), None, None).unwrap();
     assert!(engine.commits.restore(request, intent));
     world.phase(2, &commit(0)).unwrap();
     assert_eq!(live_files(&world), 1);

@@ -76,13 +76,13 @@ impl Folder {
             Stream::Following { .. } if self.settled(&held) => FolderState::UpToDate,
             Stream::Following { .. } => FolderState::CatchingUp,
         };
-        let quoted_item = |id: &String| {
+        let quoted_item = |id: &NodeId| {
             (self.item_path(id)).map_or_else(
                 || format!("node {id}"),
                 |path| koidrive_fs::quoted(&path).to_string(),
             )
         };
-        let mut reasons: BTreeMap<&String, Vec<String>> = BTreeMap::new();
+        let mut reasons: BTreeMap<&NodeId, Vec<String>> = BTreeMap::new();
         let mut restart = (self.engine.effects.blocked().keys())
             .any(|node| !self.denied.contains_key(node))
             || !held.is_empty();
@@ -109,13 +109,13 @@ impl Folder {
             };
             reasons.entry(id).or_default().push(why);
         }
-        let kept_in = |id: &str| {
+        let kept_in = |id: &NodeId| {
             (trees.local().get(id))
                 .is_some_and(|node| node.parked)
                 .then(|| {
                     let parked = Path::new(koidrive_fs::PRIVATE_DIR)
                         .join(koidrive_fs::PARKED_DIR)
-                        .join(trees.parked_name(id));
+                        .join(trees.parked_name(id).to_string());
                     format!("it is kept in {}", koidrive_fs::quoted(&parked))
                 })
         };
@@ -313,7 +313,7 @@ impl Folder {
         changed
     }
 
-    fn held(&self) -> BTreeMap<String, Stuck> {
+    fn held(&self) -> BTreeMap<NodeId, Stuck> {
         match (
             self.engine.effects.in_flight(),
             self.engine.commits.in_flight(),
@@ -345,7 +345,7 @@ impl Folder {
         }
         let other = |a: &Content, b: Option<&Content>| b.is_none_or(|b| !same_content(a, b));
         let mut wanted = BTreeMap::new();
-        let mut want = |direction, id: &String, content: &Content| {
+        let mut want = |direction, id: &NodeId, content: &Content| {
             let item = Item {
                 direction,
                 node: id.clone(),
@@ -436,7 +436,7 @@ impl Folder {
 
     /// The path of a node relative to the root: where L holds it, or else where R does, as for a file whose download
     /// failed or that this device deleted.
-    pub(super) fn item_path(&self, id: &str) -> Option<PathBuf> {
+    pub(super) fn item_path(&self, id: &NodeId) -> Option<PathBuf> {
         (self.engine.path_of(id)).or_else(|| self.engine.trees.remote().path(id))
     }
 
@@ -446,7 +446,7 @@ impl Folder {
     /// device leaves out, a folder to remove that L holds above a node that cannot be synced, or a node of `held`, which
     /// this device's rules keep from its place or from S ([`effects::stuck`]), and so is the node of every restore
     /// that waits.
-    fn settled(&self, held: &BTreeMap<String, Stuck>) -> bool {
+    fn settled(&self, held: &BTreeMap<NodeId, Stuck>) -> bool {
         let stuck = self.stays_out(held);
         let commits = &self.engine.commits;
         self.caught_up()
@@ -459,11 +459,11 @@ impl Folder {
             && commits.held_restores().count() == commits.restores().len()
     }
 
-    fn stays_out<'a>(&'a self, held: &'a BTreeMap<String, Stuck>) -> impl Fn(&String) -> bool + 'a {
+    fn stays_out<'a>(&'a self, held: &'a BTreeMap<NodeId, Stuck>) -> impl Fn(&NodeId) -> bool + 'a {
         let trees = &self.engine.trees;
         let mut above_blocked = BTreeSet::new();
         for node in (self.engine.effects.blocked().keys()).chain(held.keys()) {
-            let mut current = node.as_str();
+            let mut current = node;
             for _ in 0..trees.local().len() {
                 match trees.local().get(current) {
                     Some(local) if local.shape.parent != trees.local().root => {
@@ -475,12 +475,12 @@ impl Folder {
             }
         }
         let kept_for_excluded = trees.kept_for_excluded();
-        move |id: &String| {
+        move |id: &NodeId| {
             self.engine.effects.blocked().contains_key(id)
                 || self.engine.commits.problems().contains(id)
                 || trees.excluded(id)
-                || kept_for_excluded(id.as_str())
-                || (above_blocked.contains(id.as_str()) && trees.remote().live(id).is_none())
+                || kept_for_excluded(id)
+                || (above_blocked.contains(id) && trees.remote().live(id).is_none())
                 || held.contains_key(id)
         }
     }

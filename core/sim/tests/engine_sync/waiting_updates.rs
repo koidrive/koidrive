@@ -72,7 +72,7 @@ fn a_second_version_restore_waits_until_s_has_the_first() {
         let outcomes: Vec<_> = ran.resolved.iter().map(|r| &r.outcome).collect();
         assert_eq!(outcomes, [&Outcome::Restored; 2], "{cut:?}");
         let last = &ran.resolved[1].intent;
-        let versions = versions(&ran.space, last.node());
+        let versions = versions(&ran.space, &last.node().to_string());
         let asked = versions
             .iter()
             .find(|v| Some(v.version_id.as_str()) == last.version_id());

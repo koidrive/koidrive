@@ -180,7 +180,7 @@ fn question_summary(question: &Question) -> String {
         .to_owned(),
         QuestionKind::Conflict { original, .. } => format!(
             "{} has a conflict copy",
-            conflict_path(question, &original.node_id)
+            conflict_path(question, &original.node_id.to_string())
         ),
     }
 }
@@ -223,7 +223,7 @@ fn conflict_files(question: &Question, indent: &str, this_device: Option<&str>) 
             };
             format!(
                 "{indent}{role}: {}, written by {writer}\n",
-                conflict_path(question, &file.node_id)
+                conflict_path(question, &file.node_id.to_string())
             )
         })
         .collect()
@@ -249,8 +249,8 @@ pub(crate) fn choices(question: &Question) -> Vec<Choice> {
             })
             .collect();
     };
-    let kept = conflict_path(question, &original.node_id);
-    let copied = conflict_path(question, &copy.node_id);
+    let kept = conflict_path(question, &original.node_id.to_string());
+    let copied = conflict_path(question, &copy.node_id.to_string());
     vec![
         Choice {
             word: format!("keep-node:{}", original.node_id),

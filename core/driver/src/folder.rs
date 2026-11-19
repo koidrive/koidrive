@@ -151,19 +151,19 @@ pub(crate) struct Folder {
     /// Commit sends and uploads that failed in a row, for the backoff.
     failures: u32,
     backoff: Backoff,
-    unreadable: BTreeMap<String, Unreadable>,
+    unreadable: BTreeMap<NodeId, Unreadable>,
     detached: BTreeMap<PathBuf, Detached>,
     /// The calls that failed and are sent again, by kind, until one of the kind goes through. The status shows
     /// them once they have failed for [`RETRY_SHOWN`], or at once when the wait is that long.
     retrying: BTreeMap<Call, Retrying>,
     /// The disk effects of each node that failed in a row in this task, for [`EFFECT_RETRY`], and why the last one
     /// failed.
-    effect_failures: BTreeMap<String, (u32, String)>,
-    denied: BTreeMap<String, Denied>,
+    effect_failures: BTreeMap<NodeId, (u32, String)>,
+    denied: BTreeMap<NodeId, Denied>,
     /// The nodes whose last effect ended [`Settled::Stuck`]. A [`Work::RetryAfter`] leaves them blocked.
-    stuck_effects: BTreeSet<String>,
+    stuck_effects: BTreeSet<NodeId>,
     /// Why the server did not take a change of each node, for the nodes it may have left out of commits.
-    refused_nodes: BTreeMap<String, String>,
+    refused_nodes: BTreeMap<NodeId, String>,
     asked: BTreeSet<String>,
     progress: Arc<Mutex<Tracker>>,
     recount_at: Option<Instant>,
@@ -637,7 +637,7 @@ impl Folder {
             (folder.disk).observed(batch, &mut folder.engine, &mut folder.store)
         })?;
         self.detached = detached;
-        let allowed: Vec<String> = (self.denied.iter())
+        let allowed: Vec<NodeId> = (self.denied.iter())
             .filter(|(node, denied)| {
                 denied.foreseen
                     && self.engine.effects.blocked().contains_key(*node)
@@ -657,11 +657,11 @@ impl Folder {
             }
         }
         let problems = self.engine.commits.problems();
-        let changed: Vec<String> = (self.unreadable.iter())
+        let changed: Vec<NodeId> = (self.unreadable.iter())
             .filter(|(node, unreadable)| {
                 problems.contains(*node)
                     && (unreadable.left_out.as_ref()).is_some_and(|left_out| {
-                        self.engine.trees.local().get(node.as_str()) != left_out.seen.as_ref()
+                        self.engine.trees.local().get(node) != left_out.seen.as_ref()
                     })
             })
             .map(|(node, _)| node.clone())
@@ -678,7 +678,7 @@ impl Folder {
     pub fn scanned(&mut self) -> Result<Vec<Work>, Stop> {
         self.scanned = true;
         self.engine.forget_removals();
-        let cleared: Vec<String> = self.engine.commits.problems().iter().cloned().collect();
+        let cleared: Vec<NodeId> = self.engine.commits.problems().iter().cloned().collect();
         self.let_back_in(&cleared)?;
         self.refused_nodes.retain(|id, _| !cleared.contains(id));
         self.publish_remote()?;
@@ -827,10 +827,10 @@ impl Folder {
         change: impl FnOnce(&mut Folder) -> Result<T, Stop>,
     ) -> Result<T, Stop> {
         let local = self.engine.trees.local();
-        let failing: Vec<String> = (self.effect_failures.keys())
+        let failing: Vec<NodeId> = (self.effect_failures.keys())
             .chain(&self.stuck_effects)
             .chain(self.denied.keys())
-            .filter(|node| local.get(node.as_str()).is_some())
+            .filter(|node| local.get(node).is_some())
             .cloned()
             .collect();
         let out = change(self)?;

@@ -13,10 +13,10 @@ mutation agreed-batch $C 's/    \(needed, agreed\)\n\}/    let _ = agreed;\n    
 mutation merge-delete-wait $C 's/scratch\.protected\.insert\(level\.clone\(\)\);/let _ = \&level;/' both
 mutation pending-name $C 's/\n            && \(scratch\.holders\(&shape\.parent, &shape\.name\)\)\.any\(\|other\| \{\n.*?\n            \}\)\n        \{/\n            \&\& false\n        {/s' both
 mutation renamed-revert $C 's/\(renamed && !left && !kept\)/(false \&\& renamed \&\& !left \&\& !kept)/; s/else if renamed && !left/else if false \&\& renamed \&\& !left/' both
-mutation merged-revert $C 's/trees\.revert\(create\.node_id\.clone\(\)\);\n//' both
+mutation merged-revert $C 's/trees\.revert\(create_id\.clone\(\)\);\n//' both
 mutation cycle-revert $C 's/        for id in reverts \{\n            trees\.revert\(id\);/        for id in reverts {\n            let _ = id;/' both
 mutation split-halves $C 's/self\.cap\.set\(Some\(ops\.len\(\) \/ 2\)\);/self.cap.set(Some(ops.len()));/' both
-mutation split-delete $C 's/self\.split\.insert\(delete\.node_id\);/let _ = delete;/' unit
+mutation split-delete $C 's/self\.split\.insert\(NodeId::from\(delete\.node_id\)\);/let _ = delete;/' unit
 mutation cap-regrowth $C 's/self\.cap\.map\(\|cap\| cap \* 2\)/self.cap.map(|cap| cap)/' unit
 mutation byte-budget $C 's/\(emitted == 0 \|\| bytes \+ cost <= MAX_COMMIT_BYTES\)/(emitted == 0 || bytes + cost <= usize::MAX - cost)/' unit
 mutation large-delete $C 's/if kept \|\| opened \|\| bytes > MAX_COMMIT_BYTES \|\| split\.contains\(id\)/if kept || opened || split.contains(id)/' unit
@@ -37,11 +37,11 @@ mutation parked-reverted-remove $E 's/!\(self\.trees\.reverted\(\)\.contains\(id
 mutation parked-reverted-edit $E 's/ \|\| self\.trees\.edited\(id\)\) =>/) =>/' both
 mutation reverted-retain $L 's/\(local, remote\) => local\.is_some\(\) \|\| remote\.is_some\(\),/(local, _) => local.is_some(),/' both
 mutation alias-in-place $C 's/if in_alias && \(placed\(agreed\) \|\| placed\(remote\)\) && !trees\.reverted\(\)\.contains\(id\) \{\n            reverts\.push\(id\.clone\(\)\);/if in_alias \&\& (placed(agreed) || placed(remote)) \&\& !trees.reverted().contains(id) {\n            let _ = id;/' both
-mutation rekey-edit $C 's/            && !trees\.held\(id\)\n        \{\n            rekey_copy\(trees, id, &ids\.uuid_v7\(now_ms\)\);/            \&\& !trees.held(id)\n        {\n            let _ = (\&ids, now_ms);/' both
+mutation rekey-edit $C 's/            && !trees\.held\(id\)\n        \{\n            rekey_copy\(trees, id, &NodeId::from\(ids\.uuid_v7\(now_ms\)\)\);/            \&\& !trees.held(id)\n        {\n            let _ = (\&ids, now_ms);/' both
 mutation keep-revert-blocked $C 's/if !trees\.set_synced_if_valid\(node\.clone\(\), None\) \{\n            trees\.revert\(node\.clone\(\)\);/if !trees.set_synced_if_valid(node.clone(), None) {/' both
 mutation quota-retry $C 's/            Ok\(Code::QuotaExceeded\) if error\.retry_after_ms > 0 => Failure::Resend,\n//' unit
 mutation refused-reconnect $C 's/_ if policy && w >= a => return Reconnect::Idle,/_ if policy \&\& w >= a => return Reconnect::Resend,/' unit
 mutation unknown-resend $C 's/            _ => Failure::Halted\(Halt::Policy \{ code: error\.code \}\),/            Err(_) => Failure::Resend,\n            _ => Failure::Halted(Halt::Policy { code: error.code }),/' unit
-mutation parked-name $L 's/self\.parked_as\.get\(id\)\.map_or\(id, String::as_str\)/{ let _ = \&self.parked_as; id }/' unit
+mutation parked-name $L 's/self\.parked_as\.get\(id\)\.unwrap_or\(id\)/{ let _ = \&self.parked_as; id }/' unit
 mutation rekey-park-as $C 's/        trees\.park_as\(to\.to_owned\(\), parked_name\);\n//' unit
-mutation digest-dedupe $E 's/    let changed = remote_only\(trees, id\)\n/    let changed = trees.local().get(id).is_some_and(|node| {\n        let digest = |node: \&LocalNode| node.shape.content.as_ref().map(|content| content.manifest_digest.clone());\n        let twin = |(other, twin): (\&NodeId, \&LocalNode)| other.as_str() < id \&\& digest(twin) == digest(node);\n        digest(node).is_some() \&\& trees.synced().live(id).is_none() \&\& trees.remote().live(id).is_none() \&\& trees.local().iter().any(twin)\n    }) || remote_only(trees, id)\n/' devices
+mutation digest-dedupe $E 's/    let changed = remote_only\(trees, id\)\n/    let changed = trees.local().get(id).is_some_and(|node| {\n        let digest = |node: \&LocalNode| node.shape.content.as_ref().map(|content| content.manifest_digest.clone());\n        let twin = |(other, twin): (\&NodeId, \&LocalNode)| other < id \&\& digest(twin) == digest(node);\n        digest(node).is_some() \&\& trees.synced().live(id).is_none() \&\& trees.remote().live(id).is_none() \&\& trees.local().iter().any(twin)\n    }) || remote_only(trees, id)\n/' devices

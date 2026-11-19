@@ -108,7 +108,8 @@ fn restores_lists_what_ended_and_then_what_waits() {
     let in_inbox = driver
         .restore(SPACE, from_trash(9), Seen::default())
         .unwrap();
-    let intent = |node: u128| RestoreIntent::from_trash(server_id(node), None, None).unwrap();
+    let intent =
+        |node: u128| RestoreIntent::from_trash(server_id(node).into(), None, None).unwrap();
     let outcomes = [
         (Outcome::Restored, RestoreState::Restored),
         (
@@ -117,7 +118,7 @@ fn restores_lists_what_ended_and_then_what_waits() {
         ),
         (
             Outcome::Copied {
-                node: server_id(50),
+                node: server_id(50).into(),
                 name: "c".into(),
             },
             RestoreState::Copied {
@@ -326,9 +327,9 @@ fn a_restore_held_by_a_problem_node_reads_as_pending_with_the_reason() {
     let (_dir, paths, _root) = profile(&[]);
     let driver = Driver::open(paths.clone()).unwrap();
     let mut state = koidrive_store::EngineState::default();
-    state.commits.problems.insert(server_id(1));
-    let held = RestoreIntent::version(server_id(1), server_id(40)).unwrap();
-    let free = RestoreIntent::from_trash(server_id(2), None, None).unwrap();
+    state.commits.problems.insert(server_id(1).into());
+    let held = RestoreIntent::version(server_id(1).into(), server_id(40)).unwrap();
+    let free = RestoreIntent::from_trash(server_id(2).into(), None, None).unwrap();
     state.commits.restores.insert("a-held".into(), held);
     state.commits.restores.insert("b-free".into(), free);
     let path = paths.store(SPACE).unwrap();

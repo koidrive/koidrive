@@ -357,11 +357,11 @@ fn a_local_delete_keeps_a_recorded_entry_and_the_folders_above_it_as_the_driver_
             },
         );
     }
-    device.trees.ignore_local("m");
+    device.trees.ignore_local(&"m".into());
     device.act(&act(4, 0, 0, 0, 0));
-    assert!(device.trees.local().get("d").is_some());
-    assert!(device.trees.local().get("m").is_some());
-    assert!(device.trees.local().get("c").is_some());
+    assert!(device.trees.local().get(&"d".into()).is_some());
+    assert!(device.trees.local().get(&"m".into()).is_some());
+    assert!(device.trees.local().get(&"c".into()).is_some());
 }
 
 #[test]
@@ -621,7 +621,7 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
         parent = id;
     }
     let file = koidrive_engine::tree::Shape {
-        parent: parent.clone(),
+        parent: NodeId::from(&parent),
         name: "f".into(),
         kind: Kind::File,
         content: Some(content(1, 0)),
@@ -635,6 +635,6 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
     };
     device.trees.set_remote("f".into(), remote(server));
     device.act(&act(4, 0, 0, 0, 0));
-    assert!(device.trees.local().get("f").is_none());
-    assert!(acted_below(&device, "k", &BTreeMap::new()));
+    assert!(device.trees.local().get(&"f".into()).is_none());
+    assert!(acted_below(&device, &"k".into(), &BTreeMap::new()));
 }

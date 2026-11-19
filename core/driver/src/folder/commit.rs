@@ -16,6 +16,7 @@ use crate::progress::Credit;
 use crate::status::{WaitKind, describe};
 use crate::timing::Time;
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger};
+use koidrive_engine::tree::NodeId;
 
 use super::{Call, Flight, Folder, Next, NotTaken, Retrying, Stream, Work};
 
@@ -154,11 +155,11 @@ impl Folder {
                 tracing::info!(
                     space_id = self.link.space_id,
                     node,
-                    path = ?self.item_path(&node),
+                    path = ?self.item_path(&NodeId::from(&node)),
                     why,
                     "the server did not apply a change"
                 );
-                self.refused_nodes.insert(node, why);
+                self.refused_nodes.insert(NodeId::from(node), why);
             }
         }
         let receive = |engine: &mut Engine, result: CommitResult| {

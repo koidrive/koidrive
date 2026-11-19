@@ -10,7 +10,7 @@ use std::hash::{BuildHasher, Hasher, RandomState};
 
 use koidrive_engine::ids::{unix_ms, uuid_v7};
 use koidrive_engine::restore::{Malformed, Outcome, Rejection, RestoreIntent};
-use koidrive_engine::tree::{RemoteNode, Tree};
+use koidrive_engine::tree::{NodeId, RemoteNode, Tree};
 use koidrive_fs::ItemPath;
 use koidrive_store::Tx;
 use serde::{Deserialize, Serialize};
@@ -53,12 +53,14 @@ impl RestoreRequest {
                 node_id,
                 parent_id,
                 name,
-            } => RestoreIntent::from_trash(node_id, parent_id, name),
+            } => {
+                RestoreIntent::from_trash(NodeId::from(node_id), parent_id.map(NodeId::from), name)
+            }
             Self::Version {
                 node_id,
                 version_id,
                 ..
-            } => RestoreIntent::version(node_id, version_id),
+            } => RestoreIntent::version(NodeId::from(node_id), version_id),
         }
     }
 
@@ -70,7 +72,7 @@ impl RestoreRequest {
     }
 
     pub(crate) fn of(intent: &RestoreIntent, saved_at_ms: Option<i64>) -> Self {
-        let node_id = intent.node().to_owned();
+        let node_id = intent.node().to_string();
         match intent.version_id() {
             Some(version_id) => Self::Version {
                 node_id,
@@ -172,7 +174,7 @@ impl From<&Outcome> for RestoreState {
             Outcome::Restored => Self::Restored,
             Outcome::Renamed { name } => Self::Renamed { name: name.clone() },
             Outcome::Copied { node, name } => Self::Copied {
-                node_id: node.clone(),
+                node_id: node.to_string(),
                 name: name.clone(),
             },
             Outcome::Rejected(rejection) => Self::Rejected {
@@ -213,7 +215,7 @@ pub(crate) fn list(tx: &Tx<'_>, root: &str) -> Result<Vec<RestoreStatus>, koidri
         let asked = asked.get(id).cloned().unwrap_or_default();
         RestoreStatus {
             id: id.to_owned(),
-            path: (remote.path(intent.node()))
+            path: (remote.path(&intent.node()))
                 .and_then(|path| path.to_str().map(ItemPath::from))
                 .or(asked.path.map(ItemPath::from)),
             asked_at_ms: unix_ms(id).map_or(0, |ms| ms as i64),

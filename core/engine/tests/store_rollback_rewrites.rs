@@ -8,7 +8,7 @@ use koidrive_engine::ids::IdGen;
 use koidrive_engine::question::{
     Answer, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
 };
-use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
+use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape};
 use koidrive_proto::v1::op;
 
 const ROOT: &str = "root";
@@ -87,7 +87,7 @@ fn rolled_back_under_a_later_edit(on_disk_at: i64) -> (Trees, Commits, IdGen) {
     (trees, commits, ids)
 }
 
-fn effects(trees: &mut Trees, ids: &mut IdGen) -> Vec<(String, Effect)> {
+fn effects(trees: &mut Trees, ids: &mut IdGen) -> Vec<(NodeId, Effect)> {
     let mut effects = Effects::default();
     let mut done = Vec::new();
     for ino in 100.. {
@@ -124,7 +124,7 @@ fn a_file_written_again_with_the_bytes_s_holds_before_a_store_rollback_is_sent_w
             ..
         }
     ));
-    assert!(trees.held("n"));
+    assert!(trees.held(&"n".into()));
     assert!(effects(&mut trees, &mut ids).is_empty());
     assert!(commits.decide(&question.id, Answer::Publish));
     let commit = commits
@@ -148,8 +148,8 @@ fn a_file_whose_time_only_lost_precision_after_a_store_rollback_follows_the_late
         panic!("{done:?}");
     };
     assert_eq!(
-        (node.as_str(), &content.manifest_digest),
-        ("n", &vec![5; 32])
+        (node.to_string(), &content.manifest_digest),
+        ("n".to_owned(), &vec![5; 32])
     );
     assert!(
         commits

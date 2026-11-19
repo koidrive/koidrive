@@ -235,7 +235,7 @@ impl Credit {
     pub fn upload(
         tracker: &Arc<Mutex<Tracker>>,
         commit: &Commit,
-        path_of: impl Fn(&str) -> Option<PathBuf>,
+        path_of: impl Fn(&NodeId) -> Option<PathBuf>,
     ) -> Credit {
         let mut credit = Credit::download(tracker, []);
         let mut items = Vec::new();
@@ -246,14 +246,15 @@ impl Credit {
                 _ => continue,
             };
             let Some(content) = content else { continue };
-            if let Some(path) = path_of(node) {
+            let node = NodeId::from(node);
+            if let Some(path) = path_of(&node) {
                 credit
                     .paths
                     .insert(node.clone(), path.to_string_lossy().into_owned());
             }
             let item = Item {
                 direction: Direction::Upload,
-                node: node.clone(),
+                node,
                 digest: content.manifest_digest.clone(),
             };
             for chunk in &content.chunks {
@@ -276,12 +277,12 @@ impl Credit {
 
     pub fn download<'a>(
         tracker: &Arc<Mutex<Tracker>>,
-        paths: impl IntoIterator<Item = (&'a str, PathBuf)>,
+        paths: impl IntoIterator<Item = (&'a NodeId, PathBuf)>,
     ) -> Credit {
         Credit {
             tracker: Some(tracker.clone()),
             paths: (paths.into_iter())
-                .map(|(node, path)| (node.to_owned(), path.to_string_lossy().into_owned()))
+                .map(|(node, path)| (node.clone(), path.to_string_lossy().into_owned()))
                 .collect(),
             chunks: HashMap::new(),
         }
@@ -358,7 +359,7 @@ mod tests {
             let wanted = (files.iter())
                 .map(|(node, size)| (item(node), *size))
                 .collect();
-            (self.tracker).track(wanted, |item| synced.contains(&item.node.as_str()));
+            (self.tracker).track(wanted, |item| synced.iter().any(|node| item.node == *node));
         }
 
         fn credit(&mut self, node: &str, chunk: &str, bytes: u64) {

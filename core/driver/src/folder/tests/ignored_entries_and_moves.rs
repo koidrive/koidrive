@@ -159,7 +159,14 @@ fn a_folder_created_again_at_a_kept_folder_another_device_deleted_is_a_new_folde
         a.run(&mut remote);
         a.settle();
         a.run(&mut remote);
-        assert!(a.folder.engine.trees.remote().live(&source).is_none());
+        assert!(
+            a.folder
+                .engine
+                .trees
+                .remote()
+                .live(&NodeId::from(&source))
+                .is_none()
+        );
         if restart {
             drop(a);
             a = site.start();

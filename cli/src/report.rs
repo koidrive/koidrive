@@ -479,7 +479,7 @@ impl Decision {
                 sent_in,
             } => {
                 let file = |file: &koidrive_engine::question::ConflictFile| ConflictFileData {
-                    node_id: file.node_id.clone(),
+                    node_id: file.node_id.to_string(),
                     revisions: RevisionsData {
                         content_rev: file.revisions.content_rev,
                         meta_rev: file.revisions.meta_rev,

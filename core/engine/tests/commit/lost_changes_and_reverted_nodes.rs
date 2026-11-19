@@ -2,6 +2,7 @@
 
 /// The server lost the commit that deleted folder d with file a in it, and a bootstrap lists both
 /// live as they were deleted, at seq 1. The delete is sent again, not taken for a remote create.
+
 #[test]
 fn a_delete_the_server_lost_is_sent_again() {
     let rows = [synced("d", dir(ROOT, "d")), synced("a", file("d", "a", 1))];
@@ -23,7 +24,7 @@ fn a_delete_the_server_lost_is_sent_again() {
     );
     trees.settle(commits.aliases());
     assert_eq!(
-        (trees.class("d"), trees.class("a")),
+        (trees.class(&"d".into()), trees.class(&"a".into())),
         (Class::Local, Class::Local)
     );
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -71,7 +72,7 @@ fn a_delete_the_server_lost_is_sent_again_only_for_what_it_saw() {
         commits.accepted(),
     );
     trees.settle(commits.aliases());
-    let classes = ["same", "edited", "restored"].map(|id| (id, trees.class(id)));
+    let classes = ["same", "edited", "restored"].map(|id| (id, trees.class(&NodeId::from(id))));
     assert_eq!(
         classes,
         [
@@ -90,7 +91,7 @@ fn a_delete_the_server_lost_is_sent_again_only_for_what_it_saw() {
 fn an_edit_the_server_lost_is_sent_again() {
     let (mut commits, mut trees, mut ids) = edited_at_5_then_lost();
     let edited = trees.edited_here();
-    assert_eq!(edited, [("a".to_string(), 5)]);
+    assert_eq!(edited, [(NodeId::from("a"), 5)]);
     trees.set_remote("a".into(), remote(file(ROOT, "a", 1)));
     trees.forget_lost(
         Vec::new(),
@@ -104,7 +105,7 @@ fn an_edit_the_server_lost_is_sent_again() {
         commits.accepted(),
     );
     trees.settle(commits.aliases());
-    assert_eq!(trees.class("a"), Class::Local);
+    assert_eq!(trees.class(&"a".into()), Class::Local);
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("a", 2)]);
 }
@@ -133,7 +134,7 @@ fn an_edit_the_server_lost_is_not_sent_again_over_a_later_edit() {
         commits.accepted(),
     );
     trees.settle(commits.aliases());
-    assert_eq!(trees.class("a"), Class::Concurrent);
+    assert_eq!(trees.class(&"a".into()), Class::Concurrent);
 }
 
 /// As above, but another device that never saw the edit trashed a after the loss, at seq 3. An
@@ -192,7 +193,7 @@ fn a_local_edit_on_a_reverted_file_is_kept_on_disk_and_uploaded() {
         .unwrap();
     trees.settle(commits.aliases());
     assert_eq!(
-        trees.local().get("a").unwrap().shape,
+        trees.local().get(&"a".into()).unwrap().shape,
         file(ROOT, "x (conflict)", 2)
     );
     assert!(trees.reverted().is_empty());
@@ -218,7 +219,7 @@ fn a_merged_folder_the_user_renames_takes_what_is_created_in_it() {
         ..outcome(op_result::Code::MergedInto)
     };
     acknowledge(&mut commits, &mut trees, vec![merged]);
-    assert!(trees.reverted().contains("a"));
+    assert!(trees.reverted().contains(&"a".into()));
     trees.set_local("a".into(), local(dir(ROOT, "user"), 1));
     trees.settle(commits.aliases());
     let next = build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -263,7 +264,7 @@ fn a_scan_that_respells_the_sent_name_keeps_a_renamed_result_reverted() {
             ..outcome(op_result::Code::AppliedRenamed)
         };
         acknowledge(&mut commits, &mut trees, vec![renamed]);
-        assert!(trees.reverted().contains("n"), "create={is_create}");
+        assert!(trees.reverted().contains(&"n".into()), "create={is_create}");
         let retry = build(&mut commits, &mut trees, &mut ids);
         assert!(retry.is_none(), "create={is_create}, retry={retry:?}");
     }
@@ -282,7 +283,7 @@ fn a_reverted_file_deleted_remotely_keeps_its_unuploaded_edit_as_a_new_file() {
     trees.set_local("a".into(), local(file(ROOT, "x", 2), 1));
     trees.set_remote("a".into(), trashed(file(ROOT, "x (conflict)", 1)));
     trees.settle(commits.aliases());
-    assert!(trees.reverted().contains("a"));
+    assert!(trees.reverted().contains(&"a".into()));
     let mut effects = Effects::default();
     assert_eq!(
         effects
@@ -299,13 +300,13 @@ fn a_reverted_file_deleted_remotely_keeps_its_unuploaded_edit_as_a_new_file() {
         (ROOT, "x")
     );
     assert_eq!(create.content, Some(content(2)));
-    assert!(trees.local().get("a").is_none());
+    assert!(trees.local().get(&"a".into()).is_none());
     acknowledge(
         &mut commits,
         &mut trees,
         vec![outcome(op_result::Code::Applied)],
     );
-    trees.set_remote(create.node_id.clone(), remote(file(ROOT, "x", 2)));
+    trees.set_remote(NodeId::from(&create.node_id), remote(file(ROOT, "x", 2)));
     trees.settle(commits.aliases());
     assert_eq!(trees.work(), vec![]);
     assert!(trees.reverted().is_empty());
@@ -322,7 +323,7 @@ fn a_renamed_file_the_user_deletes_before_it_moves_is_deleted() {
     };
     acknowledge(&mut commits, &mut trees, vec![renamed]);
     trees.set_remote("a".into(), remote(file(ROOT, "x (conflict)", 1)));
-    trees.remove_local("a");
+    trees.remove_local(&"a".into());
     trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(
@@ -369,8 +370,14 @@ fn two_reverted_files_that_block_each_other_are_placed_through_parking() {
             .unwrap();
         trees.settle(commits.aliases());
     }
-    assert_eq!(trees.local().get("a").unwrap().shape, file(ROOT, "y", 1));
-    assert_eq!(trees.local().get("b").unwrap().shape, file(ROOT, "x", 2));
+    assert_eq!(
+        trees.local().get(&"a".into()).unwrap().shape,
+        file(ROOT, "y", 1)
+    );
+    assert_eq!(
+        trees.local().get(&"b".into()).unwrap().shape,
+        file(ROOT, "x", 2)
+    );
     assert!(trees.reverted().is_empty());
 }
 
@@ -401,7 +408,7 @@ fn a_folder_deleted_around_a_parked_node_is_brought_back_for_it() {
         trees.settle(&Default::default());
         let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
         assert_eq!(build(&mut commits, &mut trees, &mut ids), None, "{name}");
-        assert!(trees.reverted().contains("d"), "{name}");
+        assert!(trees.reverted().contains(&"d".into()), "{name}");
         let mut effects = Effects::default();
         for ino in 10..18 {
             trees.settle(commits.aliases());
@@ -428,8 +435,11 @@ fn a_folder_deleted_around_a_parked_node_is_brought_back_for_it() {
         }
         trees.settle(commits.aliases());
         assert_eq!(trees.work(), vec![], "{name}");
-        assert_eq!(trees.local().get("d").unwrap().shape, dir(ROOT, "d"));
-        let f = trees.local().get("f").unwrap();
+        assert_eq!(
+            trees.local().get(&"d".into()).unwrap().shape,
+            dir(ROOT, "d")
+        );
+        let f = trees.local().get(&"f".into()).unwrap();
         assert_eq!((&f.shape, f.parked), (&file("d", name, 1), false));
         assert_eq!(build(&mut commits, &mut trees, &mut ids), None, "{name}");
     }
@@ -546,8 +556,8 @@ fn a_parked_file_rekeyed_for_its_edit_is_moved_out_from_where_it_was_parked() {
     assert_eq!(trees.work(), vec![]);
     let node = trees.local().get(&rekeyed).unwrap();
     assert_eq!((&node.shape, node.parked), (&file(ROOT, "x", 2), false));
-    assert_eq!(trees.parked_name(&rekeyed), rekeyed);
-    let b = &trees.local().get("b").unwrap().shape;
+    assert_eq!(trees.parked_name(&rekeyed), &rekeyed);
+    let b = &trees.local().get(&"b".into()).unwrap().shape;
     assert_eq!(b, &file(ROOT, "x (new conflict)", 3));
 }
 
@@ -565,7 +575,7 @@ fn a_reverted_file_the_server_lost_is_created_again_under_its_id() {
         Some(remote(renamed)),
     )]);
     trees.revert("h".into());
-    trees.remove_remote("h");
+    trees.remove_remote(&"h".into());
     trees.forget_lost(
         Vec::new(),
         Vec::new(),
@@ -605,9 +615,12 @@ fn a_reverted_file_whose_s_update_waits_is_created_again_under_its_id_once_the_s
         ..outcome(op_result::Code::AppliedRenamed)
     };
     acknowledge(&mut commits, &mut trees, vec![renamed]);
-    assert!(trees.waiting().contains_key("n"), "S still has h at y");
-    assert!(trees.reverted().contains("n"));
-    trees.remove_remote("n");
+    assert!(
+        trees.waiting().contains_key(&"n".into()),
+        "S still has h at y"
+    );
+    assert!(trees.reverted().contains(&"n".into()));
+    trees.remove_remote(&"n".into());
     trees.forget_lost(
         Vec::new(),
         Vec::new(),
@@ -652,7 +665,10 @@ fn a_file_whose_s_update_waits_is_removed_or_uploaded_anew_after_a_remote_delete
             &mut trees,
             vec![outcome(op_result::Code::Applied)],
         );
-        assert!(trees.waiting().contains_key("n"), "S still has h at x");
+        assert!(
+            trees.waiting().contains_key(&"n".into()),
+            "S still has h at x"
+        );
         if let Some(digest) = edit {
             trees.set_local("n".into(), local(file(ROOT, "x", digest), 3));
         }
@@ -695,7 +711,7 @@ fn a_file_whose_s_update_waits_is_removed_or_uploaded_anew_after_a_remote_delete
                     removed,
                     "a file with no edit follows the delete, parked={parked}"
                 );
-                assert!(trees.local().get("n").is_none());
+                assert!(trees.local().get(&"n".into()).is_none());
                 let ops = commit.map(|commit| ops(&commit)).unwrap_or_default();
                 assert!(
                     ops.iter()
@@ -743,7 +759,7 @@ fn a_parked_reverted_folder_the_server_lacks_is_removed_even_when_its_name_is_ta
         .unwrap();
     trees.settle(&Default::default());
     assert_eq!(trees.work(), vec![]);
-    assert!(trees.local().get("n").is_none());
+    assert!(trees.local().get(&"n".into()).is_none());
     assert!(trees.reverted().is_empty());
 }
 
@@ -774,7 +790,7 @@ fn a_move_another_device_made_after_a_loss_is_taken() {
         commits.accepted(),
     );
     trees.settle(commits.aliases());
-    assert_eq!(trees.class("n"), Class::Remote);
+    assert_eq!(trees.class(&"n".into()), Class::Remote);
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
@@ -786,7 +802,7 @@ fn a_file_whose_folder_the_server_lost(
     changed_here(&mut trees);
     trees.settle(&Default::default());
     let synced = trees.taken_from_others(|_| false);
-    trees.remove_remote("d");
+    trees.remove_remote(&"d".into());
     for (id, node) in kept {
         trees.set_remote((*id).into(), node.clone());
     }
@@ -886,7 +902,7 @@ fn an_edit_here_after_a_loss_of_a_file_in_a_folder_the_server_lost_is_kept_besid
 fn a_file_in_a_folder_the_server_lost_that_a_later_loss_takes_is_kept_beside_another_device_s_edit() {
     let (mut trees, mut commits, mut ids) =
         a_file_whose_folder_the_server_lost(&kept_at_the_root(), |_| {});
-    trees.remove_remote("f");
+    trees.remove_remote(&"f".into());
     trees.forget_lost(
         Vec::new(),
         Vec::new(),
@@ -907,7 +923,7 @@ fn a_file_in_a_folder_the_server_lost_that_a_later_loss_takes_is_kept_beside_ano
 #[test]
 fn a_lost_edit_of_a_file_in_a_folder_the_server_lost_is_kept_beside_another_device_s_edit_when_the_server_holds_its_bytes() {
     let mut trees = trees(&[synced("d", dir(ROOT, "d")), synced("f", file("d", "f", 1))]);
-    trees.remove_remote("d");
+    trees.remove_remote(&"d".into());
     trees.set_remote("f".into(), remote_at(file(ROOT, "f", 1), 3));
     trees.forget_lost(
         Vec::new(),
@@ -942,7 +958,7 @@ fn a_remote_edit_after_a_trash_of_a_file_renamed_before_a_loss_of_its_folder_is_
     let moved = trees.moved_here();
     let untaken = trees.untaken_changes(|_| false);
     let records = trees.remote_records(|_| false);
-    trees.remove_remote("d");
+    trees.remove_remote(&"d".into());
     trees.set_listed_remote("f".into(), remote_at(file(ROOT, "f", 1), 3));
     trees.forget_lost(Vec::new(), edited, synced, moved, untaken, records, &Default::default(), 0, 0);
     trees.settle(&Default::default());
@@ -992,11 +1008,11 @@ fn a_file_in_a_folder_the_server_lost_from_a_store_before_forgotten_shapes_is_ke
 #[test]
 fn a_file_in_a_folder_the_server_lost_keeps_no_forgotten_shape_once_s_takes_it_or_l_no_longer_holds_it() {
     let (mut trees, _, _) = a_file_whose_folder_the_server_lost(&kept_at_the_root(), |_| {});
-    assert!(trees.state().forgotten_shapes.contains_key("f"));
+    assert!(trees.state().forgotten_shapes.contains_key(&"f".into()));
     trees.set_synced("f".into(), Some(file(ROOT, "f", 1)));
     assert!(trees.state().forgotten_shapes.is_empty());
     let (mut trees, _, _) = a_file_whose_folder_the_server_lost(&kept_at_the_root(), |_| {});
-    trees.remove_local("f");
+    trees.remove_local(&"f".into());
     assert!(trees.state().forgotten_shapes.is_empty());
 }
 
@@ -1008,7 +1024,7 @@ fn assert_takes_a_rename_another_device_made_after_the_loss(deleted_here: &[&str
     let (mut trees, mut commits, mut ids) =
         a_file_whose_folder_the_server_lost(&renamed_by_another_device(), |trees| {
             for id in deleted_here {
-                trees.remove_local(id);
+                trees.remove_local(&NodeId::from(*id));
             }
         });
     let mut sent = Vec::new();
@@ -1063,7 +1079,7 @@ fn changed_after_the_bootstrap(change: impl FnOnce(&mut Trees)) -> Vec<op::Op> {
 
 #[test]
 fn a_delete_found_after_the_bootstrap_keeps_a_rename_another_device_made_after_the_loss() {
-    let sent = changed_after_the_bootstrap(|trees| trees.remove_local("f"));
+    let sent = changed_after_the_bootstrap(|trees| trees.remove_local(&"f".into()));
     assert!(!sent.contains(&delete("f")), "{sent:?}");
 }
 
@@ -1089,7 +1105,7 @@ fn a_file_renamed_here_before_the_server_lost_it(name: &str, digest: u8) -> (Tre
     trees.set_local_changed("f".into(), local(written(ROOT, name, digest), 1));
     trees.settle(&Default::default());
     let synced = trees.taken_from_others(|_| false);
-    trees.remove_remote("f");
+    trees.remove_remote(&"f".into());
     trees.forget_lost(
         Vec::new(),
         Vec::new(),
@@ -1133,7 +1149,7 @@ fn a_file_renamed_here_before_a_loss_takes_the_copy_another_device_created_again
     let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
     assert_eq!(moves_of(&sent, "n"), [(ROOT.to_owned(), "g".to_owned())], "{sent:?}");
     assert!(!uploads(&sent, 1), "{sent:?}");
-    assert!(trees.local().get("f").is_none());
+    assert!(trees.local().get(&"f".into()).is_none());
     assert!(trees.state().lost_shapes.is_empty());
     assert_eq!(trees.check(), Ok(()));
 }
@@ -1144,7 +1160,7 @@ fn a_file_moved_here_into_another_folder_before_a_loss_takes_the_copy_created_ag
     trees.set_local_changed("f".into(), local(written("d", "g", 1), 2));
     trees.settle(&Default::default());
     let synced = trees.taken_from_others(|_| false);
-    trees.remove_remote("f");
+    trees.remove_remote(&"f".into());
     trees.forget_lost(
         Vec::new(),
         Vec::new(),
@@ -1186,7 +1202,7 @@ fn a_file_edited_here_before_a_loss_keeps_no_lost_shape() {
 #[test]
 fn a_file_renamed_here_before_a_loss_and_edited_after_it_is_created_again_beside_the_copy_at_its_old_place() {
     let (mut trees, mut commits, mut ids) = a_file_renamed_here_before_the_server_lost_it("g", 1);
-    assert!(trees.state().lost_shapes.contains_key("f"));
+    assert!(trees.state().lost_shapes.contains_key(&"f".into()));
     trees.set_local_changed("f".into(), local(written(ROOT, "g", 2), 1));
     trees.settle(commits.aliases());
     assert!(trees.state().lost_shapes.is_empty());
@@ -1209,11 +1225,14 @@ fn a_file_renamed_again_after_a_loss_keeps_its_lost_shape() {
 #[test]
 fn a_file_renamed_here_before_a_loss_keeps_no_lost_shape_once_s_or_r_takes_it_or_l_no_longer_holds_it() {
     let (mut trees, _, _) = a_file_renamed_here_before_the_server_lost_it("g", 1);
-    assert_eq!(trees.state().lost_shapes.get("f"), Some(&written(ROOT, "f", 1)));
+    assert_eq!(
+        trees.state().lost_shapes.get(&"f".into()),
+        Some(&written(ROOT, "f", 1))
+    );
     trees.set_synced("f".into(), Some(written(ROOT, "f", 1)));
     assert!(trees.state().lost_shapes.is_empty());
     let (mut trees, _, _) = a_file_renamed_here_before_the_server_lost_it("g", 1);
-    trees.remove_local("f");
+    trees.remove_local(&"f".into());
     assert!(trees.state().lost_shapes.is_empty());
     let (mut trees, _, _) = a_file_renamed_here_before_the_server_lost_it("g", 1);
     trees.set_remote("f".into(), remote_at(written(ROOT, "g", 1), 3));
@@ -1247,8 +1266,8 @@ fn a_file_in_a_folder_linked_after_a_loss_takes_the_copy_created_again_at_its_ol
     trees.set_local_changed("f".into(), local(written("d", "g", 1), 2));
     trees.settle(&Default::default());
     let synced = trees.taken_from_others(|_| false);
-    trees.remove_remote("f");
-    trees.remove_remote("d");
+    trees.remove_remote(&"f".into());
+    trees.remove_remote(&"d".into());
     trees.forget_lost(
         Vec::new(),
         Vec::new(),
@@ -1261,13 +1280,20 @@ fn a_file_in_a_folder_linked_after_a_loss_takes_the_copy_created_again_at_its_ol
         0,
     );
     trees.settle(&Default::default());
-    assert_eq!(trees.state().lost_shapes.get("f").map(|shape| shape.parent.as_str()), Some("d"));
+    assert_eq!(
+        trees
+            .state()
+            .lost_shapes
+            .get(&"f".into())
+            .map(|shape| &shape.parent),
+        Some(&"d".into())
+    );
     trees.set_remote("e".into(), remote_at(dir(ROOT, "d"), 3));
     trees.set_remote("n".into(), remote_at(written("e", "f", 1), 3));
     trees.settle(&Default::default());
     koidrive_engine::first_link::adopt(&mut trees, None);
     trees.settle(&Default::default());
-    assert!(trees.local().get("f").is_none());
+    assert!(trees.local().get(&"f".into()).is_none());
     assert!(trees.state().lost_shapes.is_empty());
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
@@ -1291,7 +1317,7 @@ fn a_lost_move_is_not_sent_over_a_move_another_device_made_after_the_loss() {
     let n = remote_at(file(ROOT, "z", 1), 3);
     let sent = lose_with_n_at(n, 0, &mut trees, &mut commits, &mut ids);
     assert!(sent.is_empty());
-    assert_eq!(trees.class("n"), Class::Remote);
+    assert_eq!(trees.class(&"n".into()), Class::Remote);
 }
 
 #[test]
@@ -1369,7 +1395,7 @@ fn a_lost_move_is_not_sent_over_another_position_at_a_revision_this_device_saw()
     let n = remote_at(file(ROOT, "w", 1), 7);
     let sent = lose_with_n_at(n, 0, &mut trees, &mut commits, &mut ids);
     assert!(sent.is_empty());
-    assert_eq!(trees.class("n"), Class::Remote);
+    assert_eq!(trees.class(&"n".into()), Class::Remote);
 }
 
 #[test]
@@ -1381,7 +1407,7 @@ fn a_lost_move_is_not_sent_once_another_device_moved_the_node_elsewhere() {
     let n = remote(file(ROOT, "x", 1));
     let sent = lose_with_n_at(n, 0, &mut trees, &mut commits, &mut ids);
     assert!(sent.is_empty());
-    assert_eq!(trees.class("n"), Class::Remote);
+    assert_eq!(trees.class(&"n".into()), Class::Remote);
 }
 
 #[test]
@@ -1400,7 +1426,7 @@ fn a_lost_move_is_not_sent_over_a_position_this_device_never_saw() {
     let n = remote_at(file(ROOT, "w", 1), 3);
     let sent = lose_with_n_at(n, 0, &mut trees, &mut commits, &mut ids);
     assert!(sent.is_empty());
-    assert_eq!(trees.class("n"), Class::Remote);
+    assert_eq!(trees.class(&"n".into()), Class::Remote);
 }
 
 #[test]
@@ -1536,7 +1562,7 @@ fn a_lost_move_of_a_folder_keeps_a_move_another_device_made_of_its_child_after_t
     trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("p", ROOT, "y")]);
-    assert_eq!(trees.class("n"), Class::Remote);
+    assert_eq!(trees.class(&"n".into()), Class::Remote);
 }
 
 #[test]
@@ -1554,7 +1580,7 @@ fn a_move_recorded_by_the_store_upgrade_is_not_sent_over_a_move_made_after_its_c
     let n = remote_at(file(ROOT, "z", 1), 10);
     let sent = lose_with_n_at(n, 0, &mut trees, &mut commits, &mut ids);
     assert!(sent.is_empty());
-    assert_eq!(trees.class("n"), Class::Remote);
+    assert_eq!(trees.class(&"n".into()), Class::Remote);
 }
 
 #[test]
@@ -1592,7 +1618,7 @@ fn a_lost_folder_move_keeps_its_childs_remote_move_when_its_old_name_is_held_in_
     trees.set_remote("q".into(), remote_at(dir(ROOT, "x"), 3));
     trees.set_local("q".into(), local(dir(ROOT, "x"), 2));
     trees.settle(commits.aliases());
-    assert_eq!(trees.synced().live("q").unwrap().name, "x");
+    assert_eq!(trees.synced().live(&"q".into()).unwrap().name, "x");
     assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
     let (trashed, edited, moved) = (
         trees.trashed_here(),
@@ -1616,7 +1642,7 @@ fn a_lost_folder_move_keeps_its_childs_remote_move_when_its_old_name_is_held_in_
     trees.settle(commits.aliases());
     let sent = build(&mut commits, &mut trees, &mut ids).map(|commit| ops(&commit));
     assert_eq!(sent, Some(vec![mv("p", ROOT, "y")]));
-    assert_eq!(trees.class("n"), Class::Remote);
+    assert_eq!(trees.class(&"n".into()), Class::Remote);
 }
 
 #[test]
@@ -1628,7 +1654,7 @@ fn r_keeps_the_newest_positions_a_node_held() {
             remote_at(file(ROOT, &format!("p{rev}"), 1), rev),
         );
     }
-    let kept = &trees.state().past_positions["n"];
+    let kept = &trees.state().past_positions[&"n".into()];
     assert_eq!(kept.len(), PAST_POSITIONS_KEPT);
     assert_eq!(kept.first().map(|past| past.rev), Some(2));
 }
@@ -1637,7 +1663,7 @@ fn sent_after_losing_a_move(age: impl FnOnce(&mut Trees)) -> Option<Vec<op::Op>>
     let mut trees = trees(&[synced("a", file(ROOT, "x", 1))]);
     trees.set_local("a".into(), local(file(ROOT, "y", 1), 1));
     trees.set_remote("a".into(), remote_at(file(ROOT, "y", 1), 2));
-    trees.record_moved("a", 2);
+    trees.record_moved(&"a".into(), 2);
     trees.set_synced("a".into(), Some(file(ROOT, "y", 1)));
     age(&mut trees);
     let moved = trees.moved_here();
@@ -1752,7 +1778,8 @@ fn a_delete_the_server_lost_is_sent_again_for_a_record_it_saw_above_the_bound() 
         commits.accepted(),
     );
     trees.settle(commits.aliases());
-    let classes = ["dir", "same", "restored", "marked"].map(|id| (id, trees.class(id)));
+    let classes =
+        ["dir", "same", "restored", "marked"].map(|id| (id, trees.class(&NodeId::from(id))));
     assert_eq!(
         classes,
         [
@@ -1809,7 +1836,7 @@ fn a_file_this_device_made_follows_a_delete_after_another_device_edited_it_past_
     };
     trees.set_remote("a".into(), deleted);
     trees.settle(commits.aliases());
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
     assert!(build(&mut commits, &mut trees, &mut IdGen::new(1)).is_none());
 }
 
@@ -1826,7 +1853,7 @@ fn a_file_another_device_edited_before_a_loss_follows_a_delete_made_after_it() {
     assert_eq!(
         untaken,
         [(
-            "a".to_owned(),
+            NodeId::from("a"),
             Untaken::Edit {
                 moved_in_lost_commit: false,
                 remote: edited.shape.clone(),
@@ -1845,7 +1872,7 @@ fn a_file_another_device_edited_before_a_loss_follows_a_delete_made_after_it() {
         0,
     );
     trees.settle(&Default::default());
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
     let deleted = RemoteNode {
         meta_rev: 4,
         trashed: true,
@@ -1854,7 +1881,7 @@ fn a_file_another_device_edited_before_a_loss_follows_a_delete_made_after_it() {
     };
     trees.set_remote("a".into(), deleted);
     trees.settle(&Default::default());
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
@@ -1909,7 +1936,7 @@ fn an_untaken_edit_edited_again_after_the_loss_follows_a_later_delete() {
         version_id: "v3".into(),
         ..remote(file(ROOT, "a", 3))
     });
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
     assert_eq!(commit, None);
 }
 
@@ -1921,7 +1948,7 @@ fn an_untaken_edit_moved_after_the_loss_follows_a_later_delete() {
         version_id: "v2".into(),
         ..remote(file("d", "a", 2))
     });
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
     assert_eq!(commit, None);
 }
 
@@ -1944,7 +1971,7 @@ fn an_untaken_edit_below_a_lost_folder_follows_a_later_delete() {
     ]);
     let untaken = trees.untaken_changes(|seq| seq == 4);
     trees.set_listed_remote("a".into(), remote(file(ROOT, "a", 2)));
-    trees.remove_remote("f");
+    trees.remove_remote(&"f".into());
     trees.forget_lost(
         Vec::new(),
         Vec::new(),
@@ -1980,7 +2007,7 @@ fn an_untaken_edit_below_a_lost_folder_follows_a_later_delete() {
     assert!(commits.acknowledge(&mut trees, 6));
     trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
 }
 
 #[test]
@@ -1996,7 +2023,7 @@ fn an_untaken_edit_renamed_in_a_lost_commit_is_renamed_again() {
     assert_eq!(
         untaken,
         [(
-            "a".to_owned(),
+            NodeId::from("a"),
             Untaken::Edit {
                 moved_in_lost_commit: true,
                 remote: edited.shape.clone(),
@@ -2048,7 +2075,7 @@ fn an_untaken_edit_another_device_moved_before_the_loss_stays_where_it_moved() {
     assert_eq!(
         untaken,
         [(
-            "a".to_owned(),
+            NodeId::from("a"),
             Untaken::Edit {
                 moved_in_lost_commit: false,
                 remote: moved.shape.clone(),
@@ -2068,7 +2095,7 @@ fn an_untaken_edit_another_device_moved_before_the_loss_stays_where_it_moved() {
         0,
     );
     trees.settle(&Default::default());
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
@@ -2126,7 +2153,7 @@ fn content_l_went_back_to_while_an_acknowledged_edit_waits_is_sent_after_a_loss(
     commits.received(result(5, applied)).unwrap();
     assert!(commits.acknowledge(&mut trees, 5));
     trees.settle(commits.aliases());
-    assert!(trees.waiting().contains_key("n"));
+    assert!(trees.waiting().contains_key(&"n".into()));
     trees.set_local("n".into(), local(file(ROOT, "x", 0), 3));
     trees.settle(commits.aliases());
     assert_eq!(commits.connected(&welcome_holding(&commits, 1)), Reconnect::AheadOfServer);
@@ -2186,7 +2213,7 @@ fn content_l_went_back_to_while_its_edit_was_in_flight_is_sent_after_a_loss() {
     let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
     trees.set_listed_remote("n".into(), remote_at(file(ROOT, "n", 7), 1));
-    trees.remove_remote("p");
+    trees.remove_remote(&"p".into());
     trees.forget_lost(
         trashed,
         edited,
@@ -2229,7 +2256,7 @@ fn an_untaken_edit_another_device_moved_after_the_loss_stays_where_it_moved() {
     assert_eq!(
         untaken,
         [(
-            "a".to_owned(),
+            NodeId::from("a"),
             Untaken::Edit {
                 moved_in_lost_commit: true,
                 remote: lost_move.shape.clone(),
@@ -2253,7 +2280,7 @@ fn an_untaken_edit_another_device_moved_after_the_loss_stays_where_it_moved() {
         0,
     );
     trees.settle(&Default::default());
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
@@ -2285,7 +2312,7 @@ fn content_l_went_back_to_while_its_equal_edit_was_in_flight_is_sent_after_a_los
     let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
     trees.set_listed_remote("n".into(), remote_at(file(ROOT, "n", 7), 1));
-    trees.remove_remote("p");
+    trees.remove_remote(&"p".into());
     trees.forget_lost(
         trashed,
         edited,
@@ -2328,7 +2355,7 @@ fn content_this_devices_restore_set_is_not_kept_beside_it_after_a_loss() {
     let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
     let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
     trees.set_listed_remote("n".into(), restored);
-    trees.remove_remote("p");
+    trees.remove_remote(&"p".into());
     trees.forget_lost(
         trashed,
         edited,
@@ -2431,7 +2458,7 @@ fn a_file_another_device_edited_and_deleted_before_a_loss_stays_deleted() {
     };
     let mut trees = trees(&[("a", held.clone(), held, Some(deleted))]);
     let untaken = trees.untaken_changes(|seq| seq > 2);
-    assert_eq!(untaken, [("a".to_owned(), Untaken::Delete)]);
+    assert_eq!(untaken, [(NodeId::from("a"), Untaken::Delete)]);
     let records = trees.remote_records(|seq| seq > 2);
     trees.set_listed_remote("a".into(), remote(file(ROOT, "a", 0)));
     trees.forget_lost(
@@ -2447,7 +2474,7 @@ fn a_file_another_device_edited_and_deleted_before_a_loss_stays_deleted() {
     );
     trees.settle(&Default::default());
     assert!(trees.unsent_edits().is_empty());
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
@@ -2472,13 +2499,13 @@ fn a_folder_another_device_deleted_before_a_loss_that_took_it_stays_deleted() {
     assert_eq!(
         untaken,
         [
-            ("a".to_owned(), Untaken::Delete),
-            ("d".to_owned(), Untaken::Delete)
+            (NodeId::from("a"), Untaken::Delete),
+            (NodeId::from("d"), Untaken::Delete)
         ]
     );
     let records = trees.remote_records(|_| false);
-    trees.remove_remote("a");
-    trees.remove_remote("d");
+    trees.remove_remote(&"a".into());
+    trees.remove_remote(&"d".into());
     trees.forget_lost(
         Vec::new(),
         Vec::new(),
@@ -2492,7 +2519,7 @@ fn a_folder_another_device_deleted_before_a_loss_that_took_it_stays_deleted() {
     );
     trees.settle(&Default::default());
     assert_eq!(
-        (trees.class("d"), trees.class("a")),
+        (trees.class(&"d".into()), trees.class(&"a".into())),
         (Class::Remote, Class::Remote)
     );
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
@@ -2521,7 +2548,7 @@ fn a_file_r_no_longer_holds_is_not_uploaded_again_after_a_loss() {
     let held = Some(file(ROOT, "a", 1));
     let mut trees = trees(&[("a", held.clone(), held, None)]);
     assert_eq!(lose_and_build(&mut trees), None);
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
 }
 
 #[test]
@@ -2537,8 +2564,8 @@ fn a_file_r_no_longer_holds_in_a_folder_another_device_deleted_is_not_uploaded_i
         ("a", held.clone(), held, None),
     ]);
     assert_eq!(lose_and_build(&mut trees), None);
-    assert_eq!(trees.class("d"), Class::Remote);
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class(&"d".into()), Class::Remote);
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
 }
 
 #[test]
@@ -2547,7 +2574,7 @@ fn a_delete_of_another_device_stays_across_two_losses_before_the_device_takes_it
     let mut trees = trees(&[("a", held.clone(), held, Some(trashed(file(ROOT, "a", 1))))]);
     for _ in 0..2 {
         let untaken = trees.untaken_changes(|_| false);
-        trees.remove_remote("a");
+        trees.remove_remote(&"a".into());
         trees.forget_lost(
             Vec::new(),
             Vec::new(),
@@ -2561,7 +2588,7 @@ fn a_delete_of_another_device_stays_across_two_losses_before_the_device_takes_it
         );
         trees.settle(&Default::default());
     }
-    assert_eq!(trees.class("a"), Class::Remote);
+    assert_eq!(trees.class(&"a".into()), Class::Remote);
     assert_eq!(build(&mut Commits::default(), &mut trees, &mut IdGen::new(1)), None);
 }
 
@@ -2597,7 +2624,7 @@ fn a_folder_merged_into_one_a_lost_commit_created_is_created_again_after_the_los
         trees.edited_here(),
         trees.moved_here(),
     );
-    trees.remove_remote("m");
+    trees.remove_remote(&"m".into());
     trees.forget_lost(
         trashed,
         edited,
@@ -2645,8 +2672,8 @@ fn a_folder_merged_while_s_held_it_stays_merged_after_a_loss_keeps_the_folder_it
         ..outcome(op_result::Code::MergedInto)
     };
     acknowledge(&mut commits, &mut trees, vec![merged]);
-    assert!(trees.synced().get("n").is_some());
-    assert!(trees.reverted().contains("n"));
+    assert!(trees.synced().get(&"n".into()).is_some());
+    assert!(trees.reverted().contains(&"n".into()));
     trees.set_remote("m".into(), remote_at(dir(ROOT, "b"), 2));
     trees.set_local("m".into(), local(dir(ROOT, "b"), 1));
     trees.set_synced("m".into(), Some(dir(ROOT, "b")));
@@ -2670,7 +2697,7 @@ fn a_folder_merged_while_s_held_it_stays_merged_after_a_loss_keeps_the_folder_it
     );
     commits.forget_lost_slots();
     trees.settle(commits.aliases());
-    assert!(trees.reverted().contains("n"));
+    assert!(trees.reverted().contains(&"n".into()));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
@@ -2688,7 +2715,7 @@ fn edit_lost_on_a_file_given_up_with_its_folder() -> (Commits, Trees, IdGen) {
     let far = Some(RuleFile::parse(b"/far/\n"));
     trees.set_rules::<&str>(&[], koidrive_engine::ignore::Source::Koiignore, far);
     trees.settle(commits.aliases());
-    assert_eq!(trees.synced().live("a"), None);
+    assert_eq!(trees.synced().live(&"a".into()), None);
     let welcome = welcome_holding(&commits, 1);
     assert_eq!(commits.connected(&welcome), Reconnect::AheadOfServer);
     let edited = trees.edited_here();
@@ -2720,7 +2747,7 @@ fn an_edit_the_server_lost_on_a_file_given_up_with_its_folder_is_sent_again() {
 #[test]
 fn a_file_given_up_after_a_lost_edit_and_removed_while_excluded_downloads_once_included() {
     let (mut commits, mut trees, mut ids) = edit_lost_on_a_file_given_up_with_its_folder();
-    trees.remove_local("a");
+    trees.remove_local(&"a".into());
     trees.settle(commits.aliases());
     trees.set_rules::<&str>(&[], koidrive_engine::ignore::Source::Koiignore, None);
     trees.settle(commits.aliases());
@@ -2730,6 +2757,6 @@ fn a_file_given_up_after_a_lost_edit_and_removed_while_excluded_downloads_once_i
         matches!(&effects[..], [Effect::WriteFile { .. }]),
         "{effects:?}"
     );
-    assert_eq!(trees.local().live("a"), Some(&file("x", "a", 1)));
+    assert_eq!(trees.local().live(&"a".into()), Some(&file("x", "a", 1)));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }

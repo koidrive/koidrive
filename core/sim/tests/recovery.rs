@@ -4,6 +4,7 @@ use koidrive_engine::commit::{Commits, InFlight};
 use koidrive_engine::effects::{Base, Dir, Effect, EffectRecord, Location};
 use koidrive_engine::first_link::{History, Marks};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
+use koidrive_engine::tree::NodeId;
 use koidrive_proto::v1::{Commit, Move, NodeStatus, Op, error, op};
 use koidrive_sim::world::disk::{Disk, Place, Refused, identity};
 use koidrive_sim::world::{
@@ -3007,7 +3008,13 @@ fn rekey_the_create_in_flight(world: &mut World, d: usize, another_file: bool) -
         panic!("{:?}", state.in_flight);
     };
     let old = create.node_id.clone();
-    let mut local = device.engine.trees.local().get(&old).unwrap().clone();
+    let mut local = device
+        .engine
+        .trees
+        .local()
+        .get(&NodeId::from(&old))
+        .unwrap()
+        .clone();
     if another_file {
         let ino = (device.disk)
             .create(Place::Root, "b", local.shape.content.clone())
@@ -3018,8 +3025,8 @@ fn rekey_the_create_in_flight(world: &mut World, d: usize, another_file: bool) -
     }
     let new = device.engine.ids.uuid_v7(1_794_268_740_001);
     create.node_id = new.clone();
-    device.engine.trees.remove_local(&old);
-    device.engine.trees.set_local(new.clone(), local);
+    device.engine.trees.remove_local(&NodeId::from(&old));
+    device.engine.trees.set_local(NodeId::from(&new), local);
     device.engine.commits = Commits::from_state(state).unwrap();
     device.engine.trees.take_changes();
     device.store = device.engine.reload(&device.rules).unwrap();
@@ -3066,7 +3073,9 @@ fn a_keep_stops_counting_once_its_rekeyed_file_is_asked_again() {
         .unwrap();
     let commits = &mut world.devices[0].engine.commits;
     let question = (commits.questions().iter())
-        .find(|question| question.answer.is_none() && question.shown.contains_key(&new))
+        .find(|question| {
+            question.answer.is_none() && question.shown.contains_key(&NodeId::from(&new))
+        })
         .unwrap()
         .clone();
     assert!(commits.decide(&question.id, question.kind.answers()[0]));
@@ -3198,7 +3207,7 @@ fn a_keep_does_not_count_for_bringing_back_a_later_deletion() {
         .map(|(id, local)| (id.clone(), local.clone()))
         .unwrap();
     assert_eq!(
-        world.space().node(&id).unwrap().status,
+        world.space().node(&id.to_string()).unwrap().status,
         NodeStatus::Live as i32
     );
     world
@@ -3219,15 +3228,15 @@ fn a_keep_does_not_count_for_bringing_back_a_later_deletion() {
         )
         .unwrap();
     assert_eq!(
-        world.space().node(&id).unwrap().status,
+        world.space().node(&id.to_string()).unwrap().status,
         NodeStatus::Trashed as i32
     );
     let engine = &mut world.devices[1].engine;
     let mut state = engine.commits.state();
     assert!(state.in_flight.is_none());
     let moved = Move {
-        node_id: id.clone(),
-        new_parent_id: local.shape.parent,
+        node_id: id.to_string(),
+        new_parent_id: local.shape.parent.into(),
         new_name: local.shape.name,
         from: None,
         pending_for: String::new(),
@@ -3302,7 +3311,7 @@ fn a_publish_for_a_folder_does_not_count_for_its_unchanged_child() {
         &mut engine.ids,
         1_794_268_740_020,
     );
-    let held: Vec<&String> = (engine.commits.questions().iter())
+    let held: Vec<&NodeId> = (engine.commits.questions().iter())
         .flat_map(|question| question.holds())
         .collect();
     assert_eq!(held, [&folder]);
@@ -3355,15 +3364,15 @@ fn an_unseen_rename_of_its_folder_does_not_bring_back_a_deleted_file() {
         .phase(2, &[(0, SCAN), (0, COMMIT), (0, COMMIT)])
         .unwrap();
     assert_eq!(
-        world.space().node(&child).unwrap().status,
+        world.space().node(&child.to_string()).unwrap().status,
         NodeStatus::Trashed as i32
     );
     let engine = &mut world.devices[1].engine;
     let mut state = engine.commits.state();
     assert!(state.in_flight.is_none());
     let moved = Move {
-        node_id: child.clone(),
-        new_parent_id: folder,
+        node_id: child.to_string(),
+        new_parent_id: folder.into(),
         new_name: file.shape.name,
         from: None,
         pending_for: String::new(),
@@ -3459,7 +3468,7 @@ fn recovery_finds_no_folder_the_parked_directory_holds() {
         let made = disk.create(Place::In(folder), "n", None).unwrap();
         let record = EffectRecord {
             effect_id: "e".to_owned(),
-            node: "n".to_owned(),
+            node: "n".to_owned().into(),
             counter: 1,
             effect: Effect::CreateDir {
                 at: Location::At {

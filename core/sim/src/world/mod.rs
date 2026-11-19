@@ -290,7 +290,7 @@ pub fn tag(content: &Content) -> i64 {
     (content.mtime_ns - NOW * 1_000_000).div_euclid(WRITE_SLOT_NS)
 }
 
-fn sources(commit: &Commit) -> impl Iterator<Item = (&NodeId, &Content)> {
+fn sources(commit: &Commit) -> impl Iterator<Item = (&String, &Content)> {
     commit.ops.iter().filter_map(|op| match &op.op {
         Some(op::Op::CreateFile(create)) => Some((&create.node_id, create.content.as_ref()?)),
         Some(op::Op::UpdateContent(update)) => Some((&update.node_id, update.content.as_ref()?)),
@@ -299,7 +299,8 @@ fn sources(commit: &Commit) -> impl Iterator<Item = (&NodeId, &Content)> {
 }
 
 fn readable(disk: &Disk, trees: &Trees, node: &str, content: &Content) -> bool {
-    let (Some(at), Some(local)) = (location_of(trees, node), trees.local().get(node)) else {
+    let node = NodeId::from(node);
+    let (Some(at), Some(local)) = (location_of(trees, &node), trees.local().get(&node)) else {
         return false;
     };
     disk.reads(&at, local.identity.ino, tag(content))
@@ -330,7 +331,7 @@ fn upload(
         .collect()
 }
 
-fn trashed_under(nodes: &[NodeState], write: i64, folders: &BTreeSet<&str>) -> bool {
+fn trashed_under(nodes: &[NodeState], write: i64, folders: &BTreeSet<NodeId>) -> bool {
     let Some(file) = nodes.iter().find(|node| {
         let content = (node.current.as_ref()).and_then(|version| version.content.as_ref());
         node.status != NodeStatus::Live as i32 && content.is_some_and(|c| tag(c) == write)
@@ -343,14 +344,14 @@ fn trashed_under(nodes: &[NodeState], write: i64, folders: &BTreeSet<&str>) -> b
             .map(|above| above.parent_id.as_str())
     })
     .take(nodes.len())
-    .any(|parent| folders.contains(parent))
+    .any(|parent| folders.contains(&NodeId::from(parent)))
 }
 
 /// The writes the server's live tree holds, each with the node that holds it.
 fn live_writes(space: &SpaceDo) -> BTreeMap<i64, NodeId> {
     (space.nodes().into_iter())
         .filter(|node| node.status == NodeStatus::Live as i32)
-        .filter_map(|node| Some((tag(&node.current?.content?), node.node_id)))
+        .filter_map(|node| Some((tag(&node.current?.content?), NodeId::from(node.node_id))))
         .collect()
 }
 
@@ -383,12 +384,12 @@ fn pending_stem(name: &str) -> Option<&str> {
     (n.is_empty() || numbered(n)).then_some(stem)
 }
 
-fn retained(space: &SpaceDo, node: &str) -> Vec<Vec<u8>> {
+fn retained(space: &SpaceDo, node: &NodeId) -> Vec<Vec<u8>> {
     let mut digests = Vec::new();
     let mut cursor = String::new();
     loop {
         let request = ListVersions {
-            node_id: node.into(),
+            node_id: node.to_string(),
             cursor,
             limit: 1000,
         };
@@ -805,7 +806,7 @@ impl World {
                 continue;
             }
             if let Some(content) = node.current.and_then(|current| current.content) {
-                (files.entry(tag(&content)).or_default()).insert(node.node_id);
+                (files.entry(tag(&content)).or_default()).insert(NodeId::from(node.node_id));
             }
         }
         for (write, exposure) in &mut self.exposed {
@@ -1099,7 +1100,7 @@ impl World {
     /// Records that the user of device `d` asked to restore `node` from the trash.
     pub fn restored_from_trash(&mut self, d: usize, node: &str) {
         self.observe(d);
-        if let Some(ino) = self.intents.ino_of(d, node) {
+        if let Some(ino) = self.intents.ino_of(d, &NodeId::from(node)) {
             self.intents
                 .record(d, self.moment, ino, "restore", Value::Live);
         }
@@ -1167,7 +1168,7 @@ impl World {
                     .find(|node| node.node_id == *id)
                     .is_some_and(live);
                 let gone = !self.space.node(id).is_some_and(|node| live(&node));
-                let unasked = was && gone && !self.intents.deleted(d, id);
+                let unasked = was && gone && !self.intents.deleted(d, &NodeId::from(id));
                 (unasked && !self.carries_delete(d, id, held)).then(|| {
                     format!(
                         "a commit of device {d} deletes node {id}, which its user never deleted"
@@ -1201,7 +1202,7 @@ impl World {
     }
 
     fn carries_delete(&self, d: usize, id: &str, held: &[NodeState]) -> bool {
-        if !self.sent_deletes.contains(&(d, id.to_owned())) {
+        if !self.sent_deletes.contains(&(d, NodeId::from(id))) {
             return false;
         }
         let live = |node: &NodeState| node.status == NodeStatus::Live as i32;
@@ -1214,10 +1215,14 @@ impl World {
                 .any(|at| at == id)
         };
         let authors = |node: &NodeState| -> BTreeSet<usize> {
-            (self.user_trashed.get(&node.node_id).into_iter().flatten())
-                .filter(|(author, was)| *author != d && was == node)
-                .map(|(author, _)| *author)
-                .collect()
+            (self
+                .user_trashed
+                .get(&NodeId::from(&node.node_id))
+                .into_iter()
+                .flatten())
+            .filter(|(author, was)| *author != d && was == node)
+            .map(|(author, _)| *author)
+            .collect()
         };
         let trashed: Vec<&NodeState> = (held.iter())
             .filter(|node| live(node) && under(&node.node_id))
@@ -1245,7 +1250,7 @@ impl World {
             .collect();
         let local = device.engine.trees.local().iter();
         inos.extend(local.map(|(id, node)| (node.identity.ino, id.clone())));
-        let root = self.space.space_id().to_owned();
+        let root = NodeId::from(self.space.space_id());
         (self.intents).observe(d, self.moment, &self.devices[d].disk, &inos, &root);
     }
 
@@ -1564,7 +1569,7 @@ impl World {
                     let digest = node.current.and_then(|current| current.content);
                     let digest = digest.map(|content| content.manifest_digest);
                     (
-                        node.node_id,
+                        NodeId::from(node.node_id),
                         (node.parent_id, node.name, node.status, digest),
                     )
                 })
@@ -1572,7 +1577,7 @@ impl World {
         };
         let writes = |space: &SpaceDo| -> BTreeSet<(NodeId, i64)> {
             (space.nodes().into_iter())
-                .filter_map(|node| Some((node.node_id, tag(&node.current?.content?))))
+                .filter_map(|node| Some((NodeId::from(node.node_id), tag(&node.current?.content?))))
                 .collect()
         };
         let before = shapes(&self.space);
@@ -1933,13 +1938,18 @@ impl World {
             device.disk.bring_back_all(|parked| {
                 (trees
                     .local()
-                    .get(parked)
+                    .get(&NodeId::from(parked))
                     .map(|node| node.shape.name.clone()))
-                .or_else(|| trees.synced().live(parked).map(|shape| shape.name.clone()))
+                .or_else(|| {
+                    trees
+                        .synced()
+                        .live(&NodeId::from(parked))
+                        .map(|shape| shape.name.clone())
+                })
                 .or_else(|| {
                     trees
                         .remote()
-                        .get(parked)
+                        .get(&NodeId::from(parked))
                         .map(|node| node.shape.name.clone())
                 })
                 .unwrap_or_else(|| parked.to_owned())
@@ -2546,15 +2556,15 @@ impl World {
                     let Some(op::Op::CreateFile(create)) = &op.op else {
                         continue;
                     };
-                    self.planned_copies[d].remove(&create.node_id);
-                    let source = (trees.local().get(&create.node_id))
+                    self.planned_copies[d].remove(&NodeId::from(&create.node_id));
+                    let source = (trees.local().get(&NodeId::from(&create.node_id)))
                         .and_then(|node| inos.get(&node.identity.ino))
                         .filter(|source| **source != create.node_id);
                     let (Some(source), Some(content)) = (source, &create.content) else {
                         continue;
                     };
                     let versions = self.space.list_versions(&ListVersions {
-                        node_id: source.clone(),
+                        node_id: source.to_string(),
                         limit: 1000,
                         ..Default::default()
                     });
@@ -2572,7 +2582,7 @@ impl World {
                             bound,
                             versions,
                         };
-                        self.planned_copies[d].insert(create.node_id.clone(), copy);
+                        self.planned_copies[d].insert(NodeId::from(&create.node_id), copy);
                     }
                 }
             }
@@ -2627,7 +2637,7 @@ impl World {
                 let resends: BTreeSet<NodeId> = (self.space.nodes().into_iter())
                     .filter(|node| node.status == NodeStatus::Live as i32)
                     .filter(|node| node.edit_rev < node.content_rev)
-                    .map(|node| node.node_id)
+                    .map(|node| NodeId::from(node.node_id))
                     .collect();
                 let session = device.session.clone();
                 let sent = Commit { receipts, ..commit };
@@ -2666,7 +2676,7 @@ impl World {
                             }
                             for op in &sent.ops {
                                 if let Some(op::Op::Delete(delete)) = &op.op {
-                                    self.sent_deletes.insert((d, delete.node_id.clone()));
+                                    self.sent_deletes.insert((d, NodeId::from(&delete.node_id)));
                                 }
                             }
                             let now: BTreeMap<String, NodeState> = (self.space.nodes().into_iter())
@@ -2678,8 +2688,9 @@ impl World {
                             {
                                 let trashed = (now.get(&was.node_id))
                                     .is_some_and(|node| node.status == NodeStatus::Trashed as i32);
-                                if trashed && self.intents.deleted(d, &was.node_id) {
-                                    let deletes = self.user_trashed.entry(was.node_id.clone());
+                                if trashed && self.intents.deleted(d, &NodeId::from(&was.node_id)) {
+                                    let deletes =
+                                        self.user_trashed.entry(NodeId::from(&was.node_id));
                                     deletes.or_default().push((d, was.clone()));
                                 }
                             }
@@ -2716,7 +2727,10 @@ impl World {
                                 (self.space.nodes().into_iter())
                                     .filter(|node| node.status == NodeStatus::Live as i32)
                                     .filter_map(|node| {
-                                        Some((node.node_id, node.current?.content?.manifest_digest))
+                                        Some((
+                                            NodeId::from(node.node_id),
+                                            node.current?.content?.manifest_digest,
+                                        ))
                                     })
                                     .collect();
                             for (op, outcome) in sent.ops.iter().zip(&committed.result.results) {
@@ -2728,12 +2742,15 @@ impl World {
                                         .map(|code| code as i32)
                                         .contains(&outcome.code);
                                 let content = create.content.as_ref();
-                                if let Some(copy) = self.planned_copies[d].get(&create.node_id)
+                                if let Some(copy) =
+                                    self.planned_copies[d].get(&NodeId::from(&create.node_id))
                                     && created
                                 {
-                                    self.intents.copied(&copy.source, &create.node_id);
+                                    self.intents
+                                        .copied(&copy.source, &NodeId::from(&create.node_id));
                                 }
-                                if let Some(copy) = self.planned_copies[d].get(&create.node_id)
+                                if let Some(copy) =
+                                    self.planned_copies[d].get(&NodeId::from(&create.node_id))
                                     && created
                                     && content.is_some_and(|content| tag(content) == copy.write)
                                     && (digests.get(&copy.source)).is_some_and(|digest| {
@@ -2741,18 +2758,22 @@ impl World {
                                     })
                                 {
                                     self.recovery_copies
-                                        .insert(create.node_id.clone(), copy.clone());
+                                        .insert(NodeId::from(&create.node_id), copy.clone());
                                 }
                             }
-                            let folders: BTreeSet<&str> = (sent.ops.iter())
+                            let folders: BTreeSet<NodeId> = (sent.ops.iter())
                                 .filter_map(|op| match &op.op {
-                                    Some(op::Op::Delete(delete)) => Some(delete.node_id.as_str()),
+                                    Some(op::Op::Delete(delete)) => {
+                                        Some(NodeId::from(&delete.node_id))
+                                    }
                                     _ => None,
                                 })
                                 .collect();
                             let nodes = self.space.nodes();
-                            let parents: BTreeMap<&str, &str> = (nodes.iter())
-                                .map(|node| (node.node_id.as_str(), node.parent_id.as_str()))
+                            let parents: BTreeMap<NodeId, NodeId> = (nodes.iter())
+                                .map(|node| {
+                                    (NodeId::from(&node.node_id), NodeId::from(&node.parent_id))
+                                })
                                 .collect();
                             let gone = before.iter().filter(|(w, node)| {
                                 let digest = self.held.get(*node).and_then(|held| held.get(*w));
@@ -2781,10 +2802,8 @@ impl World {
                                         trashed.node_id == *node
                                             && trashed.status != NodeStatus::Live as i32
                                     })
-                                    && std::iter::successors(Some(node.as_str()), |id| {
-                                        parents.get(id).copied()
-                                    })
-                                    .any(|id| folders.contains(id))
+                                    && std::iter::successors(Some(node), |id| parents.get(*id))
+                                        .any(|id| folders.contains(id))
                                     && (self.removed[d].iter())
                                         .any(|write| writes.is_some_and(|w| w.contains_key(write)));
                                 if self.removed.iter().any(asked)
@@ -2800,18 +2819,20 @@ impl World {
                                 )));
                             }
                             let live = live_nodes(&self.space);
-                            let deleted: BTreeSet<&str> = (sent.ops.iter())
+                            let deleted: BTreeSet<NodeId> = (sent.ops.iter())
                                 .zip(&committed.result.results)
                                 .filter(|(_, outcome)| {
                                     outcome.code != op_result::Code::Rejected as i32
                                 })
                                 .filter_map(|(op, _)| match &op.op {
-                                    Some(op::Op::Delete(op)) => Some(op.node_id.as_str()),
+                                    Some(op::Op::Delete(op)) => Some(NodeId::from(&op.node_id)),
                                     _ => None,
                                 })
                                 .collect();
-                            let parents_before: BTreeMap<&str, &str> = (held.iter())
-                                .map(|node| (node.node_id.as_str(), node.parent_id.as_str()))
+                            let parents_before: BTreeMap<NodeId, NodeId> = (held.iter())
+                                .map(|node| {
+                                    (NodeId::from(&node.node_id), NodeId::from(&node.parent_id))
+                                })
                                 .collect();
                             for deletion in &mut self.deletions {
                                 if deletion.device == d {
@@ -2827,7 +2848,8 @@ impl World {
                             for node in self.space.nodes() {
                                 if let Some(content) = node.current.and_then(|v| v.content) {
                                     for held in [&mut self.held, &mut self.in_history] {
-                                        let writes = held.entry(node.node_id.clone()).or_default();
+                                        let writes =
+                                            held.entry(NodeId::from(&node.node_id)).or_default();
                                         writes
                                             .insert(tag(&content), content.manifest_digest.clone());
                                     }
@@ -2837,7 +2859,10 @@ impl World {
                                 if let Some(op::Op::CreateDir(create)) = &op.op
                                     && outcome.code == op_result::Code::MergedInto as i32
                                 {
-                                    self.intents.merged(&create.node_id, &outcome.node_id);
+                                    (self.intents).merged(
+                                        &NodeId::from(&create.node_id),
+                                        &NodeId::from(&outcome.node_id),
+                                    );
                                 }
                                 let node = match &op.op {
                                     Some(op::Op::UpdateContent(update)) => &update.node_id,
@@ -2845,7 +2870,10 @@ impl World {
                                     _ => continue,
                                 };
                                 if outcome.code == op_result::Code::ConflictCopy as i32 {
-                                    self.intents.copied(node, &outcome.node_id);
+                                    (self.intents).copied(
+                                        &NodeId::from(node),
+                                        &NodeId::from(&outcome.node_id),
+                                    );
                                 }
                             }
                             let server = Server::of(self.space.space_id(), self.space.nodes());
@@ -2855,14 +2883,14 @@ impl World {
                                 .filter(|node| {
                                     node.status == NodeStatus::Live as i32 && trashed(&node.node_id)
                                 })
-                                .map(|node| node.node_id.clone())
+                                .map(|node| NodeId::from(&node.node_id))
                                 .collect();
                             let reparented: BTreeSet<NodeId> = (after_commit.iter())
                                 .filter(|node| {
-                                    (parents_before.get(node.node_id.as_str()))
+                                    (parents_before.get(&NodeId::from(&node.node_id)))
                                         .is_some_and(|parent| *parent != node.parent_id)
                                 })
-                                .map(|node| node.node_id.clone())
+                                .map(|node| NodeId::from(&node.node_id))
                                 .collect();
                             (self.intents).carried_by(
                                 d,
@@ -3082,7 +3110,7 @@ impl World {
                 let shape = |shape: Option<&koidrive_engine::tree::Shape>| match shape {
                     Some(shape) => format!(
                         "{} {:?} {}",
-                        short(&shape.parent),
+                        short(&shape.parent.to_string()),
                         shape.name,
                         file(&shape.content)
                     ),
@@ -3118,13 +3146,18 @@ impl World {
                     shape(trees.synced().live(id)),
                 );
                 let r = shape(trees.remote().get(id).map(|node| &node.shape));
-                writeln!(out, "  node {} L[{l}] S[{s}] R[{r}]{flags}", short(id)).unwrap();
+                writeln!(
+                    out,
+                    "  node {} L[{l}] S[{s}] R[{r}]{flags}",
+                    short(&id.to_string())
+                )
+                .unwrap();
             }
             if let Some(record) = engine.effects.in_flight().first() {
                 writeln!(
                     out,
                     "  effect in flight for {}: {:?}",
-                    short(&record.node),
+                    short(&record.node.to_string()),
                     record.effect
                 )
                 .unwrap();
@@ -3142,7 +3175,8 @@ impl World {
                 }
             }
             for question in engine.commits.questions() {
-                let holds: Vec<String> = question.holds().map(|id| short(id)).collect();
+                let holds: Vec<String> =
+                    question.holds().map(|id| short(&id.to_string())).collect();
                 writeln!(out, "  question {:?} holds {holds:?}", question.kind).unwrap();
             }
         }
@@ -3201,7 +3235,12 @@ impl World {
         let refused = self.space.refuses();
         let live: BTreeMap<NodeId, Vec<u8>> = (self.space.nodes().into_iter())
             .filter(|node| node.status == NodeStatus::Live as i32)
-            .filter_map(|node| Some((node.node_id, node.current?.content?.manifest_digest)))
+            .filter_map(|node| {
+                Some((
+                    NodeId::from(node.node_id),
+                    node.current?.content?.manifest_digest,
+                ))
+            })
             .collect();
         let held_again = |write: &i64, exposure: &Exposure| {
             let digest = (self.intents.bytes_of(*write))
@@ -3247,7 +3286,9 @@ impl World {
             .iter()
             .filter(|node| node.node_id != self.space.space_id())
         {
-            if node.status != NodeStatus::Live as i32 || left_out.contains(&node.node_id) {
+            if node.status != NodeStatus::Live as i32
+                || left_out.contains(&NodeId::from(&node.node_id))
+            {
                 continue;
             }
             let mut path = vec![node.name.clone()];
@@ -3641,7 +3682,7 @@ mod tests {
     fn ancestry_version(world: &World, write: i64) -> koidrive_proto::v1::VersionInfo {
         world
             .space
-            .node(&live_writes(&world.space)[&write])
+            .node(&(live_writes(&world.space)[&write]).to_string())
             .unwrap()
             .current
             .unwrap()
@@ -3920,13 +3961,13 @@ mod tests {
                 .node_id
         };
         let copy = RecoveryCopy {
-            source: id("a"),
+            source: id("a").into(),
             write: 1,
             device: 0,
             bound: 2,
             versions: vec![1],
         };
-        world.recovery_copies.insert(id("b"), copy);
+        world.recovery_copies.insert(id("b").into(), copy);
         let failure = world.phase(0, &[]).unwrap_err();
         assert!(
             failure
@@ -4381,7 +4422,7 @@ mod tests {
         let versions = world
             .space
             .list_versions(&ListVersions {
-                node_id: node.clone(),
+                node_id: node.to_string(),
                 ..Default::default()
             })
             .unwrap();

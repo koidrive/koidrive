@@ -143,12 +143,12 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
         0,
     );
     trees.settle(commits.aliases());
-    assert!(trees.synced().get("secret").is_none());
-    assert!(!trees.waiting().contains_key("secret"));
+    assert!(trees.synced().get(&"secret".into()).is_none());
+    assert!(!trees.waiting().contains_key(&"secret".into()));
     let mut now = file_shape("root", "secret.txt");
     if edited {
         now.content = Some(content(6));
-        let mut entry = trees.local().get("secret").unwrap().clone();
+        let mut entry = trees.local().get(&"secret".into()).unwrap().clone();
         entry.shape.content = Some(content(6));
         trees.set_local("secret".into(), entry);
     }
@@ -202,11 +202,11 @@ fn a_discarded_file_that_s_no_longer_holds_is_asked_about_again(edited: bool) {
             .unwrap();
         trees.settle(commits.aliases());
     }
-    assert!(trees.held("secret"));
+    assert!(trees.held(&"secret".into()));
     let asked = commits.questions().last().unwrap();
     assert_eq!(
-        asked.shown["secret"].content,
-        trees.local().get("secret").unwrap().shape.content
+        asked.shown[&"secret".into()].content,
+        trees.local().get(&"secret".into()).unwrap().shape.content
     );
     let answer = if edited {
         Answer::Publish
@@ -298,8 +298,8 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
         );
         trees.set_synced("c".into(), None);
         trees.settle(commits.aliases());
-        assert!(trees.synced().get("dir").is_some());
-        assert!(trees.synced().get("c").is_none());
+        assert!(trees.synced().get(&"dir".into()).is_some());
+        assert!(trees.synced().get(&"c".into()).is_none());
         let before = EngineState {
             trees: trees.state(),
             commits: commits.state(),
@@ -341,7 +341,7 @@ fn a_discarded_folder_is_not_sent_while_a_question_asks_again_about_what_it_hold
         trees.rules_scanned();
         let mut commits = Commits::from_state(after.commits).unwrap();
         commits.hold(&mut trees);
-        assert!(trees.held("c") && !trees.held("dir"));
+        assert!(trees.held(&"c".into()) && !trees.held(&"dir".into()));
         let built = commits
             .build(&mut trees, &mut ids, 1, "history", "me", 1)
             .cloned();
