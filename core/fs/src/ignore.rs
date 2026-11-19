@@ -94,8 +94,8 @@ pub struct Coverage {
     pub ended_early: bool,
     /// The left-out folders and entries the search could not open or stat.
     pub unopened: BTreeSet<PathBuf>,
-    /// The left-out folders and entries that were replaced or moved while the search walked them, after it had
-    /// started over for the replacements it allows in one search. The search went on without them.
+    /// The left-out folders and entries that were replaced, moved or changed while the search walked them, after it
+    /// had started over and looked again as often as it allows in one search. The search went on without them.
     pub replaced: BTreeSet<PathBuf>,
 }
 
@@ -151,8 +151,39 @@ struct Walk {
     bases: Vec<(PathBuf, Vec<FileId>)>,
     restarts: usize,
     relisted: HashSet<PathBuf>,
+    passed: BTreeMap<PathBuf, Seen>,
+    check: Vec<PathBuf>,
+    rounds: usize,
+    changing: BTreeSet<PathBuf>,
     unopened: BTreeSet<PathBuf>,
     replaced: BTreeSet<PathBuf>,
+}
+
+struct Seen {
+    id: FileId,
+    stamp: (i128, i128),
+    racy: bool,
+    names: Vec<(OsString, u64)>,
+}
+
+impl Seen {
+    fn of(fd: BorrowedFd<'_>, dir: &Path, unopened: &mut BTreeSet<PathBuf>) -> Option<Self> {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos() as i128);
+        let Ok(stat) = stat_fd(fd) else {
+            unopened.insert(dir.to_path_buf());
+            return None;
+        };
+        let stamp = (stat.mtime_ns, stat.ctime_ns);
+        let second = |ns: i128| ns.div_euclid(1_000_000_000);
+        Some(Self {
+            id: stat.id,
+            stamp,
+            racy: second(stamp.0.max(stamp.1)) >= second(at),
+            names: listed(fd, dir, unopened)?,
+        })
+    }
 }
 
 struct Folder {
@@ -172,20 +203,21 @@ fn listed(
     fd: BorrowedFd<'_>,
     dir: &Path,
     unopened: &mut BTreeSet<PathBuf>,
-) -> Option<Vec<OsString>> {
+) -> Option<Vec<(OsString, u64)>> {
     let Ok(mut entries) = Dir::read_from(fd) else {
         unopened.insert(dir.to_path_buf());
         return None;
     };
-    let mut names: Vec<OsString> = Vec::new();
+    let mut names: Vec<(OsString, u64)> = Vec::new();
     for item in std::iter::from_fn(|| entries.read()) {
         let Ok(item) = item else {
             unopened.insert(dir.to_path_buf());
             break;
         };
-        names.push(OsStr::from_bytes(item.file_name().to_bytes()).to_os_string());
+        let name = OsStr::from_bytes(item.file_name().to_bytes()).to_os_string();
+        names.push((name, item.ino()));
     }
-    names.retain(|name| *name != "." && *name != "..");
+    names.retain(|(name, _)| *name != "." && *name != "..");
     names.sort_unstable();
     Some(names)
 }
@@ -206,6 +238,10 @@ impl Walk {
             bases: Vec::new(),
             restarts,
             relisted: HashSet::new(),
+            passed: BTreeMap::new(),
+            check: Vec::new(),
+            rounds: 0,
+            changing: BTreeSet::new(),
             unopened: BTreeSet::new(),
             replaced: BTreeSet::new(),
         }
@@ -245,21 +281,87 @@ impl Walk {
         if !self.relisted.insert(parent.dir.clone()) {
             return;
         }
-        let Some(now) =
-            (parent.fd.as_ref()).and_then(|fd| listed(fd.as_fd(), &parent.dir, &mut self.unopened))
+        let Some(now) = (parent.fd.as_ref())
+            .and_then(|fd| Seen::of(fd.as_fd(), &parent.dir, &mut self.unopened))
         else {
             return;
         };
-        let added: Vec<OsString> = (now.into_iter())
-            .filter(|name| parent.names.binary_search(name).is_err())
+        let added: Vec<OsString> = (now.names.iter())
+            .filter(|(name, _)| parent.names.binary_search(name).is_err())
+            .map(|(name, _)| name.clone())
             .collect();
         parent.names.extend(added);
+        self.passed.insert(parent.dir.clone(), now);
+    }
+
+    fn recheck(&mut self, root: BorrowedFd<'_>, dir: PathBuf, cut: &mut dyn FnMut(Cut<'_>)) {
+        let Some(seen) = self.passed.get(&dir) else {
+            return;
+        };
+        cut(Cut::Confirming(&dir));
+        let same = match stat_at(root, dir.as_os_str()) {
+            Ok(stat) => stat
+                .id
+                .same(&seen.id)
+                .then_some((stat.mtime_ns, stat.ctime_ns)),
+            Err(err) if is_gone(&err) => {
+                self.passed.remove(&dir);
+                return;
+            }
+            Err(_) => {
+                self.unopened.insert(dir);
+                return;
+            }
+        };
+        if same.is_some_and(|stamp| stamp == seen.stamp && !seen.racy) {
+            return;
+        }
+        let now = match same {
+            Some(_) => {
+                cut(Cut::OpeningDir(&dir));
+                match open_dir_at(root, dir.as_os_str()) {
+                    Ok(fd) => Seen::of(fd.as_fd(), &dir, &mut self.unopened),
+                    Err(err) => {
+                        if !is_gone(&err) {
+                            self.unopened.insert(dir.clone());
+                        }
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+        let Some(now) = now.filter(|now| now.id.same(&seen.id)) else {
+            self.passed.remove(&dir);
+            if let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) {
+                self.listings.push(Listing {
+                    dir: parent.to_path_buf(),
+                    names: vec![name.to_os_string()],
+                });
+            }
+            self.changing.insert(dir);
+            return;
+        };
+        let added: Vec<OsString> = (now.names.iter().rev())
+            .filter(|entry| seen.names.binary_search(entry).is_err())
+            .map(|(name, _)| name.clone())
+            .collect();
+        self.passed.insert(dir.clone(), now);
+        if !added.is_empty() {
+            self.listings.push(Listing {
+                dir: dir.clone(),
+                names: added,
+            });
+            self.changing.insert(dir);
+        }
     }
 }
 
 const OPEN_FOLDERS: usize = 16;
 
 const RESTARTS: usize = 8;
+
+const CHECKS: usize = 4;
 
 const SEARCH_BUDGET: usize = 20_000;
 
@@ -777,6 +879,21 @@ impl<'r> Pending<'r> {
                     None => {
                         let Some(listing) = walk.listings.last_mut() else {
                             let Some((dir, chain)) = walk.bases.pop() else {
+                                if let Some(dir) = walk.check.pop() {
+                                    left = left.saturating_sub(1);
+                                    looked = true;
+                                    walk.recheck(root, dir, cut);
+                                    continue 'walk;
+                                }
+                                if walk.rounds == 0
+                                    || (!walk.changing.is_empty() && walk.rounds < CHECKS)
+                                {
+                                    walk.rounds += 1;
+                                    walk.changing.clear();
+                                    walk.check = walk.passed.keys().rev().cloned().collect();
+                                    continue 'walk;
+                                }
+                                walk.replaced.append(&mut walk.changing);
                                 *coverage = Coverage {
                                     ended_early: false,
                                     unopened: std::mem::take(&mut walk.unopened),
@@ -884,6 +1001,9 @@ impl<'r> Pending<'r> {
                 if entry.kind != EntryKind::Dir {
                     continue 'walk;
                 }
+                if (walk.passed.get(&path)).is_some_and(|seen| seen.id.same(&entry.id)) {
+                    continue 'walk;
+                }
                 left = left.saturating_sub(1);
                 cut(Cut::OpeningDir(&path));
                 let opened =
@@ -896,9 +1016,11 @@ impl<'r> Pending<'r> {
                     }
                     _ => break 'step Replaced::Path(path),
                 };
-                let Some(names) = listed(sub.as_fd(), &path, &mut walk.unopened) else {
+                let Some(seen) = Seen::of(sub.as_fd(), &path, &mut walk.unopened) else {
                     continue 'walk;
                 };
+                let names = seen.names.iter().map(|(name, _)| name.clone()).collect();
+                walk.passed.insert(path.clone(), seen);
                 walk.push(Folder {
                     dir: path,
                     id: entry.id,

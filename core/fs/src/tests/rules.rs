@@ -331,7 +331,7 @@ fn one_search_finds_files_moved_behind_it_or_into_a_new_scope_past_a_locked_file
 }
 
 #[test]
-fn a_search_opens_each_folder_of_a_wide_folder_past_the_open_folder_cap_once() {
+fn a_search_opens_each_folder_of_a_wide_folder_past_the_open_folder_cap_at_most_twice() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("space");
     let wide: PathBuf = ["ig"].into_iter().chain(["d"; 15]).collect();
@@ -376,8 +376,8 @@ fn a_search_opens_each_folder_of_a_wide_folder_past_the_open_folder_cap_once() {
     );
     let (folders, entries) = (16 + 100, 16 + 200);
     assert_eq!(opened.len(), folders);
-    assert_eq!(opened.values().sum::<usize>(), folders);
-    assert_eq!(looked, entries);
+    assert!(opened.values().all(|opens| *opens <= 2), "{opened:?}");
+    assert!(looked <= entries + folders, "{looked}");
 }
 
 #[test]

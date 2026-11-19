@@ -295,7 +295,7 @@ fn a_folder_replaced_above_the_open_folders_of_a_paused_search_keeps_the_move() 
 }
 
 #[test]
-fn a_search_keeps_a_move_while_folders_on_its_way_move_or_keep_being_replaced() {
+fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
     fn mv(root: &Path, from: &str, to: &str) {
         fs::rename(root.join(from), root.join(to)).unwrap();
     }
@@ -335,7 +335,7 @@ fn a_search_keeps_a_move_while_folders_on_its_way_move_or_keep_being_replaced() 
         ),
     ];
     for (fill, start, to, churn) in cases {
-        for budget in [10, 20] {
+        for budget in (3..=7).chain([10, 20]) {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path();
             write(root, KOIIGNORE, "ig/\n");
