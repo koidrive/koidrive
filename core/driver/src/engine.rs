@@ -58,6 +58,7 @@ pub(crate) struct Engine {
     pub local_written_since_load: bool,
     removed_at: BTreeMap<NodeId, u64>,
     owed: BTreeSet<NodeId>,
+    stored_owed: BTreeSet<NodeId>,
 }
 
 const DELETE_WAIT_MS: u64 = 2_000;
@@ -121,6 +122,14 @@ impl Engine {
                 self.local_written_since_load = true;
             }
         }
+        let owed = self.owed_deletes();
+        for id in owed.difference(&self.stored_owed) {
+            tx.set_owed_delete(id, true)?;
+        }
+        for id in self.stored_owed.difference(&owed) {
+            tx.set_owed_delete(id, false)?;
+        }
+        self.stored_owed = owed;
         for id in &changed.synced {
             match self.trees.synced().get(id) {
                 Some(shape) => tx.put_synced_node(&SyncedNode {
@@ -1668,6 +1677,7 @@ pub(crate) struct Stored {
     mounts: BTreeMap<PathBuf, Mount>,
     unread: Option<BTreeMap<PathBuf, i64>>,
     ctimes: BTreeMap<NodeId, i64>,
+    owed: BTreeSet<NodeId>,
 }
 
 impl Stored {
@@ -1680,6 +1690,7 @@ impl Stored {
             mounts: BTreeMap::new(),
             unread: None,
             ctimes: BTreeMap::new(),
+            owed: BTreeSet::new(),
         }
     }
 
@@ -1778,6 +1789,7 @@ impl Stored {
         self.cursor = tx.cursor()?;
         self.mounts = tx.volume_mounts()?;
         self.unread = tx.unread_folders()?;
+        self.owed = (tx.owed_deletes()?.into_iter()).map(NodeId::from).collect();
         Ok(true)
     }
 
@@ -1790,6 +1802,7 @@ impl Stored {
             mounts,
             unread,
             ctimes,
+            owed,
         } = self;
         if abandoned() {
             return Ok(None);
@@ -1835,7 +1848,8 @@ impl Stored {
             unstored_ctimes: BTreeMap::new(),
             local_written_since_load: false,
             removed_at: BTreeMap::new(),
-            owed: BTreeSet::new(),
+            owed: owed.clone(),
+            stored_owed: owed,
         }))
     }
 }
@@ -2701,6 +2715,7 @@ mod tests {
             local_written_since_load: false,
             removed_at: BTreeMap::new(),
             owed: BTreeSet::new(),
+            stored_owed: BTreeSet::new(),
         };
         Case {
             name,
