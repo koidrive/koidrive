@@ -658,6 +658,7 @@ cases = ["{1:064}"]
         local_changes = "a_device_with_local_changes_converges_with_the_server_and_keeps_every_write"
         e6d4a = "6d4a438ebc80d7846a131222b430d05dfda5334f90e1617453dd14ef4466ff4a"
         e84d3 = "84d38f0bff21b60af7a74965e61163a0dee51349a80fe507b3fbc587567b2ae2"
+        e1d7c = "1d7c783628f29903d2c2e285d7cbf2eea9fdf21b89bb507b7abb3b034e9100b9"
         j6ef9 = "6ef9f2b252a2d4d6ea433fb6b88fbc4499ed4e38fbee89c841fb95b3aa12b50e"
         j0bde = "0bdef727276492b5d06bd49ad69f35bfdd49de0c5657b41e000153fa77440c27"
         i764b = "764b716b5c597756c82822fe9d3cdd3d921e5472467f05d3f9291c53088b3b69"
@@ -745,8 +746,9 @@ cases = ["{1:064}"]
             (lose_coarse, example(w74e3), other, [("A", "GUN-1004", None)]),
             (lose_rollbacks, example(w74e3), w74e3, [("A", "GUN-1004", None)]),
             ("devices_on_coarse_volumes_converge_once_the_faults_stop", undone + "\n" + example(w74e3), other, []),
-            (local_changes, elsewhere, e6d4a, [("E", "GUN-984", ["4af1a1aa9520", "6d4a438ebc80", "84d38f0bff21"])]),
-            (local_changes, elsewhere, e84d3, [("E", "GUN-984", ["4af1a1aa9520", "6d4a438ebc80", "84d38f0bff21"])]),
+            (local_changes, elsewhere, e6d4a, [("E", "GUN-984", ["19f84e7ef1f0", "1d7c783628f2", "4af1a1aa9520", "6d4a438ebc80", "84d38f0bff21", "b9d004f06e53"])]),
+            (local_changes, elsewhere, e84d3, [("E", "GUN-984", ["19f84e7ef1f0", "1d7c783628f2", "4af1a1aa9520", "6d4a438ebc80", "84d38f0bff21", "b9d004f06e53"])]),
+            (takes_along, elsewhere, e1d7c, [("E", "GUN-984", ["19f84e7ef1f0", "1d7c783628f2", "4af1a1aa9520", "6d4a438ebc80", "84d38f0bff21", "b9d004f06e53"])]),
             (local_changes, elsewhere, other, []),
             (restores_and_rewinds, after_670(j6ef9, restores_and_rewinds), j6ef9, [("J", "GUN-1012", ["6ef9f2b252a2"])]),
             (lose_restores, after_670(j6ef9, lose_restores), j6ef9, [("J", "GUN-1012", ["6ef9f2b252a2"])]),
