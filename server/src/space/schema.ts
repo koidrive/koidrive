@@ -125,6 +125,11 @@ export const MIGRATIONS: readonly Migration[] = [
     const columns = sql.exec("SELECT name FROM pragma_table_info('versions')").toArray().map((row) => row.name);
     if (!columns.includes("source_version_id")) sql.exec("ALTER TABLE versions ADD COLUMN source_version_id TEXT NOT NULL DEFAULT ''");
   },
+  (sql) => {
+    const columns = sql.exec("SELECT name FROM pragma_table_info('nodes')").toArray().map((row) => row.name);
+    if (!columns.includes("git_tracked")) sql.exec("ALTER TABLE nodes ADD COLUMN git_tracked INTEGER NOT NULL DEFAULT 0");
+    if (!columns.includes("git_tracked_rev")) sql.exec("ALTER TABLE nodes ADD COLUMN git_tracked_rev INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 export const LEGACY_INTENTS_DUE = "legacy_intents_due";

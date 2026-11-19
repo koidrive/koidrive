@@ -53,6 +53,7 @@ export interface Attachment {
   maxFormat: number;
   hello: boolean;
   live: boolean;
+  features?: string[];
   usage?: UsageBatch;
 }
 

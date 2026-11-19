@@ -124,7 +124,7 @@ function replay(nodes: Map<string, RestoredNode>, tombstones: Map<string, NodePu
     if (held && version) {
       held.madeOver = boundMadeOver(version.madeOver);
     }
-    const rev = (state: NodeState) => [state.contentRev, state.metaRev, state.editRev, state.metaEditRev].reduce((a, b) => (a > b ? a : b));
+    const rev = (state: NodeState) => [state.contentRev, state.metaRev, state.editRev, state.metaEditRev, state.gitTrackedRev].reduce((a, b) => (a > b ? a : b));
     if (known && (rev(incoming) < rev(known.state) || (rev(incoming) === rev(known.state) && carriedFlags(incoming).join() === carriedFlags(known.state).join()))) continue;
     const previous = new Map(known?.previous);
     let current = incoming.current;
