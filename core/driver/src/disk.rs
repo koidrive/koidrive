@@ -959,11 +959,14 @@ impl Disk {
     }
 
     fn counter(&self, effects: u64) -> Marker {
-        Marker {
+        let marker = Marker {
             space_id: self.space_id.clone(),
             effects,
-            token: (self.next.as_ref().map(|next| next.token.to_string()))
-                .or_else(|| self.current.clone()),
+            token: self.current.clone(),
+        };
+        match &self.next {
+            Some(next) => self.space.log_token(&marker, next.token, next.rotation),
+            None => marker,
         }
     }
 
@@ -997,8 +1000,10 @@ impl Disk {
         let next = match &mut self.next {
             Some(next) if next.for_build => next,
             unbuilt => {
-                let restart = (unbuilt.as_ref())
-                    .is_some_and(|next| next.rotation == Rotation::Restart && !next.flushed);
+                let restart = (unbuilt.as_ref()).is_some_and(|next| {
+                    let taken = marker.token == Some(next.token.to_string());
+                    next.rotation == Rotation::Restart && !next.flushed && !taken
+                });
                 let (token, rotation) = pend_token(&marker, restart, store)?;
                 (self.hook)(Cut::TokenPended);
                 self.current = marker.token.clone();

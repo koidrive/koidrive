@@ -784,9 +784,22 @@ impl Space {
         }
     }
 
-    /// Writes `next` to the token log as `rotation` says, then writes `marker` with `next` as its token. Fails,
-    /// writing nothing, unless the root is held. A token log that can't be written only shortens how far back a
-    /// restored store finds its own token, so the marker is written either way.
+    /// Writes `next` to the token log as `rotation` says while the root is held, and returns `marker` with `next` as
+    /// its token. A token log that can't be written only shortens how far back a restored store finds its own token,
+    /// so the marker is returned either way.
+    pub fn log_token(&self, marker: &Marker, next: Minted, rotation: Rotation) -> Marker {
+        if self.check_held().is_ok()
+            && let Ok(private) = private_dir(self.root())
+        {
+            let _ = write_lineage(private.as_fd(), marker, next, rotation);
+        }
+        Marker {
+            token: Some(next.to_string()),
+            ..marker.clone()
+        }
+    }
+
+    /// [`Space::log_token`], then writes the marker it returns. Fails, writing no marker, unless the root is held.
     pub fn write_rotation(
         &self,
         marker: &Marker,
@@ -794,11 +807,7 @@ impl Space {
         rotation: Rotation,
     ) -> io::Result<()> {
         self.check_held()?;
-        let _ = write_lineage(private_dir(self.root())?.as_fd(), marker, next, rotation);
-        let rotated = Marker {
-            token: Some(next.to_string()),
-            ..marker.clone()
-        };
+        let rotated = self.log_token(marker, next, rotation);
         write_marker_at(self.root(), &rotated, Flush::Full)
     }
 }

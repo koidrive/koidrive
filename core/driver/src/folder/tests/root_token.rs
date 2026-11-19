@@ -1661,3 +1661,54 @@ fn a_start_replaces_a_token_log_that_is_not_a_file_without_waiting_on_it() {
     assert_eq!(start.recv_timeout(Duration::from_secs(30)), Ok(true));
     assert!(fs::symlink_metadata(&log).unwrap().is_file());
 }
+
+#[test]
+fn a_restart_whose_marker_took_its_token_before_the_flush_failed_keeps_the_token_in_the_log() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    forget_minted(&site);
+    let blocker = block_marker(&site);
+    let mut a = restarted(&site, &mut remote);
+    fs::remove_dir_all(&blocker).unwrap();
+    a.folder.disk.fail_marker_flush(true);
+    hold(&mut a, &site.root.join("one.txt"));
+    let saved = site.db.with_extension("saved");
+    let db = rusqlite::Connection::open(&site.db).unwrap();
+    db.execute("VACUUM INTO ?1", [saved.to_str()]).unwrap();
+    a.folder.disk.fail_marker_flush(false);
+    fs::write(site.root.join("two.txt"), b"two").unwrap();
+    a.rescan();
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(remote.names(), ["one.txt", "two.txt"]);
+    drop((db, a));
+    fs::copy(&saved, &site.db).unwrap();
+    assert!(recovers(&site));
+}
+
+#[test]
+fn an_effect_logs_a_pending_token_the_start_could_not_write_before_its_marker_carries_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let log = site.root.join(koidrive_fs::PRIVATE_DIR).join("lineage");
+    let mode = |mode| fs::set_permissions(&log, fs::Permissions::from_mode(mode)).unwrap();
+    mode(0o000);
+    let blocker = block_marker(&site);
+    let mut a = restarted(&site, &mut remote);
+    mode(0o644);
+    fs::remove_dir_all(&blocker).unwrap();
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("one.txt"), b"one");
+    a.pull(&remote);
+    a.run(&mut remote);
+    assert_eq!(names(&site.root), ["one.txt"]);
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    drop(opened(&site).unwrap());
+    fs::copy(&saved, &site.db).unwrap();
+    assert!(recovers(&site));
+}
