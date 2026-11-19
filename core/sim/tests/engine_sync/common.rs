@@ -1844,8 +1844,8 @@ fn run_ignoring_answering_after(
                 record.node
             );
             placement_check(&device, &record, &kept_with, &placed, &revived, &merged_into)?;
-            if device.trees.ignored(&record.node)
-                && let Some(local) = device.trees.local().get(&record.node)
+            if let Some(local) = (device.trees.local().get(&record.node))
+                .filter(|local| local.parked || device.trees.ignored(&record.node))
             {
                 let remote = device.trees.remote().live(&record.node);
                 let left_or_taken_to_r = match &record.after {
@@ -1857,7 +1857,7 @@ fn run_ignoring_answering_after(
                 };
                 prop_assert!(
                     left_or_taken_to_r,
-                    "the effects take the local copy of excluded {} from {:?} to {:?}, and R has {:?}",
+                    "the effects take the local copy of excluded or parked {} from {:?} to {:?}, and R has {:?}",
                     record.node,
                     local.shape,
                     record.after,
