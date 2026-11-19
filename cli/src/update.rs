@@ -74,6 +74,15 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
         .and_then(|()| brew.map_or(Ok(()), crate::lifeline::confine_program))
         .map_err(|error| failed(error.to_string()))?;
     let mut echo = open_log(paths, &update::log_path(paths), json, verbose);
+    echo.log(&format!(
+        "\n== koi {} update, {}",
+        env!("CARGO_PKG_VERSION"),
+        crate::report::utc_now()
+    ));
+    #[cfg(target_os = "macos")]
+    if let Some(journal) = echo.journal() {
+        crate::app_install::journal(journal);
+    }
     let steps = Steps::new(json, verbose);
     let updated = match &install.method {
         Method::Formula { brew } | Method::CaskElsewhere { brew } => {
@@ -81,8 +90,11 @@ pub async fn run(paths: &Paths, json: bool, verbose: bool) -> Result<Done, CliEr
         }
         _ => release(paths, &install, &mut echo, &steps).await,
     };
+    if let Ok(done) = &updated {
+        echo.log(done.text.lines().next().unwrap_or_default());
+    }
     updated.map_err(|mut error| {
-        echo.log(&error.message);
+        echo.log(&format!("Failed: {}", error.message));
         if let Some(command) = install.fallback() {
             error.next.push(Next::of(&command));
         }

@@ -71,6 +71,6 @@ pub(crate) async fn verify_existing(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) use macos::{QUIESCE, writable};
+pub(crate) use macos::{QUIESCE, journal, writable};
 #[cfg(target_os = "macos")]
 mod macos;

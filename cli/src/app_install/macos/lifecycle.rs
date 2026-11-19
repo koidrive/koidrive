@@ -83,6 +83,8 @@ pub(super) async fn capture_ui(
     let mut running = Vec::new();
     for app in installed {
         let output = process(
+            &format!("Checking whether {} is running", app.path.display()),
+            config.limits.tool,
             &config.osascript,
             &[
                 Arg::from("-l"),
@@ -94,7 +96,7 @@ pub(super) async fn capture_ui(
             control,
         )
         .await?;
-        match output.trim_ascii() {
+        match output.stdout.trim_ascii() {
             b"running" => running.push(RunningApp {
                 root: OwnedPath::capture(app.path.parent().unwrap().to_path_buf())?,
                 bundle: OwnedPath {
@@ -269,16 +271,26 @@ pub(super) async fn quiesce(
     for path in paths {
         parameters.push(passed(path)?);
     }
-    let output = process(&config.osascript, &parameters, control)
-        .await
-        .map_err(|error| {
-            if error.kind == AppInstallFailure::Command {
-                failure(AppInstallFailure::InUse, error)
-            } else {
-                error
-            }
-        })?;
-    match output.trim_ascii() {
+    let output = process(
+        "Asking Koidrive to quit",
+        config.limits.quit,
+        &config.osascript,
+        &parameters,
+        control,
+    )
+    .await
+    .map_err(|error| match error.kind {
+        AppInstallFailure::Command => failure(AppInstallFailure::InUse, error),
+        AppInstallFailure::Stalled => failure(
+            AppInstallFailure::InUse,
+            format!(
+                "Koidrive did not quit within {} seconds of being asked to",
+                config.limits.quit.as_secs()
+            ),
+        ),
+        _ => error,
+    })?;
+    match output.stdout.trim_ascii() {
         b"running" => Ok(true),
         b"stopped" => Ok(false),
         _ => Err(failure(
@@ -297,7 +309,16 @@ pub(super) async fn open(
         return AppLaunchResult::NotRequested;
     }
     let launched = match passed(path) {
-        Ok(path) => process(&config.open, &[Arg::from("-a"), path], control).await,
+        Ok(path) => {
+            process(
+                "Opening Koidrive",
+                config.limits.tool,
+                &config.open,
+                &[Arg::from("-a"), path],
+                control,
+            )
+            .await
+        }
         Err(error) => Err(error),
     };
     match launched {

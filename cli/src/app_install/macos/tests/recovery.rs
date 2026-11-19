@@ -647,6 +647,8 @@ async fn native_dmg_attach_copy_detach_and_receipt_replay() {
         cancel,
     };
     process(
+        "Creating the fixture disk image",
+        Duration::from_secs(60),
         Path::new("/usr/bin/hdiutil"),
         &[
             Arg::from("create"),
@@ -705,13 +707,15 @@ async fn native_dmg_attach_copy_detach_and_receipt_replay() {
     assert_eq!(retired[0].bundle, old_path);
     retired[0].discard().unwrap();
     let inventory = process(
+        "Listing open disk images",
+        Duration::from_secs(60),
         Path::new("/usr/bin/hdiutil"),
         &[Arg::from("info"), Arg::from("-plist")],
         &control,
     )
     .await
     .unwrap();
-    let plist = plist::Value::from_reader(std::io::Cursor::new(inventory)).unwrap();
+    let plist = plist::Value::from_reader(std::io::Cursor::new(inventory.stdout)).unwrap();
     for image in plist.as_dictionary().unwrap()["images"].as_array().unwrap() {
         for entity in image.as_dictionary().unwrap()["system-entities"]
             .as_array()

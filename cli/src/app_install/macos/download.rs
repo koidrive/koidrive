@@ -1,6 +1,6 @@
 use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
 use crate::app_install::macos::config::Config;
-use crate::app_install::macos::control::{Control, io_error};
+use crate::app_install::macos::control::{Control, io_error, record, step};
 use crate::app_install::macos::filesystem::identity;
 use crate::app_install::macos::state::{OwnedPath, VerifiedDmg};
 use semver::Version;
@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 fn checksum(bytes: &[u8], asset: &str) -> Result<[u8; 32], AppInstallError> {
@@ -63,7 +64,7 @@ pub(super) async fn download(
             }
         }))
         .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(180))
+        .read_timeout(config.limits.stall)
         .referer(false)
         .no_proxy()
         .build()
@@ -75,6 +76,7 @@ pub(super) async fn download(
         &format!("{base}/SHA256SUMS"),
         1024 * 1024,
         None,
+        config.limits.stall,
         control,
     )
     .await?;
@@ -97,6 +99,7 @@ pub(super) async fn download(
         &format!("{base}/{asset}"),
         config.max_download,
         Some(file),
+        config.limits.stall,
         control,
     )
     .await?;
@@ -113,51 +116,101 @@ async fn fetch(
     url: &str,
     limit: u64,
     mut file: Option<File>,
+    stall: Duration,
     control: &Control,
 ) -> Result<Vec<u8>, AppInstallError> {
-    control
-        .bounded(async {
-            let mut response = client
-                .get(url)
-                .send()
-                .await
-                .and_then(reqwest::Response::error_for_status)
-                .map_err(|error| failure(AppInstallFailure::Download, error))?;
-            if response.content_length().is_some_and(|len| len > limit) {
+    let name = url.rsplit('/').next().unwrap_or(url);
+    let what = format!("Downloading {name}");
+    let received = AtomicU64::new(0);
+    let total = AtomicU64::new(0);
+    let progress = || {
+        let mb = |bytes: u64| bytes as f64 / 1_000_000.0;
+        match total.load(Ordering::Relaxed) {
+            0 => format!("{:.1} MB", mb(received.load(Ordering::Relaxed))),
+            all => format!(
+                "{:.1} of {:.1} MB",
+                mb(received.load(Ordering::Relaxed)),
+                mb(all)
+            ),
+        }
+    };
+    let transfer = async {
+        let mut response = client
+            .get(url)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|error| download_error(name, "could not start", stall, &error))?;
+        total.store(response.content_length().unwrap_or(0), Ordering::Relaxed);
+        if response.content_length().is_some_and(|len| len > limit) {
+            return Err(failure(
+                AppInstallFailure::Download,
+                "Release asset exceeds download limit",
+            ));
+        }
+        let mut count = 0u64;
+        let mut bytes = Vec::new();
+        let mut hash = Sha256::new();
+        while let Some(chunk) = response.chunk().await.map_err(|error| {
+            download_error(name, &format!("stopped at {}", progress()), stall, &error)
+        })? {
+            control.check()?;
+            count = count.saturating_add(chunk.len() as u64);
+            received.store(count, Ordering::Relaxed);
+            if count > limit {
                 return Err(failure(
                     AppInstallFailure::Download,
                     "Release asset exceeds download limit",
                 ));
             }
-            let mut count = 0u64;
-            let mut bytes = Vec::new();
-            let mut hash = Sha256::new();
-            while let Some(chunk) = response
-                .chunk()
-                .await
-                .map_err(|error| failure(AppInstallFailure::Download, error))?
-            {
-                control.check()?;
-                count = count.saturating_add(chunk.len() as u64);
-                if count > limit {
-                    return Err(failure(
-                        AppInstallFailure::Download,
-                        "Release asset exceeds download limit",
-                    ));
-                }
-                if let Some(file) = file.as_mut() {
-                    file.write_all(&chunk).map_err(io_error)?;
-                    hash.update(&chunk);
-                } else {
-                    bytes.extend_from_slice(&chunk);
-                }
-            }
-            if let Some(file) = file {
-                file.sync_all().map_err(io_error)?;
-                Ok(hash.finalize().to_vec())
+            if let Some(file) = file.as_mut() {
+                file.write_all(&chunk).map_err(io_error)?;
+                hash.update(&chunk);
             } else {
-                Ok(bytes)
+                bytes.extend_from_slice(&chunk);
             }
-        })
-        .await
+        }
+        if let Some(file) = file {
+            file.sync_all().map_err(io_error)?;
+            Ok(hash.finalize().to_vec())
+        } else {
+            Ok(bytes)
+        }
+    };
+    let bounded = async {
+        control
+            .bounded(&what, control.remaining(), transfer)
+            .await
+            .map_err(|mut error| {
+                if error.kind == AppInstallFailure::Deadline {
+                    error.message = format!(
+                        "{what} was still running at {} when the app update ran out of time",
+                        progress()
+                    );
+                }
+                error
+            })
+    };
+    let result = step(&what, bounded).await;
+    if result.is_ok() {
+        record(&format!("  received {}", progress()));
+    }
+    result
+}
+
+fn download_error(
+    name: &str,
+    what: &str,
+    stall: Duration,
+    error: &reqwest::Error,
+) -> AppInstallError {
+    let why = match (error.is_timeout(), error.is_connect()) {
+        (true, _) => format!("no data arrived for {} seconds", stall.as_secs()),
+        (false, true) => format!("could not connect: {error}"),
+        _ => error.to_string(),
+    };
+    failure(
+        AppInstallFailure::Download,
+        format!("The download of {name} {what}: {why}"),
+    )
 }

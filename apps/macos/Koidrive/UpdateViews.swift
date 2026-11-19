@@ -225,11 +225,11 @@ private extension UpdateNotice {
         case .updating: String(localized: "Koidrive quits and reopens when it’s ready.")
         case .updated: String(localized: "Koidrive reopened after the update.")
         case .failed(let failure) where failure.fallbackCommand != nil:
-            String(localized: "Koidrive \(running) still works. You can also update with Homebrew in Terminal:")
+            String(localized: "\(failure.summary) Koidrive \(running) still works. You can also update with Homebrew in Terminal:")
         case .failed(let failure):
             popover || failure.logPath == nil
-                ? String(localized: "Koidrive \(running) still works.")
-                : String(localized: "Koidrive \(running) still works. The log has the details.")
+                ? String(localized: "\(failure.summary) Koidrive \(running) still works.")
+                : String(localized: "\(failure.summary) Koidrive \(running) still works. The log has the details.")
         }
     }
 

@@ -9,7 +9,7 @@ async fn lock_guard_releases_inherited_descriptors_without_losing_exclusion() {
         deadline: Instant::now() + Duration::from_secs(5),
         cancel,
     };
-    let guard = lock(&root, &control).await.unwrap();
+    let guard = lock(&root, Duration::from_secs(5), &control).await.unwrap();
     let inherited = guard.0.try_clone().unwrap();
     let competing = regular_at(&root, OsStr::new(".koidrive-app-install.lock")).unwrap();
     assert_eq!(
@@ -263,4 +263,95 @@ async fn registry_entries_are_removed_after_success_and_failure() {
     assert!(registry.0.lock().unwrap().is_empty());
     failed.unmounted();
     registry.cancel().await;
+}
+
+#[tokio::test]
+async fn a_hung_tool_fails_within_its_own_limit_and_names_the_step() {
+    let mut f = Fixture::new(None, DMG.to_vec(), 200).await;
+    f.old();
+    f.flag("attach-sleep");
+    f.config.limits.tool = Duration::from_secs(1);
+    let journal = f.base().join("journal.log");
+    journal_to(&journal);
+    let started = Instant::now();
+    let error = f.run().await.unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(20));
+    assert_eq!(error.kind, AppInstallFailure::Stalled);
+    assert_eq!(
+        error.message,
+        "Opening the downloaded disk image did not finish within 1 seconds"
+    );
+    let log = fs::read_to_string(&journal).unwrap();
+    for line in [
+        "Opening the downloaded disk image…".to_owned(),
+        format!("  $ {}", f.config.hdiutil.display()),
+        ": Opening the downloaded disk image did not finish within 1 seconds".to_owned(),
+    ] {
+        assert!(log.contains(&line), "{line} is missing from {log}");
+    }
+    f.preserved();
+    f.unmounted();
+}
+
+#[tokio::test]
+async fn an_app_that_does_not_quit_fails_the_update_with_that_reason() {
+    let mut f = Fixture::new(None, DMG.to_vec(), 200).await;
+    f.old();
+    f.flag("running");
+    f.flag("quit-hang");
+    f.config.limits.quit = Duration::from_secs(1);
+    let started = Instant::now();
+    let error = f.run().await.unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(20));
+    assert_eq!(error.kind, AppInstallFailure::InUse);
+    assert_eq!(
+        error.message,
+        "Koidrive did not quit within 1 seconds of being asked to"
+    );
+    f.preserved();
+    f.unmounted();
+}
+
+#[tokio::test]
+async fn a_stalled_download_fails_with_how_far_it_got() {
+    let mut f = Fixture::new(None, DMG.to_vec(), 200).await;
+    f.old();
+    f.flag("download-stall");
+    f.config.limits.stall = Duration::from_secs(1);
+    let started = Instant::now();
+    let error = f.run().await.unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(20));
+    assert_eq!(error.kind, AppInstallFailure::Download);
+    assert!(
+        error.message.starts_with(&format!(
+            "The download of Koidrive-{TARGET}-arm64.dmg stopped at 0.0 of 0.0 MB: no data arrived for 1 seconds"
+        )),
+        "{}",
+        error.message
+    );
+    f.preserved();
+    f.unmounted();
+}
+
+#[tokio::test]
+async fn a_held_install_lock_fails_fast_and_says_another_install_holds_it() {
+    let mut f = Fixture::new(None, DMG.to_vec(), 200).await;
+    f.old();
+    f.config.limits.lock = Duration::from_secs(1);
+    let root = private_work(&f.config.work, true).unwrap();
+    let (_tx, cancel) = watch::channel(false);
+    let holder = Control {
+        deadline: Instant::now() + Duration::from_secs(60),
+        cancel,
+    };
+    let _held = lock(&root, Duration::from_secs(5), &holder).await.unwrap();
+    let started = Instant::now();
+    let error = f.run().await.unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(20));
+    assert_eq!(error.kind, AppInstallFailure::InUse);
+    assert_eq!(
+        error.message,
+        "Another Koidrive install held the install lock for 1 seconds"
+    );
+    f.preserved();
 }

@@ -311,3 +311,15 @@ async fn root_replacement_does_not_redirect_copy_cleanup_or_commit() {
     );
     assert!(!f.base().join("mounted").exists());
 }
+
+#[tokio::test]
+async fn a_warning_from_hdiutil_does_not_break_reading_its_disk_image_list() {
+    let f = Fixture::new(None, DMG.to_vec(), 200).await;
+    f.old();
+    f.flag("info-warn");
+    let AppInstall::Present { change, .. } = f.run().await.unwrap() else {
+        panic!("the app should be installed");
+    };
+    assert_eq!(change, AppChange::Replaced);
+    f.unmounted();
+}

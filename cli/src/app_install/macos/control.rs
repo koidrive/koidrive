@@ -1,9 +1,12 @@
 use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
 use crate::app_install::macos::constants::MAX_OUTPUT;
 use crate::program::{Arg, Confined};
+use std::fs::File;
+use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -87,7 +90,7 @@ impl Control {
         if Instant::now() >= self.deadline {
             return Err(failure(
                 AppInstallFailure::Deadline,
-                "App installation deadline exceeded",
+                "The app update ran out of time between steps",
             ));
         }
         Ok(())
@@ -102,17 +105,58 @@ impl Control {
 
     pub(super) async fn bounded<T>(
         &self,
+        step: &str,
+        within: Duration,
         future: impl std::future::Future<Output = Result<T, AppInstallError>>,
     ) -> Result<T, AppInstallError> {
         self.check()?;
+        let stalled = Instant::now() + within;
         tokio::select! {
             biased;
             _ = self.cancelled() => Err(failure(AppInstallFailure::Cancelled, "App installation cancelled")),
-            _ = tokio::time::sleep_until(self.deadline) => Err(failure(AppInstallFailure::Deadline, "App installation deadline exceeded")),
+            _ = tokio::time::sleep_until(stalled.min(self.deadline)) => Err(match stalled < self.deadline {
+                true => failure(AppInstallFailure::Stalled, format!("{step} did not finish within {} seconds", within.as_secs())),
+                false => failure(AppInstallFailure::Deadline, format!("{step} was still running when the app update ran out of time")),
+            }),
             result = future => result,
         }
     }
+
+    pub(super) fn remaining(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
+    }
 }
+static JOURNAL: Mutex<Option<File>> = Mutex::new(None);
+
+pub(crate) fn journal(file: File) {
+    *JOURNAL.lock().unwrap_or_else(|error| error.into_inner()) = Some(file);
+}
+
+pub(super) fn record(line: &str) {
+    if let Some(file) = JOURNAL
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_mut()
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
+pub(super) async fn step<T>(
+    name: &str,
+    work: impl std::future::Future<Output = Result<T, AppInstallError>>,
+) -> Result<T, AppInstallError> {
+    record(&format!("{name}…"));
+    let started = Instant::now();
+    let result = work.await;
+    let took = started.elapsed().as_secs_f32();
+    match &result {
+        Ok(_) => record(&format!("  done in {took:.1}s")),
+        Err(error) => record(&format!("  failed after {took:.1}s: {error}")),
+    }
+    result
+}
+
 pub(in crate::app_install) fn active() -> &'static Registry {
     static ACTIVE: OnceLock<Registry> = OnceLock::new();
     ACTIVE.get_or_init(Registry::default)
@@ -121,11 +165,29 @@ pub(super) fn io_error(error: impl ToString) -> AppInstallError {
     failure(AppInstallFailure::Io, error)
 }
 pub(super) async fn process(
+    name: &str,
+    within: Duration,
     program: &Path,
     args: &[Arg],
     control: &Control,
-) -> Result<Vec<u8>, AppInstallError> {
+) -> Result<Output, AppInstallError> {
+    step(name, run(name, within, program, args, control)).await
+}
+
+pub(super) struct Output {
+    pub(super) stdout: Vec<u8>,
+    pub(super) stderr: Vec<u8>,
+}
+
+async fn run(
+    name: &str,
+    within: Duration,
+    program: &Path,
+    args: &[Arg],
+    control: &Control,
+) -> Result<Output, AppInstallError> {
     control.check()?;
+    record(&format!("  $ {}", program.display()));
     let mut child = crate::program::configured_async(program)
         .args(args.iter().cloned())
         .env("LC_ALL", "C")
@@ -181,14 +243,12 @@ pub(super) async fn process(
                 ),
             ));
         }
-        let mut output = out;
-        if !err.is_empty() {
-            output.push(b'\n');
-            output.extend(err);
-        }
-        Ok(output)
+        Ok(Output {
+            stdout: out,
+            stderr: err,
+        })
     };
-    let result = control.bounded(read).await;
+    let result = control.bounded(name, within, read).await;
     if result.is_err() {
         if let Some(pid) = process_group {
             let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);

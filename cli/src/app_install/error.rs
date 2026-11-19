@@ -21,6 +21,7 @@ pub(crate) struct AppInstallErrorDetails {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AppInstallFailure {
     Deadline,
+    Stalled,
     Cancelled,
     Download,
     Verification,

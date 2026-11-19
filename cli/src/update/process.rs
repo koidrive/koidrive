@@ -1,4 +1,4 @@
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, IsTerminal, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
@@ -18,6 +18,8 @@ pub(super) struct Echo {
 
 pub(super) struct Steps(Option<Terminal>);
 
+const KEPT_LOG: u64 = 1024 * 1024;
+
 #[derive(Clone, Copy)]
 pub(super) enum Child {
     Progress,
@@ -26,12 +28,25 @@ pub(super) enum Child {
 
 impl Echo {
     pub(super) fn open(path: &Path, json: bool, verbose: bool) -> Echo {
-        let log = (path.parent().map(fs::create_dir_all).transpose().ok())
-            .and_then(|_| File::create(path).ok());
+        let earlier = fs::metadata(path).map_or(0, |metadata| metadata.len());
+        let log = (path.parent().map(fs::create_dir_all).transpose().ok()).and_then(|_| {
+            OpenOptions::new()
+                .create(true)
+                .append(earlier <= KEPT_LOG)
+                .write(true)
+                .truncate(earlier > KEPT_LOG)
+                .open(path)
+                .ok()
+        });
         Echo {
             log,
             ..Echo::console(json, verbose)
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn journal(&self) -> Option<File> {
+        self.log.as_ref().and_then(|log| log.try_clone().ok())
     }
 
     pub(super) fn console(json: bool, verbose: bool) -> Echo {
@@ -71,6 +86,7 @@ impl Echo {
 
     pub(super) fn finish(&mut self, step: Option<Progress<'_>>, message: &str) {
         self.held.clear();
+        self.log(message);
         if let Some(step) = step {
             step.finish(message);
         }

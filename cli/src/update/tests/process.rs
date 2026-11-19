@@ -26,6 +26,27 @@ fn a_quiet_echo_holds_child_lines_until_a_failure_replays_them() {
 }
 
 #[test]
+fn a_later_update_keeps_the_log_of_the_attempt_before_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("logs/update.log");
+    let mut failed = Echo::open(&log, true, false);
+    failed.log("Failed: Koidrive did not quit within 30 seconds of being asked to");
+    drop(failed);
+    let mut next = Echo::open(&log, true, false);
+    next.finish(None, "Downloaded and checked Koidrive 0.1.1");
+    drop(next);
+    assert_eq!(
+        fs::read_to_string(&log).unwrap(),
+        "Failed: Koidrive did not quit within 30 seconds of being asked to\nDownloaded and checked Koidrive 0.1.1\n"
+    );
+    fs::write(&log, vec![b'x'; 1024 * 1024 + 1]).unwrap();
+    let mut fresh = Echo::open(&log, true, false);
+    fresh.log("Failed: the download stalled");
+    drop(fresh);
+    assert_eq!(fs::read_to_string(&log).unwrap(), "Failed: the download stalled\n");
+}
+
+#[test]
 fn the_update_log_records_the_state_folder_it_creates_and_nothing_beside_another_log() {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::under(dir.path());

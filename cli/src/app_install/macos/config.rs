@@ -1,6 +1,25 @@
 use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
 use crate::app_install::macos::control::io_error;
 use std::path::PathBuf;
+use std::time::Duration;
+
+#[derive(Clone, Copy)]
+pub(in crate::app_install) struct Limits {
+    pub(super) tool: Duration,
+    pub(super) quit: Duration,
+    pub(super) lock: Duration,
+    pub(super) stall: Duration,
+}
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            tool: Duration::from_secs(90),
+            quit: Duration::from_secs(30),
+            lock: Duration::from_secs(20),
+            stall: Duration::from_secs(30),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(in crate::app_install) struct Config {
@@ -16,6 +35,7 @@ pub(in crate::app_install) struct Config {
     pub(super) open: PathBuf,
     pub(super) updater: PathBuf,
     pub(super) max_download: u64,
+    pub(super) limits: Limits,
 }
 impl Config {
     pub(in crate::app_install) fn production() -> Result<Self, AppInstallError> {
@@ -42,6 +62,7 @@ impl Config {
             open: "/usr/bin/open".into(),
             updater: std::env::current_exe().map_err(io_error)?,
             max_download: 1024 * 1024 * 1024,
+            limits: Limits::default(),
         })
     }
 }

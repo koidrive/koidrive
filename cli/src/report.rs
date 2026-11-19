@@ -767,6 +767,13 @@ impl UpdateNoticeData {
     }
 }
 
+pub(crate) fn utc_now() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as i64);
+    utc(now)
+}
+
 fn utc(at_ms: i64) -> String {
     let time = std::time::UNIX_EPOCH + std::time::Duration::from_millis(at_ms.max(0) as u64);
     let seconds = at_ms.max(0) / 1000 % 86_400;

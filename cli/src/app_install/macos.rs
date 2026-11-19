@@ -16,6 +16,7 @@ mod verification;
 pub(super) use config::Config;
 pub(crate) use constants::QUIESCE;
 pub(super) use control::active;
+pub(crate) use control::journal;
 pub(crate) use filesystem::writable;
 pub(super) use transaction::ensure_registered;
 pub(crate) use verification::VerifiedHelper;

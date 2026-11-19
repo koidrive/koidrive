@@ -1,7 +1,7 @@
 use crate::app_install::error::{AppInstallError, AppInstallFailure};
 use crate::app_install::facts::{AppLaunch, CommitChange, CommitFact};
 use crate::app_install::macos::attempt::Attempt;
-use crate::app_install::macos::config::Config;
+use crate::app_install::macos::config::{Config, Limits};
 use crate::app_install::macos::constants::{
     BUNDLE, CLEANUP, IDENTIFIER, INSPECT_RUNNING, REQUIREMENT, SIGNER,
 };
@@ -52,6 +52,7 @@ async fn review_killed_transaction_child() {
         open: base.join("tools/open"),
         updater: base.join("updater"),
         max_download: 1024,
+        limits: Limits::default(),
     };
     ensure_with(
         config,
@@ -309,6 +310,10 @@ impl Drop for Fixture {
     }
 }
 
+fn journal_to(path: &Path) {
+    crate::app_install::journal(fs::File::create(path).unwrap());
+}
+
 fn script(path: &Path, text: &str) {
     let inspect = if path.file_name() == Some(OsStr::new("osascript")) {
         format!(
@@ -371,6 +376,7 @@ impl Fixture {
         let address = listener.local_addr().unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let observed = requests.clone();
+        let stall = base.join("download-stall");
         let server = tokio::spawn(async move {
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else {
@@ -379,6 +385,7 @@ impl Fixture {
                 let observed = observed.clone();
                 let sums = sums.clone();
                 let dmg = dmg.clone();
+                let stall = stall.clone();
                 tokio::spawn(async move {
                     let mut request = vec![0; 16 * 1024];
                     let len = socket.read(&mut request).await.unwrap();
@@ -401,6 +408,10 @@ impl Fixture {
                         body.len()
                     );
                     socket.write_all(response.as_bytes()).await.unwrap();
+                    if stall.exists() && !path.ends_with("/SHA256SUMS") {
+                        socket.write_all(&body[..body.len() / 2]).await.unwrap();
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                    }
                     socket.write_all(body).await.unwrap();
                 });
             }
@@ -418,6 +429,7 @@ impl Fixture {
             open: tools.join("open"),
             updater: base.join("updater"),
             max_download: 1024,
+            limits: Limits::default(),
         };
         fs::create_dir(&config.system).unwrap();
         fs::write(&config.updater, "signed updater").unwrap();
@@ -468,6 +480,7 @@ attach)
     ;;
 info)
     if [ -e "$base/info-fail" ]; then exit 9; fi
+    [ ! -e "$base/info-warn" ] || echo 'hdiutil: info: cannot find IO media' >&2
     if [ -e "$base/mounted" ]; then
         point=$(/usr/bin/head -n 1 "$base/mounted")
         image=$(/usr/bin/tail -n 1 "$base/mounted")
@@ -499,6 +512,7 @@ esac
 base='{}'
 printf '%s\n' invoked >> "$base/quit.log"
 if [ -e "$base/quit-fail" ]; then exit 5; fi
+if [ -e "$base/quit-hang" ]; then exec /bin/sleep 30; fi
 if [ -e "$base/running" ]; then /bin/rm "$base/running"; echo running; else echo stopped; fi
 "#,
                 base.display()

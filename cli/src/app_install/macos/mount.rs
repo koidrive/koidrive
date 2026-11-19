@@ -37,6 +37,8 @@ impl OwnedMount {
     ) -> Result<(), AppInstallError> {
         self.check_image(expected)?;
         process(
+            "Opening the downloaded disk image",
+            config.limits.tool,
             &config.hdiutil,
             &[
                 Arg::from("attach"),
@@ -66,12 +68,15 @@ impl OwnedMount {
         control: &Control,
     ) -> Result<MountState, AppInstallError> {
         let info = process(
+            "Listing open disk images",
+            config.limits.tool,
             &config.hdiutil,
             &[Arg::from("info"), Arg::from("-plist")],
             control,
         )
         .await?;
-        let plist = plist::Value::from_reader(std::io::Cursor::new(info)).map_err(io_error)?;
+        let plist =
+            plist::Value::from_reader(std::io::Cursor::new(info.stdout)).map_err(io_error)?;
         let images = plist
             .as_dictionary()
             .and_then(|dict| dict.get("images"))
@@ -127,6 +132,8 @@ impl OwnedMount {
         }
         self.check_image(expected)?;
         process(
+            "Closing the downloaded disk image",
+            config.limits.tool,
             &config.hdiutil,
             &[Arg::from("detach"), passed(&self.point)?],
             control,
