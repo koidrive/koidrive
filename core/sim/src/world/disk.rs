@@ -631,6 +631,10 @@ impl Disk {
         }
     }
 
+    pub fn holder(&self, at: &Location) -> Option<u128> {
+        self.at(at).ok().flatten()
+    }
+
     /// The entry at a location, if one is there.
     fn at(&self, at: &Location) -> Result<Option<u128>, Refused> {
         let (place, name) = self.locate(at)?;

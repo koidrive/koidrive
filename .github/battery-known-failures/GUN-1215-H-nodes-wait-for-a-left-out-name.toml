@@ -1,0 +1,8 @@
+class = "H"
+issue = "GUN-1215"
+tests = ["devices_with_rules_converge_once_the_faults_stop", "devices_with_rules_lose_no_write"]
+message = '''(after phase <n>: device <n> is quiet, but nodes \["<id>"(, "<id>")*\] wait for names that entries its rules leave out hold\.|not recorded: devices::\S+ \S+ NameLeftOut device <n> is quiet, but nodes \["<id>"(, "<id>")*\] wait for names that entries its rules leave out hold( not recorded: devices::\S+ \S+ NameLeftOut (?:(?! not recorded: ).)+?leave out hold)*)'''
+examples = [
+  "after phase 1: device 0 is quiet, but nodes [\"01a1c2c0-39a0-7c0e-89ff-ccf2edccf5f3\"] wait for names that entries its rules leave out hold.",
+  "not recorded: devices::devices_with_rules_lose_no_write\tcc-eef9bd40a690a69a254daff69f0a20673e74f428043292af7e7add553c956729\tNameLeftOut\tdevice 1 is quiet, but nodes [\"01a1c2c0-39a0-7cb2-989b-810659c5a8bc\"] wait for names that entries its rules leave out hold",
+]

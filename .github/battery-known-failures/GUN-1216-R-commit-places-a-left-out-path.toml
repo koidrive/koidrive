@@ -1,0 +1,11 @@
+class = "R"
+issue = "GUN-1216"
+tests = ["devices_with_rules_converge_once_the_faults_stop", "devices_with_rules_lose_no_write"]
+message = '''(after phase <n>: after the faults stopped, on device <n>: a commit of device <n> places node <id> at \[.*\], which the rules of device <n> leave out\.|not recorded: devices::\S+ \S+ SentLeftOut a commit of device <n> places node <id> at \[(?:(?! not recorded: ).)*\], which the rules of device <n> leave out( not recorded: devices::\S+ \S+ SentLeftOut (?:(?! not recorded: ).)+?leave out)*)'''
+examples = [
+  "after phase 2: after the faults stopped, on device 0: a commit of device 0 places node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 at [\"c.txt\", \"a\"], which the rules of device 0 leave out.",
+  "after phase 1: after the faults stopped, on device 1: a commit of device 1 places node 01a1c2c0-39a0-796a-8df8-fb6da7904e2f at [\"ß\", \"a\"], which the rules of device 1 leave out.",
+  "after phase 2: after the faults stopped, on device 1: a commit of device 1 places node 01a1c2c0-39a0-7e63-8781-6cb1cb6c2302 at [\"c.txt\", \"a\", \"E\\u{301}\"], which the rules of device 1 leave out.",
+  "not recorded: devices::devices_with_rules_lose_no_write\tcc-5fdc0040999ff2a29d14d3949ee9181800d72595a30048a15a540824c34d7dc4\tSentLeftOut\ta commit of device 1 places node 01a1c2c0-39a0-7697-a09e-ac5b8b8a095b at [\"ß\", \"É\", \"a\"], which the rules of device 1 leave out",
+  "after phase 0: after the faults stopped, on device 1: a commit of device 1 places node 01a1c2c0-39a0-7504-af4d-4d6a531020af at [\"ss (pending)\"], which the rules of device 1 leave out.",
+]

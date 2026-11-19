@@ -1,0 +1,393 @@
+// SPDX-License-Identifier: Apache-2.0
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use koidrive_engine::classify::Trees;
+use koidrive_engine::names::{name_key, nfc};
+use koidrive_engine::tree::{Content, Kind, NodeId, Shape};
+use koidrive_proto::v1::{NodeKind, NodeState, NodeStatus, Op, op};
+
+use super::device::Ruling;
+use super::disk::Place;
+use super::{Act, Action, Failure, TEXTS, World, content};
+
+#[derive(Default)]
+pub(super) struct Unsynced {
+    pub(super) inos: BTreeSet<u128>,
+    pub(super) nodes: BTreeSet<NodeId>,
+    pub(super) waiting: BTreeSet<NodeId>,
+}
+
+impl Unsynced {
+    pub(super) fn holds(&self, trees: &Trees, id: &str) -> bool {
+        self.nodes.contains(id)
+            || (trees.local().get(id)).is_some_and(|node| self.inos.contains(&node.identity.ino))
+    }
+}
+
+fn path_in<'a>(
+    shape: impl Fn(&str) -> Option<&'a Shape>,
+    root: &str,
+    id: &str,
+) -> Option<Vec<String>> {
+    let mut names = Vec::new();
+    let mut current = id.to_owned();
+    while current != root {
+        let above = shape(&current)?;
+        names.push(above.name.clone());
+        current = above.parent.clone();
+    }
+    names.reverse();
+    Some(names)
+}
+
+pub(super) fn excluded_op(trees: &Trees, op: &Op) -> Option<String> {
+    let local = |id: &str| trees.local().get(id).map(|node| &node.shape);
+    let remote = |id: &str| trees.remote().live(id);
+    let root = trees.local().root.as_str();
+    let at = |parent: &str, name: &str, kind: Kind| {
+        [path_in(local, root, parent), path_in(remote, root, parent)]
+            .into_iter()
+            .flatten()
+            .map(|mut path| {
+                path.push(name.to_owned());
+                path
+            })
+            .find(|path| trees.ignores(path, kind))
+    };
+    let (id, path) = match op.op.as_ref()? {
+        op::Op::CreateFile(create) => (
+            &create.node_id,
+            at(&create.parent_id, &create.name, Kind::File),
+        ),
+        op::Op::CreateDir(create) => (
+            &create.node_id,
+            at(&create.parent_id, &create.name, Kind::Dir),
+        ),
+        op::Op::Move(moved) => {
+            let shape = local(&moved.node_id).or_else(|| remote(&moved.node_id));
+            let kind = shape.map_or(Kind::File, |shape| shape.kind);
+            (
+                &moved.node_id,
+                at(&moved.new_parent_id, &moved.new_name, kind),
+            )
+        }
+        op::Op::UpdateContent(update) => (
+            &update.node_id,
+            [local(&update.node_id), remote(&update.node_id)]
+                .into_iter()
+                .flatten()
+                .find_map(|shape| at(&shape.parent, &shape.name, Kind::File)),
+        ),
+        _ => return None,
+    };
+    path.map(|path| format!("node {id} at {path:?}"))
+}
+
+pub(super) type LeftOutOnDisk = BTreeMap<u128, (Vec<String>, Option<Content>)>;
+
+impl World {
+    pub fn rule(&mut self, d: usize, ruling: &Ruling) -> Result<(), Failure> {
+        if self.devices[d].left {
+            return Ok(());
+        }
+        let rules = &mut self.devices[d].rules;
+        match ruling {
+            Ruling::File(lines) => {
+                let text = (!lines.is_empty()).then(|| {
+                    let known = self.rule_texts.iter().position(|text| text == lines);
+                    let text = TEXTS + known.unwrap_or(self.rule_texts.len()) as u8;
+                    if known.is_none() {
+                        self.rule_texts.push(lines.clone());
+                    }
+                    let digest = content(d as u8, text, 0).manifest_digest;
+                    self.rules_files.insert(digest, lines.clone());
+                    text
+                });
+                let action = Action {
+                    kind: 0,
+                    target: 0,
+                    parent: 0,
+                    name: 0,
+                    text: 0,
+                };
+                self.act(d, &action, Act::Rules(text));
+                return Ok(());
+            }
+            Ruling::Exclude(lines) => rules.exclude = lines.clone(),
+            Ruling::Include(paths) => rules.include = paths.clone(),
+        }
+        rules.changed = true;
+        self.left_out[d].clear();
+        if self.devices[d].down {
+            return Ok(());
+        }
+        let device = &mut self.devices[d];
+        device.rules.read(&mut device.engine.trees);
+        self.scan(d).map(drop)
+    }
+
+    pub(super) fn read_rules_file(&mut self, d: usize) {
+        if self.devices[d].read_rules_file(&self.rules_files) {
+            self.left_out[d].clear();
+        }
+    }
+
+    pub(super) fn left_out_on_disk(&self, d: usize) -> LeftOutOnDisk {
+        let device = &self.devices[d];
+        let (disk, trees) = (&device.disk, &device.engine.trees);
+        let parked = (self.left_out[d].iter()).filter(|(ino, (_, content))| {
+            disk.path(**ino).is_none()
+                && (disk.entries().get(ino)).is_some_and(|entry| &entry.content == content)
+        });
+        (disk.entries().iter())
+            .filter_map(|(ino, entry)| {
+                let path = disk.path(*ino)?;
+                let kind = match entry.content {
+                    Some(_) => Kind::File,
+                    None => Kind::Dir,
+                };
+                (1..=path.len())
+                    .any(|end| {
+                        let kind = if end == path.len() { kind } else { Kind::Dir };
+                        trees.ignores(&path[..end], kind)
+                    })
+                    .then(|| (*ino, (path, entry.content.clone())))
+            })
+            .chain(parked.map(|(ino, kept)| (*ino, kept.clone())))
+            .collect()
+    }
+
+    pub(super) fn waiting_on(&self, d: usize, holders: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
+        let trees = &self.devices[d].engine.trees;
+        let root = self.space.space_id();
+        let nodes = self.space.nodes();
+        let live: BTreeMap<&str, &NodeState> = (nodes.iter())
+            .filter(|node| node.status == NodeStatus::Live as i32 && node.node_id != root)
+            .map(|node| (node.node_id.as_str(), node))
+            .collect();
+        let keys = |path: Vec<String>| path.iter().map(|name| name_key(name)).collect::<Vec<_>>();
+        let local = |id: &str| trees.local().get(id).map(|node| &node.shape);
+        let remote = |id: &str| {
+            live.get(id)
+                .map(|node| (node.parent_id.as_str(), node.name.as_str()))
+        };
+        let server_path = |id: &str| {
+            let mut names = Vec::new();
+            let mut current = id;
+            while current != root {
+                let (parent, name) = remote(current).filter(|_| names.len() <= live.len())?;
+                names.push(name.to_owned());
+                current = parent;
+            }
+            names.reverse();
+            Some(names)
+        };
+        let held: BTreeSet<Vec<String>> = (holders.iter())
+            .filter_map(|id| path_in(local, root, id))
+            .map(keys)
+            .collect();
+        (live.keys())
+            .filter(|id| !holders.contains(**id))
+            .filter(|id| server_path(id).is_some_and(|path| held.contains(&keys(path))))
+            .map(|id| (*id).to_owned())
+            .collect()
+    }
+
+    pub(super) fn below(&self, d: usize, top: &BTreeSet<NodeId>) -> Unsynced {
+        let device = &self.devices[d];
+        let (disk, trees) = (&device.disk, &device.engine.trees);
+        let nodes = self.space.nodes();
+        let parents: Vec<(&str, &str)> = (nodes.iter())
+            .filter(|node| node.status == NodeStatus::Live as i32)
+            .map(|node| (node.node_id.as_str(), node.parent_id.as_str()))
+            .chain(
+                (trees.local().iter()).map(|(id, node)| (id.as_str(), node.shape.parent.as_str())),
+            )
+            .collect();
+        let mut out = Unsynced {
+            nodes: top.clone(),
+            ..Unsynced::default()
+        };
+        loop {
+            let more: Vec<NodeId> = (parents.iter())
+                .filter(|(id, parent)| out.nodes.contains(*parent) && !out.nodes.contains(*id))
+                .map(|(id, _)| (*id).to_owned())
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            out.nodes.extend(more);
+        }
+        let tops: Vec<u128> = (out.nodes.iter())
+            .filter_map(|id| trees.local().get(id))
+            .map(|node| node.identity.ino)
+            .filter(|ino| disk.entries().contains_key(ino))
+            .collect();
+        out.inos = (disk.entries().iter())
+            .filter(|(ino, entry)| {
+                tops.contains(ino) || tops.iter().any(|top| disk.inside(&entry.place, *top))
+            })
+            .map(|(ino, _)| *ino)
+            .collect();
+        out
+    }
+
+    pub(super) fn unsynced(&self, d: usize, quiet: bool) -> Unsynced {
+        let device = &self.devices[d];
+        let mut out = Unsynced::default();
+        if !device.rules.leave_out() {
+            return out;
+        }
+        let (disk, trees) = (&device.disk, &device.engine.trees);
+        let root = self.space.space_id();
+        let nodes = self.space.nodes();
+        let live: BTreeMap<&str, &NodeState> = (nodes.iter())
+            .filter(|node| node.status == NodeStatus::Live as i32 && node.node_id != root)
+            .map(|node| (node.node_id.as_str(), node))
+            .collect();
+        let kind = |node: &NodeState| match node.kind == NodeKind::Dir as i32 {
+            true => Kind::Dir,
+            false => Kind::File,
+        };
+        let server_path = |id: &str| {
+            let mut names = Vec::new();
+            let mut current = id;
+            while current != root {
+                let node = live.get(current).filter(|_| names.len() <= live.len())?;
+                names.push(node.name.clone());
+                current = &node.parent_id;
+            }
+            names.reverse();
+            Some(names)
+        };
+        let normal = |path: &[String]| path.iter().map(|name| nfc(name)).collect::<Vec<_>>();
+        let mut on_server = BTreeSet::new();
+        for (id, node) in &live {
+            let Some(path) = server_path(id) else {
+                continue;
+            };
+            if trees.ignores(&path, kind(node)) {
+                out.nodes.insert((*id).to_owned());
+            }
+            on_server.insert(normal(&path));
+        }
+        let mut on_disk = BTreeSet::new();
+        for (ino, entry) in disk.entries() {
+            let Some(path) = disk.path(*ino) else {
+                continue;
+            };
+            let kind = match entry.content {
+                Some(_) => Kind::File,
+                None => Kind::Dir,
+            };
+            if trees.ignores(&path, kind) {
+                out.inos.insert(*ino);
+            }
+            on_disk.insert(normal(&path));
+        }
+        let local = |id: &str| trees.local().get(id).map(|node| &node.shape);
+        let kept_in_l = (trees.local().iter())
+            .filter(|(id, node)| {
+                trees.recorded_local(id)
+                    || path_in(local, root, id)
+                        .is_some_and(|path| trees.ignores(&path, node.shape.kind))
+            })
+            .map(|(id, _)| id)
+            .chain(trees.displaced_local().keys());
+        out.nodes.extend(kept_in_l.cloned());
+        let held: Vec<(u128, &NodeId)> = (trees.local().iter())
+            .map(|(id, node)| (node.identity.ino, id))
+            .collect();
+        loop {
+            let size = (out.inos.len(), out.nodes.len());
+            for (ino, id) in &held {
+                if out.inos.contains(ino) && live.contains_key(id.as_str()) {
+                    out.nodes.insert((*id).clone());
+                }
+                if out.nodes.contains(*id) && disk.entries().contains_key(ino) {
+                    out.inos.insert(*ino);
+                }
+            }
+            let below: Vec<u128> = (disk.entries().iter())
+                .filter(|(_, entry)| out.inos.iter().any(|top| disk.inside(&entry.place, *top)))
+                .map(|(ino, _)| *ino)
+                .collect();
+            out.inos.extend(below);
+            let kept: Vec<u128> = (disk.entries().iter())
+                .filter(|(ino, entry)| {
+                    let folder = Place::In(**ino);
+                    let mut children = disk.children(&folder).peekable();
+                    quiet
+                        && entry.content.is_none()
+                        && (disk.path(**ino))
+                            .is_some_and(|path| !on_server.contains(&normal(&path)))
+                        && children.peek().is_some()
+                        && children.all(|child| out.inos.contains(&child))
+                })
+                .map(|(ino, _)| *ino)
+                .collect();
+            out.inos.extend(kept);
+            let above = |id: &str| {
+                std::iter::successors(live.get(id).map(|node| node.parent_id.as_str()), |id| {
+                    live.get(id).map(|node| node.parent_id.as_str())
+                })
+                .take(live.len())
+                .any(|id| out.nodes.contains(id))
+            };
+            let below: Vec<NodeId> = (live.keys())
+                .filter(|id| above(id))
+                .map(|id| (*id).to_owned())
+                .collect();
+            out.nodes.extend(below);
+            let kept: Vec<NodeId> = (live.iter())
+                .filter(|(id, node)| {
+                    let mut children = (live.values())
+                        .filter(|child| child.parent_id == **id)
+                        .peekable();
+                    quiet
+                        && kind(node) == Kind::Dir
+                        && self.intents.deleted(d, id)
+                        && server_path(id).is_some_and(|path| !on_disk.contains(&normal(&path)))
+                        && children.peek().is_some()
+                        && children.all(|child| out.nodes.contains(&child.node_id))
+                })
+                .map(|(id, _)| (*id).to_owned())
+                .collect();
+            out.nodes.extend(kept);
+            if (out.inos.len(), out.nodes.len()) == size {
+                break;
+            }
+        }
+        let keys = |path: &[String]| path.iter().map(|name| name_key(name)).collect::<Vec<_>>();
+        let holders: BTreeMap<Vec<String>, &NodeId> = (held.iter())
+            .filter(|(ino, id)| out.inos.contains(ino) || out.nodes.contains(*id))
+            .flat_map(|(ino, id)| {
+                [disk.path(*ino), path_in(local, root, id)]
+                    .into_iter()
+                    .flatten()
+                    .map(move |path| (keys(&path), *id))
+            })
+            .collect();
+        out.waiting = (live.keys())
+            .filter(|id| quiet && !out.nodes.contains(**id))
+            .filter(|id| {
+                (server_path(id).and_then(|path| holders.get(&keys(&path))))
+                    .is_some_and(|holder| holder.as_str() != **id)
+            })
+            .map(|id| (*id).to_owned())
+            .collect();
+        let below_waiting: Vec<NodeId> = (live.keys())
+            .filter(|id| {
+                std::iter::successors(live.get(**id).map(|node| node.parent_id.as_str()), |id| {
+                    live.get(id).map(|node| node.parent_id.as_str())
+                })
+                .take(live.len())
+                .any(|id| out.waiting.contains(id))
+            })
+            .map(|id| (*id).to_owned())
+            .collect();
+        out.waiting.extend(below_waiting);
+        out
+    }
+}

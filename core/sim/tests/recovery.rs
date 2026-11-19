@@ -3018,7 +3018,7 @@ fn rekey_the_create_in_flight(world: &mut World, d: usize, another_file: bool) -
     device.engine.trees.set_local(new.clone(), local);
     device.engine.commits = Commits::from_state(state).unwrap();
     device.engine.trees.take_changes();
-    device.store = device.engine.reload().unwrap();
+    device.store = device.engine.reload(&device.rules).unwrap();
     new
 }
 

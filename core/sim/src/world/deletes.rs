@@ -7,6 +7,7 @@ use koidrive_engine::tree::{Content, NodeId, RemoteNode};
 use koidrive_proto::v1::NodeStatus;
 
 use super::intents::{Check, Field, Intents, Server, Value, expected};
+use super::rules::Unsynced;
 use super::{Failure, SpaceDo, World, tag};
 
 pub(super) fn live_nodes(space: &SpaceDo) -> BTreeMap<i64, BTreeSet<NodeId>> {
@@ -41,6 +42,7 @@ pub(super) struct Deletion {
     pub(super) watched: bool,
     pub(super) reached: bool,
     pub(super) gone: bool,
+    left_out: BTreeSet<NodeId>,
 }
 
 impl Deletion {
@@ -55,6 +57,7 @@ impl Deletion {
             watched: false,
             reached: false,
             gone: false,
+            left_out: BTreeSet::new(),
         }
     }
 
@@ -134,8 +137,15 @@ impl Deletion {
         let deleted: Vec<&NodeId> = (subtree.iter())
             .flat_map(|ino| intents.nodes_of(author, *ino))
             .collect();
+        let kept_for_left_out = |node: &NodeId| {
+            (self.left_out.iter()).any(|out| {
+                out == node
+                    || server.live(out).is_some() && server.above(out).contains(&node.as_str())
+            })
+        };
         let live = deleted.iter().filter(|id| server.live(id).is_some());
         live.copied()
+            .filter(|node| !kept_for_left_out(node))
             .filter_map(|node| {
                 let brings_back = |j: usize| {
                     let other = intents.intent(j);
@@ -172,8 +182,14 @@ impl World {
         ino: u128,
         gone: BTreeSet<u128>,
         deleted: &[Content],
+        unsynced: Unsynced,
     ) {
         let device = &self.devices[d];
+        let left_out = (device.engine.trees.local().iter())
+            .filter(|(_, node)| unsynced.inos.contains(&node.identity.ino))
+            .map(|(id, _)| id.clone())
+            .chain(unsynced.nodes)
+            .collect();
         let trees = &device.store.trees;
         let synced = trees.synced();
         let target = (trees.local().iter())
@@ -274,6 +290,7 @@ impl World {
             watched,
             reached: false,
             gone: false,
+            left_out,
         };
         deletion.reached = deletion.held(&live, |_, _, _, _| false).is_none();
         self.deletions.push(deletion);
