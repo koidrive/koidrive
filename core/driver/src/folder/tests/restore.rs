@@ -288,43 +288,61 @@ fn a_restored_folder_brings_back_a_big_folder_inside_it() {
 
 #[test]
 fn a_folder_restore_asked_for_before_a_rewind_shows_as_the_folder_with_the_files_trashed_with_it() {
-    let mut remote = Remote::new();
-    let (site, mut a) = linked(&mut remote, "a");
-    fs::create_dir(site.root.join("photos")).unwrap();
-    for name in ["a.jpg", "b.jpg"] {
-        fs::write(site.root.join("photos").join(name), name).unwrap();
-    }
-    a.scan_until(|a| !a.work.is_empty());
-    a.rest(&mut remote);
-    let photos = node_named(&a, "photos");
-    fs::remove_dir_all(site.root.join("photos")).unwrap();
-    a.scan_until(|a| !a.work.is_empty());
-    assert_eq!(a.run(&mut remote), ["send"]);
-    let backup = remote.space.clone();
-    drop(a);
-    let id = ask(
-        &site,
-        &RestoreIntent::from_trash(photos, None, None).unwrap(),
-    );
-    remote.space.rewind(&backup, NOW);
-    restarted(&site, &mut remote).rest(&mut remote);
+    for rewound_past_the_folder in [false, true] {
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        let before_the_folder = remote.space.clone();
+        fs::create_dir(site.root.join("photos")).unwrap();
+        for name in ["a.jpg", "b.jpg"] {
+            fs::write(site.root.join("photos").join(name), name).unwrap();
+        }
+        a.scan_until(|a| !a.work.is_empty());
+        a.rest(&mut remote);
+        let photos = node_named(&a, "photos");
+        fs::remove_dir_all(site.root.join("photos")).unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        assert_eq!(a.run(&mut remote), ["send"]);
+        let backup = match rewound_past_the_folder {
+            true => before_the_folder,
+            false => remote.space.clone(),
+        };
+        drop(a);
+        let id = ask(
+            &site,
+            &RestoreIntent::from_trash(photos, None, None).unwrap(),
+        );
+        if rewound_past_the_folder {
+            let seen = koidrive_store::AskedRestore {
+                path: Some("photos".into()),
+                kind: Some(Kind::Dir),
+                files: Some(2),
+                ..Default::default()
+            };
+            (Store::open(&site.db).unwrap())
+                .transaction(|tx| tx.note_asked_restore(&id, &seen))
+                .unwrap();
+        }
+        remote.space.rewind(&backup, NOW);
+        restarted(&site, &mut remote).rest(&mut remote);
 
-    let question = (shown(&site).into_iter())
-        .find(|question| !question.items.is_empty())
-        .expect("a question holds the restore");
-    let items: Vec<_> = (question.items.iter())
-        .map(|item| {
-            let kind = serde_json::to_value(item).unwrap()["kind"].clone();
-            (
-                item.node_id.as_str(),
-                item.path.unquoted(),
-                kind,
-                item.files,
-            )
-        })
-        .collect();
-    assert_eq!(
-        items,
-        [(id.as_str(), "photos", serde_json::json!("folder"), 2)]
-    );
+        let question = (shown(&site).into_iter())
+            .find(|question| !question.items.is_empty())
+            .expect("a question holds the restore");
+        let items: Vec<_> = (question.items.iter())
+            .map(|item| {
+                let kind = serde_json::to_value(item).unwrap()["kind"].clone();
+                (
+                    item.node_id.as_str(),
+                    item.path.unquoted(),
+                    kind,
+                    item.files,
+                )
+            })
+            .collect();
+        assert_eq!(
+            items,
+            [(id.as_str(), "photos", serde_json::json!("folder"), 2)],
+            "rewound past the folder: {rewound_past_the_folder}"
+        );
+    }
 }

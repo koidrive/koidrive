@@ -7,7 +7,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 use koidrive_engine::names::name_key;
-use koidrive_engine::tree::{RemoteNode, same_content};
+use koidrive_engine::tree::{Kind, RemoteNode, same_content};
 use koidrive_fs::{EntryKind, ItemPath, RootAt, Snapshot, check_root};
 use koidrive_net::{ApiError, Auth, ServerError};
 use koidrive_proto::v1::{
@@ -69,6 +69,24 @@ pub enum LinkState {
 pub enum ItemKind {
     File,
     Folder,
+}
+
+impl From<Kind> for ItemKind {
+    fn from(kind: Kind) -> Self {
+        match kind {
+            Kind::Dir => ItemKind::Folder,
+            Kind::File => ItemKind::File,
+        }
+    }
+}
+
+impl From<ItemKind> for Kind {
+    fn from(kind: ItemKind) -> Self {
+        match kind {
+            ItemKind::Folder => Kind::Dir,
+            ItemKind::File => Kind::File,
+        }
+    }
 }
 
 /// The file or folder a link opens, where the space holds it now.

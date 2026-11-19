@@ -11,9 +11,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use koidrive_driver::{
-    Account, Answer, CleanupFailure, Credential, Expiry, FolderStatus, LinkApproval, Paths,
-    Question, RestoreRequest, RestoreStatus, Secret, SetAside, SharedLink, Status, Unconfirmed,
-    Update,
+    Account, Answer, CleanupFailure, Credential, Expiry, FolderStatus, ItemKind, LinkApproval,
+    Paths, Question, RestoreRequest, RestoreStatus, Secret, SetAside, SharedLink, Status,
+    Unconfirmed, Update,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -105,6 +105,11 @@ pub enum Request {
         restore: RestoreRequest,
         folder: String,
         path: String,
+        /// The item's kind and, for a folder, its files, as the person saw it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<ItemKind>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        files: Option<u64>,
     },
     Restores {
         space_id: String,
@@ -1016,6 +1021,8 @@ mod tests {
             },
             folder: "/home/ada/Docs".into(),
             path: "a.txt".into(),
+            kind: None,
+            files: None,
         };
         let json = serde_json::to_string(&request).unwrap();
         assert_eq!(

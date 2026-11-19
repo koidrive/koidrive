@@ -214,7 +214,8 @@ impl Engine {
     /// engine stopped asking, of the same kind and still unanswered, continues that one's lineage: the guard asks
     /// again under a new id when the held set changes, and this is the one place that sees both in one step. A
     /// question whose answer the engine dropped, as it does for a conflict whose answer the server refused, is shown
-    /// again without it. A conflict is shown again when the paths of its files change, as when a folder above them is renamed.
+    /// again without it. A question is shown again when what it shows changes, as when a folder above its items is renamed or a
+    /// row an earlier build stored lacks a field.
     pub fn ask(&mut self, tx: &Tx<'_>, space_id: &str) -> Result<(), Error> {
         let asked = &self.stored_questions;
         let asking = self.commits.questions();
@@ -263,15 +264,7 @@ impl Engine {
                 && (asked.iter()).any(|before| before.id == question.id && before.answer.is_some())
         };
         for question in asking.iter().filter(|question| {
-            matches!(
-                question.kind,
-                engine::QuestionKind::Conflict { .. }
-                    | engine::QuestionKind::Recovery {
-                        group: engine::RecoveryGroup::RequestedBeforeReset,
-                        ..
-                    }
-            ) && (asked.iter())
-                .any(|before| before.id == question.id && before.kind == question.kind)
+            (asked.iter()).any(|before| before.id == question.id && before.kind == question.kind)
                 && !dropped(question)
         }) {
             let Some(row) = rows.get(&question.id) else {
@@ -394,20 +387,23 @@ impl Engine {
                                 let version = intent.and_then(RestoreIntent::version_id)?;
                                 unix_ms(version).map(|ms| ms as i64)
                             });
+                        let seen_kind = noted.and_then(|noted| noted.kind).map(ItemKind::from);
+                        let seen_files = noted.and_then(|noted| noted.files);
                         let (kind, files) = match intent {
                             Some(intent) if intent.version_id().is_some() => {
-                                (Some(ItemKind::File), 1)
+                                (Some(ItemKind::File), Some(1))
                             }
-                            Some(intent) => {
-                                (self.kind(intent.node()), self.trashed_with(intent.node()))
-                            }
-                            None => (None, 1),
+                            Some(intent) => (
+                                self.kind(intent.node()).or(seen_kind),
+                                self.trashed_with(intent.node()).or(seen_files),
+                            ),
+                            None => (seen_kind, seen_files),
                         };
                         HeldItem {
                             node_id: id.clone(),
                             path: path.into(),
                             kind,
-                            files,
+                            files: files.unwrap_or(1),
                             device_id: None,
                             device_name: None,
                             size: None,
@@ -458,18 +454,13 @@ impl Engine {
         let kind = (trees.local().get(id).map(|node| node.shape.kind))
             .or_else(|| trees.synced().get(id).map(|shape| shape.kind))
             .or_else(|| trees.remote().get(id).map(|node| node.shape.kind))?;
-        Some(match kind {
-            Kind::Dir => ItemKind::Folder,
-            Kind::File => ItemKind::File,
-        })
+        Some(kind.into())
     }
 
-    fn trashed_with(&self, id: &str) -> u64 {
+    fn trashed_with(&self, id: &str) -> Option<u64> {
         let remote = self.trees.remote();
-        let Some(top) = remote.get(id).filter(|node| node.trashed) else {
-            return 1;
-        };
-        (remote.iter())
+        let top = remote.get(id).filter(|node| node.trashed)?;
+        let files = (remote.iter())
             .filter(|&(member, node)| {
                 node.trashed
                     && node.trash_group == top.trash_group
@@ -480,7 +471,8 @@ impl Engine {
                     .take(remote.len() + 1)
                     .any(|current| current == id)
             })
-            .count() as u64
+            .count();
+        Some(files as u64)
     }
 
     /// The path of a node relative to the linked folder: where L holds it, or where S holds it when L does not, as

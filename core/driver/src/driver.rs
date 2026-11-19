@@ -14,6 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use koidrive_engine::commit::{Commits, Lift, LiftError};
 use koidrive_engine::guard::Window;
 use koidrive_engine::ignore::LocalRules;
+use koidrive_engine::tree::Kind;
 use koidrive_fs::{Marker, probe_no_replace, read_marker, root_at, write_marker};
 use koidrive_ignore::LocalRulesError;
 use koidrive_net::{ApiError, Auth, ROTATION_PERIOD, ServerError, UploadGate};
@@ -37,7 +38,7 @@ use crate::leave::{Leaving, Phase};
 use crate::paths::{Paths, PathsError};
 use crate::pending_create::{self, Intent, PendingCreate};
 use crate::question::{Answer, Limit, Question, QuestionKind};
-use crate::restore::{self, RestoreRequest, RestoreStatus};
+use crate::restore::{self, RestoreRequest, RestoreStatus, Seen};
 use crate::status::{Account, Activity, FolderState, FolderStatus, Status};
 use crate::update::{self, Update, Updates};
 
@@ -2197,17 +2198,20 @@ impl Driver {
     /// A malformed ID is refused here, because the server refuses a whole commit for one. Whether the node or the
     /// version still exists is the server's answer.
     ///
-    /// `path` is where the person saw the item, relative to the folder's root. [`Driver::restores`] shows it while
-    /// the folder's copy of the server's tree cannot place the node, as for one deleted before the folder first synced.
+    /// `seen` is the item as the person saw it. [`Driver::restores`] shows its path, and a question about the restore
+    /// its kind and files, while the folder's copy of the server's tree cannot place the node, as for one deleted before
+    /// the folder first synced or after a restore point the server was rewound to.
     pub fn restore(
         &self,
         space_id: &str,
         request: RestoreRequest,
-        path: Option<&str>,
+        seen: Seen,
     ) -> Result<String, DriverError> {
         let asked = AskedRestore {
-            path: path.map(str::to_owned),
+            path: seen.path,
             version_saved_at_ms: request.saved_at_ms(),
+            kind: seen.kind.map(Kind::from),
+            files: seen.files,
         };
         let intent = request
             .intent()
@@ -10669,10 +10673,14 @@ mod tests {
             saved_at_ms: Some(1_794_000_000_000),
         };
         assert_eq!(driver.restores(SPACE).unwrap(), []);
-        let first = driver.restore(SPACE, placed.clone(), None).unwrap();
+        let first = driver
+            .restore(SPACE, placed.clone(), Seen::default())
+            .unwrap();
         assert!(watch.has_changed().unwrap());
         std::thread::sleep(Duration::from_millis(2));
-        let second = driver.restore(SPACE, version.clone(), None).unwrap();
+        let second = driver
+            .restore(SPACE, version.clone(), Seen::default())
+            .unwrap();
         assert!(first < second, "the IDs sort in request order");
         drop(driver);
 
@@ -10696,7 +10704,7 @@ mod tests {
         let driver = Driver::open(paths).unwrap();
         let other_space = "0190f0a0-0000-7000-8000-000000000002";
         assert!(matches!(
-            driver.restore(other_space, from_trash(1), None),
+            driver.restore(other_space, from_trash(1), Seen::default()),
             Err(DriverError::SpaceNotLinked(space)) if space == other_space
         ));
         assert!(matches!(
@@ -10724,7 +10732,7 @@ mod tests {
         ];
         for (request, field) in cases {
             assert!(matches!(
-                driver.restore(SPACE, request, None),
+                driver.restore(SPACE, request, Seen::default()),
                 Err(DriverError::InvalidRestore(found)) if found == field
             ));
         }
@@ -10741,7 +10749,9 @@ mod tests {
 
         let (_dir, paths, _root) = profile(&[]);
         let driver = Driver::open(paths.clone()).unwrap();
-        let in_inbox = driver.restore(SPACE, from_trash(9), None).unwrap();
+        let in_inbox = driver
+            .restore(SPACE, from_trash(9), Seen::default())
+            .unwrap();
         let intent = |node: u128| RestoreIntent::from_trash(server_id(node), None, None).unwrap();
         let outcomes = [
             (Outcome::Restored, RestoreState::Restored),
@@ -10862,7 +10872,18 @@ mod tests {
             (from_trash(9), None),
         ]
         .into_iter()
-        .map(|(request, path)| driver.restore(SPACE, request, path).unwrap())
+        .map(|(request, path)| {
+            driver
+                .restore(
+                    SPACE,
+                    request,
+                    Seen {
+                        path: path.map(str::to_owned),
+                        ..Seen::default()
+                    },
+                )
+                .unwrap()
+        })
         .collect();
         let after = now_ms();
 
@@ -10903,7 +10924,9 @@ mod tests {
         })
         .await;
 
-        let id = driver.restore(SPACE, from_trash(1), None).unwrap();
+        let id = driver
+            .restore(SPACE, from_trash(1), Seen::default())
+            .unwrap();
         let path = paths.store(SPACE).unwrap();
         eventually("the engine holds the request", || {
             let (inbox, (queued, _)) = Store::open(&path)
@@ -10958,7 +10981,9 @@ mod tests {
             .unwrap()
             .transaction(|tx| tx.set_engine_state(&state))
             .unwrap();
-        let asked = driver.restore(SPACE, from_trash(1), None).unwrap();
+        let asked = driver
+            .restore(SPACE, from_trash(1), Seen::default())
+            .unwrap();
 
         let listed = driver.restores(SPACE).unwrap();
         let states: Vec<_> = listed.iter().map(|r| (r.id.as_str(), &r.state)).collect();

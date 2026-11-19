@@ -10,8 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use koidrive_driver::{
-    Driver, FolderState, FolderStatus, Paths, RestoreRejection, RestoreRequest, RestoreState,
-    RestoreStatus, RestoreWait,
+    Driver, FolderState, FolderStatus, ItemKind, Paths, RestoreRejection, RestoreRequest,
+    RestoreState, RestoreStatus, RestoreWait,
 };
 use koidrive_engine::names::name_key;
 use koidrive_ipc::{Key, Reason, Request, RequestId, Response};
@@ -202,6 +202,8 @@ async fn restore(
             below,
         },
         restore,
+        kind,
+        files,
     ) = match checked(paths, path, version, node).await {
         Ok(checked) => checked,
         Err(error) => {
@@ -219,6 +221,8 @@ async fn restore(
         restore,
         folder: root.clone(),
         path: below.join("/"),
+        kind: Some(kind),
+        files,
     };
     match ipc::run(paths, request.once(request_id, key)).await? {
         Response::Restore {
@@ -260,7 +264,7 @@ async fn checked(
     path: &Path,
     version: Option<String>,
     node: Option<String>,
-) -> Result<(Located, RestoreRequest), CliError> {
+) -> Result<(Located, RestoreRequest, ItemKind, Option<u64>), CliError> {
     let auth = signed_in(paths)?;
     let Located {
         folder: linked,
@@ -277,7 +281,7 @@ async fn checked(
     let space = linked.space_id.as_str();
     let shown = printable(&below.join("/"));
     let live = tree(&auth, space).await?;
-    let request = match version {
+    let (request, kind, files) = match version {
         Some(version_id) => {
             let file = find(&live, space, &below).ok_or_else(|| {
                 CliError::usage(format!(
@@ -308,21 +312,32 @@ async fn checked(
                 ))
                 .because(Reason::NoSuchVersion));
             };
-            RestoreRequest::Version {
+            let request = RestoreRequest::Version {
                 node_id: file.node_id.clone(),
                 version_id,
                 saved_at_ms: Some(saved_at_ms),
-            }
+            };
+            (request, ItemKind::File, Some(1))
         }
         None => {
             let (trashed, _) = trash_nodes(&auth, space).await?;
             let deleted = trashed_at(&live, &trashed, space, &below, node.as_deref())
                 .map_err(|why| CliError::usage(why.message(&shown, &root)).because(why.reason()))?;
-            RestoreRequest::FromTrash {
+            let request = RestoreRequest::FromTrash {
                 node_id: deleted.node_id.clone(),
                 parent_id: None,
                 name: None,
-            }
+            };
+            let (kind, files) = match deleted.kind() {
+                NodeKind::Dir => {
+                    let files = (deletions(&live, &trashed, &HashMap::new(), space).into_iter())
+                        .find(|top| top.node.node_id == deleted.node_id)
+                        .map(|top| top.files);
+                    (ItemKind::Folder, files)
+                }
+                _ => (ItemKind::File, Some(1)),
+            };
+            (request, kind, files)
         }
     };
     Ok((
@@ -332,6 +347,8 @@ async fn checked(
             below,
         },
         request,
+        kind,
+        files,
     ))
 }
 

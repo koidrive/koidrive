@@ -633,4 +633,15 @@ fn a_held_folder_of_one_file_shows_as_a_folder() {
         .collect();
     let folder = serde_json::json!("folder");
     assert_eq!(items, [("d", folder.clone(), 15), ("e", folder, 1)]);
+
+    let mut earlier = question.clone();
+    for item in &mut earlier.items {
+        item.kind = None;
+    }
+    let body = serde_json::to_vec(&earlier).unwrap();
+    (Store::open(&site.db).unwrap())
+        .transaction(|tx| tx.reshow_question(&question.id, &body))
+        .unwrap();
+    restarted(&site, &mut remote).rest(&mut remote);
+    assert_eq!(shown(&site), [question], "a row an earlier build stored");
 }

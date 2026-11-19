@@ -15,6 +15,16 @@ use koidrive_fs::ItemPath;
 use koidrive_store::Tx;
 use serde::{Deserialize, Serialize};
 
+/// The item a restore brings back, as the person saw it when they asked for it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Seen {
+    /// Relative to the folder's root.
+    pub path: Option<String>,
+    pub kind: Option<crate::ItemKind>,
+    /// For a folder, the files trashed with it.
+    pub files: Option<u64>,
+}
+
 /// What to restore. The IDs come from the server's `ListTrash` and `ListVersions`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
