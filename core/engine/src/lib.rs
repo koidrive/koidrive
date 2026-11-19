@@ -17,3 +17,6 @@ pub mod restore;
 pub mod state;
 pub mod tracked;
 pub mod tree;
+
+#[cfg(test)]
+mod work_tests;

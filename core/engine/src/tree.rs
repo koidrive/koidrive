@@ -59,6 +59,7 @@ impl<K: Ord, V> CountedMap<K, V> {
     where
         K: Borrow<Q>,
     {
+        read_entries(1);
         self.0.get(key)
     }
 
@@ -66,6 +67,7 @@ impl<K: Ord, V> CountedMap<K, V> {
     where
         K: Borrow<Q>,
     {
+        read_entries(1);
         self.0.get_mut(key)
     }
 
@@ -73,6 +75,7 @@ impl<K: Ord, V> CountedMap<K, V> {
     where
         K: Borrow<Q>,
     {
+        read_entries(1);
         self.0.contains_key(key)
     }
 

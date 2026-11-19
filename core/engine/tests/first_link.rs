@@ -4341,59 +4341,6 @@ fn a_file_taken_along_by_a_reclaimed_folder_that_cannot_leave_s_yet_stays_in_it_
     assert!(sent.iter().all(|(op, _)| *op != "create file"), "{sent:?}");
 }
 
-fn one_cycle_after_the_rules_let_in_a_server_folder_a_discard_took_along(
-    files: usize,
-) -> std::time::Duration {
-    let names: Vec<String> = (0..files).map(|i| format!("y{i}")).collect();
-    let server: Vec<(&str, Shape)> = std::iter::once(("x", dir(ROOT, "server")))
-        .chain(names.iter().map(|name| (name.as_str(), file("x", name, 9))))
-        .collect();
-    let local: Vec<(&str, Shape)> = std::iter::once(("f", dir(ROOT, "new")))
-        .chain(server.iter().cloned())
-        .collect();
-    let mut trees = trees(&local, &server);
-    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
-    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
-    let asked = question(&commits);
-    trees.set_rules(
-        &[] as &[&str],
-        Source::Koiignore,
-        Some(RuleFile::parse(b"ignored\n")),
-    );
-    let mut moved = trees.local().get("x").unwrap().clone();
-    moved.shape.parent = "f".into();
-    moved.shape.name = "ignored".into();
-    trees.set_local_changed("x".into(), moved);
-    trees.settle(commits.aliases());
-    assert!(commits.decide(&asked.id, Answer::Discard));
-    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
-    trees.set_rules(&[] as &[&str], Source::Koiignore, None);
-    trees.settle(commits.aliases());
-    let started = std::time::Instant::now();
-    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
-    let planned = Effects::default()
-        .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
-        .to_vec();
-    let took = started.elapsed();
-    assert!(
-        planned.iter().any(|record| record.node == "x"),
-        "{planned:?}"
-    );
-    took
-}
-
-#[test]
-fn a_server_folder_a_discard_took_along_is_planned_in_linear_time_once_the_rules_let_it_in() {
-    let (two_hundred, two_thousand) = (
-        one_cycle_after_the_rules_let_in_a_server_folder_a_discard_took_along(200),
-        one_cycle_after_the_rules_let_in_a_server_folder_a_discard_took_along(2000),
-    );
-    assert!(
-        two_thousand < two_hundred * 30,
-        "a build and a plan with 2,000 taken-along files took {two_thousand:?}, and with 200 {two_hundred:?}"
-    );
-}
-
 fn a_folder_whose_reclaim_is_undone_stays_discarded_when_the_rules_let_it_in(
     lift_after_effects: bool,
 ) {
