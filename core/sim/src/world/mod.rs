@@ -935,8 +935,7 @@ impl World {
                     ) {
                         note(&mut self.seen, "store rolled back during a recovery");
                     }
-                    let ids = device.engine.ids.clone();
-                    device.store = Engine { ids, ..copy };
+                    device.store = copy;
                     device.sent = device.sent_copy.clone();
                     device.rolled_back = true;
                     device.down = true;
@@ -2076,7 +2075,9 @@ impl World {
     fn restart(&mut self, d: usize) -> Result<(), Failure> {
         let device = &mut self.devices[d];
         device.down = false;
-        device.engine = device.store.reload(&device.rules)?;
+        device.engine = device
+            .store
+            .reload(&device.rules, device.engine.ids.clone())?;
         let effects = &device.engine.effects;
         let (marker, cleared) = (device.disk.marker(), effects.cleared());
         let ahead = marker > cleared + effects.in_flight().len() as u64;
@@ -4612,7 +4613,9 @@ mod tests {
             )
             .to_vec();
         assert!(planned[0].applies(&engine.trees, None), "{planned:?}");
-        let loaded = engine.reload(&Rules::default()).unwrap();
+        let loaded = engine
+            .reload(&Rules::default(), engine.ids.clone())
+            .unwrap();
         assert!(loaded.effects.in_flight()[0].applies(&loaded.trees, None));
     }
 

@@ -257,10 +257,9 @@ The store writes, per `handle` call and in one transaction:
 - the folders another device deleted that stay on disk for the entries this device does not sync in them, and, for each one another device's folder took over and each folder below it, the names of the entries a listing found there that L does not hold, which stay excluded (§5.10);
 - the nodes recorded as moved into an ignored folder that is no node, each with its file identity once another entry took its path and the place where the walk last found it, and which of them are folders the disk lost that L keeps only for recorded nodes below them (§5.10);
 - the nodes a scan missed after a walk that did not search every ignored folder, which the ambiguous-disappearance question holds (§5.10);
-- every open question with what it holds;
-- the ID generator's state (`IdGen::state`).
+- every open question with what it holds.
 
-Connection state and queued outputs other than the commit and effects in flight are not persisted. Restoring `koidrive_engine::state` refuses a state that breaks an invariant. After a restart the engine emits `AskUser` again for every unanswered question. The driver shows a question ID once, so a repeat is harmless.
+Connection state, the ID generator and queued outputs other than the commit and effects in flight are not persisted. Each load seeds the ID generator afresh, so a store restored from a backup never mints an ID twice. Restoring `koidrive_engine::state` refuses a state that breaks an invariant. After a restart the engine emits `AskUser` again for every unanswered question. The driver shows a question ID once, so a repeat is harmless.
 
 ### Restart
 

@@ -917,26 +917,6 @@ impl Tx<'_> {
         Ok(())
     }
 
-    /// The engine's ID generator state, opaque to the store.
-    pub fn id_generator(&self) -> Result<Option<Vec<u8>>> {
-        Ok(self
-            .0
-            .query_row(
-                "SELECT id_generator FROM engine_state WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?)
-    }
-
-    pub fn set_id_generator(&self, state: &[u8]) -> Result<()> {
-        self.0.execute(
-            "INSERT OR REPLACE INTO engine_state (id, id_generator) VALUES (1, ?1)",
-            [state],
-        )?;
-        Ok(())
-    }
-
     /// Records that the chunk is cached, or refreshes its size and last use.
     pub fn put_chunk(&self, hash: &[u8; 32], size: u64, now_ms: i64) -> Result<()> {
         self.0
@@ -1054,9 +1034,9 @@ impl Tx<'_> {
     }
 
     /// Empties the sync state to what a first link starts from, keeping the link with its root tokens, the volume
-    /// mounts, the chunk cache, the ID generator, the write stamp and the restores a person asked for. A policy halt,
-    /// standing or interrupted by a recovery, stays as a standing policy halt, since only the person or a client
-    /// update lifts it; the commit it refused is forgotten.
+    /// mounts, the chunk cache, the write stamp and the restores a person asked for. A policy halt, standing or
+    /// interrupted by a recovery, stays as a standing policy halt, since only the person or a client update lifts it;
+    /// the commit it refused is forgotten.
     pub fn forget_sync_state(&self) -> Result<()> {
         const KEPT: [&str; 9] = [
             "migrations",
@@ -1069,7 +1049,6 @@ impl Tx<'_> {
             "split_restores",
             "write_stamp",
         ];
-        let ids = self.id_generator()?;
         let policy = self.kept_policy_halt()?;
         let tables: Vec<String> = self
             .0
@@ -1084,9 +1063,6 @@ impl Tx<'_> {
             .filter(|table| !KEPT.contains(&table.as_str()))
         {
             self.0.execute(&format!("DELETE FROM \"{table}\""), [])?;
-        }
-        if let Some(ids) = ids {
-            self.set_id_generator(&ids)?;
         }
         if let Some(halt) = policy {
             let commits = CommitsChanges {

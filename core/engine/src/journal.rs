@@ -488,8 +488,6 @@ pub struct JournalState {
     pub seen: BTreeMap<NodeId, Vec<Seen>>,
     /// R's intents came from a listing of a server that announced `field_intents`, so no id R holds was computed.
     pub listed: bool,
-    /// The state of the generator that mints this user's intents, once seeded.
-    pub ids: Option<u64>,
     /// The journal time of the first listing or record that showed R without each node.
     pub absent: BTreeMap<NodeId, i64>,
 }
@@ -500,7 +498,6 @@ pub struct JournalChanges {
     pub history: MapChanges<RowKey, Vec<HistoryEntry>>,
     pub seen: MapChanges<NodeId, Vec<Seen>>,
     pub listed: Option<bool>,
-    pub ids: Option<Option<u64>>,
     pub absent: MapChanges<NodeId, i64>,
 }
 
@@ -511,7 +508,6 @@ impl JournalChanges {
             history: changes(&before.history, &after.history),
             seen: changes(&before.seen, &after.seen),
             listed: (before.listed != after.listed).then_some(after.listed),
-            ids: (before.ids != after.ids).then_some(after.ids),
             absent: changes(&before.absent, &after.absent),
         }
     }
@@ -538,7 +534,6 @@ pub struct Journal {
     listed: bool,
     listed_before: bool,
     ids: IdGen,
-    ids_before: Option<u64>,
     absent: TrackedMap<NodeId, i64>,
     now_ms: u64,
 }
@@ -553,7 +548,6 @@ impl PartialEq for Journal {
             && *self.history == *other.history
             && *self.seen == *other.seen
             && self.listed == other.listed
-            && self.ids.state == other.ids.state
             && *self.absent == *other.absent
     }
 }
@@ -570,7 +564,6 @@ impl Journal {
             listed: false,
             listed_before: false,
             ids,
-            ids_before: None,
             absent: TrackedMap::default(),
             now_ms: 0,
         }
@@ -584,11 +577,7 @@ impl Journal {
             seen: state.seen.into(),
             listed: state.listed,
             listed_before: state.listed,
-            ids: state
-                .ids
-                .map(IdGen::new)
-                .unwrap_or_else(|| self.ids.clone()),
-            ids_before: state.ids,
+            ids: self.ids.clone(),
             absent: state.absent.into(),
             now_ms: self.now_ms,
         };
@@ -607,7 +596,6 @@ impl Journal {
             history: (*self.history).clone(),
             seen: (*self.seen).clone(),
             listed: self.listed,
-            ids: Some(self.ids.state),
             absent: (*self.absent).clone(),
         }
     }
@@ -624,15 +612,11 @@ impl Journal {
             .collect();
         let listed = (self.listed != self.listed_before).then_some(self.listed);
         self.listed_before = self.listed;
-        let state = Some(self.ids.state);
-        let ids = (state != self.ids_before).then_some(state);
-        self.ids_before = state;
         JournalChanges {
             rows,
             history: self.history.take_changes(),
             seen: self.seen.take_changes(),
             listed,
-            ids,
             absent: self.absent.take_changes(),
         }
     }

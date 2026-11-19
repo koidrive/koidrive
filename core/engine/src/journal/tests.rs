@@ -416,22 +416,19 @@ fn a_superseded_result_leaves_the_reported_intent_unseen() {
 }
 
 #[test]
-fn the_generator_is_its_own_stream_and_survives_a_restore() {
+fn the_generator_is_its_own_stream_and_a_restore_mints_from_the_one_it_was_loaded_with() {
     let mut engine = IdGen::new(42);
     let mut journal = Journal::new(&engine);
+    let rolled_back = journal.state(whole);
     engine.next_u64();
     let mut earlier: Vec<String> = (0..64).map(|_| engine.uuid_v7(0)).collect();
-    let minted: Vec<IntentId> = (0..64).map(|_| journal.mint()).collect();
-    earlier.extend(minted.iter().map(IntentId::to_string));
-    let mut restored = Journal::new(&IdGen::new(42));
-    restored.restore(journal.state(whole));
-    let next = restored.mint().to_string();
-    assert!(!earlier.contains(&next), "{next}");
+    earlier.extend((0..64).map(|_| journal.mint().to_string()));
     assert_eq!(earlier.iter().collect::<BTreeSet<_>>().len(), earlier.len());
-    assert_eq!(
-        restored.take_changes(whole).ids,
-        Some(restored.state(whole).ids)
-    );
+    let mut loaded = Journal::new(&IdGen::new(7));
+    loaded.restore(rolled_back);
+    let next = loaded.mint();
+    assert!(!earlier.contains(&next.to_string()), "{next}");
+    assert_eq!(next, Journal::new(&IdGen::new(7)).mint());
 }
 
 #[test]
