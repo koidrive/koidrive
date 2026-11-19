@@ -809,6 +809,18 @@ const scenarios: Step[][] = [
     { t: "put", plan: 0, outcome: "ok" },
     { t: "commit", file: 0, receipts: [0], extra: [] },
   ],
+  [
+    minute,
+    ...uploadBothThenA,
+    { t: "commit", file: 0, receipts: [], extra: [0] },
+    { t: "commit", file: 0, receipts: [], extra: [1] },
+    { t: "drop", version: 0 },
+    { t: "clock", ms: 31 * DAY },
+    { t: "targets", chunk: 0 },
+    { t: "clock", ms: 59 * MINUTE },
+    gc,
+    { t: "download", target: 0 },
+  ],
 ];
 
 const cases = Number(inject("batteryCases") || 100);

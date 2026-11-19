@@ -297,6 +297,20 @@ describe("RFC 0002 section 11", () => {
     expect((await a.commit(file, { commitId })).seq).toBe(1n);
   });
 
+  it("gives a row that lost its incarnation a fresh one that no earlier HEAD check confirms", async () => {
+    const { a, root } = await setup();
+    const parts = await content("checked, then stripped of its incarnation");
+    const both = await content("checked, then stripped of its incarnation", "never uploaded");
+    await a.uploadParts(parts);
+    await a.call({ case: "prepareUpload", value: { chunks: both.content.chunks } });
+    expect(code(await a.commitRaw([op.create(uuidv7(), root, "refused", both.content)]))).toBe(Error_Code.MISSING_CHUNKS);
+    const hash = parts.content.chunks[0]!.hash;
+    await runInDurableObject(a.stub, (_instance, state) => state.storage.sql.exec("UPDATE chunks SET incarnation = NULL WHERE hash = ?", hash));
+    await a.call({ case: "prepareUpload", value: { chunks: parts.content.chunks } });
+    const result = await a.commitRaw([op.create(uuidv7(), root, "stripped", parts.content)]);
+    expect(result.case === "error" && result.value.missingChunks.map(toHex)).toEqual([toHex(hash)]);
+  });
+
   it("lists a head-checked chunk as missing when its row changed before the commit transaction", async () => {
     const { a, root } = await setup();
     const parts = await content("checked, then retired");
