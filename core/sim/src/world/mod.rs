@@ -604,10 +604,8 @@ pub struct World {
     unasked: Option<String>,
     intents: Intents,
     /// For each write, how many more files than one the server may hold it in: one for each
-    /// copy a user made or published, and one for each file a download left on a disk that a
-    /// restart took for a new one (section 5.3).
+    /// copy a user made or published.
     copied: BTreeMap<i64, usize>,
-    stray_copies: BTreeSet<(usize, u128, i64)>,
     /// The last copy of the server's storage.
     backup: Option<Backup>,
     earlier_backup: Option<Backup>,
@@ -700,7 +698,6 @@ impl World {
             unasked: None,
             intents: Intents::new(count),
             copied: BTreeMap::new(),
-            stray_copies: BTreeSet::new(),
             backup: None,
             earlier_backup: None,
             retired: BTreeSet::new(),
@@ -2104,20 +2101,8 @@ impl World {
                     && (entry.mark.as_ref())
                         .is_some_and(|mark| mark.ino == **ino && mark.node == record.node)
             });
-            for (ino, entry) in strays {
+            for (ino, _) in strays {
                 self.intents.detach(d, *ino, &record.node, self.moment + 1);
-                let holds = |c: &&Content| {
-                    entry
-                        .content
-                        .as_ref()
-                        .is_some_and(|held| tag(held) == tag(c))
-                };
-                let Some(write) = download.filter(holds).map(tag) else {
-                    continue;
-                };
-                if self.stray_copies.insert((d, *ino, write)) {
-                    *self.copied.entry(write).or_default() += 1;
-                }
             }
         }
         if let Some(lost) =
