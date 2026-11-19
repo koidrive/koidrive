@@ -104,6 +104,7 @@ fn a_node_sent_without_intents_gets_legacy_ids_and_keeps_its_live_id_while_live(
             ))),
             content: Some(FieldIntent::legacy(IntentId::legacy_content("f", "v3"))),
             status: Some(FieldIntent::legacy(IntentId::legacy_live("f", 3))),
+            ..Default::default()
         })
     );
     trees.set_remote("f".into(), remote(file(ROOT, "b.txt", 1), 5));
@@ -158,6 +159,7 @@ fn r_keeps_the_intents_the_server_sent() {
         }),
         content: None,
         status: Some(FieldIntent::legacy(id(2))),
+        ..Default::default()
     };
     trees.set_remote(
         "f".into(),
@@ -648,6 +650,7 @@ fn a_finish_names_the_marks_intent_and_leaves_a_later_rename_to_send() {
             place: Some(mark),
             content: None,
             status: Some(FieldIntent::legacy(id(6))),
+            ..Default::default()
         }),
         ..remote(dir(ROOT, "d (pending)"), 1)
     };
@@ -1449,6 +1452,7 @@ fn the_first_listing_that_names_intents_replaces_the_ids_computed_for_the_values
         place: Some(FieldIntent::legacy(id(n))),
         content: Some(FieldIntent::legacy(id(n + 1))),
         status: Some(FieldIntent::legacy(id(n + 2))),
+        ..Default::default()
     };
     let mut listed: Tree<RemoteNode> = Tree::new(ROOT);
     for (node, shape, n) in [("f", file(ROOT, "a", 1), 1), ("g", file(ROOT, "d", 2), 4)] {
