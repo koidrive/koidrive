@@ -1152,7 +1152,9 @@ impl Snapshot {
         {
             let root = open_root(root)?;
             let fresh: HashSet<Key> = search.keys().copied().collect();
-            Pending::new(rules).search(root.as_fd(), &mut search, &fresh, false, &mut |_| {});
+            let mut rules = Pending::new(rules);
+            rules.search(root.as_fd(), &mut search, &fresh, false, &mut |_| {});
+            rules.hold(BTreeMap::new());
         }
         Ok((wanted.iter())
             .filter(|(_, known)| unseen(known) && search[&(known.id, known.kind)].is_none())
