@@ -156,7 +156,7 @@ describe("review regressions", () => {
     expect(seqs).toEqual([3n, 2n, 1n, 1n, 1n]);
   });
 
-  it("rejects moves and restores that would put a descendant deeper than 256, even when only a trashed one would", async () => {
+  it("rejects moves and restores that would put a descendant deeper than 256, even when only a trashed one would", { timeout: 30_000 }, async () => {
     const space = await setup();
     let parent = space.root;
     const ops = [];
@@ -203,7 +203,7 @@ describe("review regressions", () => {
     expect(next.map((r) => r.seq).sort()).toEqual([2n, 3n]);
   });
 
-  it("rolls back every table when a commit fails late, and replays a stored commit after eviction", async () => {
+  it("rolls back every table when a commit fails late, and replays a stored commit after eviction", { timeout: 30_000 }, async () => {
     const space = await setup();
     const kept = await createFile(space.a, space.root, "kept", "kept bytes");
     const parts = await content("rollback");

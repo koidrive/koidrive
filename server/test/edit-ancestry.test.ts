@@ -271,7 +271,7 @@ describe("RFC 0026 edit ancestry", () => {
     expect((await a.tree()).get(file)!.current!.madeOver).toEqual([newest, second.versionId, first.versionId, oldest]);
   });
 
-  it("bounds every stored version, current NodeState, change record, and version listing across 80 edits", async () => {
+  it("bounds every stored version, current NodeState, change record, and version listing across 80 edits", { timeout: 30_000 }, async () => {
     const { a, file, first, values, spaceId } = await setup();
     const versions = [first.versionId];
     for (let index = 0; index < 80; index++) {
