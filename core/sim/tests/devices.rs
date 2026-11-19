@@ -12940,3 +12940,34 @@ fn a_restore_answer_settles_a_move_its_user_made_before_the_delete() {
         [("b".to_owned(), Some(2)), ("ss".to_owned(), Some(1))]
     );
 }
+
+#[test]
+fn a_delete_gives_way_to_a_move_it_never_saw_that_a_rewind_kept() {
+    let a = |kind, name, text| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name,
+            text,
+        })
+    };
+    let phases = [
+        vec![(0, a(1, 6, 3))],
+        vec![
+            (1, a(3, 9, 2)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Backup),
+            (1, Step::Rewind),
+            (0, a(4, 0, 0)),
+        ],
+    ];
+    let world = converge(2, &phases).unwrap();
+    let files: Vec<_> = (files_on(&world, 0).into_iter())
+        .map(|(name, content)| (name, content.as_ref().map(tag)))
+        .collect();
+    assert_eq!(files, [("é".to_owned(), Some(1))]);
+}

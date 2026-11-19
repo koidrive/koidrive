@@ -184,6 +184,10 @@ impl Intent {
     pub(super) fn restore_answer(&self) -> bool {
         self.kind == RESTORE_ANSWER
     }
+
+    pub(super) fn dropped_off_server(&self) -> bool {
+        self.dropped && !self.held
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -709,7 +713,7 @@ impl Intents {
         into_itself
             || (0..self.list.len()).any(|j| {
                 let other = &self.list[j];
-                let dropped = other.dropped && !other.held;
+                let dropped = other.dropped_off_server();
                 if j == i || dropped && !other.restored {
                     return false;
                 }

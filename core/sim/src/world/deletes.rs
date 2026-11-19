@@ -163,7 +163,7 @@ impl Deletion {
                 let excused = (0..intents.len()).any(|j| {
                     let other = intents.intent(j);
                     j != i
-                        && !other.dropped
+                        && !other.dropped_off_server()
                         && !other.restore_answer()
                         && !matches!(other.value, Value::Trashed { .. })
                         && !intents.saw(i, j)

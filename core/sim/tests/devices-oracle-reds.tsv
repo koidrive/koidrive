@@ -512,7 +512,6 @@ devices::devices_with_rules_lose_no_write	case-42	NameLeftOut	device 1 is quiet,
 devices::devices_with_rules_lose_no_write	case-72	SentLeftOut	a commit of device 0 places node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 at ["c.txt"], which the rules of device 0 leave out
 devices::rewinds_converge_from_seed_122	case-1013	DeleteUndone	the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_122	case-1021	DeleteUndone	the delete of node 01a1c2c0-39a0-76b6-8f17-7744bb83aba9 on device 0 came undone, and no change its user did not see brought the node back
-devices::rewinds_converge_from_seed_122	case-1037	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_122	case-106	DeleteUndone	the delete of node 01a1c2c0-39a0-76b6-8f17-7744bb83aba9 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_122	case-1079	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_122	case-1144	DeleteUndone	the delete of node 01a1c2c0-39a0-753e-807a-44e7920b02c1 on device 0 came undone, and no change its user did not see brought the node back
@@ -522,8 +521,6 @@ devices::rewinds_converge_from_seed_122	case-1500	WriteKept	write 6 of the write
 devices::rewinds_converge_from_seed_122	case-1589	DeleteUndone	the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 2 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_122	case-1607	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_122	case-1613	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back
-devices::rewinds_converge_from_seed_122	case-1651	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 1 came undone, and no change its user did not see brought the node back
-devices::rewinds_converge_from_seed_122	case-1651	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_122	case-1769	DeleteUndone	the delete of node 01a1c2c0-39a0-7cb2-989b-810659c5a8bc on device 2 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_122	case-177	DeleteUndone	the delete of node 01a1c2c0-39a0-7ea7-93f8-3d888a182e12 on device 2 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_122	case-1787	WriteKept	write 2 of the write of node 01a1c2c0-39a0-796a-8df8-fb6da7904e2f on device 0 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it
@@ -625,14 +622,12 @@ devices::rewinds_converge_from_seed_301	case-3507	DeleteUndone	the delete of nod
 devices::rewinds_converge_from_seed_301	case-3510	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_301	case-3510	DeleteUndone	the delete of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_301	case-3565	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back
-devices::rewinds_converge_from_seed_301	case-3741	DeleteUndone	the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_301	case-3926	DeleteUndone	the delete of node 01a1c2c0-39a0-7c0e-89ff-ccf2edccf5f3 on device 2 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_301	case-3947	DeleteUndone	the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 1 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_301	case-4025	DeleteUndone	the delete of node 01a1c2c0-39a0-7224-a2dd-41264c2feceb on device 1 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_301	case-498	DeleteUndone	the delete of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_301	case-528	DeleteUndone	the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 1 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_301	case-534	DeleteUndone	the delete of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 on device 0 came undone, and no change its user did not see brought the node back
-devices::rewinds_converge_from_seed_301	case-558	DeleteUndone	the delete of node 01a1c2c0-39a0-796a-8df8-fb6da7904e2f on device 1 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_301	case-566	DeleteUndone	the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 1 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_301	case-602	DeleteUndone	the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_301	case-645	DeleteUndone	the delete of node 01a1c2c0-39a0-7ea7-93f8-3d888a182e12 on device 1 came undone, and no change its user did not see brought the node back
@@ -682,7 +677,6 @@ devices::rewinds_converge_from_seed_313	case-2824	DeleteUndone	the delete of nod
 devices::rewinds_converge_from_seed_313	case-2829	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_313	case-2903	DeleteUndone	the delete of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_313	case-3000	DeleteUndone	the delete of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 on device 1 came undone, and no change its user did not see brought the node back
-devices::rewinds_converge_from_seed_313	case-3005	DeleteUndone	the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_313	case-3176	DeleteUndone	the delete of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_313	case-3271	DeleteUndone	the delete of node 01a1c2c0-39a0-7c0e-89ff-ccf2edccf5f3 on device 2 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_313	case-3319	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back
@@ -714,7 +708,6 @@ devices::rewinds_converge_from_seed_319	case-1042	DeleteUndone	the delete of nod
 devices::rewinds_converge_from_seed_319	case-1069	DeleteUndone	the delete of node 01a1c2c0-39a0-7236-8163-e644f27cf0e2 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_319	case-1079	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_319	case-1124	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back
-devices::rewinds_converge_from_seed_319	case-1209	DeleteUndone	the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 1 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_319	case-1342	DeleteUndone	the delete of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 on device 1 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_319	case-1530	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_319	case-1548	DeleteUndone	the delete of node 01a1c2c0-39a0-7c0e-89ff-ccf2edccf5f3 on device 0 came undone, and no change its user did not see brought the node back
@@ -768,7 +761,6 @@ devices::rewinds_converge_from_seed_605	case-1178	DeleteUndone	the delete of nod
 devices::rewinds_converge_from_seed_605	case-119	DeleteUndone	the delete of node 01a1c2c0-39a0-753e-807a-44e7920b02c1 on device 1 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_605	case-1289	DeleteUndone	the delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_605	case-1326	DeleteUndone	the delete of node 01a1c2c0-39a0-7cad-9211-a25601bc3052 on device 0 came undone, and no change its user did not see brought the node back
-devices::rewinds_converge_from_seed_605	case-1356	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 2 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_605	case-1413	DeleteUndone	the delete of node 01a1c2c0-39a0-7735-80db-d7e668859a70 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_605	case-1525	DeleteUndone	the delete of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 0 came undone, and no change its user did not see brought the node back
 devices::rewinds_converge_from_seed_605	case-1583	DeleteUndone	the delete of node 01a1c2c0-39a0-7ea7-93f8-3d888a182e12 on device 0 came undone, and no change its user did not see brought the node back
