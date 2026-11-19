@@ -255,16 +255,7 @@ struct Run {
 
 impl Run {
     fn allowed(&mut self, path: &Path) -> bool {
-        if fs::symlink_metadata(path).is_err() {
-            return true;
-        }
-        let root = fs::metadata(path).is_ok_and(|meta| meta.is_dir())
-            && fs::symlink_metadata(path.join(".koidrive")).is_ok();
-        let folder = (self.folders.iter())
-            .find(|folder| holds(folder, path) || holds(path, folder))
-            .cloned()
-            .or_else(|| root.then(|| path.to_path_buf()));
-        let Some(folder) = folder else {
+        let Some(folder) = synced_folder(&self.folders, path) else {
             return true;
         };
         self.kept.push(Kept::InFolder {
@@ -398,6 +389,26 @@ struct Left {
     foreign: Vec<PathBuf>,
 }
 
+fn synced_folder(folders: &[PathBuf], path: &Path) -> Option<PathBuf> {
+    if fs::symlink_metadata(path).is_err() {
+        return None;
+    }
+    if let Some(folder) = (folders.iter()).find(|folder| holds(folder, path) || holds(path, folder))
+    {
+        return Some(folder.clone());
+    }
+    let parent = path
+        .parent()
+        .and_then(|parent| fs::canonicalize(parent).ok());
+    (path.ancestors())
+        .chain(parent.iter().flat_map(|parent| parent.ancestors()))
+        .find(|dir| {
+            fs::metadata(dir).is_ok_and(|meta| meta.is_dir())
+                && fs::symlink_metadata(dir.join(".koidrive")).is_ok()
+        })
+        .map(Path::to_path_buf)
+}
+
 fn holds(outer: &Path, inner: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     if inner.starts_with(outer) {
@@ -450,7 +461,19 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
         };
         return Ok(Done::ok(data, text).unchanged());
     }
-    confirm(&found, &options, terminal).await?;
+    let found = match confirm(&found, &options, terminal).await? {
+        false => found,
+        true => {
+            let now = find(paths, &home).await;
+            if plan(&now, &options) != plan(&found, &options) {
+                return Err(CliError::from(
+                    "what koi uninstall would remove changed while it waited for your answer, so nothing was changed; run it again to see what it removes now",
+                )
+                .then(&["koi", "uninstall"]));
+            }
+            now
+        }
+    };
     let shared = !found.others.is_empty() || found.unlisted.is_some();
     let mut run = Run {
         kept: found.kept.clone(),
@@ -537,9 +560,9 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
     finish(device, run)
 }
 
-async fn confirm(found: &Found, options: &Options, terminal: &Terminal) -> Result<(), CliError> {
+async fn confirm(found: &Found, options: &Options, terminal: &Terminal) -> Result<bool, CliError> {
     if options.yes {
-        return Ok(());
+        return Ok(false);
     }
     if !terminal.guided() {
         return Err(CliError::usage(
@@ -554,7 +577,7 @@ async fn confirm(found: &Found, options: &Options, terminal: &Terminal) -> Resul
         .confirm("Remove Koidrive from this computer?", false)
         .await?
     {
-        true => Ok(()),
+        true => Ok(true),
         false => Err("stopped; nothing was changed".into()),
     }
 }
@@ -621,6 +644,11 @@ fn plan(found: &Found, options: &Options) -> Vec<String> {
             Kept::UnrecordedState { path } => lines.push(format!(
                 "It keeps {}, which Koidrive has no record of creating.",
                 shown_folder(Path::new(path))
+            )),
+            Kept::InFolder { path, folder } => lines.push(format!(
+                "It keeps the PATH line in {}, which is in the synced folder {}.",
+                shown_folder(Path::new(path)),
+                shown_folder(Path::new(folder))
             )),
             _ => {}
         }

@@ -130,6 +130,23 @@ pub(super) async fn find(paths: &Paths, home: &Path) -> Found {
     }
     files.retain(|path| fs::symlink_metadata(path).is_ok());
     app_files.retain(|path| fs::symlink_metadata(path).is_ok());
+    let mut stripped = Vec::new();
+    for profile in profiles(home)
+        .into_iter()
+        .filter(|path| has_path_line(path))
+    {
+        let target = fs::canonicalize(&profile).ok();
+        match std::iter::once(profile.as_path())
+            .chain(target.as_deref())
+            .find_map(|path| synced_folder(&folders, path))
+        {
+            Some(folder) => kept.push(Kept::InFolder {
+                path: profile.display().to_string(),
+                folder: folder.display().to_string(),
+            }),
+            None => stripped.push(profile),
+        }
+    }
     Found {
         paired,
         unusable,
@@ -142,10 +159,7 @@ pub(super) async fn find(paths: &Paths, home: &Path) -> Found {
         programs,
         files,
         app_files,
-        profiles: profiles(home)
-            .into_iter()
-            .filter(|path| has_path_line(path))
-            .collect(),
+        profiles: stripped,
         kept,
         unlisted,
         config_in_state,
