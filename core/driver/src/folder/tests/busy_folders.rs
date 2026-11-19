@@ -194,16 +194,37 @@ fn a_folder_moved_into_a_busy_folder_keeps_its_rules_and_holds_no_upload_elsewhe
     let edited = |_: &Device, remote: &Remote| {
         (remote.tree().get("report.docx")).is_some_and(|id| server_size(remote, id) == 14)
     };
-    assert!(
-        until(&mut b, &mut remote, edited),
-        "the edit outside logs is uploaded while logs stays busy"
-    );
+    let up = until(&mut b, &mut remote, edited);
+    assert!(up, "the edit outside logs is uploaded");
     for _ in 0..20 {
         b.scan(Duration::from_millis(20));
         b.run(&mut remote);
     }
-    assert!(
-        !remote.tree().contains_key("logs/proj/y.tmp"),
-        "what the moved folder's rules leave out stays off the server"
-    );
+    let leaked = remote.tree().contains_key("logs/proj/y.tmp");
+    assert!(!leaked, "y.tmp stays off the server");
+}
+
+#[test]
+fn a_rules_folder_removed_with_a_busy_folder_in_one_batch_holds_no_download_elsewhere() {
+    let mut remote = Remote::new();
+    let (site, mut b) = busy_logs(&mut remote, &SyncRules::default());
+    let (site_a, mut a) = linked(&mut remote, "a");
+    a.rest(&mut remote);
+    fs::create_dir(site_a.root.join("docs")).unwrap();
+    let rules = site_a.root.join("docs/.koiignore");
+    a.create(&mut remote, &rules, b"*.tmp\n");
+    b.pull(&remote);
+    b.rest(&mut remote);
+    b.observer.keep_pending(PathBuf::from("logs"));
+    fs::remove_dir_all(site_a.root.join("docs")).unwrap();
+    fs::write(site_a.root.join("logs/new.log"), b"new").unwrap();
+    a.rescan();
+    a.rest(&mut remote);
+    b.pull(&remote);
+    assert_eq!(b.run(&mut remote), ["stage"]);
+    a.create(&mut remote, &site_a.root.join("notes.txt"), b"notes");
+    b.pull(&remote);
+    let notes = site.root.join("notes.txt");
+    let arrived = until(&mut b, &mut remote, |_, _| notes.exists());
+    assert!(arrived, "notes.txt is downloaded while logs stays busy");
 }

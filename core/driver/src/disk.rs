@@ -214,6 +214,18 @@ impl Answers {
             !self.covers(*request)
         });
     }
+
+    fn narrow_folders(&self, requested: &mut Vec<(Requests, Vec<PathBuf>)>) {
+        requested.retain_mut(|(request, folders)| {
+            if let Some((_, left)) = self.open.iter().find(|(open, _)| open == request) {
+                folders.retain(|folder| {
+                    (left.iter())
+                        .any(|scope| scope.starts_with(folder) || folder.starts_with(scope))
+                });
+            }
+            !folders.is_empty() && !self.covers(*request)
+        });
+    }
 }
 
 fn within(scopes: &[PathBuf], of: &[PathBuf]) -> Vec<PathBuf> {
@@ -857,7 +869,7 @@ impl Disk {
             observation.tracked,
             observation.all_rules,
         );
-        (self.awaited_rules).retain(|(requested, _)| !answered.covers(*requested));
+        answered.narrow_folders(&mut self.awaited_rules);
         answered.narrow(&mut self.awaited_scans);
         answered.narrow(&mut self.unscanned.effects);
         answered.narrow(&mut self.unscanned.dropped);
@@ -965,8 +977,8 @@ impl Disk {
     /// places at or below them ([`Engine::await_scan`]): the rules file's folder after an effect on a rules file, both
     /// places of a moved folder, the folder of a removal that awaits a scan ([`Settled::AwaitsScan`]), and the paths of
     /// an upload that found the disk changed (design §5.10). A wait ends with the batch that answers the reset the
-    /// effect requested ([`Batch::answered`]). A rules folder stays held whole until then, and the other holds shrink
-    /// to the scopes the scans have not settled yet.
+    /// effect requested ([`Batch::answered`]). A rules folder stays held whole while a scope of its request that the
+    /// scans have not settled overlaps it, and the other holds shrink to those scopes.
     pub fn awaits_scan(&self) -> bool {
         !self.awaited_rules.is_empty() || !self.awaited_scans.is_empty()
     }
