@@ -5139,3 +5139,39 @@ fn publishing_a_folder_moved_out_of_a_trashed_parent_with_a_move_into_a_new_fold
     ];
     assert_eq!(sent, expected.map(|(op, id)| (op, id.to_owned())));
 }
+#[test]
+fn an_answer_commits_when_a_carried_move_goes_into_a_folder_that_moves_into_a_new_folder() {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "b")),
+            ("n", dir("a", "n")),
+            ("b", dir("n", "b")),
+            ("c", dir("a", "c")),
+            ("d", dir("c", "d")),
+        ],
+        &[
+            ("a", dir(ROOT, "a")),
+            ("b", dir(ROOT, "b")),
+            ("c", dir("a", "c")),
+            ("d", dir("c", "d")),
+        ],
+        &[
+            Remote("a", dir(ROOT, "a"), true, 1),
+            Remote("b", dir(ROOT, "b"), false, 1),
+            Remote("c", dir("a", "c"), true, 1),
+            Remote("d", dir("c", "d"), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    for question in commits.questions().to_vec() {
+        assert!(commits.decide(&question.id, Answer::Publish));
+    }
+    let mut moved = trees.local().get("d").unwrap().clone();
+    moved.shape = dir("b", "d");
+    trees.set_local("d".into(), moved);
+    trees.settle(&Default::default());
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    for op in [("move", "a"), ("move", "d")] {
+        assert!(sent.contains(&(op.0, op.1.into())), "{sent:?}");
+    }
+}

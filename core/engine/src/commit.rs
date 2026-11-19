@@ -5968,6 +5968,7 @@ impl<'a> Scratch<'a> {
             })
             .cloned()
             .collect();
+        let mut lifted = BTreeSet::new();
         let mut pending: BTreeSet<NodeId> = (moving.iter())
             .filter(|node| *node != id)
             .cloned()
@@ -5998,85 +5999,97 @@ impl<'a> Scratch<'a> {
                         chain.pop();
                         continue;
                     }
-                    let Some(Want::Move {
-                        id,
-                        parent,
-                        name,
-                        guarded,
-                        ..
-                    }) = &wants[at]
-                    else {
-                        unreachable!("only moves are carried");
-                    };
-                    let into_top = scratch.kind(parent).is_none();
-                    let step = Want::Move {
-                        id: id.clone(),
-                        parent: match into_top {
+                    let refused = 'step: {
+                        let Some(Want::Move {
+                            id,
+                            parent,
+                            name,
+                            guarded,
+                            ..
+                        }) = &wants[at]
+                        else {
+                            unreachable!("only moves are carried");
+                        };
+                        let into_top = scratch.kind(parent).is_none();
+                        let to = match into_top {
                             false => parent.clone(),
                             true if scratch.inside(id, top) => match scratch.parent(top) {
                                 Some(at) => at.to_owned(),
-                                None => return unfit(),
+                                None => break 'step Some(unfit()),
                             },
-                            true => return unfit(),
-                        },
-                        name: name.clone(),
-                        pending_for: None,
-                        guarded: *guarded,
-                    };
-                    let live: BTreeSet<NodeId> = (pending.iter())
-                        .filter(|node| scratch.live(node))
-                        .cloned()
-                        .collect();
-                    let fit = scratch.fit(&step, &live);
-                    if fit == Fit::Wait
-                        && let Some(awaited) = scratch.awaited_return(&step, &live)
-                    {
-                        let first = (wants.iter()).position(
-                            |slot| matches!(slot, Some(Want::Move { id, .. }) if id == awaited),
-                        );
-                        match first.filter(|first| !chain.contains(first)) {
-                            Some(first) if live.contains(awaited) => chain.push(first),
-                            _ => return unfit(),
-                        }
-                        continue;
-                    }
-                    let set_aside = match fit {
-                        _ if into_top => true,
-                        Fit::Valid => false,
-                        Fit::NameTaken
-                            if (scratch.name_holders(&step)).all(|holder| {
-                                holder == id
-                                    || outside.contains(holder)
-                                    || live.contains(holder) && self.ends.leaves(holder)
-                            }) =>
+                            true => break 'step Some(unfit()),
+                        };
+                        let step = Want::Move {
+                            id: id.clone(),
+                            parent: to,
+                            name: name.clone(),
+                            pending_for: None,
+                            guarded: *guarded,
+                        };
+                        let live: BTreeSet<NodeId> = (pending.iter())
+                            .filter(|node| !lifted.contains(&at) && scratch.live(node))
+                            .cloned()
+                            .collect();
+                        let fit = scratch.fit(&step, &live);
+                        if fit == Fit::Wait
+                            && let Some(awaited) = scratch.awaited_return(&step, &live)
                         {
-                            true
-                        }
-                        _ => return unfit(),
-                    };
-                    let Want::Move { parent, .. } = &step else {
-                        unreachable!("built as a move");
-                    };
-                    let aside = set_aside.then(|| Want::Move {
-                        id: id.clone(),
-                        name: scratch.free_name(parent, name),
-                        parent: parent.clone(),
-                        pending_for: Some(name.clone()),
-                        guarded: *guarded,
-                    });
-                    let kind = scratch.kind(id).expect("moved nodes are in R");
-                    match &aside {
-                        Some(aside @ Want::Move { parent, name, .. }) => {
-                            if scratch.fit(aside, &live) != Fit::Valid {
-                                return None;
+                            let first = (wants.iter()).position(
+                                |slot| matches!(slot, Some(Want::Move { id, .. }) if id == awaited),
+                            );
+                            match first.filter(|first| !chain.contains(first)) {
+                                Some(first) if live.contains(awaited) => chain.push(first),
+                                _ => break 'step Some(unfit()),
                             }
-                            scratch.place(id, parent, name, kind);
+                            break 'step None;
                         }
-                        _ => scratch.place(id, parent, name, kind),
+                        let set_aside = match fit {
+                            _ if into_top => true,
+                            Fit::Valid => false,
+                            Fit::NameTaken
+                                if (scratch.name_holders(&step)).all(|holder| {
+                                    holder == id
+                                        || outside.contains(holder)
+                                        || live.contains(holder) && self.ends.leaves(holder)
+                                }) =>
+                            {
+                                true
+                            }
+                            _ => break 'step Some(unfit()),
+                        };
+                        let Want::Move { parent, .. } = &step else {
+                            unreachable!("built as a move");
+                        };
+                        let aside = set_aside.then(|| Want::Move {
+                            id: id.clone(),
+                            name: scratch.free_name(parent, name),
+                            parent: parent.clone(),
+                            pending_for: Some(name.clone()),
+                            guarded: *guarded,
+                        });
+                        let kind = scratch.kind(id).expect("moved nodes are in R");
+                        match &aside {
+                            Some(aside @ Want::Move { parent, name, .. }) => {
+                                if scratch.fit(aside, &live) != Fit::Valid {
+                                    break 'step Some(None);
+                                }
+                                scratch.place(id, parent, name, kind);
+                            }
+                            _ => scratch.place(id, parent, name, kind),
+                        }
+                        pending.remove(id);
+                        carried.push((at, aside));
+                        chain.pop();
+                        None
+                    };
+                    let Some(refused) = refused else {
+                        continue;
+                    };
+                    if chain.len() == 1 {
+                        return refused;
                     }
-                    pending.remove(id);
-                    carried.push((at, aside));
-                    chain.pop();
+                    lifted.insert(chain[0]);
+                    chain.truncate(1);
                 }
             }
             let members = (scratch.subtree(top).into_iter())
