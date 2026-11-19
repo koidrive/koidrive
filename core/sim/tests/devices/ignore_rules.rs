@@ -150,6 +150,10 @@ fn a_file_at_a_name_another_spelling_of_which_its_rules_came_to_exclude_waits_fo
 
 #[test]
 fn a_folder_the_server_refuses_waits_to_be_removed_around_the_files_its_rules_exclude() {
+    let _red = expect_red(
+        Check::RemoveLeftOut,
+        "device 0 is quiet, but it waits to remove the folders of [\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"], which hold entries its rules leave out",
+    );
     let phases = [
         vec![(0, folder("a"))],
         vec![

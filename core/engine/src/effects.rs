@@ -718,7 +718,7 @@ impl Effects {
             return false;
         };
         matches!(record.effect, Effect::RemoveDir { .. })
-            && trees.remote().live(&record.node).is_none()
+            && (trees.remote().get(&record.node)).is_some_and(|node| node.trashed)
             && held.iter().all(|(name, kind)| {
                 let mut entry = folder.clone();
                 entry.push(name);
