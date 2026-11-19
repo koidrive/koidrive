@@ -1239,7 +1239,7 @@ impl<'a> View<'a> {
                 _ => &[],
             };
             return self.trees.local_children(&record.node).all(|child| {
-                self.left_out(child)
+                self.left_out(&record.node, child)
                     || (self.trees.local().get(child)).is_some_and(|node| {
                         along.iter().any(|file| file.identity.same(&node.identity))
                     })
@@ -1293,19 +1293,28 @@ impl<'a> View<'a> {
             })
     }
 
-    fn left_out(&self, id: &NodeId) -> bool {
+    fn left_out(&self, folder: &NodeId, id: &NodeId) -> bool {
+        let trashed = |id: &NodeId| (self.trees.remote().get(id)).is_some_and(|remote| remote.trashed);
         let owed = (self.trees.local().get(id).zip(self.trees.synced().live(id)))
             .is_some_and(|(local, synced)| local.shape.same_position(synced))
-            && self
-                .trees
-                .remote()
-                .get(id)
-                .is_some_and(|remote| remote.trashed);
+            && trashed(id);
         self.trees.under_kept_entry(id)
-            || self.trees.recorded_local(id)
-            || !owed
+            || self.trees.recorded_local(id) && !self.holds_unsent_edit(id)
+            || trashed(folder)
+                && !owed
                 && crate::classify::path(self.trees.local(), id)
                     .is_some_and(|(names, kind)| self.trees.ignores(&names, kind))
+    }
+
+    fn holds_unsent_edit(&self, id: &NodeId) -> bool {
+        let mut below = vec![id];
+        while let Some(at) = below.pop() {
+            if self.trees.remote().get(at).is_some() && self.trees.edited(at) {
+                return true;
+            }
+            below.extend(self.trees.local_children(at).map(String::as_str));
+        }
+        false
     }
 
     fn goes_home(&self, id: &NodeId, remote: &Shape) -> bool {
@@ -1357,7 +1366,7 @@ impl<'a> View<'a> {
             return Step::Skip;
         }
         let children: Vec<&NodeId> = self.trees.local_children(id).collect();
-        if (children.iter()).any(|child| !self.trees.carried(child) && !self.left_out(child)) {
+        if (children.iter()).any(|child| !self.trees.carried(child) && !self.left_out(id, child)) {
             return Step::Blocked(None);
         }
         let Some(at) = self.location(id) else {

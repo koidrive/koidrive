@@ -2501,7 +2501,9 @@ impl Trees {
             }
             let state = self.discard_state(child);
             let excluded = !self.parked(child)
-                && (state == Some(Discard::Kept) || self.ignored_in_place(child));
+                && (state == Some(Discard::Kept)
+                    || self.ignored_in_place(child)
+                    || self.kept_folder(child));
             holds_excluded |= excluded;
             let follows = !self.discarded.contains_key(child)
                 && self.as_the_server_holds(child, &mut BTreeSet::new());
@@ -3332,7 +3334,7 @@ impl Trees {
             return;
         };
         self.take_out_local(id);
-        if self.r.live(id).is_some() {
+        if !(self.r.get(id)).is_some_and(|remote| remote.trashed) {
             self.displaced.insert(id.to_owned(), identity);
         }
     }
@@ -7200,7 +7202,9 @@ impl Trees {
         if let Some(id) = (state.found.keys()).find(|id| !state.outside.contains(*id)) {
             return Err(StateError::NotIgnoredLocal(id.clone()));
         }
-        let kept = |id: &&NodeId| self.l.get(id).is_none() && self.r.live(id).is_some();
+        let kept = |id: &&NodeId| {
+            self.l.get(id).is_none() && !(self.r.get(id)).is_some_and(|remote| remote.trashed)
+        };
         if let Some(id) = state
             .displaced
             .keys()
