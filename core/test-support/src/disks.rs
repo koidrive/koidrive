@@ -535,19 +535,28 @@ fn whole_device(attached: &str) -> Result<String, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn image_on(device: &str) -> Result<Option<PathBuf>, String> {
-    use std::ffi::{CStr, CString, c_char, c_void};
+mod registry {
+    use std::ffi::{CStr, CString, OsStr, c_char, c_void};
     use std::os::unix::ffi::OsStrExt;
+    use std::path::{Path, PathBuf};
 
     #[link(name = "IOKit", kind = "framework")]
     unsafe extern "C" {
         fn IOBSDNameMatching(main_port: u32, options: u32, name: *const c_char) -> *mut c_void;
+        fn IOServiceMatching(class: *const c_char) -> *mut c_void;
         fn IOServiceGetMatchingService(main_port: u32, matching: *mut c_void) -> u32;
+        fn IOServiceGetMatchingServices(
+            main_port: u32,
+            matching: *mut c_void,
+            iterator: *mut u32,
+        ) -> i32;
+        fn IOIteratorNext(iterator: u32) -> u32;
         fn IOObjectConformsTo(object: u32, class: *const c_char) -> u32;
         fn IORegistryEntryGetParentEntry(entry: u32, plane: *const c_char, parent: *mut u32)
         -> i32;
-        fn IORegistryEntryCreateCFProperty(
+        fn IORegistryEntrySearchCFProperty(
             entry: u32,
+            plane: *const c_char,
             key: *const c_void,
             allocator: *const c_void,
             options: u32,
@@ -562,75 +571,193 @@ fn image_on(device: &str) -> Result<Option<PathBuf>, String> {
             text: *const c_char,
             encoding: u32,
         ) -> *const c_void;
+        fn CFStringGetCString(
+            text: *const c_void,
+            buffer: *mut c_char,
+            size: isize,
+            encoding: u32,
+        ) -> u8;
         fn CFGetTypeID(object: *const c_void) -> usize;
         fn CFDataGetTypeID() -> usize;
+        fn CFStringGetTypeID() -> usize;
         fn CFDataGetLength(data: *const c_void) -> isize;
         fn CFDataGetBytePtr(data: *const c_void) -> *const u8;
         fn CFRelease(object: *const c_void);
     }
 
+    const UTF8: u32 = 0x0800_0100;
     const NO_DEVICE: i32 = 0xe000_02c0_u32 as i32;
-    let name = device.strip_prefix("/dev/").unwrap_or(device);
-    let node = Path::new("/dev").join(name);
-    let name = CString::new(name).map_err(|error| error.to_string())?;
-    let property = |entry: u32, key: &CStr| unsafe {
-        let key = CFStringCreateWithCString(std::ptr::null(), key.as_ptr(), 0x0800_0100);
-        let found = IORegistryEntryCreateCFProperty(entry, key, std::ptr::null(), 0);
-        CFRelease(key);
-        found
-    };
-    unsafe {
-        let media = IOServiceGetMatchingService(0, IOBSDNameMatching(0, 0, name.as_ptr()));
-        if media == 0 {
-            return if node.exists() {
-                Err(format!(
-                    "{device} exists but the IO registry has no entry for it"
-                ))
-            } else {
-                Ok(None)
-            };
-        }
-        let bsd_name = property(media, c"BSD Name");
-        if bsd_name.is_null() {
-            IOObjectRelease(media);
-            return Err(format!("the IO registry entry of {device} cannot be read"));
-        }
-        CFRelease(bsd_name);
-        let mut entry = media;
-        while IOObjectConformsTo(entry, c"IOHDIXHDDrive".as_ptr()) == 0 {
-            let mut parent = 0;
-            let status = IORegistryEntryGetParentEntry(entry, c"IOService".as_ptr(), &mut parent);
-            IOObjectRelease(entry);
-            match status {
-                0 => {}
-                NO_DEVICE => return Ok(None),
-                status => {
-                    return Err(format!(
-                        "looking up the parent of {device} in the IO registry failed with {status:#x}"
-                    ));
-                }
+    const CHILDREN: u32 = 0b01;
+
+    unsafe fn search(entry: u32, key: &CStr, options: u32) -> Result<Option<Vec<u8>>, String> {
+        unsafe {
+            let key = CFStringCreateWithCString(std::ptr::null(), key.as_ptr(), UTF8);
+            let found = IORegistryEntrySearchCFProperty(
+                entry,
+                c"IOService".as_ptr(),
+                key,
+                std::ptr::null(),
+                options,
+            );
+            CFRelease(key);
+            if found.is_null() {
+                return Ok(None);
             }
-            entry = parent;
-        }
-        let found = property(entry, c"image-path");
-        IOObjectRelease(entry);
-        if found.is_null() {
-            return Err(format!(
-                "{device} is on a disk image whose image-path cannot be read"
-            ));
-        }
-        let image = (CFGetTypeID(found) == CFDataGetTypeID()).then(|| {
-            let bytes = match CFDataGetLength(found) {
-                0 => &[][..],
-                length => std::slice::from_raw_parts(CFDataGetBytePtr(found), length as usize),
+            let value = if CFGetTypeID(found) == CFDataGetTypeID() {
+                let bytes = match CFDataGetLength(found) {
+                    0 => &[][..],
+                    length => std::slice::from_raw_parts(CFDataGetBytePtr(found), length as usize),
+                };
+                Ok(Some(bytes.strip_suffix(&[0]).unwrap_or(bytes).to_vec()))
+            } else if CFGetTypeID(found) == CFStringGetTypeID() {
+                let mut buffer = [0 as c_char; 1024];
+                (CFStringGetCString(found, buffer.as_mut_ptr(), buffer.len() as isize, UTF8) != 0)
+                    .then(|| Some(CStr::from_ptr(buffer.as_ptr()).to_bytes().to_vec()))
+                    .ok_or_else(|| format!("{key:?} does not fit in {} bytes", buffer.len()))
+            } else {
+                Err(format!("{key:?} is neither data nor a string"))
             };
-            PathBuf::from(OsStr::from_bytes(bytes.strip_suffix(&[0]).unwrap_or(bytes)))
-        });
-        CFRelease(found);
-        image
-            .map(Some)
-            .ok_or_else(|| format!("{device} has an image-path that is not data"))
+            CFRelease(found);
+            value
+        }
     }
+
+    unsafe fn image(entry: u32, options: u32) -> Result<Option<PathBuf>, String> {
+        let path = |bytes: Vec<u8>| PathBuf::from(OsStr::from_bytes(&bytes));
+        if let Some(image) = unsafe { search(entry, c"image-path", options)? } {
+            return Ok(Some(path(image)));
+        }
+        let url = unsafe { search(entry, c"DiskImageURL", options)? };
+        let Some(url) = url else {
+            return Ok(None);
+        };
+        let mut encoded = url
+            .strip_prefix(b"file://")
+            .ok_or_else(|| format!("{} is not a file URL", String::from_utf8_lossy(&url)))?
+            .iter()
+            .copied();
+        let mut decoded = Vec::new();
+        while let Some(byte) = encoded.next() {
+            decoded.push(match byte {
+                b'%' => encoded
+                    .next()
+                    .zip(encoded.next())
+                    .and_then(|(high, low)| {
+                        u8::from_str_radix(std::str::from_utf8(&[high, low]).ok()?, 16).ok()
+                    })
+                    .ok_or_else(|| {
+                        format!("{} has a broken escape", String::from_utf8_lossy(&url))
+                    })?,
+                byte => byte,
+            });
+        }
+        Ok(Some(path(decoded)))
+    }
+
+    pub fn image_on(device: &str) -> Result<Option<PathBuf>, String> {
+        let name = device.strip_prefix("/dev/").unwrap_or(device);
+        let node = Path::new("/dev").join(name);
+        let name = CString::new(name).map_err(|error| error.to_string())?;
+        unsafe {
+            let media = IOServiceGetMatchingService(0, IOBSDNameMatching(0, 0, name.as_ptr()));
+            if media == 0 {
+                return if node.exists() {
+                    Err(format!(
+                        "{device} exists but the IO registry has no entry for it"
+                    ))
+                } else {
+                    Ok(None)
+                };
+            }
+            let readable = search(media, c"BSD Name", 0);
+            if !matches!(readable, Ok(Some(_))) {
+                IOObjectRelease(media);
+                return Err(format!("the IO registry entry of {device} cannot be read"));
+            }
+            let mut entry = media;
+            while [c"IOHDIXHDDrive", c"AppleDiskImageDevice"]
+                .iter()
+                .all(|class| IOObjectConformsTo(entry, class.as_ptr()) == 0)
+            {
+                let mut parent = 0;
+                let status =
+                    IORegistryEntryGetParentEntry(entry, c"IOService".as_ptr(), &mut parent);
+                IOObjectRelease(entry);
+                match status {
+                    0 => {}
+                    NO_DEVICE => return Ok(None),
+                    status => {
+                        return Err(format!(
+                            "looking up the parent of {device} in the IO registry failed with {status:#x}"
+                        ));
+                    }
+                }
+                entry = parent;
+            }
+            let image = image(entry, 0);
+            IOObjectRelease(entry);
+            image?
+                .map(Some)
+                .ok_or_else(|| format!("{device} is on a disk image whose path cannot be read"))
+        }
+    }
+
+    pub fn attached() -> Result<Vec<(PathBuf, String)>, String> {
+        let mut images = Vec::new();
+        for class in [c"IOHDIXHDDrive", c"AppleDiskImageDevice"] {
+            let mut drives = 0;
+            let status = unsafe {
+                IOServiceGetMatchingServices(0, IOServiceMatching(class.as_ptr()), &mut drives)
+            };
+            if status != 0 {
+                return Err(format!("listing {class:?} failed with {status:#x}"));
+            }
+            let found = std::iter::from_fn(|| {
+                let drive = unsafe { IOIteratorNext(drives) };
+                (drive != 0).then(|| {
+                    let found = unsafe { (image(drive, 0), search(drive, c"BSD Name", CHILDREN)) };
+                    unsafe { IOObjectRelease(drive) };
+                    let image = found.0?.ok_or_else(|| {
+                        format!("a {class:?} entry has no image path it can read")
+                    })?;
+                    Ok((image, found.1?))
+                })
+            })
+            .collect::<Result<Vec<_>, String>>();
+            unsafe { IOObjectRelease(drives) };
+            images.extend(found?.into_iter().filter_map(|(image, name)| {
+                Some((image, format!("/dev/{}", String::from_utf8_lossy(&name?))))
+            }));
+        }
+        Ok(images)
+    }
+}
+
+#[cfg(target_os = "macos")]
+use registry::image_on;
+
+#[cfg(target_os = "macos")]
+fn resolved(image: &Path) -> Option<PathBuf> {
+    fs::canonicalize(image).ok().or_else(|| {
+        Some(
+            fs::canonicalize(image.parent()?)
+                .ok()?
+                .join(image.file_name()?),
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn attached_under(base: &Path) -> Result<Vec<Mounted>, String> {
+    Ok(registry::attached()?
+        .into_iter()
+        .filter(|(image, _)| resolved(image).is_some_and(|image| image.starts_with(base)))
+        .map(|(image, device)| Mounted {
+            at: base.to_path_buf(),
+            image,
+            device,
+        })
+        .collect())
 }
 
 #[cfg(target_os = "macos")]
@@ -737,6 +864,31 @@ fn unmount(mounted: &Mounted) -> Result<(), String> {
 
 impl Drop for Disks {
     fn drop(&mut self) {
+        #[cfg(target_os = "macos")]
+        match fs::canonicalize(self.dir.path())
+            .map_err(|error| error.to_string())
+            .and_then(|base| attached_under(&base))
+        {
+            Ok(attached) => {
+                for image in attached {
+                    if !self
+                        .mounted
+                        .iter()
+                        .any(|known| known.device == image.device)
+                    {
+                        self.mounted.push(image);
+                    }
+                }
+            }
+            Err(failure) => {
+                self.dir.disable_cleanup(true);
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "Disk cleanup could not list attached images; keeping {} for the OS to reclaim: {failure}",
+                    self.dir.path().display()
+                );
+            }
+        }
         self.cleanup(unmount);
     }
 }
@@ -857,6 +1009,128 @@ mod tests {
         theirs.attach(&image, &at);
         drop(ours);
         assert_eq!(is_mount_point(&at), Ok(true));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_image_attached_without_a_record_is_ejected_on_drop() {
+        let disks = Disks::new().unwrap();
+        let image = disks.image("Unrecorded");
+        let at = disks.base().join("at");
+        fs::create_dir(&at).unwrap();
+        let attached = hdiutil(&[
+            "attach".as_ref(),
+            "-plist".as_ref(),
+            "-nobrowse".as_ref(),
+            "-noautoopen".as_ref(),
+            "-mountpoint".as_ref(),
+            at.as_os_str(),
+            image.as_os_str(),
+        ]);
+        let unrecorded = Mounted {
+            at,
+            image,
+            device: whole_device(&attached).unwrap(),
+        };
+        let base = disks.base();
+        drop(disks);
+        assert_eq!(
+            still_attached(&unrecorded),
+            Ok(false),
+            "{}",
+            unrecorded.device
+        );
+        assert!(!base.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_drop_leaves_another_disks_image_attached_through_a_link_into_its_folder() {
+        let mut theirs = Disks::new().unwrap();
+        let ours = Disks::new().unwrap();
+        theirs.image("Theirs");
+        std::os::unix::fs::symlink(theirs.base(), ours.base().join("link")).unwrap();
+        let at = theirs.base().join("at");
+        fs::create_dir(&at).unwrap();
+        theirs.attach(&ours.base().join("link/Theirs.dmg"), &at);
+        let recorded = theirs.mounted[0].clone();
+        drop(ours);
+        assert_eq!(still_attached(&recorded), Ok(true), "{}", recorded.device);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_drop_ejects_an_image_of_its_folder_attached_through_another_spelling() {
+        let disks = Disks::new().unwrap();
+        let image = disks.image("Spelled");
+        let spelled = disks.dir.path().join("Spelled.dmg");
+        assert_ne!(spelled, image);
+        let at = disks.base().join("at");
+        fs::create_dir(&at).unwrap();
+        let attached = hdiutil(&[
+            "attach".as_ref(),
+            "-plist".as_ref(),
+            "-nobrowse".as_ref(),
+            "-noautoopen".as_ref(),
+            "-mountpoint".as_ref(),
+            at.as_os_str(),
+            spelled.as_os_str(),
+        ]);
+        let unrecorded = Mounted {
+            at,
+            image: spelled,
+            device: whole_device(&attached).unwrap(),
+        };
+        drop(disks);
+        assert_eq!(
+            still_attached(&unrecorded),
+            Ok(false),
+            "{}",
+            unrecorded.device
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_drop_ejects_an_image_of_its_folder_that_disk_images_2_attached() {
+        let disks = Disks::new().unwrap();
+        let image = disks.image("Disk Images 2%");
+        let attached = run(
+            "diskutil",
+            &[
+                "image".as_ref(),
+                "attach".as_ref(),
+                "--nomount".as_ref(),
+                "--plist".as_ref(),
+                image.as_os_str(),
+            ],
+        );
+        let device = plist::Value::from_reader_xml(attached.as_bytes())
+            .unwrap()
+            .as_dictionary()
+            .and_then(|attached| attached.get("system-entities"))
+            .and_then(plist::Value::as_array)
+            .and_then(|entities| entities.first())
+            .and_then(plist::Value::as_dictionary)
+            .and_then(|entity| entity.get("dev-entry"))
+            .and_then(plist::Value::as_string)
+            .map(|name| format!("/dev/{name}"))
+            .unwrap();
+        drop(disks);
+        assert!(!Path::new(&device).exists(), "{device}");
+    }
+
+    #[test]
+    fn a_drop_after_its_folder_moved_keeps_it_without_a_panic() {
+        let disks = Disks {
+            dir: tempfile::tempdir().unwrap(),
+            mounted: Vec::new(),
+        };
+        let moved = disks.dir.path().with_extension("moved");
+        fs::rename(disks.dir.path(), &moved).unwrap();
+        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(disks)));
+        fs::remove_dir_all(&moved).unwrap();
+        assert!(dropped.is_ok());
     }
 
     #[cfg(target_os = "macos")]
