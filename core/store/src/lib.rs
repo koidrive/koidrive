@@ -13,7 +13,7 @@
 //!   commits and the effects keep, and the restores a person asked for with
 //!   their outcomes;
 //! - the restore requests the engine has not taken yet;
-//! - the engine's ID generator state and the index of chunks cached on disk;
+//! - the index of chunks cached on disk;
 //! - the [`Link`]: the folder the store syncs and the device credential that
 //!   writes it, and the questions the engine asked with their answers.
 //!
