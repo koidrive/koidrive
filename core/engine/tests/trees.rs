@@ -1182,6 +1182,7 @@ proptest! {
                 .filter(|id| trees.local().get(id).is_some() || trees.synced().get(id).is_some())
                 .collect();
             state.removed_from = trees.state().removed_from;
+            state.synced_positions = trees.state().synced_positions;
             everything.restore(state).unwrap();
             everything.rules_scanned();
             trees.settle(&Default::default());
