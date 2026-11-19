@@ -1022,31 +1022,47 @@ fn a_file_removed_while_a_commit_is_out_before_a_rule_leaves_it_out_leaves_the_s
 }
 
 #[test]
-fn a_delete_owed_when_a_rule_left_its_file_out_is_sent_after_a_restart() {
-    clock::freeze();
-    let mut remote = Remote::new();
-    let (site, mut a) = linked(&mut remote, "a");
-    fs::create_dir_all(site.root.join("docs")).unwrap();
-    a.create(
-        &mut remote,
-        &site.root.join("docs/report.txt"),
-        b"version one",
-    );
-    a.rest(&mut remote);
-    let before = live_id(&server_nodes(&remote), "report.txt");
-    fs::write(site.root.join("other.txt"), b"other").unwrap();
-    a.scan_until(|a| a.folder.engine.commits.in_flight().is_some());
-    fs::remove_file(site.root.join("docs/report.txt")).unwrap();
-    a.scan_until(|a| a.folder.engine.trees.local().get(&before).is_none());
-    fs::write(site.root.join(".koiignore"), b"report.txt\n").unwrap();
-    a.scan_until(|_| local_holds(&site, ".koiignore"));
-    drop(a);
-    restarted(&site, &mut remote).rest(&mut remote);
-    let nodes = server_nodes(&remote);
-    assert!(
-        !nodes.contains(&("report.txt".to_owned(), before, true)),
-        "{nodes:?}"
-    );
+fn a_delete_waiting_at_a_restart_is_sent_whenever_a_rule_leaves_its_file_out() {
+    for rule in ["before the stop", "while stopped", "after the start"] {
+        clock::freeze();
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        fs::create_dir_all(site.root.join("docs")).unwrap();
+        a.create(
+            &mut remote,
+            &site.root.join("docs/report.txt"),
+            b"version one",
+        );
+        a.rest(&mut remote);
+        let before = live_id(&server_nodes(&remote), "report.txt");
+        fs::write(site.root.join("other.txt"), b"other").unwrap();
+        a.scan_until(|a| a.folder.engine.commits.in_flight().is_some());
+        fs::remove_file(site.root.join("docs/report.txt")).unwrap();
+        a.scan_until(|a| a.folder.engine.trees.local().get(&before).is_none());
+        let ignore = || fs::write(site.root.join(".koiignore"), b"report.txt\n").unwrap();
+        if rule == "before the stop" {
+            ignore();
+            a.scan_until(|_| local_holds(&site, ".koiignore"));
+        }
+        drop(a);
+        if rule == "while stopped" {
+            ignore();
+        }
+        let mut a = site.start();
+        a.connect(&mut remote);
+        a.scan_until(|a| a.folder.scanned);
+        if rule == "after the start" {
+            assert!(a.sent.is_empty());
+            ignore();
+            a.scan_until(|_| local_holds(&site, ".koiignore"));
+        }
+        a.rest(&mut remote);
+        let nodes = server_nodes(&remote);
+        assert!(
+            !nodes.contains(&("report.txt".to_owned(), before, true)),
+            "rule {rule}: {nodes:?}"
+        );
+    }
 }
 
 #[test]

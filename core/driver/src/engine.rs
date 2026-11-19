@@ -1125,6 +1125,7 @@ impl Engine {
                                 .is_some_and(|names| !self.trees.ignores(&names, Kind::File))
                         {
                             self.removed_at.insert(id.clone(), now_ms);
+                            self.owed.insert(id.clone());
                         }
                         self.remove(&id, &moving, true, missing, &mut touched, &mut gone);
                     }
