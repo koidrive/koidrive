@@ -79,7 +79,9 @@ fn an_outer_index_answers_nothing_below_a_nested_work_tree() {
     let mut rules = rules();
     let mut snapshot = Snapshot::default();
     let mut scan = || {
-        snapshot.rescan_with_rules(root, whole(), &mut rules).unwrap();
+        snapshot
+            .rescan_with_rules(root, whole(), &mut rules)
+            .unwrap();
         known(&snapshot).contains(&"inner/secret.env")
     };
     assert!(scan());
@@ -102,13 +104,18 @@ fn a_watcher_reads_an_index_outside_the_root_only_after_an_event_for_it_or_its_l
     git(main.path(), &["commit", "-qm", "main"]);
     let dir = tempfile::tempdir().unwrap();
     let root = &dir.path().join("wt");
-    git(main.path(), &["worktree", "add", "-q", root.to_str().unwrap()]);
+    git(
+        main.path(),
+        &["worktree", "add", "-q", root.to_str().unwrap()],
+    );
     write(root, "dist/app.js", "a");
     write(root, "dist/b.js", "b");
     git(root, &["add", "-f", "dist/app.js"]);
     let mut rules = rules();
     let mut snapshot = Snapshot::default();
-    snapshot.rescan_with_rules(root, whole(), &mut rules).unwrap();
+    snapshot
+        .rescan_with_rules(root, whole(), &mut rules)
+        .unwrap();
     let mut watcher = NativeWatcher::start_with_rules(root, snapshot, rules).unwrap();
     let read = |watcher: &mut NativeWatcher, wait: Duration| {
         let mut read = Vec::new();
@@ -123,7 +130,10 @@ fn a_watcher_reads_an_index_outside_the_root_only_after_an_event_for_it_or_its_l
     for n in 0..5 {
         write(&git_dir, &format!("noise{n}"), "x");
     }
-    assert_eq!(read(&mut watcher, Duration::from_secs(2)), Vec::<PathBuf>::new());
+    assert_eq!(
+        read(&mut watcher, Duration::from_secs(2)),
+        Vec::<PathBuf>::new()
+    );
     let next = git_dir.join("next-index");
     fs::copy(git_dir.join("index"), &next).unwrap();
     let out = std::process::Command::new("git")
