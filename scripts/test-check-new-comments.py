@@ -224,6 +224,18 @@ class NewComments(unittest.TestCase):
         code, out = self.comments_only({"cli/src/a.rs": src}, {"cli/src/a.rs": src.replace("/// One line per space.\n", "").replace("/// A found server.\n", "")})
         self.assertEqual(code, 0, out)
 
+    def test_comments_only_leaves_a_module_doc_above_a_clap_item_unprotected(self):
+        src = "//! The command line.\n#[derive (Parser)]\nstruct Cli {\n    /// Print JSON.\n    json: bool,\n}\n"
+        code, out = self.comments_only({"cli/src/a.rs": src}, {"cli/src/a.rs": src.replace("//! The command line.\n", "")})
+        self.assertEqual(code, 0, out)
+        code, out = self.comments_only({"cli/src/a.rs": src}, {"cli/src/a.rs": src.replace("    /// Print JSON.\n", "")})
+        self.assertEqual(code, 1, out)
+
+    def test_comments_only_protects_json_schema_docs(self):
+        src = "#[derive(Serialize, JsonSchema)]\nstruct Data {\n    /// Whether it follows.\n    follows: bool,\n}\n"
+        code, out = self.comments_only({"cli/src/a.rs": src}, {"cli/src/a.rs": src.replace("    /// Whether it follows.\n", "")})
+        self.assertEqual(code, 1, out)
+
     def test_a_new_doc_beside_clap_items_in_internal_code_fails(self):
         self.assertFlags(
             {"cli/tests/t.rs": "#[derive(Parser)]\nstruct Cli {}\nfn run() {}\n"},

@@ -22,7 +22,7 @@ LANGUAGES = {
 }
 PRAGMA = re.compile(r"^[/*!\s]*(SPDX-License-Identifier|SAFETY:|@generated|eslint-|prettier-ignore|swiftlint:|swift-tools-version:)")
 LINK = re.compile(r"https?://")
-CLAP_DERIVE = re.compile(r"derive\([^)]*\b(Parser|Subcommand|Args|ValueEnum)\b")
+CLAP_DERIVE = re.compile(r"derive\s*\([^)]*\b(Parser|Subcommand|Args|ValueEnum|JsonSchema)\b")
 MARKER = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b|\bfor now\b", re.IGNORECASE)
 INTERNAL = re.compile(r"^(server|apps/macos/Koidrive|cli/tests)/|(^|/)(tests?|Tests|examples|benches)/|(^|/)src/bin/|(^|/)(tests|build)\.rs$|\.test\.[cm]?[jt]sx?$")
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -310,7 +310,7 @@ def clap_items(src, comments):
             j = start
             while j > 0 and src[j - 1].isspace():
                 j -= 1
-            if j in ends:
+            if j in ends and not src.startswith(("//!", "/*!"), ends[j]):
                 start = ends[j]
             elif j in attrs:
                 start = attrs[j][0]
