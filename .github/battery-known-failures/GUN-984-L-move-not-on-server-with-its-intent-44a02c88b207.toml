@@ -1,0 +1,10 @@
+class = "L"
+issue = "GUN-984"
+tests = ["devices_on_coarse_volumes_converge_once_the_faults_stop"]
+message = '''not recorded: devices::devices_on_coarse_volumes_converge_once_the_faults_stop \S+ PlaceKept the move on device <n> that puts node <id> at "c\.txt" is not on the server, though its user saw the place the server holds and no rule for lost changes settles it not recorded: devices::devices_on_coarse_volumes_converge_once_the_faults_stop \S+ IntentKept the move on device <n> that puts node <id> at "c\.txt" is not on the server, and no later change that saw it, no delete that saw it and no rule for lost changes settles it'''
+examples = [
+  "not recorded: devices::devices_on_coarse_volumes_converge_once_the_faults_stop\tcc-44a02c88b207fb2c9f5a04eb17e7e4dab32ddd934af9f4e9401598bfcfc4600b\tPlaceKept\tthe move on device 0 that puts node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 at \"c.txt\" is not on the server, though its user saw the place the server holds and no rule for lost changes settles it\nnot recorded: devices::devices_on_coarse_volumes_converge_once_the_faults_stop\tcc-44a02c88b207fb2c9f5a04eb17e7e4dab32ddd934af9f4e9401598bfcfc4600b\tIntentKept\tthe move on device 0 that puts node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 at \"c.txt\" is not on the server, and no later change that saw it, no delete that saw it and no rule for lost changes settles it",
+]
+cases = [
+  "44a02c88b207",
+]

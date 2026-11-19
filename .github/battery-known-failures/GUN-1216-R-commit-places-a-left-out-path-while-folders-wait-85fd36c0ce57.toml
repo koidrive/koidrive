@@ -1,0 +1,10 @@
+class = "R"
+issue = "GUN-1216"
+tests = ["devices_with_rules_converge_once_the_faults_stop"]
+message = '''not recorded: devices::devices_with_rules_converge_once_the_faults_stop \S+ SentLeftOut a commit of device <n> places node <id> at \["E\\u\{<n>\}", "c\.txt", "E\\u\{<n>\}"\], which the rules of device <n> leave out not recorded: devices::devices_with_rules_converge_once_the_faults_stop \S+ RemoveLeftOut device <n> is quiet, but it waits to settle the folders of \["<id>"\], which hold only nodes its rules leave out'''
+examples = [
+  "not recorded: devices::devices_with_rules_converge_once_the_faults_stop\tcc-85fd36c0ce57d6212de4e421a37f9d4802ac6027baf0be2c319175eaf8fab397\tSentLeftOut\ta commit of device 1 places node 01a1c2c0-39a0-71e6-8cba-9712c5a43c0d at [\"E\\u{301}\", \"c.txt\", \"E\\u{301}\"], which the rules of device 1 leave out\nnot recorded: devices::devices_with_rules_converge_once_the_faults_stop\tcc-85fd36c0ce57d6212de4e421a37f9d4802ac6027baf0be2c319175eaf8fab397\tRemoveLeftOut\tdevice 1 is quiet, but it waits to settle the folders of [\"01a1c2c0-39a0-77dd-9144-778c081599e9\"], which hold only nodes its rules leave out",
+]
+cases = [
+  "85fd36c0ce57",
+]
