@@ -40,8 +40,7 @@ upgrade_case!(schema_forget_sync_state, |store| {
     copy.transaction(|tx| {
         tx.set_root_tokens(&tokens)?;
         tx.set_volume_mounts(&mounts)?;
-        tx.set_unread_folders(&std::collections::BTreeMap::from([("Private".into(), 42)]))?;
-        tx.set_id_generator(&7u64.to_le_bytes())
+        tx.set_unread_folders(&std::collections::BTreeMap::from([("Private".into(), 42)]))
     })
     .unwrap();
     rusqlite::Connection::open(&path)
@@ -54,7 +53,6 @@ upgrade_case!(schema_forget_sync_state, |store| {
     copy.transaction(|tx| {
         assert_eq!(tx.root_tokens()?, tokens);
         assert_eq!(tx.volume_mounts()?, mounts);
-        assert_eq!(tx.id_generator()?, Some(7u64.to_le_bytes().to_vec()));
         assert_eq!(tx.cursor()?, None);
         assert_eq!(tx.unread_folders()?, None);
         assert_eq!(tx.engine_state()?, koidrive_store::EngineState::default());
@@ -89,7 +87,6 @@ upgrade_case!(schema_forget_sync_state, |store| {
     assert!(emptied.count() > 10, "{before:?}");
     for ((table, was), (_, now)) in before.iter().zip(rows(&path)) {
         let expected = match table.as_str() {
-            "engine_state" => 1,
             table if kept.contains(&table) => *was,
             _ => 0,
         };

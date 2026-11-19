@@ -91,10 +91,7 @@ fn trees() -> Trees {
 
 fn trees_state() -> TreesState {
     TreesState {
-        journal: JournalState {
-            ids: Some(1),
-            ..Default::default()
-        },
+        journal: JournalState::default(),
         dirty: ["b".into()].into(),
         unsearched: ["b".into()].into(),
         reverted: ["a".into()].into(),
@@ -247,10 +244,6 @@ fn unsent() -> (Trees, TreesState) {
     let state = TreesState {
         dirty: ["f".into()].into(),
         unsent_edits: ["f".into()].into(),
-        journal: JournalState {
-            ids: Some(1),
-            ..Default::default()
-        },
         ..Default::default()
     };
     (trees, state)

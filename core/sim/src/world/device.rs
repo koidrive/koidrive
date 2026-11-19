@@ -66,11 +66,8 @@ impl Engine {
         }
     }
 
-    /// Rebuilds the engine the way the store loads it after a restart, and checks that every part
-    /// comes back equal. The store does not hold the ignore rules, so the device reads `rules`
-    /// again, and a restart plans nothing before its full scan, so the rules count as read.
-    pub fn reload(&self, rules: &Rules) -> Result<Engine, Failure> {
-        let mut trees = Trees::new(self.trees.remote().root.clone(), &self.ids);
+    pub fn reload(&self, rules: &Rules, ids: IdGen) -> Result<Engine, Failure> {
+        let mut trees = Trees::new(self.trees.remote().root.clone(), &ids);
         for (id, node) in self.trees.remote().iter() {
             trees.set_remote(id.clone(), node.clone());
             trees.set_remote_place_id(id, self.trees.remote_place_id(id));
@@ -88,11 +85,11 @@ impl Engine {
         rules.read(&mut trees);
         let commits = Commits::from_state(self.commits.state()).map_err(refused)?;
         commits.hold(&mut trees);
-        let loaded = Engine {
+        let mut loaded = Engine {
             trees,
             commits,
             effects: Effects::from_state(self.effects.state()).map_err(refused)?,
-            ids: IdGen::new(self.ids.state),
+            ids: self.ids.clone(),
             cursor: self.cursor.clone(),
             behind: self.behind,
             history: self.history.clone(),
@@ -105,6 +102,7 @@ impl Engine {
                 "the stored state did not come back equal".into(),
             ));
         }
+        loaded.ids = ids;
         Ok(loaded)
     }
 
@@ -696,7 +694,7 @@ impl Device {
                 differences.join("; ")
             )));
         }
-        self.store = self.engine.reload(&self.rules)?;
+        self.store = self.engine.reload(&self.rules, self.engine.ids.clone())?;
         let commits = &self.store.commits;
         if let Some(flight) = commits.in_flight() {
             (self.sent.entry(flight.commit.device_seq).or_default())

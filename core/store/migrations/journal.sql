@@ -43,8 +43,7 @@ CREATE TABLE journal_absent (
 CREATE TABLE journal_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     listed INTEGER NOT NULL,
-    backfill_owed INTEGER NOT NULL,
-    ids BLOB
+    backfill_owed INTEGER NOT NULL
 ) STRICT;
 
 ALTER TABLE remote_nodes ADD COLUMN intents BLOB;

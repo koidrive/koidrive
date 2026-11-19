@@ -845,26 +845,6 @@ impl Tx<'_> {
         Ok(())
     }
 
-    /// The engine's ID generator state, opaque to the store.
-    pub fn id_generator(&self) -> Result<Option<Vec<u8>>> {
-        Ok(self
-            .0
-            .query_row(
-                "SELECT id_generator FROM engine_state WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?)
-    }
-
-    pub fn set_id_generator(&self, state: &[u8]) -> Result<()> {
-        self.0.execute(
-            "INSERT OR REPLACE INTO engine_state (id, id_generator) VALUES (1, ?1)",
-            [state],
-        )?;
-        Ok(())
-    }
-
     /// Records that the chunk is cached, or refreshes its size and last use.
     pub fn put_chunk(&self, hash: &[u8; 32], size: u64, now_ms: i64) -> Result<()> {
         self.0
@@ -994,7 +974,6 @@ impl Tx<'_> {
             "restore_asked",
             "split_restores",
         ];
-        let ids = self.id_generator()?;
         let tables: Vec<String> = self
             .0
             .prepare(
@@ -1008,9 +987,6 @@ impl Tx<'_> {
             .filter(|table| !KEPT.contains(&table.as_str()))
         {
             self.0.execute(&format!("DELETE FROM \"{table}\""), [])?;
-        }
-        if let Some(ids) = ids {
-            self.set_id_generator(&ids)?;
         }
         Ok(())
     }

@@ -77,8 +77,6 @@ pub(crate) enum Applied {
 }
 
 impl Engine {
-    /// The engine state of the space whose root node is `root`, as the store holds it. A space that never stored an
-    /// ID generator gets one with a random seed.
     pub fn load(tx: &Tx<'_>, root: &str) -> Result<Self, Error> {
         let mut stored = Stored::new(root);
         let whole = stored.read_unless(tx, root, &|| false)?;
@@ -188,7 +186,7 @@ impl Engine {
         if let Some(questions) = changes.commits.questions {
             self.stored_questions = questions;
         }
-        tx.set_id_generator(&self.ids.state.to_le_bytes())
+        Ok(())
     }
 
     /// Takes the answers the person gave to the engine's questions (`Driver::answer`) and removes the rows of the
@@ -1897,13 +1895,6 @@ impl Stored {
         root: &str,
         abandoned: &dyn Fn() -> bool,
     ) -> Result<bool, Error> {
-        if let Some(bytes) = tx.id_generator()? {
-            let state = <[u8; 8]>::try_from(bytes.as_slice()).map_err(|_| {
-                invalid(format!("an ID generator state of {} bytes", bytes.len()))
-            })?;
-            self.ids = IdGen::new(u64::from_le_bytes(state));
-            self.trees = Trees::new(root, &self.ids);
-        }
         let trees = &mut self.trees;
         let mut walked = 0;
         let mut abandoned_now = || {
@@ -5018,54 +5009,60 @@ mod tests {
     }
 
     #[test]
-    fn upgraded_devices_backfill_and_mint_intents_of_their_own() {
-        let minted = |generator: u64| {
-            let (_dir, mut store) = store();
-            let synced = koidrive_store::Shape {
-                parent_id: ROOT.into(),
-                name: "d".into(),
-                kind: NodeKind::Dir as i32,
-                content: None,
-            };
-            let renamed = koidrive_store::Shape {
-                name: "e".into(),
-                ..synced.clone()
-            };
-            let mut state = EngineState::default();
-            state.trees.dirty.insert("d".into());
-            store
-                .transaction(|tx| {
-                    tx.set_id_generator(&generator.to_le_bytes())?;
-                    tx.put_synced_node(&SyncedNode {
-                        node_id: "d".into(),
-                        shape: synced.clone(),
-                        pending_for: String::new(),
-                    })?;
-                    tx.put_local_node(&koidrive_store::LocalNode {
-                        left_out_when_placed: false,
-                        content_from_server: false,
-                        node_id: "d".into(),
-                        shape: renamed,
-                        identity: ino(1),
-                        parked: false,
-                    })?;
-                    tx.set_engine_state(&state)
-                })
-                .unwrap();
-            let mut engine = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
-            let backfilled = engine
-                .trees
-                .journal_row("d", koidrive_engine::journal::Field::Place)
-                .unwrap()
-                .intent;
-            engine.trees.journal_mut().set_clock(1_800_000_000_000);
-            (backfilled, engine.trees.journal_mut().mint())
+    fn loads_of_one_stored_state_never_mint_the_same_id() {
+        let (_dir, mut store) = store();
+        let synced = koidrive_store::Shape {
+            parent_id: ROOT.into(),
+            name: "d".into(),
+            kind: NodeKind::Dir as i32,
+            content: None,
         };
-        let (a, a_next) = minted(0x1111_2222_3333_4444);
-        let (b, b_next) = minted(0x9999_8888_7777_6666);
+        let renamed = koidrive_store::Shape {
+            name: "e".into(),
+            ..synced.clone()
+        };
+        let mut state = EngineState::default();
+        state.trees.dirty.insert("d".into());
+        store
+            .transaction(|tx| {
+                tx.put_synced_node(&SyncedNode {
+                    node_id: "d".into(),
+                    shape: synced.clone(),
+                    pending_for: String::new(),
+                })?;
+                tx.put_local_node(&koidrive_store::LocalNode {
+                    left_out_when_placed: false,
+                    content_from_server: false,
+                    node_id: "d".into(),
+                    shape: renamed,
+                    identity: ino(1),
+                    parked: false,
+                })?;
+                tx.set_engine_state(&state)
+            })
+            .unwrap();
+        let mut first = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+        let backfilled = first
+            .trees
+            .journal_row("d", koidrive_engine::journal::Field::Place)
+            .unwrap()
+            .intent;
+        assert_ne!(
+            backfilled.as_bytes()[..6],
+            [0; 6],
+            "{backfilled} carries no time"
+        );
+        store.transaction(|tx| first.checkpoint(tx)).unwrap();
+        let mut minted = || {
+            let mut engine = store.transaction(|tx| Engine::load(tx, ROOT)).unwrap();
+            engine.trees.journal_mut().set_clock(1_800_000_000_000);
+            let intent = engine.trees.journal_mut().mint();
+            (intent, engine.ids.uuid_v7(1_800_000_000_000))
+        };
+        let (a, a_node) = minted();
+        let (b, b_node) = minted();
         assert_ne!(a, b);
-        assert_ne!(a_next, b_next);
-        assert_ne!(a.as_bytes()[..6], [0; 6], "{a} carries no time");
+        assert_ne!(a_node, b_node);
     }
 
     #[test]

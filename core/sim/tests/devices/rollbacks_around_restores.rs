@@ -510,3 +510,23 @@ fn a_restore_a_restore_to_an_earlier_backup_and_a_restore_again_after_overwrites
     ];
     converge(2, &phases).unwrap();
 }
+
+#[test]
+fn a_file_made_after_a_store_rollback_keeps_its_later_write_through_a_restore() {
+    use Step::*;
+    converge(
+        2,
+        &[
+            vec![(0, u(1, 2, 2, 7, 2)), (0, CopyStore)],
+            vec![
+                (0, u(1, 0, 1, 0, 3)),
+                (1, Backup),
+                (0, u(4, 0, 0, 5, 0)),
+                (0, RollBack),
+                (1, u(4, 0, 2, 2, 0)),
+            ],
+            vec![(2, u(2, 2, 0, 4, 1)), (1, Restore), (1, u(4, 0, 3, 7, 2))],
+        ],
+    )
+    .unwrap();
+}
