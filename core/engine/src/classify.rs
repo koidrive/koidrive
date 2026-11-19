@@ -790,6 +790,7 @@ pub struct Trees {
     pending: Unsettled,
     held_for_scan: BTreeSet<NodeId>,
     awaiting_scan: BTreeSet<Vec<String>>,
+    left_local: BTreeSet<NodeId>,
 }
 
 /// Equal when R, L, S and the state the store keeps are equal. What the trees track only until the
@@ -902,6 +903,7 @@ impl Trees {
             pending: Unsettled::default(),
             held_for_scan: BTreeSet::new(),
             awaiting_scan: BTreeSet::new(),
+            left_local: BTreeSet::new(),
         }
     }
 
@@ -1068,6 +1070,10 @@ impl Trees {
     /// elsewhere counts, since a path falls back from L to S.
     pub fn take_moved(&mut self) -> bool {
         std::mem::take(&mut self.moved)
+    }
+
+    pub(crate) fn take_left_local(&mut self) -> BTreeSet<NodeId> {
+        std::mem::take(&mut self.left_local)
     }
 
     /// The nodes whose L, S or R entry changed since the last call, which empties the three sets.
@@ -2511,6 +2517,7 @@ impl Trees {
         self.kept_folders.remove(id);
         self.kept_entries.remove(id);
         if let Some(old) = self.l.remove(id) {
+            self.left_local.insert(id.to_owned());
             self.moved |= (self.s.get(id)).is_some_and(|synced| repositioned(synced, &old.shape));
             if self.unobserved.contains(id) {
                 self.copy_gone(id);
@@ -7658,6 +7665,7 @@ impl Trees {
             pending: _,
             held_for_scan: _,
             awaiting_scan: _,
+            left_local: _,
             r_names: _,
             r_trashed: _,
             creates: _,
