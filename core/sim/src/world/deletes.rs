@@ -350,7 +350,7 @@ impl World {
                     };
                     !deletion.around_restore
                         || deletion.resendable.contains(&write)
-                        || (!at_node && self.copied.contains(&write))
+                        || (!at_node && self.copied.contains_key(&write))
                         || (0..self.intents.len()).any(changed_since)
                 })?;
                 Some((write, deletion.device))
