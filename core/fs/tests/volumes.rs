@@ -375,6 +375,11 @@ fn an_exfat_stick_udev_has_no_record_of_is_held_until_it_has() {
     let image = disks.exfat("Card");
     disks.attach(&image, &at);
     assert!(identified(&at).volume.is_some());
+    let settled = std::process::Command::new("udevadm")
+        .arg("settle")
+        .status()
+        .unwrap();
+    assert!(settled.success(), "udevadm settle: {settled}");
     fill(&at);
     let mut snapshot = Snapshot::scan(&root).unwrap();
     let mut expected = snapshot.entries.clone();
