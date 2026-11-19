@@ -168,6 +168,12 @@ pub(super) struct Intent {
     pub(super) carried: Option<Carried>,
 }
 
+impl Intent {
+    pub(super) fn restore_answer(&self) -> bool {
+        self.kind == RESTORE_ANSWER
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Carried {
     seq: u64,
@@ -698,7 +704,7 @@ impl Intents {
                         || saw_the_value
                         || merged
                         || field != Field::Content && intent.lost && other.made > intent.made
-                        || intent.kind == RESTORE_ANSWER && other.author != intent.author);
+                        || intent.restore_answer() && other.author != intent.author);
                 match dropped {
                     true => field == Field::Content && deleted,
                     false => replaced || looped || deleted,

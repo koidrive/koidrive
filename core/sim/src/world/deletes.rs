@@ -153,6 +153,7 @@ impl Deletion {
                     let other = intents.intent(j);
                     j != i
                         && !other.dropped
+                        && !other.restore_answer()
                         && !matches!(other.value, Value::Trashed { .. })
                         && (!other.answer || other.made > delete.made)
                         && (intents.saw(j, i) || !intents.saw(i, j) && !other.lost)
@@ -315,6 +316,7 @@ impl World {
                         let Some(carried) = (other.carried.as_ref()).filter(|_| {
                             other.author != deletion.device
                                 && !other.answer
+                                && !other.restore_answer()
                                 && (deletion.unsent.contains(&j) || other.made >= at)
                         }) else {
                             return false;
