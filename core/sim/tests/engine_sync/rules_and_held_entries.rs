@@ -561,7 +561,8 @@ fn a_server_folder_moved_into_a_discarded_folder_out_of_a_folder_deleted_here_se
 #[test]
 fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_folder_above() {
     let mut device = Device::new(Trees::new("root"));
-    let remote = |shape: koidrive_engine::tree::Shape| RemoteNode { made_over: Vec::new(),
+    let remote = |shape: koidrive_engine::tree::Shape, chunks: &[ChunkRef]| RemoteNode {
+        made_over: Vec::new(),
         shape,
         trashed: false,
         content_rev: 1,
@@ -572,7 +573,7 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
         edit_rev: 1,
         pending_for: None,
         pending_by: None,
-        chunks: Box::default(),
+        chunks: chunks.into(),
     };
     let folder = |parent: &str, name: &str| koidrive_engine::tree::Shape {
         parent: parent.into(),
@@ -580,7 +581,10 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
         kind: Kind::Dir,
         content: None,
     };
-    let place = |device: &mut Device, id: &str, shape: koidrive_engine::tree::Shape| {
+    let place = |device: &mut Device,
+                 id: &str,
+                 shape: koidrive_engine::tree::Shape,
+                 chunks: &[ChunkRef]| {
         let identity = device.identity();
         device.trees.set_local(
             id.into(),
@@ -590,32 +594,35 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
                 shape,
                 identity,
                 parked: false,
-                chunks: Box::default(),
+                chunks: chunks.into(),
             },
         );
     };
-    place(&mut device, "k", folder("root", "k"));
-    device.trees.set_remote("k".into(), remote(folder("root", "k")));
+    place(&mut device, "k", folder("root", "k"), &[]);
+    device
+        .trees
+        .set_remote("k".into(), remote(folder("root", "k"), &[]));
     let mut parent = "k".to_string();
     for depth in 1..=8 {
         let id = format!("a{depth}");
-        place(&mut device, &id, folder(&parent, &id));
+        place(&mut device, &id, folder(&parent, &id), &[]);
         parent = id;
     }
+    let (held, chunks) = split(Some(content(1, 0)));
     let file = koidrive_engine::tree::Shape {
         parent: NodeId::from(&parent),
         name: "f".into(),
         kind: Kind::File,
-        content: Some(key(&content(1, 0))),
+        content: held,
     };
-    place(&mut device, "f", file);
+    place(&mut device, "f", file, &chunks);
     let server = koidrive_engine::tree::Shape {
         parent: "root".into(),
         name: "f".into(),
         kind: Kind::File,
-        content: Some(key(&content(1, 0))),
+        content: held,
     };
-    device.trees.set_remote("f".into(), remote(server));
+    device.trees.set_remote("f".into(), remote(server, &chunks));
     device.act(&act(4, 0, 0, 0, 0));
     assert!(device.trees.local().get(&"f".into()).is_none());
     assert!(acted_below(&device, &"k".into(), &BTreeMap::new()));
@@ -633,11 +640,13 @@ fn an_edit_moved_into_b(b_is_a_node: bool, moved: bool) -> Device {
         Some(("p", "root", "p", None)),
     ];
     for (id, parent, name, content) in entries.into_iter().flatten() {
+        let kind = content.as_ref().map_or(Kind::Dir, |_| Kind::File);
+        let (content, chunks) = split(content);
         let shape = koidrive_engine::tree::Shape {
             parent: parent.into(),
             name: name.into(),
-            kind: content.as_ref().map_or(Kind::Dir, |_| Kind::File),
-            content: content.as_ref().map(key),
+            kind,
+            content,
         };
         let identity = device.identity();
         device.trees.set_local(
@@ -648,7 +657,7 @@ fn an_edit_moved_into_b(b_is_a_node: bool, moved: bool) -> Device {
                 shape: shape.clone(),
                 identity,
                 parked: false,
-                chunks: Box::default(),
+                chunks,
             },
         );
         if id != "b" {

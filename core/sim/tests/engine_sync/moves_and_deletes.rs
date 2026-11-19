@@ -78,7 +78,7 @@ fn a_new_folder_merges_into_a_folder_that_unknown_rules_hold_away_from_its_name(
                 shape: node.shape.clone(),
                 identity: identity(index as u64 + 1),
                 parked: false,
-                chunks: Box::default(),
+                chunks: node.chunks.clone(),
             },
         );
         trees.set_remote(id, node);

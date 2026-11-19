@@ -1945,7 +1945,7 @@ fn run_ignoring_answering_after(
                 shape: node.shape.clone(),
                 identity: device.identity(),
                 parked: false,
-                chunks: Box::default(),
+                chunks: node.chunks.clone(),
             };
             device.trees.set_local(id.clone(), local);
         }

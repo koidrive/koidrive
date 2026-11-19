@@ -322,7 +322,7 @@ impl Bench {
                 shape: node.shape.clone(),
                 identity: identity(ino as u64),
                 parked: false,
-                chunks: Box::default(),
+                chunks: node.chunks.clone(),
             };
             bench.trees.set_local(id.clone(), local);
             bench.trees.set_synced(id.clone(), Some(node.shape.clone()));
