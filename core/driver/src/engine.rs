@@ -101,8 +101,7 @@ impl Engine {
         let commits =
             Commits::from_state(stored.commits).map_err(|error| invalid(format!("{error:?}")))?;
         commits.hold(&mut trees);
-        let effects =
-            Effects::from_state(stored.effects).map_err(|error| invalid(format!("{error:?}")))?;
+        let effects = effects_of(stored.effects)?;
         let ids = match tx.id_generator()? {
             Some(bytes) => {
                 let state = <[u8; 8]>::try_from(bytes.as_slice()).map_err(|_| {
@@ -1583,6 +1582,10 @@ fn names(path: &Path) -> Option<Vec<&str>> {
 
 fn invalid(what: String) -> Error {
     Error::InvalidEngineState(what)
+}
+
+pub(crate) fn effects_of(state: koidrive_engine::state::EffectsState) -> Result<Effects, Error> {
+    Effects::from_state(state).map_err(|error| invalid(format!("{error:?}")))
 }
 
 fn shape(shape: koidrive_store::Shape) -> Result<Shape, Error> {

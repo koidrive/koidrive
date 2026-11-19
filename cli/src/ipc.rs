@@ -273,15 +273,21 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
                     GitignoreFolder::Space(space_id) => space_id,
                     GitignoreFolder::Folder(folder) => driver.linked_space(&folder)?,
                 };
-                (driver.gitignore_only(&space_id)).map(|only| (space_id, only))
+                match driver.gitignore_only(&space_id) {
+                    Ok(only) => Ok(Response::GitignoreOnly {
+                        space_id,
+                        files: only.files,
+                        bytes: only.bytes,
+                        unreadable: only.unreadable,
+                    }),
+                    Err(DriverError::SpaceNotLinked(_)) => {
+                        Ok(Response::GitignoreUnlinked { space_id })
+                    }
+                    Err(error) => Err(error),
+                }
             };
             match tokio::task::spawn_blocking(count).await {
-                Ok(counted) => counted.map(|(space_id, only)| Response::GitignoreOnly {
-                    space_id,
-                    files: only.files,
-                    bytes: only.bytes,
-                    unreadable: only.unreadable,
-                }),
+                Ok(answered) => answered,
                 Err(error) => {
                     return Response::from(CliError::from(format!(
                         "counting the files failed: {error}"
@@ -662,16 +668,13 @@ pub(crate) mod tests {
             Response::Gitignore { follows: false }
         );
         assert_eq!(ask(count()).await.unwrap(), counted);
-        let not_linked = Request::GitignoreOnly {
-            of: GitignoreFolder::Space("0190f0a0-0000-7000-8000-000000000002".into()),
-        };
-        let error = ask(not_linked).await.unwrap_err();
-        assert!(
-            error
-                .message
-                .starts_with("no linked folder syncs the space"),
-            "{}",
-            error.message
+        let not_linked = "0190f0a0-0000-7000-8000-000000000002";
+        let of = GitignoreFolder::Space(not_linked.into());
+        assert_eq!(
+            ask(Request::GitignoreOnly { of }).await.unwrap(),
+            Response::GitignoreUnlinked {
+                space_id: not_linked.into()
+            }
         );
         server.abort();
     }

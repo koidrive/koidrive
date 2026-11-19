@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use koidrive_engine::ignore::{LocalRules, Matcher as Rules, RuleFile};
 use koidrive_engine::names::name_key;
-use koidrive_fs::{EntryKind, Ignore, Ignored, RootProblem, Snapshot, Source, Space};
+use koidrive_fs::{EntryKind, Ignore, Ignored, Snapshot, Source, Space};
 use koidrive_ignore::{Kind, LocalRulesError, Reason, Status};
 use koidrive_store::Link;
 
@@ -199,15 +199,17 @@ impl Ignore for Counted {
     }
 }
 
-pub(crate) fn gitignore_only(link: &Link, local: LocalRules) -> GitignoreOnly {
+pub(crate) fn gitignore_only(
+    link: &Link,
+    admitted: Result<Space, String>,
+    local: LocalRules,
+) -> GitignoreOnly {
     let root = &link.root;
     let unreadable = || GitignoreOnly {
         unreadable: vec![root.clone()],
         ..GitignoreOnly::default()
     };
-    let held = match crate::disk::open_linked_root(link)
-        .and_then(|linked| Space::bind(linked.dir, root).map_err(RootProblem::Unreadable))
-    {
+    let held = match admitted {
         Ok(space) => space.id(),
         Err(problem) => {
             tracing::warn!(path = %koidrive_fs::quoted(root), %problem, "the .gitignore count skips a linked folder that fails the root check");
@@ -424,9 +426,14 @@ mod tests {
                 linked_at_ms: 1,
                 found_marker: false,
             };
+            let state = tempfile::tempdir().unwrap();
+            let mut store = koidrive_store::Store::open(state.path().join("store")).unwrap();
+            store.transaction(|tx| tx.set_link(&link)).unwrap();
             let locked = root.join(locked);
             std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
-            let counted = gitignore_only(&link, LocalRules::default());
+            let admitted =
+                crate::disk::admitted(&link, &mut store).map_err(|stop| stop.to_string());
+            let counted = gitignore_only(&link, admitted, LocalRules::default());
             std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
             let only = GitignoreOnly {
                 files: 1,

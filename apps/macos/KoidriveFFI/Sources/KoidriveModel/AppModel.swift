@@ -346,23 +346,30 @@ public final class AppModel {
     }
 
     /// The files that only `.gitignore` files leave out of the linked folders, counted on disk one folder at a time,
-    /// whichever way the setting is. Nil when a folder can't be counted in full or the caller is cancelled before the
-    /// last folder. The count is as old as its oldest folder.
+    /// whichever way the setting is. A folder unlinked before its turn is left out. Nil when a folder can't be counted in
+    /// full or the caller is cancelled before the last folder. The count is as old as its oldest folder.
     public func gitignoreOnly() async -> GitignoreCount? {
-        let folders = state.folders
-        var counts: [(name: String, only: GitignoreOnly)] = []
-        for folder in folders {
+        var counts: [(name: String, spaceID: String, only: GitignoreOnly)] = []
+        for folder in state.folders {
             let spaceID = folder.spaceId
-            guard !Task.isCancelled, let only = try? await run({ try $0.gitignoreOnly(spaceId: spaceID) }),
-                  only.unreadable.isEmpty else { return nil }
-            counts.append((folder.spaceName, only))
+            guard !Task.isCancelled else { return nil }
+            let only: GitignoreOnly
+            do {
+                only = try await run { try $0.gitignoreOnly(spaceId: spaceID) }
+            } catch SessionError.FolderNotLinked {
+                continue
+            } catch {
+                return nil
+            }
+            guard only.unreadable.isEmpty else { return nil }
+            counts.append((folder.spaceName, spaceID, only))
         }
         return GitignoreCount(
             files: counts.reduce(0) { $0 + $1.only.files },
             bytes: counts.reduce(0) { $0 + $1.only.bytes },
             folderNames: counts.filter { $0.only.files > 0 }.map(\.name),
             countedAtMs: counts.map(\.only.countedAtMs).min() ?? 0,
-            spaceIDs: folders.map(\.spaceId)
+            spaceIDs: counts.map(\.spaceID)
         )
     }
 

@@ -135,6 +135,7 @@ async fn counted(paths: &Paths, only: Option<&Path>) -> Result<Vec<GitignoreFold
     let mut counted = Vec::new();
     for of in linked {
         match ipc::run(paths, Request::GitignoreOnly { of }).await? {
+            Response::GitignoreUnlinked { .. } => {}
             Response::GitignoreOnly {
                 space_id,
                 files,
@@ -247,5 +248,86 @@ async fn confirm(paths: &Paths, terminal: &Terminal) -> Result<(), CliError> {
     {
         true => Ok(()),
         false => Err("stopped; nothing was changed".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use koidrive_driver::Driver;
+    use koidrive_ipc::{bind, read_line, write_line};
+
+    use super::*;
+    use crate::ipc::tests::{SPACE, linked_at, linked_profile};
+
+    #[tokio::test]
+    async fn a_folder_unlinked_while_the_folders_are_counted_drops_only_its_row() {
+        let (_dir, paths, root) = linked_profile();
+        linked_at(&paths, SPACE, &root);
+        fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        fs::write(root.join("a.log"), "abc").unwrap();
+        let other = root.with_file_name("Other");
+        fs::create_dir(&other).unwrap();
+        let unlinked = "0190f0a0-0000-7000-8000-000000000002";
+        linked_at(&paths, unlinked, &other);
+        let driver = Driver::open(paths.clone()).unwrap();
+        let daemon = bind(&paths.socket()).unwrap();
+        let served = tokio::spawn(async move {
+            loop {
+                let (stream, _) = daemon.accept().await.unwrap();
+                let (mut reader, mut writer) = stream.into_split();
+                let line = read_line(&mut reader).await.unwrap();
+                let request: Request = serde_json::from_str(&line).unwrap();
+                if matches!(&request, Request::GitignoreOnly { of: GitignoreFolder::Space(space) } if space == unlinked)
+                {
+                    driver.unlink(&other).await.unwrap();
+                }
+                let response = crate::ipc::handle(&driver, request).await;
+                write_line(&mut writer, &response).await.unwrap();
+            }
+        });
+
+        let rows = counted(&paths, None).await;
+        served.abort();
+        let rows: Vec<_> = (rows.unwrap().into_iter())
+            .map(|row| (row.space_id, row.path, row.files, row.bytes))
+            .collect();
+        assert_eq!(
+            rows,
+            [(SPACE.to_owned(), root.to_string_lossy().into_owned(), 1, 3)]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_folder_asked_for_while_it_is_being_unlinked_is_left_out() {
+        let (_dir, paths, root) = linked_profile();
+        linked_at(&paths, SPACE, &root);
+        let parked = (root.join(koidrive_fs::PRIVATE_DIR)).join(koidrive_fs::PARKED_DIR);
+        fs::create_dir_all(&parked).unwrap();
+        fs::write(parked.join("held.txt"), "held").unwrap();
+        let driver = Driver::open(paths.clone()).unwrap();
+        let store = paths.store(SPACE).unwrap();
+        let busy = rusqlite::Connection::open(&store).unwrap();
+        (busy.execute_batch("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE; COMMIT;")).unwrap();
+        let server = tokio::spawn(crate::ipc::serve(
+            bind(&paths.socket()).unwrap(),
+            driver.clone(),
+        ));
+        let unlinking = tokio::spawn({
+            let (driver, root) = (driver.clone(), root.clone());
+            async move { driver.unlink(&root).await.map(drop) }
+        });
+        while !store.with_file_name("unlinking").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let rows = counted(&paths, Some(&root)).await;
+        let still_linked = (driver.status().folders.iter()).any(|folder| folder.space_id == SPACE);
+        drop(busy);
+        unlinking.await.unwrap().unwrap();
+        server.abort();
+        assert!(still_linked);
+        assert_eq!(rows.unwrap().len(), 0);
     }
 }

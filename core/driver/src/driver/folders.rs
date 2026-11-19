@@ -671,7 +671,13 @@ impl Driver {
             .map(|folder| folder.link.clone())
             .ok_or_else(|| DriverError::SpaceNotLinked(space_id.to_owned()))?;
         let local = self.inner.rules.lock().unwrap().local.clone();
-        Ok(crate::ignore::gitignore_only(&link, local))
+        let admitted =
+            match self.read_store(space_id, |store| Ok(crate::disk::admitted(&link, store))) {
+                Ok(Some(admitted)) => admitted.map_err(|stop| stop.to_string()),
+                Ok(None) => return Err(DriverError::SpaceNotLinked(space_id.to_owned())),
+                Err(error) => Err(error.to_string()),
+            };
+        Ok(crate::ignore::gitignore_only(&link, admitted, local))
     }
 
     /// Starts the task of `folder` unless it is being unlinked or its task still runs. `all` are the roots of every

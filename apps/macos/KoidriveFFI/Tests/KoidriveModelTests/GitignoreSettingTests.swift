@@ -235,6 +235,23 @@ struct GitignoreSettingTests {
         #expect(gitignore.count == nil)
     }
 
+    @Test func aFolderUnlinkedWhileCountingIsLeftOutOfTheCount() async throws {
+        let (app, session) = scripted()
+        let gitignore = GitignoreSettingModel(app: app)
+
+        session.holdNext(.gitignoreOnly)
+        let counting = Task { await gitignore.recount() }
+        defer { session.release.signal() }
+        try await untilHeld(session)
+        try await app.unlinkFolder(spaceID: "space-photos")
+
+        session.release.signal()
+        await counting.value
+        #expect(session.calls(.gitignoreOnly) == 2)
+        #expect(gitignore.count?.folderNames == ["Documents"])
+        #expect(gitignore.count?.files == 18_342)
+    }
+
     @Test func anOlderCountDoesNotCoverAFolderLinkedSince() async throws {
         let (app, session) = scripted()
         let gitignore = GitignoreSettingModel(app: app)

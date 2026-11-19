@@ -459,24 +459,8 @@ impl Disk {
             #[cfg(test)]
             flush_fails: false,
         };
-        if !disk.space.held()? {
-            return Err(Stop::Withdrawn(disk.path));
-        }
-        link.root_at()
-            .admits(&disk.space.root_at()?)
-            .map_err(Stop::Root)?;
-        let found = disk.marker()?;
-        let (tokens, minted) =
-            store.transaction(|tx| Ok::<_, Stop>((tx.root_tokens()?, tx.root_minted()?)))?;
-        let own = [minted.as_deref(), tokens.pending.as_deref()];
-        let recovered = matches!(
-            standing(&found, &tokens, &engine.effects, || descends(
-                &disk.space,
-                &own,
-                &found
-            ))?,
-            Standing::StoreOlder
-        );
+        let (found, opened) = marker_standing(&disk.space, link, &engine.effects, store)?;
+        let recovered = matches!(opened, Standing::StoreOlder);
         if recovered {
             tracing::warn!(
                 space_id = link.space_id,
@@ -1095,6 +1079,26 @@ fn standing(
     }
 }
 
+fn marker_standing(
+    space: &Space,
+    link: &Link,
+    effects: &Effects,
+    store: &mut Store,
+) -> Result<(Marker, Standing), Stop> {
+    if !space.held()? {
+        return Err(Stop::Withdrawn(link.root.clone()));
+    }
+    link.root_at()
+        .admits(&space.root_at()?)
+        .map_err(Stop::Root)?;
+    let (tokens, minted) =
+        store.read(|tx| Ok::<_, Stop>((tx.root_tokens()?, tx.root_minted()?)))?;
+    let found = marker_of(space, &link.space_id)?;
+    let own = [minted.as_deref(), tokens.pending.as_deref()];
+    let standing = standing(&found, &tokens, effects, || descends(space, &own, &found))?;
+    Ok((found, standing))
+}
+
 fn descends(space: &Space, own: &[Option<&str>], found: &Marker) -> bool {
     (space.lineage()).is_ok_and(|lineage| lineage.descends(own, found))
 }
@@ -1497,13 +1501,13 @@ pub(crate) enum Adopted {
     Children(usize),
 }
 
-pub(crate) struct LinkedRoot {
-    pub(crate) dir: OwnedFd,
+struct LinkedRoot {
+    dir: OwnedFd,
     found: RootAt,
     renumbered: bool,
 }
 
-pub(crate) fn open_linked_root(link: &Link) -> Result<LinkedRoot, RootProblem> {
+fn open_linked_root(link: &Link) -> Result<LinkedRoot, RootProblem> {
     let dir = open_root_folder(&link.root)?;
     let found = root_at(dir.as_fd()).map_err(RootProblem::Unreadable)?;
     let renumbered = match check_root_at(dir.as_fd(), &link.space_id, &link.root_at()) {
@@ -1521,12 +1525,19 @@ pub(crate) fn open_linked_root(link: &Link) -> Result<LinkedRoot, RootProblem> {
     })
 }
 
-pub(crate) fn admit_root(link: &mut Link, store: &mut Store) -> Result<Option<Adopted>, Stop> {
-    if let Some(stored) = store.transaction(|tx| tx.link())? {
+struct FoundRoot {
+    space: Space,
+    recorded: RootAt,
+    adopted: Option<Adopted>,
+}
+
+fn find_root(link: &mut Link, store: &mut Store) -> Result<FoundRoot, Stop> {
+    if let Some(stored) = store.read(|tx| tx.link())? {
         link.root_dev = stored.root_dev;
         link.root_volume = stored.root_volume;
         link.found_marker = stored.found_marker;
     }
+    let recorded = link.root_at();
     let unreadable = |error| Stop::Root(RootProblem::Unreadable(error));
     let LinkedRoot {
         dir,
@@ -1535,25 +1546,44 @@ pub(crate) fn admit_root(link: &mut Link, store: &mut Store) -> Result<Option<Ad
     } = open_linked_root(link).map_err(Stop::Root)?;
     let space = Space::bind(dir, &link.root).map_err(unreadable)?;
     let adopted = if renumbered {
-        let engine = store.transaction(|tx| Engine::load(tx, &link.space_id))?;
+        let engine = store.read(|tx| Engine::load(tx, &link.space_id))?;
         match matching_children(&space, &engine.trees).map_err(unreadable)? {
             0 => return Err(Stop::Root(RootProblem::Renumbered)),
             matched => Some(Adopted::Children(matched)),
         }
-    } else if found == link.root_at() {
-        return Ok(None);
     } else {
-        (found.dev != link.root_dev).then_some(Adopted::Volume)
+        (found.dev != recorded.dev).then_some(Adopted::Volume)
     };
-    let old_dev = link.root_dev;
     link.root_dev = found.dev;
     link.root_volume = found.volume;
+    Ok(FoundRoot {
+        space,
+        recorded,
+        adopted,
+    })
+}
+
+pub(crate) fn admitted(link: &Link, store: &mut Store) -> Result<Space, Stop> {
+    let mut link = link.clone();
+    let FoundRoot { space, .. } = find_root(&mut link, store)?;
+    let effects = store.read(|tx| crate::engine::effects_of(tx.engine_state()?.effects))?;
+    marker_standing(&space, &link, &effects, store)?;
+    Ok(space)
+}
+
+pub(crate) fn admit_root(link: &mut Link, store: &mut Store) -> Result<Option<Adopted>, Stop> {
+    let FoundRoot {
+        recorded, adopted, ..
+    } = find_root(link, store)?;
+    if link.root_at() == recorded {
+        return Ok(None);
+    }
     store.transaction(|tx| tx.set_link(link))?;
     if let Some(adopted) = adopted {
         tracing::warn!(
             space_id = link.space_id,
-            old_dev,
-            new_dev = found.dev,
+            old_dev = recorded.dev,
+            new_dev = link.root_dev,
             ?adopted,
             "the folder's disk is mounted under another device number; syncing it again"
         );
