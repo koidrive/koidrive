@@ -688,7 +688,8 @@ cases = ["{1:064}"]
         restored_late = next(text for entry in entries for text in entry["examples"] if "01a1c2c0-39a0-7353-a331-565b5a0660d9" in text)
         queued = next(entry for entry in entries if entry["file"].startswith("GUN-1233-G-"))["examples"][0]
         parked = next(entry for entry in entries if entry["file"] == "GUN-1050-V-parked-node-neither-leaving-nor-reported.toml")["examples"][0]
-        excluded_left = next(entry for entry in entries if entry["file"] == "GUN-1011-E-nodes-left-where-none-expected.toml")["examples"][0]
+        excluded_left = ("assertion failed: `(left == right)` \n  left: `[\"01a1c2c0-39a0-7122-aa2f-19dfbfa03020\"]`,\n"
+                         " right: `[]` at core/sim/tests/engine_sync/common.rs:2008.")
         def replayed(case):
             return next(text for entry in entries for text in entry["examples"] if f"\tcc-{case}\t" in text)
         coarse_once = "devices_on_coarse_volumes_converge_once_the_faults_stop"
@@ -835,8 +836,8 @@ cases = ["{1:064}"]
             (rules_leave_out, parked, vad76, []),
             (takes_along, parked, v73cf, [("V", "GUN-1050", ["73cfd110a184"])]),
             (takes_along, parked, other, []),
-            (rules_change, excluded_left, v0d10, [("E", "GUN-1011", None)]),
-            (rules_leave_out, excluded_left, vad76, [("E", "GUN-1011", None)]),
+            (rules_change, excluded_left, v0d10, []),
+            (rules_leave_out, excluded_left, vad76, []),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):
                 found = triage.matches(entries, test, message, case)
