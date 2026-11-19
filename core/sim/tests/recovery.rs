@@ -3752,3 +3752,53 @@ fn a_keep_after_a_discard_of_the_same_file_sends_it() {
         assert!(!world.devices[0].disk.binned(1));
     }
 }
+
+fn live_writes(world: &World) -> Vec<i64> {
+    let mut writes: Vec<i64> = (world.space().nodes().into_iter())
+        .filter(|node| node.status == NodeStatus::Live as i32)
+        .filter_map(|node| Some(tag(node.current?.content.as_ref()?)))
+        .collect();
+    writes.sort();
+    writes
+}
+
+#[test]
+fn a_kept_file_another_device_keeps_with_other_bytes_first_is_asked_about_again() {
+    let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("c.txt"))]]);
+    world
+        .run(
+            1,
+            &[
+                (1, overwrite(0)),
+                (1, SCAN),
+                (1, COMMIT),
+                (1, COMMIT),
+                (1, DELIVER),
+                (0, Step::Rewind),
+                (0, Step::Connect),
+                (0, DELIVER),
+                (1, Step::Connect),
+                (1, DELIVER),
+                (1, Step::Answer(0)),
+                (0, Step::Answer(0)),
+                (0, COMMIT),
+                (0, COMMIT),
+                (0, DELIVER),
+                (1, DELIVER),
+                (1, DELIVER),
+                (1, COMMIT),
+            ],
+        )
+        .unwrap();
+    let held = only_entry(&world, 1, "c.txt");
+    let content = world.devices[1].disk.entries()[&held].content.as_ref();
+    assert_eq!(content.map(tag), Some(2));
+    let open = (world.devices[1].engine.commits.questions().iter())
+        .filter(|question| question.answer.is_none())
+        .filter(|question| matches!(question.kind, QuestionKind::Recovery { .. }))
+        .count();
+    assert_eq!(open, 1);
+    world.run(2, &[(1, Step::Answer(0))]).unwrap();
+    world.phase(3, &[]).unwrap();
+    assert_eq!(live_writes(&world), [1, 2]);
+}
