@@ -2899,7 +2899,7 @@ impl Trees {
                 let local = &self.l.get(id).expect("a local child is in L").shape;
                 let remote = self.r.get(id).map(|node| &node.shape);
                 let Some(was) = frozen.get(id) else {
-                    if !remote.is_some_and(|remote| remote.parent == *parent) {
+                    if !remote.is_some_and(|remote| remote.same_position(local)) {
                         return None;
                     }
                     if frozen.get(parent).is_some_and(|parent| parent.taken)

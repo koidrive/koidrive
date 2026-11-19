@@ -5578,7 +5578,7 @@ mod a_server_file_moved_into_an_asked_folder {
     #[test]
     fn a_discard_asks_again_when_the_user_changes_a_server_folder_it_takes_along_after_the_answer()
     {
-        let changes: [fn(&mut Trees); 6] = [
+        let changes: [fn(&mut Trees); 7] = [
             |t| by_the_user(t, "sc", |shape| shape.content = Some(content(5))),
             |t| by_the_user(t, "n", |_| {}),
             |t| by_the_user(t, "sc", |shape| shape.name = "renamed".into()),
@@ -5590,6 +5590,10 @@ mod a_server_file_moved_into_an_asked_folder {
             |t| {
                 downloaded(t, file("sf", "new", 5));
                 by_the_user(t, "sn", |shape| shape.content = Some(content(8)));
+            },
+            |t| {
+                downloaded(t, file("sf", "new", 5));
+                by_the_user(t, "sn", |shape| shape.name = "renamed".into());
             },
         ];
         for (index, change) in changes.into_iter().enumerate() {
