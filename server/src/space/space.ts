@@ -1220,7 +1220,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           if (row.state === ChunkState.LIVE || confirmedPending(row)) return { action: ChunkPlan_Action.PRESENT };
           if (row.incarnation !== null) return { action: ChunkPlan_Action.UPLOAD, incarnation: String(row.incarnation) };
           const incarnation = this.allocateIncarnation();
-          this.sql.exec("UPDATE chunks SET incarnation = ? WHERE hash = ?", incarnation, chunk.hash);
+          this.sql.exec("UPDATE chunks SET incarnation = ?, head_checked = 0 WHERE hash = ?", incarnation, chunk.hash);
           return { action: ChunkPlan_Action.UPLOAD, incarnation };
         });
       });
