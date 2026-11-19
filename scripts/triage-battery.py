@@ -66,11 +66,12 @@ def failure_message(output):
     if failing is None:
         return "\n".join(message)
     failure = [CASE_FAILS.sub("", message[failing])]
-    for line in message[failing + 1:]:
-        if HARNESS_REPORT.match(line):
-            break
-        failure.append(line)
-    return "\n".join(failure) + "."
+    reports = message[failing + 1:]
+    while reports and not HARNESS_REPORT.match(reports[0]):
+        failure.append(reports.pop(0))
+    failure[-1] += "."
+    return "\n".join(message[:failing] + failure
+                     + [line for line in reports if not line.startswith("recorded but passed: ")])
 
 
 def comparable(message):

@@ -659,27 +659,17 @@ cases = ["{1:064}"]
         entries = triage.known_failures(triage.KNOWN_FAILURES)
         restores_and_rewinds = "devices::devices_converge_across_restores_and_rewinds"
         lose_restores = "devices::devices_lose_no_write_across_restores_and_rewinds"
-        coarse = "devices::devices_on_coarse_volumes_converge_across_restores_and_rewinds"
         c7fa6 = "cc-7fa68fe1dd2cdc808c836467367c2bc474ff54db1bf9d6ba4f1658e491ffd5fe"
         d15d9 = "cc-15d9a15887573be1669890fa3fbe7c6788bbc2e8008c8c52f361254742b326fc"
-        debc6 = "cc-ebc688b05bff4a95fd7afb5c83abebd59e77b8c3c230151a5fe5746dac44bafc"
         never_ran = " never ran case cc-1cc97e001edf41a424a2764d26cbbb32894c769662a63d0a71c8b844aea4096b"
-        coarse_never_ran = [coarse + " never ran case cc-79e1ecbfd8d69fa3b00e4960fa7a3a1949d66654b791f86672e512bda85e8526",
-                            coarse + " never ran case cc-a0e99500cef5dbe9fa8d6b87b6520da3f8bf411ee15b54c22ddcc61a77688464"]
         uncounted = ("after phase 2: recovery started with no rewind, no rolled-back store and no restore of commits it "
                      "lost: the server counts 1 commits of this device, which the store cannot account for")
         taken = ("after phase 2: a restore took write 5 from the server while a disk held it, and the server does not "
                  "hold it again, though no user overwrote or deleted it")
-        copied = ("after phase 2: write 4 is in more than one file on the server, and no user copied it: "
-                  "[[\"A\"], [\"A (conflict from device-1 2026-11-09)\"]]")
         for test, case, failure, after, label in [
             (restores_and_rewinds, c7fa6, uncounted, [restores_and_rewinds + never_ran], ("C", "GUN-984")),
             (lose_restores, c7fa6, uncounted, [lose_restores + never_ran], ("C", "GUN-984")),
             (lose_restores, d15d9, taken, [lose_restores + never_ran], ("D", "GUN-984")),
-            (coarse, debc6, copied, [
-                f"not recorded: {coarse}\t{debc6}\tDeleteUndone\tthe delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 "
-                "on device 1 came undone, and no change its user did not see brought the node back", *coarse_never_ran],
-             ("D", "GUN-984")),
         ]:
             name = test.removeprefix("devices::")
             replayed = triage.outcome(101, DEVICES_REPLAY.format(
@@ -691,6 +681,30 @@ cases = ["{1:064}"]
                 self.assertEqual(replayed, {"result": "fail", "message": failure + "."})
                 self.assertEqual([(entry["class"], entry["issue"])
                                   for entry in triage.matches(entries, name, replayed["message"], case[3:])], [label])
+
+    def test_a_devices_replay_keeps_the_unrecorded_reds_its_failing_case_fired(self):
+        entries = triage.known_failures(triage.KNOWN_FAILURES)
+        test = "devices_on_coarse_volumes_converge_across_restores_and_rewinds"
+        case = "cc-ebc688b05bff4a95fd7afb5c83abebd59e77b8c3c230151a5fe5746dac44bafc"
+        copied = ("after phase 2: write 4 is in more than one file on the server, and no user copied it: "
+                  "[[\"A\"], [\"A (conflict from device-1 2026-11-09)\"]]")
+        red = (f"devices::{test}\t{case}\tDeleteUndone\tthe delete of node 01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on "
+               "device 1 came undone, and no change its user did not see brought the node back")
+        never_ran = [f"devices::{test} never ran case cc-79e1ecbfd8d69fa3b00e4960fa7a3a1949d66654b791f86672e512bda85e8526",
+                     f"devices::{test} never ran case cc-a0e99500cef5dbe9fa8d6b87b6520da3f8bf411ee15b54c22ddcc61a77688464"]
+        fails = f"devices::{test} case {case} fails: {copied}"
+        head = triage.outcome(101, DEVICES_REPLAY.format(test=test, lines="\n".join([fails, f"not recorded: {red}", *never_ran])))
+        base = triage.outcome(101, DEVICES_REPLAY.format(test=test, lines="\n".join([fails, *never_ran])))
+        self.assertEqual(head, {"result": "fail", "message": f"{copied}.\nnot recorded: {red}"})
+        self.assertEqual(base, {"result": "fail", "message": f"{copied}."})
+        self.assertEqual(triage.outcome(101, DEVICES_REPLAY.format(test=test, lines="\n".join(
+            [fails, f"not recorded: {red}", f"recorded but passed: {red}", *never_ran]))), head)
+        self.assertEqual(triage.verdict([head] * 2, [base] * 2), "PR-caused")
+        self.assertEqual(triage.verdict([head] * 2, [head] * 2), triage.SAME)
+        for message in (head["message"], base["message"]):
+            with self.subTest(message=message):
+                self.assertEqual([(entry["class"], entry["issue"]) for entry in triage.matches(entries, test, message, case[3:])],
+                                 [("D", "GUN-984")])
 
     def test_a_devices_replay_keeps_its_unrecorded_reds_and_drops_the_cases_triage_removed(self):
         entries = triage.known_failures(triage.KNOWN_FAILURES)
