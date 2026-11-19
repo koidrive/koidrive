@@ -687,11 +687,8 @@ pub struct Trees {
     /// The live files of R that are rules files.
     remote_rules_files: CountedSet<NodeId>,
     marked: CountedSet<NodeId>,
-    /// The unobserved nodes L does not hold, where [`Trees::settle`] looks for the copies that vanished.
     copies_gone: BTreeSet<NodeId>,
-    /// The nodes of [`Trees::copies_gone`] whose folder in S is not one of them, where a release starts.
     gone_tops: BTreeSet<NodeId>,
-    /// Whether anything changed since the last settle looked for vanished copies.
     release_due: bool,
     pending: Unsettled,
     held_for_scan: BTreeSet<NodeId>,
