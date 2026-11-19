@@ -335,3 +335,45 @@ fn a_commit_resent_across_a_restore_is_not_another_commit_when_a_later_restore_b
     )
     .unwrap();
 }
+
+#[test]
+#[ignore = "recovery by recorded intent (RFC 0029 §5.4) is not switched on"]
+fn a_commit_applied_again_after_a_restore_and_brought_back_by_another_leaves_no_conflict_copy() {
+    let mut world = converge(2, &[vec![(0, file("a"))]]).unwrap();
+    world
+        .run(
+            1,
+            &[
+                (0, BACKUP),
+                (0, file("b")),
+                (0, SCAN),
+                (0, COMMIT),
+                (0, COMMIT),
+                (0, Step::CopyStore),
+                (0, BACKUP),
+            ],
+        )
+        .unwrap();
+    world.phase(2, &[(0, overwrite(1))]).unwrap();
+    world.phase(3, &[(0, overwrite(0))]).unwrap();
+    world
+        .phase(4, &[(0, Step::RestoreEarlier), (0, Step::RollBack)])
+        .unwrap();
+    world.phase(5, &[(0, RESTORE)]).unwrap();
+    let tags = |files: Vec<(String, Option<Content>)>| -> Vec<(String, Option<i64>)> {
+        (files.into_iter())
+            .map(|(name, content)| (name, content.as_ref().map(tag)))
+            .collect()
+    };
+    let root = world.space().space_id().to_owned();
+    let mut server: Vec<(String, Option<Content>)> = (world.space().nodes().into_iter())
+        .filter(|node| node.node_id != root && node.status == NodeStatus::Live as i32)
+        .map(|node| (node.name, node.current.and_then(|version| version.content)))
+        .collect();
+    server.sort_by(|a, b| a.0.cmp(&b.0));
+    let expected = vec![("a".to_owned(), Some(4)), ("b".to_owned(), Some(3))];
+    assert_eq!(tags(server), expected, "server");
+    for device in 0..2 {
+        assert_eq!(tags(files_on(&world, device)), expected, "device {device}");
+    }
+}
