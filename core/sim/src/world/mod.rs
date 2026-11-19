@@ -1750,20 +1750,6 @@ impl World {
             Outcome::Crash(_) => batch.len() - 1,
             _ => (self.clock.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize % batch.len(),
         };
-        let device = &mut self.devices[d];
-        let mut staged = false;
-        for (index, record) in batch.iter().enumerate() {
-            if (index != unlucky || outcome != Outcome::Fail)
-                && let Some(identity) = device.disk.stage(record)
-            {
-                (device.engine.effects.stage(&record.effect_id, identity))
-                    .map_err(|error| Failure::Broken(format!("staging refused: {error:?}")))?;
-                staged = true;
-            }
-        }
-        if staged {
-            device.persist()?;
-        }
         let mut ends = Vec::new();
         for (index, record) in batch.iter().enumerate() {
             let outcome = if index == unlucky {
@@ -1779,6 +1765,13 @@ impl World {
                 Outcome::Crash(cut) if applies => Some(cut),
                 _ => None,
             };
+            if until.is_some()
+                && let Some(identity) = device.disk.stage(record)
+            {
+                (device.engine.effects.stage(&record.effect_id, identity))
+                    .map_err(|error| Failure::Broken(format!("staging refused: {error:?}")))?;
+                device.persist()?;
+            }
             let applied = device.disk.apply(record, until);
             if let Some((path, _)) = (kept.iter()).find_map(|(ino, kept)| {
                 (device.disk.entries().get(ino))
