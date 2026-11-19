@@ -1250,6 +1250,7 @@ fn revive(
     let trees = &device.trees;
     let reclaimed = |id: &&String| {
         let changed = device.touched.contains(*id)
+            && !asked.contains(*id)
             && !trees.excluded(id)
             && (trees.local().get(id))
                 .is_some_and(|local| !discarded.get(*id).is_some_and(|shown| local.shape.same(shown)));
@@ -1893,7 +1894,7 @@ fn run_ignoring_answering_after(
                 .unwrap();
             continue;
         }
-        let before = (device.trees.clone(), commits.questions().to_vec());
+        let mut before = (device.trees.clone(), commits.questions().to_vec());
         let built = commits.build(
             &mut device.trees,
             &mut device.ids,
@@ -1926,6 +1927,7 @@ fn run_ignoring_answering_after(
                 sent_nodes.remove(id);
             }
             let mut taken = BTreeMap::new();
+            std::mem::swap(&mut device.trees, &mut before.0);
             for folder in shown.keys() {
                 for child in device.trees.local_children(folder) {
                     if !shown.contains_key(child)
@@ -1935,6 +1937,7 @@ fn run_ignoring_answering_after(
                     }
                 }
             }
+            std::mem::swap(&mut device.trees, &mut before.0);
             device.acted.retain(|id| !taken.contains_key(id));
             kept_with.append(&mut taken);
             discarded.extend(shown);
