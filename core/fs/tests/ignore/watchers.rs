@@ -546,3 +546,41 @@ fn a_poll_waits_out_its_interval_while_only_a_sought_entry_is_searched_for() {
     watcher.poll(interval).unwrap();
     assert!(scans.load(Ordering::Relaxed) <= 3, "{scans:?}");
 }
+
+#[test]
+fn a_sought_identity_matches_an_entry_only_where_their_handles_agree() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, KOIIGNORE, "ig/\n");
+    write(root, "a.txt", "a");
+    write(root, "f.txt", "f");
+    let mut rules = rules();
+    let entries = Snapshot::scan_with_rules(root, &mut rules).unwrap().entries;
+    let a = entries[Path::new("a.txt")].id;
+    let f = entries[Path::new("f.txt")].id;
+    let Some(handle) = a.handle else {
+        eprintln!("SKIPPED: the file system gives no handles");
+        return;
+    };
+    fs::create_dir(root.join("ig")).unwrap();
+    fs::rename(root.join("f.txt"), root.join("ig/f.txt")).unwrap();
+    let snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
+    let mut watcher = RescanWatcher::with_rules(root, snapshot, Duration::ZERO, rules).unwrap();
+    let known = |id| Known { kind: File, id };
+    let legacy = FileId::stored(f.ino, f.birth_ns, None);
+    let reused = FileId::stored(a.ino, a.birth_ns, Some(!handle));
+    let wanted = BTreeMap::from([
+        (PathBuf::from("f.txt"), known(f)),
+        (PathBuf::from("legacy.txt"), known(legacy)),
+        (PathBuf::from("reused.txt"), known(reused)),
+    ]);
+    let found = Looked::Found("ig/f.txt".into());
+    assert_eq!(
+        watcher.look_for(&wanted, &BTreeMap::new()).unwrap(),
+        [
+            (PathBuf::from("f.txt"), found.clone()),
+            (PathBuf::from("legacy.txt"), found),
+            (PathBuf::from("reused.txt"), Looked::Gone),
+        ]
+    );
+}

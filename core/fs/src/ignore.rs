@@ -686,12 +686,17 @@ impl<'r> Pending<'r> {
                     }
                 };
                 let Some(entry) = entry else { continue };
-                if let Some(key) = keys_of(&entry).find(|key| pending.contains_key(key)) {
+                let keys: Vec<Key> = keys_of(&entry)
+                    .filter(|key| pending.contains_key(key))
+                    .collect();
+                if let Some(&key) = keys.first() {
                     left = left.saturating_sub(path.components().count());
                     if !holds(root, &path, key) {
                         moved = true;
                         break;
                     }
+                }
+                for key in keys {
                     pending.remove(&key);
                     if let Some(found) = wanted.get_mut(&key) {
                         *found = Some(path.clone());

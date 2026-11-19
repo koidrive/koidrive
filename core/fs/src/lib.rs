@@ -1191,14 +1191,19 @@ impl Snapshot {
         if search.is_empty() {
             return Ok(looked);
         }
-        let held: HashSet<Key> = (self.entries.values())
-            .chain(self.left_out.values())
-            .map(|entry| (entry.id.without_handle(), entry.kind))
-            .collect();
+        let mut held: HashMap<Key, Vec<FileId>> = HashMap::new();
+        for entry in self.entries.values().chain(self.left_out.values()) {
+            (held.entry((entry.id.without_handle(), entry.kind)))
+                .or_default()
+                .push(entry.id);
+        }
         looked.extend(
             (wanted.iter())
                 .filter(|(_, known)| search.contains_key(&(known.id, known.kind)))
-                .filter(|(_, known)| !held.contains(&(known.id.without_handle(), known.kind)))
+                .filter(|(_, known)| {
+                    !(held.get(&(known.id.without_handle(), known.kind)))
+                        .is_some_and(|ids| ids.iter().any(|id| id.same(&known.id)))
+                })
                 .map(|(path, _)| (path.clone(), Looked::Gone)),
         );
         Ok(looked)
