@@ -25,6 +25,7 @@ use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
     ContentKey, CountedMap, CountedSet, FileIdentity, Kind, LocalNode, Names, Node, NodeId,
     RemoteNode, Shape, TrackedTree, Tree, TreeError, counted, read_entries, same, same_content,
+    unmetered,
 };
 
 use release::Released;
@@ -803,6 +804,8 @@ pub struct Trees {
     held_for_scan: BTreeSet<NodeId>,
     awaiting_scan: BTreeSet<Vec<String>>,
     left_local: BTreeSet<NodeId>,
+    free_remote: BTreeMap<NodeId, NodeId>,
+    free_by_parent: BTreeMap<NodeId, BTreeSet<NodeId>>,
 }
 
 /// Equal when R, L, S and the state the store keeps are equal. What the trees track only until the
@@ -922,6 +925,8 @@ impl Trees {
             held_for_scan: BTreeSet::new(),
             awaiting_scan: BTreeSet::new(),
             left_local: BTreeSet::new(),
+            free_remote: BTreeMap::new(),
+            free_by_parent: BTreeMap::new(),
         }
     }
 
@@ -1096,6 +1101,7 @@ impl Trees {
 
     /// The nodes whose L, S or R entry changed since the last call, which empties the three sets.
     pub fn take_changed(&mut self) -> Changed {
+        self.see_free_remote();
         Changed {
             local: self.l.take_changed(),
             synced: self.s.take_changed(),
@@ -7077,6 +7083,7 @@ impl Trees {
         if std::mem::take(&mut self.cycles_may_end) {
             self.release_cycle_reverts(merged);
         }
+        self.see_free_remote();
         if self.rules_known {
             let unwatched = std::mem::take(&mut self.unwatched);
             let changed = match std::mem::take(&mut self.relink) {
@@ -7084,19 +7091,11 @@ impl Trees {
                 false => {
                     let mut changed: BTreeSet<NodeId> =
                         self.unsettled.union(&unwatched).cloned().collect();
-                    let mut below: Vec<NodeId> = changed.iter().cloned().collect();
-                    let mut walked = 0;
-                    while let Some(node) = below.pop() {
-                        walked += 1;
-                        if walked % CHECK_EVERY == 0 && abandoned() {
-                            return None;
-                        }
-                        for child in self.local_children(&node) {
-                            if changed.insert(child.clone()) {
-                                below.push(child.clone());
-                            }
-                        }
-                    }
+                    let below = match self.walked_below(&changed, abandoned) {
+                        Some(below) => below,
+                        None => self.free_files_below(&changed, abandoned)?,
+                    };
+                    changed.extend(below);
                     changed
                 }
             };
@@ -7113,6 +7112,100 @@ impl Trees {
             self.settle_marked(abandoned)?;
         }
         Some(())
+    }
+
+    fn see_free_remote(&mut self) {
+        let unseen = (self.l.take_unseen().into_iter())
+            .chain(self.s.take_unseen())
+            .chain(self.r.take_unseen())
+            .collect::<BTreeSet<_>>();
+        for id in unseen {
+            if let Some(parent) = self.free_remote.remove(&id)
+                && let Some(free) = self.free_by_parent.get_mut(&parent)
+            {
+                free.remove(&id);
+                if free.is_empty() {
+                    self.free_by_parent.remove(&parent);
+                }
+            }
+            let Some(remote) = self.r.get(&id) else {
+                continue;
+            };
+            let free = !remote.trashed
+                && remote.shape.kind == Kind::File
+                && self.l.get(&id).is_none()
+                && self.s.get(&id).is_none();
+            if free {
+                let parent = remote.shape.parent.clone();
+                (self.free_by_parent.entry(parent.clone()).or_default()).insert(id.clone());
+                self.free_remote.insert(id, parent);
+            }
+        }
+    }
+
+    fn walked_below(
+        &self,
+        changed: &BTreeSet<NodeId>,
+        abandoned: &dyn Fn() -> bool,
+    ) -> Option<Vec<NodeId>> {
+        let budget = 16 * self.free_by_parent.len();
+        let mut reached: BTreeSet<&NodeId> = changed.iter().collect();
+        let mut below: Vec<&NodeId> = changed.iter().collect();
+        let mut found = Vec::new();
+        let mut walked = 0;
+        while let Some(node) = below.pop() {
+            walked += 1;
+            if walked % CHECK_EVERY == 0 && abandoned() {
+                return None;
+            }
+            for child in self.local_children(node) {
+                if reached.insert(child) {
+                    if found.len() == budget {
+                        return None;
+                    }
+                    found.push(child.clone());
+                    below.push(child);
+                }
+            }
+        }
+        Some(found)
+    }
+
+    fn free_files_below(
+        &self,
+        changed: &BTreeSet<NodeId>,
+        abandoned: &dyn Fn() -> bool,
+    ) -> Option<Vec<NodeId>> {
+        let below_changed = |parent: &NodeId| {
+            let mut at = parent;
+            for _ in 0..=self.l.len() {
+                if changed.contains(at) {
+                    return true;
+                }
+                match self.l.get(at).filter(|node| !node.parked) {
+                    Some(node) => at = &node.shape.parent,
+                    None => return false,
+                }
+            }
+            false
+        };
+        let mut found = Vec::new();
+        for (walked, (parent, free)) in self.free_by_parent.iter().enumerate() {
+            if walked % CHECK_EVERY == 0 && abandoned() {
+                return None;
+            }
+            if below_changed(parent) {
+                let holders = (free.iter())
+                    .filter_map(|id| self.r.get(id))
+                    .flat_map(|remote| self.local_holders(parent, &remote.shape.name));
+                found.extend(holders.cloned());
+            }
+        }
+        let lost = (self.lost_shapes.iter()).filter(|(id, _)| {
+            (self.l.get(id)).is_some_and(|node| below_changed(&node.shape.parent))
+        });
+        found.extend(lost.map(|(id, _)| id.clone()));
+        Some(found)
     }
 
     pub(crate) fn wait_to_link(&mut self, pairs: Vec<(NodeId, NodeId)>) {
@@ -7307,12 +7400,15 @@ impl Trees {
             }
             self.sort(id);
         }
-        debug_assert!(self.creates.iter().all(|id| self.creates_only(id)));
+        debug_assert!(unmetered(|| self
+            .creates
+            .iter()
+            .all(|id| self.creates_only(id))));
         debug_assert!(self.ready.is_subset(&self.creates));
-        debug_assert!(self.creates.iter().all(|id| {
+        debug_assert!(unmetered(|| self.creates.iter().all(|id| {
             let parent = &self.l.get(id).expect("creates are in L").shape.parent;
             self.ready.contains(id) != self.creates.contains(parent)
-        }));
+        })));
         debug_assert!(self.creates.is_disjoint(&self.others));
         debug_assert_eq!(self.creates.len() + self.others.len(), self.dirty.len());
         Some(())
@@ -8217,6 +8313,8 @@ impl Trees {
             held_for_scan: _,
             awaiting_scan: _,
             left_local: _,
+            free_remote: _,
+            free_by_parent: _,
             r_names: _,
             r_trashed: _,
             creates: _,
