@@ -1303,6 +1303,7 @@ impl Engine {
                 (self.trees.synced().live(id))
                     .is_some_and(|synced| synced.kind == Kind::File && synced.name == name)
                     && self.trees.local().get(id).is_none()
+                    && !self.trees.displaced_local().contains_key(*id)
                     && !sent(id)
             })
             .cloned()
@@ -4777,5 +4778,39 @@ mod tests {
                 assert_eq!(at, draft);
             }
         }
+    }
+
+    #[test]
+    fn a_new_file_at_the_path_of_a_displaced_file_is_a_node_of_its_own() {
+        let (_dir, mut engine) = mapper();
+        engine.trees.rules_scanned();
+        let dir = |path: &str, id: u64| Observed::Created {
+            path: path.into(),
+            kind: EntryKind::Dir,
+            id: ino(id),
+            linked: false,
+            content: None,
+            marked_node: None,
+        };
+        engine.observe(
+            &[dir("docs", 1), created("docs/f.txt", ino(2), false, 1)],
+            0,
+        );
+        synced_everywhere(&mut engine);
+        let (file, _, _) = holding(&engine, "docs/f.txt").unwrap();
+        engine.trees.ignore_local(&file);
+        engine.observe(&[dir("docs/f.txt", 3)], 1_000);
+        assert!(engine.trees.displaced_local().contains_key(&file));
+        let removed = Observed::Removed {
+            path: "docs/f.txt".into(),
+            kind: EntryKind::Dir,
+        };
+        engine.observe(&[removed], 1_100);
+        engine.observe(&[created("docs/f.txt", ino(4), false, 7)], 1_200);
+        assert_ne!(
+            holding(&engine, "docs/f.txt").map(|held| held.0),
+            Some(file.clone())
+        );
+        assert!(engine.trees.displaced_local().contains_key(&file));
     }
 }
