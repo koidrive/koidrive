@@ -81,13 +81,10 @@ fn migrations_apply_from_empty() {
     drop(store);
 
     let conn = Connection::open(&path).unwrap();
-    let source = [
-        include_str!("../src/lib.rs"),
-        include_str!("../src/engine.rs"),
-        include_str!("../src/questions.rs"),
-        include_str!("../src/restore.rs"),
-    ]
-    .concat();
+    let source: String = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect();
     let words: Vec<&str> = source
         .split_whitespace()
         .map(|word| word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_'))
