@@ -1471,7 +1471,9 @@ impl Commits {
             .cloned()
             .collect();
         built_in_below(trees, &self.problems, &mut deleted);
-        deleted.retain(|id| trees.synced().live(id).is_some());
+        deleted.retain(|id| {
+            trees.synced().live(id).is_some() && !self.given_up_nodes.contains_key(id)
+        });
         let pending = guard::deletions(trees, &deleted);
         let given_up_files = self.given_up_files(trees);
         let checked = (self.guard).check(&mut asked, pending, trees, given_up_files, ids, now_ms);
