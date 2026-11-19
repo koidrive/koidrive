@@ -960,6 +960,7 @@ pub(crate) mod tests {
         let item = |node_id: &str, path: &str| HeldItem {
             node_id: node_id.into(),
             path: path.into(),
+            kind: None,
             files: 1,
             device_id: None,
             device_name: None,

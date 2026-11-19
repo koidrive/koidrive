@@ -70,7 +70,11 @@ pub struct HeldItem {
     pub node_id: String,
     /// The path relative to the linked folder.
     pub path: koidrive_fs::ItemPath,
-    /// Files the answer affects through this item: 1 for a file, the files it holds for a folder.
+    /// Absent where the driver does not know the node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<crate::ItemKind>,
+    /// Files the answer affects through this item: 1 for a file, the files it holds for a folder, and for a restore
+    /// from the trash the files trashed with it.
     pub files: u64,
     /// For a file of a conflict, the device that wrote its current version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -131,6 +135,7 @@ mod tests {
             items: vec![HeldItem {
                 node_id: "n1".into(),
                 path: "a/b".into(),
+                kind: Some(crate::ItemKind::File),
                 files: 1,
                 device_id: None,
                 device_name: None,

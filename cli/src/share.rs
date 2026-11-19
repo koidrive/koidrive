@@ -4,7 +4,7 @@ use std::io::{BufRead, IsTerminal};
 use std::path::PathBuf;
 
 use koidrive_driver::Paths;
-use koidrive_driver::{Expiry, LinkState, Secret, SharedLink, TargetKind};
+use koidrive_driver::{Expiry, ItemKind, LinkState, Secret, SharedLink};
 use koidrive_ipc::{Request, Response};
 use rustix::termios::{LocalModes, OptionalActions, Termios, tcgetattr, tcsetattr};
 
@@ -111,7 +111,7 @@ pub async fn run(paths: &Paths, action: ShareAction) -> Result<Done, CliError> {
 fn created(link: &SharedLink, now_ms: i64) -> Done {
     let shared = shown(link);
     let what = match link.target.as_ref().map(|target| target.kind) {
-        Some(TargetKind::Folder) => {
+        Some(ItemKind::Folder) => {
             format!("browse and download {shared}, with what is added to it later")
         }
         _ => format!("download {shared}"),
@@ -214,8 +214,8 @@ fn data(link: &SharedLink) -> ShareLinkData {
         node_id: link.node_id.clone(),
         path: (link.target.as_ref()).map(|target| target.path.clone().into()),
         kind: link.target.as_ref().map(|target| match target.kind {
-            TargetKind::File => NodeType::File,
-            TargetKind::Folder => NodeType::Folder,
+            ItemKind::File => NodeType::File,
+            ItemKind::Folder => NodeType::Folder,
         }),
         created_at_ms: link.created_at_ms,
         expires_at_ms: link.expires_at_ms,
@@ -327,7 +327,7 @@ mod tests {
 
     const URL: &str = "https://files.example.com/s/AAAAAAAAAAAAAAAAAAAAAA";
 
-    fn link(kind: TargetKind, expires_at_ms: Option<i64>) -> SharedLink {
+    fn link(kind: ItemKind, expires_at_ms: Option<i64>) -> SharedLink {
         SharedLink {
             id: "0123456789".into(),
             url: Secret(URL.into()),
@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn a_new_link_is_the_only_line_on_stdout_and_its_note_never_repeats_it() {
-        let done = created(&link(TargetKind::Folder, Some(7 * DAY_MS as i64)), 0);
+        let done = created(&link(ItemKind::Folder, Some(7 * DAY_MS as i64)), 0);
         assert_eq!(done.text, format!("{URL}\n"));
         assert_eq!(
             done.note,
@@ -385,7 +385,7 @@ mod tests {
 
         let file = SharedLink {
             has_password: true,
-            ..link(TargetKind::File, None)
+            ..link(ItemKind::File, None)
         };
         let done = created(&file, 0);
         assert_eq!(
@@ -412,17 +412,17 @@ mod tests {
             id: "abcdefabcd".into(),
             folder: None,
             has_password: true,
-            ..link(TargetKind::File, None)
+            ..link(ItemKind::File, None)
         };
         let revoked = SharedLink {
             id: "1111111111".into(),
             target: None,
             state: LinkState::Revoked,
             revoked_at_ms: Some(now - 3 * HOUR_MS as i64),
-            ..link(TargetKind::File, Some(now + DAY_MS as i64))
+            ..link(ItemKind::File, Some(now + DAY_MS as i64))
         };
         let links = [
-            link(TargetKind::Folder, Some(now + 3 * DAY_MS as i64)),
+            link(ItemKind::Folder, Some(now + 3 * DAY_MS as i64)),
             unlinked,
             revoked,
         ];

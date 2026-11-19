@@ -126,6 +126,7 @@ mod tests {
             items: vec![koidrive_driver::HeldItem {
                 node_id: "n1".into(),
                 path: "d".into(),
+                kind: Some(koidrive_driver::ItemKind::Folder),
                 files: 11,
                 device_id: None,
                 device_name: None,

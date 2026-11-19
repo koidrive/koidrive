@@ -3394,6 +3394,7 @@ mod tests {
             items: vec![HeldItem {
                 node_id: "n1".into(),
                 path: "old".into(),
+                kind: None,
                 files: 1_001,
                 device_id: None,
                 device_name: None,
@@ -3629,6 +3630,7 @@ mod tests {
         let item = |node_id: &str, path: &str, device_id: &str| HeldItem {
             node_id: node_id.into(),
             path: path.into(),
+            kind: None,
             files: 1,
             device_id: Some(device_id.into()),
             device_name: None,
@@ -3700,6 +3702,7 @@ mod tests {
         let item = |node_id: &str, path: &str| HeldItem {
             node_id: node_id.into(),
             path: path.into(),
+            kind: None,
             files: 1,
             device_id: None,
             device_name: None,

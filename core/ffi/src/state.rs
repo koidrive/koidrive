@@ -317,9 +317,9 @@ fn question(question: driver::Question) -> Option<Question> {
             .map(|item| HeldItem {
                 node_id: item.node_id,
                 path: item.path.into(),
-                kind: match item.files {
-                    1 => NodeKind::File,
-                    _ => NodeKind::Folder,
+                kind: match (item.kind, item.files) {
+                    (Some(driver::ItemKind::File), _) | (None, 1) => NodeKind::File,
+                    (Some(driver::ItemKind::Folder), _) | (None, _) => NodeKind::Folder,
                 },
                 files: item.files,
                 detail: match item.restore {
@@ -900,6 +900,7 @@ mod tests {
                 driver::HeldItem {
                     node_id: "n1".into(),
                     path: "Archive".into(),
+                    kind: None,
                     files: 1_499,
                     device_id: None,
                     device_name: None,
@@ -910,6 +911,7 @@ mod tests {
                 driver::HeldItem {
                     node_id: "n2".into(),
                     path: "notes.txt".into(),
+                    kind: None,
                     files: 1,
                     device_id: None,
                     device_name: None,
@@ -1067,6 +1069,39 @@ mod tests {
             ]
         );
         assert_eq!(shown.answers, [Answer::Repeat, Answer::Cancel]);
+    }
+
+    #[test]
+    fn an_item_shows_as_the_kind_the_driver_gives_it_or_by_its_file_count_without_one() {
+        let asked: driver::Question = serde_json::from_value(serde_json::json!({
+            "id": "q1", "space_id": "s1", "asked_at_ms": 7,
+            "kind": { "type": "recovery", "group": "requested_before_reset" },
+            "items": [
+                {
+                    "node_id": "restore-1", "path": "photos", "kind": "folder", "files": 2,
+                    "restore": { "type": "from_trash", "node_id": "photos" }
+                },
+                { "node_id": "n1", "path": "drafts", "kind": "folder", "files": 1 },
+                { "node_id": "n2", "path": "notes.txt", "kind": "file", "files": 1 },
+                { "node_id": "n3", "path": "Archive", "files": 3 },
+                { "node_id": "n4", "path": "old.txt", "files": 1 }
+            ]
+        }))
+        .unwrap();
+        let shown = question(asked).unwrap();
+        let items: Vec<(&str, NodeKind, u64)> = (shown.items.iter())
+            .map(|item| (item.path.as_str(), item.kind, item.files))
+            .collect();
+        assert_eq!(
+            items,
+            [
+                ("photos", NodeKind::Folder, 2),
+                ("drafts", NodeKind::Folder, 1),
+                ("notes.txt", NodeKind::File, 1),
+                ("Archive", NodeKind::Folder, 3),
+                ("old.txt", NodeKind::File, 1),
+            ]
+        );
     }
 }
 

@@ -29,6 +29,7 @@ use koidrive_proto::v1::{
 };
 use koidrive_store::{Cursor, EngineChanges, Error, StoredQuestion, SyncedNode, Tx};
 
+use crate::ItemKind;
 use crate::disk::Stop;
 use crate::observe::{Observed, Reset, RulesChange};
 use crate::question::{HeldItem, Question, RecoveryCause};
@@ -354,6 +355,7 @@ impl Engine {
                     let mut item = HeldItem {
                         node_id: file.node_id.clone(),
                         path: path(self.trees.remote(), &file.node_id).into(),
+                        kind: self.kind(&file.node_id),
                         files: 1,
                         device_id: None,
                         device_name: None,
@@ -392,10 +394,20 @@ impl Engine {
                                 let version = intent.and_then(RestoreIntent::version_id)?;
                                 unix_ms(version).map(|ms| ms as i64)
                             });
+                        let (kind, files) = match intent {
+                            Some(intent) if intent.version_id().is_some() => {
+                                (Some(ItemKind::File), 1)
+                            }
+                            Some(intent) => {
+                                (self.kind(intent.node()), self.trashed_with(intent.node()))
+                            }
+                            None => (None, 1),
+                        };
                         HeldItem {
                             node_id: id.clone(),
                             path: path.into(),
-                            files: 1,
+                            kind,
+                            files,
                             device_id: None,
                             device_name: None,
                             size: None,
@@ -409,6 +421,7 @@ impl Engine {
                 .map(|(id, held)| HeldItem {
                     node_id: id.clone(),
                     path: self.path(id).into(),
+                    kind: self.kind(id),
                     files: held.files,
                     device_id: None,
                     device_name: None,
@@ -438,6 +451,36 @@ impl Engine {
             lineage,
             recovery_cause,
         })
+    }
+
+    fn kind(&self, id: &str) -> Option<ItemKind> {
+        let trees = &self.trees;
+        let kind = (trees.local().get(id).map(|node| node.shape.kind))
+            .or_else(|| trees.synced().get(id).map(|shape| shape.kind))
+            .or_else(|| trees.remote().get(id).map(|node| node.shape.kind))?;
+        Some(match kind {
+            Kind::Dir => ItemKind::Folder,
+            Kind::File => ItemKind::File,
+        })
+    }
+
+    fn trashed_with(&self, id: &str) -> u64 {
+        let remote = self.trees.remote();
+        let Some(top) = remote.get(id).filter(|node| node.trashed) else {
+            return 1;
+        };
+        (remote.iter())
+            .filter(|&(member, node)| {
+                node.trashed
+                    && node.trash_group == top.trash_group
+                    && node.shape.kind == Kind::File
+                    && std::iter::successors(Some(member.as_str()), |current| {
+                        Some(remote.get(current)?.shape.parent.as_str())
+                    })
+                    .take(remote.len() + 1)
+                    .any(|current| current == id)
+            })
+            .count() as u64
     }
 
     /// The path of a node relative to the linked folder: where L holds it, or where S holds it when L does not, as

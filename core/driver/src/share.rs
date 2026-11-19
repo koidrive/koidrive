@@ -66,7 +66,7 @@ pub enum LinkState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TargetKind {
+pub enum ItemKind {
     File,
     Folder,
 }
@@ -76,7 +76,7 @@ pub enum TargetKind {
 pub struct Target {
     /// The names from the space's root down to it, joined with `/`; empty for the root.
     pub path: koidrive_fs::ItemPath,
-    pub kind: TargetKind,
+    pub kind: ItemKind,
 }
 
 /// A share link as its owner sees it.
@@ -545,7 +545,7 @@ impl<'a> Tree<'a> {
         if node_id == self.root {
             return Some(Target {
                 path: ItemPath::default(),
-                kind: TargetKind::Folder,
+                kind: ItemKind::Folder,
             });
         }
         let node = self.by_id.get(node_id)?;
@@ -563,8 +563,8 @@ impl<'a> Tree<'a> {
         Some(Target {
             path: names.join("/").into(),
             kind: match node.kind() {
-                NodeKind::Dir => TargetKind::Folder,
-                _ => TargetKind::File,
+                NodeKind::Dir => ItemKind::Folder,
+                _ => ItemKind::File,
             },
         })
     }
@@ -913,14 +913,14 @@ mod tests {
             tree.target("cafe"),
             Some(Target {
                 path: "Docs/Café.txt".into(),
-                kind: TargetKind::File
+                kind: ItemKind::File
             })
         );
         assert_eq!(
             tree.target(SPACE),
             Some(Target {
                 path: ItemPath::default(),
-                kind: TargetKind::Folder
+                kind: ItemKind::Folder
             })
         );
         assert_eq!(tree.target("kept"), None);

@@ -598,3 +598,35 @@ fn a_cursor_the_restored_head_caught_up_with_lists_the_tree_again() {
         ["four.txt", "one.txt", "three.txt", "two.txt"]
     );
 }
+
+#[test]
+fn a_held_folder_of_one_file_shows_as_a_folder() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    for (dir, count) in [("d", 15), ("e", 1)] {
+        fs::create_dir(site.root.join(dir)).unwrap();
+        for i in 0..count {
+            fs::write(site.root.join(format!("{dir}/{i}.txt")), format!("in {dir} {i}")).unwrap();
+        }
+    }
+    for i in 0..4 {
+        fs::write(site.root.join(format!("{i}.txt")), format!("beside {i}")).unwrap();
+    }
+    a.scan_until(|a| !a.work.is_empty());
+    a.rest(&mut remote);
+    drop(a);
+    for dir in ["d", "e"] {
+        fs::remove_dir_all(site.root.join(dir)).unwrap();
+    }
+    restarted(&site, &mut remote).rest(&mut remote);
+
+    let [question] = shown(&site).try_into().unwrap();
+    let items: Vec<_> = (question.items.iter())
+        .map(|item| {
+            let kind = serde_json::to_value(item).unwrap()["kind"].clone();
+            (item.path.unquoted(), kind, item.files)
+        })
+        .collect();
+    let folder = serde_json::json!("folder");
+    assert_eq!(items, [("d", folder.clone(), 15), ("e", folder, 1)]);
+}

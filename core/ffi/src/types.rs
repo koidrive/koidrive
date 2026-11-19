@@ -566,7 +566,8 @@ pub struct HeldItem {
     pub node_id: String,
     pub path: String,
     pub kind: NodeKind,
-    /// Files the answer affects through this item: 1 for a file, the files it holds for a folder.
+    /// Files the answer affects through this item: 1 for a file, the files it holds for a folder,
+    /// and for a restore from the trash the files trashed with it.
     pub files: u64,
     pub detail: ItemDetail,
 }
