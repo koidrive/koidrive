@@ -1613,7 +1613,9 @@ fn a_copy_in_a_left_out_folder_saved_by_rename_while_stopped_stays_the_only_copy
         files(&site.root),
         [("dist/report.docx".to_owned(), "edited".to_owned())]
     );
-    let ino = fs::metadata(site.root.join("dist/report.docx")).unwrap().ino();
+    let ino = fs::metadata(site.root.join("dist/report.docx"))
+        .unwrap()
+        .ino();
     let recorded = b.folder.engine.recorded();
     assert_eq!(recorded[Path::new("report.docx")].id.ino, u128::from(ino));
 }

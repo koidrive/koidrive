@@ -967,7 +967,8 @@ impl Engine {
                 ),
                 Observed::Created { .. }
                 | Observed::Modified { .. }
-                | Observed::Reidentified { .. } => None,
+                | Observed::Reidentified { .. }
+                | Observed::Found { .. } => None,
             })
             .collect();
         let left: Vec<&Path> = (changes.iter())
@@ -977,7 +978,8 @@ impl Engine {
                 | Observed::Renamed { from: path, .. } => Some(path.as_path()),
                 Observed::Created { .. }
                 | Observed::Modified { .. }
-                | Observed::Reidentified { .. } => None,
+                | Observed::Reidentified { .. }
+                | Observed::Found { .. } => None,
             })
             .collect();
         let staying: BTreeSet<NodeId> = (changes.iter())
@@ -1012,7 +1014,8 @@ impl Engine {
                 Observed::Removed { .. }
                 | Observed::Missing { .. }
                 | Observed::Modified { .. }
-                | Observed::Reidentified { .. } => None,
+                | Observed::Reidentified { .. }
+                | Observed::Found { .. } => None,
             })
             .collect();
         let leaving: BTreeMap<&Path, usize> = (changes.iter().enumerate())
@@ -1022,7 +1025,8 @@ impl Engine {
                 | Observed::Missing { .. }
                 | Observed::Created { .. }
                 | Observed::Modified { .. }
-                | Observed::Reidentified { .. } => None,
+                | Observed::Reidentified { .. }
+                | Observed::Found { .. } => None,
             })
             .collect();
         let folder = |path: &Path| path.ancestors().skip(1).find_map(|dir| arrival.get(dir));
@@ -1038,7 +1042,7 @@ impl Engine {
                     [(folder(path), true), (arrival.get(path.as_path()), true)]
                 }
                 Observed::Reidentified { path, .. } => [(folder(path), true), (None, false)],
-                Observed::Removed { .. } | Observed::Missing { .. } => {
+                Observed::Removed { .. } | Observed::Missing { .. } | Observed::Found { .. } => {
                     [(None, false), (None, false)]
                 }
             };
@@ -1121,6 +1125,11 @@ impl Engine {
                         self.remove(&id, &moving, true, missing, &mut touched, &mut gone);
                     }
                 }
+                Observed::Found { path, at } => {
+                    if let Some(node) = local_at(&self.trees, path) {
+                        self.trees.find_local(&node, at.clone());
+                    }
+                }
                 Observed::Reidentified { path, id } => {
                     let outside = (local_at(&self.trees, path))
                         .filter(|node| self.trees.ignored_local().contains(node))
@@ -1133,7 +1142,13 @@ impl Engine {
                     });
                     if let Some((node, local)) = outside {
                         let identity = file_identity(*id);
-                        self.trees.set_local(node, LocalNode { identity, ..local });
+                        let at = self.trees.found_local().get(&node).cloned();
+                        self.trees
+                            .set_local(node.clone(), LocalNode { identity, ..local });
+                        self.trees.ignore_local(&node);
+                        if let Some(at) = at {
+                            self.trees.find_local(&node, at);
+                        }
                     } else if folder.is_some() {
                         self.place(
                             folder,
@@ -1161,6 +1176,7 @@ impl Engine {
                             .is_none()
                         {
                             self.trees.ignore_local(node);
+                            self.trees.find_local(node, to.clone());
                             continue;
                         }
                     }
@@ -1394,6 +1410,16 @@ impl Engine {
                 }
                 Reset { scope, known }
             })
+            .collect()
+    }
+
+    pub fn found(&self) -> BTreeMap<PathBuf, PathBuf> {
+        if !self.trees.unknown_rules().is_empty() {
+            return BTreeMap::new();
+        }
+        (self.trees.found_local().iter())
+            .filter(|(id, _)| !self.trees.lost_local().contains(*id))
+            .filter_map(|(id, at)| Some((self.path_of(id)?, at.clone())))
             .collect()
     }
 

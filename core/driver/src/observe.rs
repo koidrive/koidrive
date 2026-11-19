@@ -140,6 +140,11 @@ pub enum Observed {
         path: PathBuf,
         id: FileId,
     },
+    /// The search of the ignored folders found the entry that L records at `path` at `at`.
+    Found {
+        path: PathBuf,
+        at: PathBuf,
+    },
 }
 
 /// What the observer is to believe about one scope, a path relative to the root, before it scans the scope again:
@@ -401,8 +406,8 @@ impl FsObserver {
         })
     }
 
-    pub fn seek(&mut self, recorded: BTreeMap<PathBuf, Known>) {
-        self.found.retain(|path, _| recorded.contains_key(path));
+    pub fn seek(&mut self, recorded: BTreeMap<PathBuf, Known>, found: BTreeMap<PathBuf, PathBuf>) {
+        self.found = found;
         self.recorded = recorded;
     }
 
@@ -902,7 +907,13 @@ impl Observer for FsObserver {
                     for (path, looked) in looked {
                         match looked {
                             Looked::Found(at) => {
-                                self.found.insert(path, at);
+                                if self.found.get(&path) != Some(&at) {
+                                    changes.push(Observed::Found {
+                                        path: path.clone(),
+                                        at: at.clone(),
+                                    });
+                                    self.found.insert(path, at);
+                                }
                             }
                             Looked::Gone => {
                                 if let Some(known) = self.recorded.get(&path) {
@@ -2169,7 +2180,8 @@ mod tests {
                 | Observed::Modified { path, .. }
                 | Observed::Removed { path, .. }
                 | Observed::Missing { path, .. }
-                | Observed::Reidentified { path, .. } => path.as_path(),
+                | Observed::Reidentified { path, .. }
+                | Observed::Found { path, .. } => path.as_path(),
                 Observed::Renamed { to, .. } => to.as_path(),
             })
             .collect();
