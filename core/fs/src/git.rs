@@ -194,7 +194,7 @@ fn hash_size(git_dir: &Path) -> Option<usize> {
 fn object_format(config: &str) -> Option<String> {
     let mut section = String::new();
     let mut format = None;
-    for line in config.lines() {
+    for line in config.replace("\\\r\n", "").replace("\\\n", "").lines() {
         let mut line = line.trim();
         if let Some((name, rest)) = line.strip_prefix('[').and_then(|line| line.split_once(']')) {
             section = name.trim().to_ascii_lowercase();
@@ -284,6 +284,7 @@ fn parse(bytes: &[u8], hash: usize) -> Option<Index<'_>> {
     let count = r.u32()?;
     let mut entries = Vec::new();
     let mut name = Vec::new();
+    let mut decoded = 0usize;
     for _ in 0..count {
         let start = r.0.len();
         let fixed = r.take(40 + hash)?;
@@ -299,6 +300,10 @@ fn parse(bytes: &[u8], hash: usize) -> Option<Index<'_>> {
         }
         name.extend_from_slice(r.until_nul()?);
         if flags & 0xfff != 0xfff && usize::from(flags & 0xfff) != name.len() {
+            return None;
+        }
+        decoded += name.len();
+        if decoded > bytes.len().saturating_mul(16) {
             return None;
         }
         if version != 4

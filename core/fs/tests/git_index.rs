@@ -14,6 +14,8 @@ use sha1::{Digest, Sha1};
 fn run(dir: &Path, args: &[&str]) -> Output {
     Command::new("git")
         .current_dir(dir)
+        .env_clear()
+        .envs(std::env::vars_os().filter(|(name, _)| !name.to_string_lossy().starts_with("GIT_")))
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .args(["-c", "user.name=koi", "-c", "user.email=koi@example.com"])
@@ -88,8 +90,11 @@ fn index(version: u32, entries: &[(&[u8], u16)], extensions: &[u8]) -> Vec<u8> {
         } else {
             &[]
         });
+        bytes.extend(if version == 4 { &[0][..] } else { &[] });
         bytes.extend([*name, &[0]].concat());
-        bytes.resize(start + (bytes.len() - start).next_multiple_of(8), 0);
+        if version < 4 {
+            bytes.resize(start + (bytes.len() - start).next_multiple_of(8), 0);
+        }
     }
     bytes.extend(extensions);
     let checksum = Sha1::digest(&bytes);
@@ -157,13 +162,12 @@ fn reads_version_4_prefix_compressed_paths() {
     let dir = repo(&["dir/aaa.txt", "dir/aab.txt", "dir/sub/x", "other"]);
     let root = dir.path();
     git(root, &["add", "."]);
-    git(root, &["config", "index.skipHash", "true"]);
     git(root, &["update-index", "--index-version", "4"]);
-    let bytes = fs::read(root.join(".git/index")).unwrap();
-    assert_eq!(
-        (&bytes[4..8], &bytes[bytes.len() - 20..]),
-        (&[0, 0, 0, 4][..], &[0; 20][..])
-    );
+    let mut bytes = fs::read(root.join(".git/index")).unwrap();
+    assert_eq!(&bytes[4..8], &[0, 0, 0, 4]);
+    let end = bytes.len() - 20;
+    bytes[end..].fill(0);
+    fs::write(root.join(".git/index"), bytes).unwrap();
     let paths = "dir/aaa.txt dir/aab.txt dir/sub/x other dir/aac.txt dir/aa";
     assert_eq!(answers(&read(root), paths), "yyyynn");
 }
@@ -184,6 +188,13 @@ fn reads_sha256_indexes_with_the_object_format_of_the_common_dir() {
     assert_eq!(answers(&read(root), "a.txt b.txt"), "yy");
     git(root, &["config", "extensions.objectFormat", "sha512"]);
     assert_eq!(answers(&read(root), "a.txt"), "?");
+    let config = fs::read_to_string(root.join(".git/config")).unwrap();
+    fs::write(
+        root.join(".git/config"),
+        config.replace("sha512", "sha\\\n256"),
+    )
+    .unwrap();
+    assert_eq!(answers(&read(root), "a.txt"), "y");
 }
 
 #[test]
@@ -334,6 +345,8 @@ fn an_index_git_refuses_to_read_is_unreadable() {
     assert_eq!(answers(&read(root), "a"), "y");
     fs::write(&path, index(2, &[(b"a", 0x4000)], &[])).unwrap();
     assert!(!read(root).readable(), "extended flags in version 2");
+    fs::write(&path, index(4, &vec![(&b"a"[..], 0xfff); 3000], &[])).unwrap();
+    assert!(!read(root).readable(), "paths far longer than the index");
     let shared = index(2, &[(b"a", 0)], &[]);
     let base = &shared[shared.len() - 20..];
     let hex: String = base.iter().map(|byte| format!("{byte:02x}")).collect();
