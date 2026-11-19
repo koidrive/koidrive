@@ -74,7 +74,6 @@ fn remote(shape: Shape) -> RemoteNode {
     }
 }
 
-/// R's node with its position from the record at `rev`.
 fn remote_at(shape: Shape, rev: u64) -> RemoteNode {
     RemoteNode {
         meta_rev: rev,
@@ -105,7 +104,6 @@ fn local(shape: Shape, ino: u128) -> LocalNode {
     }
 }
 
-/// A node's L, S and R.
 type Row = (
     &'static str,
     Option<Shape>,
@@ -129,7 +127,6 @@ fn trees(nodes: &[Row]) -> Trees {
     trees
 }
 
-/// The same shape in L, S and R.
 fn synced(id: &'static str, shape: Shape) -> Row {
     (
         id,
@@ -199,14 +196,12 @@ fn result(seq: u64, results: Vec<OpResult>) -> CommitResult {
     }
 }
 
-/// Receives `results` for the commit in flight and acknowledges it with R at `seq`.
 fn acknowledge(commits: &mut Commits, trees: &mut Trees, results: Vec<OpResult>) {
     commits.received(result(1, results)).unwrap();
     assert!(commits.acknowledge(trees, 1));
     trees.settle(commits.aliases());
 }
 
-/// Two files that swapped names.
 fn swapped() -> Vec<Row> {
     vec![
         (
@@ -224,7 +219,6 @@ fn swapped() -> Vec<Row> {
     ]
 }
 
-/// Applies the effect that moves the reverted `node` back to its R position.
 fn moves_back(trees: &mut Trees, ids: &mut IdGen, node: &str) {
     let mut effects = Effects::default();
     let record = effects
@@ -622,7 +616,6 @@ fn an_edit_to_the_content_a_lost_commit_replaced() -> (Trees, Commits, IdGen) {
     (trees, commits, IdGen::new(1))
 }
 
-/// Commits a new file `id`, and acknowledges it at `seq` with R holding the file.
 fn commit_file(trees: &mut Trees, commits: &mut Commits, ids: &mut IdGen, id: &str, seq: u64) {
     trees.set_local(id.into(), local(file(ROOT, id, 7), 100 + u128::from(seq)));
     trees.settle(commits.aliases());
@@ -646,7 +639,6 @@ fn commit_file(trees: &mut Trees, commits: &mut Commits, ids: &mut IdGen, id: &s
     trees.settle(commits.aliases());
 }
 
-/// Whether `ops` upload content `digest`, to any node.
 fn uploads(ops: &[op::Op], digest: u8) -> bool {
     ops.iter().any(|op| match op {
         op::Op::CreateFile(create) => (create.content.as_ref())

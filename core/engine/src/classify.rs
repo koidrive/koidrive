@@ -569,7 +569,6 @@ pub struct Trees {
     removed_here: TrackedMap<NodeId, u64>,
     /// See [`TreesState::discarded`].
     discarded: ByParent<Shape>,
-    /// See [`TreesState::removed_from`].
     removed_from: TrackedMap<NodeId, NodeId>,
     forgotten_shapes: TrackedMap<NodeId, Shape>,
     lost_shapes: TrackedMap<NodeId, Shape>,

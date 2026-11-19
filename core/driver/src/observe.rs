@@ -172,8 +172,6 @@ pub struct FsObserver {
     scanned: Option<FileId>,
     /// Whether the batch that follows the first scan of the whole tree is still to be returned.
     first: bool,
-    /// The scopes that may hold a folder whose rules no scan of the current watcher has read: `None` until a poll of
-    /// it has scanned, then the pending scopes that overlap the scopes of the poll before.
     unread_rules: Option<Vec<PathBuf>>,
     delivered: Vec<PathBuf>,
     unanswered: Vec<PathBuf>,

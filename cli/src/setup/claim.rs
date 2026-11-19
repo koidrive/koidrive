@@ -313,7 +313,6 @@ pub async fn saved_device(paths: &Paths, server: &Url) -> Result<bool, CliError>
     }
 }
 
-/// The owner's name for a new server: the login name, which the apps show and the owner can change later.
 pub(super) fn user_name() -> String {
     std::env::var("USER")
         .ok()
@@ -351,7 +350,6 @@ mod tests {
         .encode_to_vec()
     }
 
-    /// A profile whose credential names `server`.
     fn profile(server: &Url) -> (tempfile::TempDir, Paths) {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());

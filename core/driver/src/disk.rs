@@ -182,8 +182,6 @@ pub(crate) enum Settled {
 pub(crate) struct Sections {
     /// Odd while an effect section runs. Each section adds one when it starts and one when it ends.
     epoch: AtomicU64,
-    /// Scopes the observer resets to L's view and scans again before its next batch, by request in the order
-    /// requested, and how many requests there have been.
     resets: Mutex<(Requested, u64)>,
     open: Mutex<Vec<(Requests, Vec<PathBuf>)>>,
     recorded: Mutex<Option<BTreeMap<PathBuf, Known>>>,
@@ -224,8 +222,6 @@ impl Sections {
         self.marks.clone()
     }
 
-    /// The resets to pass to [`FsObserver::reset`] before the next observation, by request, with the count of every
-    /// request made so far.
     pub fn take_resets(&self) -> (Requested, Requests) {
         let mut resets = self.resets.lock().unwrap();
         (std::mem::take(&mut resets.0), Requests(resets.1))

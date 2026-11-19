@@ -882,8 +882,6 @@ impl Engine {
         }
     }
 
-    /// Gives the trees the folders a scan listed, each at the path where it listed it, and the paths where the disk
-    /// may hold what no scan has reported yet ([`Pending`]).
     pub fn listed(&mut self, listed: &[PathBuf], pending: Pending) {
         let listed: Vec<NodeId> = (listed.iter())
             .filter_map(|dir| local_at(&self.trees, dir))
@@ -891,13 +889,11 @@ impl Engine {
         self.trees.listed(&listed, pending);
     }
 
-    /// The paths of the folders a scan saw moved here that a scan must list again ([`Trees::take_relist`]).
     pub fn relist(&mut self) -> Vec<PathBuf> {
         let folders = self.trees.take_relist();
         folders.iter().filter_map(|id| self.path_of(id)).collect()
     }
 
-    /// Whether [`Engine::listed`] would change what the trees hold.
     pub fn sees_unobserved(&self, listed: &[PathBuf], pending: &Pending) -> bool {
         (self.trees).sees_unobserved(
             listed.iter().filter_map(|dir| local_at(&self.trees, dir)),
@@ -1636,7 +1632,6 @@ fn path<N: Node>(tree: &Tree<N>, id: &str) -> String {
     names.join("/")
 }
 
-/// The [`Pending`] of the scopes no scan has settled and of the files that started or stopped waiting to be read.
 pub(crate) fn pending(scopes: &[PathBuf], waiting: &BTreeMap<PathBuf, bool>) -> Pending {
     Pending::new(
         scopes

@@ -108,7 +108,6 @@ pub fn has_sync_entries(root: &Path) -> std::io::Result<bool> {
     })
 }
 
-/// What `core/fs` asks while it scans: the device's matcher, and the rules files the scan has read so far.
 struct Scanned {
     device: Arc<dyn Matcher>,
     files: Rules,

@@ -29,7 +29,6 @@ use crate::terminal::{Progress, Terminal, read_line};
 
 const DEFAULT_FOLDER: &str = "Koidrive";
 
-/// The ways to set up this machine, which `koi setup` lists when it does not guide.
 pub(super) fn choices() -> Vec<Choice> {
     let choice = |argv: &[&str], description| Choice {
         argv: Next::of(argv).argv,
