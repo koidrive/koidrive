@@ -2072,6 +2072,14 @@ fn settle(
                     Reason::Overtaken => {
                         (engine.effects).overtaken(&mut engine.trees, &record.effect_id)
                     }
+                    Reason::Taken(holder) => (engine.effects).taken(
+                        &mut engine.trees,
+                        &record.effect_id,
+                        holder.map(|kind| match kind {
+                            EntryKind::File => Kind::File,
+                            EntryKind::Dir => Kind::Dir,
+                        }),
+                    ),
                     _ => engine.effects.failed(&mut engine.trees, &record.effect_id),
                 }
                 .map_err(refused)?;
@@ -2083,7 +2091,7 @@ fn settle(
                     Reason::Moved => failed("a folder on its path is missing or was replaced"),
                     Reason::Missing => failed("the entry is not there"),
                     Reason::Changed => failed("the entry changed on this device"),
-                    Reason::Taken => failed("another entry holds its name"),
+                    Reason::Taken(_) => failed("another entry holds its name"),
                     Reason::Interrupted => failed("it was interrupted"),
                     Reason::Denied => Settled::Denied(
                         "this device does not allow the change: the folder or the file is read-only or locked; \
@@ -2225,7 +2233,7 @@ fn confirmed(outcome: Outcome, record: &EffectRecord, engine: &Engine) -> Outcom
     }
     let reason = match &record.effect {
         EngineEffect::RemoveDir { .. } | EngineEffect::RemoveFile { .. } => Reason::Missing,
-        _ => Reason::Taken,
+        _ => Reason::Taken(None),
     };
     Outcome::Failed {
         reason,

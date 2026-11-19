@@ -1922,13 +1922,17 @@ impl World {
                 Some(Err(Refused::NotEmpty)) => device.disk.held(&record.effect),
                 _ => Vec::new(),
             };
-            ends.push((record, applied, applies, outcome, held));
+            let taken = match applied {
+                Some(Err(Refused::Taken)) => device.disk.holder_kind(&record.effect),
+                _ => None,
+            };
+            ends.push((record, applied, applies, outcome, held, taken));
         }
         if batch.len() > 1 {
             note(&mut self.seen, "a batch of effects ends in one transaction");
         }
         let device = &mut self.devices[d];
-        for (record, applied, applies, outcome, held) in ends {
+        for (record, applied, applies, outcome, held, taken) in ends {
             let Engine {
                 trees,
                 effects,
@@ -1970,6 +1974,9 @@ impl World {
                         &record.effect_id,
                         &names_and_kinds(&held),
                     )
+                }
+                Some(Err(Refused::Taken)) if applies => {
+                    effects.taken(trees, &record.effect_id, taken)
                 }
                 _ => effects.failed(trees, &record.effect_id).map(|()| {
                     if !applies {

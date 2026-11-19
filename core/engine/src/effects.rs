@@ -733,6 +733,46 @@ impl Effects {
         Ok(())
     }
 
+    /// The driver did not do the effect because an entry of `holder`'s kind holds the name it puts the node at, and
+    /// fails it as [`Effects::failed`] does. When that entry is a folder L does not hold that the rules leave out, and
+    /// the effect writes a file R holds there, the place stays the folder's and the commits give the file a conflict
+    /// name (RFC 0001 section 5).
+    pub fn taken(
+        &mut self,
+        trees: &mut Trees,
+        effect_id: &str,
+        holder: Option<Kind>,
+    ) -> Result<(), EffectError> {
+        let record = self
+            .flight(effect_id)
+            .ok_or_else(|| EffectError::NotInFlight(effect_id.to_owned()))?;
+        let left_out = holder == Some(Kind::Dir)
+            && matches!(record.effect, Effect::WriteFile { replaces: None, .. })
+            && trees.local().get(&record.node).is_none()
+            && (record.after.as_ref()).is_some_and(|after| {
+                let parent = match crate::classify::path(trees.local(), &after.parent) {
+                    Some((names, _)) => Some(names),
+                    None => (after.parent == trees.local().root).then(Vec::new),
+                };
+                trees
+                    .local_holders(&after.parent, &after.name)
+                    .next()
+                    .is_none()
+                    && (trees.remote().live(&record.node))
+                        .is_some_and(|remote| remote.same_position(after))
+                    && parent.is_some_and(|mut names| {
+                        names.push(after.name.as_str());
+                        trees.ignores(&names, Kind::Dir)
+                    })
+            });
+        let node = record.node.clone();
+        self.failed(trees, effect_id)?;
+        if left_out {
+            trees.leave_name_out(&node);
+        }
+        Ok(())
+    }
+
     /// Whether the effect in flight removes a folder that R holds trashed, purged or never held, that the commit in
     /// flight does not create, and whose create the server did not merge into a folder of `merged`, and this device
     /// syncs no entry of `held`,
@@ -881,7 +921,7 @@ pub(crate) fn kept_out(trees: &Trees, id: &NodeId) -> bool {
         && matches!(view.step(id), Step::Blocked(Some(holder)) if !view.parkable(&holder))
 }
 
-pub(crate) fn displaced_by_excluded(trees: &Trees) -> BTreeMap<NodeId, NodeId> {
+pub(crate) fn displaced_by_excluded(trees: &Trees) -> BTreeSet<NodeId> {
     let view = View::new(trees);
     (trees.dirty_others().iter())
         .filter(|id| candidate(trees, id) && !trees.held(id) && !trees.ignored(id))
@@ -895,17 +935,16 @@ pub(crate) fn displaced_by_excluded(trees: &Trees) -> BTreeMap<NodeId, NodeId> {
                 .remote()
                 .get(id)
                 .filter(|node| node.pending_for.is_none())?;
-            let Some(Step::Blocked(Some(holder))) = view.blocked(id, trees.remote().live(id)?)
-            else {
-                return None;
+            let held = match view.blocked(id, trees.remote().live(id)?) {
+                Some(Step::Blocked(Some(holder))) => {
+                    (trees.local().get(&holder)).is_some_and(|node| node.shape.kind == Kind::Dir)
+                        && trees.excluded(&holder)
+                        && !trees.discarded_here(&holder)
+                }
+                None => trees.name_left_out(id),
+                _ => false,
             };
-            let folder =
-                (trees.local().get(&holder)).is_some_and(|node| node.shape.kind == Kind::Dir);
-            (folder
-                && remote.shape.kind != Kind::Dir
-                && trees.excluded(&holder)
-                && !trees.discarded_here(&holder))
-            .then(|| (id.clone(), holder))
+            (held && remote.shape.kind != Kind::Dir).then(|| id.clone())
         })
         .collect()
 }

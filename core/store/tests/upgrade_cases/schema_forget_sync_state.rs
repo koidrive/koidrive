@@ -71,7 +71,7 @@ upgrade_case!(schema_forget_sync_state, |store| {
          discarded_nodes dropped_edits edited_here effect_state effects_in_flight engine_state failed_effects \
          forgotten_shapes given_up guard_confirmed guard_confirmed_limits guard_confirmed_members guard_ledger \
          guard_remote guard_remote_dismissed kept_entries kept_folders kept_nodes kept_originals local_changes local_nodes lost_creates \
-         lost_positions lost_shapes missing_nodes moved_here node_maps node_sets open_question_items open_question_members owed_deletes \
+         lost_positions lost_shapes missing_nodes moved_here names_left_out node_maps node_sets open_question_items open_question_members owed_deletes \
          open_question_shapes open_question_frozen open_questions past_positions pending_finishes published_nodes questions \
          recorded_nodes remote_cursor remote_nodes removed_from removed_here replaced_versions resends synced_nodes synced_positions \
          taken_answers trash_groups trashed_here unobserved unread_folders unread_folders_recorded unseen_changes unsent_creates unsent_edits unsent_marks unsent_moves waiting_updates \

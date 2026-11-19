@@ -307,6 +307,10 @@ pub struct TreesState {
     /// each, or a create brings it back, as the move into the folder would have. The server's ack of it ends the record, and so does R
     /// holding the node live or L dropping it.
     pub unsent_moves: BTreeSet<NodeId>,
+    /// The nodes R holds as a file that this device does not write at their place, because a folder there that L
+    /// does not hold and the rules leave out took their name. A conflict name frees the place (RFC 0001 section 5).
+    /// A new position in R, or L holding the node, ends the record.
+    pub names_left_out: BTreeSet<NodeId>,
     /// The nodes S holds and R lacks after a server loss that a change of this device's user in or
     /// below them needs. Each is created again while S keeps it and what it holds. R taking the
     /// node, the server acknowledging its create, or L dropping it ends the record.
@@ -521,6 +525,7 @@ pub struct TreesChanges {
     pub unsent_edits: SetChanges<NodeId>,
     pub dropped_edits: SetChanges<NodeId>,
     pub unsent_moves: SetChanges<NodeId>,
+    pub names_left_out: SetChanges<NodeId>,
     pub unsent_creates: SetChanges<NodeId>,
     pub kept_folders: SetChanges<NodeId>,
     pub kept_entries: MapChanges<NodeId, KeptEntries>,
@@ -568,6 +573,7 @@ impl TreesChanges {
             unsent_edits,
             dropped_edits,
             unsent_moves,
+            names_left_out,
             unsent_creates,
             kept_folders,
             kept_entries,
@@ -611,6 +617,7 @@ impl TreesChanges {
             unsent_edits: set_changes(&before.unsent_edits, unsent_edits),
             dropped_edits: set_changes(&before.dropped_edits, dropped_edits),
             unsent_moves: set_changes(&before.unsent_moves, unsent_moves),
+            names_left_out: set_changes(&before.names_left_out, names_left_out),
             unsent_creates: set_changes(&before.unsent_creates, unsent_creates),
             kept_folders: set_changes(&before.kept_folders, kept_folders),
             kept_entries: map_changes(&before.kept_entries, kept_entries),

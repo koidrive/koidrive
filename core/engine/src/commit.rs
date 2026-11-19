@@ -265,7 +265,7 @@ impl Commits {
         if self.halted.is_some() || !trees.rules_known() {
             return BTreeSet::new();
         }
-        (effects::displaced_by_excluded(trees).into_keys())
+        (effects::displaced_by_excluded(trees).into_iter())
             .filter(|id| !self.problems.contains(id))
             .filter(|id| !(self.questions.iter()).any(|q| q.holds().any(|held| held == id)))
             .filter(|id| conflict_rename(trees, id, &self.device_name.0, now_ms).is_some())
@@ -3828,7 +3828,7 @@ fn displaced_renames<'a>(
     device_name: &'a str,
     now_ms: u64,
 ) -> impl Iterator<Item = proto::Op> + 'a {
-    (effects::displaced_by_excluded(trees).into_keys())
+    (effects::displaced_by_excluded(trees).into_iter())
         .filter(|id| !skip.contains(id))
         .filter_map(move |id| {
             let shape = trees.remote().live(&id)?;

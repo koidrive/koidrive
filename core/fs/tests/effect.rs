@@ -560,7 +560,7 @@ fn creations_never_take_a_name_that_is_in_use() {
         fs::write(root.join(name), "already here").unwrap();
         assert_eq!(
             apply(root, &effect, |_| {}),
-            failed(Reason::Taken),
+            failed(Reason::Taken(Some(EntryKind::File))),
             "{}",
             scenario.name
         );
@@ -575,7 +575,10 @@ fn move_needs_the_source_identity_and_a_free_target() {
     let root = dir.path();
     let effect = prepare(&SCENARIOS[3], root);
     fs::write(root.join("other/b.txt"), "taken").unwrap();
-    assert_eq!(apply(root, &effect, |_| {}), failed(Reason::Taken));
+    assert_eq!(
+        apply(root, &effect, |_| {}),
+        failed(Reason::Taken(Some(EntryKind::File)))
+    );
     assert_eq!(fs::read(root.join("docs/a.txt")).unwrap(), SYNCED);
     assert_eq!(fs::read(root.join("other/b.txt")).unwrap(), b"taken");
 

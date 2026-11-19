@@ -659,6 +659,7 @@ pub struct Trees {
     /// See [`TreesState::dropped_edits`].
     dropped_edits: TrackedSet<NodeId>,
     unsent_moves: TrackedSet<NodeId>,
+    names_left_out: TrackedSet<NodeId>,
     unsent_creates: TrackedSet<NodeId>,
     kept_folders: TrackedSet<NodeId>,
     kept_entries: TrackedMap<NodeId, KeptEntries>,
@@ -785,6 +786,7 @@ impl Trees {
             unsent_edits: TrackedSet::default(),
             dropped_edits: TrackedSet::default(),
             unsent_moves: TrackedSet::default(),
+            names_left_out: TrackedSet::default(),
             unsent_creates: TrackedSet::default(),
             kept_folders: TrackedSet::default(),
             kept_entries: TrackedMap::default(),
@@ -1207,6 +1209,9 @@ impl Trees {
     }
 
     fn apply_remote(&mut self, id: NodeId, node: RemoteNode, made: Made) {
+        if !(self.r.live(&id)).is_some_and(|old| !node.trashed && old.same_position(&node.shape)) {
+            self.names_left_out.remove(&id);
+        }
         let made_here = made != Made::Elsewhere;
         let edit = matches!(made, Made::Edit | Made::Answer);
         if edit {
@@ -1780,6 +1785,7 @@ impl Trees {
     }
 
     pub fn remove_remote(&mut self, id: &NodeId) {
+        self.names_left_out.remove(id);
         self.cycles_may_end = true;
         self.place_ids.remove(id);
         self.remote_rules_files.remove(id);
@@ -2145,6 +2151,7 @@ impl Trees {
         self.lost.remove(&id);
         self.removed_from.remove(&id);
         self.found.remove(&id);
+        self.names_left_out.remove(&id);
         if self.outside.remove(&id) {
             let children: Vec<NodeId> = self.l_names.children(&id).cloned().collect();
             self.outside.extend(children);
@@ -3458,6 +3465,14 @@ impl Trees {
             self.displaced.remove(id);
             self.mark(id);
         }
+    }
+
+    pub(crate) fn leave_name_out(&mut self, id: &str) {
+        self.names_left_out.insert(id.to_owned());
+    }
+
+    pub(crate) fn name_left_out(&self, id: &str) -> bool {
+        self.names_left_out.contains(id)
     }
 
     /// The nodes [`Trees::displace_local`] took out of L, each with the identity L held for it.
@@ -7043,6 +7058,13 @@ impl Trees {
             "an unsent move of a node L does not hold or that L, S and R all hold"
         );
         debug_assert_eq!(
+            (self.names_left_out.iter())
+                .find(|id| self.l.get(id).is_some() || self.r.live(id).is_none())
+                .cloned(),
+            None,
+            "a name left out for a node L holds or R does not hold live"
+        );
+        debug_assert_eq!(
             (self.unsent_creates.iter())
                 .find(|id| self.l.get(id).is_none() || self.r.get(id).is_some())
                 .cloned(),
@@ -7135,6 +7157,7 @@ impl Trees {
             unsent_edits: self.unsent_edits.to_set(),
             dropped_edits: self.dropped_edits.to_set(),
             unsent_moves: self.unsent_moves.to_set(),
+            names_left_out: self.names_left_out.to_set(),
             unsent_creates: self.unsent_creates.to_set(),
             kept_folders: self.kept_folders.to_set(),
             kept_entries: self.kept_entries.to_map(),
@@ -7191,6 +7214,7 @@ impl Trees {
             unsent_edits,
             dropped_edits,
             unsent_moves,
+            names_left_out,
             unsent_creates,
             kept_folders,
             kept_entries,
@@ -7271,6 +7295,7 @@ impl Trees {
             unsent_edits: unsent_edits.take_changes(),
             dropped_edits: dropped_edits.take_changes(),
             unsent_moves: unsent_moves.take_changes(),
+            names_left_out: names_left_out.take_changes(),
             unsent_creates: unsent_creates.take_changes(),
             kept_folders: kept_folders.take_changes(),
             kept_entries: kept_entries.take_changes(),
@@ -7513,6 +7538,7 @@ impl Trees {
             unsent_edits,
             dropped_edits,
             unsent_moves,
+            names_left_out,
             unsent_creates,
             kept_folders,
             kept_entries,
@@ -7570,6 +7596,7 @@ impl Trees {
         self.unsent_edits = unsent_edits.into();
         self.dropped_edits = dropped_edits.into();
         self.unsent_moves = unsent_moves.into();
+        self.names_left_out = names_left_out.into();
         self.unsent_creates = unsent_creates.into();
         self.kept_folders = kept_folders.into();
         self.kept_entries = kept_entries.into();

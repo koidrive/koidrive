@@ -199,6 +199,19 @@ impl Disk {
             .collect()
     }
 
+    pub fn holder_kind(&self, effect: &Effect) -> Option<Kind> {
+        let at = match effect {
+            Effect::CreateDir { at } | Effect::WriteFile { at, .. } => at,
+            Effect::Move { to, .. } => to,
+            _ => return None,
+        };
+        let entry = &self.entries[&self.holder(at)?];
+        Some(match entry.content {
+            Some(_) => Kind::File,
+            None => Kind::Dir,
+        })
+    }
+
     pub fn child(&self, place: &Place, name: &str) -> Option<u128> {
         self.children(place)
             .find(|ino| self.entries[ino].name == name)

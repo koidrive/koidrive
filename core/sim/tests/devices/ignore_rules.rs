@@ -105,13 +105,18 @@ fn a_folder_kept_for_excluded_entries_waits_for_a_scan_of_itself_once_they_go() 
 }
 
 #[test]
-fn a_file_made_at_the_name_of_a_folder_its_rules_exclude_waits_for_that_name() {
-    let _red = expect_red(
-        Check::NameLeftOut,
-        "device 1 is quiet, but the effects for [\"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\"] wait for names that entries its rules leave out hold",
-    );
+fn a_file_made_at_the_name_of_a_folder_its_rules_exclude_downloads_under_a_conflict_name() {
     let phases = [vec![(1, folder("ss"))], vec![(0, file("ss"))]];
-    converge_excluding(&[vec![], vec!["ss/"]], &phases).unwrap();
+    let world = converge_excluding(&[vec![], vec!["ss/"]], &phases).unwrap();
+    let names: Vec<String> = (files_on(&world, 0).into_iter())
+        .map(|(name, _)| name)
+        .collect();
+    let [copy] = names.as_slice() else {
+        panic!("{names:?}");
+    };
+    assert!(copy.starts_with("ss (conflict from "), "{copy}");
+    assert_eq!(content_on(&world, 1, copy), content_on(&world, 0, copy));
+    assert_eq!(world.devices[1].disk.entries().len(), 2);
 }
 
 #[test]
@@ -477,4 +482,31 @@ fn a_file_edited_then_moved_into_an_ignored_folder_keeps_its_edit_there_when_its
 #[test]
 fn a_folder_moved_into_an_ignored_folder_with_an_edit_keeps_it_there_when_its_old_folder_goes() {
     edited_then_moved_into_an_ignored_folder(true);
+}
+
+#[test]
+fn a_file_at_the_name_of_a_left_out_folder_downloads_at_that_name_once_the_folder_moves_away() {
+    let mut racing = vec![(0, user(1, 0, 1, "ss"))];
+    racing.extend(commit(0));
+    racing.extend([
+        (1, DELIVER),
+        (1, EFFECT),
+        (1, EFFECT),
+        (1, rename(1, 0, "ss")),
+    ]);
+    let phases = [
+        vec![(0, folder("b"))],
+        vec![(1, user(0, 0, 1, "ss"))],
+        racing,
+    ];
+    let world = converge_excluding(&[vec![], vec!["ss/"]], &phases).unwrap();
+    let files = |device| -> Vec<(String, Option<Content>)> {
+        (files_on(&world, device).into_iter())
+            .filter(|(_, content)| content.is_some())
+            .collect()
+    };
+    assert_eq!(files(0).len(), 1);
+    assert_eq!(files(1), files(0));
+    assert_eq!(files(1)[0].0, "ss");
+    assert_eq!(world.devices[1].disk.entries().len(), 3);
 }

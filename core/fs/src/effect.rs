@@ -163,8 +163,9 @@ pub enum Reason {
     Missing,
     /// The entry the effect acts on differs from the one expected.
     Changed,
-    /// The name the effect puts an entry at is taken.
-    Taken,
+    /// The name the effect puts an entry at is taken, by an entry of this kind: none for an entry
+    /// that is neither a file nor a folder, or that was gone when it was looked at.
+    Taken(Option<EntryKind>),
     /// Recovery found the effect stopped before it displaced anything.
     Interrupted,
     /// The effect sent the entry it replaced to the local trash, and its
@@ -688,7 +689,7 @@ impl Space {
                 resolve!(self.recheck(&parent));
                 match rustix::fs::mkdirat(parent.fd(), name, Mode::from_raw_mode(0o755)) {
                     Ok(()) => self.flush_folder(&parent, Flush::Plain)?,
-                    Err(Errno::EXIST) => return Ok(failed(Reason::Taken)),
+                    Err(Errno::EXIST) => return taken(parent.fd(), name),
                     Err(err) => return denied(err.into()),
                 }
                 let folder = mark::open(parent.fd(), name)?.ok_or(io::ErrorKind::NotFound)?;
@@ -737,7 +738,7 @@ impl Space {
                 match rename_no_replace(source.fd(), name, target.fd(), new_name) {
                     Ok(()) => {}
                     Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                        return Ok(failed(Reason::Taken));
+                        return taken(target.fd(), new_name);
                     }
                     Err(err) if err.kind() == io::ErrorKind::NotFound => {
                         return Ok(failed(Reason::Missing));
@@ -868,7 +869,7 @@ impl Space {
         match rename_no_replace(staging.fd(), id, target.fd(), name) {
             Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                return Ok(failed(Reason::Taken));
+                return taken(target.fd(), name);
             }
             Err(err) => return denied(err),
         }
@@ -1250,11 +1251,7 @@ fn held(parent: BorrowedFd<'_>, name: &OsStr, along: &[Displaced]) -> io::Result
         let Some(stat) = lookup(dir.as_fd(), &name)? else {
             continue;
         };
-        let kind = match stat.file_type {
-            FileType::Directory => Some(EntryKind::Dir),
-            FileType::RegularFile => Some(EntryKind::File),
-            _ => None,
-        };
+        let kind = entry_kind(stat.file_type);
         if !platform_file(&name, kind) {
             held.push((name, kind));
         }
@@ -1277,6 +1274,19 @@ fn clear_platform_files(quarantine: BorrowedFd<'_>, id: &OsStr) -> io::Result<()
         remove_if_present(dir.as_fd(), name)?;
     }
     flush(dir.as_fd(), Flush::Plain)
+}
+
+fn entry_kind(file_type: FileType) -> Option<EntryKind> {
+    match file_type {
+        FileType::Directory => Some(EntryKind::Dir),
+        FileType::RegularFile => Some(EntryKind::File),
+        _ => None,
+    }
+}
+
+fn taken(dir: BorrowedFd<'_>, name: &OsStr) -> io::Result<Outcome> {
+    let holder = lookup(dir, name)?.and_then(|stat| entry_kind(stat.file_type));
+    Ok(failed(Reason::Taken(holder)))
 }
 
 fn lookup(dir: BorrowedFd<'_>, name: &OsStr) -> io::Result<Option<Stat>> {
