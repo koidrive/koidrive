@@ -625,3 +625,73 @@ fn a_volume_root_born_on_one_side_only_comes_back_only_as_a_fat_or_exfat_volume(
     assert!(!root(born, disk).is_back(&root(None, disk), Some(disk)));
     assert!(root(born, stick).is_back(&root(None, stick), Some(disk)));
 }
+
+fn visits<T>(budget: u64, work: impl FnOnce() -> T) -> (T, u64) {
+    VISITED.set(0);
+    VISIT_BUDGET.set(budget);
+    let done = work();
+    VISIT_BUDGET.set(u64::MAX);
+    (done, VISITED.get())
+}
+
+#[derive(Clone, Copy)]
+enum Moved {
+    OutOfOneFolder,
+    EachOutOfItsOwnFolder,
+    WithAHardLinkLeftBehind,
+}
+
+fn moved_out_of_removed_folders(moved: Moved, files: usize, budget: u64) -> u64 {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(root.join(Source::Koiignore.file_name()), "ig\n").unwrap();
+    fs::create_dir_all(root.join("ig/deep")).unwrap();
+    fs::write(root.join("ig/deep/old.txt"), "o").unwrap();
+    fs::create_dir(root.join("e")).unwrap();
+    fs::create_dir(root.join("keep")).unwrap();
+    let from = |i: usize| match moved {
+        Moved::EachOutOfItsOwnFolder => root.join(format!("d{i}/f")),
+        Moved::OutOfOneFolder | Moved::WithAHardLinkLeftBehind => root.join(format!("d/{i}")),
+    };
+    for i in 0..files {
+        fs::create_dir_all(from(i).parent().unwrap()).unwrap();
+        fs::write(from(i), "x").unwrap();
+        if let Moved::WithAHardLinkLeftBehind = moved {
+            fs::hard_link(from(i), root.join(format!("keep/{i}"))).unwrap();
+        }
+    }
+    let mut rules = Rules::new(Box::new(Lines::default()));
+    let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
+    for i in 0..files {
+        let to = files - 1 - i;
+        fs::rename(from(i), root.join(format!("e/{to}"))).unwrap();
+        if let Moved::EachOutOfItsOwnFolder = moved {
+            fs::remove_dir(from(i).parent().unwrap()).unwrap();
+        }
+    }
+    if let Moved::OutOfOneFolder | Moved::WithAHardLinkLeftBehind = moved {
+        fs::remove_dir(root.join("d")).unwrap();
+    }
+
+    let (rescan, visited) = visits(budget, || {
+        snapshot.rescan_with_rules(root, [PathBuf::new()], &mut rules)
+    });
+    let renamed = (rescan.unwrap().changes.iter())
+        .filter(|change| matches!(change, Change::Renamed { .. }))
+        .count();
+    assert_eq!(renamed, files);
+    assert!(visited > 0);
+    visited
+}
+
+#[test]
+fn many_files_moved_out_of_removed_folders_are_matched_in_linear_work() {
+    for moved in [
+        Moved::OutOfOneFolder,
+        Moved::EachOutOfItsOwnFolder,
+        Moved::WithAHardLinkLeftBehind,
+    ] {
+        let five_hundred = moved_out_of_removed_folders(moved, 500, u64::MAX);
+        moved_out_of_removed_folders(moved, 5_000, five_hundred * 11);
+    }
+}
