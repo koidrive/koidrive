@@ -1344,7 +1344,8 @@ impl Commits {
     /// while the rules are unknown ([`Trees::rules_known`]). A folder L deleted that still holds
     /// an excluded node in R is not deleted, since that would trash the excluded node on the
     /// server: each topmost deleted node below it with no excluded node in its subtree gets its
-    /// own delete, and the folder stays (section 5.10).
+    /// own delete, and the folder stays (section 5.10). A node only a built-in exclusion leaves out
+    /// ([`Trees::built_in`]) does not count: no device syncs it, so it goes with the folder.
     ///
     /// A node an open question holds gets no op. Every other deletion that could be planned now goes
     /// through the mass-delete guard first (section 6.1), and the commit carries the changes it
@@ -4385,12 +4386,14 @@ fn plan(
             members.insert(node.clone());
             below.extend(children.get(node.as_str()).into_iter().flatten());
         }
+        members.extend((scratch.subtree(id).into_iter()).filter(|node| trees.built_in(node)));
         let bytes: usize = members
             .iter()
             .map(|node| record_cost(trees.synced().live(node)) + held_ancestry_cost(trees, node))
             .sum();
         let kept = (scratch.subtree(id).iter()).any(|node| {
-            trees.excluded(node) || trees.kept_original(node).is_some() || trees.held(node)
+            !trees.built_in(node) && (trees.excluded(node) || trees.held(node))
+                || trees.kept_original(node).is_some()
         });
         let opened = (members.iter()).any(|node| node != id && trash_groups.contains_key(node));
         match children.get(id.as_str()) {

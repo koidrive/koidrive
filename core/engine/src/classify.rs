@@ -3673,7 +3673,19 @@ impl Trees {
         !self.l.get(id).is_some_and(|node| node.parked) && self.ignored(id)
     }
 
-    /// Whether L no longer holds a node while R holds an excluded node below it. The commit planner sends no
+    /// Whether a built-in exclusion leaves the node out where the server holds it, so no device syncs it there.
+    /// Such a node does not keep a folder L deleted on the server: the folder's delete takes it along.
+    pub fn built_in(&self, id: &str) -> bool {
+        path(&self.r, id).is_some_and(|(names, kind)| {
+            let kind = match kind {
+                Kind::Dir => koidrive_ignore::Kind::Dir,
+                Kind::File => koidrive_ignore::Kind::File,
+            };
+            self.ignore.status(&names, kind) == Status::Excluded(koidrive_ignore::Reason::BuiltIn)
+        })
+    }
+
+    /// Whether L no longer holds a node while R holds an excluded node below it, other than a built-in one. The commit planner sends no
     /// `Delete` for such a folder, which stays on the server with what it holds that this device leaves out
     /// (section 5.10), and the effects do not create it again, so nothing is left to sync for it. The returned check
     /// remembers what it found below each node, so asking it about every node of R reads each node once.
@@ -3711,8 +3723,7 @@ impl Trees {
         }
         below.insert(id.to_owned(), false);
         let found = (children.get(id).into_iter().flatten()).any(|child| {
-            self.excluded(child)
-                || self.vanished(child)
+            (self.excluded(child) || self.vanished(child)) && !self.built_in(child)
                 || self.excluded_below(child, children, below)
         });
         below.insert(id.to_owned(), found);

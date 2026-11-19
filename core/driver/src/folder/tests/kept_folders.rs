@@ -79,6 +79,21 @@ fn a_remote_delete_trashes_the_synced_files_and_keeps_env_and_node_modules() {
 }
 
 #[test]
+fn a_remote_delete_keeps_a_folder_that_holds_what_the_system_writes_on_a_disk() {
+    let ignored = [
+        ".fseventsd/fsevents-1",
+        ".Trashes/501/old.docx",
+        "$RECYCLE.BIN/x",
+    ];
+    let (remote, _, _, site, b, _) = deleted_with_ignored_entries(&["report.docx"], &ignored);
+
+    assert_kept(&site, &b, &ignored);
+    assert!(!site.root.join("app/report.docx").exists());
+    assert!(b.sent.is_empty());
+    assert!(remote.names().is_empty());
+}
+
+#[test]
 fn a_remote_delete_keeps_a_folder_whose_ignored_entries_sit_at_several_depths() {
     let ignored = ["sub/deeper/build.log", "other/.env", "sub/node_modules/x/y.js"];
     let synced = ["sub/a.txt", "sub/deeper/b.txt", "other/c.txt", "d.txt"];

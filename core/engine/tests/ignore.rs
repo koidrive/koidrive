@@ -587,6 +587,44 @@ fn a_remote_change_to_an_excluded_node_does_not_bring_back_a_folder_the_user_del
 }
 
 #[test]
+fn deleting_a_folder_whose_excluded_nodes_are_all_built_in_deletes_it_with_them() {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "Disk")),
+        synced("doc", file("d", "report.docx", 1)),
+        synced("trashes", dir("d", ".Trashes")),
+        synced("old", file("trashes", "old.docx", 2)),
+        synced("events", dir("d", ".fseventsd")),
+        synced("store", file("d", ".DS_Store", 3)),
+    ]);
+    assert_eq!(ops(&mut trees), [], "nodes an older client synced");
+    for id in ["old", "trashes", "events", "store", "doc", "d"] {
+        trees.remove_local(id);
+    }
+    assert_eq!(ops(&mut trees), [delete("d")]);
+    for id in ["d", "doc", "trashes", "old", "events", "store"] {
+        trash(&mut trees, id);
+    }
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(effects(&mut trees), []);
+    assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_deleted_folder_that_also_holds_a_node_the_rules_exclude_stays() {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "Disk")),
+        synced("trashes", dir("d", ".Trashes")),
+        synced("log", file("d", "a.log", 1)),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
+    for id in ["trashes", "log", "d"] {
+        trees.remove_local(id);
+    }
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(effects(&mut trees), []);
+}
+
+#[test]
 fn a_folder_deleted_here_that_another_device_moved_comes_back_there_and_frees_its_old_name() {
     let mut trees = trees(&[
         synced("m", dir(ROOT, "m")),
