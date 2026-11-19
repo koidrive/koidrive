@@ -12997,3 +12997,21 @@ fn a_change_answered_discard_never_excuses_undoing_a_delete() {
     ];
     converge(3, &phases).unwrap();
 }
+
+#[test]
+fn a_held_folder_its_user_deletes_settles_the_never_sent_folder_inside_it() {
+    converge(
+        2,
+        &[
+            vec![(0, Step::Backup), (1, folder("a"))],
+            vec![
+                (0, Step::Rewind),
+                (0, user(0, 0, 1, "c.txt")),
+                (0, Step::Connect),
+                (0, DELIVER),
+                (0, delete(0)),
+            ],
+        ],
+    )
+    .unwrap();
+}
