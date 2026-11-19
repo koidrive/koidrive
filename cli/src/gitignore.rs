@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
-use koidrive_driver::Paths;
+use koidrive_driver::{FolderStatus, Paths};
 use koidrive_ipc::{GitignoreFolder, Request, Response};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -115,14 +115,18 @@ fn set_done(follows: bool, already: bool) -> Done {
     }
 }
 
+async fn linked(paths: &Paths) -> Result<Vec<FolderStatus>, CliError> {
+    match ipc::run(paths, Request::Status).await? {
+        Response::Status { status } => Ok(status.folders),
+        other => Err(unexpected(other)),
+    }
+}
+
 async fn counted(paths: &Paths, only: Option<&Path>) -> Result<Vec<GitignoreFolderData>, CliError> {
-    let folders: BTreeMap<String, String> = match ipc::run(paths, Request::Status).await? {
-        Response::Status { status } => (status.folders.into_iter())
-            .filter_map(|folder| Some((folder.space_id, folder.path?)))
-            .collect(),
-        other => return Err(unexpected(other)),
-    };
-    let linked = match only {
+    let folders: BTreeMap<String, String> = (linked(paths).await?.into_iter())
+        .filter_map(|folder| Some((folder.space_id, folder.path?)))
+        .collect();
+    let asked = match only {
         Some(only) => vec![GitignoreFolder::Folder(only.to_path_buf())],
         None => folders
             .keys()
@@ -131,8 +135,23 @@ async fn counted(paths: &Paths, only: Option<&Path>) -> Result<Vec<GitignoreFold
             .collect(),
     };
     let mut counted = Vec::new();
-    for of in linked {
-        match ipc::run(paths, Request::GitignoreOnly { of }).await? {
+    for of in asked {
+        let space = match &of {
+            GitignoreFolder::Space(space_id) => Some(space_id.clone()),
+            GitignoreFolder::Folder(_) => None,
+        };
+        let response = match ipc::run(paths, Request::GitignoreOnly { of }).await {
+            Ok(response) => response,
+            Err(error) => match space {
+                Some(space_id)
+                    if !(linked(paths).await?.iter()).any(|folder| folder.space_id == space_id) =>
+                {
+                    continue;
+                }
+                _ => return Err(error),
+            },
+        };
+        match response {
             Response::GitignoreOnly {
                 space_id,
                 files,
@@ -245,5 +264,54 @@ async fn confirm(paths: &Paths, terminal: &Terminal) -> Result<(), CliError> {
     {
         true => Ok(()),
         false => Err("stopped; nothing was changed".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use koidrive_driver::Driver;
+    use koidrive_ipc::{bind, read_line, write_line};
+
+    use super::*;
+    use crate::ipc::tests::{SPACE, linked_at, linked_profile};
+
+    #[tokio::test]
+    async fn a_folder_unlinked_while_the_folders_are_counted_drops_only_its_row() {
+        let (_dir, paths, root) = linked_profile();
+        linked_at(&paths, SPACE, &root);
+        fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        fs::write(root.join("a.log"), "abc").unwrap();
+        let other = root.with_file_name("Other");
+        fs::create_dir(&other).unwrap();
+        let unlinked = "0190f0a0-0000-7000-8000-000000000002";
+        linked_at(&paths, unlinked, &other);
+        let driver = Driver::open(paths.clone()).unwrap();
+        let daemon = bind(&paths.socket()).unwrap();
+        let served = tokio::spawn(async move {
+            loop {
+                let (stream, _) = daemon.accept().await.unwrap();
+                let (mut reader, mut writer) = stream.into_split();
+                let line = read_line(&mut reader).await.unwrap();
+                let request: Request = serde_json::from_str(&line).unwrap();
+                if matches!(&request, Request::GitignoreOnly { of: GitignoreFolder::Space(space) } if space == unlinked)
+                {
+                    driver.unlink(&other).await.unwrap();
+                }
+                let response = crate::ipc::handle(&driver, request).await;
+                write_line(&mut writer, &response).await.unwrap();
+            }
+        });
+
+        let rows = counted(&paths, None).await;
+        served.abort();
+        let rows: Vec<_> = (rows.unwrap().into_iter())
+            .map(|row| (row.space_id, row.path, row.files, row.bytes))
+            .collect();
+        assert_eq!(
+            rows,
+            [(SPACE.to_owned(), root.to_string_lossy().into_owned(), 1, 3)]
+        );
     }
 }

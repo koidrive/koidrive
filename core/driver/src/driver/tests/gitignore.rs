@@ -253,3 +253,43 @@ async fn gitignore_only_counts_a_linked_root_a_symbolic_link_leads_to() {
     };
     assert_eq!(driver.gitignore_only(SPACE).unwrap(), counted);
 }
+
+#[tokio::test]
+async fn gitignore_only_counts_a_linked_root_only_when_its_marker_admits_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = fs::canonicalize(dir.path()).unwrap();
+    let root = base.join("Koidrive");
+    let driver = gitignore_only_of(&base, &root);
+    let tokens = koidrive_fs::RootTokens {
+        current: Some("b".repeat(32)),
+        pending: None,
+    };
+    (Store::open(driver.paths().store(SPACE).unwrap()).unwrap())
+        .transaction(|tx| tx.set_root_tokens(&tokens))
+        .unwrap();
+    let put_back = |effects| Marker {
+        space_id: SPACE.into(),
+        effects,
+        token: Some("a".repeat(32)),
+    };
+    write_marker(&root, &put_back(0)).unwrap();
+    let blocked = GitignoreOnly {
+        files: 0,
+        bytes: 0,
+        unreadable: vec![root.clone()],
+    };
+    assert_eq!(driver.gitignore_only(SPACE).unwrap(), blocked);
+
+    write_marker(&root, &put_back(1)).unwrap();
+    let counted = GitignoreOnly {
+        files: 1,
+        bytes: 3,
+        unreadable: Vec::new(),
+    };
+    assert_eq!(driver.gitignore_only(SPACE).unwrap(), counted);
+    assert_eq!(koidrive_fs::read_marker(&root).unwrap(), Some(put_back(1)));
+    let stored = (Store::open(driver.paths().store(SPACE).unwrap()).unwrap())
+        .transaction(|tx| tx.root_tokens())
+        .unwrap();
+    assert_eq!(stored, tokens);
+}
