@@ -1047,6 +1047,10 @@ fn a_folder_a_rewind_took_while_its_pending_create_was_in_flight_gets_its_name()
 
 #[test]
 fn an_answer_whose_folder_lands_on_a_taken_name_goes_with_what_trashes_its_children_again() {
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7735-80db-d7e668859a70 on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let phases: Vec<Vec<(usize, Step)>> = vec![
         vec![
             (

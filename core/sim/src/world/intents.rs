@@ -174,6 +174,7 @@ pub(super) struct Intent {
     pub(super) applied: u64,
     pub(super) lost: bool,
     pub(super) dropped: bool,
+    kept: bool,
     restored: bool,
     pub(super) forgotten: bool,
     pub(super) answer: bool,
@@ -183,6 +184,10 @@ pub(super) struct Intent {
 impl Intent {
     pub(super) fn restore_answer(&self) -> bool {
         self.kind == RESTORE_ANSWER
+    }
+
+    pub(super) fn stands(&self) -> bool {
+        !self.dropped || self.kept
     }
 }
 
@@ -286,6 +291,7 @@ impl Intents {
             applied: 0,
             lost: false,
             dropped: false,
+            kept: false,
             restored: false,
             forgotten: false,
             answer: false,
@@ -382,6 +388,41 @@ impl Intents {
 
     fn on(&self, i: usize, node: &str) -> bool {
         self.nodes(i).any(|id| id == node)
+    }
+
+    fn same_value(&self, a: usize, b: usize) -> bool {
+        let same = match (&self.list[a].value, &self.list[b].value) {
+            (Value::Content { digest, .. }, Value::Content { digest: other, .. }) => {
+                digest == other
+            }
+            (Value::Live, Value::Live) => true,
+            (
+                Value::Place { parent, name },
+                Value::Place {
+                    parent: other_parent,
+                    name: other_name,
+                },
+            ) => {
+                let same_parent = match (parent, other_parent) {
+                    (None, None) => true,
+                    (Some(parent), Some(other_parent)) => {
+                        let (a, b) = (&self.list[a], &self.list[b]);
+                        self.nodes_of(a.author, *parent, a.made).any(|id| {
+                            self.nodes_of(b.author, *other_parent, b.made)
+                                .any(|other| other == id)
+                        })
+                    }
+                    _ => false,
+                };
+                nfc(name) == nfc(other_name) && same_parent
+            }
+            _ => false,
+        };
+        same && self.nodes(a).any(|id| self.on(b, id))
+    }
+
+    pub(super) fn saw_value(&self, i: usize, j: usize) -> bool {
+        (0..self.list.len()).any(|k| self.saw(i, k) && (k == j || self.same_value(j, k)))
     }
 
     fn parent_is(&self, i: usize, parent: Option<u128>, held: &str, root: &str) -> bool {
@@ -540,9 +581,18 @@ impl Intents {
         }
     }
 
-    pub(super) fn rewound(&mut self, clock: u64) {
-        for intent in &mut self.list {
-            intent.dropped |= intent.made < clock;
+    fn drop_unless_held(&mut self, i: usize, server: &Server) {
+        let kept = self.holds(i, server, true);
+        let intent = &mut self.list[i];
+        intent.kept = kept && (intent.kept || !intent.dropped);
+        intent.dropped = true;
+    }
+
+    pub(super) fn rewound(&mut self, server: &Server, clock: u64) {
+        for i in 0..self.list.len() {
+            if self.list[i].made < clock {
+                self.drop_unless_held(i, server);
+            }
         }
     }
 
@@ -552,10 +602,11 @@ impl Intents {
         }
     }
 
-    pub(super) fn give_up(&mut self, d: usize, nodes: &BTreeSet<NodeId>) {
+    pub(super) fn give_up(&mut self, server: &Server, d: usize, nodes: &BTreeSet<NodeId>) {
         for i in 0..self.list.len() {
-            let given_up = self.list[i].author == d && self.nodes(i).any(|id| nodes.contains(id));
-            self.list[i].dropped |= given_up;
+            if self.list[i].author == d && self.nodes(i).any(|id| nodes.contains(id)) {
+                self.drop_unless_held(i, server);
+            }
         }
     }
 
@@ -674,7 +725,7 @@ impl Intents {
         into_itself
             || (0..self.list.len()).any(|j| {
                 let other = &self.list[j];
-                let dropped = other.dropped && !other.held;
+                let dropped = !other.stands();
                 if j == i || dropped && !other.restored {
                     return false;
                 }
@@ -720,31 +771,10 @@ impl Intents {
                         && self.saw(j, k)
                 });
                 let saw_the_value = (0..self.list.len()).any(|k| {
-                    let Value::Place { parent, name } = &intent.value else {
-                        return false;
-                    };
-                    let Value::Place {
-                        parent: seen_parent,
-                        name: seen_name,
-                    } = &self.list[k].value
-                    else {
-                        return false;
-                    };
-                    let same_parent = match (parent, seen_parent) {
-                        (None, None) => true,
-                        (Some(parent), Some(seen_parent)) => self
-                            .nodes_of(intent.author, *parent, intent.made)
-                            .any(|id| {
-                                self.nodes_of(self.list[k].author, *seen_parent, self.list[k].made)
-                                    .any(|seen| seen == id)
-                            }),
-                        _ => false,
-                    };
                     k != i
+                        && matches!(intent.value, Value::Place { .. })
                         && self.saw(j, k)
-                        && nfc(name) == nfc(seen_name)
-                        && same_parent
-                        && self.nodes(i).any(|id| self.on(k, id))
+                        && self.same_value(i, k)
                 });
                 let merged = self.nodes(i).any(|id| {
                     self.merged.contains_key(id)
@@ -760,7 +790,7 @@ impl Intents {
                             && other.author != intent.author
                             && (!other.lost || other.carried.is_some()));
                 match dropped {
-                    true => field == Field::Content && deleted,
+                    true => matches!(field, Field::Content | Field::Place) && deleted,
                     false => replaced || looped || deleted,
                 }
             })
@@ -881,8 +911,14 @@ mod tests {
         assert!(a_delete_of_another_devices_write(
             |intents, node| intents.restore_deleted(0, node)
         ));
-        assert!(!a_delete_of_another_devices_write(
-            |intents, node| intents.give_up(0, node)
-        ));
+        assert!(!a_delete_of_another_devices_write(|intents, node| {
+            let live = NodeState {
+                node_id: "n".to_owned(),
+                parent_id: "root".to_owned(),
+                status: NodeStatus::Live as i32,
+                ..NodeState::default()
+            };
+            intents.give_up(&Server::of("root", vec![live]), 0, node)
+        }));
     }
 }

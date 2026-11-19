@@ -163,11 +163,12 @@ impl Deletion {
                 let excused = (0..intents.len()).any(|j| {
                     let other = intents.intent(j);
                     j != i
-                        && !other.dropped
+                        && other.stands()
                         && !other.restore_answer()
                         && !matches!(other.value, Value::Trashed { .. })
-                        && (!other.answer || other.made > delete.made)
-                        && (intents.saw(j, i) || !intents.saw(i, j) && !other.lost)
+                        && !intents.saw(i, j)
+                        && !(other.answer && intents.saw_value(i, j))
+                        && (intents.saw(j, i) || !other.lost)
                         && brings_back(j)
                 });
                 (!excused).then(|| node.clone())

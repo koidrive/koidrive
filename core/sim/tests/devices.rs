@@ -11847,6 +11847,10 @@ fn a_store_rollback_after_a_rewind_dropped_a_rename_does_not_commit_it_again() {
 
 #[test]
 fn a_conflict_name_the_server_gave_a_marked_file_is_not_taken_for_a_rename() {
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7504-af4d-4d6a531020af on device 0 came undone, and no change its user did not see brought the node back",
+    );
     let u = drawn_with;
     let phases = vec![
         vec![
@@ -12839,4 +12843,157 @@ fn a_download_its_user_moved_before_the_restart_is_a_new_file_to_delete() {
     );
     let delete = at_entry(&world, 0, "b", 4, 0);
     world.phase(1, &[(0, delete)]).unwrap();
+}
+
+fn edited_and_deleted_across_a_rewind() -> Vec<Vec<(usize, Step)>> {
+    let a = |kind, name, text| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name,
+            text,
+        })
+    };
+    vec![
+        vec![(2, a(1, 0, 3))],
+        vec![
+            (1, a(3, 7, 0)),
+            (2, a(2, 0, 1)),
+            (2, Step::Backup),
+            (0, Step::Rewind),
+            (1, Step::Connect),
+            (1, Step::Work(2)),
+            (1, Step::Work(3)),
+            (0, a(4, 1, 1)),
+        ],
+    ]
+}
+
+#[test]
+fn a_delete_after_a_rewind_gives_way_to_an_edit_its_device_never_saw() {
+    let world = converge(3, &edited_and_deleted_across_a_rewind()).unwrap();
+    for device in 0..3 {
+        let files: Vec<_> = (files_on(&world, device).into_iter())
+            .map(|(name, content)| (name, content.as_ref().map(tag)))
+            .collect();
+        assert_eq!(files, [("a".to_owned(), Some(2))], "device {device}");
+    }
+}
+
+#[test]
+fn a_file_another_device_publishes_again_after_its_delete_stays_deleted() {
+    let _red = expect_red(
+        Check::DeleteUndone,
+        "the delete of node 01a1c2c0-39a0-7cb2-989b-810659c5a8bc on device 0 came undone, and no change its user did not see brought the node back",
+    );
+    let a = |kind, text| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name: 0,
+            text,
+        })
+    };
+    let phases = [
+        vec![(0, Step::Backup)],
+        vec![(2, a(1, 1))],
+        vec![
+            (0, Step::Rewind),
+            (0, a(4, 0)),
+            (2, Step::Connect),
+            (2, Step::Deliver(0)),
+            (2, Step::Answer(0)),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}
+
+#[test]
+fn a_restore_answer_settles_a_move_its_user_made_before_the_delete() {
+    let a = |kind, name, text| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name,
+            text,
+        })
+    };
+    let phases = [
+        vec![(2, a(1, 6, 3))],
+        vec![
+            (1, Step::Backup),
+            (1, Step::Rewind),
+            (0, a(3, 9, 2)),
+            (0, a(4, 1, 3)),
+            (0, a(1, 2, 0)),
+        ],
+    ];
+    let world = converge(3, &phases).unwrap();
+    let files: Vec<_> = (files_on(&world, 0).into_iter())
+        .map(|(name, content)| (name, content.as_ref().map(tag)))
+        .collect();
+    assert_eq!(
+        files,
+        [("b".to_owned(), Some(2)), ("ss".to_owned(), Some(1))]
+    );
+}
+
+#[test]
+fn a_delete_gives_way_to_a_move_it_never_saw_that_a_rewind_kept() {
+    let a = |kind, name, text| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name,
+            text,
+        })
+    };
+    let phases = [
+        vec![(0, a(1, 6, 3))],
+        vec![
+            (1, a(3, 9, 2)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Work(0)),
+            (1, Step::Backup),
+            (1, Step::Rewind),
+            (0, a(4, 0, 0)),
+        ],
+    ];
+    let world = converge(2, &phases).unwrap();
+    let files: Vec<_> = (files_on(&world, 0).into_iter())
+        .map(|(name, content)| (name, content.as_ref().map(tag)))
+        .collect();
+    assert_eq!(files, [("é".to_owned(), Some(1))]);
+}
+
+#[test]
+fn a_change_answered_discard_never_excuses_undoing_a_delete() {
+    let a = |kind, target, parent, name, text| {
+        Step::User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = [
+        vec![(0, a(1, 5, 5, 1, 1)), (2, Step::Backup)],
+        vec![
+            (1, Step::Rewind),
+            (2, a(1, 1, 5, 5, 1)),
+            (2, a(4, 0, 6, 1, 0)),
+            (0, a(4, 5, 3, 8, 2)),
+            (1, a(2, 3, 6, 5, 3)),
+            (2, Step::Connect),
+            (2, Step::Work(0)),
+        ],
+    ];
+    converge(3, &phases).unwrap();
 }

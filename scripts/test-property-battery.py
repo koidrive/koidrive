@@ -664,6 +664,8 @@ cases = ["{1:064}"]
         i764b = "764b716b5c597756c82822fe9d3cdd3d921e5472467f05d3f9291c53088b3b69"
         ia80e = "a80ed333a4ffd9a2bbe3f44da0a8791cbdc7ad5afb1db10eec2d754ec334deef"
         ibbe9 = "bbe992fee5c28fa0abb7884bb237dd12671d433ed2b378dbeaf1453af43501ec"
+        a9151 = "9151604dfe20a0f37b0d35add8edfaae3206a8402ff5705891eee49ab745da6e"
+        coarse_restores = "devices_on_coarse_volumes_converge_across_restores_and_rewinds"
         s968b = "968b4030b16bb0cfd7da2c1467fdbdf9f0f88f7357e9e6f5ae12c3749f0a4e12"
         d67bb = "67bbb9cfd49eeba66ea83618bbd588e0dcc37bd78a0acf6b5c249eb05e11bd3e"
         d1f04 = "1f04d494189c5d7d60cf2a415e091dfa6f219d41865ccbe15fa953fa9980776c"
@@ -759,6 +761,11 @@ cases = ["{1:064}"]
             (restores_and_rewinds, example(i764b), i764b, []),
             (server_restores, example(i764b) + kept, i764b, []),
             (server_restores, head_only_undone(server_restores, ia80e), ia80e, [("D", "GUN-984", None)]),
+            (coarse_restores, example(a9151), a9151, [("A", "GUN-767", ["9151604dfe20"])]),
+            (coarse_restores, example(a9151), other, [("I", "GUN-864", None)]),
+            (restores_and_rewinds, example(a9151), a9151, [("I", "GUN-864", None)]),
+            (coarse_restores, undone, a9151, [("A", "GUN-767", ["9151604dfe20"])]),
+            (coarse_restores, undone, other, [("I", "GUN-864", None)]),
             (restores_and_rewinds, example(ibbe9), ibbe9, [("I", "GUN-864", ["bbe992fee5c2"])]),
             (restores_and_rewinds, example(ibbe9), other, []),
             (lose_restores, example(ibbe9), ibbe9, []),
