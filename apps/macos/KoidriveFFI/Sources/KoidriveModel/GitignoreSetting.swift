@@ -68,7 +68,7 @@ public final class GitignoreSettingModel {
 
     private var phase = Phase.idle
     private var newest: GitignoreCount?
-    private var stoppedSyncing: UInt64?
+    private var turnedOn: GitignoreCount?
     public private(set) var failure: SessionError?
     @ObservationIgnored private var walk: Walk?
     @ObservationIgnored private var changes = 0
@@ -89,11 +89,13 @@ public final class GitignoreSettingModel {
     }
 
     /// How many files stopped syncing when the switch was last turned on, while the setting stays on.
-    public var noLongerSyncing: UInt64? { app.followsGitignore ? stoppedSyncing : nil }
+    public var noLongerSyncing: UInt64? { app.followsGitignore ? linkedNow(turnedOn)?.files : nil }
 
     /// The newest complete count, while it covers the folders linked now.
-    public var count: GitignoreCount? {
-        newest.flatMap { $0.spaceIDs == app.state.folders.map(\.spaceId) ? $0 : nil }
+    public var count: GitignoreCount? { linkedNow(newest) }
+
+    private func linkedNow(_ count: GitignoreCount?) -> GitignoreCount? {
+        count.flatMap { $0.spaceIDs == app.state.folders.map(\.spaceId) ? $0 : nil }
     }
 
     public var follows: Bool { applying ?? app.followsGitignore }
@@ -102,7 +104,7 @@ public final class GitignoreSettingModel {
         guard phase == .idle, follow != app.followsGitignore else { return }
         changes += 1
         failure = nil
-        stoppedSyncing = nil
+        turnedOn = nil
         if follow {
             await apply(true)
         } else {
@@ -176,7 +178,7 @@ public final class GitignoreSettingModel {
         let change = changes
         let fresh = await counted(startedAfterMs: Self.nowMs())
         if changes == change, let fresh {
-            stoppedSyncing = fresh.files
+            turnedOn = fresh
         }
     }
 

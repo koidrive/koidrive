@@ -253,6 +253,28 @@ struct GitignoreSettingTests {
         #expect(gitignore.count == nil)
     }
 
+    @Test func aFolderLinkedWhileTheTurnedOnCountRunsLeavesNoLine() async throws {
+        let (app, session) = scripted()
+        try await app.unlinkFolder(spaceID: "space-photos")
+        try session.setGitignore(follow: false)
+        let gitignore = GitignoreSettingModel(app: app)
+        await gitignore.recount()
+
+        let photos = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: photos) }
+
+        session.holdNext(.gitignoreOnly)
+        let turningOn = Task { await gitignore.set(follow: true) }
+        defer { session.release.signal() }
+        try await untilHeld(session)
+        _ = try await app.linkFolder(spaceID: "space-photos", path: photos.path(percentEncoded: false))
+        session.release.signal()
+        await turningOn.value
+        #expect(app.state.folders.count == 2)
+        #expect(gitignore.noLongerSyncing == nil)
+    }
+
     @Test func aChangeThatIsNotSavedKeepsTheSettingAndSaysWhy() async throws {
         let (app, _) = scripted()
         let gitignore = GitignoreSettingModel(app: app)
