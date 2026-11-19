@@ -496,12 +496,16 @@ impl Reds {
         let mut recorded: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
         let mode = if FIELD_INTENTS.get() { "on" } else { "off" };
         for line in RECORDED_REDS.lines() {
-            let fields: Vec<&str> = line.splitn(5, '\t').collect();
-            let [name, case, modes, check, why] = fields[..] else {
+            let fields: Vec<&str> = line.split('\t').collect();
+            let [name, case, modes, check, why, ref issue @ ..] = fields[..] else {
                 panic!(
                     "devices-oracle-reds.tsv: {line:?} is not a test, a case, the intents modes, a check and a message"
                 );
             };
+            assert!(
+                matches!(issue, [] | [_]) && issue.iter().all(|issue| issue.starts_with("GUN-")),
+                "devices-oracle-reds.tsv: {line:?} ends in something other than one GUN issue"
+            );
             assert!(
                 ["both", "on", "off"].contains(&modes),
                 "devices-oracle-reds.tsv: {line:?} names no intents mode"
