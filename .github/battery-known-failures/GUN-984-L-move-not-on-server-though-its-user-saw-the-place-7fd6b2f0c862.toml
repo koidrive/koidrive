@@ -1,0 +1,10 @@
+class = "L"
+issue = "GUN-984"
+tests = ["devices_on_coarse_volumes_converge_across_restores_and_rewinds"]
+message = '''not recorded: devices::devices_on_coarse_volumes_converge_across_restores_and_rewinds \S+ PlaceKept the move on device <n> that puts node <id> at "b" is not on the server, though its user saw the place the server holds and no rule for lost changes settles it'''
+examples = [
+  "not recorded: devices::devices_on_coarse_volumes_converge_across_restores_and_rewinds\tcc-7fd6b2f0c862bb7943c8f205037a12076b7aa7e30d3f1ca711bdb71406467bf2\tPlaceKept\tthe move on device 0 that puts node 01a1c2c0-39a0-7504-af4d-4d6a531020af at \"b\" is not on the server, though its user saw the place the server holds and no rule for lost changes settles it",
+]
+cases = [
+  "7fd6b2f0c862",
+]
