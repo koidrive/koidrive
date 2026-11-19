@@ -1098,6 +1098,50 @@ fn a_delete_answered_after_a_rewind_keeps_another_devices_edit_of_either_version
 }
 
 #[test]
+fn a_delete_answered_while_an_update_of_s_waits_deletes_only_a_version_s_held() {
+    for (server, deleted) in [
+        (server_version(file(ROOT, "b", 4), "v4", &[], 3), true),
+        (server_version(file(ROOT, "b", 8), "v8", &["v4"], 3), false),
+    ] {
+        let mut trees = trees(
+            &[("m", file(ROOT, "b", 1))],
+            &[("m", file(ROOT, "b", 1))],
+            &[live("m", file(ROOT, "c", 1))],
+        );
+        trees.set_remote("n".into(), server_version(file(ROOT, "a", 4), "v4", &[], 1));
+        trees.set_synced("n".into(), Some(file(ROOT, "a", 4)));
+        trees.settle(&Default::default());
+        let mut state = trees.state();
+        let waiting = Waiting {
+            shape: Some(file(ROOT, "b", 7)),
+            origin: Origin::Other,
+        };
+        state.waiting.insert("n".into(), waiting);
+        trees.restore(state).unwrap();
+        trees.rules_scanned();
+        trees.set_remote("n".into(), server);
+        trees.settle(&Default::default());
+        let (mut commits, mut ids) = recovered(&mut trees, 0);
+        let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
+        assert!(trees.waiting().contains_key("n"), "{deleted}");
+        assert!(commits.decide(&question.id, Answer::Delete));
+        let sent = ops(&mut commits, &mut trees, &mut ids);
+        let done: Vec<Effect> = (effects(&mut trees, &mut ids).into_iter())
+            .filter(|(node, _)| node == "n")
+            .map(|(_, effect)| effect)
+            .collect();
+        match deleted {
+            true => assert_eq!((sent, done), (vec![("delete", "n".to_owned())], vec![])),
+            false => assert!(
+                sent.is_empty()
+                    && matches!(&done[..], [Effect::WriteFile { content: written, .. }] if *written == content(8)),
+                "{sent:?} {done:?}"
+            ),
+        }
+    }
+}
+
+#[test]
 fn a_delete_answered_after_another_device_moved_the_file_downloads_it_where_it_went() {
     for moves in [&[][..], &["c.txt"], &["b", "c", "b"]] {
         let mut trees = trees(
