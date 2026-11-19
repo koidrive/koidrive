@@ -631,10 +631,20 @@ cases = ["{1:064}"]
         w570e = "570e17d678be8db7ebb4f77ea1126ef4fb3f78e9e54a571548f9a65426b4a44e"
         l6e1e = "6e1e45a64034f0df942d9c9029a9dba041aeff0631a6fa348d5702b89187059f"
         g4bf7 = "4bf77899b21078eb86e2db7aee36b0b5603d934353d3504d728d8cf7262cf635"
+        a0fe7 = "0fe7ddf6285c0887303b86e99b643151f2eba36a5e0ac7dd84f81f71cf526f46"
+        ae9f1 = "e9f1c12fe9f9fdacfa8d7907f72f45eba58c488436bb16ca8febf853228fa089"
+        w17e6 = "17e659c037e555323b11dcd2ee4741bd632f1ca7a6ffa45baf2f4c350fa9c144"
+        v0d10 = "0d106c47eca4" + "0" * 52
+        vad76 = "ad761b2bdcf3" + "0" * 52
+        rules_change = "a_device_whose_rules_change_deletes_nothing_on_either_side"
+        rules_leave_out = "a_first_link_sends_nothing_the_rules_leave_out_for_a_while_until_the_person_publishes_it"
         od1d0 = "d1d0430345fa" + "0" * 52
         n62f7 = "62f7a056c8c4" + "0" * 52
         restored_late = next(text for entry in entries for text in entry["examples"] if "01a1c2c0-39a0-7353-a331-565b5a0660d9" in text)
         queued = next(entry for entry in entries if entry["file"].startswith("GUN-1233-G-"))["examples"][0]
+        def parked(case):
+            return next(entry for entry in entries if entry["file"].endswith(f"-{case[:12]}.toml"))["examples"][0]
+        excluded_left = next(entry for entry in entries if entry["file"] == "GUN-1011-E-nodes-left-where-none-expected.toml")["examples"][0]
         def replayed(case):
             return next(text for entry in entries for text in entry["examples"] if f"\tcc-{case}\t" in text)
         coarse_once = "devices_on_coarse_volumes_converge_once_the_faults_stop"
@@ -688,8 +698,8 @@ cases = ["{1:064}"]
             ("devices_on_coarse_volumes_converge_across_restores_and_rewinds", never_reached, other, [("I", "GUN-864", None)]),
             (lose_rollbacks, example(x2293), x2293, [("X", "GUN-1199", ["2293e681b3bc"])]),
             (lose_rollbacks, example(x2293), other, []),
-            (lose_coarse, example(w74e3), w74e3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be"])]),
-            (lose_coarse, example(w74e3), other, []),
+            (lose_coarse, example(w74e3), w74e3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
+            (lose_coarse, example(w74e3), other, [("A", "GUN-1004", None)]),
             (lose_rollbacks, example(w74e3), w74e3, [("A", "GUN-1004", None)]),
             ("devices_on_coarse_volumes_converge_once_the_faults_stop", undone + "\n" + example(w74e3), other, []),
             (local_changes, elsewhere, e6d4a, [("E", "GUN-984", ["4af1a1aa9520", "6d4a438ebc80", "84d38f0bff21"])]),
@@ -727,8 +737,8 @@ cases = ["{1:064}"]
             (takes_along, example(tb5bf), other, []),
             (rewinds_and_rollbacks, example(tb5bf), tb5bf, []),
             (takes_along, example(tb5bf) + "\n" + undone, tb5bf, []),
-            (lose_coarse, replayed(w78f3), w78f3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be"])]),
-            (lose_coarse, replayed(w78f3), other, []),
+            (lose_coarse, replayed(w78f3), w78f3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
+            (lose_coarse, replayed(w78f3), other, [("A", "GUN-1004", None)]),
             (lose_coarse, replayed(w78f3) + "\n" + undone, w78f3, []),
             (lose_coarse, head_only_undone(lose_coarse, w78f3), w78f3, []),
             (folder, replayed(l14fe), l14fe, [("L", "GUN-984", None)]),
@@ -741,8 +751,8 @@ cases = ["{1:064}"]
             (rewinds_and_rollbacks, restored_late, t1437, []),
             (takes_along, restored_late + "\n" + undone, t1437, []),
             (takes_along, head_only_undone(takes_along, t1437), t1437, []),
-            (lose_coarse, replayed(w570e), w570e, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be"])]),
-            (lose_coarse, replayed(w570e), other, []),
+            (lose_coarse, replayed(w570e), w570e, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
+            (lose_coarse, replayed(w570e), other, [("A", "GUN-1004", None)]),
             (coarse_once, replayed(w570e), w570e, []),
             (lose_coarse, replayed(w570e) + "\n" + undone, w570e, []),
             (lose_coarse, head_only_undone(lose_coarse, w570e), w570e, []),
@@ -763,6 +773,35 @@ cases = ["{1:064}"]
             (local_changes, queued, e6d4a, []),
             (local_changes, elsewhere, g4bf7, []),
             (local_changes, queued, n62f7, []),
+            (lose_coarse, replayed(a0fe7), a0fe7, [("A", "GUN-1004", None)]),
+            (lose_coarse, replayed(a0fe7), other, [("A", "GUN-1004", None)]),
+            (lose_coarse, replayed(ae9f1), ae9f1, [("A", "GUN-1004", None)]),
+            (lose_coarse, replayed(a0fe7), w74e3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
+            (lose_coarse, replayed(ae9f1), w17e6, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
+            (coarse_once, replayed(a0fe7), a0fe7, []),
+            (lose_coarse, replayed(a0fe7) + "\n" + undone, a0fe7, []),
+            (lose_coarse, head_only_undone(lose_coarse, a0fe7), a0fe7, []),
+            (lose_coarse, head_only_undone(lose_coarse, ae9f1), ae9f1, []),
+            (lose_coarse, replayed(w17e6), w17e6, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91", "570e17d678be", "17e659c037e5"])]),
+            (lose_coarse, replayed(w17e6), other, [("A", "GUN-1004", None)]),
+            (lose_coarse, replayed(w17e6), a0fe7, [("A", "GUN-1004", None)]),
+            (coarse_once, replayed(w17e6), w17e6, []),
+            (lose_coarse, replayed(w17e6) + "\n" + undone, w17e6, []),
+            (lose_coarse, head_only_undone(lose_coarse, w17e6), w17e6, []),
+            (rules_change, parked(v0d10), v0d10, [("V", "GUN-1050", ["0d106c47eca4"])]),
+            (rules_change, parked(v0d10), other, []),
+            (rules_change, parked(v0d10), vad76, []),
+            (takes_along, parked(v0d10), v0d10, []),
+            (rules_change, parked(v0d10) + "\n" + undone, v0d10, []),
+            (rules_change, head_only_undone(rules_change, v0d10), v0d10, []),
+            (rules_change, excluded_left, v0d10, [("E", "GUN-1011", None)]),
+            (rules_leave_out, parked(vad76), vad76, [("V", "GUN-1050", ["ad761b2bdcf3"])]),
+            (rules_leave_out, parked(vad76), other, []),
+            (rules_leave_out, parked(vad76), v0d10, []),
+            (takes_along, parked(vad76), vad76, []),
+            (rules_leave_out, parked(vad76) + "\n" + undone, vad76, []),
+            (rules_leave_out, head_only_undone(rules_leave_out, vad76), vad76, []),
+            (rules_leave_out, excluded_left, vad76, [("E", "GUN-1011", None)]),
             (local_changes, example(n62f7), g4bf7, []),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):

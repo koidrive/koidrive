@@ -7,9 +7,12 @@ tests = [
   "devices_lose_no_write_across_rewinds_and_rollbacks",
   "devices_lose_no_write_across_restores_and_rewinds",
   "devices_lose_no_write_across_server_restores",
+  "devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds",
 ]
 message = '''(after phase <n>: write <n> of the .* of node <id> on device <n> is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it\.|not recorded: devices::\S+ \S+ WriteKept write <n> of the (?:(?! not recorded: ).)* of node <id> on device <n> is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it( not recorded: devices::\S+ \S+ WriteKept (?:(?! not recorded: ).)+?settles it)*)'''
 examples = [
   "after phase 1: write 4 of the write of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 1 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it.",
   "not recorded: devices::rewinds_converge_from_seed_122\tcase-1475\tWriteKept\twrite 5 of the write of node 01a1c2c0-39a0-7cdc-8389-c4663807ce68 on device 1 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it",
+  "not recorded: devices::devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds\tcc-0fe7ddf6285c0887303b86e99b643151f2eba36a5e0ac7dd84f81f71cf526f46\tWriteKept\twrite 7 of the write of node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 on device 1 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it",
+  "not recorded: devices::devices_on_coarse_volumes_lose_no_write_across_restores_and_rewinds\tcc-e9f1c12fe9f9fdacfa8d7907f72f45eba58c488436bb16ca8febf853228fa089\tWriteKept\twrite 8 of the write of node 01a1c2c0-39a0-7ea7-93f8-3d888a182e12 on device 1 is not in the server's tree, and no later change that saw it, no delete that saw it and no rule for lost changes settles it",
 ]
