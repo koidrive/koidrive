@@ -21,6 +21,13 @@ fn rewrite_link(site: &Site, change: impl FnOnce(&mut Link)) {
         .unwrap();
 }
 
+fn forget_journal_state(site: &Site) {
+    rusqlite::Connection::open(&site.db)
+        .unwrap()
+        .execute_batch("DELETE FROM journal_state;")
+        .unwrap();
+}
+
 fn stored_link(site: &Site) -> Link {
     let mut store = Store::open(&site.db).unwrap();
     store.transaction(|tx| tx.link()).unwrap().unwrap()
@@ -201,4 +208,31 @@ fn a_restart_right_after_an_adoption_and_a_second_renumbering_converges() {
 
     assert_unchanged(&site, &remote, &tree, &a);
     assert_eq!(stored_link(&site).root_at(), found);
+}
+
+#[test]
+fn a_store_that_owes_its_journal_adopts_its_renumbered_disk_and_loads() {
+    let mut remote = Remote::new();
+    let site = synced_and_stopped(&mut remote);
+    let found = found_root(&site.root);
+    rewrite_link(&site, |link| {
+        link.root_dev = found.dev.wrapping_add(3);
+        link.root_volume = None;
+    });
+    forget_journal_state(&site);
+
+    if found.volume.is_some() {
+        let admitted = admit(&site);
+        assert!(
+            matches!(admitted, Ok(Some(Adopted::Children(3)))),
+            "{admitted:?}"
+        );
+        forget_journal_state(&site);
+    }
+    let local = local_rules(&SyncRules::default()).unwrap();
+    let loaded =
+        Folder::load(&site.db, &site.link, local, &|| false, || {}).map(|loaded| loaded.is_some());
+    assert!(matches!(loaded, Ok(true)), "{loaded:?}");
+    let mut store = Store::open(&site.db).unwrap();
+    assert!(!store.read(|tx| tx.journal_backfill_owed()).unwrap());
 }
