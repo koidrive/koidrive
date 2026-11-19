@@ -3128,7 +3128,7 @@ fn rekey_the_create_in_flight(world: &mut World, d: usize, another_file: bool) -
     device.engine.trees.take_changes();
     device.store = device
         .engine
-        .reload(&device.rules, device.engine.ids.clone())
+        .reload(&device.rules, device.engine.ids.clone(), &device.engine.ids)
         .unwrap();
     new
 }

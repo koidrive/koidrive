@@ -71,6 +71,7 @@ use koidrive_engine::effects::{
     self, BatchLimit, Effect, EffectRecord, MergeResidue, Stuck, location_of,
 };
 use koidrive_engine::first_link::{self, History, Log, LogRead, Marks};
+use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::Source;
 use koidrive_engine::names::{name_key, nfc, same_name};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
@@ -662,6 +663,7 @@ pub struct World {
     binned_copies: BTreeSet<i64>,
     /// How many recovery questions the devices answered once the faults stopped.
     answers: usize,
+    loads: IdGen,
 }
 
 fn merge_residue(disk: &Disk, trees: &Trees, commits: &commit::Commits) -> MergeResidue {
@@ -787,6 +789,7 @@ impl World {
             binned_copies: BTreeSet::new(),
             deletions: Vec::new(),
             answers: 0,
+            loads: IdGen::new(200),
         }
     }
 
@@ -2074,11 +2077,11 @@ impl World {
     /// (`Effects::confirms`), and so does an effect whose outcome L no longer takes
     /// (`EffectRecord::applies`).
     fn restart(&mut self, d: usize) -> Result<(), Failure> {
+        let journal = IdGen::new(self.loads.next_u64());
         let device = &mut self.devices[d];
         device.down = false;
-        device.engine = device
-            .store
-            .reload(&device.rules, device.engine.ids.clone())?;
+        let ids = device.engine.ids.clone();
+        device.engine = device.store.reload(&device.rules, ids, &journal)?;
         let effects = &device.engine.effects;
         let (marker, cleared) = (device.disk.marker(), effects.cleared());
         let ahead = marker > cleared + effects.in_flight().len() as u64;
@@ -4567,6 +4570,18 @@ mod tests {
     }
 
     #[test]
+    fn a_restart_mints_intents_it_never_minted_before() {
+        let mut world = World::new(1);
+        let mut minted = BTreeSet::new();
+        for _ in 0..3 {
+            let journal = world.devices[0].engine.trees.journal_mut();
+            assert!(minted.insert(journal.mint()));
+            world.devices[0].persist().unwrap();
+            world.restart(0).unwrap();
+        }
+    }
+
+    #[test]
     fn a_reload_keeps_an_effect_planned_after_a_recovery_applicable() {
         let mut engine = Engine::new("root", "history", 1);
         let cause = RecoveryCause::rewind(4, NOW);
@@ -4615,7 +4630,7 @@ mod tests {
             .to_vec();
         assert!(planned[0].applies(&engine.trees, None), "{planned:?}");
         let loaded = engine
-            .reload(&Rules::default(), engine.ids.clone())
+            .reload(&Rules::default(), engine.ids.clone(), &engine.ids)
             .unwrap();
         assert!(loaded.effects.in_flight()[0].applies(&loaded.trees, None));
     }

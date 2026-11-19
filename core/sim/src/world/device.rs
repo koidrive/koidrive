@@ -66,8 +66,8 @@ impl Engine {
         }
     }
 
-    pub fn reload(&self, rules: &Rules, ids: IdGen) -> Result<Engine, Failure> {
-        let mut trees = Trees::new(self.trees.remote().root.clone(), &ids);
+    pub fn reload(&self, rules: &Rules, ids: IdGen, journal: &IdGen) -> Result<Engine, Failure> {
+        let mut trees = Trees::new(self.trees.remote().root.clone(), journal);
         for (id, node) in self.trees.remote().iter() {
             trees.set_remote(id.clone(), node.clone());
             trees.set_remote_place_id(id, self.trees.remote_place_id(id));
@@ -694,7 +694,8 @@ impl Device {
                 differences.join("; ")
             )));
         }
-        self.store = self.engine.reload(&self.rules, self.engine.ids.clone())?;
+        let ids = self.engine.ids.clone();
+        self.store = self.engine.reload(&self.rules, ids.clone(), &ids)?;
         let commits = &self.store.commits;
         if let Some(flight) = commits.in_flight() {
             (self.sent.entry(flight.commit.device_seq).or_default())
