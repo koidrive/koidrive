@@ -194,7 +194,8 @@ fn nested_item(item: &syn::Item, parent: &[String], offsets: &Offsets, out: &mut
                 out.push(declared);
                 return;
             };
-            out.push(entry(parent, name.clone(), "container", span));
+            let found = entry(parent, name.clone(), "container", span);
+            out.push(spanned(found, item.to_token_stream(), offsets));
             let inner = [parent, &[name]].concat();
             for item in items {
                 nested_item(item, &inner, offsets, out);
@@ -203,7 +204,8 @@ fn nested_item(item: &syn::Item, parent: &[String], offsets: &Offsets, out: &mut
         }
         syn::Item::Impl(i) => {
             let name = named(impl_name(i), &i.attrs);
-            out.push(entry(parent, name.clone(), "container", span));
+            let found = entry(parent, name.clone(), "container", span);
+            out.push(spanned(found, item.to_token_stream(), offsets));
             let inner = [parent, &[name]].concat();
             for member in &i.items {
                 let name = match member {

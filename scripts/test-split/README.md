@@ -43,7 +43,7 @@ Supply one `--assign PATH::ITEM=SCENARIO` for each added test or helper. Helpers
 
 ## Replay an open branch across a module split
 
-`replay` carries an open branch's edits to a file onto the files it was split into, for a split into child modules (`mod account;` beside an `impl` block spread over several files) as well as into `include!` fragments. It needs no `mapping.json` entry, so it works after the split lands. Start a new local branch on the split main, apply the old branch's diff to every other file, then replay the split file:
+`replay` carries an open branch's edits to a file onto the files it was split into, for a split into child modules (`mod account;` beside an `impl` block spread over several files) as well as into `include!` fragments. It needs no `mapping.json` entry, so it works after the split lands. Start a new local branch on the split main, apply the old branch's diff to every other file, then replay the split file. Also leave out of the `git apply` any `include!` fragment the file already had before the split, because `replay` carries those edits too:
 
 ```sh
 git diff <old-merge-base> <old-head> -- . ':!core/driver/src/driver.rs' | git apply -3

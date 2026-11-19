@@ -539,6 +539,13 @@ class SplitTests(unittest.TestCase):
         self.assertIn(b'#[test]\nfn second() {\n    let text = r#"keep\n    build/\n"#;\n    assert!(!text.is_empty());\n}\n',
                       (self.root / "driver/tests/cases.rs").read_bytes())
 
+    def test_replay_keeps_the_literals_of_an_added_module_when_it_dedents_it(self):
+        self.split_driver()
+        added = b'    }\n\n    mod helpers {\n        pub fn fixture() -> &\'static str {\n            r#"keep\n    build/\n"#\n        }\n    }\n}\n'
+        self.replay(self.REPLAY_BASE.removesuffix(b"    }\n}\n") + added)
+        self.assertIn(b'mod helpers {\n    pub fn fixture() -> &\'static str {\n        r#"keep\n    build/\n"#\n    }\n}\n',
+                      (self.root / "driver/tests/cases.rs").read_bytes())
+
     def test_replay_refuses_a_key_that_repeats(self):
         before = self.split_driver()
         repeated = b"const _: () = assert!(true);\n\nconst _: () = assert!(!false);\n\npub struct Driver;"
