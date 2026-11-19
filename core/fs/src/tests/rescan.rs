@@ -942,3 +942,57 @@ fn a_file_that_moves_away_from_every_look_of_a_scoped_rescan_is_held_not_removed
         }]
     );
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_swap_seen_halfway_by_a_scoped_rescan_is_not_read_as_a_move_over_the_other_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for folder in ["a", "b", "c"] {
+        fs::create_dir(root.join(folder)).unwrap();
+    }
+    fs::write(root.join("a/x"), "x").unwrap();
+    fs::write(root.join("c/y"), "y").unwrap();
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    fs::rename(root.join("a/x"), root.join("b/x")).unwrap();
+    let swap = || {
+        let open =
+            |name: &str| rustix::fs::open(root.join(name), OFlags::RDONLY, Mode::empty()).unwrap();
+        let exchange = rustix::fs::RenameFlags::EXCHANGE;
+        rustix::fs::renameat_with(open("b"), "x", open("c"), "y", exchange).unwrap();
+    };
+    swap();
+    let (mut locating, mut relisting) = (Some(()), Some(()));
+    let rescan = snapshot
+        .rescan_with(root, [PathBuf::from("a")], None, &mut |cut| {
+            let turn = match cut {
+                Cut::Locating(path) if path == Path::new("c/y") => locating.take(),
+                Cut::Confirming(path) if path == Path::new("c") => relisting.take(),
+                _ => None,
+            };
+            if turn.is_some() {
+                swap();
+            }
+        })
+        .unwrap();
+    assert_eq!(
+        (rescan.changes, rescan.unsettled.clone()),
+        (vec![], vec![PathBuf::from("a/x"), PathBuf::from("c/y")])
+    );
+    let settled = snapshot.rescan(root, rescan.unsettled).unwrap();
+    assert_eq!(
+        settled.changes,
+        [
+            Change::Renamed {
+                from: "a/x".into(),
+                to: "c/y".into(),
+                kind: EntryKind::File,
+            },
+            Change::Renamed {
+                from: "c/y".into(),
+                to: "b/x".into(),
+                kind: EntryKind::File,
+            },
+        ]
+    );
+}
