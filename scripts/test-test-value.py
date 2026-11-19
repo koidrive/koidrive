@@ -192,6 +192,14 @@ class Analysis(unittest.TestCase):
             self.assertEqual((rows["b y"]["seconds"], rows["b y"]["ran_on"]),
                              (12, "every mutant in commit; mutants the faster tests missed in guard"))
 
+    def test_a_test_from_one_pooled_sample_names_it(self):
+        runs = [(planned("guard", 1), {"durations": {"b x": 1}, "flaky": []}, records([["b x"]])),
+                (planned("driver", 1), {"durations": {"b x": 1, "b y": 1}, "flaky": []}, records([["b y", "b z"]]))]
+        rows, _, _, _, _ = test_value.analyse(runs, set(), 10, 0)
+        rows = {row["test"]: row for row in rows}
+        self.assertEqual((rows["b x"]["ran_on"], rows["b y"]["ran_on"], rows["b z"]["ran_on"]),
+                         ("every mutant", "every mutant in driver", "every mutant"))
+
     def test_a_test_flaky_in_one_sample_keeps_its_kills_from_the_others(self):
         runs = [(planned("guard", 1), {"durations": {"b x": 1, "b y": 1}, "flaky": ["b x"]}, records([["b y"]])),
                 (planned("commit", 1), {"durations": {"b x": 1, "b y": 1}, "flaky": []}, records([["b x"]]))]
@@ -234,6 +242,21 @@ class Report(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 test_value.main(["--root", directory, "report", "--sample", "guard", "--runs", *runs,
                                  "--out", str(Path(directory) / "out")])
+
+
+class Stop(unittest.TestCase):
+    def test_gives_up_when_a_process_outside_the_group_keeps_the_output_open(self):
+        holder = "import subprocess, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); " \
+                 "subprocess.Popen(['sleep', '6'], start_new_session=True); print('ready', flush=True); time.sleep(30)"
+        process = subprocess.Popen(["python3", "-c", holder], stdout=subprocess.PIPE, text=True, start_new_session=True)
+        self.assertEqual(process.stdout.readline(), "ready\n")
+        original, test_value.TERMINATE_GRACE = test_value.TERMINATE_GRACE, 1
+        try:
+            with self.assertRaises(RuntimeError):
+                test_value.stop(process)
+        finally:
+            test_value.TERMINATE_GRACE = original
+        self.assertEqual(process.wait(), -9)
 
 
 class Tier(unittest.TestCase):

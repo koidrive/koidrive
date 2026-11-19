@@ -160,7 +160,11 @@ def stop(process):
             return process.communicate(timeout=TERMINATE_GRACE)[0]
         except subprocess.TimeoutExpired:
             os.killpg(process.pid, signal.SIGKILL)
-            return process.communicate()[0]
+            try:
+                return process.communicate(timeout=TERMINATE_GRACE)[0]
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(f"A process outside nextest's group still holds its output {TERMINATE_GRACE} s after "
+                                   "SIGKILL; stopping so the checkout is restored.") from None
     finally:
         signal.signal(signal.SIGINT, previous)
         if interrupted:
@@ -337,6 +341,7 @@ def analyse(runs, properties, slow_seconds, few):
             mutants[(planned["sample"], mutant["id"])] = mutant
         for record in records:
             by_mutant[(planned["sample"], record["mutant"])] = record
+    samples = {planned["sample"] for planned, _, _ in runs}
     measured = scope(mutants.values())
     attributed = {key: record for key, record in by_mutant.items() if record["status"] in ATTRIBUTED}
     provisional = len(attributed) + sum(record["status"] == "unviable" for record in by_mutant.values()) < len(mutants)
@@ -382,7 +387,7 @@ def analyse(runs, properties, slow_seconds, few):
         tiers = {sample: "no mutant" if sample in flaky.get(test, ()) else
                  "mutants the faster tests missed" if seconds >= slow_seconds else "every mutant"
                  for sample, seconds in sorted(timings.get(test, {}).items())}
-        if len(set(tiers.values())) <= 1:
+        if len(set(tiers.values())) <= 1 and len(tiers) in (0, len(samples)):
             return next(iter(tiers.values()), "every mutant")
         return "; ".join(f"{tier} in {sample}" for sample, tier in tiers.items())
 
