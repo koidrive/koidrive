@@ -372,6 +372,23 @@ impl Store {
         tx.0.commit().map_err(Error::from)?;
         Ok(value)
     }
+
+    /// Runs `f` in one read transaction. It sees the store as the last commit left it and waits for no writer, and
+    /// the connection refuses any write until it ends.
+    pub fn read<T, E: From<Error>>(
+        &mut self,
+        f: impl FnOnce(&Tx<'_>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let _query_only = QueryOnly::set(&self.conn)?;
+        let tx = Tx(rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            TransactionBehavior::Deferred,
+        )
+        .map_err(Error::from)?);
+        let value = f(&tx)?;
+        tx.0.commit().map_err(Error::from)?;
+        Ok(value)
+    }
 }
 
 fn applied_migrations(conn: &Connection) -> Result<(u32, BTreeSet<String>)> {
@@ -398,6 +415,10 @@ fn applied_migrations(conn: &Connection) -> Result<(u32, BTreeSet<String>)> {
 
 fn migrate(conn: &mut Connection, written_ns: Option<i128>) -> Result<()> {
     migrations::register_functions(conn, written_ns)?;
+    let (version, applied) = applied_migrations(conn)?;
+    if version == NAMED && MIGRATIONS.iter().all(|m| applied.contains(m.name)) {
+        return Ok(());
+    }
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let (version, applied) = applied_migrations(&tx)?;
     if version != NAMED {
@@ -428,6 +449,21 @@ fn migrate(conn: &mut Connection, written_ns: Option<i128>) -> Result<()> {
         tx.commit()?;
     }
     Ok(())
+}
+
+struct QueryOnly<'a>(&'a Connection);
+
+impl<'a> QueryOnly<'a> {
+    fn set(conn: &'a Connection) -> Result<Self> {
+        conn.pragma_update(None, "query_only", true)?;
+        Ok(Self(conn))
+    }
+}
+
+impl Drop for QueryOnly<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.pragma_update(None, "query_only", false);
+    }
 }
 
 /// An open transaction. Obtain one with [`Store::transaction`].
