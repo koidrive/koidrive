@@ -250,10 +250,9 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
             follows: driver.follows_gitignore(),
         }),
         Request::SetGitignore { follow } => {
-            let already = driver.follows_gitignore() == follow;
-            (driver.set_gitignore(follow).await).map(|()| Response::GitignoreSet {
+            (driver.set_gitignore(follow).await).map(|changed| Response::GitignoreSet {
                 follows: follow,
-                already,
+                already: !changed,
             })
         }
         Request::GitignoreOnly { folder } => {
@@ -652,6 +651,43 @@ pub(crate) mod tests {
             error.message
         );
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn queued_gitignore_requests_each_report_whether_they_changed_the_setting() {
+        let (_dir, paths, _root) = linked_profile();
+        koidrive_driver::Credential {
+            server: "https://files.example.com/".into(),
+            user_id: "u1".into(),
+            user_name: None,
+            device_id: "d1".into(),
+            device_name: "Mac".into(),
+            refresh_credential: "not-a-secret".into(),
+        }
+        .save_new(&paths.credential())
+        .unwrap();
+        let driver = Driver::open(paths).unwrap();
+        driver.start();
+        let set = |follow| handle(&driver, Request::SetGitignore { follow });
+        let mut queued = [
+            Box::pin(set(false)),
+            Box::pin(set(true)),
+            Box::pin(set(false)),
+        ];
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        for request in &mut queued {
+            assert!(request.as_mut().poll(&mut context).is_pending());
+        }
+        let mut reported = Vec::new();
+        for request in queued {
+            reported.push(request.await);
+        }
+        let changed = |follows| Response::GitignoreSet {
+            follows,
+            already: false,
+        };
+        assert_eq!(reported, [changed(false), changed(true), changed(false)]);
+        driver.stop().await;
     }
 
     #[tokio::test]

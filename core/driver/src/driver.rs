@@ -2433,15 +2433,16 @@ impl Driver {
     /// `gitignore` under `[sync]` in the profile's configuration file, with the rest of the file as it was. Each folder
     /// whose task runs restarts with the new rules. What the change leaves out stays on disk and on the server, and
     /// what it includes again syncs (design §5.10). The file is written first, so a driver opened after a crash
-    /// applies the choice. Setting the value the driver already follows restarts nothing.
-    pub async fn set_gitignore(&self, follow: bool) -> Result<(), DriverError> {
+    /// applies the choice. Setting the value the driver already follows restarts nothing. Returns whether the driver
+    /// followed the other value before this call.
+    pub async fn set_gitignore(&self, follow: bool) -> Result<bool, DriverError> {
         let _lifecycle = self.inner.lifecycle.lock().await;
         let _pausing = self.inner.pausing.lock().await;
         write_gitignore(&self.inner.paths.config_file, follow)?;
         {
             let mut rules = self.inner.rules.lock().unwrap();
             if rules.local.follows_gitignore() == follow {
-                return Ok(());
+                return Ok(false);
             }
             let local = rules.local.clone().with_gitignore(follow);
             *rules = DeviceRules {
@@ -2481,7 +2482,7 @@ impl Driver {
         }
         drop(folders);
         self.changed();
-        Ok(())
+        Ok(true)
     }
 
     /// Counts the regular files in the linked folder at `folder` that its `.gitignore` files alone leave out: those
