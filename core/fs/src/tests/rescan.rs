@@ -610,13 +610,15 @@ fn a_rename_that_straddles_a_scan_is_never_read_as_a_removal_and_a_creation() {
             }
         }
         let mut during = Some(during);
-        let straddling = snapshot.rescan_with(root, [PathBuf::new()], None, &mut |cut| {
-            if matches!(cut, Cut::Stating(path) if path == Path::new(at)) {
-                for (from, to) in during.take().into_iter().flatten() {
-                    fs::rename(root.join(from), root.join(to)).unwrap();
+        let straddling = snapshot
+            .rescan_with(root, [PathBuf::new()], None, &mut |cut| {
+                if matches!(cut, Cut::Stating(path) if path == Path::new(at)) {
+                    for (from, to) in during.take().into_iter().flatten() {
+                        fs::rename(root.join(from), root.join(to)).unwrap();
+                    }
                 }
-            }
-        });
+            })
+            .unwrap();
         for (from, to) in after {
             fs::rename(root.join(from), root.join(to)).unwrap();
         }
@@ -626,11 +628,89 @@ fn a_rename_that_straddles_a_scan_is_never_read_as_a_removal_and_a_creation() {
                 .any(|change| matches!(change, Change::Removed { .. } | Change::Created { .. }))
         };
         assert!(
-            !straddling
-                .as_ref()
-                .is_ok_and(|rescan| split(&rescan.changes))
-                && !split(&next),
+            !split(&straddling.changes) && !split(&next),
             "{at}, handles kept {kept_handles}: {straddling:?} then {next:?}"
+        );
+    }
+}
+
+#[test]
+fn an_unreadable_folder_renamed_over_another_during_a_scan_is_not_published_at_both_names() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for name in ["a", "b"] {
+        fs::create_dir(root.join(name)).unwrap();
+        fs::set_permissions(root.join(name), fs::Permissions::from_mode(0o300)).unwrap();
+    }
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    let mut rename = Some(());
+    let rescan = snapshot
+        .rescan_with(root, [PathBuf::new()], None, &mut |cut| {
+            if matches!(cut, Cut::Stating(path) if path == Path::new("b"))
+                && rename.take().is_some()
+            {
+                fs::rename(root.join("a"), root.join("b")).unwrap();
+            }
+        })
+        .unwrap();
+    let ino = |snapshot: &Snapshot, name: &str| snapshot.entries[Path::new(name)].id.ino;
+    assert_ne!(ino(&snapshot, "a"), ino(&snapshot, "b"), "{rescan:?}");
+    let next = snapshot.rescan(root, rescan.unsettled).unwrap();
+    fs::set_permissions(root.join("b"), fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(
+        snapshot.entries.keys().collect::<Vec<_>>(),
+        [Path::new("b")],
+        "{next:?}"
+    );
+}
+
+#[test]
+fn a_move_into_a_listed_folder_is_found_when_its_search_fails_or_its_mtime_is_set_back() {
+    use std::os::unix::fs::PermissionsExt;
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+    let set_back = |path: &Path| {
+        let times = fs::FileTimes::new().set_modified(old);
+        fs::File::open(path).unwrap().set_times(times).unwrap();
+    };
+    for locked in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for file in ["p/x/keep.txt", "y/c.txt"] {
+            fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+            fs::write(root.join(file), file).unwrap();
+        }
+        set_back(&root.join("p/x"));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let mut snapshot = Snapshot::scan(root).unwrap();
+        let (mut moving, mut locking) = (Some(()), Some(()));
+        let straddling = snapshot
+            .rescan_with(root, [PathBuf::new()], None, &mut |cut| match cut {
+                Cut::Stating(path) if path == Path::new("y") && moving.take().is_some() => {
+                    fs::rename(root.join("y/c.txt"), root.join("p/x/c.txt")).unwrap();
+                    if !locked {
+                        set_back(&root.join("p/x"));
+                    }
+                }
+                Cut::Confirming(path)
+                    if path == Path::new("p") && locked && locking.take().is_some() =>
+                {
+                    fs::set_permissions(root.join("p/x"), fs::Permissions::from_mode(0o000))
+                        .unwrap();
+                }
+                _ => {}
+            })
+            .unwrap();
+        fs::set_permissions(root.join("p/x"), fs::Permissions::from_mode(0o755)).unwrap();
+        let next = snapshot.rescan(root, [PathBuf::new()]).unwrap();
+        assert_eq!(
+            [straddling.changes, next.changes].concat(),
+            [Change::Renamed {
+                from: "y/c.txt".into(),
+                to: "p/x/c.txt".into(),
+                kind: EntryKind::File
+            }],
+            "locked {locked}"
         );
     }
 }
@@ -712,8 +792,11 @@ fn swaps_through_a_temporary_name_during_scans_publish_only_renames_and_settle_t
         while done % 3 != 0 {
             step(&mut done);
         }
-        let settled =
-            (0..5).any(|_| (snapshot.rescan(root, [PathBuf::new()]).unwrap().unsettled).is_empty());
+        let settled = (0..5).any(|_| {
+            let rescan = snapshot.rescan(root, [PathBuf::new()]).unwrap();
+            seen.extend(rescan.changes);
+            rescan.unsettled.is_empty()
+        });
         assert!(
             settled
                 && !(seen.iter()).any(|change| matches!(
