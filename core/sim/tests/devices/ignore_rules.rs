@@ -334,3 +334,34 @@ fn a_folder_kept_for_excluded_entries_goes_at_the_restart_after_they_go() {
         (trees.local().iter()).any(|(id, node)| node.shape.name == "a" && trees.kept_folder(id));
     assert!(!kept);
 }
+
+fn refused_beside_a(last: (usize, Step)) -> Result<World, Failure> {
+    let _red = expect_red(
+        Check::RemoveLeftOut,
+        "device 0 is quiet, but it waits to remove the folders of [\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"], which hold entries its rules leave out",
+    );
+    let phases = [
+        vec![(0, folder("a"))],
+        vec![
+            (0, folder("c.txt")),
+            (0, user(1, 0, 2, "c.txt")),
+            (0, rename(1, 0, "A")),
+        ],
+        vec![last],
+    ];
+    converge_excluding(&[vec!["*.txt"], vec![]], &phases)
+}
+
+#[test]
+fn a_folder_deleted_beside_a_refused_folder_of_its_name_in_another_case_is_deleted_everywhere() {
+    refused_beside_a((0, delete(0))).unwrap();
+}
+
+#[test]
+fn a_folder_renamed_elsewhere_to_the_case_of_a_refused_folder_beside_it_is_renamed_here() {
+    let _parked = expect_red(
+        Check::RemoveLeftOut,
+        "device 0 is quiet, but it keeps the folders of [\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"] parked, which hold entries its rules leave out",
+    );
+    refused_beside_a((1, rename(0, 0, "A"))).unwrap();
+}
