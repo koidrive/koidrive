@@ -2578,6 +2578,7 @@ impl Commits {
                         && applied
                         && target != *id
                         && !finished
+                        && !trees.name_left_out(id)
                     {
                         let shape = Shape {
                             parent: target.clone(),

@@ -735,7 +735,7 @@ impl Effects {
 
     /// The driver did not do the effect because an entry of `holder`'s kind holds the name it puts the node at, and
     /// fails it as [`Effects::failed`] does. When that entry is a folder L does not hold that the rules leave out, and
-    /// the effect writes a file R holds there, the place stays the folder's and the commits give the file a conflict
+    /// the effect writes or moves a file R holds there, the place stays the folder's and the commits give the file a conflict
     /// name (RFC 0001 section 5).
     pub fn taken(
         &mut self,
@@ -747,8 +747,10 @@ impl Effects {
             .flight(effect_id)
             .ok_or_else(|| EffectError::NotInFlight(effect_id.to_owned()))?;
         let left_out = holder == Some(Kind::Dir)
-            && matches!(record.effect, Effect::WriteFile { replaces: None, .. })
-            && trees.local().get(&record.node).is_none()
+            && matches!(
+                record.effect,
+                Effect::WriteFile { .. } | Effect::Move { .. }
+            )
             && (record.after.as_ref()).is_some_and(|after| {
                 let parent = match crate::classify::path(trees.local(), &after.parent) {
                     Some((names, _)) => Some(names),
@@ -926,7 +928,7 @@ pub(crate) fn displaced_by_excluded(trees: &Trees) -> BTreeSet<NodeId> {
     (trees.dirty_others().iter())
         .filter(|id| candidate(trees, id) && !trees.held(id) && !trees.ignored(id))
         .filter(|id| {
-            trees.local().get(id).is_none()
+            (trees.local().get(id).is_none() || trees.name_left_out(id))
                 && !trees.waiting().contains_key(id)
                 && !trees.pending_finishes().contains_key(*id)
         })

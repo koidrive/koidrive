@@ -309,7 +309,7 @@ pub struct TreesState {
     pub unsent_moves: BTreeSet<NodeId>,
     /// The nodes R holds as a file that this device does not write at their place, because a folder there that L
     /// does not hold and the rules leave out took their name. A conflict name frees the place (RFC 0001 section 5).
-    /// A new position in R, or L holding the node, ends the record.
+    /// A new position in R, L holding the node there, or rules that let that folder in end the record.
     pub names_left_out: BTreeSet<NodeId>,
     /// The nodes S holds and R lacks after a server loss that a change of this device's user in or
     /// below them needs. Each is created again while S keeps it and what it holds. R taking the

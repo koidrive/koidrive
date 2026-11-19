@@ -1209,7 +1209,10 @@ impl Trees {
     }
 
     fn apply_remote(&mut self, id: NodeId, node: RemoteNode, made: Made) {
-        if !(self.r.live(&id)).is_some_and(|old| !node.trashed && old.same_position(&node.shape)) {
+        let moved = !(self.r.live(&id)).is_some_and(|old| old.same_position(&node.shape));
+        let home = (self.l.get(&id))
+            .is_some_and(|local| !local.parked && local.shape.same_position(&node.shape));
+        if node.trashed || moved && (made == Made::Elsewhere || home) {
             self.names_left_out.remove(&id);
         }
         let made_here = made != Made::Elsewhere;
@@ -2151,7 +2154,9 @@ impl Trees {
         self.lost.remove(&id);
         self.removed_from.remove(&id);
         self.found.remove(&id);
-        self.names_left_out.remove(&id);
+        if (self.r.live(&id)).is_some_and(|remote| node.shape.same_position(remote)) {
+            self.names_left_out.remove(&id);
+        }
         if self.outside.remove(&id) {
             let children: Vec<NodeId> = self.l_names.children(&id).cloned().collect();
             self.outside.extend(children);
@@ -3848,6 +3853,15 @@ impl Trees {
             return Some(());
         }
         let changed = std::mem::take(&mut self.rules_changed);
+        let lifted: Vec<NodeId> = (self.names_left_out.iter())
+            .filter(|id| {
+                !path(&self.r, id).is_some_and(|(names, _)| self.ignores(&names, Kind::Dir))
+            })
+            .cloned()
+            .collect();
+        for id in lifted {
+            self.names_left_out.remove(&id);
+        }
         let below: Option<BTreeSet<NodeId>> = (!changed.contains(&Vec::new())).then(|| {
             (changed.iter())
                 .flat_map(|dir| self.below_rules(dir))
@@ -7059,10 +7073,14 @@ impl Trees {
         );
         debug_assert_eq!(
             (self.names_left_out.iter())
-                .find(|id| self.l.get(id).is_some() || self.r.live(id).is_none())
+                .find(|id| match self.r.live(id) {
+                    None => true,
+                    Some(remote) => (self.l.get(id))
+                        .is_some_and(|local| !local.parked && local.shape.same_position(remote)),
+                })
                 .cloned(),
             None,
-            "a name left out for a node L holds or R does not hold live"
+            "a name left out for a node R does not hold live or L holds at R's place"
         );
         debug_assert_eq!(
             (self.unsent_creates.iter())

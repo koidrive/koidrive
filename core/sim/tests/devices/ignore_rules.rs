@@ -510,3 +510,52 @@ fn a_file_at_the_name_of_a_left_out_folder_downloads_at_that_name_once_the_folde
     assert_eq!(files(1)[0].0, "ss");
     assert_eq!(world.devices[1].disk.entries().len(), 3);
 }
+
+#[test]
+fn a_file_another_device_renames_onto_the_name_of_a_folder_its_rules_exclude_gets_a_conflict_name()
+{
+    let phases = [
+        vec![(1, folder("ss"))],
+        vec![(0, file("a"))],
+        vec![(0, rename(0, 0, "ss"))],
+    ];
+    let world = converge_excluding(&[vec![], vec!["ss/"]], &phases).unwrap();
+    let names: Vec<String> = (files_on(&world, 0).into_iter())
+        .map(|(name, _)| name)
+        .collect();
+    let [copy] = names.as_slice() else {
+        panic!("{names:?}");
+    };
+    assert!(copy.starts_with("ss (conflict from "), "{copy}");
+    assert_eq!(content_on(&world, 1, copy), content_on(&world, 0, copy));
+    assert_eq!(world.devices[1].disk.entries().len(), 2);
+}
+
+#[test]
+fn a_file_refused_at_the_name_of_a_left_out_folder_keeps_that_name_once_the_rules_let_the_folder_in()
+ {
+    let mut world = converge_excluding(
+        &[vec![], vec!["ss/"]],
+        &[vec![(1, folder("ss")), (1, user(1, 0, 1, "b"))]],
+    )
+    .unwrap();
+    let mut steps = vec![(0, file("ss"))];
+    steps.extend(commit(0));
+    steps.extend([(1, DELIVER), (1, EFFECT), (1, EFFECT)]);
+    world.run(1, &steps).unwrap();
+    assert!(
+        !world.devices[1]
+            .engine
+            .trees
+            .state()
+            .names_left_out
+            .is_empty()
+    );
+    world.rule(1, &Ruling::Exclude(vec![])).unwrap();
+    world.phase(2, &[]).unwrap();
+    assert!(
+        live_node_at(&world, &["ss"]).is_some(),
+        "{:?}",
+        files_on(&world, 1)
+    );
+}
