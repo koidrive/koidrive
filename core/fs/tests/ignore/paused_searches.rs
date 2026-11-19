@@ -146,7 +146,9 @@ fn an_unreadable_folder_past_the_open_folder_cap_does_not_stop_the_search() {
             write(root, "f.txt", "f");
             let mut rules = rules().with_search_budget(budget);
             let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
+            let id = snapshot.entries[Path::new("f.txt")].id;
             fs::set_permissions(root.join(&locked), fs::Permissions::from_mode(0o000)).unwrap();
+            let unopened = fs::read_dir(root.join(&locked)).is_err();
             fs::remove_file(root.join("f.txt")).unwrap();
             let mut paths = whole().to_vec();
             let mut changes = Vec::new();
@@ -159,11 +161,16 @@ fn an_unreadable_folder_past_the_open_folder_cap_does_not_stop_the_search() {
                 paths = rescan.unsettled;
             }
             fs::set_permissions(root.join(&locked), fs::Permissions::from_mode(0o755)).unwrap();
-            assert_eq!(
-                changes,
-                [removed("f.txt", File)],
-                "depth {depth} budget {budget}"
-            );
+            assert_eq!(rules.coverage().everywhere(), !unopened);
+            let expected = match unopened && !cfg!(target_os = "macos") {
+                true => Change::Missing {
+                    path: "f.txt".into(),
+                    kind: File,
+                    id,
+                },
+                false => removed("f.txt", File),
+            };
+            assert_eq!(changes, [expected], "depth {depth} budget {budget}");
         }
     }
 }

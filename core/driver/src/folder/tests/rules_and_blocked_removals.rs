@@ -1918,3 +1918,59 @@ fn a_copy_rebuilt_while_excluded_takes_back_its_node_when_another_device_moves_i
     );
     assert!(shown(&site).is_empty());
 }
+#[cfg(target_os = "linux")]
+#[test]
+fn a_file_moved_into_a_left_out_folder_the_search_cannot_open_stays_on_the_server_under_a_question()
+{
+    use std::os::unix::fs::PermissionsExt;
+
+    for (target, rescan) in [
+        ("dist/locked/report.docx", true),
+        ("dist/locked/inner/report.docx", true),
+        ("dist/locked/report.docx", false),
+    ] {
+        let case = format!("{target} rescan={rescan}");
+        let mut remote = Remote::new();
+        let (site, mut b) = linked(&mut remote, "b");
+        fs::write(site.root.join("report.docx"), "report").unwrap();
+        b.rescan();
+        b.rest(&mut remote);
+        drop(b);
+        let mut b = started(&site, &mut remote, &dist_left_out());
+        fs::create_dir_all(site.root.join(target).parent().unwrap()).unwrap();
+        b.rest(&mut remote);
+        fs::rename(site.root.join("report.docx"), site.root.join(target)).unwrap();
+        let locked = site.root.join("dist/locked");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(&locked).is_ok() {
+            assert!(rustix::process::geteuid().is_root());
+            eprintln!("SKIPPED: running as root, so permissions do not block reads");
+            return;
+        }
+        if rescan {
+            b.rescan();
+        }
+        for _ in 0..50 {
+            b.run(&mut remote);
+            let _ = b.try_scan(Duration::from_millis(100));
+        }
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+        assert!(!sent.contains(&"delete"), "{case}: sent {sent:?}");
+        assert_eq!(remote.names(), ["report.docx"], "{case}");
+        let questions: Vec<_> = (shown(&site).into_iter())
+            .map(|question| {
+                let items: Vec<String> = (question.items.iter())
+                    .map(|item| item.path.unquoted().to_owned())
+                    .collect();
+                (question.kind, items)
+            })
+            .collect();
+        let held = (
+            crate::question::QuestionKind::AmbiguousDisappearance,
+            vec!["report.docx".to_owned()],
+        );
+        assert_eq!(questions, [held], "{case}");
+    }
+}

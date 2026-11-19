@@ -75,6 +75,23 @@ struct Search {
     postponed: BTreeSet<PathBuf>,
     scanned: Vec<PathBuf>,
     reseeded: Vec<PathBuf>,
+    coverage: Coverage,
+}
+
+/// How much of the left-out entries the last search that decided anything looked at.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Coverage {
+    /// The search ended before it had looked everywhere ([`Rules::end_search`]).
+    pub ended_early: bool,
+    /// The left-out folders and entries the search could not open or stat.
+    pub unopened: BTreeSet<PathBuf>,
+}
+
+impl Coverage {
+    /// Whether the search looked everywhere, so that an entry it did not find is not on the disk.
+    pub fn everywhere(&self) -> bool {
+        !self.ended_early && self.unopened.is_empty()
+    }
 }
 
 impl Search {
@@ -120,6 +137,7 @@ struct Walk {
     reach: Option<Reach>,
     above: Option<OwnedFd>,
     bases: Vec<(PathBuf, Vec<FileId>)>,
+    unopened: BTreeSet<PathBuf>,
 }
 
 struct Reach {
@@ -182,12 +200,20 @@ impl Rules {
 
     /// Ends the search under way before it has looked everywhere. Each entry it still looks for counts as not
     /// found without proof: the next scan of its path reports it as [`Change::Missing`](crate::Change::Missing).
+    /// So does each entry a search misses after it could not open a left-out folder ([`Rules::coverage`]).
     pub fn end_search(&mut self) {
         let search = &mut self.search;
+        search.coverage = Coverage {
+            ended_early: true,
+            unopened: (search.walk.take()).map_or_else(BTreeSet::new, |walk| walk.unopened),
+        };
         for (key, _) in search.pending.drain() {
             search.decided.insert(key, Decided::Unproven);
         }
-        search.walk = None;
+    }
+
+    pub fn coverage(&self) -> &Coverage {
+        &self.search.coverage
     }
 
     pub(crate) fn searching(&self) -> bool {
@@ -437,6 +463,7 @@ impl<'r> Pending<'r> {
             walk: walking,
             pending,
             decided,
+            coverage,
             ..
         } = search;
         let next = *walks + 1;
@@ -474,6 +501,7 @@ impl<'r> Pending<'r> {
                     reach: None,
                     above: None,
                     bases: Vec::new(),
+                    unopened: BTreeSet::new(),
                 }
             });
             let mut opened: Option<(PathBuf, OwnedFd)> = None;
@@ -540,6 +568,7 @@ impl<'r> Pending<'r> {
                                     (id, next)
                                 }
                                 Err(err) if !is_gone(&err) => {
+                                    walk.unopened.insert(below);
                                     walk.reach = None;
                                     continue;
                                 }
@@ -566,7 +595,8 @@ impl<'r> Pending<'r> {
                             if confirm {
                                 continue;
                             }
-                            let Some(folder) = Folder::open(dir, id, fd) else {
+                            let Some(folder) = Folder::open(dir.clone(), id, fd) else {
+                                walk.unopened.insert(dir);
                                 continue;
                             };
                             seen.pop();
@@ -614,7 +644,10 @@ impl<'r> Pending<'r> {
                             }
                             Some((dir.clone(), fd))
                         }
-                        _ => {
+                        gone => {
+                            if gone.is_err() {
+                                walk.unopened.insert(dir);
+                            }
                             walk.listings.pop();
                             continue;
                         }
@@ -628,9 +661,16 @@ impl<'r> Pending<'r> {
                 let Some(parent) = parent else { continue };
                 let path = dir.join(&name);
                 cut(Cut::Searching(&path));
-                let Some(entry) = stat_at(parent, &name).ok().and_then(|stat| stat.entry()) else {
-                    continue;
+                let entry = match stat_at(parent, &name) {
+                    Ok(stat) => stat.entry(),
+                    Err(err) => {
+                        if !is_gone(&err) {
+                            walk.unopened.insert(path.clone());
+                        }
+                        None
+                    }
                 };
+                let Some(entry) = entry else { continue };
                 if let Some(key) = keys_of(&entry).find(|key| pending.contains_key(key)) {
                     left = left.saturating_sub(path.components().count());
                     if !holds(root, &path, key) {
@@ -652,10 +692,17 @@ impl<'r> Pending<'r> {
                 }
                 left = left.saturating_sub(1);
                 cut(Cut::OpeningDir(&path));
-                let Ok(sub) = open_dir_at(parent, &name) else {
-                    continue;
+                let sub = match open_dir_at(parent, &name) {
+                    Ok(sub) => sub,
+                    Err(err) => {
+                        if !is_gone(&err) {
+                            walk.unopened.insert(path);
+                        }
+                        continue;
+                    }
                 };
-                let Some(folder) = Folder::open(path, entry.id, sub) else {
+                let Some(folder) = Folder::open(path.clone(), entry.id, sub) else {
+                    walk.unopened.insert(path);
                     continue;
                 };
                 if walk.folders.is_empty() {
@@ -677,12 +724,22 @@ impl<'r> Pending<'r> {
                 && walk.reach.is_none()
                 && walk.bases.is_empty()
             {
+                *coverage = Coverage {
+                    ended_early: false,
+                    unopened: std::mem::take(&mut walk.unopened),
+                };
                 *walking = None;
+                let everywhere = coverage.everywhere();
                 let done = *walks;
                 pending.retain(|key, needs| {
                     let open = *needs > done;
                     if !open {
-                        decided.insert(*key, Decided::Missed);
+                        let missed = if everywhere {
+                            Decided::Missed
+                        } else {
+                            Decided::Unproven
+                        };
+                        decided.insert(*key, missed);
                     }
                     open
                 });

@@ -73,7 +73,7 @@ fn a_search_ended_before_it_looked_everywhere_reports_its_miss_as_missing() {
             }
             rescan = (snapshot.rescan_with_rules(root, rescan.unsettled, &mut rules)).unwrap();
         }
-        let expected = match end {
+        let expected = match end && (moved || !cfg!(target_os = "macos")) {
             true => Change::Missing {
                 path: "f.txt".into(),
                 kind: File,

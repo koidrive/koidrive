@@ -83,7 +83,8 @@
 //! deleted, so it is reported as [`Change::Ignored`]. A miss is reported as a
 //! removal, although a file saved again after such a move has a new identity
 //! and is missed. A miss of a search that ended before it looked everywhere
-//! ([`Rules::end_search`]) is reported as [`Change::Missing`], which design
+//! ([`Rules::end_search`]), or that could not open a left-out folder
+//! ([`Rules::coverage`]), is reported as [`Change::Missing`], which design
 //! §5.10 holds for a question to the user. The search does not look in
 //! [`PRIVATE_DIR`] or in the built-in platform files.
 //!
@@ -895,8 +896,9 @@ pub enum Change {
         path: PathBuf,
         kind: EntryKind,
     },
-    /// The entry at `path`, with identity `id`, left the disk, and the search below the left-out entries ended
-    /// before it looked everywhere ([`Rules::end_search`]). The entry may still be in a left-out folder.
+    /// The entry at `path`, with identity `id`, left the disk, and the search below the left-out entries did not
+    /// look everywhere: it ended early ([`Rules::end_search`]) or could not open a folder ([`Rules::coverage`]). The
+    /// entry may still be in a left-out folder.
     Missing {
         path: PathBuf,
         kind: EntryKind,
@@ -2869,9 +2871,6 @@ fn hold_back(
         .collect();
     wanted.extend(seeded.iter().map(|path| (key(path), None)));
     let undecided = rules.search(root, &mut wanted, &fresh, true, cut);
-    let unproven: HashSet<Key> = (wanted.keys().copied())
-        .filter(|key| rules.unproven(*key))
-        .collect();
     let relocated = |path: &Path| {
         unaside(
             &(path.ancestors().skip(1))
@@ -2910,6 +2909,11 @@ fn hold_back(
         unseen.clear();
         arrivals.clear();
     }
+    let unproven: HashSet<Key> = (wanted.keys().copied())
+        .filter(|key| rules.unproven(*key))
+        .collect();
+    let gone_from_root =
+        |entry: &Entry| cfg!(target_os = "macos") && matches!(located(root, entry), Ok(None));
     let overwrote: HashSet<Key> = (exempt.iter())
         .filter(|inside| (deferred.iter()).any(|(dir, _)| inside.starts_with(dir)))
         .map(|inside| key(inside))
@@ -2983,7 +2987,7 @@ fn hold_back(
             Change::Removed { path, kind } if !exempt.contains(&path) => {
                 if let Some(ignored) = found(path) {
                     *change = ignored;
-                } else if unproven.contains(&key(path)) {
+                } else if unproven.contains(&key(path)) && !gone_from_root(&old[path]) {
                     *change = Change::Missing {
                         path: path.clone(),
                         kind: *kind,
@@ -4033,7 +4037,7 @@ pub use effect::{
     Action, BroughtBack, Contents, Displaced, Effect, Outcome, QUARANTINE_DIR, Reason, Refusal,
     STAGING_DIR, Section, Step,
 };
-pub use ignore::{Ignore, Ignored, Rules};
+pub use ignore::{Coverage, Ignore, Ignored, Rules};
 use ignore::{Key, Pending, RulesRead, Seeded, Wanted};
 pub use koidrive_ignore::Source;
 pub use mark::{MarkLog, node_mark};
