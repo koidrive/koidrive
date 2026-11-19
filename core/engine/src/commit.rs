@@ -3919,25 +3919,26 @@ fn displaced_renames<'a>(
 }
 
 fn frozen_name_claimants(trees: &Trees) -> BTreeSet<NodeId> {
-    (trees.waiting().iter())
-        .filter_map(|(id, waiting)| {
-            let shape = waiting.shape.as_ref()?;
+    (trees.waiting().keys())
+        .chain(trees.dirty())
+        .filter(|id| {
+            let Some(remote) = trees.remote().live(id) else {
+                return false;
+            };
             let placed = (trees.local().get(id))
-                .filter(|local| !local.parked)
-                .is_some_and(|local| local.shape.same_position(shape));
-            let remote = trees
-                .remote()
-                .live(id)
-                .is_some_and(|remote| remote.same_position(shape));
-            let frozen = (trees.synced_holders(&shape.parent, &shape.name)).any(|other| {
-                other != id
+                .is_some_and(|local| !local.parked && local.shape.same_position(remote));
+            let agreed =
+                (trees.synced().live(id)).is_some_and(|synced| synced.same_position(remote));
+            let frozen = (trees.synced_holders(&remote.parent, &remote.name)).any(|other| {
+                other != *id
                     && trees.ignored(other)
                     && (trees.synced().live(other)).is_some_and(|held| {
                         (trees.remote().live(other)).is_none_or(|r| !r.same_position(held))
                     })
             });
-            (placed && remote && frozen && !trees.ignored(id)).then(|| id.clone())
+            placed && !agreed && frozen && !trees.ignored(id)
         })
+        .cloned()
         .collect()
 }
 

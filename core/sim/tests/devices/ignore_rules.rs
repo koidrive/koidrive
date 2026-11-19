@@ -1027,6 +1027,26 @@ fn a_file_renamed_to_the_name_an_excluded_folder_keeps_takes_a_conflict_name_and
     assert!(renamed.len() == 1 && renamed[0] != "A", "{renamed:?}");
 }
 
+#[test]
+fn a_node_both_devices_rename_to_the_name_an_excluded_folder_keeps_takes_a_conflict_name() {
+    let folder_with_a_file = vec![(1, folder("b")), (1, user(1, 0, 1, "a"))];
+    for made in [vec![(1, file("b"))], folder_with_a_file] {
+        let held = made.len() > 1;
+        let claim = vec![(0, rename(3, 0, "A")), (1, rename(0, 0, "A"))];
+        let phases = beside_a_folder_moved_into_an_excluded_folder(made, claim);
+        let world = converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
+        for device in 0..2 {
+            let renamed = spelled_like(&world, device, "A");
+            assert!(
+                renamed.len() == 1 && renamed[0] != "A",
+                "{device}: {renamed:?}"
+            );
+            let inside = format!("{}/a", renamed[0]);
+            assert_eq!(paths_on(&world, device).contains(&inside), held, "{device}");
+        }
+    }
+}
+
 const CLAIMED: &str = "A (conflict from unknown device 2026-11-09)";
 
 fn claimed_a_kept_name(made: Vec<(usize, Step)>, steps: usize) -> World {
