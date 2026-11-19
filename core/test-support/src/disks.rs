@@ -622,20 +622,19 @@ mod registry {
         }
     }
 
-    unsafe fn image(entry: u32, options: u32) -> Result<Option<PathBuf>, String> {
+    unsafe fn image(drive: u32) -> Result<Option<PathBuf>, String> {
         let path = |bytes: Vec<u8>| PathBuf::from(OsStr::from_bytes(&bytes));
-        if let Some(image) = unsafe { search(entry, c"image-path", options)? } {
+        if let Some(image) = unsafe { search(drive, c"image-path", 0)? } {
             return Ok(Some(path(image)));
         }
-        let url = unsafe { search(entry, c"DiskImageURL", options)? };
+        let url = unsafe { search(drive, c"DiskImageURL", 0)? };
         let Some(url) = url else {
+            return Err("a disk image drive has no image path it can read".to_owned());
+        };
+        let Some(encoded) = url.strip_prefix(b"file://") else {
             return Ok(None);
         };
-        let mut encoded = url
-            .strip_prefix(b"file://")
-            .ok_or_else(|| format!("{} is not a file URL", String::from_utf8_lossy(&url)))?
-            .iter()
-            .copied();
+        let mut encoded = encoded.iter().copied();
         let mut decoded = Vec::new();
         while let Some(byte) = encoded.next() {
             decoded.push(match byte {
@@ -694,11 +693,9 @@ mod registry {
                 }
                 entry = parent;
             }
-            let image = image(entry, 0);
+            let image = image(entry);
             IOObjectRelease(entry);
-            image?
-                .map(Some)
-                .ok_or_else(|| format!("{device} is on a disk image whose path cannot be read"))
+            image.map_err(|error| format!("{device}: {error}"))
         }
     }
 
@@ -715,18 +712,15 @@ mod registry {
             let found = std::iter::from_fn(|| {
                 let drive = unsafe { IOIteratorNext(drives) };
                 (drive != 0).then(|| {
-                    let found = unsafe { (image(drive, 0), search(drive, c"BSD Name", CHILDREN)) };
+                    let found = unsafe { (image(drive), search(drive, c"BSD Name", CHILDREN)) };
                     unsafe { IOObjectRelease(drive) };
-                    let image = found.0?.ok_or_else(|| {
-                        format!("a {class:?} entry has no image path it can read")
-                    })?;
-                    Ok((image, found.1?))
+                    Ok((found.0?, found.1?))
                 })
             })
             .collect::<Result<Vec<_>, String>>();
             unsafe { IOObjectRelease(drives) };
             images.extend(found?.into_iter().filter_map(|(image, name)| {
-                Some((image, format!("/dev/{}", String::from_utf8_lossy(&name?))))
+                Some((image?, format!("/dev/{}", String::from_utf8_lossy(&name?))))
             }));
         }
         Ok(images)
@@ -1095,17 +1089,58 @@ mod tests {
     fn a_drop_ejects_an_image_of_its_folder_that_disk_images_2_attached() {
         let disks = Disks::new().unwrap();
         let image = disks.image("Disk Images 2%");
+        let device = disk_images_2_attach(image.as_os_str());
+        drop(disks);
+        assert!(!Path::new(&device).exists(), "{device}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_drop_ejects_an_image_of_its_folder_while_a_ram_disk_is_attached() {
+        let ram = disk_images_2_attach("ram://32768".as_ref());
+        let disks = Disks::new().unwrap();
+        let image = disks.image("BesideRam");
+        let at = disks.base().join("at");
+        fs::create_dir(&at).unwrap();
+        let attached = hdiutil(&[
+            "attach".as_ref(),
+            "-plist".as_ref(),
+            "-nobrowse".as_ref(),
+            "-noautoopen".as_ref(),
+            "-mountpoint".as_ref(),
+            at.as_os_str(),
+            image.as_os_str(),
+        ]);
+        let unrecorded = Mounted {
+            at,
+            image,
+            device: whole_device(&attached).unwrap(),
+        };
+        drop(disks);
+        let ejected = still_attached(&unrecorded);
+        let ram_image = image_on(&ram);
+        run("diskutil", &["eject".as_ref(), ram.as_ref()]);
+        assert_eq!(
+            (ejected, ram_image),
+            (Ok(false), Ok(None)),
+            "{}",
+            unrecorded.device
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    fn disk_images_2_attach(source: &OsStr) -> String {
         let attached = run(
             "diskutil",
             &[
                 "image".as_ref(),
                 "attach".as_ref(),
-                "--nomount".as_ref(),
+                "--noMount".as_ref(),
                 "--plist".as_ref(),
-                image.as_os_str(),
+                source,
             ],
         );
-        let device = plist::Value::from_reader_xml(attached.as_bytes())
+        plist::Value::from_reader_xml(attached.as_bytes())
             .unwrap()
             .as_dictionary()
             .and_then(|attached| attached.get("system-entities"))
@@ -1115,9 +1150,7 @@ mod tests {
             .and_then(|entity| entity.get("dev-entry"))
             .and_then(plist::Value::as_string)
             .map(|name| format!("/dev/{name}"))
-            .unwrap();
-        drop(disks);
-        assert!(!Path::new(&device).exists(), "{device}");
+            .unwrap()
     }
 
     #[test]
