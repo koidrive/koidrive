@@ -2726,7 +2726,10 @@ fn a_file_given_up_after_a_lost_edit_and_removed_while_excluded_downloads_once_i
     trees.settle(commits.aliases());
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
     let effects = effects_for(&mut trees, &mut ids, "a");
-    assert!(matches!(&effects[..], [Effect::WriteFile { .. }]), "{effects:?}");
+    assert!(
+        matches!(&effects[..], [Effect::WriteFile { .. }]),
+        "{effects:?}"
+    );
     assert_eq!(trees.local().live("a"), Some(&file("x", "a", 1)));
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
