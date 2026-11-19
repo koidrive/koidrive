@@ -214,3 +214,17 @@ fn a_folder_made_at_the_name_of_a_file_renamed_to_an_excluded_name_waits_with_wh
     ];
     converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
 }
+
+#[test]
+fn a_folder_kept_for_a_file_its_rules_exclude_stays_out_of_sync_once_the_file_leaves() {
+    let _red = expect_red(
+        Check::RemoveLeftOut,
+        "device 1 is quiet, but the folders of [\"01a1c2c0-39a0-7c5c-8466-a7d0954b76a3\"], which it kept for entries its rules leave out, stay out of sync",
+    );
+    let phases = [
+        vec![(1, folder("\u{df}")), (1, file("C.TXT"))],
+        vec![(1, rename(1, 1, "c.txt")), (0, delete(0))],
+        vec![(1, rename(1, 0, "\u{c9}"))],
+    ];
+    converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
+}

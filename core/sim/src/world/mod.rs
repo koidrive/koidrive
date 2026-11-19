@@ -601,6 +601,7 @@ pub struct World {
     writers: BTreeMap<i64, usize>,
     /// For each device, the writes its user overwrote or deleted on its disk.
     removed: Vec<BTreeSet<i64>>,
+    kept_for_left_out: Vec<BTreeSet<NodeId>>,
     overwrote: BTreeMap<i64, i64>,
     /// The writes the server's live tree has held at some time.
     published: BTreeSet<i64>,
@@ -691,6 +692,7 @@ impl World {
         Self {
             space,
             removed: vec![BTreeSet::new(); count],
+            kept_for_left_out: vec![BTreeSet::new(); count],
             overwrote: BTreeMap::new(),
             kept: vec![BTreeMap::new(); devices.len()],
             devices,
@@ -1799,6 +1801,7 @@ impl World {
                         &mut self.seen,
                         "a folder to remove that holds only excluded entries stays",
                     );
+                    self.kept_for_left_out[d].insert(record.node.clone());
                     effects.kept(trees, &record.effect_id, &names_and_kinds(&held))
                 }
                 _ => effects.failed(trees, &record.effect_id).map(|()| {
@@ -3306,6 +3309,18 @@ impl World {
                     "device {d} is quiet, but nodes {waiting:?} wait for names that entries its rules leave out hold"
                 );
                 if intents::expected(Check::NameLeftOut, &why) {
+                    continue;
+                }
+                return Err(Failure::Diverged(why));
+            }
+            if !unsettled.is_empty()
+                && (unsettled.iter()).all(|(id, _)| self.kept_for_left_out[d].contains(id))
+            {
+                let nodes: Vec<&NodeId> = unsettled.iter().map(|(id, _)| id).collect();
+                let why = format!(
+                    "device {d} is quiet, but the folders of {nodes:?}, which it kept for entries its rules leave out, stay out of sync"
+                );
+                if intents::expected(Check::RemoveLeftOut, &why) {
                     continue;
                 }
                 return Err(Failure::Diverged(why));
