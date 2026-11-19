@@ -301,11 +301,11 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
     }
     type Fill = fn(usize) -> String;
     type Churn = dyn Fn(&Path, usize);
-    let cases: [(Fill, &str, &str, &Churn); 3] = [
+    type Moved = Option<(&'static str, &'static str)>;
+    let cases: [(Fill, Moved, &Churn); 4] = [
         (
             |i| format!("ig/p/box/a{i:02}"),
-            "ig/p/box/f.txt",
-            "ig/a/box/f.txt",
+            Some(("ig/p/box/f.txt", "ig/a/box/f.txt")),
             &|root, rescan| {
                 if rescan == 1 {
                     mv(root, "ig/p/box", "ig/a/box");
@@ -314,8 +314,7 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
         ),
         (
             |i| format!("ig/inbox/a{i:02}"),
-            "ig/inbox/f.txt",
-            "ig/inbox-2/f.txt",
+            Some(("ig/inbox/f.txt", "ig/inbox-2/f.txt")),
             &|root, rescan| match rescan {
                 1 => mv(root, "ig/inbox", "ig/inbox-1"),
                 2 => mv(root, "ig/inbox-1", "ig/inbox-2"),
@@ -324,8 +323,7 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
         ),
         (
             |i| format!("ig/m/k{i:02}/x"),
-            "ig/m/k39/f.txt",
-            "ig/old001/k39/f.txt",
+            Some(("ig/m/k39/f.txt", "ig/old001/k39/f.txt")),
             &|root, rescan| {
                 mv(root, "ig/m", &format!("ig/old{rescan:03}"));
                 for i in 0..40 {
@@ -333,8 +331,13 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
                 }
             },
         ),
+        (
+            |i| format!("ig/lib/p{:02}/f{}", i / 4, i % 4),
+            None,
+            &|root, rescan| write(root, &format!("ig/a/w{rescan}"), "x"),
+        ),
     ];
-    for (fill, start, to, churn) in cases {
+    for (fill, moved, churn) in cases {
         for budget in (3..=7).chain([10, 20]) {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path();
@@ -347,7 +350,10 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
             let mut rules = rules().with_search_budget(budget);
             let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
             let id = snapshot.entries[Path::new("f.txt")].id;
-            fs::rename(root.join("f.txt"), root.join(start)).unwrap();
+            match moved {
+                Some((start, _)) => fs::rename(root.join("f.txt"), root.join(start)).unwrap(),
+                None => fs::remove_file(root.join("f.txt")).unwrap(),
+            }
             let mut paths = whole().to_vec();
             let changes = (1..2000)
                 .find_map(|rescan| {
@@ -358,14 +364,22 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
                     paths = result.unsettled;
                     Some(result.changes).filter(|changes| !changes.is_empty())
                 })
-                .unwrap_or_else(|| panic!("{start} budget {budget}: the search never ended"));
-            let moved = Change::Ignored {
-                from: "f.txt".into(),
-                to: to.into(),
-                kind: File,
-                id,
+                .unwrap_or_else(|| panic!("{moved:?} budget {budget}: the search never ended"));
+            let expected = match moved {
+                Some((_, to)) => Change::Ignored {
+                    from: "f.txt".into(),
+                    to: to.into(),
+                    kind: File,
+                    id,
+                },
+                None => removed("f.txt", File),
             };
-            assert_eq!(changes, [moved], "{start} budget {budget}");
+            assert_eq!(changes, [expected], "{moved:?} budget {budget}");
+            assert!(
+                moved.is_some() || rules.coverage().everywhere(),
+                "budget {budget}: {:?}",
+                rules.coverage()
+            );
         }
     }
 }
