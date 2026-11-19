@@ -10942,6 +10942,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_gitignore_choice_whose_sync_fails_after_publication_is_what_a_reopen_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        fs::create_dir_all(paths.config_file.parent().unwrap()).unwrap();
+        fs::write(&paths.config_file, "[sync]\n").unwrap();
+        let driver = Driver::open(paths.clone()).unwrap();
+        assert!(driver.follows_gitignore());
+        let failing = koidrive_state_file::fail_syncs_after_publication();
+        let set = driver.set_gitignore(false).await;
+        drop(failing);
+        assert!(set.is_ok());
+        assert!(!driver.follows_gitignore());
+        drop(driver);
+        assert!(!Driver::open(paths).unwrap().follows_gitignore());
+    }
+
+    #[tokio::test]
     async fn setting_gitignore_keeps_the_rest_of_the_configuration_file() {
         let dir = tempfile::tempdir().unwrap();
         let base = fs::canonicalize(dir.path()).unwrap();
