@@ -76,6 +76,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.koidrive.KoidriveUITests
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSPrincipalClass: KoidriveUITests.UITestBundle
         SWIFT_VERSION: 6.0
         CODE_SIGN_IDENTITY: "-"
         TEST_TARGET_NAME: Koidrive
