@@ -73,7 +73,8 @@ pub(crate) fn group(
             .filter(|other| *other != id)
             .filter_map(|other| trees.remote().live(other))
             .any(|other| same_bytes(local, other));
-        !on_server && live.is_none_or(|r| r.content.is_some() && !same_bytes(local, r))
+        !on_server
+            && remote.is_none_or(|r| r.shape.content.is_some() && !same_bytes(local, &r.shape))
     };
     let unchanged = same(local, synced) && !written_again(local, synced);
     match (local, synced) {

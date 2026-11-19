@@ -13097,3 +13097,16 @@ fn a_folder_its_user_deletes_after_a_rewind_settles_the_never_sent_file_inside_i
     )
     .unwrap();
 }
+
+#[test]
+fn a_held_file_another_device_deletes_with_the_same_bytes_stays_deleted() {
+    converge(
+        2,
+        &[
+            vec![(1, file("c.txt")), (1, Step::Backup)],
+            vec![(0, Step::Rewind)],
+            vec![(0, delete(0))],
+        ],
+    )
+    .unwrap();
+}
