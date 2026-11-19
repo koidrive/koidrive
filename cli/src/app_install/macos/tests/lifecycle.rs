@@ -129,8 +129,8 @@ async fn quiescing_quits_the_app_running_from_the_bundle_and_says_it_was_running
 }
 
 #[tokio::test]
-async fn an_app_that_ignores_the_quit_request_fails_quiescing_within_the_quit_limit() {
-    let mut probe = Probe::launch(&[
+async fn an_app_that_ignores_the_quit_request_fails_quiescing_when_the_install_window_ends() {
+    let probe = Probe::launch(&[
         "on idle",
         "return 30",
         "end idle",
@@ -139,10 +139,13 @@ async fn an_app_that_ignores_the_quit_request_fails_quiescing_within_the_quit_li
         "end quit",
     ])
     .await;
-    probe.config.limits.quit = Duration::from_secs(2);
+    let window = Control {
+        deadline: Instant::now() + Duration::from_secs(2),
+        cancel: probe.control.cancel.clone(),
+    };
     let started = Instant::now();
 
-    let error = quiesce(&probe.config, &[&probe.app], &probe.control)
+    let error = quiesce(&probe.config, &[&probe.app], &window)
         .await
         .unwrap_err();
 
@@ -150,7 +153,7 @@ async fn an_app_that_ignores_the_quit_request_fails_quiescing_within_the_quit_li
     assert_eq!(error.kind, AppInstallFailure::InUse);
     assert_eq!(
         error.message,
-        "Koidrive did not quit within 2 seconds of being asked to"
+        "Koidrive did not quit before the app update ran out of time"
     );
     assert_eq!(probe.inspect().await, b"running");
 }
@@ -170,6 +173,7 @@ async fn lifecycle_failed_swap_restores_only_previously_running_ui() {
         f.preserved();
         f.unmounted();
         assert_eq!(f.base().join("open.log").exists(), running);
+        assert_eq!(f.base().join("started.log").exists(), running);
     }
 }
 

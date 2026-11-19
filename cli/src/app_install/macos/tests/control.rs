@@ -272,7 +272,7 @@ async fn a_hung_tool_fails_within_its_own_limit_and_names_the_step() {
     f.flag("attach-sleep");
     f.config.limits.tool = Duration::from_secs(1);
     let journal = f.base().join("journal.log");
-    journal_to(&journal);
+    let _journaled = journal_to(&journal).await;
     let started = Instant::now();
     let error = f.run().await.unwrap_err();
     assert!(started.elapsed() < Duration::from_secs(20));
@@ -294,21 +294,121 @@ async fn a_hung_tool_fails_within_its_own_limit_and_names_the_step() {
 }
 
 #[tokio::test]
-async fn an_app_that_does_not_quit_fails_the_update_with_that_reason() {
-    let mut f = Fixture::new(None, DMG.to_vec(), 200).await;
+async fn an_app_that_does_not_quit_fails_when_the_install_window_ends_and_keeps_running() {
+    let f = Fixture::new(None, DMG.to_vec(), 200).await;
     f.old();
     f.flag("running");
     f.flag("quit-hang");
-    f.config.limits.quit = Duration::from_secs(1);
     let started = Instant::now();
-    let error = f.run().await.unwrap_err();
-    assert!(started.elapsed() < Duration::from_secs(20));
+    let error = ensure_with(
+        f.config.clone(),
+        Version::parse(TARGET).unwrap(),
+        AppLaunch::Preserve,
+        Instant::now() + CLEANUP + Duration::from_secs(8),
+    )
+    .await
+    .unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(25));
     assert_eq!(error.kind, AppInstallFailure::InUse);
     assert_eq!(
         error.message,
-        "Koidrive did not quit within 1 seconds of being asked to"
+        "Koidrive did not quit before the app update ran out of time"
+    );
+    let installed = format!("{}\n", f.installed().display());
+    assert!(
+        fs::read_to_string(f.base().join("open.log"))
+            .unwrap()
+            .contains(&installed)
+    );
+    assert_eq!(
+        fs::read_to_string(f.base().join("started.log")).unwrap(),
+        installed
     );
     f.preserved();
+    f.unmounted();
+}
+
+#[tokio::test]
+async fn an_app_that_quits_after_every_step_limit_is_updated_and_reopened() {
+    let mut f = Fixture::new(None, DMG.to_vec(), 200).await;
+    f.old();
+    f.flag("running");
+    f.config.limits.tool = Duration::from_secs(1);
+    script(
+        &f.config.osascript,
+        r#"
+case "$4" in *terminate*) /bin/sleep 3;; esac
+echo running
+"#,
+    );
+    let AppInstall::Present { change, launch, .. } = f.run().await.unwrap() else {
+        panic!("the app should be installed");
+    };
+    assert_eq!(change, AppChange::Replaced);
+    assert_eq!(launch, AppLaunchResult::Requested);
+    assert!(
+        fs::read_to_string(f.base().join("open.log"))
+            .unwrap()
+            .contains(&f.installed().display().to_string())
+    );
+    f.unmounted();
+}
+
+#[tokio::test]
+async fn a_failed_tool_names_the_step_and_keeps_its_output_in_the_log() {
+    let f = Fixture::new(None, DMG.to_vec(), 200).await;
+    f.old();
+    f.flag("attach-fail");
+    let journal = f.base().join("journal.log");
+    let _journaled = journal_to(&journal).await;
+    let error = f.run().await.unwrap_err();
+    assert_eq!(error.kind, AppInstallFailure::Command);
+    assert_eq!(error.message, "Opening the downloaded disk image failed");
+    let log = fs::read_to_string(&journal).unwrap();
+    for line in [
+        "  exit status: 7",
+        "  stderr: hdiutil: WARNING: 'hdiutil attach -readonly -nobrowse -mountpoint ...' is deprecated.",
+        "  stderr: hdiutil: attach failed - image not recognized",
+    ] {
+        assert!(log.contains(line), "{line} is missing from {log}");
+    }
+    f.preserved();
+    f.unmounted();
+}
+
+#[tokio::test]
+async fn an_old_app_that_does_not_start_again_keeps_the_recovery_pending_for_the_next_attempt() {
+    let f = Fixture::new(None, DMG.to_vec(), 200).await;
+    f.old();
+    f.flag("running");
+    f.flag("launch-fail");
+    fs::set_permissions(f.installed(), fs::Permissions::from_mode(0o555)).unwrap();
+    let result = f.run().await;
+    fs::set_permissions(f.installed(), fs::Permissions::from_mode(0o755)).unwrap();
+    let error = result.unwrap_err();
+    assert_eq!(error.kind, AppInstallFailure::Io);
+    assert_eq!(
+        error.residue.len(),
+        1,
+        "the recovery stays pending: {error:?}"
+    );
+    let started = format!("{}\n", f.installed().display());
+    assert_eq!(
+        fs::read_to_string(f.base().join("started.log")).unwrap(),
+        started
+    );
+    f.preserved();
+    fs::remove_file(f.base().join("launch-fail")).unwrap();
+    f.flag("running");
+    let AppInstall::Present { change, .. } = f.run().await.unwrap() else {
+        panic!("the retry should install");
+    };
+    assert_eq!(change, AppChange::Replaced);
+    assert!(
+        fs::read_to_string(f.base().join("started.log"))
+            .unwrap()
+            .starts_with(&started.repeat(2))
+    );
     f.unmounted();
 }
 
@@ -367,11 +467,11 @@ async fn a_download_that_keeps_moving_is_not_bounded_by_the_install_window() {
         f.config.clone(),
         Version::parse(TARGET).unwrap(),
         AppLaunch::Preserve,
-        Instant::now() + CLEANUP + Duration::from_secs(3),
+        Instant::now() + CLEANUP + Duration::from_secs(8),
     )
     .await
     .unwrap();
-    assert!(started.elapsed() > Duration::from_secs(4));
+    assert!(started.elapsed() > Duration::from_secs(9));
     let AppInstall::Present { change, .. } = installed else {
         panic!("the app should be installed");
     };

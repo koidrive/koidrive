@@ -185,7 +185,7 @@ pub(super) async fn verify(
     safe_tree(path, control)?;
     let id = identity(&fs::symlink_metadata(path).map_err(io_error)?);
     process(
-        &format!("Checking the signature of {}", path.display()),
+        "Checking Koidrive's signature",
         config.limits.tool,
         &config.codesign,
         &signature_args(path, REQUIREMENT, true)?,
@@ -195,7 +195,7 @@ pub(super) async fn verify(
     .map_err(|error| verification_error(error, "App signature verification failed"))?;
     if target.is_some() {
         let assessment = process(
-            &format!("Checking the notarization of {}", path.display()),
+            "Checking Koidrive's notarization",
             config.limits.tool,
             &config.spctl,
             &[
@@ -285,6 +285,8 @@ pub(super) fn verification_error(error: AppInstallError, message: &str) -> AppIn
         AppInstallFailure::Deadline | AppInstallFailure::Stalled | AppInstallFailure::Cancelled
     ) {
         error
+    } else if error.kind == AppInstallFailure::Command {
+        failure(AppInstallFailure::Verification, message)
     } else {
         failure(
             AppInstallFailure::Verification,

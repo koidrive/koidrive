@@ -111,7 +111,7 @@ pub(super) async fn stage_copy(
     root_fd.sync_all().map_err(io_error)?;
     receipt.save(&data)?;
     process(
-        &format!("Copying Koidrive into {}", root.display()),
+        "Copying Koidrive into place",
         config.limits.tool,
         &config.ditto,
         &[passed(source)?, passed(&staged_path)?],

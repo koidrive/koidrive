@@ -187,7 +187,16 @@ async fn run(
     control: &Control,
 ) -> Result<Output, AppInstallError> {
     control.check()?;
-    record(&format!("  $ {}", program.display()));
+    let shown: Vec<String> = (args.iter().map(ToString::to_string))
+        .map(|arg| {
+            if arg.contains('\n') {
+                "<script>".into()
+            } else {
+                arg
+            }
+        })
+        .collect();
+    record(&format!("  $ {} {}", program.display(), shown.join(" ")));
     let mut child = crate::program::configured_async(program)
         .args(args.iter().cloned())
         .env("LC_ALL", "C")
@@ -234,13 +243,13 @@ async fn run(
             read_output(&mut stderr),
         )?;
         if !status.success() {
+            record(&format!("  {status}"));
+            for line in String::from_utf8_lossy(&err).lines() {
+                record(&format!("  stderr: {line}"));
+            }
             return Err(failure(
                 AppInstallFailure::Command,
-                format!(
-                    "{} failed ({status}): {}",
-                    program.display(),
-                    String::from_utf8_lossy(&err)
-                ),
+                format!("{name} failed"),
             ));
         }
         Ok(Output {

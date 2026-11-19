@@ -17,6 +17,20 @@ function run(args) {
     }
     return 'stopped';
 }"#;
+pub(super) const AWAIT_RUNNING: &str = r#"ObjC.import('AppKit');
+function run(args) {
+    const path = ObjC.unwrap($(args[0]).stringByStandardizingPath);
+    const until = Date.now() + 10000;
+    while (Date.now() < until) {
+        const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier('dev.koidrive.Koidrive');
+        for (let i = 0; i < apps.count; i++) {
+            const app = apps.objectAtIndex(i);
+            if (!app.terminated && app.bundleURL && ObjC.unwrap(app.bundleURL.path.stringByStandardizingPath) === path) return 'running';
+        }
+        $.NSThread.sleepForTimeInterval(0.1);
+    }
+    return 'stopped';
+}"#;
 pub(crate) const QUIESCE: &str = r#"ObjC.import('AppKit');
 function run(args) {
     const paths = args.map(p => ObjC.unwrap($(p).stringByStandardizingPath));

@@ -310,14 +310,19 @@ impl Drop for Fixture {
     }
 }
 
-fn journal_to(path: &Path) {
+async fn journal_to(path: &Path) -> tokio::sync::MutexGuard<'static, ()> {
+    static JOURNALED: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let journaled = JOURNALED.lock().await;
     crate::app_install::journal(fs::File::create(path).unwrap());
+    journaled
 }
 
 fn script(path: &Path, text: &str) {
     let inspect = if path.file_name() == Some(OsStr::new("osascript")) {
         format!(
-            r#"case "$*" in *inspectedBundlePath*) if [ -e '{}/running' ]; then echo running; else echo stopped; fi; exit 0;; esac"#,
+            r#"base='{}'
+case "$*" in *inspectedBundlePath*) if [ -e "$base/running" ]; then echo running; else echo stopped; fi; exit 0;; esac
+case "$*" in *Date.now*) printf '%s\n' "$5" >> "$base/started.log"; if [ -e "$base/launch-fail" ]; then echo stopped; else echo running; fi; exit 0;; esac"#,
             path.parent().unwrap().parent().unwrap().display()
         )
     } else {
@@ -411,7 +416,7 @@ impl Fixture {
                     );
                     socket.write_all(response.as_bytes()).await.unwrap();
                     if trickle.exists() && !path.ends_with("/SHA256SUMS") {
-                        for piece in body.chunks(body.len().div_ceil(8)) {
+                        for piece in body.chunks(body.len().div_ceil(16)) {
                             tokio::time::sleep(Duration::from_millis(600)).await;
                             socket.write_all(piece).await.unwrap();
                         }
@@ -483,7 +488,11 @@ attach)
     for image do :; done
     /usr/bin/ditto "$base/incoming/Koidrive.app" "$point/Koidrive.app"
     printf '%s\n%s\n' "$point" "$image" > "$base/mounted"
-    [ ! -e "$base/attach-fail" ] || exit 7
+    if [ -e "$base/attach-fail" ]; then
+        echo "hdiutil: WARNING: 'hdiutil attach -readonly -nobrowse -mountpoint ...' is deprecated. Please use 'diskutil image attach ...' instead." >&2
+        echo 'hdiutil: attach failed - image not recognized' >&2
+        exit 7
+    fi
     if [ -e "$base/attach-sleep" ]; then echo $$ > "$base/child.pid"; exec /bin/sleep 30; fi
     printf '<plist version="1.0"><dict/></plist>\n'
     ;;

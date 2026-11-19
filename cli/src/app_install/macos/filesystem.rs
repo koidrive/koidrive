@@ -1,5 +1,5 @@
 use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
-use crate::app_install::macos::control::{Control, io_error};
+use crate::app_install::macos::control::{Control, io_error, step};
 use crate::app_install::macos::state::{Identity, OwnedPath, PinnedDirectory};
 use rustix::fs::{AtFlags, FlockOperation, Mode, OFlags};
 use std::ffi::OsStr;
@@ -250,12 +250,8 @@ pub(super) async fn lock(
             }
         }
     };
-    control
-        .bounded(
-            "Waiting for another Koidrive install to finish",
-            within,
-            acquire,
-        )
+    let waiting = "Waiting for another Koidrive install to finish";
+    step(waiting, control.bounded(waiting, within, acquire))
         .await
         .map_err(|error| match error.kind {
             AppInstallFailure::Stalled => failure(

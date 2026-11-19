@@ -1,6 +1,6 @@
 use crate::app_install::error::{AppInstallError, AppInstallFailure, failure};
 use crate::app_install::macos::config::Config;
-use crate::app_install::macos::constants::{BUNDLE, INSPECT_RUNNING, QUIESCE};
+use crate::app_install::macos::constants::{AWAIT_RUNNING, BUNDLE, INSPECT_RUNNING, QUIESCE};
 use crate::app_install::macos::control::{Control, io_error, passed, process};
 use crate::app_install::macos::filesystem::observed;
 use crate::app_install::macos::state::{
@@ -83,7 +83,7 @@ pub(super) async fn capture_ui(
     let mut running = Vec::new();
     for app in installed {
         let output = process(
-            &format!("Checking whether {} is running", app.path.display()),
+            "Checking whether Koidrive is running",
             config.limits.tool,
             &config.osascript,
             &[
@@ -137,6 +137,26 @@ async fn restore_ui(
             open(config, &running.bundle.path, true, control).await
         {
             return Err(failure(AppInstallFailure::Command, error));
+        }
+        let started = process(
+            "Checking that Koidrive started again",
+            config.limits.tool,
+            &config.osascript,
+            &[
+                Arg::from("-l"),
+                Arg::from("JavaScript"),
+                Arg::from("-e"),
+                Arg::from(AWAIT_RUNNING),
+                passed(&running.bundle.path)?,
+            ],
+            control,
+        )
+        .await?;
+        if started.stdout.trim_ascii() != b"running" {
+            return Err(failure(
+                AppInstallFailure::Command,
+                "Koidrive was reopened after the failed update but did not start",
+            ));
         }
     }
     Ok(())
@@ -273,7 +293,7 @@ pub(super) async fn quiesce(
     }
     let output = process(
         "Asking Koidrive to quit",
-        config.limits.quit,
+        control.remaining(),
         &config.osascript,
         &parameters,
         control,
@@ -281,12 +301,9 @@ pub(super) async fn quiesce(
     .await
     .map_err(|error| match error.kind {
         AppInstallFailure::Command => failure(AppInstallFailure::InUse, error),
-        AppInstallFailure::Stalled => failure(
+        AppInstallFailure::Deadline => failure(
             AppInstallFailure::InUse,
-            format!(
-                "Koidrive did not quit within {} seconds of being asked to",
-                config.limits.quit.as_secs()
-            ),
+            "Koidrive did not quit before the app update ran out of time",
         ),
         _ => error,
     })?;

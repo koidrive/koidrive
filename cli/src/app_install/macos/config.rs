@@ -6,7 +6,6 @@ use std::time::Duration;
 #[derive(Clone, Copy)]
 pub(in crate::app_install) struct Limits {
     pub(super) tool: Duration,
-    pub(super) quit: Duration,
     pub(super) lock: Duration,
     pub(super) stall: Duration,
 }
@@ -14,7 +13,6 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             tool: Duration::from_secs(90),
-            quit: Duration::from_secs(30),
             lock: Duration::from_secs(20),
             stall: Duration::from_secs(30),
         }
