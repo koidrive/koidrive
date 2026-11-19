@@ -812,13 +812,21 @@ impl Observer for FsObserver {
                 .as_ref()
                 .is_none_or(|scopes| !scopes.is_empty())
         {
-            let unread: Vec<PathBuf> = (poll.pending.iter())
-                .filter(|pending| {
-                    (self.unread_rules.as_ref())
-                        .is_none_or(|scopes| scopes.iter().any(|scope| overlap(pending, scope)))
-                })
-                .cloned()
-                .collect();
+            let mut unread: Vec<PathBuf> = match &self.unread_rules {
+                None => poll.pending.clone(),
+                Some(scopes) => (poll.pending.iter())
+                    .flat_map(|pending| {
+                        (scopes.iter())
+                            .filter(|scope| overlap(pending, scope))
+                            .map(move |scope| match pending.starts_with(scope) {
+                                true => pending.clone(),
+                                false => scope.clone(),
+                            })
+                    })
+                    .collect(),
+            };
+            unread.sort();
+            unread.dedup();
             let snapshot = self.watcher.snapshot();
             unreadable.extend(
                 (unread.iter())
@@ -2267,17 +2275,6 @@ mod tests {
             dev: fs::metadata(root).unwrap().dev(),
             volume: None,
         };
-        let mut observer = FsObserver::start(
-            root,
-            SPACE,
-            dev,
-            known.snapshot().clone(),
-            MarkLog::default(),
-            Arc::new(Unfiltered),
-            || false,
-            |_| {},
-        )
-        .unwrap();
         let paths = |paths: &[&str]| paths.iter().map(PathBuf::from).collect::<Vec<_>>();
         let poll = |pending: &[&str], read: &[&str]| Poll {
             pending: paths(pending),
@@ -2285,28 +2282,41 @@ mod tests {
             root: known.scanned(),
             ..Poll::default()
         };
-        observer.watcher = Box::new(Scripted {
-            snapshot: known.snapshot().clone(),
-            polls: vec![
-                poll(&["logs"], &[""]),
-                poll(&["logs", "src"], &[]),
-                poll(&["src"], &["logs"]),
-                poll(&["logs"], &[]),
+        let scripts = [
+            vec![
+                (poll(&["logs"], &[""]), paths(&["logs"])),
+                (poll(&["logs", "src"], &[]), paths(&["logs"])),
+                (poll(&["src"], &["logs"]), paths(&[])),
+                (poll(&["logs"], &[]), paths(&[])),
             ],
-        });
-        let mut unreadable = || {
-            (observer.observe(Duration::ZERO).unwrap())
-                .expect("a batch")
-                .unreadable
-        };
-        assert_eq!(unreadable(), paths(&["logs"]));
-        assert_eq!(
-            unreadable(),
-            paths(&["logs"]),
-            "the first scan read the rules of src"
-        );
-        assert_eq!(unreadable(), paths(&[]));
-        assert_eq!(unreadable(), paths(&[]));
+            vec![
+                (poll(&["logs"], &[""]), paths(&["logs"])),
+                (poll(&[""], &[]), paths(&["logs"])),
+                (poll(&["src"], &[]), paths(&[])),
+            ],
+        ];
+        for script in scripts {
+            let mut observer = FsObserver::start(
+                root,
+                SPACE,
+                dev,
+                known.snapshot().clone(),
+                MarkLog::default(),
+                Arc::new(Unfiltered),
+                || false,
+                |_| {},
+            )
+            .unwrap();
+            let (polls, unreadable): (Vec<_>, Vec<_>) = script.into_iter().unzip();
+            observer.watcher = Box::new(Scripted {
+                snapshot: known.snapshot().clone(),
+                polls,
+            });
+            for unreadable in unreadable {
+                let batch = observer.observe(Duration::ZERO).unwrap().expect("a batch");
+                assert_eq!(batch.unreadable, unreadable);
+            }
+        }
     }
 
     /// The platform watcher fails after the user deleted a rules file it had not reported. The rescanning watcher that
