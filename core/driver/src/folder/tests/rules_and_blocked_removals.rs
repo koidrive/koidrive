@@ -1592,6 +1592,33 @@ fn moved_into_a_left_out_folder(remote: &mut Remote, to: &str) -> (Site, Device)
 }
 
 #[test]
+fn a_copy_in_a_left_out_folder_saved_by_rename_while_stopped_stays_the_only_copy() {
+    use std::os::unix::fs::MetadataExt;
+    let mut remote = Remote::new();
+    let (site, b) = moved_into_a_left_out_folder(&mut remote, "dist/report.docx");
+    drop(b);
+    fs::write(site.root.join("dist/.~report.tmp"), "edited").unwrap();
+    fs::rename(
+        site.root.join("dist/.~report.tmp"),
+        site.root.join("dist/report.docx"),
+    )
+    .unwrap();
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    for _ in 0..3 {
+        b.settle();
+        b.rest(&mut remote);
+    }
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert_eq!(
+        files(&site.root),
+        [("dist/report.docx".to_owned(), "edited".to_owned())]
+    );
+    let ino = fs::metadata(site.root.join("dist/report.docx")).unwrap().ino();
+    let recorded = b.folder.engine.recorded();
+    assert_eq!(recorded[Path::new("report.docx")].id.ino, u128::from(ino));
+}
+
+#[test]
 fn a_copy_in_a_left_out_folder_saved_by_rename_stays_the_only_copy() {
     let mut remote = Remote::new();
     let (site, mut b) = moved_into_a_left_out_folder(&mut remote, "dist/report.docx");
