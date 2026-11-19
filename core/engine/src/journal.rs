@@ -922,6 +922,29 @@ impl Journal {
                 _ => {}
             });
         self.rebase(sent, held.id);
+        if sent != held.id {
+            let keys: Vec<NodeId> = (self.seen.iter())
+                .filter(|(_, entries)| {
+                    entries.iter().any(|entry| entry.intent == sent)
+                        && !entries.iter().any(|entry| entry.intent == held.id)
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
+            for key in keys {
+                let mut entries = Vec::new();
+                for entry in &self.seen[&key] {
+                    entries.push(entry.clone());
+                    if entry.intent == sent {
+                        entries.push(Seen {
+                            intent: held.id,
+                            value: None,
+                            ..entry.clone()
+                        });
+                    }
+                }
+                self.seen.insert(key, entries);
+            }
+        }
         self.push_history(node, field, held.id, held.applied_at_ms, true);
     }
 

@@ -374,6 +374,46 @@ fn replacing_computed_ids_reaches_rows_history_and_seen_lists() {
     assert_eq!(journal.row("d", Field::Status).unwrap().base, Some(id(11)));
 }
 
+fn deleted_after_a_send(journal: &mut Journal) -> IntentId {
+    let sent = journal.user_change("n", content(1), WireBase::None, None);
+    journal.send("n", Field::Content, 0);
+    let entry = Seen {
+        node: "n".into(),
+        field: Field::Content,
+        intent: sent,
+        value: Some(content(1)),
+    };
+    journal.user_delete("d", vec![entry], None);
+    sent
+}
+
+fn seen_ids(journal: &Journal) -> Vec<IntentId> {
+    journal.seen("d").iter().map(|entry| entry.intent).collect()
+}
+
+#[test]
+fn an_applied_result_adds_its_held_as_next_to_the_sent_intent_in_a_seen_list() {
+    let mut journal = Journal::new(&IdGen::new(0));
+    let sent = deleted_after_a_send(&mut journal);
+    journal.applied("n", Field::Content, sent, &held(2, 2), None);
+    assert_eq!(seen_ids(&journal), [sent, id(2)]);
+}
+
+#[test]
+fn a_superseded_result_leaves_the_reported_intent_unseen() {
+    let mut journal = Journal::new(&IdGen::new(0));
+    let sent = deleted_after_a_send(&mut journal);
+    journal.superseded("n", Field::Content, sent, Some(id(2)));
+    assert_eq!(seen_ids(&journal), [sent]);
+    let remote = [RemoteField {
+        node: "n".into(),
+        field: Field::Content,
+        intent: id(2),
+        value: content(2),
+    }];
+    assert_eq!(delete_view(journal.seen("d"), &remote).unseen, [id(2)]);
+}
+
 #[test]
 fn the_generator_is_its_own_stream_and_survives_a_restore() {
     let mut engine = IdGen::new(42);
