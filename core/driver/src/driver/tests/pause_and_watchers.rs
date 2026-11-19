@@ -118,8 +118,7 @@ async fn a_resume_after_a_pause_cancelled_before_its_task_ran_stays_resumed() {
 }
 
 #[tokio::test]
-async fn a_pause_answers_before_its_folders_end_and_a_resume_starts_them_again_once_they_have()
-{
+async fn a_pause_answers_before_its_folders_end_and_a_resume_starts_them_again_once_they_have() {
     let dir = tempfile::tempdir().unwrap();
     let base = fs::canonicalize(dir.path()).unwrap();
     let paths = Paths::under(&base.join("profile"));
