@@ -13,11 +13,16 @@ examples = [
   "assertion failed: `(left == right)` \n  left: `(\"01a1c2c0-39a0-7001-b241-9db23951df99\", \"ß\")`, \n right: `(\"01a1c2c0-39a0-775c-844c-3cd7f43c661c\", \"ß\")`: 01a1c2c0-39a0-75ee-831c-498d57bc0a70 is sent to a place the disk does not hold it at at core/sim/tests/engine_sync/common.rs:1367.",
 ]
 cases = [
+  "08e61c519396",
   "19f84e7ef1f0",
   "1d7c783628f2",
+  "3c1845290a58",
   "4af1a1aa9520",
   "5434a941f700",
+  "67ff8e5ba7b6",
   "6d4a438ebc80",
   "84d38f0bff21",
+  "9350d8000cff",
+  "99df591672b6",
   "b9d004f06e53",
 ]
