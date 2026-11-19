@@ -900,3 +900,45 @@ fn a_folder_renamed_over_its_moved_out_child_reports_the_child_removed() {
         }
     }
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_file_that_moves_away_from_every_look_of_a_scoped_rescan_is_held_not_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for folder in ["a", "b", "c"] {
+        fs::create_dir(root.join(folder)).unwrap();
+    }
+    fs::write(root.join("a/x"), "x").unwrap();
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    fs::rename(root.join("a/x"), root.join("b/x")).unwrap();
+    let mut at = "b";
+    let mut dodge = |cut: Cut<'_>| {
+        let (Cut::Stating(path) | Cut::Confirming(path)) = cut else {
+            return;
+        };
+        if path == Path::new(at) || path == Path::new(at).join("x") {
+            let to = if at == "b" { "c" } else { "b" };
+            fs::rename(root.join(at).join("x"), root.join(to).join("x")).unwrap();
+            at = to;
+        }
+    };
+    for _ in 0..2 {
+        let rescan = snapshot
+            .rescan_with(root, [PathBuf::from("a")], None, &mut dodge)
+            .unwrap();
+        assert_eq!(
+            (rescan.changes, rescan.unsettled),
+            (vec![], vec![PathBuf::from("a/x")])
+        );
+    }
+    let settled = snapshot.rescan(root, [PathBuf::from("a")]).unwrap();
+    assert_eq!(
+        settled.changes,
+        [Change::Renamed {
+            from: "a/x".into(),
+            to: Path::new(at).join("x"),
+            kind: EntryKind::File,
+        }]
+    );
+}

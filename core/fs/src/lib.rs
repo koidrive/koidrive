@@ -44,10 +44,12 @@
 //! A rescan of part of the tree reports a move whose other end lies outside
 //! the paths it was given as a rescan of both places would. On macOS, for an
 //! entry it no longer finds, it asks the system where that identity is now.
-//! An entry whose identity the system places where the scan cannot read keeps
-//! its old entry until a rescan finds it or the system no longer places it
-//! there. An entry whose whereabouts the system cannot tell is kept once, and
-//! the next rescan of its path reports it as a rename or as removed.
+//! An entry the system still finds by its identity, where the scan cannot
+//! read or where the scan looked before the entry got there, keeps its old
+//! entry until a rescan finds it or the system no longer finds it. An entry
+//! whose whereabouts the system cannot tell, such as a file with several
+//! links, is kept once, and the next rescan of its path reports it as a
+//! rename or as removed.
 //! [`NativeWatcher`] keeps every removal that neither a move nor the rules
 //! explain the same way and ends the poll, so a file replaced at its path in
 //! two steps reads as modified, and a move whose two ends reach it in
@@ -1287,6 +1289,11 @@ impl Snapshot {
         let blocked = |path: &Path| (scan.unreadable.iter()).any(|dir| path.starts_with(dir));
         let same =
             |entry: &Entry, other: &Entry| entry.id.same(&other.id) && entry.kind == other.kind;
+        let missed = |at: &Path, entry: &Entry| {
+            covered(at)
+                && !scan.new.get(at).is_some_and(|now| same(entry, now))
+                && !(at.ancestors()).any(|above| scan.left_out.contains_key(above))
+        };
         let mut arrived: HashMap<(FileId, EntryKind), Vec<&PathBuf>> = HashMap::new();
         for (path, now) in &scan.new {
             if !(self.entries.get(path)).is_some_and(|before| same(before, now)) {
@@ -1352,7 +1359,7 @@ impl Snapshot {
             }
             let links = (links.get(&(entry.id, entry.kind))).map_or(&[][..], Vec::as_slice);
             match whereabouts(dir.as_fd(), dev, entry, links) {
-                Whereabouts::At(at) if blocked(&at) => {
+                Whereabouts::At(at) if blocked(&at) || missed(&at, entry) => {
                     hidden.push(path.clone());
                     moved = Some(path);
                 }
@@ -2525,24 +2532,34 @@ fn whereabouts(root: BorrowedFd<'_>, root_dev: u64, entry: &Entry, links: &[&Pat
         Ok(stat) if is_it(&stat) && links.contains(&rel.as_path()) => Whereabouts::Nowhere,
         Ok(stat) if is_it(&stat) => Whereabouts::At(rel),
         Err(err) if denied(&err) => Whereabouts::Hidden,
-        Ok(_) | Err(_) if !linked_anywhere(root_dev, entry) => Whereabouts::Nowhere,
-        Ok(_) | Err(_) => Whereabouts::Unsure,
+        Ok(_) | Err(_) => match linked_anywhere(root_dev, entry) {
+            Some(false) => Whereabouts::Nowhere,
+            Some(true) if !entry.linked => Whereabouts::Hidden,
+            _ => Whereabouts::Unsure,
+        },
     }
 }
 
 #[cfg(target_os = "macos")]
-fn linked_anywhere(dev: u64, entry: &Entry) -> bool {
+fn linked_anywhere(dev: u64, entry: &Entry) -> Option<bool> {
     let by_id = PathBuf::from(format!("/.vol/{dev}/{}", entry.id.ino));
     match rustix::fs::lstat(&by_id) {
-        Ok(stat) => (from_stat(stat).entry())
-            .is_some_and(|now| now.id.same(&entry.id) && now.kind == entry.kind),
-        Err(err) => err != rustix::io::Errno::NOENT,
+        Ok(stat) => {
+            let now = from_stat(stat);
+            Some(
+                now.nlink > 0
+                    && (now.entry())
+                        .is_some_and(|now| now.id.same(&entry.id) && now.kind == entry.kind),
+            )
+        }
+        Err(rustix::io::Errno::NOENT) => Some(false),
+        Err(_) => None,
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn linked_anywhere(_: u64, _: &Entry) -> bool {
-    true
+fn linked_anywhere(_: u64, _: &Entry) -> Option<bool> {
+    None
 }
 
 #[cfg(target_os = "macos")]
