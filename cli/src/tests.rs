@@ -2174,6 +2174,13 @@ fn a_mass_delete_question_names_the_limit_it_crossed_and_lists_at_most_20_items(
         )
     );
     assert_eq!(text.lines().count(), 6);
+
+    let mut missed = held((1, 1, 20), &[], 1);
+    missed.kind = QuestionKind::AmbiguousDisappearance;
+    assert_eq!(
+        question_notice(&missed),
+        "Koidrive couldn't tell whether these were moved or deleted. Other devices keep them until you decide; first path: old/00. Run koi resolve."
+    );
 }
 
 #[test]
