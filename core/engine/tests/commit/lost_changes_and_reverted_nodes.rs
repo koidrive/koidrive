@@ -2674,9 +2674,8 @@ fn a_folder_merged_while_s_held_it_stays_merged_after_a_loss_keeps_the_folder_it
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
-#[test]
-fn an_edit_the_server_lost_on_a_file_given_up_with_its_folder_is_sent_again() {
-    let (mut commits, mut trees, mut ids) = edited_at_5_then_lost_below("x");
+fn edit_lost_on_a_file_given_up_with_its_folder() -> (Commits, Trees, IdGen) {
+    let (mut commits, mut trees, ids) = edited_at_5_then_lost_below("x");
     trees.set_remote("x".into(), remote_at(dir("far", "x"), 6));
     let parked = LocalNode {
         parked: true,
@@ -2705,9 +2704,29 @@ fn an_edit_the_server_lost_on_a_file_given_up_with_its_folder_is_sent_again() {
         commits.held_through(),
         commits.accepted(),
     );
+    (commits, trees, ids)
+}
+
+#[test]
+fn an_edit_the_server_lost_on_a_file_given_up_with_its_folder_is_sent_again() {
+    let (mut commits, mut trees, mut ids) = edit_lost_on_a_file_given_up_with_its_folder();
     trees.set_rules::<&str>(&[], koidrive_engine::ignore::Source::Koiignore, None);
     trees.settle(commits.aliases());
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [update("a", 2)]);
     assert_eq!(effects_for(&mut trees, &mut ids, "a"), []);
+}
+
+#[test]
+fn a_file_given_up_after_a_lost_edit_and_removed_while_excluded_downloads_once_included() {
+    let (mut commits, mut trees, mut ids) = edit_lost_on_a_file_given_up_with_its_folder();
+    trees.remove_local("a");
+    trees.settle(commits.aliases());
+    trees.set_rules::<&str>(&[], koidrive_engine::ignore::Source::Koiignore, None);
+    trees.settle(commits.aliases());
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    let effects = effects_for(&mut trees, &mut ids, "a");
+    assert!(matches!(&effects[..], [Effect::WriteFile { .. }]), "{effects:?}");
+    assert_eq!(trees.local().live("a"), Some(&file("x", "a", 1)));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
