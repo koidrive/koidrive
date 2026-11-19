@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parent.parent
 TIMES = ROOT / ".github/rust-test-times.json"
 CONFIG = ROOT / ".config/nextest.toml"
+MERGE_ONLY = ROOT / ".github/rust-tests-merge-only.txt"
 FEATURES = "koidrive-cli/test-install-inventory,koidrive-cli/test-setup"
 SUITES = {"rust_driver": "koidrive-driver", "rust_engine": "koidrive-engine"}
 SLOW = 2.0
@@ -44,6 +45,28 @@ def listed(listing):
         if names:
             tests[binary] = names
     return tests
+
+
+def merge_only(path=MERGE_ONLY):
+    entries = set()
+    for line in Path(path).read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            binary, name = line.split(" ", 1)
+            entries.add((binary, name))
+    return entries
+
+
+def deferred(tests, event, entries):
+    renamed = sorted((binary, name) for binary, name in entries if binary in tests and name not in tests[binary])
+    for binary, name in renamed:
+        print(f"::error::{MERGE_ONLY.relative_to(ROOT)} lists {binary} {name}, which the archive does not hold. "
+              "Update the line to the test's new name or remove it.")
+    if renamed:
+        raise SystemExit(1)
+    if event != "pull_request":
+        return set()
+    return {(binary, name) for binary, name in entries if name in tests.get(binary, ())}
 
 
 def items(tests, times, shards):
@@ -87,11 +110,19 @@ def plan(tests, times, shards):
 
 def command_plan(args):
     tests = listed(json.loads(Path(args.list).read_text()))
+    skipped = deferred(tests, args.event, merge_only())
+    tests = {binary: [name for name in names if (binary, name) not in skipped] for binary, names in tests.items()}
+    tests = {binary: names for binary, names in tests.items() if names}
+    if skipped:
+        print(f"{len(skipped)} tests listed in {MERGE_ONLY.relative_to(ROOT)} wait for the merge queue.")
     times = json.loads(TIMES.read_text()).get(args.os, {})
     loads = plan(tests, times, args.shards)
     config = [CONFIG.read_text()]
+    excluded = " | ".join(f"(binary_id(={binary}) & test(={name}))" for binary, name in sorted(skipped))
     for index, (seconds, expressions, count) in enumerate(loads, 1):
         filterset = " | ".join(expressions) if expressions else "none()"
+        if excluded:
+            filterset = f"({filterset}) & !({excluded})"
         config.append(f"\n[profile.shard-{index}]\ninherits = \"ci\"\ndefault-filter = '''{filterset}'''\n")
         print(f"shard {index}/{args.shards}: {count} tests, {seconds:.0f} s of measured test time")
     Path(args.out).write_text("".join(config))
@@ -116,8 +147,10 @@ def command_report(args):
                 flaky.append((binary, name, junit.parent.name))
             elif case.find("failure") is not None or case.find("error") is not None:
                 failed.append((binary, name, junit.parent.name))
-    wanted = {(binary, name) for binary, names in expected.items() for name in names}
+    skipped = deferred({binary: sorted(names) for binary, names in expected.items()}, args.event, merge_only())
+    wanted = {(binary, name) for binary, names in expected.items() for name in names} - skipped
     missing = sorted(wanted - ran.keys())
+    early = sorted(skipped & ran.keys())
     twice = sorted(key for key, count in ran.items() if count > 1)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -137,6 +170,8 @@ def command_report(args):
             tsv.write(f"{seconds:.3f}\t{binary}\t{name}\n")
     lines = [f"## Rust tests on {args.os}", "",
              f"{len(ran)} of {len(wanted)} listed tests ran, {len(failed)} failed, {len(flaky)} passed only on retry (flaky).", ""]
+    if skipped:
+        lines += [f"{len(skipped)} slow tests listed in {MERGE_ONLY.relative_to(ROOT)} were left for the merge queue.", ""]
     for title, rows in (("Flaky (failed, then passed on retry; the run still fails)", flaky), ("Failed", failed)):
         if rows:
             lines += [f"### {title}", "", "| binary | test | shard |", "|---|---|---|"]
@@ -146,7 +181,9 @@ def command_report(args):
     lines += [f"| {seconds:.1f} | {binary} | {name} |" for (binary, name), seconds in sorted(times.items(), key=lambda item: -item[1])[:15]]
     (out / "summary.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
-    if missing or twice:
+    if missing or twice or early:
+        for binary, name in early:
+            print(f"::error::{binary} {name} waits for the merge queue but ran on this pull request.")
         for binary, name in missing:
             print(f"::error::{binary} {name} is in the archive's test list but no shard ran it.")
         for binary, name in twice:
@@ -276,6 +313,21 @@ def command_coverage_map(args):
           f"so pull requests never skip them.")
     return 0
 
+def command_skip_args(args):
+    present = {line.rsplit(": ", 1)[0] for line in Path(args.inventory).read_text().splitlines() if line.endswith(": test")}
+    names = sorted(name for binary, name in merge_only() if binary.split("::")[0] == args.package)
+    renamed = [name for name in names if name not in present]
+    for name in renamed:
+        print(f"::error::{MERGE_ONLY.relative_to(ROOT)} lists {args.package} test {name}, which the package does not hold. "
+              "Update the line to the test's new name or remove it.", file=sys.stderr)
+    if renamed:
+        return 1
+    if args.event == "pull_request":
+        for name in names:
+            print(f"--skip\n{name}")
+    return 0
+
+
 def term(text):
     binary, _, test = text.partition("=")
     return binary, test
@@ -308,11 +360,17 @@ def main(argv):
     plans.add_argument("--shards", type=int, required=True)
     plans.add_argument("--list", required=True)
     plans.add_argument("--out", required=True)
+    plans.add_argument("--event", required=True, help="the GitHub event; pull_request leaves out the tests in .github/rust-tests-merge-only.txt")
     report = commands.add_parser("report", help="Check that the shards ran every listed test once and summarize timings and flaky tests.")
     report.add_argument("--os", required=True)
     report.add_argument("--list", action="append", required=True)
     report.add_argument("--junit", required=True)
     report.add_argument("--out", required=True)
+    report.add_argument("--event", required=True, help="the GitHub event; on pull_request the merge-only tests must not run")
+    skips = commands.add_parser("skip-args", help="Print the libtest --skip arguments that leave a package's merge-only tests out of a pull request run.")
+    skips.add_argument("--package", required=True)
+    skips.add_argument("--inventory", required=True, help="the package's 'cargo test -- --list --format terse' output")
+    skips.add_argument("--event", required=True)
     shadow = commands.add_parser("shadow", help="Count the failed tests that the shadow test selection would have skipped.")
     shadow.add_argument("--selection", required=True)
     shadow.add_argument("--junit", action="append", required=True)
@@ -348,6 +406,8 @@ def main(argv):
         return command_shadow(args)
     if args.command == "coverage-map":
         return command_coverage_map(args)
+    if args.command == "skip-args":
+        return command_skip_args(args)
     return command_report(args)
 
 

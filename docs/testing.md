@@ -42,6 +42,10 @@ Four other workflows run on pull requests. [CLI distribution](../.github/workflo
 
 `rust build` lists the archive's tests and writes one nextest profile per shard with `scripts/ci-rust-tests.py plan`. The plan reads per-test times from [`.github/rust-test-times.json`](../.github/rust-test-times.json), splits large binaries by test, and gives each shard the same share of measured time. A binary missing from that file counts half a second per test. Each shard retries a failed test once to tell flaky tests from failing ones, and a test that passes only on the retry still fails the run. The `rust-test-report` artifact holds each system's flaky tests, a `test-times.tsv` and a fresh `rust-test-times.json`. Copy that file's entries into `.github/rust-test-times.json` when the shards drift apart.
 
+### Some slow tests wait for the merge queue
+
+Pull request runs leave out the tests listed in [`.github/rust-tests-merge-only.txt`](../.github/rust-tests-merge-only.txt). Merge queue runs, pushes to `main` and every other event run them, so each still runs once before code reaches `main`. Mutation testing found that none of them catches a mutant a faster test misses (see [Test value](#test-value)). `plan` leaves them out of the shards on `pull_request`, `report` counts them as left for the merge queue and fails if one ran, and the sim job passes them to `cargo test` as `--skip` arguments. Both commands fail when a listed test no longer exists, so a rename has to update the list. Add a test to the list only when it is slow and catches nothing a faster test misses; never list a work-bound or timeout test.
+
 ## Some tests run only on request
 
 `cargo test` skips a test marked `#[ignore]`. `grep -rn '#\[ignore' core cli` lists them. They are of these kinds:

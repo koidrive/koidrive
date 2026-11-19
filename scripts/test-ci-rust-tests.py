@@ -81,7 +81,8 @@ class Plan(unittest.TestCase):
     def test_the_plan_writes_one_profile_per_shard(self):
         with tempfile.TemporaryDirectory() as temp:
             (Path(temp) / "list.json").write_text(json.dumps(listing(self.tests, ignored=[("big", "slow_ignored")])))
-            args = type("Args", (), {"os": "fixture", "shards": 3, "list": f"{temp}/list.json", "out": f"{temp}/shards.toml"})
+            args = type("Args", (), {"os": "fixture", "shards": 3, "list": f"{temp}/list.json", "out": f"{temp}/shards.toml",
+                                    "event": "merge_group"})
             with contextlib.redirect_stdout(io.StringIO()):
                 tool.command_plan(args)
             text = (Path(temp) / "shards.toml").read_text()
@@ -89,6 +90,37 @@ class Plan(unittest.TestCase):
         self.assertEqual(re.findall(r"(?m)^\[profile\.(shard-\d+)\]$", text), ["shard-1", "shard-2", "shard-3"])
         self.assertEqual(text.count('inherits = "ci"'), 3)
         self.assertNotIn("slow_ignored", text)
+
+    def test_a_pull_request_plan_leaves_out_the_merge_only_tests_and_a_merge_group_plan_keeps_them(self):
+        original, tool.merge_only = tool.merge_only, lambda: {("big", "t0"), ("sim", "absent_binary")}
+        self.addCleanup(setattr, tool, "merge_only", original)
+        for event, present in (("pull_request", False), ("merge_group", True), ("push", True)):
+            with self.subTest(event=event), tempfile.TemporaryDirectory() as temp:
+                (Path(temp) / "list.json").write_text(json.dumps(listing(self.tests)))
+                args = type("Args", (), {"os": "fixture", "shards": 3, "list": f"{temp}/list.json",
+                                         "out": f"{temp}/shards.toml", "event": event})
+                with contextlib.redirect_stdout(io.StringIO()):
+                    tool.command_plan(args)
+                filters = re.findall(r"default-filter = '''(.*)'''", (Path(temp) / "shards.toml").read_text())
+                self.assertEqual(len(filters), 3)
+                for expression in filters:
+                    left_out = expression.endswith(" & !((binary_id(=big) & test(=t0)))")
+                    self.assertEqual(left_out, not present, expression[-80:])
+                    self.assertTrue(left_out or "!(" not in expression)
+
+    def test_a_merge_only_test_the_archive_lost_fails_the_plan(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stdout(io.StringIO()) as out:
+            tool.deferred({"big": ["t1"]}, "merge_group", {("big", "renamed")})
+        self.assertIn("big renamed", out.getvalue())
+
+    def test_the_merge_only_list_names_tests_that_exist(self):
+        for binary, name in tool.merge_only():
+            package, _, target = binary.partition("::")
+            source = {"koidrive-engine": "core/engine/tests", "koidrive-driver": "core/driver/src",
+                      "koidrive-sim": "core/sim/tests"}[package]
+            function = name.rsplit("::", 1)[-1]
+            with self.subTest(test=f"{binary} {name}"):
+                self.assertTrue(any(f"fn {function}(" in path.read_text() for path in (ROOT / source).rglob("*.rs")))
 
     def grouped(self):
         found = {}
@@ -98,7 +130,7 @@ class Plan(unittest.TestCase):
 
 
 class Report(unittest.TestCase):
-    def run_report(self, cases, tests):
+    def run_report(self, cases, tests, event="merge_group"):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
@@ -107,7 +139,8 @@ class Report(unittest.TestCase):
             (root / "junit" / shard).mkdir(parents=True)
             body = "".join(f'<testcase classname="{b}" name="{n}" time="{t}">{extra}</testcase>' for b, n, t, extra in rows)
             (root / "junit" / shard / "junit.xml").write_text(f"<testsuites><testsuite>{body}</testsuite></testsuites>")
-        args = type("Args", (), {"os": "fixture", "list": [str(root / "list.json")], "junit": str(root / "junit"), "out": str(root / "out")})
+        args = type("Args", (), {"os": "fixture", "list": [str(root / "list.json")], "junit": str(root / "junit"), "out": str(root / "out"),
+                                 "event": event})
         with contextlib.redirect_stdout(io.StringIO()) as out:
             status = tool.command_report(args)
         return status, out.getvalue(), root / "out"
@@ -132,6 +165,36 @@ class Report(unittest.TestCase):
         status, out, _ = self.run_report({"s1": [("a", "x", "1", "")]}, [("a", "x"), ("a", "lost")])
         self.assertEqual(status, 1)
         self.assertIn("a lost is in the archive's test list but no shard ran it", out)
+
+    def test_a_pull_request_expects_no_merge_only_test_and_fails_if_one_ran(self):
+        original, tool.merge_only = tool.merge_only, lambda: {("a", "slow")}
+        self.addCleanup(setattr, tool, "merge_only", original)
+        status, out, _ = self.run_report({"s1": [("a", "x", "1", "")]}, [("a", "x"), ("a", "slow")], event="pull_request")
+        self.assertEqual(status, 0)
+        self.assertIn("1 slow tests listed in", out)
+        status, out, _ = self.run_report({"s1": [("a", "x", "1", ""), ("a", "slow", "9", "")]}, [("a", "x"), ("a", "slow")],
+                                         event="pull_request")
+        self.assertEqual(status, 1)
+        self.assertIn("a slow waits for the merge queue but ran on this pull request", out)
+        status, out, _ = self.run_report({"s1": [("a", "x", "1", "")]}, [("a", "x"), ("a", "slow")], event="merge_group")
+        self.assertEqual(status, 1)
+        self.assertIn("a slow is in the archive's test list but no shard ran it", out)
+
+    def test_skip_args_leave_out_a_packages_merge_only_tests_on_pull_requests_only(self):
+        original, tool.merge_only = tool.merge_only, lambda: {("koidrive-sim::devices", "seed_1"), ("koidrive-engine", "e")}
+        self.addCleanup(setattr, tool, "merge_only", original)
+        with tempfile.TemporaryDirectory() as temp:
+            inventory = Path(temp) / "inventory.txt"
+            inventory.write_text("seed_1: test\nother: test\n")
+            for event, expected in (("pull_request", "--skip\nseed_1\n"), ("merge_group", "")):
+                args = type("Args", (), {"package": "koidrive-sim", "inventory": str(inventory), "event": event})
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(tool.command_skip_args(args), 0)
+                self.assertEqual(out.getvalue(), expected)
+            inventory.write_text("other: test\n")
+            args = type("Args", (), {"package": "koidrive-sim", "inventory": str(inventory), "event": "merge_group"})
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(tool.command_skip_args(args), 1)
 
     def test_a_test_two_shards_ran_fails(self):
         status, out, _ = self.run_report({"s1": [("a", "x", "1", "")], "s2": [("a", "x", "1", "")]}, [("a", "x")])
