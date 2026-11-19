@@ -864,7 +864,7 @@ fn swaps_through_a_temporary_name_during_scans_publish_only_renames_and_settle_t
 fn a_folder_renamed_over_its_moved_out_child_reports_the_child_removed() {
     let scopes: [&[&str]; 3] = [&[""], &["s/a"], &["s/a/s", "s/s", "s/a"]];
     for scope in scopes {
-        for _ in 0..20 {
+        for _ in 0..200 {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path();
             fs::create_dir_all(root.join("s/a/s")).unwrap();

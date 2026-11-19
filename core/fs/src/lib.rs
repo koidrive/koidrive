@@ -2499,33 +2499,37 @@ fn whereabouts(root: BorrowedFd<'_>, root_dev: u64, entry: &Entry, links: &[&Pat
         stat.dev == root_dev
             && (stat.entry()).is_some_and(|now| now.id.same(&entry.id) && now.kind == entry.kind)
     };
-    let mut stale_path: Option<PathBuf> = None;
-    for _ in 0..2 {
-        let rel = match located(root, entry) {
-            Ok(Some(rel)) => rel,
-            Ok(None) => return Whereabouts::Nowhere,
-            Err(err) if denied(&err) => return Whereabouts::Hidden,
-            Err(_) => return Whereabouts::Nowhere,
-        };
-        if private(Path::new(""), rel.iter().next().unwrap_or_default()) {
-            return Whereabouts::Nowhere;
-        }
-        match stat_rel(root, &rel) {
-            Ok(stat) if is_it(&stat) && links.contains(&rel.as_path()) => {
-                return Whereabouts::Nowhere;
-            }
-            Ok(stat) if is_it(&stat) => return Whereabouts::At(rel),
-            Ok(_) => {}
-            Err(err) if denied(&err) => return Whereabouts::Hidden,
-            Err(err) if is_gone(&err) => {}
-            Err(_) => return Whereabouts::Nowhere,
-        }
-        if stale_path.as_ref() == Some(&rel) {
-            return Whereabouts::Nowhere;
-        }
-        stale_path = Some(rel);
+    let rel = match located(root, entry) {
+        Ok(Some(rel)) => rel,
+        Ok(None) => return Whereabouts::Nowhere,
+        Err(err) if denied(&err) => return Whereabouts::Hidden,
+        Err(_) => return Whereabouts::Nowhere,
+    };
+    if private(Path::new(""), rel.iter().next().unwrap_or_default()) {
+        return Whereabouts::Nowhere;
     }
-    Whereabouts::Unsure
+    match stat_rel(root, &rel) {
+        Ok(stat) if is_it(&stat) && links.contains(&rel.as_path()) => Whereabouts::Nowhere,
+        Ok(stat) if is_it(&stat) => Whereabouts::At(rel),
+        Err(err) if denied(&err) => Whereabouts::Hidden,
+        Ok(_) | Err(_) if !linked_anywhere(root_dev, entry) => Whereabouts::Nowhere,
+        Ok(_) | Err(_) => Whereabouts::Unsure,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn linked_anywhere(dev: u64, entry: &Entry) -> bool {
+    let by_id = PathBuf::from(format!("/.vol/{dev}/{}", entry.id.ino));
+    match rustix::fs::lstat(&by_id) {
+        Ok(stat) => (from_stat(stat).entry())
+            .is_some_and(|now| now.id.same(&entry.id) && now.kind == entry.kind),
+        Err(err) => err != rustix::io::Errno::NOENT,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn linked_anywhere(_: u64, _: &Entry) -> bool {
+    true
 }
 
 #[cfg(target_os = "macos")]
