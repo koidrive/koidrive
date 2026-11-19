@@ -599,6 +599,10 @@ impl Effects {
                 }
             });
         for id in below.iter().rev() {
+            if trees.recorded_local(id) {
+                trees.displace_local(id);
+                continue;
+            }
             trees.give_up(id);
             trees.drop_local(id);
         }
@@ -714,7 +718,7 @@ impl Effects {
             return false;
         };
         matches!(record.effect, Effect::RemoveDir { .. })
-            && (trees.remote().get(&record.node)).is_some_and(|node| node.trashed)
+            && trees.remote().live(&record.node).is_none()
             && held.iter().all(|(name, kind)| {
                 let mut entry = folder.clone();
                 entry.push(name);
@@ -1235,7 +1239,7 @@ impl<'a> View<'a> {
                 _ => &[],
             };
             return self.trees.local_children(&record.node).all(|child| {
-                self.trees.under_kept_entry(child)
+                self.left_out(child)
                     || (self.trees.local().get(child)).is_some_and(|node| {
                         along.iter().any(|file| file.identity.same(&node.identity))
                     })
@@ -1289,6 +1293,10 @@ impl<'a> View<'a> {
             })
     }
 
+    fn left_out(&self, id: &NodeId) -> bool {
+        self.trees.excluded(id) || self.trees.under_kept_entry(id)
+    }
+
     fn goes_home(&self, id: &NodeId, remote: &Shape) -> bool {
         self.trees.edited(id) && self.trees.ignored_in_remote(id)
             || self.held_by_excluded(id, remote)
@@ -1338,9 +1346,7 @@ impl<'a> View<'a> {
             return Step::Skip;
         }
         let children: Vec<&NodeId> = self.trees.local_children(id).collect();
-        if (children.iter())
-            .any(|child| !self.trees.carried(child) && !self.trees.under_kept_entry(child))
-        {
+        if (children.iter()).any(|child| !self.trees.carried(child) && !self.left_out(child)) {
             return Step::Blocked(None);
         }
         let Some(at) = self.location(id) else {

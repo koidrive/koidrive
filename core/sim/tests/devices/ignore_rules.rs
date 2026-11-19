@@ -150,10 +150,6 @@ fn a_file_at_a_name_another_spelling_of_which_its_rules_came_to_exclude_waits_fo
 
 #[test]
 fn a_folder_the_server_refuses_waits_to_be_removed_around_the_files_its_rules_exclude() {
-    let _red = expect_red(
-        Check::RemoveLeftOut,
-        "device 0 is quiet, but it waits to remove the folders of [\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"], which hold entries its rules leave out",
-    );
     let phases = [
         vec![(0, folder("a"))],
         vec![
@@ -167,14 +163,6 @@ fn a_folder_the_server_refuses_waits_to_be_removed_around_the_files_its_rules_ex
 
 #[test]
 fn a_folder_another_device_deletes_stays_parked_around_a_file_its_rules_came_to_exclude() {
-    let _red = expect_red(
-        Check::RemoveLeftOut,
-        "device 1 is quiet, but it keeps the folders of [\"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\"] parked, which hold entries its rules leave out",
-    );
-    let _waits = expect_red(
-        Check::NameLeftOut,
-        "device 1 is quiet, but nodes [\"01a1c2c0-39a0-7c94-ad9a-de661683ef13\"] wait for names that entries its rules leave out hold",
-    );
     let phases = [
         vec![
             (0, folder("a")),
@@ -203,10 +191,6 @@ fn a_folder_another_device_deletes_stays_parked_around_a_file_its_rules_came_to_
 
 #[test]
 fn a_folder_another_device_deletes_waits_around_a_new_file_moved_to_where_its_rules_exclude() {
-    let _red = expect_red(
-        Check::RemoveLeftOut,
-        "device 1 is quiet, but it waits to settle the folders of [\"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\"], which hold only nodes its rules leave out",
-    );
     let phases = [
         vec![(0, folder("\u{c9}"))],
         vec![
