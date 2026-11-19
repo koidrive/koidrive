@@ -182,17 +182,32 @@ pub(crate) enum Settled {
 pub(crate) struct Sections {
     /// Odd while an effect section runs. Each section adds one when it starts and one when it ends.
     epoch: AtomicU64,
-    /// Scopes the observer resets to L's view and scans again before its next batch, in the order requested, and
-    /// how many requests there have been.
-    resets: Mutex<(Vec<Reset>, u64)>,
+    /// Scopes the observer resets to L's view and scans again before its next batch, by request in the order
+    /// requested, and how many requests there have been.
+    resets: Mutex<(Requested, u64)>,
+    open: Mutex<Vec<(Requests, Vec<PathBuf>)>>,
     recorded: Mutex<Option<BTreeMap<PathBuf, Known>>>,
     marks: koidrive_fs::MarkLog,
 }
 
+type Requested = Vec<(Requests, Vec<Reset>)>;
+
 /// A count of the reset requests of the effect sections. The count a request returns names that request and every
 /// one before it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Requests(u64);
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Answers {
+    pub through: Requests,
+    pub open: Vec<Requests>,
+}
+
+impl Answers {
+    fn covers(&self, request: Requests) -> bool {
+        request <= self.through && !self.open.contains(&request)
+    }
+}
 
 /// The epoch read before a batch's scans began.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -209,17 +224,19 @@ impl Sections {
         self.marks.clone()
     }
 
-    /// The resets to pass to [`FsObserver::reset`] before the next observation, with the requests they complete.
-    pub fn take_resets(&self) -> (Vec<Reset>, Requests) {
+    /// The resets to pass to [`FsObserver::reset`] before the next observation, by request, with the count of every
+    /// request made so far.
+    pub fn take_resets(&self) -> (Requested, Requests) {
         let mut resets = self.resets.lock().unwrap();
         (std::mem::take(&mut resets.0), Requests(resets.1))
     }
 
-    fn request(&self, resets: Vec<Reset>) -> Requests {
+    pub(crate) fn request(&self, resets: Vec<Reset>) -> Requests {
         let mut requested = self.resets.lock().unwrap();
-        requested.0.extend(resets);
         requested.1 += 1;
-        Requests(requested.1)
+        let request = Requests(requested.1);
+        requested.0.push((request, resets));
+        request
     }
 
     /// One pass of the observer's thread. It resets the scopes the effect sections asked for, then takes the stamp,
@@ -230,23 +247,40 @@ impl Sections {
         observer: &mut FsObserver,
         idle: Duration,
     ) -> Result<Option<Batch>, koidrive_fs::Error> {
-        let (resets, requests) = self.take_resets();
-        let wait = if resets.is_empty() {
+        let (resets, through) = self.take_resets();
+        let wait = if resets.iter().all(|(_, resets)| resets.is_empty()) {
             idle
         } else {
             Duration::ZERO
         };
-        observer.reset(resets);
+        let mut open = self.open.lock().unwrap();
+        for (request, resets) in resets {
+            open.push((
+                request,
+                resets.iter().map(|reset| reset.scope.clone()).collect(),
+            ));
+            observer.reset(resets);
+        }
         if let Some(recorded) = self.recorded.lock().unwrap().take() {
             observer.seek(recorded);
         }
         let stamp = self.stamp();
         let observation = observer.observe(wait)?;
-        Ok(observation.map(|observation| Batch {
-            stamp,
-            answered: observer.answered().then_some(requests),
-            observation,
-            unread: observer.unread(),
+        Ok(observation.map(|observation| {
+            let unanswered = observer.unanswered();
+            open.retain_mut(|(_, scopes)| {
+                scopes.retain(|scope| unanswered.contains(scope));
+                !scopes.is_empty()
+            });
+            Batch {
+                stamp,
+                answered: Answers {
+                    through,
+                    open: open.iter().map(|(request, _)| *request).collect(),
+                },
+                observation,
+                unread: observer.unread(),
+            }
         }))
     }
 }
@@ -254,15 +288,16 @@ impl Sections {
 #[derive(Debug, Default)]
 struct Unscanned {
     batch: Vec<PathBuf>,
-    effects: BTreeSet<PathBuf>,
-    dropped: BTreeSet<PathBuf>,
+    effects: Vec<(Requests, Vec<PathBuf>)>,
+    dropped: Vec<(Requests, Vec<PathBuf>)>,
 }
 
 impl Unscanned {
-    fn all(&self) -> Vec<PathBuf> {
+    fn all(&self, more: &[PathBuf]) -> Vec<PathBuf> {
+        let requested = (self.effects.iter()).chain(&self.dropped);
         (self.batch.iter())
-            .chain(&self.effects)
-            .chain(&self.dropped)
+            .chain(requested.flat_map(|(_, paths)| paths))
+            .chain(more)
             .cloned()
             .collect()
     }
@@ -273,10 +308,9 @@ impl Unscanned {
 pub(crate) struct Batch {
     pub stamp: Stamp,
     /// The reset requests this batch answers: the observer was given the resets of each one, and a scan made after
-    /// that settled every scope of them, in this batch or in one sent before it. `None` while a reset the observer
-    /// was given still waits for such a scan. A stamp cannot say this: it tells when the scans of a batch began, not
-    /// which scopes they read.
-    pub answered: Option<Requests>,
+    /// that settled every scope of them, in this batch or in one sent before it. A stamp cannot say this: it tells
+    /// when the scans of a batch began, not which scopes they read.
+    pub answered: Answers,
     pub observation: Observation,
     pub unread: (u64, u64),
 }
@@ -311,14 +345,8 @@ pub(crate) struct Disk {
     spans: VecDeque<(u64, Vec<PathBuf>)>,
     /// The end epoch of the latest section that `spans` no longer holds.
     forgotten: u64,
-    /// The reset request of the latest effect section whose outcome L follows only after a scan of the section's
-    /// paths: it wrote, moved or removed a rules file, or it moved a folder, whose rules files the trees hold by path,
-    /// or it removed a folder that an entry L places in it had left. Set until a batch answers that request, and so
-    /// has passed a scan of the section's paths and the rules it read.
-    scan_after: Option<Requests>,
     unscanned: Unscanned,
-    drop_after: Option<Requests>,
-    rescan_after: Option<Requests>,
+    rescan_after: Vec<Requests>,
     /// The most each batch of effects holds: [`BATCH`] outside tests.
     batch: BatchLimit,
     hook: Hook,
@@ -459,10 +487,8 @@ impl Disk {
             recorded: BTreeMap::new(),
             spans: VecDeque::new(),
             forgotten: 0,
-            scan_after: None,
             unscanned: Unscanned::default(),
-            drop_after: None,
-            rescan_after: None,
+            rescan_after: Vec::new(),
             batch: BATCH,
             hook,
             brought_back: BroughtBack::Entries(HashSet::new()),
@@ -521,7 +547,7 @@ impl Disk {
                 &outcomes,
                 true,
                 &link.space_id,
-                pending(&disk.unscanned.all(), &BTreeMap::new()),
+                pending(&disk.unscanned.all(&[]), &BTreeMap::new()),
                 engine,
                 store,
                 hook,
@@ -690,12 +716,11 @@ impl Disk {
             rules_changed |= !scopes.is_empty() && (moved_folder || scopes.iter().any(rules_file));
             scopes_of_batch.extend(scopes);
         }
-        if rules_changed {
-            self.unscanned
-                .effects
-                .extend(scopes_of_batch.iter().cloned());
-        }
-        let pending = pending(&self.unscanned.all(), &BTreeMap::new());
+        let unscanned = match rules_changed {
+            true => scopes_of_batch.clone(),
+            false => Vec::new(),
+        };
+        let pending = pending(&self.unscanned.all(&unscanned), &BTreeMap::new());
         let settled = acknowledge(
             &outcomes,
             false,
@@ -711,7 +736,7 @@ impl Disk {
         if rules_changed
             || (settled.iter()).any(|settled| matches!(settled, Settled::AwaitsScan(_)))
         {
-            self.scan_after = Some(requested);
+            self.unscanned.effects.push((requested, unscanned));
         }
         self.spans.push_back((end, scopes_of_batch));
         while self.spans.len() > SPANS {
@@ -761,17 +786,10 @@ impl Disk {
         }
         observation.root.map_err(Stop::Root)?;
         engine.rules(observation.rules, observation.all_rules);
-        if (self.scan_after).is_some_and(|requested| answered >= Some(requested)) {
-            self.scan_after = None;
-            self.unscanned.effects.clear();
-        }
-        if (self.rescan_after).is_some_and(|requested| answered >= Some(requested)) {
-            self.rescan_after = None;
-        }
-        if (self.drop_after).is_some_and(|requested| answered >= Some(requested)) {
-            self.drop_after = None;
-            self.unscanned.dropped.clear();
-        }
+        self.rescan_after
+            .retain(|requested| !answered.covers(*requested));
+        (self.unscanned.effects).retain(|(requested, _)| !answered.covers(*requested));
+        (self.unscanned.dropped).retain(|(requested, _)| !answered.covers(*requested));
         if stamp.0 < self.forgotten {
             tracing::debug!(
                 space_id = self.space_id.as_str(),
@@ -779,9 +797,13 @@ impl Disk {
                 "dropped an observation older than the effects the folder remembers, and reset the whole folder"
             );
             engine.read(&observation.read, &observation.unreadable);
-            self.unscanned.dropped.insert(PathBuf::new());
-            engine.listed(&[], pending(&self.unscanned.all(), &observation.waiting));
-            self.drop_after = Some(self.sections.request(engine.resets([PathBuf::new()])));
+            let root = vec![PathBuf::new()];
+            engine.listed(
+                &[],
+                pending(&self.unscanned.all(&root), &observation.waiting),
+            );
+            let requested = self.sections.request(engine.resets(root.iter().cloned()));
+            self.unscanned.dropped.push((requested, root));
             return Ok(());
         }
         let mut scopes: BTreeSet<PathBuf> = (self.spans.iter())
@@ -825,8 +847,8 @@ impl Disk {
         let mut ctimes = observation.ctimes;
         ctimes.retain(|path, _| !dropped.contains(path));
         self.unscanned.batch = observation.pending;
-        self.unscanned.dropped.extend(dropped.iter().cloned());
-        let pending = pending(&self.unscanned.all(), &observation.waiting);
+        let dropped: Vec<PathBuf> = dropped.into_iter().collect();
+        let pending = pending(&self.unscanned.all(&dropped), &observation.waiting);
         if !changes.is_empty()
             || mounts.is_some()
             || !ctimes.is_empty()
@@ -857,7 +879,10 @@ impl Disk {
                 ?dropped,
                 "dropped the changes an effect made after the observation began, and reset their paths"
             );
-            self.drop_after = Some(self.sections.request(engine.resets(dropped)));
+            let requested = self
+                .sections
+                .request(engine.resets(dropped.iter().cloned()));
+            self.unscanned.dropped.push((requested, dropped));
         }
         self.record(engine);
         Ok(())
@@ -874,7 +899,7 @@ impl Disk {
     /// its resets before the effect ended, or may have scanned other paths. The observer answers a reset with a batch
     /// also when the scan found nothing, so the wait ends without a change on disk.
     pub fn awaits_scan(&self) -> bool {
-        self.scan_after.is_some()
+        !self.unscanned.effects.is_empty()
     }
 
     #[cfg(test)]
@@ -922,11 +947,12 @@ impl Disk {
 
     /// Asks the observer to reset `paths` to L and scan them again.
     pub fn rescan(&mut self, engine: &Engine, paths: Vec<PathBuf>) {
-        self.rescan_after = Some(self.sections.request(engine.resets(paths)));
+        self.rescan_after
+            .push(self.sections.request(engine.resets(paths)));
     }
 
     pub fn awaits_rescan(&self) -> bool {
-        self.rescan_after.is_some()
+        !self.rescan_after.is_empty()
     }
 
     /// The chunks `commit` adds, with where the bytes of each are: for every content the commit creates or

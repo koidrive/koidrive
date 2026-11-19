@@ -259,7 +259,7 @@ fn removals_below_a_folder_move_that_is_dropped_are_dropped_with_it() {
     let stale = Batch {
         stamp,
         unread: (0, 0),
-        answered: None,
+        answered: Default::default(),
         observation: crate::observe::Observation {
             changes: vec![
                 Observed::Removed {
@@ -322,7 +322,7 @@ fn a_removal_dropped_while_excluded_stays_unobserved_until_the_reset_scan_answer
     let batch = |stamp, changes, rules, read| Batch {
         stamp,
         unread: (0, 0),
-        answered: None,
+        answered: Default::default(),
         observation: crate::observe::Observation {
             changes,
             root: Ok(()),
@@ -1005,6 +1005,32 @@ fn a_batch_scanned_before_a_rules_file_was_written_does_not_end_the_wait_for_its
     assert_eq!(names(&site.root), [".koiignore", "mine.txt"]);
 }
 
+#[test]
+fn a_downloaded_rules_file_ends_the_wait_for_its_scan_while_another_folder_stays_busy() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("logs")).unwrap();
+    a.create(&mut remote, &site_a.root.join("logs/app.log"), b"started\n");
+    a.create(&mut remote, &site_a.root.join("cache.tmp"), b"cache");
+    let (site, mut b) = linked(&mut remote, "b");
+    b.settle();
+    b.observer.keep_pending(PathBuf::from("logs"));
+    a.create(&mut remote, &site_a.root.join("logs/a.log"), b"from a");
+    b.pull(&remote);
+    b.run(&mut remote);
+    assert_eq!(fs::read(site.root.join("logs/a.log")).unwrap(), b"from a");
+
+    a.create(&mut remote, &site_a.root.join(".koiignore"), b"*.tmp\n");
+    a.create(&mut remote, &site_a.root.join("notes.txt"), b"notes");
+    b.pull(&remote);
+    assert_eq!(b.run(&mut remote), ["stage"]);
+    assert!(b.folder.disk.awaits_scan());
+
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
+    b.run(&mut remote);
+    assert_eq!(fs::read(site.root.join("notes.txt")).unwrap(), b"notes");
+}
+
 /// The observer's thread takes its resets, and the effect that moves the folder ends before the thread reads its
 /// stamp. The batch that follows began after the effect, but its scans were never asked to read the moved folder.
 #[test]
@@ -1044,7 +1070,10 @@ fn a_batch_that_was_not_asked_to_scan_a_moved_folder_does_not_end_the_wait_for_i
     let unrelated = Batch {
         stamp: sections.stamp(),
         unread: (0, 0),
-        answered: Some(requests),
+        answered: crate::disk::Answers {
+            through: requests,
+            open: Vec::new(),
+        },
         observation: crate::observe::Observation {
             changes: Vec::new(),
             root: Ok(()),
