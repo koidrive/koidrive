@@ -215,6 +215,7 @@ impl Guard {
         asked: &mut Option<Question>,
         pending: BTreeMap<NodeId, Held>,
         trees: &Trees,
+        given_up_files: u64,
         ids: &mut IdGen,
         now_ms: u64,
     ) -> Checked {
@@ -282,7 +283,7 @@ impl Guard {
         let held_before = was_asked
             || (open.values())
                 .any(|held| held.members.keys().any(|node| unconfirmed.contains(node)));
-        let window = self.window(&open, trees);
+        let window = self.window(&open, trees, given_up_files);
         let mut exceeded = window.exceeded();
         if open.is_empty() || (!held_before && exceeded.is_empty()) {
             return checked;
@@ -318,7 +319,7 @@ impl Guard {
         }
     }
 
-    fn window(&self, open: &BTreeMap<NodeId, Held>, trees: &Trees) -> Window {
+    fn window(&self, open: &BTreeMap<NodeId, Held>, trees: &Trees, given_up_files: u64) -> Window {
         let gone: u64 = (self.ledger.iter())
             .filter(|(id, _)| trees.synced().live(id).is_none())
             .map(|(_, counted)| counted.files)
@@ -329,7 +330,7 @@ impl Guard {
         Window {
             deletions: self.ledger.len() as u64,
             affected_files,
-            space_files: trees.synced_files() + gone,
+            space_files: trees.synced_files() - given_up_files + gone,
         }
     }
 
@@ -339,6 +340,7 @@ impl Guard {
         last_seq: u64,
         noticed: bool,
         trees: &Trees,
+        given_up_files: u64,
         now_ms: u64,
     ) -> Option<Window> {
         let removed = RemoteDeletion::of(trees, &removal.within, last_seq);
@@ -371,7 +373,7 @@ impl Guard {
         Some(Window {
             deletions: self.remote.len() as u64,
             affected_files,
-            space_files: trees.synced_files() + affected_files,
+            space_files: trees.synced_files() - given_up_files + affected_files,
         })
     }
 

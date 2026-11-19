@@ -109,7 +109,7 @@ A `Move` of a trashed folder brings back the members of its trash group (R8). Wh
 
 - The commit requires the head it was planned on (RFC 0002 §4). When another device restored, moved or edited a member after `base_seq`, the server refuses the whole commit, and the planner plans again against the new R, where the member is no longer one the move brings back.
 - When these ops don't fit the planner's rules, the move goes alone, as a plain move.
-- When they don't fit in one commit with the move, the move goes first and the members are given up as for an answer (§6.4): the next commits delete them, and they are not downloaded in between.
+- When they don't fit in one commit with the move, the move goes first and the members are given up as for an answer (§6.4): the next commits delete them, and they are not downloaded in between. The mass-delete guard (mass-deletion.md §6.1) counts neither these deletes nor the given-up members among the space's files.
 
 A move that this device built before it knew that R trashed the folder, or a plain move as above, brings the members back live. A `Delete` of such a member in the same commit is superseded, because the commit's own move changed the member after `base_seq` (RFC 0002 §9). So the member is deleted in the next commit and is never downloaded:
 

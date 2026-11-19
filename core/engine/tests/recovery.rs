@@ -5071,3 +5071,128 @@ fn files_an_answer_brings_back_beyond_one_commit_are_trashed_again_without_a_mas
     assert_eq!(sent, expected);
     assert_eq!(commits.questions(), []);
 }
+
+#[test]
+fn a_mass_delete_beside_given_up_members_is_still_asked() {
+    let files: Vec<(String, Shape)> = (0..600)
+        .map(|i| (format!("f{i}"), file("d", &format!("child{i}"), 1)))
+        .collect();
+    let real: Vec<(String, Shape)> = (0..500)
+        .map(|i| (format!("g{i}"), file(ROOT, &format!("real{i}"), 1)))
+        .collect();
+    let synced: Vec<(&str, Shape)> = [("d", dir(ROOT, "old"))]
+        .into_iter()
+        .chain(files.iter().map(|(id, s)| (id.as_str(), s.clone())))
+        .chain(real.iter().map(|(id, s)| (id.as_str(), s.clone())))
+        .collect();
+    let remote: Vec<Remote> = (synced.iter())
+        .map(|(id, s)| Remote(id, s.clone(), !id.starts_with('g'), 1))
+        .collect();
+    let local: Vec<(&str, Shape)> = [("d", dir(ROOT, "new"))]
+        .into_iter()
+        .chain(real.iter().map(|(id, s)| (id.as_str(), s.clone())))
+        .collect();
+    let mut trees = trees(&local, &synced, &remote);
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "d".into())]
+    );
+    let revived: Vec<(&str, Shape, bool)> = [("d", dir(ROOT, "new"), false)]
+        .into_iter()
+        .chain(files.iter().map(|(id, s)| (id.as_str(), s.clone(), false)))
+        .collect();
+    applied(&mut commits, &mut trees, 2, &revived);
+    for (id, _) in &real {
+        trees.remove_local(id);
+    }
+    trees.settle(commits.aliases());
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    assert!(
+        !sent.iter().any(|(_, id)| id.starts_with('g')),
+        "{} ops sent",
+        sent.len()
+    );
+    assert!(
+        (commits.questions().iter()).any(|q| matches!(q.kind, QuestionKind::MassDelete { .. }))
+    );
+}
+
+fn removal_beside_revived_files_is_asked(count: usize, rounds_before: Option<usize>) {
+    let files: Vec<(String, Shape)> = (0..count)
+        .map(|i| (format!("f{i}"), file("d", &format!("c{i}"), 1)))
+        .collect();
+    let mine: Vec<(String, Shape)> = (0..30)
+        .map(|i| (format!("g{i}"), file("e", &format!("m{i}"), 2)))
+        .collect();
+    let synced: Vec<(&str, Shape)> = [("d", dir(ROOT, "old"))]
+        .into_iter()
+        .chain(files.iter().map(|(i, s)| (i.as_str(), s.clone())))
+        .collect();
+    let ours: Vec<(&str, Shape)> = [("e", dir(ROOT, "e"))]
+        .into_iter()
+        .chain(mine.iter().map(|(i, s)| (i.as_str(), s.clone())))
+        .collect();
+    let remote: Vec<Remote> = (synced.iter().map(|(i, s)| Remote(i, s.clone(), true, 1)))
+        .chain(ours.iter().map(|(i, s)| Remote(i, s.clone(), false, 1)))
+        .collect();
+    let local: Vec<(&str, Shape)> = [("d", dir(ROOT, "new"))]
+        .into_iter()
+        .chain(ours.iter().cloned())
+        .collect();
+    let all: Vec<(&str, Shape)> = synced.iter().cloned().chain(ours.iter().cloned()).collect();
+    let mut trees = trees(&local, &all, &remote);
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "d".into())]
+    );
+    let remove = |trees: &mut Trees, commits: &Commits| {
+        for (id, _) in ours.iter().rev() {
+            trees.remove_local(id);
+        }
+        trees.settle(commits.aliases());
+    };
+    if rounds_before.is_none() {
+        remove(&mut trees, &commits);
+    }
+    let revived: Vec<(&str, Shape, bool)> = [("d", dir(ROOT, "new"), false)]
+        .into_iter()
+        .chain(files.iter().map(|(i, s)| (i.as_str(), s.clone(), false)))
+        .collect();
+    applied(&mut commits, &mut trees, 2, &revived);
+    for round in 0..rounds_before.unwrap_or(0) {
+        let sent = ops(&mut commits, &mut trees, &mut ids);
+        assert_eq!(sent.len(), 1000);
+        let trashed: Vec<(&str, Shape, bool)> = (files.iter())
+            .filter(|(i, _)| sent.contains(&("delete", i.clone())))
+            .map(|(i, s)| (i.as_str(), s.clone(), true))
+            .collect();
+        applied(&mut commits, &mut trees, 3 + round as u64, &trashed);
+    }
+    if rounds_before.is_some() {
+        remove(&mut trees, &commits);
+    }
+    let sent = ops(&mut commits, &mut trees, &mut ids);
+    assert!(
+        !sent.iter().any(|(_, i)| i == "e" || i.starts_with('g')),
+        "{sent:?}"
+    );
+    assert!(
+        (commits.questions().iter()).any(|q| matches!(q.kind, QuestionKind::MassDelete { .. }))
+    );
+}
+
+#[test]
+fn a_mass_delete_made_while_the_answer_is_in_flight_is_still_asked() {
+    removal_beside_revived_files_is_asked(600, None);
+}
+
+#[test]
+fn a_mass_delete_made_in_the_last_round_that_trashes_given_up_members_is_still_asked() {
+    removal_beside_revived_files_is_asked(2500, Some(2));
+}
