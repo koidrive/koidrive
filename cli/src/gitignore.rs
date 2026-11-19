@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
-use koidrive_driver::{FolderStatus, Paths};
+use koidrive_driver::Paths;
 use koidrive_ipc::{GitignoreFolder, Request, Response};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -115,18 +115,14 @@ fn set_done(follows: bool, already: bool) -> Done {
     }
 }
 
-async fn linked(paths: &Paths) -> Result<Vec<FolderStatus>, CliError> {
-    match ipc::run(paths, Request::Status).await? {
-        Response::Status { status } => Ok(status.folders),
-        other => Err(unexpected(other)),
-    }
-}
-
 async fn counted(paths: &Paths, only: Option<&Path>) -> Result<Vec<GitignoreFolderData>, CliError> {
-    let folders: BTreeMap<String, String> = (linked(paths).await?.into_iter())
-        .filter_map(|folder| Some((folder.space_id, folder.path?)))
-        .collect();
-    let asked = match only {
+    let folders: BTreeMap<String, String> = match ipc::run(paths, Request::Status).await? {
+        Response::Status { status } => (status.folders.into_iter())
+            .filter_map(|folder| Some((folder.space_id, folder.path?)))
+            .collect(),
+        other => return Err(unexpected(other)),
+    };
+    let linked = match only {
         Some(only) => vec![GitignoreFolder::Folder(only.to_path_buf())],
         None => folders
             .keys()
@@ -135,23 +131,9 @@ async fn counted(paths: &Paths, only: Option<&Path>) -> Result<Vec<GitignoreFold
             .collect(),
     };
     let mut counted = Vec::new();
-    for of in asked {
-        let space = match &of {
-            GitignoreFolder::Space(space_id) => Some(space_id.clone()),
-            GitignoreFolder::Folder(_) => None,
-        };
-        let response = match ipc::run(paths, Request::GitignoreOnly { of }).await {
-            Ok(response) => response,
-            Err(error) => match space {
-                Some(space_id)
-                    if !(linked(paths).await?.iter()).any(|folder| folder.space_id == space_id) =>
-                {
-                    continue;
-                }
-                _ => return Err(error),
-            },
-        };
-        match response {
+    for of in linked {
+        match ipc::run(paths, Request::GitignoreOnly { of }).await? {
+            Response::GitignoreUnlinked { .. } => {}
             Response::GitignoreOnly {
                 space_id,
                 files,

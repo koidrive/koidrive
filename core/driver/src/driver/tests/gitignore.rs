@@ -316,3 +316,15 @@ async fn gitignore_only_does_not_wait_for_the_folders_write_transaction() {
     assert_eq!(counted, only);
     assert!(took < Duration::from_secs(1), "took {took:?}");
 }
+
+#[tokio::test]
+async fn gitignore_only_leaves_out_a_folder_while_it_is_unlinked() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = fs::canonicalize(dir.path()).unwrap();
+    let driver = gitignore_only_of(&base, &base.join("Koidrive"));
+    (driver.inner.folders.lock().unwrap().get_mut(SPACE).unwrap()).unlink = Some(Unlink::Running);
+    assert!(matches!(
+        driver.gitignore_only(SPACE),
+        Err(DriverError::SpaceNotLinked(_))
+    ));
+}

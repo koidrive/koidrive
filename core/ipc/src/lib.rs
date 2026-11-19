@@ -316,6 +316,10 @@ pub enum Response {
         )]
         unreadable: Vec<PathBuf>,
     },
+    /// [`Request::GitignoreOnly`] of a space whose folder is unlinked or being unlinked, which the count leaves out.
+    GitignoreUnlinked {
+        space_id: String,
+    },
     /// A failed request. An older daemon sends only `message`, which reads as [`Code::Failed`].
     Error {
         message: String,
@@ -1147,6 +1151,12 @@ mod tests {
                 unreadable: vec!["/home/ada/Code/pgdata".into()],
             },
             r#"{"response":"gitignore_only","space_id":"s1","files":1,"bytes":2,"unreadable":["/home/ada/Code/pgdata"]}"#,
+        );
+        pinned(
+            Response::GitignoreUnlinked {
+                space_id: "s1".into(),
+            },
+            r#"{"response":"gitignore_unlinked","space_id":"s1"}"#,
         );
         pinned(
             Request::Leave {

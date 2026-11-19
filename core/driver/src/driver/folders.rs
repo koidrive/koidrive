@@ -624,7 +624,7 @@ impl Driver {
         let admitted =
             match self.read_store(space_id, |store| Ok(crate::disk::admitted(&link, store))) {
                 Ok(Some(admitted)) => admitted.map_err(|stop| stop.to_string()),
-                Ok(None) => Err("the folder is being unlinked".to_owned()),
+                Ok(None) => return Err(DriverError::SpaceNotLinked(space_id.to_owned())),
                 Err(error) => Err(error.to_string()),
             };
         Ok(crate::ignore::gitignore_only(&link, admitted, local))

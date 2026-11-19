@@ -267,6 +267,7 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
             })
         }
         Request::GitignoreOnly { of } => {
+            let listed = matches!(of, GitignoreFolder::Space(_));
             let driver = driver.clone();
             let count = move || {
                 let space_id = match of {
@@ -276,6 +277,9 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
                 (driver.gitignore_only(&space_id)).map(|only| (space_id, only))
             };
             match tokio::task::spawn_blocking(count).await {
+                Ok(Err(DriverError::SpaceNotLinked(space_id))) if listed => {
+                    Ok(Response::GitignoreUnlinked { space_id })
+                }
                 Ok(counted) => counted.map(|(space_id, only)| Response::GitignoreOnly {
                     space_id,
                     files: only.files,
@@ -662,16 +666,13 @@ pub(crate) mod tests {
             Response::Gitignore { follows: false }
         );
         assert_eq!(ask(count()).await.unwrap(), counted);
-        let not_linked = Request::GitignoreOnly {
-            of: GitignoreFolder::Space("0190f0a0-0000-7000-8000-000000000002".into()),
-        };
-        let error = ask(not_linked).await.unwrap_err();
-        assert!(
-            error
-                .message
-                .starts_with("no linked folder syncs the space"),
-            "{}",
-            error.message
+        let not_linked = "0190f0a0-0000-7000-8000-000000000002";
+        let of = GitignoreFolder::Space(not_linked.into());
+        assert_eq!(
+            ask(Request::GitignoreOnly { of }).await.unwrap(),
+            Response::GitignoreUnlinked {
+                space_id: not_linked.into()
+            }
         );
         server.abort();
     }
