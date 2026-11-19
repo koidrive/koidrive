@@ -1294,7 +1294,10 @@ impl<'a> View<'a> {
     }
 
     fn left_out(&self, id: &NodeId) -> bool {
-        self.trees.excluded(id) || self.trees.under_kept_entry(id)
+        self.trees.under_kept_entry(id)
+            || self.trees.recorded_local(id)
+            || crate::classify::path(self.trees.local(), id)
+                .is_some_and(|(names, kind)| self.trees.ignores(&names, kind))
     }
 
     fn goes_home(&self, id: &NodeId, remote: &Shape) -> bool {
