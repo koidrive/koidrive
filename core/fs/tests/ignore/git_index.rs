@@ -161,6 +161,7 @@ fn a_watcher_reads_a_split_index_again_when_its_shared_index_returns() {
         .unwrap();
     let mut watcher = NativeWatcher::start_with_rules(root, snapshot, rules).unwrap();
     watcher.poll(Duration::from_secs(2)).unwrap();
+    assert!(!known(watcher.snapshot()).contains(&"dist/a.js"));
     fs::rename(away.path().join("shared"), &shared).unwrap();
     let deadline = Instant::now() + WAIT;
     while Instant::now() < deadline && !known(watcher.snapshot()).contains(&"dist/a.js") {
