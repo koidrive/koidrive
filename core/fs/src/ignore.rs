@@ -72,6 +72,7 @@ struct Search {
     pending: HashMap<Key, u64>,
     decided: HashMap<Key, Decided>,
     held: BTreeMap<PathBuf, Entry>,
+    sought: HashSet<Key>,
     postponed: BTreeSet<PathBuf>,
     scanned: Vec<PathBuf>,
     reseeded: Vec<PathBuf>,
@@ -98,6 +99,7 @@ impl Search {
     fn prune(&mut self) {
         let keys: HashSet<Key> = (self.held.values())
             .map(|entry| (entry.id, entry.kind))
+            .chain(self.sought.iter().copied())
             .collect();
         self.pending.retain(|key, _| keys.contains(key));
         self.decided.retain(|key, _| keys.contains(key));
@@ -788,6 +790,12 @@ impl<'r> Pending<'r> {
         });
         *held = kept;
         taken
+    }
+
+    pub(crate) fn seek(&mut self, keys: HashSet<Key>) {
+        let search = &mut self.rules.search;
+        search.sought = keys;
+        search.prune();
     }
 
     pub(crate) fn hold(&mut self, held: BTreeMap<PathBuf, Entry>) {

@@ -454,3 +454,65 @@ fn a_rescan_watcher_taking_over_from_another_reports_what_the_other_held_back() 
         );
     }
 }
+
+#[test]
+fn a_sought_entry_is_searched_for_across_scans_until_a_search_looked_everywhere() {
+    let dir = large_ignored_tree();
+    let root = dir.path();
+    write(root, "f.txt", "f");
+    let mut rules = rules().with_search_budget(100);
+    let id = Snapshot::scan_with_rules(root, &mut rules).unwrap().entries[Path::new("f.txt")].id;
+    fs::rename(root.join("f.txt"), root.join("ig/zz/deep/f.txt")).unwrap();
+    let snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
+    let mut watcher = RescanWatcher::with_rules(root, snapshot, Duration::ZERO, rules).unwrap();
+    let wanted = BTreeMap::from([(PathBuf::from("f.txt"), Known { kind: File, id })]);
+    let look = |watcher: &mut RescanWatcher| {
+        let gone = watcher.look_for(&wanted, &BTreeMap::new()).unwrap();
+        watcher.poll(Duration::ZERO).unwrap();
+        gone
+    };
+    for _ in 0..10 {
+        assert!(!look(&mut watcher).contains(&(PathBuf::from("f.txt"), Looked::Gone)));
+    }
+
+    fs::remove_file(root.join("ig/zz/deep/f.txt")).unwrap();
+    let searches =
+        (1..=20).find(|_| look(&mut watcher).contains(&(PathBuf::from("f.txt"), Looked::Gone)));
+    assert!(searches.is_some_and(|n| n > 1), "{searches:?}");
+}
+
+#[test]
+fn a_sought_entry_below_a_folder_the_search_could_not_open_is_searched_for_again_once_it_can() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, KOIIGNORE, "ig/\n");
+    write(root, "f.txt", "f");
+    let mut rules = rules();
+    let id = Snapshot::scan_with_rules(root, &mut rules).unwrap().entries[Path::new("f.txt")].id;
+    let locked = root.join("ig/locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::rename(root.join("f.txt"), locked.join("f.txt")).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(&locked).is_ok() {
+        eprintln!("SKIPPED: running as root, so permissions do not block reads");
+        return;
+    }
+    let snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
+    let mut watcher = RescanWatcher::with_rules(root, snapshot, Duration::ZERO, rules).unwrap();
+    let wanted = BTreeMap::from([(PathBuf::from("f.txt"), Known { kind: File, id })]);
+    let mut look = || {
+        let looked = watcher.look_for(&wanted, &BTreeMap::new()).unwrap();
+        watcher.poll(Duration::ZERO).unwrap();
+        looked
+    };
+    for _ in 0..3 {
+        assert_eq!(look(), []);
+    }
+
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    let found = Looked::Found("ig/locked/f.txt".into());
+    assert_eq!(look(), [(PathBuf::from("f.txt"), found)]);
+    fs::remove_file(locked.join("f.txt")).unwrap();
+    assert_eq!(look(), [(PathBuf::from("f.txt"), Looked::Gone)]);
+}
