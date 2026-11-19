@@ -339,6 +339,14 @@ fn a_server_that_keeps_its_last_device() -> String {
 }
 
 fn a_server_that_keeps_its_last_device_once_it_answers(answers: Arc<AtomicBool>) -> String {
+    serve(answers, Arc::new(|| {}))
+}
+
+fn a_server_that_revokes_and_then(on_revoke: impl Fn() + Send + Sync + 'static) -> String {
+    serve(Arc::new(AtomicBool::new(true)), Arc::new(on_revoke))
+}
+
+fn serve(answers: Arc<AtomicBool>, on_revoke: Arc<dyn Fn() + Send + Sync>) -> String {
     use prost::Message;
     use std::io::{Read, Write};
 
@@ -347,6 +355,7 @@ fn a_server_that_keeps_its_last_device_once_it_answers(answers: Arc<AtomicBool>)
     std::thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
             let answers = answers.clone();
+            let on_revoke = on_revoke.clone();
             std::thread::spawn(move || {
                 let mut request = [0; 65536];
                 let read = stream.read(&mut request).unwrap_or(0);
@@ -365,6 +374,7 @@ fn a_server_that_keeps_its_last_device_once_it_answers(answers: Arc<AtomicBool>)
                     };
                     (200, token.encode_to_vec())
                 } else if line.contains("confirm=last-device") {
+                    on_revoke();
                     (204, Vec::new())
                 } else if !answers.load(Ordering::SeqCst) {
                     std::thread::sleep(std::time::Duration::from_secs(60));
@@ -2011,6 +2021,36 @@ fn a_profile_in_a_folder_unlinked_earlier_loses_its_path_line() {
     assert_eq!(
         fs::read_to_string(&zprofile).unwrap(),
         "export EDITOR=vim\n",
+        "{envelope:#}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_profile_that_registers_its_service_during_the_sign_out_keeps_the_shared_command() {
+    let agent = Arc::new(std::sync::OnceLock::<(PathBuf, String)>::new());
+    let server = a_server_that_revokes_and_then({
+        let agent = agent.clone();
+        move || {
+            if let Some((plist, text)) = agent.get() {
+                fs::create_dir_all(plist.parent().unwrap()).unwrap();
+                fs::write(plist, text).unwrap();
+            }
+        }
+    });
+    let (machine, koi, _) = signed_in_to(&server);
+    let other = OtherProfile::new(&machine, &koi);
+    let plist = machine.path(&format!("Library/LaunchAgents/{}.plist", other.label));
+    agent.set((plist.clone(), other.agent.clone())).unwrap();
+
+    let command = machine.command(&koi, &["uninstall", "--yes", "--last-device", "--json"]);
+    let (output, envelope) = machine.envelope(command);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert!(plist.exists(), "{envelope:#}");
+    assert!(koi.is_file(), "{envelope:#}");
+    assert!(
+        kept(&envelope).contains(&json!({ "kind": "shared", "path": koi.display().to_string() })),
         "{envelope:#}"
     );
 }

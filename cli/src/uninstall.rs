@@ -25,7 +25,7 @@ mod find;
 mod remove;
 mod text;
 
-use find::{find, is_koi, is_path_line, kept_programs};
+use find::{find, is_koi, is_path_line, kept_programs, other_services};
 use remove::{
     clean_folder, keep_shared, prune_runtime, quit_apps, released, remove_path, remove_programs,
     remove_service, sign_out, unlink,
@@ -463,7 +463,7 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
         };
         return Ok(Done::ok(data, text).unchanged());
     }
-    let found = match confirm(&found, &options, terminal).await? {
+    let mut found = match confirm(&found, &options, terminal).await? {
         false => found,
         true => {
             let now = find(paths, &home).await;
@@ -540,7 +540,8 @@ pub async fn run(paths: &Paths, options: Options, terminal: &Terminal) -> Result
         }
     }
     prune_runtime(paths);
-    if shared {
+    (found.others, found.unlisted) = other_services(paths, &home);
+    if !found.others.is_empty() || found.unlisted.is_some() {
         keep_shared(&found, &mut run);
         run.problems.extend(found.unlisted.iter().map(|problem| {
             format!("cannot list the background services of other profiles, so the shared koi stays: {problem}")

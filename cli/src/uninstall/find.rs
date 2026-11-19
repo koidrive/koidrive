@@ -50,16 +50,7 @@ pub(super) async fn find(paths: &Paths, home: &Path) -> Found {
     }
     let manager = service::system();
     let this = service::this_service(paths).ok();
-    let own = this.as_ref().map(|service| manager.name(service));
-    let (others, unlisted) = match service::installed_services(manager.kind(), home) {
-        Ok(installed) => (
-            (installed.into_iter())
-                .filter(|installed| Some(&installed.name) != own.as_ref())
-                .collect::<Vec<_>>(),
-            None,
-        ),
-        Err(problem) => (Vec::new(), Some(problem)),
-    };
+    let (others, unlisted) = other_services(paths, home);
     let mut files = Vec::new();
     if cfg!(target_os = "macos")
         && let Some(service) = &this
@@ -163,6 +154,25 @@ pub(super) async fn find(paths: &Paths, home: &Path) -> Found {
         kept,
         unlisted,
         config_in_state,
+    }
+}
+
+pub(super) fn other_services(
+    paths: &Paths,
+    home: &Path,
+) -> (Vec<service::Installed>, Option<String>) {
+    let manager = service::system();
+    let own = service::this_service(paths)
+        .ok()
+        .map(|service| manager.name(&service));
+    match service::installed_services(manager.kind(), home) {
+        Ok(installed) => (
+            (installed.into_iter())
+                .filter(|installed| Some(&installed.name) != own.as_ref())
+                .collect(),
+            None,
+        ),
+        Err(problem) => (Vec::new(), Some(problem)),
     }
 }
 
