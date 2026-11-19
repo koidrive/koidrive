@@ -580,6 +580,8 @@ mod registry {
         fn CFGetTypeID(object: *const c_void) -> usize;
         fn CFDataGetTypeID() -> usize;
         fn CFStringGetTypeID() -> usize;
+        fn CFStringGetLength(text: *const c_void) -> isize;
+        fn CFStringGetMaximumSizeForEncoding(length: isize, encoding: u32) -> isize;
         fn CFDataGetLength(data: *const c_void) -> isize;
         fn CFDataGetBytePtr(data: *const c_void) -> *const u8;
         fn CFRelease(object: *const c_void);
@@ -613,7 +615,12 @@ mod registry {
                 };
                 Ok(Some(bytes.strip_suffix(&[0]).unwrap_or(bytes).to_vec()))
             } else if CFGetTypeID(found) == CFStringGetTypeID() {
-                let mut buffer = [0 as c_char; 1024];
+                let mut buffer = vec![
+                    0 as c_char;
+                    CFStringGetMaximumSizeForEncoding(CFStringGetLength(found), UTF8)
+                        as usize
+                        + 1
+                ];
                 (CFStringGetCString(found, buffer.as_mut_ptr(), buffer.len() as isize, UTF8) != 0)
                     .then(|| Some(CStr::from_ptr(buffer.as_ptr()).to_bytes().to_vec()))
                     .ok_or_else(|| format!("{name:?} does not fit in {} bytes", buffer.len()))
@@ -1100,9 +1107,9 @@ mod tests {
     fn a_drop_ejects_an_image_of_its_folder_that_disk_images_2_attached() {
         let disks = Disks::new().unwrap();
         let image = disks.image("Disk Images 2%");
-        let device = disk_images_2_attach(image.as_os_str());
+        let device = Eject(disk_images_2_attach(image.as_os_str()));
         drop(disks);
-        assert!(!Path::new(&device).exists(), "{device}");
+        assert_ne!(image_on(&device.0).unwrap(), Some(image), "{}", device.0);
     }
 
     #[cfg(target_os = "macos")]
@@ -1129,12 +1136,42 @@ mod tests {
         };
         drop(disks);
         let ejected = still_attached(&unrecorded);
+        assert!(Path::new(&ram.0).exists(), "{}", ram.0);
         assert_eq!(
             (ejected, image_on(&ram.0)),
             (Ok(false), Ok(None)),
             "{}",
             unrecorded.device
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_drop_ejects_an_image_of_its_folder_at_the_longest_url_disk_images_2_takes() {
+        use std::os::unix::ffi::OsStrExt;
+        let disks = Disks::new().unwrap();
+        let image = disks.image("Long");
+        let url_length = |path: &Path| {
+            "file://".len()
+                + path
+                    .as_os_str()
+                    .as_bytes()
+                    .iter()
+                    .map(|&byte| if byte == b' ' { 3 } else { 1 })
+                    .sum::<usize>()
+        };
+        let mut long = fs::canonicalize(disks.base()).unwrap();
+        for _ in 0..3 {
+            long.push(" ".repeat(100));
+        }
+        fs::create_dir_all(&long).unwrap();
+        let name = "x".repeat(1023 - url_length(&long) - "/.dmg".len());
+        long.push(format!("{name}.dmg"));
+        assert_eq!(url_length(&long), 1023);
+        fs::rename(&image, &long).unwrap();
+        let device = Eject(disk_images_2_attach(long.as_os_str()));
+        drop(disks);
+        assert_ne!(image_on(&device.0).unwrap(), Some(long), "{}", device.0);
     }
 
     #[cfg(target_os = "macos")]
