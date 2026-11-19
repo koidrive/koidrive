@@ -80,7 +80,7 @@ use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::{self, Base, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, location_of};
 use koidrive_engine::first_link::{self, History, Marks};
-use koidrive_engine::names::{conflict_name, nfc, same_name};
+use koidrive_engine::names::{conflict_name, name_key, nfc, same_name};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
 use koidrive_engine::tree::{
     Content, FileIdentity, Kind, NodeId, RemoteNode, Shape, same, same_content,
@@ -3207,6 +3207,20 @@ impl World {
             if engine.behind {
                 return fail("R waits for a listing".into());
             }
+            let left_out = &unsynced[d];
+            let mut excused: BTreeSet<NodeId> = BTreeSet::new();
+            let excuse = |nodes: &[&NodeId], check: Check, why: String| {
+                let why = format!("device {d} is quiet, but {why}");
+                match nodes.is_empty() || intents::expected(check, &why) {
+                    true => Ok(nodes.iter().map(|id| (*id).clone()).collect::<Vec<_>>()),
+                    false => Err(Failure::Diverged(why)),
+                }
+            };
+            let holds_only_left_out_inos = |ino: u128| {
+                let folder = Place::In(ino);
+                let mut children = device.disk.children(&folder).peekable();
+                children.peek().is_some() && children.all(|child| left_out.inos.contains(&child))
+            };
             let blocked = engine.effects.blocked();
             let held_out = |effect: &Effect| {
                 let at = match effect {
@@ -3214,39 +3228,40 @@ impl World {
                     Effect::Move { to, .. } => to,
                     _ => return false,
                 };
-                (device.disk.holder(at)).is_some_and(|ino| unsynced[d].inos.contains(&ino))
+                (device.disk.holder(at)).is_some_and(|ino| left_out.inos.contains(&ino))
             };
-            if !blocked.is_empty() && blocked.values().all(held_out) {
-                let nodes: Vec<&NodeId> = blocked.keys().collect();
-                let why = format!(
-                    "device {d} is quiet, but the effects for {nodes:?} wait for names that entries its rules leave out hold"
-                );
-                if intents::expected(Check::NameLeftOut, &why) {
-                    continue;
-                }
-                return Err(Failure::Diverged(why));
-            }
-            let emptied_of_left_out = |effect: &Effect| {
-                let Effect::RemoveDir { identity, .. } = effect else {
-                    return false;
-                };
-                let folder = Place::In(identity.ino);
-                let mut children = device.disk.children(&folder).peekable();
-                children.peek().is_some() && children.all(|child| unsynced[d].inos.contains(&child))
+            let emptied_of_left_out = |effect: &Effect| match effect {
+                Effect::RemoveDir { identity, .. } => holds_only_left_out_inos(identity.ino),
+                _ => false,
             };
-            if !blocked.is_empty() && blocked.values().all(emptied_of_left_out) {
-                let nodes: Vec<&NodeId> = blocked.keys().collect();
-                let why = format!(
-                    "device {d} is quiet, but it waits to remove the folders of {nodes:?}, which hold entries its rules leave out"
-                );
-                if intents::expected(Check::RemoveLeftOut, &why) {
-                    continue;
-                }
-                return Err(Failure::Diverged(why));
+            let named: Vec<&NodeId> = (blocked.iter())
+                .filter(|(_, effect)| held_out(effect))
+                .map(|(id, _)| id)
+                .collect();
+            let removing: Vec<&NodeId> = (blocked.iter())
+                .filter(|(_, effect)| !held_out(effect) && emptied_of_left_out(effect))
+                .map(|(id, _)| id)
+                .collect();
+            let other: BTreeMap<&NodeId, &Effect> = (blocked.iter())
+                .filter(|(_, effect)| !held_out(effect) && !emptied_of_left_out(effect))
+                .collect();
+            if !other.is_empty() {
+                return fail(format!("effects are blocked: {other:?}"));
             }
-            if !blocked.is_empty() {
-                return fail(format!("effects are blocked: {blocked:?}"));
-            }
+            excused.extend(excuse(
+                &named,
+                Check::NameLeftOut,
+                format!(
+                    "the effects for {named:?} wait for names that entries its rules leave out hold"
+                ),
+            )?);
+            excused.extend(excuse(
+                &removing,
+                Check::RemoveLeftOut,
+                format!(
+                    "it waits to remove the folders of {removing:?}, which hold entries its rules leave out"
+                ),
+            )?);
             if !engine.commits.problems().is_empty() || engine.commits.halted().is_some() {
                 let (problems, halted) = (engine.commits.problems(), engine.commits.halted());
                 return fail(format!(
@@ -3257,22 +3272,18 @@ impl World {
                 .filter(|(_, node)| node.parked)
                 .map(|(id, node)| (id, node.identity.ino))
                 .collect();
-            let holds_left_out = |(_, ino): &(&NodeId, u128)| {
-                let folder = Place::In(*ino);
-                let mut children = device.disk.children(&folder).peekable();
-                children.peek().is_some() && children.all(|child| unsynced[d].inos.contains(&child))
-            };
-            if !parked.is_empty() && parked.iter().all(holds_left_out) {
-                let nodes: Vec<&NodeId> = parked.iter().map(|(id, _)| *id).collect();
-                let why = format!(
-                    "device {d} is quiet, but it keeps the folders of {nodes:?} parked, which hold entries its rules leave out"
-                );
-                if intents::expected(Check::RemoveLeftOut, &why) {
-                    continue;
-                }
-                return Err(Failure::Diverged(why));
-            }
-            if let Some((id, _)) = parked.first() {
+            let kept_parked: Vec<&NodeId> = (parked.iter())
+                .filter(|(_, ino)| holds_only_left_out_inos(*ino))
+                .map(|(id, _)| *id)
+                .collect();
+            excused.extend(excuse(
+                &kept_parked,
+                Check::RemoveLeftOut,
+                format!(
+                    "it keeps the folders of {kept_parked:?} parked, which hold entries its rules leave out"
+                ),
+            )?);
+            if let Some((id, _)) = parked.iter().find(|(id, _)| !kept_parked.contains(id)) {
                 return fail(format!("node {id} is parked"));
             }
             let state = engine.trees.state();
@@ -3285,13 +3296,17 @@ impl World {
                     state.resends, state.lost_positions, state.lost_creates
                 ));
             }
-            let left_out = &unsynced[d];
             let mut trees = engine.trees.clone();
             trees.settle(engine.commits.aliases());
             let unsettled: Vec<_> = (trees.work().into_iter())
                 .filter(|(id, _)| !left_out.holds(&trees, id))
                 .collect();
+            let waiting_on_kept = self.waiting_on(d, &excused);
             let waiting: Vec<&NodeId> = (left_out.waiting.iter())
+                .chain(&waiting_on_kept)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .filter(|id| !excused.contains(*id))
                 .filter(|id| {
                     let shapes = [
                         trees.local().get(id).map(|node| &node.shape),
@@ -3302,53 +3317,75 @@ impl World {
                         || shapes.iter().any(|shape| shape != &shapes[2])
                 })
                 .collect();
-            if !waiting.is_empty()
-                && (unsettled.iter()).all(|(id, _)| left_out.waiting.contains(id))
-            {
-                let why = format!(
-                    "device {d} is quiet, but nodes {waiting:?} wait for names that entries its rules leave out hold"
-                );
-                if intents::expected(Check::NameLeftOut, &why) {
-                    continue;
-                }
-                return Err(Failure::Diverged(why));
-            }
-            if !unsettled.is_empty()
-                && (unsettled.iter()).all(|(id, _)| self.kept_for_left_out[d].contains(id))
-            {
-                let nodes: Vec<&NodeId> = unsettled.iter().map(|(id, _)| id).collect();
-                let why = format!(
-                    "device {d} is quiet, but the folders of {nodes:?}, which it kept for entries its rules leave out, stay out of sync"
-                );
-                if intents::expected(Check::RemoveLeftOut, &why) {
-                    continue;
-                }
-                return Err(Failure::Diverged(why));
-            }
+            let holds_name_of = |holder: &NodeId, id: &NodeId| {
+                let (Some(held), Some(remote)) =
+                    (trees.synced().live(holder), trees.remote().live(id))
+                else {
+                    return false;
+                };
+                held.parent == remote.parent && name_key(&held.name) == name_key(&remote.name)
+            };
+            let behind: Vec<&NodeId> = (unsettled.iter())
+                .map(|(id, _)| id)
+                .filter(|id| !excused.contains(*id) && !waiting.contains(id))
+                .filter(|id| {
+                    (excused.iter().chain(waiting.iter().copied()))
+                        .any(|holder| holder != *id && holds_name_of(holder, id))
+                })
+                .collect();
+            let waiting: Vec<&NodeId> = (waiting.into_iter().chain(behind))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            excused.extend(excuse(
+                &waiting,
+                Check::NameLeftOut,
+                format!("nodes {waiting:?} wait for names that entries its rules leave out hold"),
+            )?);
+            let kept: Vec<&NodeId> = (unsettled.iter())
+                .map(|(id, _)| id)
+                .filter(|id| !excused.contains(*id) && !left_out.waiting.contains(*id))
+                .filter(|id| self.kept_for_left_out[d].contains(*id))
+                .collect();
+            excused.extend(excuse(
+                &kept,
+                Check::RemoveLeftOut,
+                format!(
+                    "the folders of {kept:?}, which it kept for entries its rules leave out, stay out of sync"
+                ),
+            )?);
             let holds_only_left_out = |id: &NodeId| {
                 let mut children = trees.local_children(id).peekable();
                 children.peek().is_some() && children.all(|child| left_out.holds(&trees, child))
             };
-            if !unsettled.is_empty() && unsettled.iter().all(|(id, _)| holds_only_left_out(id)) {
-                let nodes: Vec<&NodeId> = unsettled.iter().map(|(id, _)| id).collect();
-                let why = format!(
-                    "device {d} is quiet, but it waits to settle the folders of {nodes:?}, which hold only nodes its rules leave out"
-                );
-                if intents::expected(Check::RemoveLeftOut, &why) {
-                    continue;
-                }
-                return Err(Failure::Diverged(why));
-            }
+            let settling: Vec<&NodeId> = (unsettled.iter())
+                .map(|(id, _)| id)
+                .filter(|id| !excused.contains(*id) && !left_out.waiting.contains(*id))
+                .filter(|id| !self.kept_for_left_out[d].contains(*id))
+                .filter(|id| holds_only_left_out(id))
+                .collect();
+            excused.extend(excuse(
+                &settling,
+                Check::RemoveLeftOut,
+                format!(
+                    "it waits to settle the folders of {settling:?}, which hold only nodes its rules leave out"
+                ),
+            )?);
+            let excused = self.below(d, &excused);
+            let unsettled: Vec<_> = (unsettled.into_iter())
+                .filter(|(id, _)| !excused.nodes.contains(id))
+                .collect();
             if !unsettled.is_empty() {
                 return fail(format!("nodes are not in sync: {unsettled:?}"));
             }
-            let server = match left_out.nodes.is_empty() {
+            let skipped: BTreeSet<NodeId> = left_out.nodes.union(&excused.nodes).cloned().collect();
+            let server = match skipped.is_empty() {
                 true => server.clone(),
-                false => self.server_tree(&left_out.nodes)?,
+                false => self.server_tree(&skipped)?,
             };
             let mut disk: BTreeMap<Vec<String>, Option<Content>> = BTreeMap::new();
             for (ino, entry) in device.disk.entries() {
-                if left_out.inos.contains(ino) {
+                if left_out.inos.contains(ino) || excused.inos.contains(ino) {
                     continue;
                 }
                 let Some(path) = device.disk.path(*ino) else {
@@ -3385,6 +3422,9 @@ impl World {
                     .find(|(other, node)| other == id && !node.trashed)
                     .map(|(_, node)| &node.shape);
                 let local = trees.local().get(id).map(|node| &node.shape);
+                if excused.nodes.contains(id) {
+                    continue;
+                }
                 let only_r = left_out.holds(trees, id);
                 for (tree, shape) in [
                     ('L', local),

@@ -134,6 +134,10 @@ fn a_folder_another_device_deletes_stays_parked_around_a_file_its_rules_came_to_
         Check::RemoveLeftOut,
         "device 1 is quiet, but it keeps the folders of [\"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\"] parked, which hold entries its rules leave out",
     );
+    let _waits = expect_red(
+        Check::NameLeftOut,
+        "device 1 is quiet, but nodes [\"01a1c2c0-39a0-7c94-ad9a-de661683ef13\"] wait for names that entries its rules leave out hold",
+    );
     let phases = [
         vec![
             (0, folder("a")),

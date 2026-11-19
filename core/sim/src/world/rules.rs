@@ -84,6 +84,81 @@ pub(super) fn excluded_op(trees: &Trees, op: &Op) -> Option<String> {
 }
 
 impl World {
+    pub(super) fn waiting_on(&self, d: usize, holders: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
+        let trees = &self.devices[d].engine.trees;
+        let root = self.space.space_id();
+        let nodes = self.space.nodes();
+        let live: BTreeMap<&str, &NodeState> = (nodes.iter())
+            .filter(|node| node.status == NodeStatus::Live as i32 && node.node_id != root)
+            .map(|node| (node.node_id.as_str(), node))
+            .collect();
+        let keys = |path: Vec<String>| path.iter().map(|name| name_key(name)).collect::<Vec<_>>();
+        let local = |id: &str| trees.local().get(id).map(|node| &node.shape);
+        let remote = |id: &str| {
+            live.get(id)
+                .map(|node| (node.parent_id.as_str(), node.name.as_str()))
+        };
+        let server_path = |id: &str| {
+            let mut names = Vec::new();
+            let mut current = id;
+            while current != root {
+                let (parent, name) = remote(current).filter(|_| names.len() <= live.len())?;
+                names.push(name.to_owned());
+                current = parent;
+            }
+            names.reverse();
+            Some(names)
+        };
+        let held: BTreeSet<Vec<String>> = (holders.iter())
+            .filter_map(|id| path_in(local, root, id))
+            .map(keys)
+            .collect();
+        (live.keys())
+            .filter(|id| !holders.contains(**id))
+            .filter(|id| server_path(id).is_some_and(|path| held.contains(&keys(path))))
+            .map(|id| (*id).to_owned())
+            .collect()
+    }
+
+    pub(super) fn below(&self, d: usize, top: &BTreeSet<NodeId>) -> Unsynced {
+        let device = &self.devices[d];
+        let (disk, trees) = (&device.disk, &device.engine.trees);
+        let nodes = self.space.nodes();
+        let parents: Vec<(&str, &str)> = (nodes.iter())
+            .filter(|node| node.status == NodeStatus::Live as i32)
+            .map(|node| (node.node_id.as_str(), node.parent_id.as_str()))
+            .chain(
+                (trees.local().iter()).map(|(id, node)| (id.as_str(), node.shape.parent.as_str())),
+            )
+            .collect();
+        let mut out = Unsynced {
+            nodes: top.clone(),
+            ..Unsynced::default()
+        };
+        loop {
+            let more: Vec<NodeId> = (parents.iter())
+                .filter(|(id, parent)| out.nodes.contains(*parent) && !out.nodes.contains(*id))
+                .map(|(id, _)| (*id).to_owned())
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            out.nodes.extend(more);
+        }
+        let tops: Vec<u128> = (out.nodes.iter())
+            .filter_map(|id| trees.local().get(id))
+            .map(|node| node.identity.ino)
+            .filter(|ino| disk.entries().contains_key(ino))
+            .collect();
+        out.inos = (disk.entries().iter())
+            .filter(|(ino, entry)| {
+                tops.contains(ino) || tops.iter().any(|top| disk.inside(&entry.place, *top))
+            })
+            .map(|(ino, _)| *ino)
+            .collect();
+        out
+    }
+
     pub(super) fn unsynced(&self, d: usize, quiet: bool) -> Unsynced {
         let device = &self.devices[d];
         let mut out = Unsynced::default();
