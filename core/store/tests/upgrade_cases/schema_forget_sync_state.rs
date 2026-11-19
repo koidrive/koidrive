@@ -60,6 +60,7 @@ upgrade_case!(schema_forget_sync_state, |store| {
         "migrations",
         "restore_asked",
         "restore_intents",
+        "restore_pieces",
         "restore_requests",
         "volume_mounts",
     ];

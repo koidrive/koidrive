@@ -12,7 +12,7 @@ use koidrive_engine::ids::uuid_v7;
 use koidrive_engine::question::{
     Answer, Held, Limit, Question, QuestionKind, RecoveryCause, Revisions,
 };
-use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
+use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent, RestorePiece};
 use koidrive_engine::state::{
     Agreed, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptEntries, LostPosition,
     MovedHere, PendingFinish, StateError, TreesState,
@@ -348,6 +348,14 @@ fn commits_state() -> CommitsState {
         cap: Some(4),
         split: ["s".into()].into(),
         trash_groups: [("s".into(), "commit:0".into())].into(),
+        restore_pieces: [(
+            "p".into(),
+            RestorePiece {
+                restore_id: "r1".into(),
+                trash_group: "commit:1".into(),
+            },
+        )]
+        .into(),
         aliases: [("f".into(), "g".into())].into(),
         restores: [("r1".into(), restore(1)), ("r2".into(), restore(2))].into(),
         resolved: vec![Resolved {

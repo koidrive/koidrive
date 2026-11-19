@@ -11,6 +11,7 @@ use koidrive_engine::classify::{Origin, Waiting};
 use koidrive_engine::commit::{Halt, InFlight, Slot};
 use koidrive_engine::effects::{Base, Dir, Displaced, Effect, EffectRecord, Location};
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger, Revisions};
+use koidrive_engine::restore::RestorePiece;
 use koidrive_engine::state::{
     Agreed, CommitsChanges, CommitsState, ContentProvenance, EffectsChanges, EffectsState,
     FinishOrigin, GivenUp, LostPosition, MapChanges, MovedHere, PendingFinish, SetChanges,
@@ -421,6 +422,16 @@ impl Tx<'_> {
         while let Some(row) = rows.next()? {
             state.commits.trash_groups.insert(row.get(0)?, row.get(1)?);
         }
+        let mut stmt = (self.0)
+            .prepare_cached("SELECT node_id, restore_id, trash_group FROM restore_pieces")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let piece = RestorePiece {
+                restore_id: row.get(1)?,
+                trash_group: row.get(2)?,
+            };
+            state.commits.restore_pieces.insert(row.get(0)?, piece);
+        }
         let mut stmt = self
             .0
             .prepare_cached("SELECT node_id, pending_for FROM unsent_marks")?;
@@ -601,6 +612,7 @@ impl Tx<'_> {
             cap,
             split,
             trash_groups,
+            restore_pieces,
             aliases,
             restores,
             resolved,
@@ -1058,6 +1070,12 @@ impl Tx<'_> {
             "DELETE FROM trash_groups WHERE node_id = ?1",
             "INSERT OR REPLACE INTO trash_groups (node_id, trash_group) VALUES (?1, ?2)",
             |put, node, group| put.execute(params![node, group]),
+        )?;
+        self.write_map(
+            restore_pieces,
+            "DELETE FROM restore_pieces WHERE node_id = ?1",
+            "INSERT OR REPLACE INTO restore_pieces (node_id, restore_id, trash_group) VALUES (?1, ?2, ?3)",
+            |put, node, piece| put.execute(params![node, piece.restore_id, piece.trash_group]),
         )?;
         self.write_set(
             published,
