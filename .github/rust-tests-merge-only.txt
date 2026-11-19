@@ -8,7 +8,6 @@ koidrive-driver folder::tests::a_folder_restored_and_deleted_again_while_the_log
 koidrive-driver folder::tests::a_folder_that_returns_from_a_path_the_rules_exclude_keeps_its_node
 koidrive-driver folder::tests::a_fresh_first_link_sends_what_the_space_lacks_and_keeps_both_files_of_one_name_without_a_question
 koidrive-driver folder::tests::dismissing_the_notice_while_the_folder_is_removed_opens_no_new_one
-koidrive-sim::devices rewinds_converge_from_seed_122
 koidrive-sim::devices rewinds_converge_from_seed_301
 koidrive-sim::devices rewinds_converge_from_seed_313
 koidrive-sim::devices rewinds_converge_from_seed_319
