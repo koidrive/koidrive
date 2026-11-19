@@ -833,7 +833,9 @@ fn a_file_replaced_at_its_path_in_a_later_scan_keeps_its_node() {
     fs::write(site.root.join("docs/report.txt"), b"version two").unwrap();
     a.scan_until(|a| {
         let local = a.folder.engine.trees.local();
-        local.iter().any(|(_, node)| node.shape.name == "report.txt")
+        local
+            .iter()
+            .any(|(_, node)| node.shape.name == "report.txt")
     });
     a.rest(&mut remote);
     assert_eq!(live_id(&server_nodes(&remote), "report.txt"), before);
@@ -864,7 +866,11 @@ fn a_file_removed_with_its_folder_leaves_the_server_without_a_wait() {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
     fs::create_dir_all(site.root.join("docs")).unwrap();
-    a.create(&mut remote, &site.root.join("docs/report.txt"), b"version one");
+    a.create(
+        &mut remote,
+        &site.root.join("docs/report.txt"),
+        b"version one",
+    );
     a.rest(&mut remote);
     fs::remove_dir_all(site.root.join("docs")).unwrap();
     a.scan_until(|a| !a.work.is_empty());
@@ -887,7 +893,9 @@ fn an_edit_from_another_device_during_the_wait_is_kept_beside_the_file_written_a
             fs::write(site.root.join("docs/report.txt"), b"version two").unwrap();
         }
         for _ in 0..6 {
-            while let Some(at) = (a.work.iter()).position(|work| !matches!(work, Work::RetryAfter(_))) {
+            while let Some(at) =
+                (a.work.iter()).position(|work| !matches!(work, Work::RetryAfter(_)))
+            {
                 let work = a.work.remove(at).unwrap();
                 a.perform(work, &mut remote).unwrap();
             }
