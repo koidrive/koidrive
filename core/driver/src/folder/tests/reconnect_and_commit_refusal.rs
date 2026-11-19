@@ -290,8 +290,11 @@ fn a_commit_resent_after_a_restart_uploads_again_only_once_its_receipts_no_longe
         let mut a = site.start();
         a.connect(&remote);
         a.scan_until(|a| a.folder.scanned);
+        let ran = a.run(&mut remote);
         a.rest(&mut remote);
         let case = format!("expired: {expired}, unstored: {unstored}");
+        let again = ran.iter().filter(|work| **work == "upload").count();
+        assert_eq!(again, uploads, "{case}");
         let sends = (a.sent.iter()).filter(|sent| sent.commit_id == commit.commit_id);
         assert_eq!(sends.count(), uploads + 1, "{case}");
         assert_eq!(remote.space.head_seq(), 1, "{case}");
