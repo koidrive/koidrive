@@ -389,6 +389,246 @@ def verify(executable, mapping, revision):
     print(f"PASS {total} items, no additions, deletions, duplicates, or changed bodies")
 
 
+def nested(executable, source):
+    result = subprocess.run([str(executable), "--nested"], input=source, capture_output=True)
+    if result.returncode:
+        raise ValueError(result.stderr.decode().strip())
+    return json.loads(result.stdout)
+
+
+def module_file(read, path, inline, name, attribute):
+    path = Path(path)
+    directory = path.parent if path.name in ("mod.rs", "lib.rs", "main.rs") else path.parent / path.stem
+    directory = directory.joinpath(*inline)
+    if attribute:
+        return ((directory if inline else path.parent) / attribute).as_posix()
+    for candidate in (directory / f"{name}.rs", directory / name / "mod.rs"):
+        try:
+            read(candidate.as_posix())
+            return candidate.as_posix()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+    raise ValueError(f"no file for module {name} declared in {path}")
+
+
+def indent(source, offset):
+    return offset - (source.rfind(b"\n", 0, offset) + 1)
+
+
+def reindent(place, text, delta):
+    lines, start = text.split(b"\n"), 0
+    for number, line in enumerate(lines):
+        inside = any(begin < place["lead"] + start <= end for begin, end in place["literals"])
+        start += len(line) + 1
+        if number == 0 or inside or not line.strip():
+            continue
+        if delta > 0:
+            lines[number] = b" " * delta + line
+        else:
+            lines[number] = line[min(-delta, len(line) - len(line.lstrip(b" "))):]
+    return b"\n".join(lines)
+
+
+ITEM = re.compile(rb'(?m)^[ \t]*((?:pub(?:\([^)]*\))? )?)(?:async |const |unsafe |extern (?:"[^"]*" )?)*(?:fn|struct|enum|const|static|type|trait|union) ')
+
+
+def visibility(text, other):
+    found = ITEM.search(text)
+    wanted = ITEM.search(other)
+    if not found or not wanted:
+        return text
+    return text[:found.start(1)] + wanted.group(1) + text[found.end(1):]
+
+
+def gather(executable, read, path, base=None, atomic=frozenset()):
+    tree = {"items": {}, "containers": set(), "order": {}, "sources": {}, "residual": []}
+
+    def visit(file, prefix, scope, added):
+        source = tree["sources"][file] = read(file)
+        last = {}
+        residual, kept = [], 0
+        for entry in nested(executable, source):
+            parent = tuple(entry["parent"])
+            logical = prefix + list(parent) + [entry["name"]]
+            key = "/".join(logical)
+            previous = last.get(parent)
+            last[parent] = entry["end"]
+            if any("/".join(logical[:depth]) in atomic for depth in range(1, len(logical))):
+                continue
+            inline = [name.removeprefix("mod:").split("[")[0] for name in parent if name.startswith("mod:")]
+            kind = entry["kind"]
+            if kind == "include":
+                visit((Path(file).parent / entry["name"]).as_posix(), prefix + list(parent), scope, added)
+                continue
+            if kind == "module" and base is not None and (key in base["containers"] or key not in base["items"]):
+                moved = module_file(read, file, inline, entry["file"], entry["path"])
+                inline = key in base["containers"]
+                visit(moved, logical if inline else prefix + list(parent), moved, added or not inline)
+                continue
+            if kind == "container" and key not in atomic:
+                tree["containers"].add(key)
+                continue
+            gap = source[previous:entry["start"]] if previous is not None else b""
+            lead = entry["start"] - len(gap.lstrip()) if previous is not None else entry["start"]
+            tree["items"].setdefault(key, []).append({
+                "file": file, "lead": lead, "end": entry["end"], "indent": indent(source, lead),
+                "newlines": max(gap.count(b"\n"), 1), "use": kind == "use", "literals": entry.get("literals", []),
+                "scope": scope, "added": added})
+            tree["order"].setdefault("/".join(prefix + list(parent)), []).append(key)
+            residual.append(source[kept:lead])
+            kept = entry["end"]
+        residual.append(source[kept:])
+        tree["residual"].append(b"".join(residual))
+
+    visit(path, [], path, False)
+    return tree
+
+
+def region(tree, place):
+    return tree["sources"][place["file"]][place["lead"]:place["end"]]
+
+
+def replay_onto_split(executable, path, base_ref, branch_ref):
+    def at(revision):
+        return lambda file: git_source(revision, file)
+
+    base = gather(executable, at(base_ref), path)
+    added = gather(executable, at(branch_ref), path)["containers"] - base["containers"]
+    branch = gather(executable, at(branch_ref), path, atomic=added)
+    current = gather(executable, lambda file: (ROOT / file).read_bytes(), path, base=base, atomic=added)
+
+    def stripped(tree):
+        return re.sub(rb"\s+", b"", b"".join(tree["residual"]))
+
+    if stripped(base) != stripped(branch):
+        lines = [b"\n".join(line for line in b"".join(tree["residual"]).split(b"\n") if line.strip()).decode(errors="replace")
+                 for tree in (base, branch)]
+        shown = "\n".join(difflib.unified_diff(lines[0].split("\n"), lines[1].split("\n"), "base", "branch", n=1, lineterm=""))
+        raise ValueError(f"{path}: the branch edits text outside any item; apply it by hand:\n{shown}")
+    for tree in (base, branch, current):
+        for key, places in tree["items"].items():
+            if len(places) > 1 and not places[0]["use"]:
+                raise ValueError(f"{path}: {key} appears {len(places)} times in {sorted({place['file'] for place in places})}; "
+                                 "replay cannot tell the copies apart, so apply this branch by hand")
+
+    edits = {}
+    removed = set()
+    for key, places in base["items"].items():
+        if key in branch["items"]:
+            continue
+        text = region(base, places[0])
+        found = current["items"].get(key, [])
+        if not found:
+            if places[0]["use"]:
+                raise ValueError(f"{path}: the branch removes `{key}`, which the split rewrote; apply that import change by hand")
+            raise ValueError(f"{path}: the branch removes {key}, which the split tree lacks; main removed or renamed it, "
+                             "so remove it by hand if it is still there")
+        for place in found:
+            moved = region(current, place)
+            if moved != visibility(reindent(places[0], text, place["indent"] - places[0]["indent"]), moved):
+                raise ValueError(f"{path}: the branch removes {key}, which also changed since its base; resolve it by hand")
+            source = current["sources"][place["file"]]
+            before = source[:place["lead"]].rstrip()
+            if before.endswith(b"{") or not before:
+                after = len(source) - len(source[place["end"]:].lstrip())
+                span = (len(before), after) if source[after:after + 1] == b"}" else (place["lead"], after)
+            else:
+                span = (len(before), place["end"])
+            edits.setdefault(place["file"], []).append((*span, b""))
+        removed.add(key)
+        print(f"removed {key} from {', '.join(place['file'] for place in found)}")
+
+    buckets, inserted = {}, {}
+
+    def present(name):
+        if name in inserted:
+            return inserted[name]
+        found = [] if name in removed else current["items"].get(name, [])
+        return next((place for place in found if place["file"] == path), found[0] if found else None)
+
+    for key, places in branch["items"].items():
+        place, text = places[0], region(branch, places[0])
+        if key in base["items"]:
+            original = region(base, base["items"][key][0])
+            if original == text:
+                continue
+            found = current["items"].get(key)
+            if not found:
+                raise ValueError(f"{path}: the branch changes {key}, which no longer exists after the split; resolve it by hand")
+            if places[0]["use"]:
+                raise ValueError(f"{path}: the branch rewrites `{key}`; apply that import change by hand")
+            target = found[0]
+            moved = region(current, target)
+            original = reindent(base["items"][key][0], original, target["indent"] - base["items"][key][0]["indent"])
+            text = reindent(place, text, target["indent"] - place["indent"])
+            if visibility(text, original) == text:
+                original, text = visibility(original, moved), visibility(text, moved)
+            merged = merge(original, text, moved, key)
+            edits.setdefault(target["file"], []).append((target["lead"], target["end"], merged))
+            print(f"changed {key} in {target['file']}")
+            continue
+        parent, _, _ = key.rpartition("/")
+        siblings = branch["order"][parent]
+        position = siblings.index(key)
+        mode, neighbour = "after", next((name for name in reversed(siblings[:position]) if present(name)), None)
+        if neighbour is None:
+            mode, neighbour = "before", next((name for name in siblings[position + 1:] if present(name)), None)
+        if neighbour is None:
+            raise ValueError(f"{path}: no neighbour of the added {key} exists after the split; place it by hand")
+        anchor = present(neighbour)
+        held = [found for found in current["items"].get(key, []) if not found["use"] or found["scope"] == anchor["scope"]]
+        if held:
+            if region(current, held[0]) != reindent(place, text, held[0]["indent"] - place["indent"]):
+                raise ValueError(f"{path}: {key} was added on both sides with different text; resolve it by hand")
+            continue
+        bucket = anchor["bucket"] if "bucket" in anchor else (anchor["file"], anchor["end"] if mode == "after" else anchor["lead"], mode)
+        width = anchor["indent"]
+        text = reindent(place, text, width - place["indent"])
+        trait_member = re.match(r"impl:[^:]", parent.rpartition("/")[2])
+        own_line = key.rpartition("/")[2].split(":")[0] in ("fn", "struct", "enum", "const", "static", "type", "trait", "union")
+        declared = ITEM.search(text)
+        if anchor["added"] and own_line and not trait_member and declared and not declared.group(1):
+            text = visibility(text, b"pub(super) fn ")
+            print(f"made {key} pub(super): the split put it in a module of its own; drop the marker if nothing outside that module uses it")
+        entry = (b"\n" * place["newlines"] + b" " * width, text)
+        buckets.setdefault(bucket, []).append(entry)
+        inserted[key] = {**anchor, "bucket": bucket}
+        print(f"added {key} to {bucket[0]} {mode} {neighbour}")
+
+    for (file, offset, mode), entries in buckets.items():
+        if mode == "after":
+            text = b"".join(separator + text for separator, text in entries)
+        else:
+            text = b"".join(text + separator for separator, text in entries)
+        edits.setdefault(file, []).append((offset, offset, text))
+
+    written = {}
+    for file, changes in edits.items():
+        source = current["sources"][file]
+        deletions = sorted(change[:2] for change in changes if change[0] < change[1] and change[2] == b"")
+        merged = []
+        for start, end in deletions:
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        changes = [change for change in changes if not (change[0] < change[1] and change[2] == b"")]
+        for span in merged:
+            before, after = source[:span[0]].rstrip(), source[span[1]:].lstrip()
+            if before.endswith(b"{") and after.startswith(b"}"):
+                span[:] = [len(before), len(source) - len(after)]
+        changes += [(start, end, b"") for start, end in merged]
+        changes.sort(key=lambda change: (change[0], change[1]), reverse=True)
+        limit = len(source) + 1
+        for start, end, text in changes:
+            if end > limit:
+                raise ValueError(f"{path}: overlapping edits in {file}; resolve them by hand")
+            source = source[:start] + text + source[end:]
+            limit = start if start < end else start + 1
+        written[ROOT / file] = source
+    return written
+
+
 def compare_lists(before, after):
     def tests(path):
         return Counter(line for line in Path(path).read_text().splitlines()
@@ -412,6 +652,10 @@ def main():
     replay.add_argument("--branch-ref", required=True)
     replay.add_argument("--assign", action="append", default=[], metavar="PATH::ITEM=SCENARIO")
     commands.add_parser("map")
+    rebase = commands.add_parser("replay")
+    rebase.add_argument("--base-ref", required=True)
+    rebase.add_argument("--branch-ref", required=True)
+    rebase.add_argument("sources", nargs="+")
     formatting = commands.add_parser("check-format")
     formatting.add_argument("--base-ref", required=True)
     listing = commands.add_parser("compare-lists")
@@ -422,6 +666,13 @@ def main():
         compare_lists(args.before, args.after)
         return
     executable = parser()
+    if args.command == "replay":
+        written = {}
+        for path in args.sources:
+            written |= replay_onto_split(executable, path, args.base_ref, args.branch_ref)
+        for file, source in written.items():
+            file.write_bytes(source)
+        return
     if args.command == "check-format":
         diff = subprocess.check_output(["git", "diff", "-U0", "--inter-hunk-context=0", "--text", "--no-color", "--no-ext-diff", "--src-prefix=a/",
                                         "--dst-prefix=b/", "--diff-filter=d", args.base_ref, "HEAD"], cwd=ROOT)

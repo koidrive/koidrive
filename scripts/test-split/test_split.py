@@ -473,6 +473,132 @@ class SplitTests(unittest.TestCase):
         self.assertIn(b"helper(), 2", scenario.read_bytes())
         self.assertIn(b"fn holds(x in 0..4u8)", scenario.read_bytes())
 
+    REPLAY_BASE = (
+        b"use std::fmt;\n\npub struct Driver;\n\nimpl Driver {\n    fn one(&self) -> u8 {\n        1\n    }\n\n"
+        b"    fn two(&self) -> u8 {\n        2\n    }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n"
+        b"    #[test]\n    fn first() {\n        assert_eq!(Driver.one(), 1);\n    }\n}\n"
+    )
+
+    def split_driver(self):
+        files = {
+            "driver.rs": b"use std::fmt;\n\nmod parts;\n\npub struct Driver;\n\nimpl Driver {\n    fn one(&self) -> u8 {\n"
+                         b"        1\n    }\n}\n\n#[cfg(test)]\nmod tests;\n",
+            "driver/parts.rs": b"use super::*;\n\nimpl Driver {\n    pub(super) fn two(&self) -> u8 {\n        2\n    }\n}\n",
+            "driver/tests.rs": b"use super::*;\n\ninclude!(\"tests/cases.rs\");\n",
+            "driver/tests/cases.rs": split.LICENSE + b"#[test]\nfn first() {\n    assert_eq!(Driver.one(), 1);\n}\n",
+        }
+        for name, text in files.items():
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / name).write_bytes(text)
+        return {name: (self.root / name).read_bytes() for name in files}
+
+    def replay(self, branch):
+        sources = {"base": self.REPLAY_BASE, "branch": branch}
+        with patch.object(split, "git_source", side_effect=lambda ref, path: sources[ref]):
+            for file, source in split.replay_onto_split(self.executable, "driver.rs", "base", "branch").items():
+                file.write_bytes(source)
+
+    def test_replay_merges_a_changed_method_where_the_split_moved_it(self):
+        self.split_driver()
+        self.replay(self.REPLAY_BASE.replace(b"        2\n", b"        3\n"))
+        self.assertEqual((self.root / "driver/parts.rs").read_bytes(),
+                         b"use super::*;\n\nimpl Driver {\n    pub(super) fn two(&self) -> u8 {\n        3\n    }\n}\n")
+
+    def test_replay_puts_an_added_test_after_its_neighbour_at_the_fragment_indent(self):
+        self.split_driver()
+        added = b"    }\n\n    #[test]\n    fn second() {\n        assert_eq!(Driver.two(), 2);\n    }\n}\n"
+        self.replay(self.REPLAY_BASE.removesuffix(b"    }\n}\n") + added)
+        self.assertEqual((self.root / "driver/tests/cases.rs").read_bytes(), split.LICENSE
+                         + b"#[test]\nfn first() {\n    assert_eq!(Driver.one(), 1);\n}\n\n"
+                         + b"#[test]\nfn second() {\n    assert_eq!(Driver.two(), 2);\n}\n")
+
+    def test_replay_removes_a_method_from_the_file_the_split_moved_it_to(self):
+        self.split_driver()
+        self.replay(self.REPLAY_BASE.replace(b"    }\n\n    fn two(&self) -> u8 {\n        2\n    }\n}", b"    }\n}"))
+        self.assertEqual((self.root / "driver/parts.rs").read_bytes(), b"use super::*;\n\nimpl Driver {}\n")
+
+    def test_replay_refuses_an_edit_outside_any_item_without_writes(self):
+        before = self.split_driver()
+        with self.assertRaisesRegex(ValueError, "outside any item"):
+            self.replay(self.REPLAY_BASE.replace(b"mod tests {", b"#[allow(unused)]\nmod tests {"))
+        self.assertEqual(before, {name: (self.root / name).read_bytes() for name in before})
+
+    def test_replay_refuses_an_import_change_the_split_rewrote_without_writes(self):
+        self.split_driver()
+        root = self.root / "driver.rs"
+        root.write_bytes(root.read_bytes().replace(b"use std::fmt;", b"use std::fmt::{self};"))
+        before = {path: path.read_bytes() for path in self.root.rglob("*.rs")}
+        with self.assertRaisesRegex(ValueError, "removes .use:std :: fmt., which the split rewrote"):
+            self.replay(self.REPLAY_BASE.replace(b"use std::fmt;\n", b"use std::fmt::Write;\n"))
+        self.assertEqual(before, {path: path.read_bytes() for path in self.root.rglob("*.rs")})
+
+    def test_replay_keeps_the_lines_of_a_multiline_literal_when_it_dedents_a_test(self):
+        self.split_driver()
+        added = b'    }\n\n    #[test]\n    fn second() {\n        let text = r#"keep\n    build/\n"#;\n        assert!(!text.is_empty());\n    }\n}\n'
+        self.replay(self.REPLAY_BASE.removesuffix(b"    }\n}\n") + added)
+        self.assertIn(b'#[test]\nfn second() {\n    let text = r#"keep\n    build/\n"#;\n    assert!(!text.is_empty());\n}\n',
+                      (self.root / "driver/tests/cases.rs").read_bytes())
+
+    def test_replay_keeps_the_literals_of_an_added_module_when_it_dedents_it(self):
+        self.split_driver()
+        added = b'    }\n\n    mod helpers {\n        pub fn fixture() -> &\'static str {\n            r#"keep\n    build/\n"#\n        }\n    }\n}\n'
+        self.replay(self.REPLAY_BASE.removesuffix(b"    }\n}\n") + added)
+        self.assertIn(b'mod helpers {\n    pub fn fixture() -> &\'static str {\n        r#"keep\n    build/\n"#\n    }\n}\n',
+                      (self.root / "driver/tests/cases.rs").read_bytes())
+
+    def test_replay_gives_a_private_method_added_in_a_split_module_pub_super(self):
+        self.split_driver()
+        self.replay(self.REPLAY_BASE.replace(b"        2\n    }\n", b"        2\n    }\n\n    fn three(&self) -> u8 {\n        3\n    }\n"))
+        self.assertIn(b"    pub(super) fn two(&self) -> u8 {\n        2\n    }\n\n    pub(super) fn three(&self) -> u8 {\n        3\n    }\n",
+                      (self.root / "driver/parts.rs").read_bytes())
+
+    def test_replay_gives_an_added_extern_fn_in_a_split_module_pub_super(self):
+        self.split_driver()
+        self.replay(self.REPLAY_BASE.replace(b"        2\n    }\n", b'        2\n    }\n\n    extern "C" fn three() -> u8 {\n        3\n    }\n'))
+        self.assertIn(b'    pub(super) extern "C" fn three() -> u8 {', (self.root / "driver/parts.rs").read_bytes())
+
+    def test_replay_adds_an_import_only_where_its_module_lacks_it(self):
+        self.split_driver()
+        tests = self.root / "driver/tests.rs"
+        tests.write_bytes(tests.read_bytes().replace(b"use super::*;\n", b"use super::*;\nuse std::fmt::Write;\n"))
+        before = tests.read_bytes()
+        self.replay(self.REPLAY_BASE.replace(b"    use super::*;\n", b"    use super::*;\n    use std::fmt::Write;\n"))
+        self.assertEqual(tests.read_bytes(), before)
+
+    def test_replay_removes_the_first_two_methods_of_an_impl_block(self):
+        self.split_driver()
+        parts = self.root / "driver/parts.rs"
+        parts.write_bytes(parts.read_bytes().replace(b"    pub(super) fn two", b"    pub(super) fn zero(&self) -> u8 {\n        0\n    }\n\n    pub(super) fn two"))
+        base = self.REPLAY_BASE.replace(b"    fn two", b"    fn zero(&self) -> u8 {\n        0\n    }\n\n    fn two")
+        sources = {"base": base, "branch": base.replace(b"    }\n\n    fn zero(&self) -> u8 {\n        0\n    }\n\n    fn two(&self) -> u8 {\n        2\n    }\n}", b"    }\n}")}
+        with patch.object(split, "git_source", side_effect=lambda ref, path: sources[ref]):
+            for file, source in split.replay_onto_split(self.executable, "driver.rs", "base", "branch").items():
+                file.write_bytes(source)
+        self.assertEqual(parts.read_bytes(), b"use super::*;\n\nimpl Driver {}\n")
+
+    def test_replay_refuses_a_key_that_repeats(self):
+        before = self.split_driver()
+        repeated = b"const _: () = assert!(true);\n\nconst _: () = assert!(!false);\n\npub struct Driver;"
+        with self.assertRaisesRegex(ValueError, "const:_ appears 2 times"):
+            self.replay(self.REPLAY_BASE.replace(b"pub struct Driver;", repeated))
+        self.assertEqual(before, {name: (self.root / name).read_bytes() for name in before})
+
+    def test_replay_refuses_to_remove_an_item_the_split_tree_holds_under_another_key(self):
+        self.split_driver()
+        parts = self.root / "driver/parts.rs"
+        parts.write_bytes(parts.read_bytes().replace(b"    pub(super) fn two", b"    #[cfg(unix)]\n    pub(super) fn two"))
+        with self.assertRaisesRegex(ValueError, "removes impl::Driver/fn:two, which the split tree lacks"):
+            self.replay(self.REPLAY_BASE.replace(b"    }\n\n    fn two(&self) -> u8 {\n        2\n    }\n}", b"    }\n}"))
+
+    def test_replay_refuses_overlapping_edits_without_writes(self):
+        before = self.split_driver()
+        parts = self.root / "driver/parts.rs"
+        parts.write_bytes(parts.read_bytes().replace(b"        2\n", b"        4\n"))
+        before["driver/parts.rs"] = parts.read_bytes()
+        with self.assertRaisesRegex(ValueError, "overlapping edits in impl::Driver/fn:two"):
+            self.replay(self.REPLAY_BASE.replace(b"        2\n", b"        3\n"))
+        self.assertEqual(before, {name: (self.root / name).read_bytes() for name in before})
+
 
 if __name__ == "__main__":
     unittest.main()
