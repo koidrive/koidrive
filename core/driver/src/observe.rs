@@ -27,7 +27,7 @@ use koidrive_chunk::ChunkerConfig;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_fs::{
     Change, Ctime, Detached, Entry, EntryKind, Error as FsError, FileId, Known, Looked, MarkLog,
-    Mount, NativeWatcher, RescanWatcher, RootAt, RootProblem, Snapshot, Source, Watcher,
+    Mount, NativeWatcher, RescanWatcher, RootAt, RootProblem, Search, Snapshot, Source, Watcher,
     check_root,
 };
 use koidrive_proto::v1::{ChunkRef, Content};
@@ -37,6 +37,7 @@ use crate::ignore::{Matcher, scan_rules};
 
 /// How often the fallback watcher rescans the whole tree.
 const RESCAN_INTERVAL: Duration = Duration::from_secs(30);
+const SEARCH_BUDGET: usize = 4096;
 /// The wait before a file whose content could not be read is read again; it doubles with each failure.
 const RETRY_FIRST: Duration = Duration::from_millis(250);
 /// The longest wait between two reads of such a file.
@@ -179,6 +180,7 @@ pub struct FsObserver {
     unanswered: Vec<PathBuf>,
     recorded: BTreeMap<PathBuf, Known>,
     found: BTreeMap<PathBuf, PathBuf>,
+    search: Option<(Vec<(PathBuf, Known)>, Search)>,
     /// Files whose content could not be read, or that an observation left to a later one, with when to read them.
     unread: Unread,
     /// Whether the caller has stopped waiting for observations.
@@ -394,6 +396,7 @@ impl FsObserver {
             unanswered: Vec::new(),
             recorded: BTreeMap::new(),
             found: BTreeMap::new(),
+            search: None,
             unread: Unread::default(),
             stopped,
             progress,
@@ -675,22 +678,64 @@ impl FsObserver {
     }
 
     fn find_unsettled(
-        &self,
-        path: &Path,
-        known: &Known,
+        &mut self,
+        gone: BTreeMap<PathBuf, Known>,
         unsettled: &[&PathBuf],
-    ) -> io::Result<Option<PathBuf>> {
+    ) -> Vec<PathBuf> {
         if unsettled.is_empty() {
-            return Ok(None);
+            self.search = None;
+            return gone.into_keys().collect();
         }
-        let last =
-            (self.found.get(path)).filter(|at| unsettled.iter().any(|scope| at.starts_with(scope)));
-        if let Some(at) = last
-            && let Ok(Some(at)) = koidrive_fs::find_below(&self.root, &[at], known)
+        let mut sought = Vec::new();
+        for (path, known) in gone {
+            let last = (self.found.get(&path))
+                .filter(|at| unsettled.iter().any(|scope| at.starts_with(scope)));
+            if let Some(at) = last
+                && let Ok(Some(hits)) =
+                    Search::new(vec![known]).step(&self.root, &[at], &mut 0, &|| false)
+                && let [Some(at)] = hits.as_slice()
+            {
+                self.found.insert(path, at.clone());
+                continue;
+            }
+            sought.push((path, known));
+        }
+        if sought.is_empty() {
+            self.search = None;
+            return Vec::new();
+        }
+        if (self.search.as_ref()).is_none_or(|(was, _)| sought.iter().any(|one| !was.contains(one)))
         {
-            return Ok(Some(at));
+            let wanted = sought.iter().map(|(_, known)| *known).collect();
+            self.search = Some((sought.clone(), Search::new(wanted)));
         }
-        koidrive_fs::find_below(&self.root, unsettled, known)
+        let (was, search) = self.search.as_mut().expect("a search");
+        let mut budget = SEARCH_BUDGET;
+        match search.step(&self.root, unsettled, &mut budget, &*self.stopped) {
+            Ok(None) => Vec::new(),
+            Ok(Some(hits)) => {
+                let was = std::mem::take(was);
+                self.search = None;
+                let mut gone = Vec::new();
+                for ((path, known), hit) in was.into_iter().zip(hits) {
+                    if !sought.contains(&(path.clone(), known)) {
+                        continue;
+                    }
+                    match hit {
+                        Some(at) => {
+                            self.found.insert(path, at);
+                        }
+                        None => gone.push(path),
+                    }
+                }
+                gone
+            }
+            Err(error) => {
+                tracing::debug!(%error, "a folder that is still pending could not be searched");
+                self.search = None;
+                Vec::new()
+            }
+        }
     }
 
     fn marked_node(&self, path: &Path, entry: &Entry) -> Option<String> {
@@ -853,6 +898,7 @@ impl Observer for FsObserver {
                 .filter(|(path, _)| !unsettled.iter().any(|scope| overlap(scope, path)))
                 .map(|(path, known)| (path.clone(), *known))
                 .collect();
+            let mut gone = BTreeMap::new();
             match self.watcher.look_for(&wanted, &self.found) {
                 Ok(looked) => {
                     for (path, looked) in looked {
@@ -861,27 +907,8 @@ impl Observer for FsObserver {
                                 self.found.insert(path, at);
                             }
                             Looked::Gone => {
-                                let Some(known) = self.recorded.get(&path).copied() else {
-                                    continue;
-                                };
-                                let held = self.find_unsettled(&path, &known, &unsettled);
-                                match held {
-                                    Ok(None) => {}
-                                    Ok(Some(at)) => {
-                                        self.found.insert(path, at);
-                                        continue;
-                                    }
-                                    Err(error) => {
-                                        tracing::debug!(%error, "a folder that is still pending could not be searched");
-                                        continue;
-                                    }
-                                }
-                                self.found.remove(&path);
-                                let Some(Known { kind, .. }) = self.recorded.remove(&path) else {
-                                    continue;
-                                };
-                                if !self.watcher.snapshot().entries.contains_key(&path) {
-                                    changes.push(Observed::Removed { kind, path });
+                                if let Some(known) = self.recorded.get(&path) {
+                                    gone.insert(path, *known);
                                 }
                             }
                             Looked::Replaced(id) => {
@@ -898,6 +925,18 @@ impl Observer for FsObserver {
                     tracing::debug!(%error, "the entries moved into left-out folders could not be looked for");
                 }
             }
+            for path in self.find_unsettled(gone, &unsettled) {
+                self.found.remove(&path);
+                let Some(Known { kind, .. }) = self.recorded.remove(&path) else {
+                    continue;
+                };
+                if !self.watcher.snapshot().entries.contains_key(&path) {
+                    changes.push(Observed::Removed { kind, path });
+                }
+            }
+        }
+        if (self.stopped)() {
+            return Ok(None);
         }
         if !first
             && !answers

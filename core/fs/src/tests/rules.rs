@@ -255,11 +255,12 @@ fn a_mount_point_that_cannot_be_opened_is_left_out_once_its_folder_rules_leave_i
 }
 
 #[test]
-fn find_below_passes_a_locked_file_and_a_socket_and_fails_at_a_folder_it_cannot_list() {
+fn one_search_finds_entries_moved_behind_it_past_a_locked_file_and_a_socket_and_fails_at_a_folder_it_cannot_list()
+ {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    fs::create_dir_all(root.join("logs/deep")).unwrap();
+    fs::create_dir_all(root.join("logs/deep/deeper")).unwrap();
     fs::write(root.join("logs/locked.log"), "locked").unwrap();
     fs::set_permissions(
         root.join("logs/locked.log"),
@@ -267,26 +268,54 @@ fn find_below_passes_a_locked_file_and_a_socket_and_fails_at_a_folder_it_cannot_
     )
     .unwrap();
     let _socket = std::os::unix::net::UnixListener::bind(root.join("logs/dev.sock")).unwrap();
-    let report = root.join("logs/deep/report.docx");
-    fs::write(&report, "report").unwrap();
-    let id = id_of(fs::File::open(&report).unwrap().as_fd()).unwrap();
-    let known = Known {
-        kind: EntryKind::File,
-        id,
+    let known = |path: &str| {
+        fs::write(root.join(path), path).unwrap();
+        Known {
+            kind: EntryKind::File,
+            id: id_of(fs::File::open(root.join(path)).unwrap().as_fd()).unwrap(),
+        }
     };
+    let wanted = vec![
+        known("logs/deep/deeper/report.docx"),
+        known("logs/deep/notes.txt"),
+        known("elsewhere.txt"),
+    ];
     let logs = PathBuf::from("logs");
-    let found = find_below(root, &[&logs], &known);
-    assert_eq!(found.unwrap(), Some(PathBuf::from("logs/deep/report.docx")));
+    let mut search = Search::new(wanted.clone());
+    assert_eq!(
+        search.step(root, &[&logs], &mut 1, &|| false).unwrap(),
+        None
+    );
+    fs::rename(
+        root.join("logs/deep/deeper/report.docx"),
+        root.join("logs/report.docx"),
+    )
+    .unwrap();
+    let found = (0..1000)
+        .find_map(|_| {
+            let step = search.step(root, &[&logs], &mut 1, &|| false).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            step
+        })
+        .expect("the search ends");
+    let found: Vec<_> = found
+        .iter()
+        .map(|at| at.as_ref().and_then(|at| at.to_str()))
+        .collect();
+    assert_eq!(
+        found,
+        [Some("logs/report.docx"), Some("logs/deep/notes.txt"), None]
+    );
 
-    fs::remove_file(&report).unwrap();
     fs::create_dir(root.join("logs/sealed")).unwrap();
     fs::set_permissions(root.join("logs/sealed"), fs::Permissions::from_mode(0o0)).unwrap();
-    let sealed = find_below(root, &[&logs], &known);
+    let mut all = usize::MAX;
+    let sealed = Search::new(wanted).step(root, &[&logs], &mut all, &|| false);
     fs::set_permissions(root.join("logs/sealed"), fs::Permissions::from_mode(0o755)).unwrap();
     fs::set_permissions(
         root.join("logs/locked.log"),
         fs::Permissions::from_mode(0o644),
     )
     .unwrap();
-    blocks_reads("find_below", sealed);
+    blocks_reads("a search", sealed);
 }
