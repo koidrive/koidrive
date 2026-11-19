@@ -3,6 +3,7 @@ issue = "GUN-984"
 tests = [
   "a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone",
   "a_device_with_local_changes_converges_with_the_server_and_keeps_every_write",
+  "a_first_link_discard_keeps_a_folder_the_user_changes_after_the_server_drops_part_of_it",
 ]
 message = '''assertion failed: `\(left == right\)` left: `\("<id>", "(.*)"\)`, right: `\("<id>", "\1"\)`: <id> is sent to a place the disk does not hold it at at \S+\.rs:<line>\.'''
 examples = [
@@ -10,4 +11,4 @@ examples = [
   "assertion failed: `(left == right)` \n  left: `(\"01a1c2c0-39a0-7001-b241-9db23951df99\", \"ss\")`, \n right: `(\"01a1c2c0-39a0-775c-844c-3cd7f43c661c\", \"ss\")`: 01a1c2c0-39a0-796f-a8a3-82c9a31d6efe is sent to a place the disk does not hold it at at core/sim/tests/engine_sync/common.rs:1330.",
   "assertion failed: `(left == right)` \n  left: `(\"01a1c2c0-39a0-75ee-831c-498d57bc0a70\", \"a\")`, \n right: `(\"01a1c2c0-39a0-780a-953a-eb70673e29cb\", \"a\")`: 01a1c2c0-39a0-7895-abc3-b3429e08873f is sent to a place the disk does not hold it at at core/sim/tests/engine_sync/common.rs:1330.",
 ]
-cases = ["1d7c783628f2", "4af1a1aa9520", "6d4a438ebc80", "84d38f0bff21"]
+cases = ["19f84e7ef1f0", "1d7c783628f2", "4af1a1aa9520", "6d4a438ebc80", "84d38f0bff21", "b9d004f06e53"]
