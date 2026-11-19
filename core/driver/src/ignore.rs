@@ -199,6 +199,13 @@ impl Ignore for Counted {
 }
 
 pub(crate) fn gitignore_only(root: &Path, local: LocalRules) -> GitignoreOnly {
+    let unreadable = || GitignoreOnly {
+        unreadable: vec![root.to_path_buf()],
+        ..GitignoreOnly::default()
+    };
+    if !std::fs::symlink_metadata(root).is_ok_and(|metadata| metadata.is_dir()) {
+        return unreadable();
+    }
     let both = Arc::new(Mutex::new(Both {
         with: Rules::new(local.clone().with_gitignore(true)),
         without: Rules::new(local.with_gitignore(false)),
@@ -209,10 +216,7 @@ pub(crate) fn gitignore_only(root: &Path, local: LocalRules) -> GitignoreOnly {
         Ok(rescan) => rescan,
         Err(error) => {
             tracing::warn!(%error, root = %root.display(), "the .gitignore count cannot read a linked folder");
-            return GitignoreOnly {
-                unreadable: vec![root.to_path_buf()],
-                ..GitignoreOnly::default()
-            };
+            return unreadable();
         }
     };
     let both = both.lock().unwrap();

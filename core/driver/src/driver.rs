@@ -10883,4 +10883,37 @@ mod tests {
         }
         assert!(driver.follows_gitignore());
     }
+
+    #[tokio::test]
+    async fn gitignore_only_does_not_count_a_folder_a_symbolic_link_puts_at_a_linked_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        let root = base.join("Koidrive");
+        let other = base.join("Other");
+        linked(&paths, &root, "d1");
+        fs::create_dir(&other).unwrap();
+        for (folder, file, text) in [(&root, "a.log", "abc"), (&other, "b.log", "12345")] {
+            fs::write(folder.join(".gitignore"), "*.log\n").unwrap();
+            fs::write(folder.join(file), text).unwrap();
+        }
+        let driver = Driver::open(paths).unwrap();
+        let alias = base.join("Alias");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        let counted = GitignoreOnly {
+            files: 1,
+            bytes: 3,
+            unreadable: Vec::new(),
+        };
+        assert_eq!(driver.gitignore_only(&alias).unwrap(), counted);
+
+        fs::rename(&root, base.join("Moved")).unwrap();
+        std::os::unix::fs::symlink(&other, &root).unwrap();
+        let blocked = GitignoreOnly {
+            files: 0,
+            bytes: 0,
+            unreadable: vec![root.clone()],
+        };
+        assert_eq!(driver.gitignore_only(&root).unwrap(), blocked);
+    }
 }
