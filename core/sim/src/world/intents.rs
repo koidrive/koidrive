@@ -174,6 +174,8 @@ pub(super) struct Intent {
     pub(super) applied: u64,
     pub(super) lost: bool,
     pub(super) dropped: bool,
+    kept: bool,
+    given_up: bool,
     restored: bool,
     pub(super) forgotten: bool,
     pub(super) answer: bool,
@@ -185,8 +187,8 @@ impl Intent {
         self.kind == RESTORE_ANSWER
     }
 
-    pub(super) fn dropped_off_server(&self) -> bool {
-        self.dropped && !self.held
+    pub(super) fn stands(&self) -> bool {
+        !self.given_up && (!self.dropped || self.kept)
     }
 }
 
@@ -290,6 +292,8 @@ impl Intents {
             applied: 0,
             lost: false,
             dropped: false,
+            kept: false,
+            given_up: false,
             restored: false,
             forgotten: false,
             answer: false,
@@ -579,9 +583,15 @@ impl Intents {
         }
     }
 
-    pub(super) fn rewound(&mut self, clock: u64) {
-        for intent in &mut self.list {
-            intent.dropped |= intent.made < clock;
+    pub(super) fn rewound(&mut self, server: &Server, clock: u64) {
+        for i in 0..self.list.len() {
+            if self.list[i].made >= clock {
+                continue;
+            }
+            let kept = self.holds(i, server, true);
+            let intent = &mut self.list[i];
+            intent.kept = kept && (intent.kept || !intent.dropped);
+            intent.dropped = true;
         }
     }
 
@@ -595,6 +605,7 @@ impl Intents {
         for i in 0..self.list.len() {
             let given_up = self.list[i].author == d && self.nodes(i).any(|id| nodes.contains(id));
             self.list[i].dropped |= given_up;
+            self.list[i].given_up |= given_up;
         }
     }
 
@@ -713,7 +724,7 @@ impl Intents {
         into_itself
             || (0..self.list.len()).any(|j| {
                 let other = &self.list[j];
-                let dropped = other.dropped_off_server();
+                let dropped = !other.stands();
                 if j == i || dropped && !other.restored {
                     return false;
                 }

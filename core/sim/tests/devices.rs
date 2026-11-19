@@ -12971,3 +12971,29 @@ fn a_delete_gives_way_to_a_move_it_never_saw_that_a_rewind_kept() {
         .collect();
     assert_eq!(files, [("é".to_owned(), Some(1))]);
 }
+
+#[test]
+fn a_change_answered_discard_never_excuses_undoing_a_delete() {
+    let a = |kind, target, parent, name, text| {
+        Step::User(Action {
+            kind,
+            target,
+            parent,
+            name,
+            text,
+        })
+    };
+    let phases = [
+        vec![(0, a(1, 5, 5, 1, 1)), (2, Step::Backup)],
+        vec![
+            (1, Step::Rewind),
+            (2, a(1, 1, 5, 5, 1)),
+            (2, a(4, 0, 6, 1, 0)),
+            (0, a(4, 5, 3, 8, 2)),
+            (1, a(2, 3, 6, 5, 3)),
+            (2, Step::Connect),
+            (2, Step::Work(0)),
+        ],
+    ];
+    converge(3, &phases).unwrap();
+}

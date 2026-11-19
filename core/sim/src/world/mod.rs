@@ -1264,7 +1264,8 @@ impl World {
         self.restored_to = None;
         self.held_commits = backup.held_commits.clone();
         self.in_history = backup.in_history.clone();
-        self.intents.rewound(self.moment);
+        let server = Server::of(self.space.space_id(), self.space.nodes());
+        self.intents.rewound(&server, self.moment);
         self.intents.carried_until(backup.space.head_seq());
         self.rewound
             .retain(|write, _| !stored(&backup.in_history, *write));
