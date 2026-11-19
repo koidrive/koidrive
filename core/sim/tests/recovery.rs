@@ -3833,3 +3833,121 @@ fn a_held_file_stays_held_when_a_second_rewind_brings_back_another_devices_keep(
     world.phase(3, &[]).unwrap();
     assert_eq!(live_writes(&world), [1, 2]);
 }
+
+fn open_recovery(world: &World, d: usize) -> usize {
+    (world.devices[d].engine.commits.questions().iter())
+        .filter(|question| question.answer.is_none())
+        .filter(|question| matches!(question.kind, QuestionKind::Recovery { .. }))
+        .count()
+}
+
+fn back_after_the_other_keep(then: &[(usize, Step)]) -> World {
+    let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("c.txt"))]]);
+    let rewind_and_keep = [
+        (1, overwrite(0)),
+        (1, SCAN),
+        (1, COMMIT),
+        (1, COMMIT),
+        (1, DELIVER),
+        (0, Step::Rewind),
+        (0, Step::Connect),
+        (0, DELIVER),
+        (0, Step::Answer(0)),
+        (0, COMMIT),
+        (0, COMMIT),
+        (0, DELIVER),
+    ];
+    let back = [(1, Step::Connect), (1, DELIVER), (1, COMMIT)];
+    world
+        .run(1, &[&rewind_and_keep[..], then, &back].concat())
+        .unwrap();
+    world
+}
+
+#[test]
+fn a_device_back_after_another_devices_keep_is_asked_about_its_own_write() {
+    for (answer, live, binned) in [(0, vec![1, 2], false), (1, vec![1], true)] {
+        let mut world = back_after_the_other_keep(&[]);
+        assert_eq!(open_recovery(&world, 1), 1);
+        world.run(2, &[(1, Step::Answer(answer))]).unwrap();
+        world.phase(3, &[]).unwrap();
+        assert_eq!(live_writes(&world), live, "answer {answer}");
+        assert_eq!(world.devices[1].disk.binned(2), binned, "answer {answer}");
+    }
+}
+
+#[test]
+fn a_device_back_after_another_device_kept_and_deleted_a_file_keeps_its_own_write() {
+    let delete = [
+        (0, delete(0)),
+        (0, SCAN),
+        (0, COMMIT),
+        (0, COMMIT),
+        (0, DELIVER),
+    ];
+    let mut world = back_after_the_other_keep(&delete);
+    assert_eq!(open_recovery(&world, 1), 1);
+    world.run(2, &[(1, Step::Answer(0))]).unwrap();
+    world.phase(3, &[]).unwrap();
+    assert_eq!(live_writes(&world), [2]);
+}
+
+#[test]
+fn a_device_back_after_another_device_kept_and_renamed_the_same_bytes_is_not_asked() {
+    let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("c.txt"))]]);
+    let rewind_and_keep = [
+        (0, Step::Rewind),
+        (0, Step::Connect),
+        (0, DELIVER),
+        (0, Step::Answer(0)),
+        (0, COMMIT),
+        (0, COMMIT),
+        (0, DELIVER),
+        (0, rename(0, "b")),
+        (0, SCAN),
+        (0, COMMIT),
+        (0, COMMIT),
+        (0, DELIVER),
+        (1, Step::Connect),
+        (1, DELIVER),
+        (1, COMMIT),
+    ];
+    world.run(1, &rewind_and_keep).unwrap();
+    assert_eq!(open_recovery(&world, 1), 0);
+    world.phase(2, &[]).unwrap();
+    assert_eq!(live_writes(&world), [1]);
+}
+
+#[test]
+fn a_rewind_of_an_edit_to_a_file_the_restore_point_held_follows_the_server() {
+    for online in [true, false] {
+        let mut world = synced(2, &[vec![(0, file("c.txt"))], vec![(0, Step::Backup)]]);
+        let edit = [
+            (0, overwrite(0)),
+            (0, SCAN),
+            (0, COMMIT),
+            (0, COMMIT),
+            (0, DELIVER),
+            (1, DELIVER),
+        ];
+        let rewind = [
+            (0, Step::Rewind),
+            (0, Step::Connect),
+            (0, DELIVER),
+            (0, COMMIT),
+        ];
+        let back = [(1, Step::Connect), (1, DELIVER), (1, COMMIT)];
+        let schedule = match online {
+            true => [&edit[..], &back, &rewind, &back].concat(),
+            false => [&edit[..], &rewind, &back].concat(),
+        };
+        world.run(1, &schedule).unwrap();
+        assert_eq!(
+            (open_recovery(&world, 0), open_recovery(&world, 1)),
+            (0, 0),
+            "online {online}"
+        );
+        world.phase(2, &[]).unwrap();
+        assert_eq!(live_writes(&world), [1], "online {online}");
+    }
+}
