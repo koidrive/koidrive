@@ -838,3 +838,19 @@ fn a_held_rename_back_after_a_rename_out_of_the_trash_the_server_lost_is_sent_ag
     assert_eq!(effects, []);
     assert_eq!(commit, Some(vec![mv("f", "p", "a")]));
 }
+
+#[test]
+fn a_rename_back_after_the_recovery_of_a_lost_rename_out_of_the_trash_is_sent() {
+    let (mut trees, mut commits, mut ids) = renamed_in_place_out_of_the_trash();
+    lose_and_list(
+        &mut trees,
+        &mut commits,
+        &[("f", trashed_at(file("p", "a", 1), 2))],
+    );
+    trees.set_local_changed("f".into(), local(file("p", "a", 1), 2));
+    trees.settle(commits.aliases());
+    let effects = effects_for(&mut trees, &mut ids, "f");
+    let commit = build(&mut commits, &mut trees, &mut ids).map(|c| ops(&c));
+    assert_eq!(effects, []);
+    assert_eq!(commit, Some(vec![mv("f", "p", "a")]));
+}

@@ -5056,13 +5056,12 @@ impl Trees {
                 name: remote.shape.name.clone(),
                 ..synced.clone()
             };
-            let revived_in_place = remote.trashed
-                && (self.l.get(id)).is_some_and(|local| local.shape.same_position(&before));
+            let revived = remote.trashed && self.l.get(id).is_some();
             if !self.set_synced_if_valid(id.clone(), Some(before.clone())) {
                 queued.insert(id.clone());
                 self.wait(id.clone(), Some(before), Origin::Other);
             }
-            if revived_in_place {
+            if revived {
                 self.hold_unsent_move(id.clone());
             }
         }
