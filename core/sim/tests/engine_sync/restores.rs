@@ -553,6 +553,38 @@ fn two_requests_for_big_folders_bring_back_every_file() {
 }
 
 #[test]
+fn a_folder_moved_out_of_a_big_folder_while_it_comes_back_comes_back_whole() {
+    let rows: [(&[&str], usize, &str); 3] = [
+        (&["big", "sub"], 0, "sub"),
+        (&["big", "sub"], 0, "moved out"),
+        (&["big", "sub", "inner"], 1, "moved out"),
+    ];
+    for (path, asked, name) in rows {
+        let (mut bench, folders) = Bench::large_files(path, 8);
+        bench.delete(&folders[0], |_| {});
+        let mut moved = false;
+        let last = folders.last().unwrap();
+        bench.restore(&folders[asked], |bench| {
+            let sub = (bench.space.nodes().into_iter()).find(|node| &node.node_id == last);
+            if moved || sub.is_none_or(|sub| sub.status != 1) {
+                return;
+            }
+            moved = true;
+            bench.commit_by_other(op::Op::Move(Move {
+                node_id: last.clone(),
+                new_parent_id: bench.space.space_id().to_owned(),
+                new_name: name.to_owned(),
+                from: None,
+                pending_for: String::new(),
+            }));
+        });
+        assert!(moved, "{path:?} {name}");
+        assert_eq!(bench.live_files(), 8, "{path:?} {name}");
+        assert_eq!(bench.outcomes(), [Outcome::Restored], "{path:?} {name}");
+    }
+}
+
+#[test]
 fn a_big_folder_restored_where_its_name_is_taken_reports_its_new_name() {
     let (mut bench, folders) = Bench::large_files(&["big"], 8);
     bench.delete(&folders[0], |_| {});

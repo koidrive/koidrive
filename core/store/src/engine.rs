@@ -423,14 +423,17 @@ impl Tx<'_> {
             state.commits.trash_groups.insert(row.get(0)?, row.get(1)?);
         }
         let mut stmt = (self.0).prepare_cached(
-            "SELECT restore_id, trash_group, parent_id, name FROM split_restores",
+            "SELECT restore_id, trash_group, parent_id, name, folders FROM split_restores",
         )?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
+            let folders: String = row.get(4)?;
             let split = SplitRestore {
                 trash_group: row.get(1)?,
                 parent: row.get(2)?,
                 name: row.get(3)?,
+                folders: serde_json::from_str(&folders)
+                    .map_err(|error| invalid(format!("split restore folders: {error}")))?,
             };
             state.commits.split_restores.insert(row.get(0)?, split);
         }
@@ -1076,8 +1079,11 @@ impl Tx<'_> {
         self.write_map(
             split_restores,
             "DELETE FROM split_restores WHERE restore_id = ?1",
-            "INSERT OR REPLACE INTO split_restores (restore_id, trash_group, parent_id, name) VALUES (?1, ?2, ?3, ?4)",
-            |put, id, split| put.execute(params![id, split.trash_group, split.parent, split.name]),
+            "INSERT OR REPLACE INTO split_restores (restore_id, trash_group, parent_id, name, folders) VALUES (?1, ?2, ?3, ?4, ?5)",
+            |put, id, split| {
+                let folders = serde_json::to_string(&split.folders).expect("node ids encode");
+                put.execute(params![id, split.trash_group, split.parent, split.name, folders])
+            },
         )?;
         self.write_set(
             published,

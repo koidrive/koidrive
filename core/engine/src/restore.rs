@@ -35,6 +35,7 @@ pub struct SplitRestore {
     pub trash_group: String,
     pub parent: NodeId,
     pub name: String,
+    pub folders: BTreeSet<NodeId>,
 }
 
 /// The field of a restore that is not a lowercase UUIDv7, or that a version restore must leave

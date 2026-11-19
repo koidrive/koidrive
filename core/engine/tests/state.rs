@@ -354,6 +354,7 @@ fn commits_state() -> CommitsState {
                 trash_group: "commit:1".into(),
                 parent: "f".into(),
                 name: "d".into(),
+                folders: ["e".into()].into(),
             },
         )]
         .into(),

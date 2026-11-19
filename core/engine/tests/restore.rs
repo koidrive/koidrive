@@ -724,26 +724,48 @@ fn a_restore_that_does_not_fit_alone_is_resolved() {
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
-#[test]
-fn a_piece_of_a_split_restore_answered_superseded_leaves_the_restore_going() {
-    let (folder, request) = (id(1), id(100));
+fn big_folder_in_trash(folder: u128, name: &str) -> Vec<Row> {
     let chunk = proto::ChunkRef {
         hash: vec![7; 32],
         size: 3,
         encoding: 0,
     };
-    let large = Content {
+    let content = Some(Content {
         chunks: vec![chunk; 4096],
         chunk_count: 4096,
         ..content(1)
-    };
-    let mut rows = vec![in_trash(folder.clone(), dir(&root(), "d"))];
-    for n in 2..10 {
-        let shape = file(&folder, &format!("f{n}"), 1);
-        let content = Some(large.clone());
-        rows.push(in_trash(id(n), Shape { content, ..shape }));
+    });
+    let mut rows = vec![in_trash(id(folder), dir(&root(), name))];
+    for n in 0..8 {
+        let shape = file(&id(folder), &format!("f{n}"), 1);
+        let content = content.clone();
+        rows.push(in_trash(id(folder * 100 + n), Shape { content, ..shape }));
     }
-    let mut trees = trees(&rows);
+    rows
+}
+
+#[test]
+fn a_reset_asks_only_about_the_split_restores_a_piece_in_flight_carried() {
+    let (first, second) = (from_trash(&id(1)), from_trash(&id(2)));
+    let mut trees = trees(&[big_folder_in_trash(1, "a"), big_folder_in_trash(2, "b")].concat());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    commits.restore(id(100), first.clone());
+    commits.restore(id(101), second.clone());
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    let mut reset = Commits::default();
+    reset.restore(id(100), first);
+    reset.restore(id(101), second);
+    reset.ask_unsettled_restores(&commits, &trees, &mut ids, 0);
+    let [question] = reset.questions() else {
+        panic!("one question: {:?}", reset.questions());
+    };
+    assert!(question.held.keys().eq([&id(100)]));
+}
+
+#[test]
+fn a_piece_of_a_split_restore_answered_superseded_leaves_the_restore_going() {
+    let (folder, request) = (id(1), id(100));
+    let mut trees = trees(&big_folder_in_trash(1, "d"));
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     commits.restore(request, from_trash(&folder));
     let pieces = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
@@ -935,7 +957,7 @@ fn a_read_only_device_rejects_the_restores_it_cannot_send() {
     let sent = build(&mut commits, &mut trees, &mut ids).unwrap();
     let mut reset = Commits::default();
     reset.restore(id(100), first.clone());
-    reset.ask_unsettled_restores(&commits, &mut ids, 0);
+    reset.ask_unsettled_restores(&commits, &trees, &mut ids, 0);
     assert_eq!(reset.connected(&read_only), Reconnect::Idle);
     assert_eq!(reset.resolved(), []);
     commits.restore(id(101), second.clone());
@@ -972,7 +994,7 @@ fn a_second_reset_keeps_the_restore_question_only_while_it_holds_the_same_restor
     build(&mut commits, &mut trees, &mut ids).unwrap();
     let mut reset = Commits::default();
     reset.restore(id(100), first.clone());
-    reset.ask_unsettled_restores(&commits, &mut ids, 0);
+    reset.ask_unsettled_restores(&commits, &trees, &mut ids, 0);
     reset.restore(id(101), second.clone());
     build(&mut reset, &mut trees, &mut ids).unwrap();
     let asked = reset.questions()[0].id.clone();
@@ -980,13 +1002,13 @@ fn a_second_reset_keeps_the_restore_question_only_while_it_holds_the_same_restor
 
     let mut again = Commits::default();
     again.restore(id(100), first.clone());
-    again.ask_unsettled_restores(&reset, &mut ids, 0);
+    again.ask_unsettled_restores(&reset, &trees, &mut ids, 0);
     assert_eq!(again.questions(), reset.questions());
 
     let mut wider = Commits::default();
     wider.restore(id(100), first);
     wider.restore(id(101), second);
-    wider.ask_unsettled_restores(&reset, &mut ids, 0);
+    wider.ask_unsettled_restores(&reset, &trees, &mut ids, 0);
     let [question] = wider.questions() else {
         panic!("one question: {:?}", wider.questions());
     };
@@ -1013,7 +1035,7 @@ fn a_second_reset_keeps_a_repeat_whose_commit_carried_none_of_its_restores() {
     build(&mut commits, &mut before, &mut ids).unwrap();
     let mut reset = Commits::default();
     reset.restore(id(100), intent.clone());
-    reset.ask_unsettled_restores(&commits, &mut ids, 0);
+    reset.ask_unsettled_restores(&commits, &before, &mut ids, 0);
     let mut edited = trees(&[row(&n, "f", 3, 2), row(&m, "g", 4, 4)]);
     build(&mut reset, &mut edited, &mut ids).unwrap();
     acknowledge(&mut reset, &mut edited, vec![rejected("LATER_REASON")]);
@@ -1025,7 +1047,7 @@ fn a_second_reset_keeps_a_repeat_whose_commit_carried_none_of_its_restores() {
 
     let mut again = Commits::default();
     again.restore(id(100), intent.clone());
-    again.ask_unsettled_restores(&reset, &mut ids, 0);
+    again.ask_unsettled_restores(&reset, &unrelated, &mut ids, 0);
     let [question] = again.questions() else {
         panic!("one question: {:?}", again.questions());
     };
@@ -1039,7 +1061,7 @@ fn a_second_reset_keeps_a_repeat_whose_commit_carried_none_of_its_restores() {
 
     let mut carried = Commits::default();
     carried.restore(id(100), intent);
-    carried.ask_unsettled_restores(&again, &mut ids, 0);
+    carried.ask_unsettled_restores(&again, &kept, &mut ids, 0);
     let [question] = carried.questions() else {
         panic!("one question: {:?}", carried.questions());
     };

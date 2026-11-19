@@ -1422,6 +1422,7 @@ fn engine_state() -> EngineState {
                     trash_group: "commit:4".into(),
                     parent: "root".into(),
                     name: "big".into(),
+                    folders: ["sub".into()].into(),
                 },
             )]),
             aliases: BTreeMap::from([("twin".into(), "kept".into())]),

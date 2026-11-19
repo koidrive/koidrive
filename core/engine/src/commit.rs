@@ -646,10 +646,17 @@ impl Commits {
     /// Asks again about the restores `before` sent or held for an answer, once a reset of the sync state that
     /// kept the restores dropped the commit in flight and the questions: the server may have applied them, so
     /// none is sent again until the person answers. Restores `before` never sent stay queued.
-    pub fn ask_unsettled_restores(&mut self, before: &Commits, ids: &mut IdGen, now_ms: u64) {
+    pub fn ask_unsettled_restores(
+        &mut self,
+        before: &Commits,
+        trees: &Trees,
+        ids: &mut IdGen,
+        now_ms: u64,
+    ) {
         let sent: BTreeSet<RestoreId> = (before.in_flight.as_ref())
             .and_then(|flight| {
-                carrying(&before.restores, &before.split_restores, &flight.commit.ops).ok()
+                let (restores, splits) = (&before.restores, &before.split_restores);
+                carrying(restores, splits, &flight.commit.ops, Some(trees)).ok()
             })
             .into_iter()
             .flatten()
@@ -830,7 +837,7 @@ impl Commits {
             .filter(|(id, intent)| {
                 recovery::done(trees, intent)
                     && (self.split_restores.get(*id)).is_none_or(|split| {
-                        pieces(trees, &trashed, intent.node(), &split.trash_group).is_empty()
+                        pieces(trees, &trashed, intent.node(), split).is_empty()
                     })
             })
             .map(|(id, _)| id.clone())
@@ -1154,15 +1161,10 @@ impl Commits {
     }
 
     fn split_owners(&self, trees: &Trees, node: &str) -> Vec<RestoreId> {
-        let Some(remote) = trees.remote().get(node).filter(|remote| remote.trashed) else {
-            return Vec::new();
-        };
         (self.split_restores.iter())
             .filter(|(id, split)| {
-                split.trash_group == remote.trash_group
-                    && (self.restores.get(*id)).is_some_and(|intent| {
-                        remote_below(trees, node, &BTreeSet::from([intent.node()]))
-                    })
+                (self.restores.get(*id))
+                    .is_some_and(|intent| owns(trees, split, intent.node(), node))
             })
             .map(|(id, _)| id.clone())
             .collect()
@@ -1195,6 +1197,7 @@ impl Commits {
             &self.restores,
             &self.split_restores,
             ops.unwrap_or_default(),
+            None,
         )
         .expect("a Restore op in flight is queued");
         let asked: BTreeSet<&RestoreId> = self.asked_again().collect();
@@ -3027,13 +3030,26 @@ fn carrying(
     restores: &BTreeMap<RestoreId, RestoreIntent>,
     splits: &BTreeMap<RestoreId, SplitRestore>,
     ops: &[proto::Op],
+    trees: Option<&Trees>,
 ) -> Result<BTreeSet<RestoreId>, usize> {
     let found = carried(restores, splits, ops)?;
-    let pieces = (ops.iter().enumerate()).any(|(index, op)| {
-        matches!(&op.op, Some(op::Op::Restore(_))) && !found.contains_key(&index)
+    let pieces: Vec<&str> = (ops.iter().enumerate())
+        .filter(|(index, _)| !found.contains_key(index))
+        .filter_map(|(_, op)| match &op.op {
+            Some(op::Op::Restore(restore)) => Some(restore.node_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let split = (splits.iter()).filter(|(id, split)| {
+        (restores.get(*id)).is_some_and(|intent| {
+            (pieces.iter())
+                .any(|node| trees.is_none_or(|trees| owns(trees, split, intent.node(), node)))
+        })
     });
-    let split = (splits.keys()).filter(|id| pieces && restores.contains_key(*id));
-    Ok(found.into_values().chain(split.cloned()).collect())
+    Ok(found
+        .into_values()
+        .chain(split.map(|(id, _)| id.clone()))
+        .collect())
 }
 
 fn positioned(op: &op::Op) -> Option<&str> {
@@ -3876,10 +3892,31 @@ fn split_restore(trees: &Trees, trashed: &Trashed, id: &str) -> Option<SplitRest
     let node = trees.remote().get(id).filter(|node| node.trashed)?;
     let group = node.trash_group.as_str();
     let fits = restored_costs(trees, trashed, id, group)[id] <= MAX_COMMIT_BYTES;
-    (!fits && trashed.contains_key(&(group, id))).then(|| SplitRestore {
+    if fits || !trashed.contains_key(&(group, id)) {
+        return None;
+    }
+    let mut folders = BTreeSet::new();
+    let mut below = vec![id];
+    while let Some(folder) = below.pop() {
+        for kid in trashed.get(&(group, folder)).into_iter().flatten() {
+            if trashed.contains_key(&(group, kid.as_str())) && folders.insert((*kid).clone()) {
+                below.push(kid);
+            }
+        }
+    }
+    Some(SplitRestore {
         trash_group: group.to_owned(),
         parent: node.shape.parent.clone(),
         name: node.shape.name.clone(),
+        folders,
+    })
+}
+
+fn owns(trees: &Trees, split: &SplitRestore, restored: &str, node: &str) -> bool {
+    trees.remote().get(node).is_some_and(|remote| {
+        let parent = &remote.shape.parent;
+        (!remote.trashed || remote.trash_group == split.trash_group)
+            && (parent == restored || split.folders.contains(parent))
     })
 }
 
@@ -3887,20 +3924,19 @@ fn pieces<'a>(
     trees: &'a Trees,
     trashed: &Trashed<'a>,
     id: &'a str,
-    group: &'a str,
+    split: &'a SplitRestore,
 ) -> Vec<&'a NodeId> {
+    let group = split.trash_group.as_str();
     let in_group = |node: &str| {
         node != id
             && (trees.remote().get(node))
                 .is_some_and(|remote| remote.trashed && remote.trash_group == group)
     };
-    let below = BTreeSet::from([id]);
-    let mut tops: Vec<&NodeId> = (trashed.range((group, "")..))
-        .take_while(|((at, _), _)| *at == group)
-        .filter(|((_, parent), _)| !in_group(parent))
-        .flat_map(|(_, members)| members.iter().copied())
-        .filter(|member| member.as_str() != id && remote_below(trees, member, &below))
-        .collect();
+    let mut tops: Vec<&NodeId> = (std::iter::once(id)
+        .chain(split.folders.iter().map(String::as_str)))
+    .filter(|parent| !in_group(parent))
+    .flat_map(|parent| trashed.get(&(group, parent)).into_iter().flatten().copied())
+    .collect();
     let mut pieces = Vec::new();
     while let Some(top) = tops.pop() {
         match trashed.get(&(group, top.as_str())) {
@@ -4100,7 +4136,7 @@ fn plan(
         for (id, intent) in restores {
             if let Some(split) = splits.get(id) {
                 let group = split.trash_group.as_str();
-                let pieces = pieces(trees, &trashed, intent.node(), group);
+                let pieces = pieces(trees, &trashed, intent.node(), split);
                 if !pieces.is_empty() {
                     for node in pieces.into_iter().filter(|node| sent.insert(*node)) {
                         wants.push(Want::Restore {
