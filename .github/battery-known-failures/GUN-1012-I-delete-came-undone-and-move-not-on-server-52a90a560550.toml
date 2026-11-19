@@ -1,5 +1,5 @@
 class = "I"
-issue = "GUN-864"
+issue = "GUN-1012"
 tests = ["devices_on_coarse_volumes_converge_across_restores_and_rewinds"]
 message = '''not recorded: devices::devices_on_coarse_volumes_converge_across_restores_and_rewinds \S+ DeleteUndone the delete of node <id> on device <n> came undone, and no change its user did not see brought the node back not recorded: devices::devices_on_coarse_volumes_converge_across_restores_and_rewinds \S+ PlaceKept the move on device <n> that puts node <id> at "E\\u\{<n>\}" is not on the server, though its user saw the place the server holds and no rule for lost changes settles it'''
 examples = [
