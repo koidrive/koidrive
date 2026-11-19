@@ -2499,7 +2499,7 @@ fn whereabouts(root: BorrowedFd<'_>, root_dev: u64, entry: &Entry, links: &[&Pat
         stat.dev == root_dev
             && (stat.entry()).is_some_and(|now| now.id.same(&entry.id) && now.kind == entry.kind)
     };
-    let mut missed: Option<PathBuf> = None;
+    let mut stale_path: Option<PathBuf> = None;
     for _ in 0..2 {
         let rel = match located(root, entry) {
             Ok(Some(rel)) => rel,
@@ -2520,11 +2520,10 @@ fn whereabouts(root: BorrowedFd<'_>, root_dev: u64, entry: &Entry, links: &[&Pat
             Err(err) if is_gone(&err) => {}
             Err(_) => return Whereabouts::Nowhere,
         }
-        // APFS's fsgetpath can keep returning the last path of an entry a rename destroyed.
-        if missed.as_ref() == Some(&rel) {
+        if stale_path.as_ref() == Some(&rel) {
             return Whereabouts::Nowhere;
         }
-        missed = Some(rel);
+        stale_path = Some(rel);
     }
     Whereabouts::Unsure
 }
