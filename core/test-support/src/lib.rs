@@ -15,7 +15,7 @@ use proptest::test_runner::{Config, FailurePersistence, PersistedSeed, RngSeed};
 
 mod disks;
 mod forked;
-pub use disks::{Disks, is_volume_metadata};
+pub use disks::Disks;
 mod net;
 pub use forked::Forked;
 pub use net::reset_tcp_address;

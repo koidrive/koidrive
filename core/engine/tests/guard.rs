@@ -1588,3 +1588,67 @@ fn a_notice_names_every_limit_the_removals_crossed() {
     assert_eq!(window.deletions, 1001);
     assert_eq!(exceeded, [Limit::Deletions, Limit::Share]);
 }
+
+fn a_folder_with_old_system_files(files: usize) -> Trees {
+    let mut trees = Trees::new(ROOT);
+    let mut nodes = vec![
+        ("d".to_owned(), shape(ROOT, "d", Kind::Dir)),
+        ("d/keep".to_owned(), shape("d", "keep.txt", Kind::File)),
+        ("d/bin".to_owned(), shape("d", "$RECYCLE.BIN", Kind::Dir)),
+    ];
+    nodes.extend((0..30).map(|i| (format!("f{i}"), shape(ROOT, &format!("f{i}"), Kind::File))));
+    nodes.extend((0..files).map(|i| {
+        let name = format!("$R{i}.docx");
+        (format!("d/bin/r{i}"), shape("d/bin", &name, Kind::File))
+    }));
+    for (ino, (id, shape)) in nodes.into_iter().enumerate() {
+        put_back(&mut trees, &id, shape.clone(), ino as u128 + 1);
+        trees.set_synced(id.clone(), Some(shape.clone()));
+        serve(&mut trees, id, shape);
+    }
+    trees.settle(&Default::default());
+    trees
+}
+
+#[test]
+fn a_deleted_folder_counts_the_system_files_it_takes_to_the_server_trash() {
+    let mut trees = a_folder_with_old_system_files(100);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    assert_eq!(build_at(&mut commits, &mut trees, &mut ids, NOW), []);
+    remove(&mut trees, &["d"]);
+    let ops = build_at(&mut commits, &mut trees, &mut ids, NOW);
+    let Some(QuestionKind::MassDelete { affected_files, .. }) =
+        asked(&commits).map(|question| &question.kind)
+    else {
+        panic!("deleted {:?} without a question", deleted(&ops));
+    };
+    assert_eq!(*affected_files, 101);
+    assert_eq!(deleted(&ops), Vec::<String>::new());
+}
+
+#[test]
+fn a_deleted_folder_whose_system_files_pass_the_commit_limit_is_sent_in_pieces() {
+    let mut trees = a_folder_with_old_system_files(3000);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    assert_eq!(build_at(&mut commits, &mut trees, &mut ids, NOW), []);
+    remove(&mut trees, &["d"]);
+    assert_eq!(build_at(&mut commits, &mut trees, &mut ids, NOW), []);
+    let id = asked(&commits).unwrap().id.clone();
+    assert!(commits.decide(&id, Answer::Delete));
+    let mut sent = 0;
+    for seq in 1..20 {
+        let gone = deleted(&build_at(&mut commits, &mut trees, &mut ids, NOW));
+        if gone.is_empty() {
+            break;
+        }
+        trash_remotely(
+            &mut trees,
+            &gone.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        acknowledge(&mut commits, &mut trees, seq);
+        sent += 1;
+    }
+    assert!(sent > 1, "{sent} commits");
+    assert_eq!(trees.synced().live("d"), None);
+    assert!(trees.synced().iter().all(|(id, _)| !id.starts_with("d/")));
+}

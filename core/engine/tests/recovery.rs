@@ -5337,3 +5337,40 @@ fn files_another_device_changes_after_an_answer_gave_them_up_count_in_the_space_
         commits.questions()
     );
 }
+
+#[test]
+fn system_files_an_answer_gave_up_are_not_counted_again_when_their_folder_is_deleted() {
+    let names: Vec<String> = (0..650).map(|i| format!("f{i}")).collect();
+    let parent = |i: usize| ["d", "t", ROOT][usize::from(i >= 600) + usize::from(i >= 630)];
+    let synced: Vec<(&str, Shape)> = [("d", dir(ROOT, "Disk")), ("t", dir("d", ".Trashes"))]
+        .into_iter()
+        .chain((names.iter().enumerate()).map(|(i, id)| (id.as_str(), file(parent(i), id, 1))))
+        .collect();
+    let remote: Vec<Remote> = (synced.iter())
+        .map(|(id, s)| Remote(id, s.clone(), s.parent != ROOT || *id == "d", 1))
+        .collect();
+    let local: Vec<(&str, Shape)> = [("d", dir(ROOT, "Disk2"))]
+        .into_iter()
+        .chain(synced[632..].iter().cloned())
+        .collect();
+    let mut trees = trees(&local, &synced, &remote);
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
+    assert!(commits.decide(&question.id, Answer::Publish));
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("move", "d".into())]
+    );
+    let revived: Vec<(&str, Shape, bool)> = [("d", dir(ROOT, "Disk2"), false)]
+        .into_iter()
+        .chain(synced[1..632].iter().map(|(id, s)| (*id, s.clone(), false)))
+        .collect();
+    applied(&mut commits, &mut trees, 2, &revived);
+    trees.remove_local("d");
+    trees.settle(commits.aliases());
+    assert_eq!(
+        ops(&mut commits, &mut trees, &mut ids),
+        [("delete", "d".into())]
+    );
+    assert_eq!(commits.questions(), []);
+}

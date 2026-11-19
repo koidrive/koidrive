@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use koidrive_fs::{Change, Detached, EntryKind, Mount, NativeWatcher, Snapshot, Watcher};
-use koidrive_test_support::{Disks, is_volume_metadata};
+use koidrive_ignore::PLATFORM_FILES;
+use koidrive_test_support::Disks;
 
 fn write(path: &Path, text: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -20,8 +21,13 @@ fn rescan(snapshot: &mut Snapshot, root: &Path, paths: &[&str]) -> koidrive_fs::
         .unwrap();
     found
         .changes
-        .retain(|change| !paths_of(change).any(is_volume_metadata));
+        .retain(|change| !paths_of(change).any(written_by_the_system));
     found
+}
+
+fn written_by_the_system(path: &Path) -> bool {
+    path.iter()
+        .any(|name| PLATFORM_FILES.iter().any(|file| name == *file))
 }
 
 fn paths_of(change: &Change) -> impl Iterator<Item = &Path> {

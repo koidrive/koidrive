@@ -1,0 +1,3 @@
+37
+# A built-in system file a recovery answer gave up (state-model §2.6) and that sits below a folder the person deletes
+# must stay out of the mass-delete count, as an ordinary given-up node does. Only the recovery harness can make given-up nodes.

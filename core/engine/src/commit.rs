@@ -1351,7 +1351,10 @@ impl Commits {
     /// while the rules are unknown ([`Trees::rules_known`]). A folder L deleted that still holds
     /// an excluded node in R is not deleted, since that would trash the excluded node on the
     /// server: each topmost deleted node below it with no excluded node in its subtree gets its
-    /// own delete, and the folder stays (section 5.10).
+    /// own delete, and the folder stays (section 5.10). A node only a built-in exclusion leaves out
+    /// ([`Trees::built_in`]) below a deleted folder, in S or only in R, is deleted with it, since no
+    /// device syncs it: it does not keep the folder, the guard counts the files of it that S holds,
+    /// and the splitter can cut its subtree.
     ///
     /// A node an open question holds gets no op. Every other deletion that could be planned now goes
     /// through the mass-delete guard first (section 6.1), and the commit carries the changes it
@@ -1498,7 +1501,7 @@ impl Commits {
                 self.given_up_nodes.remove(&id);
             }
         }
-        let deleted = (trees.dirty_others().iter())
+        let mut deleted = (trees.dirty_others().iter())
             .filter(|id| {
                 !skip.contains(*id)
                     && !self.given_up_nodes.contains_key(*id)
@@ -1506,6 +1509,10 @@ impl Commits {
             })
             .cloned()
             .collect();
+        built_in_below(trees, &self.problems, &mut deleted);
+        deleted.retain(|id| {
+            trees.synced().live(id).is_some() && !self.given_up_nodes.contains_key(id)
+        });
         let pending = guard::deletions(trees, &deleted);
         let given_up_files = self.given_up_files(trees);
         let checked = (self.guard).check(&mut asked, pending, trees, given_up_files, ids, now_ms);
@@ -1524,9 +1531,8 @@ impl Commits {
             self.questions.get_mut().insert(at, question);
         }
         self.hold(trees);
-        self.split.retain(|id| trees.synced().live(id).is_some());
-        self.trash_groups
-            .retain(|id, _| trees.synced().live(id).is_some() && trees.local().get(id).is_none());
+        self.split.retain(|id| deletable(trees, id));
+        (self.trash_groups).retain(|id, _| deletable(trees, id) && trees.local().get(id).is_none());
         self.published.retain(|id| trees.local().get(id).is_some());
         self.aliases.retain(|id, _| trees.holds_merge(id));
         let held_restores: BTreeSet<&RestoreId> = self.asked_again().collect();
@@ -3249,6 +3255,36 @@ fn deletes(trees: &Trees, id: &str, needed: &BTreeSet<NodeId>) -> bool {
         && !needed.contains(id)
 }
 
+fn deletable(trees: &Trees, id: &str) -> bool {
+    trees.synced().live(id).is_some() || trees.built_in(id) && trees.remote().live(id).is_some()
+}
+
+fn deleted_shape<'a>(trees: &'a Trees, id: &str) -> Option<&'a Shape> {
+    trees.remote().live(id).or(trees.synced().live(id))
+}
+
+fn deleted_bytes<'a>(trees: &Trees, members: impl IntoIterator<Item = &'a NodeId>) -> usize {
+    (members.into_iter())
+        .map(|node| record_cost(deleted_shape(trees, node)) + held_ancestry_cost(trees, node))
+        .sum()
+}
+
+fn built_in_below(trees: &Trees, problems: &BTreeSet<NodeId>, deleted: &mut BTreeSet<NodeId>) {
+    let mut below: Vec<NodeId> = deleted.iter().cloned().collect();
+    while let Some(id) = below.pop() {
+        let built_in: Vec<NodeId> = (trees.remote_children(&id))
+            .filter(|child| trees.built_in(child) && trees.local().get(child).is_none())
+            .filter(|child| !problems.contains(*child))
+            .cloned()
+            .collect();
+        for child in built_in {
+            if deleted.insert(child.clone()) {
+                below.push(child);
+            }
+        }
+    }
+}
+
 /// Makes the S updates, the last for each node, that leave S a valid tree: all of them together
 /// when they fit together, otherwise those left once each update that a node outside the batch
 /// blocks is taken out ([`blocked`]), otherwise each that fits on its own and then the rest together
@@ -4129,10 +4165,7 @@ fn cost(trees: &Trees, want: &Want) -> usize {
         Want::Content { id, content } => {
             RECORD_BYTES + content.encoded_len() + edited_ancestry_cost(trees, id)
         }
-        Want::Delete { members, .. } => members
-            .iter()
-            .map(|node| record_cost(trees.synced().live(node)) + held_ancestry_cost(trees, node))
-            .sum(),
+        Want::Delete { members, .. } => deleted_bytes(trees, members),
         Want::Retrash { members, .. } => members
             .iter()
             .map(|node| {
@@ -4408,6 +4441,7 @@ fn plan(
             });
         }
     }
+    built_in_below(trees, problems, &mut deleted);
     deleted.extend(given_up.keys().filter(|id| !skip.contains(*id)).cloned());
     let within = within.unwrap_or(wants.len());
     let mut scratch = Scratch::new(trees);
@@ -4415,7 +4449,7 @@ fn plan(
     let mut tops = Vec::new();
     let mut children: BTreeMap<&str, Vec<&NodeId>> = BTreeMap::new();
     for id in &deleted {
-        match trees.synced().live(id).map(|s| &s.parent) {
+        match deleted_shape(trees, id).map(|s| &s.parent) {
             Some(parent) if deleted.contains(parent) => {
                 children.entry(parent).or_default().push(id)
             }
@@ -4430,12 +4464,10 @@ fn plan(
             members.insert(node.clone());
             below.extend(children.get(node.as_str()).into_iter().flatten());
         }
-        let bytes: usize = members
-            .iter()
-            .map(|node| record_cost(trees.synced().live(node)) + held_ancestry_cost(trees, node))
-            .sum();
+        let bytes = deleted_bytes(trees, &members);
         let kept = (scratch.subtree(id).iter()).any(|node| {
-            trees.excluded(node) || trees.kept_original(node).is_some() || trees.held(node)
+            !trees.built_in(node) && (trees.excluded(node) || trees.held(node))
+                || trees.kept_original(node).is_some()
         });
         let opened = (members.iter()).any(|node| node != id && trash_groups.contains_key(node));
         match children.get(id.as_str()) {

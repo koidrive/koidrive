@@ -62,6 +62,7 @@ struct Remote {
     space: SpaceDo,
     chunks: Server,
     results: HashMap<String, CommitResult>,
+    delete_limit: Option<usize>,
 }
 
 impl Remote {
@@ -75,6 +76,7 @@ impl Remote {
             space: SpaceDo::new(1, now_ms),
             chunks: Server::default(),
             results: HashMap::new(),
+            delete_limit: None,
         }
     }
 
@@ -149,6 +151,19 @@ impl Remote {
 
     /// What `Session::commit` does.
     fn commit(&mut self, caller: &Caller, commit: &Commit) -> Result<CommitResult, CallError> {
+        let too_large = |op: &Op| match &op.op {
+            Some(op::Op::Delete(delete)) => self
+                .delete_limit
+                .is_some_and(|limit| self.live_subtree(&delete.node_id) > limit),
+            _ => false,
+        };
+        if commit.ops.iter().any(too_large) {
+            return Err(CallError::Server(ServerError(koidrive_proto::v1::Error {
+                code: Code::LimitExceeded as i32,
+                message: "the commit's change records do not fit in one message".into(),
+                ..Default::default()
+            })));
+        }
         match self.space.commit(caller, self.now_ms, commit) {
             Ok(committed) => {
                 let id = commit.commit_id.clone();
@@ -157,6 +172,22 @@ impl Remote {
             }
             Err(error) => Err(CallError::Server(ServerError(error))),
         }
+    }
+
+    fn live_subtree(&self, id: &str) -> usize {
+        let live = koidrive_proto::v1::NodeStatus::Live as i32;
+        let nodes = self.space.nodes();
+        let mut below = vec![id.to_owned()];
+        let mut count = 0;
+        while let Some(at) = below.pop() {
+            count += 1;
+            below.extend(
+                (nodes.iter())
+                    .filter(|node| node.status == live && node.parent_id == at)
+                    .map(|node| node.node_id.clone()),
+            );
+        }
+        count
     }
 
     /// The names of the live nodes besides the root, in order.
@@ -1260,6 +1291,7 @@ fn answered_then_lost(given: Answer) -> (Site, Remote) {
         space: remote.space.clone(),
         chunks,
         results: remote.results.clone(),
+        delete_limit: remote.delete_limit,
     };
     answer(&site_b, given);
     let step = b.folder.requested();
@@ -1345,6 +1377,7 @@ fn keep_original_lost_by_a_restore(deleted_on_c: bool) -> (Remote, Site, Vec<Com
         space: remote.space.clone(),
         chunks,
         results: remote.results.clone(),
+        delete_limit: remote.delete_limit,
     };
     answer(&site_b, Answer::KeepOriginal);
     let step = b.folder.requested();
@@ -1403,6 +1436,7 @@ fn keep_original_lost_below_a_removed_folder(deleted_on_c: bool) -> (Remote, Com
         space: remote.space.clone(),
         chunks,
         results: remote.results.clone(),
+        delete_limit: remote.delete_limit,
     };
     answer(&site_b, Answer::KeepOriginal);
     let step = b.folder.requested();
@@ -1463,6 +1497,7 @@ fn keep_original_lost_then_its_folder_removed(original_moved_out: bool) -> (Remo
         space: remote.space.clone(),
         chunks,
         results: remote.results.clone(),
+        delete_limit: remote.delete_limit,
     };
     answer(&site_b, Answer::KeepOriginal);
     let step = b.folder.requested();
@@ -1496,6 +1531,7 @@ fn keep_original_lost_after_the_original_was_deleted(deleted_on_b: bool) -> (Rem
         space: remote.space.clone(),
         chunks,
         results: remote.results.clone(),
+        delete_limit: remote.delete_limit,
     };
     answer(&site_b, Answer::KeepOriginal);
     let step = b.folder.requested();

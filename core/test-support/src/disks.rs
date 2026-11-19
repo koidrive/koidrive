@@ -11,20 +11,6 @@ use std::process::Command;
 const MOUNTS: &str = "KOIDRIVE_TEST_MOUNTS";
 const EXFAT: &str = "KOIDRIVE_TEST_EXFAT";
 
-const VOLUME_METADATA: [&str; 5] = [
-    ".fseventsd",
-    ".Spotlight-V100",
-    ".Trashes",
-    ".TemporaryItems",
-    ".DocumentRevisions-V100",
-];
-
-/// Whether `path` is in a folder the system writes on a volume it mounts whenever it likes, such as `.fseventsd`.
-pub fn is_volume_metadata(path: &Path) -> bool {
-    path.components()
-        .any(|part| VOLUME_METADATA.iter().any(|name| part.as_os_str() == *name))
-}
-
 fn output(program: &str, args: &[&OsStr]) -> Result<String, String> {
     let out = Command::new(program)
         .args(args)
