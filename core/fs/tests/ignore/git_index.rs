@@ -169,6 +169,32 @@ fn a_watcher_reads_a_split_index_again_when_its_shared_index_returns() {
     assert!(known(watcher.snapshot()).contains(&"dist/a.js"));
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn a_watcher_keeps_reading_an_index_outside_the_root_it_may_not_watch() {
+    use std::os::unix::fs::PermissionsExt;
+    let away = tempfile::tempdir().unwrap();
+    let git_dir = away.path().join("g");
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, ".gitignore", "dist/\n");
+    write(root, "dist/a.js", "a");
+    let separate = format!("--separate-git-dir={}", git_dir.display());
+    git(root, &["init", "-q", &separate]);
+    git(root, &["add", "-f", "dist/a.js"]);
+    fs::set_permissions(&git_dir, fs::Permissions::from_mode(0o100)).unwrap();
+    let mut rules = rules();
+    let mut snapshot = Snapshot::default();
+    snapshot
+        .rescan_with_rules(root, whole(), &mut rules)
+        .unwrap();
+    let mut watcher = NativeWatcher::start_with_rules(root, snapshot, rules).unwrap();
+    let polled = watcher.poll(Duration::from_secs(1)).map(|_| ());
+    fs::set_permissions(&git_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    polled.unwrap();
+    assert!(known(watcher.snapshot()).contains(&"dist/a.js"));
+}
+
 #[test]
 fn a_watcher_reads_an_index_outside_the_root_after_an_event_for_it_or_its_lock() {
     let main_dir = tempfile::tempdir().unwrap();

@@ -3462,7 +3462,10 @@ pub struct NativeWatcher {
     /// The rules changes of the scans since the last poll returned.
     changed_rules: Vec<(PathBuf, Source, Option<Vec<u8>>)>,
     changed_tracked: Vec<(PathBuf, Vec<String>)>,
-    git_dirs: BTreeMap<PathBuf, ((u64, FileId), Vec<PathBuf>)>,
+    /// The git directories of the work trees the rules know, each with the identity a watch covers, if one does, and
+    /// its work trees.
+    git_dirs: GitDirs,
+    git_watcher: Option<RecommendedWatcher>,
     /// The folders whose rules the scans since the last poll established.
     read: BTreeSet<PathBuf>,
     /// Folders whose subfolders may be unwatched, which are registered once a
@@ -3485,6 +3488,8 @@ pub struct NativeWatcher {
     #[cfg(all(test, target_os = "linux"))]
     before_register: Option<Box<dyn FnMut()>>,
 }
+
+type GitDirs = BTreeMap<PathBuf, (Option<(u64, FileId)>, Vec<PathBuf>)>;
 
 impl NativeWatcher {
     /// Starts watching `root` recursively. The first poll compares the whole
@@ -3530,6 +3535,7 @@ impl NativeWatcher {
             changed_rules: Vec::new(),
             changed_tracked: Vec::new(),
             git_dirs: BTreeMap::new(),
+            git_watcher: None,
             read: BTreeSet::new(),
             rewatch: false,
             remount_checked: Instant::now(),
@@ -3660,7 +3666,7 @@ impl NativeWatcher {
         let Some(rules) = &self.rules else {
             return;
         };
-        let mut now: BTreeMap<PathBuf, ((u64, FileId), Vec<PathBuf>)> = BTreeMap::new();
+        let mut now = GitDirs::new();
         for (tree, dir) in rules.git_dirs() {
             let Ok(dir) = std::fs::canonicalize(dir) else {
                 continue;
@@ -3670,34 +3676,41 @@ impl NativeWatcher {
             };
             let id = (stat.dev, stat.id);
             now.entry(dir)
-                .or_insert((id, Vec::new()))
+                .or_insert((Some(id), Vec::new()))
                 .1
                 .push(tree.clone());
         }
         let root = self.root.clone();
         let uncovered = |dir: &Path| cfg!(target_os = "linux") || !dir.starts_with(&root);
         let mut fresh = Vec::new();
-        for (dir, (id, trees)) in &now {
-            let watched = self.git_dirs.get(dir).map(|(watched, _)| watched);
-            if watched == Some(id) {
+        for (dir, (id, trees)) in &mut now {
+            let watched = self.git_dirs.get(dir).and_then(|(watched, _)| *watched);
+            if watched == *id {
                 continue;
             }
             if uncovered(dir) {
-                if watched.is_some() {
-                    let _ = notify::Watcher::unwatch(&mut self.watcher, dir);
+                if self.git_watcher.is_none() {
+                    self.git_watcher = notify::recommended_watcher(self.sender.clone()).ok();
                 }
-                if let Err(err) =
-                    notify::Watcher::watch(&mut self.watcher, dir, RecursiveMode::NonRecursive)
-                    && !gone(dir)
-                {
-                    self.failed = Some(watch_error(err));
+                let registered = self.git_watcher.as_mut().is_some_and(|watcher| {
+                    if watched.is_some() {
+                        let _ = notify::Watcher::unwatch(watcher, dir);
+                    }
+                    notify::Watcher::watch(watcher, dir, RecursiveMode::NonRecursive).is_ok()
+                });
+                if !registered {
+                    *id = None;
                 }
             }
             fresh.extend(trees.iter().cloned());
         }
-        for dir in self.git_dirs.keys().filter(|dir| !now.contains_key(*dir)) {
-            if uncovered(dir) {
-                let _ = notify::Watcher::unwatch(&mut self.watcher, dir);
+        for (dir, (watched, _)) in &self.git_dirs {
+            if let Some(watcher) = self.git_watcher.as_mut()
+                && watched.is_some()
+                && uncovered(dir)
+                && !now.contains_key(dir)
+            {
+                let _ = notify::Watcher::unwatch(watcher, dir);
             }
         }
         self.git_dirs = now;
@@ -3995,6 +4008,9 @@ impl Watcher for NativeWatcher {
         self.view.take();
         let deadline = Instant::now() + timeout;
         let mut root = None;
+        if self.git_dirs.values().any(|(watched, _)| watched.is_none()) {
+            self.watch_git_dirs();
+        }
         loop {
             if let Some(err) = self.failed.take() {
                 return Err(err);
@@ -4039,6 +4055,7 @@ impl Watcher for NativeWatcher {
             if self.rewatch {
                 let deferred = cfg!(target_os = "linux") && self.rules.is_some();
                 self.watcher = watch_root(&self.root, &self.sender, deferred)?;
+                self.git_watcher = None;
                 self.git_dirs.clear();
                 #[cfg(target_os = "linux")]
                 self.blocked.extend(deferred.then(PathBuf::new));
