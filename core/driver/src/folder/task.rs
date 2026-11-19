@@ -87,6 +87,7 @@ pub(crate) struct FolderTask {
 #[cfg(test)]
 pub(crate) struct ObserveFault {
     pub paused: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    pub before_batch: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 #[cfg(test)]
@@ -190,6 +191,15 @@ impl FolderTask {
         }
     }
 
+    fn halt(&self, lock: &Flock, stop: Stop) -> Halt {
+        match stop {
+            Stop::OtherRoot | Stop::Withdrawn(_) if !claim::still_locked(lock, &self.link.root) => {
+                Halt::Root(Halted::Replaced, REPLACED.to_owned())
+            }
+            stop => stop.into(),
+        }
+    }
+
     /// Waits for the observer's thread, which ends soon after `sync` has dropped its receiver.
     async fn join_observer(&self) {
         let thread = self.observer.lock().unwrap().take();
@@ -246,7 +256,7 @@ impl FolderTask {
         let (mut folder, snapshot) =
             match loaded.and_then(|loaded| Folder::open(loaded, link, &lock)) {
                 Ok(opened) => opened,
-                Err(stop) => return stop.into(),
+                Err(stop) => return self.halt(&lock, stop),
             };
         if let Err(error) = self.status.opened() {
             return Halt::Person(
@@ -326,12 +336,7 @@ impl FolderTask {
                     Some(seen) = from_disk.recv() => match seen {
                         // The observer reaches the folder by its path, so a folder replaced before its
                         // first scan is scanned or fails there before the recheck below sees it.
-                        FromDisk::Batch(batch, entries) => match folder.observed(*batch, entries) {
-                            Err(Stop::OtherRoot) if !claim::still_locked(&lock, &self.link.root) => {
-                                break Halt::Root(Halted::Replaced, REPLACED.to_owned());
-                            }
-                            step => step,
-                        },
+                        FromDisk::Batch(batch, entries) => folder.observed(*batch, entries),
                         FromDisk::Scanned => folder.scanned(),
                         FromDisk::Failed(_) if !claim::still_locked(&lock, &self.link.root) => {
                             break Halt::Root(Halted::Replaced, REPLACED.to_owned());
@@ -361,7 +366,7 @@ impl FolderTask {
                 };
                 let work = match step {
                     Ok(work) => work,
-                    Err(stop) => break stop.into(),
+                    Err(stop) => break self.halt(&lock, stop),
                 };
                 for work in work {
                     match work {
@@ -549,6 +554,12 @@ impl FolderTask {
                             root_ok = batch.observation.root.is_ok(),
                             "observed the folder"
                         );
+                        #[cfg(test)]
+                        if let Some(before) = (fault.as_ref())
+                            .and_then(|fault| fault.before_batch.lock().unwrap().take())
+                        {
+                            before();
+                        }
                         let entries = observer.snapshot().entries.len() as u64;
                         let _ = sender.send(FromDisk::Batch(Box::new(batch), entries));
                     }
