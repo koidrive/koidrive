@@ -231,7 +231,7 @@ impl Sections {
         (std::mem::take(&mut resets.0), Requests(resets.1))
     }
 
-    fn request(&self, resets: Vec<Reset>) -> Requests {
+    pub(crate) fn request(&self, resets: Vec<Reset>) -> Requests {
         let mut requested = self.resets.lock().unwrap();
         requested.1 += 1;
         let request = Requests(requested.1);
@@ -268,7 +268,10 @@ impl Sections {
         let observation = observer.observe(wait)?;
         Ok(observation.map(|observation| {
             let unanswered = observer.unanswered();
-            open.retain(|(_, scopes)| scopes.iter().any(|scope| unanswered.contains(scope)));
+            open.retain_mut(|(_, scopes)| {
+                scopes.retain(|scope| unanswered.contains(scope));
+                !scopes.is_empty()
+            });
             Batch {
                 stamp,
                 answered: Answers {

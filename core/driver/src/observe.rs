@@ -1093,6 +1093,7 @@ mod tests {
     use koidrive_fs::{Marker, Poll, write_marker};
 
     use super::*;
+    use crate::disk::Sections;
     use crate::ignore::Unfiltered;
 
     const SPACE: &str = "0190f0a0-0000-7000-8000-000000000001";
@@ -2214,6 +2215,44 @@ mod tests {
         (observer.observe(Duration::ZERO).unwrap())
             .expect("the batch that answers the reset of docs");
         assert_eq!(observer.unanswered(), [PathBuf::from("logs/app.log")]);
+    }
+
+    #[test]
+    fn a_request_is_answered_once_each_of_its_scopes_settled_though_another_request_reset_one_again()
+     {
+        let dir = marked();
+        let root = dir.path();
+        fs::create_dir(root.join("docs")).unwrap();
+        fs::create_dir(root.join("logs")).unwrap();
+        let mut observer = observer(root);
+        observer.observe(Duration::from_secs(10)).unwrap();
+        let pending = |scope: &str| Poll {
+            pending: vec![PathBuf::from(scope)],
+            root: observer.scanned(),
+            ..Poll::default()
+        };
+        let polls = vec![pending("logs"), pending("docs")];
+        observer.watcher = Box::new(Scripted {
+            snapshot: observer.snapshot().clone(),
+            polls,
+        });
+        let resets = |scopes: &[&str]| {
+            (scopes.iter())
+                .map(|scope| Reset {
+                    scope: PathBuf::from(scope),
+                    known: BTreeMap::new(),
+                })
+                .collect::<Vec<_>>()
+        };
+        let sections = Sections::default();
+        let both = sections.request(resets(&["docs", "logs"]));
+        let batch = (sections.observe(&mut observer, Duration::ZERO).unwrap())
+            .expect("the batch that settles docs");
+        assert_eq!(batch.answered.open, [both]);
+        let docs = sections.request(resets(&["docs"]));
+        let batch = (sections.observe(&mut observer, Duration::ZERO).unwrap())
+            .expect("the batch that settles logs");
+        assert_eq!(batch.answered.open, [docs]);
     }
 
     #[test]
