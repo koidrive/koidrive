@@ -12825,6 +12825,44 @@ fn a_server_that_copies_the_download_a_restart_took_for_a_new_file_is_caught() {
 }
 
 #[test]
+fn a_server_that_copies_a_file_sent_again_after_a_restore_is_caught() {
+    use Step::*;
+    let mut world = on(&[Precision::Fine, Precision::Fine]);
+    let file = User(Action {
+        kind: 1,
+        target: 0,
+        parent: 0,
+        name: 0,
+        text: 1,
+    });
+    world
+        .phase(0, &[(1, file), (1, Connect), (0, Connect)])
+        .unwrap();
+    world.phase(1, &[(0, Backup)]).unwrap();
+    let disk = &world.devices[1].disk;
+    let target = (disk.visible().iter())
+        .position(|ino| disk.entries()[ino].name == "a")
+        .unwrap();
+    let copy = Copy(Action {
+        kind: 0,
+        target,
+        parent: 0,
+        name: 5,
+        text: 0,
+    });
+    world.phase(2, &[(1, copy)]).unwrap();
+    world.space_mut().copy_each_created_file();
+    world.phase(3, &[]).unwrap();
+    let failure = world.phase(4, &[(0, Restore)]).unwrap_err();
+    assert!(
+        failure
+            .to_string()
+            .contains("write 1 is in 3 live nodes on the server"),
+        "{failure}"
+    );
+}
+
+#[test]
 fn a_download_its_user_moved_before_the_restart_is_a_new_file_to_delete() {
     use Step::*;
     let mut world = on(&[Precision::Fine, Precision::Fine]);
