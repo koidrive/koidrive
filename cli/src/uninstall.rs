@@ -35,7 +35,14 @@ use text::{finish, kept_text};
 const RECORD: &str = "uninstall.json";
 const PATH_MARKERS: [&str; 2] = ["; : 'koidrive PATH'", "; true 'koidrive PATH'"];
 const BASH_PRELUDE: &str = r#"if [ -r "$HOME/.bash_login" ]; then . "$HOME/.bash_login"; elif [ -r "$HOME/.profile" ]; then . "$HOME/.profile"; fi"#;
-const FOLDER_RECORDS: [&str; 4] = ["space.json", "device.json", "device.json.tmp", "staging"];
+const FOLDER_RECORDS: [&str; 6] = [
+    "space.json",
+    "device.json",
+    "device.json.tmp",
+    "lineage",
+    "lineage.tmp",
+    "staging",
+];
 const RECOVERY_RECORDS: [&str; 2] = ["brought-back.json", "brought-back.json.tmp"];
 const KOI_MARK: &[u8] = b"Koidrive sync client";
 const STATUS: Duration = Duration::from_secs(10);

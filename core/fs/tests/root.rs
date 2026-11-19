@@ -6,8 +6,8 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
 use koidrive_fs::{
-    Marker, PRIVATE_DIR, RootAt, RootProblem, RootTokens, Space, Unresolved, VolumeId, check_root,
-    check_root_at, new_token, open_root_folder, probe_no_replace, read_marker, rename_no_replace,
+    Marker, Minted, PRIVATE_DIR, RootAt, RootProblem, RootTokens, Space, Unresolved, VolumeId,
+    check_root, check_root_at, open_root_folder, probe_no_replace, read_marker, rename_no_replace,
     root_at, write_marker,
 };
 
@@ -61,9 +61,9 @@ fn a_marker_without_a_token_reads_and_writes_back_as_it_was() {
     let written: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
     assert_eq!(written, unversioned);
 
-    let token = new_token();
+    let token = Minted::mint().to_string();
     assert!(token.len() == 32 && token.chars().all(|c| c.is_ascii_hexdigit()));
-    assert_ne!(new_token(), token);
+    assert_ne!(Minted::mint().to_string(), token);
     let tokened = Marker {
         token: Some(token),
         ..read
@@ -457,7 +457,7 @@ fn a_btrfs_snapshot_rolled_back_into_the_path_is_another_root() {
     let at = |path: &Path| root_at(fs::File::open(path).unwrap().as_fd()).unwrap();
     btrfs(&["subvolume".as_ref(), "create".as_ref(), subvolume.as_ref()]);
     fs::create_dir(subvolume.join("folder")).unwrap();
-    let token = new_token();
+    let token = Minted::mint().to_string();
     let tokened = Marker {
         token: Some(token.clone()),
         ..marker("space-1", 0)

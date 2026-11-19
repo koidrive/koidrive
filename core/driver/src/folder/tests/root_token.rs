@@ -533,7 +533,10 @@ fn a_crash_at_each_step_of_a_rotation_starts_again_without_a_halt() {
                 write_marker(&site.root, &marker).unwrap();
             }
             let mut store = Store::open(&site.db).unwrap();
-            let pending = disk::pend_token(&marker, &mut store).unwrap();
+            let pending = disk::pend_token(&marker, false, &mut store)
+                .unwrap()
+                .0
+                .to_string();
             if written {
                 let rotated = Marker {
                     token: Some(pending.clone()),
@@ -665,13 +668,20 @@ fn recoveries_while_taking_turns(sites: [&Site; 2], remote: &mut Remote) -> usiz
 }
 
 #[test]
-fn two_clones_of_one_store_taking_turns_on_one_folder_never_recover() {
+fn two_clones_of_one_store_taking_turns_on_one_folder_recover_once_then_the_other_halts() {
     let mut remote = Remote::new();
     let (site, a) = linked(&mut remote, "a");
     drop(a);
     let clone = store_clone(&site);
     let recovered = recoveries_while_taking_turns([&site, &clone], &mut remote);
-    assert_eq!(recovered, 0);
+    assert_eq!(recovered, 1);
+    assert!(halts_as_a_copy(&site));
+}
+
+fn forget_minted(site: &Site) {
+    let db = rusqlite::Connection::open(&site.db).unwrap();
+    db.execute("UPDATE link SET root_minted = NULL", [])
+        .unwrap();
 }
 
 fn rotated_by_a_link_without_a_token_after_its_first_marker_write_failed(
@@ -688,6 +698,7 @@ fn rotated_by_a_link_without_a_token_after_its_first_marker_write_failed(
     let none = koidrive_fs::RootTokens::default();
     store.transaction(|tx| tx.set_root_tokens(&none)).unwrap();
     drop(store);
+    forget_minted(&other);
     let blocker = block_marker(&other);
     drop(opened(&other).unwrap());
     fs::remove_dir_all(&blocker).unwrap();
@@ -1034,8 +1045,7 @@ fn a_file_the_newer_copy_deleted_reaches_the_server_only_once_the_question_is_an
 }
 
 #[test]
-fn relink_refuses_a_folder_that_passes_its_check_and_takes_one_whose_store_was_restored_on_its_own()
-{
+fn relink_refuses_a_folder_that_passes_its_check_and_takes_a_copy_made_before_a_start() {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");
     a.create(&mut remote, &site.root.join("one.txt"), b"one");
@@ -1049,10 +1059,11 @@ fn relink_refuses_a_folder_that_passes_its_check_and_takes_one_whose_store_was_r
     assert!(matches!(relink(&site), Err(disk::RelinkError::NotACopy)));
     assert_eq!((marker_of(&site), tokens_of(&site)), (marker, tokens));
     assert!(site.stored().cursor.is_some());
-    let saved = site.db.with_extension("saved");
-    fs::copy(&site.db, &saved).unwrap();
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
     drop(restarted(&site, &mut remote));
-    fs::copy(&saved, &site.db).unwrap();
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
     assert!(halts_as_a_copy(&site));
     let id = ask(&site, &RestoreIntent::from_trash(node, None, None).unwrap());
 
@@ -1295,4 +1306,409 @@ fn a_link_that_adopted_a_token_and_failed_its_write_does_not_hand_it_back() {
     fs::remove_dir_all(&blocker).unwrap();
     drop(opened(&second).unwrap());
     assert!(halts_as_a_copy(&site));
+}
+
+#[test]
+fn a_store_restored_from_before_a_start_with_no_download_since_recovers_the_folder() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("kept.txt"), b"kept");
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.create(&mut remote, &site.root.join("after.txt"), b"after");
+    drop(a);
+    fs::copy(&saved, &site.db).unwrap();
+    assert_eq!(marker_of(&site).effects, site.stored().effects.cleared());
+    assert!(matches!(relink(&site), Err(disk::RelinkError::NotACopy)));
+
+    let mut a = site.start();
+    assert!(matches!(
+        a.folder.engine.commits.halted(),
+        Some(CommitHalt::Recovery(_))
+    ));
+    a.connect(&remote);
+    a.settle();
+    a.run(&mut remote);
+    assert!(a.folder.engine.commits.halted().is_none());
+    assert_eq!(names(&site.root), ["after.txt", "kept.txt"]);
+    assert_eq!(remote.names(), ["after.txt", "kept.txt"]);
+}
+
+#[test]
+fn a_store_restored_from_before_130_starts_and_a_download_recovers() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    for _ in 0..130 {
+        drop(site.start());
+    }
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let mut a = restarted(&site, &mut remote);
+    a.settle();
+    a.run(&mut remote);
+    a.rest(&mut remote);
+    drop(a);
+    fs::copy(&saved, &site.db).unwrap();
+    assert!(recovers(&site));
+}
+
+fn as_an_older_build_restarted(site: &Site) {
+    let token = Some("e".repeat(32));
+    let mut marker = marker_of(site);
+    marker.token = token.clone();
+    koidrive_fs::write_marker(&site.root, &marker).unwrap();
+    let tokens = koidrive_fs::RootTokens {
+        current: token,
+        pending: None,
+    };
+    let mut store = Store::open(&site.db).unwrap();
+    store.transaction(|tx| tx.set_root_tokens(&tokens)).unwrap();
+}
+
+#[test]
+fn a_copy_from_before_a_downgrade_and_reupgrade_halts_as_a_copy() {
+    for upgraded_since in [false, true] {
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site.root.join("kept.txt"), b"kept");
+        drop(a);
+        for _ in 0..3 {
+            drop(restarted(&site, &mut remote));
+        }
+        let copy = site.root.with_file_name("copy");
+        copy_folder(&site.root, &copy);
+        as_an_older_build_restarted(&site);
+        if upgraded_since {
+            let mut a = restarted(&site, &mut remote);
+            a.create(&mut remote, &site.root.join("after.txt"), b"after");
+        }
+        fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+        fs::rename(&copy, &site.root).unwrap();
+        assert!(halts_as_a_copy(&site), "{upgraded_since}");
+    }
+}
+
+#[test]
+fn two_clones_of_one_store_on_two_copies_of_the_folder_halt_when_the_folders_swap() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let mut clone = store_clone(&site);
+    clone.root = site.root.with_file_name("copy");
+    clone.link.root = clone.root.clone();
+    copy_folder(&site.root, &clone.root);
+    for _ in 0..2 {
+        drop(restarted(&site, &mut remote));
+        drop(restarted(&clone, &mut remote));
+    }
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&clone.root, &site.root).unwrap();
+    assert!(halts_as_a_copy(&site));
+}
+
+#[test]
+fn a_store_backed_up_between_a_rotation_and_its_commit_recovers_the_folder() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.folder.disk.set_hook(crash_at(disk::Cut::TokenWritten));
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        a.create(&mut remote, &site.root.join("after.txt"), b"after")
+    }));
+    assert!(crashed.is_err());
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    drop(restarted(&site, &mut remote));
+    fs::copy(&saved, &site.db).unwrap();
+    assert!(tokens_of(&site).pending.is_some());
+    assert!(recovers(&site));
+}
+
+#[test]
+fn a_store_restored_under_a_copy_made_after_its_backup_recovers_and_takes_the_newer_files() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.create(&mut remote, &site.root.join("before.txt"), b"before");
+    drop(a);
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    let mut a = restarted(&site, &mut remote);
+    a.create(&mut remote, &site.root.join("after.txt"), b"after");
+    drop(a);
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    fs::copy(&saved, &site.db).unwrap();
+
+    let mut a = site.start();
+    assert!(a.folder.engine.commits.halted().is_some());
+    a.connect(&remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(names(&site.root), ["after.txt", "before.txt"]);
+    assert_eq!(remote.names(), ["after.txt", "before.txt"]);
+}
+
+#[test]
+fn a_store_restored_past_the_token_log_or_from_before_minted_tokens_halts_as_a_copy() {
+    for overflowed in [false, true] {
+        let mut remote = Remote::new();
+        let (site, a) = linked(&mut remote, "a");
+        drop(a);
+        let saved = site.db.with_extension("saved");
+        fs::copy(&site.db, &saved).unwrap();
+        drop(restarted(&site, &mut remote));
+        if overflowed {
+            let log = site.root.join(koidrive_fs::PRIVATE_DIR).join("lineage");
+            let kept = fs::read(&log).unwrap();
+            let fillers =
+                (1..2 * koidrive_fs::LINEAGE_KEPT as u128 - 1).flat_map(u128::to_be_bytes);
+            let full = [&kept[..16], &fillers.collect::<Vec<_>>(), &kept[16..]].concat();
+            fs::write(&log, full).unwrap();
+            drop(restarted(&site, &mut remote));
+        }
+        fs::copy(&saved, &site.db).unwrap();
+        if !overflowed {
+            forget_minted(&site);
+        }
+        assert!(halts_as_a_copy(&site), "{overflowed}");
+    }
+}
+
+#[test]
+fn a_restore_recovers_after_a_failed_marker_write_left_a_token_in_the_log() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    let blocker = block_marker(&site);
+    drop(opened(&site).unwrap());
+    fs::remove_dir_all(&blocker).unwrap();
+    drop(restarted(&site, &mut remote));
+    fs::copy(&saved, &site.db).unwrap();
+    assert!(recovers(&site));
+}
+
+#[test]
+fn a_token_log_that_cannot_be_written_holds_no_upload() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let log = site.root.join(koidrive_fs::PRIVATE_DIR).join("lineage");
+    fs::remove_file(&log).unwrap();
+    fs::create_dir(&log).unwrap();
+    fs::write(log.join("held"), b"").unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.create(&mut remote, &site.root.join("after.txt"), b"after");
+    assert_eq!(remote.names(), ["after.txt"]);
+}
+
+#[test]
+fn a_retried_marker_flush_does_not_let_a_copy_from_before_a_downgrade_recover() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site.root.join("kept.txt"), b"kept");
+    a.folder.disk.fail_marker_flush(true);
+    hold(&mut a, &site.root.join("after.txt"));
+    a.folder.disk.fail_marker_flush(false);
+    a.run(&mut remote);
+    drop(a);
+    let copy = site.root.with_file_name("copy");
+    copy_folder(&site.root, &copy);
+    as_an_older_build_restarted(&site);
+    fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
+    fs::rename(&copy, &site.root).unwrap();
+    assert!(halts_as_a_copy(&site));
+}
+
+#[test]
+fn a_marker_write_that_keeps_failing_adds_its_token_to_the_log_once() {
+    for renamed in [false, true] {
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        let log = site.root.join(koidrive_fs::PRIVATE_DIR).join("lineage");
+        let before = fs::read(&log).unwrap().len();
+        match renamed {
+            true => a.folder.disk.fail_marker_flush(true),
+            false => drop(block_marker(&site)),
+        }
+        hold(&mut a, &site.root.join("after.txt"));
+        for _ in 0..5 {
+            let retry = a.work.pop_front().unwrap();
+            a.perform(retry, &mut remote).unwrap();
+            assert_retries_the_build(&a);
+        }
+        assert_eq!(fs::read(&log).unwrap().len(), before + 16, "{renamed}");
+    }
+}
+
+#[test]
+fn a_store_restored_with_a_delete_in_flight_recovers() {
+    for remade in [false, true] {
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        a.create(&mut remote, &site.root.join("kept.txt"), b"one");
+        let (other, mut b) = linked(&mut remote, "b");
+        b.settle();
+        b.run(&mut remote);
+        fs::remove_file(other.root.join("kept.txt")).unwrap();
+        b.rescan();
+        b.scan_until(|b| !b.work.is_empty());
+        b.run(&mut remote);
+        a.folder.disk.set_hook(crash_at(disk::Cut::AfterPlan));
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            a.pull(&remote);
+            a.run(&mut remote);
+        }));
+        assert!(crashed.is_err());
+        drop(a);
+        let saved = site.db.with_extension("saved");
+        fs::copy(&site.db, &saved).unwrap();
+        drop(opened(&site).unwrap());
+        if remade {
+            fs::write(site.root.join("kept.txt"), b"two").unwrap();
+        }
+        fs::copy(&saved, &site.db).unwrap();
+        let (stored, marker) = (site.stored(), marker_of(&site));
+        let cleared = stored.effects.cleared();
+        assert!(marker.effects >= cleared);
+        assert!(marker.effects <= cleared + stored.effects.in_flight().len() as u64);
+        assert_ne!(marker.token, tokens_of(&site).current);
+        assert!(recovers(&site), "{remade}");
+
+        let mut a = site.start();
+        a.connect(&remote);
+        for _ in 0..4 {
+            a.rescan();
+            a.settle();
+            a.run(&mut remote);
+            a.rest(&mut remote);
+        }
+        assert!(remote.names().is_empty(), "{remade}");
+        if remade {
+            assert_eq!(
+                files(&site.root),
+                [("kept.txt".to_owned(), "two".to_owned())]
+            );
+            assert_eq!(a.folder.view().questions, 1);
+        } else {
+            assert!(files(&site.root).is_empty());
+            assert_eq!(a.folder.view().questions, 0);
+        }
+    }
+}
+
+#[test]
+fn a_store_restored_after_a_start_left_the_markers_token_pending_recovers_the_folder() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.folder.disk.set_hook(crash_at(disk::Cut::TokenWritten));
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        a.create(&mut remote, &site.root.join("after.txt"), b"after")
+    }));
+    assert!(crashed.is_err());
+    drop(a);
+    let blocker = block_marker(&site);
+    drop(opened(&site).unwrap());
+    fs::remove_dir_all(&blocker).unwrap();
+    drop(opened(&site).unwrap());
+    fs::copy(&saved, &site.db).unwrap();
+    assert!(recovers(&site));
+}
+
+#[test]
+fn a_token_log_longer_than_any_rotation_writes_counts_as_no_log() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    drop(restarted(&site, &mut remote));
+    let log = site.root.join(koidrive_fs::PRIVATE_DIR).join("lineage");
+    let kept = fs::read(&log).unwrap();
+    let fillers = (1..=2 * koidrive_fs::LINEAGE_KEPT as u128).flat_map(u128::to_be_bytes);
+    let full = [&kept[..16], &fillers.collect::<Vec<_>>(), &kept[16..]].concat();
+    fs::write(&log, full).unwrap();
+    fs::copy(&saved, &site.db).unwrap();
+    assert!(halts_as_a_copy(&site));
+}
+
+#[test]
+fn a_start_replaces_a_token_log_that_is_not_a_file_without_waiting_on_it() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let log = site.root.join(koidrive_fs::PRIVATE_DIR).join("lineage");
+    fs::remove_file(&log).unwrap();
+    let made = std::process::Command::new("mkfifo").arg(&log).status();
+    assert!(made.unwrap().success());
+    let clone = store_clone(&site);
+    let (started, start) = std::sync::mpsc::channel();
+    std::thread::spawn(move || started.send(opened(&clone).is_ok()).unwrap());
+    assert_eq!(start.recv_timeout(Duration::from_secs(30)), Ok(true));
+    assert!(fs::symlink_metadata(&log).unwrap().is_file());
+}
+
+#[test]
+fn a_restart_whose_marker_took_its_token_before_the_flush_failed_keeps_the_token_in_the_log() {
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    forget_minted(&site);
+    let blocker = block_marker(&site);
+    let mut a = restarted(&site, &mut remote);
+    fs::remove_dir_all(&blocker).unwrap();
+    a.folder.disk.fail_marker_flush(true);
+    hold(&mut a, &site.root.join("one.txt"));
+    let saved = site.db.with_extension("saved");
+    let db = rusqlite::Connection::open(&site.db).unwrap();
+    db.execute("VACUUM INTO ?1", [saved.to_str()]).unwrap();
+    a.folder.disk.fail_marker_flush(false);
+    fs::write(site.root.join("two.txt"), b"two").unwrap();
+    a.rescan();
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(remote.names(), ["one.txt", "two.txt"]);
+    drop((db, a));
+    fs::copy(&saved, &site.db).unwrap();
+    assert!(recovers(&site));
+}
+
+#[test]
+fn an_effect_logs_a_pending_token_the_start_could_not_write_before_its_marker_carries_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut remote = Remote::new();
+    let (site, a) = linked(&mut remote, "a");
+    drop(a);
+    let log = site.root.join(koidrive_fs::PRIVATE_DIR).join("lineage");
+    let mode = |mode| fs::set_permissions(&log, fs::Permissions::from_mode(mode)).unwrap();
+    mode(0o000);
+    let blocker = block_marker(&site);
+    let mut a = restarted(&site, &mut remote);
+    mode(0o644);
+    fs::remove_dir_all(&blocker).unwrap();
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("one.txt"), b"one");
+    a.pull(&remote);
+    a.run(&mut remote);
+    assert_eq!(names(&site.root), ["one.txt"]);
+    drop(a);
+    let saved = site.db.with_extension("saved");
+    fs::copy(&site.db, &saved).unwrap();
+    drop(opened(&site).unwrap());
+    fs::copy(&saved, &site.db).unwrap();
+    assert!(recovers(&site));
 }

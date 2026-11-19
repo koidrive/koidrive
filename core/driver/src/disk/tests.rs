@@ -1276,7 +1276,7 @@ fn a_marker_from_before_tokens_halts_as_a_copy_unless_it_counts_more_than_the_st
             effects,
             token: None,
         };
-        match standing(&marker, &tokens, &engine.effects) {
+        match standing(&marker, &tokens, &engine.effects, || false) {
             Ok(Standing::StoreOlder) => assert!(newer, "{effects}"),
             Err(Stop::Root(RootProblem::Copy)) => assert!(!newer, "{effects}"),
             _ => panic!("marker at {effects}"),

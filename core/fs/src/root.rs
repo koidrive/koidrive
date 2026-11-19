@@ -4,6 +4,7 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::fs::FileExt;
 use std::path::Path;
 
 use rustix::fs::{AtFlags, Mode, OFlags, RenameFlags};
@@ -20,6 +21,8 @@ pub const PRIVATE_DIR: &str = ".koidrive";
 
 const MARKER: &str = "space.json";
 const MARKER_TEMP: &str = "space.json.tmp";
+const LINEAGE: &str = "lineage";
+const LINEAGE_TEMP: &str = "lineage.tmp";
 const PROBE: [&str; 3] = [
     "no-replace-probe-a",
     "no-replace-probe-b",
@@ -40,11 +43,140 @@ pub struct Marker {
     pub token: Option<String>,
 }
 
-/// A new marker token: 128 random bits in hex.
-pub fn new_token() -> String {
-    let mut bytes = [0; 16];
-    getrandom::fill(&mut bytes).expect("the operating system provides random bytes");
-    format!("{:032x}", u128::from_be_bytes(bytes))
+/// A marker token this link generated: 128 random bits, written in hex. Nothing turns a string into one, so a token
+/// read from a marker or a store can't pass for one this link minted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Minted(u128);
+
+impl Minted {
+    pub fn mint() -> Minted {
+        let mut bytes = [0; 16];
+        getrandom::fill(&mut bytes).expect("the operating system provides random bytes");
+        Minted(u128::from_be_bytes(bytes))
+    }
+}
+
+impl std::fmt::Display for Minted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:032x}", self.0)
+    }
+}
+
+/// How a rotation writes the folder's token log: after the marker's token, which this link minted, or as a new log
+/// that holds only the new token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rotation {
+    Extend,
+    Restart,
+}
+
+/// The most tokens the folder's token log holds once it has grown past twice as many.
+pub const LINEAGE_KEPT: usize = 1 << 16;
+
+/// The folder's token log, `.koidrive/lineage`: the tokens its markers took, oldest first, each written before the
+/// marker that carries it. One link's rotations extend it only after a token that link minted.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Lineage(Vec<u128>);
+
+impl Lineage {
+    /// Whether the token `marker` carries comes after one of `own` in the log.
+    pub fn descends(&self, own: &[Option<&str>], marker: &Marker) -> bool {
+        let Some(found) = marker.token.as_deref().and_then(token_bits) else {
+            return false;
+        };
+        let Some(at) = self.0.iter().rposition(|token| *token == found) else {
+            return false;
+        };
+        (own.iter().flatten().filter_map(|token| token_bits(token)))
+            .any(|token| token != found && self.0[..at].contains(&token))
+    }
+
+    fn read(private: BorrowedFd<'_>) -> io::Result<Lineage> {
+        let Some(file) = open_lineage(private, OFlags::RDONLY)? else {
+            return Ok(Lineage::default());
+        };
+        if file.metadata()?.len() > LINEAGE_BYTES {
+            return Ok(Lineage::default());
+        }
+        let mut bytes = Vec::new();
+        file.take(LINEAGE_BYTES).read_to_end(&mut bytes)?;
+        let (tokens, _) = bytes.as_chunks::<16>();
+        Ok(Lineage(
+            tokens
+                .iter()
+                .map(|token| u128::from_be_bytes(*token))
+                .collect(),
+        ))
+    }
+}
+
+const LINEAGE_BYTES: u64 = (2 * LINEAGE_KEPT as u64 + 1) * 16;
+
+fn open_lineage(private: BorrowedFd<'_>, flags: OFlags) -> io::Result<Option<File>> {
+    let flags = flags | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let file = match rustix::fs::openat(private, LINEAGE, flags, Mode::empty()) {
+        Ok(file) => File::from(file),
+        Err(Errno::NOENT) => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    Ok(file.metadata()?.is_file().then_some(file))
+}
+
+fn token_bits(token: &str) -> Option<u128> {
+    let hex = token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit());
+    hex.then(|| u128::from_str_radix(token, 16).ok()).flatten()
+}
+
+fn write_lineage(
+    private: BorrowedFd<'_>,
+    marker: &Marker,
+    next: Minted,
+    rotation: Rotation,
+) -> io::Result<()> {
+    let alone = next.0.to_be_bytes();
+    let (Rotation::Extend, Some(found)) = (rotation, marker.token.as_deref().and_then(token_bits))
+    else {
+        return replace_file(private, LINEAGE, LINEAGE_TEMP, &alone, Flush::Barrier);
+    };
+    if found == next.0 || append_after(private, found, &alone)? {
+        return Ok(());
+    }
+    let mut tokens = Lineage::read(private)?.0;
+    let Some(at) = tokens.iter().rposition(|token| *token == found) else {
+        return replace_file(private, LINEAGE, LINEAGE_TEMP, &alone, Flush::Barrier);
+    };
+    tokens.truncate(at + 1);
+    tokens.push(next.0);
+    if tokens.len() > 2 * LINEAGE_KEPT {
+        tokens.drain(..tokens.len() - LINEAGE_KEPT);
+    }
+    let bytes: Vec<u8> = tokens
+        .iter()
+        .flat_map(|token| token.to_be_bytes())
+        .collect();
+    replace_file(private, LINEAGE, LINEAGE_TEMP, &bytes, Flush::Barrier)
+}
+
+fn append_after(private: BorrowedFd<'_>, last: u128, next: &[u8; 16]) -> io::Result<bool> {
+    let Some(mut file) = open_lineage(private, OFlags::RDWR | OFlags::APPEND)? else {
+        return Ok(false);
+    };
+    let len = file.metadata()?.len();
+    if len == 0 || len % 16 != 0 || len >= 32 * LINEAGE_KEPT as u64 {
+        return Ok(false);
+    }
+    let mut tail = [0; 16];
+    file.read_exact_at(&mut tail, len - 16)?;
+    if tail == *next && len >= 32 {
+        file.read_exact_at(&mut tail, len - 32)?;
+        return Ok(u128::from_be_bytes(tail) == last);
+    }
+    if u128::from_be_bytes(tail) != last {
+        return Ok(false);
+    }
+    file.write_all(next)?;
+    flush(file.as_fd(), Flush::Barrier)?;
+    Ok(true)
 }
 
 /// The marker tokens a link records: the one the marker carries since the
@@ -641,6 +773,42 @@ impl Space {
     pub fn write_marker(&self, marker: &Marker) -> io::Result<()> {
         self.check_held()?;
         write_marker_at(self.root(), marker, Flush::Full)
+    }
+
+    /// The folder's token log, empty when there is none.
+    pub fn lineage(&self) -> io::Result<Lineage> {
+        match open_dir_at(self.root(), OsStr::new(PRIVATE_DIR)) {
+            Ok(private) => Lineage::read(private.as_fd()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Lineage::default()),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Writes `next` to the token log as `rotation` says while the root is held, and returns `marker` with `next` as
+    /// its token. A token log that can't be written only shortens how far back a restored store finds its own token,
+    /// so the marker is returned either way.
+    pub fn log_token(&self, marker: &Marker, next: Minted, rotation: Rotation) -> Marker {
+        if self.check_held().is_ok()
+            && let Ok(private) = private_dir(self.root())
+        {
+            let _ = write_lineage(private.as_fd(), marker, next, rotation);
+        }
+        Marker {
+            token: Some(next.to_string()),
+            ..marker.clone()
+        }
+    }
+
+    /// [`Space::log_token`], then writes the marker it returns. Fails, writing no marker, unless the root is held.
+    pub fn write_rotation(
+        &self,
+        marker: &Marker,
+        next: Minted,
+        rotation: Rotation,
+    ) -> io::Result<()> {
+        self.check_held()?;
+        let rotated = self.log_token(marker, next, rotation);
+        write_marker_at(self.root(), &rotated, Flush::Full)
     }
 }
 

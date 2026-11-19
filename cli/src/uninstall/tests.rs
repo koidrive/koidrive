@@ -19,6 +19,7 @@ fn linked(root: &Path, owner: &Owner) -> PathBuf {
     let private = root.join(".koidrive");
     fs::create_dir_all(private.join("staging")).unwrap();
     fs::write(private.join("space.json"), b"{}").unwrap();
+    fs::write(private.join("lineage"), [0; 16]).unwrap();
     fs::write(
         private.join("device.json"),
         serde_json::to_vec(owner).unwrap(),
@@ -143,7 +144,7 @@ fn files_in_the_local_trash_and_other_holding_folders_stay() {
         fs::read(private.join("quarantine/q1")).unwrap(),
         b"held aside"
     );
-    for gone in ["space.json", "device.json", "staging", "parked"] {
+    for gone in ["space.json", "device.json", "lineage", "staging", "parked"] {
         assert!(!private.join(gone).exists(), "{gone}");
     }
 }

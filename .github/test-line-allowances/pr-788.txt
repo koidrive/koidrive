@@ -1,0 +1,4 @@
+38
+# Driver: a store restored from a backup at an equal effect count recovers its folder through the folder's token log, so each way a token can reach the marker without reaching the log needs its own sequence of starts, failed writes and restores: a retried marker flush, a marker write that keeps failing, a start that stops before writing its next token, a log that is oversized, not a regular file or unwritable, a Restart whose marker write landed before its flush failed, and an effect section that publishes a token the start could not write.
+# Driver: the halting side of the same check: copies made before a downgrade, a start or an upload, clones of one store taking turns, and stores restored past the log or from before minted tokens must still halt, so a recovery path never admits an older copy.
+# No other test drives the token log, and each of these fails on main or without its fix.
