@@ -133,7 +133,7 @@ fn a_folder_made_in_a_folder_another_device_renamed_to_a_name_its_rules_exclude_
 }
 
 #[test]
-fn a_file_at_a_name_another_spelling_of_which_its_rules_came_to_exclude_syncs_there() {
+fn a_file_at_a_name_another_spelling_of_which_its_rules_came_to_exclude_takes_a_conflict_name() {
     let phases = [
         vec![
             (2, file("A")),
@@ -955,4 +955,136 @@ fn a_file_made_in_a_folder_its_include_list_takes_syncs_through_the_folders_pend
     phase.extend([(1, user(1, 0, 2, "b")), work, (1, rename(0, 0, "a"))]);
     let rulings = [(0, 1, Ruling::Include(vec!["ss/"]))];
     converge_ruled(&[vec![], vec![]], &rulings, &[phase]).unwrap();
+}
+
+fn spelled_like(world: &World, device: usize, name: &str) -> Vec<String> {
+    (paths_on(world, device).into_iter())
+        .filter(|path| !path.contains('/'))
+        .filter(|path| path == name || path.starts_with(&format!("{name} (conflict from ")))
+        .collect()
+}
+
+fn frozen_name_phases(extra: Vec<(usize, Step)>) -> Vec<Vec<(usize, Step)>> {
+    vec![
+        vec![
+            (2, file("A")),
+            (0, folder("a")),
+            (1, folder("a")),
+            (0, user(0, 0, 3983142787068221396, "b")),
+            (0, rename(6113237590744703406, 5114041128735224957, "c.txt")),
+        ],
+        vec![
+            (0, rename(6162043229936789262, 3027433216408009345, "b")),
+            (1, act(3, 13474642980939706019, 2727123195511875546, "A", 3)),
+        ],
+        extra,
+    ]
+}
+
+#[test]
+fn a_folder_another_device_moved_keeps_that_move_when_the_rules_that_froze_its_name_go() {
+    let rulings = [(2, 1, Ruling::Exclude(vec![]))];
+    let rules = [vec![], vec!["*.txt", "\u{e9}"], vec![]];
+    converge_ruled(&rules, &rulings, &frozen_name_phases(vec![])).unwrap();
+}
+
+#[test]
+fn a_folder_another_device_deletes_stays_deleted_beside_a_file_at_the_name_its_rules_froze() {
+    let rules = [vec![], vec!["*.txt", "\u{e9}"], vec![]];
+    converge_excluding(&rules, &frozen_name_phases(vec![(0, delete(0))])).unwrap();
+}
+
+fn beside_a_folder_moved_into_an_excluded_folder(
+    made: Vec<(usize, Step)>,
+    claim: Vec<(usize, Step)>,
+) -> Vec<Vec<(usize, Step)>> {
+    let mut first = made;
+    first.extend([
+        (0, folder("a")),
+        (0, folder("c.txt")),
+        (0, user(1, 0, 1, "b")),
+    ]);
+    vec![first, vec![(0, rename(0, 2, "a"))], claim, vec![], vec![]]
+}
+
+#[test]
+fn a_file_renamed_to_the_name_an_excluded_folder_keeps_takes_a_conflict_name_and_the_folder_moves_once_let_in()
+ {
+    let phases = beside_a_folder_moved_into_an_excluded_folder(
+        vec![(1, file("b"))],
+        vec![(1, rename(0, 0, "A"))],
+    );
+    let rulings = [(4, 1, Ruling::Exclude(vec![]))];
+    let rules = [vec![], vec!["*.txt"]];
+    converge_ruled(&rules, &rulings, &phases[..3]).unwrap();
+    let world = converge_ruled(&rules, &rulings, &phases).unwrap();
+    assert!(
+        live_node_at(&world, &["c.txt", "a", "b"]).is_some(),
+        "{:?}",
+        paths_on(&world, 1)
+    );
+    let renamed = spelled_like(&world, 1, "A");
+    assert!(renamed.len() == 1 && renamed[0] != "A", "{renamed:?}");
+}
+
+const CLAIMED: &str = "A (conflict from unknown device 2026-11-09)";
+
+fn claimed_a_kept_name(made: Vec<(usize, Step)>, steps: usize) -> World {
+    let phases = beside_a_folder_moved_into_an_excluded_folder(made, vec![]);
+    let mut world = converge_excluding(&[vec![], vec!["*.txt"]], &phases[..2]).unwrap();
+    let mut claim = vec![(1, rename(0, 0, "A"))];
+    claim.extend(std::iter::repeat_n((1, Step::Work(0)), steps));
+    world.run(2, &claim).unwrap();
+    world
+}
+
+fn settle_claim(world: &mut World) {
+    (2..5)
+        .try_for_each(|phase| world.phase(phase, &[]))
+        .unwrap();
+    for device in 0..2 {
+        assert_eq!(spelled_like(world, device, "A"), [CLAIMED], "{device}");
+    }
+}
+
+#[test]
+fn a_file_renamed_to_the_name_an_excluded_folder_keeps_is_not_renamed_again_while_its_rename_is_a_problem()
+ {
+    let mut world = claimed_a_kept_name(vec![(1, file("b"))], 4);
+    let refused = (1, Step::Commit(Reply::Refused(error::Code::LimitExceeded)));
+    let deliver = (1, Step::Deliver(0));
+    world.run(2, &[refused, refused, deliver]).unwrap();
+    assert_eq!(
+        world
+            .seen
+            .get("commit of one op refused for its size, its node is a problem"),
+        Some(&1)
+    );
+    let served = (1, Step::Commit(Reply::Served));
+    world.run(2, &[served, served, deliver]).unwrap();
+    assert!(live_node_at(&world, &["A"]).is_some() && live_node_at(&world, &[CLAIMED]).is_none());
+    settle_claim(&mut world);
+}
+
+#[test]
+fn a_folder_renamed_to_the_name_an_excluded_folder_keeps_takes_a_conflict_name_with_what_it_holds_across_a_crash()
+ {
+    let made = vec![(1, folder("b")), (1, user(1, 0, 1, "a"))];
+    let mut acknowledged_before_moved = false;
+    for steps in 0..10 {
+        let mut world = claimed_a_kept_name(made.clone(), steps);
+        acknowledged_before_moved |= live_node_at(&world, &[CLAIMED]).is_some()
+            && paths_on(&world, 1).contains(&"A".to_string());
+        world.run(2, &[(1, Step::Crash)]).unwrap();
+        settle_claim(&mut world);
+        for device in 0..2 {
+            let inside = format!("{CLAIMED}/a");
+            assert!(
+                paths_on(&world, device).contains(&inside),
+                "{device}: {:?}",
+                paths_on(&world, device)
+            );
+        }
+    }
+    assert!(acknowledged_before_moved);
 }

@@ -3676,13 +3676,12 @@ impl Trees {
         }
     }
 
-    /// What S may become for an excluded node whose S position neither L nor R holds any more, or
-    /// whose S name another node this device syncs holds in both L and R, in order of preference,
-    /// or `None` when the node is not one. A parked node holds no position in L, so one that the rules now leave out gives up its S position too, also
+    /// What S may become for an excluded node whose S position neither L nor R holds any more,
+    /// in order of preference, or `None` when the node is not one. A parked node holds no position in L, so one that the rules now leave out gives up its S position too, also
     /// while its old name is taken and it cannot be moved back. Nothing is planned for the node,
     /// so no op would ever move its S entry, and the name it holds in S would keep every other
     /// node from being acknowledged there. With the node in L and live in R, S takes R's
-    /// position, or else the position the local copy has when no such node holds it, and keeps its content, so the content
+    /// position, or else the position the local copy has, and keeps its content, so the content
     /// is still compared with the last synced one when the node is included again. Otherwise, or
     /// when S can hold the node at neither position, S drops the node, which is then resolved
     /// like a node never synced: what R holds is downloaded, and what only L holds is uploaded.
@@ -3694,8 +3693,7 @@ impl Trees {
         let fits = |shape: &Shape| !server || !self.under_discarded(shape);
         let held = |shape: Option<&Shape>| shape.is_some_and(|shape| shape.same_position(synced));
         let placed = local.filter(|node| !node.parked).map(|node| &node.shape);
-        let claimed = |shape: &Shape| self.claimed_by_other(id, shape);
-        if (held(placed) && !claimed(synced) || held(remote)) && fits(synced)
+        if (held(placed) || held(remote)) && fits(synced)
             || !self.ignored(id)
             || self.trashed_while_parked(id)
         {
@@ -3716,22 +3714,12 @@ impl Trees {
                 [remote]
                     .into_iter()
                     .chain(placed)
-                    .filter(|shape| fits(shape) && !claimed(shape))
+                    .filter(|shape| fits(shape))
                     .map(at),
             );
         }
         next.push(None);
         Some(next)
-    }
-
-    fn claimed_by_other(&self, id: &str, shape: &Shape) -> bool {
-        (self.local_holders(&shape.parent, &shape.name)).any(|other| {
-            other != id
-                && !self.ignored(other)
-                && (self.r.live(other)).is_some_and(|remote| {
-                    remote.parent == shape.parent && name_key(&remote.name) == name_key(&shape.name)
-                })
-        })
     }
 
     fn under_discarded(&self, shape: &Shape) -> bool {
@@ -4209,7 +4197,7 @@ impl Trees {
     /// matches the rules, or so does its place in L below its R parent, or a folder R holds it under is excluded, or, for a node the server never held (a create this device sent counts as held), when L holds no node below it that the server held, the path a commit would give it on the server is (its local name under the nearest folder R holds, live or trashed, read at that folder's place in R unless this device moved or kept that folder), or its local copy, or a folder L holds it under, was moved into an
     /// ignored folder, or it is a discarded folder L still holds unchanged with an excluded entry in it. Nothing is planned for an excluded node, in either direction. Its S entry
     /// stays the merge base it was: S takes only what L and R both hold, and gives up a position
-    /// neither holds any more or whose name another node holds in both, so that the entry never keeps another node out of S. A node that L holds at an included position
+    /// neither holds any more, so that the entry never keeps another node out of S. A node that L holds at an included position
     /// different from S's is not excluded: the user moved it out, and the move is planned like
     /// any local move. A parked node is not excluded either until the effects have placed it
     /// again, since it must not stay in the parked directory ([`Trees::ignored`]).

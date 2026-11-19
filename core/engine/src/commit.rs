@@ -267,6 +267,7 @@ impl Commits {
             return BTreeSet::new();
         }
         (effects::displaced_by_excluded(trees).into_iter())
+            .chain(frozen_name_claimants(trees))
             .filter(|id| !self.problems.contains(id))
             .filter(|id| !(self.questions.iter()).any(|q| q.holds().any(|held| held == id)))
             .filter(|id| conflict_rename(trees, id, &self.device_name.0, now_ms).is_some())
@@ -1581,8 +1582,9 @@ impl Commits {
             self.hold(trees);
         }
         self.ask_missing(trees, ids, now_ms);
+        let claimants = frozen_name_claimants(trees);
         let waiting: BTreeSet<NodeId> = (trees.waiting().keys())
-            .filter(|id| !changed_locally(trees, id))
+            .filter(|id| !changed_locally(trees, id) && !claimants.contains(*id))
             .cloned()
             .collect();
         let skip_ordinary =
@@ -1902,7 +1904,11 @@ impl Commits {
                         parent: NodeId::from(&from.parent_id),
                         name: from.name.clone(),
                     };
-                    trees.send_left_out_rename(&NodeId::from(&moved.node_id), over);
+                    let id = NodeId::from(&moved.node_id);
+                    trees.send_left_out_rename(&id, over);
+                    if claimants.contains(&id) {
+                        trees.revert(id);
+                    }
                 }
             }
         }
@@ -3891,6 +3897,7 @@ fn displaced_renames<'a>(
     now_ms: u64,
 ) -> impl Iterator<Item = proto::Op> + 'a {
     (effects::displaced_by_excluded(trees).into_iter())
+        .chain(frozen_name_claimants(trees))
         .filter(|id| !skip.contains(id))
         .filter_map(move |id| {
             let shape = trees.remote().live(&id)?;
@@ -3909,6 +3916,29 @@ fn displaced_renames<'a>(
                 ..Default::default()
             })
         })
+}
+
+fn frozen_name_claimants(trees: &Trees) -> BTreeSet<NodeId> {
+    (trees.waiting().iter())
+        .filter_map(|(id, waiting)| {
+            let shape = waiting.shape.as_ref()?;
+            let placed = (trees.local().get(id))
+                .filter(|local| !local.parked)
+                .is_some_and(|local| local.shape.same_position(shape));
+            let remote = trees
+                .remote()
+                .live(id)
+                .is_some_and(|remote| remote.same_position(shape));
+            let frozen = (trees.synced_holders(&shape.parent, &shape.name)).any(|other| {
+                other != id
+                    && trees.ignored(other)
+                    && (trees.synced().live(other)).is_some_and(|held| {
+                        (trees.remote().live(other)).is_none_or(|r| !r.same_position(held))
+                    })
+            });
+            (placed && remote && frozen && !trees.ignored(id)).then(|| id.clone())
+        })
+        .collect()
 }
 
 fn conflict_rename(trees: &Trees, id: &NodeId, device_name: &str, now_ms: u64) -> Option<String> {
