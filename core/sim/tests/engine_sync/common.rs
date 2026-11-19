@@ -1855,11 +1855,14 @@ fn run_ignoring_answering_after(
                     }
                     None => {
                         let discarded = device.trees.state().discarded;
-                        let taken_along = std::iter::successors(Some(&local.shape.parent), |id| {
+                        let parked_or_taken_along = std::iter::successors(Some(&record.node), |id| {
                             device.trees.local().get(id).map(|node| &node.shape.parent)
                         })
-                        .any(|id| discarded.contains_key(id));
-                        remote.is_none() && (local.parked || taken_along)
+                        .any(|id| {
+                            discarded.contains_key(id)
+                                || device.trees.local().get(id).is_some_and(|node| node.parked)
+                        });
+                        remote.is_none() && parked_or_taken_along
                     }
                 };
                 prop_assert!(
