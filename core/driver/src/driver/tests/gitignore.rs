@@ -63,6 +63,8 @@ async fn setting_gitignore_keeps_the_rest_of_the_configuration_file() {
 
 #[tokio::test]
 async fn setting_gitignore_writes_through_symbolic_links_to_the_configuration_file() {
+    use std::os::unix::fs::PermissionsExt;
+
     let dir = tempfile::tempdir().unwrap();
     let base = fs::canonicalize(dir.path()).unwrap();
     let paths = Paths::under(&base.join("profile"));
@@ -71,6 +73,7 @@ async fn setting_gitignore_writes_through_symbolic_links_to_the_configuration_fi
     let dotfile = base.join("dotfiles/koi/config.toml");
     let current = base.join("dotfiles/current.toml");
     fs::write(&dotfile, "[sync]\n").unwrap();
+    fs::set_permissions(&dotfile, fs::Permissions::from_mode(0o644)).unwrap();
     std::os::unix::fs::symlink("koi/config.toml", &current).unwrap();
     std::os::unix::fs::symlink(&current, &paths.config_file).unwrap();
     let driver = Driver::open(paths.clone()).unwrap();
@@ -89,6 +92,7 @@ async fn setting_gitignore_writes_through_symbolic_links_to_the_configuration_fi
         "[sync]\ngitignore = false\n"
     );
     assert!(!Config::load(&paths.config_file).unwrap().sync.gitignore);
+    assert_eq!(fs::metadata(&dotfile).unwrap().mode() & 0o777, 0o644);
 
     fs::remove_file(&dotfile).unwrap();
     driver.set_gitignore(true).await.unwrap();
@@ -97,14 +101,41 @@ async fn setting_gitignore_writes_through_symbolic_links_to_the_configuration_fi
         fs::read_to_string(&dotfile).unwrap(),
         "[sync]\ngitignore = true\n"
     );
+}
 
-    fs::remove_file(&current).unwrap();
-    std::os::unix::fs::symlink("current.toml", &current).unwrap();
-    assert!(matches!(
-        driver.set_gitignore(false).await,
-        Err(DriverError::Io { .. })
-    ));
-    assert_eq!(fs::read_link(&current).unwrap(), Path::new("current.toml"));
+#[tokio::test]
+async fn setting_gitignore_writes_nothing_through_a_symbolic_link_to_no_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = fs::canonicalize(dir.path()).unwrap();
+    let paths = Paths::under(&base.join("profile"));
+    fs::create_dir_all(base.join("profile")).unwrap();
+    let driver = Driver::open(paths.clone()).unwrap();
+    for target in [
+        "../dotfiles/koi/config.toml",
+        "../newdir/",
+        "../newdir/.",
+        "config.toml",
+    ] {
+        std::os::unix::fs::symlink(target, &paths.config_file).unwrap();
+        assert!(
+            matches!(
+                driver.set_gitignore(false).await,
+                Err(DriverError::Io { .. })
+            ),
+            "{target}"
+        );
+        assert_eq!(
+            fs::read_link(&paths.config_file).unwrap(),
+            Path::new(target)
+        );
+        fs::remove_file(&paths.config_file).unwrap();
+        let left: Vec<_> = fs::read_dir(&base)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["profile"], "{target}");
+        assert!(driver.follows_gitignore());
+    }
 }
 
 #[tokio::test]

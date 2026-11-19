@@ -3,11 +3,14 @@
 use super::link::{find, owner_of, recorded_brought_back, roots};
 use super::*;
 
-fn write_gitignore(path: &Path, follow: bool) -> Result<(), DriverError> {
-    let path = &link_target(path).map_err(io_error(path))?;
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+fn write_gitignore(config_file: &Path, follow: bool) -> Result<(), DriverError> {
+    let path = &linked_file(config_file).map_err(io_error(config_file))?;
+    let (text, mode) = match fs::read_to_string(path) {
+        Ok(text) => {
+            let mode = fs::metadata(path).map_err(io_error(path))?.permissions();
+            (text, Some(mode))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => (String::new(), None),
         Err(error) => return Err(io_error(path)(error)),
     };
     let invalid = |reason: String| ConfigError::Invalid {
@@ -27,36 +30,63 @@ fn write_gitignore(path: &Path, follow: bool) -> Result<(), DriverError> {
     if already {
         return Ok(());
     }
-    if let Some(dir) = path.parent() {
+    if let Some(dir) = config_file.parent() {
         DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(dir)
             .map_err(io_error(dir))?;
     }
-    koidrive_state_file::write(path, text.as_bytes())
+    let stage = koidrive_state_file::AtomicFile::prepare(path).map_err(io_error(path))?;
+    stage
+        .as_file()
+        .write_all(text.as_bytes())
+        .map_err(io_error(path))?;
+    if let Some(mode) = mode {
+        stage
+            .as_file()
+            .set_permissions(mode)
+            .map_err(io_error(path))?;
+    }
+    stage
+        .finish(koidrive_state_file::Publish::Replace)
         .map_err(io_error(path))?
         .warn_unless_durable(path);
     Ok(())
 }
 
-pub(super) fn link_target(path: &Path) -> io::Result<PathBuf> {
-    let mut path = path.to_path_buf();
-    for _ in 0..40 {
-        match fs::read_link(&path) {
-            Ok(target) => path = path.parent().unwrap_or(Path::new("")).join(target),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::InvalidInput | io::ErrorKind::NotFound
-                ) =>
-            {
-                return Ok(path);
-            }
-            Err(error) => return Err(error),
-        }
+fn linked_file(path: &Path) -> io::Result<PathBuf> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {}
+        _ => return Ok(path.to_path_buf()),
     }
-    Err(rustix::io::Errno::LOOP.into())
+    match fs::canonicalize(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        resolved => return resolved,
+    }
+    let mut target = path.to_path_buf();
+    let mut hops = 0;
+    while fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        hops += 1;
+        if hops > 40 {
+            return Err(rustix::io::Errno::LOOP.into());
+        }
+        target = target
+            .parent()
+            .unwrap_or(Path::new(""))
+            .join(fs::read_link(&target)?);
+    }
+    let last = target
+        .as_os_str()
+        .as_bytes()
+        .rsplit(|byte| *byte == b'/')
+        .next();
+    let name = match target.components().next_back() {
+        Some(Component::Normal(name)) if last == Some(name.as_bytes()) => name,
+        _ => return Err(io::Error::from(io::ErrorKind::NotFound)),
+    };
+    let parent = target.parent().unwrap_or(Path::new(""));
+    Ok(fs::canonicalize(parent)?.join(name))
 }
 
 enum Fix {
