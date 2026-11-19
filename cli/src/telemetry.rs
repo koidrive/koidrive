@@ -25,7 +25,6 @@ use crate::error::CliError;
 use crate::report::Done;
 use crate::terminal::{PromptFailure, Terminal};
 
-/// How often the daemon moves its sums to disk and sends what is due.
 const TICK: Duration = Duration::from_secs(60);
 const EXIT_SEND: Duration = Duration::from_secs(2);
 const VOTE_SEND: Duration = Duration::from_secs(5);
@@ -201,7 +200,6 @@ pub fn prompt_pending(paths: &Paths) -> bool {
     }
 }
 
-/// Sets the flow this run's setup steps belong to, for `koi setup` once the person chose one.
 pub fn set_flow(flow: SetupFlow) {
     if let Some(run) = RUN.get()
         && let Ok(mut current) = run.flow.lock()
@@ -571,7 +569,6 @@ pub(crate) struct ChoiceData {
     install_id: Option<InstallId>,
 }
 
-/// `koi telemetry ...`.
 pub async fn command(paths: &Paths, action: TelemetryAction) -> Result<Done, CliError> {
     let store = Store::new(&paths.state_dir);
     let failed = |error: std::io::Error| {

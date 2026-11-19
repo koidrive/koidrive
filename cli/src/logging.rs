@@ -43,7 +43,6 @@ pub(crate) fn init_logging(
     }
 }
 
-/// Whether log lines carry ANSI colours: only on a terminal, and never under `--json`.
 pub(crate) fn log_ansi(stderr_tty: bool, json: bool) -> bool {
     stderr_tty && !json
 }

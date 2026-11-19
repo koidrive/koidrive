@@ -90,8 +90,6 @@ pub async fn run(paths: &Paths, action: HistoryAction) -> Result<Done, CliError>
     }
 }
 
-/// `koi history trash [folder]`: the deletions in the trash of the folder's space, or of the part under `folder`
-/// when it is a folder inside a linked one.
 async fn trash(paths: &Paths, folder: &Path) -> Result<Done, CliError> {
     let auth = signed_in(paths)?;
     let Located {
@@ -118,7 +116,6 @@ async fn trash(paths: &Paths, folder: &Path) -> Result<Done, CliError> {
     ))
 }
 
-/// `koi history versions <file>`: the versions the server keeps of a live file, newest first.
 async fn versions(paths: &Paths, file: &Path) -> Result<Done, CliError> {
     let auth = signed_in(paths)?;
     let Located {
@@ -257,8 +254,6 @@ async fn replayed(
     Ok(asked(&folder, &path, restore_id, state))
 }
 
-/// The folder `path` is in, the names below its root, and the restore to ask for, once the server's listings show that
-/// the restore can be made.
 async fn checked(
     paths: &Paths,
     path: &Path,
@@ -410,7 +405,6 @@ fn asked(folder: &Path, path: &str, id: String, state: Option<FolderState>) -> D
     }
 }
 
-/// `koi history requests [folder]`: the restores asked for in the folder's space, those that ended first.
 async fn requests(paths: &Paths, folder: &Path) -> Result<Done, CliError> {
     let Located {
         folder: linked,
@@ -456,14 +450,10 @@ async fn requests(paths: &Paths, folder: &Path) -> Result<Done, CliError> {
     })
 }
 
-/// Why no single deletion could be picked.
 #[derive(Debug, PartialEq)]
 enum NotPicked<'a> {
-    /// No deletion had the path. `live` says whether a live node has it.
     None { live: bool },
-    /// Several did, and none was picked.
     Several(Vec<&'a NodeState>),
-    /// None of the deletions at the path is the node asked for.
     NotThere(String),
 }
 

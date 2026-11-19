@@ -223,7 +223,6 @@ pub(crate) async fn devices(auth: &Auth) -> Result<Vec<DeviceInfo>, CliError> {
         .map_err(CliError::api_retry_safe)
 }
 
-/// A pairing code `koi device invite` showed, as its request record keeps it.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Invitation {
     pub(crate) code: String,
@@ -266,8 +265,6 @@ pub(crate) fn replayed(
     invited(invitation, now_ms)
 }
 
-/// One line per device: its ID, name, platform, when it last refreshed a token, and whether it is this device, active
-/// or revoked.
 pub(crate) fn device_table(devices: &[DeviceInfo], now_ms: i64) -> String {
     let rows: Vec<[String; 5]> = devices
         .iter()
