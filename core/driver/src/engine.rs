@@ -1339,12 +1339,8 @@ impl Engine {
 
     pub fn owed_deletes(&mut self) -> BTreeSet<NodeId> {
         let trees = &self.trees;
-        let problems = self.commits.problems();
-        self.owed.retain(|id| {
-            trees.local().get(id).is_none()
-                && trees.synced().live(id).is_some()
-                && !problems.contains(id)
-        });
+        self.owed
+            .retain(|id| trees.local().get(id).is_none() && trees.synced().live(id).is_some());
         self.owed.clone()
     }
 

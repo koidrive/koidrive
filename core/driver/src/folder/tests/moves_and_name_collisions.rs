@@ -1006,3 +1006,38 @@ fn a_file_removed_while_a_commit_is_out_before_a_rule_leaves_it_out_leaves_the_s
         "{nodes:?}"
     );
 }
+
+#[test]
+fn a_delete_the_server_refused_after_a_rule_left_its_file_out_is_sent_again_after_a_rescan() {
+    let mut remote = Remote::new();
+    let (site, mut a, before) = report_removed(&mut remote);
+    fs::write(site.root.join(".koiignore"), b"report.txt\n").unwrap();
+    a.scan_until(|_| local_holds(&site, ".koiignore"));
+    let commit = loop {
+        match a.work.pop_front() {
+            Some(Work::Send(commit)) => break commit,
+            Some(work) => a.perform(work, &mut remote).unwrap(),
+            None => panic!("the delete is sent"),
+        }
+    };
+    assert!(kinds(&commit).contains(&"delete"), "{:?}", kinds(&commit));
+    let mut refused = commit.clone();
+    for op in &mut refused.ops {
+        if let Some(koidrive_proto::v1::op::Op::Delete(delete)) = &mut op.op {
+            delete.node_id = "00000000-0000-7000-8000-000000000000".into();
+        }
+    }
+    let result = remote.commit(&a.caller, &refused).unwrap();
+    let step = a.folder.sent(Ok(result));
+    a.take(step).unwrap();
+    assert!(a.folder.engine.commits.problems().contains(&before));
+    let step = a.folder.scanned();
+    a.take(step).unwrap();
+    a.rest(&mut remote);
+    let nodes = server_nodes(&remote);
+    assert!(
+        nodes.contains(&("report.txt".to_owned(), before, false)),
+        "{nodes:?}"
+    );
+}
+
