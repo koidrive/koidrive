@@ -1274,16 +1274,14 @@ impl Driver {
                     error: error.to_string(),
                 });
             }
-            if self.remove_space_state(&link.space_id, &mut failed)
-                && let Some(folder) = self.inner.folders.lock().unwrap().remove(&link.space_id)
-            {
+            failed.extend(self.remove_space_state(&link.space_id).err());
+            if let Some(folder) = self.inner.folders.lock().unwrap().remove(&link.space_id) {
                 folder.progress.lock().unwrap().clear();
             }
         }
         for space_id in &leaving.intent.unplaced {
-            if self.remove_space_state(space_id, &mut failed) {
-                self.inner.unplaced.lock().unwrap().remove(space_id);
-            }
+            failed.extend(self.remove_space_state(space_id).err());
+            self.inner.unplaced.lock().unwrap().remove(space_id);
         }
         if failed.is_empty()
             && let Err(error) = leaving.finish()
@@ -1304,31 +1302,21 @@ impl Driver {
         })
     }
 
-    fn remove_space_state(&self, space_id: &str, failed: &mut Vec<CleanupFailure>) -> bool {
-        let store = match self.inner.paths.store(space_id) {
-            Ok(store) => store,
-            Err(error) => {
-                failed.push(CleanupFailure {
-                    path: self.inner.paths.spaces(),
-                    error: error.to_string(),
-                });
-                return false;
-            }
-        };
-        let failure = |error: io::Error| CleanupFailure {
-            path: store.parent().expect("a store has a parent").to_path_buf(),
-            error: error.to_string(),
-        };
-        match remove_store_dir(&self.inner.paths, space_id) {
-            Ok(removed) => {
-                failed.extend(removed.durable.err().map(failure));
-                true
-            }
-            Err(error) => {
-                failed.push(failure(error));
-                false
-            }
-        }
+    fn remove_space_state(&self, space_id: &str) -> Result<(), CleanupFailure> {
+        let store = self
+            .inner
+            .paths
+            .store(space_id)
+            .map_err(|error| CleanupFailure {
+                path: self.inner.paths.spaces(),
+                error: error.to_string(),
+            })?;
+        (remove_store_dir(&self.inner.paths, space_id))
+            .and_then(|removed| removed.durable)
+            .map_err(|error| CleanupFailure {
+                path: store.parent().expect("a store has a parent").to_path_buf(),
+                error: error.to_string(),
+            })
     }
 
     async fn revocation_auth(
@@ -8366,6 +8354,92 @@ mod tests {
         CleanupSyncProbe
     }
 
+    #[tokio::test]
+    async fn a_sign_out_whose_store_removal_fails_runs_as_a_reopen_reads_until_a_retry_finishes() {
+        use std::os::unix::fs::PermissionsExt;
+        const LOST: &str = "0190f0a0-0000-7000-8000-0000000000f6";
+        let seen = |driver: &Driver| {
+            let status = driver.status();
+            let folders: Vec<_> = status.folders.into_iter().map(|f| f.space_id).collect();
+            let pairable = driver.check_unpaired().is_ok();
+            (
+                status.account,
+                folders,
+                status.running,
+                status.paused,
+                pairable,
+            )
+        };
+        let mut disagreements = Vec::new();
+        for renames in [false, true] {
+            if !renames && rustix::process::geteuid().is_root() {
+                continue;
+            }
+            for (link, lost) in [(true, false), (false, true), (true, true)] {
+                let dir = tempfile::tempdir().unwrap();
+                let base = fs::canonicalize(dir.path()).unwrap();
+                let paths = Paths::under(&base.join("profile"));
+                paired(&paths, "d1");
+                let mut ids = Vec::new();
+                if link {
+                    linked_to(&paths, &base.join("Koidrive"), "d1", SPACE);
+                    ids.push(SPACE);
+                }
+                if lost {
+                    unplaced(&paths, LOST);
+                    ids.push(LOST);
+                }
+                let driver = Driver::open(paths.clone()).unwrap();
+                let intent = Intent {
+                    links: (driver.inner.folders.lock().unwrap().values())
+                        .map(|folder| (&folder.link).into())
+                        .collect(),
+                    unplaced: driver
+                        .inner
+                        .unplaced
+                        .lock()
+                        .unwrap()
+                        .keys()
+                        .cloned()
+                        .collect(),
+                    ..Default::default()
+                };
+                let mut leaving = Leaving::begin(&paths.state_dir, intent).unwrap();
+                leaving.set_phase(Phase::Committed).unwrap();
+                drop(leaving);
+
+                let mode =
+                    |mode| fs::set_permissions(paths.spaces(), fs::Permissions::from_mode(mode));
+                let failing = (!renames).then(|| mode(0o555).unwrap());
+                let failing_sync = renames.then(|| failing_syncs_of(&paths.spaces()));
+                let failed = driver.sign_out(false).await.unwrap().not_removed;
+                drop(failing_sync);
+                if failing.is_some() {
+                    mode(0o755).unwrap();
+                }
+                for id in &ids {
+                    let store = paths.spaces().join(id);
+                    assert!(failed.iter().any(|f| f.path == store), "{failed:?}");
+                }
+                let cell = format!("renames={renames} link={link} unplaced={lost}");
+                let running = seen(&driver);
+                drop(driver);
+                let driver = Driver::open(paths.clone()).unwrap();
+                if running != seen(&driver) {
+                    disagreements.push(format!("{cell}: {running:?} != {:?}", seen(&driver)));
+                }
+
+                assert_eq!(driver.sign_out(false).await.unwrap().not_removed, []);
+                let retried = seen(&driver);
+                drop(driver);
+                assert_eq!(retried, seen(&Driver::open(paths.clone()).unwrap()));
+                assert_eq!(retried, (None, Vec::new(), false, false, true), "{cell}");
+                assert!(ids.iter().all(|id| !paths.spaces().join(id).exists()));
+            }
+        }
+        assert!(disagreements.is_empty(), "{disagreements:#?}");
+    }
+
     async fn cleanup_parent_sync_failure_is_retryable(target: usize) {
         use std::cell::{Cell, RefCell};
         use std::os::unix::fs::MetadataExt;
@@ -8378,11 +8452,9 @@ mod tests {
             let root = base.join("Koidrive");
             let other = base.join("Other");
             let other_id = "0190f0a0-0000-7000-8000-000000000002";
-            let lost_id = "0190f0a0-0000-7000-8000-0000000000f5";
             linked(&paths, &root, "d1");
             owned(&paths, &root);
             linked_to(&paths, &other, "d1", other_id);
-            let lost = unplaced(&paths, lost_id);
             claim::set_owner(&other, &claim::owner(&root).unwrap().unwrap()).unwrap();
             fs::write(root.join("keep.txt"), b"keep").unwrap();
             fs::write(other.join("keep.txt"), b"keep too").unwrap();
@@ -8400,7 +8472,6 @@ mod tests {
                 &paths.state_dir,
                 Intent {
                     links,
-                    unplaced: vec![lost_id.into()],
                     ..Default::default()
                 },
             )
@@ -8474,13 +8545,6 @@ mod tests {
             assert!(!paths.store(other_id).unwrap().parent().unwrap().exists());
             assert!(driver.status().account.is_none());
             assert!(driver.status().folders.is_empty());
-            assert!(!lost.exists());
-            assert!(driver.inner.unplaced.lock().unwrap().is_empty());
-            assert_eq!(
-                target == 1,
-                failed.iter().any(|failure| failure.path == lost),
-                "{failed:?}"
-            );
             let boundary = events.borrow().len();
             fail.set(false);
             if reopen {
