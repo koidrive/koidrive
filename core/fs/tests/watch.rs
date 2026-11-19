@@ -1852,8 +1852,16 @@ fn a_file_removed_while_a_folder_stays_unreadable_is_removed() {
     fs::create_dir(root.join("box")).unwrap();
     fs::write(root.join("report.docx"), b"report").unwrap();
     fs::set_permissions(root.join("box"), fs::Permissions::from_mode(0o000)).unwrap();
-    std::thread::sleep(Duration::from_millis(50));
-    let scanned = Snapshot::scan(&root).unwrap();
+    let mut scanned = Snapshot::scan(&root).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline
+        && !(scanned.unread.as_ref())
+            .and_then(|unread| unread.get(Path::new("box")))
+            .is_some_and(|unread| unread.ctime_ns.is_some())
+    {
+        std::thread::sleep(Duration::from_millis(100));
+        scanned.rescan(&root, [PathBuf::new()]).unwrap();
+    }
     fs::remove_file(root.join("report.docx")).unwrap();
     let blocked = blocks_reads(
         "a_file_removed_while_a_folder_stays_unreadable_is_removed",
@@ -2035,10 +2043,12 @@ fn a_file_waiting_on_an_unreadable_folder_is_removed_once_a_file_takes_the_folde
         .rescan(&root, [PathBuf::from("src/report.docx")])
         .unwrap()
         .changes;
-    let removed = (held.iter().chain(&read)).any(
-        |change| matches!(change, Change::Removed { path, .. } if path.ends_with("report.docx")),
-    );
-    assert!(removed, "{held:?} {read:?}");
+    let removed = |changes: &[Change]| {
+        (changes.iter()).any(
+            |change| matches!(change, Change::Removed { path, .. } if path.ends_with("report.docx")),
+        )
+    };
+    assert!(!removed(&held) && removed(&read), "{held:?} {read:?}");
     snapshot.rescan(&root, [PathBuf::new()]).unwrap();
     assert_eq!(snapshot, Snapshot::scan(&root).unwrap());
 }
@@ -2166,4 +2176,50 @@ fn waiting_folder_out_of_reach(case: &str) -> Option<String> {
     let settled = snapshot == Snapshot::scan(&root).unwrap();
     (removed(&held) || !placed || !settled)
         .then(|| format!("{case}: settled {settled}, {held:?} {narrow:?} {read:?}"))
+}
+
+#[test]
+fn a_file_moved_out_of_a_folder_readable_again_waits_on_the_unreadable_folder_it_moved_into() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    for folder in ["box", "src"] {
+        fs::create_dir(root.join(folder)).unwrap();
+    }
+    fs::write(root.join("src/report.docx"), b"report").unwrap();
+    fs::write(root.join("notes.txt"), b"notes").unwrap();
+    let mode = |name: &str, mode| {
+        fs::set_permissions(root.join(name), fs::Permissions::from_mode(mode)).unwrap()
+    };
+    let mut snapshot = Snapshot::scan(&root).unwrap();
+    mode("box", 0o000);
+    mode("src", 0o000);
+    let blocked = blocks_reads(
+        "a source folder readable again",
+        fs::read_dir(root.join("box")),
+    );
+    std::thread::sleep(Duration::from_millis(50));
+    let locked = snapshot.rescan(&root, [PathBuf::new()]).unwrap().changes;
+    std::thread::sleep(Duration::from_millis(50));
+    snapshot.rescan(&root, [PathBuf::new()]).unwrap();
+    mode("box", 0o755);
+    mode("src", 0o755);
+    if !blocked {
+        return;
+    }
+    fs::rename(root.join("src/report.docx"), root.join("box/report.docx")).unwrap();
+    mode("box", 0o000);
+    std::thread::sleep(Duration::from_millis(50));
+    let narrow = snapshot
+        .rescan(&root, [PathBuf::from("notes.txt")])
+        .unwrap()
+        .changes;
+    std::thread::sleep(Duration::from_millis(50));
+    let whole = snapshot.rescan(&root, [PathBuf::new()]).unwrap().changes;
+    mode("box", 0o755);
+    let read = snapshot.rescan(&root, [PathBuf::new()]).unwrap().changes;
+    assert_eq!((locked, narrow, whole), (vec![], vec![], vec![]));
+    assert_eq!(
+        read,
+        vec![renamed("src/report.docx", "box/report.docx", File)]
+    );
 }

@@ -871,7 +871,6 @@ struct Scan<'c> {
     listed: Vec<(PathBuf, [i128; 2], i128)>,
     denied: Vec<PathBuf>,
     unread: BTreeMap<PathBuf, Option<i128>>,
-    unseen: Vec<PathBuf>,
 }
 
 impl Scan<'_> {
@@ -1444,6 +1443,7 @@ impl Snapshot {
         let mut paths: Vec<PathBuf> = paths.into_iter().collect();
         let mut bound = None;
         let mut widened = false;
+        let mut learned = Vec::new();
         loop {
             let mut scan = Scan {
                 new: BTreeMap::new(),
@@ -1474,7 +1474,6 @@ impl Snapshot {
                 marks,
                 denied: Vec::new(),
                 unread: BTreeMap::new(),
-                unseen: Vec::new(),
             };
             let started = now_ns();
             let scanned =
@@ -1485,17 +1484,13 @@ impl Snapshot {
                     }
                 });
             let mut unestablished = false;
-            let scanned = scanned.and_then(|stat| {
-                self.learn_handles(&scan);
+            if scanned.is_ok() {
+                learned.extend(self.learn_handles(&scan));
                 match self.unread_now(root, &scan, started) {
-                    Some(unread) => {
-                        scan.unread = unread;
-                        scan.unseen = self.left_unseen(root, &scan)?;
-                    }
+                    Some(unread) => scan.unread = unread,
                     None => unestablished = true,
                 }
-                Ok(stat)
-            });
+            }
             let (mut unscanned, hidden, moving, unsure) = match &scanned {
                 Ok(_) => self.other_ends(root, &mut scan, &paths),
                 Err(_) => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
@@ -1523,16 +1518,24 @@ impl Snapshot {
             let result = scanned.and_then(|stat| {
                 self.publish(root, &stat, &mut scan, hidden, moving, unsure, keep)
             });
-            if result.is_err()
-                && let Some(rules) = scan.rules
-            {
-                rules.undo();
+            if result.is_err() {
+                for path in &learned {
+                    for entry in [self.entries.get_mut(path), self.left_out.get_mut(path)]
+                        .into_iter()
+                        .flatten()
+                    {
+                        entry.id.handle = None;
+                    }
+                }
+                if let Some(rules) = scan.rules {
+                    rules.undo();
+                }
             }
             return result;
         }
     }
 
-    fn learn_handles(&mut self, scan: &Scan<'_>) {
+    fn learn_handles(&mut self, scan: &Scan<'_>) -> Vec<PathBuf> {
         let mut found: HashMap<(FileId, EntryKind), Option<u64>> = HashMap::new();
         for (path, now) in scan.new.iter().chain(&scan.left_out) {
             let at_its_path = (self.entries.get(path))
@@ -1547,16 +1550,20 @@ impl Snapshot {
                     .or_insert(now.id.handle);
             }
         }
+        let mut learned = Vec::new();
         if found.is_empty() {
-            return;
+            return learned;
         }
-        for entry in (self.entries.values_mut()).chain(self.left_out.values_mut()) {
+        for (path, entry) in (self.entries.iter_mut()).chain(self.left_out.iter_mut()) {
             if entry.id.handle.is_none()
                 && let Some(&handle) = found.get(&(entry.id, entry.kind))
+                && handle.is_some()
             {
                 entry.id.handle = handle;
+                learned.push(path.clone());
             }
         }
+        learned
     }
 
     fn unread_now(
@@ -1594,43 +1601,6 @@ impl Snapshot {
             unread.insert(dir.clone(), ctime_ns);
         }
         Some(unread)
-    }
-
-    fn left_unseen(&self, root: &Path, scan: &Scan<'_>) -> Result<Vec<PathBuf>> {
-        let Some(known) = &self.unread else {
-            return Ok(Vec::new());
-        };
-        let changed = (scan.unread.iter()).any(|(dir, now)| {
-            now.is_none() || (known.get(dir)).is_none_or(|known| known.ctime_ns != *now)
-        });
-        let Some(at) = (!LOOKS_UP_IDENTITIES && changed)
-            .then(|| open_root(root).ok())
-            .flatten()
-        else {
-            return Ok(Vec::new());
-        };
-        let judged = |path: &Path| {
-            (scan
-                .replaced
-                .iter()
-                .chain(&scan.unreadable)
-                .chain(known.keys()))
-            .any(|above| path.starts_with(above))
-        };
-        let mut gone: Vec<PathBuf> = Vec::new();
-        for (path, entry) in &self.entries {
-            if (scan.stopped)() {
-                return Err(Error::Stopped);
-            }
-            if judged(path) || gone.last().is_some_and(|last| path.starts_with(last)) {
-                continue;
-            }
-            let here = (stat_at(at.as_fd(), path.as_os_str()).ok()).and_then(|stat| stat.entry());
-            if !here.is_some_and(|now| now.id.same(&entry.id) && now.kind == entry.kind) {
-                gone.push(path.clone());
-            }
-        }
-        Ok(gone)
     }
 
     fn other_ends(
@@ -2450,6 +2420,47 @@ impl Snapshot {
         });
         let covered = |path: &Path| (scan.replaced.iter()).any(|scope| path.starts_with(scope));
         let recorded = self.unread.is_some();
+        let changed = !LOOKS_UP_IDENTITIES
+            && (self.unread.as_ref()).is_some_and(|known| {
+                (scan.unread.iter()).any(|(dir, ctime_ns)| {
+                    ctime_ns.is_none()
+                        || (known.get(dir)).is_none_or(|known| known.ctime_ns != *ctime_ns)
+                })
+            });
+        let mut missing = BTreeSet::new();
+        if changed {
+            let replaced: HashSet<&PathBuf> = old.keys().chain(&left_out).collect();
+            let after: BTreeMap<&PathBuf, &Entry> = (self.entries.iter())
+                .filter(|(path, _)| !replaced.contains(path))
+                .chain(&scan.new)
+                .collect();
+            let mut present = HashSet::new();
+            let mut gone: Vec<(&PathBuf, &Entry)> = Vec::new();
+            for (path, entry) in after {
+                if (scan.stopped)() {
+                    return Err(Error::Stopped);
+                }
+                if gone.last().is_some_and(|(last, _)| path.starts_with(last)) {
+                    continue;
+                }
+                match stat_at(again.as_fd(), path.as_os_str()) {
+                    Ok(stat)
+                        if (stat.entry()).is_some_and(|now| {
+                            now.id.same(&entry.id) && now.kind == entry.kind
+                        }) =>
+                    {
+                        present.insert((entry.id.without_handle(), entry.kind));
+                    }
+                    Err(err) if !is_gone(&err) => {}
+                    _ => gone.push((path, entry)),
+                }
+            }
+            missing = (gone.into_iter())
+                .filter(|(_, entry)| !present.contains(&(entry.id.without_handle(), entry.kind)))
+                .map(|(path, _)| path.clone())
+                .collect();
+        }
+        let unobservable = |path: &Path| matches!(stat_at(again.as_fd(), path.as_os_str()), Err(err) if !is_gone(&err));
         let mut before = self.unread.take().unwrap_or_default();
         self.unread = (recorded || covered(Path::new(""))).then(|| {
             (std::mem::take(&mut scan.unread).into_iter())
@@ -2479,8 +2490,8 @@ impl Snapshot {
                             })
                             .collect();
                     if took_in {
-                        waiting.extend(still_hidden.iter().cloned());
-                        waiting.extend(scan.unseen.iter().cloned());
+                        waiting.retain(|path| unobservable(path));
+                        waiting.extend(missing.iter().cloned());
                     }
                     (dir, Unread { ctime_ns, waiting })
                 })
