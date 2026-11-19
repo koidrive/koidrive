@@ -243,7 +243,7 @@ impl Folder {
             "a file could not be read for its upload"
         );
         self.disk
-            .rescan(&self.engine, vec![scope.unwrap_or_default()]);
+            .rescan(&mut self.engine, vec![scope.unwrap_or_default()]);
         self.commit_ended();
         if changed && failures < LEFT_OUT_AFTER {
             self.step(|engine, _| Ok(engine.commits.abandon()))?;

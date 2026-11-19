@@ -358,7 +358,8 @@ pub(crate) struct Disk {
     /// The end epoch of the latest section that `spans` no longer holds.
     forgotten: u64,
     unscanned: Unscanned,
-    rescan_after: Vec<Requests>,
+    awaited_rules: Vec<(Requests, Vec<PathBuf>)>,
+    awaited_scans: Vec<(Requests, Vec<PathBuf>)>,
     /// The most each batch of effects holds: [`BATCH`] outside tests.
     batch: BatchLimit,
     hook: Hook,
@@ -502,7 +503,8 @@ impl Disk {
             spans: VecDeque::new(),
             forgotten: 0,
             unscanned: Unscanned::default(),
-            rescan_after: Vec::new(),
+            awaited_rules: Vec::new(),
+            awaited_scans: Vec::new(),
             batch: BATCH,
             hook,
             brought_back: BroughtBack::Entries(HashSet::new()),
@@ -746,13 +748,24 @@ impl Disk {
         };
         let mut scopes_of_batch = Vec::new();
         let mut rules_changed = false;
+        let mut rules_folders = Vec::new();
+        let mut moved_folders = Vec::new();
+        let mut scopes_of_effects = Vec::new();
         for ((planned, _), (_, outcome)) in effects.iter().zip(&outcomes) {
             let scopes = scopes(&planned.effect.action, outcome);
             let moved_folder = matches!(planned.effect.action, Action::Move { .. })
                 && (engine.trees.local().get(&planned.record.node))
                     .is_some_and(|node| node.shape.kind == Kind::Dir);
             rules_changed |= !scopes.is_empty() && (moved_folder || scopes.iter().any(rules_file));
-            scopes_of_batch.extend(scopes);
+            rules_folders.extend(
+                (scopes.iter().filter(|scope| rules_file(scope)))
+                    .filter_map(|scope| scope.parent().map(Path::to_path_buf)),
+            );
+            if moved_folder {
+                moved_folders.extend(scopes.iter().cloned());
+            }
+            scopes_of_batch.extend(scopes.iter().cloned());
+            scopes_of_effects.push(scopes);
         }
         let unscanned = match rules_changed {
             true => scopes_of_batch.clone(),
@@ -776,11 +789,22 @@ impl Disk {
         self.drop_staging(rotates, Some(&ids), store)?;
         let end = self.sections.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let requested = (self.sections).request(engine.resets(scopes_of_batch.iter().cloned()));
-        if rules_changed
-            || (settled.iter()).any(|settled| matches!(settled, Settled::AwaitsScan(_)))
-        {
+        if rules_changed {
             self.unscanned.effects.push((requested, unscanned));
         }
+        let mut awaited = moved_folders;
+        for (scopes, settled) in scopes_of_effects.into_iter().zip(&settled) {
+            if matches!(settled, Settled::AwaitsScan(_)) {
+                awaited.extend(scopes);
+            }
+        }
+        if !rules_folders.is_empty() {
+            self.awaited_rules.push((requested, rules_folders));
+        }
+        if !awaited.is_empty() {
+            self.awaited_scans.push((requested, awaited));
+        }
+        self.hold(engine);
         self.spans.push_back((end, scopes_of_batch));
         while self.spans.len() > SPANS {
             if let Some((end, _)) = self.spans.pop_front() {
@@ -833,8 +857,8 @@ impl Disk {
             observation.tracked,
             observation.all_rules,
         );
-        self.rescan_after
-            .retain(|requested| !answered.covers(*requested));
+        (self.awaited_rules).retain(|(requested, _)| !answered.covers(*requested));
+        answered.narrow(&mut self.awaited_scans);
         answered.narrow(&mut self.unscanned.effects);
         answered.narrow(&mut self.unscanned.dropped);
         if stamp.0 < self.forgotten {
@@ -851,6 +875,7 @@ impl Disk {
             );
             let requested = self.sections.request(engine.resets(root.iter().cloned()));
             self.unscanned.dropped.push((requested, root));
+            self.hold(engine);
             return Ok(());
         }
         let mut scopes: BTreeSet<PathBuf> = (self.spans.iter())
@@ -931,22 +956,25 @@ impl Disk {
                 .request(engine.resets(dropped.iter().cloned()));
             self.unscanned.dropped.push((requested, dropped));
         }
+        self.hold(engine);
         self.record(engine);
         Ok(())
     }
 
-    /// True from an effect that can have changed which rules apply where until a batch has passed the rules of a scan
-    /// of that effect's paths: an effect that wrote, moved or removed a rules file, or that moved a folder. The caller
-    /// plans nothing meanwhile (design §5.10). Otherwise what a rules file that was just downloaded excludes would be
-    /// downloaded first, and a remote change would be written into a file that the rules file of a moved folder
-    /// excludes, because the trees hold each rules file by the path of its folder. A removal of a folder that an entry
-    /// L places in it had left waits the same way ([`Settled::AwaitsScan`]): the scan tells L where the entry went,
-    /// and until then the same removal would be planned again. The wait ends with the batch that answers the reset the
-    /// effect requested ([`Batch::answered`]), never with a batch that only began later: the observer may have taken
-    /// its resets before the effect ended, or may have scanned other paths. The observer answers a reset with a batch
-    /// also when the scan found nothing, so the wait ends without a change on disk.
+    /// True while an effect or a failed upload waits for a scan of its paths. Until then the engine holds what L, S or R
+    /// places at or below them ([`Engine::await_scan`]): the rules file's folder after an effect on a rules file, both
+    /// places of a moved folder, the folder of a removal that awaits a scan ([`Settled::AwaitsScan`]), and the paths of
+    /// an upload that found the disk changed (design §5.10). A wait ends with the batch that answers the reset the
+    /// effect requested ([`Batch::answered`]). A rules folder stays held whole until then, and the other holds shrink
+    /// to the scopes the scans have not settled yet.
     pub fn awaits_scan(&self) -> bool {
-        !self.unscanned.effects.is_empty()
+        !self.awaited_rules.is_empty() || !self.awaited_scans.is_empty()
+    }
+
+    fn hold(&self, engine: &mut Engine) {
+        let rules = self.awaited_rules.iter().flat_map(|(_, folders)| folders);
+        let scans = self.awaited_scans.iter().flat_map(|(_, scopes)| scopes);
+        engine.await_scan(rules.chain(scans));
     }
 
     #[cfg(test)]
@@ -997,14 +1025,12 @@ impl Disk {
         Some((at, file_id(trees.local().get(id)?.identity)))
     }
 
-    /// Asks the observer to reset `paths` to L and scan them again.
-    pub fn rescan(&mut self, engine: &Engine, paths: Vec<PathBuf>) {
-        self.rescan_after
-            .push(self.sections.request(engine.resets(paths)));
-    }
-
-    pub fn awaits_rescan(&self) -> bool {
-        !self.rescan_after.is_empty()
+    /// Asks the observer to reset `paths` to L and scan them again, and holds what is at or below them until a
+    /// scan answers.
+    pub fn rescan(&mut self, engine: &mut Engine, paths: Vec<PathBuf>) {
+        let requested = self.sections.request(engine.resets(paths.iter().cloned()));
+        self.awaited_scans.push((requested, paths));
+        self.hold(engine);
     }
 
     /// The chunks `commit` adds, with where the bytes of each are: for every content the commit creates or

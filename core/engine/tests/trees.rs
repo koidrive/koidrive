@@ -1379,3 +1379,19 @@ fn known_rules_above_a_folder_whose_copy_went_retry_the_release_below_it() {
     trees.set_rules_known(&ROOT.into());
     assert_eq!(trees.check(), Ok(()));
 }
+
+#[test]
+fn a_node_that_awaits_a_scan_holds_itself_and_what_l_s_or_r_places_below_it() {
+    let mut trees = Trees::new(ROOT);
+    trees.set_local("logs".into(), local(dir(ROOT, "logs"), 1));
+    trees.set_local("app".into(), local(file("logs", "app.log", 1), 2));
+    trees.set_local("notes".into(), local(file(ROOT, "notes.txt", 3), 3));
+    trees.set_remote("logs".into(), remote(dir(ROOT, "logs")));
+    trees.set_remote("new".into(), remote(file("logs", "new.log", 2)));
+    let busy = ["logs", "app", "new"].map(NodeId::from);
+    trees.await_scan(std::collections::BTreeSet::from([NodeId::from("logs")]));
+    assert!(busy.iter().all(|id| trees.held(id)));
+    assert!(!trees.held(&NodeId::from("notes")));
+    trees.await_scan(std::collections::BTreeSet::new());
+    assert!(!busy.iter().any(|id| trees.held(id)));
+}

@@ -683,6 +683,7 @@ pub struct Trees {
     release_due: bool,
     pending: Unsettled,
     held_for_scan: BTreeSet<NodeId>,
+    awaiting_scan: BTreeSet<NodeId>,
 }
 
 /// Equal when R, L, S and the state the store keeps are equal. What the trees track only until the
@@ -789,6 +790,7 @@ impl Trees {
             release_due: true,
             pending: Unsettled::default(),
             held_for_scan: BTreeSet::new(),
+            awaiting_scan: BTreeSet::new(),
         }
     }
 
@@ -2444,10 +2446,35 @@ impl Trees {
     }
 
     /// Whether an open question holds the node's local entry ([`Trees::set_asked`]), or L, S or R
-    /// places it below a folder whose rules are unknown ([`Trees::set_rules_unknown`]). Neither an effect nor a
-    /// commit is planned for it, and no effect parks it to make room for another node.
+    /// places it below a folder whose rules are unknown ([`Trees::set_rules_unknown`]) or at or below a node
+    /// that awaits a scan ([`Trees::await_scan`]). Neither an effect nor a commit is planned for it, and no
+    /// effect parks it to make room for another node.
     pub fn held(&self, id: &NodeId) -> bool {
-        self.asked.contains(id) || self.vanished(id) || self.below_unknown_rules(id)
+        self.asked.contains(id)
+            || self.vanished(id)
+            || self.below_unknown_rules(id)
+            || self.awaits_scan(id)
+    }
+
+    /// Sets the nodes whose place on disk a scan must report before anything is planned at or below them, as after
+    /// an effect that changed which rules apply there or an upload that found the disk changed. Replaces the nodes
+    /// an earlier call set.
+    pub fn await_scan(&mut self, nodes: BTreeSet<NodeId>) {
+        if nodes == self.awaiting_scan {
+            return;
+        }
+        self.forget_reclaims();
+        self.relink |= !self.awaiting_scan.is_subset(&nodes);
+        self.awaiting_scan = nodes;
+    }
+
+    fn awaits_scan(&self, id: &NodeId) -> bool {
+        let nodes = &self.awaiting_scan;
+        !nodes.is_empty()
+            && (nodes.contains(id)
+                || below(&self.l, id, nodes)
+                || below(&self.s, id, nodes)
+                || below(&self.r, id, nodes))
     }
 
     fn below_unknown_rules(&self, id: &NodeId) -> bool {
@@ -6737,6 +6764,7 @@ impl Trees {
             release_due: _,
             pending: _,
             held_for_scan: _,
+            awaiting_scan: _,
             r_names: _,
             r_trashed: _,
             creates: _,

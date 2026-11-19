@@ -908,6 +908,30 @@ impl Engine {
         folders.iter().filter_map(|id| self.path_of(id)).collect()
     }
 
+    /// Holds what L, S or R places at or below each of `paths`, at the deepest node L holds on the way to it, until
+    /// the next call ([`Trees::await_scan`]).
+    pub fn await_scan<'a>(&mut self, paths: impl IntoIterator<Item = &'a PathBuf>) {
+        let nodes = (paths.into_iter())
+            .map(|path| {
+                let mut current = self.trees.local().root.clone();
+                for component in path.components() {
+                    let Component::Normal(name) = component else {
+                        break;
+                    };
+                    match name
+                        .to_str()
+                        .and_then(|name| self.trees.local_child(&current, name))
+                    {
+                        Some(child) => current = child.clone(),
+                        None => break,
+                    }
+                }
+                current
+            })
+            .collect();
+        self.trees.await_scan(nodes);
+    }
+
     pub fn sees_unobserved(&self, listed: &[PathBuf], pending: &Pending) -> bool {
         (self.trees).sees_unobserved(
             listed.iter().filter_map(|dir| local_at(&self.trees, dir)),
