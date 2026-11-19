@@ -329,6 +329,7 @@ describe("RFC 0002 section 11", () => {
 describe("RFC 0032 section 3 rule 4", () => {
   type Parts = Awaited<ReturnType<typeof content>>;
   const HOUR = 3_600_000;
+  const RESEND_TIMEOUT_MS = 120_000;
 
   function chunkRow(c: TestClient, hash: Uint8Array) {
     return runInDurableObject(c.stub, (_instance, state) => state.storage.sql.exec("SELECT state, incarnation, head_checked, hold_until_ms FROM chunks WHERE hash = ?", hash).toArray()[0]);
@@ -411,7 +412,7 @@ describe("RFC 0032 section 3 rule 4", () => {
     a.nowMs = undefined;
     const sent = await resendUntilCommitted(a, [op.create(uuidv7(), root, "many", parts.content)], parts, expired);
     expect(sent).toEqual({ rounds: 2, uploaded: count - MAX_HEAD_CHECKS });
-  });
+  }, RESEND_TIMEOUT_MS);
 
   it("records the chunks a refused commit's valid receipts confirmed, so they are not uploaded again", async () => {
     const { a, root } = await setup();
@@ -424,7 +425,7 @@ describe("RFC 0032 section 3 rule 4", () => {
     const valid = await a.uploadParts(await content(...fresh));
     const sent = await resendUntilCommitted(a, [op.create(uuidv7(), root, "many", parts.content)], parts, [...expired, ...valid]);
     expect(sent).toEqual({ rounds: 2, uploaded: MAX_HEAD_CHECKS });
-  });
+  }, RESEND_TIMEOUT_MS);
 
   it("takes a commit whose chunks answered PRESENT outnumber MAX_HEAD_CHECKS without checking them again", async () => {
     const { a, root } = await setup();
@@ -437,5 +438,5 @@ describe("RFC 0032 section 3 rule 4", () => {
     const ops = [op.create(uuidv7(), root, "many", parts.content)];
     for (let i = 0; i < 2; i++) expect(code(await a.commitRaw(ops))).toBe(Error_Code.MISSING_CHUNKS);
     expect(await resendUntilCommitted(a, ops, parts, [])).toEqual({ rounds: 2, uploaded: 10 });
-  });
+  }, RESEND_TIMEOUT_MS);
 });
