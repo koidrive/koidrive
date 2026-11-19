@@ -118,12 +118,13 @@ fn a_store_rolled_back_past_a_kept_slot_starts_recovery_when_a_later_copy_commit
         .unwrap();
     assert!(matches!(
         world.devices[0].engine.commits.halted(),
-        Some(koidrive_engine::commit::Halt::Recovery(
-            koidrive_engine::question::RecoveryCause {
+        Some(koidrive_engine::commit::Halt::Recovery {
+            cause: koidrive_engine::question::RecoveryCause {
                 trigger: koidrive_engine::question::RecoveryTrigger::StoreRolledBack,
                 ..
-            }
-        ))
+            },
+            ..
+        })
     ));
     world.phase(6, &[]).unwrap();
 }
