@@ -1557,6 +1557,59 @@ fn a_discard_keeps_its_folder_off_the_server_when_the_user_empties_a_server_fold
 }
 
 #[test]
+fn a_discard_answered_after_another_device_changes_a_server_folder_the_rules_leave_out_keeps_its_folder_off_the_server()
+ {
+    let changes: [(&str, Shape); 2] = [("c", file("x", "child", 8)), ("n", file("x", "added", 6))];
+    for (id, shape) in changes {
+        let mut trees = trees(
+            &[
+                ("f", dir(ROOT, "new")),
+                ("o", dir(ROOT, "other")),
+                ("x", dir(ROOT, "server")),
+                ("d", dir("x", "sub")),
+                ("c", file("x", "child", 3)),
+            ],
+            &[
+                ("o", dir(ROOT, "other")),
+                ("x", dir(ROOT, "server")),
+                ("d", dir("x", "sub")),
+                ("c", file("x", "child", 3)),
+            ],
+        );
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+        trees.settle(commits.aliases());
+        let asked = question(&commits);
+        let ignored = Some(RuleFile::parse(b"ignored\n"));
+        trees.set_rules(&[] as &[&str], Source::Koiignore, ignored);
+        let mut moved = trees.local().get("x").unwrap().clone();
+        (moved.shape.parent, moved.shape.name) = ("f".into(), "ignored".into());
+        trees.set_local_changed("x".into(), moved);
+        trees.settle(commits.aliases());
+        let mut remote = trees.remote().get("c").unwrap().clone();
+        (remote.shape, remote.content_rev, remote.edit_rev) = (shape, 2, 2);
+        trees.set_remote(id.into(), remote);
+        trees.settle(commits.aliases());
+        assert_eq!(drive_until_quiet(&mut commits, &mut trees, &mut ids), []);
+        assert!(commits.decide(&mut trees, &asked.id, Answer::Discard));
+        let mut out = trees.local().get("d").unwrap().clone();
+        out.shape.parent = "o".into();
+        trees.set_local_changed("d".into(), out);
+        trees.remove_local("d");
+        trees.remove_local("o");
+        trees.settle(commits.aliases());
+        let mut sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+        trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+        sent.extend(drive_until_quiet(&mut commits, &mut trees, &mut ids));
+        assert_eq!(
+            sent,
+            [("delete", "o".to_owned()), ("delete", "d".to_owned())],
+            "{id}"
+        );
+    }
+}
+
+#[test]
 fn a_discard_answered_while_a_change_to_a_server_folder_it_takes_along_is_in_flight_takes_it_along()
 {
     let changes = [

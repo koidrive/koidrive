@@ -2943,13 +2943,16 @@ impl Trees {
             if !seen.insert(id) {
                 continue;
             }
-            let pending = (self.r.live(id)).is_some_and(|remote| {
-                let synced = self.s.get(id);
-                let local = self.l.get(id).map(|node| &node.shape);
-                !same(Some(remote), synced) && same(local, synced)
-            });
-            let unfetched = (self.remote_children(id))
-                .any(|child| self.l.get(child).is_none() && self.s.get(child).is_none());
+            let applies = !self.ignored(id);
+            let pending = applies
+                && (self.r.live(id)).is_some_and(|remote| {
+                    let synced = self.s.get(id);
+                    let local = self.l.get(id).map(|node| &node.shape);
+                    !same(Some(remote), synced) && same(local, synced)
+                });
+            let unfetched = applies
+                && (self.remote_children(id))
+                    .any(|child| self.l.get(child).is_none() && self.s.get(child).is_none());
             let waiting = self.waiting.children(id).next().is_some();
             if pending || unfetched || waiting {
                 return false;
