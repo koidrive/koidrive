@@ -552,6 +552,11 @@ class SplitTests(unittest.TestCase):
         self.assertIn(b"    pub(super) fn two(&self) -> u8 {\n        2\n    }\n\n    pub(super) fn three(&self) -> u8 {\n        3\n    }\n",
                       (self.root / "driver/parts.rs").read_bytes())
 
+    def test_replay_gives_an_added_extern_fn_in_a_split_module_pub_super(self):
+        self.split_driver()
+        self.replay(self.REPLAY_BASE.replace(b"        2\n    }\n", b'        2\n    }\n\n    extern "C" fn three() -> u8 {\n        3\n    }\n'))
+        self.assertIn(b'    pub(super) extern "C" fn three() -> u8 {', (self.root / "driver/parts.rs").read_bytes())
+
     def test_replay_adds_an_import_only_where_its_module_lacks_it(self):
         self.split_driver()
         tests = self.root / "driver/tests.rs"

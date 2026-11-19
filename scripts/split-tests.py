@@ -429,7 +429,7 @@ def reindent(place, text, delta):
     return b"\n".join(lines)
 
 
-ITEM = re.compile(rb"(?m)^ *((?:pub(?:\([^)]*\))? )?)(?:async |const |unsafe )*(?:fn|struct|enum|const|static|type|trait|union) ")
+ITEM = re.compile(rb'(?m)^[ \t]*((?:pub(?:\([^)]*\))? )?)(?:async |const |unsafe |extern (?:"[^"]*" )?)*(?:fn|struct|enum|const|static|type|trait|union) ')
 
 
 def visibility(text, other):
@@ -586,7 +586,8 @@ def replay_onto_split(executable, path, base_ref, branch_ref):
         text = reindent(place, text, width - place["indent"])
         trait_member = re.match(r"impl:[^:]", parent.rpartition("/")[2])
         own_line = key.rpartition("/")[2].split(":")[0] in ("fn", "struct", "enum", "const", "static", "type", "trait", "union")
-        if anchor["added"] and own_line and not trait_member and not ITEM.search(text).group(1):
+        declared = ITEM.search(text)
+        if anchor["added"] and own_line and not trait_member and declared and not declared.group(1):
             text = visibility(text, b"pub(super) fn ")
             print(f"made {key} pub(super): the split put it in a module of its own; drop the marker if nothing outside that module uses it")
         entry = (b"\n" * place["newlines"] + b" " * width, text)
