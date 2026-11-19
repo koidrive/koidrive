@@ -41,6 +41,10 @@ pub struct Changed {
 /// Every subset of a group is tried, so the search costs up to 2^n checks of n nodes.
 pub const SETTLE_GROUP_LIMIT: usize = 12;
 
+/// How many nodes the `_unless` variants, such as [`Trees::settle_unless`], handle between two calls of their
+/// `abandoned`.
+pub const CHECK_EVERY: usize = 4096;
+
 /// How many of the versions R held for one file before its current one
 /// [`Trees::replaced_versions`] keeps. A loss that rolls a file back further than that is not
 /// proven, and the file's content is kept beside R's as a conflict copy.
@@ -3569,10 +3573,10 @@ impl Trees {
                 .filter(|id| self.l.get(id).is_some())
                 .collect(),
         };
-        self.mark_left_out(&tops);
+        self.mark_left_out(&tops, &|| false);
     }
 
-    fn mark_left_out(&mut self, tops: &[NodeId]) {
+    fn mark_left_out(&mut self, tops: &[NodeId], abandoned: &dyn Fn() -> bool) -> Option<()> {
         let mut scopes = HashMap::new();
         let mut seen = HashSet::new();
         let mut below: Vec<&NodeId> = tops.iter().collect();
@@ -3580,6 +3584,9 @@ impl Trees {
         while let Some(node) = below.pop() {
             if !seen.insert(node) {
                 continue;
+            }
+            if seen.len() % CHECK_EVERY == 0 && abandoned() {
+                return None;
             }
             for names in [&self.l_names, &self.l_parked, &self.s_names, &self.r_names] {
                 below.extend(names.children(node));
@@ -3594,6 +3601,7 @@ impl Trees {
         for node in marked {
             self.set_unobserved(node);
         }
+        Some(())
     }
 
     fn below_rules(&self, dir: &[String]) -> BTreeSet<NodeId> {
@@ -5668,6 +5676,17 @@ impl Trees {
     /// content into S, unless an acknowledged update of the node waits, since content never breaks S, so a later change on either side is compared
     /// with the content both sides already hold. [`Trees::work`] gives the dirty nodes that are left.
     pub fn settle(&mut self, merged: &BTreeMap<NodeId, NodeId>) {
+        self.settle_unless(merged, &|| false)
+            .expect("a settle nobody abandons ends settled");
+    }
+
+    /// [`Trees::settle`], which gives up with `None` once `abandoned` holds at one of its checks, one per
+    /// [`CHECK_EVERY`] nodes. The trees it gives up on are half settled, fit only to be dropped.
+    pub fn settle_unless(
+        &mut self,
+        merged: &BTreeMap<NodeId, NodeId>,
+        abandoned: &dyn Fn() -> bool,
+    ) -> Option<()> {
         self.release_kept_entries_the_person_let_in();
         self.note_kept_causes();
         let carried: Vec<NodeId> = (self.unsettled.iter())
@@ -5703,14 +5722,15 @@ impl Trees {
             let unfit = first_link::adopt_equal_files(self, &changed);
             self.wait_to_link(unfit);
         }
-        self.settle_marked();
+        self.settle_marked(abandoned)?;
         self.note_unobserved();
         while self.link_due() {
-            self.settle_marked();
+            self.settle_marked(abandoned)?;
         }
         if std::mem::take(&mut self.release_due) && self.release_vanished() {
-            self.settle_marked();
+            self.settle_marked(abandoned)?;
         }
+        Some(())
     }
 
     pub(crate) fn wait_to_link(&mut self, pairs: Vec<(NodeId, NodeId)>) {
@@ -5758,7 +5778,7 @@ impl Trees {
         }
     }
 
-    fn settle_marked(&mut self) {
+    fn settle_marked(&mut self, abandoned: &dyn Fn() -> bool) -> Option<()> {
         let (l, r) = (&self.l, &self.r);
         self.lost_positions
             .retain(|id, _| match (l.live(id), r.live(id)) {
@@ -5776,6 +5796,9 @@ impl Trees {
         let mut next = 0;
         let mut changed = Vec::new();
         while let Some(id) = queue.get(next).cloned() {
+            if next % CHECK_EVERY == 0 && abandoned() {
+                return None;
+            }
             next += 1;
             let options = self.released(&id).unwrap_or_default();
             let fitting = (options.iter()).find(|next| self.fits_synced(&id, next.as_ref()));
@@ -5883,7 +5906,7 @@ impl Trees {
                 }
             }
         }
-        self.mark_left_out(&changed);
+        self.mark_left_out(&changed, abandoned)?;
         self.same = pending;
         self.reverted
             .retain(|id| match (self.l.get(id), self.r.live(id)) {
@@ -5893,7 +5916,10 @@ impl Trees {
                 }
                 (local, remote) => local.is_some() || remote.is_some(),
             });
-        for id in &queue {
+        for (sorted, id) in queue.iter().enumerate() {
+            if sorted % CHECK_EVERY == 0 && abandoned() {
+                return None;
+            }
             self.sort(id);
         }
         debug_assert!(self.creates.iter().all(|id| self.creates_only(id)));
@@ -5904,6 +5930,7 @@ impl Trees {
         }));
         debug_assert!(self.creates.is_disjoint(&self.others));
         debug_assert_eq!(self.creates.len() + self.others.len(), self.dirty.len());
+        Some(())
     }
 
     /// Every dirty node with its class, in `node_id` order. This reads the whole dirty set.
@@ -6799,6 +6826,18 @@ impl Trees {
     /// although it is parked or not in sync, an unsearched node that is not dirty, and a parked
     /// name for a node L does not hold as parked.
     pub fn restore(&mut self, state: TreesState) -> Result<(), StateError> {
+        self.restore_unless(state, &|| false)
+            .map(|restored| restored.expect("a restore nobody abandons ends restored"))
+    }
+
+    /// [`Trees::restore`], which gives up with `Ok(None)` once `abandoned` holds at one of its checks: after the
+    /// trees pass theirs, and after every refusal. Both come before `state` replaces anything, so the trees it gives
+    /// up on are as they were.
+    pub fn restore_unless(
+        &mut self,
+        state: TreesState,
+        abandoned: &dyn Fn() -> bool,
+    ) -> Result<Option<()>, StateError> {
         if let Some((id, _)) = state
             .content_provenance
             .iter()
@@ -6808,6 +6847,9 @@ impl Trees {
         }
         self.check()
             .map_err(|(tree, error)| StateError::Tree(tree, error))?;
+        if abandoned() {
+            return Ok(None);
+        }
         let ids = (self.r.iter().map(|(id, _)| id))
             .chain(self.l.iter().map(|(id, _)| id))
             .chain(self.s.iter().map(|(id, _)| id));
@@ -6899,6 +6941,9 @@ impl Trees {
             .find(|id| self.r.get(id).is_some() || self.l.get(id).is_none())
         {
             return Err(StateError::NotLostCreate(id.clone()));
+        }
+        if abandoned() {
+            return Ok(None);
         }
         let TreesState {
             dirty,
@@ -6999,7 +7044,7 @@ impl Trees {
         self.pending_finishes = pending_finishes.into();
         self.rules_known = false;
         self.unknown_rules.clear();
-        Ok(())
+        Ok(Some(()))
     }
 }
 

@@ -361,14 +361,19 @@ impl Folder {
             return Ok(None);
         }
         engine.trees.set_local_rules(local);
-        engine.trees.settle(engine.commits.aliases());
-        if abandoned() {
+        if (engine.trees)
+            .settle_unless(engine.commits.aliases(), abandoned)
+            .is_none()
+        {
             return Ok(None);
         }
+        let Some(snapshot) = engine.snapshot_unless(abandoned) else {
+            return Ok(None);
+        };
         Ok(Some(Loaded {
             timing,
             store,
-            snapshot: engine.snapshot(),
+            snapshot,
             engine,
         }))
     }

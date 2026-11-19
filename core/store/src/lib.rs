@@ -30,6 +30,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
+use std::ops::ControlFlow;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -667,6 +668,19 @@ impl Tx<'_> {
 
     /// Every node of the local tree, ordered by `node_id`.
     pub fn local_nodes(&self) -> Result<Vec<LocalNode>> {
+        let mut nodes = Vec::new();
+        self.each_local_node(|node| {
+            nodes.push(node);
+            ControlFlow::<()>::Continue(())
+        })?;
+        Ok(nodes)
+    }
+
+    /// Gives `each` the nodes of [`Tx::local_nodes`] one at a time, and stops with what it breaks with.
+    pub fn each_local_node<B>(
+        &self,
+        mut each: impl FnMut(LocalNode) -> ControlFlow<B>,
+    ) -> Result<Option<B>> {
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, parent_id, name, kind, content, ino, ino_high, birth_ns, parked,
                     left_out_when_placed, content_from_server, handle
@@ -686,19 +700,22 @@ impl Tx<'_> {
                 row.get::<_, bool>(10)?,
             ))
         })?;
-        rows.map(|row| {
+        for row in rows {
             let (node_id, shape, identity, parked, left_out_when_placed, content_from_server) =
                 row?;
-            Ok(LocalNode {
+            let node = LocalNode {
                 node_id: node_id.into(),
                 shape: shape.into_shape()?,
                 identity,
                 parked,
                 left_out_when_placed,
                 content_from_server,
-            })
-        })
-        .collect()
+            };
+            if let ControlFlow::Break(stopped) = each(node) {
+                return Ok(Some(stopped));
+            }
+        }
+        Ok(None)
     }
 
     /// Inserts the local node, or updates its row in place. `ino` is stored as the bit patterns of its low and high 64

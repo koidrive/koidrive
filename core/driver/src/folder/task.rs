@@ -70,6 +70,7 @@ pub(crate) struct FolderTask {
     pub owner: Owner,
     /// The observer's thread, joined before the task ends so the folder's lock is released with it.
     pub observer: Mutex<Option<JoinHandle<()>>>,
+    pub loader: Mutex<Option<JoinHandle<()>>>,
     /// Marked whenever the folder's status changes (`Driver::watch`).
     pub changed: Arc<watch::Sender<()>>,
     pub progressed: Arc<watch::Sender<()>>,
@@ -154,11 +155,11 @@ impl FolderTask {
                 self.changed.send_replace(());
             }
             let Some(halted) = halted else {
-                self.join_observer().await;
+                self.join_threads().await;
                 return;
             };
             if let Halt::Reconnect = halted {
-                self.join_observer().await;
+                self.join_threads().await;
                 continue;
             }
             tracing::warn!(space_id, reason = %halted, "sync of a folder halted");
@@ -178,7 +179,7 @@ impl FolderTask {
             };
             self.status.halt(why, problem, recovery);
             self.changed.send_replace(());
-            self.join_observer().await;
+            self.join_threads().await;
             if let Halt::Person(..) = halted {
                 let _ = stop.wait_for(|stop| *stop).await;
                 return;
@@ -200,10 +201,11 @@ impl FolderTask {
         }
     }
 
-    /// Waits for the observer's thread, which ends soon after `sync` has dropped its receiver.
-    async fn join_observer(&self) {
-        let thread = self.observer.lock().unwrap().take();
-        if let Some(thread) = thread {
+    /// Waits for the threads that load the store and observe the folder, which end soon after `sync` has dropped
+    /// their receivers.
+    async fn join_threads(&self) {
+        let threads = [&self.loader, &self.observer].map(|thread| thread.lock().unwrap().take());
+        for thread in threads.into_iter().flatten() {
             let _ = tokio::task::spawn_blocking(move || thread.join()).await;
         }
     }
@@ -240,7 +242,7 @@ impl FolderTask {
             before_open();
         }
         let (sent, loading) = tokio::sync::oneshot::channel();
-        std::thread::spawn({
+        *self.loader.lock().unwrap() = Some(std::thread::spawn({
             let (store, link, local) = (self.store.clone(), link.clone(), self.local.clone());
             move || {
                 if let Some(loaded) =
@@ -249,7 +251,7 @@ impl FolderTask {
                     let _ = sent.send(loaded);
                 }
             }
-        });
+        }));
         let loaded = loading
             .await
             .expect("the thread that loads a folder sends unless it panics or the task is gone");

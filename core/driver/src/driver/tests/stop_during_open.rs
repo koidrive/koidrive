@@ -33,8 +33,6 @@ async fn a_pause_while_a_folder_loads_its_store_stops_it_at_once_and_leaves_the_
         .unwrap();
     let before = stored(&store);
     let (entered, loading) = mpsc::channel();
-    let (release, released) = mpsc::channel::<()>();
-    let (gave_up, giving_up) = mpsc::channel();
     let waited_out = Arc::new(AtomicBool::new(false));
     crate::folder::WHILE_LOADING.lock().unwrap().insert(
         store.clone(),
@@ -42,10 +40,14 @@ async fn a_pause_while_a_folder_loads_its_store_stops_it_at_once_and_leaves_the_
             let waited_out = waited_out.clone();
             move |abandoned: &dyn Fn() -> bool| {
                 entered.send(()).unwrap();
-                if released.recv_timeout(Duration::from_secs(10)).is_err() {
-                    waited_out.store(true, Ordering::SeqCst);
+                let parked = std::time::Instant::now();
+                while !abandoned() {
+                    if parked.elapsed() > Duration::from_secs(10) {
+                        waited_out.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
                 }
-                gave_up.send(abandoned()).unwrap();
             }
         }),
     );
@@ -64,16 +66,62 @@ async fn a_pause_while_a_folder_loads_its_store_stops_it_at_once_and_leaves_the_
     );
     assert_eq!(stored(&store), before, "the stopped open changed the store");
 
-    release.send(()).unwrap();
-    assert!(
-        giving_up.recv().unwrap(),
-        "the load went on after the pause"
-    );
     driver.resume().await.unwrap();
     eventually("the next open takes the restore request", || {
         stored(&store).0 == 0
     })
     .await;
     assert_ne!(driver.status().folders[0].state, FolderState::Halted);
+    driver.stop().await;
+}
+
+#[tokio::test]
+async fn pauses_and_resumes_while_a_folder_loads_its_store_never_load_it_twice_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = fs::canonicalize(dir.path()).unwrap();
+    let root = base.join("Koidrive");
+    let paths = Paths::under(&base.join("profile"));
+    linked(&paths, &root, "d1");
+    let store = paths.store(SPACE).unwrap();
+    let parked = Arc::new(AtomicBool::new(true));
+    let (entered, loading) = mpsc::channel();
+    crate::folder::WHILE_LOADING.lock().unwrap().insert(
+        store.clone(),
+        Box::new({
+            let parked = parked.clone();
+            move |_: &dyn Fn() -> bool| {
+                entered.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(500));
+                parked.store(false, Ordering::SeqCst);
+            }
+        }),
+    );
+    let driver = Driver::open(paths).unwrap();
+    driver.start();
+    eventually("the folder loads its store", || loading.try_recv().is_ok()).await;
+    let (again, loading_again) = mpsc::channel();
+    crate::folder::WHILE_LOADING.lock().unwrap().insert(
+        store.clone(),
+        Box::new({
+            let parked = parked.clone();
+            move |_: &dyn Fn() -> bool| again.send(parked.load(Ordering::SeqCst)).unwrap()
+        }),
+    );
+
+    for _ in 0..3 {
+        driver.pause().await.unwrap();
+        driver.resume().await.unwrap();
+    }
+    let beside = std::cell::Cell::new(None);
+    eventually("the folder loads its store again", || {
+        beside.set(loading_again.try_recv().ok());
+        beside.get().is_some()
+    })
+    .await;
+    assert_eq!(
+        beside.get(),
+        Some(false),
+        "a second load ran beside the first"
+    );
     driver.stop().await;
 }

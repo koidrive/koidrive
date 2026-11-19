@@ -10,9 +10,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::BuildHasher;
+use std::ops::ControlFlow;
 use std::path::{Component, Path, PathBuf};
 
-use koidrive_engine::classify::{Pending, Trees};
+use koidrive_engine::classify::{CHECK_EVERY, Pending, Trees};
 use koidrive_engine::commit::{Base, Commits, Halt};
 use koidrive_engine::effects::Effects;
 use koidrive_engine::first_link::History;
@@ -102,23 +103,42 @@ impl Engine {
         if abandoned() {
             return Ok(None);
         }
-        for node in tx.local_nodes()? {
+        let mut walked = 0;
+        let stopped = tx.each_local_node(|node| {
+            walked += 1;
+            if walked % CHECK_EVERY == 0 && abandoned() {
+                return ControlFlow::Break(Ok(None));
+            }
+            let shape = match shape(node.shape) {
+                Ok(shape) => shape,
+                Err(error) => return ControlFlow::Break(Err(error)),
+            };
             let local = LocalNode {
-                shape: shape(node.shape)?,
+                shape,
                 identity: file_identity(node.identity),
                 parked: node.parked,
                 left_out_when_placed: node.left_out_when_placed,
                 content_from_server: node.content_from_server,
             };
             trees.set_local(node.node_id, local);
+            ControlFlow::Continue(())
+        })?;
+        if let Some(stopped) = stopped {
+            return stopped;
         }
         if abandoned() {
             return Ok(None);
         }
         let stored = tx.engine_state()?;
-        trees
-            .restore(stored.trees)
+        if abandoned() {
+            return Ok(None);
+        }
+        let restored = trees
+            .restore_unless(stored.trees, abandoned)
             .map_err(|error| invalid(format!("{error:?}")))?;
+        if restored.is_none() {
+            return Ok(None);
+        }
         trees.take_changed();
         let stored_questions = stored.commits.questions.clone();
         let commits =
@@ -758,10 +778,20 @@ impl Engine {
     /// [`Trees::ignore_local`] recorded is left out with what is under it, since the disk does not hold it there: an
     /// entry the scan finds at its path is reported as created.
     pub fn snapshot(&self) -> Snapshot {
+        self.snapshot_unless(&|| false)
+            .expect("a snapshot nobody abandons ends with every entry")
+    }
+
+    pub fn snapshot_unless(&self, abandoned: &dyn Fn() -> bool) -> Option<Snapshot> {
         let local = self.trees.local();
         let mut entries = BTreeMap::new();
         let mut pending = vec![(PathBuf::new(), local.root.clone())];
+        let mut walked = 0;
         while let Some((path, id)) = pending.pop() {
+            walked += 1;
+            if walked % CHECK_EVERY == 0 && abandoned() {
+                return None;
+            }
             for child in self.trees.local_children(&id) {
                 let Some(node) = local.get(child) else {
                     continue;
@@ -809,10 +839,10 @@ impl Engine {
                 pending.push((at, child.clone()));
             }
         }
-        Snapshot {
+        Some(Snapshot {
             entries,
             ..Snapshot::default()
-        }
+        })
     }
 
     /// The path of a node L holds, relative to the root. `None` for a node L does not hold under the root, such as
