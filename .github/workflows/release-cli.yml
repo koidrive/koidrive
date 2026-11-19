@@ -153,11 +153,20 @@ jobs:
           pnpm --dir server install --frozen-lockfile
           node server/scripts/pack-bundle.mjs "$RUNNER_TEMP/server-bundle"
           echo "KOIDRIVE_SERVER_BUNDLE=$RUNNER_TEMP/server-bundle" >> "$GITHUB_ENV"
-      - name: Install Linux cross-build tools and ShellCheck
+      - name: Install qemu-aarch64 to run the aarch64 binary
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        env:
+          QEMU_URL: https://github.com/multiarch/qemu-user-static/releases/download/v7.2.0-1/qemu-aarch64-static
+          QEMU_SHA256: dce64b2dc6b005485c7aa735a7ea39cb0006bf7e5badc28b324b2cd0c73d883f
+        run: |
+          mkdir -p "$RUNNER_TEMP/qemu"
+          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/qemu/qemu-aarch64" "$QEMU_URL"
+          echo "$QEMU_SHA256  $RUNNER_TEMP/qemu/qemu-aarch64" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/qemu/qemu-aarch64"
+          echo "$RUNNER_TEMP/qemu" >> "$GITHUB_PATH"
+      - name: Install the Linux cross-build tools
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck qemu-user
           python3 -m venv "$RUNNER_TEMP/zigbuild"
           "$RUNNER_TEMP/zigbuild/bin/pip" install --require-hashes --only-binary=:all: -r .github/requirements-musl.txt
           echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
