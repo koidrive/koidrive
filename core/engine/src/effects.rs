@@ -774,17 +774,22 @@ impl Effects {
         };
         match shape {
             None => trees.drop_local(&record.node),
-            Some(shape) => trees.place_local(
-                record.node.clone(),
-                LocalNode {
-                    left_out_when_placed: false,
-                    content_from_server: false,
-                    shape,
-                    identity,
-                    parked,
-                    chunks,
-                },
-            ),
+            Some(shape) => {
+                if !parked {
+                    trees.displace_recorded_at(&record.node, &shape);
+                }
+                trees.place_local(
+                    record.node.clone(),
+                    LocalNode {
+                        left_out_when_placed: false,
+                        content_from_server: false,
+                        shape,
+                        identity,
+                        parked,
+                        chunks,
+                    },
+                )
+            }
         }
         if matches!(record.effect, Effect::WriteFile { .. }) {
             trees.set_content_from_server(&record.node, true);
@@ -1623,6 +1628,7 @@ impl<'a> View<'a> {
             && self.location_in(&after.parent, &after.name).is_some()
             && !(self.trees.local_holders(&after.parent, &after.name)).any(|other| {
                 *other != record.node
+                    && !self.trees.ignored_local().contains(other)
                     && local
                         .get(other)
                         .is_some_and(|node| node.shape.name == after.name)
@@ -1745,7 +1751,11 @@ impl<'a> View<'a> {
                     && name_key(&node.shape.name) == name_key(&remote.name)
             });
         (self.trees.local_holders(&remote.parent, &remote.name))
-            .filter(|other| *other != id && !(beside && merged(other)))
+            .filter(|other| {
+                *other != id
+                    && !(beside && merged(other))
+                    && !self.trees.ignored_local().contains(*other)
+            })
             .min_by_key(|other| (!self.trees.excluded(other), !merged(other)))
             .map(|holder| Step::Blocked(Some(holder.clone())))
     }
