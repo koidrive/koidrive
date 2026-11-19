@@ -447,7 +447,9 @@ impl FsObserver {
                 self.unread.remove(&path);
             }
             self.watcher.reset(&scope, known);
-            self.unanswered.push(scope);
+            if !self.unanswered.contains(&scope) {
+                self.unanswered.push(scope);
+            }
         }
     }
 

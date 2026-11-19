@@ -162,7 +162,7 @@ Becoming ignored never deletes anything, on either side. An ignored path is outs
 - The engine plans no effect and no commit for a node that L, S or R places below a folder a scan reports unreadable, until a scan reports the folder's rules. It holds the folder by its node, found after the batch's changes at the path the scan reports, by exact name as L holds names: a folder renamed, also only in case, is the same folder, and two folders whose names differ only in case are two. The hold ends when L no longer holds the folder.
 - Each scan reports, apart from the rules files that changed, every folder whose rules it established at the path where it listed the folder: it read the rules file, found none, or kept the rules an earlier scan read. The hold of the node at that path ends there.
 - A folder that holds two rules files of the same kind whose names differ only in case is reported unreadable until one is gone.
-- Until the first scan of a watcher has settled every scope, a folder that is still pending is reported unreadable.
+- A folder that the first scan of a watcher left pending is reported unreadable until a scan settles it, whatever else is still pending.
 - The rules are not stored (§2.8). After a restart the engine plans no effect and no commit until the driver has passed it the device-local list and the rules files of a full scan.
 - The first batch of each watcher lists every rules file its scan read, and the engine drops the rules of every folder it does not list.
 
