@@ -1179,6 +1179,81 @@ fn a_move_r_undid_while_it_was_in_flight_is_moved_back() {
     assert_in_sync(&mut trees);
 }
 
+#[test]
+fn a_reverted_move_r_moved_on_from_while_it_was_in_flight_is_moved_on() {
+    let (mut trees, mut disk) = space(&[("f", Some(file(ROOT, "b", 1)), Some(file(ROOT, "c", 1)))]);
+    let mut local = trees.local().get("f").unwrap().clone();
+    local.shape.name = "a".into();
+    trees.set_local("f".into(), local);
+    disk.entries.get_mut(&1).unwrap().name = "a".into();
+    trees.revert("f".into());
+    trees.settle(&Default::default());
+    let (mut effects, mut ids) = (Effects::default(), IdGen::new(1));
+    let record = effects
+        .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+        .first()
+        .unwrap()
+        .clone();
+    assert!(matches!(record.effect, Effect::Move { .. }));
+
+    trees.set_remote("f".into(), remote(file(ROOT, "d", 1)));
+    let created = disk.apply(&record.effect).unwrap();
+    effects
+        .done(&mut trees, None, &record.effect_id, created)
+        .unwrap();
+    trees.settle(&Default::default());
+    let commit = koidrive_engine::commit::Commits::default()
+        .build(&mut trees, &mut ids, NOW, "history", "me", 1)
+        .map(|commit| commit.ops.clone());
+    assert_eq!(commit, None);
+
+    let done = converge(&mut trees, &mut disk, 10).unwrap();
+    assert!(matches!(done[..], [Effect::Move { .. }]), "{done:?}");
+    assert_in_sync(&mut trees);
+}
+
+#[test]
+fn a_cycle_reverted_move_r_moved_on_from_while_it_was_in_flight_is_moved_on() {
+    let (mut trees, mut disk) = space(&[
+        ("x", Some(dir(ROOT, "x")), Some(dir(ROOT, "c"))),
+        ("y", Some(dir(ROOT, "y")), Some(dir("x", "y"))),
+    ]);
+    let mut local = trees.local().get("x").unwrap().clone();
+    local.shape.parent = "y".into();
+    trees.set_local("x".into(), local);
+    disk.entries.get_mut(&1).unwrap().area = Area::Dir(2);
+    trees.settle(&Default::default());
+    let mut ids = IdGen::new(1);
+    let mut commits = koidrive_engine::commit::Commits::default();
+    let first = commits
+        .build(&mut trees, &mut ids, NOW, "history", "me", 1)
+        .map(|commit| commit.ops.clone());
+    assert_eq!(first, None);
+    assert!(trees.reverted().contains("x"));
+    trees.settle(&Default::default());
+    let mut effects = Effects::default();
+    let record = effects
+        .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+        .first()
+        .unwrap()
+        .clone();
+    assert!(matches!(record.effect, Effect::Move { .. }));
+
+    trees.set_remote("x".into(), remote(dir(ROOT, "d")));
+    let created = disk.apply(&record.effect).unwrap();
+    effects
+        .done(&mut trees, None, &record.effect_id, created)
+        .unwrap();
+    trees.settle(&Default::default());
+    let commit = commits
+        .build(&mut trees, &mut ids, NOW, "history", "me", 1)
+        .map(|commit| commit.ops.clone());
+    assert_eq!(commit, None);
+
+    converge(&mut trees, &mut disk, 10).unwrap();
+    assert_in_sync(&mut trees);
+}
+
 /// A move to R's position is in flight when R moves the file back with new content, and the
 /// user's copy reaches the same content, so S takes it. The move changes only the position, so
 /// L and S keep that content, and the effects move the file back without a conflict.
