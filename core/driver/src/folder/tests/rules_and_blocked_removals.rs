@@ -1478,6 +1478,153 @@ fn a_synced_file_moved_into_an_ignored_folder_and_deleted_there_comes_back() {
     }
 }
 
+#[test]
+fn a_synced_file_moved_into_an_ignored_folder_and_deleted_there_while_running_comes_back() {
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    fs::write(site.root.join("report.docx"), "report").unwrap();
+    b.settle();
+    b.rest(&mut remote);
+    drop(b);
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    fs::create_dir(site.root.join("dist")).unwrap();
+    fs::rename(
+        site.root.join("report.docx"),
+        site.root.join("dist/report.docx"),
+    )
+    .unwrap();
+    b.settle();
+    b.rest(&mut remote);
+    fs::remove_file(site.root.join("dist/report.docx")).unwrap();
+    for _ in 0..10 {
+        b.settle();
+        b.rest(&mut remote);
+    }
+    let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+    assert!(!sent.contains(&"delete"), "{sent:?}");
+    assert!(remote.names().contains(&"report.docx".to_owned()));
+    assert_eq!(
+        files(&site.root),
+        [("report.docx".to_owned(), "report".to_owned())],
+        "{sent:?}"
+    );
+}
+
+#[test]
+fn a_synced_file_found_in_an_ignored_folder_at_start_and_deleted_there_while_running_comes_back() {
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    fs::write(site.root.join("report.docx"), "report").unwrap();
+    b.settle();
+    b.rest(&mut remote);
+    drop(b);
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    fs::create_dir(site.root.join("dist")).unwrap();
+    fs::rename(
+        site.root.join("report.docx"),
+        site.root.join("dist/report.docx"),
+    )
+    .unwrap();
+    b.settle();
+    b.rest(&mut remote);
+    drop(b);
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    b.rest(&mut remote);
+    assert_eq!(
+        files(&site.root),
+        [("dist/report.docx".to_owned(), "report".to_owned())]
+    );
+    fs::remove_file(site.root.join("dist/report.docx")).unwrap();
+    for _ in 0..10 {
+        b.settle();
+        b.rest(&mut remote);
+    }
+    let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+    assert!(!sent.contains(&"delete"), "{sent:?}");
+    assert_eq!(
+        files(&site.root),
+        [("report.docx".to_owned(), "report".to_owned())],
+        "{sent:?}"
+    );
+}
+
+fn moved_into_a_left_out_folder(remote: &mut Remote, to: &str) -> (Site, Device) {
+    let (site, mut b) = linked(remote, "b");
+    fs::write(site.root.join("report.docx"), "report").unwrap();
+    b.settle();
+    b.rest(remote);
+    drop(b);
+    let mut b = started(&site, remote, &dist_left_out());
+    fs::create_dir_all(site.root.join(to).parent().unwrap()).unwrap();
+    fs::rename(site.root.join("report.docx"), site.root.join(to)).unwrap();
+    b.settle();
+    b.rest(remote);
+    (site, b)
+}
+
+#[test]
+fn a_copy_in_a_left_out_folder_saved_by_rename_stays_the_only_copy() {
+    let mut remote = Remote::new();
+    let (site, mut b) = moved_into_a_left_out_folder(&mut remote, "dist/report.docx");
+    fs::write(site.root.join("dist/.~report.tmp"), "edited").unwrap();
+    fs::rename(
+        site.root.join("dist/.~report.tmp"),
+        site.root.join("dist/report.docx"),
+    )
+    .unwrap();
+    b.settle();
+    b.rest(&mut remote);
+    drop(b);
+    let b = started(&site, &mut remote, &dist_left_out());
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert_eq!(
+        files(&site.root),
+        [("dist/report.docx".to_owned(), "edited".to_owned())]
+    );
+}
+
+#[test]
+fn a_copy_in_a_left_out_folder_kept_only_through_a_hard_link_stays_the_only_copy() {
+    let mut remote = Remote::new();
+    let (site, mut b) = moved_into_a_left_out_folder(&mut remote, "dist/report.docx");
+    fs::hard_link(
+        site.root.join("dist/report.docx"),
+        site.root.join("dist/link.docx"),
+    )
+    .unwrap();
+    fs::remove_file(site.root.join("dist/report.docx")).unwrap();
+    b.settle();
+    b.rest(&mut remote);
+    drop(b);
+    started(&site, &mut remote, &dist_left_out());
+    assert_eq!(
+        files(&site.root),
+        [("dist/link.docx".to_owned(), "report".to_owned())]
+    );
+}
+
+#[test]
+fn a_copy_below_an_unreadable_folder_that_the_rules_let_in_again_is_not_downloaded_again() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut remote = Remote::new();
+    let (site, b) = moved_into_a_left_out_folder(&mut remote, "dist/locked/report.docx");
+    drop(b);
+    let locked = site.root.join("dist/locked");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let mut b = started(&site, &mut remote, &SyncRules::default());
+    b.rest(&mut remote);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    b.settle();
+    b.rest(&mut remote);
+    let sent: Vec<&str> = b.sent.iter().flat_map(kinds).collect();
+    assert!(!sent.contains(&"delete"), "{sent:?}");
+    assert_eq!(
+        files(&site.root),
+        [("dist/locked/report.docx".to_owned(), "report".to_owned())],
+        "{sent:?}"
+    );
+}
+
 fn a_file_deleted_after_its_folder_moved_out_of_the_rules_is_deleted(rules: &str, to: &str) {
     for victim in ["f0.docx", "sub/f1.docx"] {
         let (mut remote, site, _) = excluded_dist(3);
