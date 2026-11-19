@@ -832,7 +832,7 @@ impl Engine {
         all: bool,
     ) {
         let changed = all || !rules.is_empty();
-        self.unscanned = changed.then(|| {
+        self.unscanned = (changed || !tracked.is_empty()).then(|| {
             (self.trees.local().iter())
                 .filter(|(id, node)| node.shape.kind == Kind::Dir && !self.scanned(id))
                 .map(|(id, _)| id.clone())
@@ -3618,8 +3618,8 @@ mod tests {
             vec![("".into(), vec!["dist/app.js".into()])],
             true,
         );
-        let folder = Observed::Created {
-            path: "dist".into(),
+        let folder = |path: &str| Observed::Created {
+            path: path.into(),
             kind: EntryKind::Dir,
             id: ino(1),
             linked: false,
@@ -3628,7 +3628,11 @@ mod tests {
         };
         let app = created("dist/app.js", ino(2), false, 1);
         engine.observe(
-            &[folder, app, created("dist/other.js", ino(3), false, 1)],
+            &[
+                folder("dist"),
+                app,
+                created("dist/other.js", ino(3), false, 1),
+            ],
             0,
         );
         let excluded =
@@ -3636,6 +3640,14 @@ mod tests {
         assert!(!excluded(&engine, "dist/app.js") && excluded(&engine, "dist/other.js"));
         engine.rules(Vec::new(), vec![("".into(), Vec::new())], false);
         assert!(excluded(&engine, "dist/app.js"));
+        let node = holding(&engine, "dist").unwrap().0;
+        engine.rules(
+            Vec::new(),
+            vec![("".into(), vec!["dist/app.js".into()])],
+            false,
+        );
+        engine.observe(&[folder("out")], 0);
+        assert_eq!(holding(&engine, "out").unwrap().0, node);
     }
 
     /// A reset queued before a child entered L leaves the snapshot without the
