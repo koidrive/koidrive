@@ -1682,7 +1682,7 @@ fn a_deleted_folder_whose_system_files_pass_the_commit_limit_is_sent_in_pieces()
     remove(&mut trees, &["d"]);
     assert_eq!(build_at(&mut commits, &mut trees, &mut ids, NOW), []);
     let id = asked(&commits).unwrap().id.clone();
-    assert!(commits.decide(&id, Answer::Delete));
+    assert!(commits.decide(&mut trees, &id, Answer::Delete));
     let mut sent = 0;
     for seq in 1..20 {
         let gone = deleted(&build_at(&mut commits, &mut trees, &mut ids, NOW));

@@ -5662,7 +5662,7 @@ fn system_files_an_answer_gave_up_are_not_counted_again_when_their_folder_is_del
     let mut trees = trees(&local, &synced, &remote);
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
-    assert!(commits.decide(&question.id, Answer::Publish));
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),
         [("move", "d".into())]

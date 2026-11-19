@@ -930,8 +930,6 @@ impl Commits {
                 let question = &self.questions[index];
                 let settled = trees.rules_known()
                     && !matches!(*self.halted, Some(Halt::Recovery { .. }))
-                    && !(self.in_flight.as_ref())
-                        .is_some_and(|flight| reaches_into(trees, flight, question))
                     && first_link::still_shown(trees, question)
                     && trees.settled_below(&question.shown);
                 let frozen = settled.then(|| trees.below(&question.shown));
@@ -3832,26 +3830,6 @@ fn edited_on_both_sides(trees: &Trees, id: &NodeId) -> bool {
     let s = content(trees.acknowledged(id));
     let changed = |c: &Content| s.as_ref().is_none_or(|s| !same_content(c, s));
     (changed(&l) || trees.unsent_edits().contains(id)) && changed(&r) && !same_content(&l, &r)
-}
-
-fn reaches_into(trees: &Trees, flight: &InFlight, question: &Question) -> bool {
-    let steps = trees.local().len() + trees.remote().len();
-    (flight.commit.ops.iter().filter_map(|op| op.op.as_ref())).any(|op| {
-        let first = op_node(op);
-        let mut at = &first;
-        for _ in 0..=steps {
-            if question.shown.contains_key(at) {
-                return true;
-            }
-            let parent = (trees.local().get(at).map(|node| &node.shape.parent))
-                .or_else(|| trees.remote().get(at).map(|node| &node.shape.parent));
-            match parent {
-                Some(parent) => at = parent,
-                None => return false,
-            }
-        }
-        false
-    })
 }
 
 fn holds_server_entry(trees: &Trees, id: &NodeId) -> bool {
