@@ -255,8 +255,7 @@ fn a_mount_point_that_cannot_be_opened_is_left_out_once_its_folder_rules_leave_i
 }
 
 #[test]
-fn one_search_finds_entries_moved_behind_it_past_a_locked_file_and_a_socket_and_fails_at_a_folder_it_cannot_list()
- {
+fn one_search_finds_files_moved_behind_it_or_into_a_new_scope_past_a_locked_file_and_a_socket() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -281,9 +280,12 @@ fn one_search_finds_entries_moved_behind_it_past_a_locked_file_and_a_socket_and_
         known("elsewhere.txt"),
     ];
     let logs = PathBuf::from("logs");
+    let later = PathBuf::from("later");
     let mut search = Search::new(wanted.clone());
     assert_eq!(
-        search.step(root, &[&logs], &mut 1, &|| false).unwrap(),
+        search
+            .step(root, &[&logs, &later], &mut 1, &|| false)
+            .unwrap(),
         None
     );
     fs::rename(
@@ -291,9 +293,17 @@ fn one_search_finds_entries_moved_behind_it_past_a_locked_file_and_a_socket_and_
         root.join("logs/report.docx"),
     )
     .unwrap();
+    fs::create_dir(root.join("later")).unwrap();
+    fs::rename(
+        root.join("logs/deep/notes.txt"),
+        root.join("later/notes.txt"),
+    )
+    .unwrap();
     let found = (0..1000)
         .find_map(|_| {
-            let step = search.step(root, &[&logs], &mut 1, &|| false).unwrap();
+            let step = search
+                .step(root, &[&logs, &later], &mut 1, &|| false)
+                .unwrap();
             std::thread::sleep(std::time::Duration::from_millis(5));
             step
         })
@@ -304,13 +314,13 @@ fn one_search_finds_entries_moved_behind_it_past_a_locked_file_and_a_socket_and_
         .collect();
     assert_eq!(
         found,
-        [Some("logs/report.docx"), Some("logs/deep/notes.txt"), None]
+        [Some("logs/report.docx"), Some("later/notes.txt"), None]
     );
 
     fs::create_dir(root.join("logs/sealed")).unwrap();
     fs::set_permissions(root.join("logs/sealed"), fs::Permissions::from_mode(0o0)).unwrap();
     let mut all = usize::MAX;
-    let sealed = Search::new(wanted).step(root, &[&logs], &mut all, &|| false);
+    let sealed = Search::new(wanted).step(root, &[&logs, &later], &mut all, &|| false);
     fs::set_permissions(root.join("logs/sealed"), fs::Permissions::from_mode(0o755)).unwrap();
     fs::set_permissions(
         root.join("logs/locked.log"),

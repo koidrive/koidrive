@@ -663,6 +663,7 @@ pub struct Search {
     covered: Vec<PathBuf>,
     scopes: Vec<PathBuf>,
     folders: Vec<PathBuf>,
+    absent: Vec<PathBuf>,
     listed: BTreeMap<PathBuf, ([i128; 2], i128)>,
     ticks: HashMap<u64, i128>,
 }
@@ -675,6 +676,7 @@ impl Search {
             covered: Vec::new(),
             scopes: Vec::new(),
             folders: Vec::new(),
+            absent: Vec::new(),
             listed: BTreeMap::new(),
             ticks: HashMap::new(),
         }
@@ -699,22 +701,8 @@ impl Search {
         }
         let root = open_root(root)?;
         while let Some(scope) = self.scopes.pop() {
-            let (Some(parent), Some(name)) = (scope.parent(), scope.file_name()) else {
-                self.folders.push(scope);
-                continue;
-            };
-            let Some((dir, _)) = open_attached(root.as_fd(), parent, &mut |_| {})? else {
-                continue;
-            };
-            let stat = match stat_at(dir.as_fd(), name) {
-                Err(err) if is_gone(&err) => continue,
-                stat => stat?,
-            };
-            if self.hit(&stat, &scope) {
+            if self.probe(root.as_fd(), scope)? {
                 return Ok(Some(std::mem::take(&mut self.hits)));
-            }
-            if stat.file_type == FileType::Directory {
-                self.folders.push(scope);
             }
         }
         while let Some(folder) = self.folders.pop() {
@@ -759,10 +747,35 @@ impl Search {
                 self.folders.push(folder);
             }
         }
+        for scope in std::mem::take(&mut self.absent) {
+            if self.probe(root.as_fd(), scope)? {
+                return Ok(Some(std::mem::take(&mut self.hits)));
+            }
+        }
         if !self.folders.is_empty() {
             return Ok(None);
         }
         Ok(Some(std::mem::take(&mut self.hits)))
+    }
+
+    fn probe(&mut self, root: BorrowedFd<'_>, scope: PathBuf) -> io::Result<bool> {
+        let (Some(parent), Some(name)) = (scope.parent(), scope.file_name()) else {
+            self.folders.push(scope);
+            return Ok(false);
+        };
+        let stat = match open_attached(root, parent, &mut |_| {})? {
+            None => None,
+            Some((dir, _)) => match stat_at(dir.as_fd(), name) {
+                Err(err) if is_gone(&err) => None,
+                stat => Some(stat?),
+            },
+        };
+        match stat {
+            Some(stat) if self.hit(&stat, &scope) => return Ok(true),
+            Some(stat) if stat.file_type == FileType::Directory => self.folders.push(scope),
+            _ => self.absent.push(scope),
+        }
+        Ok(false)
     }
 
     fn hit(&mut self, stat: &Stat, at: &Path) -> bool {
