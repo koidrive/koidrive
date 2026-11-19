@@ -77,7 +77,7 @@ use koidrive_engine::tree::{
 };
 use koidrive_proto::v1::{
     ChunkRef, Commit, Error, ListVersions, NodeKind, NodeState, NodeStatus, PrepareUpload, Resume,
-    UploadReceipt, chunk_plan, error, op, op_result, resync_required,
+    UploadReceipt, change_record, chunk_plan, error, op, op_result, resync_required,
 };
 use sha2::{Digest, Sha256};
 
@@ -2981,6 +2981,30 @@ impl World {
                                         &NodeId::from(node),
                                         &NodeId::from(&outcome.node_id),
                                     );
+                                }
+                            }
+                            if (sent.ops.iter()).any(|op| matches!(op.op, Some(op::Op::Delete(_))))
+                            {
+                                let changed: Vec<&NodeState> = (committed.result.changes.iter())
+                                    .filter_map(|change| match &change.change {
+                                        Some(change_record::Change::Node(state)) => Some(state),
+                                        _ => None,
+                                    })
+                                    .collect();
+                                let content = |node: &NodeState| {
+                                    Some(node.intents.as_ref()?.content.as_ref()?.id.clone())
+                                };
+                                let live =
+                                    |node: &NodeState| node.status == NodeStatus::Live as i32;
+                                for trashed in changed.iter().filter(|node| !live(node)) {
+                                    let Some(intent) = content(trashed) else {
+                                        continue;
+                                    };
+                                    for copy in &changed {
+                                        if live(copy) && content(copy).as_ref() == Some(&intent) {
+                                            self.intents.copied(&trashed.node_id, &copy.node_id);
+                                        }
+                                    }
                                 }
                             }
                             let server = Server::of(self.space.space_id(), self.space.nodes());
