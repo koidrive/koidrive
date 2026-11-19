@@ -852,7 +852,7 @@ impl Tx<'_> {
     /// Empties the sync state to what a first link starts from, keeping the link with its root tokens, the volume
     /// mounts, the chunk cache, the ID generator and the restores a person asked for.
     pub fn forget_sync_state(&self) -> Result<()> {
-        const KEPT: [&str; 7] = [
+        const KEPT: [&str; 8] = [
             "migrations",
             "link",
             "volume_mounts",
@@ -860,6 +860,7 @@ impl Tx<'_> {
             "restore_requests",
             "restore_intents",
             "restore_asked",
+            "split_restores",
         ];
         let ids = self.id_generator()?;
         let tables: Vec<String> = self

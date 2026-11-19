@@ -55,7 +55,7 @@ export const op = {
   update: (nodeId: string, content: Content): Op => create(OpSchema, { op: { case: "updateContent", value: { nodeId, content } } }),
   move: (nodeId: string, newParentId: string, newName: string): Op =>
     create(OpSchema, { op: { case: "move", value: { nodeId, newParentId, newName } } }),
-  delete: (nodeId: string): Op => create(OpSchema, { op: { case: "delete", value: { nodeId } } }),
+  delete: (nodeId: string, trashGroup = ""): Op => create(OpSchema, { op: { case: "delete", value: { nodeId, trashGroup } } }),
   restore: (nodeId: string, init: { versionId?: string; targetParentId?: string; name?: string } = {}): Op =>
     create(OpSchema, { op: { case: "restore", value: { nodeId, ...init } } }),
 };

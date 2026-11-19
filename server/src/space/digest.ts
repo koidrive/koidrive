@@ -18,9 +18,9 @@ function content(value: Content | undefined): Content | undefined {
   });
 }
 
-export type DigestVersion = 1 | 2 | 3 | 4 | 5;
+export type DigestVersion = 1 | 2 | 3 | 4 | 5 | 6;
 
-export const DIGEST_VERSION: DigestVersion = 5;
+export const DIGEST_VERSION: DigestVersion = 6;
 
 export type Digests = Record<DigestVersion, Uint8Array>;
 
@@ -32,6 +32,7 @@ function op(each: Op, version: DigestVersion): Op {
   if (projected.op.case === "delete" && each.op.case === "delete") {
     projected.op.value.unseen = each.op.value.unseen;
     projected.op.value.held = each.op.value.held;
+    if (version >= 6) projected.op.value.trashGroup = each.op.value.trashGroup;
   }
   if (projected.op.case === "createFile" && each.op.case === "createFile") projected.op.value.pendingFor = each.op.value.pendingFor;
   return projected;
@@ -103,5 +104,6 @@ export async function commitDigests(commit: Commit): Promise<Digests> {
     3: await commitDigest(commit, 3),
     4: await commitDigest(commit, 4),
     5: await commitDigest(commit, 5),
+    6: await commitDigest(commit, 6),
   };
 }

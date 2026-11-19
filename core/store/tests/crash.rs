@@ -62,6 +62,7 @@ fn engine(seq: u64, taken: Vec<(RestoreId, RestoreIntent)>) -> EngineState {
                 },
                 deletes: BTreeMap::new(),
                 restores: BTreeMap::new(),
+                owners: BTreeMap::new(),
                 result: None,
             }),
             restores: taken.into_iter().collect(),

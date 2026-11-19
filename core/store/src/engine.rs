@@ -11,6 +11,7 @@ use koidrive_engine::classify::{Origin, Waiting};
 use koidrive_engine::commit::{Halt, InFlight, Slot};
 use koidrive_engine::effects::{Base, Dir, Displaced, Effect, EffectRecord, Location};
 use koidrive_engine::question::{RecoveryCause, RecoveryTrigger, Revisions};
+use koidrive_engine::restore::SplitRestore;
 use koidrive_engine::state::{
     Agreed, CommitsChanges, CommitsState, ContentProvenance, EffectsChanges, EffectsState,
     FinishOrigin, GivenUp, LostPosition, MapChanges, MovedHere, PendingFinish, SetChanges,
@@ -416,6 +417,29 @@ impl Tx<'_> {
         }
         let mut stmt = self
             .0
+            .prepare_cached("SELECT node_id, trash_group FROM trash_groups")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            state.commits.trash_groups.insert(row.get(0)?, row.get(1)?);
+        }
+        let mut stmt = (self.0).prepare_cached(
+            "SELECT restore_id, trash_group, parent_id, name, folders, landed_parent_id, landed_name FROM split_restores",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let folders: String = row.get(4)?;
+            let split = SplitRestore {
+                trash_group: row.get(1)?,
+                parent: row.get(2)?,
+                name: row.get(3)?,
+                folders: serde_json::from_str(&folders)
+                    .map_err(|error| invalid(format!("split restore folders: {error}")))?,
+                landed: Option::zip(row.get(5)?, row.get(6)?),
+            };
+            state.commits.split_restores.insert(row.get(0)?, split);
+        }
+        let mut stmt = self
+            .0
             .prepare_cached("SELECT node_id, pending_for FROM unsent_marks")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
@@ -593,6 +617,8 @@ impl Tx<'_> {
             halted,
             cap,
             split,
+            trash_groups,
+            split_restores,
             aliases,
             restores,
             resolved,
@@ -983,6 +1009,7 @@ impl Tx<'_> {
                 "commit_in_flight_deletes",
                 "commit_in_flight_delete_members",
                 "commit_in_flight_restore_members",
+                "commit_in_flight_restore_owners",
             ] {
                 self.0.execute(&format!("DELETE FROM {table}"), [])?;
             }
@@ -1013,6 +1040,12 @@ impl Tx<'_> {
                     for (position, node) in nodes.iter().enumerate() {
                         restored.execute(params![index, position, node])?;
                     }
+                }
+                let mut owners = self.0.prepare_cached(
+                    "INSERT INTO commit_in_flight_restore_owners (op, restore_id) VALUES (?1, ?2)",
+                )?;
+                for (index, id) in &flight.owners {
+                    owners.execute(params![index, id])?;
                 }
             }
         }
@@ -1045,6 +1078,22 @@ impl Tx<'_> {
         if let Some(questions) = questions {
             self.set_open_questions(questions)?;
         }
+        self.write_map(
+            trash_groups,
+            "DELETE FROM trash_groups WHERE node_id = ?1",
+            "INSERT OR REPLACE INTO trash_groups (node_id, trash_group) VALUES (?1, ?2)",
+            |put, node, group| put.execute(params![node, group]),
+        )?;
+        self.write_map(
+            split_restores,
+            "DELETE FROM split_restores WHERE restore_id = ?1",
+            "INSERT OR REPLACE INTO split_restores (restore_id, trash_group, parent_id, name, folders, landed_parent_id, landed_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            |put, id, split| {
+                let folders = serde_json::to_string(&split.folders).expect("node ids encode");
+                let (landed_parent, landed_name) = split.landed.clone().unzip();
+                put.execute(params![id, split.trash_group, split.parent, split.name, folders, landed_parent, landed_name])
+            },
+        )?;
         self.write_set(
             published,
             "DELETE FROM published_nodes WHERE node_id = ?1",
@@ -1219,10 +1268,16 @@ impl Tx<'_> {
         while let Some(row) = rows.next()? {
             restores.entry(row.get(0)?).or_default().push(row.get(1)?);
         }
+        let owners = self
+            .0
+            .prepare_cached("SELECT op, restore_id FROM commit_in_flight_restore_owners")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
         Ok(Some(InFlight {
             commit: Commit::decode(commit.as_slice())?,
             deletes,
             restores,
+            owners,
             result: decode(result)?,
         }))
     }

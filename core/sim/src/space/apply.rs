@@ -9,7 +9,7 @@ use koidrive_proto::v1::{
     NodeStatus, Op, OpResult, Place, Restore, change_record, error, op, op_result,
 };
 
-use super::{ChunkState, Node, Session, State, Version, fail};
+use super::{ChunkState, Node, Session, State, StoredResult, Version, fail};
 
 pub const MAX_DEPTH: usize = 256;
 
@@ -20,6 +20,7 @@ pub(super) struct Context<'a> {
     pub now_ms: i64,
     pub committer: &'a Session,
     pub copies_created_files: bool,
+    pub results: &'a HashMap<String, StoredResult>,
 }
 
 type Reject = &'static str;
@@ -800,7 +801,9 @@ impl<'a> Applier<'a> {
                 _ => return result(op_result::Code::Superseded, "", ""),
             },
         };
-        if self.trash_subtree(&node, &format!("{}:{index}", self.ctx.commit_id)) {
+        let group = (self.joined_group(&op.trash_group, index))
+            .unwrap_or_else(|| format!("{}:{index}", self.ctx.commit_id));
+        if self.trash_subtree(&node, &group) {
             return result(op_result::Code::Superseded, "", "");
         }
         if let Some(required) = required {
@@ -814,6 +817,22 @@ impl<'a> Applier<'a> {
             stored.parent_dev = dev;
         }
         result(op_result::Code::Applied, "", "")
+    }
+
+    fn joined_group(&self, group: &str, index: usize) -> Option<String> {
+        let (commit_id, at) = group.rsplit_once(':')?;
+        let at: usize = at.parse().ok()?;
+        let joins = match commit_id == self.ctx.commit_id {
+            true => at <= index,
+            false => {
+                let own = (self.ctx.results.get(commit_id))
+                    .is_some_and(|stored| stored.device_id == self.ctx.committer.device_id);
+                own && (self.st.nodes.values()).any(|node| {
+                    node.status == NodeStatus::Trashed && node.trash_group.as_deref() == Some(group)
+                })
+            }
+        };
+        (joins && format!("{commit_id}:{at}") == group).then(|| group.to_owned())
     }
 
     fn restore(&mut self, op: &Restore) -> Result<OpResult, Error> {

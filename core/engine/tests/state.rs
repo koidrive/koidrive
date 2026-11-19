@@ -12,7 +12,7 @@ use koidrive_engine::ids::uuid_v7;
 use koidrive_engine::question::{
     Answer, Held, Limit, Question, QuestionKind, RecoveryCause, Revisions,
 };
-use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent};
+use koidrive_engine::restore::{Outcome, Rejection, Resolved, RestoreIntent, SplitRestore};
 use koidrive_engine::state::{
     Agreed, CommitsState, EffectsState, FinishOrigin, GivenUp, KeptEntries, LostPosition,
     MovedHere, PendingFinish, StateError, TreesState,
@@ -338,6 +338,7 @@ fn commits_state() -> CommitsState {
             },
             deletes: [("d".into(), vec!["d".into(), "e".into()])].into(),
             restores: [(2, vec!["r".into(), "s".into()])].into(),
+            owners: [(2, "r1".into())].into(),
             result: Some(CommitResult {
                 results: vec![OpResult::default(); 3],
                 ..Default::default()
@@ -347,6 +348,18 @@ fn commits_state() -> CommitsState {
         halted: Some(Halt::Recovery(RecoveryCause::rewind(4, 1_700_000_000_000))),
         cap: Some(4),
         split: ["s".into()].into(),
+        trash_groups: [("s".into(), "commit:0".into())].into(),
+        split_restores: [(
+            "r1".into(),
+            SplitRestore {
+                trash_group: "commit:1".into(),
+                parent: "f".into(),
+                name: "d".into(),
+                folders: ["e".into()].into(),
+                landed: Some(("f".into(), "d (2)".into())),
+            },
+        )]
+        .into(),
         aliases: [("f".into(), "g".into())].into(),
         restores: [("r1".into(), restore(1)), ("r2".into(), restore(2))].into(),
         resolved: vec![Resolved {

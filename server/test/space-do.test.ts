@@ -405,6 +405,50 @@ describe("conflict rules", () => {
     expect(groups).toEqual(new Map([[first, `${commitId}:0`], [second, `${commitId}:1`]]));
   });
 
+  it("RFC 0031: a deletion that takes several commits trashes into one group, and its restore brings back every node", async () => {
+    const { a, root } = await setup();
+    const dir = uuidv7();
+    await a.commit([op.mkdir(dir, root, "Big")]);
+    const files = [];
+    for (const name of ["a", "b", "c"]) files.push((await createFile(a, dir, name, name)).nodeId);
+    const first = uuidv7();
+    await a.commit([op.delete(files[0]!), op.delete(files[1]!, `${first}:0`)], { commitId: first });
+    const result = await a.commit([op.delete(dir, `${first}:0`)]);
+    expect(result.results[0]!.code).toBe(OpResult_Code.APPLIED);
+    const groups = new Set(result.changes.flatMap((c) => (c.change.case === "node" ? [c.change.value.trashGroup] : [])));
+    expect(groups).toEqual(new Set([`${first}:0`]));
+
+    await a.commit([op.restore(dir)]);
+    const tree = await a.tree();
+    expect([dir, ...files].every((id) => tree.has(id))).toBe(true);
+  });
+
+  it("RFC 0031: a delete keeps its own group when the group it names is not one this device opened", async () => {
+    const { a, b, root } = await setup();
+    const opened = uuidv7();
+    const first = uuidv7();
+    await a.commit([op.mkdir(first, root, "First")]);
+    await a.commit([op.delete(first)], { commitId: opened });
+    const cases: [TestClient, (sent: string) => string][] = [
+      [b, () => `${opened}:0`],
+      [a, (sent) => `${sent}:1`],
+      [a, (sent) => `${sent}:00`],
+      [a, () => `${uuidv7()}:0`],
+      [a, () => "forged"],
+    ];
+    for (const [device, named] of cases) {
+      const dir = uuidv7();
+      await a.commit([op.mkdir(dir, root, named("x"))]);
+      device.baseSeq = a.baseSeq;
+      const sent = uuidv7();
+      const result = await device.commit([op.delete(dir, named(sent))], { commitId: sent });
+      expect(result.results[0]!.code).toBe(OpResult_Code.APPLIED);
+      const groups = result.changes.flatMap((c) => (c.change.case === "node" ? [c.change.value.trashGroup] : []));
+      expect(groups).toEqual([`${sent}:0`]);
+      a.baseSeq = device.baseSeq;
+    }
+  });
+
   it("R8: an unseen edit revives a deleted file, and creating inside a trashed folder revives the folder", async () => {
     const { a, b, root } = await setup();
     const dir = uuidv7();

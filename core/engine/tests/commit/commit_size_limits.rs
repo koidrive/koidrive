@@ -240,9 +240,17 @@ fn a_delete_that_does_not_fit_alone_deletes_the_folder_contents_first() {
         commits.failed(&mut trees, &refusal(error::Code::LimitExceeded, 0)),
         Ok(Failure::Split)
     );
-    let mut second = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
-    second.sort_by_key(|op| format!("{op:?}"));
-    assert_eq!(second, [delete("e"), delete("s")]);
+    let second = build(&mut commits, &mut trees, &mut ids).unwrap().clone();
+    let grouped = |node: &str| {
+        op::Op::Delete(proto::Delete {
+            node_id: node.into(),
+            trash_group: format!("{}:0", second.commit_id),
+            ..Default::default()
+        })
+    };
+    let mut deletes = ops(&second);
+    deletes.sort_by_key(|op| format!("{op:?}"));
+    assert_eq!(deletes, [grouped("e"), grouped("s")]);
     acknowledge(
         &mut commits,
         &mut trees,
@@ -257,7 +265,7 @@ fn a_delete_that_does_not_fit_alone_deletes_the_folder_contents_first() {
         trees.set_remote(id.into(), trashed(shape));
     }
     let third = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&third), [delete("d")]);
+    assert_eq!(ops(&third), [grouped("d")]);
     acknowledge(
         &mut commits,
         &mut trees,

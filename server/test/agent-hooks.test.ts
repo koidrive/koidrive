@@ -85,6 +85,15 @@ describe("RFC 0006 section 8: digest v1", () => {
     expect(toHex(await commitDigest(resent, 2))).not.toBe(toHex(await commitDigest(plain, 2)));
   });
 
+  it("covers the trash group a delete joins from digest v6 and leaves digest v5 as it was", async () => {
+    const deleting = (trashGroup: string) =>
+      create(CommitSchema, { baseSeq: 1n, deviceSeq: 2n, ops: [create(OpSchema, { op: { case: "delete", value: { nodeId: "n", trashGroup } } })] });
+    const [own, joined] = [deleting(""), deleting("c:0")];
+    expect(toHex(await commitDigest(own, 6))).toBe(toHex(await commitDigest(own, 5)));
+    expect(toHex(await commitDigest(joined, 5))).toBe(toHex(await commitDigest(own, 5)));
+    expect(toHex(await commitDigest(joined, 6))).not.toBe(toHex(await commitDigest(own, 6)));
+  });
+
   it("covers pending marks from digest v3 and leaves digest v2 as it was", async () => {
     const marked = (pendingFor: string) =>
       create(CommitSchema, {

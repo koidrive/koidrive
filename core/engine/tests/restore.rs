@@ -724,6 +724,96 @@ fn a_restore_that_does_not_fit_alone_is_resolved() {
     assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
 }
 
+fn big_folder_in_trash(folder: u128, name: &str) -> Vec<Row> {
+    let chunk = proto::ChunkRef {
+        hash: vec![7; 32],
+        size: 3,
+        encoding: 0,
+    };
+    let content = Some(Content {
+        chunks: vec![chunk; 4096],
+        chunk_count: 4096,
+        ..content(1)
+    });
+    let mut rows = vec![in_trash(id(folder), dir(&root(), name))];
+    for n in 0..8 {
+        let shape = file(&id(folder), &format!("f{n}"), 1);
+        let content = content.clone();
+        rows.push(in_trash(id(folder * 100 + n), Shape { content, ..shape }));
+    }
+    rows
+}
+
+#[test]
+fn a_reset_asks_only_about_the_split_restores_a_piece_in_flight_carried() {
+    let (first, second) = (from_trash(&id(1)), from_trash(&id(2)));
+    let mut trees = trees(&[big_folder_in_trash(1, "a"), big_folder_in_trash(2, "b")].concat());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    commits.restore(id(100), first.clone());
+    commits.restore(id(101), second.clone());
+    build(&mut commits, &mut trees, &mut ids).unwrap();
+    let mut reset = Commits::default();
+    reset.restore(id(100), first);
+    reset.restore(id(101), second);
+    reset.ask_unsettled_restores(&commits, &mut ids, 0);
+    let [question] = reset.questions() else {
+        panic!("one question: {:?}", reset.questions());
+    };
+    assert!(question.held.keys().eq([&id(100)]));
+}
+
+#[test]
+fn a_piece_of_a_split_restore_answered_superseded_leaves_the_restore_going() {
+    let (folder, request) = (id(1), id(100));
+    let mut trees = trees(&big_folder_in_trash(1, "d"));
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    commits.restore(request, from_trash(&folder));
+    let pieces = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    assert!(!pieces.contains(&restore_op(&from_trash(&folder))));
+    let superseded = vec![outcome(op_result::Code::Superseded); pieces.len()];
+    acknowledge(&mut commits, &mut trees, superseded);
+    assert!(commits.resolved().is_empty());
+    let again = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&again), pieces);
+}
+
+#[test]
+fn a_rejected_piece_ends_its_split_restore_and_not_a_later_request_for_the_same_node() {
+    let mut trees = trees(&big_folder_in_trash(3, "d"));
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    commits.restore(id(900), from_trash(&id(3)));
+    let pieces = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+    let later = from_trash(&id(307));
+    assert!(pieces.contains(&restore_op(&later)));
+    commits.restore(id(901), later);
+    acknowledge(&mut commits, &mut trees, vec![rejected("NO"); pieces.len()]);
+    let ended: Vec<&String> = commits.resolved().iter().map(|ended| &ended.id).collect();
+    assert_eq!(ended, [&id(900)]);
+    assert!(commits.restores().contains_key(&id(901)));
+}
+
+#[test]
+fn a_split_restore_a_read_only_device_cannot_finish_ends_once_its_piece_is_answered() {
+    let mut trees = trees(&big_folder_in_trash(3, "d"));
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let intent = from_trash(&id(3));
+    commits.restore(id(900), intent.clone());
+    let pieces = build(&mut commits, &mut trees, &mut ids).unwrap().ops.len();
+    let read_only = Welcome {
+        read_only: true,
+        ..welcome(0)
+    };
+    commits.connected(&read_only);
+    assert_eq!(commits.resolved(), []);
+    acknowledge(
+        &mut commits,
+        &mut trees,
+        vec![outcome(op_result::Code::Applied); pieces],
+    );
+    let refused = Outcome::Rejected(Rejection::ReadOnly);
+    assert_eq!(commits.resolved(), [ended(&id(900), &intent, refused)]);
+}
+
 #[test]
 fn a_restore_in_a_commit_that_does_not_fit_is_sent_again_in_a_smaller_one() {
     let (n, request) = (id(1), id(100));
@@ -1061,7 +1151,7 @@ fn two_requests_for_the_same_restore_are_sent_and_resolved_one_each() {
         vec![outcome(op_result::Code::Applied)],
     );
     let ended: Vec<&String> = commits.resolved().iter().map(|ended| &ended.id).collect();
-    assert_eq!(ended, [&id(100), &id(101)]);
+    assert_eq!(ended, [&id(101), &id(100)]);
 }
 
 #[test]
