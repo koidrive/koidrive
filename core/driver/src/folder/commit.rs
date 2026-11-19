@@ -179,7 +179,7 @@ impl Folder {
             if result.seq == staging.last_seq() + 1 {
                 staging.replay_commit(at, &result.changes)?;
             } else {
-                staging.remember(result.seq, &result.changes);
+                staging.remember(&at, &result.changes);
             }
             if ours {
                 self.step(|engine, _| receive(engine, result))?;

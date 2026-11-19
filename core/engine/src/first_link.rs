@@ -6,6 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use koidrive_proto::v1::{ChangeRecord, change_record};
+
 use crate::classify::Trees;
 use crate::commit::{rekey, set_synced_together};
 use crate::ids::IdGen;
@@ -24,8 +26,50 @@ pub type History = BTreeMap<NodeId, Vec<Shape>>;
 /// keyed by their ID in L. The caller keeps only marks written on the entry as L holds it.
 pub type Marks = BTreeMap<NodeId, NodeId>;
 
-/// Each state the server's log gave a node, in seq order.
-pub type Log = BTreeMap<NodeId, Vec<RemoteNode>>;
+/// What a recovery reads from the server's log.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Log {
+    /// For a store rollback within one history: each shape the log gave a node since the store's
+    /// cursor.
+    SinceCursor(History),
+    /// After a history change: the current history's log from `floor_seq`, as the commit time of
+    /// each node's latest create and of the first commit read.
+    SinceFloor {
+        floor_seq: u64,
+        first_ms: Option<i64>,
+        created_ms: BTreeMap<NodeId, i64>,
+    },
+}
+
+impl Log {
+    /// Takes the changes of the commit at `seq`, committed at `committed_ms`. A node state that
+    /// sets `content_rev` and `meta_rev` to `seq` is a create.
+    pub fn record(&mut self, seq: u64, committed_ms: i64, changes: &[ChangeRecord]) {
+        let states = (changes.iter()).filter_map(|change| match &change.change {
+            Some(change_record::Change::Node(state)) => Some(state),
+            _ => None,
+        });
+        match self {
+            Log::SinceCursor(history) => {
+                for (id, node) in states.filter_map(|state| RemoteNode::from_state(state).ok()) {
+                    history.entry(id).or_default().push(node.shape);
+                }
+            }
+            Log::SinceFloor {
+                first_ms,
+                created_ms,
+                ..
+            } => {
+                first_ms.get_or_insert(committed_ms);
+                for state in
+                    states.filter(|state| state.content_rev == seq && state.meta_rev == seq)
+                {
+                    created_ms.insert(state.node_id.clone(), committed_ms);
+                }
+            }
+        }
+    }
+}
 
 /// What a recovery learns from the server's log.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -33,50 +77,63 @@ pub struct LogRead {
     /// After a store rollback within one history: the shape R₀ gives each live node, then each
     /// shape the log gave it since the store's cursor.
     pub history: History,
-    /// After a history change: the nodes R′ holds only since the restore point.
+    /// After a history change: the files R′ holds only since S₀.
     pub recreated: BTreeSet<NodeId>,
 }
 
 impl LogRead {
-    /// `log` is the log since the store's cursor when `cause` names no restore point, and the
-    /// new history's log from its first seq when it does; `None` when the log no longer reaches
-    /// back that far.
+    /// `log` is `None` when the log no longer reaches back to where the recovery asked for it.
     pub fn new(trees: &Trees, cause: &RecoveryCause, log: Option<Log>) -> LogRead {
-        let Some(restore_point_ms) = cause.restore_point_ms else {
-            let Some(log) = log else {
-                return LogRead::default();
-            };
-            let mut history: History = (trees.remote().iter())
-                .filter(|(_, node)| !node.trashed)
-                .map(|(id, node)| (id.clone(), vec![node.shape.clone()]))
-                .collect();
-            for (id, states) in log {
-                (history.entry(id).or_default()).extend(states.into_iter().map(|node| node.shape));
+        let synced_ms = (trees.synced().iter())
+            .filter(|(_, shape)| shape.kind == Kind::File)
+            .filter_map(|(id, _)| {
+                let version_ms = trees.synced_version_id(id).and_then(crate::ids::unix_ms)?;
+                Some((id, i64::try_from(version_ms).ok()?))
+            });
+        let after_restore_point = |synced_ms: i64| {
+            cause
+                .restore_point_ms
+                .is_some_and(|point| synced_ms > point)
+        };
+        match log {
+            Some(Log::SinceCursor(log)) => {
+                let mut history: History = (trees.remote().iter())
+                    .filter(|(_, node)| !node.trashed)
+                    .map(|(id, node)| (id.clone(), vec![node.shape.clone()]))
+                    .collect();
+                for (id, shapes) in log {
+                    history.entry(id).or_default().extend(shapes);
+                }
+                LogRead {
+                    history,
+                    recreated: BTreeSet::new(),
+                }
             }
-            return LogRead {
-                history,
-                recreated: BTreeSet::new(),
-            };
-        };
-        let recreated = match log {
-            Some(log) => (log.into_iter())
-                .filter(|(_, states)| {
-                    (states.first()).is_some_and(|first| first.content_rev == first.meta_rev)
-                })
-                .map(|(id, _)| id)
-                .collect(),
-            None => (trees.synced().iter())
-                .filter(|(_, shape)| shape.kind == Kind::File)
-                .filter(|(id, _)| {
-                    (trees.synced_version_id(id).and_then(crate::ids::unix_ms))
-                        .is_none_or(|committed_ms| committed_ms as i64 > restore_point_ms)
-                })
-                .map(|(id, _)| id.clone())
-                .collect(),
-        };
-        LogRead {
-            history: History::new(),
-            recreated,
+            Some(Log::SinceFloor {
+                floor_seq,
+                first_ms,
+                created_ms,
+            }) => LogRead {
+                history: History::new(),
+                recreated: synced_ms
+                    .filter(|(id, synced_ms)| {
+                        let reaches_back =
+                            floor_seq == 0 || first_ms.is_some_and(|first| first <= *synced_ms);
+                        created_ms
+                            .get(*id)
+                            .is_some_and(|created| created > synced_ms)
+                            || (!reaches_back && after_restore_point(*synced_ms))
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect(),
+            },
+            None => LogRead {
+                history: History::new(),
+                recreated: synced_ms
+                    .filter(|(_, synced_ms)| after_restore_point(*synced_ms))
+                    .map(|(id, _)| id.clone())
+                    .collect(),
+            },
         }
     }
 }

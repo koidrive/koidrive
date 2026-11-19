@@ -239,33 +239,40 @@ fn a_recovery_question_records_the_rewind_it_comes_from() {
 
 #[test]
 fn a_device_back_after_another_devices_keep_is_asked_about_its_own_write() {
-    let mut remote = Remote::new();
-    let (site_a, mut a) = linked(&mut remote, "a");
-    let (site_b, mut b) = linked(&mut remote, "b");
-    let backup = remote.space.clone();
-    a.create(&mut remote, &site_a.root.join("c.txt"), b"one");
-    b.pull(&remote);
-    b.rest(&mut remote);
-    b.create(&mut remote, &site_b.root.join("c.txt"), b"two");
-    remote.space.rewind(&backup, NOW);
+    for rewound_again in [false, true] {
+        let mut remote = Remote::new();
+        let (site_a, mut a) = linked(&mut remote, "a");
+        let (site_b, mut b) = linked(&mut remote, "b");
+        let backup = remote.space.clone();
+        a.create(&mut remote, &site_a.root.join("c.txt"), b"one");
+        b.pull(&remote);
+        b.rest(&mut remote);
+        b.create(&mut remote, &site_b.root.join("c.txt"), b"two");
+        remote.space.rewind(&backup, NOW);
+        remote.now_ms += 60_000;
 
-    a.pull(&remote);
-    assert_eq!(a.run(&mut remote).first(), Some(&"reconnect"));
-    a.settle();
-    a.run(&mut remote);
-    drop(a);
-    answer(&site_a, Answer::Keep);
-    let mut a = restarted(&site_a, &mut remote);
-    a.rest(&mut remote);
-    assert_eq!(server_bytes(&remote, &node_named(&a, "c.txt")), b"one");
+        a.pull(&remote);
+        assert_eq!(a.run(&mut remote).first(), Some(&"reconnect"));
+        a.settle();
+        a.run(&mut remote);
+        drop(a);
+        answer(&site_a, Answer::Keep);
+        let mut a = restarted(&site_a, &mut remote);
+        a.rest(&mut remote);
+        assert_eq!(server_bytes(&remote, &node_named(&a, "c.txt")), b"one");
+        if rewound_again {
+            let kept = remote.space.clone();
+            remote.space.rewind(&kept, NOW);
+        }
 
-    b.pull(&remote);
-    assert_eq!(b.run(&mut remote).first(), Some(&"reconnect"));
-    b.settle();
-    b.run(&mut remote);
-    let questions = shown(&site_b);
-    assert_eq!(questions.len(), 1, "{questions:?}");
-    assert_eq!(fs::read(site_b.root.join("c.txt")).unwrap(), b"two");
+        b.pull(&remote);
+        assert_eq!(b.run(&mut remote).first(), Some(&"reconnect"));
+        b.settle();
+        b.run(&mut remote);
+        let questions = shown(&site_b);
+        assert_eq!(questions.len(), 1, "rewound again {rewound_again}: {questions:?}");
+        assert_eq!(fs::read(site_b.root.join("c.txt")).unwrap(), b"two");
+    }
 }
 
 #[test]

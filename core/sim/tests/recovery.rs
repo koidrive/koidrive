@@ -4183,3 +4183,55 @@ fn a_device_back_after_another_device_edited_and_moved_a_file_in_one_commit_is_a
         assert_eq!(world.devices[1].disk.binned(2), binned, "answer {answer}");
     }
 }
+
+#[test]
+fn a_device_back_after_another_devices_keep_and_a_later_rewind_is_asked_about_its_own_write() {
+    let again = [
+        (0, Step::Backup),
+        (0, Step::Rewind),
+        (0, Step::Connect),
+        (0, DELIVER),
+        (0, COMMIT),
+    ];
+    let mut world = back_after_the_other_keep(&again);
+    assert_eq!(open_recovery(&world, 1), 1);
+    world.run(2, &[(1, Step::Answer(0))]).unwrap();
+    world.phase(3, &[]).unwrap();
+    assert_eq!(live_writes(&world), [1, 2]);
+}
+
+#[test]
+fn a_device_that_synced_another_devices_keep_follows_a_later_rewind_of_its_own_edit() {
+    let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("c.txt"))]]);
+    let schedule = [
+        (0, Step::Rewind),
+        (0, Step::Connect),
+        (0, DELIVER),
+        (0, Step::Answer(0)),
+        (0, COMMIT),
+        (0, COMMIT),
+        (0, DELIVER),
+        (1, Step::Connect),
+        (1, DELIVER),
+        (1, COMMIT),
+        (1, DELIVER),
+        (0, Step::Backup),
+        (1, overwrite(0)),
+        (1, SCAN),
+        (1, COMMIT),
+        (1, COMMIT),
+        (1, DELIVER),
+        (0, Step::Rewind),
+        (0, Step::Connect),
+        (0, DELIVER),
+        (0, COMMIT),
+        (1, Step::Connect),
+        (1, DELIVER),
+        (1, COMMIT),
+    ];
+    world.run(1, &schedule).unwrap();
+    assert_eq!(open_recovery(&world, 1), 0);
+    world.phase(2, &[]).unwrap();
+    assert_eq!(live_writes(&world), [1]);
+    assert!(world.devices[1].disk.binned(2));
+}

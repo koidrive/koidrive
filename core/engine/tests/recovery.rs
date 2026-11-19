@@ -19,7 +19,10 @@ use koidrive_engine::state::{ContentProvenance, ContentVersion, TreesState};
 use koidrive_engine::tree::{
     Content, ContentKey, FileIdentity, Kind, LocalNode, NodeId, RemoteNode, Shape,
 };
-use koidrive_proto::v1::{CommitResult, Error, OpResult, Welcome, error, op, op_result};
+use koidrive_proto::v1::{
+    ChangeRecord, CommitResult, Error, NodeState, OpResult, Welcome, change_record, error, op,
+    op_result,
+};
 use koidrive_sim::world::key;
 
 const ROOT: &str = "root";
@@ -5822,52 +5825,99 @@ fn recovered_from_log(trees: &mut Trees, log: Option<Log>) -> Commits {
     commits
 }
 
-#[test]
-fn a_rewound_file_follows_the_server_unless_the_new_history_logs_it_created_again() {
-    for (content_rev, recreated) in [(3, false), (9, true)] {
-        let synced = file(ROOT, "a", 2);
-        let mut trees = trees(
-            &[("n", synced.clone())],
-            &[("n", synced)],
-            &[live("n", file(ROOT, "a", 1))],
-        );
-        let first = RemoteNode {
+fn synced_at(version_ms: u64) -> Trees {
+    let synced = file(ROOT, "a", 2);
+    let mut trees = trees(
+        &[("n", synced.clone())],
+        &[("n", synced)],
+        &[live("n", file(ROOT, "a", 1))],
+    );
+    let mut state = trees.state();
+    let provenance = ContentProvenance {
+        synced: Some(version(&koidrive_engine::ids::uuid_v7(version_ms, 5))),
+        ..ContentProvenance::default()
+    };
+    state.content_provenance.insert("n".into(), provenance);
+    trees.restore(state).unwrap();
+    trees.settle(&Default::default());
+    trees
+}
+
+fn logged(floor_seq: u64, records: &[(u64, u64, u64, u64)]) -> Log {
+    let mut log = Log::SinceFloor {
+        floor_seq,
+        first_ms: None,
+        created_ms: BTreeMap::new(),
+    };
+    for &(seq, committed_ms, content_rev, meta_rev) in records {
+        let state = NodeState {
+            node_id: "n".into(),
             content_rev,
-            meta_rev: 9,
-            ..trees.remote().get("n").unwrap().clone()
+            meta_rev,
+            ..NodeState::default()
         };
-        let log = Log::from([("n".to_owned(), vec![first])]);
-        let commits = recovered_from_log(&mut trees, Some(log));
-        let asked = match recreated {
-            true => vec![RecoveryGroup::CreatedAfterRestorePoint],
-            false => vec![],
+        let change = ChangeRecord {
+            change: Some(change_record::Change::Node(state)),
         };
-        assert_eq!(groups(&commits), asked, "content_rev {content_rev}");
+        log.record(seq, committed_ms as i64, &[change]);
+    }
+    log
+}
+
+#[test]
+fn a_rewound_file_is_asked_about_only_when_the_log_creates_it_after_its_synced_version() {
+    let synced_ms = NOW - 10;
+    for (records, asked, why) in [
+        (
+            vec![(9, synced_ms + 1, 9, 9)],
+            true,
+            "created again after S",
+        ),
+        (vec![(1, synced_ms - 1, 1, 1)], false, "created before S"),
+        (
+            vec![(9, synced_ms + 1, 1, 1)],
+            false,
+            "a later record that sets no rev",
+        ),
+        (
+            vec![(9, synced_ms + 1, 3, 9)],
+            false,
+            "restored from the trash",
+        ),
+        (
+            vec![(9, synced_ms + 1, 9, 9), (10, synced_ms + 2, 10, 10)],
+            true,
+            "created again twice",
+        ),
+    ] {
+        let mut trees = synced_at(synced_ms);
+        let commits = recovered_from_log(&mut trees, Some(logged(0, &records)));
+        let groups = groups(&commits);
+        assert_eq!(groups.len(), usize::from(asked), "{why}: {groups:?}");
     }
 }
 
 #[test]
-fn without_the_new_historys_log_a_file_whose_synced_version_postdates_the_restore_point_is_held() {
-    for (committed_ms, held) in [(NOW - 1, false), (NOW + 1, true)] {
-        let synced = file(ROOT, "a", 2);
-        let mut trees = trees(
-            &[("n", synced.clone())],
-            &[("n", synced)],
-            &[live("n", file(ROOT, "a", 1))],
-        );
-        let mut state = trees.state();
-        let provenance = ContentProvenance {
-            synced: Some(version(&koidrive_engine::ids::uuid_v7(committed_ms, 5))),
-            ..ContentProvenance::default()
-        };
-        state.content_provenance.insert("n".into(), provenance);
-        trees.restore(state).unwrap();
-        trees.settle(&Default::default());
-        let commits = recovered_from_log(&mut trees, None);
-        let asked = match held {
+fn a_file_the_log_no_longer_reaches_back_to_is_held_when_its_synced_version_postdates_the_restore_point()
+ {
+    for (synced_ms, floor, first_ms, asked) in [
+        (NOW + 1, None, None, true),
+        (NOW - 1, None, None, false),
+        (NOW + 1, Some(5), Some(NOW + 5), true),
+        (NOW - 1, Some(5), Some(NOW + 5), false),
+        (NOW + 1, Some(5), Some(NOW), false),
+    ] {
+        let mut trees = synced_at(synced_ms);
+        let log = floor.map(|floor| logged(floor, &[(floor + 1, first_ms.unwrap(), 2, 6)]));
+        let commits = recovered_from_log(&mut trees, log);
+        let expected = match asked {
             true => vec![RecoveryGroup::CreatedAfterRestorePoint],
             false => vec![],
         };
-        assert_eq!(groups(&commits), asked, "committed at {committed_ms}");
+        assert_eq!(
+            groups(&commits),
+            expected,
+            "synced {synced_ms} floor {floor:?}"
+        );
     }
 }

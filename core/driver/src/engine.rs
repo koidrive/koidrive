@@ -2140,8 +2140,8 @@ impl Staging {
         &self.last
     }
 
-    pub fn read_history_since(&mut self, since: Base) -> Base {
-        self.history = Some((since.seq, Log::new()));
+    pub fn read_history_since(&mut self, since: Base, log: Log) -> Base {
+        self.history = Some((since.seq, log));
         since
     }
 
@@ -2153,25 +2153,19 @@ impl Staging {
         self.history.take().map(|(_, history)| history)
     }
 
-    pub fn remember(&mut self, seq: u64, changes: &[ChangeRecord]) {
-        let Some((through, history)) = &mut self.history else {
+    pub fn remember(&mut self, at: &Base, changes: &[ChangeRecord]) {
+        let Some((through, log)) = &mut self.history else {
             return;
         };
-        if seq <= *through {
+        if at.seq <= *through {
             return;
         }
-        if seq != *through + 1 {
+        if at.seq != *through + 1 {
             self.history = None;
             return;
         }
-        *through = seq;
-        for change in changes {
-            if let Some(change_record::Change::Node(state)) = &change.change
-                && let Ok((id, node)) = RemoteNode::from_state(state)
-            {
-                history.entry(id).or_default().push(node);
-            }
-        }
+        *through = at.seq;
+        log.record(at.seq, at.committed_at_ms, changes);
     }
 
     /// Replays commits of the log in seq order. A node state replaces the listed node only when it is newer, since a
@@ -2179,7 +2173,7 @@ impl Staging {
     pub fn replay(&mut self, records: &[CommitRecord]) -> Result<Applied, Stop> {
         for record in records {
             if record.seq <= self.last.seq {
-                self.remember(record.seq, &record.changes);
+                self.remember(&record_base(record), &record.changes);
                 continue;
             }
             if record.seq != self.last.seq + 1 {
@@ -2198,7 +2192,7 @@ impl Staging {
                 at.seq
             )));
         }
-        self.remember(at.seq, changes);
+        self.remember(&at, changes);
         for change in changes {
             match &change.change {
                 Some(change_record::Change::Node(state)) => self.take(state.clone()),

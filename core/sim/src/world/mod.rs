@@ -75,7 +75,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::{self, Base, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, location_of};
-use koidrive_engine::first_link::{self, Log, LogRead, Marks};
+use koidrive_engine::first_link::{self, History, Log, LogRead, Marks};
 use koidrive_engine::ignore::Source;
 use koidrive_engine::names::{name_key, nfc, same_name};
 use koidrive_engine::question::{Answer, QuestionKind, RecoveryCause, RecoveryTrigger};
@@ -84,7 +84,7 @@ use koidrive_engine::tree::{
 };
 use koidrive_proto::v1::{
     ChunkRef, Commit, Error, ListVersions, NodeKind, NodeState, NodeStatus, PrepareUpload, Resume,
-    UploadReceipt, change_record, chunk_plan, error, op, op_result, resync_required,
+    UploadReceipt, chunk_plan, error, op, op_result, resync_required,
 };
 use sha2::{Digest, Sha256};
 
@@ -547,15 +547,16 @@ fn listing_with(space: &SpaceDo, log: LogRead) -> Message {
 
 fn log_since(space: &SpaceDo, from: &Resume, trees: &Trees, cause: &RecoveryCause) -> LogRead {
     let log = space.resume(from).ok().map(|records| {
-        let mut log = Log::new();
+        let mut log = match cause.restore_point_ms {
+            Some(_) => Log::SinceFloor {
+                floor_seq: from.since_seq,
+                first_ms: None,
+                created_ms: BTreeMap::new(),
+            },
+            None => Log::SinceCursor(History::new()),
+        };
         for record in records {
-            for change in &record.changes {
-                if let Some(change_record::Change::Node(state)) = &change.change
-                    && let Ok((id, node)) = RemoteNode::from_state(state)
-                {
-                    log.entry(id).or_default().push(node);
-                }
-            }
+            log.record(record.seq, record.committed_at_ms, &record.changes);
         }
         log
     });
@@ -1376,7 +1377,7 @@ impl World {
                 RecoveryCause::rewind(welcome.restore_seq, welcome.restore_point_ms),
                 Resume {
                     history_id: welcome.history_id,
-                    since_seq: welcome.restore_seq,
+                    since_seq: welcome.log_floor_seq,
                     ..Resume::default()
                 },
             ),
