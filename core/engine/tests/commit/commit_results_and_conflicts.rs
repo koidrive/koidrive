@@ -1064,3 +1064,26 @@ fn a_create_superseded_on_a_trashed_node_keeps_the_edit_made_after_it_was_sent()
     assert_eq!(trees.synced().get("f"), Some(&file(ROOT, "c.txt", 1)));
     assert_ne!(trees.class("f"), Class::Remote);
 }
+
+#[test]
+fn a_create_superseded_on_a_purged_node_gives_way_to_the_purge_and_is_not_created_again() {
+    for (sent, renamed) in [
+        (dir(ROOT, "c"), dir(ROOT, "d")),
+        (file(ROOT, "c.txt", 1), file(ROOT, "d.txt", 1)),
+    ] {
+        let mut trees = trees(&[("f", Some(sent.clone()), None, None)]);
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        build(&mut commits, &mut trees, &mut ids).unwrap();
+        trees.set_local("f".into(), local(renamed.clone(), 1));
+        acknowledge(
+            &mut commits,
+            &mut trees,
+            vec![outcome(op_result::Code::Superseded)],
+        );
+        assert!(commits.problems().is_empty(), "{sent:?}");
+        assert_eq!(trees.synced().get("f"), Some(&renamed));
+        assert_eq!(trees.class("f"), Class::Remote, "{sent:?}");
+        let again = build(&mut commits, &mut trees, &mut ids);
+        assert_eq!(again.as_ref().map(ops), None, "{sent:?}");
+    }
+}

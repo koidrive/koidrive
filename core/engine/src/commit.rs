@@ -2525,6 +2525,12 @@ impl Commits {
                         }
                         agreed.extend(agree(trees, &create_id, result.seq));
                         synced.set(&create_id, Some(shape));
+                    } else if superseded && trees.remote().get(&create_id).is_none() {
+                        trees.take_lost_position(
+                            create_id.clone(),
+                            shape,
+                            Origin::Commit(flight.commit.device_seq),
+                        );
                     } else if superseded {
                         synced.set(&create_id, Some(shape));
                     }
@@ -2570,6 +2576,13 @@ impl Commits {
                                 true,
                             );
                         }
+                        trees.sent_edit(&create_id, create.content.as_ref().map(sent_key).as_ref());
+                    } else if superseded && trees.remote().get(&create_id).is_none() {
+                        trees.take_lost_position(
+                            create_id.clone(),
+                            shape,
+                            Origin::Commit(flight.commit.device_seq),
+                        );
                         trees.sent_edit(&create_id, create.content.as_ref().map(sent_key).as_ref());
                     } else if superseded {
                         synced.set(&create_id, Some(shape));
