@@ -63,6 +63,7 @@ struct Remote {
     chunks: Server,
     results: HashMap<String, CommitResult>,
     delete_limit: Option<usize>,
+    puts: usize,
 }
 
 impl Remote {
@@ -77,6 +78,7 @@ impl Remote {
             chunks: Server::default(),
             results: HashMap::new(),
             delete_limit: None,
+            puts: 0,
         }
     }
 
@@ -143,6 +145,7 @@ impl Remote {
                 .chunks
                 .insert(chunk.hash.clone(), bytes.to_vec());
             receipts.push(self.space.put_chunk(&chunk.hash, chunk.size, self.now_ms));
+            self.puts += 1;
             crate::timing::add_bytes(&upload.timing_bytes, u64::from(chunk.size));
             upload.credit.chunk(&chunk.hash);
         }
@@ -1292,6 +1295,7 @@ fn answered_then_lost(given: Answer) -> (Site, Remote) {
         chunks,
         results: remote.results.clone(),
         delete_limit: remote.delete_limit,
+        puts: remote.puts,
     };
     answer(&site_b, given);
     let step = b.folder.requested();
@@ -1378,6 +1382,7 @@ fn keep_original_lost_by_a_restore(deleted_on_c: bool) -> (Remote, Site, Vec<Com
         chunks,
         results: remote.results.clone(),
         delete_limit: remote.delete_limit,
+        puts: remote.puts,
     };
     answer(&site_b, Answer::KeepOriginal);
     let step = b.folder.requested();
@@ -1437,6 +1442,7 @@ fn keep_original_lost_below_a_removed_folder(deleted_on_c: bool) -> (Remote, Com
         chunks,
         results: remote.results.clone(),
         delete_limit: remote.delete_limit,
+        puts: remote.puts,
     };
     answer(&site_b, Answer::KeepOriginal);
     let step = b.folder.requested();
@@ -1498,6 +1504,7 @@ fn keep_original_lost_then_its_folder_removed(original_moved_out: bool) -> (Remo
         chunks,
         results: remote.results.clone(),
         delete_limit: remote.delete_limit,
+        puts: remote.puts,
     };
     answer(&site_b, Answer::KeepOriginal);
     let step = b.folder.requested();
@@ -1532,6 +1539,7 @@ fn keep_original_lost_after_the_original_was_deleted(deleted_on_b: bool) -> (Rem
         chunks,
         results: remote.results.clone(),
         delete_limit: remote.delete_limit,
+        puts: remote.puts,
     };
     answer(&site_b, Answer::KeepOriginal);
     let step = b.folder.requested();
