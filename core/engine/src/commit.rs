@@ -3958,6 +3958,7 @@ fn parked_until_moved(trees: &Trees) -> impl Iterator<Item = &NodeId> {
         .filter(move |(id, node)| {
             node.parked
                 && !effects::kept_out(trees, id)
+                && !trees.name_left_out(id)
                 && (known(id) || effects::unparks_to(trees, id, &node.shape))
         })
         .map(|(id, _)| id)
