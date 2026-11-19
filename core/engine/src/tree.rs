@@ -362,10 +362,20 @@ fn visit() {
     VISITS.with(|visits| visits.set(visits.get() + 1));
 }
 
+pub(crate) fn unmetered<T>(check: impl FnOnce() -> T) -> T {
+    #[cfg(test)]
+    let before = visits();
+    let checked = check();
+    #[cfg(test)]
+    VISITS.with(|visits| visits.set(before));
+    checked
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct TrackedTree<N> {
     tree: Tree<N>,
     changed: BTreeSet<NodeId>,
+    unseen: BTreeSet<NodeId>,
 }
 
 impl<N: Node + PartialEq + Clone> TrackedTree<N> {
@@ -373,12 +383,14 @@ impl<N: Node + PartialEq + Clone> TrackedTree<N> {
         Self {
             tree: Tree::new(root),
             changed: BTreeSet::new(),
+            unseen: BTreeSet::new(),
         }
     }
 
     pub(crate) fn insert(&mut self, id: NodeId, node: N) -> Option<N> {
         if self.tree.get(&id) != Some(&node) {
             self.changed.insert(id.clone());
+            self.unseen.insert(id.clone());
         }
         self.tree.insert(id, node)
     }
@@ -386,6 +398,7 @@ impl<N: Node + PartialEq + Clone> TrackedTree<N> {
     pub(crate) fn remove(&mut self, id: &str) -> Option<N> {
         let old = self.tree.remove(id)?;
         self.changed.insert(id.to_owned());
+        self.unseen.insert(id.to_owned());
         Some(old)
     }
 
@@ -397,6 +410,7 @@ impl<N: Node + PartialEq + Clone> TrackedTree<N> {
         change(node);
         if *node != before {
             self.changed.insert(id.to_owned());
+            self.unseen.insert(id.to_owned());
         }
     }
 
@@ -406,6 +420,10 @@ impl<N: Node + PartialEq + Clone> TrackedTree<N> {
 
     pub(crate) fn take_changed(&mut self) -> BTreeSet<NodeId> {
         std::mem::take(&mut self.changed)
+    }
+
+    pub(crate) fn take_unseen(&mut self) -> BTreeSet<NodeId> {
+        std::mem::take(&mut self.unseen)
     }
 }
 

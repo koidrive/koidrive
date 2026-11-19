@@ -5070,26 +5070,37 @@ mod build_work_tests {
         trees.settle(commits.aliases());
     }
 
-    fn visits_of_a_build(folders: usize) -> u64 {
+    fn visits_of_commits(folders: usize) -> Vec<(u64, u64)> {
         let (mut trees, mut commits, mut ids) = linked(folders);
-        let mut visited = 0;
-        for seq in 1..=3 {
-            let before = visits();
-            let built = commits.build(&mut trees, &mut ids, NOW, "history", "me", seq - 1);
-            assert_eq!(built.map(|commit| commit.ops.len()), Some(50 << (seq - 1)));
-            visited = visits() - before;
-            sent(&mut trees, &mut commits, seq);
-        }
-        visited
+        (1..=3)
+            .map(|seq| {
+                let before = visits();
+                let built = commits.build(&mut trees, &mut ids, NOW, "history", "me", seq - 1);
+                assert_eq!(built.map(|commit| commit.ops.len()), Some(50 << (seq - 1)));
+                let built = visits();
+                sent(&mut trees, &mut commits, seq);
+                (built - before, visits() - built)
+            })
+            .collect()
     }
 
     #[test]
-    fn a_build_of_a_first_link_visits_as_many_nodes_whatever_the_size_of_the_tree() {
-        let small = visits_of_a_build(2_000);
-        let large = visits_of_a_build(20_000);
-        assert!(
-            (large as f64) < 1.5 * small as f64,
-            "the third build visited {small} nodes in a tree of 2000 folders and {large} in one of 20000"
-        );
+    fn a_commit_of_a_first_link_visits_as_many_nodes_whatever_the_size_of_the_tree() {
+        let (small, large) = (visits_of_commits(2_000), visits_of_commits(20_000));
+        let steps = [
+            ("third build", small[2].0, large[2].0),
+            (
+                "result of the first commit, whose folders hold the whole tree",
+                small[0].1,
+                large[0].1,
+            ),
+            ("result of the third commit", small[2].1, large[2].1),
+        ];
+        for (step, small, large) in steps {
+            assert!(
+                (large as f64) < 1.5 * small as f64,
+                "the {step} visited {small} nodes in a tree of 2000 folders and {large} in one of 20000"
+            );
+        }
     }
 }
