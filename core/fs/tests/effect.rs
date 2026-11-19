@@ -1074,6 +1074,34 @@ fn recovery_of_a_replacement_whose_name_was_taken_before_a_crash_after_the_trash
 }
 
 #[test]
+fn recovery_of_a_replacement_that_never_ran_leaves_the_bytes_the_user_wrote_at_its_target() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::create_dir(root.join("docs")).unwrap();
+    fs::write(root.join("docs/report.txt"), SYNCED).unwrap();
+    let found = entries(root, &["docs", "docs/report.txt"]);
+    let docs = vec![dir("docs", &found[0])];
+    let effect = Effect {
+        id: ID.into(),
+        node: "node".into(),
+        action: Action::WriteFile {
+            at: at(docs.clone(), "renamed.txt"),
+            replaces: Some(Displaced {
+                at: at(docs, "report.txt"),
+                entry: found[1],
+            }),
+        },
+    };
+    fs::write(root.join("docs/renamed.txt"), REMOTE).unwrap();
+    let outcome = recover_one(&bind(root), &effect, &mut |_| {}).unwrap();
+    assert_eq!(outcome, failed(Reason::Interrupted));
+    assert_eq!(fs::read(root.join("docs/report.txt")).unwrap(), SYNCED);
+    assert_eq!(fs::read(root.join("docs/renamed.txt")).unwrap(), REMOTE);
+    assert!(trashed(root).is_empty());
+    assert_settled(root);
+}
+
+#[test]
 fn an_effect_the_system_does_not_allow_fails_and_changes_nothing() {
     use std::os::unix::fs::PermissionsExt;
 

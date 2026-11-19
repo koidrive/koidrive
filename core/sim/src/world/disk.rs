@@ -536,12 +536,12 @@ impl Disk {
     /// Ends the effect in flight after a crash (section 5.3). An entry in quarantine means that
     /// the effect displaced it: the staged download gets its name if it has none yet, and the
     /// entry goes to the local trash. With nothing in quarantine and nothing staged, the effect
-    /// is done when its target is in the effect's final state, which for a removal also takes its
-    /// entry in the local trash. A removal whose name is empty without that entry fails, since the
-    /// user moved or deleted the entry before the effect reached it. A write whose replaced entry
-    /// goes or went to the local trash while its target does not hold the new content is
-    /// overtaken. Anything else is an effect that stopped early or whose target the user has
-    /// changed since.
+    /// is done when its target is in the effect's final state, which for a removal or a write that
+    /// replaces an entry also takes that entry in the local trash. A removal whose name is empty
+    /// without that entry fails, since the user moved or deleted the entry before the effect
+    /// reached it. A write whose replaced entry goes or went to the local trash while its target
+    /// does not hold the new content is overtaken. Anything else is an effect that stopped early
+    /// or whose target the user has changed since.
     pub fn recover(&mut self, record: &EffectRecord) -> Applied {
         self.marker = record.counter;
         let staged = self.staged.remove(&record.effect_id);
@@ -580,15 +580,23 @@ impl Disk {
     }
 
     /// The identity of the entry an effect made, when the disk is in the effect's final state. A
-    /// removal is final only once its entry is in the local trash.
+    /// removal, or a write that replaces an entry, is final only once that entry is in the local
+    /// trash.
     fn finished(&self, record: &EffectRecord) -> Result<Option<FileIdentity>, Refused> {
         let at = |at: &Location| self.found(at).map_err(|_| Refused::Interrupted);
         let done = match &record.effect {
             Effect::CreateDir { at: place } => at(place)?
                 .filter(|ino| self.entries[ino].content.is_none())
                 .map(|ino| Some(identity(ino))),
-            Effect::WriteFile { at, content, .. } => match self.written(at, content) {
-                None if self.trash.contains(&record.effect_id) => return Err(Refused::Overtaken),
+            Effect::WriteFile {
+                replaces: Some(_), ..
+            } if !self.trash.contains(&record.effect_id) => None,
+            Effect::WriteFile {
+                at,
+                content,
+                replaces,
+            } => match self.written(at, content) {
+                None if replaces.is_some() => return Err(Refused::Overtaken),
                 written => written.map(Some),
             },
             Effect::Move {
