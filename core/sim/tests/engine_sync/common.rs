@@ -1285,13 +1285,20 @@ fn release_taken_along(
         revived.contains(folder)
             && (trees.synced().get(folder).is_none() || trees.remote().get(folder).is_some())
     };
+    let home = |id: &String| {
+        (trees.local().get(id)).is_some_and(|local| {
+            !local.parked
+                && (trees.remote().live(id))
+                    .is_some_and(|remote| remote.same_position(&local.shape))
+        })
+    };
     let released: Vec<String> = (kept_with.iter())
-        .filter(|(_, shape)| {
-            let mut folder = &shape.parent;
+        .filter(|(id, shape)| {
+            let (mut top, mut folder) = (*id, &shape.parent);
             for _ in 0..=kept_with.len() {
-                match kept_with.get(folder) {
-                    Some(kept) => folder = &kept.parent,
-                    None => return reclaimed(folder),
+                match kept_with.get_key_value(folder) {
+                    Some((kept_id, kept)) => (top, folder) = (kept_id, &kept.parent),
+                    None => return reclaimed(folder) || home(top),
                 }
             }
             false
@@ -1710,6 +1717,7 @@ fn run_ignoring_answering_after(
     note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
     let mut merged_into: BTreeMap<String, String> = BTreeMap::new();
     let mut revived_once: BTreeSet<String> = BTreeSet::new();
+    let mut freed: BTreeSet<String> = BTreeSet::new();
     let mut sent_nodes: BTreeSet<String> = BTreeSet::new();
     let mut pending: Option<Question> = None;
     let mut during = during.iter();
@@ -1784,8 +1792,11 @@ fn run_ignoring_answering_after(
             reload(&device.trees, &commits, &effects, &device.rules)?;
         note_kept_back(&mut device);
         note_unacknowledged_taken_along_kept_back(&mut device, &kept_with);
-        let revived = revive(&device, &discarded, &kept_with, &held_by(commits.questions()));
+        let held = held_by(commits.questions());
+        let revived = revive(&device, &discarded, &kept_with, &held);
         revived_once.extend(revived.iter().cloned());
+        freed.extend(revived.iter().filter(|id| !held.contains(*id)).cloned());
+        release_taken_along(&device.trees, &mut kept_with, &freed);
         let reverted = device.trees.reverted();
         parked_reverted = parked_reverted.max(
             device
@@ -1911,6 +1922,7 @@ fn run_ignoring_answering_after(
                 device.acted.remove(id);
                 placed.remove(id);
                 revived_once.remove(id);
+                freed.remove(id);
                 sent_nodes.remove(id);
             }
             let mut taken = BTreeMap::new();
@@ -1928,7 +1940,6 @@ fn run_ignoring_answering_after(
             discarded.extend(shown);
         }
         let revived = revive(&device, &discarded, &kept_with, &held_by(commits.questions()));
-        release_taken_along(&device.trees, &mut kept_with, &revived);
         revived_once.extend(revived);
         let guarded = (commits.questions().iter())
             .find(|question| !matches!(question.kind, QuestionKind::Conflict { .. }))
