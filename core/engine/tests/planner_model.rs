@@ -709,6 +709,7 @@ impl World {
                 at(&o.target_parent_id),
                 o.name
             ),
+            op::Op::MarkGitTracked(o) => format!("MarkGitTracked {} {}", at(&o.node_id), o.tracked),
         }
     }
 }
@@ -1000,6 +1001,7 @@ fn target(op: &proto::Op) -> &str {
         op::Op::Move(o) => &o.node_id,
         op::Op::Delete(o) => &o.node_id,
         op::Op::Restore(o) => &o.node_id,
+        op::Op::MarkGitTracked(o) => &o.node_id,
     }
 }
 
