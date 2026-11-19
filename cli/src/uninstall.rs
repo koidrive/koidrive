@@ -407,11 +407,7 @@ fn synced_folder(folders: &[PathBuf], path: &Path) -> Option<PathBuf> {
         .and_then(|parent| fs::canonicalize(parent).ok());
     (path.ancestors().skip(1))
         .chain(parent.iter().flat_map(|parent| parent.ancestors()))
-        .find(|dir| {
-            ["space.json", "device.json"]
-                .iter()
-                .any(|record| fs::symlink_metadata(dir.join(".koidrive").join(record)).is_ok())
-        })
+        .find(|dir| fs::symlink_metadata(dir.join(".koidrive/device.json")).is_ok())
         .map(Path::to_path_buf)
 }
 

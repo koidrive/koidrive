@@ -1872,8 +1872,9 @@ fn a_shell_profile_in_a_synced_folder_keeps_its_path_line() {
         let line = path_line(koi.parent().unwrap());
         let folder = machine.path("Koidrive");
         machine.write("Koidrive/.koidrive/space.json", "{}");
-        if linked_here {
-            record(&machine, &folder);
+        match linked_here {
+            true => record(&machine, &folder),
+            false => _ = machine.write("Koidrive/.koidrive/device.json", "{}"),
         }
         let zprofile = machine.write("Koidrive/dotfiles/.zprofile", &format!("{line}\n"));
         let mut command = machine.command(&koi, &["uninstall", "--yes", "--json"]);
@@ -1986,5 +1987,30 @@ fn a_profile_in_a_folder_uninstall_already_released_loses_its_path_line() {
         fs::read_to_string(&zprofile).unwrap(),
         "export EDITOR=vim\n",
         "{second:#}"
+    );
+}
+
+#[test]
+fn a_profile_in_a_folder_unlinked_earlier_loses_its_path_line() {
+    let machine = Machine::new();
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    machine.write("Docs/.koidrive/space.json", "{\"space_id\":\"s1\"}");
+    let line = path_line(koi.parent().unwrap());
+    let zprofile = machine.write(
+        "Docs/zsh/.zprofile",
+        &format!("export EDITOR=vim\n{line}\n"),
+    );
+    let mut command = machine.command(&koi, &["uninstall", "--yes", "--json"]);
+    command.env("ZDOTDIR", machine.path("Docs/zsh"));
+
+    let (output, envelope) = machine.envelope(command);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert!(!koi.exists(), "{envelope:#}");
+    assert_eq!(
+        fs::read_to_string(&zprofile).unwrap(),
+        "export EDITOR=vim\n",
+        "{envelope:#}"
     );
 }
