@@ -1107,15 +1107,20 @@ mod tests {
     fn a_drop_ejects_an_image_of_its_folder_that_disk_images_2_attached() {
         let disks = Disks::new().unwrap();
         let image = disks.image("Disk Images 2%");
-        let device = Eject(disk_images_2_attach(image.as_os_str()));
+        let device = Eject::attach(Some(image));
         drop(disks);
-        assert_ne!(image_on(&device.0).unwrap(), Some(image), "{}", device.0);
+        assert_ne!(
+            image_on(&device.device).unwrap(),
+            device.image,
+            "{}",
+            device.device
+        );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn a_drop_ejects_an_image_of_its_folder_while_a_ram_disk_is_attached() {
-        let ram = Eject(disk_images_2_attach("ram://32768".as_ref()));
+        let ram = Eject::attach(None);
         let disks = Disks::new().unwrap();
         let image = disks.image("BesideRam");
         let at = disks.base().join("at");
@@ -1136,9 +1141,9 @@ mod tests {
         };
         drop(disks);
         let ejected = still_attached(&unrecorded);
-        assert!(Path::new(&ram.0).exists(), "{}", ram.0);
+        assert!(Path::new(&ram.device).exists(), "{}", ram.device);
         assert_eq!(
-            (ejected, image_on(&ram.0)),
+            (ejected, image_on(&ram.device)),
             (Ok(false), Ok(None)),
             "{}",
             unrecorded.device
@@ -1169,19 +1174,59 @@ mod tests {
         long.push(format!("{name}.dmg"));
         assert_eq!(url_length(&long), 1023);
         fs::rename(&image, &long).unwrap();
-        let device = Eject(disk_images_2_attach(long.as_os_str()));
+        let device = Eject::attach(Some(long));
         drop(disks);
-        assert_ne!(image_on(&device.0).unwrap(), Some(long), "{}", device.0);
+        assert_ne!(
+            image_on(&device.device).unwrap(),
+            device.image,
+            "{}",
+            device.device
+        );
     }
 
     #[cfg(target_os = "macos")]
-    struct Eject(String);
+    struct Eject {
+        device: String,
+        image: Option<PathBuf>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Eject {
+        fn attach(image: Option<PathBuf>) -> Eject {
+            let source = image
+                .as_deref()
+                .map_or("ram://32768".as_ref(), Path::as_os_str);
+            Eject {
+                device: disk_images_2_attach(source),
+                image,
+            }
+        }
+    }
 
     #[cfg(target_os = "macos")]
     impl Drop for Eject {
         fn drop(&mut self) {
-            let _ = output("diskutil", &["eject".as_ref(), self.0.as_ref()]);
+            if image_on(&self.device).as_ref() == Ok(&self.image) {
+                let _ = output("diskutil", &["eject".as_ref(), self.device.as_ref()]);
+            }
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_eject_guard_ejects_only_its_own_image() {
+        let disks = Disks::new().unwrap();
+        let image = disks.image("Held");
+        let held = Eject::attach(Some(image.clone()));
+        let device = held.device.clone();
+        drop(Eject {
+            device: device.clone(),
+            image: Some(disks.image("Other")),
+        });
+        let after_another_guard = image_on(&device);
+        drop(held);
+        assert_eq!(after_another_guard, Ok(Some(image.clone())));
+        assert_ne!(image_on(&device).unwrap(), Some(image));
     }
 
     #[cfg(target_os = "macos")]
