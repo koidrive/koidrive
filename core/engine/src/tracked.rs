@@ -48,6 +48,7 @@ impl<K: Ord + Clone> TrackedSet<K> {
     }
 
     pub fn retain(&mut self, mut keep: impl FnMut(&K) -> bool) {
+        read_entries(self.set.len());
         let before = &mut self.before;
         self.set.retain(|key| {
             let kept = keep(key);
@@ -59,6 +60,7 @@ impl<K: Ord + Clone> TrackedSet<K> {
     }
 
     pub fn clear(&mut self) {
+        read_entries(self.set.len());
         for key in std::mem::take(&mut self.set) {
             self.before.entry(key).or_insert(true);
         }
@@ -66,6 +68,7 @@ impl<K: Ord + Clone> TrackedSet<K> {
 
     /// Every key whose membership changed since the last take, with whether the set holds it now.
     pub fn take_changes(&mut self) -> Vec<(K, bool)> {
+        read_entries(self.before.len());
         (std::mem::take(&mut self.before).into_iter())
             .filter_map(|(key, held)| {
                 let holds = self.set.contains(&key);
@@ -191,6 +194,7 @@ impl<K: PartialEq> PartialEq<BTreeSet<K>> for TrackedSet<K> {
 
 impl<K: fmt::Debug> fmt::Debug for TrackedSet<K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        read_entries(self.set.len());
         self.set.fmt(f)
     }
 }
@@ -250,6 +254,7 @@ impl<K: Ord + Clone, V: Clone + PartialEq> TrackedMap<K, V> {
     }
 
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
+        read_entries(self.map.len());
         for (key, value) in &self.map {
             if !self.before.contains_key(key) {
                 self.before.insert(key.clone(), Some(value.clone()));
@@ -259,6 +264,7 @@ impl<K: Ord + Clone, V: Clone + PartialEq> TrackedMap<K, V> {
     }
 
     pub fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) {
+        read_entries(self.map.len());
         let before = &mut self.before;
         self.map.retain(|key, value| {
             let kept = keep(key, value);
@@ -279,6 +285,7 @@ impl<K: Ord + Clone, V: Clone + PartialEq> TrackedMap<K, V> {
 
     /// Removes every entry and returns them.
     pub fn take_all(&mut self) -> BTreeMap<K, V> {
+        read_entries(self.map.len());
         let map = std::mem::take(&mut self.map);
         for (key, value) in &map {
             if !self.before.contains_key(key) {
@@ -295,6 +302,7 @@ impl<K: Ord + Clone, V: Clone + PartialEq> TrackedMap<K, V> {
     /// Every key whose value changed since the last take, with its value now, or `None` when the
     /// map no longer holds it.
     pub fn take_changes(&mut self) -> Vec<(K, Option<V>)> {
+        read_entries(self.before.len());
         (std::mem::take(&mut self.before).into_iter())
             .filter_map(|(key, held)| {
                 let value = self.map.get(&key);
@@ -439,6 +447,7 @@ impl<K: PartialEq, V: PartialEq> PartialEq for TrackedMap<K, V> {
 
 impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for TrackedMap<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        read_entries(self.map.len());
         self.map.fmt(f)
     }
 }

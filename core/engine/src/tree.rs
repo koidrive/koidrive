@@ -158,12 +158,19 @@ impl<K: PartialEq> PartialEq<BTreeSet<K>> for CountedSet<K> {
 
 impl<K: fmt::Debug> fmt::Debug for CountedSet<K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        read_entries(self.0.len());
         self.0.fmt(f)
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct CountedMap<K, V>(BTreeMap<K, V>);
+
+impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for CountedMap<K, V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        read_entries(self.0.len());
+        self.0.fmt(f)
+    }
+}
 
 impl<K: Clone, V: Clone> Clone for CountedMap<K, V> {
     fn clone(&self) -> Self {
