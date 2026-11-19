@@ -617,6 +617,33 @@ cases = ["{1:064}"]
         e84d3 = "84d38f0bff21b60af7a74965e61163a0dee51349a80fe507b3fbc587567b2ae2"
         j6ef9 = "6ef9f2b252a2d4d6ea433fb6b88fbc4499ed4e38fbee89c841fb95b3aa12b50e"
         j0bde = "0bdef727276492b5d06bd49ad69f35bfdd49de0c5657b41e000153fa77440c27"
+        i764b = "764b716b5c597756c82822fe9d3cdd3d921e5472467f05d3f9291c53088b3b69"
+        ia80e = "a80ed333a4ffd9a2bbe3f44da0a8791cbdc7ad5afb1db10eec2d754ec334deef"
+        ibbe9 = "bbe992fee5c28fa0abb7884bb237dd12671d433ed2b378dbeaf1453af43501ec"
+        s968b = "968b4030b16bb0cfd7da2c1467fdbdf9f0f88f7357e9e6f5ae12c3749f0a4e12"
+        d67bb = "67bbb9cfd49eeba66ea83618bbd588e0dcc37bd78a0acf6b5c249eb05e11bd3e"
+        d1f04 = "1f04d494189c5d7d60cf2a415e091dfa6f219d41865ccbe15fa953fa9980776c"
+        tb5bf = "b5bf582a739d8550f5b2ca632da13e912e07e6844bd1640ffd05e801fc57ec25"
+        takes_along = "a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone"
+        w78f3 = "78f33ddc3d91d9ca24ee8db9ad24f0ca0437d7aef0592e880d853f42fbc7443a"
+        l14fe = "14fe391f4d7b8011cbf4479f6c7a329d79742ba2970f9a9dba0de41bb92f4f40"
+        def replayed(case):
+            return next(text for entry in entries for text in entry["examples"] if f"\tcc-{case}\t" in text)
+        coarse_once = "devices_on_coarse_volumes_converge_once_the_faults_stop"
+        lose_server_restores = "devices_lose_no_write_across_server_restores"
+        taken = ("after phase 2: a restore took write 2 from the server while a disk held it, and the server does not hold it "
+                 "again, though no user overwrote or deleted it.")
+        kept = (f"\nnot recorded: devices::{server_restores}\tcc-{i764b}\tWriteKept\twrite 3 of the write of node "
+                "01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 0 is not in the server's tree, and no later change that saw it, "
+                "no delete that saw it and no rule for lost changes settles it")
+        placed = (f"\nnot recorded: devices::{restores_and_rewinds}\tcc-{ibbe9}\tPlaceKept\tthe move on device 1 that puts node "
+                  "01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 at \"a\" is not on the server, though its user saw the place the server "
+                  "holds and no rule for lost changes settles it")
+        copied = ("after phase 2: write 4 is in more than one file on the server, and no user copied it: "
+                  "[[\"A\"], [\"A (conflict from device-1 2026-11-09)\"]].")
+        def head_only_undone(test, case):
+            return (f"{copied}\nnot recorded: devices::{test}\tcc-{case}\tDeleteUndone\tthe delete of node "
+                    "01a1c2c0-39a0-7c5c-8466-a7d0954b76a3 on device 1 came undone, and no change its user did not see brought the node back")
         elsewhere = ("assertion failed: `(left == right)` \n  left: `(\"01a1c2c0-39a0-75ee-831c-498d57bc0a70\", \"a\")`, \n right: `(\"01a1c2c0-39a0-780a-953a-eb70673e29cb\", \"a\")`: 01a1c2c0-39a0-7895-abc3-b3429e08873f"
                      " is sent to a place the disk does not hold it at at core/sim/tests/engine_sync/common.rs:1330.")
         never_reached = next(entry for entry in entries
@@ -653,7 +680,7 @@ cases = ["{1:064}"]
             ("devices_on_coarse_volumes_converge_across_restores_and_rewinds", never_reached, other, [("I", "GUN-864", None)]),
             (lose_rollbacks, example(x2293), x2293, [("X", "GUN-1199", ["2293e681b3bc"])]),
             (lose_rollbacks, example(x2293), other, []),
-            (lose_coarse, example(w74e3), w74e3, [("W", "GUN-1200", ["74e37aa2bf80"])]),
+            (lose_coarse, example(w74e3), w74e3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91"])]),
             (lose_coarse, example(w74e3), other, []),
             (lose_rollbacks, example(w74e3), w74e3, [("A", "GUN-1004", None)]),
             ("devices_on_coarse_volumes_converge_once_the_faults_stop", undone + "\n" + example(w74e3), other, []),
@@ -665,6 +692,42 @@ cases = ["{1:064}"]
             (lose_restores, after_670(j6ef9, lose_restores), other, []),
             (lose_coarse, after_670(j0bde, lose_coarse), j0bde, [("J", "GUN-1012", ["0bdef7272764"])]),
             (lose_coarse, after_670(j0bde, lose_coarse), other, []),
+            (server_restores, example(i764b), i764b, [("I", "GUN-864", ["764b716b5c59", "a80ed333a4ff"])]),
+            (server_restores, example(i764b), ia80e, [("I", "GUN-864", ["764b716b5c59", "a80ed333a4ff"])]),
+            (server_restores, example(i764b), other, []),
+            (restores_and_rewinds, example(i764b), i764b, []),
+            (server_restores, example(i764b) + kept, i764b, []),
+            (server_restores, head_only_undone(server_restores, ia80e), ia80e, [("D", "GUN-984", None)]),
+            (restores_and_rewinds, example(ibbe9), ibbe9, [("I", "GUN-864", ["bbe992fee5c2"])]),
+            (restores_and_rewinds, example(ibbe9), other, []),
+            (lose_restores, example(ibbe9), ibbe9, []),
+            (restores_and_rewinds, example(ibbe9) + placed, ibbe9, []),
+            (restores_and_rewinds, head_only_undone(restores_and_rewinds, ibbe9), ibbe9, [("D", "GUN-984", None)]),
+            (coarse_once, example(s968b), s968b, [("S", "GUN-1044", ["968b4030b16b"])]),
+            (coarse_once, example(s968b), other, []),
+            (coarse_once, example(s968b) + "\n" + undone, s968b, []),
+            (coarse_once, head_only_undone(coarse_once, s968b), s968b, []),
+            (lose_server_restores, taken, d67bb, [("D", "GUN-984", None)]),
+            (server_restores, taken, d67bb, [("D", "GUN-984", None)]),
+            (lose_coarse, example(d1f04), d1f04, [("D", "GUN-984", ["1f04d494189c"])]),
+            (lose_coarse, example(d1f04), other, []),
+            (lose_restores, example(d1f04), d1f04, []),
+            (lose_coarse, example(d1f04) + "\n" + undone, d1f04, []),
+            (lose_coarse, head_only_undone(lose_coarse, d1f04), d1f04, []),
+            (lose_coarse, taken, d1f04, [("D", "GUN-984", None)]),
+            (takes_along, example(tb5bf), tb5bf, [("T", "GUN-1046", ["b5bf582a739d"])]),
+            (takes_along, example(tb5bf), other, []),
+            (rewinds_and_rollbacks, example(tb5bf), tb5bf, []),
+            (takes_along, example(tb5bf) + "\n" + undone, tb5bf, []),
+            (lose_coarse, replayed(w78f3), w78f3, [("W", "GUN-1200", ["74e37aa2bf80", "78f33ddc3d91"])]),
+            (lose_coarse, replayed(w78f3), other, []),
+            (lose_coarse, replayed(w78f3) + "\n" + undone, w78f3, []),
+            (lose_coarse, head_only_undone(lose_coarse, w78f3), w78f3, []),
+            (folder, replayed(l14fe), l14fe, [("L", "GUN-984", None)]),
+            (folder, replayed(l14fe), other, [("L", "GUN-984", None)]),
+            (folder, replayed(l14fe) + "\n" + undone, l14fe, []),
+            (folder, head_only_undone(folder, l14fe), l14fe, []),
+            (coarse_once, replayed(l14fe), l14fe, []),
         ]:
             with self.subTest(test=test, message=message[:40], case=case[:12]):
                 found = triage.matches(entries, test, message, case)
