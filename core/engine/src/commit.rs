@@ -3530,9 +3530,9 @@ fn rekey_copy(trees: &mut Trees, from: &str, to: &str) {
 /// The rebase of section 2.4, before ops are planned. A reverted file that R no longer has but that
 /// holds an edit not uploaded yet becomes a new node, so the edit is uploaded as a create instead
 /// of being removed with the node. Nodes in `skip` are not rebased otherwise, though what they changed
-/// remotely still keeps their ancestors. No change keeps a node an open question holds (`asked`),
-/// so S keeps it until the person answers. An excluded node is not rebased and keeps nothing; S
-/// still takes what both sides agree on for it. Returns the nodes the keep rule could
+/// remotely still keeps their ancestors. A node an open question holds (`asked`) is not kept by its
+/// own change, so S keeps it until the person answers. An excluded node is not rebased and keeps
+/// nothing; S still takes what both sides agree on for it. Returns the nodes the keep rule could
 /// not clear from S yet, and the S updates both sides agree on, which are made together with the
 /// waiting ones.
 fn rebase(
@@ -3788,8 +3788,9 @@ fn parked_until_moved(trees: &Trees) -> impl Iterator<Item = &NodeId> {
 }
 
 fn keep(trees: &mut Trees, id: &str, asked: &BTreeSet<NodeId>, needed: &mut BTreeSet<NodeId>) {
+    let held = asked.contains(id);
     let deleted: Vec<NodeId> = (trees.keep_walk(id))
-        .filter(|(node, deleted)| *deleted && !asked.contains(*node))
+        .filter(|(node, deleted)| *deleted && !(held && *node == id))
         .map(|(node, _)| node.to_owned())
         .collect();
     for node in deleted {

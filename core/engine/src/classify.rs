@@ -1410,6 +1410,29 @@ impl Trees {
         })
     }
 
+    pub(crate) fn remote_seen_here(&self, id: &str) -> bool {
+        let remote = self.r.get(id).filter(|remote| !remote.trashed);
+        let (Some(synced), Some(remote)) = (self.acknowledged(id), remote) else {
+            return false;
+        };
+        let place = &remote.shape;
+        let placed_here = synced.same_position(place)
+            || (self.past_positions.get(id).into_iter().flatten())
+                .any(|past| past.parent == place.parent && same_name(&past.name, &place.name));
+        if !placed_here {
+            return false;
+        }
+        let same = match (&synced.content, &remote.shape.content) {
+            (Some(synced), Some(remote)) => same_content(synced, remote),
+            (synced, remote) => synced.is_none() && remote.is_none(),
+        };
+        same || (self.content_provenance.get(id))
+            .and_then(|p| p.synced.as_ref())
+            .is_some_and(|version| {
+                !remote.version_id.is_empty() && version.bases().contains(&remote.version_id)
+            })
+    }
+
     pub(crate) fn synced_version_id(&self, id: &str) -> Option<&str> {
         (self.content_provenance.get(id)?.synced.as_ref())
             .map(|synced| synced.version_id.as_str())
