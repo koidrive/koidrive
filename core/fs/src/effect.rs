@@ -451,6 +451,13 @@ impl Space {
         Ok(rustix::fs::openat(staging.fd(), id, flags, Mode::from_raw_mode(0o644))?.into())
     }
 
+    /// Flushes the staging folder, so that every staged file whose identity the store records next survives a power
+    /// loss.
+    pub fn sync_staging(&self) -> io::Result<()> {
+        let staging = self.private(&[STAGING_DIR])?;
+        self.flush_folder(&staging, Flush::Barrier)
+    }
+
     /// Flushes `folder` after a change in it. A folder on another device than the root, such as a volume mounted
     /// below it, is flushed in full, since the full flush that ends a section reaches only the root's device.
     pub(crate) fn flush_folder(&self, folder: &Folder, how: Flush) -> io::Result<()> {

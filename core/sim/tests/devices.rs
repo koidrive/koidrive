@@ -12873,7 +12873,7 @@ fn two_downloads_of_the_same_bytes_swapped_while_their_device_is_down() -> World
 }
 
 #[test]
-fn a_restart_that_takes_the_other_download_leaves_each_file_to_the_node_it_holds() {
+fn a_restart_finds_two_swapped_downloads_done_and_leaves_each_file_to_the_node_it_holds() {
     for deleted in ["a", "c.txt"] {
         let mut world = two_downloads_of_the_same_bytes_swapped_while_their_device_is_down();
         world.phase(0, &[]).unwrap();
@@ -12945,7 +12945,7 @@ fn a_server_that_copies_a_file_sent_again_after_a_restore_is_caught() {
 }
 
 #[test]
-fn a_download_its_user_moved_before_the_restart_is_a_new_file_to_delete() {
+fn a_download_its_user_moved_before_the_restart_keeps_its_node_under_the_new_name() {
     use Step::*;
     let mut world = on(&[Precision::Fine, Precision::Fine]);
     let file = User(Action {

@@ -686,7 +686,9 @@ impl Disk {
                 _ => None,
             })
             .collect();
-        if !staged.is_empty() {
+        let rotates = !staged.is_empty();
+        if rotates {
+            self.space.sync_staging()?;
             store.transaction(|tx| -> Result<_, Stop> {
                 for (effect_id, identity) in &staged {
                     (engine.effects.stage(effect_id, *identity)).map_err(|error| Stop::Record {
@@ -747,10 +749,16 @@ impl Disk {
             store,
             hook,
         )?;
-        for (planned, _) in &effects {
-            self.space.drop_staged(&planned.effect.id)?;
-        }
         self.finish_rotation(store)?;
+        if rotates {
+            let marker = self.marker()?;
+            self.rotate(marker, false, store)?;
+        }
+        if self.next.is_none() {
+            for (planned, _) in &effects {
+                self.space.drop_staged(&planned.effect.id)?;
+            }
+        }
         let end = self.sections.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let requested = (self.sections).request(engine.resets(scopes_of_batch.iter().cloned()));
         if rules_changed

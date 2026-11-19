@@ -3454,3 +3454,70 @@ fn a_path_an_effect_changed_after_the_scan_read_it_is_not_listed_from_that_scan(
         );
     }
 }
+
+fn copy_store(from: &Path, to: &Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let source = PathBuf::from(format!("{}{suffix}", from.display()));
+        let target = PathBuf::from(format!("{}{suffix}", to.display()));
+        let _ = fs::remove_file(&target);
+        if source.exists() {
+            fs::copy(&source, &target).unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_store_restored_from_before_a_write_that_failed_does_not_take_its_download_as_placed() {
+    for scenario in [&SCENARIOS[1], &SCENARIOS[2]] {
+        let folder = Folder::new();
+        let mut server = Server::default();
+        (scenario.setup)(&folder, &mut server);
+        let before = Snapshot::scan(&folder.root).unwrap();
+        let backup = folder.dir.path().join("backup.sqlite");
+        let (db, target, copy) = (
+            folder.db.clone(),
+            folder.root.join("report.txt"),
+            backup.clone(),
+        );
+        let saved = b"the user's own file";
+        let mut copied = false;
+        let hook: Hook = Box::new(move |reached| {
+            if !copied && matches!(reached, Cut::Step(_)) {
+                copied = true;
+                copy_store(&db, &copy);
+                fs::write(&target, saved).unwrap();
+            }
+        });
+        let mut running = folder.start(Some(hook)).unwrap();
+        running.step(&server);
+        drop(running);
+        copy_store(&backup, &folder.db);
+        let mut running = folder.start(no_hook()).unwrap();
+        assert!(
+            running.engine.effects.in_flight().is_empty(),
+            "{}",
+            scenario.name
+        );
+        assert!(
+            matches!(
+                running.engine.commits.halted(),
+                Some(CommitHalt::Recovery { .. })
+            ),
+            "{}",
+            scenario.name
+        );
+        let mut watching = observer(&folder.root, before);
+        let seen = observe_until(&mut watching, running.disk.sections().stamp(), |seen| {
+            !seen.is_empty()
+        });
+        (running.disk)
+            .observed(seen, &mut running.engine, &mut running.store)
+            .unwrap();
+        let content = |shape: Option<&Shape>| shape.and_then(|shape| shape.content.clone());
+        let synced = content(running.engine.trees.synced().live(NODE)).map(|c| c.size);
+        let expected = scenario.displaces.map(|bytes| bytes.len() as u64);
+        assert_eq!(synced, expected, "{}", scenario.name);
+        let user = BTreeMap::from([(PathBuf::from("report.txt"), Some(saved.to_vec()))]);
+        assert_eq!(visible(&folder), user, "{}", scenario.name);
+    }
+}
