@@ -14,6 +14,8 @@ import sys
 import tempfile
 import unittest
 
+import battery_logs
+
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github/workflows/property-battery.yml"
@@ -105,6 +107,30 @@ class PropertyBattery(unittest.TestCase):
         self.assertIn("Bounded properties keep their own case budgets; tests outside property blocks run once per battery",
                       output)
         self.assertIn("Tests: 8 passed and 1 failed, summed over shards", output)
+
+    def test_summary_lists_properties_that_failed_without_saving_a_case_by_shard(self):
+        block = re.search(r"(?ms)^ *(jq -r '\[\.\[\] \| \.shard as \$shard.*?' shards\.json)$", self.workflow)[1]
+        shards = [{"shard": 2, "unsaved": [{"binary": "devices", "test": "converge", "zero": True}]},
+                  {"shard": 5, "unsaved": [{"binary": "devices", "test": "converge", "zero": True},
+                                           {"binary": "devices", "test": "lose_no_write", "zero": False}]},
+                  {"shard": 7, "unsaved": []}, {"shard": 9}]
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "shards.json").write_text(json.dumps(shards))
+            listed = subprocess.check_output(["bash", "-eu", "-c", block], cwd=directory, text=True)
+            (Path(directory) / "shards.json").write_text(json.dumps(shards[2:]))
+            none = subprocess.check_output(["bash", "-eu", "-c", block], cwd=directory, text=True)
+        self.assertEqual(listed.splitlines(), [
+            "- devices converge: 0 generated cases on shards 2, 5",
+            "- devices lose_no_write: failed without saving a case on shards 5, on a case that may be one another test of "
+            "its binary saved there"])
+        self.assertEqual(none, "No property failed without saving a case.\n")
+        unknown = re.search(r"(?ms)^ *(jq -r '\[\.\[\] \| select\(has\(\"unsaved\"\) and \.unsaved == null\).*?' shards\.json)$",
+                            self.workflow)[1]
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "shards.json").write_text(json.dumps(shards + [{"shard": 11, "unsaved": None}]))
+            self.assertEqual(subprocess.check_output(["bash", "-eu", "-c", unknown], cwd=directory, text=True),
+                             "- Unknown on shards 11: the battery could not read their logs for tests that failed "
+                             "without saving a case\n")
 
     def test_execution_and_repro_pass_isolated_budgets_and_same_selection(self):
         execution, repro = commands(self.workflow)
@@ -400,6 +426,23 @@ class HeavyTests(unittest.TestCase):
 TRIAGE_SPEC = importlib.util.spec_from_file_location("triage", ROOT / "scripts/triage-battery.py")
 triage = importlib.util.module_from_spec(TRIAGE_SPEC)
 TRIAGE_SPEC.loader.exec_module(triage)
+
+REPLAY_LOG = """running 1 test
+test {test} ... FAILED
+
+failures:
+
+---- {test} stdout ----
+
+thread '{test}' (4120) panicked at core/sim/tests/devices.rs:569:5:
+devices::{test} case cc-{case} fails: write 1 is lost
+note: run with §RUST_BACKTRACE=1§ environment variable to display a backtrace
+
+failures:
+    {test}
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s
+""".replace("§", chr(96))
 
 FAILING_LOG = """running 3 tests
 test devices_converge ... FAILED
@@ -992,7 +1035,11 @@ class Triage(unittest.TestCase):
                          " right: §2§: write 1 is lost at core/sim/tests/devices/common.rs:120.".replace("§", chr(96)))
         self.assertEqual(cases[1]["battery_message"], "a committed case fails.")
         self.assertEqual(others, [{"binary": "devices", "test": "devices_lose_no_write", "shards": [4, 10],
-                                   "cases": [cases[0]["path"], cases[2]["path"]]}])
+                                   "cases": [cases[0]["path"], cases[2]["path"]],
+                                   "message": "a committed case fails.",
+                                   "by_shard": [{"shard": 4, "cases": [cases[0]["path"]], "property": False, "zero": False},
+                                                {"shard": 10, "cases": [cases[0]["path"], cases[2]["path"]],
+                                                 "property": False, "zero": False}]}])
 
     def test_collect_reads_a_single_artifact_extracted_without_its_directory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1084,6 +1131,136 @@ class Triage(unittest.TestCase):
                 text = triage.markdown(spec, rows, others, "https://example.com/runs/7")
                 self.assertEqual("(saved by another test)" in text, bool(listed) is False)
                 self.assertEqual("- devices §lose_no_write§ on shards 2".replace("§", chr(96)) in text, bool(listed))
+
+    def test_a_shard_whose_logs_could_not_be_read_fails_the_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for shard, result in ((3, {"shard": 3, "failing": [], "unsaved": None}), (4, {"shard": 4, "failing": []}),
+                                  (6, {"shard": 6, "failing": [], "unsaved": []})):
+                (root / f"failure-shard-{shard}/logs").mkdir(parents=True)
+                (root / f"failure-shard-{shard}/result-{shard}.json").write_text(json.dumps(result))
+            self.assertEqual(triage.unread(root), [3])
+            spec = {"run": "7", "head": "h" * 40, "base": "b" * 40, "cases": [], "others": [], "unread": [3]}
+            (root / "cases.json").write_text(json.dumps(spec))
+            run = subprocess.run([sys.executable, str(ROOT / "scripts/triage-battery.py"), "report",
+                                  "--cases", str(root / "cases.json"), "--run-url", "https://example.com/runs/7",
+                                  "--out", str(root / "out")], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            text = (root / "out/triage.md").read_text()
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("::error::the battery could not read the logs of shards 3 ", run.stdout)
+        self.assertIn("could not read the logs of shards 3 ", text)
+
+    def test_a_property_stopped_by_a_committed_case_is_flagged_as_generating_nothing(self):
+        case = "7d9b037c" + "0" * 56
+        test = "devices_converge_across_restores_and_rewinds"
+        log = REPLAY_LOG.format(test=test, case=case)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shard = root / "failure-shard-3"
+            (shard / "logs").mkdir(parents=True)
+            (shard / "regressions").mkdir()
+            (shard / "logs/devices-09cbc274e49e4fd7.log").write_text(log)
+            (root / "properties").mkdir()
+            (root / "properties/devices-09cbc274e49e4fd7.txt").write_text(
+                "devices_lose_no_write_around_an_owed_rename_across_server_restores\n")
+            listed = subprocess.run([sys.executable, str(ROOT / "scripts/battery_logs.py"), str(shard / "logs"),
+                                     str(root / "properties")], capture_output=True, text=True, check=True)
+            (shard / "result-3.json").write_text(json.dumps({"shard": 3, "failing": [
+                {"target": "koidrive-sim --test devices", "log": "devices-09cbc274e49e4fd7",
+                 "reason": "exit code 101", "repro": "cargo test -p koidrive-sim --test devices"}],
+                "unsaved": json.loads(listed.stdout)}))
+            cases, others = triage.collect(root)
+            spec = {"run": "7", "head": "h" * 40, "base": "b" * 40, "checked_profile": "", "cases": cases,
+                    "others": others, "unattributed": triage.unattributed(root)}
+            (root / "cases.json").write_text(json.dumps(spec))
+            run = subprocess.run([sys.executable, str(ROOT / "scripts/triage-battery.py"), "report",
+                                  "--cases", str(root / "cases.json"), "--run-url", "https://example.com/runs/7",
+                                  "--out", str(root / "out")], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            text = (root / "out/triage.md").read_text()
+            starved = json.loads((root / "out/triage.json").read_text())["starved"]
+        self.assertEqual(json.loads(listed.stdout), [{"binary": "devices", "test": test, "zero": True,
+                                                      "message": "write 1 is lost."}])
+        self.assertEqual(cases, [])
+        self.assertEqual([(other["test"], other["shards"]) for other in starved], [(test, [3])])
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn(f"::error::these tests generated 0 cases on some shards: devices {test} on shards 3", run.stdout)
+        self.assertIn("**1 test generated 0 cases on some shards.**", text)
+        self.assertIn(f"- devices §{test}§ on shards 3: write 1 is lost.".replace("§", chr(96)), text)
+
+    def test_a_committed_case_failure_stays_flagged_when_another_tests_case_also_fails_it(self):
+        path = "core/sim/tests/devices.cases/cc-" + "a" * 64 + ".txt"
+        spec = {"run": "7", "head": "h" * 40, "base": "b" * 40,
+                "cases": [{"case": "a" * 64, "path": path, "binary": "devices", "test": test, "shards": [2],
+                           "shared": shared} for test, shared in (("converge", False), ("lose_no_write", True))],
+                "others": [{"binary": "devices", "test": "lose_no_write", "shards": [2], "cases": [path],
+                            "message": "write 1 is lost.",
+                            "by_shard": [{"shard": 2, "cases": [path], "property": True, "zero": False}]}]}
+        failing = {"runs": [{"result": "fail", "message": "lost"}] * 2, "target": "sim --test devices"}
+        passing = {"runs": [{"result": "pass", "message": None}] * 2, "target": "sim --test devices"}
+        for zero, property, shared, flagged in ((True, True, failing, True), (False, True, failing, False),
+                                                (False, True, passing, True), (False, False, passing, False)):
+            spec["others"][0]["by_shard"][0].update(zero=zero, property=property)
+            with self.subTest(zero=zero, property=property, shared=shared["runs"][0]["result"]):
+                replays = {"head": {"results": [failing, shared]}, "base": {"results": [failing, failing]}}
+                rows = triage.combine(spec, replays)
+                starved = triage.starved(spec, rows)
+                triage.classify(rows, [])
+                text = triage.markdown(spec, rows, triage.caseless(spec, rows), "https://example.com/runs/7",
+                                       zero=starved)
+                self.assertEqual([other["test"] for other in starved], ["lose_no_write"] if flagged else [])
+                self.assertEqual("§lose_no_write§ (generated 0 cases on some shards)".replace("§", chr(96)) in text,
+                                 flagged and shared is failing)
+
+    def test_each_shard_of_a_test_that_saved_nothing_is_judged_by_its_own_cases(self):
+        explaining = "core/sim/tests/devices.cases/cc-" + "a" * 64 + ".txt"
+        unrelated = "core/sim/tests/devices.cases/cc-" + "b" * 64 + ".txt"
+        def entry(shard, cases, zero=False):
+            return {"shard": shard, "cases": cases, "property": True, "zero": zero}
+        spec = {"cases": [{"case": path[-68:-4], "path": path, "binary": "devices", "test": "lose_no_write",
+                           "shards": [shard], "shared": True} for path, shard in ((explaining, 5), (unrelated, 2))]}
+        failing = {"runs": [{"result": "fail", "message": "lost"}] * 2, "target": "sim --test devices"}
+        passing = {"runs": [{"result": "pass", "message": None}] * 2, "target": "sim --test devices"}
+        rows = triage.combine(spec, {"head": {"results": [failing, passing]}, "base": {"results": [failing, failing]}})
+        broken = {"runs": [{"result": "error", "message": "the build failed"}] * 2, "target": "sim --test devices"}
+        unbuilt = triage.combine(spec, {"head": {"results": [broken, passing]}, "base": {"results": [failing, failing]}})
+        spec["others"] = [{"binary": "devices", "test": "lose_no_write", "shards": [5], "cases": [explaining],
+                           "message": "lost", "by_shard": [entry(5, [explaining])]}]
+        self.assertEqual([row["verdict"] for row in unbuilt], ["unknown"])
+        self.assertEqual([other["shards"] for other in triage.starved(spec, unbuilt)], [[5]])
+        self.assertEqual([other["test"] for other in triage.caseless(spec, unbuilt)], ["lose_no_write"])
+        for by_shard, shards in (([entry(2, [unrelated]), entry(5, [explaining])], [2]),
+                                 ([entry(2, [explaining]), entry(5, [], zero=True)], [5]),
+                                 ([entry(2, [explaining]), entry(5, [explaining])], [])):
+            with self.subTest(shards=shards):
+                spec["others"] = [{"binary": "devices", "test": "lose_no_write", "shards": [2, 5],
+                                   "cases": sorted({path for each in by_shard for path in each["cases"]}),
+                                   "message": "lost", "by_shard": by_shard}]
+                self.assertEqual([other["shards"] for other in triage.starved(spec, rows)], [shards] if shards else [])
+
+    def test_only_a_property_that_failed_on_a_loaded_case_counts_as_generating_nothing(self):
+        properties = {"a", "b", "rewinds_converge_from_seed_122", "prints_help_twice"}
+        def unsaved(log):
+            return [(test["test"], test["zero"]) for test in battery_logs.unsaved(log, properties)]
+        committed = "---- a stdout ----\nproptest regression: cc cc2e\nthread 'a' panicked at t.rs:3:1:\nTest failed: 0 is small.\n"
+        saving = ("---- b stdout ----\nproptest regression: cc cc2e\nproptest regression saved in /w/t.cases/cc-9460.txt: "
+                  "cc 9460\nthread 'b' panicked at t.rs:3:1:\nTest failed: 92156 is small.\n")
+        shared = committed.replace("cc cc2e\n", "cc cc2e\nproptest regression: cc 9460\n")
+        fixed_seed = ("---- rewinds_converge_from_seed_122 stdout ----\nthread 'x' panicked at core/sim/tests/devices.rs:495:5:\n"
+                      "devices::rewinds_converge_from_seed_122 case case-17 fails: write 1 is lost\n")
+        recorded = ("---- rewinds_converge_from_seed_122 stdout ----\nthread 'x' panicked at core/sim/tests/devices.rs:495:5:\n"
+                    "recorded but passed: devices::rewinds_converge_from_seed_122\tcase-17\tWriteKept\twrite 1 is lost\n")
+        plain = "---- prints_help stdout ----\nproptest regression: cc cc2e\nthread 'x' panicked at t.rs:3:1:\nboom\n"
+        self.assertEqual(unsaved(committed + saving), [("a", True)])
+        self.assertEqual(unsaved(shared + saving), [("a", False)])
+        self.assertEqual(unsaved(REPLAY_LOG.format(test="devices_lose_no_write", case="c" * 64)),
+                         [("devices_lose_no_write", True)])
+        self.assertEqual(unsaved(fixed_seed), [])
+        self.assertEqual(unsaved(recorded), [])
+        self.assertEqual(unsaved(plain), [])
+        self.assertEqual(unsaved(committed.replace("Test failed", "cannot save proptest regression cc 77: disk full\nTest failed")),
+                         [])
+        self.assertEqual(unsaved(plain.replace("prints_help", "prints_help_twice")), [("prints_help_twice", True)])
+        self.assertEqual(unsaved(FAILING_LOG.format(case="a" * 64)), [])
 
     def test_failure_message_falls_back_to_the_panic(self):
         self.assertEqual(triage.failure_message("thread 'x' panicked at src/lib.rs:3:5:\nboom\nnote: run with"), "boom")

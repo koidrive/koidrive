@@ -128,6 +128,7 @@ globs = [
   "scripts/battery.sh",
   "scripts/test-property-battery.py",
   "scripts/triage-battery.py",
+  "scripts/battery_logs.py",
   ".github/battery-known-failures/**",
   "scripts/mutations.sh",
   "scripts/engine-mutations.sh",

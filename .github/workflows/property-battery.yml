@@ -103,7 +103,7 @@ jobs:
           filter_args=()
           if [ -n "$FILTER" ]; then filter_args=("$FILTER"); fi
           cargo run --quiet --locked --manifest-path scripts/check-proptest-persistence/Cargo.toml --target-dir target/check-proptest-persistence -- --list > "$RUNNER_TEMP/properties.tsv"
-          mkdir -p battery/bin battery/every battery/once
+          mkdir -p battery/bin battery/every battery/once battery/properties
           : > battery/targets.tsv
           : > "$RUNNER_TEMP/covered.txt"
           while IFS=$'\t' read -r manifest selector executable; do
@@ -128,6 +128,7 @@ jobs:
             : > "$every"
             : > "$once"
             awk -F'\t' 'FILENAME == ARGV[1] { files[$0]; next } $1 in files { print $2 }' <(echo "$properties") "$RUNNER_TEMP/properties.tsv" | sort -u > "$RUNNER_TEMP/names.txt"
+            cp "$RUNNER_TEMP/names.txt" "battery/properties/$(basename "$executable").txt"
             sed -n 's/: test$//p' <<< "$listing" > "$RUNNER_TEMP/listed.txt"
             ambiguous=$(awk -F'::' 'FILENAME == ARGV[1] { names[$0]; next } $NF in names { seen[$NF]++ } END { for (name in seen) if (seen[name] > 1) print name }' "$RUNNER_TEMP/names.txt" "$RUNNER_TEMP/listed.txt" | sort)
             if [ -n "$ambiguous" ]; then
@@ -276,8 +277,9 @@ jobs:
           git status --porcelain --untracked-files=all -- '*.proptest-regressions' '*/proptest-regressions/*.txt' '*.cases/*.txt' | cut -c4- | while read -r file; do
             cp --parents "$file" "$out/regressions/"
           done
-          jq -n --argjson shard "$SHARD" --argjson seed "$seed" --argjson cases "$CASES" --argjson passed "$passed" --argjson failed "$failed" --argjson failing "$failing" \
-            '{shard: $shard, seed: $seed, cases: $cases, passed: $passed, failed: $failed, failing: $failing}' > "$out/result-$SHARD.json"
+          unsaved=$(python3 scripts/battery_logs.py "$out/logs" battery/properties) || unsaved=null
+          jq -n --argjson shard "$SHARD" --argjson seed "$seed" --argjson cases "$CASES" --argjson passed "$passed" --argjson failed "$failed" --argjson failing "$failing" --argjson unsaved "$unsaved" \
+            '{shard: $shard, seed: $seed, cases: $cases, passed: $passed, failed: $failed, failing: $failing, unsaved: $unsaved}' > "$out/result-$SHARD.json"
           if [ "$failing" = '[]' ]; then
             echo "Shard $SHARD passed: $passed tests, seed $seed, stress budget $CASES generated cases per selected, opted-in stress property. Other properties keep their own budgets; tests outside property blocks run once per battery in the packages ONCE_PACKAGES names, and on every shard in the others." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -407,6 +409,18 @@ jobs:
             echo "- Stress budget: $CASES generated cases per selected, opted-in stress property on each passing shard, $((CASES * passing)) in total; saved regressions also replay"
             echo "- Bounded properties keep their own case budgets; tests outside property blocks run once per battery, spread over the shards, in the packages ONCE_PACKAGES names, and on every shard in the others"
             echo "- Tests: $tests_passed passed and $tests_failed failed, summed over shards"
+            echo
+            echo "Generated cases: a property that passed on a shard generated its whole budget there, and one that failed and saved a case generated at least one. A property that failed without saving a case failed on a case it loaded, before it generated any. When that may be a case another test of its binary saved on the same shard, triage replays it to decide."
+            echo
+            jq -r '[.[] | .shard as $shard | (.unsaved // [])[] | {key: "\(.binary) \(.test)", zero, shard: $shard}]
+              | if length == 0 then "No property failed without saving a case." else
+                  group_by(.key)[] | "- \(.[0].key): " + ([
+                    ([.[] | select(.zero) | .shard] | select(length > 0) | "0 generated cases on shards \(map(tostring) | join(", "))"),
+                    ([.[] | select(.zero | not) | .shard] | select(length > 0) | "failed without saving a case on shards \(map(tostring) | join(", ")), on a case that may be one another test of its binary saved there")
+                  ] | join("; "))
+                end' shards.json
+            jq -r '[.[] | select(has("unsaved") and .unsaved == null) | .shard] | select(length > 0)
+              | "- Unknown on shards \(map(tostring) | join(", ")): the battery could not read their logs for tests that failed without saving a case"' shards.json
             echo
             echo "| Shard | Seed | Result | Tests passed | Tests failed | Job |"
             echo "|---|---|---|---|---|---|"

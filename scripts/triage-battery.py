@@ -11,9 +11,8 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-SECTION = re.compile(r"^---- (\S+) stdout ----$", re.M)
-FAILURES = re.compile(r"^failures:$", re.M)
-SAVED = re.compile(r"^proptest regression saved in (\S+): cc ([0-9a-f]+)$", re.M)
+from battery_logs import NEVER_RAN, SAVED, SECTION, failure_message, sections
+
 CASE = re.compile(r"^cc-([0-9a-f]+)\.txt$")
 LOCATION = re.compile(r"[\w./-]*\.rs:\d+(?::\d+)?")
 CHECKED_PROFILE = re.compile(r"(?ms)^\[profile\.checked\]\n.*?(?=^\[|\Z)")
@@ -36,42 +35,6 @@ SILENT = "a side crashed without a message (unconfirmed)"
 VERDICTS = ("PR-caused", "unstable", "unknown", SILENT, MOVED, "flaky or fixed", SAME)
 HARNESS_OUTPUT = re.compile(r"^(running \d+ tests?$|test \S+ \.\.\.)")
 SILENT_CRASH = re.compile(r"^killed by signal \d+$")
-CASE_FAILS = re.compile(r"^\S+::\S+ case \S+ fails: ")
-NEVER_RAN = re.compile(r"^\S+::\S+ never ran case \S+$", re.M)
-HARNESS_REPORT = re.compile(r"^(\S+::\S+ case \S+ fails: |not recorded: |recorded but passed: )")
-
-
-def sections(log):
-    headers = list(SECTION.finditer(log))
-    for index, header in enumerate(headers):
-        end = headers[index + 1].start() if index + 1 < len(headers) else len(log)
-        closing = FAILURES.search(log, header.end(), end)
-        yield header[1], log[header.end():closing.start() if closing else end]
-
-
-def failure_message(output):
-    lines = output.splitlines()
-    start = next((index for index, line in enumerate(lines) if line.startswith("Test failed: ")), None)
-    if start is None:
-        start = next((index + 1 for index, line in enumerate(lines[:-1]) if " panicked at " in line), None)
-    if start is None:
-        return None
-    message = [lines[start].removeprefix("Test failed: ")]
-    for line in lines[start + 1:]:
-        if not line.strip() or line.startswith(("minimal failing input:", "note: ", "thread '", "---- ")):
-            break
-        message.append(line)
-    message = [line for line in message if not NEVER_RAN.match(line)]
-    failing = next((index for index, line in enumerate(message) if CASE_FAILS.match(line)), None)
-    if failing is None:
-        return "\n".join(message)
-    failure = [CASE_FAILS.sub("", message[failing])]
-    reports = message[failing + 1:]
-    while reports and not HARNESS_REPORT.match(reports[0]):
-        failure.append(reports.pop(0))
-    failure[-1] += "."
-    return "\n".join(message[:failing] + failure
-                     + [line for line in reports if not line.startswith("recorded but passed: ")])
 
 
 def comparable(message):
@@ -172,6 +135,9 @@ def collect(failures):
             case["shards"].append(shard)
 
     for shard, shard_dir in shards(failures):
+        result = shard_dir / f"result-{shard}.json"
+        listed = {(entry["binary"], entry["test"]): entry["zero"]
+                  for entry in (json.loads(result.read_text()).get("unsaved") or [] if result.is_file() else [])}
         regressions = shard_dir / "regressions"
         files = {path.relative_to(regressions).as_posix(): path
                  for path in regressions.rglob("cc-*.txt") if path.parent.suffix == ".cases"}
@@ -190,15 +156,22 @@ def collect(failures):
                     add(path, test, binary, shard, failure_message(body[match.end():]), False)
             mapped.update(saved_here)
             for test, message in unsaved:
-                other = others.setdefault((binary, test), {"shards": set(), "cases": set()})
+                other = others.setdefault((binary, test), {"shards": set(), "cases": set(), "messages": {},
+                                                           "by_shard": []})
+                if shard not in other["shards"]:
+                    other["by_shard"].append({"shard": shard, "cases": sorted(saved_here),
+                                              "property": (binary, test) in listed,
+                                              "zero": listed.get((binary, test), False)})
                 other["shards"].add(shard)
                 other["cases"].update(saved_here)
+                other["messages"].setdefault(message, shard)
                 for path in saved_here:
                     add(path, test, binary, shard, message, True)
         for path in sorted(set(files) - mapped):
             add(path, None, None, shard, None, False)
     return (sorted(cases.values(), key=lambda case: (case["path"], case["test"] or "")),
-            [{"binary": binary, "test": test, "shards": sorted(other["shards"]), "cases": sorted(other["cases"])}
+            [{"binary": binary, "test": test, "shards": sorted(other["shards"]), "cases": sorted(other["cases"]),
+              "message": min(other["messages"].items(), key=lambda item: item[1])[0], "by_shard": other["by_shard"]}
              for (binary, test), other in sorted(others.items())])
 
 
@@ -209,6 +182,12 @@ def target_logs(logs, failing):
     named = re.match(r"--(?:test|bin) (\S+)$", selector)
     binary = named[1] if named else package.replace("-", "_")
     return [log for log in logs.glob("*.log") if log.stem.rsplit("-", 1)[0] == binary]
+
+
+def unread(failures):
+    return [shard for shard, shard_dir in shards(failures)
+            for result in [shard_dir / f"result-{shard}.json"]
+            if result.is_file() and json.loads(result.read_text()).get("unsaved", []) is None]
 
 
 def unattributed(failures):
@@ -465,10 +444,26 @@ def combine(spec, replays):
     return rows
 
 
+def reproducing(rows):
+    return {(row["path"], row["test"]) for row in rows if any(run["result"] == "fail" for run in row["head"])}
+
+
 def caseless(spec, rows):
-    reproduced = {(row["path"], row["test"]) for row in rows}
+    reproduced = reproducing(rows)
     return [other for other in spec["others"]
             if not any((path, other["test"]) in reproduced for path in other["cases"])]
+
+
+def starved(spec, rows):
+    reproduced = reproducing(rows)
+    found = []
+    for other in spec["others"]:
+        shards = [entry["shard"] for entry in other.get("by_shard", [])
+                  if entry["zero"] or (entry["property"]
+                                       and not any((path, other["test"]) in reproduced for path in entry["cases"]))]
+        if shards:
+            found.append({**other, "shards": shards})
+    return found
 
 
 def cell(text):
@@ -492,13 +487,22 @@ def messages_cell(runs):
     return " / ".join(f"run {number}: {cell(message) or '(none)'}" for number, message in enumerate(messages, 1))
 
 
-def markdown(spec, rows, others, run_url, problem=None):
+def markdown(spec, rows, others, run_url, problem=None, zero=()):
     counts = ", ".join(f"{sum(row['verdict'] == name for row in rows)} {name}" for name in VERDICTS)
     same = [row for row in rows if row["verdict"] == SAME]
     unclassified = sum(row["class"] == UNCLASSIFIED for row in same)
     lines = [
         "## Battery triage",
         "",
+    ]
+    if zero:
+        lines += [f"**{len(zero)} test{'s' if len(zero) != 1 else ''} generated 0 cases on some shards.** "
+                  "Each failed on a case it loaded before it generated any, and no case its shards saved "
+                  "explains the failure, so its stress budget checked nothing there:", ""]
+        lines += [f"- {other['binary']} `{other['test']}` on shards {', '.join(map(str, other['shards']))}: "
+                  f"{cell(other.get('message')) or '(no message)'}" for other in zero]
+        lines.append("")
+    lines += [
         f"[Run {spec['run']}]({run_url}) saved {len({row['path'] for row in rows if not row['shared']})} new cases; "
         f"the table has {len(rows)} rows: {counts}. "
         f"Each case replayed alone {REPLAYS} times on each side, without the committed cases, with "
@@ -528,16 +532,24 @@ masked, and for an entry that lists cases, only by those cases, which come befor
         "| Case | Binary and test | Head | Base | Head message | Base message | Verdict | Class | Issue |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
+    starving = {other["test"] for other in zero}
     lines += [f"| `{row['case'][:12]}`{' (saved by another test)' if row['shared'] else ''} | "
-              f"{cell(row['target'])} `{row['test'] or '?'}` | {results_cell(row['head'])} | "
+              f"{cell(row['target'])} `{row['test'] or '?'}`"
+              f"{' (generated 0 cases on some shards)' if row['test'] in starving else ''} | {results_cell(row['head'])} | "
               f"{results_cell(row['base'])} | {messages_cell(row['head'])} | {messages_cell(row['base'])} | "
               f"{row['verdict']} | {row['class'] or ''} | {row['issue'] or ''} |"
               for row in rows]
+    others = [other for other in others
+              if (other["binary"], other["test"]) not in {(each["binary"], each["test"]) for each in zero}]
     if others:
         lines += ["", "These tests failed without saving a new case, and every case their shards saved in the same "
                   "binary passes them on every head run, so they are not in the table:", ""]
         lines += [f"- {other['binary']} `{other['test']}` on shards {', '.join(map(str, other['shards']))}"
                   for other in others]
+    if spec.get("unread"):
+        lines += ["", f"The battery could not read the logs of shards {', '.join(map(str, spec['unread']))} for the "
+                  "tests that failed without saving a case, so triage can't tell whether a property there generated "
+                  "0 cases."]
     if spec.get("unattributed"):
         lines += ["", "These targets failed, but their logs name no failing test, so triage replayed nothing for "
                   "them (a crash, a signal or a timeout ends a test binary before it reports). Run their repro "
@@ -584,7 +596,8 @@ def main():
         if profile is None:
             sys.exit("Neither the head's Cargo.toml nor this checkout's has a [profile.checked] section.")
         spec = {"run": arguments.run, "head": arguments.head, "base": arguments.base,
-                "checked_profile": profile, "cases": cases, "others": others, "unattributed": failed}
+                "checked_profile": profile, "cases": cases, "others": others, "unattributed": failed,
+                "unread": unread(arguments.failures)}
         arguments.out.write_text(json.dumps(spec, indent=2) + "\n")
         print(f"{len(cases)} new cases; {len(others)} failing tests saved no new case; "
               f"{len(failed)} failing targets left no failing test in their logs.")
@@ -597,6 +610,7 @@ def main():
         replays = {replayed["side"]: replayed for replayed in (json.loads(path.read_text()) for path in arguments.replays)}
         rows = combine(spec, replays)
         others = caseless(spec, rows)
+        zero = starved(spec, rows)
         try:
             entries, problem = known_failures(arguments.known_failures), None
         except (OSError, ValueError) as error:
@@ -604,18 +618,31 @@ def main():
         ambiguous = classify(rows, entries)
         arguments.out.mkdir(parents=True, exist_ok=True)
         (arguments.out / "triage.json").write_text(json.dumps(
-            {"run": spec["run"], "head": spec["head"], "base": spec["base"], "cases": rows, "others": others},
+            {"run": spec["run"], "head": spec["head"], "base": spec["base"], "cases": rows, "others": others,
+             "starved": zero},
             indent=2) + "\n")
-        (arguments.out / "triage.md").write_text(markdown(spec, rows, others, arguments.run_url, problem))
+        (arguments.out / "triage.md").write_text(markdown(spec, rows, others, arguments.run_url, problem, zero))
+        errors = []
+        if zero:
+            errors.append("these tests generated 0 cases on some shards: " + "; ".join(
+                f"{other['binary']} {other['test']} on shards {', '.join(map(str, other['shards']))}"
+                for other in zero))
+        if spec.get("unread"):
+            errors.append(f"the battery could not read the logs of shards {', '.join(map(str, spec['unread']))} "
+                          "for tests that generated 0 cases")
         if spec.get("unattributed"):
-            sys.exit("::error::" + "; ".join(f"shard {failed['shard']}: {failed['target'] or 'the whole shard'} "
-                                             f"failed ({failed['reason']}) with no failing test in its log"
-                                             for failed in spec["unattributed"]))
+            errors.append("; ".join(f"shard {failed['shard']}: {failed['target'] or 'the whole shard'} "
+                                    f"failed ({failed['reason']}) with no failing test in its log"
+                                    for failed in spec["unattributed"]))
         if problem:
-            sys.exit(f"::error::No row has a class: {problem}")
+            errors.append(f"No row has a class: {problem}")
         if ambiguous:
-            sys.exit(f"::error::{arguments.known_failures} is wrong: " + "; ".join(
+            errors.append(f"{arguments.known_failures} is wrong: " + "; ".join(
                 f"{row['case'][:12]} {row['test']} matches {row['class']}" for row in ambiguous))
+        for error in errors:
+            print(f"::error::{error}")
+        if errors:
+            sys.exit(1)
 
 
 if __name__ == "__main__":
