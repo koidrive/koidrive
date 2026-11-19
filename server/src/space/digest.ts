@@ -3,7 +3,9 @@
 import { create, toBinary } from "@bufbuild/protobuf";
 import { type Commit, CommitSchema, type Op, OpSchema } from "../gen/koidrive/v1/commit_pb";
 import { type Content, ContentSchema } from "../gen/koidrive/v1/model_pb";
+import { Error_Code } from "../gen/koidrive/v1/rpc_pb";
 import { sha256 } from "../crypto";
+import { CallFailure } from "./commit";
 
 function content(value: Content | undefined): Content | undefined {
   if (!value) return undefined;
@@ -106,6 +108,6 @@ export async function commitDigests(commit: Commit): Promise<Digests> {
 
 export function digestVersion(stored: number): DigestVersion {
   const known = DIGEST_VERSIONS.find((version) => version === stored);
-  if (known === undefined) throw new Error(`stored digest version ${stored} is unknown to this server`);
+  if (known === undefined) throw new CallFailure(Error_Code.INTERNAL, `stored digest version ${stored} is unknown to this server`);
   return known;
 }

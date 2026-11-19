@@ -10,7 +10,7 @@ import { sha256 } from "../src/crypto";
 import { errorReply } from "../src/http";
 import { toHex, uuidv7 } from "../src/ids";
 import { policy } from "../src/policy";
-import { commitDigest } from "../src/space/digest";
+import { commitDigest, type DigestVersion } from "../src/space/digest";
 import { client, content, newSpace, op, type TestClient } from "./helpers";
 
 afterEach(() => {
@@ -201,14 +201,33 @@ describe("RFC 0006 section 8: stored results", () => {
 
   it("checks a resend against the digest version its result was stored with", async () => {
     const { a, root } = await setup();
-    const [first, second] = [await createFile(a, root, "a"), await createFile(a, root, "b")];
+    const [first, second, third] = [await createFile(a, root, "a"), await createFile(a, root, "b"), await createFile(a, root, "c")];
     const opening = uuidv7();
     await a.commit([op.delete(first)], { commitId: opening });
-    const [joined, ops] = [uuidv7(), [op.delete(second, `${opening}:0`)]];
-    const stored = await a.commit(ops, { commitId: joined });
-    for (const table of ["commits", "device_commits"]) await sql(a, `UPDATE ${table} SET digest_version = 6 WHERE commit_id = ?`, joined);
-    expect(await a.commit(ops, { commitId: joined })).toEqual(stored);
-    expect(code(await a.commitRaw([op.delete(second)], { commitId: joined }))).toBe(Error_Code.INVALID_ARGUMENT);
+    const joining = (nodeId: string, group = `${opening}:0`) => [op.delete(nodeId, group)];
+    const storedWith = async (version: DigestVersion, nodeId: string) => {
+      const commitId = uuidv7();
+      const request = create(CommitSchema, { baseSeq: a.baseSeq, deviceSeq: a.acceptedSeq + 1n, ops: joining(nodeId) });
+      const result = await a.commit(joining(nodeId), { commitId });
+      const digest = await commitDigest(request, version);
+      for (const table of ["commits", "device_commits"]) await sql(a, `UPDATE ${table} SET digest_version = ?, request_digest = ? WHERE commit_id = ?`, version, digest, commitId);
+      return { commitId, result };
+    };
+
+    const v6 = await storedWith(6, second);
+    expect(await a.commit(joining(second), { commitId: v6.commitId })).toEqual(v6.result);
+    expect(code(await a.commitRaw(joining(second, ""), { commitId: v6.commitId }))).toBe(Error_Code.INVALID_ARGUMENT);
+
+    const v5 = await storedWith(5, third);
+    expect(await a.commit(joining(third, ""), { commitId: v5.commitId })).toEqual(v5.result);
+    expect(code(await a.commitRaw(joining(first), { commitId: v5.commitId }))).toBe(Error_Code.INVALID_ARGUMENT);
+
+    await sql(a, "UPDATE commits SET digest_version = 99 WHERE commit_id = ?", v5.commitId);
+    const unknown = await a.commitRaw(joining(third), { commitId: v5.commitId });
+    expect(unknown.case === "error" && { code: unknown.value.code, message: unknown.value.message }).toEqual({
+      code: Error_Code.INTERNAL,
+      message: "stored digest version 99 is unknown to this server",
+    });
   });
 
   it("returns a result stored before RFC 0006 to its own device without the body check", async () => {
