@@ -3120,7 +3120,9 @@ impl Trees {
         let mut below = vec![id.to_owned()];
         while let Some(node) = below.pop() {
             below.extend(self.l_names.children(&node).cloned());
-            self.clear_unobserved(&node);
+            if self.r.live(&node).is_none() {
+                self.clear_unobserved(&node);
+            }
         }
     }
 
