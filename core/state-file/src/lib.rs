@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#[cfg(any(test, feature = "test-hooks"))]
+use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
 use std::fs::{DirBuilder, File};
 use std::io::{self, Read, Write};
@@ -21,6 +23,26 @@ const RANDOM_BYTES: usize = 16;
 pub enum Publish {
     Replace,
     Create,
+}
+
+/// A state file whose new contents every reader already sees. `durable` holds the error of a step after
+/// publication that failed, such as the parent directory's sync; until that is `Ok`, a crash can bring back the old
+/// contents.
+#[must_use = "the new contents are in place even when `durable` holds an error"]
+#[derive(Debug)]
+pub struct Published<T = ()> {
+    pub value: T,
+    pub durable: io::Result<()>,
+}
+
+impl<T> Published<T> {
+    /// The value, after logging a step after publication that failed: every reader already sees the new contents.
+    pub fn warn_unless_durable(self, path: &Path) -> T {
+        if let Err(error) = self.durable {
+            tracing::warn!(path = %path.display(), %error, "a state change is in place, but it may not survive a crash");
+        }
+        self.value
+    }
 }
 
 /// A private, same-directory stage whose inode lock distinguishes live writes from abandoned writes.
@@ -99,8 +121,8 @@ impl AtomicFile {
     }
 
     /// Syncs the contents, publishes atomically, and syncs the parent directory.
-    /// `Create` never replaces an existing destination. Failure after publication can leave the complete file.
-    pub fn finish(self, publish: Publish) -> io::Result<File> {
+    /// `Create` never replaces an existing destination. An error leaves the destination as it was.
+    pub fn finish(self, publish: Publish) -> io::Result<Published<File>> {
         self.finish_with_legacy(publish, &[])
     }
 
@@ -111,7 +133,7 @@ impl AtomicFile {
         self,
         publish: Publish,
         legacy: impl FnMut(&OsStr) -> bool,
-    ) -> io::Result<File> {
+    ) -> io::Result<Published<File>> {
         let names = matching_legacy(&self.directory, legacy)?;
         self.finish_with_legacy(
             publish,
@@ -122,10 +144,15 @@ impl AtomicFile {
     /// Publishes the file, then removes obsolete sibling stages while the directory is locked.
     /// Callers must own the legacy names. Names cannot escape the directory, name the destination,
     /// or overlap the helper's staging namespace. Permission-denied obsolete stages are left untouched.
-    /// Other cleanup failures can follow complete publication.
-    pub fn finish_with_legacy(mut self, publish: Publish, legacy: &[&OsStr]) -> io::Result<File> {
+    /// Other cleanup failures follow publication, in [`Published::durable`].
+    pub fn finish_with_legacy(
+        mut self,
+        publish: Publish,
+        legacy: &[&OsStr],
+    ) -> io::Result<Published<File>> {
         validate_legacy(&self.destination, legacy)?;
         self.file.sync_all()?;
+        let file = self.file.try_clone()?;
         let _lock = DirectoryLock::new(&self.directory)?;
         if aliased_stage(&self.directory, &self.destination)?.is_some() {
             return Err(io::Error::new(
@@ -152,31 +179,39 @@ impl AtomicFile {
             Publish::Replace => {
                 fs::renameat(&self.directory, stage, &self.directory, &self.destination)?
             }
-            Publish::Create => {
-                fs::linkat(
-                    &self.directory,
-                    stage,
-                    &self.directory,
-                    &self.destination,
-                    AtFlags::empty(),
-                )?;
-                fs::unlinkat(&self.directory, stage, AtFlags::empty())?;
+            Publish::Create => fs::linkat(
+                &self.directory,
+                stage,
+                &self.directory,
+                &self.destination,
+                AtFlags::empty(),
+            )?,
+        }
+        let unstaged = match publish {
+            Publish::Replace => Ok(()),
+            Publish::Create => fs::unlinkat(&self.directory, stage, AtFlags::empty()),
+        };
+        if unstaged.is_ok() {
+            self.stage = None;
+        }
+        let durable = unstaged.map_err(io::Error::from).and_then(|()| {
+            for name in legacy {
+                if same_inode(&self.directory, name, &self.file)? {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "a legacy name cannot alias the published state file",
+                    ));
+                }
             }
-        }
-        self.stage = None;
-        for name in legacy {
-            if same_inode(&self.directory, name, &self.file)? {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "a legacy name cannot alias the published state file",
-                ));
+            for name in legacy {
+                unlink_obsolete(&self.directory, name)?;
             }
-        }
-        for name in legacy {
-            unlink_obsolete(&self.directory, name)?;
-        }
-        self.directory.sync_all()?;
-        self.file.try_clone()
+            sync_published(&self.directory)
+        });
+        Ok(Published {
+            value: file,
+            durable,
+        })
     }
 }
 
@@ -191,9 +226,58 @@ impl Drop for AtomicFile {
     }
 }
 
+/// Syncs a file or folder whose new contents every reader can already see.
+pub fn sync_published(file: &File) -> io::Result<()> {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if FAILING_SYNCS.get() {
+        return Err(io::Error::other("injected sync failure after publication"));
+    }
+    file.sync_all()
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    static FAILING_SYNCS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Makes every [`sync_published`] on this thread fail until the guard is dropped.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn fail_syncs_after_publication() -> FailingSyncs {
+    FAILING_SYNCS.set(true);
+    FailingSyncs
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+pub struct FailingSyncs;
+
+#[cfg(any(test, feature = "test-hooks"))]
+impl Drop for FailingSyncs {
+    fn drop(&mut self) {
+        FAILING_SYNCS.set(false);
+    }
+}
+
 /// Replaces a state file with complete, synced bytes using [`AtomicFile`].
-pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub fn write(path: &Path, bytes: &[u8]) -> io::Result<Published> {
     write_with_legacy(path, bytes, &[])
+}
+
+/// Renames `from` to `to`, then syncs the folder of `to`. An error leaves both names as they were.
+pub fn rename(from: &Path, to: &Path) -> io::Result<Published> {
+    std::fs::rename(from, to)?;
+    Ok(Published {
+        value: (),
+        durable: open_directory(parent(to)).and_then(|dir| sync_published(&dir)),
+    })
+}
+
+/// Removes the file at `path`, then syncs its folder. An error leaves the file as it was.
+pub fn remove(path: &Path) -> io::Result<Published> {
+    std::fs::remove_file(path)?;
+    Ok(Published {
+        value: (),
+        durable: open_directory(parent(path)).and_then(|dir| sync_published(&dir)),
+    })
 }
 
 /// The file in which Koidrive records that it created a state folder.
@@ -219,9 +303,12 @@ pub fn create_dir(root: &Path, dir: &Path) -> io::Result<()> {
         Ok(()) => {
             let recorded = std::fs::metadata(root)
                 .and_then(|folder| write(&root.join(MADE), made_record(&folder).as_bytes()));
-            if let Err(error) = recorded {
-                let _ = std::fs::remove_dir(root);
-                return Err(error);
+            match recorded {
+                Ok(published) => published.warn_unless_durable(&root.join(MADE)),
+                Err(error) => {
+                    let _ = std::fs::remove_dir(root);
+                    return Err(error);
+                }
             }
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -252,22 +339,26 @@ fn made_record(folder: &std::fs::Metadata) -> String {
 }
 
 /// Replaces a state file and removes obsolete sibling stages owned by the caller.
-/// Permission-denied obsolete stages are left untouched; other cleanup failures can follow publication.
-pub fn write_with_legacy(path: &Path, bytes: &[u8], legacy: &[&OsStr]) -> io::Result<()> {
+/// Permission-denied obsolete stages are left untouched; other cleanup failures follow publication.
+pub fn write_with_legacy(path: &Path, bytes: &[u8], legacy: &[&OsStr]) -> io::Result<Published> {
     let stage = AtomicFile::prepare(path)?;
     stage.as_file().write_all(bytes)?;
-    stage.finish_with_legacy(Publish::Replace, legacy).map(drop)
+    let published = stage.finish_with_legacy(Publish::Replace, legacy)?;
+    Ok(Published {
+        value: (),
+        durable: published.durable,
+    })
 }
 
 /// Removes a state file and obsolete sibling stages, then syncs the directory without allocating a stage.
 /// Selects obsolete regular files and symlinks from the anchored directory. Callers must own the selected
 /// names and exclude concurrent writers of the destination and legacy stages.
 /// Missing files or directories are already removed. Destination removal errors are returned.
-/// Permission-denied obsolete stages are left untouched; other cleanup failures can follow destination removal.
+/// Permission-denied obsolete stages are left untouched; other cleanup failures follow destination removal.
 pub fn remove_with_legacy_matching(
     path: &Path,
     legacy: impl FnMut(&OsStr) -> bool,
-) -> io::Result<()> {
+) -> io::Result<Published> {
     let destination = path
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "a state file needs a name"))?;
@@ -279,7 +370,12 @@ pub fn remove_with_legacy_matching(
     }
     let directory = match open_directory(parent(path)) {
         Ok(directory) => directory,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(Published {
+                value: (),
+                durable: Ok(()),
+            });
+        }
         Err(error) => return Err(error),
     };
     let _lock = DirectoryLock::new(&directory)?;
@@ -296,10 +392,10 @@ pub fn remove_with_legacy_matching(
         Ok(()) | Err(rustix::io::Errno::NOENT) => {}
         Err(error) => return Err(error.into()),
     }
-    for name in legacy {
-        unlink_obsolete(&directory, name)?;
-    }
-    directory.sync_all()
+    let durable = (legacy.iter())
+        .try_for_each(|name| unlink_obsolete(&directory, name).map(drop))
+        .and_then(|()| sync_published(&directory));
+    Ok(Published { value: (), durable })
 }
 
 /// Removes this helper's abandoned stages, but never a stage locked by a live writer.
@@ -550,4 +646,25 @@ fn recover_stage(directory: &File, name: &OsStr) -> io::Result<Recovered> {
         return Ok(Recovered::Untouched);
     }
     Ok(Recovered::Removed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_sync_that_fails_after_publication_leaves_the_new_contents_for_every_reader() {
+        for publish in [Publish::Replace, Publish::Create] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state");
+            let stage = AtomicFile::prepare(&path).unwrap();
+            stage.as_file().write_all(b"new").unwrap();
+            let failing = fail_syncs_after_publication();
+            let published = stage.finish(publish).unwrap();
+            drop(failing);
+            assert!(published.durable.is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), b"new");
+            assert_eq!(recover(dir.path()).unwrap(), 0);
+        }
+    }
 }

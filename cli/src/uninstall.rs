@@ -657,7 +657,8 @@ fn record(paths: &Paths, found: &Found, run: &mut Run) {
     let written = koidrive_state_file::write(
         &path,
         &serde_json::to_vec(&record).expect("the record serializes"),
-    );
+    )
+    .and_then(|published| published.durable);
     if let Err(error) = written {
         run.problems
             .push(format!("cannot write {}: {error}", shown_folder(&path)));

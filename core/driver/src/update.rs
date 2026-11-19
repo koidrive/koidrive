@@ -509,6 +509,7 @@ fn save(path: &Path, checked: &Checked) -> io::Result<()> {
         &serde_json::to_vec(checked)?,
         &[legacy.file_name().expect("the update cache has a name")],
     )
+    .map(|written| written.warn_unless_durable(path))
 }
 
 fn now_ms() -> i64 {

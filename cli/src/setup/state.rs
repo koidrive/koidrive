@@ -100,7 +100,8 @@ impl StateFile {
             koidrive_state_file::write(
                 &self.path,
                 &serde_json::to_vec_pretty(state).expect("the state serializes"),
-            )
+            )?
+            .durable
         };
         write().map_err(|error| CliError::from(format!("cannot write {}: {error}", self.path.display()))
             .human(format!("Could not save setup progress: {error}. Check local file permissions and available storage. Cloud changes may already have happened. Check the affected server in your account before repeating them. Run koi diagnose to collect a report.")))

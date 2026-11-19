@@ -222,6 +222,8 @@ fn matching_legacy_cleanup_stays_in_the_prepared_directory_after_an_ancestor_mov
             fs::write(dir.join(name), b"replacement directory's data").unwrap();
             true
         })
+        .unwrap()
+        .durable
         .unwrap();
     assert_eq!(fs::read(moved.join("state.json")).unwrap(), b"new state");
     assert!(!moved.join(name).exists());
@@ -252,6 +254,8 @@ fn removal_and_legacy_selection_share_the_same_directory_after_an_ancestor_moves
         fs::write(dir.join(name), b"another legacy-looking file").unwrap();
         true
     })
+    .unwrap()
+    .durable
     .unwrap();
     assert!(!moved.join("state.json").exists());
     assert!(!moved.join(name).exists());
@@ -260,7 +264,10 @@ fn removal_and_legacy_selection_share_the_same_directory_after_an_ancestor_moves
         fs::read(dir.join(name)).unwrap(),
         b"another legacy-looking file"
     );
-    remove_with_legacy_matching(&root.path().join("absent/state.json"), |_| true).unwrap();
+    remove_with_legacy_matching(&root.path().join("absent/state.json"), |_| true)
+        .unwrap()
+        .durable
+        .unwrap();
     assert!(!root.path().join("absent").exists());
 }
 
@@ -329,6 +336,8 @@ fn legacy_cleanup_follows_successful_publication() {
     assert!(!path.exists());
     stage
         .finish_with_legacy(Publish::Create, &[OsStr::new("state.json.tmp")])
+        .unwrap()
+        .durable
         .unwrap();
     assert_eq!(fs::read(&path).unwrap(), b"new");
     assert!(!legacy.exists());
@@ -409,7 +418,7 @@ fn legacy_ascii_case_alias_cannot_remove_a_live_stage() {
     assert_eq!(fs::read(&live).unwrap(), b"first");
     assert!(!second_path.exists());
     assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
-    first.finish(Publish::Create).unwrap();
+    first.finish(Publish::Create).unwrap().durable.unwrap();
     assert_eq!(fs::read(first_path).unwrap(), b"first");
 }
 
@@ -472,7 +481,7 @@ fn destination_inode_alias_cannot_replace_a_live_stage() {
     assert_eq!(fs::read(&alias).unwrap(), b"first");
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     assert!(error.to_string().contains("a live writer holds that stage"));
-    first.finish(Publish::Create).unwrap();
+    first.finish(Publish::Create).unwrap().durable.unwrap();
     assert_eq!(fs::read(&first_path).unwrap(), b"first");
     assert_eq!(fs::read(&alias).unwrap(), b"first");
 }
@@ -498,7 +507,7 @@ fn legacy_inode_alias_cannot_remove_a_live_stage() {
     assert_eq!(fs::read(dir.path().join("legacy")).unwrap(), b"first");
     assert!(!second_path.exists());
     assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
-    first.finish(Publish::Create).unwrap();
+    first.finish(Publish::Create).unwrap().durable.unwrap();
     assert_eq!(fs::read(first_path).unwrap(), b"first");
 }
 
@@ -583,7 +592,7 @@ fn interrupted_create_recovers_its_stage_without_removing_the_destination() {
                 assert_eq!(fs::read(&path).unwrap(), b"published");
             }
             Publish::Replace => {
-                retry.finish(publish).unwrap();
+                retry.finish(publish).unwrap().durable.unwrap();
                 assert_eq!(fs::read(&path).unwrap(), b"replacement");
             }
         }
@@ -641,7 +650,7 @@ fn destination_alias_scan_does_not_skip_abandoned_stage_recovery() {
     assert!(!abandoned.exists());
     assert_eq!(stages(dir.path()), 1);
     assert_eq!(fs::read(&path).unwrap(), b"original");
-    stage.finish(Publish::Replace).unwrap();
+    stage.finish(Publish::Replace).unwrap().durable.unwrap();
     assert_eq!(fs::read(&path).unwrap(), b"published");
     assert_eq!(stages(dir.path()), 0);
 }
@@ -655,7 +664,10 @@ fn legacy_cleanup_can_remove_an_old_destination_hard_link() {
     fs::write(&path, b"original").unwrap();
     fs::hard_link(&path, &legacy).unwrap();
     fs::hard_link(&path, &retained).unwrap();
-    write_with_legacy(&path, b"published", &[OsStr::new("legacy")]).unwrap();
+    write_with_legacy(&path, b"published", &[OsStr::new("legacy")])
+        .unwrap()
+        .durable
+        .unwrap();
     assert_eq!(fs::read(&path).unwrap(), b"published");
     assert_eq!(fs::read(retained).unwrap(), b"original");
     assert!(!legacy.exists());
@@ -697,7 +709,7 @@ fn unicode_filesystem_aliases_cannot_replace_or_remove_a_live_stage() {
         assert!(!second_path.exists());
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
     }
-    first.finish(Publish::Create).unwrap();
+    first.finish(Publish::Create).unwrap().durable.unwrap();
     assert_eq!(fs::read(first_path).unwrap(), b"first");
 }
 
@@ -721,7 +733,10 @@ fn unicode_destination_alias_cannot_remove_the_publication() {
         let result = stage.finish_with_legacy(publish, &[OsStr::new(alias)]);
         assert_eq!(fs::read(&path).unwrap(), b"published");
         assert_eq!(fs::read(dir.path().join(alias)).unwrap(), b"published");
-        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            result.unwrap().durable.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
         assert_eq!(stages(dir.path()), 0);
     }
 }
@@ -732,7 +747,7 @@ fn ordinary_unicode_destinations_replace_inaccessible_files() {
     let path = dir.path().join("café-state.json");
     fs::write(&path, b"original").unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
-    write(&path, b"published").unwrap();
+    write(&path, b"published").unwrap().durable.unwrap();
     assert_eq!(fs::read(&path).unwrap(), b"published");
 }
 
@@ -743,7 +758,10 @@ fn legacy_symlink_cleanup_preserves_its_target() {
     let legacy = dir.path().join("legacy");
     fs::write(&target, b"target").unwrap();
     symlink(&target, &legacy).unwrap();
-    write_with_legacy(&dir.path().join("state"), b"new", &[OsStr::new("legacy")]).unwrap();
+    write_with_legacy(&dir.path().join("state"), b"new", &[OsStr::new("legacy")])
+        .unwrap()
+        .durable
+        .unwrap();
     assert!(legacy.symlink_metadata().is_err());
     assert_eq!(fs::read(target).unwrap(), b"target");
 }
@@ -759,6 +777,8 @@ fn legacy_symlink_to_the_destination_is_unlinked_without_removing_the_publicatio
         stage.as_file().write_all(b"published").unwrap();
         stage
             .finish_with_legacy(publish, &[OsStr::new("legacy")])
+            .unwrap()
+            .durable
             .unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"published");
         assert!(legacy.symlink_metadata().is_err());
@@ -779,6 +799,8 @@ fn legacy_cleanup_follows_the_original_parent_after_rename() {
     fs::write(original.join("legacy"), b"protected").unwrap();
     stage
         .finish_with_legacy(Publish::Replace, &[OsStr::new("legacy")])
+        .unwrap()
+        .durable
         .unwrap();
     assert_eq!(fs::read(moved.join("state")).unwrap(), b"new");
     assert!(!moved.join("legacy").exists());
@@ -811,7 +833,7 @@ fn publication_is_whole_and_create_never_clobbers() {
     );
     stage.as_file().write_all(b"whole").unwrap();
     assert!(!path.exists());
-    stage.finish(Publish::Create).unwrap();
+    stage.finish(Publish::Create).unwrap().durable.unwrap();
     let stage = AtomicFile::prepare(&path).unwrap();
     stage.as_file().write_all(b"replacement").unwrap();
     assert_eq!(
@@ -819,7 +841,7 @@ fn publication_is_whole_and_create_never_clobbers() {
         std::io::ErrorKind::AlreadyExists
     );
     assert_eq!(fs::read(&path).unwrap(), b"whole");
-    write(&path, b"replacement").unwrap();
+    write(&path, b"replacement").unwrap().durable.unwrap();
     assert_eq!(fs::read(&path).unwrap(), b"replacement");
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
 }
@@ -869,8 +891,11 @@ fn publication_and_drop_follow_the_original_parent_after_it_moves() {
     stage.as_file().write_all(b"complete").unwrap();
     fs::rename(&original, &moved).unwrap();
     fs::create_dir(&original).unwrap();
-    write(&original.join("state.json"), b"replacement directory").unwrap();
-    stage.finish(Publish::Replace).unwrap();
+    write(&original.join("state.json"), b"replacement directory")
+        .unwrap()
+        .durable
+        .unwrap();
+    stage.finish(Publish::Replace).unwrap().durable.unwrap();
     assert_eq!(
         fs::read(original.join("state.json")).unwrap(),
         b"replacement directory"
@@ -975,7 +1000,10 @@ fn killed_stage_is_removed_on_restart_without_publishing() {
     recover(dir.path()).unwrap();
     assert_eq!(stages(dir.path()), 0);
     assert!(!dir.path().join("state.json").exists());
-    write(&dir.path().join("state.json"), b"restart").unwrap();
+    write(&dir.path().join("state.json"), b"restart")
+        .unwrap()
+        .durable
+        .unwrap();
     assert_eq!(fs::read(dir.path().join("state.json")).unwrap(), b"restart");
 }
 
@@ -995,7 +1023,10 @@ fn recovery_removes_write_only_abandoned_stage_and_skips_inaccessible_stage() {
     assert_eq!(recover(dir.path()).unwrap(), 1);
     assert!(!abandoned.exists());
     assert!(inaccessible.exists());
-    write(&dir.path().join("state.json"), b"published").unwrap();
+    write(&dir.path().join("state.json"), b"published")
+        .unwrap()
+        .durable
+        .unwrap();
     assert_eq!(
         fs::read(dir.path().join("state.json")).unwrap(),
         b"published"
@@ -1039,7 +1070,10 @@ fn recovery_preserves_a_write_only_live_stage() {
     let mut worker = Worker::start(dir.path(), "live", "write-only");
     assert_eq!(recover(dir.path()).unwrap(), 0);
     assert_eq!(stages(dir.path()), 1);
-    write(&dir.path().join("other.json"), b"other").unwrap();
+    write(&dir.path().join("other.json"), b"other")
+        .unwrap()
+        .durable
+        .unwrap();
     assert_eq!(stages(dir.path()), 1);
     worker.finish();
     assert_eq!(fs::read(dir.path().join("state.json")).unwrap(), b"live");
@@ -1114,10 +1148,13 @@ fn subprocess_worker() {
             .set_permissions(fs::Permissions::from_mode(0o600))
             .unwrap();
     }
-    stage.finish(Publish::Replace).unwrap();
+    stage.finish(Publish::Replace).unwrap().durable.unwrap();
     if mode == "repeat" {
         for _ in 0..8 {
-            write(&dir.join("state.json"), &name.as_bytes().repeat(4096)).unwrap();
+            write(&dir.join("state.json"), &name.as_bytes().repeat(4096))
+                .unwrap()
+                .durable
+                .unwrap();
         }
     }
 }

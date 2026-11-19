@@ -238,7 +238,10 @@ impl PendingCreate {
             None => Publish::Create,
         };
         match stage.finish(publish) {
-            Ok(_) => Ok(Some(fresh.request_id)),
+            Ok(published) => {
+                published.warn_unless_durable(&self.path);
+                Ok(Some(fresh.request_id))
+            }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(None),
             Err(error) => Err(error),
         }
@@ -340,7 +343,9 @@ fn load(path: &Path) -> io::Result<Option<Saved>> {
 }
 
 fn forget(path: &Path, legacy: impl FnMut(&OsStr) -> bool) {
-    if let Err(error) = koidrive_state_file::remove_with_legacy_matching(path, legacy) {
+    if let Err(error) = koidrive_state_file::remove_with_legacy_matching(path, legacy)
+        .map(|removed| removed.warn_unless_durable(path))
+    {
         tracing::warn!(path = %koidrive_fs::quoted(path), %error, "could not forget a finished create");
     }
 }

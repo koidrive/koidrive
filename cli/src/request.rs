@@ -124,7 +124,7 @@ fn write(paths: &Paths, path: &Path, value: &impl Serialize, replace: bool) -> i
         koidrive_state_file::Publish::Create
     };
     match temp.finish(publish) {
-        Ok(_) => {}
+        Ok(published) => published.durable?,
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists && !replace => return Ok(false),
         Err(error) => return Err(error),
     }

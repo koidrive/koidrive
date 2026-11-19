@@ -242,7 +242,7 @@ fn read<T: Default + for<'de> Deserialize<'de>>(path: &Path) -> io::Result<T> {
 }
 
 fn write<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
-    koidrive_state_file::write(path, &serde_json::to_vec(value)?)
+    koidrive_state_file::write(path, &serde_json::to_vec(value)?)?.durable
 }
 
 fn remove(path: &Path) -> io::Result<()> {

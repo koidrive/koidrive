@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LockResult, Mutex, MutexGuard};
 
+use koidrive_state_file::Published;
 use koidrive_telemetry::schema::Age;
 use koidrive_telemetry::{Event, Recorder};
 use serde::{Deserialize, Serialize};
@@ -230,7 +231,9 @@ impl Lifecycle {
         };
         let marker = self.path.with_file_name(UNLINKING);
         let unfinished = marker.exists();
-        let written = koidrive_state_file::write(&marker, b"").and_then(|()| self.save(&next));
+        let written = koidrive_state_file::write(&marker, b"")
+            .map(|marked| marked.warn_unless_durable(&marker))
+            .and_then(|()| self.save(&next));
         if let Err(error) = written {
             if !unfinished {
                 let _ = self.forget_unlink();
@@ -243,10 +246,11 @@ impl Lifecycle {
 
     fn forget_unlink(&self) -> io::Result<()> {
         let marker = self.path.with_file_name(UNLINKING);
-        match marker.exists() {
-            true => koidrive_state_file::remove_with_legacy_matching(&marker, |_| false),
-            false => Ok(()),
+        if marker.exists() {
+            koidrive_state_file::remove_with_legacy_matching(&marker, |_| false)?
+                .warn_unless_durable(&marker);
         }
+        Ok(())
     }
 
     pub(crate) fn settle_unreadable(&self) {
@@ -323,7 +327,10 @@ impl Lifecycle {
             file.write_all(&serde_json::to_vec(checkpoint)?)?;
             file.sync_all()?;
             fs::rename(&temp, &self.path)?;
-            File::open(self.path.parent().unwrap())?.sync_all()
+            let durable = File::open(self.path.parent().unwrap())
+                .and_then(|dir| koidrive_state_file::sync_published(&dir));
+            Published { value: (), durable }.warn_unless_durable(&self.path);
+            Ok(())
         })();
         if result.is_err() {
             let _ = fs::remove_file(&temp);
@@ -630,6 +637,25 @@ mod tests {
         fs::write(store.with_file_name(UNLINKING), b"").unwrap();
         lifecycle.claimed(identity).unwrap();
         assert!(!store.with_file_name(UNLINKING).exists());
+    }
+
+    #[test]
+    fn a_restart_or_unlink_whose_sync_fails_after_publication_is_what_a_reopen_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store.sqlite");
+        let reopened = || Lifecycle::open(&store, status(), Recorder::off());
+        let lifecycle = reopened();
+        lifecycle.halt(Halted::Io, "x".into(), Remedy::Restart);
+
+        let failing = koidrive_state_file::fail_syncs_after_publication();
+        let restarted = lifecycle.restart();
+        assert_eq!(lifecycle.halted(), reopened().halted());
+        let begun = lifecycle.begin_unlink();
+        drop(failing);
+
+        assert_eq!(lifecycle.unlinking(), reopened().unlinking());
+        assert!(lifecycle.unlinking());
+        assert!(restarted.is_ok() && begun.is_ok());
     }
 
     #[test]

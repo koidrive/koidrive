@@ -15,7 +15,9 @@ pub(super) fn write(path: &Path, text: &str) -> Result<bool, String> {
     crate::lifeline::confine(path).map_err(failed)?;
     let dir = path.parent().unwrap_or(Path::new("/"));
     fs::create_dir_all(dir).map_err(failed)?;
-    koidrive_state_file::write(path, text.as_bytes()).map_err(failed)?;
+    koidrive_state_file::write(path, text.as_bytes())
+        .and_then(|published| published.durable)
+        .map_err(failed)?;
     Ok(true)
 }
 
