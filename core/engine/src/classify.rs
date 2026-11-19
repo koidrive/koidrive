@@ -5384,7 +5384,15 @@ impl Trees {
             }
         }
         for id in held {
-            if self.r.get(merged.get(&id).unwrap_or(&id)).is_none() {
+            let renamed_there = |record: &RemoteRecord| {
+                (self.r.live(&id)).is_some_and(|remote| {
+                    record.node.trashed || !record.node.shape.same_position(remote)
+                })
+            };
+            let rename_lost = !merged.contains_key(&id)
+                && !self.cycle_reverted.contains(&id)
+                && records.get(&id).is_some_and(renamed_there);
+            if rename_lost || self.r.get(merged.get(&id).unwrap_or(&id)).is_none() {
                 self.end_revert(&id);
             }
         }
