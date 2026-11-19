@@ -149,7 +149,17 @@ fn a_marker_write_that_failed_at_the_start_takes_the_new_token_at_the_next_effec
     a.settle();
     a.run(&mut remote);
     assert_eq!(names(&site.root), ["before.txt", "two.txt"]);
-    assert_eq!(marker_of(&site).token, pending);
+    let log = fs::read(site.root.join(koidrive_fs::PRIVATE_DIR).join("lineage")).unwrap();
+    let logged: Vec<_> = (log.chunks(16))
+        .map(|token| {
+            Some(format!(
+                "{:032x}",
+                u128::from_be_bytes(token.try_into().unwrap())
+            ))
+        })
+        .collect();
+    let taken = logged.iter().position(|token| *token == pending).unwrap();
+    assert!(logged[taken + 1..].contains(&marker_of(&site).token));
     assert_rotated_from(&site, &[before.token]);
     drop(a);
 
@@ -241,7 +251,7 @@ fn a_copy_made_before_a_change_from_the_server_was_applied_does_not_start() {
 
     fs::rename(&site.root, site.root.with_file_name("original")).unwrap();
     fs::rename(&copy, &site.root).unwrap();
-    assert!(matches!(opened(&site), Err(Stop::DiskBehind { .. })));
+    assert!(matches!(opened(&site), Err(Stop::Root(RootProblem::Copy))));
     assert_eq!(names(&site.root), ["before.txt"]);
     assert_eq!(remote.tree(), served);
 
@@ -251,7 +261,7 @@ fn a_copy_made_before_a_change_from_the_server_was_applied_does_not_start() {
         Err(disk::RelinkError::Stop(Stop::Io(_)))
     ));
     fs::remove_dir_all(&blocker).unwrap();
-    assert!(matches!(relink(&site), Err(disk::RelinkError::NotACopy)));
+    relink(&site).unwrap();
     let mut a = restarted(&site, &mut remote);
     a.rest(&mut remote);
     assert_eq!(remote.tree(), served);

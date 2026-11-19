@@ -3468,7 +3468,10 @@ fn copy_store(from: &Path, to: &Path) {
 
 #[test]
 fn a_store_restored_from_before_a_write_that_failed_does_not_take_its_download_as_placed() {
-    for scenario in [&SCENARIOS[1], &SCENARIOS[2]] {
+    for (scenario, at_startup) in [&SCENARIOS[1], &SCENARIOS[2]]
+        .into_iter()
+        .flat_map(|scenario| [(scenario, false), (scenario, true)])
+    {
         let folder = Folder::new();
         let mut server = Server::default();
         (scenario.setup)(&folder, &mut server);
@@ -3480,17 +3483,31 @@ fn a_store_restored_from_before_a_write_that_failed_does_not_take_its_download_a
             backup.clone(),
         );
         let saved = b"the user's own file";
-        let mut copied = false;
+        let mut first = true;
         let hook: Hook = Box::new(move |reached| {
-            if !copied && matches!(reached, Cut::Step(_)) {
-                copied = true;
+            if first && matches!(reached, Cut::Step(_)) {
+                first = false;
+                if at_startup {
+                    resume_unwind(Box::new(Crash));
+                }
                 copy_store(&db, &copy);
                 fs::write(&target, saved).unwrap();
             }
         });
-        let mut running = folder.start(Some(hook)).unwrap();
-        running.step(&server);
-        drop(running);
+        let ran = catch_unwind(AssertUnwindSafe(|| {
+            folder.start(Some(hook)).unwrap().step(&server);
+        }));
+        assert_eq!(ran.is_err(), at_startup, "{}", scenario.name);
+        if at_startup {
+            fs::write(folder.root.join("report.txt"), saved).unwrap();
+            let (db, copy) = (folder.db.clone(), backup.clone());
+            let hook: Hook = Box::new(move |reached| {
+                if reached == Cut::BeforeAck {
+                    copy_store(&db, &copy);
+                }
+            });
+            drop(folder.start(Some(hook)).unwrap());
+        }
         copy_store(&backup, &folder.db);
         let mut running = folder.start(no_hook()).unwrap();
         assert!(

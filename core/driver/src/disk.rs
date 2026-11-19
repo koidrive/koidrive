@@ -443,7 +443,8 @@ impl Disk {
     ///    transaction. An interrupted one is planned again; one that met another state on disk stays blocked, and so
     ///    does one that recovery found done where L shows another entry
     ///    ([`koidrive_engine::effects::Effects::confirms`]).
-    /// 6. Staged files without an effect are deleted.
+    /// 6. Staged files without an effect are deleted. When a recovered effect recorded its staged file's identity,
+    ///    the marker first gets a new token as in step 4, and the files stay until a later startup if it cannot.
     ///
     /// The observer then resets the paths of the recovered effects to L, so it reads a file an effect placed before
     /// the crash once, whatever the snapshot it starts from says about that file.
@@ -560,7 +561,8 @@ impl Disk {
                 .flat_map(|((effect, _), (_, outcome))| scopes(&effect.action, outcome));
             disk.sections.request(engine.resets(scopes));
         }
-        disk.space.clear_staging(None)?;
+        let recorded = records.iter().any(|record| record.staged.is_some());
+        disk.drop_staging(recorded, None, store)?;
         disk.record(engine);
         Ok(disk)
     }
@@ -750,15 +752,11 @@ impl Disk {
             hook,
         )?;
         self.finish_rotation(store)?;
-        if rotates {
-            let marker = self.marker()?;
-            self.rotate(marker, false, store)?;
-        }
-        if self.next.is_none() {
-            for (planned, _) in &effects {
-                self.space.drop_staged(&planned.effect.id)?;
-            }
-        }
+        let ids: Vec<_> = effects
+            .iter()
+            .map(|(planned, _)| &planned.effect.id)
+            .collect();
+        self.drop_staging(rotates, Some(&ids), store)?;
         let end = self.sections.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let requested = (self.sections).request(engine.resets(scopes_of_batch.iter().cloned()));
         if rules_changed
@@ -1124,6 +1122,32 @@ impl Disk {
         if let Some(next) = self.next.take() {
             commit_token(next.token, store)?;
             self.current = Some(next.token.to_string());
+        }
+        Ok(())
+    }
+
+    fn drop_staging(
+        &mut self,
+        recorded: bool,
+        only: Option<&[&String]>,
+        store: &mut Store,
+    ) -> Result<(), Stop> {
+        if recorded {
+            let marker = self.marker()?;
+            self.rotate(marker, false, store)?;
+            if self.next.is_some() {
+                return Ok(());
+            }
+        }
+        match only {
+            Some(ids) => {
+                for id in ids {
+                    self.space.drop_staged(id)?;
+                }
+            }
+            None => {
+                self.space.clear_staging(None)?;
+            }
         }
         Ok(())
     }
