@@ -2248,7 +2248,11 @@ fn an_excluded_file_the_server_moves_keeps_its_synced_entry_while_its_place_in_r
 }
 
 fn excluded_folder_released_with_its_file() -> Trees {
-    let mut trees = trees(&[
+    excluded_folder_holding(&[])
+}
+
+fn excluded_folder_holding(more: &[Row]) -> Trees {
+    let rows = [
         incoming("far", dir(ROOT, "far")),
         (
             "x",
@@ -2257,7 +2261,8 @@ fn excluded_folder_released_with_its_file() -> Trees {
             Some(dir("far", "x")),
         ),
         synced("z", file("x", "g", 1)),
-    ]);
+    ];
+    let mut trees = trees(&[&rows[..], more].concat());
     let parked = LocalNode {
         parked: true,
         ..local(dir(ROOT, "x"), 2)
@@ -2290,4 +2295,58 @@ fn an_unchanged_excluded_file_takes_the_remote_edit_when_included_again() {
         trees.local().get("z").map(|node| &node.shape),
         Some(&file("x", "g", 9))
     );
+}
+
+#[test]
+fn an_excluded_folder_gives_up_its_synced_place_with_its_file_to_a_node_l_and_r_put_there() {
+    let trees = excluded_folder_released_with_its_file();
+    assert_eq!(trees.synced().live("y"), Some(&file(ROOT, "x", 2)));
+    assert_eq!(trees.synced().live("x"), None);
+    assert_eq!(trees.synced().live("z"), None);
+    assert!(!trees.work().iter().any(|(id, _)| id == "y"));
+}
+
+#[test]
+fn an_excluded_file_given_up_with_its_folder_downloads_again_once_its_copy_vanished_while_excluded()
+{
+    let mut trees = excluded_folder_released_with_its_file();
+    trees.remove_local("z");
+    trees.settle(&Default::default());
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
+    effects(&mut trees);
+    assert_eq!(ops(&mut trees), []);
+    assert_eq!(
+        trees.local().get("z").map(|node| &node.shape),
+        Some(&file("x", "g", 1))
+    );
+}
+
+#[test]
+fn an_excluded_file_edited_after_it_was_given_up_uploads_the_edit_once_included_again() {
+    let mut trees = excluded_folder_released_with_its_file();
+    let mut edited = trees.local().get("z").unwrap().clone();
+    edited.shape.content = Some(content(5));
+    trees.set_local_changed("z".into(), edited);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
+    effects(&mut trees);
+    let sent = ops(&mut trees);
+    assert!(
+        matches!(&sent[..], [op::Op::UpdateContent(update)] if update.node_id == "z"),
+        "{sent:?}"
+    );
+}
+
+#[test]
+fn an_excluded_folder_that_holds_an_included_node_keeps_its_synced_place() {
+    let moved_out = (
+        "k",
+        Some(file("x", "k", 3)),
+        Some(file("x", "k", 3)),
+        Some(file(ROOT, "k", 3)),
+    );
+    let trees = excluded_folder_holding(&[moved_out]);
+    assert!(!trees.ignored("k"));
+    assert_eq!(trees.synced().live("x"), Some(&dir(ROOT, "x")));
+    assert_eq!(trees.synced().live("z"), Some(&file("x", "g", 1)));
+    assert_eq!(trees.synced().live("y"), Some(&file("x", "f", 2)));
 }

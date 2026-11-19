@@ -2247,6 +2247,12 @@ impl Trees {
             self.mark(id);
         }
         if self.s.get(id).is_none() && !self.watched_positions.contains_key(id) {
+            let base = (self.waiting.get(id)).is_some_and(|waiting| {
+                matches!(waiting.origin, Origin::Other) && waiting.shape.is_some()
+            });
+            if base && self.unobserved.contains(id) {
+                self.waiting.remove(id);
+            }
             self.clear_unobserved(id);
         }
     }
@@ -5635,7 +5641,7 @@ impl Trees {
             let fitting = (options.iter()).find(|next| self.fits_synced(&id, next.as_ref()));
             let released = match fitting {
                 Some(next) => self.release(vec![(id.clone(), next.clone())]),
-                None if !options.is_empty() => self.release_subtree(&id),
+                None if !options.is_empty() => self.release_subtree(&id, &BTreeMap::new()),
                 None => None,
             };
             if let Some(released) = released {
@@ -5888,7 +5894,7 @@ impl Trees {
                 for holder in self.s_names.holders(&shape.parent, &shape.name) {
                     if !targets.contains_key(holder.as_str())
                         && let Some(options) = self.released(holder)
-                        && let Some(dropped) = self.release(vec![(holder.clone(), None)])
+                        && let Some(dropped) = self.release_subtree(holder, &targets)
                     {
                         released.push((holder, options, dropped));
                     }
@@ -5901,12 +5907,15 @@ impl Trees {
             if let Some(fitting) = fitting {
                 return self.take_released(fitting).into_iter().collect();
             }
-            targets.extend(
-                released
-                    .iter()
-                    .map(|(holder, _, _)| (holder.as_str(), None)),
-            );
+            let giving_up: Vec<&str> = (released.iter())
+                .flat_map(|(holder, _, _)| self.s_subtree(holder))
+                .filter(|id| !targets.contains_key(id))
+                .collect();
+            targets.extend(giving_up.into_iter().map(|id| (id, None)));
             (taken, unsearched) = self.search_together(&targets);
+            if !taken.iter().any(|id| pending.contains(id)) {
+                return BTreeSet::new();
+            }
             drops = (released.into_iter())
                 .map(|(holder, _, dropped)| (holder.clone(), dropped))
                 .collect();
@@ -5916,12 +5925,22 @@ impl Trees {
             .collect();
         self.unsearched.clear();
         self.unsearched.extend(unsearched);
+        let bases: Vec<(NodeId, Shape)> = (drops.values())
+            .flat_map(|dropped| dropped.nodes())
+            .filter(|(id, _)| self.l.get(id).is_some())
+            .filter_map(|(id, _)| Some((id.clone(), self.s.get(id)?.clone())))
+            .collect();
         for (id, next) in updates {
             match drops.remove(&id) {
                 Some(dropped) => {
                     self.take_released(dropped);
                 }
                 None => self.set_synced_unmarked(&id, next),
+            }
+        }
+        for (id, base) in bases {
+            if self.s.get(&id).is_none() {
+                self.wait(id, Some(base), Origin::Other);
             }
         }
         debug_assert_eq!(self.s.check(Names::ByKey), Ok(()));
@@ -6135,18 +6154,35 @@ impl Trees {
     /// Drops the folder `id` from S with every node S holds below it, when S can hold the folder nowhere else and
     /// every one of those nodes is ignored too ([`Trees::released`]). Their S entries keep the folder's from
     /// being dropped, and none of them is ever planned, so without this the folder would keep its name in S for good.
-    /// A node below that is not ignored keeps the whole subtree in S. Returns the nodes below that it dropped.
-    fn release_subtree(&self, id: &str) -> Option<Released> {
-        let mut below = vec![id.to_owned()];
-        let mut next = 0;
-        while let Some(folder) = below.get(next).cloned() {
-            next += 1;
-            below.extend(self.s_names.children(&folder).cloned());
-        }
+    /// A node below that is neither ignored nor updated with it in `leaving` keeps the whole subtree in S. Returns the
+    /// nodes it dropped.
+    fn release_subtree(
+        &self,
+        id: &str,
+        leaving: &BTreeMap<&str, Option<&Shape>>,
+    ) -> Option<Released> {
+        let below: Vec<&str> = (self.s_subtree(id).into_iter())
+            .filter(|node| !leaving.contains_key(node))
+            .collect();
         if !(below.iter()).all(|node| self.ignored(node) && !self.trashed_while_parked(node)) {
             return None;
         }
-        self.release(below.into_iter().map(|node| (node, None)).collect())
+        self.release(
+            below
+                .into_iter()
+                .map(|node| (node.to_owned(), None))
+                .collect(),
+        )
+    }
+
+    fn s_subtree<'a>(&'a self, id: &'a str) -> Vec<&'a str> {
+        let mut below = vec![id];
+        let mut next = 0;
+        while let Some(folder) = below.get(next).copied() {
+            next += 1;
+            below.extend(self.s_names.children(folder).map(|child| child.as_str()));
+        }
+        below
     }
 
     /// Records, for a node whose position is watched, R's position and the revision of its record
