@@ -6888,26 +6888,40 @@ mod build_work_tests {
         trees.settle(commits.aliases());
     }
 
-    fn entries_read_by_a_build(folders: usize) -> u64 {
+    fn entries_read_by_commits(folders: usize) -> Vec<(u64, u64)> {
         let (mut trees, mut commits, mut ids) = linked(folders);
-        let mut read = 0;
-        for seq in 1..=3 {
-            let before = ENTRIES_READ.with(Cell::get);
-            let built = commits.build(&mut trees, &mut ids, NOW, "history", "me", seq - 1);
-            assert_eq!(built.map(|commit| commit.ops.len()), Some(50 << (seq - 1)));
-            read = ENTRIES_READ.with(Cell::get) - before;
-            sent(&mut trees, &mut commits, seq);
-        }
-        read
+        (1..=3)
+            .map(|seq| {
+                let before = ENTRIES_READ.with(Cell::get);
+                let built = commits.build(&mut trees, &mut ids, NOW, "history", "me", seq - 1);
+                assert_eq!(built.map(|commit| commit.ops.len()), Some(50 << (seq - 1)));
+                let built = ENTRIES_READ.with(Cell::get);
+                sent(&mut trees, &mut commits, seq);
+                (built - before, ENTRIES_READ.with(Cell::get) - built)
+            })
+            .collect()
     }
 
     #[test]
-    fn a_build_of_a_first_link_reads_as_many_entries_whatever_the_size_of_the_tree() {
-        let small = entries_read_by_a_build(2_000);
-        let large = entries_read_by_a_build(20_000);
-        assert!(
-            (large as f64) < 1.5 * small as f64,
-            "the third build read {small} entries in a tree of 2000 folders and {large} in one of 20000"
+    fn a_commit_of_a_first_link_reads_as_many_entries_whatever_the_size_of_the_tree() {
+        let (small, large) = (
+            entries_read_by_commits(2_000),
+            entries_read_by_commits(20_000),
         );
+        let steps = [
+            ("third build", small[2].0, large[2].0),
+            (
+                "result of the first commit, whose folders hold the whole tree",
+                small[0].1,
+                large[0].1,
+            ),
+            ("result of the third commit", small[2].1, large[2].1),
+        ];
+        for (step, small, large) in steps {
+            assert!(
+                (large as f64) < 1.5 * small as f64,
+                "the {step} read {small} entries in a tree of 2000 folders and {large} in one of 20000"
+            );
+        }
     }
 }
