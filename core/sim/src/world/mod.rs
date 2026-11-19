@@ -643,6 +643,7 @@ pub struct World {
     rolled_back: BTreeMap<NodeId, Vec<u8>>,
     rewound: BTreeMap<i64, BTreeSet<usize>>,
     user_trashed: BTreeMap<NodeId, Vec<(usize, NodeState)>>,
+    sent_deletes: BTreeSet<(usize, NodeId)>,
     held_before_a_loss: Vec<Vec<BTreeMap<NodeId, u128>>>,
     clock: u64,
     moment: u64,
@@ -730,6 +731,7 @@ impl World {
             rolled_back: BTreeMap::new(),
             rewound: BTreeMap::new(),
             user_trashed: BTreeMap::new(),
+            sent_deletes: BTreeSet::new(),
             clock: 0,
             held_before_a_loss: vec![Vec::new(); count],
             moment: 0,
@@ -1208,6 +1210,9 @@ impl World {
     }
 
     fn carries_delete(&self, d: usize, id: &str, held: &[NodeState]) -> bool {
+        if !self.sent_deletes.contains(&(d, id.to_owned())) {
+            return false;
+        }
         let live = |node: &NodeState| node.status == NodeStatus::Live as i32;
         let parents: BTreeMap<&str, &str> = (held.iter())
             .map(|node| (node.node_id.as_str(), node.parent_id.as_str()))
@@ -2666,6 +2671,11 @@ impl World {
                                 .find_map(|(op, _)| self.unasked_op(d, op, &held));
                             if let Some(why) = unasked {
                                 self.unasked.get_or_insert(why);
+                            }
+                            for op in &sent.ops {
+                                if let Some(op::Op::Delete(delete)) = &op.op {
+                                    self.sent_deletes.insert((d, delete.node_id.clone()));
+                                }
                             }
                             let now: BTreeMap<String, NodeState> = (self.space.nodes().into_iter())
                                 .map(|node| (node.node_id.clone(), node))
