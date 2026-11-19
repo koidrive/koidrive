@@ -195,6 +195,7 @@ fn hash_size(git_dir: &Path) -> Option<usize> {
 }
 
 fn object_format(config: &str) -> Option<String> {
+    let config = config.strip_prefix('\u{feff}').unwrap_or(config);
     let mut joined = String::with_capacity(config.len());
     let (mut quoted, mut comment) = (false, false);
     let mut chars = config.chars().peekable();

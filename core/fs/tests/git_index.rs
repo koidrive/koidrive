@@ -199,6 +199,8 @@ fn reads_sha256_indexes_with_the_object_format_of_the_common_dir() {
     let text = text.replace("[extensions]", "[x]\n\ty = a\\\\\n[extensions]\n# c \\");
     fs::write(&config, text.replace("sha512", "sha\"\\\n25\"6")).unwrap();
     assert_eq!(answers(&read(root), "a.txt"), "y");
+    fs::write(&config, "\u{feff}[extensions]\n\tobjectformat = sha256\n").unwrap();
+    assert_eq!(answers(&read(root), "a.txt"), "y");
 }
 
 #[test]
