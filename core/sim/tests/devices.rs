@@ -28,6 +28,8 @@ use proptest::test_runner::{FailurePersistence, PersistedSeed, RngSeed, TestRunn
 
 #[path = "devices/deletes_across_losses.rs"]
 mod deletes_across_losses;
+#[path = "devices/ignore_rules.rs"]
+mod ignore_rules;
 #[path = "devices/intents_kept.rs"]
 mod intents_kept;
 #[path = "devices/long_loss_schedules.rs"]
@@ -286,9 +288,12 @@ fn world(devices: usize) -> World {
     on(&vec![Precision::Fine; devices])
 }
 
-/// Devices that print every step with the state it leaves when `KOIDRIVE_SIM_TRACE` is set.
 fn on(volumes: &[Precision]) -> World {
-    let mut world = World::on(volumes);
+    configured(World::on(volumes))
+}
+
+/// Devices that print every step with the state it leaves when `KOIDRIVE_SIM_TRACE` is set.
+fn configured(mut world: World) -> World {
     world.trace = std::env::var_os("KOIDRIVE_SIM_TRACE").is_some();
     world.tokenless_welcome = TOKENLESS_WELCOME.get();
     world.revived_deletes = std::env::var_os("KOIDRIVE_SIM_REVIVED_DELETES").is_some();
@@ -302,7 +307,14 @@ fn run(
     phases: &[Vec<(usize, Step)>],
     stops: fn(&Failure) -> bool,
 ) -> Result<World, Failure> {
-    let mut world = on(volumes);
+    run_in(on(volumes), phases, stops)
+}
+
+fn run_in(
+    mut world: World,
+    phases: &[Vec<(usize, Step)>],
+    stops: fn(&Failure) -> bool,
+) -> Result<World, Failure> {
     for (phase, schedule) in phases.iter().enumerate() {
         match world.phase(phase, schedule) {
             Err(failure) if stops(&failure) => return Err(failure),
@@ -330,6 +342,32 @@ fn keep_on(volumes: &[Precision], phases: &[Vec<(usize, Step)>]) -> Result<World
     run(volumes, phases, |failure| {
         matches!(failure, Failure::Broken(_))
     })
+}
+
+fn converge_excluding(
+    exclude: &[Vec<&'static str>],
+    phases: &[Vec<(usize, Step)>],
+) -> Result<World, Failure> {
+    run_in(configured(World::excluding(exclude)), phases, |_| true)
+}
+
+fn keep_excluding(
+    exclude: &[Vec<&'static str>],
+    phases: &[Vec<(usize, Step)>],
+) -> Result<World, Failure> {
+    run_in(configured(World::excluding(exclude)), phases, |failure| {
+        matches!(failure, Failure::Broken(_))
+    })
+}
+
+const EXCLUDED: &[&str] = &["a", "/b", "*.txt", "ss/", "c.txt", "\u{e9}"];
+
+fn excludes() -> impl Strategy<Value = Vec<Vec<&'static str>>> {
+    let list = prop_oneof![
+        1 => Just(Vec::new()),
+        3 => prop::collection::vec(prop::sample::select(EXCLUDED), 1..3),
+    ];
+    prop::collection::vec(list, 3)
 }
 
 const REWIND_SEED: u64 = 501;
@@ -634,6 +672,26 @@ fn devices_lose_no_write() {
         None,
         (2..=3usize, phases(Losses::None)),
         |(devices, phases)| keep(devices, &phases).map(drop),
+    );
+}
+
+#[test]
+fn devices_with_rules_lose_no_write() {
+    holds(
+        test_name!(devices_with_rules_lose_no_write),
+        None,
+        (2..=3usize, excludes(), phases(Losses::None)),
+        |(devices, exclude, phases)| keep_excluding(&exclude[..devices], &phases).map(drop),
+    );
+}
+
+#[test]
+fn devices_with_rules_converge_once_the_faults_stop() {
+    holds(
+        test_name!(devices_with_rules_converge_once_the_faults_stop),
+        None,
+        (2..=3usize, excludes(), phases(Losses::None)),
+        |(devices, exclude, phases)| converge_excluding(&exclude[..devices], &phases).map(drop),
     );
 }
 

@@ -72,6 +72,7 @@ mod deletes;
 pub mod device;
 pub mod disk;
 mod intents;
+mod rules;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -91,11 +92,12 @@ use koidrive_proto::v1::{
 use sha2::{Digest, Sha256};
 
 use self::deletes::{Deletion, live_nodes};
-use self::device::{Device, Engine, Link, Message};
+use self::device::{Device, Engine, Link, Message, Rules};
 pub use self::disk::Cut;
 use self::disk::{Applied, Disk, Place, Precision, Refused};
 pub use self::intents::{Check, ExpectedRed, allow_red, expect_red};
 use self::intents::{Intents, RESTORE_ANSWER, Server, Value};
+use self::rules::{Unsynced, excluded_op};
 use crate::space::{Role, Session, SpaceDo};
 
 const NOW: i64 = 1_794_268_740_000;
@@ -669,6 +671,7 @@ impl World {
                         max_format: 1,
                     },
                     disk: Disk::new(*precision),
+                    rules: Rules::default(),
                     store: engine.clone(),
                     engine,
                     down: false,
@@ -725,6 +728,20 @@ impl World {
             deletions: Vec::new(),
             answers: 0,
         }
+    }
+
+    /// Devices with empty disks, each of which leaves out of sync what its own exclude list in
+    /// `exclude` names, for the whole run.
+    pub fn excluding(exclude: &[Vec<&'static str>]) -> Self {
+        let mut world = Self::new(exclude.len());
+        for (device, exclude) in world.devices.iter_mut().zip(exclude) {
+            device.rules = Rules {
+                exclude: exclude.clone(),
+            };
+            device.rules.read(&mut device.engine.trees);
+            device.store = device.engine.clone();
+        }
+        world
     }
 
     pub fn space_mut(&mut self) -> &mut SpaceDo {
@@ -941,6 +958,7 @@ impl World {
 
     fn act(&mut self, d: usize, action: &Action, act: Act) {
         self.observe(d);
+        let unsynced = self.unsynced(d, false);
         let disk = &mut self.devices[d].disk;
         let visible = disk.visible();
         let dirs: Vec<Place> = std::iter::once(Place::Root)
@@ -1026,7 +1044,7 @@ impl World {
                 let gone = disk.subtree(ino);
                 let deleted = disk.delete(ino);
                 self.removed[d].extend(deleted.iter().map(tag));
-                self.record_delete(d, ino, gone, &deleted);
+                self.record_delete(d, ino, gone, &deleted, unsynced);
                 return;
             }
             (Act::Copy, Some(ino)) => {
@@ -1838,7 +1856,7 @@ impl World {
     fn restart(&mut self, d: usize) -> Result<(), Failure> {
         let device = &mut self.devices[d];
         device.down = false;
-        device.engine = device.store.reload()?;
+        device.engine = device.store.reload(&device.rules)?;
         let effects = &device.engine.effects;
         let (marker, cleared) = (device.disk.marker(), effects.cleared());
         if marker > cleared + effects.in_flight().len() as u64 {
@@ -2405,6 +2423,17 @@ impl World {
                     .map(|(id, node)| (node.identity.ino, id.clone()))
                     .collect();
                 commits.build(trees, ids, NOW as u64, &history, device_id, cursor.clone());
+                let ops = commits.in_flight().map(|flight| &flight.commit.ops);
+                if let Some(placed) =
+                    (ops.into_iter().flatten()).find_map(|op| excluded_op(trees, op))
+                {
+                    let why = format!(
+                        "a commit of device {d} places {placed}, which the rules of device {d} leave out"
+                    );
+                    if !intents::expected(Check::SentLeftOut, &why) {
+                        return Err(Failure::Broken(why));
+                    }
+                }
                 let bound = copy_bound(&self.held_commits[d], self.restored_to);
                 let ops = commits.in_flight().map(|flight| &flight.commit.ops);
                 for op in ops.into_iter().flatten() {
@@ -3109,8 +3138,11 @@ impl World {
         }
     }
 
-    /// The server's live tree by path.
-    fn server_tree(&self) -> Result<BTreeMap<Vec<String>, Option<Content>>, Failure> {
+    /// The server's live tree by path, without the nodes of `left_out`.
+    fn server_tree(
+        &self,
+        left_out: &BTreeSet<NodeId>,
+    ) -> Result<BTreeMap<Vec<String>, Option<Content>>, Failure> {
         let nodes = self.space.nodes();
         let live = |id: &str| {
             (nodes.iter()).find(|node| node.node_id == id && node.status == NodeStatus::Live as i32)
@@ -3120,7 +3152,7 @@ impl World {
             .iter()
             .filter(|node| node.node_id != self.space.space_id())
         {
-            if node.status != NodeStatus::Live as i32 {
+            if node.status != NodeStatus::Live as i32 || left_out.contains(&node.node_id) {
                 continue;
             }
             let mut path = vec![node.name.clone()];
@@ -3148,7 +3180,10 @@ impl World {
 
     /// The end state of sections 3.3 and 3.4.
     fn converged(&self) -> Result<(), Failure> {
-        let server = self.server_tree()?;
+        let server = self.server_tree(&BTreeSet::new())?;
+        let unsynced: Vec<Unsynced> = (0..self.devices.len())
+            .map(|d| self.unsynced(d, true))
+            .collect();
         let nodes: Vec<(NodeId, RemoteNode)> = (self.space.nodes().iter())
             .filter(|state| state.node_id != self.space.space_id())
             .map(|state| RemoteNode::from_state(state).expect("a file or a folder"))
@@ -3169,11 +3204,45 @@ impl World {
             if engine.behind {
                 return fail("R waits for a listing".into());
             }
-            if !engine.effects.blocked().is_empty() {
-                return fail(format!(
-                    "effects are blocked: {:?}",
-                    engine.effects.blocked()
-                ));
+            let blocked = engine.effects.blocked();
+            let held_out = |effect: &Effect| {
+                let at = match effect {
+                    Effect::CreateDir { at, .. } | Effect::WriteFile { at, .. } => at,
+                    Effect::Move { to, .. } => to,
+                    _ => return false,
+                };
+                (device.disk.holder(at)).is_some_and(|ino| unsynced[d].inos.contains(&ino))
+            };
+            if !blocked.is_empty() && blocked.values().all(held_out) {
+                let nodes: Vec<&NodeId> = blocked.keys().collect();
+                let why = format!(
+                    "device {d} is quiet, but the effects for {nodes:?} wait for names that entries its rules leave out hold"
+                );
+                if intents::expected(Check::NameLeftOut, &why) {
+                    continue;
+                }
+                return Err(Failure::Diverged(why));
+            }
+            let emptied_of_left_out = |effect: &Effect| {
+                let Effect::RemoveDir { identity, .. } = effect else {
+                    return false;
+                };
+                let folder = Place::In(identity.ino);
+                let mut children = device.disk.children(&folder).peekable();
+                children.peek().is_some() && children.all(|child| unsynced[d].inos.contains(&child))
+            };
+            if !blocked.is_empty() && blocked.values().all(emptied_of_left_out) {
+                let nodes: Vec<&NodeId> = blocked.keys().collect();
+                let why = format!(
+                    "device {d} is quiet, but it waits to remove the folders of {nodes:?}, which hold entries its rules leave out"
+                );
+                if intents::expected(Check::RemoveLeftOut, &why) {
+                    continue;
+                }
+                return Err(Failure::Diverged(why));
+            }
+            if !blocked.is_empty() {
+                return fail(format!("effects are blocked: {blocked:?}"));
             }
             if !engine.commits.problems().is_empty() || engine.commits.halted().is_some() {
                 let (problems, halted) = (engine.commits.problems(), engine.commits.halted());
@@ -3194,14 +3263,46 @@ impl World {
                     state.resends, state.lost_positions, state.lost_creates
                 ));
             }
+            let left_out = &unsynced[d];
             let mut trees = engine.trees.clone();
             trees.settle(engine.commits.aliases());
-            let unsettled = trees.work();
+            let unsettled: Vec<_> = (trees.work().into_iter())
+                .filter(|(id, _)| !left_out.holds(&trees, id))
+                .collect();
+            let waiting: Vec<&NodeId> = (left_out.waiting.iter())
+                .filter(|id| {
+                    let shapes = [
+                        trees.local().get(id).map(|node| &node.shape),
+                        trees.synced().live(id),
+                        trees.remote().live(id),
+                    ];
+                    unsettled.iter().any(|(other, _)| other == *id)
+                        || shapes.iter().any(|shape| shape != &shapes[2])
+                })
+                .collect();
+            if !waiting.is_empty()
+                && (unsettled.iter()).all(|(id, _)| left_out.waiting.contains(id))
+            {
+                let why = format!(
+                    "device {d} is quiet, but nodes {waiting:?} wait for names that entries its rules leave out hold"
+                );
+                if intents::expected(Check::NameLeftOut, &why) {
+                    continue;
+                }
+                return Err(Failure::Diverged(why));
+            }
             if !unsettled.is_empty() {
                 return fail(format!("nodes are not in sync: {unsettled:?}"));
             }
+            let server = match left_out.nodes.is_empty() {
+                true => server.clone(),
+                false => self.server_tree(&left_out.nodes)?,
+            };
             let mut disk: BTreeMap<Vec<String>, Option<Content>> = BTreeMap::new();
             for (ino, entry) in device.disk.entries() {
+                if left_out.inos.contains(ino) {
+                    continue;
+                }
                 let Some(path) = device.disk.path(*ino) else {
                     return fail("its parked directory is not empty".into());
                 };
@@ -3236,12 +3337,13 @@ impl World {
                     .find(|(other, node)| other == id && !node.trashed)
                     .map(|(_, node)| &node.shape);
                 let local = trees.local().get(id).map(|node| &node.shape);
+                let only_r = left_out.holds(trees, id);
                 for (tree, shape) in [
                     ('L', local),
                     ('S', trees.synced().live(id)),
                     ('R', trees.remote().live(id)),
                 ] {
-                    if !same(shape, on_server) {
+                    if !same(shape, on_server) && (tree == 'R' || !only_r) {
                         return fail(format!(
                             "{tree} has {shape:?} for node {id} and the server has {on_server:?}"
                         ));
@@ -3254,7 +3356,8 @@ impl World {
         self.revived_delete()?;
         self.undone_delete(&held)?;
         let gone = |d: usize| self.devices[d].left;
-        (self.intents.check(&held, gone)).map_err(|(why, write)| match write {
+        let left_out = |d: usize, ino: u128| unsynced[d].inos.contains(&ino);
+        (self.intents.check(&held, gone, left_out)).map_err(|(why, write)| match write {
             true => Failure::Broken(why),
             false => Failure::Diverged(why),
         })?;
@@ -3391,8 +3494,17 @@ impl World {
                 && (device.disk.entries().values())
                     .any(|entry| (entry.content.as_ref()).is_some_and(|c| tag(c) == write))
         };
+        let held_out_of_sync = |write: i64, writer: usize| {
+            let disk = &self.devices[writer].disk;
+            (unsynced[writer].inos.iter()).any(|ino| {
+                (disk.entries().get(ino))
+                    .and_then(|entry| entry.content.as_ref())
+                    .is_some_and(|content| tag(content) == write)
+            })
+        };
         let lost = (self.writers.iter()).find(|(write, writer)| {
             !live.contains_key(write)
+                && !held_out_of_sync(**write, **writer)
                 && !self.published.contains(write)
                 && !self.removed[**writer].contains(write)
                 && !self.discarded.contains(write)
@@ -4170,7 +4282,7 @@ mod tests {
             )
             .to_vec();
         assert!(planned[0].applies(&engine.trees, None), "{planned:?}");
-        let loaded = engine.reload().unwrap();
+        let loaded = engine.reload(&Rules::default()).unwrap();
         assert!(loaded.effects.in_flight()[0].applies(&loaded.trees, None));
     }
 

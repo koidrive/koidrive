@@ -11,6 +11,8 @@ use koidrive_engine::commit::{Base, Commits, GIVEN_UP_KEPT, Halt};
 use koidrive_engine::effects::Effects;
 use koidrive_engine::first_link::History;
 use koidrive_engine::ids::IdGen;
+use koidrive_engine::ignore::LocalRules;
+use koidrive_engine::names::name_key;
 use koidrive_engine::state::{CommitsChanges, EffectsChanges, TreesChanges};
 use koidrive_engine::tree::{Kind, LocalNode, NodeId, RemoteNode, Shape};
 use koidrive_proto::v1::{
@@ -59,9 +61,9 @@ impl Engine {
     }
 
     /// Rebuilds the engine the way the store loads it after a restart, and checks that every part
-    /// comes back equal. The store does not hold the ignore rules. These devices have no rules of
-    /// their own, and a restart plans nothing before its full scan, so the rules count as read.
-    pub fn reload(&self) -> Result<Engine, Failure> {
+    /// comes back equal. The store does not hold the ignore rules, so the device reads `rules`
+    /// again, and a restart plans nothing before its full scan, so the rules count as read.
+    pub fn reload(&self, rules: &Rules) -> Result<Engine, Failure> {
         let mut trees = Trees::new(self.trees.remote().root.clone());
         for (id, node) in self.trees.remote().iter() {
             trees.set_remote(id.clone(), node.clone());
@@ -76,7 +78,7 @@ impl Engine {
         }
         let refused = |error| Failure::Broken(format!("the stored state was refused: {error:?}"));
         trees.restore(self.trees.state()).map_err(refused)?;
-        trees.rules_scanned();
+        rules.read(&mut trees);
         let commits = Commits::from_state(self.commits.state()).map_err(refused)?;
         commits.hold(&mut trees);
         let loaded = Engine {
@@ -161,14 +163,33 @@ impl Engine {
         let known: BTreeMap<u128, NodeId> = (self.trees.local().iter())
             .map(|(id, node)| (node.identity.ino, id.clone()))
             .collect();
+        let displaced: BTreeMap<u128, NodeId> = (self.trees.displaced_local().iter())
+            .map(|(id, identity)| (identity.ino, id.clone()))
+            .collect();
         let mut nodes: BTreeMap<u128, NodeId> = BTreeMap::new();
         let mut queue: VecDeque<u128> = (entries.iter().copied())
             .filter(|ino| {
                 !matches!(&disk.entries()[ino].place, Place::In(parent) if entries.contains(parent))
             })
             .collect();
+        let mut left_out: BTreeSet<NodeId> = BTreeSet::new();
         while let Some(ino) = queue.pop_front() {
             let entry = &disk.entries()[&ino];
+            let kind = match entry.content {
+                Some(_) => Kind::File,
+                None => Kind::Dir,
+            };
+            if disk
+                .path(ino)
+                .is_some_and(|path| self.trees.ignores(&path, kind))
+            {
+                queue.extend(disk.children(&Place::In(ino)));
+                if let Some(id) = known.get(&ino) {
+                    left_out.insert(id.clone());
+                    self.leave_out(disk, (ino, id), &nodes, &known);
+                }
+                continue;
+            }
             let marked = (entry.mark.as_ref())
                 .filter(|_| !matches!(self.commits.halted(), Some(Halt::Recovery(_))))
                 .filter(|mark| mark.ino == ino)
@@ -179,7 +200,7 @@ impl Engine {
                         && self.trees.remote().get(node).is_none()
                         && !nodes.values().any(|taken| taken == node)
                 });
-            let id = match known.get(&ino) {
+            let id = match known.get(&ino).or_else(|| displaced.get(&ino)) {
                 Some(id) => id.clone(),
                 None => marked.unwrap_or_else(|| self.ids.uuid_v7(NOW as u64)),
             };
@@ -205,10 +226,7 @@ impl Engine {
                 shape: Shape {
                     parent,
                     name: entry.name.clone(),
-                    kind: match entry.content {
-                        Some(_) => Kind::File,
-                        None => Kind::Dir,
-                    },
+                    kind,
                     content: entry.content.clone(),
                 },
                 identity: identity(ino),
@@ -216,17 +234,160 @@ impl Engine {
             };
             self.trees.set_local_changed(id, node);
         }
-        let on_disk: BTreeSet<&NodeId> = nodes.values().collect();
-        let gone: Vec<NodeId> = (reached.into_iter())
+        let on_disk: BTreeSet<&NodeId> = nodes.values().chain(&left_out).collect();
+        let missing: BTreeSet<NodeId> = (reached.into_iter())
             .filter(|id| !on_disk.contains(id))
             .collect();
-        for id in gone {
-            self.trees.remove_local(&id);
+        let reported: BTreeSet<NodeId> = nodes.into_values().collect();
+        self.displace(&reported);
+        let gone = self.gone(&missing);
+        for id in missing.iter().filter(|id| gone.contains(id)) {
+            self.trees.remove_local(id);
         }
+        self.drop_lost_folders();
         Reached {
             places,
             widened,
             observed,
+        }
+    }
+
+    fn leave_out(
+        &mut self,
+        disk: &Disk,
+        (ino, id): (u128, &NodeId),
+        nodes: &BTreeMap<u128, NodeId>,
+        known: &BTreeMap<u128, NodeId>,
+    ) {
+        let entry = &disk.entries()[&ino];
+        let held = self.trees.local().get(id).expect("known in L").clone();
+        let (parent, folder_left_out) = match &entry.place {
+            Place::Root => (Some(self.trees.local().root.clone()), false),
+            Place::In(parent) => (
+                nodes.get(parent).or_else(|| known.get(parent)).cloned(),
+                (disk.path(*parent)).is_some_and(|path| self.trees.ignores(&path, Kind::Dir)),
+            ),
+            Place::Parked(_) => return,
+        };
+        let stays = parent.as_ref() == Some(&held.shape.parent) && entry.name == held.shape.name;
+        if stays {
+            if held.parked {
+                let mut node = held;
+                node.parked = false;
+                self.trees.set_local_changed(id.clone(), node);
+            }
+            return;
+        }
+        match (folder_left_out, parent) {
+            (true, _) | (false, None) => {
+                if !self.trees.recorded_local(id) {
+                    self.trees.ignore_local(id);
+                }
+            }
+            (false, Some(parent)) => {
+                let mut node = held;
+                node.parked = false;
+                node.shape.parent = parent;
+                node.shape.name = entry.name.clone();
+                self.trees.set_local_changed(id.clone(), node);
+            }
+        }
+    }
+
+    fn left_out_in_l(&self, id: &NodeId) -> bool {
+        let local = self.trees.local();
+        let Some(node) = local.get(id) else {
+            return false;
+        };
+        let mut path = Vec::new();
+        let mut current = id;
+        while *current != local.root {
+            let Some(above) = local.get(current) else {
+                return false;
+            };
+            path.push(above.shape.name.clone());
+            current = &above.shape.parent;
+        }
+        path.reverse();
+        self.trees.ignores(&path, node.shape.kind)
+    }
+
+    fn displace(&mut self, reported: &BTreeSet<NodeId>) {
+        let local = self.trees.local();
+        let taken = |id: &NodeId, node: &LocalNode| {
+            (local.iter()).any(|(other, held)| {
+                other != id
+                    && reported.contains(other)
+                    && !held.parked
+                    && held.shape.parent == node.shape.parent
+                    && name_key(&held.shape.name) == name_key(&node.shape.name)
+            })
+        };
+        let holders: Vec<NodeId> = (local.iter())
+            .filter(|(id, node)| {
+                !node.parked
+                    && !reported.contains(*id)
+                    && self.trees.ignored_local().contains(*id)
+                    && taken(id, node)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for holder in holders {
+            let mut doomed = vec![holder];
+            let mut next = 0;
+            while let Some(current) = doomed.get(next).cloned() {
+                doomed.extend(self.trees.local_children(&current).cloned());
+                next += 1;
+            }
+            for id in doomed.iter().rev() {
+                self.trees.displace_local(id);
+            }
+        }
+    }
+
+    fn gone(&mut self, missing: &BTreeSet<NodeId>) -> Vec<NodeId> {
+        let mut gone: Vec<NodeId> = Vec::new();
+        loop {
+            let parent_gone = |id: &NodeId| {
+                (self.trees.local().get(id)).is_some_and(|node| gone.contains(&node.shape.parent))
+            };
+            let more: Vec<NodeId> = (missing.iter())
+                .filter(|id| !gone.contains(*id) && self.trees.local().get(id).is_some())
+                .filter(|id| !self.trees.recorded_local(id))
+                .filter(|id| !self.left_out_in_l(id) || parent_gone(id))
+                .cloned()
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            gone.extend(more);
+        }
+        let recorded: Vec<NodeId> = self.trees.ignored_local().iter().cloned().collect();
+        for node in recorded {
+            let mut above = self
+                .trees
+                .local()
+                .get(&node)
+                .map(|n| n.shape.parent.clone());
+            while let Some(folder) = above.filter(|folder| gone.contains(folder)) {
+                gone.retain(|id| *id != folder);
+                self.trees.keep_lost_local(&folder);
+                above = self
+                    .trees
+                    .local()
+                    .get(&folder)
+                    .map(|n| n.shape.parent.clone());
+            }
+        }
+        gone
+    }
+
+    fn drop_lost_folders(&mut self) {
+        while let Some(folder) = (self.trees.lost_local().iter())
+            .find(|folder| self.trees.local_children(folder).next().is_none())
+            .cloned()
+        {
+            self.trees.remove_local(&folder);
         }
     }
 
@@ -363,6 +524,23 @@ struct Reach {
     nodes: BTreeSet<NodeId>,
 }
 
+/// What a device leaves out of sync by its own exclude list, which it keeps for the whole run.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Rules {
+    pub exclude: Vec<&'static str>,
+}
+
+impl Rules {
+    pub fn read(&self, trees: &mut Trees) {
+        if !self.exclude.is_empty() {
+            let include: [&str; 0] = [];
+            let local = LocalRules::new(&include, &self.exclude).expect("a valid exclude list");
+            trees.set_local_rules(local);
+        }
+        trees.rules_scanned();
+    }
+}
+
 /// A message on its way from the server to a device.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Message {
@@ -397,6 +575,7 @@ pub struct Link {
 pub struct Device {
     pub session: Session,
     pub disk: Disk,
+    pub rules: Rules,
     pub engine: Engine,
     /// The engine state as the last store transaction left it.
     pub store: Engine,
@@ -452,7 +631,7 @@ impl Device {
                 differences.join("; ")
             )));
         }
-        self.store = self.engine.reload()?;
+        self.store = self.engine.reload(&self.rules)?;
         let commits = &self.store.commits;
         if let Some(flight) = commits.in_flight() {
             (self.sent.entry(flight.commit.device_seq).or_default())

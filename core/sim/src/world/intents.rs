@@ -24,15 +24,24 @@ pub enum Check {
     /// Any other change a user made stays on the server unless a later change that saw it, a
     /// delete that saw it or the lost-change rule settles it.
     IntentKept,
+    /// No effect waits for a name that an entry its device's rules leave out holds on disk.
+    NameLeftOut,
+    /// No commit places a node at a path its device's rules leave out.
+    SentLeftOut,
+    /// No folder removal waits for entries inside the folder that its device's rules leave out.
+    RemoveLeftOut,
 }
 
 impl Check {
-    pub const ALL: [Check; 5] = [
+    pub const ALL: [Check; 8] = [
         Check::OwnerFinish,
         Check::DeleteUndone,
         Check::PlaceKept,
         Check::WriteKept,
         Check::IntentKept,
+        Check::NameLeftOut,
+        Check::SentLeftOut,
+        Check::RemoveLeftOut,
     ];
 }
 
@@ -718,11 +727,13 @@ impl Intents {
         &self,
         server: &Server,
         gone: impl Fn(usize) -> bool,
+        left_out: impl Fn(usize, u128) -> bool,
     ) -> Result<(), (String, bool)> {
         for (i, intent) in self.list.iter().enumerate() {
             if intent.dropped
                 || intent.forgotten
                 || gone(intent.author)
+                || left_out(intent.author, intent.ino)
                 || self.nodes(i).next().is_none()
             {
                 continue;
