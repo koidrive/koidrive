@@ -661,7 +661,7 @@ impl Engine {
             }
         }
         Snapshot {
-            entries,
+            entries: entries.into(),
             ..Snapshot::default()
         }
     }
@@ -3756,13 +3756,12 @@ mod tests {
         let x = local_at(&engine.trees, Path::new("d/x"));
         let seen = snapshot;
         let mut snapshot = engine.snapshot();
-        for (path, entry) in snapshot.entries.iter_mut() {
-            if let Some(before) = seen
-                .entries
-                .get(path)
-                .filter(|before| before.id == entry.id)
+        for (path, before) in &seen.entries {
+            if let Some(mut entry) =
+                (snapshot.entries.get(path).copied()).filter(|entry| entry.id == before.id)
             {
                 entry.mtime_ns = before.mtime_ns;
+                snapshot.entries.insert(path.clone(), entry);
             }
         }
         fs::write(root.join("d/x"), "edited").unwrap();

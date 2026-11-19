@@ -606,7 +606,7 @@ pub enum Change {
 /// exact names the directory listings return.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
-    pub entries: BTreeMap<PathBuf, Entry>,
+    pub entries: Entries,
     /// The entries the snapshot knew that the rules now leave out, as each was
     /// last known. What is below them is not known.
     pub left_out: BTreeMap<PathBuf, Entry>,
@@ -846,12 +846,13 @@ impl Snapshot {
                 replaced: Vec::new(),
                 unreadable: Vec::new(),
                 left_out: BTreeMap::new(),
-                mounts: (self.entries.iter())
-                    .filter(|(path, entry)| {
-                        entry.mount.is_some()
-                            || self.detached.get(*path) == Some(&Detached::Covered)
-                    })
-                    .map(|(path, entry)| (path.clone(), *entry))
+                mounts: (self.entries.mounts().keys())
+                    .chain(
+                        (self.detached.iter())
+                            .filter(|(_, detached)| **detached == Detached::Covered)
+                            .map(|(path, _)| path),
+                    )
+                    .filter_map(|path| Some((path.clone(), *self.entries.get(path)?)))
                     .collect(),
                 detached: Vec::new(),
                 rules: rules.as_deref_mut().map(Pending::new),
@@ -2872,6 +2873,7 @@ impl From<ItemPath> for String {
 }
 
 mod effect;
+mod entries;
 mod ignore;
 mod mark;
 mod recovered;
@@ -2885,6 +2887,7 @@ pub use effect::{
     Action, BroughtBack, Contents, Displaced, Effect, Outcome, QUARANTINE_DIR, Reason, Refusal,
     STAGING_DIR, Section, Step,
 };
+pub use entries::Entries;
 pub use ignore::{Ignore, Ignored, RULES_FILE, Rules};
 use ignore::{Key, Pending, RulesRead, Seeded, Wanted};
 pub use mark::node_mark;

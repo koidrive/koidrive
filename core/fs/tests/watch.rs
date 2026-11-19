@@ -984,8 +984,10 @@ fn a_folder_on_another_device_number_is_not_replaced() {
 
     for ino in [0, 1000] {
         let mut snapshot = scanned.clone();
-        for entry in snapshot.entries.values_mut() {
+        for (path, entry) in &scanned.entries {
+            let mut entry = *entry;
             entry.id.ino += ino;
+            snapshot.entries.insert(path.clone(), entry);
         }
         let changes = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
         let expected = match ino {
