@@ -2798,6 +2798,21 @@ fn a_folder_deleted_elsewhere_goes_around_a_copy_moved_out_with_an_edit_the_serv
     assert_removed_around_the_edit(trees);
 }
 
+#[test]
+fn a_copy_moved_out_before_the_server_trashes_its_edited_node_holds_no_unsent_edit() {
+    let mut trees = trees(&[
+        synced("F", dir(ROOT, "F")),
+        synced("c", file("F", "c.txt", 1)),
+    ]);
+    let mut edited = trees.local().get(&NodeId::from("c")).unwrap().clone();
+    edited.shape.content = Some(content(2));
+    trees.set_local("c".into(), edited);
+    trees.ignore_local(&NodeId::from("c"));
+    trash(&mut trees, "c");
+    trees.settle(&Default::default());
+    assert_removed_around_the_edit(trees);
+}
+
 fn removed_around_a_file_never_sent(in_flight: Option<&InFlight>) -> Trees {
     let mut trees = trees(&[
         synced("F", dir(ROOT, "F")),
