@@ -3268,13 +3268,19 @@ pub trait Watcher {
 /// [`Error::Watch`], the platform watcher cannot cover the tree (for example
 /// the inotify watch limit); continue with a [`RescanWatcher`] built from
 /// [`Watcher::snapshot`].
+struct Barrier {
+    file: PathBuf,
+    written: Instant,
+    holds: BTreeSet<PathBuf>,
+}
+
 pub struct NativeWatcher {
     root: PathBuf,
     snapshot: Snapshot,
     view: OnceCell<Snapshot>,
     dirty: BTreeSet<PathBuf>,
     waiting: BTreeSet<PathBuf>,
-    barrier: Option<(PathBuf, Instant, BTreeSet<PathBuf>)>,
+    barrier: Option<Barrier>,
     barriers: u64,
     listed: BTreeSet<PathBuf>,
     unreadable: BTreeSet<PathBuf>,
@@ -3393,8 +3399,10 @@ impl NativeWatcher {
         if event.need_rescan() {
             self.rewatch = true;
             self.dirty.insert(PathBuf::new());
+            self.barrier = None;
+            self.dirty.append(&mut self.waiting);
         }
-        if (self.barrier.as_ref()).is_some_and(|(file, ..)| event.paths.contains(file)) {
+        if (self.barrier.as_ref()).is_some_and(|barrier| event.paths.contains(&barrier.file)) {
             self.lift_barrier();
         }
         if let EventKind::Access(access) = event.kind
@@ -3447,10 +3455,10 @@ impl NativeWatcher {
     }
 
     fn lift_barrier(&mut self) {
-        let Some((_, _, holds)) = self.barrier.take() else {
+        let Some(barrier) = self.barrier.take() else {
             return;
         };
-        for path in holds {
+        for path in barrier.holds {
             if self.waiting.remove(&path) {
                 self.dirty.insert(path);
             }
@@ -3465,18 +3473,23 @@ impl NativeWatcher {
         self.barriers += 1;
         let name = format!("{BARRIER}-{}", self.barriers % 2);
         #[cfg(target_os = "linux")]
-        let _ = notify::Watcher::watch(
+        let watched = notify::Watcher::watch(
             &mut self.watcher,
             &self.root.join(PRIVATE_DIR),
             RecursiveMode::NonRecursive,
-        );
-        match write_barrier(&self.root, &name) {
-            Ok(()) => {
-                let file = self.root.join(PRIVATE_DIR).join(name);
-                self.barrier = Some((file, Instant::now(), self.waiting.clone()));
-            }
-            Err(_) => self.dirty.append(&mut self.waiting),
+        )
+        .is_ok();
+        #[cfg(not(target_os = "linux"))]
+        let watched = true;
+        if !(watched && write_barrier(&self.root, &name).is_ok()) {
+            self.dirty.append(&mut self.waiting);
+            return;
         }
+        self.barrier = Some(Barrier {
+            file: self.root.join(PRIVATE_DIR).join(name),
+            written: Instant::now(),
+            holds: self.waiting.clone(),
+        });
     }
 
     fn receive(&mut self, timeout: Duration) -> Result<bool> {
@@ -3731,15 +3744,15 @@ impl Watcher for NativeWatcher {
                     left.min(REMOUNT_CHECK)
                 };
                 let wait = match &self.barrier {
-                    Some((_, written, _)) => {
-                        wait.min(BARRIER_TIMEOUT.saturating_sub(written.elapsed()))
+                    Some(barrier) => {
+                        wait.min(BARRIER_TIMEOUT.saturating_sub(barrier.written.elapsed()))
                     }
                     None => wait,
                 };
                 self.receive(wait)?;
             }
             if (self.barrier.as_ref())
-                .is_some_and(|(_, written, _)| written.elapsed() >= BARRIER_TIMEOUT)
+                .is_some_and(|barrier| barrier.written.elapsed() >= BARRIER_TIMEOUT)
             {
                 self.lift_barrier();
             }

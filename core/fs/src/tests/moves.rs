@@ -699,8 +699,8 @@ fn many_files_moved_out_of_removed_folders_are_matched_in_linear_work() {
 }
 
 fn hear_barrier(watcher: &NativeWatcher) {
-    if let Some((file, ..)) = &watcher.barrier {
-        let event = notify::Event::new(EventKind::Any).add_path(file.clone());
+    if let Some(barrier) = &watcher.barrier {
+        let event = notify::Event::new(EventKind::Any).add_path(barrier.file.clone());
         watcher.sender.send(Ok(event)).unwrap();
     }
 }
@@ -787,7 +787,7 @@ fn a_held_removal_is_reported_once_its_barrier_is_heard_or_times_out() {
         }
         match heard {
             true => hear_barrier(&watcher),
-            false => watcher.barrier.as_mut().unwrap().1 -= BARRIER_TIMEOUT,
+            false => watcher.barrier.as_mut().unwrap().written -= BARRIER_TIMEOUT,
         }
         assert_eq!(
             watcher.poll(Duration::ZERO).unwrap().changes,
@@ -796,7 +796,7 @@ fn a_held_removal_is_reported_once_its_barrier_is_heard_or_times_out() {
                 kind: EntryKind::File
             }]
         );
-        assert_eq!(watcher.barrier, None);
+        assert!(watcher.barrier.is_none());
     }
 }
 
@@ -817,7 +817,7 @@ fn a_removal_held_while_an_earlier_barrier_waits_gets_a_barrier_of_its_own() {
         changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
         match heard {
             true => hear_barrier(&watcher),
-            false => watcher.barrier.as_mut().unwrap().1 -= BARRIER_TIMEOUT,
+            false => watcher.barrier.as_mut().unwrap().written -= BARRIER_TIMEOUT,
         }
         changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
         hear_barrier(&watcher);
@@ -835,8 +835,33 @@ fn a_removal_held_while_an_earlier_barrier_waits_gets_a_barrier_of_its_own() {
             ],
             "heard {heard}"
         );
-        assert_eq!(watcher.barrier, None);
+        assert!(watcher.barrier.is_none());
     }
+}
+
+#[test]
+fn a_removal_held_after_an_overflow_gets_a_barrier_of_its_own() {
+    let removed = |path: &str| Change::Removed {
+        path: path.into(),
+        kind: EntryKind::File,
+    };
+    let (_dir, root, _) = one_file();
+    fs::create_dir(root.join(".koidrive")).unwrap();
+    fs::write(root.join("x/h.txt"), "h").unwrap();
+    let mut watcher = quiet_watcher(&root, &["x/g.txt"]);
+    fs::remove_file(root.join("x/g.txt")).unwrap();
+    assert_eq!(watcher.poll(Duration::ZERO).unwrap().changes, []);
+    let overflow = notify::Event::new(EventKind::Other).set_flag(Flag::Rescan);
+    watcher.sender.send(Ok(overflow)).unwrap();
+    let changes = watcher.poll(Duration::ZERO).unwrap().changes;
+    assert_eq!(changes, [removed("x/g.txt")]);
+    (watcher.sender, watcher.events) = mpsc::channel();
+    fs::remove_file(root.join("x/h.txt")).unwrap();
+    watcher.dirty.insert("x/h.txt".into());
+    assert_eq!(watcher.poll(Duration::ZERO).unwrap().changes, []);
+    hear_barrier(&watcher);
+    let changes = watcher.poll(Duration::ZERO).unwrap().changes;
+    assert_eq!(changes, [removed("x/h.txt")]);
 }
 
 #[test]
