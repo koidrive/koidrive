@@ -3719,3 +3719,23 @@ fn a_file_a_store_rollback_forgot_that_its_user_renamed_while_another_device_edi
     assert_eq!(written(&world, "a"), edited);
     assert_eq!(written(&world, "b"), renamed);
 }
+
+#[test]
+fn a_keep_after_a_discard_of_the_same_file_sends_it() {
+    let recover = [(0, Step::Rewind), (0, Step::Connect), (0, DELIVER)];
+    let discard = [(0, Step::Answer(1)), (0, COMMIT)];
+    let keep = [(0, Step::Answer(0))];
+    for synced_before_the_rewind in [true, false] {
+        let made = [(0, file("a")), (0, SCAN)];
+        let (first, before) = match synced_before_the_rewind {
+            true => (vec![(0, Step::Backup), (0, file("a"))], &[][..]),
+            false => (vec![(0, Step::Backup)], &made[..]),
+        };
+        let mut world = synced(1, &[first]);
+        let schedule = [before, &recover, &discard, &recover, &keep].concat();
+        world.run(1, &schedule).unwrap();
+        world.phase(2, &[]).unwrap();
+        assert_eq!(live(&world), ["a"], "synced: {synced_before_the_rewind}");
+        assert!(!world.devices[0].disk.binned(1));
+    }
+}
