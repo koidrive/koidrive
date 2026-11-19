@@ -38,7 +38,9 @@ const LIST_PAGE = 2;
 type Outcome = "ok" | "lostApplied" | "lostInflight";
 type Retirement = "ok" | "refused" | "lostBefore" | "lostAfter";
 
-type Step =
+type Pause = "head" | "put" | "retire" | "delete";
+
+type Simple =
   | { t: "prepare"; chunks: number[] }
   | { t: "put"; plan: number; outcome: Outcome }
   | { t: "bundle"; plans: number[]; outcome: Outcome }
@@ -49,10 +51,13 @@ type Step =
   | { t: "land"; flight: number }
   | { t: "export" }
   | { t: "crash" }
-  | { t: "rewind"; point: number }
+  | { t: "rewind"; point: number; from?: "newest" | "oldest" | "drop" }
   | { t: "targets"; chunk: number }
   | { t: "download"; target: number }
-  | { t: "clock"; ms: number };
+  | { t: "clock"; ms: number }
+  | { t: "until"; mark: "grace" | "hold"; chunk: number; offsetMs: number };
+
+type Step = Simple | { t: "race"; outer: Simple; at: Pause; inner: Simple[]; innerAt?: Pause };
 
 type Flight = { put: string; bytes: Uint8Array; onlyIfAbsent: boolean } | { delete: string[] };
 
@@ -62,8 +67,28 @@ const r2 = {
   put: "ok" as Outcome,
   del: "ok" as Outcome,
   retire: "ok" as Retirement,
+  retired: new Set<string>(),
   violations: [] as string[],
 };
+
+interface Gate {
+  reached: boolean;
+  released: boolean;
+}
+
+const pauses = new Map<Pause, Gate>();
+
+async function until(done: () => boolean): Promise<void> {
+  while (!done()) await new Promise((resolve) => setTimeout(resolve, 5));
+}
+
+async function pause(at: Pause): Promise<void> {
+  const gate = pauses.get(at);
+  if (!gate) return;
+  pauses.delete(at);
+  gate.reached = true;
+  await until(() => gate.released);
+}
 
 interface World {
   spaceId: string;
@@ -73,6 +98,7 @@ interface World {
   receipts: UploadReceipt[];
   targets: { chunk: number; url: string; expiresAtMs: number }[];
   points: number[];
+  drops: number[];
   history: { atMs: number; keys: string[] }[];
 }
 
@@ -124,12 +150,18 @@ function installModelR2(): void {
     if (options?.sha256 !== undefined && options.sha256 !== toHex(await sha256(bytes))) {
       throw new Error("put: The SHA-256 checksum you specified did not match what we received.");
     }
+    await pause("put");
     const onlyIfAbsent = (options?.onlyIf as R2Conditional | undefined)?.etagDoesNotMatch === "*";
     if (onlyIfAbsent && r2.objects.has(key)) return null;
     settle({ put: key, bytes, onlyIfAbsent }, r2.put);
     return described(key);
   }) as never);
-  vi.spyOn(bucket, "head").mockImplementation((async (key: string) => (CHUNK_KEY.test(key) ? described(key) : real.head(key))) as never);
+  vi.spyOn(bucket, "head").mockImplementation((async (key: string) => {
+    if (!CHUNK_KEY.test(key)) return real.head(key);
+    const found = described(key);
+    await pause("head");
+    return found;
+  }) as never);
   vi.spyOn(bucket, "get").mockImplementation((async (key: string, options?: R2GetOptions) => {
     if (!CHUNK_KEY.test(key)) return real.get(key, options);
     const found = described(key);
@@ -145,6 +177,7 @@ function installModelR2(): void {
     const spaceId = modelled[0]!.split("/")[1]!;
     const retired = await retiredKeys(spaceId);
     for (const key of modelled) if (!retired.has(key)) r2.violations.push(`delete issued for ${key}, which the Account DO has not retired`);
+    await pause("delete");
     settle({ delete: modelled }, r2.del);
   }) as never);
   vi.spyOn(bucket, "list").mockImplementation((async (options?: R2ListOptions) => {
@@ -162,18 +195,24 @@ function installRetirementOutcomes(): void {
   const directory = prototype.account;
   vi.spyOn(prototype, "account").mockImplementation(function (this: unknown, ...args: unknown[]) {
     const target = directory.apply(this, args) as Record<string | symbol, unknown> & {
-      retireChunks(spaceId: string, objects: unknown[]): Promise<unknown>;
+      retireChunks(spaceId: string, objects: { hashHex: string; incarnation: string }[]): Promise<unknown>;
     };
-    const retireChunks = async (spaceId: string, objects: unknown[]) => {
+    const retire = async (spaceId: string, objects: { hashHex: string; incarnation: string }[]) => {
+      const outcome = (await target.retireChunks(spaceId, objects)) as { ok: boolean };
+      if (outcome.ok) for (const { hashHex, incarnation } of objects) r2.retired.add(chunkKey(spaceId, hashHex, incarnation));
+      return outcome;
+    };
+    const retireChunks = async (spaceId: string, objects: { hashHex: string; incarnation: string }[]) => {
+      await pause("retire");
       switch (r2.retire) {
         case "ok":
-          return target.retireChunks(spaceId, objects);
+          return retire(spaceId, objects);
         case "refused":
           return { ok: false, code: Error_Code.RETRY_LATER, message: "the model Account DO refused" };
         case "lostBefore":
           throw new Error("the Account DO did not answer");
         case "lostAfter":
-          await target.retireChunks(spaceId, objects);
+          await retire(spaceId, objects);
           throw new Error("the Account DO did not answer");
       }
     };
@@ -217,7 +256,7 @@ async function newWorld(): Promise<World> {
   if (!created.ok) throw new Error(created.message);
   const spaceId = created.value.spaceId;
   const session: Session = { deviceId: owner.deviceId, userId: owner.userId, deviceName: "Laptop", kind: "device", scope: null, role: "owner", maxFormat: 1, origin: BASE };
-  const world: World = { spaceId, session, files: Array.from({ length: FILES }, () => uuidv7()), plans: [], receipts: [], targets: [], points: [], history: [] };
+  const world: World = { spaceId, session, files: Array.from({ length: FILES }, () => uuidv7()), plans: [], receipts: [], targets: [], points: [], drops: [], history: [] };
   await snapshot(world);
   return world;
 }
@@ -300,6 +339,7 @@ async function act(world: World, step: Step): Promise<boolean> {
       return (await (await device(world)).commitRaw([op.delete(nodeId)])).case === "commit";
     }
     case "drop":
+      world.drops.push(Date.now());
       return runInDurableObject(space(spaceId), (instance, state) => {
         const superseded = state.storage.sql.exec("SELECT * FROM versions WHERE superseded_at_ms IS NOT NULL ORDER BY version_id").toArray() as unknown as VersionRow[];
         const version = pick(superseded, step.version);
@@ -313,7 +353,7 @@ async function act(world: World, step: Step): Promise<boolean> {
       r2.del = step.del;
       return runInDurableObject(space(spaceId), (instance) => instance.collectGarbage(Date.now()))
         .then(() => true)
-        .catch(() => false)
+        .catch(() => step.retire !== "ok" || step.del !== "ok")
         .finally(() => {
           r2.retire = "ok";
           r2.del = "ok";
@@ -334,8 +374,11 @@ async function act(world: World, step: Step): Promise<boolean> {
       return true;
     case "rewind": {
       const nowMs = Date.now();
-      const points = [...new Set(world.points)].filter((pointMs) => pointMs <= nowMs - MINUTE && pointMs >= nowMs - 29 * DAY);
-      const restorePointMs = pick(points, step.point);
+      const lastDrop = world.drops.at(-1) ?? -Infinity;
+      const points = [...new Set(world.points)].filter(
+        (pointMs) => pointMs <= nowMs - MINUTE && pointMs >= nowMs - 29 * DAY && (step.from !== "drop" || pointMs < lastDrop),
+      );
+      const restorePointMs = step.from === "oldest" ? points[step.point % Math.max(points.length, 1)] : pick(points, step.point);
       if (restorePointMs === undefined) return false;
       await act(world, { t: "export" });
       const rewound = await account().rewind({ userId: owner.userId, spaceId, rewindId: uuidv7(), restorePointMs, expectedHistoryId: await historyId(world) });
@@ -361,6 +404,38 @@ async function act(world: World, step: Step): Promise<boolean> {
     case "clock":
       vi.setSystemTime(Date.now() + step.ms);
       return true;
+    case "until": {
+      const markMs = await runInDurableObject(space(spaceId), (instance, state) => {
+        const row = state.storage.sql.exec("SELECT hold_until_ms, zero_since_ms FROM chunks WHERE hash = ?", fromHex(chunks[step.chunk]!.hex)!).toArray()[0];
+        if (!row) return undefined;
+        if (step.mark === "hold") return Number(row.hold_until_ms);
+        const graceDays = (instance as unknown as { settings(): { chunk_grace_days: number } }).settings().chunk_grace_days;
+        return row.zero_since_ms === null ? undefined : Number(row.zero_since_ms) + graceDays * DAY;
+      });
+      if (markMs === undefined || markMs + step.offsetMs <= Date.now()) return false;
+      vi.setSystemTime(markMs + step.offsetMs);
+      return true;
+    }
+    case "race": {
+      const outerGate: Gate = { reached: false, released: false };
+      pauses.set(step.at, outerGate);
+      let outerDone = false;
+      const outer = act(world, step.outer).finally(() => (outerDone = true));
+      await until(() => outerGate.reached || outerDone);
+      pauses.clear();
+      for (const inner of step.inner.slice(0, -1)) await act(world, inner);
+      const innerGate: Gate = { reached: false, released: false };
+      if (step.innerAt !== undefined) pauses.set(step.innerAt, innerGate);
+      let innerDone = false;
+      const inner = act(world, step.inner.at(-1)!).finally(() => (innerDone = true));
+      await until(() => innerGate.reached || innerDone);
+      pauses.clear();
+      outerGate.released = true;
+      await outer;
+      innerGate.released = true;
+      await inner;
+      return outerGate.reached;
+    }
   }
 }
 
@@ -409,7 +484,7 @@ async function chunkRows(world: World): Promise<{ rows: ChunkRow[]; references: 
 
 async function check(world: World): Promise<void> {
   const violations = r2.violations.splice(0);
-  const retired = await retiredKeys(world.spaceId);
+  const retired = new Set([...(await retiredKeys(world.spaceId)), ...r2.retired]);
   const { rows, references } = await chunkRows(world);
   for (const row of rows) {
     const key = row.incarnation === null ? undefined : chunkKey(world.spaceId, row.hex, row.incarnation);
@@ -451,29 +526,58 @@ async function quiesce(world: World): Promise<void> {
 const index = fc.oneof({ weight: 3, arbitrary: fc.constant(0) }, fc.nat({ max: 15 }));
 const chunkSet = fc.uniqueArray(fc.integer({ min: 0, max: TEXTS.length - 1 }), { minLength: 1, maxLength: 2 });
 const outcome = fc.oneof({ weight: 4, arbitrary: fc.constant<Outcome>("ok") }, fc.constantFrom<Outcome>("lostApplied", "lostInflight"));
-const step: fc.Arbitrary<Step> = fc.oneof(
-  { weight: 3, arbitrary: fc.record({ t: fc.constant("prepare" as const), chunks: chunkSet }) },
-  { weight: 6, arbitrary: fc.record({ t: fc.constant("put" as const), plan: index, outcome }) },
+const prepare = fc.record({ t: fc.constant("prepare" as const), chunks: chunkSet });
+const put = fc.record({ t: fc.constant("put" as const), plan: index, outcome });
+const commit = fc.record({
+  t: fc.constant("commit" as const),
+  file: fc.nat({ max: FILES - 1 }),
+  receipts: fc.uniqueArray(index, { maxLength: 2 }),
+  extra: fc.uniqueArray(fc.nat({ max: TEXTS.length - 1 }), { maxLength: 1 }),
+});
+const collect = fc.record({ t: fc.constant("gc" as const), retire: fc.constantFrom<Retirement>("ok", "ok", "refused", "lostBefore", "lostAfter"), del: outcome });
+const drop = fc.record({ t: fc.constant("drop" as const), version: index });
+const clock = fc.record({ t: fc.constant("clock" as const), ms: fc.constantFrom(MINUTE, MINUTE, MINUTE, 30 * MINUTE, 2 * HOUR, DAY, 7 * DAY, 31 * DAY) });
+const pausePoint = fc.constantFrom<Pause>("head", "put", "retire", "delete");
+const simple: fc.Arbitrary<Simple> = fc.oneof(
+  { weight: 3, arbitrary: prepare },
+  { weight: 6, arbitrary: put },
   { weight: 1, arbitrary: fc.record({ t: fc.constant("bundle" as const), plans: fc.array(index, { minLength: 1, maxLength: 3 }), outcome }) },
-  { weight: 4, arbitrary: fc.record({
-      t: fc.constant("commit" as const),
-      file: fc.nat({ max: FILES - 1 }),
-      receipts: fc.uniqueArray(index, { maxLength: 2 }),
-      extra: fc.uniqueArray(fc.nat({ max: TEXTS.length - 1 }), { maxLength: 1 }),
-    }) },
+  { weight: 4, arbitrary: commit },
   { weight: 1, arbitrary: fc.record({ t: fc.constant("trash" as const), file: fc.nat({ max: FILES - 1 }) }) },
-  { weight: 3, arbitrary: fc.record({ t: fc.constant("drop" as const), version: index }) },
-  {
-    weight: 4,
-    arbitrary: fc.record({ t: fc.constant("gc" as const), retire: fc.constantFrom<Retirement>("ok", "ok", "refused", "lostBefore", "lostAfter"), del: outcome }),
-  },
+  { weight: 3, arbitrary: drop },
+  { weight: 4, arbitrary: collect },
   { weight: 2, arbitrary: fc.record({ t: fc.constant("land" as const), flight: index }) },
   { weight: 2, arbitrary: fc.constant({ t: "export" as const }) },
   { weight: 1, arbitrary: fc.constant({ t: "crash" as const }) },
-  { weight: 2, arbitrary: fc.record({ t: fc.constant("rewind" as const), point: index }) },
+  { weight: 3, arbitrary: fc.record({ t: fc.constant("rewind" as const), point: index, from: fc.constantFrom("newest" as const, "oldest" as const, "drop" as const) }) },
   { weight: 2, arbitrary: fc.record({ t: fc.constant("targets" as const), chunk: fc.nat({ max: TEXTS.length - 1 }) }) },
   { weight: 2, arbitrary: fc.record({ t: fc.constant("download" as const), target: index }) },
-  { weight: 4, arbitrary: fc.record({ t: fc.constant("clock" as const), ms: fc.constantFrom(MINUTE, MINUTE, MINUTE, 30 * MINUTE, 2 * HOUR, DAY, 7 * DAY, 31 * DAY) }) },
+  { weight: 4, arbitrary: clock },
+  {
+    weight: 2,
+    arbitrary: fc.record({
+      t: fc.constant("until" as const),
+      mark: fc.constantFrom("grace" as const, "hold" as const),
+      chunk: fc.nat({ max: TEXTS.length - 1 }),
+      offsetMs: fc.constantFrom(-6 * DAY, -2 * DAY, -MINUTE, MINUTE, 2 * DAY),
+    }),
+  },
+);
+const step: fc.Arbitrary<Step> = fc.oneof(
+  { weight: 9, arbitrary: simple },
+  {
+    weight: 1,
+    arbitrary: fc.record(
+      {
+        t: fc.constant("race" as const),
+        outer: fc.oneof(commit, collect, put),
+        at: pausePoint,
+        inner: fc.array(fc.oneof(prepare, put, commit, collect, drop, clock), { minLength: 1, maxLength: 2 }),
+        innerAt: pausePoint,
+      },
+      { requiredKeys: ["t", "outer", "at", "inner"] },
+    ),
+  },
 );
 const steps = fc.array(step, { minLength: 1, maxLength: 60, size: "max" });
 
@@ -539,6 +643,57 @@ const scenarios: Step[][] = [
     day,
     gc,
     { t: "rewind", point: 1 },
+  ],
+  [
+    minute,
+    { t: "prepare", chunks: [0] },
+    { t: "put", plan: 0, outcome: "ok" },
+    { t: "clock", ms: 2 * DAY },
+    { t: "race", outer: { t: "commit", file: 0, receipts: [], extra: [0] }, at: "head", inner: [gc], innerAt: "retire" },
+  ],
+  [
+    minute,
+    { t: "prepare", chunks: [0] },
+    { t: "put", plan: 0, outcome: "ok" },
+    { t: "clock", ms: 2 * DAY },
+    { t: "race", outer: { t: "commit", file: 0, receipts: [], extra: [0] }, at: "head", inner: [gc, { t: "prepare", chunks: [0] }] },
+  ],
+  [
+    minute,
+    ...uploadBothThenA,
+    { t: "commit", file: 0, receipts: [], extra: [0] },
+    { t: "commit", file: 0, receipts: [], extra: [1] },
+    minute,
+    { t: "drop", version: 0 },
+    { t: "clock", ms: 26 * DAY },
+    gc,
+  ],
+  [
+    minute,
+    ...uploadBothThenA,
+    { t: "commit", file: 0, receipts: [], extra: [1] },
+    minute,
+    { t: "clock", ms: 4 * DAY },
+    { t: "commit", file: 1, receipts: [], extra: [0] },
+    minute,
+    { t: "clock", ms: 24 * DAY },
+    { t: "rewind", point: 3 },
+    { t: "clock", ms: 3 * DAY },
+    gc,
+  ],
+  [
+    minute,
+    { t: "prepare", chunks: [0] },
+    { t: "put", plan: 0, outcome: "ok" },
+    { t: "clock", ms: 2 * DAY },
+    { t: "gc", retire: "ok", del: "lostInflight" },
+    gc,
+    { t: "clock", ms: 8 * DAY },
+    { t: "prepare", chunks: [1] },
+    { t: "put", plan: 0, outcome: "ok" },
+    { t: "clock", ms: 2 * DAY },
+    gc,
+    { t: "rewind", point: 7 },
   ],
 ];
 
