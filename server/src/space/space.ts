@@ -59,7 +59,7 @@ import type { AccountDO } from "../account-do";
 import { verifyAccessToken } from "../auth";
 import { type ChunkObject, signChunkGrant, verifyChunkGrant } from "../crypto";
 import { errorText } from "../errors";
-import type { Database, ObjectState, ObjectStore, Socket, Sql } from "../host";
+import type { Database, ObjectState, ObjectStore, Socket, Sql, SqlRow } from "../host";
 import { fromHex, isUuidV7, toHex, uuidv7 } from "../ids";
 import { GIT_TRACKED } from "../features";
 import { policy } from "../policy";
@@ -162,6 +162,10 @@ function withoutGitTracked(message: ServerMessage): ServerMessage {
   if (msg.case === "changes") for (const commit of msg.value.commits) unmarkRecords(commit.changes);
   if (msg.case === "rpc") unmarkReply(msg.value);
   return message;
+}
+
+function confirmedPending(row: SqlRow): boolean {
+  return row.state === ChunkState.PENDING && row.incarnation !== null && row.head_checked === 1;
 }
 
 function oldestUsableBookmarkMs(nowMs: number): number {
@@ -1122,7 +1126,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
         const row = this.sql.exec("SELECT size, state, incarnation, head_checked FROM chunks WHERE hash = ?", chunk.hash).toArray()[0];
         if (!row || row.size !== chunk.size || row.state !== ChunkState.PENDING || row.incarnation === null) continue;
         const object = { spaceId, hashHex: hex, incarnation: String(row.incarnation) };
-        let valid = row.head_checked === 1;
+        let valid = confirmedPending(row);
         for (const receipt of receiptsByHash.get(hex) ?? []) {
           if (receipt.size !== chunk.size) continue;
           if (await verifyChunkGrant(this.spaceKey, "receipt", object, receipt.size, receipt.token, nowMs)) valid = true;
@@ -1179,7 +1183,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
       const actions = this.db.transactionSync(() => {
         this.checkOpen();
         return chunks.map((chunk): { action: ChunkPlan_Action; incarnation?: string } => {
-          const row = this.sql.exec("SELECT size, state, incarnation FROM chunks WHERE hash = ?", chunk.hash).toArray()[0];
+          const row = this.sql.exec("SELECT size, state, incarnation, head_checked FROM chunks WHERE hash = ?", chunk.hash).toArray()[0];
           if (!row) {
             const incarnation = this.allocateIncarnation();
             this.sql.exec(
@@ -1195,7 +1199,7 @@ export function spaceLogic<B extends abstract new (...args: any[]) => object>(Ba
           if (row.size !== chunk.size) fail(Error_Code.INVALID_ARGUMENT, "chunk size differs from the stored chunk");
           if (row.state === ChunkState.DELETING) return { action: ChunkPlan_Action.RETRY_LATER };
           this.sql.exec("UPDATE chunks SET hold_until_ms = MAX(hold_until_ms, ?) WHERE hash = ?", holdUntil, chunk.hash);
-          if (row.state === ChunkState.LIVE) return { action: ChunkPlan_Action.PRESENT };
+          if (row.state === ChunkState.LIVE || confirmedPending(row)) return { action: ChunkPlan_Action.PRESENT };
           if (row.incarnation !== null) return { action: ChunkPlan_Action.UPLOAD, incarnation: String(row.incarnation) };
           const incarnation = this.allocateIncarnation();
           this.sql.exec("UPDATE chunks SET incarnation = ? WHERE hash = ?", incarnation, chunk.hash);

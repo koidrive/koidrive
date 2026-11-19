@@ -10,7 +10,7 @@ import { type UploadReceipt, UploadReceiptSchema } from "../src/gen/koidrive/v1/
 import { ChunkBundleResultSchema, ChunkBundleSchema, ChunkPlan_Action, Error_Code } from "../src/gen/koidrive/v1/rpc_pb";
 import { sha256 } from "../src/crypto";
 import { fromHex, toHex, uuidv7 } from "../src/ids";
-import { type Session, SpaceDO } from "../src/space-do";
+import { HOLD_MS, type Session, SpaceDO } from "../src/space-do";
 import { ChunkState } from "../src/space/schema";
 import { chunkKey, versionChunks, type VersionRow } from "../src/space/store";
 import saved from "./gc-model.cases.json";
@@ -34,6 +34,7 @@ const CHUNK_KEY = /^spaces\/[^/]+\/chunks\//;
 const TEXTS = ["alpha", "bravo", "charlie"];
 const FILES = 2;
 const LIST_PAGE = 2;
+const SYNC_ROUNDS = 3;
 
 type Outcome = "ok" | "lostApplied" | "lostInflight";
 type Retirement = "ok" | "refused" | "lostBefore" | "lostAfter";
@@ -44,7 +45,8 @@ type Simple =
   | { t: "prepare"; chunks: number[] }
   | { t: "put"; plan: number; outcome: Outcome }
   | { t: "bundle"; plans: number[]; outcome: Outcome }
-  | { t: "commit"; file: number; receipts: number[]; extra: number[]; dup?: boolean }
+  | { t: "commit"; file: number; receipts: number[]; extra: number[]; dup?: boolean; refused?: boolean }
+  | { t: "sync"; file: number; chunks: number[] }
   | { t: "trash"; file: number }
   | { t: "drop"; version: number }
   | { t: "gc"; retire: Retirement; del: Outcome }
@@ -97,6 +99,7 @@ interface World {
   plans: { chunk: number; url: string }[];
   receipts: UploadReceipt[];
   targets: { chunk: number; url: string; expiresAtMs: number }[];
+  present: { hex: string; atMs: number }[];
   points: number[];
   drops: number[];
   history: { atMs: number; keys: string[]; lastUsedMs: Map<string, number> }[];
@@ -257,7 +260,7 @@ async function newWorld(): Promise<World> {
   if (!created.ok) throw new Error(created.message);
   const spaceId = created.value.spaceId;
   const session: Session = { deviceId: owner.deviceId, userId: owner.userId, deviceName: "Laptop", kind: "device", scope: null, role: "owner", maxFormat: 1, origin: BASE };
-  const world: World = { spaceId, session, files: Array.from({ length: FILES }, () => uuidv7()), plans: [], receipts: [], targets: [], points: [], drops: [], history: [], lastUsedMs: new Map() };
+  const world: World = { spaceId, session, files: Array.from({ length: FILES }, () => uuidv7()), plans: [], receipts: [], targets: [], present: [], points: [], drops: [], history: [], lastUsedMs: new Map() };
   await snapshot(world);
   return world;
 }
@@ -299,6 +302,7 @@ async function act(world: World, step: Step): Promise<boolean> {
       if (result.case !== "prepareUpload") return false;
       for (const plan of result.value.chunks) {
         if (plan.action === ChunkPlan_Action.UPLOAD) world.plans.push({ chunk: chunks.findIndex((c) => c.hex === toHex(plan.hash)), url: plan.target!.url });
+        if (plan.action === ChunkPlan_Action.PRESENT) world.present.push({ hex: toHex(plan.hash), atMs: Date.now() });
       }
       return true;
     }
@@ -328,12 +332,28 @@ async function act(world: World, step: Step): Promise<boolean> {
       const receipts = step.receipts.flatMap((i) => pick(world.receipts, i) ?? []);
       const used = new Set([...receipts.map((receipt) => chunks.findIndex((c) => c.hex === toHex(receipt.hash))), ...step.extra]);
       if (used.size === 0) return false;
-      const texts = [...used].sort().map((i) => TEXTS[i]!);
-      const parts = await content(...(step.dup ? [...texts, texts[0]!] : texts));
-      const nodeId = world.files[step.file]!;
-      const status = await nodeStatus(world, nodeId);
-      const change = status === undefined ? op.create(nodeId, spaceId, `file ${step.file}`, parts.content) : op.update(nodeId, parts.content);
-      return (await (await device(world)).commitRaw([change], { receipts })).case === "commit";
+      const result = await commitFile(world, step.file, [...used], receipts, step.dup);
+      return step.refused ? result?.case === "error" && result.value.code === Error_Code.MISSING_CHUNKS : result?.case === "commit";
+    }
+    case "sync": {
+      const refs = step.chunks.map((i) => ({ hash: fromHex(chunks[i]!.hex)!, size: chunks[i]!.bytes.length }));
+      for (let round = 0; round < SYNC_ROUNDS; round++) {
+        const plan = await (await device(world)).call({ case: "prepareUpload", value: { chunks: refs } });
+        if (plan.case !== "prepareUpload" || plan.value.chunks.some((chunk) => chunk.action === ChunkPlan_Action.RETRY_LATER)) return false;
+        const receipts: UploadReceipt[] = [];
+        for (const chunk of plan.value.chunks) {
+          if (chunk.action === ChunkPlan_Action.PRESENT) world.present.push({ hex: toHex(chunk.hash), atMs: Date.now() });
+          if (chunk.action !== ChunkPlan_Action.UPLOAD) continue;
+          const receipt = await putChunk(chunk.target!.url, chunks.find((c) => c.hex === toHex(chunk.hash))!.bytes);
+          if (!receipt) return false;
+          receipts.push(receipt);
+        }
+        const result = await commitFile(world, step.file, step.chunks, receipts);
+        if (result?.case === "commit") return true;
+        if (result?.case !== "error" || result.value.code !== Error_Code.MISSING_CHUNKS) return false;
+      }
+      r2.violations.push(`a client that uploaded every chunk prepareUpload asked for was refused with MISSING_CHUNKS ${SYNC_ROUNDS} times for chunks ${step.chunks}`);
+      return false;
     }
     case "trash": {
       const nodeId = world.files[step.file]!;
@@ -384,6 +404,7 @@ async function act(world: World, step: Step): Promise<boolean> {
       if (restorePointMs === undefined) return false;
       await act(world, { t: "export" });
       const rewound = await account().rewind({ userId: owner.userId, spaceId, rewindId: uuidv7(), restorePointMs, expectedHistoryId: await historyId(world) });
+      world.present = [];
       if (!rewound.ok) return false;
       world.lastUsedMs = world.history.findLast((state) => state.atMs === restorePointMs)!.lastUsedMs;
       return (await historyId(world)) === rewound.value.historyId;
@@ -446,6 +467,14 @@ async function act(world: World, step: Step): Promise<boolean> {
       return outerGate.reached && (step.innerAt === undefined || innerGate.reached);
     }
   }
+}
+
+async function commitFile(world: World, file: number, used: number[], receipts: UploadReceipt[], dup = false) {
+  const texts = [...used].sort().map((i) => TEXTS[i]!);
+  const parts = await content(...(dup ? [...texts, texts[0]!] : texts));
+  const nodeId = world.files[file]!;
+  const change = (await nodeStatus(world, nodeId)) === undefined ? op.create(nodeId, world.spaceId, `file ${file}`, parts.content) : op.update(nodeId, parts.content);
+  return (await device(world)).commitRaw([change], { receipts });
 }
 
 function historyId(world: World): Promise<string> {
@@ -519,6 +548,11 @@ async function check(world: World): Promise<void> {
     for (const key of keys) if (retired.has(key) || !r2.objects.has(key)) violations.push(`the state at ${atMs} has a used chunk on ${key}, which is ${retired.has(key) ? "retired" : "gone"}`);
   }
   for (const hex of references.keys()) if (!rows.some((row) => row.hex === hex)) violations.push(`a version uses chunk ${hex}, which has no row`);
+  for (const { hex, atMs } of world.present) {
+    const row = rows.find((one) => one.hex === hex);
+    if (Date.now() >= atMs + HOLD_MS || row?.state === ChunkState.LIVE || (row?.state === ChunkState.PENDING && row.incarnation !== null && row.headChecked)) continue;
+    violations.push(`chunk ${hex} was answered PRESENT at ${atMs}, but a commit without its receipt would be refused: ${row ? `state ${row.state}, head_checked ${row.headChecked}` : "it has no row"}`);
+  }
   if (violations.length > 0) throw new Error(violations.join("\n"));
 }
 
@@ -561,6 +595,7 @@ const simple: fc.Arbitrary<Simple> = fc.oneof(
   { weight: 6, arbitrary: put },
   { weight: 1, arbitrary: fc.record({ t: fc.constant("bundle" as const), plans: fc.array(index, { minLength: 1, maxLength: 3 }), outcome }) },
   { weight: 4, arbitrary: commit },
+  { weight: 2, arbitrary: fc.record({ t: fc.constant("sync" as const), file: fc.nat({ max: FILES - 1 }), chunks: chunkSet }) },
   { weight: 1, arbitrary: fc.record({ t: fc.constant("trash" as const), file: fc.nat({ max: FILES - 1 }) }) },
   { weight: 3, arbitrary: drop },
   { weight: 4, arbitrary: collect },
@@ -618,6 +653,14 @@ const day: Step = { t: "clock", ms: DAY };
 const week: Step = { t: "clock", ms: 7 * DAY };
 const gc: Step = { t: "gc", retire: "ok", del: "ok" };
 const uploadBothThenA: Step[] = [{ t: "prepare", chunks: [0, 1] }, { t: "put", plan: 0, outcome: "ok" }, { t: "put", plan: 1, outcome: "ok" }];
+const checkAThenRefuse: Step[] = [
+  minute,
+  { t: "prepare", chunks: [0] },
+  { t: "put", plan: 0, outcome: "ok" },
+  { t: "prepare", chunks: [1] },
+  { t: "clock", ms: 2 * HOUR },
+  { t: "commit", file: 0, receipts: [], extra: [0, 1], refused: true },
+];
 const scenarios: Step[][] = [
   [minute, { t: "prepare", chunks: [0] }, { t: "put", plan: 0, outcome: "ok" }, { t: "commit", file: 0, receipts: [0], extra: [], dup: true }, { t: "commit", file: 0, receipts: [], extra: [0] }, { t: "drop", version: 0 }],
   [
@@ -752,6 +795,20 @@ const scenarios: Step[][] = [
     { t: "put", plan: 2, outcome: "ok" },
     { t: "commit", file: 0, receipts: [0, 1, 2], extra: [] },
   ],
+  [minute, { t: "prepare", chunks: [0] }, { t: "sync", file: 0, chunks: [0] }],
+  [...checkAThenRefuse, { t: "clock", ms: 23 * HOUR }, { t: "prepare", chunks: [0] }, { t: "clock", ms: 2 * HOUR }, gc, { t: "commit", file: 0, receipts: [], extra: [0] }],
+  [
+    ...checkAThenRefuse,
+    minute,
+    { t: "prepare", chunks: [0] },
+    { t: "clock", ms: 2 * DAY },
+    gc,
+    { t: "rewind", point: 0 },
+    { t: "commit", file: 0, receipts: [], extra: [0], refused: true },
+    { t: "prepare", chunks: [0] },
+    { t: "put", plan: 0, outcome: "ok" },
+    { t: "commit", file: 0, receipts: [0], extra: [] },
+  ],
 ];
 
 const cases = Number(inject("batteryCases") || 100);
@@ -761,9 +818,10 @@ async function run(sequence: Step[], directed = false): Promise<World> {
   const world = await newWorld();
   for (const [i, next] of sequence.entries()) {
     vi.setSystemTime(Date.now() + 1000);
-    if (!(await act(world, next)) && directed) throw new Error(`directed step ${i}, ${JSON.stringify(next)}, did not take effect`);
+    const took = await act(world, next);
     await snapshot(world);
     await check(world);
+    if (!took && directed) throw new Error(`directed step ${i}, ${JSON.stringify(next)}, did not take effect`);
   }
   return world;
 }
