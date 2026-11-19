@@ -10,6 +10,7 @@ use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, Effects};
 use koidrive_engine::first_link::{History, Log, LogRead, Marks, PriorSync};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::ignore::{RuleFile, Source};
+use koidrive_engine::journal::{FieldIntent, IntentId, NodeIntents};
 use koidrive_engine::names::{nfc, same_name};
 use koidrive_engine::question::{
     Answer, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
@@ -2336,6 +2337,88 @@ fn a_child_an_answer_trashes_again_leaves_the_disk_and_is_not_sent_again() {
         "{done:?}"
     );
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_child_an_answer_trashes_again_is_deleted_under_the_trash_intent_with_what_the_trash_holds_as_seen()
+ {
+    let mut trees = trees(
+        &[("d", dir(ROOT, "new")), ("f", file("d", "child", 1))],
+        &[("d", dir(ROOT, "old")), ("f", file("d", "child", 1))],
+        &[
+            Remote("d", dir(ROOT, "old"), true, 1),
+            Remote("f", file("d", "child", 1), true, 1),
+        ],
+    );
+    let id = |n: u8| IntentId::from_bytes(&[n; 16]).unwrap();
+    let intent = |n: u8, author: &str| FieldIntent {
+        id: id(n),
+        author: author.into(),
+        replay: false,
+        applied_at_ms: 0,
+    };
+    for (node, n) in [("d", 10), ("f", 20)] {
+        let mut remote = trees.remote().get(node).unwrap().clone();
+        remote.intents = Some(NodeIntents {
+            place: Some(intent(n, "me")),
+            content: (node == "f").then(|| intent(n + 1, "me")),
+            status: Some(intent(1, "other")),
+            trash_over: Some(id(n + 2)),
+            trash_held: vec![id(n + 3)],
+        });
+        trees.set_remote(node.into(), remote);
+    }
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    commits.connected(&Welcome {
+        features: vec!["field_intents".into()],
+        ..Default::default()
+    });
+    let question = asked(&commits, RecoveryGroup::ChangedOnThisDevice, &["d"]);
+    assert!(commits.decide(&mut trees, &question.id, Answer::Publish));
+    let commit = (commits
+        .build(&mut trees, &mut ids, NOW, NEW, "me", 1)
+        .cloned())
+    .unwrap();
+    let delete_of = |commit: &koidrive_proto::v1::Commit| {
+        (commit.ops.iter())
+            .find_map(|op| match &op.op {
+                Some(op::Op::Delete(delete)) => Some((op.intent.clone(), delete.clone())),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (trash, delete) = delete_of(&commit);
+    assert_eq!(delete.node_id, "f");
+    let trash = trash.unwrap();
+    assert_eq!(
+        (trash.id, trash.author_device_id.as_str()),
+        (vec![1; 16], "other")
+    );
+    assert!(delete.unseen.is_empty(), "{:?}", delete.unseen);
+    let held: BTreeSet<Vec<u8>> = delete.held.iter().cloned().collect();
+    assert!(
+        held.contains(&vec![22; 16]) && held.contains(&vec![23; 16]),
+        "{held:?}"
+    );
+    let mut edited = trees.remote().get("f").unwrap().clone();
+    if let Some(intents) = edited.intents.as_mut() {
+        intents.content = Some(intent(30, "another"));
+        intents.trash_held.push(id(31));
+    }
+    trees.set_remote("f".into(), edited);
+    assert!(
+        commits
+            .build(&mut trees, &mut ids, NOW, NEW, "me", 1)
+            .is_none()
+    );
+    let welcome = Welcome {
+        history_id: NEW.into(),
+        device_seq: commits.accepted(),
+        features: vec!["field_intents".into()],
+        ..Default::default()
+    };
+    assert_eq!(commits.connected(&welcome), Reconnect::Resend);
+    assert_eq!(delete_of(&commits.in_flight().unwrap().commit).1, delete);
 }
 
 #[test]

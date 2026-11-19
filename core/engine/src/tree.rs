@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use koidrive_proto::v1::{self as proto, ChunkRef, NodeKind, NodeStatus};
 
-use crate::journal::NodeIntents;
+use crate::journal::{IntentId, NodeIntents};
 use crate::names::{name_key, same_name};
 use crate::node_id::{intern, interned};
 
@@ -546,7 +546,12 @@ impl RemoteNode {
             pending_for: Some(state.pending_for.clone()).filter(|name| !name.is_empty()),
             pending_by: Some(state.pending_by.clone()).filter(|device| !device.is_empty()),
             chunks,
-            intents: state.intents.as_ref().map(NodeIntents::from_proto),
+            intents: state.intents.as_ref().map(|intents| NodeIntents {
+                trash_held: (state.trash_held.iter())
+                    .filter_map(|id| IntentId::from_bytes(id))
+                    .collect(),
+                ..NodeIntents::from_proto(intents)
+            }),
         };
         Ok((NodeId::from(&state.node_id), node))
     }

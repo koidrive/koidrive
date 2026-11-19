@@ -96,6 +96,7 @@ fn field_intents_round_trip_through_the_wire_message() {
             replay: true,
             ..held(2, 6)
         }),
+        ..Default::default()
     };
     assert_eq!(NodeIntents::from_proto(&intents.to_proto()), intents);
     assert!(intents.to_proto().status.unwrap().replay);
