@@ -1177,12 +1177,7 @@ pub(crate) fn relink_with_hook(
         let mut engine = Engine::load(tx, &link.space_id)?;
         engine.effects.catch_up(marker.effects);
         let now_ms = crate::clock::unix_ms();
-        (engine.commits).ask_unsettled_restores(
-            &before.commits,
-            &before.trees,
-            &mut engine.ids,
-            now_ms,
-        );
+        (engine.commits).ask_unsettled_restores(&before.commits, &mut engine.ids, now_ms);
         engine.ask(tx, &link.space_id)?;
         for row in &answered {
             if let Some(given) = &row.answer {

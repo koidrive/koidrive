@@ -2299,6 +2299,7 @@ mod tests {
             commit,
             deletes: BTreeMap::new(),
             restores: BTreeMap::new(),
+            owners: BTreeMap::new(),
             result: None,
         });
         let state = CommitsState {

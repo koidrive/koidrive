@@ -89,6 +89,8 @@ pub struct InFlight {
     /// For each `Restore` op, by its index in the commit, the nodes this device's user removed that
     /// it brings back. When the restore is applied, they are downloaded instead of deleted again.
     pub restores: BTreeMap<usize, Vec<NodeId>>,
+    /// For each `Restore` op, by its index in the commit, the restore it was sent for.
+    pub owners: BTreeMap<usize, RestoreId>,
     /// The result once it has arrived, kept until R holds its records.
     pub result: Option<proto::CommitResult>,
 }
@@ -353,8 +355,7 @@ impl Commits {
             if let Some(id) = flight.deletes.keys().find(|id| !deleted(id)) {
                 return Err(StateError::DeleteWithoutOp(id.clone()));
             }
-            carried(&state.restores, &state.split_restores, ops)
-                .map_err(StateError::RestoreNotQueued)?;
+            carried(&state.restores, flight).map_err(StateError::RestoreNotQueued)?;
         }
         let mut ended = BTreeSet::new();
         for resolved in &state.resolved {
@@ -646,18 +647,9 @@ impl Commits {
     /// Asks again about the restores `before` sent or held for an answer, once a reset of the sync state that
     /// kept the restores dropped the commit in flight and the questions: the server may have applied them, so
     /// none is sent again until the person answers. Restores `before` never sent stay queued.
-    pub fn ask_unsettled_restores(
-        &mut self,
-        before: &Commits,
-        trees: &Trees,
-        ids: &mut IdGen,
-        now_ms: u64,
-    ) {
+    pub fn ask_unsettled_restores(&mut self, before: &Commits, ids: &mut IdGen, now_ms: u64) {
         let sent: BTreeSet<RestoreId> = (before.in_flight.as_ref())
-            .and_then(|flight| {
-                let (restores, splits) = (&before.restores, &before.split_restores);
-                carrying(restores, splits, &flight.commit.ops, Some(trees)).ok()
-            })
+            .and_then(|flight| carrying(&before.restores, flight).ok())
             .into_iter()
             .flatten()
             .collect();
@@ -1160,16 +1152,6 @@ impl Commits {
         trees.set_asked(shown.cloned().collect());
     }
 
-    fn split_owners(&self, trees: &Trees, node: &str) -> Vec<RestoreId> {
-        (self.split_restores.iter())
-            .filter(|(id, split)| {
-                (self.restores.get(*id))
-                    .is_some_and(|intent| owns(trees, split, intent.node(), node))
-            })
-            .map(|(id, _)| id.clone())
-            .collect()
-    }
-
     fn resolve(&mut self, id: RestoreId, outcome: Outcome) {
         let intent = self
             .restores
@@ -1192,14 +1174,11 @@ impl Commits {
         if *self.halted != Some(Halt::ReadOnly) {
             return;
         }
-        let ops = self.in_flight.as_ref().map(|flight| &flight.commit.ops[..]);
-        let sent = carrying(
-            &self.restores,
-            &self.split_restores,
-            ops.unwrap_or_default(),
-            None,
-        )
-        .expect("a Restore op in flight is queued");
+        let sent = (self.in_flight.as_ref())
+            .map(|flight| {
+                carrying(&self.restores, flight).expect("a Restore op in flight is queued")
+            })
+            .unwrap_or_default();
         let asked: BTreeSet<&RestoreId> = self.asked_again().collect();
         let unsent: Vec<RestoreId> = (self.restores.keys())
             .filter(|id| !sent.contains(*id) && !asked.contains(id))
@@ -1446,7 +1425,7 @@ impl Commits {
             .filter(|id| creates.contains(*id) && !ready.contains(*id))
             .collect();
         let mut window = 2 * cap;
-        let (planned, deletes, deletions, reverts, cycle_reverts, given_up, retrashed) = loop {
+        let (planned, deletes, deletions, reverts, cycle_reverts, given_up, retrashed, owners) = loop {
             let mut seeds = ready.iter().peekable();
             let mut next: BinaryHeap<Reverse<(usize, &NodeId)>> =
                 aliased.iter().map(|id| Reverse((1, *id))).collect();
@@ -1700,6 +1679,7 @@ impl Commits {
             },
             deletes,
             restores,
+            owners,
             result: None,
         }));
         self.in_flight.as_ref().map(|flight| &flight.commit)
@@ -2017,6 +1997,7 @@ impl Commits {
         else {
             return false;
         };
+        let restored = carried(&self.restores, &flight).expect("a Restore op in flight is queued");
         let result = flight.result.expect("taken with a result");
         (self.granted.0).extend(
             given_nodes(&flight.commit, &result)
@@ -2604,14 +2585,42 @@ impl Commits {
         for (index, original, copy) in conflicts {
             self.ask_conflict(trees, &flight.commit.commit_id, index, original, copy);
         }
-        let restored = carried(&self.restores, &self.split_restores, &flight.commit.ops)
-            .expect("a Restore op in flight is queued");
+        let landed: Vec<(RestoreId, SplitRestore)> = (self.split_restores.iter())
+            .filter(|(_, split)| split.landed.is_none())
+            .filter_map(|(id, split)| {
+                let node = self.restores.get(id)?.node();
+                let state = (result.changes.iter()).find_map(|change| match &change.change {
+                    Some(proto::change_record::Change::Node(state))
+                        if state.node_id == node
+                            && state.status == proto::NodeStatus::Live as i32 =>
+                    {
+                        Some(state)
+                    }
+                    _ => None,
+                })?;
+                let landed = Some((state.parent_id.clone(), state.name.clone()));
+                Some((
+                    id.clone(),
+                    SplitRestore {
+                        landed,
+                        ..split.clone()
+                    },
+                ))
+            })
+            .collect();
+        self.split_restores.extend(landed);
         for (index, op) in flight.commit.ops.iter().enumerate() {
             let Some(op::Op::Restore(restore)) = &op.op else {
                 continue;
             };
             let result = &result.results[index];
-            let Some(id) = restored.get(&index) else {
+            let Some(id) = restored
+                .get(&index)
+                .filter(|id| self.restores.contains_key(*id))
+            else {
+                continue;
+            };
+            if restore.node_id != self.restores[id].node() {
                 let code = op_result::Code::try_from(result.code);
                 if !matches!(
                     code,
@@ -2619,25 +2628,23 @@ impl Commits {
                         | op_result::Code::AppliedRenamed
                         | op_result::Code::Superseded)
                 ) {
-                    for id in self.split_owners(trees, &restore.node_id) {
-                        self.resolve(id, Outcome::from_result(result));
-                    }
+                    self.resolve(id.clone(), Outcome::from_result(result));
                 }
-                continue;
-            };
-            if !self.restores.contains_key(id) {
                 continue;
             }
             let outcome = match (Outcome::from_result(result), self.split_restores.get(id)) {
-                (Outcome::Restored, Some(split)) => (trees.remote().live(&restore.node_id))
-                    .filter(|live| live.parent != split.parent || live.name != split.name)
-                    .map_or(Outcome::Restored, |live| Outcome::Renamed {
-                        name: live.name.clone(),
-                    }),
+                (Outcome::Restored, Some(split)) => (split.landed.clone())
+                    .or_else(|| {
+                        let live = trees.remote().live(&restore.node_id)?;
+                        Some((live.parent.clone(), live.name.clone()))
+                    })
+                    .filter(|(parent, name)| *parent != split.parent || *name != split.name)
+                    .map_or(Outcome::Restored, |(_, name)| Outcome::Renamed { name }),
                 (outcome, _) => outcome,
             };
             self.resolve(id.clone(), outcome);
         }
+        self.reject_unsent_when_read_only();
         trees.watch_content([]);
         trees.watch_positions([]);
         self.retry_waiting(trees, BTreeSet::new(), Vec::new());
@@ -2814,25 +2821,14 @@ impl Commits {
                         *sent_in = None;
                     }
                 }
-                let ops = flight.commit.ops;
-                let restored = carried(&self.restores, &self.split_restores, &ops);
-                let restore = restored
+                let restore = carried(&self.restores, &flight)
                     .expect("a Restore op in flight is queued")
                     .remove(&0);
+                let ops = flight.commit.ops;
                 if ops.len() > 1 {
                     self.cap.set(Some(ops.len() / 2));
                 } else if let Some(id) = restore {
                     self.resolve(id, Outcome::DoesNotFit);
-                } else if let [
-                    proto::Op {
-                        op: Some(op::Op::Restore(piece)),
-                        ..
-                    },
-                ] = &ops[..]
-                {
-                    for id in self.split_owners(trees, &piece.node_id) {
-                        self.resolve(id, Outcome::DoesNotFit);
-                    }
                 } else if let Some(op) = ops.into_iter().next().and_then(|op| op.op) {
                     match op {
                         op::Op::Delete(delete) if !self.split.contains(&delete.node_id) => {
@@ -2998,58 +2994,31 @@ fn same_application(welcome: &proto::Welcome, commit_id: &str, committed_at_ms: 
 
 fn carried(
     restores: &BTreeMap<RestoreId, RestoreIntent>,
-    splits: &BTreeMap<RestoreId, SplitRestore>,
-    ops: &[proto::Op],
+    flight: &InFlight,
 ) -> Result<BTreeMap<usize, RestoreId>, usize> {
     let mut queued: HashMap<&proto::Restore, VecDeque<&RestoreId>> = HashMap::new();
     for (id, intent) in restores {
         queued.entry(intent.op()).or_default().push_back(id);
     }
-    let splitting = splits.keys().any(|id| restores.contains_key(id));
     let mut found = BTreeMap::new();
-    for (index, op) in ops.iter().enumerate() {
+    for (index, op) in flight.commit.ops.iter().enumerate() {
         let Some(op::Op::Restore(restore)) = &op.op else {
             continue;
         };
-        let piece = proto::Restore {
-            node_id: restore.node_id.clone(),
-            ..Default::default()
+        let id = match flight.owners.get(&index) {
+            Some(id) => restores.contains_key(id).then_some(id),
+            None => queued.get_mut(restore).and_then(VecDeque::pop_front),
         };
-        match queued.get_mut(restore).and_then(VecDeque::pop_front) {
-            Some(id) => {
-                found.insert(index, id.clone());
-            }
-            None if splitting && *restore == piece => {}
-            None => return Err(index),
-        }
+        found.insert(index, id.ok_or(index)?.clone());
     }
     Ok(found)
 }
 
 fn carrying(
     restores: &BTreeMap<RestoreId, RestoreIntent>,
-    splits: &BTreeMap<RestoreId, SplitRestore>,
-    ops: &[proto::Op],
-    trees: Option<&Trees>,
+    flight: &InFlight,
 ) -> Result<BTreeSet<RestoreId>, usize> {
-    let found = carried(restores, splits, ops)?;
-    let pieces: Vec<&str> = (ops.iter().enumerate())
-        .filter(|(index, _)| !found.contains_key(index))
-        .filter_map(|(_, op)| match &op.op {
-            Some(op::Op::Restore(restore)) => Some(restore.node_id.as_str()),
-            _ => None,
-        })
-        .collect();
-    let split = (splits.iter()).filter(|(id, split)| {
-        (restores.get(*id)).is_some_and(|intent| {
-            (pieces.iter())
-                .any(|node| trees.is_none_or(|trees| owns(trees, split, intent.node(), node)))
-        })
-    });
-    Ok(found
-        .into_values()
-        .chain(split.map(|(id, _)| id.clone()))
-        .collect())
+    Ok(carried(restores, flight)?.into_values().collect())
 }
 
 fn positioned(op: &op::Op) -> Option<&str> {
@@ -3909,14 +3878,7 @@ fn split_restore(trees: &Trees, trashed: &Trashed, id: &str) -> Option<SplitRest
         parent: node.shape.parent.clone(),
         name: node.shape.name.clone(),
         folders,
-    })
-}
-
-fn owns(trees: &Trees, split: &SplitRestore, restored: &str, node: &str) -> bool {
-    trees.remote().get(node).is_some_and(|remote| {
-        let parent = &remote.shape.parent;
-        (!remote.trashed || remote.trash_group == split.trash_group)
-            && (parent == restored || split.folders.contains(parent))
+        landed: None,
     })
 }
 
@@ -4056,6 +4018,7 @@ enum Want {
     Restore {
         op: proto::Restore,
         cost: usize,
+        owner: RestoreId,
     },
 }
 
@@ -4099,6 +4062,7 @@ type Planned = (
     Vec<NodeId>,
     BTreeSet<NodeId>,
     bool,
+    BTreeMap<usize, RestoreId>,
 );
 
 #[allow(clippy::too_many_arguments)]
@@ -4145,6 +4109,7 @@ fn plan(
                                 ..Default::default()
                             },
                             cost: restored_costs(trees, &trashed, node, group)[node.as_str()],
+                            owner: id.clone(),
                         });
                     }
                     continue;
@@ -4168,6 +4133,7 @@ fn plan(
             wants.push(Want::Restore {
                 op: intent.op().clone(),
                 cost,
+                owner: id.clone(),
             });
         }
     }
@@ -4467,6 +4433,7 @@ fn plan(
     };
     let mut wants: Vec<Option<Want>> = wants.into_iter().map(Some).collect();
     let mut ops = Vec::new();
+    let mut owners = BTreeMap::new();
     let mut deletes = BTreeMap::new();
     let mut deletions = BTreeMap::new();
     let mut retrashed = false;
@@ -4611,7 +4578,8 @@ fn plan(
                     ..Default::default()
                 })
             }
-            Want::Restore { op, .. } => {
+            Want::Restore { op, owner, .. } => {
+                owners.insert(ops.len(), owner);
                 scratch.restoring.remove(&op.node_id);
                 scratch.restores.remove(&op.node_id);
                 match restored_at(trees, &op).filter(|_| !scratch.live(&op.node_id)) {
@@ -5004,6 +4972,7 @@ fn plan(
             cycle_reverts,
             deferred_retrash,
             retrashed,
+            owners,
         ),
         exact,
     )

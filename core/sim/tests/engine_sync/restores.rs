@@ -553,8 +553,9 @@ fn two_requests_for_big_folders_bring_back_every_file() {
 }
 
 #[test]
-fn a_folder_moved_out_of_a_big_folder_while_it_comes_back_comes_back_whole() {
-    let rows: [(&[&str], usize, &str); 3] = [
+fn a_folder_moved_while_a_big_folder_comes_back_comes_back_whole() {
+    let rows: [(&[&str], usize, &str); 4] = [
+        (&["big"], 0, "renamed"),
         (&["big", "sub"], 0, "sub"),
         (&["big", "sub"], 0, "moved out"),
         (&["big", "sub", "inner"], 1, "moved out"),

@@ -600,6 +600,9 @@ fn legacy_state() -> EngineState {
     state.trees.replaced_versions = full.trees.replaced_versions;
     state.commits.accepted = full.commits.accepted;
     state.commits.in_flight = full.commits.in_flight;
+    if let Some(flight) = &mut state.commits.in_flight {
+        flight.owners.clear();
+    }
     state.commits.problems = full.commits.problems;
     state.commits.halted = full.commits.halted;
     state.commits.cap = full.commits.cap;
@@ -1404,6 +1407,7 @@ fn engine_state() -> EngineState {
                     ("empty".into(), vec![]),
                 ]),
                 restores: BTreeMap::new(),
+                owners: BTreeMap::from([(0, id(100))]),
                 result: Some(CommitResult {
                     seq: 30,
                     results: vec![applied.clone(), applied.clone(), applied],
@@ -1423,6 +1427,7 @@ fn engine_state() -> EngineState {
                     parent: "root".into(),
                     name: "big".into(),
                     folders: ["sub".into()].into(),
+                    landed: Some(("root".into(), "big (2)".into())),
                 },
             )]),
             aliases: BTreeMap::from([("twin".into(), "kept".into())]),
@@ -1862,6 +1867,7 @@ fn a_policy_halt_outlasts_a_restart_and_resends_nothing() {
                 },
                 deletes: BTreeMap::new(),
                 restores: BTreeMap::new(),
+                owners: BTreeMap::new(),
                 result: None,
             }),
             halted: Some(halt),

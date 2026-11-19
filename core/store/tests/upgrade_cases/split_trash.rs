@@ -14,6 +14,7 @@ upgrade_case!(split_trash, |store| {
                 parent: report.shape.parent_id.clone(),
                 name: "report.txt".into(),
                 folders: ["0190a6b2-0000-7000-8000-000000000004".into()].into(),
+                landed: None,
             };
             after.commits.split_restores.insert("0190a6b2-0000-7000-8000-000000000002".into(), split);
             tx.update_engine_state(&before, &after)?;

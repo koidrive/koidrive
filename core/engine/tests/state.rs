@@ -338,6 +338,7 @@ fn commits_state() -> CommitsState {
             },
             deletes: [("d".into(), vec!["d".into(), "e".into()])].into(),
             restores: [(2, vec!["r".into(), "s".into()])].into(),
+            owners: [(2, "r1".into())].into(),
             result: Some(CommitResult {
                 results: vec![OpResult::default(); 3],
                 ..Default::default()
@@ -355,6 +356,7 @@ fn commits_state() -> CommitsState {
                 parent: "f".into(),
                 name: "d".into(),
                 folders: ["e".into()].into(),
+                landed: Some(("f".into(), "d (2)".into())),
             },
         )]
         .into(),

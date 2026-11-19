@@ -927,8 +927,7 @@ export class CommitApplier {
     }
   }
 
-  private mergeHeld(node: NodeRow, held: readonly string[]): void {
-    const group = node.trash_group!;
+  private mergeHeld(group: string, held: readonly string[]): void {
     let added = false;
     for (const intentId of held) {
       added = this.sql.exec("INSERT INTO trash_held (trash_group, intent_id) VALUES (?, ?) ON CONFLICT DO NOTHING RETURNING intent_id", group, intentId).toArray().length > 0 || added;
@@ -950,17 +949,17 @@ export class CommitApplier {
     const trashed = node.status === NodeStatusValue.TRASHED;
     if (this.client) {
       if (trashed && this.holdsIntents(node, ["status"])) {
-        this.mergeHeld(node, held);
+        this.mergeHeld(node.trash_group!, held);
         return unchanged(node);
       }
       if (trashed && this.intents.over !== undefined && node.status_before === this.intents.over) {
-        this.mergeHeld(node, held);
+        this.mergeHeld(node.trash_group!, held);
         return result(OpResult_Code.APPLIED);
       }
       if (!this.overHeld(node, "status")) return superseded();
     }
     if (trashed) {
-      if (this.client) this.mergeHeld(node, held);
+      if (this.client) this.mergeHeld(node.trash_group!, held);
       return result(OpResult_Code.APPLIED);
     }
     const required = op.requires && this.node(op.requires.nodeId);
@@ -980,8 +979,8 @@ export class CommitApplier {
       const before = this.trashings;
       const kept = this.trashByView(node, group, view);
       if (this.trashings === before) return superseded();
-      for (const intentId of held) this.sql.exec("INSERT INTO trash_held (trash_group, intent_id) VALUES (?, ?) ON CONFLICT DO NOTHING", group, intentId);
-      this.trashCopies([...view.held, ...view.seenContent], group);
+      this.mergeHeld(group, held);
+      this.trashCopies(view.seenContent, group);
       if (kept) return superseded();
     } else if (this.trashSubtree(node, group)) return superseded();
     if (required) {

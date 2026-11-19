@@ -1,4 +1,4 @@
-258
+316
 # A folder of large files deleted over several commits and restored over several commits. No existing test deletes or restores anything bigger than one commit's change records, so none could see files left in the trash.
 # Sim: one table runs that deletion and restore in one go, stopped and reloaded from the store after every commit, cut before a saved commit left, cut before a response arrived, with the server failing commits, and with the folder above renamed between commits. The harness builds files of 4,096 chunks against the real space server, which the existing engine_sync devices do not.
 # Sim: two requests for the same folder, or for a big folder and a big folder inside it, end only once every file is back, and a server before RFC 0031 that gives each delete its own group restores without an error.
@@ -7,3 +7,4 @@
 # Sim: a folder deleted before the folder around it, one or two levels down and with its own deletion finished or not, comes back whole when restored and stays trashed when the folder around it is restored. A big folder restored where its name is taken reports the name it got. The existing restore tests never delete a folder inside another one first or restore into a taken name.
 # Engine: a piece of a split restore answered SUPERSEDED leaves the restore going, which no single-op restore test can reach.
 # Sim: a subfolder another device moves out of a folder being restored, with or without a new name and one level deeper, still brings back all its files; no other test moves a revived folder while its restore goes on. Engine: after a server loss only the split restore a piece in flight belongs to is asked about.
+# Engine: a rejected piece ends only the split restore that sent it, not a later request for the same file, and a read-only device ends a split restore once its piece is answered. Sim: a big folder renamed elsewhere after it came back reports Restored. Server: a delete that joins a trash group sends the grown held list for the members already in it. No other test sends a piece and a request for the same node together, answers a piece on a read-only device, or joins a group with held intents.

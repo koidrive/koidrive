@@ -34,8 +34,8 @@ function sent(base: Op, sentIntent: Intent, fields?: { place?: Intent; content?:
   return create(OpSchema, { ...base, intent: sentIntent, fields: fields && create(FieldIntentsSchema, fields) });
 }
 
-function del(nodeId: string, view: { unseen?: Uint8Array[]; held?: Uint8Array[] } = {}): Op {
-  return create(OpSchema, { op: { case: "delete", value: { nodeId, unseen: view.unseen ?? [], held: view.held ?? [] } } });
+function del(nodeId: string, view: { unseen?: Uint8Array[]; held?: Uint8Array[]; trashGroup?: string } = {}): Op {
+  return create(OpSchema, { op: { case: "delete", value: { nodeId, unseen: view.unseen ?? [], held: view.held ?? [], trashGroup: view.trashGroup ?? "" } } });
 }
 
 function update(nodeId: string, value: Content, ancestry: { madeOver?: string[]; sourceVersionId?: string; resend?: boolean } = {}): Op {
@@ -595,6 +595,20 @@ describe("RFC 0029 section 3.3: deletes with a view", () => {
       const answer = await c.commit([sent(update(nodeId, values[1]!), replay)]);
       expect(answer.results[0]!.code).toBe(OpResult_Code.SUPERSEDED);
     }
+  });
+
+  it("sends the grown held list for each node already in a trash group that a later delete joins", async () => {
+    const { a, c, values, root } = await setup();
+    const dir = uuidv7();
+    await a.commit([op.mkdir(dir, root, "Big")]);
+    const inner = await file(a, dir, "a.txt", values[0]!);
+    const replay = intent(c.session.deviceId, { replay: true });
+    const first = uuidv7();
+    await a.commit([sent(del(inner), intent(a.session.deviceId))], { commitId: first });
+    const joined = await a.commit([sent(del(dir, { held: [replay.id], trashGroup: first + ":0" }), intent(a.session.deviceId))]);
+    expect(joined.results[0]!.code).toBe(OpResult_Code.APPLIED);
+    const states = new Map(joined.changes.flatMap(({ change }) => (change.case === "node" ? [[change.value.nodeId, change.value.trashHeld.map(toHex)] as const] : [])));
+    expect(states).toEqual(new Map([dir, inner].map((id) => [id, [toHex(replay.id)]])));
   });
 
   it("keeps a tombstone for a purged node, supersedes a replay's, carried op's or create's place and lands unknown content as a copy", async () => {

@@ -88,6 +88,7 @@ fn a_store_that_recorded_pending_names_opens_owing_each_rename_r_and_s_still_hol
     state.trees.unsent_marks.insert("f".into(), "C".into());
     state.commits.in_flight = Some(InFlight {
         restores: Default::default(),
+        owners: Default::default(),
         commit: Commit::default(),
         deletes: BTreeMap::new(),
         result: None,
@@ -223,6 +224,7 @@ fn a_store_that_recorded_a_pending_name_its_commit_in_flight_sends_opens_owing_t
     let mut state = EngineState::default();
     state.commits.in_flight = Some(InFlight {
         restores: Default::default(),
+        owners: Default::default(),
         commit: Commit {
             commit_id: "c1".into(),
             device_seq: 1,

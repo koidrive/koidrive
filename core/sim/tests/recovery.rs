@@ -3242,6 +3242,7 @@ fn a_keep_does_not_count_for_bringing_back_a_later_deletion() {
         },
         deletes: Default::default(),
         restores: Default::default(),
+        owners: Default::default(),
         result: None,
     });
     engine.commits = Commits::from_state(state).unwrap();
@@ -3376,6 +3377,7 @@ fn an_unseen_rename_of_its_folder_does_not_bring_back_a_deleted_file() {
         },
         deletes: Default::default(),
         restores: Default::default(),
+        owners: Default::default(),
         result: None,
     });
     engine.commits = Commits::from_state(state).unwrap();

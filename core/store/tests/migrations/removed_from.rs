@@ -19,6 +19,9 @@ fn a_store_from_before_removals_were_recorded_opens_with_none_recorded() {
     before.trees.removed_from.clear();
     before.commits.trash_groups.clear();
     before.commits.split_restores.clear();
+    if let Some(flight) = &mut before.commits.in_flight {
+        flight.owners.clear();
+    }
     assert!(!after.trees.removed_from.is_empty());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store
