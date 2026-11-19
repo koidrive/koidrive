@@ -121,7 +121,8 @@ class PropertyBattery(unittest.TestCase):
             none = subprocess.check_output(["bash", "-eu", "-c", block], cwd=directory, text=True)
         self.assertEqual(listed.splitlines(), [
             "- devices converge: 0 generated cases on shards 2, 5",
-            "- devices lose_no_write: failed without saving a case on shards 5, where another test of its binary saved one"])
+            "- devices lose_no_write: failed without saving a case on shards 5, on a case that may be one another test of "
+            "its binary saved there"])
         self.assertEqual(none, "No property failed without saving a case.\n")
 
     def test_execution_and_repro_pass_isolated_budgets_and_same_selection(self):
@@ -953,7 +954,7 @@ class Triage(unittest.TestCase):
         self.assertEqual(cases[1]["battery_message"], "a committed case fails.")
         self.assertEqual(others, [{"binary": "devices", "test": "devices_lose_no_write", "shards": [4, 10],
                                    "cases": [cases[0]["path"], cases[2]["path"]],
-                                   "message": "a committed case fails.", "replayed": False}])
+                                   "message": "a committed case fails.", "property": False, "zero": False}])
 
     def test_collect_reads_a_single_artifact_extracted_without_its_directory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1036,7 +1037,7 @@ class Triage(unittest.TestCase):
                 replays = {"head": {"results": [side("fail", "lost"), head]},
                            "base": {"results": [side("fail", "lost"), side("fail", "lost")]}}
                 rows = triage.combine(spec, replays)
-                others = triage.starved(spec, rows)
+                others = triage.caseless(spec, rows)
                 self.assertEqual(sorted(row["test"] for row in rows), kept)
                 if head is flaky:
                     self.assertEqual(next(row["verdict"] for row in rows if row["shared"]), "unstable")
@@ -1056,11 +1057,14 @@ class Triage(unittest.TestCase):
             (shard / "logs").mkdir(parents=True)
             (shard / "regressions").mkdir()
             (shard / "logs/devices-09cbc274e49e4fd7.log").write_text(log)
+            (root / "properties").mkdir()
+            (root / "properties/devices-09cbc274e49e4fd7.txt").write_text(f"{test}\ndevices_lose_no_write\n")
+            listed = subprocess.run([sys.executable, str(ROOT / "scripts/battery_logs.py"), str(shard / "logs"),
+                                     str(root / "properties")], capture_output=True, text=True, check=True)
             (shard / "result-3.json").write_text(json.dumps({"shard": 3, "failing": [
                 {"target": "koidrive-sim --test devices", "log": "devices-09cbc274e49e4fd7",
-                 "reason": "exit code 101", "repro": "cargo test -p koidrive-sim --test devices"}]}))
-            listed = subprocess.run([sys.executable, str(ROOT / "scripts/battery_logs.py"), str(shard / "logs")],
-                                    capture_output=True, text=True, check=True)
+                 "reason": "exit code 101", "repro": "cargo test -p koidrive-sim --test devices"}],
+                "unsaved": json.loads(listed.stdout)}))
             cases, others = triage.collect(root)
             spec = {"run": "7", "head": "h" * 40, "base": "b" * 40, "checked_profile": "", "cases": cases,
                     "others": others, "unattributed": triage.unattributed(root)}
@@ -1085,31 +1089,44 @@ class Triage(unittest.TestCase):
                 "cases": [{"case": "a" * 64, "path": path, "binary": "devices", "test": test, "shards": [2],
                            "shared": shared} for test, shared in (("converge", False), ("lose_no_write", True))],
                 "others": [{"binary": "devices", "test": "lose_no_write", "shards": [2], "cases": [path],
-                            "message": "write 1 is lost.", "replayed": False}]}
+                            "message": "write 1 is lost.", "property": True, "zero": False}]}
         failing = {"runs": [{"result": "fail", "message": "lost"}] * 2, "target": "sim --test devices"}
-        replays = {"head": {"results": [failing, failing]}, "base": {"results": [failing, failing]}}
-        for replayed in (True, False):
-            spec["others"][0]["replayed"] = replayed
-            with self.subTest(replayed=replayed):
+        passing = {"runs": [{"result": "pass", "message": None}] * 2, "target": "sim --test devices"}
+        for zero, property, shared, flagged in ((True, True, failing, True), (False, True, failing, False),
+                                                (False, True, passing, True), (False, False, passing, False)):
+            spec["others"][0].update(zero=zero, property=property)
+            with self.subTest(zero=zero, property=property, shared=shared["runs"][0]["result"]):
+                replays = {"head": {"results": [failing, shared]}, "base": {"results": [failing, failing]}}
                 rows = triage.combine(spec, replays)
-                zero = triage.starved(spec, rows)
+                starved = triage.starved(spec, rows)
                 triage.classify(rows, [])
-                text = triage.markdown(spec, rows, zero, "https://example.com/runs/7")
-                self.assertEqual([other["test"] for other in zero], ["lose_no_write"] if replayed else [])
+                text = triage.markdown(spec, rows, triage.caseless(spec, rows), "https://example.com/runs/7",
+                                       zero=starved)
+                self.assertEqual([other["test"] for other in starved], ["lose_no_write"] if flagged else [])
                 self.assertEqual("§lose_no_write§ (generated 0 cases on some shards)".replace("§", chr(96)) in text,
-                                 replayed)
+                                 flagged and shared is failing)
 
-    def test_a_test_that_failed_without_saving_counts_as_generating_nothing_unless_another_test_saved(self):
-        alone = FAILING_LOG.format(case="a" * 64).replace(
-            "proptest regression saved in /home/runner/work/koidrive/koidrive/core/sim/tests/devices.cases/"
-            f"cc-{'a' * 64}.txt: cc {'a' * 64}\n", "")
-        replay = REPLAY_LOG.format(test="devices_lose_no_write", case="c" * 64)
-        self.assertEqual([(test["test"], test["zero"]) for test in battery_logs.unsaved(FAILING_LOG.format(case="a" * 64))],
-                         [("devices_lose_no_write", False)])
-        self.assertEqual([(test["test"], test["zero"]) for test in battery_logs.unsaved(alone)],
-                         [("devices_converge", True), ("devices_lose_no_write", True)])
-        self.assertEqual([(test["test"], test["zero"]) for test in battery_logs.unsaved(replay)],
+    def test_only_a_property_that_failed_on_a_loaded_case_counts_as_generating_nothing(self):
+        properties = {"a", "b", "devices_lose_no_write", "rewinds_converge_from_seed_122"}
+        def unsaved(log):
+            return [(test["test"], test["zero"]) for test in battery_logs.unsaved(log, properties)]
+        committed = "---- a stdout ----\nproptest regression: cc cc2e\nthread 'a' panicked at t.rs:3:1:\nTest failed: 0 is small.\n"
+        saving = ("---- b stdout ----\nproptest regression: cc cc2e\nproptest regression saved in /w/t.cases/cc-9460.txt: "
+                  "cc 9460\nthread 'b' panicked at t.rs:3:1:\nTest failed: 92156 is small.\n")
+        shared = committed.replace("cc cc2e\n", "cc cc2e\nproptest regression: cc 9460\n")
+        fixed_seed = ("---- rewinds_converge_from_seed_122 stdout ----\nthread 'x' panicked at core/sim/tests/devices.rs:495:5:\n"
+                      "devices::rewinds_converge_from_seed_122 case case-17 fails: write 1 is lost\n")
+        recorded = ("---- rewinds_converge_from_seed_122 stdout ----\nthread 'x' panicked at core/sim/tests/devices.rs:495:5:\n"
+                    "recorded but passed: devices::rewinds_converge_from_seed_122\tcase-17\tWriteKept\twrite 1 is lost\n")
+        plain = "---- prints_help stdout ----\nproptest regression: cc cc2e\nthread 'x' panicked at t.rs:3:1:\nboom\n"
+        self.assertEqual(unsaved(committed + saving), [("a", True)])
+        self.assertEqual(unsaved(shared + saving), [("a", False)])
+        self.assertEqual(unsaved(REPLAY_LOG.format(test="devices_lose_no_write", case="c" * 64)),
                          [("devices_lose_no_write", True)])
+        self.assertEqual(unsaved(fixed_seed), [])
+        self.assertEqual(unsaved(recorded), [])
+        self.assertEqual(unsaved(plain), [])
+        self.assertEqual(unsaved(FAILING_LOG.format(case="a" * 64)), [])
 
     def test_failure_message_falls_back_to_the_panic(self):
         self.assertEqual(triage.failure_message("thread 'x' panicked at src/lib.rs:3:5:\nboom\nnote: run with"), "boom")

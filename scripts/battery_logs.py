@@ -12,6 +12,8 @@ SAVED = re.compile(r"^proptest regression saved in (\S+): cc ([0-9a-f]+)$", re.M
 CASE_FAILS = re.compile(r"^\S+::\S+ case \S+ fails: ")
 NEVER_RAN = re.compile(r"^\S+::\S+ never ran case \S+$", re.M)
 HARNESS_REPORT = re.compile(r"^(\S+::\S+ case \S+ fails: |not recorded: |recorded but passed: )")
+LOADED = re.compile(r"^proptest regression: cc ([0-9a-f]+)$", re.M)
+COMMITTED = re.compile(r"\bcc-[0-9a-f]+\b")
 
 
 def sections(log):
@@ -47,21 +49,32 @@ def failure_message(output):
                      + [line for line in reports if not line.startswith("recorded but passed: ")])
 
 
-def replayed(body):
-    return any(HARNESS_REPORT.match(line) or NEVER_RAN.match(line) for line in body.splitlines())
-
-
-def unsaved(log):
-    tests = [(test, body, bool(SAVED.search(body))) for test, body in sections(log)]
-    others_saved = any(saved for _, _, saved in tests)
-    return [{"test": test, "message": failure_message(body), "zero": replayed(body) or not others_saved}
-            for test, body, saved in tests if not saved]
+def unsaved(log, properties):
+    saved = {match[2] for match in SAVED.finditer(log)}
+    found = []
+    for test, body in sections(log):
+        if SAVED.search(body) or test.rsplit("::", 1)[-1] not in properties:
+            continue
+        reports = [line for line in body.splitlines() if HARNESS_REPORT.match(line) or NEVER_RAN.match(line)]
+        loaded = set(LOADED.findall(body))
+        if reports:
+            if not any(COMMITTED.search(line) for line in reports):
+                continue
+            zero = True
+        elif loaded:
+            zero = not loaded & saved
+        else:
+            continue
+        found.append({"test": test, "message": failure_message(body), "zero": zero})
+    return found
 
 
 def main():
+    logs, properties = Path(sys.argv[1]), Path(sys.argv[2])
     print(json.dumps([{"binary": log.stem.rsplit("-", 1)[0], **test}
-                      for log in sorted(Path(sys.argv[1]).glob("*.log"))
-                      for test in unsaved(log.read_text(errors="replace"))]))
+                      for log in sorted(logs.glob("*.log"))
+                      for test in unsaved(log.read_text(errors="replace"),
+                                          set((properties / f"{log.stem}.txt").read_text().split()))]))
 
 
 if __name__ == "__main__":

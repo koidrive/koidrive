@@ -11,7 +11,7 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-from battery_logs import NEVER_RAN, SAVED, SECTION, failure_message, replayed, sections
+from battery_logs import NEVER_RAN, SAVED, SECTION, failure_message, sections
 
 CASE = re.compile(r"^cc-([0-9a-f]+)\.txt$")
 LOCATION = re.compile(r"[\w./-]*\.rs:\d+(?::\d+)?")
@@ -135,6 +135,9 @@ def collect(failures):
             case["shards"].append(shard)
 
     for shard, shard_dir in shards(failures):
+        result = shard_dir / f"result-{shard}.json"
+        listed = {(entry["binary"], entry["test"]): entry["zero"]
+                  for entry in (json.loads(result.read_text()).get("unsaved") or [] if result.is_file() else [])}
         regressions = shard_dir / "regressions"
         files = {path.relative_to(regressions).as_posix(): path
                  for path in regressions.rglob("cc-*.txt") if path.parent.suffix == ".cases"}
@@ -147,25 +150,27 @@ def collect(failures):
                 saved = [(match, path) for match in SAVED.finditer(body)
                          for path in files if match[1].endswith("/" + path)]
                 if not saved:
-                    unsaved.append((test, failure_message(body), replayed(body)))
+                    unsaved.append((test, failure_message(body)))
                 for match, path in saved:
                     saved_here.append(path)
                     add(path, test, binary, shard, failure_message(body[match.end():]), False)
             mapped.update(saved_here)
-            for test, message, replay in unsaved:
+            for test, message in unsaved:
                 other = others.setdefault((binary, test), {"shards": set(), "cases": set(), "messages": {},
-                                                           "replayed": False})
+                                                           "property": False, "zero": False})
                 other["shards"].add(shard)
                 other["cases"].update(saved_here)
                 other["messages"].setdefault(message, shard)
-                other["replayed"] = other["replayed"] or replay
+                other["property"] = other["property"] or (binary, test) in listed
+                other["zero"] = other["zero"] or listed.get((binary, test), False)
                 for path in saved_here:
                     add(path, test, binary, shard, message, True)
         for path in sorted(set(files) - mapped):
             add(path, None, None, shard, None, False)
     return (sorted(cases.values(), key=lambda case: (case["path"], case["test"] or "")),
             [{"binary": binary, "test": test, "shards": sorted(other["shards"]), "cases": sorted(other["cases"]),
-              "message": min(other["messages"].items(), key=lambda item: item[1])[0], "replayed": other["replayed"]}
+              "message": min(other["messages"].items(), key=lambda item: item[1])[0], "property": other["property"],
+              "zero": other["zero"]}
              for (binary, test), other in sorted(others.items())])
 
 
@@ -432,10 +437,16 @@ def combine(spec, replays):
     return rows
 
 
-def starved(spec, rows):
+def caseless(spec, rows):
     reproduced = {(row["path"], row["test"]) for row in rows}
     return [other for other in spec["others"]
-            if other.get("replayed") or not any((path, other["test"]) in reproduced for path in other["cases"])]
+            if not any((path, other["test"]) in reproduced for path in other["cases"])]
+
+
+def starved(spec, rows):
+    unexplained = caseless(spec, rows)
+    return [other for other in spec["others"]
+            if other.get("zero") or (other.get("property") and other in unexplained)]
 
 
 def cell(text):
@@ -459,7 +470,7 @@ def messages_cell(runs):
     return " / ".join(f"run {number}: {cell(message) or '(none)'}" for number, message in enumerate(messages, 1))
 
 
-def markdown(spec, rows, zero, run_url, problem=None):
+def markdown(spec, rows, others, run_url, problem=None, zero=()):
     counts = ", ".join(f"{sum(row['verdict'] == name for row in rows)} {name}" for name in VERDICTS)
     same = [row for row in rows if row["verdict"] == SAME]
     unclassified = sum(row["class"] == UNCLASSIFIED for row in same)
@@ -469,9 +480,8 @@ def markdown(spec, rows, zero, run_url, problem=None):
     ]
     if zero:
         lines += [f"**{len(zero)} test{'s' if len(zero) != 1 else ''} generated 0 cases on some shards.** "
-                  "Each failed before it saved a case, on a "
-                  "committed case or on another check that runs before generation, and no case its shards saved "
-                  "fails it, so its stress budget checked nothing there:", ""]
+                  "Each failed on a case it loaded before it generated any, and no case its shards saved "
+                  "explains the failure, so its stress budget checked nothing there:", ""]
         lines += [f"- {other['binary']} `{other['test']}` on shards {', '.join(map(str, other['shards']))}: "
                   f"{cell(other.get('message')) or '(no message)'}" for other in zero]
         lines.append("")
@@ -512,6 +522,12 @@ masked, and for an entry that lists cases, only by those cases, which come befor
               f"{results_cell(row['base'])} | {messages_cell(row['head'])} | {messages_cell(row['base'])} | "
               f"{row['verdict']} | {row['class'] or ''} | {row['issue'] or ''} |"
               for row in rows]
+    others = [other for other in others if other not in zero]
+    if others:
+        lines += ["", "These tests failed without saving a new case, and every case their shards saved in the same "
+                  "binary passes them on every head run, so they are not in the table:", ""]
+        lines += [f"- {other['binary']} `{other['test']}` on shards {', '.join(map(str, other['shards']))}"
+                  for other in others]
     if spec.get("unattributed"):
         lines += ["", "These targets failed, but their logs name no failing test, so triage replayed nothing for "
                   "them (a crash, a signal or a timeout ends a test binary before it reports). Run their repro "
@@ -570,6 +586,7 @@ def main():
         spec = json.loads(arguments.cases.read_text())
         replays = {replayed["side"]: replayed for replayed in (json.loads(path.read_text()) for path in arguments.replays)}
         rows = combine(spec, replays)
+        others = caseless(spec, rows)
         zero = starved(spec, rows)
         try:
             entries, problem = known_failures(arguments.known_failures), None
@@ -578,9 +595,10 @@ def main():
         ambiguous = classify(rows, entries)
         arguments.out.mkdir(parents=True, exist_ok=True)
         (arguments.out / "triage.json").write_text(json.dumps(
-            {"run": spec["run"], "head": spec["head"], "base": spec["base"], "cases": rows, "starved": zero},
+            {"run": spec["run"], "head": spec["head"], "base": spec["base"], "cases": rows, "others": others,
+             "starved": zero},
             indent=2) + "\n")
-        (arguments.out / "triage.md").write_text(markdown(spec, rows, zero, arguments.run_url, problem))
+        (arguments.out / "triage.md").write_text(markdown(spec, rows, others, arguments.run_url, problem, zero))
         errors = []
         if zero:
             errors.append("these tests generated 0 cases on some shards: " + "; ".join(
