@@ -645,3 +645,88 @@ fn a_held_folder_of_one_file_shows_as_a_folder() {
     restarted(&site, &mut remote).rest(&mut remote);
     assert_eq!(shown(&site), [question], "a row an earlier build stored");
 }
+
+#[test]
+fn a_held_folder_shows_its_new_path_after_the_folder_above_it_is_renamed() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::create_dir_all(site.root.join("top/d")).unwrap();
+    for i in 0..15 {
+        fs::write(
+            site.root.join(format!("top/d/{i}.txt")),
+            format!("in d {i}"),
+        )
+        .unwrap();
+    }
+    for i in 0..5 {
+        fs::write(site.root.join(format!("{i}.txt")), format!("beside {i}")).unwrap();
+    }
+    a.scan_until(|a| !a.work.is_empty());
+    a.rest(&mut remote);
+    drop(a);
+    fs::remove_dir_all(site.root.join("top/d")).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    let paths = |question: &crate::question::Question| -> Vec<String> {
+        (question.items.iter())
+            .map(|item| item.path.unquoted().to_owned())
+            .collect()
+    };
+    let [first] = shown(&site).try_into().unwrap();
+    assert_eq!(paths(&first), ["top/d"]);
+
+    fs::rename(site.root.join("top"), site.root.join("moved")).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.rest(&mut remote);
+    let [again] = shown(&site).try_into().unwrap();
+    assert_eq!(paths(&again), ["moved/d"], "in the same session");
+
+    drop(a);
+    restarted(&site, &mut remote).rest(&mut remote);
+    let [after] = shown(&site).try_into().unwrap();
+    assert_eq!(paths(&after), ["moved/d"], "after a restart");
+}
+
+#[test]
+fn a_held_folder_shows_its_new_path_after_another_device_renames_the_folder_above_it() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    fs::create_dir_all(site.root.join("top/d")).unwrap();
+    for i in 0..15 {
+        fs::write(site.root.join(format!("top/d/{i}.txt")), "in d").unwrap();
+    }
+    for i in 0..5 {
+        fs::write(site.root.join(format!("{i}.txt")), "beside").unwrap();
+    }
+    a.scan_until(|a| !a.work.is_empty());
+    a.rest(&mut remote);
+    let (site_b, mut b) = linked(&mut remote, "b");
+    b.settle();
+    drop(a);
+    fs::remove_dir_all(site.root.join("top/d")).unwrap();
+    let mut a = restarted(&site, &mut remote);
+    a.rest(&mut remote);
+    let paths = |site: &Site| -> Vec<String> {
+        (shown(site).iter())
+            .flat_map(|question| question.items.iter())
+            .map(|item| item.path.unquoted().to_owned())
+            .collect()
+    };
+    assert_eq!(paths(&site), ["top/d"]);
+
+    fs::rename(site_b.root.join("top"), site_b.root.join("renamed")).unwrap();
+    b.scan_until(|b| !b.work.is_empty());
+    b.run(&mut remote);
+    a.pull(&remote);
+    a.rest(&mut remote);
+    let session = paths(&site);
+    assert_eq!(session, ["renamed/d"]);
+
+    drop(a);
+    restarted(&site, &mut remote).rest(&mut remote);
+    assert_eq!(
+        paths(&site),
+        session,
+        "a restart shows what the session showed"
+    );
+}

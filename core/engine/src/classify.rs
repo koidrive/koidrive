@@ -25,6 +25,10 @@ use release::Released;
 
 type Pair = (NodeId, NodeId);
 
+fn repositioned(before: &Shape, after: &Shape) -> bool {
+    before.parent != after.parent || before.name != after.name
+}
+
 /// The nodes whose rows the store must write: [`Changed::local`] for L, [`Changed::synced`] for S.
 #[derive(Debug, Default)]
 pub struct Changed {
@@ -550,6 +554,7 @@ pub struct Trees {
     relist: BTreeSet<NodeId>,
     released: Vec<NodeId>,
     cycles_may_end: bool,
+    moved: bool,
     parked_as: TrackedMap<NodeId, NodeId>,
     waiting: ByParent<Waiting>,
     /// The nodes whose content the commit in flight creates or updates, each with whether S's content
@@ -684,6 +689,7 @@ impl Trees {
             relist: BTreeSet::new(),
             released: Vec::new(),
             cycles_may_end: false,
+            moved: false,
             parked_as: TrackedMap::default(),
             waiting: ByParent::default(),
             watched: TrackedMap::default(),
@@ -909,6 +915,13 @@ impl Trees {
 
     pub(crate) fn dirty_others(&self) -> &BTreeSet<NodeId> {
         &self.others
+    }
+
+    /// Whether a node changed its parent or name since the last call, which clears it: in R, where trashing or
+    /// restoring a node counts too, in L, or in S for a node L does not hold. L gaining or losing a node S holds
+    /// elsewhere counts, since a path falls back from L to S.
+    pub fn take_moved(&mut self) -> bool {
+        std::mem::take(&mut self.moved)
     }
 
     /// The nodes whose L entry or S entry changed since the last call, which empties both sets.
@@ -1350,6 +1363,9 @@ impl Trees {
             && (self.r.get(&id)).is_none_or(|old| {
                 old.shape.parent != node.shape.parent || old.trashed != node.trashed
             });
+        self.moved |= (self.r.get(&id)).is_some_and(|old| {
+            repositioned(&old.shape, &node.shape) || old.trashed != node.trashed
+        });
         let old = self.r.insert(id.clone(), node);
         self.index_remote(&id, old.as_ref());
         self.count_held_trash(&id, true);
@@ -2012,6 +2028,10 @@ impl Trees {
         .or_insert_with(|| Holders::One(id.clone()));
         self.mark(&id);
         self.count_held_trash(&id, false);
+        self.moved |= match self.l.get(&id) {
+            Some(old) => repositioned(&old.shape, &node.shape) || old.parked != node.parked,
+            None => (self.s.get(&id)).is_some_and(|synced| repositioned(synced, &node.shape)),
+        };
         self.l.insert(id.clone(), node);
         self.copy_back(&id);
         self.count_held_trash(&id, true);
@@ -2210,6 +2230,7 @@ impl Trees {
         self.kept_folders.remove(id);
         self.kept_entries.remove(id);
         if let Some(old) = self.l.remove(id) {
+            self.moved |= (self.s.get(id)).is_some_and(|synced| repositioned(synced, &old.shape));
             if self.unobserved.contains(id) {
                 self.copy_gone(id);
             }
@@ -6169,6 +6190,8 @@ impl Trees {
         }
         let old = match shape {
             Some(shape) => {
+                self.moved |= self.l.get(id).is_none()
+                    && (self.s.get(id)).is_none_or(|old| repositioned(old, &shape));
                 self.s_names.insert(id, &shape);
                 self.s.insert(id.to_owned(), shape)
             }
@@ -6402,6 +6425,7 @@ impl Trees {
             relist: _,
             released: _,
             cycles_may_end: _,
+            moved: _,
             parked_as,
             waiting,
             watched,

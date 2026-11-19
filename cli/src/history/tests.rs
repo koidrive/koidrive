@@ -614,6 +614,39 @@ async fn each_refusal_of_history_names_its_reason() {
 }
 
 #[tokio::test]
+async fn a_restored_folder_counts_the_files_trashed_with_it_also_inside_a_trashed_folder() {
+    let rpc = format!("/v1/spaces/{SPACE}/rpc");
+    let tree = || {
+        proto(
+            "POST",
+            &rpc,
+            answer(rpc_response::Result::Tree(TreePage::default())),
+        )
+    };
+    let trash = || {
+        let nodes = vec![
+            node("photos", SPACE, "photos", NodeKind::Dir, 0, "g1"),
+            node("c", "photos", "c.jpg", NodeKind::File, 1, "g1"),
+            node("2024", "photos", "2024", NodeKind::Dir, 0, "g1"),
+            node("a", "2024", "a.jpg", NodeKind::File, 1, "g1"),
+            node("b", "2024", "b.jpg", NodeKind::File, 1, "g1"),
+            node("d", "2024", "d.jpg", NodeKind::File, 1, "g0"),
+        ];
+        let page = TrashPage {
+            nodes,
+            ..TrashPage::default()
+        };
+        proto("POST", &rpc, answer(rpc_response::Result::Trash(page)))
+    };
+    for (path, files) in [("photos", 3), ("photos/2024", 2)] {
+        let fake = Fake::start(vec![token(), tree(), trash()]).await;
+        let (_dir, paths, root) = linked_on(fake.base.as_str());
+        let (_, _, kind, counted) = checked(&paths, &root.join(path), None, None).await.unwrap();
+        assert_eq!((kind, counted), (ItemKind::Folder, Some(files)), "{path}");
+    }
+}
+
+#[tokio::test]
 async fn a_save_between_reading_the_tree_and_the_versions_reads_both_again() {
     let rpc = format!("/v1/spaces/{SPACE}/rpc");
     let saved = |id: &str, seq: u64| VersionInfo {
