@@ -1098,9 +1098,12 @@ impl Engine {
                 (Observed::Reidentified { path, id }, _)
                     if let Some(node) = local_at(&self.trees, path)
                         && self.trees.ignored_local().contains(&node)
-                        && (self.trees.local_with_identity(&file_identity(*id)))
+                        && let Some(local) = self.trees.local().get(&node)
+                        && ((self.trees.local_with_identity(&file_identity(*id)))
                             .is_some_and(|other| *other != node)
-                        && let Some(local) = self.trees.local().get(&node) =>
+                            || (self.trees)
+                                .displaced_with_identity(&file_identity(*id), local.shape.kind)
+                                .is_some()) =>
                 {
                     lost = Observed::Removed {
                         path: path.clone(),

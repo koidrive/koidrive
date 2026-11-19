@@ -3577,8 +3577,8 @@ pub enum Looked {
     /// A search that looked everywhere ([`Rules::coverage`]) did not find it, and the snapshot does not hold it.
     Gone,
     /// A search that looked everywhere did not find it, the snapshot does not hold it, and another entry of its kind
-    /// that no wanted entry has the identity of took the place where an earlier call found it, as a save by rename does,
-    /// so it is the same entry with this identity. A scan counts a file that takes another's path the same way.
+    /// took the place where an earlier call found it, as a save by rename does. It is the same entry with this identity
+    /// unless the identity belongs to another node. A scan counts a file that takes another's path the same way.
     Replaced(FileId),
 }
 

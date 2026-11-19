@@ -1728,6 +1728,38 @@ fn a_left_out_copy_moved_over_another_ones_found_place_while_stopped_keeps_both_
 }
 
 #[test]
+fn a_displaced_copy_moved_over_another_ones_found_place_while_stopped_keeps_both_nodes() {
+    let mut remote = Remote::new();
+    let (site, mut b) = linked(&mut remote, "b");
+    fs::write(site.root.join("a.docx"), "a").unwrap();
+    fs::write(site.root.join("x.docx"), "x").unwrap();
+    b.settle();
+    b.rest(&mut remote);
+    drop(b);
+    let mut b = started(&site, &mut remote, &dist_left_out());
+    fs::create_dir(site.root.join("dist")).unwrap();
+    fs::rename(site.root.join("a.docx"), site.root.join("dist/a.docx")).unwrap();
+    fs::rename(site.root.join("x.docx"), site.root.join("dist/x.docx")).unwrap();
+    for _ in 0..3 {
+        b.settle();
+        b.rest(&mut remote);
+    }
+    let ida = remote.tree()["a.docx"].clone();
+    let idx = remote.tree()["x.docx"].clone();
+    fs::write(site.root.join("x.docx"), "new x").unwrap();
+    for _ in 0..3 {
+        b.settle();
+        b.rest(&mut remote);
+    }
+    drop(b);
+    fs::rename(site.root.join("dist/x.docx"), site.root.join("dist/a.docx")).unwrap();
+    settled_after_a_start(&site, &mut remote, &dist_left_out());
+    settled_after_a_start(&site, &mut remote, &SyncRules::default());
+    assert_eq!(server_bytes(&remote, &ida), b"a");
+    assert_eq!(server_bytes(&remote, &idx), b"x");
+}
+
+#[test]
 fn a_left_out_copy_replaced_by_a_hard_link_of_a_synced_file_while_stopped_downloads_again() {
     let mut remote = Remote::new();
     let (site, mut b) = linked(&mut remote, "b");
