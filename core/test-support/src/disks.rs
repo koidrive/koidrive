@@ -535,39 +535,75 @@ fn whole_device(attached: &str) -> Result<String, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn lists(info: &plist::Value, image: &Path, device: &str) -> Result<bool, String> {
-    let images = info
-        .as_dictionary()
-        .and_then(|info| info.get("images"))
-        .and_then(plist::Value::as_array)
-        .ok_or("hdiutil info has no images array")?;
-    for attached in images {
-        let attached = attached.as_dictionary().ok_or("invalid hdiutil image")?;
-        let path = attached.get("image-path").and_then(plist::Value::as_string);
-        let on_device = attached
-            .get("system-entities")
-            .and_then(plist::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(plist::Value::as_dictionary)
-            .any(|entity| {
-                entity.get("dev-entry").and_then(plist::Value::as_string) == Some(device)
-            });
-        if on_device && path.map(Path::new) == Some(image) {
-            return Ok(true);
-        }
+fn image_on(device: &str) -> Result<Option<PathBuf>, String> {
+    use std::ffi::{CString, c_char, c_void};
+    use std::os::unix::ffi::OsStrExt;
+
+    #[link(name = "IOKit", kind = "framework")]
+    unsafe extern "C" {
+        fn IOBSDNameMatching(main_port: u32, options: u32, name: *const c_char) -> *mut c_void;
+        fn IOServiceGetMatchingService(main_port: u32, matching: *mut c_void) -> u32;
+        fn IORegistryEntrySearchCFProperty(
+            entry: u32,
+            plane: *const c_char,
+            key: *const c_void,
+            allocator: *const c_void,
+            options: u32,
+        ) -> *const c_void;
+        fn IOObjectRelease(object: u32) -> i32;
     }
-    Ok(false)
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFStringCreateWithCString(
+            allocator: *const c_void,
+            text: *const c_char,
+            encoding: u32,
+        ) -> *const c_void;
+        fn CFGetTypeID(object: *const c_void) -> usize;
+        fn CFDataGetTypeID() -> usize;
+        fn CFDataGetLength(data: *const c_void) -> isize;
+        fn CFDataGetBytePtr(data: *const c_void) -> *const u8;
+        fn CFRelease(object: *const c_void);
+    }
+
+    let name = device.strip_prefix("/dev/").unwrap_or(device);
+    let name = CString::new(name).map_err(|error| error.to_string())?;
+    unsafe {
+        let media = IOServiceGetMatchingService(0, IOBSDNameMatching(0, 0, name.as_ptr()));
+        if media == 0 {
+            return Ok(None);
+        }
+        let key = CFStringCreateWithCString(std::ptr::null(), c"image-path".as_ptr(), 0x0800_0100);
+        let found = IORegistryEntrySearchCFProperty(
+            media,
+            c"IOService".as_ptr(),
+            key,
+            std::ptr::null(),
+            0b11,
+        );
+        CFRelease(key);
+        IOObjectRelease(media);
+        if found.is_null() {
+            return Ok(None);
+        }
+        let image = (CFGetTypeID(found) == CFDataGetTypeID()).then(|| {
+            let bytes = std::slice::from_raw_parts(
+                CFDataGetBytePtr(found),
+                CFDataGetLength(found) as usize,
+            );
+            PathBuf::from(OsStr::from_bytes(bytes.strip_suffix(&[0]).unwrap_or(bytes)))
+        });
+        CFRelease(found);
+        image
+            .map(Some)
+            .ok_or_else(|| format!("{device} has an image-path that is not data"))
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn still_attached(mounted: &Mounted) -> Result<bool, String> {
-    if !Path::new(&mounted.device).exists() {
-        return Ok(false);
-    }
-    let info = output("hdiutil", &["info".as_ref(), "-plist".as_ref()])?;
-    let info = plist::Value::from_reader_xml(info.as_bytes()).map_err(|error| error.to_string())?;
-    lists(&info, &mounted.image, &mounted.device)
+    Ok(image_on(&mounted.device)?.is_some_and(|image| image == mounted.image))
 }
 
 #[cfg(target_os = "macos")]
@@ -808,18 +844,24 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn a_device_belongs_to_the_image_hdiutil_lists_on_it() {
-        let info = plist::Value::from_reader_xml(br#"<?xml version="1.0"?><plist version="1.0"><dict><key>images</key><array><dict><key>image-path</key><string>/fixture/other.dmg</string><key>system-entities</key><array><dict><key>dev-entry</key><string>/dev/disk5</string></dict></array></dict></array></dict></plist>"#.as_slice()).unwrap();
-        let other = Path::new("/fixture/other.dmg");
-        assert_eq!(lists(&info, other, "/dev/disk5"), Ok(true));
-        assert_eq!(lists(&info, other, "/dev/disk7"), Ok(false));
+    fn a_device_belongs_to_the_image_the_kernel_backs_it_with() {
+        let mut disks = Disks::new().unwrap();
+        let image = disks.image("Backing");
+        let at = disks.base().join("at");
+        fs::create_dir(&at).unwrap();
+        disks.attach(&image, &at);
+        let device = disks.mounted[0].device.clone();
+        assert_eq!(image_on(&device), Ok(Some(image)));
         assert_eq!(
-            lists(&info, Path::new("/fixture/mine.dmg"), "/dev/disk5"),
-            Ok(false)
+            image_on(&format!("{device}s1")).map(|image| image.is_some()),
+            Ok(true)
         );
-        let unnamed = plist::Value::from_reader_xml(br#"<?xml version="1.0"?><plist version="1.0"><dict><key>images</key><array><dict><key>system-entities</key><array><dict><key>dev-entry</key><string>/dev/disk5</string></dict></array></dict></array></dict></plist>"#.as_slice()).unwrap();
-        assert_eq!(lists(&unnamed, other, "/dev/disk5"), Ok(false));
-        assert!(lists(&plist::Value::String("bad".into()), other, "/dev/disk5").is_err());
+        disks.detach(&at);
+        assert_ne!(
+            image_on(&device),
+            Ok(Some(disks.base().join("Backing.dmg")))
+        );
+        assert_eq!(image_on("/dev/disk999999"), Ok(None));
     }
 
     #[test]
