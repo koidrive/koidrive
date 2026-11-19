@@ -6,6 +6,7 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
+use koidrive_state_file::Published;
 use koidrive_store::Link;
 use serde::{Deserialize, Serialize};
 
@@ -33,7 +34,7 @@ pub(crate) fn sync_dir(dir: &File) -> io::Result<()> {
         Some(hook) => hook(dir),
         None => Ok(()),
     })?;
-    dir.sync_all()
+    koidrive_state_file::sync_published(dir)
 }
 
 pub(crate) fn sync_parent(path: &Path) -> io::Result<()> {
@@ -159,10 +160,12 @@ impl Leaving {
         serde_json::to_writer(&mut bytes, &intent).map_err(io::Error::other)?;
         let staged = koidrive_state_file::AtomicFile::prepare(&path)?;
         staged.as_file().write_all(&bytes)?;
-        let file = staged.finish_with_legacy(
-            koidrive_state_file::Publish::Replace,
-            &[OsStr::new("leaving.next")],
-        )?;
+        let file = staged
+            .finish_with_legacy(
+                koidrive_state_file::Publish::Replace,
+                &[OsStr::new("leaving.next")],
+            )?
+            .warn_unless_durable(&path);
         Ok(Self {
             intent,
             phase: Phase::Prepared,
@@ -180,15 +183,18 @@ impl Leaving {
             ));
         }
         self.file.write_all_at(&[phase.byte()], 0)?;
-        self.file.sync_all()?;
         self.phase = phase;
+        let durable = koidrive_state_file::sync_published(&self.file);
+        Published { value: (), durable }.warn_unless_durable(&self.path);
         Ok(())
     }
 
     pub fn finish(self) -> io::Result<()> {
         sync_parent(&self.path)?;
         fs::remove_file(&self.path)?;
-        sync_parent(&self.path)
+        let durable = sync_parent(&self.path);
+        Published { value: (), durable }.warn_unless_durable(&self.path);
+        Ok(())
     }
 }
 
@@ -237,6 +243,18 @@ mod tests {
             leaving.finish().unwrap();
             assert!(Leaving::load(dir.path()).unwrap().is_none());
         }
+    }
+
+    #[test]
+    fn a_phase_whose_sync_fails_after_its_write_is_the_phase_a_reload_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut leaving = Leaving::begin(dir.path(), Intent::default()).unwrap();
+        let failing = koidrive_state_file::fail_syncs_after_publication();
+        let phased = leaving.set_phase(Phase::Revoking);
+        drop(failing);
+        let reloaded = Leaving::load(dir.path()).unwrap().unwrap();
+        assert!(leaving.phase == reloaded.phase);
+        assert!(phased.is_ok());
     }
 
     #[test]

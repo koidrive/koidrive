@@ -56,7 +56,10 @@ impl Sandbox {
         let lifeline = made(LIFELINE_PREFIX);
         let owner = locked(&lifeline, "owner");
         let root = made("koi-");
-        koidrive_state_file::write(&lifeline.join("root"), root.as_os_str().as_bytes()).unwrap();
+        let published =
+            koidrive_state_file::write(&lifeline.join("root"), root.as_os_str().as_bytes())
+                .unwrap();
+        published.durable.unwrap();
         File::create(lifeline.join("alive")).unwrap();
         let held = locked(&lifeline, "held");
         OPEN.lock().unwrap().push(Open {

@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use koidrive_net::{Api, ApiError, CredentialStore, Credentials, Staged, Stored};
+use koidrive_state_file::Published;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -185,7 +186,10 @@ impl Credential {
     /// with [`CredentialError::Exists`] instead of replacing a credential. The file appears whole or not at all, and on
     /// macOS it is excluded from Time Machine before the credential is written to it.
     pub fn save_new(&self, path: &Path) -> Result<(), CredentialError> {
-        NewCredentialFile::create(path)?.write(self)
+        NewCredentialFile::create(path)?
+            .write(self)?
+            .warn_unless_durable(path);
+        Ok(())
     }
 
     pub fn keep_out_of_backups(path: &Path) -> Result<(), CredentialError> {
@@ -240,16 +244,20 @@ impl NewCredentialFile {
         })
     }
 
-    pub fn write(self, credential: &Credential) -> Result<(), CredentialError> {
+    pub fn write(self, credential: &Credential) -> Result<Published, CredentialError> {
         let bytes = serde_json::to_vec_pretty(credential).map_err(io::Error::from);
         self.finish(bytes, false)
     }
 
-    fn replace(self, bytes: Vec<u8>) -> Result<(), CredentialError> {
+    fn replace(self, bytes: Vec<u8>) -> Result<Published, CredentialError> {
         self.finish(Ok(bytes), true)
     }
 
-    fn finish(self, bytes: io::Result<Vec<u8>>, replace: bool) -> Result<(), CredentialError> {
+    fn finish(
+        self,
+        bytes: io::Result<Vec<u8>>,
+        replace: bool,
+    ) -> Result<Published, CredentialError> {
         let io = |source| CredentialError::Io {
             path: self.path.clone(),
             source,
@@ -261,17 +269,21 @@ impl NewCredentialFile {
             } else {
                 koidrive_state_file::Publish::Create
             };
-            self.file.finish(publish).map(drop)
+            self.file.finish(publish)
         })();
         match written {
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-                return Err(CredentialError::Exists {
+                Err(CredentialError::Exists {
                     path: self.path.clone(),
-                });
+                })
             }
-            other => other.map_err(io)?,
+            other => other
+                .map(|published| Published {
+                    value: (),
+                    durable: published.durable,
+                })
+                .map_err(io),
         }
-        Ok(())
     }
 }
 
@@ -396,7 +408,8 @@ impl CredentialFiles {
     fn write(path: &Path, bytes: Vec<u8>) -> io::Result<()> {
         NewCredentialFile::create(path)
             .and_then(|file| file.replace(bytes))
-            .map_err(io::Error::other)
+            .map_err(io::Error::other)?
+            .durable
     }
 
     fn remove_next(&self) -> io::Result<()> {
@@ -691,6 +704,10 @@ pub(crate) mod tests {
         files.stage(&staged("later")).unwrap();
         files.clear_staged().unwrap();
         assert_eq!(slots(&path), ("next".into(), None));
+
+        let _failing = koidrive_state_file::fail_syncs_after_publication();
+        assert!(files.stage(&staged("unsynced")).is_err());
+        assert!(files.promote(&staged("unsynced")).is_err());
     }
 
     #[test]

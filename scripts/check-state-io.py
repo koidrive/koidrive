@@ -32,10 +32,10 @@ LEXER_SPEC.loader.exec_module(LEXER)
 LIFECYCLE_EXCEPTION = {
     "name": "lifecycle checkpoint publication",
     "file": "core/driver/src/lifecycle.rs",
-    "line": 325,
-    "function_start": 314,
-    "function_end": 332,
-    "function_sha256": "71663a7a398a485e912b332633084934293b16a20ece23968efa1fc9d8e60182",
+    "line": 329,
+    "function_start": 318,
+    "function_end": 339,
+    "function_sha256": "d20e0e9b5bb3459a257713f4fd5d1b56f798c65ee8571311081248754427e66f",
     "follow_up": "GUN-928",
     "reason": "The restart regression faults the legacy staging name; migrate both after the protected driver changes land.",
 }

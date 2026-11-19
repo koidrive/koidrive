@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use koidrive_fs::PRIVATE_DIR;
-use koidrive_state_file::Flock;
+use koidrive_state_file::{Flock, Published};
 use rustix::fs::{Mode, OFlags};
 use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
@@ -111,16 +111,20 @@ pub(crate) fn check_release(root: &Path, owner: &Owner) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn release(root: &Path, owner: &Owner) -> io::Result<()> {
+pub(crate) fn release(root: &Path, owner: &Owner) -> io::Result<Published> {
+    let unchanged = Published {
+        value: (),
+        durable: Ok(()),
+    };
     let current = match self::owner(root) {
         Ok(current) => current,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return crate::leave::sync_parent(&record(root));
+            return crate::leave::sync_parent(&record(root)).map(|()| unchanged);
         }
         Err(error) => return Err(error),
     };
     if current.as_ref().is_some_and(|current| current != owner) {
-        return Ok(());
+        return Ok(unchanged);
     }
     let dir = private_dir(root)?;
     if current.is_some() {
@@ -129,7 +133,10 @@ pub(crate) fn release(root: &Path, owner: &Owner) -> io::Result<()> {
             Err(error) => return Err(error.into()),
         }
     }
-    crate::leave::sync_dir(&File::from(dir))
+    Ok(Published {
+        value: (),
+        durable: crate::leave::sync_dir(&File::from(dir)),
+    })
 }
 
 #[cfg(test)]
@@ -239,9 +246,9 @@ pub(crate) mod tests {
         assert_eq!(owner(dir.path()).unwrap(), None);
         set_owner(dir.path(), &device("d1")).unwrap();
         assert_eq!(owner(dir.path()).unwrap(), Some(device("d1")));
-        release(dir.path(), &device("d2")).unwrap();
+        release(dir.path(), &device("d2")).unwrap().durable.unwrap();
         assert_eq!(owner(dir.path()).unwrap(), Some(device("d1")));
-        release(dir.path(), &device("d1")).unwrap();
+        release(dir.path(), &device("d1")).unwrap().durable.unwrap();
         assert_eq!(owner(dir.path()).unwrap(), None);
     }
 

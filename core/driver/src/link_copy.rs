@@ -72,7 +72,9 @@ pub(crate) fn write(store: &Path, link: &Link) -> io::Result<()> {
         linked_at_ms,
         found_marker,
     };
-    koidrive_state_file::write(&path(store), &serde_json::to_vec(&copy)?)
+    let copied = path(store);
+    koidrive_state_file::write(&copied, &serde_json::to_vec(&copy)?)
+        .map(|written| written.warn_unless_durable(&copied))
 }
 
 pub(crate) fn read(store: &Path, space_id: &str) -> Option<Link> {

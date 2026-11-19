@@ -321,7 +321,8 @@ impl Disks {
             .with_extension(image.extension().unwrap());
         let stage = koidrive_state_file::AtomicFile::prepare(&copy).unwrap();
         std::io::copy(&mut fs::File::open(image).unwrap(), &mut stage.as_file()).unwrap();
-        stage.finish(koidrive_state_file::Publish::Replace).unwrap();
+        let published = stage.finish(koidrive_state_file::Publish::Replace).unwrap();
+        published.durable.unwrap();
         copy
     }
 

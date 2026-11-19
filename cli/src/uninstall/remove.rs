@@ -399,7 +399,9 @@ pub(super) fn strip_path_line(profile: &Path) -> io::Result<bool> {
     staged
         .as_file()
         .set_permissions(fs::metadata(&target)?.permissions())?;
-    staged.finish(koidrive_state_file::Publish::Replace)?;
+    staged
+        .finish(koidrive_state_file::Publish::Replace)?
+        .durable?;
     Ok(true)
 }
 
