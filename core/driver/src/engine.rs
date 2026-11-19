@@ -1478,6 +1478,9 @@ impl Engine {
                 }
         });
         if unchanged {
+            if let (Some(id), Some(content)) = (&node, &shape.content) {
+                self.trees.restamp_local(id, content.mtime_ns);
+            }
             return;
         }
         let shape = Shape {

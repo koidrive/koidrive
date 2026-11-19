@@ -1163,3 +1163,119 @@ fn a_restart_reads_nothing_after_any_change_the_observer_accepted() {
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
+
+fn saved_unchanged(restart: bool) -> (Remote, Site, Device, Site, Device) {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site_a.root.join("notes.txt"), b"synced");
+    let site = Site::new(&remote, "b");
+    let mut b = site.start();
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    let notes = site.root.join("notes.txt");
+    let before = disk_mtime(&notes);
+    fs::write(&notes, b"synced").unwrap();
+    assert_ne!(disk_mtime(&notes), before);
+    if restart {
+        drop(b);
+        b = site.start();
+        b.connect(&remote);
+        b.scan_until(|b| b.folder.scanned);
+    }
+    for _ in 0..2 {
+        b.settle();
+        b.run(&mut remote);
+    }
+    (remote, site_a, a, site, b)
+}
+
+fn disk_mtime(path: &Path) -> i64 {
+    use std::os::unix::fs::MetadataExt;
+    let meta = fs::metadata(path).unwrap();
+    meta.mtime() * 1_000_000_000 + meta.mtime_nsec()
+}
+
+fn idle_plans(b: &mut Device, remote: &mut Remote) -> usize {
+    let plans = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = plans.clone();
+    b.folder.disk.set_hook(Box::new(move |cut| {
+        if cut == crate::disk::Cut::AfterPlan {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }));
+    for _ in 0..10 {
+        b.scan(Duration::from_millis(100));
+        b.run(remote);
+    }
+    plans.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[test]
+fn a_file_saved_unchanged_takes_its_new_modification_time_and_sends_nothing() {
+    for restart in [false, true] {
+        let (_, _, _, site, b) = saved_unchanged(restart);
+
+        let trees = &b.folder.engine.trees;
+        let id = local_named(&b, "notes.txt");
+        let mtime = |shape: &koidrive_engine::tree::Shape| shape.content.as_ref().unwrap().mtime_ns;
+        let node = trees.local().get(&id).unwrap();
+        let local = mtime(&node.shape);
+        assert_eq!(local, disk_mtime(&site.root.join("notes.txt")), "{restart}");
+        assert!(node.content_from_server, "{restart}");
+        assert!(!trees.unsent_edits().contains(&id), "{restart}");
+        let remote = trees.remote().get(&id).map(|node| &node.shape);
+        assert_eq!(trees.synced().get(&id), remote, "{restart}");
+        assert_ne!(mtime(remote.unwrap()), local, "{restart}");
+        assert!(b.sent.is_empty(), "{restart}: {:?}", b.sent);
+        assert_eq!(b.state(), FolderState::UpToDate, "{restart}");
+    }
+}
+
+#[test]
+fn a_file_saved_unchanged_goes_to_the_trash_when_another_device_deletes_it() {
+    for restart in [false, true] {
+        let (mut remote, site_a, mut a, site, mut b) = saved_unchanged(restart);
+
+        fs::remove_file(site_a.root.join("notes.txt")).unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        a.run(&mut remote);
+        for _ in 0..3 {
+            b.pull(&remote);
+            b.run(&mut remote);
+            b.settle();
+        }
+
+        assert_eq!(idle_plans(&mut b, &mut remote), 0, "{restart}");
+        assert!(!site.root.join("notes.txt").exists(), "{restart}");
+        assert_eq!(trashed(&site.root).len(), 1, "{restart}");
+        assert!(b.sent.is_empty(), "{restart}: {:?}", b.sent);
+        assert_eq!(b.state(), FolderState::UpToDate, "{restart}");
+    }
+}
+
+#[test]
+fn an_edit_saved_again_unchanged_while_it_waits_to_upload_uploads_once() {
+    for again in [false, true] {
+        let (mut remote, _, _, site, mut b) = saved_unchanged(false);
+        let notes = site.root.join("notes.txt");
+
+        fs::write(&notes, b"edited").unwrap();
+        b.scan_until(|b| !b.work.is_empty());
+        if again {
+            fs::write(&notes, b"edited").unwrap();
+            b.settle();
+        }
+        b.run(&mut remote);
+        b.settle();
+        b.run(&mut remote);
+
+        let id = local_named(&b, "notes.txt");
+        assert_eq!(server_bytes(&remote, &id), b"edited", "{again}");
+        let edits = (b.sent.iter().flat_map(|commit| &commit.ops)).count();
+        assert_eq!(edits, 1, "{again}: {:?}", b.sent);
+        assert_eq!(idle_plans(&mut b, &mut remote), 0, "{again}");
+        assert_eq!(b.state(), FolderState::UpToDate, "{again}");
+    }
+}
