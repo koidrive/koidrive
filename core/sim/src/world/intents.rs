@@ -774,7 +774,7 @@ impl Intents {
                             && other.author != intent.author
                             && (!other.lost || other.carried.is_some()));
                 match dropped {
-                    true => field == Field::Content && deleted,
+                    true => matches!(field, Field::Content | Field::Place) && deleted,
                     false => replaced || looped || deleted,
                 }
             })

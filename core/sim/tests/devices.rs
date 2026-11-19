@@ -12909,3 +12909,34 @@ fn a_file_another_device_publishes_again_after_its_delete_stays_deleted() {
     ];
     converge(3, &phases).unwrap();
 }
+
+#[test]
+fn a_restore_answer_settles_a_move_its_user_made_before_the_delete() {
+    let a = |kind, name, text| {
+        Step::User(Action {
+            kind,
+            target: 0,
+            parent: 0,
+            name,
+            text,
+        })
+    };
+    let phases = [
+        vec![(2, a(1, 6, 3))],
+        vec![
+            (1, Step::Backup),
+            (1, Step::Rewind),
+            (0, a(3, 9, 2)),
+            (0, a(4, 1, 3)),
+            (0, a(1, 2, 0)),
+        ],
+    ];
+    let world = converge(3, &phases).unwrap();
+    let files: Vec<_> = (files_on(&world, 0).into_iter())
+        .map(|(name, content)| (name, content.as_ref().map(tag)))
+        .collect();
+    assert_eq!(
+        files,
+        [("b".to_owned(), Some(2)), ("ss".to_owned(), Some(1))]
+    );
+}
