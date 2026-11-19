@@ -1359,7 +1359,7 @@ impl Trees {
         let moved = !(self.r.live(&id)).is_some_and(|old| old.same_position(&node.shape));
         let home = (self.l.get(&id))
             .is_some_and(|local| !local.parked && local.shape.same_position(&node.shape));
-        if node.trashed || moved && (!made_here || home) {
+        if node.trashed || moved || home {
             self.names_left_out.remove(&id);
         }
         let sent_again = self.resends.contains(&id) || self.lost_creates.contains(&id);
@@ -7075,12 +7075,18 @@ impl Trees {
             (self.names_left_out.iter())
                 .find(|id| match self.r.live(id) {
                     None => true,
-                    Some(remote) => (self.l.get(id))
-                        .is_some_and(|local| !local.parked && local.shape.same_position(remote)),
+                    Some(remote) => {
+                        (self.l.get(id))
+                            .is_some_and(|local| !local.parked && local.shape.same_position(remote))
+                            || self.rules_known
+                                && self.rules_changed.is_empty()
+                                && !path(&self.r, id)
+                                    .is_some_and(|(names, _)| self.ignores(&names, Kind::Dir))
+                    }
                 })
                 .cloned(),
             None,
-            "a name left out for a node R does not hold live or L holds at R's place"
+            "a name left out for a node R does not hold live, L holds at R's place, or the rules no longer leave out a folder at R's place"
         );
         debug_assert_eq!(
             (self.unsent_creates.iter())

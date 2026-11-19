@@ -2578,7 +2578,7 @@ impl Commits {
                         && applied
                         && target != *id
                         && !finished
-                        && !trees.name_left_out(id)
+                        && !renamed_off_a_left_out_name(trees, moved)
                     {
                         let shape = Shape {
                             parent: target.clone(),
@@ -3847,6 +3847,26 @@ fn displaced_renames<'a>(
                 })),
                 ..Default::default()
             })
+        })
+}
+
+fn renamed_off_a_left_out_name(trees: &Trees, moved: &proto::Move) -> bool {
+    let Some(from) = &moved.from else {
+        return false;
+    };
+    let parent = match path(trees.remote(), &from.parent_id) {
+        Some((names, _)) => Some(names),
+        None => (from.parent_id == trees.remote().root).then(Vec::new),
+    };
+    let left_out = parent.is_some_and(|mut names| {
+        names.push(from.name.as_str());
+        trees.ignores(&names, Kind::Dir)
+    });
+    left_out
+        && !(trees.local().get(&moved.node_id)).is_some_and(|local| {
+            !local.parked
+                && local.shape.parent == moved.new_parent_id
+                && nfc(&local.shape.name) == nfc(&moved.new_name)
         })
 }
 

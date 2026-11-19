@@ -559,3 +559,73 @@ fn a_file_refused_at_the_name_of_a_left_out_folder_keeps_that_name_once_the_rule
         files_on(&world, 1)
     );
 }
+
+fn refused_at_a_left_out_folders_name(
+    first: &[Vec<(usize, Step)>],
+    arrives: Step,
+) -> (World, usize) {
+    let mut world = converge_excluding(&[vec![], vec!["ss/"]], first).unwrap();
+    let mut steps = vec![(0, arrives)];
+    steps.extend(commit(0));
+    steps.extend([(1, DELIVER), (1, EFFECT), (1, EFFECT)]);
+    world.run(first.len(), &steps).unwrap();
+    assert!(
+        !world.devices[1]
+            .engine
+            .trees
+            .state()
+            .names_left_out
+            .is_empty()
+    );
+    (world, first.len())
+}
+
+fn left_out_name_shapes() -> [(World, usize); 2] {
+    let downloaded = [vec![(1, folder("ss")), (1, user(1, 0, 1, "b"))]];
+    let moved = [vec![(1, folder("ss"))], vec![(0, file("a"))]];
+    [
+        refused_at_a_left_out_folders_name(&downloaded, file("ss")),
+        refused_at_a_left_out_folders_name(&moved, rename(0, 0, "ss")),
+    ]
+}
+
+#[test]
+fn a_file_refused_at_a_left_out_folders_name_takes_one_conflict_name_however_often_the_device_commits()
+ {
+    for (shape, (mut world, phase)) in left_out_name_shapes().into_iter().enumerate() {
+        let steps: Vec<(usize, Step)> = (0..3).flat_map(|_| commit(1)).collect();
+        world.run(phase, &steps).unwrap();
+        world.phase(phase + 1, &[]).unwrap();
+        for device in 0..2 {
+            let copies = conflict_copies(&world, device);
+            let [copy] = copies.as_slice() else {
+                panic!("shape {shape}, device {device}: {copies:?}");
+            };
+            assert_eq!(
+                copy.matches("(conflict from").count(),
+                1,
+                "shape {shape}: {copy}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_file_deleted_here_before_it_follows_its_conflict_name_comes_back_for_the_move_its_user_never_saw()
+ {
+    let [_, (mut world, phase)] = left_out_name_shapes();
+    let mut steps = commit(1);
+    steps.push((1, delete(1)));
+    world.run(phase, &steps).unwrap();
+    world.phase(phase + 1, &[]).unwrap();
+    for device in 0..2 {
+        assert_eq!(conflict_copies(&world, device).len(), 1, "{device}");
+    }
+}
+
+fn conflict_copies(world: &World, device: usize) -> Vec<String> {
+    (files_on(world, device).into_iter())
+        .map(|(name, _)| name)
+        .filter(|name| name.contains("(conflict from"))
+        .collect()
+}
