@@ -668,7 +668,7 @@ fn local_writes_check_after_an_edit(
         let shape = koidrive_engine::tree::Shape {
             parent: parent.into(),
             name: name.into(),
-            kind: if content.is_some() { Kind::File } else { Kind::Dir },
+            kind: content.as_ref().map_or(Kind::Dir, |_| Kind::File),
             content,
         };
         let identity = device.identity();
@@ -716,4 +716,3 @@ fn an_edit_moved_into_a_folder_the_rules_include_again_is_a_lost_write() {
     let error = local_writes_check_after_an_edit(true, true).unwrap_err();
     assert!(error.to_string().contains("a local write was lost"));
 }
-

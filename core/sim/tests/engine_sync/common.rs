@@ -842,8 +842,9 @@ impl Device {
             kind: node.shape.kind,
             content: node.shape.content.clone(),
         };
+        let local = self.trees.local();
         let children: Vec<(NodeId, String)> = (self.trees.local_children(id))
-            .filter_map(|child| Some((child.clone(), self.trees.local().get(child)?.shape.name.clone())))
+            .filter_map(|child| Some((child.clone(), local.get(child)?.shape.name.clone())))
             .collect();
         self.in_ignored_folders.insert(id.to_owned(), copy);
         for (child, name) in children {
