@@ -3402,13 +3402,13 @@ impl NativeWatcher {
             self.barrier = None;
             self.dirty.append(&mut self.waiting);
         }
-        if (self.barrier.as_ref()).is_some_and(|barrier| event.paths.contains(&barrier.file)) {
-            self.lift_barrier();
-        }
         if let EventKind::Access(access) = event.kind
             && access != AccessKind::Close(AccessMode::Write)
         {
             return Ok(());
+        }
+        if (self.barrier.as_ref()).is_some_and(|barrier| event.paths.contains(&barrier.file)) {
+            self.lift_barrier();
         }
         let listing_only = match event.kind {
             EventKind::Modify(ModifyKind::Metadata(MetadataKind::Extended)) => true,

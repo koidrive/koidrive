@@ -785,6 +785,11 @@ fn a_held_removal_is_reported_once_its_barrier_is_heard_or_times_out() {
                 (vec![], vec![PathBuf::from("x/g.txt")])
             );
         }
+        let barrier = watcher.barrier.as_ref().unwrap().file.clone();
+        let opened = EventKind::Access(AccessKind::Open(AccessMode::Any));
+        let opened = notify::Event::new(opened).add_path(barrier);
+        watcher.sender.send(Ok(opened)).unwrap();
+        assert_eq!(watcher.poll(Duration::ZERO).unwrap().changes, []);
         match heard {
             true => hear_barrier(&watcher),
             false => watcher.barrier.as_mut().unwrap().written -= BARRIER_TIMEOUT,
