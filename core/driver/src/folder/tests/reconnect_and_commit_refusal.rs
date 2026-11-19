@@ -255,3 +255,49 @@ fn a_space_this_device_can_no_longer_reach_is_not_lifted_by_a_restart() {
         );
     }
 }
+
+#[test]
+fn a_commit_resent_after_a_restart_uploads_again_only_once_its_receipts_no_longer_hold() {
+    for (expired, unstored, uploads) in [(false, false, 0), (true, false, 1), (false, true, 1)] {
+        let mut remote = Remote::new();
+        let (site, mut a) = linked(&mut remote, "a");
+        for n in 0..60 {
+            fs::write(site.root.join(format!("{n}.txt")), format!("file {n}")).unwrap();
+        }
+        a.rescan();
+        a.scan_until(|a| !a.work.is_empty());
+        let upload = a.work.pop_front().unwrap();
+        a.perform(upload, &mut remote).unwrap();
+        let Some(Work::Send(commit)) = a.work.pop_front() else {
+            panic!("the commit is sent after its upload");
+        };
+        assert_eq!(commit.receipts.len(), 60);
+        drop(a);
+
+        if unstored {
+            let mut store = Store::open(&site.db).unwrap();
+            store
+                .transaction(|tx| {
+                    let mut engine = Engine::load(tx, &site.link.space_id)?;
+                    engine.commits.uploaded(Vec::new());
+                    engine.checkpoint(tx)
+                })
+                .unwrap();
+        }
+        if expired {
+            remote.now_ms += 3_600_001;
+        }
+        let mut a = site.start();
+        a.connect(&remote);
+        a.scan_until(|a| a.folder.scanned);
+        a.rest(&mut remote);
+        assert_eq!(
+            (a.sent.iter()).filter(|sent| sent.commit_id == commit.commit_id).count(),
+            uploads + 1,
+            "expired: {expired}, unstored: {unstored}"
+        );
+        assert_eq!(remote.space.head_seq(), 1, "expired: {expired}, unstored: {unstored}");
+        assert_eq!(remote.names().len(), 60, "expired: {expired}, unstored: {unstored}");
+        assert_eq!(a.state(), FolderState::UpToDate, "expired: {expired}, unstored: {unstored}");
+    }
+}
