@@ -185,11 +185,11 @@ impl From<GuardState> for Guard {
 impl Guard {
     pub(crate) fn state(&self) -> GuardState {
         GuardState {
-            ledger: (*self.ledger).clone(),
-            confirmed: (*self.confirmed).clone(),
+            ledger: self.ledger.to_map(),
+            confirmed: self.confirmed.to_map(),
             confirmed_limits: (*self.confirmed_limits).clone(),
-            remote: (*self.remote).clone(),
-            dismissed: (*self.dismissed).clone(),
+            remote: self.remote.to_map(),
+            dismissed: self.dismissed.to_set(),
         }
     }
 

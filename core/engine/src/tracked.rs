@@ -10,12 +10,11 @@
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet, btree_map, btree_set};
 use std::fmt;
-use std::ops::{Deref, RangeBounds};
+use std::ops::{Deref, Index, RangeBounds};
 
 use crate::tree::{Counting, counted, read_entries};
 
 /// A [`BTreeSet`] that records the keys whose membership changed.
-#[derive(Clone)]
 pub struct TrackedSet<K> {
     set: BTreeSet<K>,
     before: BTreeMap<K, bool>,
@@ -85,6 +84,14 @@ impl<K: Ord + Clone> Extend<K> for TrackedSet<K> {
 }
 
 impl<K: Ord> TrackedSet<K> {
+    pub fn len(&self) -> usize {
+        self.set.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.set.is_empty()
+    }
+
     pub fn contains<Q: Ord + ?Sized>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
@@ -124,6 +131,24 @@ impl<K: Ord> TrackedSet<K> {
         read_entries(1);
         self.set.last()
     }
+
+    pub fn to_set(&self) -> BTreeSet<K>
+    where
+        K: Clone,
+    {
+        read_entries(self.set.len());
+        self.set.clone()
+    }
+}
+
+impl<K: Clone> Clone for TrackedSet<K> {
+    fn clone(&self) -> Self {
+        read_entries(self.set.len());
+        Self {
+            set: self.set.clone(),
+            before: self.before.clone(),
+        }
+    }
 }
 
 impl<'a, K: Ord> IntoIterator for &'a TrackedSet<K> {
@@ -132,14 +157,6 @@ impl<'a, K: Ord> IntoIterator for &'a TrackedSet<K> {
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
-    }
-}
-
-impl<K> Deref for TrackedSet<K> {
-    type Target = BTreeSet<K>;
-
-    fn deref(&self) -> &BTreeSet<K> {
-        &self.set
     }
 }
 
@@ -160,12 +177,14 @@ impl<K> Default for TrackedSet<K> {
 
 impl<K: PartialEq> PartialEq for TrackedSet<K> {
     fn eq(&self, other: &Self) -> bool {
+        read_entries(self.set.len().min(other.set.len()));
         self.set == other.set
     }
 }
 
 impl<K: PartialEq> PartialEq<BTreeSet<K>> for TrackedSet<K> {
     fn eq(&self, other: &BTreeSet<K>) -> bool {
+        read_entries(self.set.len().min(other.len()));
         self.set == *other
     }
 }
@@ -177,7 +196,6 @@ impl<K: fmt::Debug> fmt::Debug for TrackedSet<K> {
 }
 
 /// A [`BTreeMap`] that records the keys whose value changed.
-#[derive(Clone)]
 pub struct TrackedMap<K, V> {
     map: BTreeMap<K, V>,
     before: BTreeMap<K, Option<V>>,
@@ -295,6 +313,14 @@ impl<K: Ord + Clone, V: Clone + PartialEq> Extend<(K, V)> for TrackedMap<K, V> {
 }
 
 impl<K: Ord, V> TrackedMap<K, V> {
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
     pub fn get<Q: Ord + ?Sized>(&self, key: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
@@ -350,6 +376,34 @@ impl<K: Ord, V> TrackedMap<K, V> {
         read_entries(1);
         self.map.last_key_value()
     }
+
+    pub fn to_map(&self) -> BTreeMap<K, V>
+    where
+        K: Clone,
+        V: Clone,
+    {
+        read_entries(self.map.len());
+        self.map.clone()
+    }
+}
+
+impl<K: Clone, V: Clone> Clone for TrackedMap<K, V> {
+    fn clone(&self) -> Self {
+        read_entries(self.map.len());
+        Self {
+            map: self.map.clone(),
+            before: self.before.clone(),
+        }
+    }
+}
+
+impl<K: Ord + Borrow<Q>, Q: Ord + ?Sized, V> Index<&Q> for TrackedMap<K, V> {
+    type Output = V;
+
+    fn index(&self, key: &Q) -> &V {
+        read_entries(1);
+        &self.map[key]
+    }
 }
 
 impl<'a, K: Ord, V> IntoIterator for &'a TrackedMap<K, V> {
@@ -358,14 +412,6 @@ impl<'a, K: Ord, V> IntoIterator for &'a TrackedMap<K, V> {
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
-    }
-}
-
-impl<K, V> Deref for TrackedMap<K, V> {
-    type Target = BTreeMap<K, V>;
-
-    fn deref(&self) -> &BTreeMap<K, V> {
-        &self.map
     }
 }
 
@@ -386,6 +432,7 @@ impl<K, V> Default for TrackedMap<K, V> {
 
 impl<K: PartialEq, V: PartialEq> PartialEq for TrackedMap<K, V> {
     fn eq(&self, other: &Self) -> bool {
+        read_entries(self.map.len().min(other.map.len()));
         self.map == other.map
     }
 }

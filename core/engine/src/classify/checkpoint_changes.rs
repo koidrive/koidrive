@@ -154,7 +154,7 @@ proptest! {
         for op in ops.iter().chain([&Op::Checkpoint]) {
             apply(&mut trees, op);
             if let Op::Checkpoint = op {
-                trees.settle(&BTreeMap::new());
+                trees.settle(&TrackedMap::default());
                 let changed = trees.take_changed();
                 let now = rows(&trees);
                 prop_assert!(differing(&checkpointed.0, &now.0).is_subset(&changed.local), "after {:?}", ops);

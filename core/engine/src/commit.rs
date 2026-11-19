@@ -266,21 +266,21 @@ impl Commits {
         CommitsState {
             accepted: *self.accepted,
             in_flight: (*self.in_flight).clone(),
-            problems: (*self.problems).clone(),
+            problems: self.problems.to_set(),
             halted: *self.halted,
             cap: *self.cap,
-            split: (*self.split).clone(),
-            trash_groups: (*self.trash_groups).clone(),
-            split_restores: (*self.split_restores).clone(),
-            aliases: (*self.aliases).clone(),
+            split: self.split.to_set(),
+            trash_groups: self.trash_groups.to_map(),
+            split_restores: self.split_restores.to_map(),
+            aliases: self.aliases.to_map(),
             restores: (*self.restores).clone(),
             resolved: (*self.resolved).clone(),
-            slots: (*self.slots).clone(),
-            given_up: (*self.given_up).clone(),
+            slots: self.slots.to_map(),
+            given_up: self.given_up.to_map(),
             questions: (*self.questions).clone(),
-            published: (*self.published).clone(),
-            given_up_nodes: (*self.given_up_nodes).clone(),
-            answer_moves: (*self.answer_moves).clone(),
+            published: self.published.to_set(),
+            given_up_nodes: self.given_up_nodes.to_map(),
+            answer_moves: self.answer_moves.to_set(),
             guard: self.guard.state(),
         }
     }
@@ -613,11 +613,11 @@ impl Commits {
         }
     }
 
-    pub fn slots(&self) -> &BTreeMap<u64, Slot> {
+    pub fn slots(&self) -> &TrackedMap<u64, Slot> {
         &self.slots
     }
 
-    pub fn given_up(&self) -> &BTreeMap<u64, Vec<String>> {
+    pub fn given_up(&self) -> &TrackedMap<u64, Vec<String>> {
         &self.given_up
     }
 
@@ -628,7 +628,7 @@ impl Commits {
     }
 
     /// Folders merged into one L holds elsewhere, by the folder they were merged into.
-    pub fn aliases(&self) -> &BTreeMap<NodeId, NodeId> {
+    pub fn aliases(&self) -> &TrackedMap<NodeId, NodeId> {
         &self.aliases
     }
 
@@ -638,7 +638,7 @@ impl Commits {
 
     /// Nodes an op was rejected for. They are left out of planning until [`Commits::clear_problem`],
     /// after the next rescan or a user action.
-    pub fn problems(&self) -> &BTreeSet<NodeId> {
+    pub fn problems(&self) -> &TrackedSet<NodeId> {
         &self.problems
     }
 
@@ -732,7 +732,8 @@ impl Commits {
     /// The queued restores that wait because their node is a problem
     /// ([`RestoreIntent::held_by`]), so a surface can say why they are pending.
     pub fn held_restores(&self) -> impl Iterator<Item = &RestoreId> {
-        let held = |(_, intent): &(&RestoreId, &RestoreIntent)| intent.held_by(&self.problems);
+        let held =
+            |(_, intent): &(&RestoreId, &RestoreIntent)| self.problems.contains(&intent.node());
         self.restores.iter().filter(held).map(|(id, _)| id)
     }
 
@@ -1039,7 +1040,7 @@ impl Commits {
             .position(|question| question.kind == QuestionKind::AmbiguousDisappearance);
         let asked = index.map(|index| self.questions.get_mut().remove(index));
         let at = index.unwrap_or(self.questions.len());
-        let mut open = guard::deletions(trees, trees.missing());
+        let mut open = guard::deletions(trees, &trees.missing().to_set());
         match asked {
             Some(question) if question.held == open && question.answer.is_none() => {
                 self.questions.get_mut().insert(at, question);
@@ -1075,7 +1076,7 @@ impl Commits {
                 for (id, shape) in update_synced(trees, updates) {
                     trees.wait(id, shape, Origin::Other);
                 }
-                open = guard::deletions(trees, trees.missing());
+                open = guard::deletions(trees, &trees.missing().to_set());
             }
             _ => {}
         }
@@ -1781,18 +1782,19 @@ impl Commits {
         }
         if ops.is_empty() && released.is_empty() {
             let mut bytes = 0;
-            let first: Vec<(NodeId, NodeId, String)> = (finishes(trees, &skip, Some(device_id)))
-                .filter(|(id, .., free)| !free || disk_first(trees, id))
-                .take(cap)
-                .take_while(|(id, _, name, _)| {
-                    let shape = trees.remote().live(id).or(trees.synced().live(id));
-                    let cost = record_cost(shape) + held_ancestry_cost(trees, id) + name.len();
-                    let fits = bytes == 0 || bytes + cost <= MAX_COMMIT_BYTES;
-                    bytes += cost;
-                    fits
-                })
-                .map(|(id, parent, name, _)| (id.clone(), parent.clone(), name.to_owned()))
-                .collect();
+            let first: Vec<(NodeId, NodeId, String)> =
+                (finishes(trees, |id| skip.contains(id), Some(device_id)))
+                    .filter(|(id, .., free)| !free || disk_first(trees, id))
+                    .take(cap)
+                    .take_while(|(id, _, name, _)| {
+                        let shape = trees.remote().live(id).or(trees.synced().live(id));
+                        let cost = record_cost(shape) + held_ancestry_cost(trees, id) + name.len();
+                        let fits = bytes == 0 || bytes + cost <= MAX_COMMIT_BYTES;
+                        bytes += cost;
+                        fits
+                    })
+                    .map(|(id, parent, name, _)| (id.clone(), parent.clone(), name.to_owned()))
+                    .collect();
             for (id, parent, name) in first {
                 trees.start_finish(&id);
                 let pending = trees
@@ -2013,7 +2015,7 @@ impl Commits {
             || !trees.waiting().is_empty()
             || !self.restores.is_empty()
             || self.conflicts_due(trees)
-            || finishes(trees, &self.problems, Some(device_id))
+            || finishes(trees, |id| self.problems.contains(id), Some(device_id))
                 .any(|(id, .., free)| !free || disk_first(trees, id))
     }
 
@@ -2248,7 +2250,7 @@ impl Commits {
         let mut agreed: BTreeMap<NodeId, Agreed> = BTreeMap::new();
         let mut unreverted: BTreeSet<NodeId> = BTreeSet::new();
         let aliases = self.aliases.clone();
-        let given_up = (*self.given_up_nodes).clone();
+        let given_up = self.given_up_nodes.to_map();
         let lost: Vec<NodeId> = (flight.commit.ops.iter())
             .filter_map(|op| match &op.op {
                 Some(op::Op::CreateDir(create)) => Some(NodeId::from(&create.node_id)),
@@ -3510,8 +3512,8 @@ fn in_sync(trees: &Trees, original: &ConflictFile, copy: &ConflictFile) -> bool 
 
 fn leaving_unsent(
     scratch: &Scratch,
-    aliases: &BTreeMap<NodeId, NodeId>,
-    problems: &BTreeSet<NodeId>,
+    aliases: &TrackedMap<NodeId, NodeId>,
+    problems: &TrackedSet<NodeId>,
     id: &NodeId,
 ) -> bool {
     let trees = scratch.trees;
@@ -3987,17 +3989,14 @@ fn wedged(
 
 pub(crate) fn finishes<'a>(
     trees: &'a Trees,
-    skip: &'a BTreeSet<NodeId>,
+    skip: impl Fn(&NodeId) -> bool + 'a,
     device_id: Option<&'a str>,
 ) -> impl Iterator<Item = (&'a NodeId, &'a NodeId, &'a str, bool)> + 'a {
     let recorded = (trees.pending_finishes().keys()).filter(|id| !trees.marked().contains(*id));
     (trees.marked().iter())
         .chain(recorded)
-        .filter(|id| {
-            !skip.contains(*id)
-                && !trees.excluded(id)
-                && !trees.held(id)
-                && !trees.waiting().contains_key(id)
+        .filter(move |id| {
+            !skip(id) && !trees.excluded(id) && !trees.held(id) && !trees.waiting().contains_key(id)
         })
         .filter_map(move |id| {
             let remote = trees.remote().get(id).filter(|node| !node.trashed)?;
@@ -4382,18 +4381,18 @@ fn plan(
     candidates: &[&NodeId],
     bound: Option<(usize, &NodeId)>,
     skip: &BTreeSet<NodeId>,
-    problems: &BTreeSet<NodeId>,
+    problems: &TrackedSet<NodeId>,
     needed: &BTreeSet<NodeId>,
     cap: usize,
     answered: &[proto::Op],
-    split: &BTreeSet<NodeId>,
-    given_up: &BTreeMap<NodeId, GivenUp>,
-    aliases: &BTreeMap<NodeId, NodeId>,
-    trash_groups: &BTreeMap<NodeId, String>,
+    split: &TrackedSet<NodeId>,
+    given_up: &TrackedMap<NodeId, GivenUp>,
+    aliases: &TrackedMap<NodeId, NodeId>,
+    trash_groups: &TrackedMap<NodeId, String>,
     restores: &BTreeMap<RestoreId, RestoreIntent>,
-    splits: &BTreeMap<RestoreId, SplitRestore>,
+    splits: &TrackedMap<RestoreId, SplitRestore>,
     answers: &BTreeSet<NodeId>,
-    answer_moves: &BTreeSet<NodeId>,
+    answer_moves: &TrackedSet<NodeId>,
     device_id: &str,
 ) -> (Planned, bool) {
     let mut wants = Vec::new();

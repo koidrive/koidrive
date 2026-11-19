@@ -123,7 +123,7 @@ pub fn classify(l: Option<&Shape>, s: Option<&Shape>, r: Option<&Shape>) -> Clas
 }
 
 /// Whether `tree` holds `id` live and placed below one of `folders`, through live, placed folders.
-fn below<N: Node>(tree: &Tree<N>, id: &NodeId, folders: &BTreeSet<NodeId>) -> bool {
+fn below<N: Node>(tree: &Tree<N>, id: &NodeId, folders: &CountedSet<NodeId>) -> bool {
     let held = |id: &NodeId| {
         tree.get(id)
             .filter(|node| node.is_live() && node.is_placed())
@@ -301,8 +301,7 @@ impl<V> ByParent<V> {
     where
         V: Clone,
     {
-        read_entries(self.entries.len());
-        (*self.entries).clone()
+        self.entries.to_map()
     }
 }
 
@@ -316,7 +315,7 @@ impl<V> std::ops::Index<&NodeId> for ByParent<V> {
 
 impl<V: PartialEq> PartialEq for ByParent<V> {
     fn eq(&self, other: &Self) -> bool {
-        *self.entries == *other.entries
+        self.entries == other.entries
     }
 }
 
@@ -3304,7 +3303,7 @@ impl Trees {
     }
 
     /// Where [`Trees::find_local`] last found each recorded node.
-    pub fn found_local(&self) -> &BTreeMap<NodeId, PathBuf> {
+    pub fn found_local(&self) -> &TrackedMap<NodeId, PathBuf> {
         &self.found
     }
 
@@ -3354,7 +3353,7 @@ impl Trees {
     }
 
     /// The nodes [`Trees::miss_local`] took out of L that it still holds.
-    pub fn missing(&self) -> &BTreeSet<NodeId> {
+    pub fn missing(&self) -> &TrackedSet<NodeId> {
         &self.missing
     }
 
@@ -4746,7 +4745,7 @@ impl Trees {
     }
 
     pub fn removed_here(&self) -> BTreeMap<NodeId, u64> {
-        (*self.removed_here).clone()
+        self.removed_here.to_map()
     }
 
     /// After a listing replaces R, makes each node of `removed` that R now holds live and L
@@ -5188,7 +5187,7 @@ impl Trees {
         moved: Vec<(NodeId, MovedHere)>,
         untaken: Vec<(NodeId, Untaken)>,
         records: BTreeMap<NodeId, RemoteRecord>,
-        merged: &BTreeMap<NodeId, NodeId>,
+        merged: &TrackedMap<NodeId, NodeId>,
         held_through: u64,
         accepted: u64,
     ) {
@@ -5851,7 +5850,7 @@ impl Trees {
     /// [`Trees::unsearched`] lists them. A [`Class::Same`] node whose update is left still takes R's
     /// content into S, unless an acknowledged update of the node waits, since content never breaks S, so a later change on either side is compared
     /// with the content both sides already hold. [`Trees::work`] gives the dirty nodes that are left.
-    pub fn settle(&mut self, merged: &BTreeMap<NodeId, NodeId>) {
+    pub fn settle(&mut self, merged: &TrackedMap<NodeId, NodeId>) {
         self.settle_unless(merged, &|| false)
             .expect("a settle nobody abandons ends settled");
     }
@@ -5860,7 +5859,7 @@ impl Trees {
     /// [`CHECK_EVERY`] nodes. The trees it gives up on are half settled, fit only to be dropped.
     pub fn settle_unless(
         &mut self,
-        merged: &BTreeMap<NodeId, NodeId>,
+        merged: &TrackedMap<NodeId, NodeId>,
         abandoned: &dyn Fn() -> bool,
     ) -> Option<()> {
         self.release_kept_entries_the_person_let_in();
@@ -6194,7 +6193,7 @@ impl Trees {
         self.l.get(id).is_some() && self.reverted.contains(id)
     }
 
-    fn release_cycle_reverts(&mut self, merged: &BTreeMap<NodeId, NodeId>) {
+    fn release_cycle_reverts(&mut self, merged: &TrackedMap<NodeId, NodeId>) {
         let released: Vec<NodeId> = (self.cycle_reverted.iter())
             .filter(|&id| {
                 !self.reverted.contains(id)
@@ -6833,47 +6832,47 @@ impl Trees {
     /// What the store keeps besides the nodes of R, L and S.
     pub fn state(&self) -> TreesState {
         TreesState {
-            dirty: (*self.dirty).clone(),
-            unsearched: (*self.unsearched).clone(),
-            reverted: (*self.reverted).clone(),
-            cycle_reverted: (*self.cycle_reverted).clone(),
-            unobserved: (*self.unobserved).clone(),
-            parked_as: (*self.parked_as).clone(),
+            dirty: self.dirty.to_set(),
+            unsearched: self.unsearched.to_set(),
+            reverted: self.reverted.to_set(),
+            cycle_reverted: self.cycle_reverted.to_set(),
+            unobserved: self.unobserved.to_set(),
+            parked_as: self.parked_as.to_map(),
             waiting: self.waiting.to_map(),
-            watched: (*self.watched).clone(),
-            watched_positions: (*self.watched_positions).clone(),
-            trashed_here: (*self.trashed_here).clone(),
-            removed_here: (*self.removed_here).clone(),
+            watched: self.watched.to_map(),
+            watched_positions: self.watched_positions.to_map(),
+            trashed_here: self.trashed_here.to_map(),
+            removed_here: self.removed_here.to_map(),
             discarded: self.discarded.to_map(),
-            removed_from: (*self.removed_from).clone(),
-            forgotten_shapes: (*self.forgotten_shapes).clone(),
-            lost_shapes: (*self.lost_shapes).clone(),
-            outside: (*self.outside).clone(),
-            lost: (*self.lost).clone(),
-            found: (*self.found).clone(),
-            displaced: (*self.displaced).clone(),
-            missing: (*self.missing).clone(),
-            edited_here: (*self.edited_here).clone(),
-            moved_here: (*self.moved_here).clone(),
-            past_positions: (*self.past_positions).clone(),
-            synced_positions: (*self.synced_positions).clone(),
-            unsent_edits: (*self.unsent_edits).clone(),
-            dropped_edits: (*self.dropped_edits).clone(),
-            unsent_moves: (*self.unsent_moves).clone(),
-            unsent_creates: (*self.unsent_creates).clone(),
-            kept_folders: (*self.kept_folders).clone(),
-            kept_entries: (*self.kept_entries).clone(),
-            kept_nodes: (*self.kept_nodes).clone(),
-            unseen_changes: (*self.unseen_changes).clone(),
-            replaced_versions: (*self.replaced_versions).clone(),
-            content_provenance: (*self.content_provenance).clone(),
-            resends: (*self.resends).clone(),
-            local_changes: (*self.local_changes).clone(),
-            lost_positions: (*self.lost_positions).clone(),
-            lost_creates: (*self.lost_creates).clone(),
-            kept_originals: (*self.kept_originals).clone(),
-            unsent_marks: (*self.unsent_marks).clone(),
-            pending_finishes: (*self.pending_finishes).clone(),
+            removed_from: self.removed_from.to_map(),
+            forgotten_shapes: self.forgotten_shapes.to_map(),
+            lost_shapes: self.lost_shapes.to_map(),
+            outside: self.outside.to_set(),
+            lost: self.lost.to_set(),
+            found: self.found.to_map(),
+            displaced: self.displaced.to_map(),
+            missing: self.missing.to_set(),
+            edited_here: self.edited_here.to_map(),
+            moved_here: self.moved_here.to_map(),
+            past_positions: self.past_positions.to_map(),
+            synced_positions: self.synced_positions.to_map(),
+            unsent_edits: self.unsent_edits.to_set(),
+            dropped_edits: self.dropped_edits.to_set(),
+            unsent_moves: self.unsent_moves.to_set(),
+            unsent_creates: self.unsent_creates.to_set(),
+            kept_folders: self.kept_folders.to_set(),
+            kept_entries: self.kept_entries.to_map(),
+            kept_nodes: self.kept_nodes.to_map(),
+            unseen_changes: self.unseen_changes.to_set(),
+            replaced_versions: self.replaced_versions.to_map(),
+            content_provenance: self.content_provenance.to_map(),
+            resends: self.resends.to_set(),
+            local_changes: self.local_changes.to_set(),
+            lost_positions: self.lost_positions.to_map(),
+            lost_creates: self.lost_creates.to_set(),
+            kept_originals: self.kept_originals.to_map(),
+            unsent_marks: self.unsent_marks.to_map(),
+            pending_finishes: self.pending_finishes.to_map(),
         }
     }
 

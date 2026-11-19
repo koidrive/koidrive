@@ -407,7 +407,7 @@ impl Folder {
         } = loaded;
         let mut store = Store::open_existing(store)?;
         let disk = Disk::start(lock, &link, &mut engine, &mut store)?;
-        for node in engine.effects.blocked().clone().into_keys() {
+        for node in engine.effects.blocked().to_map().into_keys() {
             engine.effects.unblock(&node);
         }
         let (remote_nodes, questions) = store.transaction(|tx| {

@@ -7,7 +7,7 @@ use std::borrow::Borrow;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, btree_set};
 use std::fmt;
-use std::ops::{Deref, RangeBounds};
+use std::ops::RangeBounds;
 use std::path::PathBuf;
 
 use koidrive_proto::v1::{self as proto, NodeKind, NodeStatus};
@@ -53,7 +53,6 @@ pub(crate) fn counted<I: Iterator>(entries: I) -> Counting<I> {
 }
 
 /// A [`BTreeSet`] whose reads count as entries read.
-#[derive(Clone, PartialEq, Eq)]
 pub struct CountedSet<K>(BTreeSet<K>);
 
 impl<K> Default for CountedSet<K> {
@@ -99,6 +98,31 @@ impl<K: Ord> CountedSet<K> {
         read_entries(1);
         self.0.last()
     }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn is_subset(&self, other: &Self) -> bool {
+        read_entries(self.0.len());
+        self.0.is_subset(&other.0)
+    }
+
+    pub fn is_disjoint(&self, other: &Self) -> bool {
+        read_entries(self.0.len().min(other.0.len()));
+        self.0.is_disjoint(&other.0)
+    }
+}
+
+impl<K: Clone> Clone for CountedSet<K> {
+    fn clone(&self) -> Self {
+        read_entries(self.0.len());
+        Self(self.0.clone())
+    }
 }
 
 impl<'a, K: Ord> IntoIterator for &'a CountedSet<K> {
@@ -110,22 +134,24 @@ impl<'a, K: Ord> IntoIterator for &'a CountedSet<K> {
     }
 }
 
-impl<K> Deref for CountedSet<K> {
-    type Target = BTreeSet<K>;
-
-    fn deref(&self) -> &BTreeSet<K> {
-        &self.0
-    }
-}
-
 impl<K> From<BTreeSet<K>> for CountedSet<K> {
     fn from(set: BTreeSet<K>) -> Self {
         Self(set)
     }
 }
 
+impl<K: PartialEq> PartialEq for CountedSet<K> {
+    fn eq(&self, other: &Self) -> bool {
+        read_entries(self.0.len().min(other.0.len()));
+        self.0 == other.0
+    }
+}
+
+impl<K: Eq> Eq for CountedSet<K> {}
+
 impl<K: PartialEq> PartialEq<BTreeSet<K>> for CountedSet<K> {
     fn eq(&self, other: &BTreeSet<K>) -> bool {
+        read_entries(self.0.len().min(other.len()));
         self.0 == *other
     }
 }
