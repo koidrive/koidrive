@@ -1336,6 +1336,7 @@ fn engine_state() -> EngineState {
                         rev: 9,
                         parent: "root".into(),
                         name: "moved.txt".into(),
+                        trash_group: None,
                     }),
                 ),
                 ("placed".into(), None),
@@ -1384,11 +1385,13 @@ fn engine_state() -> EngineState {
                         rev: 6,
                         parent: "root".into(),
                         name: "old.txt".into(),
+                        trash_group: None,
                     },
                     Agreed {
                         rev: 8,
                         parent: String::new().into(),
                         name: "before.txt".into(),
+                        trash_group: None,
                     },
                 ],
             )]),
@@ -2513,6 +2516,7 @@ fn a_store_from_before_watched_positions_were_kept_takes_them_from_s() {
             rev: 4,
             parent: "root".into(),
             name: "lost.txt".into(),
+            trash_group: None,
         }),
     );
     let mut store = Store::open(&path).unwrap();

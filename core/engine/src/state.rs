@@ -27,6 +27,8 @@ pub struct Agreed {
     pub rev: u64,
     pub parent: NodeId,
     pub name: String,
+    /// The trash group of R's record, when that record was trashed.
+    pub trash_group: Option<String>,
 }
 
 /// A position S held of a node.

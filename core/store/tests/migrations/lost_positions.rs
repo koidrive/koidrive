@@ -49,6 +49,7 @@ fn an_own_move_whose_earlier_positions_aged_out_before_the_upgrade_is_sent_again
             rev: 2,
             parent: "root".into(),
             name: "y".into(),
+            trash_group: None,
         }],
     );
 

@@ -1341,12 +1341,14 @@ impl Trees {
             self.moved_here.remove(&id);
         }
         let replaced = (self.r.get(&id))
-            .filter(|old| (made_here || !old.trashed) && old.meta_rev < node.meta_rev);
+            .filter(|old| !old.trashed || (made_here && !old.trash_group.is_empty()))
+            .filter(|old| old.meta_rev < node.meta_rev);
         if let Some(old) = replaced {
             let past = Agreed {
                 rev: old.meta_rev,
                 parent: old.shape.parent.clone(),
                 name: old.shape.name.clone(),
+                trash_group: old.trashed.then(|| old.trash_group.clone()),
             };
             let moved = self.moved_here.get(&id).map(|moved| moved.seq);
             let earlier = self.past_positions.get_or_insert_with(id.clone(), Vec::new);
@@ -4592,6 +4594,7 @@ impl Trees {
                     past.rev == seq
                         && past.parent == remote.shape.parent
                         && past.name == remote.shape.name
+                        && past.trash_group.is_none()
                 })
         };
         if (self.r.get(id)).is_some_and(|remote| !remote.trashed && held(remote)) {
@@ -4975,11 +4978,8 @@ impl Trees {
             .cloned()
             .collect();
         let seen = |id: &NodeId, remote: &RemoteNode| {
-            (self.past_positions.get(id).into_iter().flatten()).any(|past| {
-                past.rev == remote.meta_rev
-                    && past.parent == remote.shape.parent
-                    && past.name == remote.shape.name
-            })
+            (self.past_positions.get(id).into_iter().flatten())
+                .any(|past| same_record(past, remote))
         };
         let before = |id: &NodeId, moved: &MovedHere| {
             (self.r.get(id)).is_some_and(|remote| {
@@ -5048,16 +5048,19 @@ impl Trees {
         }
         let mut queued = BTreeSet::new();
         for id in &lost_moves {
-            let (Some(remote), Some(synced)) =
-                (self.r.get(id).map(|remote| &remote.shape), self.s.live(id))
-            else {
+            let (Some(remote), Some(synced)) = (self.r.get(id), self.s.live(id)) else {
                 continue;
             };
             let before = Shape {
-                parent: remote.parent.clone(),
-                name: remote.name.clone(),
+                parent: remote.shape.parent.clone(),
+                name: remote.shape.name.clone(),
                 ..synced.clone()
             };
+            if remote.trashed
+                && (self.l.get(id)).is_some_and(|local| local.shape.same_position(&before))
+            {
+                continue;
+            }
             if !self.set_synced_if_valid(id.clone(), Some(before.clone())) {
                 queued.insert(id.clone());
                 self.wait(id.clone(), Some(before), Origin::Other);
@@ -6288,6 +6291,7 @@ impl Trees {
                 rev: remote.meta_rev,
                 parent: remote.shape.parent.clone(),
                 name: remote.shape.name.clone(),
+                trash_group: None,
             });
         }
     }
@@ -6936,6 +6940,13 @@ impl Trees {
         self.unknown_rules.clear();
         Ok(())
     }
+}
+
+fn same_record(past: &Agreed, remote: &RemoteNode) -> bool {
+    past.rev == remote.meta_rev
+        && past.parent == remote.shape.parent
+        && past.name == remote.shape.name
+        && past.trash_group.as_deref() == remote.trashed.then_some(remote.trash_group.as_str())
 }
 
 fn before_move(past: &[Agreed], seq: u64) -> Option<&Agreed> {

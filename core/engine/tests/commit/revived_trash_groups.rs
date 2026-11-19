@@ -587,7 +587,7 @@ fn a_rename_out_of_the_trash_the_server_lost_yields_to_a_later_trash() {
 }
 
 #[test]
-fn a_folder_rename_out_of_the_trash_the_server_lost_is_sent_again_and_keeps_its_members() {
+fn a_folder_rename_out_of_the_trash_the_server_lost_is_sent_again() {
     let mut trees = trees(&[
         (
             "t",
@@ -636,5 +636,177 @@ fn a_folder_rename_out_of_the_trash_the_server_lost_is_sent_again_and_keeps_its_
     let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
     assert_eq!(ops(&commit), [mv("t", ROOT, "T2")]);
     assert_eq!(effects_for(&mut trees, &mut ids, "t"), []);
-    assert_eq!(effects_for(&mut trees, &mut ids, "g"), []);
+}
+fn lose_and_list(trees: &mut Trees, commits: &mut Commits, listed: &[(&str, RemoteNode)]) {
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    let (deleted, edited, moved) = (
+        trees.trashed_here(),
+        trees.edited_here(),
+        trees.moved_here(),
+    );
+    let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
+    for (id, node) in listed {
+        trees.set_listed_remote((*id).into(), node.clone());
+    }
+    trees.forget_lost(
+        deleted,
+        edited,
+        synced,
+        moved,
+        Vec::new(),
+        Default::default(),
+        &Default::default(),
+        commits.held_through(),
+        commits.accepted(),
+    );
+    trees.settle(commits.aliases());
+}
+
+fn acknowledge_made_here(
+    trees: &mut Trees,
+    commits: &mut Commits,
+    seq: u64,
+    made: &[(&str, RemoteNode)],
+) {
+    for (id, node) in made {
+        trees.set_remote_made_here((*id).into(), node.clone());
+    }
+    commits
+        .received(result(
+            seq,
+            vec![outcome(op_result::Code::Applied); made.len()],
+        ))
+        .unwrap();
+    assert!(commits.acknowledge(trees, seq));
+    trees.settle(commits.aliases());
+}
+
+fn renamed_in_place_out_of_the_trash() -> (Trees, Commits, IdGen) {
+    let mut trees = trees(&[
+        (
+            "p",
+            Some(dir(ROOT, "p")),
+            Some(dir(ROOT, "p")),
+            Some(remote(dir(ROOT, "p"))),
+        ),
+        (
+            "f",
+            Some(file("p", "a", 1)),
+            Some(file("p", "a", 1)),
+            Some(remote(file("p", "a", 1))),
+        ),
+    ]);
+    trees.set_remote("f".into(), trashed_at(file("p", "a", 1), 2));
+    trees.set_local_changed("f".into(), local(file("p", "b", 1), 2));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [mv("f", "p", "b")]);
+    acknowledge_made_here(
+        &mut trees,
+        &mut commits,
+        3,
+        &[("f", remote_at(file("p", "b", 1), 3))],
+    );
+    (trees, commits, ids)
+}
+
+#[test]
+fn a_rename_in_place_out_of_the_trash_the_server_lost_is_sent_again_over_the_same_trash() {
+    let (mut trees, mut commits, mut ids) = renamed_in_place_out_of_the_trash();
+    lose_and_list(
+        &mut trees,
+        &mut commits,
+        &[("f", trashed_at(file("p", "a", 1), 2))],
+    );
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [mv("f", "p", "b")]);
+}
+
+#[test]
+fn a_fresh_trash_at_the_reused_seq_is_not_undone() {
+    let fresh = RemoteNode {
+        trash_group: "commit-of-z:0".into(),
+        ..trashed(file("t", "c", 1))
+    };
+    let (mut trees, mut commits, mut ids) = lost_after_renaming_out_of_the_trash(fresh);
+    let effects = effects_for(&mut trees, &mut ids, "f");
+    assert_eq!(
+        build(&mut commits, &mut trees, &mut ids).map(|c| ops(&c)),
+        None
+    );
+    assert!(matches!(&effects[..], [Effect::RemoveFile { .. }]));
+}
+
+#[test]
+fn a_fresh_trash_in_place_at_the_reused_seq_is_not_undone() {
+    let (mut trees, mut commits, mut ids) = renamed_in_place_out_of_the_trash();
+    let fresh = RemoteNode {
+        trash_group: "commit-of-z:0".into(),
+        ..trashed_at(file("p", "a", 1), 2)
+    };
+    lose_and_list(&mut trees, &mut commits, &[("f", fresh)]);
+    let effects = effects_for(&mut trees, &mut ids, "f");
+    assert_eq!(
+        build(&mut commits, &mut trees, &mut ids).map(|c| ops(&c)),
+        None
+    );
+    assert!(matches!(&effects[..], [Effect::RemoveFile { .. }]));
+}
+
+#[test]
+fn a_fresh_trash_of_the_folder_at_the_reused_seq_is_not_undone() {
+    let mut trees = trees(&[
+        (
+            "p",
+            Some(dir(ROOT, "p")),
+            Some(dir(ROOT, "p")),
+            Some(remote(dir(ROOT, "p"))),
+        ),
+        ("t", None, None, Some(trashed(dir(ROOT, "t")))),
+        (
+            "f",
+            Some(file("p", "a", 1)),
+            Some(file("p", "a", 1)),
+            Some(trashed(file("t", "c", 1))),
+        ),
+    ]);
+    trees.set_local_changed("f".into(), local(file("p", "b", 1), 2));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [mv("f", "p", "b")]);
+    acknowledge_made_here(
+        &mut trees,
+        &mut commits,
+        5,
+        &[("f", remote_at(file("p", "b", 1), 5))],
+    );
+    let fresh_t = RemoteNode {
+        trash_group: "commit-of-z:0".into(),
+        ..trashed(dir(ROOT, "t"))
+    };
+    let fresh_f = RemoteNode {
+        trash_group: "commit-of-z:0".into(),
+        ..trashed(file("t", "c", 1))
+    };
+    lose_and_list(&mut trees, &mut commits, &[("t", fresh_t), ("f", fresh_f)]);
+    let effects = effects_for(&mut trees, &mut ids, "f");
+    assert_eq!(
+        build(&mut commits, &mut trees, &mut ids).map(|c| ops(&c)),
+        None
+    );
+    assert!(matches!(&effects[..], [Effect::RemoveFile { .. }]));
+}
+
+#[test]
+fn a_rename_back_after_a_rename_out_of_the_trash_the_server_lost_is_sent() {
+    let (mut trees, mut commits, mut ids) = renamed_in_place_out_of_the_trash();
+    trees.set_local_changed("f".into(), local(file("p", "a", 1), 2));
+    trees.settle(commits.aliases());
+    lose_and_list(&mut trees, &mut commits, &[("f", trashed_at(file("p", "a", 1), 2))]);
+    let effects = effects_for(&mut trees, &mut ids, "f");
+    let commit = build(&mut commits, &mut trees, &mut ids).map(|c| ops(&c));
+    assert_eq!(effects, []);
+    assert_eq!(commit, Some(vec![mv("f", "p", "a")]));
 }
