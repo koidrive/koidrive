@@ -2518,7 +2518,7 @@ fn local_writes_check(
     let in_ignored_folders = (device.in_ignored_folders.iter())
         .filter(|(id, copy)| {
             device.trees.ignores(&copy.path, copy.kind)
-                && (device.trees.local().get(*id).is_none() || device.trees.recorded_local(id))
+                && (device.trees.local().get(id).is_none() || device.trees.recorded_local(id))
         })
         .map(|(_, copy)| copy.content.clone());
     let kept = written(
