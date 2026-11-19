@@ -573,7 +573,11 @@ fn a_folder_created_where_a_node_the_rules_now_exclude_still_is_takes_a_pending_
         ),
         ("n", Some(dir(ROOT, "A")), None, None),
     ]);
-    trees.set_rules::<&str>(&[], Some(RuleFile::parse(b"ignored\n")));
+    trees.set_rules::<&str>(
+        &[],
+        koidrive_engine::ignore::Source::Koiignore,
+        Some(RuleFile::parse(b"ignored\n")),
+    );
     trees.settle(&Default::default());
     assert!(trees.excluded("h"));
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));

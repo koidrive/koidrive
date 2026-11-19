@@ -54,10 +54,11 @@ pub use config::{BackgroundService, Config, ConfigError, LocalTrash, SyncRules, 
 pub use credential::{Credential, CredentialError, SET_UP_AGAIN, api_for};
 pub use driver::{
     Answered, Change, Changes, CleanupFailure, Driver, DriverError, LinkApproval, Linked,
-    PROGRESS_INTERVAL, SetAside, SignedOut, Unconfirmed,
+    PROGRESS_INTERVAL, SetAside, SignedOut, Unconfirmed, lossy_paths,
 };
 pub use failures::{Failure, failures};
 pub use folder::MAX_FORMAT;
+pub use ignore::GitignoreOnly;
 pub use koidrive_engine::guard::MAX_DELETIONS;
 pub use koidrive_state_file::Flock;
 pub use observe::{FsObserver, Observation, Observed, Observer, Observing, RulesChange};

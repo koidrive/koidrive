@@ -18,7 +18,7 @@ fn a_held_entry_under_a_folder_that_cannot_be_read_is_not_removed() {
         fs::rename(root.join("ig/zz/deep/x"), root.join("d/x")).unwrap();
         fs::set_permissions(root.join("d"), fs::Permissions::from_mode(0o000)).unwrap();
         if left_out {
-            write(root, RULES_FILE, "ig/\nd/\n");
+            write(root, KOIIGNORE, "ig/\nd/\n");
         }
 
         let mut changes = Vec::new();

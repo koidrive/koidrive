@@ -1202,10 +1202,17 @@ fn kept_cause(rules: &[u8]) -> KeptCause {
                     on_server: true,
                 }),
                 rules: Some(rules.to_vec()),
+                gitignore_file: None,
+                gitignore_rules: None,
             },
             KeptRules {
                 file: None,
                 rules: None,
+                gitignore_file: Some(KeptRulesFile {
+                    id: "g".into(),
+                    on_server: false,
+                }),
+                gitignore_rules: Some(b".env\n".to_vec()),
             },
         ],
     }

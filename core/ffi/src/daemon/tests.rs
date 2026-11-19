@@ -805,6 +805,60 @@ fn a_usage_choice_is_saved_through_koi() {
 }
 
 #[test]
+fn the_gitignore_setting_is_read_from_the_configuration_file_and_saved_through_koi() {
+    let koi = Koi::new(signed_in(true));
+    assert!(koi.core.gitignore());
+    let config = &koi.core.paths.config_file;
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(config, "[sync]\ngitignore = false\n").unwrap();
+    assert!(!koi.core.gitignore());
+    fs::write(config, "[sync]\ngitignore = \"no\"\n").unwrap();
+    assert!(
+        koi.core.gitignore(),
+        "an unreadable file reads as the default"
+    );
+
+    koi.answer("gitignore-on", ok(json!({ "follows": true })));
+    koi.answer("gitignore-off", ok(json!({ "follows": false })));
+    koi.core.set_gitignore(true).unwrap();
+    koi.core.set_gitignore(false).unwrap();
+    assert_eq!(
+        koi.calls_of("gitignore"),
+        ["gitignore on", "gitignore off --yes"]
+    );
+}
+
+#[test]
+fn a_folders_gitignore_count_is_koi_gitignore_status_of_that_folder() {
+    let koi = Koi::new(signed_in(true));
+    koi.core.reload();
+    koi.answer(
+        "gitignore-status",
+        ok(json!({
+            "follows": true,
+            "folders": [{ "space_id": "s1", "path": "/Users/ada/Documents", "files": 18342, "bytes": 412000000, "unreadable": ["/Users/ada/Documents/pgdata"] }],
+        })),
+    );
+    let before = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let only = koi.core.gitignore_only("s1").unwrap();
+    assert_eq!((only.files, only.bytes), (18_342, 412_000_000));
+    assert_eq!(only.unreadable, ["/Users/ada/Documents/pgdata"]);
+    assert!(only.counted_at_ms >= before);
+    assert_eq!(
+        koi.calls_of("gitignore"),
+        ["gitignore status -- /Users/ada/Documents"]
+    );
+    assert_eq!(
+        koi.core.gitignore_only("s2"),
+        Err(SessionError::FolderNotLinked)
+    );
+    assert_eq!(koi.calls_of("gitignore").len(), 1);
+}
+
+#[test]
 fn a_koi_that_prints_no_result_is_named() {
     let koi = Koi::new(signed_in(true));
     let Err(SessionError::Failed { reason }) = koi.core.spaces() else {

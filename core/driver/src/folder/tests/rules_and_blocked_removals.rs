@@ -10,6 +10,7 @@ fn the_device_list_narrows_what_is_downloaded_and_what_is_uploaded() {
     let sync = SyncRules {
         include: Vec::new(),
         exclude: vec!["*.log".into()],
+        ..SyncRules::default()
     };
     let site = Site::new(&remote, "b");
     let mut b = site.start_with(&sync);
@@ -355,6 +356,7 @@ fn a_removal_dropped_while_excluded_stays_unobserved_until_the_reset_scan_answer
         ],
         vec![crate::observe::RulesChange {
             dir: PathBuf::new(),
+            source: koidrive_fs::Source::Koiignore,
             rules: Some(koidrive_engine::ignore::RuleFile::parse(b"other.txt\n")),
         }],
         Vec::new(),
@@ -407,6 +409,7 @@ fn a_remote_delete_of_a_folder_holding_an_entry_l_does_not_know_keeps_the_folder
         let sync = SyncRules {
             include: Vec::new(),
             exclude: vec!["*.log".into()],
+            ..SyncRules::default()
         };
         let site = Site::new(&remote, "b");
         let mut b = site.start_with(&sync);
@@ -477,6 +480,7 @@ fn a_remote_delete_of_a_folder_whose_subfolder_holds_an_entry_l_does_not_know_ke
     let sync = SyncRules {
         include: Vec::new(),
         exclude: vec!["*.log".into()],
+        ..SyncRules::default()
     };
     let site = Site::new(&remote, "b");
     let mut b = site.start_with(&sync);
@@ -528,6 +532,7 @@ fn a_wait_for_another_failed_effect_plans_nothing_for_a_kept_folder()
     let sync = SyncRules {
         include: Vec::new(),
         exclude: vec!["*.log".into()],
+        ..SyncRules::default()
     };
     let site = Site::new(&remote, "b");
     let mut b = site.start_with(&sync);
@@ -622,6 +627,7 @@ fn a_file_whose_place_an_excluded_folder_holds_is_reported_while_its_folder_sync
     let sync = SyncRules {
         include: Vec::new(),
         exclude: vec!["ss/".into()],
+        ..SyncRules::default()
     };
     let mut b = site.start_with(&sync);
     b.connect(&remote);
@@ -684,6 +690,7 @@ fn a_folder_to_remove_that_holds_a_file_an_excluded_entry_keeps_out_lets_the_fol
     let sync = SyncRules {
         include: Vec::new(),
         exclude: vec!["x/".into()],
+        ..SyncRules::default()
     };
     let mut b = site.start_with(&sync);
     b.connect(&remote);
@@ -733,6 +740,7 @@ fn a_file_in_a_folder_an_excluded_entry_keeps_out_is_named_with_it() {
     let sync = SyncRules {
         include: Vec::new(),
         exclude: vec!["skip/".into()],
+        ..SyncRules::default()
     };
     let mut b = site.start_with(&sync);
     b.connect(&remote);
@@ -1131,8 +1139,8 @@ fn started(site: &Site, remote: &mut Remote, sync: &SyncRules) -> Device {
 
 fn dist_left_out() -> SyncRules {
     SyncRules {
-        include: Vec::new(),
         exclude: vec!["dist/".into()],
+        ..SyncRules::default()
     }
 }
 
@@ -1682,6 +1690,7 @@ fn a_file_deleted_where_the_rules_leave_it_out_downloads_again_once_another_devi
     let sync = SyncRules {
         include: Vec::new(),
         exclude: vec!["dist/report.docx".to_owned()],
+        ..SyncRules::default()
     };
     let mut b = started(&site, &mut remote, &sync);
     fs::remove_file(site.root.join("dist/report.docx")).unwrap();

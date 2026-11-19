@@ -27,7 +27,7 @@ use koidrive_chunk::ChunkerConfig;
 use koidrive_engine::ignore::RuleFile;
 use koidrive_fs::{
     Change, Ctime, Detached, Entry, EntryKind, Error as FsError, FileId, Known, MarkLog, Mount,
-    NativeWatcher, RescanWatcher, RootAt, RootProblem, Snapshot, Watcher, check_root,
+    NativeWatcher, RescanWatcher, RootAt, RootProblem, Snapshot, Source, Watcher, check_root,
 };
 use koidrive_proto::v1::{ChunkRef, Content};
 use rustix::fs::{Mode, OFlags};
@@ -73,7 +73,7 @@ pub struct Observation {
     /// The files that started (`true`) or stopped (`false`) waiting for their content to be read since the
     /// previous batch.
     pub waiting: BTreeMap<PathBuf, bool>,
-    /// The folders whose `.koiignore` file the scans of this batch found changed, each with the rules it holds now.
+    /// The rules files the scans of this batch found changed, each with the rules it holds now.
     /// The engine takes them before the changes of the batch. The first batch of an observer follows its scan of the
     /// whole tree and lists every rules file there is, also when nothing else changed.
     pub rules: Vec<RulesChange>,
@@ -86,11 +86,12 @@ pub struct Observation {
     pub ctimes: BTreeMap<PathBuf, i64>,
 }
 
-/// The rules of the `.koiignore` file in `dir`, a folder relative to the root and empty for the root, or `None` when
-/// the folder has no rules file any more. A line the file cannot use is among [`RuleFile::invalid_lines`].
+/// The rules of the rules file of kind `source` in `dir`, a folder relative to the root and empty for the root, or
+/// `None` when the folder has no such file any more. A line the file cannot use is among [`RuleFile::invalid_lines`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct RulesChange {
     pub dir: PathBuf,
+    pub source: Source,
     pub rules: Option<RuleFile>,
 }
 
@@ -760,8 +761,9 @@ impl Observer for FsObserver {
             self.unread.insert(path, retry, size);
         }
         let rules: Vec<RulesChange> = (poll.rules.into_iter())
-            .map(|(dir, bytes)| RulesChange {
+            .map(|(dir, source, bytes)| RulesChange {
                 dir,
+                source,
                 rules: bytes.as_deref().map(RuleFile::parse),
             })
             .collect();
@@ -2226,6 +2228,7 @@ mod tests {
         let sync = crate::SyncRules {
             include: vec!["Work/".into()],
             exclude: vec![],
+            ..crate::SyncRules::default()
         };
         let dev = RootAt {
             dev: fs::metadata(root).unwrap().dev(),

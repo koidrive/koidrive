@@ -77,7 +77,12 @@ async fn once(driver: &Driver, request_id: RequestId, key: Key, request: Request
 pub async fn handle(driver: &Driver, request: Request) -> Response {
     let read_only = matches!(
         &request,
-        Request::Status | Request::Access | Request::Questions | Request::ShareLinks
+        Request::Status
+            | Request::Access
+            | Request::Questions
+            | Request::ShareLinks
+            | Request::Gitignore
+            | Request::GitignoreOnly { .. }
     );
     let outcome: Result<Response, DriverError> = match request {
         Request::Status => Ok(Response::Status {
@@ -240,6 +245,31 @@ pub async fn handle(driver: &Driver, request: Request) -> Response {
                 },
                 Err(error) => Response::from(CliError::from(error)),
             };
+        }
+        Request::Gitignore => Ok(Response::Gitignore {
+            follows: driver.follows_gitignore(),
+        }),
+        Request::SetGitignore { follow } => {
+            let already = driver.follows_gitignore() == follow;
+            (driver.set_gitignore(follow).await).map(|()| Response::GitignoreSet {
+                follows: follow,
+                already,
+            })
+        }
+        Request::GitignoreOnly { folder } => {
+            let driver = driver.clone();
+            match tokio::task::spawn_blocking(move || driver.gitignore_only(&folder)).await {
+                Ok(counted) => counted.map(|only| Response::GitignoreOnly {
+                    files: only.files,
+                    bytes: only.bytes,
+                    unreadable: only.unreadable,
+                }),
+                Err(error) => {
+                    return Response::from(CliError::from(format!(
+                        "counting the files failed: {error}"
+                    )));
+                }
+            }
         }
         Request::Once {
             request_id,
@@ -476,6 +506,14 @@ pub async fn run(paths: &Paths, request: Request) -> Result<Response, CliError> 
         None if matches!(request, Request::Resume) && !paths.state_dir.exists() => {
             Response::NotPaused
         }
+        None if matches!(request, Request::Gitignore) && !paths.state_dir.exists() => {
+            match koidrive_driver::Config::load(&paths.config_file) {
+                Ok(config) => Response::Gitignore {
+                    follows: config.sync.gitignore,
+                },
+                Err(error) => Response::from(CliError::retry_safe(DriverError::from(error))),
+            }
+        }
         None => match reach(paths, &request, STARTING, || {
             Driver::open_with_telemetry(paths.clone(), crate::telemetry::recorder())
         })
@@ -564,6 +602,73 @@ pub(crate) mod tests {
             (Code::Usage, Some(koidrive_ipc::Reason::PasswordLength))
         );
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn the_gitignore_setting_is_read_set_and_counted_through_the_daemon() {
+        let (_dir, paths, root) = linked_profile();
+        fs::write(root.join(".gitignore"), "node_modules/\n").unwrap();
+        fs::create_dir_all(root.join("node_modules")).unwrap();
+        fs::write(root.join("node_modules/a.js"), "abc").unwrap();
+        fs::write(root.join("notes.txt"), "synced").unwrap();
+        let driver = Driver::open(paths.clone()).unwrap();
+        let server = tokio::spawn(serve(bind(&paths.socket()).unwrap(), driver.clone()));
+        let ask = |request| run(&paths, request);
+        let counted = Response::GitignoreOnly {
+            files: 1,
+            bytes: 3,
+            unreadable: Vec::new(),
+        };
+
+        assert_eq!(
+            ask(Request::Gitignore).await.unwrap(),
+            Response::Gitignore { follows: true }
+        );
+        let count = || Request::GitignoreOnly {
+            folder: root.clone(),
+        };
+        assert_eq!(ask(count()).await.unwrap(), counted);
+        for already in [false, true] {
+            assert_eq!(
+                ask(Request::SetGitignore { follow: false }).await.unwrap(),
+                Response::GitignoreSet {
+                    follows: false,
+                    already
+                }
+            );
+        }
+        assert_eq!(
+            ask(Request::Gitignore).await.unwrap(),
+            Response::Gitignore { follows: false }
+        );
+        assert_eq!(ask(count()).await.unwrap(), counted);
+        let not_linked = Request::GitignoreOnly {
+            folder: root.join("node_modules"),
+        };
+        let error = ask(not_linked).await.unwrap_err();
+        assert!(
+            error.message.ends_with("is not a linked folder"),
+            "{}",
+            error.message
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn without_sync_state_the_gitignore_setting_comes_from_the_configuration_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        assert_eq!(
+            run(&paths, Request::Gitignore).await.unwrap(),
+            Response::Gitignore { follows: true }
+        );
+        fs::create_dir_all(paths.config_file.parent().unwrap()).unwrap();
+        fs::write(&paths.config_file, "[sync]\ngitignore = false\n").unwrap();
+        assert_eq!(
+            run(&paths, Request::Gitignore).await.unwrap(),
+            Response::Gitignore { follows: false }
+        );
+        assert!(!paths.state_dir.exists());
     }
 
     async fn next_state(lines: &mut koidrive_ipc::Watch) -> Status {

@@ -281,7 +281,7 @@ fn a_file_in_a_folder_renamed_inside_a_renamed_folder_with_a_link_in_an_ignored_
  {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(root, RULES_FILE, "ig/\n");
+    write(root, KOIIGNORE, "ig/\n");
     write(root, "d/a/x/file", "kept");
     fs::create_dir(root.join("ig")).unwrap();
     fs::create_dir(root.join("dest")).unwrap();
@@ -347,7 +347,7 @@ fn a_file_moved_into_an_ignored_folder_out_of_a_removed_folder_with_an_included_
 fn a_file_saved_by_rename_with_a_link_below_an_ignored_folder_is_modified() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(root, RULES_FILE, "ig/\n");
+    write(root, KOIIGNORE, "ig/\n");
     write(root, "f.txt", "f");
     fs::create_dir_all(root.join("ig/snap")).unwrap();
     fs::hard_link(root.join("f.txt"), root.join("ig/snap/f.txt")).unwrap();
@@ -370,7 +370,7 @@ fn a_file_saved_by_rename_with_a_link_below_an_ignored_folder_is_modified() {
 fn a_file_saved_by_rename_with_a_link_at_an_ignored_name_is_modified() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(root, RULES_FILE, "*.bak\n");
+    write(root, KOIIGNORE, "*.bak\n");
     write(root, "f.txt", "f");
     fs::hard_link(root.join("f.txt"), root.join("f.bak")).unwrap();
     let mut rules = rules();

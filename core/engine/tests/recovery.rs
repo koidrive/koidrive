@@ -9,7 +9,7 @@ use koidrive_engine::commit::{Base, Commits, Failure, Halt, Reconnect};
 use koidrive_engine::effects::{BatchLimit, Effect, EffectRecord, Effects};
 use koidrive_engine::first_link::{History, Marks, PriorSync};
 use koidrive_engine::ids::IdGen;
-use koidrive_engine::ignore::RuleFile;
+use koidrive_engine::ignore::{RuleFile, Source};
 use koidrive_engine::names::{nfc, same_name};
 use koidrive_engine::question::{
     Answer, Question, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
@@ -2219,10 +2219,10 @@ fn a_held_node_excluded_and_included_again_keeps_its_question() {
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["a"]);
-    trees.set_rules::<&str>(&[], Some(RuleFile::parse(b"a\n")));
+    trees.set_rules::<&str>(&[], Source::Koiignore, Some(RuleFile::parse(b"a\n")));
     trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
-    trees.set_rules::<&str>(&[], None);
+    trees.set_rules::<&str>(&[], Source::Koiignore, None);
     trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["a"]);
@@ -2237,11 +2237,11 @@ fn a_node_excluded_when_recovery_starts_is_asked_about_once_included() {
         &[("a", file(ROOT, "a", 1))],
         &[],
     );
-    trees.set_rules::<&str>(&[], Some(RuleFile::parse(b"a\n")));
+    trees.set_rules::<&str>(&[], Source::Koiignore, Some(RuleFile::parse(b"a\n")));
     trees.settle(&Default::default());
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
-    trees.set_rules::<&str>(&[], None);
+    trees.set_rules::<&str>(&[], Source::Koiignore, None);
     trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     asked(&commits, RecoveryGroup::CreatedAfterRestorePoint, &["a"]);
@@ -4143,14 +4143,18 @@ fn a_recovery_discard_takes_along_a_server_file_the_rules_let_in_while_the_folde
     );
     let (mut commits, mut ids) = recovered(&mut trees, 0);
     asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["f"]);
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
+    trees.set_rules(
+        &[] as &[&str],
+        Source::Koiignore,
+        Some(RuleFile::parse(b"ignored\n")),
+    );
     let mut moved = trees.local().get("x").unwrap().clone();
     moved.shape.parent = "f".into();
     moved.shape.name = "ignored".into();
     trees.set_local_changed("x".into(), moved);
     trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
-    trees.set_rules(&[] as &[&str], None);
+    trees.set_rules(&[] as &[&str], Source::Koiignore, None);
     trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["f"]);
@@ -4178,7 +4182,11 @@ fn a_file_recovered_by_its_mark_and_moved_in_while_left_out_is_taken_along_with_
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "server", 9)));
     let question = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["e", "new"]);
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
+    trees.set_rules(
+        &[] as &[&str],
+        Source::Koiignore,
+        Some(RuleFile::parse(b"ignored\n")),
+    );
     trees.settle(commits.aliases());
     let mut moved = trees.local().get("n").unwrap().clone();
     moved.shape.parent = "new".into();
@@ -4192,7 +4200,7 @@ fn a_file_recovered_by_its_mark_and_moved_in_while_left_out_is_taken_along_with_
     edited.edit_rev = 2;
     trees.set_remote("n".into(), edited);
     trees.settle(commits.aliases());
-    trees.set_rules(&[] as &[&str], None);
+    trees.set_rules(&[] as &[&str], Source::Koiignore, None);
     trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = (commits.questions().iter())
@@ -4225,7 +4233,11 @@ fn a_file_a_rewind_finds_with_the_server_s_bytes_and_moved_in_while_left_out_is_
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     assert_eq!(local_shape(&trees, "n"), Some(&file(ROOT, "server", 9)));
     let question = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &["e", "new"]);
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"ignored\n")));
+    trees.set_rules(
+        &[] as &[&str],
+        Source::Koiignore,
+        Some(RuleFile::parse(b"ignored\n")),
+    );
     trees.settle(commits.aliases());
     let mut moved = trees.local().get("n").unwrap().clone();
     moved.shape.parent = "new".into();
@@ -4239,7 +4251,7 @@ fn a_file_a_rewind_finds_with_the_server_s_bytes_and_moved_in_while_left_out_is_
     edited.edit_rev = 2;
     trees.set_remote("n".into(), edited);
     trees.settle(commits.aliases());
-    trees.set_rules(&[] as &[&str], None);
+    trees.set_rules(&[] as &[&str], Source::Koiignore, None);
     trees.settle(commits.aliases());
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = (commits.questions().iter())

@@ -685,7 +685,7 @@ fn a_folder_delete_waits_while_a_resent_answer_delete_below_it_requires_the_orig
     let mut state = trees.state();
     state.kept_originals.insert("y".into(), "f".into());
     trees.restore(state).unwrap();
-    trees.set_rules::<&str>(&[], None);
+    trees.set_rules::<&str>(&[], koidrive_engine::ignore::Source::Koiignore, None);
     trees.rules_scanned();
     let held = trees.remote().get("f").unwrap();
     let required = delete_copy_requiring(held.content_rev, held.meta_rev);

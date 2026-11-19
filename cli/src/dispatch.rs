@@ -12,7 +12,8 @@ use crate::space::space;
 use crate::status::status;
 use crate::sync_control::{pause, resume};
 use crate::{
-    diagnose, history, ipc, pairing, setup, share, telemetry, terminal, uninstall, update,
+    diagnose, gitignore, history, ipc, pairing, setup, share, telemetry, terminal, uninstall,
+    update,
 };
 use koidrive_driver::Paths;
 use koidrive_ipc::Request;
@@ -61,7 +62,9 @@ pub(crate) fn telemetry_of(
         Command::Diagnose => (Name::Diagnose, None, None),
         Command::Update { .. } => (Name::Update, None, None),
         Command::Daemon { .. } => (Name::Daemon, None, None),
-        Command::Uninstall { .. } | Command::CheckUpdates => return None,
+        Command::Gitignore { .. } | Command::Uninstall { .. } | Command::CheckUpdates => {
+            return None;
+        }
     })
 }
 
@@ -161,6 +164,7 @@ pub(crate) async fn execute(
         Command::Device { action } => device(paths, action).await,
         Command::History { action } => history::run(&paths, action).await,
         Command::Share { action } => share::run(&paths, action).await,
+        Command::Gitignore { action } => gitignore::run(&paths, action, &terminal).await,
         Command::Telemetry { action } => telemetry::command(&paths, action).await,
     }
 }

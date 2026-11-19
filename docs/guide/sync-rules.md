@@ -24,7 +24,7 @@ The first sync compares the folder with the space, path by path. Here names must
 - A folder that the space also holds at the same path stays, and sync compares its contents one by one.
 - A file that the space holds at the same path, with the same content and the same executable bit, stays as it is.
 - Sync downloads files and folders that only the space holds, except where a held entry has the same name.
-- Entries that `.koiignore` or this device's rules leave out are skipped.
+- Entries that `.koiignore` files, `.gitignore` files or this device's rules leave out are skipped.
 - A file or folder at a path the space's trash holds is held, since the space records a deletion at that path. A folder whose name the space holds only in another case is held with everything in it when it holds such a file.
 - Every other file and folder uploads as it is. If the space has a file with the same name, the upload gets a [conflict name](conflicts.md#two-files-with-the-same-name).
 

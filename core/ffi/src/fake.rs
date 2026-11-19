@@ -9,12 +9,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::core::{Core, Events, pairing_code, refuse_line_breaks};
 use crate::types::{
     Account, Answer, AppCrashStamp, ChangeKind, ConflictSide, DeletedItem, Device, Direction,
-    FileVersion, FileVersions, FolderPath, FolderState, HeldItem, ItemDetail, LinkedFolder,
-    MassDeleteLimit, NewShareLink, NodeKind, Notice, NoticeKind, PairingCode, Problem, ProblemKind,
-    Question, QuestionKind, RECENT_CHANGES, RecentChange, RecoveryCause, RecoveryGroup,
-    RecoveryTrigger, RestoreAsked, RestoreRequest, RestoreState, RestoreTarget, ServerInfo,
-    SessionError, SessionEvent, SessionState, ShareExpiry, ShareLink, ShareState, Space,
-    SpaceUsage, SyncProgress, SyncStatus, TelemetrySetting, Trash, UpdateResult, UpdateStatus,
+    FileVersion, FileVersions, FolderPath, FolderState, GitignoreOnly, HeldItem, ItemDetail,
+    LinkedFolder, MassDeleteLimit, NewShareLink, NodeKind, Notice, NoticeKind, PairingCode,
+    Problem, ProblemKind, Question, QuestionKind, RECENT_CHANGES, RecentChange, RecoveryCause,
+    RecoveryGroup, RecoveryTrigger, RestoreAsked, RestoreRequest, RestoreState, RestoreTarget,
+    ServerInfo, SessionError, SessionEvent, SessionState, ShareExpiry, ShareLink, ShareState,
+    Space, SpaceUsage, SyncProgress, SyncStatus, TelemetrySetting, Trash, UpdateResult,
+    UpdateStatus,
 };
 
 const CLAIM_CODE_LEN: usize = 12;
@@ -127,6 +128,7 @@ struct State {
     not_writable: Option<Problem>,
     status: SyncStatus,
     telemetry: TelemetrySetting,
+    gitignore: bool,
     version: String,
     update: UpdateStatus,
     update_fails: bool,
@@ -271,6 +273,7 @@ impl FakeCore {
                 not_writable: None,
                 status: SyncStatus::Stopped,
                 telemetry: TelemetrySetting::default(),
+                gitignore: true,
                 version: scenario::RUNNING.to_owned(),
                 update: UpdateStatus::Unknown,
                 update_fails: false,
@@ -439,6 +442,7 @@ impl FakeCore {
             decided: scenario != FakeScenario::FirstRun,
             locked: false,
         };
+        state.gitignore = true;
         self.publish(&mut state, &ALL_PARTS, cleared);
         Ok(())
     }
@@ -1258,6 +1262,37 @@ impl Core for FakeCore {
         Ok(())
     }
 
+    fn gitignore(&self) -> bool {
+        self.lock().gitignore
+    }
+
+    fn set_gitignore(&self, follow: bool) -> Result<(), SessionError> {
+        let mut state = self.lock();
+        state.take_failure()?;
+        if state.fail_saves {
+            return Err(SessionError::NotSaved {
+                reason: "saving is scripted to fail".to_owned(),
+            });
+        }
+        state.gitignore = follow;
+        Ok(())
+    }
+
+    fn gitignore_only(&self, space_id: &str) -> Result<GitignoreOnly, SessionError> {
+        let mut state = self.lock();
+        state.take_failure()?;
+        let n = (state.saved.folders.iter())
+            .position(|folder| folder.space_id == space_id)
+            .ok_or(SessionError::FolderNotLinked)? as u64
+            + 1;
+        Ok(GitignoreOnly {
+            files: 18_342 * n,
+            bytes: 412_000_000 * n,
+            unreadable: Vec::new(),
+            counted_at_ms: now_ms() as u64,
+        })
+    }
+
     fn update(&self) -> Result<UpdateResult, SessionError> {
         let mut state = self.lock();
         state.take_failure()?;
@@ -1418,6 +1453,43 @@ mod tests {
                 SyncStatus::Stopped,
             ]
         );
+    }
+
+    #[test]
+    fn gitignore_files_are_followed_until_set_and_each_linked_folder_has_a_count() {
+        let h = Harness::new();
+        assert!(h.core.gitignore());
+        h.core.load_scenario(FakeScenario::UpToDate).unwrap();
+        assert!(h.core.gitignore());
+        let folders = h.core.state().folders;
+        assert!(!folders.is_empty());
+        for folder in &folders {
+            let only = h.core.gitignore_only(&folder.space_id).unwrap();
+            assert!(only.files > 0 && only.bytes > 0 && only.counted_at_ms > 0);
+        }
+        assert_eq!(
+            h.core.gitignore_only("no-such-space"),
+            Err(SessionError::FolderNotLinked)
+        );
+
+        h.core.fail_saves(true);
+        assert!(matches!(
+            h.core.set_gitignore(false),
+            Err(SessionError::NotSaved { .. })
+        ));
+        assert!(h.core.gitignore());
+        h.core.fail_saves(false);
+        h.core.set_gitignore(false).unwrap();
+        assert!(!h.core.gitignore());
+        assert_eq!(
+            h.core
+                .gitignore_only(&folders[0].space_id)
+                .map(|only| only.files),
+            Ok(18_342),
+            "the count does not depend on the setting"
+        );
+        h.core.load_scenario(FakeScenario::UpToDate).unwrap();
+        assert!(h.core.gitignore());
     }
 
     #[test]

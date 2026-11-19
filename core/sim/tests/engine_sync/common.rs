@@ -12,7 +12,7 @@ use koidrive_engine::first_link::PriorSync;
 
 use koidrive_engine::ids::IdGen;
 
-use koidrive_engine::ignore::{LocalRules, RuleFile};
+use koidrive_engine::ignore::{LocalRules, RuleFile, Source};
 
 use koidrive_engine::names::name_key;
 
@@ -531,7 +531,11 @@ impl Rules {
     fn read(&self, trees: &mut Trees) {
         let root: [&str; 0] = [];
         let file = RuleFile::parse(self.file.join("\n").as_bytes());
-        trees.set_rules(&root, (!self.file.is_empty()).then_some(file));
+        trees.set_rules(
+            &root,
+            Source::Koiignore,
+            (!self.file.is_empty()).then_some(file),
+        );
         trees.set_local_rules(LocalRules::new(&self.include, &self.exclude).unwrap());
         trees.rules_scanned();
     }

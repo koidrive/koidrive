@@ -5,7 +5,7 @@ use crate::folder::FolderAction;
 use crate::logging::LogFormat;
 use crate::options::DeviceArgs;
 use crate::space::SpaceAction;
-use crate::{history, setup, share, telemetry, terminal};
+use crate::{gitignore, history, setup, share, telemetry, terminal};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -130,6 +130,12 @@ pub(crate) enum Command {
     Share {
         #[command(subcommand)]
         action: share::ShareAction,
+    },
+    /// Show whether this device leaves out what .gitignore files exclude, or turn that on or off.
+    #[command(arg_required_else_help = true)]
+    Gitignore {
+        #[command(subcommand)]
+        action: gitignore::GitignoreAction,
     },
     /// Show, turn on or off, preview, reset or mark internal the usage reports this machine sends.
     #[command(arg_required_else_help = true)]

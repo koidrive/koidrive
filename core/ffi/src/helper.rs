@@ -14,9 +14,10 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::types::{
-    Account, DeletedItem, Device, FileVersion, FileVersions, LinkedFolder, NewShareLink, NodeKind,
-    PairingCode, RestoreAsked, RestoreRefusal, RestoreRequest, RestoreState, RestoreTarget,
-    SessionError, ShareLink, ShareState, Space, SpaceUsage, Trash, UpdateResult,
+    Account, DeletedItem, Device, FileVersion, FileVersions, GitignoreOnly, LinkedFolder,
+    NewShareLink, NodeKind, PairingCode, RestoreAsked, RestoreRefusal, RestoreRequest,
+    RestoreState, RestoreTarget, SessionError, ShareLink, ShareState, Space, SpaceUsage, Trash,
+    UpdateResult,
 };
 
 #[cfg(target_os = "macos")]
@@ -203,7 +204,7 @@ impl Helper {
             .map_err(|error| Refusal::failed(format!("{shown} cannot run: {error}")))?;
         let timeout = match args {
             ["status"] | ["device", "list"] | ["space", "list" | "usage"] => Duration::from_secs(5),
-            ["share", ..] => Duration::from_secs(600),
+            ["share", ..] | ["gitignore", ..] => Duration::from_secs(600),
             ["update"] => Duration::from_secs(15 * 60),
             _ => Duration::from_secs(60),
         };
@@ -684,6 +685,38 @@ impl UsagesData {
             }),
             None => Err(SessionError::SpaceNotFound),
         }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct GitignoreStatusData {
+    folders: Vec<GitignoreFolderData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitignoreFolderData {
+    space_id: String,
+    files: u64,
+    bytes: u64,
+    #[serde(default)]
+    unreadable: Vec<String>,
+}
+
+impl GitignoreStatusData {
+    pub(crate) fn of(
+        self,
+        space_id: &str,
+        counted_at_ms: u64,
+    ) -> Result<GitignoreOnly, SessionError> {
+        (self.folders.into_iter())
+            .find(|folder| folder.space_id == space_id)
+            .map(|folder| GitignoreOnly {
+                files: folder.files,
+                bytes: folder.bytes,
+                unreadable: folder.unreadable,
+                counted_at_ms,
+            })
+            .ok_or(SessionError::FolderNotLinked)
     }
 }
 

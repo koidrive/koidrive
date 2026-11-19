@@ -372,8 +372,22 @@ fn a_resend_whose_lost_folder_is_excluded_is_created_where_l_holds_it() {
     let synced = trees.taken_from_others(|_| false);
     trees.remove_remote("f");
     trees.remove_remote("p");
-    trees.forget_lost(Vec::new(), Vec::new(), synced, Vec::new(), Vec::new(), Default::default(), &Default::default(), 0, 0);
-    trees.set_rules(&[] as &[&str], Some(RuleFile::parse(b"/p/\n")));
+    trees.forget_lost(
+        Vec::new(),
+        Vec::new(),
+        synced,
+        Vec::new(),
+        Vec::new(),
+        Default::default(),
+        &Default::default(),
+        0,
+        0,
+    );
+    trees.set_rules(
+        &[] as &[&str],
+        koidrive_engine::ignore::Source::Koiignore,
+        Some(RuleFile::parse(b"/p/\n")),
+    );
     trees.settle(&Default::default());
     assert!(trees.excluded("p"));
     assert!(!trees.excluded("f"));

@@ -60,8 +60,8 @@ fn a_failed_scan_leaves_the_rules_as_they_were() {
     assert_eq!(
         rescan.rules,
         [
-            (PathBuf::new(), Some(b"z\n".to_vec())),
-            (PathBuf::from("a"), Some(b"y\n".to_vec())),
+            (PathBuf::new(), Source::Koiignore, Some(b"z\n".to_vec())),
+            (PathBuf::from("a"), Source::Koiignore, Some(b"y\n".to_vec())),
         ]
     );
     assert_eq!(
@@ -180,7 +180,11 @@ fn a_left_out_entry_back_while_its_removal_is_confirmed_stays_left_out_until_inc
     fs::write(root.join("sub/hidden"), "known").unwrap();
     let mut rules = Rules::new(Box::new(Lines::default()));
     let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
-    fs::write(root.join("sub").join(RULES_FILE), "hidden\n").unwrap();
+    fs::write(
+        root.join("sub").join(Source::Koiignore.file_name()),
+        "hidden\n",
+    )
+    .unwrap();
     snapshot
         .rescan_with_rules(root, [PathBuf::new()], &mut rules)
         .unwrap();
@@ -210,7 +214,7 @@ fn a_left_out_entry_back_while_its_removal_is_confirmed_stays_left_out_until_inc
     assert_eq!(rescan.unsettled, [PathBuf::from("sub/hidden")]);
     assert!(!snapshot.entries.contains_key(Path::new("sub/hidden")));
     assert!(snapshot.left_out.contains_key(Path::new("sub/hidden")));
-    fs::write(root.join("sub").join(RULES_FILE), "").unwrap();
+    fs::write(root.join("sub").join(Source::Koiignore.file_name()), "").unwrap();
     let rescan = snapshot
         .rescan_with_rules(root, [PathBuf::new()], &mut rules)
         .unwrap();
@@ -238,7 +242,7 @@ fn a_mount_point_that_cannot_be_opened_is_left_out_once_its_folder_rules_leave_i
     fs::write(root.join("Disk/report.docx"), "kept").unwrap();
     let mut rules = Rules::new(Box::new(Lines::default()));
     let mut snapshot = Snapshot::scan_with_rules(&root, &mut rules).unwrap();
-    fs::write(root.join(RULES_FILE), "Disk\n").unwrap();
+    fs::write(root.join(Source::Koiignore.file_name()), "Disk\n").unwrap();
     fs::set_permissions(root.join("Disk"), fs::Permissions::from_mode(0o0)).unwrap();
     let rescan = snapshot.rescan_with_rules(&root, [PathBuf::new()], &mut rules);
     fs::set_permissions(root.join("Disk"), fs::Permissions::from_mode(0o755)).unwrap();

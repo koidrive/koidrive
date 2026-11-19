@@ -182,6 +182,7 @@ fn discarded_held_folder_with(unknown: &str) -> (Remote, Site, Device, PathBuf) 
     let sync = SyncRules {
         include: Vec::new(),
         exclude: vec!["*.log".into()],
+        ..SyncRules::default()
     };
     let mut b = site.start_with(&sync);
     b.connect(&remote);

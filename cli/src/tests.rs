@@ -957,6 +957,185 @@ async fn resume_without_a_daemon_reconciles_without_overriding_background_off() 
     }
 }
 
+#[tokio::test]
+async fn gitignore_off_without_a_terminal_needs_yes_and_each_result_fits_its_schema() {
+    use crate::gitignore::GitignoreAction;
+    let (_dir, paths, root) = ipc::tests::linked_profile();
+    std::fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+    std::fs::write(root.join("x.log"), "12").unwrap();
+    let terminal = Arc::new(terminal::Terminal::new(true, false));
+    let gitignore = |action| {
+        run(
+            paths.clone(),
+            Command::Gitignore { action },
+            true,
+            false,
+            terminal.clone(),
+        )
+    };
+    let fits = |command: &str, done: Done| {
+        let validator = jsonschema::validator_for(&schema::envelope(command).unwrap()).unwrap();
+        let envelope = serde_json::to_value(Envelope::of(command, done)).unwrap();
+        assert!(validator.is_valid(&envelope), "{envelope:#}");
+    };
+
+    let status = gitignore(GitignoreAction::Status { folder: None })
+        .await
+        .unwrap();
+    assert_eq!(
+        status.data,
+        serde_json::json!({
+            "follows": true,
+            "folders": [{ "space_id": ipc::tests::SPACE, "path": root.display().to_string(), "files": 1, "bytes": 2, "unreadable": [] }],
+        })
+    );
+    assert_eq!(
+        status.text,
+        format!(
+            "This device leaves out what .gitignore files exclude.\nFiles only .gitignore files exclude:\n  {}  1 file, 2 B\nTurn off: koi gitignore off\n",
+            root.display()
+        )
+    );
+    fits("gitignore status", status);
+
+    let error = gitignore(GitignoreAction::Off { yes: false })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, Code::Usage);
+    assert_eq!(
+        error.next,
+        [koidrive_ipc::Next::of(&[
+            "koi",
+            "gitignore",
+            "off",
+            "--yes"
+        ])]
+    );
+    assert!(!paths.config_file.exists(), "nothing was written");
+
+    for (action, command, outcome, follows) in [
+        (
+            GitignoreAction::Off { yes: true },
+            "gitignore off",
+            report::Outcome::Ok,
+            false,
+        ),
+        (
+            GitignoreAction::Off { yes: false },
+            "gitignore off",
+            report::Outcome::Unchanged,
+            false,
+        ),
+        (
+            GitignoreAction::On,
+            "gitignore on",
+            report::Outcome::Ok,
+            true,
+        ),
+        (
+            GitignoreAction::On,
+            "gitignore on",
+            report::Outcome::Unchanged,
+            true,
+        ),
+    ] {
+        let done = gitignore(action).await.unwrap();
+        assert_eq!(done.outcome, outcome, "{command}");
+        assert_eq!(done.data, serde_json::json!({ "follows": follows }));
+        fits(command, done);
+    }
+
+    let elsewhere = root.join("x.log");
+    let error = gitignore(GitignoreAction::Status {
+        folder: Some(elsewhere),
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, Code::Usage, "{}", error.message);
+}
+
+#[tokio::test]
+async fn gitignore_off_on_a_daemon_already_off_writes_the_setting_the_configuration_lost() {
+    let (_dir, paths, _root) = ipc::tests::linked_profile();
+    std::fs::create_dir_all(paths.config_file.parent().unwrap()).unwrap();
+    std::fs::write(&paths.config_file, "[sync]\ngitignore = false\n").unwrap();
+    let driver = Driver::open(paths.clone()).unwrap();
+    let server = tokio::spawn(ipc::serve(
+        koidrive_ipc::bind(&paths.socket()).unwrap(),
+        driver,
+    ));
+    std::fs::write(&paths.config_file, "[sync]\ngitignore = true\n").unwrap();
+    let terminal = Arc::new(terminal::Terminal::new(true, false));
+    let off = crate::gitignore::GitignoreAction::Off { yes: false };
+    let done = run(
+        paths.clone(),
+        Command::Gitignore { action: off },
+        true,
+        false,
+        terminal,
+    )
+    .await
+    .unwrap();
+    assert_eq!(done.outcome, report::Outcome::Unchanged);
+    let config = koidrive_driver::Config::load(&paths.config_file).unwrap();
+    assert!(!config.sync.gitignore);
+    server.abort();
+}
+
+#[tokio::test]
+async fn gitignore_status_and_off_name_a_folder_they_cannot_read_and_count_the_rest() {
+    use crate::gitignore::GitignoreAction;
+    use std::os::unix::fs::PermissionsExt;
+
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let (_dir, paths, root) = ipc::tests::linked_profile();
+    std::fs::write(root.join(".gitignore"), "pgdata/\n*.log\n").unwrap();
+    std::fs::write(root.join("x.log"), "12").unwrap();
+    std::fs::create_dir(root.join("pgdata")).unwrap();
+    std::fs::write(root.join("pgdata/base"), "db").unwrap();
+    let lock = |mode| {
+        let mode = std::fs::Permissions::from_mode(mode);
+        std::fs::set_permissions(root.join("pgdata"), mode).unwrap();
+    };
+    let terminal = Arc::new(terminal::Terminal::new(true, true));
+    let go = |action| {
+        run(
+            paths.clone(),
+            Command::Gitignore { action },
+            true,
+            false,
+            terminal.clone(),
+        )
+    };
+    lock(0o000);
+    let status = go(GitignoreAction::Status { folder: None }).await;
+    let off = go(GitignoreAction::Off { yes: false }).await;
+    lock(0o755);
+
+    let status = status.unwrap();
+    let pgdata = root.join("pgdata").to_string_lossy().into_owned();
+    let folder = &status.data["folders"][0];
+    assert_eq!((&folder["files"], &folder["bytes"]), (&1.into(), &2.into()));
+    assert_eq!(folder["unreadable"], serde_json::json!([pgdata]));
+    let named = format!("Not counted, because Koidrive can't read them:\n  {pgdata}\n");
+    assert!(status.text.contains(&named), "{}", status.text);
+    let schema = schema::envelope("gitignore status").unwrap();
+    let envelope = serde_json::to_value(Envelope::of("gitignore status", status)).unwrap();
+    assert!(
+        jsonschema::validator_for(&schema)
+            .unwrap()
+            .is_valid(&envelope)
+    );
+    let error = off.unwrap_err();
+    assert!(
+        error.message.contains("needs a terminal"),
+        "{}",
+        error.message
+    );
+}
+
 #[test]
 fn a_daemon_waits_asynchronously_for_a_stopped_profile_reader() {
     let runtime = tokio::runtime::Builder::new_current_thread()

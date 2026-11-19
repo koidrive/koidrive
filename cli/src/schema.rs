@@ -4,6 +4,7 @@ use schemars::generate::SchemaSettings;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde_json::{Map, Value, json};
 
+use crate::gitignore::{GitignoreData, GitignoreStatusData};
 use crate::manifest::file_name;
 use crate::report::{
     AnsweredData, ChoicesData, DaemonLine, DevicesData, DiagnosticsData, Empty, Envelope,
@@ -26,8 +27,8 @@ fn data(command: &str) -> Option<&'static [Data]> {
         "status" => &[of::<StatusData>],
         "resolve" => &[of::<AnsweredData>],
         "help" | "server" | "server upgrade" | "server delete" => &[],
-        "space" | "folder" | "service" | "device" | "history" | "share" | "telemetry"
-        | "_daemon" => &[],
+        "space" | "folder" | "service" | "device" | "history" | "share" | "gitignore"
+        | "telemetry" | "_daemon" => &[],
         "setup" => &[
             of::<WithApp<WithService<ChoicesData>>>,
             of::<WithApp<WithService<SetupData>>>,
@@ -56,6 +57,8 @@ fn data(command: &str) -> Option<&'static [Data]> {
         "share create" => &[of::<SharedData>],
         "share list" => &[of::<ShareLinksData>],
         "share revoke" => &[of::<ShareLinkData>],
+        "gitignore status" => &[of::<GitignoreStatusData>],
+        "gitignore on" | "gitignore off" => &[of::<GitignoreData>],
         "telemetry status" => &[of::<TelemetryStatusData>],
         "telemetry on" | "telemetry off" | "telemetry reset" => &[of::<ChoiceData>],
         "telemetry preview" => &[of::<Map<String, Value>>],

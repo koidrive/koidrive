@@ -62,9 +62,10 @@
 //!
 //! Scans and watchers given [`Rules`] also leave out what the rules name
 //! (design §5.10): the built-in platform files, and every entry a `.koiignore`
-//! file or the device's own list excludes, with everything below it. A scan
-//! reads the [`RULES_FILE`] of each folder it lists and hands the bytes to
-//! the caller's matcher ([`Ignore`]) before it judges the folder's entries.
+//! or `.gitignore` file or the device's own list excludes, with everything
+//! below it. A scan reads the rules files ([`Source`]) of each folder it lists
+//! and hands the bytes to the caller's matcher ([`Ignore`]) before it judges
+//! the folder's entries.
 //! Being left out is never a removal. An entry a changed rule leaves out
 //! leaves the snapshot without a change, and one a changed rule includes
 //! again is reported as created. While the entry stays on disk, the snapshot
@@ -832,7 +833,7 @@ impl Scan<'_> {
         self.unless_denied(rel, result)
     }
 
-    /// Reads the rules file of the folder `dir` at `rel`, which lists `names`,
+    /// Reads the rules files of the folder `dir` at `rel`, which lists `names`,
     /// before any of its children is judged. A folder whose rules are
     /// [`RulesRead::Unknown`] is unreadable: the caller records it and judges none
     /// of its children.
@@ -944,14 +945,14 @@ pub struct Rescan {
     /// another folder than the caller's root has already applied that folder
     /// to the snapshot, so stop using the snapshot, not only its changes.
     pub root: FileId,
-    /// The folders whose rules file this scan found changed, each with the
-    /// bytes it holds now, or `None` for a folder that has none any more.
-    /// Empty for a scan without [`Rules`].
-    pub rules: Vec<(PathBuf, Option<Vec<u8>>)>,
+    /// The rules files this scan found changed, each as its folder, its kind
+    /// and the bytes it holds now, or `None` for a folder that has none of
+    /// that kind any more. Empty for a scan without [`Rules`].
+    pub rules: Vec<(PathBuf, Source, Option<Vec<u8>>)>,
     /// The folders whose rules this scan established, at the paths it listed
-    /// them: it read their rules file, found none, or could not read one and
+    /// them: it read their rules files, found none, or could not read one and
     /// kept the rules an earlier scan read. A folder reported unreadable
-    /// before has known rules again once it is here, whatever its rules file
+    /// before has known rules again once it is here, whatever its rules files
     /// did meanwhile. Empty for a scan without [`Rules`].
     pub read: Vec<PathBuf>,
     pub settled: Vec<PathBuf>,
@@ -1002,7 +1003,7 @@ impl Snapshot {
     /// [`Snapshot::rescan`], leaving out what `rules` leave out, as the crate
     /// docs describe.
     ///
-    /// In each folder it lists, the scan reads the rules file before it judges
+    /// In each folder it lists, the scan reads the rules files before it judges
     /// the folder's entries, and it returns the folders whose rules changed in
     /// [`Rescan::rules`]. A changed rules file widens the scan to everything
     /// below its folder. An entry the rules now leave out leaves the snapshot
@@ -1923,7 +1924,7 @@ impl Snapshot {
 
     /// Rescans the children of the known folder `parent`: every name in
     /// `focus`, every listed name the snapshot does not know, and every known
-    /// child the listing no longer contains. When the folder's rules file
+    /// child the listing no longer contains. When a rules file of the folder
     /// changed, it rescans every child, because the change can include or
     /// leave out anything below the folder.
     fn scan_children(
@@ -2870,9 +2871,9 @@ pub struct Poll {
     /// The identity of the root folder the scans of this poll opened, or
     /// `None` when the poll scanned nothing; see [`Rescan::root`].
     pub root: Option<FileId>,
-    /// The folders whose rules file the scans of this poll found changed, in
-    /// the order they found them; see [`Rescan::rules`].
-    pub rules: Vec<(PathBuf, Option<Vec<u8>>)>,
+    /// The rules files the scans of this poll found changed, in the order
+    /// they found them; see [`Rescan::rules`].
+    pub rules: Vec<(PathBuf, Source, Option<Vec<u8>>)>,
     /// The folders whose rules the scans of this poll established and that no
     /// later scan of the poll found unreadable; see [`Rescan::read`].
     pub read: Vec<PathBuf>,
@@ -2928,7 +2929,7 @@ pub struct NativeWatcher {
     unreadable: BTreeSet<PathBuf>,
     rules: Option<Rules>,
     /// The rules changes of the scans since the last poll returned.
-    changed_rules: Vec<(PathBuf, Option<Vec<u8>>)>,
+    changed_rules: Vec<(PathBuf, Source, Option<Vec<u8>>)>,
     /// The folders whose rules the scans since the last poll established.
     read: BTreeSet<PathBuf>,
     /// Folders whose subfolders may be unwatched, which are registered once a
@@ -3664,8 +3665,9 @@ pub use effect::{
     Action, BroughtBack, Contents, Displaced, Effect, Outcome, QUARANTINE_DIR, Reason, Refusal,
     STAGING_DIR, Section, Step,
 };
-pub use ignore::{Ignore, Ignored, RULES_FILE, Rules};
+pub use ignore::{Ignore, Ignored, Rules};
 use ignore::{Key, Pending, RulesRead, Seeded, Wanted};
+pub use koidrive_ignore::Source;
 pub use mark::{MarkLog, node_mark};
 pub use recovered::{recovered_name, utc_date};
 pub use resolve::{Base, Dir, Folder, Location, PARKED_DIR, Space, Unresolved};

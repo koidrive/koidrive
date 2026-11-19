@@ -6,7 +6,7 @@ use koidrive_engine::classify::{Origin, Pending, Trees, Waiting};
 use koidrive_engine::commit::Commits;
 use koidrive_engine::effects::{self, Base, BatchLimit, Effect, Effects, Location, Stuck};
 use koidrive_engine::ids::IdGen;
-use koidrive_engine::ignore::{LocalRules, RuleFile};
+use koidrive_engine::ignore::{LocalRules, RuleFile, Source};
 use koidrive_engine::tree::{Content, FileIdentity, Kind, LocalNode, RemoteNode, Shape};
 use koidrive_proto::v1::{self as proto, op};
 
@@ -177,11 +177,11 @@ fn a_rule_excludes_what_it_matches_in_any_tree_and_everything_below_a_folder() {
             .iter()
             .all(|id| !trees.excluded(id))
     );
-    trees.set_rules(&AT_ROOT, rules("logs/\n.koiignore\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("logs/\n.koiignore\n"));
     assert!(["logs", "old", "new"].iter().all(|id| trees.excluded(id)));
     assert!(!trees.excluded("kept"));
     assert!(!trees.excluded("rules"), "a rules file cannot hide itself");
-    trees.set_rules(&AT_ROOT, None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
     assert!(["logs", "old", "new"].iter().all(|id| !trees.excluded(id)));
 }
 
@@ -193,7 +193,7 @@ fn a_synced_node_a_new_rule_matches_is_left_alone_on_both_sides() {
         synced("b", file(ROOT, "b.log", 2)),
         synced("c", file(ROOT, "c.txt", 3)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     assert_eq!(ops(&mut trees), []);
     assert_eq!(effects(&mut trees), []);
 
@@ -226,7 +226,7 @@ fn a_remote_node_that_matches_a_rule_is_not_downloaded() {
         incoming("src", dir(ROOT, "src")),
         incoming("main", file("src", "main.rs", 2)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("/build/\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/build/\n"));
     let done = effects(&mut trees);
     assert_eq!(nodes(&done), ["src", "main"]);
     assert_eq!(ops(&mut trees), []);
@@ -238,11 +238,11 @@ fn a_node_is_synced_again_once_its_rule_is_removed() {
         synced("a", file(ROOT, "a.log", 1)),
         synced("b", file(ROOT, "b.log", 2)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     set_content(&mut trees, "a", 7);
     assert_eq!(effects(&mut trees), []);
 
-    trees.set_rules(&AT_ROOT, rules("# nothing\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("# nothing\n"));
     let mut edited = trees.local().get("b").unwrap().clone();
     edited.shape.content = Some(content(9));
     trees.set_local("b".into(), edited);
@@ -290,7 +290,11 @@ fn the_platform_files_and_the_state_folder_are_excluded_without_any_rule() {
         [],
         "a platform file on disk is not uploaded"
     );
-    trees.set_rules(&AT_ROOT, rules("!.DS_Store\n!Thumbs.db\n!.koidrive/\n"));
+    trees.set_rules(
+        &AT_ROOT,
+        Source::Koiignore,
+        rules("!.DS_Store\n!Thumbs.db\n!.koidrive/\n"),
+    );
     assert_eq!(
         effects(&mut trees),
         [],
@@ -331,7 +335,7 @@ fn a_device_local_include_list_narrows_what_syncs() {
 #[test]
 fn a_file_renamed_to_an_ignored_name_stays_on_the_server_as_it_was() {
     let mut trees = trees(&[synced("a", file(ROOT, "a.txt", 1))]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     place(&mut trees, "a", ROOT, "a.log");
     assert_eq!(ops(&mut trees), [], "neither a move nor a delete is sent");
     set_content(&mut trees, "a", 7);
@@ -409,7 +413,7 @@ fn a_file_moved_into_an_ignored_folder_that_is_no_node_stays_on_the_server_as_it
         synced("inner", dir("d", "inner")),
         synced("b", file("inner", "b.txt", 2)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("/build/\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/build/\n"));
     trees.ignore_local("a");
     trees.ignore_local("inner");
     assert!(trees.excluded("a") && trees.excluded("inner"));
@@ -441,7 +445,7 @@ fn a_file_moved_into_an_ignored_folder_that_is_no_node_stays_on_the_server_as_it
 fn holding_an_excluded_folders_name(incoming: RemoteNode) -> Trees {
     let mut trees = trees(&[("kept", Some(dir(ROOT, "ig")), None, None)]);
     trees.set_remote("f".into(), incoming);
-    trees.set_rules(&AT_ROOT, rules("/ig/\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/ig/\n"));
     assert!(trees.excluded("kept"));
     trees
 }
@@ -468,7 +472,7 @@ fn a_server_file_at_an_excluded_folders_name_is_renamed_from_its_place_to_a_conf
 #[test]
 fn a_server_file_at_an_excluded_folders_name_the_rules_leave_no_conflict_name_for_is_reported() {
     let mut trees = holding_an_excluded_folders_name(remote(file(ROOT, "ig", 1)));
-    trees.set_rules(&AT_ROOT, rules("/ig/\n*conflict*\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/ig/\n*conflict*\n"));
     assert_eq!(ops(&mut trees), []);
     let renaming = Commits::default().renaming(&trees, NOW);
     assert_eq!(
@@ -490,7 +494,7 @@ fn a_server_file_under_a_pending_name_at_an_excluded_folders_name_is_not_renamed
 #[test]
 fn a_node_the_user_moves_out_of_an_ignored_path_is_moved_on_the_server() {
     let mut trees = trees(&[synced("a", file(ROOT, "a.log", 1))]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     assert!(trees.excluded("a"));
     place(&mut trees, "a", ROOT, "a.txt");
     assert!(!trees.excluded("a"));
@@ -511,7 +515,7 @@ fn a_remote_move_into_an_ignored_path_leaves_the_local_copy_where_it_is() {
         synced("b", file(ROOT, "b.txt", 2)),
         incoming("build", dir(ROOT, "build")),
     ]);
-    trees.set_rules(&AT_ROOT, rules("/build/\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/build/\n"));
     for id in ["a", "b"] {
         let mut node = trees.remote().get(id).unwrap().clone();
         node.shape.parent = "build".into();
@@ -543,7 +547,7 @@ fn deleting_a_folder_that_holds_an_excluded_node_deletes_only_the_rest() {
         synced("sub", dir("d", "sub")),
         synced("deep", file("sub", "c.txt", 3)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     for id in ["deep", "sub", "txt", "log", "d"] {
         trees.remove_local(id);
     }
@@ -572,7 +576,7 @@ fn a_remote_change_to_an_excluded_node_does_not_bring_back_a_folder_the_user_del
         synced("d", dir(ROOT, "d")),
         synced("log", file("d", "a.log", 1)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     trees.remove_local("log");
     trees.remove_local("d");
     assert_eq!(ops(&mut trees), [], "the folder holds an excluded file");
@@ -600,7 +604,7 @@ fn a_folder_deleted_here_that_another_device_moved_comes_back_there_and_frees_it
             Some(file(ROOT, "d", 2)),
         ),
     ]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     assert!(trees.kept_for_excluded()("d"));
     assert_eq!(ops(&mut trees), []);
     assert_eq!(nodes(&effects(&mut trees)), ["d"]);
@@ -608,7 +612,7 @@ fn a_folder_deleted_here_that_another_device_moved_comes_back_there_and_frees_it
     assert_eq!(trees.synced().live("d"), Some(&dir("m", "d")));
     assert_eq!(trees.synced().live("new"), Some(&file(ROOT, "d", 2)));
     assert_eq!(trees.check(), Ok(()));
-    trees.set_rules(&AT_ROOT, None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
     assert_eq!(ops(&mut trees), [delete("log")]);
 }
 
@@ -632,7 +636,7 @@ fn a_kept_folder_and_the_node_that_takes_its_name_swap_names_in_s() {
                 Some(holder(ROOT, "d")),
             ),
         ]);
-        trees.set_rules(&AT_ROOT, rules("*.log\n"));
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
         assert!(trees.kept_for_excluded()("d"));
         assert_eq!(ops(&mut trees), []);
         assert_eq!(nodes(&effects(&mut trees)), ["d"]);
@@ -655,7 +659,7 @@ fn a_parked_node_the_rules_now_exclude_is_moved_back_to_where_l_keeps_it() {
         ..local(file(ROOT, "a.txt", 1), 1)
     };
     trees.set_local("a".into(), parked);
-    trees.set_rules(&AT_ROOT, rules("a.txt\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("a.txt\n"));
     assert!(trees.ignored("a") && !trees.excluded("a"));
     let done = effects(&mut trees);
     let [(_, Effect::Move { from, to, .. })] = &done[..] else {
@@ -692,7 +696,7 @@ fn a_node_whose_place_an_excluded_node_holds_is_not_parked_to_make_room() {
         ),
         incoming("new", file(ROOT, "draft.txt", 3)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     assert!(trees.excluded("old"), "its local copy stays at notes.txt");
     assert_eq!(effects(&mut trees), []);
     assert!(!trees.local().get("draft").unwrap().parked);
@@ -720,7 +724,7 @@ fn a_parked_node_whose_old_name_another_node_took_follows_r_into_the_folder_the_
         ..local(dir(ROOT, "docs"), 9)
     };
     trees.set_local("old".into(), parked.clone());
-    trees.set_rules(&AT_ROOT, rules("/archive/\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/archive/\n"));
     let to = Location::At {
         base: Base::Root,
         dirs: vec![],
@@ -764,7 +768,7 @@ fn parked_excluded_folder() -> (Trees, LocalNode) {
         ..local(dir(ROOT, "docs"), 9)
     };
     trees.set_local("old".into(), parked.clone());
-    trees.set_rules(&AT_ROOT, rules("/archive/\n*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/archive/\n*.log\n"));
     (trees, parked)
 }
 
@@ -822,7 +826,7 @@ fn an_excluded_folder_s_cannot_follow_to_r_frees_its_name_in_s_all_the_same() {
             Some(dir(ROOT, "docs")),
         ),
     ]);
-    trees.set_rules(&AT_ROOT, rules("/x/\n/y/\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/x/\n/y/\n"));
     assert!(trees.excluded("moved") && trees.excluded("far"));
     assert_eq!(effects(&mut trees), []);
     assert_eq!(ops(&mut trees), []);
@@ -851,7 +855,7 @@ fn a_folder_is_not_parked_to_move_below_an_excluded_folder_it_holds() {
         ),
         synced("b", dir("x", "b")),
     ]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     assert!(trees.excluded("x") && trees.excluded("b") && trees.excluded("a"));
     assert_eq!(
         effects(&mut trees),
@@ -885,7 +889,7 @@ fn an_excluded_node_whose_s_update_waits_is_not_parked_to_make_room() {
     };
     state.waiting.insert("old".into(), acknowledged);
     assert_eq!(trees.restore(state), Ok(()));
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     trees.rules_scanned();
     assert!(trees.excluded("old") && trees.waiting().contains_key("old"));
     assert_eq!(effects(&mut trees), []);
@@ -896,7 +900,7 @@ fn an_excluded_node_whose_s_update_waits_is_not_parked_to_make_room() {
 #[test]
 fn s_of_an_excluded_node_takes_what_l_and_r_both_hold() {
     let mut trees = trees(&[synced("a", file(ROOT, "a.log", 1))]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     set_content(&mut trees, "a", 7);
     trees.set_local("a".into(), local(file(ROOT, "a.log", 7), 1));
     trees.set_local("b".into(), local(file(ROOT, "b.log", 2), 2));
@@ -912,13 +916,22 @@ fn s_of_an_excluded_node_takes_what_l_and_r_both_hold() {
 
 #[test]
 fn a_remote_rules_file_is_written_before_anything_else_below_its_folder() {
+    a_remote_rules_file_of_kind_is_written_first(Source::Koiignore);
+}
+
+#[test]
+fn a_remote_gitignore_file_is_written_before_anything_else_below_its_folder() {
+    a_remote_rules_file_of_kind_is_written_first(Source::Gitignore);
+}
+
+fn a_remote_rules_file_of_kind_is_written_first(source: Source) {
     let mut trees = trees(&[
         synced("d", dir(ROOT, "d")),
         incoming("a-outside", file(ROOT, "z.txt", 1)),
         incoming("b-secret", file("d", "secret.txt", 2)),
         incoming("c-sub", dir("d", "sub")),
         incoming("d-deep", file("c-sub", "deep.txt", 3)),
-        incoming("z-rules", file("d", ".koiignore", 4)),
+        incoming("z-rules", file("d", source.file_name(), 4)),
     ]);
     let (mut effects, mut ids, mut order) = (Effects::default(), IdGen::new(2), Vec::new());
     loop {
@@ -935,7 +948,7 @@ fn a_remote_rules_file_is_written_before_anything_else_below_its_folder() {
             .done(&mut trees, None, &record.effect_id, Some(made))
             .unwrap();
         if record.node == "z-rules" {
-            trees.set_rules(&["d"], rules("secret.txt\n"));
+            trees.set_rules(&["d"], source, rules("secret.txt\n"));
         }
         order.push(record.node);
     }
@@ -951,7 +964,7 @@ fn nothing_is_planned_after_a_restore_until_the_rules_are_scanned() {
         synced("txt", file("d", "b.txt", 2)),
         synced("gone", file(ROOT, "gone.log", 3)),
     ]);
-    before.set_rules(&AT_ROOT, rules("*.log\n"));
+    before.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     before.remove_local("log");
     before.remove_local("txt");
     trash(&mut before, "gone");
@@ -980,7 +993,7 @@ fn nothing_is_planned_after_a_restore_until_the_rules_are_scanned() {
         "and remove the local copy of the other"
     );
 
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     trees.rules_scanned();
     assert_eq!(ops(&mut trees), [delete("txt")]);
     assert_eq!(effects(&mut trees), []);
@@ -1009,7 +1022,7 @@ fn reading_a_folder_keeps_the_hold_of_its_namesake_in_another_case() {
     ]);
     assert_eq!(trees.check(), Ok(()));
     trees.set_rules_unknown("upper");
-    trees.set_rules(&["proj"], None);
+    trees.set_rules(&["proj"], Source::Koiignore, None);
     trees.set_rules_known("lower");
     assert!(trees.held("unknown"));
 }
@@ -1042,7 +1055,7 @@ fn a_server_entry_in_a_folder_whose_path_here_the_rules_exclude_is_not_written_t
         ),
         incoming("c", file("f", "a", 1)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("ss/\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("ss/\n"));
     assert!(trees.excluded("f"));
     assert!(
         trees.excluded("c"),
@@ -1072,7 +1085,7 @@ fn what_a_folder_moved_into_a_folder_excluded_here_holds_stays_out_too() {
         synced("c", file("f", "c", 1)),
         incoming("d", file("f", "d", 2)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("ss/\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("ss/\n"));
     assert!(trees.excluded("f") && trees.excluded("c") && trees.excluded("d"));
     assert_eq!(ops(&mut trees), []);
     assert_eq!(effects(&mut trees), []);
@@ -1100,7 +1113,7 @@ fn what_a_folder_whose_place_here_the_rules_exclude_holds_stays_out_too() {
         synced("c", file("f", "c", 1)),
         incoming("d", file("f", "d", 2)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("ss/\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("ss/\n"));
     assert!(trees.excluded("p") && trees.excluded("f"));
     assert!(trees.excluded("c") && trees.excluded("d"));
     assert_eq!(effects(&mut trees), []);
@@ -1120,7 +1133,7 @@ fn a_server_entry_is_not_written_where_the_rules_exclude_it_in_its_folder_here()
         ("z", Some(file(ROOT, "z", 2)), None, None),
         incoming("c", file("f", "c", 1)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("/y/c\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/y/c\n"));
     assert!(!trees.excluded("f") && trees.excluded("c"));
     assert_eq!(
         effects(&mut trees),
@@ -1144,7 +1157,7 @@ fn what_a_new_server_folder_whose_place_here_the_rules_exclude_holds_stays_out_t
         incoming("c", dir("a", "c")),
         incoming("x", file("c", "x", 1)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("/y/a/c\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/y/a/c\n"));
     assert!(!trees.excluded("p") && !trees.excluded("a"));
     assert!(trees.excluded("c") && trees.excluded("x"));
     assert_eq!(effects(&mut trees), []);
@@ -1162,7 +1175,7 @@ fn a_new_server_entry_in_a_folder_the_rules_exclude_at_its_synced_place_stays_ou
         synced("a", dir("p", "a")),
         incoming("x", file("a", "x", 1)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("/y/a\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/y/a\n"));
     assert!(!trees.excluded("p") && trees.excluded("a"));
     assert!(trees.excluded("x"));
     assert!(!nodes(&effects(&mut trees)).contains(&"x"));
@@ -1199,7 +1212,7 @@ fn a_folder_renamed_here_keeps_planning_below_it_fast() {
             remote(file(&bottom, &format!("g{j}.txt"), 2)),
         );
     }
-    trees.set_rules(&AT_ROOT, rules("ss/\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("ss/\n"));
     let started = std::time::Instant::now();
     assert_eq!(ops(&mut trees).len(), 1);
     let took = started.elapsed();
@@ -1213,7 +1226,7 @@ fn a_folder_renamed_here_keeps_planning_below_it_fast() {
 #[test]
 fn a_file_another_device_owed_a_rename_to_an_ignored_name_stays_where_it_is() {
     let mut trees = trees(&[synced("a", file(ROOT, "a.txt", 1))]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     trees.set_remote(
         "a".into(),
         RemoteNode {
@@ -1235,7 +1248,7 @@ fn a_kept_folder_another_device_moves_below_the_folder_taking_its_stale_name_com
         synced("d", dir(ROOT, "ss")),
         synced("log", file("d", "a.log", 1)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     trees.remove_local("log");
     trees.remove_local("d");
     trees.set_remote("d".into(), remote(dir(ROOT, "b")));
@@ -1259,7 +1272,7 @@ fn a_kept_folder_another_device_renames_comes_back_with_the_child_the_rules_let_
         synced("d", dir(ROOT, "ss")),
         synced("log", file("d", "a.log", 1)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("/ss/a.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/ss/a.log\n"));
     trees.remove_local("log");
     trees.remove_local("d");
     trees.set_remote("d".into(), remote(dir(ROOT, "b")));
@@ -1283,14 +1296,14 @@ fn a_node_deleted_while_excluded_is_downloaded_again_when_the_rules_let_it_in() 
         synced("deep", file("sub", "report.docx", 2)),
         synced("log", file(ROOT, "a.log", 3)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("dist/\n*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("dist/\n*.log\n"));
     for id in ["deep", "sub", "app", "dist", "log"] {
         trees.remove_local(id);
     }
     assert_eq!(ops(&mut trees), []);
     assert_eq!(effects(&mut trees), []);
 
-    trees.set_rules(&AT_ROOT, None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
     assert_eq!(ops(&mut trees), []);
     let mut done = nodes(&effects(&mut trees))
         .into_iter()
@@ -1315,7 +1328,7 @@ fn a_file_that_vanished_in_a_deleted_folder_the_server_keeps_for_an_excluded_fil
         synced("e", dir(ROOT, "e")),
         synced("p", dir(ROOT, "p")),
     ]);
-    trees.set_rules(&AT_ROOT, rules("e/\n*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("e/\n*.log\n"));
     assert_eq!(ops(&mut trees), []);
     rename_here(&mut trees, "v", "p", "v.log");
     rename_here(&mut trees, "x", "e", "x.docx");
@@ -1342,12 +1355,12 @@ fn a_folder_deleted_with_the_excluded_file_it_holds_comes_back_with_it_when_the_
         synced("d", dir(ROOT, "d")),
         synced("log", file("d", "a.log", 1)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     trees.remove_local("log");
     trees.remove_local("d");
     assert_eq!(ops(&mut trees), []);
 
-    trees.set_rules(&AT_ROOT, None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
     trees.listed(&[ROOT.into()], Pending::default());
     assert_eq!(ops(&mut trees), []);
     assert_eq!(nodes(&effects(&mut trees)), ["d", "log"]);
@@ -1362,9 +1375,9 @@ fn a_node_deleted_after_the_rules_let_it_in_again_is_deleted() {
         synced("app", file("dist", "app.js", 1)),
         synced("log", file(ROOT, "a.log", 2)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("dist/\n*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("dist/\n*.log\n"));
     assert_eq!(ops(&mut trees), []);
-    trees.set_rules(&AT_ROOT, None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
     trees.listed(&[ROOT.into(), "dist".into()], Pending::default());
     for id in ["app", "dist", "log"] {
         trees.remove_local(id);
@@ -1383,7 +1396,7 @@ fn the_mark_of_an_excluded_dist_after_the_server_drops_it(drop_remote: impl Fn(&
                 synced("d", dir(ROOT, "dist")),
                 synced("a", file("d", "a.js", 1)),
             ]);
-            trees.set_rules(&AT_ROOT, rules("dist/\n"));
+            trees.set_rules(&AT_ROOT, Source::Koiignore, rules("dist/\n"));
             assert_eq!(ops(&mut trees), []);
             if vanished {
                 trees.remove_local("a");
@@ -1400,7 +1413,7 @@ fn the_mark_of_an_excluded_dist_after_the_server_drops_it(drop_remote: impl Fn(&
             assert_eq!(ops(&mut trees), [], "{case}");
             assert_eq!(effects(&mut trees), [], "{case}");
             if lift {
-                trees.set_rules(&AT_ROOT, None);
+                trees.set_rules(&AT_ROOT, Source::Koiignore, None);
                 trees.listed(&[ROOT.into(), "d".into()], Pending::default());
             }
             assert_eq!(ops(&mut trees), [], "{case}");
@@ -1488,7 +1501,7 @@ fn a_file_the_server_moved_out_of_an_excluded_folder_it_trashed_downloads_again_
         synced("d", dir(ROOT, "dist")),
         synced("f", file("d", "f.docx", 1)),
     ]);
-    before.set_rules(&AT_ROOT, rules("dist/\n"));
+    before.set_rules(&AT_ROOT, Source::Koiignore, rules("dist/\n"));
     assert_eq!(ops(&mut before), []);
     before.remove_local("f");
     before.remove_local("d");
@@ -1498,7 +1511,7 @@ fn a_file_the_server_moved_out_of_an_excluded_folder_it_trashed_downloads_again_
     trash(&mut before, "d");
 
     let mut trees = restarted(&before);
-    trees.set_rules(&AT_ROOT, rules("dist/\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("dist/\n"));
     trees.rules_scanned();
     assert_eq!(ops(&mut trees), []);
     assert_eq!(nodes(&effects(&mut trees)), ["f"]);
@@ -1511,7 +1524,7 @@ fn a_file_the_server_moved_out_of_an_excluded_folder_it_trashed_downloads_again_
 fn a_node_whose_copy_vanished_while_excluded_keeps_its_place_until_the_rules_are_scanned_after_a_restart()
  {
     let mut before = trees(&[synced("a", file(ROOT, "a.log", 1))]);
-    before.set_rules(&AT_ROOT, rules("*.log\n"));
+    before.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     assert_eq!(ops(&mut before), []);
     before.remove_local("a");
     assert_eq!(ops(&mut before), []);
@@ -1527,7 +1540,7 @@ fn a_node_whose_copy_vanished_while_excluded_keeps_its_place_until_the_rules_are
         Some("a")
     );
 
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     trees.rules_scanned();
     assert_eq!(ops(&mut trees), []);
     assert_eq!(effects(&mut trees), []);
@@ -1538,7 +1551,7 @@ fn a_node_whose_copy_vanished_while_excluded_keeps_its_place_until_the_rules_are
         Some("a")
     );
 
-    trees.set_rules(&AT_ROOT, None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
     trees.listed(&[ROOT.into()], Pending::default());
     assert_eq!(ops(&mut trees), []);
     assert_eq!(nodes(&effects(&mut trees)), ["a"]);
@@ -1551,13 +1564,13 @@ fn an_excluded_file_lost_with_its_folder_downloads_as_the_same_node_after_the_fo
         synced("d", dir(ROOT, "dist")),
         synced("log", file("d", "a.log", 1)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("dist/\n*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("dist/\n*.log\n"));
     assert_eq!(ops(&mut trees), []);
     trees.remove_local("log");
     trees.remove_local("d");
     assert_eq!(ops(&mut trees), []);
 
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     trees.listed(&[ROOT.into()], Pending::default());
     assert_eq!(ops(&mut trees), []);
     assert_eq!(nodes(&effects(&mut trees)), ["d"]);
@@ -1565,7 +1578,7 @@ fn an_excluded_file_lost_with_its_folder_downloads_as_the_same_node_after_the_fo
     assert_eq!(trees.synced().live("log"), None);
     assert_eq!(trees.local().live("log"), None);
 
-    trees.set_rules(&AT_ROOT, None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
     trees.listed(&[ROOT.into(), "d".into()], Pending::default());
     assert_eq!(ops(&mut trees), []);
     assert_eq!(nodes(&effects(&mut trees)), ["log"]);
@@ -1580,7 +1593,7 @@ fn a_node_whose_copy_vanished_below_a_folder_with_unread_rules_waits_for_them() 
         synced("d", dir(ROOT, "d")),
         synced("f", file("d", "f.txt", 1)),
     ]);
-    before.set_rules(&["d"], rules("f.txt\n"));
+    before.set_rules(&["d"], Source::Koiignore, rules("f.txt\n"));
     assert_eq!(ops(&mut before), []);
     assert!(before.unobserved("f"));
     before.remove_local("f");
@@ -1599,7 +1612,7 @@ fn a_node_whose_copy_vanished_below_a_folder_with_unread_rules_waits_for_them() 
         Some("f")
     );
 
-    trees.set_rules(&["d"], rules("f.txt\n"));
+    trees.set_rules(&["d"], Source::Koiignore, rules("f.txt\n"));
     trees.set_rules_known("d");
     assert_eq!(ops(&mut trees), []);
     assert_eq!(effects(&mut trees), []);
@@ -1610,7 +1623,7 @@ fn a_node_whose_copy_vanished_below_a_folder_with_unread_rules_waits_for_them() 
         Some("f")
     );
 
-    trees.set_rules(&["d"], None);
+    trees.set_rules(&["d"], Source::Koiignore, None);
     trees.listed(&[ROOT.into(), "d".into()], Pending::default());
     assert_eq!(ops(&mut trees), []);
     assert_eq!(nodes(&effects(&mut trees)), ["f"]);
@@ -1623,7 +1636,7 @@ fn a_file_moved_out_of_an_excluded_folder_keeps_its_move_when_the_folder_vanishe
         synced("f", file("d", "f.docx", 1)),
         synced("g", file("d", "g.docx", 2)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("dist/\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("dist/\n"));
     assert_eq!(ops(&mut trees), []);
     place(&mut trees, "f", ROOT, "f.docx");
     trees.remove_local("g");
@@ -1639,7 +1652,7 @@ fn a_file_moved_out_of_an_excluded_folder_keeps_its_move_when_the_folder_vanishe
     moved.shape.parent = ROOT.into();
     trees.set_remote("f".into(), moved);
 
-    trees.set_rules(&AT_ROOT, None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
     trees.listed(&[ROOT.into()], Pending::default());
     let mut done: Vec<String> = nodes(&effects(&mut trees))
         .into_iter()
@@ -1660,7 +1673,7 @@ fn a_file_below_a_folder_renamed_out_of_the_rules_stays_observed_after_the_relis
         synced("sub", dir("d", "sub")),
         synced("f", file("sub", "f.docx", 1)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("dist/\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("dist/\n"));
     assert_eq!(ops(&mut trees), []);
     rename_here(&mut trees, "d", ROOT, "shipped");
     assert_eq!(trees.take_relist(), ["d"]);
@@ -1682,7 +1695,7 @@ fn a_folder_removed_with_only_an_excluded_file_left_in_it_stays_removed_after_it
         synced("log", file("d", "a.log", 1)),
         synced("txt", file("d", "b.txt", 2)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     assert_eq!(ops(&mut trees), []);
     for id in ["log", "txt", "d"] {
         trees.remove_local(id);
@@ -1706,7 +1719,7 @@ fn a_file_removed_below_a_folder_renamed_into_the_rules_downloads_once_s_follows
         synced("sub", dir("d", "sub")),
         synced("f", file("sub", "f.docx", 1)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("dist/\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("dist/\n"));
     assert_eq!(ops(&mut trees), []);
     rename_here(&mut trees, "d", ROOT, "shipped");
     assert_eq!(trees.take_relist(), ["d"]);
@@ -1736,7 +1749,7 @@ fn a_file_renamed_out_of_the_rules_downloads_again_at_its_synced_place_when_its_
         synced("f", file("d", "f.docx", 1)),
         synced("p", dir(ROOT, "p")),
     ]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     assert_eq!(ops(&mut trees), []);
     rename_here(&mut trees, "f", "p", "f.log");
     assert_eq!(ops(&mut trees), []);
@@ -1756,7 +1769,7 @@ fn a_file_removed_below_a_folder_renamed_back_into_the_rules_before_a_scan_lists
         synced("d", dir(ROOT, "d")),
         synced("f", file("d", "f.docx", 1)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     assert_eq!(ops(&mut trees), []);
     rename_here(&mut trees, "d", ROOT, "d.log");
     trees.settle(&Default::default());
@@ -1779,7 +1792,7 @@ fn a_folder_deleted_with_a_file_that_vanished_while_renamed_out_of_the_rules_sta
         synced("g", file("d", "g.docx", 2)),
         synced("p", dir(ROOT, "p")),
     ]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     assert_eq!(ops(&mut trees), []);
     rename_here(&mut trees, "f", "p", "f.log");
     assert_eq!(ops(&mut trees), []);
@@ -1841,7 +1854,7 @@ fn a_file_renamed_out_of_the_rules_downloads_again_however_its_folder_is_moved_r
             synced("p", dir(ROOT, "p")),
             synced("q", dir(ROOT, "q")),
         ]);
-        trees.set_rules(&AT_ROOT, rules("*.log\n"));
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
         assert_eq!(ops(&mut trees), []);
         if case == 5 {
             renamed_there(&mut trees);
@@ -1902,7 +1915,7 @@ fn a_file_whose_folder_is_deleted_around_it_downloads_again_after_a_restart_with
         synced("g", file("d", "g.docx", 2)),
         synced("p", dir(ROOT, "p")),
     ]);
-    before.set_rules(&AT_ROOT, rules("*.log\n"));
+    before.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     assert_eq!(ops(&mut before), []);
     rename_here(&mut before, "f", "p", "f.log");
     assert_eq!(ops(&mut before), []);
@@ -1912,7 +1925,7 @@ fn a_file_whose_folder_is_deleted_around_it_downloads_again_after_a_restart_with
     assert_eq!(ops(&mut before), [delete("p"), delete("g")]);
 
     let mut trees = restarted(&before);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     trees.rules_scanned();
     trash(&mut trees, "p");
     trash(&mut trees, "g");
@@ -1927,9 +1940,9 @@ fn a_file_whose_folder_is_deleted_around_it_downloads_again_after_a_restart_with
 #[test]
 fn a_file_a_scan_reports_as_l_holds_it_after_the_rules_let_it_in_again_is_deleted_once_removed() {
     let mut trees = trees(&[synced("f", file(ROOT, "f.docx", 1))]);
-    trees.set_rules(&AT_ROOT, rules("*.docx\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.docx\n"));
     assert_eq!(ops(&mut trees), []);
-    trees.set_rules(&AT_ROOT, None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
     assert_eq!(ops(&mut trees), []);
     assert!(trees.unobserved("f"));
     let held = trees.local().get("f").unwrap().clone();
@@ -1952,7 +1965,7 @@ fn a_file_the_rules_of_the_folder_it_moves_into_leave_out_downloads_again_after_
         synced("log", file("p", "a.log", 1)),
         synced("q", dir(ROOT, "q")),
     ]);
-    trees.set_rules(&["q"], rules("*.log\n"));
+    trees.set_rules(&["q"], Source::Koiignore, rules("*.log\n"));
     assert_eq!(ops(&mut trees), []);
     place(&mut trees, "p", "q", "p");
     let sent = ops(&mut trees);
@@ -1964,7 +1977,7 @@ fn a_file_the_rules_of_the_folder_it_moves_into_leave_out_downloads_again_after_
     assert!(trees.unobserved("log"));
     trees.remove_local("log");
     assert_eq!(ops(&mut trees), []);
-    trees.set_rules(&["q"], None);
+    trees.set_rules(&["q"], Source::Koiignore, None);
     trees.listed(&["q".into(), "p".into()], Pending::default());
     assert_eq!(ops(&mut trees), []);
     assert_eq!(nodes(&effects(&mut trees)), ["log"]);
@@ -1991,7 +2004,7 @@ fn excluded_and_removed_in_one_batch(folder: bool, rules_first: bool, stopped: b
         false => before,
     };
     let exclude = |trees: &mut Trees| {
-        trees.set_rules(&AT_ROOT, rules(rule));
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules(rule));
         trees.rules_scanned();
     };
     if rules_first {
@@ -2005,7 +2018,7 @@ fn excluded_and_removed_in_one_batch(folder: bool, rules_first: bool, stopped: b
     }
     assert_eq!(ops(&mut trees), []);
     assert_eq!(effects(&mut trees), []);
-    trees.set_rules(&AT_ROOT, None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
     trees.listed(&[ROOT.into()], Pending::default());
     trees
 }
@@ -2049,18 +2062,18 @@ fn a_folder_removed_while_left_out_comes_back_whole_with_a_removed_folder_the_se
         synced("ss", dir("a", "ss")),
         incoming("c", file("ss", "c.txt", 2)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("c.txt\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("c.txt\n"));
     assert_eq!(ops(&mut trees), []);
     trees.remove_local("ss");
     assert_eq!(ops(&mut trees), []);
-    trees.set_rules(&AT_ROOT, rules("c.txt\na/\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("c.txt\na/\n"));
     assert_eq!(ops(&mut trees), []);
     assert!(trees.unobserved("a") && trees.unobserved("A"));
     trees.remove_local("A");
     trees.remove_local("a");
     assert_eq!(ops(&mut trees), []);
 
-    trees.set_rules(&AT_ROOT, rules("c.txt\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("c.txt\n"));
     trees.listed(&[ROOT.into()], Pending::default());
     assert_eq!(ops(&mut trees), []);
     assert_eq!(nodes(&effects(&mut trees)), ["a", "A", "ss"]);
@@ -2080,13 +2093,13 @@ fn a_released_file_moved_into_a_folder_whose_release_waits_on_unknown_rules_keep
         synced("v", dir("u", "v")),
         synced("f", file(ROOT, "f.docx", 1)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("v/\nf.docx\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("v/\nf.docx\n"));
     assert_eq!(ops(&mut trees), []);
     trees.remove_local("f");
     trees.remove_local("v");
     assert_eq!(ops(&mut trees), []);
     trees.set_rules_unknown("u");
-    trees.set_rules(&AT_ROOT, None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
     ops(&mut trees);
     assert!(trees.synced().get("f").is_none() && trees.synced().get("v").is_some());
     trees.set_remote("f".into(), remote(file("v", "f.docx", 1)));
@@ -2101,11 +2114,11 @@ fn a_vanished_node_below_a_folder_the_user_moved_waits_while_its_place_on_disk_i
             synced("d", dir(ROOT, "dist")),
             synced("a", file("d", "a.log", 1)),
         ]);
-        trees.set_rules(&AT_ROOT, rules("*.log\n"));
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
         assert_eq!(ops(&mut trees), []);
         trees.remove_local("a");
         place(&mut trees, "d", ROOT, "out");
-        trees.set_rules(&AT_ROOT, None);
+        trees.set_rules(&AT_ROOT, Source::Koiignore, None);
         trees.listed(&[ROOT.into()], Pending::new([pending.split('/')]));
         trees.settle(&Default::default());
         assert_eq!(
@@ -2128,10 +2141,10 @@ fn a_folder_whose_copy_goes_while_pending_keeps_what_a_release_took_from_it_wait
         synced("x", file("p", "x.txt", 1)),
         synced("y", file("p", "y.txt", 2)),
     ]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     assert_eq!(ops(&mut trees), []);
     trees.remove_local("x");
-    trees.set_rules(&AT_ROOT, None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
     trees.listed(&[], Pending::default());
     trees.settle(&Default::default());
     assert_eq!(trees.synced().live("x"), None);
@@ -2152,7 +2165,7 @@ fn a_create_removed_while_excluded_leaves_no_mark_once_no_commit_sends_it() {
     let mut trees = trees(&[]);
     trees.set_local("n".into(), local(file(ROOT, "n.log", 1), 1));
     assert!(matches!(ops(&mut trees)[..], [op::Op::CreateFile(_)]));
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     trees.remove_local("n");
     trees.settle(&Default::default());
     assert_eq!(trees.check(), Ok(()));
@@ -2164,10 +2177,10 @@ fn a_create_removed_while_excluded_leaves_no_mark_once_no_commit_sends_it() {
 #[test]
 fn a_file_waiting_under_a_name_that_differs_only_in_case_keeps_its_place_pending() {
     let mut trees = trees(&[synced("x", file(ROOT, "x.log", 1))]);
-    trees.set_rules(&AT_ROOT, rules("*.log\n"));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
     assert_eq!(ops(&mut trees), []);
     trees.remove_local("x");
-    trees.set_rules(&AT_ROOT, None);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
     let renamed =
         Pending::new(Vec::<Vec<&str>>::new()).waiting([(["X.log"], true), (["x.log"], false)]);
     trees.listed(&[], renamed);
@@ -2192,7 +2205,7 @@ fn an_excluded_node_the_server_renames_keeps_its_synced_entries_while_their_old_
             synced("p", dir(ROOT, "p.log")),
             synced("x", file(parent, "x.log", 1)),
         ]);
-        trees.set_rules(&AT_ROOT, rules("*.log\n"));
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
         assert_eq!(ops(&mut trees), []);
         trees.remove_local("x");
         trees.remove_local(renamed);
@@ -2221,7 +2234,7 @@ fn an_excluded_file_the_server_moves_keeps_its_synced_entry_while_its_place_in_r
             false => incoming("p", dir(ROOT, "dest")),
         };
         let mut trees = trees(&[synced("x", file(ROOT, "x.log", 1)), folder]);
-        trees.set_rules(&AT_ROOT, rules("*.log\n"));
+        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.log\n"));
         ops(&mut trees);
         trees.remove_local("x");
         if folder_in_s {

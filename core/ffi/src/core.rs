@@ -3,9 +3,10 @@
 use std::sync::{Arc, Weak};
 
 use crate::types::{
-    Account, Answer, AppCrashStamp, Device, FileVersions, LinkedFolder, NewShareLink, PairingCode,
-    RestoreAsked, RestoreRequest, ServerInfo, SessionError, SessionEvent, SessionState,
-    ShareExpiry, ShareLink, Space, SpaceUsage, TelemetrySetting, Trash, UpdateResult, UpdateStatus,
+    Account, Answer, AppCrashStamp, Device, FileVersions, GitignoreOnly, LinkedFolder,
+    NewShareLink, PairingCode, RestoreAsked, RestoreRequest, ServerInfo, SessionError,
+    SessionEvent, SessionState, ShareExpiry, ShareLink, Space, SpaceUsage, TelemetrySetting, Trash,
+    UpdateResult, UpdateStatus,
 };
 
 pub(crate) fn refuse_line_breaks(password: &str) -> Result<(), SessionError> {
@@ -203,6 +204,17 @@ pub trait Core: Send + Sync {
     /// keeping only what [`koidrive_telemetry::Store::absorb_app_crash`] reads. Ok once the crash is queued or is not to
     /// be recorded, so the app can delete the report; an error leaves the report for the next launch.
     fn record_app_crash(&self, report: &str) -> Result<(), SessionError>;
+
+    /// Whether this device leaves out what the `.gitignore` files of its folders exclude, as `gitignore` under `[sync]`
+    /// in the profile's config.toml says. It reads that file and never talks to the daemon.
+    fn gitignore(&self) -> bool;
+    /// Follows the `.gitignore` files of every folder, or stops following them, as `koi gitignore on` and
+    /// `koi gitignore off` do. Nothing is deleted on either side: what they start excluding stays on disk and on the
+    /// server, and what they stop excluding syncs.
+    fn set_gitignore(&self, follow: bool) -> Result<(), SessionError>;
+    /// Counts what only the `.gitignore` files of the folder linked to `space_id` exclude, on disk now: what
+    /// `set_gitignore(false)` would start syncing. It reads the whole folder.
+    fn gitignore_only(&self, space_id: &str) -> Result<GitignoreOnly, SessionError>;
 
     /// Updates Koidrive on this Mac to the newest release, as `koi update` does for this install. The updater quits the
     /// running app before it replaces it and opens it again afterwards, so a call from that app usually ends with

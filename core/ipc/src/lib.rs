@@ -132,6 +132,16 @@ pub enum Request {
     },
     /// `Driver::check_for_updates_now`.
     CheckForUpdates,
+    /// `Driver::follows_gitignore`.
+    Gitignore,
+    /// `Driver::set_gitignore`.
+    SetGitignore {
+        follow: bool,
+    },
+    /// `Driver::gitignore_only`: what only the `.gitignore` files of the linked folder at `folder` leave out.
+    GitignoreOnly {
+        folder: PathBuf,
+    },
     /// Runs `run` once for `request_id`: a later request with the same ID and key gets the first response, and one
     /// with another key fails as stale.
     Once {
@@ -243,6 +253,25 @@ pub enum Response {
     UpdateChecked {
         update: Update,
         version: String,
+    },
+    Gitignore {
+        follows: bool,
+    },
+    /// The setting after [`Request::SetGitignore`], and whether it held already.
+    GitignoreSet {
+        follows: bool,
+        already: bool,
+    },
+    GitignoreOnly {
+        files: u64,
+        bytes: u64,
+        /// The folders whose files the count leaves out because they cannot be read.
+        #[serde(
+            default,
+            skip_serializing_if = "Vec::is_empty",
+            serialize_with = "koidrive_driver::lossy_paths"
+        )]
+        unreadable: Vec<PathBuf>,
     },
     /// A failed request. An older daemon sends only `message`, which reads as [`Code::Failed`].
     Error {
@@ -652,6 +681,32 @@ mod tests {
         assert_eq!(not_removed[0].path.as_os_str().as_bytes(), bytes);
     }
 
+    #[tokio::test]
+    async fn a_gitignore_count_names_a_non_utf8_unreadable_folder_and_keeps_its_counts() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let bytes = b"/home/ada/Code/data-\xff";
+        let response = Response::GitignoreOnly {
+            files: 3,
+            bytes: 12,
+            unreadable: vec![PathBuf::from(OsString::from_vec(bytes.to_vec()))],
+        };
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        write_line(&mut writer, &response)
+            .await
+            .expect("a count must encode a non-UTF-8 folder name");
+        let line = read_line(&mut reader).await.unwrap();
+        assert_eq!(
+            parse(&line).unwrap(),
+            Response::GitignoreOnly {
+                files: 3,
+                bytes: 12,
+                unreadable: vec!["/home/ada/Code/data-\u{fffd}".into()],
+            }
+        );
+    }
+
     #[test]
     fn an_approved_link_is_not_a_plain_link_to_an_older_daemon() {
         #[derive(Debug, Deserialize)]
@@ -992,6 +1047,44 @@ mod tests {
         pinned(Request::Pause, r#"{"request":"pause"}"#);
         pinned(Request::Resume, r#"{"request":"resume"}"#);
         pinned(Request::Watch, r#"{"request":"watch"}"#);
+        pinned(Request::Gitignore, r#"{"request":"gitignore"}"#);
+        pinned(
+            Request::SetGitignore { follow: false },
+            r#"{"request":"set_gitignore","follow":false}"#,
+        );
+        pinned(
+            Request::GitignoreOnly {
+                folder: "/home/ada/Code".into(),
+            },
+            r#"{"request":"gitignore_only","folder":"/home/ada/Code"}"#,
+        );
+        pinned(
+            Response::Gitignore { follows: true },
+            r#"{"response":"gitignore","follows":true}"#,
+        );
+        pinned(
+            Response::GitignoreSet {
+                follows: false,
+                already: true,
+            },
+            r#"{"response":"gitignore_set","follows":false,"already":true}"#,
+        );
+        pinned(
+            Response::GitignoreOnly {
+                files: 18_342,
+                bytes: 412_000_000,
+                unreadable: Vec::new(),
+            },
+            r#"{"response":"gitignore_only","files":18342,"bytes":412000000}"#,
+        );
+        pinned(
+            Response::GitignoreOnly {
+                files: 1,
+                bytes: 2,
+                unreadable: vec!["/home/ada/Code/pgdata".into()],
+            },
+            r#"{"response":"gitignore_only","files":1,"bytes":2,"unreadable":["/home/ada/Code/pgdata"]}"#,
+        );
         pinned(
             Request::Leave {
                 confirm_last_device: false,

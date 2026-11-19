@@ -193,7 +193,11 @@ fn a_parked_edit_whose_name_goes_to_a_folder_this_device_excludes_is_not_held_ba
         Some(file(ROOT, "x", 1)),
         Some(remote(file(ROOT, "X", 1))),
     )]);
-    trees.set_rules::<&str>(&[], Some(RuleFile::parse(b"x/\n")));
+    trees.set_rules::<&str>(
+        &[],
+        koidrive_engine::ignore::Source::Koiignore,
+        Some(RuleFile::parse(b"x/\n")),
+    );
     trees.settle(&Default::default());
     let (mut effects, mut ids) = (Effects::default(), IdGen::new(1));
     let park = effects
@@ -569,7 +573,11 @@ fn a_rename_back_to_the_pending_name_while_another_rename_is_sent_is_kept() {
 fn an_excluded_node_at_a_pending_name_gets_no_rename() {
     let (mut commits, mut trees, mut ids) =
         owing_its_name(&[synced("a", dir(ROOT, "a (pending)"))]);
-    trees.set_rules::<&str>(&[], Some(RuleFile::parse(b"a (pending)/\n")));
+    trees.set_rules::<&str>(
+        &[],
+        koidrive_engine::ignore::Source::Koiignore,
+        Some(RuleFile::parse(b"a (pending)/\n")),
+    );
     trees.settle(commits.aliases());
     assert!(trees.excluded("a"));
     assert!(!commits.due(&trees, "me"));
