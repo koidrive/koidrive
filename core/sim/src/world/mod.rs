@@ -601,10 +601,10 @@ pub struct World {
     unasked: Option<String>,
     intents: Intents,
     /// How a lost change meets a later delete its author did not see.
-    /// The writes that a download left on a disk in a file the engine then took for a new one. A
-    /// crash kept the store from hearing of the download, and the user renamed the file before
-    /// the restart (section 5.3). The server holds such a write in two files.
-    copied: BTreeSet<i64>,
+    /// For each write, how many more files than one the server may hold it in: one for each
+    /// copy a user made or published, and one for each file a download left on a disk that a
+    /// restart took for a new one (section 5.3).
+    copied: BTreeMap<i64, usize>,
     /// The last copy of the server's storage.
     backup: Option<Backup>,
     earlier_backup: Option<Backup>,
@@ -697,7 +697,7 @@ impl World {
             in_history: Held::new(),
             unasked: None,
             intents: Intents::new(count),
-            copied: BTreeSet::new(),
+            copied: BTreeMap::new(),
             backup: None,
             earlier_backup: None,
             retired: BTreeSet::new(),
@@ -1061,7 +1061,9 @@ impl World {
                     return;
                 };
                 let content = disk.entries()[&new].content.clone();
-                (self.copied).extend(content.as_ref().map(tag));
+                if let Some(content) = &content {
+                    *self.copied.entry(tag(content)).or_default() += 1;
+                }
                 ("copy", made(new, parent, name, content.as_ref()))
             }
             (Act::Save { keeps_mark }, Some(ino)) => {
@@ -1424,7 +1426,9 @@ impl World {
                 self.discarded.extend(local);
             }
             Answer::Publish => {
-                self.copied.extend(local);
+                for write in local {
+                    *self.copied.entry(write).or_default() += 1;
+                }
                 self.removed[d].extend(remote);
             }
             Answer::Delete => {
@@ -1901,6 +1905,7 @@ impl World {
         }
         let device = &mut self.devices[d];
         let batch = device.engine.effects.in_flight().to_vec();
+        let before = device.disk.entries().clone();
         let mut recovered = Vec::with_capacity(batch.len());
         for record in &batch {
             let quarantined = device.disk.quarantine.contains_key(&record.effect_id);
@@ -1967,9 +1972,6 @@ impl World {
                             writes.insert(tag(found), found.manifest_digest.clone());
                         }
                         self.published.insert(tag(found));
-                        if let Some(content) = download.filter(|c| device.disk.holds(tag(c))) {
-                            self.copied.insert(tag(content));
-                        }
                     }
                     note(
                         &mut self.seen,
@@ -1988,9 +1990,6 @@ impl World {
                 }
                 Err(Refused::Overtaken) => {
                     note(&mut self.seen, "restart finds a write its user overtook");
-                    if let Some(content) = download.filter(|c| device.disk.holds(tag(c))) {
-                        self.copied.insert(tag(content));
-                    }
                     effects.overtaken(trees, &record.effect_id)
                 }
                 outcome => {
@@ -2005,9 +2004,6 @@ impl World {
                             Err(_) => "restart finds the effect in flight refused by the disk",
                         },
                     );
-                    if let Some(content) = download.filter(|c| device.disk.holds(tag(c))) {
-                        self.copied.insert(tag(content));
-                    }
                     // The driver plans an interrupted effect again, and one that L no longer
                     // takes once L has changed. An effect that failed for another reason waits
                     // until the disk is observed.
@@ -2021,22 +2017,37 @@ impl World {
             reported.map_err(|error| {
                 Failure::Broken(format!("the effect's outcome was refused: {error:?}"))
             })?;
-            if matches!(
+            if !matches!(
                 record.effect,
                 Effect::WriteFile { .. } | Effect::CreateDir { .. }
             ) {
-                let elsewhere: Vec<u128> = (device.disk.entries().iter())
-                    .filter(|(ino, entry)| {
-                        Some(**ino) != own
-                            && (entry.mark.as_ref())
-                                .is_some_and(|mark| mark.ino == **ino && mark.node == record.node)
-                    })
-                    .map(|(ino, _)| *ino)
-                    .collect();
-                for ino in elsewhere {
-                    self.intents.detach(d, ino, &record.node, self.moment + 1);
+                continue;
+            }
+            let strays = (before.iter()).filter(|(ino, entry)| {
+                Some(**ino) != own
+                    && (entry.mark.as_ref())
+                        .is_some_and(|mark| mark.ino == **ino && mark.node == record.node)
+            });
+            for (ino, entry) in strays {
+                self.intents.detach(d, *ino, &record.node, self.moment + 1);
+                let holds = |c: &&Content| {
+                    entry
+                        .content
+                        .as_ref()
+                        .is_some_and(|held| tag(held) == tag(c))
+                };
+                if let Some(content) = download.filter(holds) {
+                    *self.copied.entry(tag(content)).or_default() += 1;
                 }
             }
+        }
+        if let Some(lost) =
+            (before.iter()).find(|(ino, _)| !device.disk.entries().contains_key(ino))
+        {
+            return Err(Failure::Broken(format!(
+                "restarting device {d} took {:?} off its disk",
+                lost.1.name
+            )));
         }
         if batch.len() > 1 {
             note(&mut self.seen, "restart ends a batch of effects");
@@ -2752,7 +2763,7 @@ impl World {
                                 }
                                 deletion.reached |= deletion
                                     .held(&live, |write, _, _, at_node| {
-                                        !at_node && self.copied.contains(&write)
+                                        !at_node && self.copied.contains_key(&write)
                                     })
                                     .is_none();
                             }
@@ -3482,7 +3493,7 @@ impl World {
             }
         }
         for (write, paths) in &files {
-            if paths.len() < 2 || self.copied.contains(write) {
+            if paths.len() <= 1 + self.copied.get(write).copied().unwrap_or(0) {
                 continue;
             }
             let why = format!(
@@ -3500,7 +3511,7 @@ impl World {
                 .filter(|copy| !copy.permitted())?;
             let holds = (node.shape.content.as_ref()).is_some_and(|c| tag(c) == copy.write);
             let excused =
-                self.exposed.contains_key(&copy.write) || self.copied.contains(&copy.write);
+                self.exposed.contains_key(&copy.write) || self.copied.contains_key(&copy.write);
             (!node.trashed && holds && !excused).then_some((&node.shape.name, copy))
         });
         if let Some((name, copy)) = forbidden {

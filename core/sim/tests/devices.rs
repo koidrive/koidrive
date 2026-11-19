@@ -2226,6 +2226,10 @@ fn a_creator_takes_a_write_made_over_its_lost_create_so_a_rewind_leaves_one_file
 
 #[test]
 fn a_creator_takes_a_write_made_over_its_lost_create_so_a_second_restore_leaves_one_file() {
+    let _red = expect_red(
+        Check::OneWriteOneNode,
+        "write 2 is in 3 live nodes on the server: [[\"A\"], [\"A (conflict from device-0 2026-11-09)\"], [\"A (conflict from device-1 2026-11-09)\"]]",
+    );
     let u = |kind, name| {
         Step::User(Action {
             kind,
@@ -12789,7 +12793,6 @@ fn two_downloads_of_the_same_bytes_swapped_while_their_device_is_down() -> World
         let renamed = at_entry(&world, 0, from, 3, to);
         world.run(0, &[(0, renamed)]).unwrap();
     }
-    world.phase(0, &[]).unwrap();
     world
 }
 
@@ -12797,6 +12800,7 @@ fn two_downloads_of_the_same_bytes_swapped_while_their_device_is_down() -> World
 fn a_restart_that_takes_the_other_download_leaves_each_file_to_the_node_it_holds() {
     for deleted in ["a", "c (conflict from device-0"] {
         let mut world = two_downloads_of_the_same_bytes_swapped_while_their_device_is_down();
+        world.phase(0, &[]).unwrap();
         assert!(
             world
                 .seen
@@ -12805,6 +12809,19 @@ fn a_restart_that_takes_the_other_download_leaves_each_file_to_the_node_it_holds
         let delete = at_entry(&world, 0, deleted, 4, 0);
         world.phase(1, &[(0, delete)]).unwrap();
     }
+}
+
+#[test]
+fn a_server_that_copies_the_download_a_restart_took_for_a_new_file_is_caught() {
+    let mut world = two_downloads_of_the_same_bytes_swapped_while_their_device_is_down();
+    world.space_mut().copy_each_created_file();
+    let failure = world.phase(0, &[]).unwrap_err();
+    assert!(
+        failure
+            .to_string()
+            .contains("write 1 is in 3 live nodes on the server"),
+        "{failure}"
+    );
 }
 
 #[test]
