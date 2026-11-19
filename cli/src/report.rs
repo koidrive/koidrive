@@ -33,8 +33,6 @@ pub enum Outcome {
     Error,
 }
 
-/// What a finished command produced: the text it prints without `--json`, and the data, decisions and next commands
-/// it returns with it.
 #[derive(Debug)]
 pub struct Done {
     pub outcome: Outcome,
@@ -46,7 +44,6 @@ pub struct Done {
     pub text: String,
     pub presentation: Presentation,
     pub tone: Tone,
-    /// What it prints on stderr after the text without `--json`: what the value is and what to do with it.
     pub note: String,
     pub human: Option<HumanOutput>,
     pub decisions: Vec<Decision>,
@@ -75,7 +72,6 @@ impl Done {
         }
     }
 
-    /// A result that is one value: `value` alone on stdout, and `note` on stderr.
     pub fn value(data: impl Serialize, value: &str, note: impl Into<String>) -> Self {
         Done {
             note: note.into(),
@@ -91,7 +87,6 @@ impl Done {
         }
     }
 
-    /// The same result, with the outcome `unchanged`.
     pub fn unchanged(self) -> Self {
         Done {
             outcome: Outcome::Unchanged,
@@ -104,7 +99,6 @@ impl Done {
         self
     }
 
-    /// A command whose output was already printed while it ran, such as a server deploy.
     pub fn printed() -> Self {
         Done::ok(Value::Null, "")
     }
@@ -164,7 +158,6 @@ impl Envelope {
         }
     }
 
-    /// The envelope of a failed command, keeping the data it read before it failed.
     pub fn failed(command: &str, error: CliError, partial: Option<Done>) -> Self {
         let (data, decisions) = partial.map_or((Value::Null, Vec::new()), |done| {
             (done.data, done.decisions)
@@ -858,7 +851,6 @@ pub enum Condition {
 }
 
 impl Condition {
-    /// The exit status of `status --check` for this condition alone.
     pub fn exit(&self) -> u8 {
         match self {
             Condition::NotSetUp => Code::AuthRequired.exit(),
@@ -909,8 +901,6 @@ pub fn conditions(status: &Status, questions: &[Question]) -> Vec<Condition> {
     found
 }
 
-/// The exit status of `status --check`: missing credentials first, then halted or stopped sync, then a decision
-/// that needs a choice, then offline or waiting folders. 0 when there is none of them.
 pub fn check_exit(conditions: &[Condition]) -> u8 {
     let precedence = [
         Code::AuthRequired,
@@ -954,7 +944,6 @@ pub enum Lifecycle {
 }
 
 impl Lifecycle {
-    /// The event as one line of JSON, with the schema version.
     pub fn line(&self) -> String {
         let line = DaemonLine {
             schema_version: SCHEMA_VERSION,

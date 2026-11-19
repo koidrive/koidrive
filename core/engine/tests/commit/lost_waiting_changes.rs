@@ -151,7 +151,6 @@ fn an_edit_to_the_content_a_lost_commit_replaced_is_sent_after_the_loss() {
     assert!(trees.unsent_edits().is_empty());
 }
 
-/// content.
 #[test]
 fn a_remote_edit_before_an_edit_to_the_content_a_lost_commit_replaced_is_sent_keeps_both() {
     let (mut trees, mut commits, mut ids) = an_edit_to_the_content_a_lost_commit_replaced();
@@ -716,7 +715,6 @@ fn an_effect_on_a_node_whose_update_waits_keeps_its_slot_for_a_loss() {
     );
 }
 
-/// GUN-418: a waiting update taken by a rebase and waited again keeps the slot of its commit.
 #[test]
 fn a_waiting_update_keeps_its_slot_through_a_rebase() {
     let (mut trees, mut commits, mut ids) = a_move_and_edit_whose_s_update_waits();

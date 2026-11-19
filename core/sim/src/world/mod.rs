@@ -596,11 +596,8 @@ pub struct World {
     /// What every node of the server, live or trashed, has held at some time.
     held: Held,
     in_history: Held,
-    /// The first commit that presented a change as its user's that its user never made, or made
-    /// up a place.
     unasked: Option<String>,
     intents: Intents,
-    /// How a lost change meets a later delete its author did not see.
     /// For each write, how many more files than one the server may hold it in: one for each
     /// copy a user made or published, and one for each file a download left on a disk that a
     /// restart took for a new one (section 5.3).
@@ -612,7 +609,6 @@ pub struct World {
     /// The writes that a restore took from the server while no disk held them. The server may
     /// stay without them, or hold them again in a file for each device that placed one from R.
     retired: BTreeSet<i64>,
-    /// The writes that a restore took from the server while a device still held them.
     exposed: BTreeMap<i64, Exposure>,
     held_commits: Vec<BTreeSet<(u64, String)>>,
     restored_to: Option<u64>,
@@ -1215,8 +1211,6 @@ impl World {
             .any(|author| trashed.iter().all(|node| authors(node).contains(&author)))
     }
 
-    /// Notes what the disk of device `d` shows, and the node each of its entries is in L or in its
-    /// mark.
     fn observe(&mut self, d: usize) {
         let device = &self.devices[d];
         if device.left {
@@ -3185,7 +3179,6 @@ impl World {
         }
     }
 
-    /// The server's live tree by path, without the nodes of `left_out`.
     fn server_tree(
         &self,
         left_out: &BTreeSet<NodeId>,
