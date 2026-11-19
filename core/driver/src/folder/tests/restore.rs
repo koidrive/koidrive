@@ -238,9 +238,6 @@ fn a_restore_asked_for_before_a_rewind_is_shown_by_its_file_and_answered_by_its_
     );
 }
 
-/// Device `a` synced `count` files in each folder of `folders`, the user removed `removed` with all it holds and agreed
-/// to the deletion, and then asked for `removed` back from the trash. Returns the site once `a` rested after the
-/// restore, with the remote.
 fn restored_after_a_big_deletion(folders: &[&str], count: usize, removed: &str) -> (Site, Remote) {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");

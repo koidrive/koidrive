@@ -1,0 +1,6 @@
+99
+# A folder of large files deleted over several commits and restored over several commits. No existing test deletes or restores anything bigger than one commit's change records, so none could see files left in the trash.
+# Sim: one table runs that deletion and restore in one go, stopped and reloaded from the store after every commit, cut before a saved commit left, cut before a response arrived, with the server failing commits, and with the folder above renamed between commits. The harness builds files of 4,096 chunks against the real space server, which the existing engine_sync devices do not.
+# Sim: two requests for the same folder end only once every file is back, and a server before RFC 0031 that gives each delete its own group restores without an error.
+# Sim space rules: the server joins a delete to a group only from the same commit or a group this device opened that the trash still holds, and falls back to the op's own group for a forged, foreign or malformed one.
+# Driver: real scans, the store and restarts bring back 2,000 files of a folder, of its subfolders trashed on their own, and of a big folder inside it.

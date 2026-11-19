@@ -242,7 +242,6 @@ fn an_unsent_edit_of_a_file_in_a_restored_folder_stays_current() {
     }
 }
 
-/// A space whose tree another device made, and this device with that tree in L, S and R.
 struct Bench {
     space: SpaceDo,
     trees: Trees,
@@ -250,17 +249,13 @@ struct Bench {
     ids: IdGen,
     other: IdGen,
     last_seq: u64,
-    /// Where each commit is cut once, as [`run_cut`] cuts a commit that carries a restore.
     cut: Cut,
     cut_commits: BTreeSet<String>,
-    /// How many of the next commits the server refuses with `INTERNAL` before it reads them.
     refused: usize,
-    /// Whether the server ignores the trash group a `Delete` names, as a server before RFC 0031 does.
     ignores_groups: bool,
 }
 
 impl Bench {
-    /// Folders `path` nested in each other under the root, with `count` files of 4,096 chunks in the last.
     fn large_files(path: &[&str], count: usize) -> (Self, Vec<String>) {
         let (space, other) = seeded(&[]);
         let root = space.space_id().to_owned();
@@ -382,8 +377,6 @@ impl Bench {
         self.commits.connected(&self.space.welcome(&session("me")));
     }
 
-    /// Sends what this device commits until it has nothing left, agreeing to a deletion it asks
-    /// about, and calls `between` after each commit the server applied.
     fn sync(&mut self, mut between: impl FnMut(&mut Bench)) {
         let me = session("me");
         for _ in 0..STEPS {
@@ -458,7 +451,6 @@ impl Bench {
         panic!("no end within {STEPS} steps");
     }
 
-    /// Removes `folder` with all it holds from L, and sends the deletion.
     fn delete(&mut self, folder: &str, between: impl FnMut(&mut Bench)) {
         let mut below = vec![folder.to_owned()];
         while let Some(id) = below.pop() {
@@ -471,7 +463,6 @@ impl Bench {
         assert!(self.space.nodes().iter().any(trashed));
     }
 
-    /// Asks for `node` back from the trash, and sends the restore.
     fn restore(&mut self, node: &str, between: impl FnMut(&mut Bench)) {
         let intent = RestoreIntent::from_trash(node.to_owned(), None, None).unwrap();
         assert!(self.commits.restore(self.ids.uuid_v7(NOW as u64), intent));
@@ -497,20 +488,47 @@ fn rules() -> Rules {
     }
 }
 
-/// A folder of eight files of 4,096 chunks each is too large to delete in one op, and to restore in
-/// one commit. The person deletes it and asks for it back, and every file comes back.
 #[test]
-fn a_restored_folder_of_large_files_brings_back_every_file() {
-    let (mut bench, folders) = Bench::large_files(&["big"], 8);
-    bench.delete(&folders[0], |_| {});
-    assert_eq!(bench.live_files(), 0);
-    bench.restore(&folders[0], |_| {});
-    assert_eq!(bench.live_files(), 8);
-    assert_eq!(bench.outcomes(), [Outcome::Restored]);
+fn a_big_deletion_and_its_restore_bring_back_every_file() {
+    type Between = fn(&mut Bench, &[String]);
+    fn nothing(_: &mut Bench, _: &[String]) {}
+    fn stop(bench: &mut Bench, _: &[String]) {
+        bench.restart();
+    }
+    fn refuse(bench: &mut Bench, _: &[String]) {
+        bench.refused = 1;
+    }
+    fn rename(bench: &mut Bench, folders: &[String]) {
+        let root = bench.space.space_id().to_owned();
+        bench.commit_by_other(op::Op::Move(Move {
+            node_id: folders[0].clone(),
+            new_parent_id: root,
+            new_name: format!("outer {}", bench.space.head_seq()),
+            from: None,
+            pending_for: String::new(),
+        }));
+    }
+    let scenarios: [(&str, Cut, usize, Between); 6] = [
+        ("in one go", Cut::None, 0, nothing),
+        ("stopped between commits", Cut::None, 0, stop),
+        ("cut before a saved commit left", Cut::Built, 0, nothing),
+        ("cut before a response arrived", Cut::Applied, 0, nothing),
+        ("server failing commits", Cut::None, 2, refuse),
+        ("folder above renamed", Cut::None, 0, rename),
+    ];
+    for (scenario, cut, refused, between) in scenarios {
+        let (mut bench, folders) = Bench::large_files(&["outer", "big"], 8);
+        (bench.cut, bench.refused) = (cut, refused);
+        bench.delete(&folders[1], |bench| between(bench, &folders));
+        bench.refused = refused;
+        bench.restore(&folders[1], |bench| between(bench, &folders));
+        assert_eq!(bench.live_files(), 8, "{scenario}");
+        assert_eq!(bench.outcomes(), [Outcome::Restored], "{scenario}");
+        let restored = (bench.space.nodes().into_iter()).find(|node| node.node_id == folders[1]);
+        assert_eq!(restored.unwrap().parent_id, folders[0], "{scenario}");
+    }
 }
 
-/// The person asks twice for the folder back before the first commit leaves. Both requests end
-/// restored once every file is back.
 #[test]
 fn two_requests_for_a_big_folder_bring_back_every_file() {
     let (mut bench, folders) = Bench::large_files(&["big"], 8);
@@ -527,72 +545,6 @@ fn two_requests_for_a_big_folder_bring_back_every_file() {
     assert_eq!(bench.outcomes(), [Outcome::Restored, Outcome::Restored]);
 }
 
-/// The device stops after each commit of the deletion and of the restore, so each continues from
-/// the store.
-#[test]
-fn a_big_deletion_and_its_restore_continue_after_a_stop_between_commits() {
-    let (mut bench, folders) = Bench::large_files(&["big"], 8);
-    bench.delete(&folders[0], Bench::restart);
-    bench.restore(&folders[0], Bench::restart);
-    assert_eq!(bench.live_files(), 8);
-    assert_eq!(bench.outcomes(), [Outcome::Restored]);
-}
-
-/// Every commit of the deletion and the restore is cut once: after it was saved and before it
-/// left, or after the server applied it and before its response arrived.
-#[test]
-fn a_big_deletion_and_its_restore_cut_in_every_commit_bring_back_every_file() {
-    for cut in [Cut::Built, Cut::Applied] {
-        let (mut bench, folders) = Bench::large_files(&["big"], 8);
-        bench.cut = cut;
-        bench.delete(&folders[0], |_| {});
-        bench.restore(&folders[0], |_| {});
-        assert_eq!(bench.live_files(), 8, "{cut:?}");
-        assert_eq!(bench.outcomes(), [Outcome::Restored], "{cut:?}");
-    }
-}
-
-/// The server fails the first two commits of the deletion and of the restore, and the device sends
-/// them again.
-#[test]
-fn a_big_restore_goes_on_after_the_server_fails_its_commits() {
-    let (mut bench, folders) = Bench::large_files(&["big"], 8);
-    bench.refused = 2;
-    bench.delete(&folders[0], |_| {});
-    bench.refused = 2;
-    bench.restore(&folders[0], |bench| bench.refused = 1);
-    assert_eq!(bench.live_files(), 8);
-    assert_eq!(bench.outcomes(), [Outcome::Restored]);
-}
-
-/// Another device renames the folder above the trashed one between the commits of its deletion
-/// and between those of its restore. Every file comes back, in the renamed folder.
-#[test]
-fn a_big_restore_brings_back_every_file_after_its_parent_is_renamed() {
-    let (mut bench, folders) = Bench::large_files(&["outer", "big"], 8);
-    let mut renames = 0;
-    let mut rename = |bench: &mut Bench| {
-        renames += 1;
-        let root = bench.space.space_id().to_owned();
-        bench.commit_by_other(op::Op::Move(Move {
-            node_id: folders[0].clone(),
-            new_parent_id: root,
-            new_name: format!("outer {renames}"),
-            from: None,
-            pending_for: String::new(),
-        }));
-    };
-    bench.delete(&folders[1], &mut rename);
-    bench.restore(&folders[1], &mut rename);
-    assert_eq!(bench.live_files(), 8);
-    assert_eq!(bench.outcomes(), [Outcome::Restored]);
-    let big = (bench.space.nodes().into_iter()).find(|node| node.node_id == folders[1]);
-    assert_eq!(big.unwrap().parent_id, folders[0]);
-}
-
-/// A server before RFC 0031 gives each `Delete` of a big deletion its own trash group, and so did
-/// every server for trash from before it. Nothing fails: the restore brings back the folder with
-/// what its own group holds, and syncing goes on.
 #[test]
 fn a_big_deletion_trashed_one_group_per_delete_restores_without_an_error() {
     for restored_by_old_server in [true, false] {
