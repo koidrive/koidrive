@@ -536,7 +536,7 @@ fn whole_device(attached: &str) -> Result<String, String> {
 
 #[cfg(target_os = "macos")]
 fn image_on(device: &str) -> Result<Option<PathBuf>, String> {
-    use std::ffi::{CString, c_char, c_void};
+    use std::ffi::{CStr, CString, c_char, c_void};
     use std::os::unix::ffi::OsStrExt;
 
     #[link(name = "IOKit", kind = "framework")]
@@ -568,30 +568,49 @@ fn image_on(device: &str) -> Result<Option<PathBuf>, String> {
     }
 
     let name = device.strip_prefix("/dev/").unwrap_or(device);
+    let node = Path::new("/dev").join(name);
     let name = CString::new(name).map_err(|error| error.to_string())?;
-    unsafe {
-        let media = IOServiceGetMatchingService(0, IOBSDNameMatching(0, 0, name.as_ptr()));
-        if media == 0 {
-            return Ok(None);
-        }
-        let key = CFStringCreateWithCString(std::ptr::null(), c"image-path".as_ptr(), 0x0800_0100);
+    let property = |entry: u32, key: &CStr, options: u32| unsafe {
+        let key = CFStringCreateWithCString(std::ptr::null(), key.as_ptr(), 0x0800_0100);
         let found = IORegistryEntrySearchCFProperty(
-            media,
+            entry,
             c"IOService".as_ptr(),
             key,
             std::ptr::null(),
-            0b11,
+            options,
         );
         CFRelease(key);
+        found
+    };
+    unsafe {
+        let media = IOServiceGetMatchingService(0, IOBSDNameMatching(0, 0, name.as_ptr()));
+        if media == 0 {
+            return if node.exists() {
+                Err(format!(
+                    "{device} exists but the IO registry has no entry for it"
+                ))
+            } else {
+                Ok(None)
+            };
+        }
+        let bsd_name = property(media, c"BSD Name", 0);
+        let found = property(media, c"image-path", 0b11);
         IOObjectRelease(media);
+        if bsd_name.is_null() {
+            if !found.is_null() {
+                CFRelease(found);
+            }
+            return Err(format!("the IO registry entry of {device} cannot be read"));
+        }
+        CFRelease(bsd_name);
         if found.is_null() {
             return Ok(None);
         }
         let image = (CFGetTypeID(found) == CFDataGetTypeID()).then(|| {
-            let bytes = std::slice::from_raw_parts(
-                CFDataGetBytePtr(found),
-                CFDataGetLength(found) as usize,
-            );
+            let bytes = match CFDataGetLength(found) {
+                0 => &[][..],
+                length => std::slice::from_raw_parts(CFDataGetBytePtr(found), length as usize),
+            };
             PathBuf::from(OsStr::from_bytes(bytes.strip_suffix(&[0]).unwrap_or(bytes)))
         });
         CFRelease(found);
@@ -862,6 +881,35 @@ mod tests {
             Ok(Some(disks.base().join("Backing.dmg")))
         );
         assert_eq!(image_on("/dev/disk999999"), Ok(None));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_disk_the_registry_will_not_describe_is_an_error_and_not_detached() {
+        if std::env::var_os("KOIDRIVE_TEST_IOKIT_DENIED").is_some() {
+            assert!(image_on("/dev/disk0").is_err());
+            return;
+        }
+        let denied = std::process::Command::new("sandbox-exec")
+            .args([
+                "-p",
+                "(version 1)(allow default)(deny iokit-get-properties)",
+            ])
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "disks::tests::a_disk_the_registry_will_not_describe_is_an_error_and_not_detached",
+                "--nocapture",
+            ])
+            .env("KOIDRIVE_TEST_IOKIT_DENIED", "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&denied.stdout);
+        assert!(
+            denied.status.success() && stdout.contains("test result: ok. 1 passed"),
+            "{stdout}{}",
+            String::from_utf8_lossy(&denied.stderr)
+        );
     }
 
     #[test]
