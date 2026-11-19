@@ -62,15 +62,18 @@ pub enum Request {
         confirm_last_device: bool,
     },
     Link {
+        #[serde(with = "raw_path")]
         folder: PathBuf,
         space: String,
     },
     LinkApproved {
+        #[serde(with = "raw_path")]
         folder: PathBuf,
         space: String,
         approval: LinkApproval,
     },
     Unlink {
+        #[serde(with = "raw_path")]
         folder: PathBuf,
     },
     /// `Driver::unlink_space`.
@@ -78,14 +81,17 @@ pub enum Request {
         space_id: String,
     },
     Restart {
+        #[serde(with = "raw_path")]
         folder: PathBuf,
     },
     /// `Driver::lift`: `Lift::Replan` when `replan`, else `Lift::Resend`.
     Lift {
+        #[serde(with = "raw_path")]
         folder: PathBuf,
         replan: bool,
     },
     Relink {
+        #[serde(with = "raw_path")]
         folder: PathBuf,
     },
     Questions,
@@ -125,6 +131,7 @@ pub enum Request {
     Watch,
     /// `Driver::share`: a new link to the file or folder at the absolute `path`.
     Share {
+        #[serde(with = "raw_path")]
         path: PathBuf,
         expiry: Expiry,
         password: Option<Secret>,
@@ -227,6 +234,7 @@ pub enum Response {
     },
     Unlinked {
         space_id: String,
+        #[serde(with = "raw_path")]
         path: PathBuf,
         #[serde(flatten)]
         set_aside: SetAside,
@@ -237,6 +245,7 @@ pub enum Response {
     },
     /// The folder to unlink was not linked.
     NotLinked {
+        #[serde(with = "raw_path")]
         path: PathBuf,
     },
     Restarted {
@@ -750,6 +759,68 @@ mod tests {
                 unreadable: vec!["/home/ada/Code/data-\u{fffd}".into()],
             }
         );
+    }
+
+    #[test]
+    fn requests_and_answers_name_a_non_utf8_folder_by_its_bytes() {
+        let raw =
+            PathBuf::from(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"/a\xff"));
+        assert_eq!(
+            serde_json::to_string(&Request::Restart {
+                folder: raw.clone()
+            })
+            .unwrap(),
+            r#"{"request":"restart","folder":[47,97,255]}"#
+        );
+        let directory = koidrive_driver::DirectoryIdentity::of(&std::fs::metadata("/").unwrap());
+        for request in [
+            Request::Link {
+                folder: raw.clone(),
+                space: "s1".into(),
+            },
+            Request::LinkApproved {
+                folder: raw.clone(),
+                space: "s1".into(),
+                approval: LinkApproval {
+                    directory,
+                    accept_existing_files: true,
+                },
+            },
+            Request::Unlink {
+                folder: raw.clone(),
+            },
+            Request::Restart {
+                folder: raw.clone(),
+            },
+            Request::Lift {
+                folder: raw.clone(),
+                replan: true,
+            },
+            Request::Relink {
+                folder: raw.clone(),
+            },
+            Request::Share {
+                path: raw.join("report.docx"),
+                expiry: Expiry::Never,
+                password: None,
+            },
+        ] {
+            let json = serde_json::to_string(&request).unwrap();
+            assert!(json.contains("[47,97,255"), "{json}");
+            assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), request);
+        }
+        for response in [
+            Response::Unlinked {
+                space_id: "s1".into(),
+                path: raw.clone(),
+                set_aside: SetAside::default(),
+            },
+            Response::NotLinked { path: raw.clone() },
+        ] {
+            let json = serde_json::to_string(&response).unwrap();
+            assert!(json.contains("[47,97,255]"), "{json}");
+            assert_eq!(serde_json::from_str::<Response>(&json).unwrap(), response);
+        }
     }
 
     #[test]
