@@ -2077,3 +2077,24 @@ fn a_kept_folder_goes_to_the_trash_after_a_rules_file_another_device_edited_is_s
     assert!(b.sent.is_empty(), "{:?}", b.sent);
     assert!(remote.names().is_empty());
 }
+
+#[test]
+fn a_kept_folder_stays_with_a_rules_file_edited_after_the_server_purges_it() {
+    let (mut remote, _, _, site, mut b, old) =
+        deleted_with_rules_files(&[(".koiignore", ".env\n")], &["README.md"], &[".env"]);
+    for (name, id, _) in server_nodes(&remote) {
+        assert!(name == "app" || remote.space.purge(&id, NOW), "{name}");
+    }
+    assert!(remote.space.purge(&old, NOW));
+    b.pull(&remote);
+    settled(&mut b, &mut remote);
+    fs::write(site.root.join("app/.koiignore"), b".env\n*.log\n").unwrap();
+    settled(&mut b, &mut remote);
+    fs::remove_file(site.root.join("app/.env")).unwrap();
+    settled(&mut b, &mut remote);
+
+    let rules = fs::read(site.root.join("app/.koiignore")).unwrap();
+    assert_eq!(rules, b".env\n*.log\n");
+    assert!(b.sent.is_empty(), "{:?}", b.sent);
+    assert!(remote.names().is_empty());
+}

@@ -3889,6 +3889,7 @@ impl Trees {
 
     fn unedited_kept_rules_file(&self, id: &NodeId) -> bool {
         self.kept_rules_file(id)
+            && self.r.get(id).is_some()
             && (!self.unsent_edits.contains(id) || self.holds_remote_content(id))
     }
 
