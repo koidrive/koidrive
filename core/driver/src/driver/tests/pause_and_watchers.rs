@@ -118,14 +118,14 @@ async fn a_resume_after_a_pause_cancelled_before_its_task_ran_stays_resumed() {
 }
 
 #[tokio::test]
-async fn a_resume_after_a_pause_whose_caller_stopped_waiting_starts_every_folder_again() {
+async fn a_pause_answers_before_its_folders_end_and_a_resume_starts_them_again_once_they_have() {
     let dir = tempfile::tempdir().unwrap();
     let base = fs::canonicalize(dir.path()).unwrap();
     let paths = Paths::under(&base.join("profile"));
     linked(&paths, &base.join("Koidrive"), "d1");
-    let driver = Driver::open(paths).unwrap();
+    let driver = Driver::open(paths.clone()).unwrap();
     driver.inner.running.store(true, Ordering::SeqCst);
-    let (stop, _stopped) = watch::channel(false);
+    let (stop, stopped) = watch::channel(false);
     let (finished, done) = watch::channel(());
     let stopping = Running {
         stop,
@@ -142,17 +142,26 @@ async fn a_resume_after_a_pause_whose_caller_stopped_waiting_starts_every_folder
         .unwrap()
         .run = Some(stopping);
 
-    let abandoned = tokio::time::timeout(Duration::from_millis(100), driver.pause()).await;
+    let paused = tokio::time::timeout(Duration::from_secs(5), driver.pause()).await;
     assert!(
-        abandoned.is_err(),
-        "the pause waits for the folder's task to end"
+        paused
+            .expect("the pause answers while the folder's task runs")
+            .unwrap()
     );
-    assert!(driver.status().paused);
+    assert!(*stopped.borrow());
+    assert!(paths.paused().is_file());
+    let status = driver.status();
+    assert!(status.paused);
+    assert_eq!(status.folders[0].state, FolderState::Stopped);
     let resuming = tokio::spawn({
         let driver = driver.clone();
         async move { driver.resume().await }
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !resuming.is_finished(),
+        "a resume waits for the paused folders to end"
+    );
     drop(finished);
     assert!(resuming.await.unwrap().unwrap());
     {
@@ -164,6 +173,52 @@ async fn a_resume_after_a_pause_whose_caller_stopped_waiting_starts_every_folder
         );
     }
     driver.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_after_an_answered_pause_returns_only_once_the_pause_has_finished() {
+    for _ in 0..20 {
+        let dir = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(dir.path()).unwrap();
+        let paths = Paths::under(&base.join("profile"));
+        linked(&paths, &base.join("Koidrive"), "d1");
+        let driver = Driver::open(paths).unwrap();
+        driver.inner.running.store(true, Ordering::SeqCst);
+        let (stop, _stopped) = watch::channel(false);
+        let (finished, done) = watch::channel(());
+        driver
+            .inner
+            .folders
+            .lock()
+            .unwrap()
+            .values_mut()
+            .next()
+            .unwrap()
+            .run = Some(Running {
+            stop,
+            requests: Arc::new(Notify::new()),
+            done,
+        });
+        assert!(driver.pause().await.unwrap());
+        let stopping = tokio::spawn({
+            let driver = driver.clone();
+            async move { driver.stop().await }
+        });
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(
+            !stopping.is_finished(),
+            "a stop waits for the folder to end"
+        );
+        drop(finished);
+        tokio::time::timeout(Duration::from_secs(10), stopping)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            driver.inner.pausing.try_lock().is_ok(),
+            "the stop returned before the pause finished"
+        );
+    }
 }
 
 #[tokio::test]

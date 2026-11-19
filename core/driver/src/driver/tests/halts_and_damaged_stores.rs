@@ -18,6 +18,7 @@ async fn pausing_a_halted_folder_keeps_its_problem_and_resuming_rechecks_it() {
     assert_eq!(driver.status().folders[0].state, FolderState::Halted);
     assert_eq!(driver.status().folders[0].problem, halted.problem);
     driver.pause().await.unwrap();
+    driver.stop().await;
     drop(driver);
 
     let driver = Driver::open(paths).unwrap();
@@ -71,6 +72,7 @@ async fn a_resume_and_a_reopen_keep_a_replacement_folder_waiting_for_explicit_re
         assert_eq!(driver.status().folders[0].state, FolderState::Halted);
         assert_eq!(driver.status().folders[0].problem, problem);
         driver.pause().await.unwrap();
+        driver.stop().await;
         drop(driver);
 
         let driver = Driver::open(paths).unwrap();
@@ -111,6 +113,7 @@ async fn a_paused_root_wait_reopens_and_recovers_only_the_original_folder() {
         halted(&driver).await;
         driver.pause().await.unwrap();
         let problem = driver.status().folders[0].problem.clone();
+        driver.stop().await;
         drop(driver);
 
         let driver = Driver::open(paths).unwrap();

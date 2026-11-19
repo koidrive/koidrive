@@ -377,6 +377,13 @@ impl Driver {
                     status.state = FolderState::Halted;
                     status.problem = Some(crate::lifecycle::UNFINISHED_UNLINK.into());
                 }
+                if self.inner.paused.load(Ordering::SeqCst)
+                    && status.state != FolderState::Halted
+                    && folder.run.as_ref().is_some_and(|run| !run.ended())
+                {
+                    status.state = FolderState::Stopped;
+                    status.wait = None;
+                }
                 if !matches!(
                     status.state,
                     FolderState::Bootstrapping | FolderState::CatchingUp

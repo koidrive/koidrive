@@ -396,15 +396,18 @@ impl Driver {
         self.changed();
     }
 
-    /// Pauses sync: stops every folder as [`Driver::stop`] does and keeps the profile's paused file, so that a driver
-    /// opened on the profile later stays paused too. Returns false when sync was paused already. Once it holds the pause
-    /// lock, the pause runs in a task of its own on the current Tokio runtime, so it finishes stopping the folders even
-    /// when its caller stops waiting, and a later resume waits until it has. A pause dropped before it holds the lock
-    /// changes nothing.
+    /// Pauses sync: tells every folder to stop as [`Driver::stop`] does and keeps the profile's paused file, so that a
+    /// driver opened on the profile later stays paused too. Returns false when sync was paused already. It returns once
+    /// the paused file and every folder's lifecycle record are saved, without waiting for the folders to end. They end in
+    /// a task of its own on the current Tokio runtime that holds the pause lock, so a later resume waits until they have,
+    /// and a halt they record while ending is saved there, with a warning if it cannot be. A pause that cannot save the
+    /// paused file or a lifecycle record at once waits for the folders to end, saves again, and fails if that fails too.
+    /// A pause dropped before it holds the lock changes nothing.
     pub async fn pause(&self) -> Result<bool, DriverError> {
         let pausing = self.inner.pausing.clone().lock_owned().await;
         let driver = self.clone();
-        let paused = tokio::spawn(async move {
+        let (save, saved) = tokio::sync::oneshot::channel();
+        let finished = tokio::spawn(async move {
             let _pausing = pausing;
             let path = driver.inner.paths.paused();
             let written = match koidrive_state_file::write(&path, b"paused\n") {
@@ -413,16 +416,26 @@ impl Driver {
                 Err(error) => return Err(io_error(&path)(error)),
             };
             let changed = !driver.inner.paused.swap(true, Ordering::SeqCst);
-            if changed {
-                driver.stop_folders().await;
-            }
-            let persisted =
+            let stopping = match changed {
+                true => driver.tell_folders_to_stop(),
+                false => Vec::new(),
+            };
+            let persist = || {
                 (driver.inner.folders.lock().unwrap().values()).try_for_each(|folder| {
                     folder
                         .status
                         .persist()
                         .map_err(io_error(folder.status.path()))
-                });
+                })
+            };
+            if written.is_ok() && persist().is_ok() {
+                driver.changed();
+                let _ = save.send(changed);
+            }
+            if changed {
+                driver.folders_stopped(stopping).await;
+            }
+            let persisted = persist();
             if let Err(error) = written {
                 if let Err(folder) = &persisted {
                     tracing::warn!(%folder, "a folder's paused state could not be saved either");
@@ -431,9 +444,17 @@ impl Driver {
             }
             persisted.map(|()| changed)
         });
-        paused
-            .await
-            .unwrap_or_else(|error| std::panic::resume_unwind(error.into_panic()))
+        let Ok(changed) = saved.await else {
+            return finished
+                .await
+                .unwrap_or_else(|error| std::panic::resume_unwind(error.into_panic()));
+        };
+        tokio::spawn(async move {
+            if let Ok(Err(error)) = finished.await {
+                tracing::warn!(%error, "sync is paused, but a folder's paused state could not be saved");
+            }
+        });
+        Ok(changed)
     }
 
     /// Ends a pause: removes the profile's paused file and starts the folders if the driver was started. Returns false
@@ -704,23 +725,27 @@ impl Driver {
         }
     }
 
-    /// Stops every folder and the update check, and waits for the folders' tasks to end, also those an earlier stop or
-    /// unlink is still waiting for. State on disk is kept.
+    /// Stops every folder and the update check, and waits for the folders' tasks to end, also those an earlier stop,
+    /// pause or unlink is still waiting for, and for that pause to finish. State on disk is kept.
     pub async fn stop(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
         self.inner.updates.stop();
+        let _pausing = self.inner.pausing.lock().await;
         self.stop_folders().await;
     }
 
     async fn stop_folders(&self) {
-        let stopping: Vec<_> = self
-            .inner
-            .folders
-            .lock()
-            .unwrap()
-            .values()
+        let stopping = self.tell_folders_to_stop();
+        self.folders_stopped(stopping).await;
+    }
+
+    fn tell_folders_to_stop(&self) -> Vec<watch::Receiver<()>> {
+        (self.inner.folders.lock().unwrap().values())
             .filter_map(|folder| folder.run.as_ref().map(Running::stop))
-            .collect();
+            .collect()
+    }
+
+    async fn folders_stopped(&self, stopping: Vec<watch::Receiver<()>>) {
         for done in stopping {
             ended(done).await;
         }
