@@ -1137,9 +1137,7 @@ fn a_recovery_keeps_the_policy_halt_it_interrupted() {
     };
     assert_eq!(commits.connected(&rewound), Reconnect::Recovery);
     let (log, marks) = (LogRead::default(), Marks::new());
-    commits.recover(
-        &mut trees, 0, false, &cause, &log, &marks, &mut ids, NOW,
-    );
+    commits.recover(&mut trees, 0, false, &cause, &log, &marks, &mut ids, NOW);
     assert_eq!(commits.halted(), halt);
     assert_eq!(
         commits.lift(Lift::Resend),

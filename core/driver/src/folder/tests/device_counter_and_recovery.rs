@@ -293,9 +293,17 @@ fn a_rewind_of_an_edit_to_a_file_the_restore_point_held_is_asked_about_only_when
         assert_eq!(b.run(&mut remote).first(), Some(&"reconnect"));
         b.settle();
         b.rest(&mut remote);
-        assert_eq!(shown(&site_b).len(), usize::from(truncated), "truncated {truncated}");
+        assert_eq!(
+            shown(&site_b).len(),
+            usize::from(truncated),
+            "truncated {truncated}"
+        );
         let kept: &[u8] = if truncated { b"two" } else { b"one" };
-        assert_eq!(fs::read(site_b.root.join("c.txt")).unwrap(), kept, "truncated {truncated}");
+        assert_eq!(
+            fs::read(site_b.root.join("c.txt")).unwrap(),
+            kept,
+            "truncated {truncated}"
+        );
     }
 }
 
