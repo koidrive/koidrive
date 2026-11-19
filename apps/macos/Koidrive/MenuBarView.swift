@@ -306,6 +306,14 @@ struct MenuContent: View {
         }
     }
 
+    private var pauseTitle: LocalizedStringKey {
+        switch model.pauseChange {
+        case .pausing: "Pausing…"
+        case .resuming: "Resuming…"
+        case nil: model.isPaused ? "Resume Sync" : "Pause Sync"
+        }
+    }
+
     private var actions: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(model.state.folders.filter { $0.url != nil }, id: \.spaceId) { folder in
@@ -318,18 +326,17 @@ struct MenuContent: View {
                     openWindow.show(WindowID.setup)
                 }
             } else {
-                MenuButton(
-                    title: model.isPaused ? "Resume Sync" : "Pause Sync",
-                    systemImage: model.isPaused ? "play" : "pause"
-                ) {
-                    do {
-                        try model.togglePause()
-                        error = nil
-                    } catch let failure as SessionError {
-                        error = failure
-                    } catch {}
+                MenuButton(title: pauseTitle, systemImage: model.isPaused ? "play" : "pause") {
+                    Task {
+                        do {
+                            try await model.togglePause()
+                            error = nil
+                        } catch let failure as SessionError {
+                            error = failure
+                        } catch {}
+                    }
                 }
-                .disabled(model.state.status == .stopped)
+                .disabled(model.state.status == .stopped || model.pauseChange != nil)
             }
             MenuButton(title: "Needs You…", systemImage: "questionmark.circle") {
                 openWindow.show(WindowID.questions)

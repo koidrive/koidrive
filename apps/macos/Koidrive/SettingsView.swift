@@ -710,12 +710,12 @@ struct GeneralSettings: View {
                     }
                 }
                 Spacer()
-                Toggle("Send usage reports", isOn: Binding(get: { app.telemetry.enabled }, set: setTelemetry))
+                Toggle("Send usage reports", isOn: Binding(get: { app.telemetryChoice ?? app.telemetry.enabled }, set: setTelemetry))
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     .tint(.koi)
-                    .disabled(app.telemetry.locked)
+                    .disabled(app.telemetry.locked || app.telemetryChoice != nil)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -763,11 +763,13 @@ struct GeneralSettings: View {
     }
 
     private func setTelemetry(_ on: Bool) {
-        do {
-            try app.setTelemetry(enabled: on)
-            telemetryError = nil
-        } catch {
-            telemetryError = (error as? SessionError)?.message ?? error.localizedDescription
+        Task {
+            do {
+                try await app.setTelemetry(enabled: on)
+                telemetryError = nil
+            } catch {
+                telemetryError = (error as? SessionError)?.message ?? error.localizedDescription
+            }
         }
     }
 }
