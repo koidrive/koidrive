@@ -3098,7 +3098,7 @@ async fn revoke(
         Ok(Err(Some(error))) if !confirm_last_device && error.status() == Some(409) => {
             return Err(RevokeFailure {
                 error: DriverError::LastDevice,
-                definitive: !recovering,
+                definitive: true,
             });
         }
         Ok(Err(Some(error))) if error.is_unauthenticated() => {

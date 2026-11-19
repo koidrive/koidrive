@@ -1,5 +1,6 @@
 use super::*;
 use crate::program::Arg;
+use koidrive_ipc::Code;
 
 async fn ask(paths: &Paths, found: &Found, request: Request) -> Result<Response, CliError> {
     match found.state {
@@ -57,9 +58,6 @@ pub(super) async fn sign_out(
             shown_folder(&paths.state_dir)
         )));
     }
-    let needs_confirmation = |error: &CliError| {
-        (error.next.iter()).any(|next| next.argv.iter().any(|arg| arg == "--last-device"))
-    };
     let leave = |confirm_last_device| {
         ask(
             paths,
@@ -74,7 +72,7 @@ pub(super) async fn sign_out(
         && !options.last_device
         && !options.yes
         && terminal.guided()
-        && needs_confirmation(error)
+        && (error.next.iter()).any(|next| next.argv.iter().any(|arg| arg == "--last-device"))
     {
         terminal.message(&printable(&error.message));
         if terminal
@@ -104,25 +102,49 @@ pub(super) async fn sign_out(
                 Some(set_aside),
             )),
         },
-        Err(error) if needs_confirmation(&error) => Err(CliError::new(
-            error.code,
-            format!(
-                "{}; nothing was removed and this device stays signed in; to remove Koidrive and sign it out anyway, run koi uninstall --last-device",
-                error.message
-            ),
-        )
-        .then(&["koi", "uninstall", "--last-device"])),
         failed => {
-            run.sign_out_failed = true;
-            still_listed(Some(match (failed, &found.unusable) {
-                (Err(_), Some(unusable)) => {
+            let (code, problem) = match (failed, &found.unusable) {
+                (Err(_), Some(unusable)) => (
+                    Code::Failed,
                     format!(
                         "Koidrive could not use this device's saved sign-in, because {unusable}"
-                    )
-                }
-                (Err(error), None) => error.message,
-                (Ok(other), _) => format!("the daemon answered {other:?}"),
-            }))
+                    ),
+                ),
+                (Err(error), None) => (error.code, error.message),
+                (Ok(other), _) => (Code::Failed, format!("the daemon answered {other:?}")),
+            };
+            if options.last_device && found.unusable.is_some() {
+                run.sign_out_failed = true;
+                return still_listed(Some(problem));
+            }
+            let credential = paths.credential();
+            let (remedy, retry) = match Credential::load(&credential) {
+                Err(CredentialError::SignOutPending) => (
+                    "nothing was removed, but this device's sign-out is still pending, so sync stays stopped until it finishes; run koi uninstall again to retry it, or koi uninstall --last-device to finish without the server".to_owned(),
+                    true,
+                ),
+                Err(CredentialError::Exposed { .. }) => (
+                    format!(
+                        "nothing was removed; run chmod 600 {} and then koi uninstall again, or koi uninstall --last-device to remove Koidrive without signing out",
+                        crate::output::command_word(&credential.display().to_string())
+                    ),
+                    true,
+                ),
+                _ if options.last_device => (
+                    "nothing was removed; run koi uninstall --last-device again".to_owned(),
+                    false,
+                ),
+                _ => (
+                    "nothing was removed and this device stays signed in; to remove Koidrive and sign it out anyway, run koi uninstall --last-device".to_owned(),
+                    false,
+                ),
+            };
+            let error = CliError::new(code, format!("{problem}; {remedy}"));
+            Err(match retry {
+                true => error.then(&["koi", "uninstall"]),
+                false => error,
+            }
+            .then(&["koi", "uninstall", "--last-device"]))
         }
     }
 }
