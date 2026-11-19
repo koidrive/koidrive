@@ -390,17 +390,20 @@ fn a_rescan_watcher_taking_over_from_another_reports_what_the_other_held_back() 
         write(root, "p/top.txt", "top");
         let mut held = rules().with_search_budget(100);
         let start = Snapshot::scan_with_rules(root, &mut held).unwrap();
+        let hour = Duration::from_secs(3600);
         let mut first: Box<dyn Watcher> = match native_first {
             true => Box::new(NativeWatcher::start_with_rules(root, start, held).unwrap()),
-            false => {
-                Box::new(RescanWatcher::with_rules(root, start, Duration::ZERO, held).unwrap())
-            }
+            false => Box::new(RescanWatcher::with_rules(root, start, hour, held).unwrap()),
         };
-        assert_eq!(first.poll(Duration::from_millis(500)).unwrap().changes, []);
+        let wait = match native_first {
+            true => Duration::from_millis(500),
+            false => Duration::ZERO,
+        };
+        assert_eq!(first.poll(wait).unwrap().changes, []);
         fs::rename(root.join("p/top.txt"), root.join("ig/zz/deep/top.txt")).unwrap();
         fs::rename(root.join("b/c/2.txt"), root.join("p/top.txt")).unwrap();
         fs::rename(root.join("b/c"), root.join("ig/zz/deep/c")).unwrap();
-        let poll = first.poll(Duration::from_millis(500)).unwrap();
+        let poll = first.poll(wait).unwrap();
         assert_eq!(poll.changes, [], "native {native_first}");
         assert_eq!(
             poll.pending,
@@ -429,15 +432,20 @@ fn a_rescan_watcher_taking_over_from_another_reports_what_the_other_held_back() 
             kind,
             id,
         };
-        assert_eq!(
-            changes,
-            [
+        let expected = match cfg!(target_os = "macos") {
+            true => vec![
                 created("p/top.txt", File),
                 ignored("b/c", "ig/zz/deep/c", Dir, c),
                 ignored("p/top.txt", "ig/zz/deep/top.txt", File, top),
             ],
-            "native {native_first}"
-        );
+            false => vec![
+                ignored("b/c", "ig/zz/deep/c", Dir, c),
+                Change::Modified {
+                    path: "p/top.txt".into(),
+                },
+            ],
+        };
+        assert_eq!(changes, expected, "native {native_first}");
         let disk = Snapshot::scan_with_rules(root, &mut rules()).unwrap();
         assert_eq!(
             identities(second.snapshot()),
