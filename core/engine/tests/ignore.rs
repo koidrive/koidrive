@@ -2751,4 +2751,44 @@ fn a_given_up_file_removed_while_a_commit_watches_its_position_downloads_once_in
     assert_eq!(ops(&mut trees), []);
     effects(&mut trees);
     assert_eq!(trees.local().live(&"z".into()), Some(&file("x", "g", 1)));
+
+fn moved_out_with_an_unsent_edit(rename: bool) -> Trees {
+}
+    let mut trees = trees(&[
+        synced("F", dir(ROOT, "F")),
+        synced("c", file("F", "c.txt", 1)),
+    ]);
+    let mut edited = trees.local().get(&NodeId::from("c")).unwrap().clone();
+    edited.shape.content = Some(content(2));
+    if rename {
+        edited.shape.name = "d.txt".into();
+    }
+    trees.set_local("c".into(), edited);
+    trash(&mut trees, "c");
+    trees.settle(&Default::default());
+    trees.ignore_local(&NodeId::from("c"));
+    trees
+}
+
+fn assert_waits_around_the_edit(mut trees: Trees) {
+    trash(&mut trees, "F");
+    assert!(trees.unsent_edits().contains("c"));
+    let done = effects(&mut trees);
+    assert!(!nodes(&done).contains(&"F"), "{done:?}");
+    assert!(trees.local().get("c").is_some() && trees.unsent_edits().contains("c"));
+}
+
+#[test]
+fn a_folder_deleted_elsewhere_waits_around_a_copy_moved_out_with_an_edit_its_rules_now_exclude() {
+    let mut trees = moved_out_with_an_unsent_edit(true);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    assert_waits_around_the_edit(trees);
+}
+
+#[test]
+fn a_folder_deleted_elsewhere_waits_around_a_copy_moved_out_with_an_edit_the_server_dropped() {
+    let mut trees = moved_out_with_an_unsent_edit(false);
+    trees.set_synced("c".into(), Some(file("F", "c.txt", 2)));
+    trees.remove_remote(&NodeId::from("c"));
+    assert_waits_around_the_edit(trees);
 }
