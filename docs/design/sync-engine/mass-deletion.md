@@ -142,7 +142,7 @@ Entering recovery is one store transaction that copies R, S and L into evidence 
 | deleted on this device | absent or trashed | yes | Nothing to do |
 | absent (not in S₀ or L) | live | yes | Download |
 
-- Held nodes are classified again, with the same table against S₀, whenever R′ or L changes for them. A question is dropped only when a certain row applies, such as the local version and R′(n) becoming equal. A node that merely reappears in R′ is not certain. If another device publishes n = C while this device holds n = B, then B ≠ C, or B = C at another position, stays held with its question refreshed to C's revision, and B = C at the same position becomes certain.
+- Held nodes are classified again, with the same table against S₀, whenever R′ or L changes for them. A question is dropped only when a certain row applies, such as the local version and R′(n) becoming equal. A node held as created after the restore point that reappears in R′ is not certain while R′ trashed it or gives it other content. If another device publishes n = C while this device holds n = B, then B ≠ C stays held with its question refreshed to C's revision, also after a later rewind, unless another live node of R′ at B's place has B's content. B = C becomes certain, and at another position n follows R′.
 - A recovery commit rejected with `ID_EXISTS` is classified again the same way instead of becoming a problem.
 - An excluded node (§5.10) stays excluded and is not classified.
 
