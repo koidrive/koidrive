@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, VecDeque};
 use koidrive_proto::v1::{self as proto, error, op, op_result};
 use prost::Message;
 
-use crate::classify::{Class, Origin, Trees, Waiting, path};
+use crate::classify::{Class, Landing, Origin, Trees, Waiting, path};
 use crate::effects;
 use crate::first_link::{self, History, Marks, PriorSync};
 use crate::guard::{self, Guard, RemoteRemoval};
@@ -531,6 +531,36 @@ impl Commits {
             .collect()
     }
 
+    fn landing(&self) -> Landing {
+        let mut landing = Landing::default();
+        let Some(flight) = self.in_flight.as_ref() else {
+            return landing;
+        };
+        for op in (flight.commit.ops.iter()).filter_map(|op| op.op.as_ref()) {
+            match op {
+                op::Op::CreateFile(create) => {
+                    (landing.contents).insert(NodeId::from(&create.node_id), create.content.clone());
+                }
+                op::Op::CreateDir(create) => {
+                    landing.contents.insert(NodeId::from(&create.node_id), None);
+                }
+                op::Op::UpdateContent(update) => {
+                    (landing.contents).insert(NodeId::from(&update.node_id), update.content.clone());
+                }
+                op::Op::Delete(delete) => {
+                    landing.deleted.insert(NodeId::from(&delete.node_id));
+                }
+                _ => {}
+            }
+        }
+        for (top, members) in &flight.deletes {
+            landing
+                .deleted
+                .extend(std::iter::once(top).chain(members).cloned());
+        }
+        landing
+    }
+
     /// Whether a listed node at revision `seq` was placed there by this device: by a commit of
     /// this device that the server kept, or by the commit in flight, whose result has that seq.
     pub fn listed_here(&self, seq: u64) -> bool {
@@ -932,7 +962,7 @@ impl Commits {
                     && !matches!(*self.halted, Some(Halt::Recovery { .. }))
                     && first_link::still_shown(trees, question)
                     && trees.settled_below(&question.shown);
-                let frozen = settled.then(|| trees.below(&question.shown));
+                let frozen = settled.then(|| trees.below(&question.shown, &self.landing()));
                 let question = &mut self.questions.get_mut()[index];
                 question.answer = Some(answer);
                 question.frozen = frozen;
@@ -1093,9 +1123,12 @@ impl Commits {
                 Some(question) => {
                     self.questions.get_mut().remove(index);
                     if question.answer == Some(Answer::Discard) {
+                        let landing = self.landing();
                         let taken = match &question.frozen {
-                            Some(frozen) => trees.frozen_server_entries(&question.shown, frozen),
-                            None => Some(trees.server_entries_below(&question.shown)),
+                            Some(frozen) => {
+                                trees.frozen_server_entries(&question.shown, frozen, &landing)
+                            }
+                            None => Some(trees.server_entries_below(&question.shown, &landing)),
                         };
                         let Some(taken) = taken else {
                             self.questions.get_mut().insert(

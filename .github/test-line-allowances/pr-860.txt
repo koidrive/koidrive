@@ -1,8 +1,9 @@
-175
+263
 # About 140 lines are existing tests that pass the trees to Commits::decide and set Question::frozen to None, because a Discard now records what was below its folders when the person answers. They protect what they did before.
 # Engine: a Discard answered before the user empties a server folder in the discarded folder keeps the folder off the server (the original report), with a commit that does not reach the folder in flight. No existing test changes the folder between the answer and the build.
 # Engine: a Discard answered after another device edits or adds inside a server folder the rules leave out, followed by the original report's change, keeps the folder off the server. No existing test changes the server below an excluded folder before the answer.
 # Engine: a Discard answered while an edit, a create or a rename inside a server folder it takes along is in flight takes the folder along after the acknowledgement. The existing in-flight tests answer with nothing in flight below the folder.
 # Engine: server changes between the answer and the build (rename, move, a new entry, an entry moved in, an edit, a purge, a trash) send nothing of the discarded folder, and user changes after the answer (an edit, a new entry, a rename, a server entry moved in, a file renamed before the answer and edited after it) ask again. No existing test changes anything between the answer and the build.
+# Engine: a Discard answered while an edit, a file or folder create or a delete below a server folder is in flight, followed by the original report's change, keeps the folder off the server. The existing in-flight tests only answer while the folder is already a server copy.
 # Store: the record a Discard keeps survives a restart, a store from before it opens with none, and a question asked again leaves no rows. These cover a new migration.
 # Sim: the oracle decides what a Discard takes along at the answer, as the engine does, and checks on its own that no discarded folder is created on the server unless the user changed something in it after the Discard. The old oracle decided at the build and accepted the original report.

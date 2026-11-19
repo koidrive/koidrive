@@ -26,6 +26,12 @@ use release::Released;
 
 type Pair = (NodeId, NodeId);
 
+#[derive(Default)]
+pub(crate) struct Landing {
+    pub(crate) contents: BTreeMap<NodeId, Option<Content>>,
+    pub(crate) deleted: BTreeSet<NodeId>,
+}
+
 fn repositioned(before: &Shape, after: &Shape) -> bool {
     before.parent != after.parent || before.name != after.name
 }
@@ -2593,7 +2599,7 @@ impl Trees {
             && (self.local_children_placed_or_parked(id)).all(|child| {
                 self.kept_as_discarded_in(child, id) || self.as_the_server_holds(child, &mut seen)
             })
-            && self.keeps_the_synced_children(id, &mut seen)
+            && self.keeps_the_synced_children(id, &BTreeSet::new(), &mut seen)
     }
 
     fn kept_as_discarded_in(&self, id: &NodeId, folder: &NodeId) -> bool {
@@ -2623,7 +2629,7 @@ impl Trees {
         (holds(self.r.live(id)) || holds(self.acknowledged(id)))
             && (self.local_children_placed_or_parked(id))
                 .all(|child| self.as_the_server_holds(child, seen))
-            && self.keeps_the_synced_children(id, seen)
+            && self.keeps_the_synced_children(id, &BTreeSet::new(), seen)
     }
 
     fn removal_stands(&self, id: &NodeId) -> bool {
@@ -2709,17 +2715,20 @@ impl Trees {
     fn keeps_the_synced_children<'a>(
         &'a self,
         id: &'a NodeId,
+        deleting: &BTreeSet<NodeId>,
         seen: &mut BTreeSet<&'a NodeId>,
     ) -> bool {
         self.s_children(id).all(|child| {
             self.l.get(child).is_some()
+                || deleting.contains(child)
                 || self
                     .removed_from
                     .get(child)
                     .is_none_or(|folder| folder != id)
                 || self.r.live(child).is_none()
                 || (self.kept_back(child)
-                    && (!seen.insert(child) || self.keeps_the_synced_children(child, seen)))
+                    && (!seen.insert(child)
+                        || self.keeps_the_synced_children(child, deleting, seen)))
         })
     }
 
@@ -2821,6 +2830,7 @@ impl Trees {
     pub(crate) fn server_entries_below(
         &mut self,
         shown: &BTreeMap<NodeId, Shape>,
+        landing: &Landing,
     ) -> Vec<(NodeId, Shape)> {
         self.forget_reclaims();
         let mut kept = Vec::new();
@@ -2829,7 +2839,7 @@ impl Trees {
                 let left_out = self.excluded(child)
                     || (self.l.get(child)).is_some_and(|node| node.left_out_when_placed);
                 if !shown.contains_key(child) && left_out {
-                    self.server_copy(child, shown, &mut kept);
+                    self.server_copy(child, shown, landing, &mut kept);
                 }
             }
         }
@@ -2842,15 +2852,20 @@ impl Trees {
         }
     }
 
-    pub(crate) fn below(&mut self, shown: &BTreeMap<NodeId, Shape>) -> BTreeMap<NodeId, Frozen> {
+    pub(crate) fn below(
+        &mut self,
+        shown: &BTreeMap<NodeId, Shape>,
+        landing: &Landing,
+    ) -> BTreeMap<NodeId, Frozen> {
         let frozen = |shape: &Shape, taken| Frozen {
             parent: shape.parent.clone(),
             name: shape.name.clone(),
             taken,
         };
-        let mut below: BTreeMap<NodeId, Frozen> = (self.server_entries_below(shown).iter())
-            .map(|(id, shape)| (id.clone(), frozen(shape, true)))
-            .collect();
+        let mut below: BTreeMap<NodeId, Frozen> =
+            (self.server_entries_below(shown, landing).iter())
+                .map(|(id, shape)| (id.clone(), frozen(shape, true)))
+                .collect();
         let mut at: Vec<&NodeId> = shown.keys().collect();
         while let Some(id) = at.pop() {
             for child in self.local_children_placed_or_parked(id) {
@@ -2870,6 +2885,7 @@ impl Trees {
         &mut self,
         shown: &BTreeMap<NodeId, Shape>,
         frozen: &BTreeMap<NodeId, Frozen>,
+        landing: &Landing,
     ) -> Option<Vec<(NodeId, Shape)>> {
         self.forget_reclaims();
         let mut kept = Vec::new();
@@ -2887,7 +2903,7 @@ impl Trees {
                         return None;
                     }
                     if frozen.get(parent).is_some_and(|parent| parent.taken) {
-                        self.server_copy(id, shown, &mut kept);
+                        self.server_copy(id, shown, landing, &mut kept);
                     }
                     continue;
                 };
@@ -2932,7 +2948,7 @@ impl Trees {
                 kept.push((id.clone(), remote.clone()));
             }
         }
-        kept.extend(self.server_entries_below(shown));
+        kept.extend(self.server_entries_below(shown, landing));
         Some(kept)
     }
 
@@ -2966,14 +2982,20 @@ impl Trees {
         &self,
         id: &NodeId,
         shown: &BTreeMap<NodeId, Shape>,
+        landing: &Landing,
         kept: &mut Vec<(NodeId, Shape)>,
     ) -> bool {
-        let (Some(local), Some(remote)) = (self.l.get(id), self.r.get(id)) else {
+        let Some(local) = self.l.get(id) else {
+            return false;
+        };
+        let Some(remote) = (landing.contents.get(id).map(Option::as_ref))
+            .or_else(|| Some(self.r.get(id)?.shape.content.as_ref()))
+        else {
             return false;
         };
         let start = kept.len();
         let copy = match local.shape.kind {
-            Kind::File => match (&local.shape.content, &remote.shape.content) {
+            Kind::File => match (&local.shape.content, remote) {
                 (Some(content), Some(remote)) => {
                     same_content(content, remote) || local.content_from_server
                 }
@@ -2981,12 +3003,13 @@ impl Trees {
             },
             Kind::Dir => {
                 let children: Vec<&NodeId> = self.local_children_placed_or_parked(id).collect();
-                self.keeps_the_synced_children(id, &mut BTreeSet::new())
-                    && !(self.s_children(id)).any(|child| self.removal_stands(child))
+                self.keeps_the_synced_children(id, &landing.deleted, &mut BTreeSet::new())
+                    && !(self.s_children(id))
+                        .any(|child| !landing.deleted.contains(child) && self.removal_stands(child))
                     && children.into_iter().all(|child| {
                         shown.contains_key(child)
                             || self.kept_as_discarded_in(child, id)
-                            || self.server_copy(child, shown, kept)
+                            || self.server_copy(child, shown, landing, kept)
                     })
             }
         };

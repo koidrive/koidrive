@@ -1610,6 +1610,93 @@ fn a_discard_answered_after_another_device_changes_a_server_folder_the_rules_lea
 }
 
 #[test]
+fn a_discard_answered_while_a_change_below_a_server_folder_is_in_flight_keeps_its_folder_off_the_server()
+ {
+    let changes = [
+        ("c", Some(file("x", "child", 4)), "update"),
+        ("n", Some(file("x", "added", 6)), "create file"),
+        ("m", Some(dir("x", "made")), "create dir"),
+        ("e", None, "delete"),
+    ];
+    for (id, shape, op) in changes {
+        let mut trees = trees(
+            &[
+                ("f", dir(ROOT, "new")),
+                ("o", dir(ROOT, "other")),
+                ("x", dir(ROOT, "server")),
+                ("d", dir("x", "sub")),
+                ("c", file("x", "child", 3)),
+                ("e", file("x", "gone", 5)),
+            ],
+            &[
+                ("o", dir(ROOT, "other")),
+                ("x", dir(ROOT, "server")),
+                ("d", dir("x", "sub")),
+                ("c", file("x", "child", 3)),
+                ("e", file("x", "gone", 5)),
+            ],
+        );
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+        trees.settle(commits.aliases());
+        let asked = question(&commits);
+        let ignored = Some(RuleFile::parse(b"ignored\n"));
+        trees.set_rules(&[] as &[&str], Source::Koiignore, ignored);
+        match &shape {
+            Some(shape) => {
+                let mut sent = local_node(shape.clone(), 77);
+                if let Some(edited) = trees.local().get(id) {
+                    sent = LocalNode {
+                        shape: shape.clone(),
+                        ..edited.clone()
+                    };
+                }
+                trees.set_local_changed(id.into(), sent);
+            }
+            None => trees.remove_local(id),
+        }
+        trees.settle(commits.aliases());
+        assert_eq!(
+            ops(&mut commits, &mut trees, &mut ids),
+            [(op, id.to_owned())]
+        );
+        let mut moved = trees.local().get("x").unwrap().clone();
+        (moved.shape.parent, moved.shape.name) = ("f".into(), "ignored".into());
+        trees.set_local_changed("x".into(), moved);
+        trees.settle(commits.aliases());
+        assert!(commits.decide(&mut trees, &asked.id, Answer::Discard));
+        commits
+            .received(CommitResult {
+                seq: 1,
+                results: vec![OpResult {
+                    code: op_result::Code::Applied as i32,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+        match shape {
+            Some(shape) => {
+                let mut remote = trees.remote().get("c").unwrap().clone();
+                (remote.shape, remote.content_rev) = (shape, 2);
+                trees.set_remote(id.into(), remote);
+            }
+            None => trees.remove_remote(id),
+        }
+        assert!(commits.acknowledge(&mut trees, 1));
+        let mut out = trees.local().get("d").unwrap().clone();
+        out.shape.parent = "o".into();
+        trees.set_local_changed("d".into(), out);
+        trees.remove_local("d");
+        trees.settle(commits.aliases());
+        let mut sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+        trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+        sent.extend(drive_until_quiet(&mut commits, &mut trees, &mut ids));
+        assert_eq!(sent, [("delete", "d".to_owned())], "{id}");
+    }
+}
+
+#[test]
 fn a_discard_answered_while_a_change_to_a_server_folder_it_takes_along_is_in_flight_takes_it_along()
 {
     let changes = [

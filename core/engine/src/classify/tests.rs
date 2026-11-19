@@ -505,7 +505,10 @@ fn a_server_folder_in_a_discarded_folder(folders: usize, waiting: bool) -> (Tree
         koidrive_ignore::Source::Koiignore,
         Some(RuleFile::parse(b"ignored/\n")),
     );
-    let taken = trees.server_entries_below(&BTreeMap::from([("f".into(), dir(&"root".into(), "new"))]));
+    let taken = trees.server_entries_below(
+        &BTreeMap::from([("f".into(), dir(&"root".into(), "new"))]),
+        &Landing::default(),
+    );
     trees.discard_taken(taken);
     trees.discard(
         ["f".into()],
@@ -571,7 +574,7 @@ fn two_server_folders_swapped_below_a_discarded_folder_stay_discarded() {
         Some(RuleFile::parse(b"ignored/\n")),
     );
     let shown = BTreeMap::from([("f".into(), dir(&"root".into(), "new"))]);
-    let taken = trees.server_entries_below(&shown);
+    let taken = trees.server_entries_below(&shown, &Landing::default());
     trees.discard_taken(taken);
     trees.discard(["f".into()], &shown);
     place(&mut trees, &"z".into(), dir(&"x".into(), "z"), true);
@@ -761,7 +764,7 @@ fn a_discard_check_over_a_deep_chain_of_taken_along_server_folders_finishes() {
     }
     let shown = BTreeMap::from([("f".into(), dir(&"root".into(), "new"))]);
     trees.discard(["f".into()], &shown);
-    let taken = trees.server_entries_below(&shown);
+    let taken = trees.server_entries_below(&shown, &Landing::default());
     trees.discard_taken(taken);
     assert!(trees.in_one_pass(|| trees.is_discarded(&"x0".into())));
 }
