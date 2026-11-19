@@ -462,8 +462,8 @@ def gather(executable, read, path, base=None, atomic=frozenset()):
                 continue
             if kind == "module" and base is not None and (key in base["containers"] or key not in base["items"]):
                 moved = module_file(read, file, inline, entry["file"], entry["path"])
-                kept = key in base["containers"]
-                visit(moved, logical if kept else prefix + list(parent), moved, added or not kept)
+                inline = key in base["containers"]
+                visit(moved, logical if inline else prefix + list(parent), moved, added or not inline)
                 continue
             if kind == "container" and key not in atomic:
                 tree["containers"].add(key)
@@ -584,7 +584,9 @@ def replay_onto_split(executable, path, base_ref, branch_ref):
         bucket = anchor["bucket"] if "bucket" in anchor else (anchor["file"], anchor["end"] if mode == "after" else anchor["lead"], mode)
         width = anchor["indent"]
         text = reindent(place, text, width - place["indent"])
-        if anchor["added"] and not place["use"] and ITEM.search(text) and not ITEM.search(text).group(1):
+        trait_member = re.match(r"impl:[^:]", parent.rpartition("/")[2])
+        own_line = key.rpartition("/")[2].split(":")[0] in ("fn", "struct", "enum", "const", "static", "type", "trait", "union")
+        if anchor["added"] and own_line and not trait_member and not ITEM.search(text).group(1):
             text = visibility(text, b"pub(super) fn ")
             print(f"made {key} pub(super): the split put it in a module of its own; drop the marker if nothing outside that module uses it")
         entry = (b"\n" * place["newlines"] + b" " * width, text)
