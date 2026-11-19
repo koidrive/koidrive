@@ -397,14 +397,20 @@ fn synced_folder(folders: &[PathBuf], path: &Path) -> Option<PathBuf> {
     {
         return Some(folder.clone());
     }
+    if fs::metadata(path).is_ok_and(|meta| meta.is_dir())
+        && fs::symlink_metadata(path.join(".koidrive")).is_ok()
+    {
+        return Some(path.to_path_buf());
+    }
     let parent = path
         .parent()
         .and_then(|parent| fs::canonicalize(parent).ok());
-    (path.ancestors())
+    (path.ancestors().skip(1))
         .chain(parent.iter().flat_map(|parent| parent.ancestors()))
         .find(|dir| {
-            fs::metadata(dir).is_ok_and(|meta| meta.is_dir())
-                && fs::symlink_metadata(dir.join(".koidrive")).is_ok()
+            ["space.json", "device.json"]
+                .iter()
+                .any(|record| fs::symlink_metadata(dir.join(".koidrive").join(record)).is_ok())
         })
         .map(Path::to_path_buf)
 }

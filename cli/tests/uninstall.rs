@@ -1951,3 +1951,40 @@ fn a_profile_that_registers_its_service_while_uninstall_asks_stops_it() {
         "{text}"
     );
 }
+
+#[test]
+fn a_profile_in_a_folder_uninstall_already_released_loses_its_path_line() {
+    let machine = Machine::new();
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let folder = machine.path("Docs");
+    machine.write("Docs/.koidrive/space.json", "{}");
+    machine.write("Docs/.koidrive/trash/report.docx", "old version");
+    record(&machine, &folder);
+
+    let (output, first) = machine.uninstall(&koi);
+    assert!(output.status.success(), "{first:#}");
+    assert!(
+        machine.path("Docs/.koidrive/trash/report.docx").exists(),
+        "{first:#}"
+    );
+
+    machine.profile();
+    let koi = machine.copy_koi(".local/bin/koi");
+    let line = path_line(koi.parent().unwrap());
+    let zprofile = machine.write(
+        "Docs/zsh/.zprofile",
+        &format!("export EDITOR=vim\n{line}\n"),
+    );
+    let mut command = machine.command(&koi, &["uninstall", "--yes", "--json"]);
+    command.env("ZDOTDIR", machine.path("Docs/zsh"));
+
+    let (output, second) = machine.envelope(command);
+
+    assert!(output.status.success(), "{second:#}");
+    assert_eq!(
+        fs::read_to_string(&zprofile).unwrap(),
+        "export EDITOR=vim\n",
+        "{second:#}"
+    );
+}
