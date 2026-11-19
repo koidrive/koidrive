@@ -1811,7 +1811,8 @@ fn find_root(link: &mut Link, store: &mut Store) -> Result<FoundRoot, Stop> {
     } = open_linked_root(link).map_err(Stop::Root)?;
     let space = Space::bind(dir, &link.root).map_err(unreadable)?;
     let adopted = if renumbered {
-        let engine = store.read(|tx| Engine::load(tx, &link.space_id))?;
+        let engine = Engine::load_from(store, &link.space_id, &|| false)?
+            .expect("a load nobody abandons ends with the engine");
         match matching_children(&space, &engine.trees).map_err(unreadable)? {
             0 => return Err(Stop::Root(RootProblem::Renumbered)),
             matched => Some(Adopted::Children(matched)),

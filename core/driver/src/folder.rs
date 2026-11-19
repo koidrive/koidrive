@@ -351,14 +351,20 @@ impl Folder {
     ) -> Result<Option<Loaded>, Stop> {
         let timing = Timing::open(store, link.linked_at_ms);
         let mut stored = Stored::new(&link.space_id);
+        let mut backfilled = None;
         let read = Store::open_existing(store).and_then(|mut opened| {
+            #[cfg(test)]
+            let parked = WHILE_READING.lock().unwrap().remove(store);
+            #[cfg(test)]
+            if let Some(parked) = parked {
+                parked(abandoned);
+            }
+            if opened.read(|tx| tx.journal_backfill_owed())? {
+                let stamp = opened.read(|tx| tx.write_stamp())?;
+                backfilled = Engine::load_from(&mut opened, &link.space_id, abandoned)?;
+                return Ok((backfilled.is_some(), stamp));
+            }
             opened.read(|tx| {
-                #[cfg(test)]
-                let parked = WHILE_READING.lock().unwrap().remove(store);
-                #[cfg(test)]
-                if let Some(parked) = parked {
-                    parked(abandoned);
-                }
                 let read = stored.read_unless(tx, &link.space_id, abandoned)?;
                 Ok((read, tx.write_stamp()?))
             })
@@ -374,7 +380,11 @@ impl Folder {
         if !read {
             return Ok(None);
         }
-        let Some(mut engine) = stored.engine_unless(abandoned)? else {
+        let loaded = match backfilled {
+            Some(engine) => Some(engine),
+            None => stored.engine_unless(abandoned)?,
+        };
+        let Some(mut engine) = loaded else {
             return Ok(None);
         };
         if abandoned() {
