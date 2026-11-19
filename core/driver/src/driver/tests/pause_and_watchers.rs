@@ -205,7 +205,10 @@ async fn a_stop_after_an_answered_pause_returns_only_once_the_pause_has_finished
             async move { driver.stop().await }
         });
         tokio::time::sleep(Duration::from_millis(5)).await;
-        assert!(!stopping.is_finished(), "a stop waits for the folder to end");
+        assert!(
+            !stopping.is_finished(),
+            "a stop waits for the folder to end"
+        );
         drop(finished);
         tokio::time::timeout(Duration::from_secs(10), stopping)
             .await
