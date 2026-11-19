@@ -2350,3 +2350,46 @@ fn an_excluded_folder_that_holds_an_included_node_keeps_its_synced_place() {
     assert_eq!(trees.synced().live("z"), Some(&file("x", "g", 1)));
     assert_eq!(trees.synced().live("y"), Some(&file("x", "f", 2)));
 }
+
+#[test]
+fn a_delete_refused_after_its_folder_was_given_up_is_sent_again_once_included() {
+    let mut trees = trees(&[
+        incoming("far", dir(ROOT, "far")),
+        (
+            "x",
+            Some(dir(ROOT, "x")),
+            Some(dir(ROOT, "x")),
+            Some(dir("far", "x")),
+        ),
+        synced("z", file("x", "g", 1)),
+    ]);
+    trees.remove_local("z");
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let built = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 7);
+    assert_eq!(
+        built.map(|c| c.ops[0].op.clone().unwrap()),
+        Some(delete("z"))
+    );
+    let parked = LocalNode {
+        parked: true,
+        ..local(dir(ROOT, "x"), 2)
+    };
+    trees.set_local("x".into(), parked);
+    trees.set_local("y".into(), local(file(ROOT, "x", 2), 4));
+    trees.set_synced("y".into(), Some(file("x", "f", 2)));
+    trees.set_remote("y".into(), remote(file(ROOT, "x", 2)));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/far/\n"));
+    trees.settle(&Default::default());
+    let head_moved = proto::Error {
+        code: proto::error::Code::HeadMoved as i32,
+        ..Default::default()
+    };
+    commits.failed(&mut trees, &head_moved).unwrap();
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
+    effects(&mut trees);
+    let built = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 7);
+    let sent: Vec<op::Op> = built.map_or_else(Vec::new, |c| {
+        c.ops.iter().map(|o| o.op.clone().unwrap()).collect()
+    });
+    assert_eq!(sent, [delete("z")]);
+}

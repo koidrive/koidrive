@@ -5914,7 +5914,7 @@ impl Trees {
             targets.extend(giving_up.into_iter().map(|id| (id, None)));
             (taken, unsearched) = self.search_together(&targets);
             if !taken.iter().any(|id| pending.contains(id)) {
-                return BTreeSet::new();
+                taken.clear();
             }
             drops = (released.into_iter())
                 .map(|(holder, _, dropped)| (holder.clone(), dropped))
@@ -5927,7 +5927,7 @@ impl Trees {
         self.unsearched.extend(unsearched);
         let bases: Vec<(NodeId, Shape)> = (drops.values())
             .flat_map(|dropped| dropped.nodes())
-            .filter(|(id, _)| self.l.get(id).is_some())
+            .filter(|(id, _)| self.l.get(id).is_some() || !self.unobserved.contains(id))
             .filter_map(|(id, _)| Some((id.clone(), self.s.get(id)?.clone())))
             .collect();
         for (id, next) in updates {
