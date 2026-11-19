@@ -829,7 +829,7 @@ mod tests {
         intents.record(0, 2, 1, "delete", deleted);
         give_up(&mut intents, &node);
         intents
-            .check(&Server::of("root", Vec::new()), |_| false)
+            .check(&Server::of("root", Vec::new()), |_| false, |_, _| false)
             .is_ok()
     }
 

@@ -1,7 +1,7 @@
 class = "R"
 issue = "GUN-1216"
 tests = ["devices_with_rules_converge_once_the_faults_stop", "devices_with_rules_lose_no_write"]
-message = '''(after phase <n>: after the faults stopped, on device <n>: a commit of device <n> places node <id> at \[.*\], which the rules of device <n> leave out\.|not recorded: devices::\S+ \S+ SentLeftOut a commit of device <n> places node <id> at \[(?:(?! not recorded: ).)*\], which the rules of device <n> leave out( not recorded: devices::\S+ \S+ SentLeftOut (?:(?! not recorded: ).)+?leave out)*( devices::\S+ never ran case \S+)*)'''
+message = '''(after phase <n>: after the faults stopped, on device <n>: a commit of device <n> places node <id> at \[.*\], which the rules of device <n> leave out\.|not recorded: devices::\S+ \S+ SentLeftOut a commit of device <n> places node <id> at \[(?:(?! not recorded: ).)*\], which the rules of device <n> leave out( not recorded: devices::\S+ \S+ SentLeftOut (?:(?! not recorded: ).)+?leave out)*)'''
 examples = [
   "after phase 2: after the faults stopped, on device 0: a commit of device 0 places node 01a1c2c0-39a0-7510-83bc-38d6c6b89fe4 at [\"c.txt\", \"a\"], which the rules of device 0 leave out.",
   "after phase 1: after the faults stopped, on device 1: a commit of device 1 places node 01a1c2c0-39a0-796a-8df8-fb6da7904e2f at [\"ß\", \"a\"], which the rules of device 1 leave out.",

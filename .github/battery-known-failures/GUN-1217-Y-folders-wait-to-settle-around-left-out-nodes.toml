@@ -1,7 +1,7 @@
 class = "Y"
 issue = "GUN-1217"
 tests = ["devices_with_rules_converge_once_the_faults_stop", "devices_with_rules_lose_no_write"]
-message = '''(after phase <n>: device <n> is quiet, but it waits to settle the folders of \["<id>"(, "<id>")*\], which hold only nodes its rules leave out\.|not recorded: devices::\S+ \S+ RemoveLeftOut device <n> is quiet, but it waits to settle the folders of \["<id>"(, "<id>")*\], which hold only nodes its rules leave out( not recorded: devices::\S+ \S+ RemoveLeftOut (?:(?! not recorded: ).)+?leave out)*( devices::\S+ never ran case \S+)*)'''
+message = '''(after phase <n>: device <n> is quiet, but it waits to settle the folders of \["<id>"(, "<id>")*\], which hold only nodes its rules leave out\.|not recorded: devices::\S+ \S+ RemoveLeftOut device <n> is quiet, but it waits to settle the folders of \["<id>"(, "<id>")*\], which hold only nodes its rules leave out( not recorded: devices::\S+ \S+ RemoveLeftOut (?:(?! not recorded: ).)+?leave out)*)'''
 examples = [
   "after phase 1: device 1 is quiet, but it waits to settle the folders of [\"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\"], which hold only nodes its rules leave out.",
 ]
