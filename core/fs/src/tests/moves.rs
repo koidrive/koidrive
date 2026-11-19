@@ -132,7 +132,9 @@ fn scan_settling(snapshot: &mut Snapshot, root: &Path, scope: &str) -> Rescan {
             None,
             &|| false,
             &|_| {},
-            Keep::Unexplained,
+            Keep::Unexplained {
+                waiting: &BTreeSet::new(),
+            },
             &mut |_| {},
             &MarkLog::default(),
         )
@@ -693,5 +695,252 @@ fn many_files_moved_out_of_removed_folders_are_matched_in_linear_work() {
     ] {
         let five_hundred = moved_out_of_removed_folders(moved, 500, u64::MAX);
         moved_out_of_removed_folders(moved, 5_000, five_hundred * 11);
+    }
+}
+
+fn hear_barrier(watcher: &NativeWatcher) {
+    if let Some(barrier) = &watcher.barrier {
+        let written = EventKind::Create(notify::event::CreateKind::File);
+        let event = notify::Event::new(written).add_path(barrier.file.clone());
+        watcher.sender.send(Ok(event)).unwrap();
+    }
+}
+
+fn heard_in_batches(tree: &[&str], moves: &[(&str, &str)], batches: &[&[&str]]) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    for path in tree.iter().chain(&[".koidrive/"]) {
+        let at = root.join(path);
+        fs::create_dir_all(if path.ends_with('/') {
+            &at
+        } else {
+            at.parent().unwrap()
+        })
+        .unwrap();
+        if !path.ends_with('/') {
+            fs::write(&at, path).unwrap();
+        }
+    }
+    let mut watcher = quiet_watcher(&root, &[]);
+    let mut whole = watcher.snapshot.clone();
+    for (from, to) in moves {
+        fs::rename(root.join(from), root.join(to)).unwrap();
+    }
+    let mut expected = whole.rescan(&root, [PathBuf::new()]).unwrap().changes;
+    let mut changes = Vec::new();
+    for batch in batches {
+        watcher.dirty.extend(batch.iter().map(PathBuf::from));
+        changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+    }
+    for _ in 0..3 {
+        hear_barrier(&watcher);
+        changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+    }
+    changes.sort_by_key(|change| format!("{change:?}"));
+    expected.sort_by_key(|change| format!("{change:?}"));
+    assert_eq!(changes, expected, "{batches:?}");
+    assert_eq!(watcher.snapshot.entries, whole.entries, "{batches:?}");
+    assert!(watcher.poll(Duration::ZERO).unwrap().pending.is_empty());
+}
+
+#[test]
+fn a_move_heard_in_two_batches_is_a_rename_whatever_the_watcher_hears_between() {
+    let file: [&[&str]; 2] = [&["x/d/g.txt"], &["e/moved.txt"]];
+    let folder: [&[&str]; 2] = [&["x/d"], &["e/d2"]];
+    for (from, to) in [(0, 1), (1, 0)] {
+        for between in [&[][..], &["x"], &["e"]] {
+            heard_in_batches(
+                &["x/d/g.txt", "e/"],
+                &[("x/d/g.txt", "e/moved.txt")],
+                &[file[from], between, file[to]],
+            );
+            heard_in_batches(
+                &["x/d/g.txt", "x/d/h.txt", "e/"],
+                &[("x/d", "e/d2")],
+                &[folder[from], between, folder[to]],
+            );
+        }
+    }
+}
+
+#[test]
+fn a_folder_seen_moved_beside_a_scanned_path_is_a_rename_once_its_events_come() {
+    let tree = ["d0/f4", "d0/e/f1", "d1/f2", "d1/f3", "d2/"];
+    let moves = [("d0/f4", "n1"), ("d1", "d2/n2"), ("d0/e/f1", "d0/n3")];
+    heard_in_batches(&tree, &moves, &[&["n1"], &[], &["d2/n2"], &["d0/n3"]]);
+    heard_in_batches(&tree, &moves, &[&["n1"], &["d0/n3"], &["d1", "d2/n2"]]);
+}
+
+#[test]
+fn a_held_removal_is_reported_once_its_barrier_is_heard_or_times_out() {
+    for heard in [true, false] {
+        let (_dir, root, _) = one_file();
+        fs::create_dir(root.join(".koidrive")).unwrap();
+        let mut watcher = quiet_watcher(&root, &["x/g.txt"]);
+        fs::remove_file(root.join("x/g.txt")).unwrap();
+        for batch in [&[][..], &["x"], &["x/g.txt"]] {
+            watcher.dirty.extend(batch.iter().map(PathBuf::from));
+            let held = watcher.poll(Duration::ZERO).unwrap();
+            assert_eq!(
+                (held.changes, held.pending),
+                (vec![], vec![PathBuf::from("x/g.txt")])
+            );
+        }
+        let barrier = watcher.barrier.as_ref().unwrap().file.clone();
+        for other in [
+            EventKind::Access(AccessKind::Open(AccessMode::Any)),
+            EventKind::Remove(notify::event::RemoveKind::File),
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any)),
+        ] {
+            let other = notify::Event::new(other).add_path(barrier.clone());
+            watcher.sender.send(Ok(other)).unwrap();
+            assert_eq!(watcher.poll(Duration::ZERO).unwrap().changes, []);
+        }
+        match heard {
+            true => hear_barrier(&watcher),
+            false => watcher.barrier.as_mut().unwrap().written -= BARRIER_TIMEOUT,
+        }
+        assert_eq!(
+            watcher.poll(Duration::ZERO).unwrap().changes,
+            [Change::Removed {
+                path: "x/g.txt".into(),
+                kind: EntryKind::File
+            }]
+        );
+        assert!(watcher.barrier.is_none());
+    }
+}
+
+#[test]
+fn a_removal_held_while_an_earlier_barrier_waits_gets_a_barrier_of_its_own() {
+    for heard in [true, false] {
+        let (_dir, root, _) = one_file();
+        fs::create_dir(root.join(".koidrive")).unwrap();
+        fs::write(root.join("x/h.txt"), "h").unwrap();
+        let mut watcher = quiet_watcher(&root, &["x/g.txt"]);
+        let _old = fs::File::open(root.join("x/g.txt")).unwrap();
+        fs::remove_file(root.join("x/g.txt")).unwrap();
+        let mut changes = watcher.poll(Duration::ZERO).unwrap().changes;
+        fs::write(root.join("x/g.txt"), "new").unwrap();
+        fs::remove_file(root.join("x/h.txt")).unwrap();
+        let batch = ["x/g.txt", "x/h.txt"].map(PathBuf::from);
+        watcher.dirty.extend(batch);
+        changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+        match heard {
+            true => hear_barrier(&watcher),
+            false => watcher.barrier.as_mut().unwrap().written -= BARRIER_TIMEOUT,
+        }
+        changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+        hear_barrier(&watcher);
+        changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+        assert_eq!(
+            changes,
+            [
+                Change::Modified {
+                    path: "x/g.txt".into()
+                },
+                Change::Removed {
+                    path: "x/h.txt".into(),
+                    kind: EntryKind::File
+                }
+            ],
+            "heard {heard}"
+        );
+        assert!(watcher.barrier.is_none());
+    }
+}
+
+#[test]
+fn a_removal_held_after_an_overflow_gets_a_barrier_of_its_own() {
+    let removed = |path: &str| Change::Removed {
+        path: path.into(),
+        kind: EntryKind::File,
+    };
+    let (_dir, root, _) = one_file();
+    fs::create_dir(root.join(".koidrive")).unwrap();
+    fs::write(root.join("x/h.txt"), "h").unwrap();
+    let mut watcher = quiet_watcher(&root, &["x/g.txt"]);
+    fs::remove_file(root.join("x/g.txt")).unwrap();
+    assert_eq!(watcher.poll(Duration::ZERO).unwrap().changes, []);
+    let overflow = notify::Event::new(EventKind::Other).set_flag(Flag::Rescan);
+    watcher.sender.send(Ok(overflow)).unwrap();
+    let changes = watcher.poll(Duration::ZERO).unwrap().changes;
+    assert_eq!(changes, [removed("x/g.txt")]);
+    (watcher.sender, watcher.events) = mpsc::channel();
+    fs::remove_file(root.join("x/h.txt")).unwrap();
+    watcher.dirty.insert("x/h.txt".into());
+    assert_eq!(watcher.poll(Duration::ZERO).unwrap().changes, []);
+    hear_barrier(&watcher);
+    let changes = watcher.poll(Duration::ZERO).unwrap().changes;
+    assert_eq!(changes, [removed("x/h.txt")]);
+}
+
+#[test]
+fn a_barrier_does_not_lift_a_hold_made_after_it_was_written() {
+    let (_dir, root, _) = one_file();
+    fs::create_dir(root.join(".koidrive")).unwrap();
+    fs::create_dir(root.join("y")).unwrap();
+    let mut watcher = quiet_watcher(&root, &["x/g.txt"]);
+    let _old = fs::File::open(root.join("x/g.txt")).unwrap();
+    fs::remove_file(root.join("x/g.txt")).unwrap();
+    let mut changes = watcher.poll(Duration::ZERO).unwrap().changes;
+    fs::write(root.join("x/g.txt"), "new").unwrap();
+    watcher.dirty.insert("x/g.txt".into());
+    changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+    fs::rename(root.join("x/g.txt"), root.join("y/g.txt")).unwrap();
+    watcher.dirty.insert("x/g.txt".into());
+    changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+    hear_barrier(&watcher);
+    changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+    watcher.dirty.insert("y/g.txt".into());
+    hear_barrier(&watcher);
+    changes.extend(watcher.poll(Duration::ZERO).unwrap().changes);
+    assert_eq!(
+        changes,
+        [
+            Change::Modified {
+                path: "x/g.txt".into()
+            },
+            Change::Renamed {
+                from: "x/g.txt".into(),
+                to: "y/g.txt".into(),
+                kind: EntryKind::File
+            }
+        ]
+    );
+}
+
+#[test]
+fn a_native_watcher_hears_its_barrier_before_the_timeout() {
+    for rules in [false, true] {
+        let (_dir, root, _) = one_file();
+        fs::create_dir(root.join(".koidrive")).unwrap();
+        fs::write(root.join(Source::Koiignore.file_name()), ".koidrive\n").unwrap();
+        let previous = Snapshot::scan(&root).unwrap();
+        let mut watcher = match rules {
+            true => NativeWatcher::start_with_rules(
+                &root,
+                previous,
+                Rules::new(Box::new(Lines::default())),
+            ),
+            false => NativeWatcher::start(&root, previous),
+        }
+        .unwrap();
+        while !watcher.poll(Duration::ZERO).unwrap().pending.is_empty() {}
+        let started = Instant::now();
+        fs::remove_file(root.join("x/g.txt")).unwrap();
+        let mut changes = Vec::new();
+        while changes.is_empty() && started.elapsed() < BARRIER_TIMEOUT {
+            changes = watcher.poll(Duration::from_millis(100)).unwrap().changes;
+        }
+        assert!(started.elapsed() < BARRIER_TIMEOUT, "rules {rules}");
+        assert_eq!(
+            changes,
+            [Change::Removed {
+                path: "x/g.txt".into(),
+                kind: EntryKind::File
+            }],
+            "rules {rules}"
+        );
     }
 }

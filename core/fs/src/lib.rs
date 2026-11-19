@@ -131,6 +131,9 @@ const SETTLE: Duration = Duration::from_millis(50);
 /// The longest a batch waits for quiet under constant activity.
 const MAX_SETTLE: Duration = Duration::from_secs(1);
 const REMOUNT_CHECK: Duration = Duration::from_secs(1);
+/// A sync cookie, as in <https://meta.github.io/watchman/docs/cookies>.
+const BARRIER: &str = "watch-barrier";
+const BARRIER_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -661,9 +664,9 @@ fn list(dir: BorrowedFd<'_>) -> io::Result<BTreeSet<OsString>> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Keep {
+enum Keep<'a> {
     Unplaced,
-    Unexplained,
+    Unexplained { waiting: &'a BTreeSet<PathBuf> },
 }
 
 /// Where a scan can be interrupted in tests.
@@ -931,8 +934,9 @@ pub struct Snapshot {
     /// a UUID. The entries keep what was known below each, and no scan reads there until the volume is back.
     pub detached: BTreeMap<PathBuf, Detached>,
     /// Paths where the next scan reports a removal without keeping it: paths a scan saw disappear and kept, because
-    /// the system could not tell where their identity went or a [`NativeWatcher`] waited for the other end of a
-    /// move, and the scope of a [`Snapshot::reset`]. A kept path keeps what was known at and below it.
+    /// the system could not tell where their identity went or a [`NativeWatcher`] waits for the other end of a move,
+    /// and the scope of a [`Snapshot::reset`]. A [`NativeWatcher`] keeps a path it waits for until it has heard
+    /// every event from before the scan that kept it. A kept path keeps what was known at and below it.
     pub unplaced: BTreeSet<PathBuf>,
 }
 
@@ -1169,7 +1173,7 @@ impl Snapshot {
         mut rules: Option<&mut Rules>,
         stopped: &dyn Fn() -> bool,
         found: &dyn Fn(u64),
-        keep: Keep,
+        keep: Keep<'_>,
         cut: &mut dyn FnMut(Cut<'_>),
         marks: &MarkLog,
     ) -> Result<Rescan> {
@@ -1483,7 +1487,7 @@ impl Snapshot {
         scan: &mut Scan<'_>,
         hidden: Vec<PathBuf>,
         unsure: Vec<PathBuf>,
-        keep: Keep,
+        keep: Keep<'_>,
     ) -> Result<Rescan> {
         let again = open_root(root)?;
         if !stat_fd(again.as_fd())?.is_at(root_stat.dev, &root_stat.id) {
@@ -1936,7 +1940,7 @@ impl Snapshot {
         }
         let whole = (scan.replaced.iter()).any(|prefix| prefix.as_os_str().is_empty());
         let doubtful = match keep {
-            Keep::Unexplained if !whole => old.keys().cloned().collect(),
+            Keep::Unexplained { .. } if !whole => old.keys().cloned().collect(),
             _ => [unsure, hidden.clone()].concat(),
         };
         let hidden: BTreeSet<PathBuf> = hidden.into_iter().collect();
@@ -1993,7 +1997,9 @@ impl Snapshot {
                 continue;
             }
             if place.ancestors().any(|above| {
-                (!proven && self.unplaced.contains(above))
+                (!proven
+                    && self.unplaced.contains(above)
+                    && !matches!(keep, Keep::Unexplained { waiting } if waiting.contains(above)))
                     || settling.contains(above)
                     || unplaced.contains(above)
                     || still_hidden.contains(above)
@@ -3249,7 +3255,7 @@ pub struct Poll {
     pub changes: Vec<Change>,
     /// Scopes the watcher knows changed but could not settle before the poll
     /// returned: a removal it could not confirm, or a scan that saw the tree
-    /// change under it. The next poll rescans them.
+    /// change under it. A later poll rescans them.
     pub pending: Vec<PathBuf>,
     /// Folders the scans of this poll may not read; see
     /// [`Rescan::unreadable`].
@@ -3295,6 +3301,12 @@ pub trait Watcher {
     fn revisit(&mut self, paths: Vec<PathBuf>);
 }
 
+struct Barrier {
+    file: PathBuf,
+    written: Instant,
+    holds: BTreeSet<PathBuf>,
+}
+
 /// Watches with FSEvents on macOS and inotify on Linux.
 ///
 /// When the platform reports lost events (an inotify queue overflow, or
@@ -3311,6 +3323,9 @@ pub struct NativeWatcher {
     snapshot: Snapshot,
     view: OnceCell<Snapshot>,
     dirty: BTreeSet<PathBuf>,
+    waiting: BTreeSet<PathBuf>,
+    barrier: Option<Barrier>,
+    barriers: u64,
     listed: BTreeSet<PathBuf>,
     unreadable: BTreeSet<PathBuf>,
     rules: Option<Rules>,
@@ -3371,6 +3386,9 @@ impl NativeWatcher {
             root,
             view: OnceCell::new(),
             dirty: BTreeSet::from([PathBuf::new()]),
+            waiting: BTreeSet::new(),
+            barrier: None,
+            barriers: 0,
             listed: BTreeSet::new(),
             unreadable: BTreeSet::new(),
             #[cfg(target_os = "linux")]
@@ -3425,11 +3443,24 @@ impl NativeWatcher {
         if event.need_rescan() {
             self.rewatch = true;
             self.dirty.insert(PathBuf::new());
+            self.barrier = None;
+            self.dirty.append(&mut self.waiting);
         }
         if let EventKind::Access(access) = event.kind
             && access != AccessKind::Close(AccessMode::Write)
         {
             return Ok(());
+        }
+        let written = matches!(
+            event.kind,
+            EventKind::Create(_)
+                | EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Any)
+                | EventKind::Access(AccessKind::Close(AccessMode::Write))
+        );
+        if written
+            && (self.barrier.as_ref()).is_some_and(|barrier| event.paths.contains(&barrier.file))
+        {
+            self.lift_barrier();
         }
         let listing_only = match event.kind {
             EventKind::Modify(ModifyKind::Metadata(MetadataKind::Extended)) => true,
@@ -3473,6 +3504,44 @@ impl NativeWatcher {
             .is_some_and(|scanned| {
                 stat_path(path).is_ok_and(|stat| stat.entry().as_ref() == Some(scanned))
             })
+    }
+
+    fn lift_barrier(&mut self) {
+        let Some(barrier) = self.barrier.take() else {
+            return;
+        };
+        for path in barrier.holds {
+            if self.waiting.remove(&path) {
+                self.dirty.insert(path);
+            }
+        }
+        self.raise_barrier();
+    }
+
+    fn raise_barrier(&mut self) {
+        if self.barrier.is_some() || self.waiting.is_empty() {
+            return;
+        }
+        self.barriers += 1;
+        let name = format!("{BARRIER}-{}", self.barriers % 2);
+        #[cfg(target_os = "linux")]
+        let watched = notify::Watcher::watch(
+            &mut self.watcher,
+            &self.root.join(PRIVATE_DIR),
+            RecursiveMode::NonRecursive,
+        )
+        .is_ok();
+        #[cfg(not(target_os = "linux"))]
+        let watched = true;
+        if !(watched && write_barrier(&self.root, &name).is_ok()) {
+            self.dirty.append(&mut self.waiting);
+            return;
+        }
+        self.barrier = Some(Barrier {
+            file: self.root.join(PRIVATE_DIR).join(name),
+            written: Instant::now(),
+            holds: self.waiting.clone(),
+        });
     }
 
     fn receive(&mut self, timeout: Duration) -> Result<bool> {
@@ -3561,7 +3630,7 @@ impl NativeWatcher {
     fn report(&mut self, changes: Vec<Change>, root: Option<FileId>) -> Poll {
         Poll {
             changes,
-            pending: self.dirty.iter().cloned().collect(),
+            pending: self.dirty.union(&self.waiting).cloned().collect(),
             unreadable: std::mem::take(&mut self.unreadable).into_iter().collect(),
             root,
             rules: std::mem::take(&mut self.changed_rules),
@@ -3603,6 +3672,15 @@ impl NativeWatcher {
             self.unreadable.insert(dir.clone());
         }
     }
+}
+
+fn write_barrier(root: &Path, name: &str) -> io::Result<()> {
+    let private = open_dir_at(open_root(root)?.as_fd(), OsStr::new(PRIVATE_DIR))?;
+    let flags =
+        OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let file = rustix::fs::openat(&private, name, flags, Mode::from_raw_mode(0o644))?;
+    rustix::io::write(&file, b"\n")?;
+    Ok(())
 }
 
 /// Starts a platform watcher on `root` and everything below it, or, when the
@@ -3717,7 +3795,18 @@ impl Watcher for NativeWatcher {
                 } else {
                     left.min(REMOUNT_CHECK)
                 };
+                let wait = match &self.barrier {
+                    Some(barrier) => {
+                        wait.min(BARRIER_TIMEOUT.saturating_sub(barrier.written.elapsed()))
+                    }
+                    None => wait,
+                };
                 self.receive(wait)?;
+            }
+            if (self.barrier.as_ref())
+                .is_some_and(|barrier| barrier.written.elapsed() >= BARRIER_TIMEOUT)
+            {
+                self.lift_barrier();
             }
             if !self.snapshot.detached.is_empty() && self.remount_checked.elapsed() >= REMOUNT_CHECK
             {
@@ -3757,7 +3846,9 @@ impl Watcher for NativeWatcher {
                 self.rules.as_mut(),
                 &*self.stopped,
                 &*self.found,
-                Keep::Unexplained,
+                Keep::Unexplained {
+                    waiting: &self.waiting,
+                },
                 &mut |_| {},
                 &self.marks,
             ) {
@@ -3775,7 +3866,17 @@ impl Watcher for NativeWatcher {
             root = Some(rescan.root);
             self.changed_rules.extend(rescan.rules);
             self.settled.extend(rescan.settled);
-            self.dirty = rescan.unsettled.into_iter().collect();
+            self.waiting
+                .retain(|path| self.snapshot.unplaced.contains(path));
+            if let Some(barrier) = self.barrier.as_mut() {
+                barrier.holds.retain(|path| self.waiting.contains(path));
+            }
+            self.waiting
+                .extend(self.snapshot.unplaced.difference(&held).cloned());
+            self.dirty = (rescan.unsettled.into_iter())
+                .filter(|path| !self.waiting.contains(path))
+                .collect();
+            self.raise_barrier();
             #[cfg(target_os = "linux")]
             let readable = self.unblock(&scopes, &rescan.unreadable);
             self.learn(rescan.read, &rescan.unreadable);
