@@ -36,6 +36,9 @@ SILENT = "a side crashed without a message (unconfirmed)"
 VERDICTS = ("PR-caused", "unstable", "unknown", SILENT, MOVED, "flaky or fixed", SAME)
 HARNESS_OUTPUT = re.compile(r"^(running \d+ tests?$|test \S+ \.\.\.)")
 SILENT_CRASH = re.compile(r"^killed by signal \d+$")
+CASE_FAILS = re.compile(r"^\S+::\S+ case \S+ fails: ")
+NEVER_RAN = re.compile(r"^\S+::\S+ never ran case \S+$", re.M)
+HARNESS_REPORT = re.compile(r"^(\S+::\S+ case \S+ fails: |not recorded: |recorded but passed: )")
 
 
 def sections(log):
@@ -58,7 +61,16 @@ def failure_message(output):
         if not line.strip() or line.startswith(("minimal failing input:", "note: ", "thread '", "---- ")):
             break
         message.append(line)
-    return "\n".join(message)
+    message = [line for line in message if not NEVER_RAN.match(line)]
+    failing = next((index for index, line in enumerate(message) if CASE_FAILS.match(line)), None)
+    if failing is None:
+        return "\n".join(message)
+    failure = [CASE_FAILS.sub("", message[failing])]
+    for line in message[failing + 1:]:
+        if HARNESS_REPORT.match(line):
+            break
+        failure.append(line)
+    return "\n".join(failure) + "."
 
 
 def comparable(message):
@@ -290,7 +302,10 @@ def outcome(returncode, output):
         return {"result": "fail", "message": failure_message(output)
                 or f"killed by signal {-returncode}" + (f" after: {last}" if last else "")}
     if returncode != 0 and re.search(r"^test result: FAILED\.", output, re.M):
-        return {"result": "fail", "message": failure_message(output) or f"exit code {returncode}"}
+        message = failure_message(output)
+        if message == "" and NEVER_RAN.search(output):
+            return {"result": "pass", "message": None}
+        return {"result": "fail", "message": message or f"exit code {returncode}"}
     return {"result": "error", "message": f"exit code {returncode} without a test result"}
 
 
