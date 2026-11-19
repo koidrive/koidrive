@@ -1135,7 +1135,7 @@ impl Commits {
                 continue;
             }
             for id in question.holds() {
-                let Some(now) = recovery::group(trees, id, cause.as_ref()) else {
+                let Some(now) = recovery::regroup_held(trees, id, group, cause.as_ref()) else {
                     continue;
                 };
                 let now = match now {

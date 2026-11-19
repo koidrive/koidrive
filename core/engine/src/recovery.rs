@@ -80,6 +80,23 @@ pub(crate) fn group(
     }
 }
 
+pub(crate) fn regroup_held(
+    trees: &Trees,
+    id: &str,
+    held: RecoveryGroup,
+    cause: Option<&RecoveryCause>,
+) -> Option<RecoveryGroup> {
+    let local = trees.local().get(id).map(|node| &node.shape);
+    let reappeared = held == RecoveryGroup::CreatedAfterRestorePoint
+        && local.is_some()
+        && trees.remote().get(id).is_some()
+        && !same(local, trees.remote().live(id));
+    match group(trees, id, cause) {
+        None if reappeared => Some(held),
+        now => now,
+    }
+}
+
 /// Every node of R, S and L that a group holds, by group.
 pub(crate) fn classify(
     trees: &Trees,
