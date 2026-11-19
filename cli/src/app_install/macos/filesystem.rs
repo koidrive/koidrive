@@ -305,15 +305,8 @@ pub(super) fn private_work(path: &Path, create: bool) -> Result<File, AppInstall
     Ok(file)
 }
 pub(super) fn regular_at(root: &File, name: &OsStr) -> Result<File, AppInstallError> {
-    let file = File::from(
-        rustix::fs::openat(
-            root,
-            name,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|error| failure(AppInstallFailure::UnsafePath, error))?,
-    );
+    let file = koidrive_state_file::open_regular(root, name, OFlags::RDONLY | OFlags::NOFOLLOW)
+        .map_err(|error| failure(AppInstallFailure::UnsafePath, error))?;
     let metadata = file.metadata().map_err(io_error)?;
     if !metadata.is_file()
         || metadata.nlink() != 1

@@ -7,7 +7,7 @@ use std::io::{self, Read};
 use std::os::fd::{AsFd, BorrowedFd};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rustix::fs::{AtFlags, Mode, OFlags};
+use rustix::fs::{AtFlags, OFlags};
 use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 
@@ -193,9 +193,9 @@ fn remove_unchanged(
     if !folder {
         let unchanged = match &kept.content {
             Some(content) => {
-                let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-                rustix::fs::openat(trash, entry, flags, Mode::empty())
-                    .is_ok_and(|file| holds(&File::from(file), content).unwrap_or(false))
+                let flags = OFlags::RDONLY | OFlags::NOFOLLOW;
+                koidrive_state_file::open_regular(trash, entry, flags)
+                    .is_ok_and(|file| holds(&file, content).unwrap_or(false))
             }
             None => ctime(stat.ctime_ns) == kept.ctime_ns,
         };
@@ -246,14 +246,14 @@ fn seconds(time: SystemTime) -> u64 {
 }
 
 fn read_index(private: BorrowedFd<'_>) -> io::Result<Index> {
-    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let file = match rustix::fs::openat(private, INDEX, flags, Mode::empty()) {
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW;
+    let mut file = match koidrive_state_file::open_regular(private, INDEX, flags) {
         Ok(file) => file,
-        Err(Errno::NOENT) => return Ok(Index::default()),
-        Err(err) => return Err(err.into()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Index::default()),
+        Err(err) => return Err(err),
     };
     let mut text = String::new();
-    File::from(file).read_to_string(&mut text)?;
+    file.read_to_string(&mut text)?;
     serde_json::from_str(&text).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
 }
 

@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 getrandom = "0.4.3"
 koidrive-ignore = { path = "../ignore" }
+koidrive-state-file = { path = "../state-file" }
 libc = "0.2.191"
 notify = "8.2.2"
 rustix = { version = "1.1.6", features = ["fs"] }

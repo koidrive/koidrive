@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fs;
-
 use super::command::{ok, remove_file, run};
 use super::definition::unit_binary;
 use super::{Manager, Service, ServiceManager, State};
@@ -49,7 +47,7 @@ impl Manager for Systemd {
     }
 
     fn installed(&self, service: &Service) -> Option<String> {
-        unit_binary(&fs::read_to_string(service.unit_file()).ok()?)
+        unit_binary(&koidrive_state_file::read_to_string(&service.unit_file()).ok()?)
     }
 
     fn start(&self, service: &Service, restart: bool) -> Result<(), String> {

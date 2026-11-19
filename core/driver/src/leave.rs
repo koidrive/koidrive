@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::ffi::OsStr;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
@@ -71,7 +71,12 @@ impl Phase {
 }
 
 pub(crate) fn phase(state: &Path) -> io::Result<Option<Phase>> {
-    let mut file = match File::open(state.join("leaving")) {
+    let leaving = state.join("leaving");
+    let mut file = match koidrive_state_file::open_regular(
+        rustix::fs::CWD,
+        &leaving,
+        rustix::fs::OFlags::RDONLY,
+    ) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
@@ -128,7 +133,11 @@ pub(crate) struct Leaving {
 impl Leaving {
     pub fn load(state: &Path) -> io::Result<Option<Self>> {
         let path = state.join("leaving");
-        let mut file = match OpenOptions::new().read(true).write(true).open(&path) {
+        let mut file = match koidrive_state_file::open_regular(
+            rustix::fs::CWD,
+            &path,
+            rustix::fs::OFlags::RDWR,
+        ) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),

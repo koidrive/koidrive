@@ -231,13 +231,13 @@ fn daemon_log(paths: &Paths) -> Result<String, String> {
     let service = service::this_service(paths)?;
     if cfg!(target_os = "macos") {
         let path = service.log_file();
-        let log = fs::read(&path).map_err(|error| match error.kind() {
+        let log = koidrive_state_file::read(&path).map_err(|error| match error.kind() {
             ErrorKind::NotFound => "the service has not written a log".to_owned(),
             _ => format!("cannot read {}: {error}", path.display()),
         })?;
         let log = String::from_utf8_lossy(&log).into_owned();
         if log.lines().count() < LOG_LINES
-            && let Ok(older) = fs::read(crate::logfile::previous(&path))
+            && let Ok(older) = koidrive_state_file::read(&crate::logfile::previous(&path))
         {
             return Ok(String::from_utf8_lossy(&older).into_owned() + &log);
         }

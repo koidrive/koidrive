@@ -99,7 +99,7 @@ pub(crate) struct Lifecycle {
 impl Lifecycle {
     pub(crate) fn open(store: &Path, mut status: FolderStatus, telemetry: Recorder) -> Self {
         let path = store.with_file_name("lifecycle.json");
-        let read = match fs::read(&path) {
+        let read = match koidrive_state_file::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other),
             Err(error)
                 if error.kind() == io::ErrorKind::NotFound

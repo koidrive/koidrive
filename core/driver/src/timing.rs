@@ -146,10 +146,12 @@ impl Timing {
 
     fn open_at(store: &Path, linked_ms: i64, opened: Time) -> Self {
         let path = store.with_file_name("first-sync");
-        let install = fs::read_to_string(&path).ok().and_then(|value| {
-            let (linked, install) = value.split_once(' ')?;
-            (linked.parse::<i64>().ok()? == linked_ms).then(|| install.trim().to_owned())
-        });
+        let install = koidrive_state_file::read_to_string(&path)
+            .ok()
+            .and_then(|value| {
+                let (linked, install) = value.split_once(' ')?;
+                (linked.parse::<i64>().ok()? == linked_ms).then(|| install.trim().to_owned())
+            });
         Self {
             recorder: Recorder::off(),
             state: Live::default(),

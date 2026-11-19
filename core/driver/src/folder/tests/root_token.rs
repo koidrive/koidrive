@@ -1673,7 +1673,10 @@ fn a_start_whose_marker_is_not_a_file_stops_on_an_unreadable_marker_without_wait
     koidrive_test_support::make_fifo(&marker);
     let clone = store_clone(&site);
     let started = koidrive_test_support::without_waiting(move || opened(&clone).err());
-    assert!(matches!(started, Some(Stop::Root(RootProblem::BadMarker(_)))), "{started:?}");
+    assert!(
+        matches!(started, Some(Stop::Root(RootProblem::BadMarker(_)))),
+        "{started:?}"
+    );
 }
 
 #[test]

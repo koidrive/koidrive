@@ -535,8 +535,12 @@ fn a_marker_that_is_not_a_file_is_unreadable_without_waiting_on_it() {
         volume: None,
     };
 
-    let checked = koidrive_test_support::without_waiting(move || check_root(&root, "space-1", &linked));
-    assert!(matches!(checked, Err(RootProblem::BadMarker(_))), "{checked:?}");
+    let checked =
+        koidrive_test_support::without_waiting(move || check_root(&root, "space-1", &linked));
+    assert!(
+        matches!(checked, Err(RootProblem::BadMarker(_))),
+        "{checked:?}"
+    );
 }
 
 #[test]

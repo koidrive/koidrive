@@ -5,7 +5,7 @@ use super::*;
 
 fn write_gitignore(config_file: &Path, follow: bool) -> Result<(), DriverError> {
     let path = &linked_file(config_file).map_err(io_error(config_file))?;
-    let (text, mode) = match fs::read_to_string(path) {
+    let (text, mode) = match koidrive_state_file::read_to_string(path) {
         Ok(text) => {
             let mode = fs::metadata(path).map_err(io_error(path))?.permissions();
             (text, Some(mode))

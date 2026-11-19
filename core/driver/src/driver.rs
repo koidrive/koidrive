@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
@@ -235,7 +235,11 @@ impl Driver {
     /// writers out, so a profile that another process holds is refused with [`DriverError::Busy`].
     pub fn linked_folders(paths: &Paths) -> Result<Vec<FolderStatus>, DriverError> {
         let lock_path = paths.lock();
-        let _lock = match File::open(&lock_path) {
+        let _lock = match koidrive_state_file::open_regular(
+            rustix::fs::CWD,
+            &lock_path,
+            rustix::fs::OFlags::RDONLY,
+        ) {
             Ok(file) => match Flock::share(file).map_err(io_error(&lock_path))? {
                 Some(lock) => Some(lock),
                 None => return Err(DriverError::Busy(lock_path)),

@@ -8,7 +8,7 @@ use std::process::Output;
 use crate::program::Arg;
 
 pub(super) fn write(path: &Path, text: &str) -> Result<bool, String> {
-    if fs::read(path).is_ok_and(|old| old == text.as_bytes()) {
+    if koidrive_state_file::read(path).is_ok_and(|old| old == text.as_bytes()) {
         return Ok(false);
     }
     let failed = |error: io::Error| format!("cannot write {}: {error}", path.display());

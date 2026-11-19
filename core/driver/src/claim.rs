@@ -64,14 +64,14 @@ pub(crate) fn still_locked(lock: &File, root: &Path) -> bool {
 
 pub(crate) fn owner(root: &Path) -> io::Result<Option<Owner>> {
     let dir = private_dir(root)?;
-    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let file = match rustix::fs::openat(&dir, OWNER, flags, Mode::empty()) {
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW;
+    let mut file = match koidrive_state_file::open_regular(&dir, OWNER, flags) {
         Ok(file) => file,
-        Err(Errno::NOENT) => return Ok(None),
-        Err(error) => return Err(error.into()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
     };
     let mut text = String::new();
-    File::from(file).read_to_string(&mut text)?;
+    file.read_to_string(&mut text)?;
     serde_json::from_str(&text)
         .map(Some)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))

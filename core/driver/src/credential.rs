@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -193,10 +193,12 @@ impl Credential {
     }
 
     pub fn keep_out_of_backups(path: &Path) -> Result<(), CredentialError> {
-        let file = File::open(path).map_err(|source| CredentialError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        let file =
+            koidrive_state_file::open_regular(rustix::fs::CWD, path, rustix::fs::OFlags::RDONLY)
+                .map_err(|source| CredentialError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
         #[cfg(target_os = "macos")]
         {
             let mut value = [0; 64];
@@ -323,11 +325,8 @@ fn read_private(path: &Path) -> Result<Option<(String, fs::Metadata)>, Credentia
         path: path.to_path_buf(),
         source,
     };
-    let mut file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(path)
-    {
+    let flags = rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW;
+    let mut file = match koidrive_state_file::open_regular(rustix::fs::CWD, path, flags) {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(io(err)),

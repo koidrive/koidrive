@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
 use std::fs::{DirBuilder, File};
 use std::io::{self, Read, Write};
+use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::Path;
@@ -257,6 +258,43 @@ impl Drop for FailingSyncs {
     }
 }
 
+/// Opens `path`, relative to `dir`, with the access and options in `flags`, and returns it only when it is a regular
+/// file. The open never waits, as an open of a FIFO with no writer would. A folder fails with
+/// [`io::ErrorKind::IsADirectory`], as [`std::fs::read`] does, and an entry of any other kind with
+/// [`io::ErrorKind::InvalidInput`].
+pub fn open_regular(
+    dir: impl AsFd,
+    path: impl rustix::path::Arg,
+    flags: OFlags,
+) -> io::Result<File> {
+    let flags = flags | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let file = File::from(fs::openat(dir, path, flags, Mode::empty())?);
+    let metadata = file.metadata()?;
+    if metadata.is_dir() {
+        return Err(rustix::io::Errno::ISDIR.into());
+    }
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+/// [`std::fs::read`] through [`open_regular`].
+pub fn read(path: &Path) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    open_regular(fs::CWD, path, OFlags::RDONLY)?.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// [`std::fs::read_to_string`] through [`open_regular`].
+pub fn read_to_string(path: &Path) -> io::Result<String> {
+    String::from_utf8(read(path)?)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
 /// Replaces a state file with complete, synced bytes using [`AtomicFile`].
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<Published> {
     write_with_legacy(path, bytes, &[])
@@ -322,7 +360,10 @@ pub fn create_dir(root: &Path, dir: &Path) -> io::Result<()> {
 pub fn made(root: &Path) -> bool {
     let record = root.join(MADE);
     std::fs::symlink_metadata(&record).is_ok_and(|meta| meta.is_file())
-        && match (std::fs::metadata(root), File::open(&record)) {
+        && match (
+            std::fs::metadata(root),
+            open_regular(fs::CWD, &record, OFlags::RDONLY),
+        ) {
             (Ok(folder), Ok(file)) => {
                 let expected = made_record(&folder);
                 let mut text = String::new();

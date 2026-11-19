@@ -498,7 +498,7 @@ pub async fn check_now(paths: &Paths) -> Result<Option<Release>, CheckError> {
 }
 
 pub(crate) fn load(path: &Path) -> Option<Checked> {
-    let checked: Checked = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    let checked: Checked = serde_json::from_slice(&koidrive_state_file::read(path).ok()?).ok()?;
     (checked.asset.as_deref() == Some(this_asset().as_str())).then_some(checked)
 }
 

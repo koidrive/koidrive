@@ -58,12 +58,13 @@ pub struct Unconfirmed {
 impl Unconfirmed {
     /// The unconfirmed sign-out the profile at `paths` recorded, if any.
     pub fn recorded(paths: &Paths) -> Option<Self> {
-        use rustix::fs::{Mode, OFlags};
-        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
-        let file = File::from(
-            rustix::fs::open(paths.unconfirmed_revocation(), flags, Mode::empty()).ok()?,
+        let flags = rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW;
+        let file = koidrive_state_file::open_regular(
+            rustix::fs::CWD,
+            paths.unconfirmed_revocation(),
+            flags,
         );
-        serde_json::from_reader(io::BufReader::new(file)).ok()
+        serde_json::from_reader(io::BufReader::new(file.ok()?)).ok()
     }
 }
 

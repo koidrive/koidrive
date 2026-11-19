@@ -2,7 +2,7 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -11,8 +11,41 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use koidrive_state_file::{
-    AtomicFile, Publish, recover, remove_with_legacy_matching, write, write_with_legacy,
+    AtomicFile, Publish, open_regular, read, recover, remove_with_legacy_matching, write,
+    write_with_legacy,
 };
+use rustix::fs::{CWD, OFlags};
+
+#[test]
+fn reads_refuse_anything_but_a_regular_file_without_waiting() {
+    let dir = tempfile::tempdir().unwrap();
+    let (file, fifo) = (dir.path().join("file"), dir.path().join("fifo"));
+    fs::write(&file, "kept").unwrap();
+    koidrive_test_support::make_fifo(&fifo);
+
+    assert_eq!(read(&file).unwrap(), b"kept");
+    let missing = read(&dir.path().join("missing")).unwrap_err();
+    assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+    let refused = koidrive_test_support::without_waiting({
+        let dir = dir.path().to_path_buf();
+        move || {
+            [
+                read(&fifo).map(drop),
+                read(&dir).map(drop),
+                open_regular(CWD, &fifo, OFlags::WRONLY).map(drop),
+            ]
+            .map(|opened| opened.map_err(|error| error.kind()))
+        }
+    });
+    assert!(refused.iter().all(Result::is_err), "{refused:?}");
+    assert_eq!(
+        refused[..2],
+        [
+            Err(io::ErrorKind::InvalidInput),
+            Err(io::ErrorKind::IsADirectory)
+        ]
+    );
+}
 
 #[cfg(target_os = "macos")]
 #[test]

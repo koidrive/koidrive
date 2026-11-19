@@ -753,6 +753,34 @@ fn a_record_of_versions_an_unlink_brought_back_that_is_not_a_file_is_not_read() 
 }
 
 #[test]
+fn state_records_that_are_not_files_are_refused_without_waiting_on_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    let root = dir.path().join("folder");
+    let owner = root.join(koidrive_fs::PRIVATE_DIR).join("device.json");
+    let records = [
+        paths.config_file.clone(),
+        paths.credential(),
+        paths.state_dir.join("leaving"),
+        owner,
+    ];
+    for record in &records {
+        fs::create_dir_all(record.parent().unwrap()).unwrap();
+        koidrive_test_support::make_fifo(record);
+    }
+
+    let refused = koidrive_test_support::without_waiting(move || {
+        [
+            crate::config::Config::load(&paths.config_file).is_err(),
+            crate::credential::Credential::load(&paths.credential()).is_err(),
+            crate::leave::Leaving::load(&paths.state_dir).is_err(),
+            claim::owner(&root).is_err(),
+        ]
+    });
+    assert_eq!(refused, [true; 4]);
+}
+
+#[test]
 fn a_record_of_an_unconfirmed_sign_out_that_is_not_a_file_is_not_read() {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::under(dir.path());

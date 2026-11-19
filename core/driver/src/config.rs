@@ -177,7 +177,7 @@ impl Config {
     /// Reads the file, or returns the default configuration when there is none. Unknown keys and rules that cannot
     /// be turned into matcher input are refused, so a typo never silently syncs more than intended.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let text = match std::fs::read_to_string(path) {
+        let text = match koidrive_state_file::read_to_string(path) {
             Ok(text) => text,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Config::default()),
             Err(source) => {
