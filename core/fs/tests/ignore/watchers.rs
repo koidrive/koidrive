@@ -379,3 +379,78 @@ fn a_save_by_rename_while_no_watcher_ran_is_a_modification() {
         assert_eq!(changes, expected, "{renamed}");
     }
 }
+
+#[test]
+fn a_rescan_watcher_taking_over_from_another_reports_what_the_other_held_back() {
+    for native_first in [false, true] {
+        let dir = large_ignored_tree();
+        let root = dir.path();
+        write(root, "b/c/2.txt", "2");
+        write(root, "b/c/3.txt", "3");
+        write(root, "p/top.txt", "top");
+        let mut held = rules().with_search_budget(100);
+        let start = Snapshot::scan_with_rules(root, &mut held).unwrap();
+        let hour = Duration::from_secs(3600);
+        let mut first: Box<dyn Watcher> = match native_first {
+            true => Box::new(NativeWatcher::start_with_rules(root, start, held).unwrap()),
+            false => Box::new(RescanWatcher::with_rules(root, start, hour, held).unwrap()),
+        };
+        let wait = match native_first {
+            true => Duration::from_millis(500),
+            false => Duration::ZERO,
+        };
+        assert_eq!(first.poll(wait).unwrap().changes, []);
+        fs::rename(root.join("p/top.txt"), root.join("ig/zz/deep/top.txt")).unwrap();
+        fs::rename(root.join("b/c/2.txt"), root.join("p/top.txt")).unwrap();
+        fs::rename(root.join("b/c"), root.join("ig/zz/deep/c")).unwrap();
+        let poll = first.poll(wait).unwrap();
+        assert_eq!(poll.changes, [], "native {native_first}");
+        assert_eq!(
+            poll.pending,
+            [PathBuf::from("b/c"), PathBuf::from("p/top.txt")],
+            "native {native_first}"
+        );
+        let c = first.snapshot().entries[Path::new("b/c")].id;
+        let top = first.snapshot().entries[Path::new("p/top.txt")].id;
+
+        let fresh = rules().with_search_budget(100);
+        let mut second =
+            RescanWatcher::with_rules(root, first.snapshot().clone(), Duration::ZERO, fresh)
+                .unwrap();
+        let mut changes = Vec::new();
+        for _ in 0..200 {
+            let poll = second.poll(Duration::from_millis(50)).unwrap();
+            changes.extend(poll.changes);
+            if poll.pending.is_empty() {
+                break;
+            }
+        }
+        changes.sort_by_key(|change| format!("{change:?}"));
+        let ignored = |from: &str, to: &str, kind, id| Change::Ignored {
+            from: from.into(),
+            to: to.into(),
+            kind,
+            id,
+        };
+        let expected = match cfg!(target_os = "macos") {
+            true => vec![
+                created("p/top.txt", File),
+                ignored("b/c", "ig/zz/deep/c", Dir, c),
+                ignored("p/top.txt", "ig/zz/deep/top.txt", File, top),
+            ],
+            false => vec![
+                ignored("b/c", "ig/zz/deep/c", Dir, c),
+                Change::Modified {
+                    path: "p/top.txt".into(),
+                },
+            ],
+        };
+        assert_eq!(changes, expected, "native {native_first}");
+        let disk = Snapshot::scan_with_rules(root, &mut rules()).unwrap();
+        assert_eq!(
+            identities(second.snapshot()),
+            identities(&disk),
+            "native {native_first}"
+        );
+    }
+}
