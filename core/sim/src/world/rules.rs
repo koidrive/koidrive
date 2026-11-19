@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_engine::classify::Trees;
 use koidrive_engine::names::{name_key, nfc};
-use koidrive_engine::tree::{Content, Kind, NodeId, Shape};
+use koidrive_engine::tree::{Content, Kind, LocalNode, NodeId, Shape, same_content};
 use koidrive_proto::v1::{NodeKind, NodeState, NodeStatus, Op, op};
 
 use super::device::Ruling;
@@ -23,6 +23,17 @@ impl Unsynced {
         self.nodes.contains(id)
             || (trees.local().get(id)).is_some_and(|node| self.inos.contains(&node.identity.ino))
     }
+}
+
+pub(super) fn owned(trees: &Trees, id: &str, node: &LocalNode) -> bool {
+    let Some(content) = node.shape.content.as_ref() else {
+        return true;
+    };
+    (trees.remote().live(id))
+        .and_then(|remote| remote.content.as_ref())
+        .is_some_and(|remote| same_content(remote, content))
+        || trees.unsent_edits().contains(id)
+        || trees.remote().get(id).is_none()
 }
 
 fn path_in<'a>(
@@ -296,7 +307,8 @@ impl World {
             .map(|(id, _)| id)
             .chain(trees.displaced_local().keys());
         out.nodes.extend(kept_in_l.cloned());
-        let held: Vec<(u128, &NodeId)> = (trees.local().iter())
+        let held: Vec<(u128, &NodeId)> = (trees.local_entries())
+            .filter(|(id, node)| trees.local().get(id).is_some() || owned(trees, id, node))
             .map(|(id, node)| (node.identity.ino, id))
             .collect();
         loop {

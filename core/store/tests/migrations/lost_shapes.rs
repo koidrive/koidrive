@@ -34,7 +34,6 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
     trees.set_local(
         "f".into(),
         EngineLocalNode {
-            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: shape.clone(),
@@ -47,7 +46,6 @@ fn a_rename_pending_at_the_upgrade_to_lost_shapes_is_sent_as_a_create_beside_ano
     trees.set_local_changed(
         "f".into(),
         EngineLocalNode {
-            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: renamed.clone(),

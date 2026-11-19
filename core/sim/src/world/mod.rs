@@ -3254,6 +3254,14 @@ impl World {
             if engine.behind {
                 return fail("R waits for a listing".into());
             }
+            let trees = &engine.trees;
+            if let Some((id, _)) = (trees.local_entries()).find(|(id, node)| {
+                trees.local().get(id).is_none() && !rules::owned(trees, id, node)
+            }) {
+                return fail(format!(
+                    "displaced {id} holds content that neither R nor a write the device owes holds"
+                ));
+            }
             let left_out = &unsynced[d];
             let mut excused: BTreeSet<NodeId> = BTreeSet::new();
             let excuse = |nodes: &[&NodeId], check: Check, why: String| {

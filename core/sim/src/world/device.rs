@@ -19,7 +19,7 @@ use koidrive_proto::v1::{
     ChangeRecord, CommitRecord, CommitResult, Error, NodeState, Resume, change_record,
 };
 
-use super::disk::{Disk, Place, identity};
+use super::disk::{Disk, Place};
 use super::{Failure, NOW, RULES_FILE};
 use crate::space::Session;
 
@@ -68,7 +68,7 @@ impl Engine {
         for (id, node) in self.trees.remote().iter() {
             trees.set_remote(id.clone(), node.clone());
         }
-        for (id, node) in self.trees.local().iter() {
+        for (id, node) in self.trees.local_entries() {
             trees.set_local(id.clone(), node.clone());
         }
         for (id, shape) in self.trees.synced().iter() {
@@ -162,7 +162,10 @@ impl Engine {
             )
             .collect();
         let root = self.trees.local().root.clone();
-        let known: BTreeMap<u128, NodeId> = (self.trees.local().iter())
+        let known: BTreeMap<u128, NodeId> = (self.trees.local_entries())
+            .filter(|(id, node)| {
+                self.trees.local().get(id).is_some() || node.identity.birth_ns.is_some()
+            })
             .map(|(id, node)| (node.identity.ino, id.clone()))
             .collect();
         let mut nodes: BTreeMap<u128, NodeId> = BTreeMap::new();
@@ -223,7 +226,6 @@ impl Engine {
                 }
             };
             let node = LocalNode {
-                displaced: false,
                 left_out_when_placed: false,
                 content_from_server: false,
                 shape: Shape {
@@ -232,7 +234,7 @@ impl Engine {
                     kind,
                     content: entry.content.clone(),
                 },
-                identity: identity(ino),
+                identity: disk.identity_of(ino),
                 parked: false,
             };
             self.trees.set_local_changed(id, node);
@@ -263,7 +265,7 @@ impl Engine {
         known: &BTreeMap<u128, NodeId>,
     ) -> bool {
         let entry = &disk.entries()[&ino];
-        let held = self.trees.local().get(id).expect("known in L").clone();
+        let held = self.trees.local_entry(id).expect("known in L").clone();
         let (parent, folder_left_out) = match &entry.place {
             Place::Root => (Some(self.trees.local().root.clone()), false),
             Place::In(parent) => (

@@ -302,7 +302,6 @@ pub struct LocalNode {
     pub shape: Shape,
     pub identity: FileIdentity,
     pub parked: bool,
-    pub displaced: bool,
     /// Whether the rules left the node out when a scan last found it at a new parent or name.
     pub left_out_when_placed: bool,
     /// Whether the file holds the server's bytes as of the last write the device knows of, either
@@ -316,7 +315,7 @@ impl Node for LocalNode {
         &self.shape
     }
     fn is_placed(&self) -> bool {
-        !self.parked && !self.displaced
+        !self.parked
     }
 }
 

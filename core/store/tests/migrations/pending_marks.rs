@@ -164,7 +164,6 @@ fn a_rename_a_store_recorded_before_pending_marks_is_finished_after_the_upgrade_
                 trees.set_local(
                     node_id.into(),
                     koidrive_engine::tree::LocalNode {
-                        displaced: false,
                         left_out_when_placed: false,
                         content_from_server: false,
                         shape: at(name),

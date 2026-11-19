@@ -58,7 +58,6 @@ fn local(shape: Shape, ino: u128) -> LocalNode {
             handle: None,
         },
         parked: false,
-        displaced: false,
     }
 }
 

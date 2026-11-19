@@ -134,9 +134,17 @@ pub struct Disk {
     binned: BTreeSet<i64>,
     marker: u64,
     pub(super) brought_back: BTreeSet<u128>,
+    pub no_birth_times: bool,
 }
 
 impl Disk {
+    pub fn identity_of(&self, ino: u128) -> FileIdentity {
+        FileIdentity {
+            birth_ns: identity(ino).birth_ns.filter(|_| !self.no_birth_times),
+            ..identity(ino)
+        }
+    }
+
     pub fn new(precision: Precision) -> Self {
         Self {
             precision,
@@ -443,7 +451,7 @@ impl Disk {
                 }
                 let ino = self.create(place, &name, None).ok_or(Refused::Taken)?;
                 self.marked(ino, &record.node);
-                Ok(Some(identity(ino)))
+                Ok(Some(self.identity_of(ino)))
             }
             Effect::WriteFile {
                 at,
@@ -476,7 +484,7 @@ impl Disk {
                     Some(_) if until == Cut::Done => Refused::Overtaken,
                     _ => Refused::Taken,
                 };
-                ino.map(|ino| Some(identity(ino))).ok_or(refused)
+                ino.map(|ino| Some(self.identity_of(ino))).ok_or(refused)
             }
             Effect::Move {
                 from,
@@ -563,7 +571,7 @@ impl Disk {
                     self.marked(ino, &record.node);
                 }
                 placed
-                    .map(|ino| Some(identity(ino)))
+                    .map(|ino| Some(self.identity_of(ino)))
                     .ok_or(Refused::Overtaken)
             }
             Effect::WriteFile { at, content, .. } => {
@@ -586,7 +594,7 @@ impl Disk {
         let done = match &record.effect {
             Effect::CreateDir { at: place } => at(place)?
                 .filter(|ino| self.entries[ino].content.is_none())
-                .map(|ino| Some(identity(ino))),
+                .map(|ino| Some(self.identity_of(ino))),
             Effect::WriteFile { at, content, .. } => match self.written(at, content) {
                 None if self.trash.contains(&record.effect_id) => return Err(Refused::Overtaken),
                 written => written.map(Some),
@@ -616,7 +624,7 @@ impl Disk {
     fn written(&self, at: &Location, content: &Content) -> Option<FileIdentity> {
         let ino = self.found(at).ok()??;
         let held = self.entries[&ino].content.as_ref()?;
-        same_content(held, content).then(|| identity(ino))
+        same_content(held, content).then(|| self.identity_of(ino))
     }
 
     /// The file an effect displaces, when it still is the file the engine saw.

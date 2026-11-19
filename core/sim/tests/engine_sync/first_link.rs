@@ -30,7 +30,6 @@ fn placement_check_after_a_move(
         trees.set_local(
             id.clone(),
             LocalNode {
-                displaced: false,
                 left_out_when_placed: false,
                 content_from_server: false,
                 shape: koidrive_engine::tree::Shape {
@@ -883,7 +882,6 @@ fn keep_rule_walk_reaches_a_deleted_folder(server_took_the_move: bool) -> bool {
     device.trees.set_local(
         "m".into(),
         LocalNode {
-            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: moved.clone(),
@@ -941,7 +939,6 @@ fn keep_rule_keeps_a_deleted_folder(server_renames_it: bool) -> bool {
     device.trees.set_local(
         "k".into(),
         LocalNode {
-            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: held,
@@ -994,7 +991,6 @@ fn the_keep_rule_keeps_back_a_folder_above_an_entry_it_already_kept_back() {
     for (id, ino) in [("k", 1), ("c", 2)] {
         let shape = device.trees.remote().live(id).unwrap().clone();
         let node = LocalNode {
-            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape,

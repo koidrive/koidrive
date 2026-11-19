@@ -384,3 +384,92 @@ fn a_restore_that_loses_the_move_of_a_displaced_file_leaves_nothing_to_send() {
         converge_excluding(&[vec![], vec!["*.txt"]], &[p0, phase, moved_out]).unwrap();
     }
 }
+
+#[test]
+fn an_edit_moved_out_of_a_displaced_folder_follows_the_server_after_the_server_loses_it() {
+    for (works, lost) in [
+        (5, Step::Rewind),
+        (6, Step::Rewind),
+        (7, Step::Rewind),
+        (4, Step::Restore),
+    ] {
+        let mut out = vec![
+            (0, Step::Backup),
+            (1, rename(1, 0, "ss")),
+            (1, overwrite(1)),
+        ];
+        out.extend(std::iter::repeat_n((1, Step::Work(0)), works));
+        out.push((0, lost));
+        let phases = [
+            vec![
+                (1, folder("a")),
+                (1, user(1, 0, 1, "b")),
+                (1, folder("c.txt")),
+            ],
+            vec![
+                (1, rename(0, 2, "a")),
+                (1, SCAN),
+                (0, rename(0, 0, "\u{df}")),
+                (0, folder("a")),
+            ],
+            out,
+            vec![],
+        ];
+        let world = converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
+        let contents = |device| {
+            (files_on(&world, device).into_iter())
+                .filter_map(|(_, content)| content)
+                .collect::<Vec<_>>()
+        };
+        for content in contents(1) {
+            assert!(
+                contents(0).contains(&content),
+                "works {works}: device 0 never gets device 1's {content:?}"
+            );
+        }
+        if lost == Step::Rewind {
+            assert!(
+                world.devices.iter().all(|device| !device.disk.shows(2)),
+                "works {works}"
+            );
+            assert!(world.devices[1].disk.binned(2), "works {works}");
+        } else {
+            assert!(world.devices[0].disk.shows(2), "works {works}");
+        }
+    }
+}
+
+#[test]
+fn a_file_moved_out_of_a_displaced_folder_on_a_disk_without_birth_times_is_kept_as_a_new_file() {
+    let mut world = configured(World::excluding(&[vec![], vec!["*.txt"]]));
+    world.devices[1].disk.no_birth_times = true;
+    let phases = [
+        vec![
+            (1, folder("a")),
+            (1, user(1, 0, 1, "b")),
+            (1, folder("c.txt")),
+        ],
+        vec![
+            (1, rename(0, 2, "a")),
+            (1, SCAN),
+            (0, rename(0, 0, "\u{df}")),
+            (0, folder("a")),
+        ],
+        vec![(1, rename(1, 0, "ss")), (1, overwrite(1))],
+        vec![],
+    ];
+    let world = run_in(world, &[], &phases, |_| true).unwrap();
+    let files = |device| {
+        (files_on(&world, device).into_iter())
+            .filter(|(_, content)| content.is_some())
+            .map(|(name, content)| (name, tag(&content.unwrap())))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(files(0).len(), 2);
+    assert!(
+        [1, 2]
+            .iter()
+            .all(|write| world.devices[0].disk.shows(*write))
+    );
+    assert!(world.devices[1].disk.shows(2));
+}

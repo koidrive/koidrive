@@ -100,7 +100,6 @@ impl Engine {
         }
         for node in tx.local_nodes()? {
             let local = LocalNode {
-                displaced: false,
                 shape: shape(node.shape)?,
                 identity: file_identity(node.identity),
                 parked: node.parked,
@@ -162,7 +161,7 @@ impl Engine {
         let changed = self.trees.take_changed();
         self.local_written_since_load |= !changed.local.is_empty();
         for id in &changed.local {
-            match self.trees.local().get(id) {
+            match self.trees.local_entry(id) {
                 Some(node) => tx.put_local_node(&stored(id, node))?,
                 None => {
                     tx.remove_local_node(id)?;
@@ -173,7 +172,7 @@ impl Engine {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_nanos() as i64);
         for id in &changed.local {
-            match self.trees.local().get(id) {
+            match self.trees.local_entry(id) {
                 None => {
                     self.stored_ctimes.remove(id);
                 }
@@ -184,7 +183,7 @@ impl Engine {
             }
         }
         for (id, ctime) in std::mem::take(&mut self.unstored_ctimes) {
-            if self.trees.local().get(&id).is_some() {
+            if self.trees.local_entry(&id).is_some() {
                 tx.set_local_ctime(&id, ctime)?;
                 self.stored_ctimes.insert(id, ctime);
                 self.local_written_since_load = true;
@@ -1422,7 +1421,6 @@ impl Engine {
         self.trees.set_local_changed(
             id.clone(),
             LocalNode {
-                displaced: false,
                 left_out_when_placed: false,
                 content_from_server: false,
                 shape,
@@ -2280,7 +2278,6 @@ mod tests {
 
     fn held(shape: Shape, ino: u128) -> LocalNode {
         LocalNode {
-            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape,
@@ -4408,7 +4405,6 @@ mod tests {
         let ids: Vec<String> = (0..20).map(|n| format!("dir{n:02}")).collect();
         for (n, id) in ids.iter().enumerate() {
             let local = LocalNode {
-                displaced: false,
                 shape: Shape {
                     parent: ROOT.into(),
                     name: id.clone(),

@@ -67,7 +67,6 @@ fn identity(ino: u128) -> FileIdentity {
 
 fn local(shape: Shape, ino: u128) -> LocalNode {
     LocalNode {
-        displaced: false,
         left_out_when_placed: false,
         content_from_server: false,
         shape,

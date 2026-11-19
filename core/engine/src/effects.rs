@@ -633,7 +633,6 @@ impl Effects {
                 trees.place_local(
                     record.node.clone(),
                     LocalNode {
-                        displaced: false,
                         left_out_when_placed: false,
                         content_from_server: false,
                         shape: match (&record.effect, content) {
@@ -890,7 +889,7 @@ fn candidate(trees: &Trees, id: &str) -> bool {
         || trees.is_discarded(id);
     changed
         && !forgets
-        && (!trees.excluded(id) || trees.trashed_while_parked(id))
+        && (!trees.excluded(id) || trees.trashed_while_parked(id) || trees.left_for_displaced(id))
         && !trees.reclaimed(id)
 }
 
@@ -1099,6 +1098,9 @@ impl<'a> View<'a> {
                 return self.remove(id, local);
             }
             return self.unpark(id, local, self.way_out(id, local));
+        }
+        if let Some(local) = local.filter(|_| self.trees.left_for_displaced(id)) {
+            return self.remove(id, local);
         }
         let (local, remote) = match (local, remote) {
             (None, None) => return Step::Skip,

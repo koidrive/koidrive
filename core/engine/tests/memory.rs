@@ -134,7 +134,6 @@ fn first_upload() -> (Trees, usize) {
     trees.rules_scanned();
     for (n, entry) in entries.iter().enumerate() {
         let local = LocalNode {
-            displaced: false,
             shape: shape(entry, n),
             identity: FileIdentity {
                 ino: n as u128 + 1,

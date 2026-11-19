@@ -300,7 +300,6 @@ fn space(nodes: &[(&str, Option<Shape>, Option<Shape>)]) -> (Trees, Disk) {
             trees.set_local(
                 (*id).into(),
                 LocalNode {
-                    displaced: false,
                     left_out_when_placed: false,
                     content_from_server: false,
                     shape: shape.clone(),
@@ -1074,7 +1073,6 @@ fn done_refuses_an_outcome_whose_name_another_node_took() {
     trees.set_local(
         "u".into(),
         LocalNode {
-            displaced: false,
             left_out_when_placed: false,
             content_from_server: false,
             shape: file(ROOT, "a", 2),
