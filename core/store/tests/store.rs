@@ -1619,9 +1619,7 @@ fn engine_state_survives_a_reopen() {
         .unwrap();
 }
 
-/// Counts each row inserted, updated or deleted in any table of the store from now on in the table
-/// `writes`. The triggers are stored in the database, so they count the writes of every connection.
-fn count_engine_writes(path: &Path) {
+fn count_writes_to_every_table(path: &Path) {
     let conn = Connection::open(path).unwrap();
     let tables = tables(&conn);
     conn.execute_batch("CREATE TABLE writes (n INTEGER NOT NULL); INSERT INTO writes VALUES (0);")
@@ -1637,7 +1635,7 @@ fn count_engine_writes(path: &Path) {
     }
 }
 
-fn engine_writes(path: &Path) -> u64 {
+fn rows_written(path: &Path) -> u64 {
     let conn = Connection::open(path).unwrap();
     conn.query_row("SELECT n FROM writes", [], |row| row.get(0))
         .unwrap()
@@ -1703,13 +1701,13 @@ fn a_counted_remote_removal_writes_its_row_alone() {
             .unwrap()
             .transaction(|tx| tx.set_engine_state(&before))
             .unwrap();
-        count_engine_writes(&path);
+        count_writes_to_every_table(&path);
 
         let mut store = Store::open(&path).unwrap();
         store
             .transaction(|tx| tx.update_engine_state(&before, &after))
             .unwrap();
-        writes.push(engine_writes(&path));
+        writes.push(rows_written(&path));
         assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), after);
     }
     assert_eq!(writes, [1, 1]);
@@ -1745,13 +1743,13 @@ fn an_engine_state_update_writes_rows_for_the_change_alone() {
             .unwrap()
             .transaction(|tx| tx.set_engine_state(&before))
             .unwrap();
-        count_engine_writes(&path);
+        count_writes_to_every_table(&path);
 
         let mut store = Store::open(&path).unwrap();
         store
             .transaction(|tx| tx.update_engine_state(&before, &after))
             .unwrap();
-        writes.push(engine_writes(&path));
+        writes.push(rows_written(&path));
         assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), after);
         drop(store);
         let mut store = Store::open(&path).unwrap();
@@ -1760,7 +1758,7 @@ fn an_engine_state_update_writes_rows_for_the_change_alone() {
             .transaction(|tx| tx.update_engine_state(&after, &after))
             .unwrap();
         assert_eq!(
-            engine_writes(&path),
+            rows_written(&path),
             writes[writes.len() - 1],
             "an unchanged state writes no row"
         );
