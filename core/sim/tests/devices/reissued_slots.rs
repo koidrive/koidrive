@@ -86,6 +86,49 @@ fn a_store_copied_before_the_listing_starts_no_recovery_when_a_restore_brings_ba
 }
 
 #[test]
+fn a_store_rolled_back_past_a_kept_slot_starts_recovery_when_a_later_copy_committed_another_commit_there()
+ {
+    let mut world = converge(
+        2,
+        &[vec![(0, file("a"))], vec![(0, BACKUP), (0, file("b"))]],
+    )
+    .unwrap();
+    world
+        .phase(2, &[(0, RESTORE), (0, Step::Connect), (0, Step::CopyStore)])
+        .unwrap();
+    world
+        .phase(3, &[(0, BACKUP), (0, Step::RollBack), (0, Step::Connect)])
+        .unwrap();
+    world
+        .phase(
+            4,
+            &[
+                (0, Step::CopyStore),
+                (0, Step::RestoreEarlier),
+                (0, Step::Connect),
+                (0, file("c.txt")),
+            ],
+        )
+        .unwrap();
+    world
+        .run(
+            5,
+            &[(0, Step::RollBack), (0, Step::Connect), (0, Step::Connect)],
+        )
+        .unwrap();
+    assert!(matches!(
+        world.devices[0].engine.commits.halted(),
+        Some(koidrive_engine::commit::Halt::Recovery(
+            koidrive_engine::question::RecoveryCause {
+                trigger: koidrive_engine::question::RecoveryTrigger::StoreRolledBack,
+                ..
+            }
+        ))
+    ));
+    world.phase(6, &[]).unwrap();
+}
+
+#[test]
 fn a_store_copied_before_the_listing_takes_another_devices_delete_of_a_file_it_edited_before_the_loss()
  {
     let mut world = converge(2, &[vec![(0, file("a"))], vec![(0, overwrite(0))]]).unwrap();
