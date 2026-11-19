@@ -3,7 +3,7 @@
 use koidrive_engine::classify::Trees;
 use koidrive_engine::commit::Commits;
 use koidrive_engine::effects::{BatchLimit, Effect, Effects};
-use koidrive_engine::first_link::{History, Marks};
+use koidrive_engine::first_link::{LogRead, Marks};
 use koidrive_engine::ids::IdGen;
 use koidrive_engine::question::{
     Answer, QuestionKind, RecoveryCause, RecoveryGroup, RecoveryTrigger,
@@ -81,7 +81,7 @@ fn rolled_back_under_a_later_edit(on_disk_at: i64) -> (Trees, Commits, IdGen) {
         0,
         false,
         &cause,
-        &History::new(),
+        &LogRead::default(),
         &Marks::new(),
         &mut ids,
         NOW,

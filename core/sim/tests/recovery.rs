@@ -4193,11 +4193,14 @@ fn a_device_back_after_another_devices_keep_and_a_later_rewind_is_asked_about_it
         (0, DELIVER),
         (0, COMMIT),
     ];
-    let mut world = back_after_the_other_keep(&again);
-    assert_eq!(open_recovery(&world, 1), 1);
-    world.run(2, &[(1, Step::Answer(0))]).unwrap();
-    world.phase(3, &[]).unwrap();
-    assert_eq!(live_writes(&world), [1, 2]);
+    for reading_the_first in [false, true] {
+        let connected = &[(1, Step::Connect)][..usize::from(reading_the_first)];
+        let mut world = back_after_the_other_keep(&[connected, &again].concat());
+        assert_eq!(open_recovery(&world, 1), 1, "{reading_the_first}");
+        world.run(2, &[(1, Step::Answer(0))]).unwrap();
+        world.phase(3, &[]).unwrap();
+        assert_eq!(live_writes(&world), [1, 2], "{reading_the_first}");
+    }
 }
 
 #[test]
