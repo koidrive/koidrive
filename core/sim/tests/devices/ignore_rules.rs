@@ -561,10 +561,11 @@ fn a_file_refused_at_the_name_of_a_left_out_folder_keeps_that_name_once_the_rule
 }
 
 fn refused_at_a_left_out_folders_name(
+    rule: &'static str,
     first: &[Vec<(usize, Step)>],
     arrives: Step,
 ) -> (World, usize) {
-    let mut world = converge_excluding(&[vec![], vec!["ss/"]], first).unwrap();
+    let mut world = converge_excluding(&[vec![], vec![rule]], first).unwrap();
     let mut steps = vec![(0, arrives)];
     steps.extend(commit(0));
     steps.extend([(1, DELIVER), (1, EFFECT), (1, EFFECT)]);
@@ -584,8 +585,8 @@ fn left_out_name_shapes() -> [(World, usize); 2] {
     let downloaded = [vec![(1, folder("ss")), (1, user(1, 0, 1, "b"))]];
     let moved = [vec![(1, folder("ss"))], vec![(0, file("a"))]];
     [
-        refused_at_a_left_out_folders_name(&downloaded, file("ss")),
-        refused_at_a_left_out_folders_name(&moved, rename(0, 0, "ss")),
+        refused_at_a_left_out_folders_name("ss/", &downloaded, file("ss")),
+        refused_at_a_left_out_folders_name("ss/", &moved, rename(0, 0, "ss")),
     ]
 }
 
@@ -621,6 +622,25 @@ fn a_file_deleted_here_before_it_follows_its_conflict_name_comes_back_for_the_mo
     for device in 0..2 {
         assert_eq!(conflict_copies(&world, device).len(), 1, "{device}");
     }
+}
+
+#[test]
+fn a_file_refused_beside_a_folder_an_anchored_rule_leaves_out_takes_one_conflict_name_once_another_device_renames_their_parent()
+ {
+    let first = [vec![(1, folder("b")), (1, user(0, 0, 1, "ss"))]];
+    let (mut world, phase) =
+        refused_at_a_left_out_folders_name("/b/ss/", &first, user(1, 0, 1, "ss"));
+    let mut steps = vec![(0, rename(0, 0, "A"))];
+    steps.extend(commit(0));
+    world.run(phase, &steps).unwrap();
+    world.phase(phase + 1, &[]).unwrap();
+    assert_eq!(paths_on(&world, 0), paths_on(&world, 1));
+    assert_eq!(
+        conflict_copies(&world, 1).len(),
+        1,
+        "{:?}",
+        paths_on(&world, 1)
+    );
 }
 
 fn conflict_copies(world: &World, device: usize) -> Vec<String> {

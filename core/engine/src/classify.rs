@@ -3848,11 +3848,10 @@ impl Trees {
         )
     }
 
-    fn note_unobserved(&mut self, abandoned: &dyn Fn() -> bool) -> Option<()> {
-        if !self.rules_known || self.rules_changed.is_empty() {
-            return Some(());
+    fn end_names_no_longer_left_out(&mut self) {
+        if !self.rules_known {
+            return;
         }
-        let changed = std::mem::take(&mut self.rules_changed);
         let lifted: Vec<NodeId> = (self.names_left_out.iter())
             .filter(|id| {
                 !path(&self.r, id).is_some_and(|(names, _)| self.ignores(&names, Kind::Dir))
@@ -3862,6 +3861,13 @@ impl Trees {
         for id in lifted {
             self.names_left_out.remove(&id);
         }
+    }
+
+    fn note_unobserved(&mut self, abandoned: &dyn Fn() -> bool) -> Option<()> {
+        if !self.rules_known || self.rules_changed.is_empty() {
+            return Some(());
+        }
+        let changed = std::mem::take(&mut self.rules_changed);
         let below: Option<BTreeSet<NodeId>> = (!changed.contains(&Vec::new())).then(|| {
             (changed.iter())
                 .flat_map(|dir| self.below_rules(dir))
@@ -6211,6 +6217,7 @@ impl Trees {
             self.wait_to_link(unfit);
         }
         self.settle_marked(abandoned)?;
+        self.end_names_no_longer_left_out();
         self.note_unobserved(abandoned)?;
         while self.link_due() {
             self.settle_marked(abandoned)?;
