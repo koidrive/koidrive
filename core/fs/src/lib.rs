@@ -3257,6 +3257,12 @@ pub trait Watcher {
     fn revisit(&mut self, paths: Vec<PathBuf>);
 }
 
+struct Barrier {
+    file: PathBuf,
+    written: Instant,
+    holds: BTreeSet<PathBuf>,
+}
+
 /// Watches with FSEvents on macOS and inotify on Linux.
 ///
 /// When the platform reports lost events (an inotify queue overflow, or
@@ -3268,12 +3274,6 @@ pub trait Watcher {
 /// [`Error::Watch`], the platform watcher cannot cover the tree (for example
 /// the inotify watch limit); continue with a [`RescanWatcher`] built from
 /// [`Watcher::snapshot`].
-struct Barrier {
-    file: PathBuf,
-    written: Instant,
-    holds: BTreeSet<PathBuf>,
-}
-
 pub struct NativeWatcher {
     root: PathBuf,
     snapshot: Snapshot,
