@@ -20,6 +20,9 @@ pub struct ServerInfo {
     /// it, because after an upgrade the Durable Object can keep its old code for up to 300 seconds.
     #[prost(bool, tag="6")]
     pub setup_attempts: bool,
+    /// The effective features (RFC 0022): each configured feature that the Account DO's code implements.
+    #[prost(string, repeated, tag="7")]
+    pub features: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// The storage schema versions this server's code migrates its Durable Objects to (RFC 0025). Unset on a server that
     /// does not report them.
     #[prost(message, optional, tag="8")]

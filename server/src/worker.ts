@@ -31,6 +31,7 @@ import {
 import { countBundledChunks, decodeChunkBundle, MAX_BUNDLE_CHUNKS } from "./chunk-bundle";
 import { causeOf } from "./cause";
 import { errorText } from "./errors";
+import { CHUNK_BUNDLES, featuresOf } from "./features";
 import type { ObjectStore } from "./host";
 import { BadRequest, errorReply, readMessage, reply, responseOutcome } from "./http";
 import { countedBucket, countedEgress } from "./report/meter";
@@ -253,6 +254,11 @@ async function bundle(request: Request, env: Env, objects: ObjectStore, spaceId:
 
 class LimitExceeded extends Error {}
 
+async function effectiveFeatures(env: Env): Promise<string[]> {
+  const implemented = new Set(await account(env).implementedFeatures().catch(() => []));
+  return [...featuresOf(env)].filter((name) => implemented.has(name));
+}
+
 async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -274,6 +280,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       setupAttempts: await account(env)
         .handlesSetupAttempts()
         .catch(() => false),
+      features: await effectiveFeatures(env),
       storage: STORAGE,
       commit: SERVER_COMMIT,
     });
@@ -315,7 +322,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
 
   const bundleRoute = /^\/v1\/spaces\/([0-9a-f-]{36})\/chunks$/.exec(path);
-  if (bundleRoute && isUuidV7(bundleRoute[1]!)) return bundle(request, env, env.BUCKET, bundleRoute[1]!);
+  if (bundleRoute && isUuidV7(bundleRoute[1]!) && featuresOf(env).has(CHUNK_BUNDLES)) return bundle(request, env, env.BUCKET, bundleRoute[1]!);
 
   const chunkRoute = /^\/v1\/spaces\/([0-9a-f-]{36})\/chunks\/([0-9a-f]{64})$/.exec(path);
   if (chunkRoute && isUuidV7(chunkRoute[1]!)) return chunk(request, env, env.BUCKET, chunkRoute[1]!, chunkRoute[2]!);

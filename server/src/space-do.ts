@@ -3,7 +3,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { Error_Code } from "./gen/koidrive/v1/rpc_pb";
 import type { Database, ObjectState, Sql } from "./host";
-import { configuredFeatures } from "./features";
+import { featuresOf } from "./features";
 import { errorReply } from "./http";
 import { uuidv7 } from "./ids";
 import { countedBucket, countedState, type MeteredCall, meteredObject, meteredReply, meteredStub, type Reply } from "./report/meter";
@@ -47,7 +47,7 @@ export class SpaceDO extends spaceLogic(DurableObject<Env>) {
   }
 
   protected features(): ReadonlySet<string> {
-    return configuredFeatures((this.env as Env & { KOIDRIVE_FEATURES?: string }).KOIDRIVE_FEATURES);
+    return featuresOf(this.env);
   }
 
   protected get objects(): R2Bucket {
