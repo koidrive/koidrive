@@ -1058,7 +1058,7 @@ fn an_abandoned_stage_that_cannot_be_opened_does_not_block_publication() {
         assert_eq!(libc::fcntl(lease.as_raw_fd(), libc::F_SETOWN, 0), 0);
     }
     let path = dir.path().join("state.json");
-    write(&path, b"published").unwrap();
+    write(&path, b"published").unwrap().durable.unwrap();
     assert_eq!(fs::read(&path).unwrap(), b"published");
     assert_eq!(recover(dir.path()).unwrap(), 0);
     assert_eq!(stages(dir.path()), 1);
