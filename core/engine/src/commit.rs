@@ -965,6 +965,17 @@ impl Commits {
                 return;
             }
             Some(question) if question.held == open && question.answer == Some(Answer::Delete) => {
+                let updates = (question.holds())
+                    .map(|id| {
+                        (
+                            id.clone(),
+                            trees.remote().get(id).map(|node| node.shape.clone()),
+                        )
+                    })
+                    .collect();
+                for (id, shape) in update_synced(trees, updates) {
+                    trees.wait(id, shape, Origin::Other);
+                }
                 for id in question.holds() {
                     trees.release_missing(id);
                 }

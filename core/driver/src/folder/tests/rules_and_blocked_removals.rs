@@ -1974,3 +1974,95 @@ fn a_file_moved_into_a_left_out_folder_the_search_cannot_open_stays_on_the_serve
         assert_eq!(questions, [held], "{case}");
     }
 }
+#[cfg(target_os = "linux")]
+#[test]
+fn a_held_file_after_a_server_rewind_stays_under_its_one_question() {
+    use std::os::unix::fs::PermissionsExt;
+    fn spin(b: &mut Device, remote: &mut Remote) {
+        for _ in 0..20 {
+            let _ = b.try_scan(Duration::from_millis(50));
+            b.run(remote);
+        }
+    }
+    for (past_create, order, given) in [
+        (false, [true, false], Answer::Delete),
+        (false, [false, true], Answer::Delete),
+        (true, [true, false], Answer::Delete),
+        (false, [true, false], Answer::Restore),
+    ] {
+        let case = format!("past_create={past_create} order={order:?} {given}");
+        let mut remote = Remote::new();
+        let (site, mut b) = linked(&mut remote, "b");
+        let mut backup = remote.space.clone();
+        fs::write(site.root.join("report.docx"), "v1").unwrap();
+        b.rescan();
+        b.rest(&mut remote);
+        if !past_create {
+            backup = remote.space.clone();
+        }
+        fs::write(site.root.join("report.docx"), "v2 edited").unwrap();
+        b.rescan();
+        b.rest(&mut remote);
+        drop(b);
+        let mut b = started(&site, &mut remote, &dist_left_out());
+        let locked = site.root.join("dist/locked");
+        fs::create_dir_all(&locked).unwrap();
+        b.rest(&mut remote);
+        fs::rename(site.root.join("report.docx"), locked.join("report.docx")).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(&locked).is_ok() {
+            assert!(rustix::process::geteuid().is_root());
+            eprintln!("SKIPPED: running as root, so permissions do not block reads");
+            return;
+        }
+        b.rescan();
+        spin(&mut b, &mut remote);
+
+        remote.space.rewind(&backup, NOW);
+        b.event(Event::Connected(remote.space.welcome(&b.caller)))
+            .unwrap();
+        for _ in 0..3 {
+            b.pull(&remote);
+            spin(&mut b, &mut remote);
+            b.settle();
+        }
+        let asked: Vec<_> = (shown(&site).into_iter())
+            .map(|question| question.kind)
+            .collect();
+        for ambiguous in order {
+            let mut store = Store::open(&site.db).unwrap();
+            for row in store.transaction(|tx| tx.questions()).unwrap() {
+                let question: crate::question::Question =
+                    serde_json::from_slice(&row.body).unwrap();
+                if (question.kind == crate::question::QuestionKind::AmbiguousDisappearance)
+                    == ambiguous
+                {
+                    let answer = koidrive_store::GivenAnswer {
+                        answer: given.as_str().into(),
+                        answered_at_ms: NOW,
+                    };
+                    (store.transaction(|tx| tx.answer_question(&row.question_id, &answer)))
+                        .unwrap();
+                }
+            }
+            let step = b.folder.requested();
+            b.take(step).unwrap();
+            spin(&mut b, &mut remote);
+            b.settle();
+            spin(&mut b, &mut remote);
+        }
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let restored = given == Answer::Restore;
+        let names: &[&str] = if restored { &["report.docx"] } else { &[] };
+        assert_eq!(remote.names(), names, "{case}");
+        assert_eq!(site.root.join("report.docx").exists(), restored, "{case}");
+        assert!(locked.join("report.docx").exists(), "{case}");
+        let expected: &[_] = match past_create {
+            true => &[],
+            false => &[crate::question::QuestionKind::AmbiguousDisappearance],
+        };
+        assert_eq!(asked, expected, "{case}");
+        assert_eq!(shown(&site).len(), 0, "{case}");
+    }
+}
