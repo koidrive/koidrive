@@ -2074,7 +2074,7 @@ impl World {
                     .map(|(ino, _)| *ino)
                     .collect();
                 for ino in elsewhere {
-                    self.intents.detach(d, ino, &record.node, self.moment);
+                    self.intents.detach(d, ino, &record.node, self.moment + 1);
                 }
             }
         }

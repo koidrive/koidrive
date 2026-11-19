@@ -247,8 +247,10 @@ pub(super) struct Intents {
     nodes: Vec<BTreeMap<u128, BTreeSet<NodeId>>>,
     merged: BTreeMap<NodeId, NodeId>,
     copies: BTreeMap<NodeId, BTreeSet<NodeId>>,
-    detached: Vec<BTreeMap<u128, BTreeMap<NodeId, u64>>>,
+    detached: Vec<BTreeMap<u128, BTreeMap<NodeId, Spans>>>,
 }
+
+type Spans = Vec<(u64, Option<u64>)>;
 
 impl Intents {
     pub(super) fn new(devices: usize) -> Self {
@@ -318,11 +320,16 @@ impl Intents {
     }
 
     pub(super) fn detach(&mut self, d: usize, ino: u128, node: &str, since: u64) {
-        (self.detached[d].entry(ino).or_default()).insert(node.to_owned(), since);
+        if !self.detached(d, ino, node) {
+            let spans = self.detached[d].entry(ino).or_default();
+            (spans.entry(node.to_owned()).or_default()).push((since, None));
+        }
     }
 
     pub(super) fn detached(&self, d: usize, ino: u128, node: &str) -> bool {
-        (self.detached[d].get(&ino)).is_some_and(|nodes| nodes.contains_key(node))
+        (self.detached[d].get(&ino).and_then(|nodes| nodes.get(node)))
+            .and_then(|spans| spans.last())
+            .is_some_and(|(_, until)| until.is_none())
     }
 
     pub(super) fn merged(&mut self, from: &str, into: &str) {
@@ -356,9 +363,11 @@ impl Intents {
     ) -> impl Iterator<Item = &NodeId> {
         let detached = self.detached[device].get(&ino);
         let ids = (self.nodes[device].get(&ino).into_iter().flatten()).filter(move |id| {
-            detached
-                .and_then(|nodes| nodes.get(*id))
-                .is_none_or(|since| made < *since)
+            let spans = detached.and_then(|nodes| nodes.get(*id));
+            !spans
+                .into_iter()
+                .flatten()
+                .any(|(since, until)| *since <= made && until.is_none_or(|until| made < until))
         });
         ids.flat_map(|id| std::iter::once(id).chain(self.merged.get(id)))
     }
@@ -396,8 +405,9 @@ impl Intents {
     ) {
         for (ino, node) in inos {
             self.nodes[d].entry(*ino).or_default().insert(node.clone());
-            if let Some(nodes) = self.detached[d].get_mut(ino) {
-                nodes.remove(node);
+            let spans = (self.detached[d].get_mut(ino)).and_then(|nodes| nodes.get_mut(node));
+            if let Some((_, until @ None)) = spans.and_then(|spans| spans.last_mut()) {
+                *until = Some(clock + 1);
             }
         }
         type Shown<'a> = (Option<&'a str>, &'a str, Option<&'a [u8]>);
