@@ -1999,7 +1999,7 @@ impl Driver {
         let mut questions = Vec::new();
         for space_id in self.space_ids() {
             let open = match self.read_store(&space_id, |store| {
-                store.transaction(|tx| {
+                store.read(|tx| {
                     let mut open = Vec::new();
                     for stored in tx.questions()? {
                         let Some(mut question) = (stored.answer.is_none())
@@ -2077,7 +2077,7 @@ impl Driver {
     pub fn answered_question(&self, question_id: &str) -> Result<Option<Question>, DriverError> {
         for space_id in self.space_ids() {
             let stored = match self.read_store(&space_id, |store| {
-                store.transaction(|tx| {
+                store.read(|tx| {
                     let current = (tx.questions()?.into_iter())
                         .find(|stored| stored.question_id == question_id);
                     match current {

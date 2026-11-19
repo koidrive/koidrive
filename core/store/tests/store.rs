@@ -105,6 +105,49 @@ fn migrations_apply_from_empty() {
     assert_eq!(journal, "wal");
 }
 
+fn unsynced_cursor() -> Cursor {
+    Cursor {
+        history_id: "h".into(),
+        last_seq: 1,
+        commit_id: String::new(),
+        committed_at_ms: 0,
+        ahead_of_server: false,
+    }
+}
+
+#[test]
+fn a_store_opens_and_reads_while_another_connection_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut writer = Store::open(&path).unwrap();
+    let (writing, written) = std::sync::mpsc::channel();
+    let (finish, finished) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        writer.transaction(|tx| {
+            tx.set_cursor(&unsynced_cursor())?;
+            writing.send(()).unwrap();
+            finished.recv().unwrap();
+            Ok::<_, Error>(())
+        })
+    });
+    written.recv().unwrap();
+    let read = Store::open_existing(&path)
+        .and_then(|mut reader| reader.read(|tx| Ok::<_, Error>((tx.questions()?, tx.cursor()?))));
+    finish.send(()).unwrap();
+    holder.join().unwrap().unwrap();
+    assert_eq!(read.unwrap(), (Vec::new(), None));
+}
+
+#[test]
+fn a_read_refuses_to_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path().join("state.db")).unwrap();
+    let cursor = unsynced_cursor();
+    assert!(store.read(|tx| tx.set_cursor(&cursor)).is_err());
+    store.transaction(|tx| tx.set_cursor(&cursor)).unwrap();
+    assert_eq!(store.read(|tx| tx.cursor()).unwrap(), Some(cursor));
+}
+
 #[test]
 fn connection_uses_durable_commits() {
     let dir = tempfile::tempdir().unwrap();
