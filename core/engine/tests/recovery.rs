@@ -5843,12 +5843,8 @@ fn synced_at(version_ms: u64) -> Trees {
     trees
 }
 
-fn logged(floor_seq: u64, records: &[(u64, u64, u64, u64)]) -> Log {
-    let mut log = Log::SinceFloor {
-        floor_seq,
-        first_ms: None,
-        created_ms: BTreeMap::new(),
-    };
+fn logged(trees: &Trees, floor_seq: u64, records: &[(u64, u64, u64, u64)]) -> Log {
+    let mut log = Log::since_floor(floor_seq, trees);
     for &(seq, committed_ms, content_rev, meta_rev) in records {
         let state = NodeState {
             node_id: "n".into(),
@@ -5891,7 +5887,8 @@ fn a_rewound_file_is_asked_about_only_when_the_log_creates_it_after_its_synced_v
         ),
     ] {
         let mut trees = synced_at(synced_ms);
-        let commits = recovered_from_log(&mut trees, Some(logged(0, &records)));
+        let log = logged(&trees, 0, &records);
+        let commits = recovered_from_log(&mut trees, Some(log));
         let groups = groups(&commits);
         assert_eq!(groups.len(), usize::from(asked), "{why}: {groups:?}");
     }
@@ -5908,7 +5905,7 @@ fn a_file_the_log_no_longer_reaches_back_to_is_held_when_its_synced_version_post
         (NOW + 1, Some(5), Some(NOW), false),
     ] {
         let mut trees = synced_at(synced_ms);
-        let log = floor.map(|floor| logged(floor, &[(floor + 1, first_ms.unwrap(), 2, 6)]));
+        let log = floor.map(|floor| logged(&trees, floor, &[(floor + 1, first_ms.unwrap(), 2, 6)]));
         let commits = recovered_from_log(&mut trees, log);
         let expected = match asked {
             true => vec![RecoveryGroup::CreatedAfterRestorePoint],

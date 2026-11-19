@@ -548,11 +548,7 @@ fn listing_with(space: &SpaceDo, log: LogRead) -> Message {
 fn log_since(space: &SpaceDo, from: &Resume, trees: &Trees, cause: &RecoveryCause) -> LogRead {
     let log = space.resume(from).ok().map(|records| {
         let mut log = match cause.restore_point_ms {
-            Some(_) => Log::SinceFloor {
-                floor_seq: from.since_seq,
-                first_ms: None,
-                created_ms: BTreeMap::new(),
-            },
+            Some(_) => Log::since_floor(from.since_seq, trees),
             None => Log::SinceCursor(History::new()),
         };
         for record in records {
@@ -563,11 +559,8 @@ fn log_since(space: &SpaceDo, from: &Resume, trees: &Trees, cause: &RecoveryCaus
     LogRead::new(trees, cause, log)
 }
 
-/// A write a restore took from the server while a device still held it (design sections 2.4 and
-/// 4.4).
 #[derive(Default)]
 struct Exposure {
-    /// The nodes that held the write at the restore, on the server or on a device.
     nodes: BTreeSet<NodeId>,
 }
 

@@ -629,11 +629,7 @@ impl Folder {
         let floor_seq = self.log_floor_seq;
         let since = match self.engine.commits.halted() {
             Some(CommitHalt::Recovery { cause, .. }) if cause.restore_point_ms.is_some() => {
-                let floor = Log::SinceFloor {
-                    floor_seq,
-                    first_ms: None,
-                    created_ms: BTreeMap::new(),
-                };
+                let floor = Log::since_floor(floor_seq, &self.engine.trees);
                 let from = Base {
                     seq: floor_seq,
                     ..Base::default()

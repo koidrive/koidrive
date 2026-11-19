@@ -33,15 +33,27 @@ pub enum Log {
     /// cursor.
     SinceCursor(History),
     /// After a history change: the current history's log from `floor_seq`, as the commit time of
-    /// each node's latest create and of the first commit read.
+    /// the first commit read and of each candidate's latest create.
     SinceFloor {
         floor_seq: u64,
+        candidates: BTreeSet<NodeId>,
         first_ms: Option<i64>,
         created_ms: BTreeMap<NodeId, i64>,
     },
 }
 
 impl Log {
+    /// The log a recovery after a history change reads from `floor_seq`, keeping only the creates of
+    /// the files S holds at a known version, the only ones it can count as held since S₀.
+    pub fn since_floor(floor_seq: u64, trees: &Trees) -> Log {
+        Log::SinceFloor {
+            floor_seq,
+            candidates: synced_versions(trees).map(|(id, _)| id.clone()).collect(),
+            first_ms: None,
+            created_ms: BTreeMap::new(),
+        }
+    }
+
     /// Takes the changes of the commit at `seq`, committed at `committed_ms`. A node state that
     /// sets `content_rev` and `meta_rev` to `seq` is a create.
     pub fn record(&mut self, seq: u64, committed_ms: i64, changes: &[ChangeRecord]) {
@@ -56,14 +68,17 @@ impl Log {
                 }
             }
             Log::SinceFloor {
+                candidates,
                 first_ms,
                 created_ms,
                 ..
             } => {
                 first_ms.get_or_insert(committed_ms);
-                for state in
-                    states.filter(|state| state.content_rev == seq && state.meta_rev == seq)
-                {
+                for state in states.filter(|state| {
+                    state.content_rev == seq
+                        && state.meta_rev == seq
+                        && candidates.contains(&state.node_id)
+                }) {
                     created_ms.insert(state.node_id.clone(), committed_ms);
                 }
             }
@@ -84,12 +99,7 @@ pub struct LogRead {
 impl LogRead {
     /// `log` is `None` when the log no longer reaches back to where the recovery asked for it.
     pub fn new(trees: &Trees, cause: &RecoveryCause, log: Option<Log>) -> LogRead {
-        let synced_ms = (trees.synced().iter())
-            .filter(|(_, shape)| shape.kind == Kind::File)
-            .filter_map(|(id, _)| {
-                let version_ms = trees.synced_version_id(id).and_then(crate::ids::unix_ms)?;
-                Some((id, i64::try_from(version_ms).ok()?))
-            });
+        let synced_ms = synced_versions(trees);
         let after_restore_point = |synced_ms: i64| {
             cause
                 .restore_point_ms
@@ -113,6 +123,7 @@ impl LogRead {
                 floor_seq,
                 first_ms,
                 created_ms,
+                ..
             }) => LogRead {
                 history: History::new(),
                 recreated: synced_ms
@@ -136,6 +147,15 @@ impl LogRead {
             },
         }
     }
+}
+
+fn synced_versions(trees: &Trees) -> impl Iterator<Item = (&NodeId, i64)> {
+    (trees.synced().iter())
+        .filter(|(_, shape)| shape.kind == Kind::File)
+        .filter_map(|(id, _)| {
+            let version_ms = trees.synced_version_id(id).and_then(crate::ids::unix_ms)?;
+            Some((id, i64::try_from(version_ms).ok()?))
+        })
 }
 
 /// Whether the folder synced the space before the store it links with: the server accepted commits

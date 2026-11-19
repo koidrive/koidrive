@@ -270,7 +270,11 @@ fn a_device_back_after_another_devices_keep_is_asked_about_its_own_write() {
         b.settle();
         b.run(&mut remote);
         let questions = shown(&site_b);
-        assert_eq!(questions.len(), 1, "rewound again {rewound_again}: {questions:?}");
+        assert_eq!(
+            questions.len(),
+            1,
+            "rewound again {rewound_again}: {questions:?}"
+        );
         assert_eq!(fs::read(site_b.root.join("c.txt")).unwrap(), b"two");
     }
 }
@@ -516,7 +520,7 @@ fn a_rewind_on_the_server_holds_the_writes_it_took_until_the_person_keeps_them()
         crate::question::QuestionKind::Recovery {
             group: crate::question::RecoveryGroup::CreatedAfterRestorePoint,
             sent_in: None,
-            cause: Some(RecoveryCause::rewind(0, 0)),
+            cause: Some(RecoveryCause::rewind(1, NOW)),
         }
     );
     let step = a.folder.requested();
