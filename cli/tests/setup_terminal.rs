@@ -520,7 +520,7 @@ fn folder_status(folder: &Path, space: &SpaceInfo) -> FolderStatus {
     FolderStatus {
         space_id: space.space_id.clone(),
         space_name: space.name.clone(),
-        path: Some(folder.display().to_string()),
+        path: Some(folder.to_path_buf()),
         state: FolderState::Connecting,
         history_id: None,
         last_seq: None,

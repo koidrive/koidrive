@@ -409,12 +409,10 @@ impl From<DriverError> for CliError {
             DriverError::SpaceUnplaced(space_id) => {
                 CliError::usage(message).then(&["koi", "folder", "unlink", "--space", &space_id])
             }
-            DriverError::UnlinkUnfinished(folder) => CliError::usage(message).then(&[
-                "koi",
-                "folder",
-                "unlink",
-                &folder.display().to_string(),
-            ]),
+            DriverError::UnlinkUnfinished(folder) => match folder.to_str() {
+                Some(folder) => CliError::usage(message).then(&["koi", "folder", "unlink", folder]),
+                None => CliError::usage(message),
+            },
             DriverError::EmptyName
             | DriverError::EmptyUserName
             | DriverError::SpaceNotFound(_)

@@ -650,10 +650,16 @@ impl WaitData {
     }
 }
 
+fn lossy_path(folder: &FolderStatus) -> String {
+    (folder.path.as_deref())
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 impl FolderData {
     pub fn of(folder: &FolderStatus) -> Self {
         FolderData {
-            path: folder.path.clone().unwrap_or_default(),
+            path: lossy_path(folder),
             space_id: folder.space_id.clone(),
             space_name: folder.space_name.clone(),
             state: match folder.state {
@@ -870,7 +876,7 @@ pub fn conditions(status: &Status, questions: &[Question]) -> Vec<Condition> {
         found.push(Condition::NotSetUp);
     }
     for folder in &status.folders {
-        let path = folder.path.clone().unwrap_or_default();
+        let path = lossy_path(folder);
         match folder.state {
             FolderState::Halted => found.push(Condition::Halted {
                 folder: path,
@@ -886,7 +892,7 @@ pub fn conditions(status: &Status, questions: &[Question]) -> Vec<Condition> {
         }
         if let Some(wait) = folder.wait.as_ref().and_then(WaitData::of) {
             found.push(Condition::Waiting {
-                folder: folder.path.clone().unwrap_or_default(),
+                folder: lossy_path(folder),
                 wait,
             });
         }
@@ -1521,7 +1527,7 @@ mod tests {
             recovery: None,
             space_id: format!("space-{path}"),
             space_name: path.to_owned(),
-            path: Some(format!("/home/ada/{path}")),
+            path: Some(format!("/home/ada/{path}").into()),
             state,
             history_id: None,
             last_seq: None,

@@ -2928,3 +2928,128 @@ fn a_folder_is_listed_as_a_folder_with_the_files_it_holds_or_brings_back_from_th
         ]
     );
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn folder_commands_reach_the_daemon_for_a_folder_whose_name_is_not_utf8() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let (_dir, paths, root) = ipc::tests::linked_profile();
+    let raw = root.with_file_name(std::ffi::OsStr::from_bytes(b"Koidrive\xff"));
+    std::fs::rename(&root, &raw).unwrap();
+    ipc::tests::linked_at(&paths, ipc::tests::SPACE, &raw);
+    let server = tokio::spawn(ipc::serve(
+        koidrive_ipc::bind(&paths.socket()).unwrap(),
+        Driver::open(paths.clone()).unwrap(),
+    ));
+    let mut outcomes = Vec::new();
+    for words in [
+        &["restart"][..],
+        &["retry", "--resend"],
+        &["relink"],
+        &["unlink"],
+        &["unlink"],
+    ] {
+        let mut args: Vec<OsString> = (["koi", "folder"].iter().chain(words))
+            .map(OsString::from)
+            .collect();
+        args.push(raw.clone().into());
+        let command = Cli::try_parse_from(args).unwrap().command.unwrap();
+        let done = run(
+            paths.clone(),
+            command,
+            true,
+            false,
+            Arc::new(terminal::Terminal::new(true, true)),
+        )
+        .await;
+        outcomes.push(done.map(|done| done.text).map_err(|error| error.message));
+    }
+    server.abort();
+    let shown = raw.display();
+    assert_eq!(
+        outcomes,
+        [
+            Ok(format!("Syncing {shown} again.\n")),
+            Err("the folder holds no changes the server refused".into()),
+            Err(format!(
+                "{} is not halted as an older copy of the linked folder, so it syncs as it is",
+                koidrive_fs::quoted(&raw)
+            )),
+            Ok(format!(
+                "Unlinked {shown} from space {}. Its files and its .koidrive folder stay.\n",
+                ipc::tests::SPACE
+            )),
+            Ok(format!(
+                "{shown} is not linked, so there is nothing to unlink.\n"
+            )),
+        ]
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn readers_of_the_status_find_a_linked_folder_whose_name_is_not_utf8() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let (_dir, paths, root) = ipc::tests::linked_profile();
+    let raw = root.with_file_name(std::ffi::OsStr::from_bytes(b"Koidrive\xff"));
+    std::fs::rename(&root, &raw).unwrap();
+    ipc::tests::linked_at(&paths, ipc::tests::SPACE, &raw);
+    std::fs::write(raw.join("report.docx"), b"x").unwrap();
+    Credential {
+        server: format!("http://{}/", koidrive_test_support::reset_tcp_address()),
+        user_id: "u1".into(),
+        user_name: None,
+        device_id: "d1".into(),
+        device_name: "Mac".into(),
+        refresh_credential: "not-a-secret".into(),
+    }
+    .save_new(&paths.credential())
+    .unwrap();
+    let server = tokio::spawn(ipc::serve(
+        koidrive_ipc::bind(&paths.socket()).unwrap(),
+        Driver::open(paths.clone()).unwrap(),
+    ));
+    let mut outcomes = Vec::new();
+    for words in [
+        vec![
+            "share".into(),
+            "create".into(),
+            raw.join("report.docx").into(),
+        ],
+        vec!["history".into(), "trash".into(), raw.clone().into()],
+        vec![OsString::from("gitignore"), "status".into()],
+    ] {
+        let args = std::iter::once(OsString::from("koi")).chain(words);
+        let command = Cli::try_parse_from(args).unwrap().command.unwrap();
+        let done = run(
+            paths.clone(),
+            command,
+            true,
+            false,
+            Arc::new(terminal::Terminal::new(true, true)),
+        )
+        .await;
+        outcomes.push(done.map(|done| done.text).map_err(|error| error.message));
+    }
+    let access = ipc::run(&paths, Request::Access).await.unwrap();
+    server.abort();
+    assert_eq!(
+        access,
+        Response::Access {
+            blocked: Vec::new()
+        }
+    );
+    assert_eq!(
+        outcomes,
+        [
+            Err("could not reach the server".into()),
+            Err("could not reach the server".into()),
+            Ok(format!(
+                "This device leaves out what .gitignore files exclude.\nFiles only .gitignore files exclude:\n  {}  no files\nTurn off: koi gitignore off\n",
+                raw.display()
+            )),
+        ]
+    );
+}

@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use koidrive_driver::{Driver, Question};
 
@@ -11,13 +12,13 @@ pub fn decisions(driver: Driver) -> impl Future<Output = ()> {
             let Ok(questions) = driver.questions() else {
                 continue;
             };
-            let folders: BTreeMap<String, String> = (driver.status().folders.into_iter())
+            let folders: BTreeMap<String, PathBuf> = (driver.status().folders.into_iter())
                 .filter_map(|folder| Some((folder.space_id, folder.path?)))
                 .collect();
             for question in opened(&open, &questions) {
                 let folder = (folders.get(&question.space_id)).map_or_else(
                     || "A linked folder".to_owned(),
-                    |path| crate::printable(path),
+                    |path| crate::printable(&path.to_string_lossy()),
                 );
                 let body = format!("{folder}: {}", crate::question_notice(question));
                 tokio::spawn(async move { send("Koidrive needs a decision", &body).await });

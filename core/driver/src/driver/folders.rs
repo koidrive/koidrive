@@ -158,7 +158,7 @@ pub(super) fn folder_status(
 ) -> FolderStatus {
     FolderStatus {
         space_name: link.space_name.clone(),
-        path: Some(link.root.to_string_lossy().into_owned()),
+        path: Some(link.root.clone()),
         history_id: cursor.as_ref().map(|cursor| cursor.history_id.clone()),
         last_seq: cursor.map(|cursor| cursor.last_seq),
         remote_nodes: nodes,

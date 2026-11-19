@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
 fn refused(status: u16, code: ServerCode) -> ApiError {
@@ -441,6 +442,10 @@ fn pairing_and_unlinking_presentations_keep_original_actions() {
         [Next::of(&["koi", "folder", "unlink", "/Documents"])]
     );
     assert!(unfinished.human.unwrap().contains("Its files stay"));
+    let unfinished = CliError::from(DriverError::UnlinkUnfinished(PathBuf::from(
+        std::ffi::OsStr::from_bytes(b"/Documents\xff"),
+    )));
+    assert!(unfinished.next.is_empty(), "{:?}", unfinished.next);
     let not_relinked = CliError::from(DriverError::NotRelinked {
         path: PathBuf::from("/Documents"),
         why: "the root marker is missing".into(),

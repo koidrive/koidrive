@@ -62,15 +62,18 @@ pub enum Request {
         confirm_last_device: bool,
     },
     Link {
+        #[serde(with = "koidrive_driver::raw_path")]
         folder: PathBuf,
         space: String,
     },
     LinkApproved {
+        #[serde(with = "koidrive_driver::raw_path")]
         folder: PathBuf,
         space: String,
         approval: LinkApproval,
     },
     Unlink {
+        #[serde(with = "koidrive_driver::raw_path")]
         folder: PathBuf,
     },
     /// `Driver::unlink_space`.
@@ -78,14 +81,17 @@ pub enum Request {
         space_id: String,
     },
     Restart {
+        #[serde(with = "koidrive_driver::raw_path")]
         folder: PathBuf,
     },
     /// `Driver::lift`: `Lift::Replan` when `replan`, else `Lift::Resend`.
     Lift {
+        #[serde(with = "koidrive_driver::raw_path")]
         folder: PathBuf,
         replan: bool,
     },
     Relink {
+        #[serde(with = "koidrive_driver::raw_path")]
         folder: PathBuf,
     },
     Questions,
@@ -103,7 +109,8 @@ pub enum Request {
     Restore {
         space_id: String,
         restore: RestoreRequest,
-        folder: String,
+        #[serde(with = "koidrive_driver::raw_path")]
+        folder: PathBuf,
         path: String,
         /// The item's kind and, for a folder, its files, as the person saw it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -125,6 +132,7 @@ pub enum Request {
     Watch,
     /// `Driver::share`: a new link to the file or folder at the absolute `path`.
     Share {
+        #[serde(with = "koidrive_driver::raw_path")]
         path: PathBuf,
         expiry: Expiry,
         password: Option<Secret>,
@@ -175,36 +183,7 @@ impl Request {
 #[serde(rename_all = "snake_case")]
 pub enum GitignoreFolder {
     Space(String),
-    Folder(#[serde(with = "raw_path")] PathBuf),
-}
-
-mod raw_path {
-    use std::ffi::OsString;
-    use std::os::unix::ffi::{OsStrExt, OsStringExt};
-    use std::path::{Path, PathBuf};
-
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Wire {
-        Text(String),
-        Bytes(Vec<u8>),
-    }
-
-    pub fn serialize<S: Serializer>(path: &Path, serializer: S) -> Result<S::Ok, S::Error> {
-        match path.to_str() {
-            Some(text) => serializer.serialize_str(text),
-            None => path.as_os_str().as_bytes().serialize(serializer),
-        }
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<PathBuf, D::Error> {
-        Ok(match Wire::deserialize(deserializer)? {
-            Wire::Text(text) => text.into(),
-            Wire::Bytes(bytes) => OsString::from_vec(bytes).into(),
-        })
-    }
+    Folder(#[serde(with = "koidrive_driver::raw_path")] PathBuf),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,6 +206,7 @@ pub enum Response {
     },
     Unlinked {
         space_id: String,
+        #[serde(with = "koidrive_driver::raw_path")]
         path: PathBuf,
         #[serde(flatten)]
         set_aside: SetAside,
@@ -237,6 +217,7 @@ pub enum Response {
     },
     /// The folder to unlink was not linked.
     NotLinked {
+        #[serde(with = "koidrive_driver::raw_path")]
         path: PathBuf,
     },
     Restarted {
@@ -254,7 +235,8 @@ pub enum Response {
     Restore {
         id: String,
         space_id: String,
-        folder: String,
+        #[serde(with = "koidrive_driver::raw_path")]
+        folder: PathBuf,
         path: String,
     },
     Restores {
@@ -750,6 +732,86 @@ mod tests {
                 unreadable: vec!["/home/ada/Code/data-\u{fffd}".into()],
             }
         );
+    }
+
+    #[test]
+    fn requests_and_answers_name_a_non_utf8_folder_by_its_bytes() {
+        let raw =
+            PathBuf::from(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"/a\xff"));
+        assert_eq!(
+            serde_json::to_string(&Request::Restart {
+                folder: raw.clone()
+            })
+            .unwrap(),
+            r#"{"request":"restart","folder":[47,97,255]}"#
+        );
+        let directory = koidrive_driver::DirectoryIdentity::of(&std::fs::metadata("/").unwrap());
+        for request in [
+            Request::Link {
+                folder: raw.clone(),
+                space: "s1".into(),
+            },
+            Request::LinkApproved {
+                folder: raw.clone(),
+                space: "s1".into(),
+                approval: LinkApproval {
+                    directory,
+                    accept_existing_files: true,
+                },
+            },
+            Request::Unlink {
+                folder: raw.clone(),
+            },
+            Request::Restart {
+                folder: raw.clone(),
+            },
+            Request::Lift {
+                folder: raw.clone(),
+                replan: true,
+            },
+            Request::Relink {
+                folder: raw.clone(),
+            },
+            Request::Share {
+                path: raw.join("report.docx"),
+                expiry: Expiry::Never,
+                password: None,
+            },
+            Request::Restore {
+                space_id: "s1".into(),
+                restore: RestoreRequest::FromTrash {
+                    node_id: "n1".into(),
+                    parent_id: None,
+                    name: None,
+                },
+                folder: raw.clone(),
+                path: "report.docx".into(),
+                kind: None,
+                files: None,
+            },
+        ] {
+            let json = serde_json::to_string(&request).unwrap();
+            assert!(json.contains("[47,97,255"), "{json}");
+            assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), request);
+        }
+        for response in [
+            Response::Unlinked {
+                space_id: "s1".into(),
+                path: raw.clone(),
+                set_aside: SetAside::default(),
+            },
+            Response::NotLinked { path: raw.clone() },
+            Response::Restore {
+                id: "r1".into(),
+                space_id: "s1".into(),
+                folder: raw.clone(),
+                path: "report.docx".into(),
+            },
+        ] {
+            let json = serde_json::to_string(&response).unwrap();
+            assert!(json.contains("[47,97,255]"), "{json}");
+            assert_eq!(serde_json::from_str::<Response>(&json).unwrap(), response);
+        }
     }
 
     #[test]

@@ -109,7 +109,7 @@ async fn trash(paths: &Paths, folder: &Path) -> Result<Done, CliError> {
         false => HashMap::new(),
     };
     let data = TrashData {
-        folder: root.clone(),
+        folder: root.to_string_lossy().into_owned(),
         entries: found.iter().map(|deleted| deleted.entry(&names)).collect(),
     };
     Ok(Done::ok(
@@ -129,7 +129,7 @@ async fn versions(paths: &Paths, file: &Path) -> Result<Done, CliError> {
     if below.is_empty() {
         return Err(CliError::usage(format!(
             "{} is the linked folder itself; name a file in it",
-            root
+            root.display()
         ))
         .because(Reason::LinkedFolderItself));
     }
@@ -139,7 +139,7 @@ async fn versions(paths: &Paths, file: &Path) -> Result<Done, CliError> {
         CliError::usage(format!(
             "the server has no file at {} in {}; koi history trash lists deleted ones",
             printable(&below.join("/")),
-            root
+            root.display()
         ))
         .because(Reason::NotFound)
     })?;
@@ -274,7 +274,7 @@ async fn checked(
     if below.is_empty() {
         return Err(CliError::usage(format!(
             "{} is the linked folder itself; name a file or folder in it",
-            root
+            root.display()
         ))
         .because(Reason::LinkedFolderItself));
     }
@@ -286,7 +286,7 @@ async fn checked(
             let file = find(&live, space, &below).ok_or_else(|| {
                 CliError::usage(format!(
                     "the server has no file at {shown} in {}; koi history trash lists deleted ones",
-                    root
+                    root.display()
                 ))
                 .because(Reason::NotFound)
             })?;
@@ -354,19 +354,20 @@ async fn checked(
 
 /// What `koi history restore` reports for the restore `id` of `path` in `folder`. `state` is the folder's state while it is
 /// linked to the restore's space. Without it, nothing follows: `koi history requests` needs the folder linked.
-fn asked(folder: &str, path: &str, id: String, state: Option<FolderState>) -> Done {
+fn asked(folder: &Path, path: &str, id: String, state: Option<FolderState>) -> Done {
     let shown = printable(path);
+    let folder_text = folder.to_string_lossy();
     let mut note = format!("Asked to restore {shown} (restore {}).\n", printable(&id));
     match state {
         Some(FolderState::Stopped) => {
             note.push_str(&format!(
                 "The folder sends it once the daemon runs; koi status shows why it doesn't. koi history requests {} shows how it went.\n",
-                printable(folder)
+                printable(&folder_text)
             ))
         }
         Some(_) => note.push_str(&format!(
             "The folder sends it with its next commit. koi history requests {} shows how it went.\n",
-            printable(folder)
+            printable(&folder_text)
         )),
         None => {}
     }
@@ -391,12 +392,12 @@ fn asked(folder: &str, path: &str, id: String, state: Option<FolderState>) -> Do
     if state.is_some() {
         summary.push_str(&format!(
             "Check restore: koi history requests {}\n",
-            crate::output::command_path(Path::new(folder))
+            crate::output::command_path(folder)
         ));
     }
     let data = RestoreAskedData {
         request_id: id,
-        folder: folder.to_owned(),
+        folder: folder_text.to_string(),
         path: path.to_owned(),
     };
     let done = Done {
@@ -405,8 +406,8 @@ fn asked(folder: &str, path: &str, id: String, state: Option<FolderState>) -> Do
         ..Done::value(data, &value, note)
     }
     .human(format!("{value}\n"), summary);
-    match state {
-        Some(_) => done.then(&["koi", "history", "requests", folder]),
+    match state.and(folder.to_str()) {
+        Some(folder) => done.then(&["koi", "history", "requests", folder]),
         None => done,
     }
 }
@@ -426,7 +427,7 @@ async fn requests(paths: &Paths, folder: &Path) -> Result<Done, CliError> {
         other => return Err(unexpected(other)),
     };
     let data = RequestsData {
-        folder: root.clone(),
+        folder: root.to_string_lossy().into_owned(),
         requests: restores.iter().map(RequestData::of).collect(),
     };
     let pending = restores
@@ -478,14 +479,14 @@ impl NotPicked<'_> {
         }
     }
 
-    fn message(&self, shown: &str, root: &str) -> String {
+    fn message(&self, shown: &str, root: &Path) -> String {
         match self {
             Self::None { live: true } => {
                 format!("{shown} is not deleted; koi history versions lists the versions of a file")
             }
             Self::None { live: false } => format!(
                 "nothing deleted at {shown} is in the trash of {}; koi history trash lists what is",
-                root
+                root.display()
             ),
             Self::Several(found) => {
                 let candidates: Vec<String> = (found.iter())

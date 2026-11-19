@@ -61,9 +61,12 @@ pub(crate) async fn status(paths: &Paths, check: bool) -> Result<Done, CliError>
     if status.paused {
         done = done.then(&["koi", "resume"]);
     }
-    for (path, command) in (status.folders.iter())
-        .filter_map(|folder| Some((folder.path.as_deref()?, RemedyData::of(folder)?.command()?)))
-    {
+    for (path, command) in (status.folders.iter()).filter_map(|folder| {
+        Some((
+            folder.path.as_deref()?.to_str()?,
+            RemedyData::of(folder)?.command()?,
+        ))
+    }) {
         done = done.then(&["koi", "folder", command, path]);
     }
     Ok(done)
@@ -252,7 +255,7 @@ pub(crate) fn folder_text(folder: &FolderStatus) -> String {
         FolderState::Halted => "Halted",
     };
     let path = match &folder.path {
-        Some(root) => printable(root),
+        Some(root) => printable(&root.to_string_lossy()),
         None => "(path unknown)".to_owned(),
     };
     let mut text = format!(
@@ -308,13 +311,14 @@ fn progress_text(progress: &Progress) -> String {
     parts.join("; ")
 }
 
-fn held(folder: &FolderStatus, root: &str) -> String {
+fn held(folder: &FolderStatus, root: &Path) -> String {
+    let root = root.to_string_lossy();
     let mut text = String::new();
     for disk in &folder.held_disks {
-        text.push_str(&format!("  {}\n", printable(&disk.describe(root))));
+        text.push_str(&format!("  {}\n", printable(&disk.describe(&root))));
     }
     if !folder.kept_entries.is_empty() {
-        let kept = koidrive_driver::describe_kept(root, &folder.kept_entries);
+        let kept = koidrive_driver::describe_kept(&root, &folder.kept_entries);
         text.push_str(&format!("  {}\n", printable(&kept)));
     }
     text

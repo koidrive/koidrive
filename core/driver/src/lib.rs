@@ -40,6 +40,7 @@ mod pending_create;
 pub mod policy;
 mod progress;
 mod question;
+pub mod raw_path;
 mod restore;
 #[cfg(test)]
 mod scripted;

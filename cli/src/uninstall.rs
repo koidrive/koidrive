@@ -190,6 +190,7 @@ struct Owner {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Record {
+    #[serde(with = "koidrive_driver::raw_path::list")]
     folders: Vec<PathBuf>,
     owner: Option<Owner>,
 }

@@ -113,7 +113,7 @@ pub(crate) fn folder(folder: &driver::FolderStatus) -> LinkedFolder {
     LinkedFolder {
         space_id: folder.space_id.clone(),
         space_name: folder.space_name.clone(),
-        path: folder.path.clone(),
+        path: (folder.path.as_deref()).map(|path| path.to_string_lossy().into_owned()),
         state: match folder.state {
             DriverFolderState::Stopped | DriverFolderState::Connecting => FolderState::Waiting,
             DriverFolderState::Offline => FolderState::Offline,

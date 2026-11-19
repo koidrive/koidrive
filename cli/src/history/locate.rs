@@ -24,7 +24,7 @@ pub(super) async fn linked_folders(paths: &Paths) -> Result<Vec<FolderStatus>, C
 #[derive(Debug)]
 pub(super) struct Located {
     pub(super) folder: FolderStatus,
-    pub(super) root: String,
+    pub(super) root: PathBuf,
     pub(super) below: Vec<String>,
 }
 
@@ -37,7 +37,7 @@ pub(super) async fn locate(paths: &Paths, path: &Path) -> Result<Located, CliErr
                 .iter()
                 .filter_map(|folder| Some((folder, folder.path.as_deref()?)))
                 .flat_map(|(folder, root)| {
-                    let stored = PathBuf::from(root);
+                    let stored = root.to_path_buf();
                     let resolved = real_path(&stored);
                     [Some(stored), resolved]
                         .into_iter()
