@@ -517,6 +517,19 @@ impl Tx<'_> {
 
     /// Every node of the remote tree, live and trashed, ordered by `node_id`.
     pub fn remote_nodes(&self) -> Result<Vec<NodeState>> {
+        let mut nodes = Vec::new();
+        self.each_remote_node(|node| {
+            nodes.push(node);
+            ControlFlow::<()>::Continue(())
+        })?;
+        Ok(nodes)
+    }
+
+    /// Gives `each` the nodes of [`Tx::remote_nodes`] one at a time, and stops with what it breaks with.
+    pub fn each_remote_node<B>(
+        &self,
+        mut each: impl FnMut(NodeState) -> ControlFlow<B>,
+    ) -> Result<Option<B>> {
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, parent_id, name, kind, status, content_rev, meta_rev, trash_group, current,
                     edit_rev, meta_edit_rev, pending_for, pending_by
@@ -543,12 +556,14 @@ impl Tx<'_> {
                 row.get::<_, Option<Vec<u8>>>(8)?,
             ))
         })?;
-        rows.map(|row| {
+        for row in rows {
             let (mut node, current) = row?;
             node.current = decode(current)?;
-            Ok(node)
-        })
-        .collect()
+            if let ControlFlow::Break(stopped) = each(node) {
+                return Ok(Some(stopped));
+            }
+        }
+        Ok(None)
     }
 
     /// Inserts the remote node with `node.node_id`, or updates its row in place.
@@ -618,6 +633,19 @@ impl Tx<'_> {
 
     /// Every node of the synced tree, ordered by `node_id`.
     pub fn synced_nodes(&self) -> Result<Vec<SyncedNode>> {
+        let mut nodes = Vec::new();
+        self.each_synced_node(|node| {
+            nodes.push(node);
+            ControlFlow::<()>::Continue(())
+        })?;
+        Ok(nodes)
+    }
+
+    /// Gives `each` the nodes of [`Tx::synced_nodes`] one at a time, and stops with what it breaks with.
+    pub fn each_synced_node<B>(
+        &self,
+        mut each: impl FnMut(SyncedNode) -> ControlFlow<B>,
+    ) -> Result<Option<B>> {
         let mut stmt = self.0.prepare_cached(
             "SELECT node_id, parent_id, name, kind, content, pending_for FROM synced_nodes
              ORDER BY node_id",
@@ -629,15 +657,18 @@ impl Tx<'_> {
                 row.get::<_, Option<String>>(5)?.unwrap_or_default(),
             ))
         })?;
-        rows.map(|row| {
+        for row in rows {
             let (node_id, shape, pending_for) = row?;
-            Ok(SyncedNode {
+            let node = SyncedNode {
                 node_id: node_id.into(),
                 shape: shape.into_shape()?,
                 pending_for,
-            })
-        })
-        .collect()
+            };
+            if let ControlFlow::Break(stopped) = each(node) {
+                return Ok(Some(stopped));
+            }
+        }
+        Ok(None)
     }
 
     pub fn put_synced_node(&self, node: &SyncedNode) -> Result<()> {

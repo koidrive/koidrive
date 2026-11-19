@@ -84,29 +84,54 @@ impl Engine {
         abandoned: &dyn Fn() -> bool,
     ) -> Result<Option<Self>, Error> {
         let mut trees = Trees::new(root);
-        for state in tx.remote_nodes()? {
-            if state.node_id == root {
-                continue;
+        let mut walked = 0;
+        let mut abandoned_now = || {
+            walked += 1;
+            walked % CHECK_EVERY == 0 && abandoned()
+        };
+        let stopped = tx.each_remote_node(|state| {
+            if abandoned_now() {
+                return ControlFlow::Break(Ok(None));
             }
-            let (id, node) = RemoteNode::from_state(&state)
-                .map_err(|error| invalid(format!("remote node {}: {error:?}", state.node_id)))?;
-            trees.set_remote(id, node);
+            if state.node_id == root {
+                return ControlFlow::Continue(());
+            }
+            match RemoteNode::from_state(&state) {
+                Ok((id, node)) => trees.set_remote(id, node),
+                Err(error) => {
+                    let error = invalid(format!("remote node {}: {error:?}", state.node_id));
+                    return ControlFlow::Break(Err(error));
+                }
+            }
+            ControlFlow::Continue(())
+        })?;
+        if let Some(stopped) = stopped {
+            return stopped;
         }
         if abandoned() {
             return Ok(None);
         }
-        for node in tx.synced_nodes()? {
-            trees.set_synced(node.node_id.clone(), Some(shape(node.shape)?));
+        let stopped = tx.each_synced_node(|node| {
+            if abandoned_now() {
+                return ControlFlow::Break(Ok(None));
+            }
+            let shape = match shape(node.shape) {
+                Ok(shape) => shape,
+                Err(error) => return ControlFlow::Break(Err(error)),
+            };
+            trees.set_synced(node.node_id.clone(), Some(shape));
             let mark = Some(node.pending_for).filter(|name| !name.is_empty());
             trees.set_synced_mark(node.node_id, mark);
+            ControlFlow::Continue(())
+        })?;
+        if let Some(stopped) = stopped {
+            return stopped;
         }
         if abandoned() {
             return Ok(None);
         }
-        let mut walked = 0;
         let stopped = tx.each_local_node(|node| {
-            walked += 1;
-            if walked % CHECK_EVERY == 0 && abandoned() {
+            if abandoned_now() {
                 return ControlFlow::Break(Ok(None));
             }
             let shape = match shape(node.shape) {
