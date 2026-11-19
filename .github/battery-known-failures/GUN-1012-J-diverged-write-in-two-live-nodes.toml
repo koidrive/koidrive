@@ -1,0 +1,8 @@
+class = "J"
+issue = "GUN-1012"
+tests = [
+  "restore_lost_copy::a_discarded_overwrite_across_a_rewind_keeps_the_rewound_write_in_one_file",
+  "restore_lost_copy::a_same_bytes_rewrite_across_a_rewind_keeps_the_rewound_write_in_one_file",
+]
+message = '''called `Result::unwrap\(\)` on an `Err` value: Diverged\("after phase <n>: write <n> is in <n> live nodes on the server: \[\[.*\]\]"\)'''
+examples = ["called `Result::unwrap()` on an `Err` value: Diverged(\"after phase 2: write 2 is in 2 live nodes on the server: [[\\\"a\\\"], [\\\"a (conflict from device-2 2026-11-09)\\\"]]\")"]

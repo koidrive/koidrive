@@ -30,10 +30,12 @@ pub enum Check {
     SentLeftOut,
     /// No folder removal waits for entries inside the folder that its device's rules leave out.
     RemoveLeftOut,
+    /// A write is in at most one live node of the server, unless a user copied it.
+    OneWriteOneNode,
 }
 
 impl Check {
-    pub const ALL: [Check; 8] = [
+    pub const ALL: [Check; 9] = [
         Check::OwnerFinish,
         Check::DeleteUndone,
         Check::PlaceKept,
@@ -42,6 +44,7 @@ impl Check {
         Check::NameLeftOut,
         Check::SentLeftOut,
         Check::RemoveLeftOut,
+        Check::OneWriteOneNode,
     ];
 }
 

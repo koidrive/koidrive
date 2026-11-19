@@ -2337,6 +2337,10 @@ fn an_edit_after_a_lost_create_reaches_the_server_after_a_second_restore() {
 
 #[test]
 fn a_bystanders_unchanged_file_takes_the_authors_later_write_after_an_earlier_backup_is_restored() {
+    let _red = expect_red(
+        Check::OneWriteOneNode,
+        "write 2 is in 2 live nodes on the server: [[\"a\"], [\"a (conflict from device-0 2026-11-09)\"]]",
+    );
     let u = |kind| {
         Step::User(Action {
             kind,
@@ -2356,6 +2360,10 @@ fn a_bystanders_unchanged_file_takes_the_authors_later_write_after_an_earlier_ba
 
 #[test]
 fn two_bystanders_take_the_authors_later_write_after_an_earlier_backup_is_restored() {
+    let _red = expect_red(
+        Check::OneWriteOneNode,
+        "write 2 is in 2 live nodes on the server: [[\"a\"], [\"a (conflict from device-0 2026-11-09)\"]]",
+    );
     let u = |kind| {
         Step::User(Action {
             kind,
@@ -3282,7 +3290,9 @@ fn a_copy_of_a_lost_write_during_the_recovery_is_refused() {
         .unwrap();
     let failure = world.phase(2, &[]).unwrap_err();
     assert!(
-        failure.to_string().contains("is in more than one file"),
+        failure
+            .to_string()
+            .contains("write 1 is in 2 live nodes on the server"),
         "{failure}"
     );
 }
@@ -3308,7 +3318,9 @@ fn a_copy_of_a_rolled_back_write_after_the_recovery_is_refused() {
         .unwrap();
     let failure = world.phase(3, &[]).unwrap_err();
     assert!(
-        failure.to_string().contains("is in more than one file"),
+        failure
+            .to_string()
+            .contains("write 2 is in 2 live nodes on the server"),
         "{failure}"
     );
 }
@@ -3332,7 +3344,9 @@ fn a_conflict_copy_of_a_write_whose_time_tells_it_apart_is_one_write_in_two_file
     let failure = a_conflict_copy_of_the_write_at_a_beside_it(&[Precision::Fine, Precision::Fine])
         .unwrap_err();
     assert!(
-        failure.to_string().contains("is in more than one file"),
+        failure
+            .to_string()
+            .contains("write 1 is in 2 live nodes on the server"),
         "{failure}"
     );
 }
@@ -3425,6 +3439,10 @@ fn a_restore_and_a_store_rollback_that_lose_track_of_a_coarse_download() -> Vec<
 
 #[test]
 fn a_file_a_coarse_disk_keeps_through_a_loss_is_created_again_beside_the_servers_file() {
+    let _red = expect_red(
+        Check::OneWriteOneNode,
+        "write 2 is in 2 live nodes on the server: [[\"ss\"], [\"ss (conflict from device-1 2026-11-09)\"]]",
+    );
     let world = converge_on(
         &[Precision::Seconds, Precision::Seconds],
         &a_restore_and_a_store_rollback_that_lose_track_of_a_coarse_download(),
@@ -3442,6 +3460,10 @@ fn a_file_a_coarse_disk_keeps_through_a_loss_is_created_again_beside_the_servers
 
 #[test]
 fn a_file_created_again_beside_the_servers_file_stays_one_write_through_a_later_loss() {
+    let _red = expect_red(
+        Check::OneWriteOneNode,
+        "write 2 is in 2 live nodes on the server: [[\"ss\"], [\"ss (conflict from device-1 2026-11-09)\"]]",
+    );
     let mut phases = a_restore_and_a_store_rollback_that_lose_track_of_a_coarse_download();
     phases[2].extend([(0, Step::Backup), (0, Step::Restore)]);
     let world = converge_on(&[Precision::Seconds, Precision::Seconds], &phases).unwrap();
@@ -3474,7 +3496,7 @@ fn a_server_that_keeps_a_conflict_copy_of_a_file_created_after_a_loss_is_caught(
         assert!(
             failure
                 .to_string()
-                .contains("write 3 is in more than one file"),
+                .contains("write 3 is in 2 live nodes on the server"),
             "{volumes:?}: {failure}"
         );
     }
@@ -3502,7 +3524,7 @@ fn a_server_that_keeps_a_conflict_copy_of_each_created_file_is_caught_without_a_
         assert!(
             failure
                 .to_string()
-                .contains("write 1 is in more than one file"),
+                .contains("write 1 is in 2 live nodes on the server"),
             "{volumes:?}: {failure}"
         );
     }
@@ -3636,7 +3658,7 @@ fn a_copy_beside_the_copies_of_a_write_a_restore_kept_is_refused() {
     assert!(
         failure
             .to_string()
-            .contains("write 3 is in more than one file"),
+            .contains("write 3 is in 2 live nodes on the server"),
         "{failure}"
     );
 }
@@ -11530,6 +11552,10 @@ fn a_resent_folder_created_where_l_holds_it_after_a_cycle_leaves_no_lost_positio
 
 #[test]
 fn two_devices_keep_a_lost_write_beside_an_edit_the_server_later_trashes() {
+    let _red = expect_red(
+        Check::OneWriteOneNode,
+        "write 1 is in 2 live nodes on the server: [[\"A (conflict from device-1 2026-11-09)\"], [\"a (conflict from device-0 2026-11-09)\"]]",
+    );
     let a = |kind: u8, target: usize, parent: usize, name: usize| {
         Step::User(Action {
             kind,
