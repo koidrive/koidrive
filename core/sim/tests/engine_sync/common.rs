@@ -2216,6 +2216,7 @@ fn run_ignoring_answering_after(
             }
             if let Effect::RemoveDir { along, .. } = &record.effect {
                 let held: Vec<(String, Option<Kind>)> = (device.trees.local_children(&record.node))
+                    .filter(|child| !device.trees.recorded_local(child))
                     .filter_map(|child| device.trees.local().get(child))
                     .filter(|node| !along.iter().any(|file| file.identity.same(&node.identity)))
                     .map(|node| (node.shape.name.clone(), Some(node.shape.kind)))
