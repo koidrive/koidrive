@@ -525,6 +525,10 @@ pub(super) async fn remove_programs(programs: &[Program], profiles: &[PathBuf], 
         return;
     }
     for profile in profiles {
+        let target = fs::canonicalize(profile).ok();
+        if !run.allowed(profile) || target.is_some_and(|target| !run.allowed(&target)) {
+            continue;
+        }
         match strip_path_line(profile) {
             Ok(true) => run.removed.push(Removed::ShellProfile {
                 path: profile.display().to_string(),

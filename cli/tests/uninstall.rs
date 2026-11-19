@@ -342,7 +342,6 @@ fn a_server_that_keeps_its_last_device_once_it_answers(answers: Arc<AtomicBool>)
     serve(answers, Arc::new(|| {}))
 }
 
-#[cfg(target_os = "macos")]
 fn a_server_that_revokes_and_then(on_revoke: impl Fn() + Send + Sync + 'static) -> String {
     serve(Arc::new(AtomicBool::new(true)), Arc::new(on_revoke))
 }
@@ -2060,6 +2059,41 @@ fn a_profile_that_registers_its_service_during_the_sign_out_keeps_the_shared_com
     );
     assert!(
         kept(&envelope).contains(&json!({ "kind": "shared", "path": koi.display().to_string() })),
+        "{envelope:#}"
+    );
+}
+
+#[test]
+fn a_profile_whose_folder_is_linked_during_the_sign_out_keeps_its_path_line() {
+    let marker = Arc::new(std::sync::OnceLock::<PathBuf>::new());
+    let server = a_server_that_revokes_and_then({
+        let marker = marker.clone();
+        move || {
+            if let Some(marker) = marker.get() {
+                fs::write(marker, "{}").unwrap();
+            }
+        }
+    });
+    let (machine, koi, _) = signed_in_to(&server);
+    let text = format!("export EDITOR=vim\n{}\n", path_line(koi.parent().unwrap()));
+    let zprofile = machine.write("Docs/zsh/.zprofile", &text);
+    fs::create_dir_all(machine.path("Docs/.koidrive")).unwrap();
+    marker
+        .set(machine.path("Docs/.koidrive/device.json"))
+        .unwrap();
+    let mut command = machine.command(&koi, &["uninstall", "--yes", "--last-device", "--json"]);
+    command.env("ZDOTDIR", machine.path("Docs/zsh"));
+
+    let (output, envelope) = machine.envelope(command);
+
+    assert!(output.status.success(), "{envelope:#}");
+    assert_eq!(fs::read_to_string(&zprofile).unwrap(), text, "{envelope:#}");
+    assert!(
+        kept(&envelope).contains(&json!({
+            "kind": "in_folder",
+            "path": zprofile.display().to_string(),
+            "folder": machine.path("Docs").display().to_string()
+        })),
         "{envelope:#}"
     );
 }
