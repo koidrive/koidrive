@@ -4647,19 +4647,24 @@ fn plan(
     };
     let ordered = !(wants.iter().flatten())
         .any(|want| matches!(want, Want::Delete { .. } | Want::Restore { .. }));
-    let (mut pass, mut stalled) = (1, false);
+    let (mut pass, mut stalled, mut lift) = (1, false, None);
     let mut filled_at = None;
     let capped = loop {
-        let (mut progress, mut full) = (false, false);
+        let (mut progress, mut full, mut refused) = (false, false, Vec::new());
         for at in 0..wants.len() {
             let Some(want) =
                 (wants[at].as_ref()).filter(|want| scratch.fit(want, &moving) == Fit::Valid)
             else {
                 continue;
             };
+            let lifted = lift == Some(at);
+            if lifted {
+                lift = None;
+            }
             let Some((carried, bundle)) =
-                scratch.compensation(want, answers, trees, &wants, &moving, scratch.stalled)
+                scratch.compensation(want, answers, trees, &wants, &moving, lifted)
             else {
+                refused.push(at);
                 continue;
             };
             let order = match want {
@@ -4854,6 +4859,17 @@ fn plan(
                 &mut scratch,
                 &mut moving,
             );
+            continue;
+        }
+        if lift.take().is_none()
+            && let Some(at) = refused.into_iter().find(|at| {
+                let want = wants[*at]
+                    .as_ref()
+                    .expect("refused in the pass that stalled");
+                (scratch.compensation(want, answers, trees, &wants, &moving, true)).is_some()
+            })
+        {
+            lift = Some(at);
             continue;
         }
         let held: Vec<NodeId> = (wants.iter().flatten())
