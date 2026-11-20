@@ -2167,6 +2167,15 @@ fn run_ignoring_answering_after(
                 .filter(|(id, node)| node.parked && reverted.contains(*id))
                 .count(),
         );
+        failed_on_ignored.retain(|id, (failed, at)| {
+            if effects.blocked().get(id) != Some(failed)
+                || device.disk_name_taken(&at.parent, &[], &at.name)
+            {
+                return true;
+            }
+            effects.unblock(id);
+            false
+        });
         if let Some(record) = effects
             .plan(
                 &device.trees,
