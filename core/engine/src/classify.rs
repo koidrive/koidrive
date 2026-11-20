@@ -1233,10 +1233,6 @@ impl Trees {
         self.write_out_journal(&id);
         self.journal.r_holds(&id);
         self.take_remote_intents(&id, &mut node);
-        if (self.unsent_deletes.get(&id)).is_some_and(|seen| node.trashed || !node.shape.same(seen))
-        {
-            self.unsent_deletes.remove(&id);
-        }
         let made_here = made != Made::Elsewhere;
         let edit = matches!(made, Made::Edit | Made::Answer);
         if edit {
@@ -1388,6 +1384,10 @@ impl Trees {
     }
 
     fn place_remote(&mut self, id: NodeId, node: RemoteNode, made_here: bool) {
+        if (self.unsent_deletes.get(&id)).is_some_and(|seen| node.trashed || !node.shape.same(seen))
+        {
+            self.unsent_deletes.remove(&id);
+        }
         self.place_ids.remove(&id);
         let moved = !(self.r.live(&id)).is_some_and(|old| old.same_position(&node.shape));
         let home = (self.l.get(&id))
