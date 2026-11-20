@@ -955,21 +955,34 @@ fn publishing_a_file_moved_out_of_a_folder_restored_in_the_same_pass_sends_its_c
 }
 
 #[test]
-fn a_file_deleted_across_a_rewind_that_the_server_trashes_and_restores_before_a_settle_is_downloaded()
- {
-    let deleted = file(ROOT, "c", 1);
-    let mut trees = trees(&[("c", deleted.clone())], &[("c", deleted.clone())], &[]);
-    trees.remove_local(&"c".into());
-    let (mut commits, mut ids) = recovered(&mut trees, 0);
-    assert_eq!(trees.state().unsent_deletes.len(), 1);
-    let mut trashed = server_version(deleted.clone(), "", &[], 2);
-    trashed.trashed = true;
-    trees.set_remote("c".into(), trashed);
-    trees.set_remote("c".into(), server_version(deleted, "", &[], 3));
-    trees.settle(commits.aliases());
-    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
-    let done = effects(&mut trees, &mut ids);
-    assert!(matches!(&done[..], [(node, _)] if node == "c"), "{done:?}");
+fn a_file_deleted_across_a_rewind_is_downloaded_once_the_server_trashed_or_changed_it() {
+    for listed in [false, true] {
+        let deleted = file(ROOT, "c", 1);
+        let mut trees = trees(&[("c", deleted.clone())], &[("c", deleted.clone())], &[]);
+        trees.remove_local(&"c".into());
+        let (mut commits, mut ids) = recovered(&mut trees, 0);
+        assert_eq!(trees.state().unsent_deletes.len(), 1);
+        if listed {
+            let changed = server_version(file(ROOT, "c", 2), "", &[], 2);
+            trees.set_listed_remote("c".into(), changed);
+        } else {
+            let mut trashed = server_version(deleted.clone(), "", &[], 2);
+            trashed.trashed = true;
+            trees.set_remote("c".into(), trashed);
+            trees.set_remote("c".into(), server_version(deleted, "", &[], 3));
+        }
+        trees.settle(commits.aliases());
+        assert_eq!(
+            ops(&mut commits, &mut trees, &mut ids),
+            [],
+            "listed {listed}"
+        );
+        let done = effects(&mut trees, &mut ids);
+        assert!(
+            matches!(&done[..], [(node, _)] if node == "c"),
+            "listed {listed}: {done:?}"
+        );
+    }
 }
 
 #[test]
