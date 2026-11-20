@@ -11,12 +11,12 @@ upgrade_case!(names_left_out, |store| {
                 .find(|node| node.shape.name == "report.txt")
                 .unwrap();
             let mut state = before.clone();
-            state.trees.names_left_out.insert(report.node_id.clone(), false);
+            state.trees.names_left_out.insert(report.node_id.clone(), None);
             tx.set_engine_state(&state)?;
             let mut stored = tx.engine_state()?;
             assert_eq!(
                 stored.trees.names_left_out,
-                std::collections::BTreeMap::from([(report.node_id, false)])
+                std::collections::BTreeMap::from([(report.node_id, None)])
             );
             stored.trees.names_left_out.clear();
             assert_eq!(stored, before);

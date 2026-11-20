@@ -1857,3 +1857,58 @@ fn a_sent_conflict_rename_keeps_its_record_until_the_answer_even_if_r_or_l_chang
         assert!(!trees.name_left_out(&"n".into()), "{trashed_remotely}");
     }
 }
+
+#[test]
+fn a_conflict_rename_dropped_unanswered_is_sent_again_only_while_r_holds_the_refused_name() {
+    for remote_moved in [false, true] {
+        let mut trees = trees(&[("n", None, None, Some(remote(file(ROOT, "ss", 1))))]);
+        trees.set_rules::<&str>(
+            &[],
+            koidrive_engine::ignore::Source::Koiignore,
+            Some(RuleFile::parse(b"ss/\ntt/\n")),
+        );
+        trees.rules_scanned();
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+        trees.settle(commits.aliases());
+        let mut effects = Effects::default();
+        let refused = effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)[0]
+            .effect_id
+            .clone();
+        effects
+            .taken(&mut trees, &refused, Some(Kind::Dir))
+            .unwrap();
+        trees.settle(commits.aliases());
+        let sent = ops(&build(&mut commits, &mut trees, &mut ids).unwrap());
+        let [op::Op::Move(sent)] = sent.as_slice() else {
+            panic!("{sent:?}");
+        };
+        assert_eq!(sent.from.as_ref().unwrap().name, "ss");
+        if remote_moved {
+            trees.set_remote("n".into(), remote_at(file(ROOT, "tt", 1), 6));
+            trees.settle(commits.aliases());
+        }
+        assert!(trees.name_left_out(&"n".into()), "{remote_moved}");
+        commits
+            .failed(&mut trees, &refusal(error::Code::HeadMoved, 0))
+            .unwrap();
+        assert_eq!(
+            trees.name_left_out(&"n".into()),
+            !remote_moved,
+            "{remote_moved}"
+        );
+        trees.settle(commits.aliases());
+        let again = (build(&mut commits, &mut trees, &mut ids).as_ref()).map_or_else(Vec::new, ops);
+        let renames: Vec<&str> = (again.iter())
+            .filter_map(|op| match op {
+                op::Op::Move(moved) if moved.node_id == sent.node_id => {
+                    Some(moved.from.as_ref().unwrap().name.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        match remote_moved {
+            false => assert_eq!(renames, ["ss"], "{again:?}"),
+            true => assert_eq!(renames, Vec::<&str>::new(), "{again:?}"),
+        }
+    }
+}

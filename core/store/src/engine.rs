@@ -17,8 +17,8 @@ use koidrive_engine::question::{RecoveryCause, RecoveryTrigger, Revisions};
 use koidrive_engine::restore::SplitRestore;
 use koidrive_engine::state::{
     Agreed, CommitsChanges, CommitsState, ContentProvenance, EffectsChanges, EffectsState,
-    FinishOrigin, GivenUp, LostPosition, MapChanges, MovedHere, PendingFinish, SetChanges,
-    SyncedPosition, TreesChanges, TreesState,
+    FinishOrigin, GivenUp, LostPosition, MapChanges, MovedHere, PendingFinish, RenamedOver,
+    SetChanges, SyncedPosition, TreesChanges, TreesState,
 };
 use koidrive_engine::tree::{ContentKey, DigestTooLong, FileIdentity, Kind, NodeId, Shape};
 use koidrive_proto::v1::{Commit, CommitResult, Content, NodeKind};
@@ -433,13 +433,19 @@ impl Tx<'_> {
         }
         let mut stmt = self
             .0
-            .prepare_cached("SELECT node_id, sending FROM names_left_out")?;
+            .prepare_cached("SELECT node_id, sent_parent_id, sent_name FROM names_left_out")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
+            let over = (row.get::<_, Option<String>>(1)?)
+                .zip(row.get::<_, Option<String>>(2)?)
+                .map(|(parent, name)| RenamedOver {
+                    parent: NodeId::from(parent),
+                    name,
+                });
             state
                 .trees
                 .names_left_out
-                .insert(NodeId::from(row.get::<_, String>(0)?), row.get(1)?);
+                .insert(NodeId::from(row.get::<_, String>(0)?), over);
         }
         let mut stmt = self.0.prepare_cached("SELECT node_id FROM kept_folders")?;
         let mut rows = stmt.query([])?;
@@ -1003,8 +1009,15 @@ impl Tx<'_> {
         self.write_node_map(
             names_left_out,
             "DELETE FROM names_left_out WHERE node_id = ?1",
-            "INSERT OR REPLACE INTO names_left_out (node_id, sending) VALUES (?1, ?2)",
-            |put, node, sending| put.execute(params![node, sending]),
+            "INSERT OR REPLACE INTO names_left_out (node_id, sent_parent_id, sent_name) VALUES (?1, ?2, ?3)",
+            |put, node, over: &Option<RenamedOver>| {
+                let over = over.as_ref();
+                put.execute(params![
+                    node,
+                    over.map(|over| over.parent.to_string()),
+                    over.map(|over| &over.name)
+                ])
+            },
         )?;
         self.write_set(
             unsent_creates,

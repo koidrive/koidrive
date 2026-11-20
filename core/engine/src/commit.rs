@@ -27,7 +27,7 @@ use crate::restore::{
 };
 use crate::state::{
     Agreed, CONTENT_ANCESTRY_LIMIT, CommitsChanges, CommitsState, FinishOrigin, GivenUp,
-    MovePosition, StateError,
+    MovePosition, RenamedOver, StateError,
 };
 use crate::tracked::{Marked, TrackedMap, TrackedSet};
 use crate::tree::{
@@ -1859,8 +1859,14 @@ impl Commits {
         if ops.is_empty() && released.is_empty() {
             ops.extend(displaced_renames(trees, &skip, &self.device_name.0, now_ms).take(cap));
             for op in &ops {
-                if let Some(op::Op::Move(moved)) = &op.op {
-                    trees.send_left_out_rename(&NodeId::from(&moved.node_id));
+                if let Some(op::Op::Move(moved)) = &op.op
+                    && let Some(from) = &moved.from
+                {
+                    let over = RenamedOver {
+                        parent: NodeId::from(&from.parent_id),
+                        name: from.name.clone(),
+                    };
+                    trees.send_left_out_rename(&NodeId::from(&moved.node_id), over);
                 }
             }
         }
@@ -2584,7 +2590,11 @@ impl Commits {
                         && applied
                         && target != *id
                         && !finished
-                        && !(moved.from.is_some() && trees.left_out_rename_sent(id))
+                        && !(moved.from.as_ref()).is_some_and(|from| {
+                            trees.left_out_rename_sent_over(id).is_some_and(|over| {
+                                over.parent == from.parent_id && over.name == from.name
+                            })
+                        })
                     {
                         let shape = Shape {
                             parent: target.clone(),

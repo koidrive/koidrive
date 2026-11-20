@@ -16,7 +16,7 @@ use crate::question::Frozen;
 use crate::state::{
     Agreed, ContentProvenance, ContentValue, ContentVersion, FinishOrigin, KeptCause, KeptEntries,
     KeptRules, KeptRulesFile, LostPosition, MoveHistory, MovePosition, MovedHere, PendingFinish,
-    StateError, SyncedPosition, TreesChanges, TreesState, made_over,
+    RenamedOver, StateError, SyncedPosition, TreesChanges, TreesState, made_over,
 };
 use crate::tracked::{TrackedMap, TrackedSet};
 use crate::tree::{
@@ -659,7 +659,7 @@ pub struct Trees {
     /// See [`TreesState::dropped_edits`].
     dropped_edits: TrackedSet<NodeId>,
     unsent_moves: TrackedSet<NodeId>,
-    names_left_out: TrackedMap<NodeId, bool>,
+    names_left_out: TrackedMap<NodeId, Option<RenamedOver>>,
     unsent_creates: TrackedSet<NodeId>,
     kept_folders: TrackedSet<NodeId>,
     kept_entries: TrackedMap<NodeId, KeptEntries>,
@@ -3478,21 +3478,25 @@ impl Trees {
     }
 
     pub(crate) fn leave_name_out(&mut self, id: &NodeId) {
-        self.names_left_out.get_or_insert_with(id.clone(), || false);
+        self.names_left_out.get_or_insert_with(id.clone(), || None);
     }
 
     pub fn name_left_out(&self, id: &NodeId) -> bool {
         self.names_left_out.contains_key(id)
     }
 
-    pub(crate) fn send_left_out_rename(&mut self, id: &NodeId) {
-        if let Some(sending) = self.names_left_out.get_mut(id) {
-            *sending = true;
+    pub(crate) fn send_left_out_rename(&mut self, id: &NodeId, over: RenamedOver) {
+        if let Some(sent) = self.names_left_out.get_mut(id) {
+            *sent = Some(over);
         }
     }
 
+    pub(crate) fn left_out_rename_sent_over(&self, id: &NodeId) -> Option<&RenamedOver> {
+        self.names_left_out.get(id)?.as_ref()
+    }
+
     pub(crate) fn left_out_rename_sent(&self, id: &NodeId) -> bool {
-        self.names_left_out.get(id) == Some(&true)
+        self.left_out_rename_sent_over(id).is_some()
     }
 
     pub(crate) fn answer_left_out_rename(&mut self, id: &NodeId) {
@@ -3502,7 +3506,22 @@ impl Trees {
     }
 
     pub(crate) fn unsend_left_out_renames(&mut self) {
-        self.names_left_out.retain(|_, sending| !sending);
+        let sent: Vec<(NodeId, RenamedOver)> = (self.names_left_out.iter())
+            .filter_map(|(id, over)| Some((id.clone(), over.clone()?)))
+            .collect();
+        for (id, over) in sent {
+            let refused = (self.r.live(&id)).is_some_and(|remote| {
+                remote.parent == over.parent
+                    && same_name(&remote.name, &over.name)
+                    && !(self.l.get(&id))
+                        .is_some_and(|local| !local.parked && local.shape.same_position(remote))
+            });
+            match refused {
+                true => self.names_left_out.insert(id, None),
+                false => self.names_left_out.remove(&id),
+            };
+        }
+        self.end_names_no_longer_left_out();
     }
 
     /// The nodes [`Trees::displace_local`] took out of L, each with the identity L held for it.
