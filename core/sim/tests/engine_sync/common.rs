@@ -577,6 +577,7 @@ struct Device {
     touched: BTreeSet<NodeId>,
     acted: BTreeSet<NodeId>,
     removed_from: BTreeMap<NodeId, NodeId>,
+    on_server_since_discard: BTreeMap<NodeId, NodeId>,
     kept_back: BTreeSet<NodeId>,
     relocated: BTreeMap<NodeId, Relocation>,
     left_out_folders: BTreeSet<String>,
@@ -611,6 +612,7 @@ impl Device {
             touched: BTreeSet::new(),
             acted: BTreeSet::new(),
             removed_from: BTreeMap::new(),
+            on_server_since_discard: BTreeMap::new(),
             kept_back: BTreeSet::new(),
             relocated: BTreeMap::new(),
             left_out_folders: BTreeSet::new(),
@@ -1912,12 +1914,12 @@ fn acted_below(
     };
     let in_local = |at: &NodeId| trees.local().get(at).map(|node| node.shape.parent.clone());
     let removed_from = |at: &NodeId| in_local(at).or_else(|| device.removed_from.get(at).cloned());
-    let in_remote = |at: &NodeId| trees.remote().live(at).map(|shape| shape.parent.clone());
-    let belongs_here = |entry: &NodeId| {
-        trees.local().get(entry).is_some()
-            || trees.remote().live(entry).is_none()
-            || reaches(entry, &in_remote)
+    let at_discard = |at: &NodeId| {
+        (kept_with.get(at).or_else(|| discarded.get(at)))
+            .map(|shape| shape.parent.clone())
+            .or_else(|| device.on_server_since_discard.get(at).cloned())
     };
+    let belongs_here = |entry: &NodeId| !kept_with.contains_key(id) || reaches(entry, &at_discard);
     let as_agreed = |entry: &NodeId| {
         let Some(local) = trees.local().get(entry) else {
             return trees.remote().live(entry).is_none();
@@ -2207,6 +2209,15 @@ fn run_ignoring_answering_after(
         prop_assert!(steps <= STEPS, "no convergence within {} steps", STEPS);
         device.trees.settle(commits.aliases());
         prop_assert_eq!(device.trees.check(), Ok(()));
+        if !discarded.is_empty() {
+            let arrived: Vec<(NodeId, NodeId)> = (device.trees.remote().iter())
+                .filter(|(id, remote)| {
+                    !remote.trashed && !device.on_server_since_discard.contains_key(*id)
+                })
+                .map(|(id, remote)| (id.clone(), remote.shape.parent.clone()))
+                .collect();
+            device.on_server_since_discard.extend(arrived);
+        }
         device.follow_rekeys();
         note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
         if (due || steps % 2 == 0)
@@ -2526,6 +2537,11 @@ fn run_ignoring_answering_after(
             device.acted.retain(|id| !taken.contains_key(id));
             kept_with.append(&mut taken);
             discarded.extend(shown);
+            let on_server: Vec<(NodeId, NodeId)> = (device.trees.remote().iter())
+                .filter(|(_, remote)| !remote.trashed)
+                .map(|(id, remote)| (id.clone(), remote.shape.parent.clone()))
+                .collect();
+            device.on_server_since_discard.extend(on_server);
         }
         let held = held_by(commits.questions());
         let revived = revive(&device, &discarded, &kept_with, &held);
