@@ -1553,7 +1553,12 @@ fn a_file_a_server_loss_made_s_forget_goes_to_the_local_trash_when_another_devic
 fn a_file_with_bytes_s_held_before_a_server_loss_does_not_bring_back_a_folder_another_device_trashed()
  {
     let mut trees = trees(&[
-        ("p", Some(dir(ROOT, "p")), None, Some(trashed(dir(ROOT, "p")))),
+        (
+            "p",
+            Some(dir(ROOT, "p")),
+            None,
+            Some(trashed(dir(ROOT, "p"))),
+        ),
         (
             "c",
             Some(file("p", "new", 1)),
@@ -1562,7 +1567,9 @@ fn a_file_with_bytes_s_held_before_a_server_loss_does_not_bring_back_a_folder_an
         ),
     ]);
     with_state(&mut trees, |state| {
-        state.forgotten_shapes.insert("c".into(), file("p", "old", 1));
+        state
+            .forgotten_shapes
+            .insert("c".into(), file("p", "old", 1));
         let old = koidrive_engine::state::SyncedPosition {
             parent: "p".into(),
             name: "old".into(),
