@@ -1,0 +1,5 @@
+44
+# The commit test checks that a refused create can reload immediately after Replan, before planning
+# can clear stale state. The folder test checks the database before restart, where load-time cleanup
+# would mask the same bug. The existing move and recovery tests now check which transitions release
+# a position watch and which keep it. None of those tests previously checked the watch lifetime.

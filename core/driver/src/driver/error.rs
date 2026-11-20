@@ -187,21 +187,18 @@ pub(crate) fn store_error(path: &Path) -> impl FnOnce(koidrive_store::Error) -> 
 }
 
 /// Lifts the policy halt the store at `path` holds (RFC 0006 section 1, point 5). No task may hold the store.
-pub(crate) fn lift_halt(path: &Path, lift: Lift) -> Result<(), DriverError> {
+pub(crate) fn lift_halt(path: &Path, space_id: &str, lift: Lift) -> Result<(), DriverError> {
     let lifted = Store::open_existing(path)
         .and_then(|mut store| {
             store.transaction(|tx| {
-                let before = tx.engine_state()?;
-                let mut commits = Commits::from_state(before.commits.clone()).map_err(|error| {
-                    koidrive_store::Error::InvalidEngineState(format!("{error:?}"))
-                })?;
-                let lifted = commits.lift(lift);
+                let mut engine = crate::engine::Engine::load(tx, space_id)?;
+                let lifted = engine.commits.lift(&mut engine.trees, lift);
                 if lifted.is_ok() {
-                    let after = EngineState {
-                        commits: commits.state(),
-                        ..before.clone()
-                    };
-                    tx.update_engine_state(&before, &after)?;
+                    tx.write_engine_changes(&koidrive_store::EngineChanges {
+                        commits: engine.commits.take_changes(),
+                        trees: engine.trees.take_changes(),
+                        ..Default::default()
+                    })?;
                 }
                 Ok(lifted)
             })

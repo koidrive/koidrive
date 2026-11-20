@@ -680,8 +680,8 @@ impl Commits {
     /// stays, and the next `Welcome` that accounts for its slot sends it again (section 2.8); a
     /// server loss under the halt has already dropped it, and its changes are planned again. With
     /// [`Lift::Replan`] it is forgotten, and its restores stay queued for the next commit, as when
-    /// a refusal forgets a commit. Nothing else changes.
-    pub fn lift(&mut self, lift: Lift) -> Result<(), LiftError> {
+    /// a refusal forgets a commit.
+    pub fn lift(&mut self, trees: &mut Trees, lift: Lift) -> Result<(), LiftError> {
         let Some(Halt::Policy { code }) = *self.halted else {
             return Err(LiftError::NotHalted);
         };
@@ -691,6 +691,7 @@ impl Commits {
         self.halted.set(None);
         if lift == Lift::Replan {
             self.forget_in_flight();
+            trees.watch_positions([]);
         }
         Ok(())
     }

@@ -364,7 +364,7 @@ fn a_remote_move_waits_exactly_while_a_commit_in_flight_moves_the_node() {
             (format!("{code:?}"), true, exit)
         })
         .collect();
-    let others: [(&str, bool, Exit); 7] = [
+    let others: [(&str, bool, Exit); 8] = [
         (
             "QuotaExceeded with a retry time",
             true,
@@ -380,11 +380,16 @@ fn a_remote_move_waits_exactly_while_a_commit_in_flight_moves_the_node() {
             Box::new(|commits, trees| assert!(commits.abandon(trees))),
         ),
         (
+            "left out",
+            true,
+            Box::new(|commits, trees| assert!(commits.leave_out(trees, &"n".into()))),
+        ),
+        (
             "lifted to resend",
             true,
             Box::new(|commits, trees| {
                 commits.failed(trees, &refusal(Code::Forbidden, 0)).unwrap();
-                commits.lift(Lift::Resend).unwrap();
+                commits.lift(trees, Lift::Resend).unwrap();
             }),
         ),
         (
@@ -392,7 +397,7 @@ fn a_remote_move_waits_exactly_while_a_commit_in_flight_moves_the_node() {
             true,
             Box::new(|commits, trees| {
                 commits.failed(trees, &refusal(Code::Forbidden, 0)).unwrap();
-                commits.lift(Lift::Replan).unwrap();
+                commits.lift(trees, Lift::Replan).unwrap();
             }),
         ),
         (
@@ -405,9 +410,10 @@ fn a_remote_move_waits_exactly_while_a_commit_in_flight_moves_the_node() {
         (
             "reconnected to a server that lost it",
             true,
-            Box::new(move |commits, _| {
+            Box::new(move |commits, trees| {
                 commits.received(result(1, ok())).unwrap();
                 assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+                commits.clear_position_watches_if_idle(trees);
             }),
         ),
         (
@@ -438,6 +444,11 @@ fn a_remote_move_waits_exactly_while_a_commit_in_flight_moves_the_node() {
             .first();
         assert_eq!(planned, None, "{name}");
         exit(&mut commits, &mut trees);
+        assert_eq!(
+            trees.state().watched_positions.is_empty(),
+            commits.in_flight().is_none(),
+            "{name}"
+        );
         trees.settle(commits.aliases());
         let planned = (effects
             .plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE)
@@ -464,6 +475,7 @@ fn a_remote_move_waits_exactly_while_a_commit_in_flight_moves_the_node() {
             "HeadMoved",
             "AheadOfServer",
             "abandoned",
+            "left out",
             "lifted to replan",
             "reconnected to a server that lost it",
             "acknowledged",
