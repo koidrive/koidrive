@@ -120,6 +120,7 @@ impl Engine {
         self.trees.backfill(
             self.commits.in_flight(),
             recovering,
+            self.commits.store_behind_disk(),
             crate::driver::now_ms() as u64,
         );
         tx.write_engine_changes(&EngineChanges {
@@ -1877,6 +1878,9 @@ impl Engine {
                     self.trees.displace_local(&id, created)
                 }
                 (false, true) => self.trees.miss_local(&id),
+                (false, false) if self.commits.store_behind_disk() => {
+                    self.trees.remove_local_unproven(&id)
+                }
                 (false, false) => self.trees.remove_local_by_user(&id),
             }
             touched.insert(id);

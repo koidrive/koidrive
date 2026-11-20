@@ -718,6 +718,18 @@ impl Commits {
         *self.halted
     }
 
+    /// Whether the recovery in progress found the store older than the disk, so the disk may lack a node because of
+    /// an effect the store forgot rather than its user.
+    pub fn store_behind_disk(&self) -> bool {
+        matches!(
+            *self.halted,
+            Some(Halt::Recovery {
+                store_behind_disk: true,
+                ..
+            })
+        )
+    }
+
     /// Lifts a policy halt the way a person chose. With [`Lift::Resend`] the commit in flight
     /// stays, and the next `Welcome` that accounts for its slot sends it again (section 2.8); a
     /// server loss under the halt has already dropped it, and its changes are planned again. With
@@ -890,13 +902,6 @@ impl Commits {
         for question in self.questions.get_mut().iter_mut() {
             question.frozen = None;
         }
-        let store_behind_disk = matches!(
-            *self.halted,
-            Some(Halt::Recovery {
-                store_behind_disk: true,
-                ..
-            })
-        );
         self.halted.set(match *self.halted {
             Some(Halt::Recovery {
                 policy: Some(code), ..
@@ -958,7 +963,7 @@ impl Commits {
             })
             .collect();
         let unsent: Vec<(NodeId, Shape)> = (agreed.iter())
-            .filter(|(_, shape)| shape.is_none() && !store_behind_disk)
+            .filter(|(_, shape)| shape.is_none())
             .filter_map(|(id, _)| trees.unsent_delete(id).map(|seen| (id.clone(), seen)))
             .collect();
         for (id, shape) in update_synced(trees, agreed) {

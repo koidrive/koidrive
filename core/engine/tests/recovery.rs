@@ -967,7 +967,7 @@ fn a_file_deleted_across_a_rewind_is_downloaded_once_the_server_trashed_or_chang
     for listed in [false, true] {
         let deleted = file(ROOT, "c", 1);
         let mut trees = trees(&[("c", deleted.clone())], &[("c", deleted.clone())], &[]);
-        trees.remove_local(&"c".into());
+        trees.remove_local_by_user(&"c".into());
         let (mut commits, mut ids) = recovered(&mut trees, 0);
         assert_eq!(trees.state().unsent_deletes.len(), 1);
         if listed {
@@ -994,18 +994,142 @@ fn a_file_deleted_across_a_rewind_is_downloaded_once_the_server_trashed_or_chang
 }
 
 #[test]
+fn a_restore_left_waiting_from_a_store_older_than_the_disk_records_no_delete() {
+    let folder = dir(ROOT, "b");
+    let rows = [(NODE, folder.clone()), ("c", file(NODE, "c", 1))];
+    let mut trees = trees(&rows, &rows, &[]);
+    let mut trashed = server_version(folder.clone(), "", &[], 5);
+    trashed.trashed = true;
+    trashed.trash_group = "folder-group".into();
+    trees.set_remote(NODE.into(), trashed);
+    trees.set_remote("c".into(), server_version(file(ROOT, "c", 1), "", &[], 4));
+    trees.rules_scanned();
+    trees.settle(&Default::default());
+    let mut state = trees.state();
+    state.removed_here.insert(NODE.into(), 5);
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    let intent = RestoreIntent::from_trash(NODE.into(), None, None).unwrap();
+    assert!(commits.restore("restore".into(), intent));
+    let restore = commits
+        .build(&mut trees, &mut ids, NOW, OLD, "me", 5)
+        .unwrap();
+    assert!(
+        matches!(&restore.ops[..], [op] if matches!(&op.op, Some(op::Op::Restore(r)) if r.node_id == NODE))
+    );
+    trees.remove_local(&"c".into());
+    trees.remove_local(&NODE.into());
+    trees.set_remote(NODE.into(), server_version(folder.clone(), "", &[], 6));
+    commits
+        .received(CommitResult {
+            seq: 6,
+            results: vec![OpResult {
+                code: op_result::Code::Applied as i32,
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 6));
+    let waiting = trees.waiting().get(&NODE.into()).expect("blocked Restore");
+    assert_eq!(waiting.origin, Origin::Commit(1));
+    assert_eq!(waiting.shape, None);
+    trees.remove_remote(&NODE.into());
+    trees.set_remote("c".into(), server_version(file(ROOT, "c", 1), "", &[], 1));
+    let cause = RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk);
+    commits.enter_recovery(cause);
+    commits.recover(
+        &mut trees,
+        0,
+        false,
+        &cause,
+        &LogRead::default(),
+        &Marks::new(),
+        &mut ids,
+        NOW,
+    );
+    trees.settle(commits.aliases());
+    let child = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["c"]);
+    assert!(commits.decide(&mut trees, &child.id, Answer::Restore));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    assert!(trees.synced().get(&NODE.into()).is_none());
+    trees.set_remote(NODE.into(), server_version(folder, "", &[], 2));
+    trees.settle(commits.aliases());
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
+fn a_file_a_store_older_than_the_disk_found_missing_is_not_deleted_after_a_later_recovery() {
+    for bootstrap in [false, true] {
+        let kept = file(ROOT, "c", 1);
+        let mut trees = trees(
+            &[("c", kept.clone())],
+            &[("c", kept.clone())],
+            &[live("c", kept.clone())],
+        );
+        let mut commits = Commits::default();
+        let mut ids = IdGen::new(7);
+        let behind = RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk);
+        commits.enter_recovery(behind);
+        trees.remove_local_unproven(&"c".into());
+        let (log, marks) = (LogRead::default(), Marks::new());
+        commits.recover(&mut trees, 0, false, &behind, &log, &marks, &mut ids, NOW);
+        trees.settle(commits.aliases());
+        asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["c"]);
+        trees.remove_remote(&"c".into());
+        if bootstrap {
+            let none = BTreeMap::new();
+            trees.forget_lost(
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                none,
+                &Default::default(),
+                0,
+                0,
+            );
+        } else {
+            commits.enter_recovery(rewind());
+            commits.recover(&mut trees, 0, false, &rewind(), &log, &marks, &mut ids, NOW);
+        }
+        trees.settle(commits.aliases());
+        assert!(
+            trees.state().unsent_deletes.is_empty(),
+            "bootstrap {bootstrap}"
+        );
+        trees.set_remote("c".into(), server_version(kept.clone(), "", &[], 2));
+        trees.settle(commits.aliases());
+        assert_eq!(
+            ops(&mut commits, &mut trees, &mut ids),
+            [],
+            "bootstrap {bootstrap}"
+        );
+    }
+}
+
+#[test]
 fn a_file_missing_from_a_disk_the_store_was_older_than_is_downloaded_once_another_device_keeps_it()
 {
     let behind = RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk);
+    let mut rewound = Commits::default();
+    rewound.enter_recovery(rewind());
+    assert!(!rewound.store_behind_disk());
     for causes in [vec![behind], vec![behind, rewind()]] {
         let kept = file(ROOT, "c", 1);
         let mut trees = trees(&[("c", kept.clone())], &[("c", kept.clone())], &[]);
-        trees.remove_local(&"c".into());
         let mut commits = Commits::default();
         let mut ids = IdGen::new(7);
         for cause in &causes {
             commits.enter_recovery(*cause);
         }
+        assert!(commits.store_behind_disk(), "{causes:?}");
+        trees.remove_local_unproven(&"c".into());
+        assert!(trees.journal_row(&"c".into(), Field::Status).is_none());
         let last = *causes.last().unwrap();
         commits.recover(
             &mut trees,
@@ -1180,7 +1304,7 @@ fn deleted_while_the_store_was_behind(names: &[&str]) -> (Trees, Commits, IdGen,
 #[test]
 fn a_journal_backfill_records_no_delete_of_a_file_a_store_rollback_question_holds() {
     let (mut trees, mut commits, mut ids, question) = deleted_while_the_store_was_behind(&["c"]);
-    trees.backfill(None, false, NOW);
+    trees.backfill(None, false, commits.store_behind_disk(), NOW);
     assert!(trees.journal_row(&"c".into(), Field::Status).is_none());
     assert!(commits.decide(&mut trees, &question.id, Answer::Restore));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
@@ -1192,7 +1316,7 @@ fn a_delete_answered_after_a_store_rollback_is_recorded_before_the_guard_lets_it
     let names: Vec<String> = (0..20).map(|i| format!("f{i:02}")).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let (mut trees, mut commits, mut ids, question) = deleted_while_the_store_was_behind(&names);
-    trees.backfill(None, false, NOW);
+    trees.backfill(None, false, commits.store_behind_disk(), NOW);
     assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let recorded: BTreeMap<String, IntentId> = (names.iter())
@@ -7220,7 +7344,7 @@ fn a_delete_answer_records_no_status_row_for_an_entry_the_rules_leave_out() {
         RecoveryGroup::DeletedOnThisDevice,
         &["c", "d", "n", "x"],
     );
-    trees.backfill(None, false, NOW);
+    trees.backfill(None, false, commits.store_behind_disk(), NOW);
     assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
     assert_eq!(
         ops(&mut commits, &mut trees, &mut ids),

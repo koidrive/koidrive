@@ -805,6 +805,42 @@ fn a_recovery_keeps_its_cause_across_a_restart() {
 }
 
 #[test]
+fn a_file_missing_from_the_disk_a_store_older_than_it_held_leaves_no_delete_row() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    let path = site.root.join("one.txt");
+    a.create(&mut remote, &path, b"one");
+    let one = node_named(&a, "one.txt");
+    drop(a);
+    let copy = site.db.with_extension("copy");
+    fs::copy(&site.db, &copy).unwrap();
+    let (other, mut b) = linked(&mut remote, "b");
+    b.create(&mut remote, &other.root.join("two.txt"), b"two");
+    let mut a = site.start();
+    a.connect(&remote);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    drop(a);
+    fs::remove_file(&path).unwrap();
+    fs::copy(&copy, &site.db).unwrap();
+    let mut a = site.start();
+    a.connect(&remote);
+    a.scan_until(|a| a.folder.scanned);
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    let trees = &a.folder.engine.trees;
+    assert!(trees.local().get(&one).is_none());
+    let status = trees.journal_row(&one, koidrive_engine::journal::Field::Status);
+    assert_ne!(
+        status.map(|row| row.value.clone()),
+        Some(koidrive_engine::journal::Value::Status { live: false })
+    );
+    assert_eq!(remote.names(), ["one.txt", "two.txt"]);
+}
+
+#[test]
 fn a_file_another_device_brings_back_after_a_rewind_at_a_seq_this_device_used_is_downloaded() {
     let mut remote = Remote::new();
     let (site, mut a) = linked(&mut remote, "a");

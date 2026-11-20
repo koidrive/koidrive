@@ -1803,6 +1803,18 @@ fn stored_flight(kind: op::Op) -> InFlight {
     }
 }
 
+#[test]
+fn a_backfill_writes_no_delete_row_while_a_recovery_found_the_store_older_than_the_disk() {
+    for store_behind_disk in [false, true] {
+        let mut trees = Trees::new(ROOT, &IdGen::new(0));
+        synced(&mut trees, "f", file(ROOT, "f.txt", 1), 5);
+        trees.remove_local(&"f".into());
+        trees.backfill(None, true, store_behind_disk, 1_000);
+        let deleted = trees.journal_row(&"f".into(), Field::Status).is_some();
+        assert_eq!(deleted, !store_behind_disk);
+    }
+}
+
 fn backfilled(table: &str, waiting: Option<Waiting>) -> Trees {
     let mut trees = Trees::new(ROOT, &IdGen::new(0));
     trees.set_synced("d".into(), Some(dir(ROOT, "d")));
@@ -1816,7 +1828,7 @@ fn backfilled(table: &str, waiting: Option<Waiting>) -> Trees {
         .waiting
         .extend(waiting.map(|waiting| ("d".into(), waiting)));
     trees.restore(state).unwrap();
-    trees.backfill(None, false, 1_000);
+    trees.backfill(None, false, false, 1_000);
     trees
 }
 
@@ -1894,7 +1906,7 @@ fn a_backfill_keeps_an_unsent_edit_whose_bytes_r_already_holds() {
     old.unsent_edits.insert("f".into());
     old.dirty.insert("f".into());
     t.restore(old).unwrap();
-    t.backfill(None, false, 1_000);
+    t.backfill(None, false, false, 1_000);
     assert!(
         t.journal_row(&"f".into(), Field::Content)
             .is_some_and(|r| r.author == Author::Own && matches!(r.state, RowState::Local { .. }))
@@ -1962,7 +1974,7 @@ fn a_backfill_seeds_the_place_history_and_the_held_base_of_a_move_r_holds_exactl
         };
         state.moved_here.insert("f".into(), moved);
         trees.restore(state).unwrap();
-        trees.backfill(None, false, 1_000);
+        trees.backfill(None, false, false, 1_000);
         let row = trees.journal_row(&"f".into(), Field::Place).unwrap();
         let seeded = place_history(&trees, "f");
         match exact {
@@ -2017,7 +2029,7 @@ fn a_backfill_gives_the_newest_move_base_to_the_sent_row_or_to_the_flight_a_late
             owners: Default::default(),
             result: None,
         };
-        trees.backfill(Some(&flight), false, 1_000);
+        trees.backfill(Some(&flight), false, false, 1_000);
         let row = trees.journal_row(&"f".into(), Field::Place).unwrap();
         let base = match &row.state {
             RowState::Sent => row.base,
@@ -2051,7 +2063,7 @@ fn a_backfill_keeps_the_trash_group_of_a_trashed_past_position() {
         .past_positions
         .insert("f".into(), vec![trashed.clone()]);
     trees.restore(state).unwrap();
-    trees.backfill(None, false, 1_000);
+    trees.backfill(None, false, false, 1_000);
     let history = |field| -> Vec<IntentId> {
         (trees.remote_history(&"f".into(), field).iter())
             .map(|entry| entry.intent)
@@ -2125,7 +2137,7 @@ fn a_backfilled_resend_in_flight_is_held_once_the_server_applies_it() {
         resend: true,
         ..Default::default()
     }));
-    t.backfill(Some(&flight), true, 1_000);
+    t.backfill(Some(&flight), true, false, 1_000);
     let reported = node_state("f", &sent, 2, None);
     t.set_remote_made_here(n.clone(), remote(sent.clone(), 2));
     t.record_results(
@@ -2396,7 +2408,7 @@ fn a_backfilled_delete_of_a_folder_l_lacks_sees_what_s_held_below_it() {
     }
     let state = trees.state();
     trees.restore(state).unwrap();
-    trees.backfill(None, false, 1_000);
+    trees.backfill(None, false, false, 1_000);
     let seen: Vec<(NodeId, Field)> = (trees.journal().seen(&"d".into()).iter())
         .map(|entry| (entry.node.clone(), entry.field))
         .collect();
@@ -2442,7 +2454,7 @@ fn a_backfilled_delete_already_in_flight_gets_the_seen_list_of_what_s_held() {
         node_id: "f".into(),
         ..Default::default()
     }));
-    t.backfill(Some(&flight), false, 1_000);
+    t.backfill(Some(&flight), false, false, 1_000);
     assert!(t.journal_row(&"f".into(), Field::Status).unwrap().is_sent());
     assert!(
         t.journal()
@@ -2472,7 +2484,7 @@ fn a_backfilled_delete_sees_a_child_under_the_folder_its_waiting_update_moved_it
         },
     );
     t.restore(old).unwrap();
-    t.backfill(None, false, 1_000);
+    t.backfill(None, false, false, 1_000);
     assert!(
         t.journal()
             .seen(&"b".into())

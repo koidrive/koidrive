@@ -14,7 +14,7 @@ use siphasher::sip::SipHasher13;
 use crate::first_link;
 use crate::ids::IdGen;
 use crate::ignore::{Key, LocalRules, Matcher, RuleFile, is_rules_file};
-use crate::journal::{Journal, NodeIntents};
+use crate::journal::{Author, Field, Journal, NodeIntents, Value};
 use crate::names::{name_key, nfc, same_name};
 use crate::provenance::Provenances;
 use crate::question::Frozen;
@@ -6693,7 +6693,12 @@ impl Trees {
     }
 
     pub(crate) fn unsent_delete(&self, id: &NodeId) -> Option<Shape> {
-        let deleted = self.l.get(id).is_none() && self.r.get(id).is_none() && !self.unobserved(id);
+        let deleted = self.l.get(id).is_none()
+            && self.r.get(id).is_none()
+            && !self.unobserved(id)
+            && (self.journal_row(id, Field::Status)).is_some_and(|row| {
+                row.author == Author::Own && row.value == Value::Status { live: false }
+            });
         self.s.live(id).filter(|_| deleted).cloned()
     }
 

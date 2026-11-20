@@ -35,7 +35,7 @@ upgrade_case!(journal_backfill_trash_group, |store| {
             past.dirty.insert(node.clone());
             trees.restore(past).unwrap();
             trees.take_changes();
-            trees.backfill(None, false, 1_800_000_000_000);
+            trees.backfill(None, false, false, 1_800_000_000_000);
             tx.write_engine_changes(&koidrive_store::EngineChanges {
                 trees: trees.take_changes(),
                 commits: Default::default(),

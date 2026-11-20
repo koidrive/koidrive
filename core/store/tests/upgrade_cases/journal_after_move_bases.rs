@@ -126,7 +126,7 @@ upgrade_case!(journal_after_move_bases, |store| {
         let edit_rev = trees.remote().get(&report).unwrap().edit_rev;
         restored.edited_here.insert(report.clone(), edit_rev);
         trees.restore(restored).unwrap();
-        trees.backfill(Some(&in_flight), false, 1_800_000_000_000);
+        trees.backfill(Some(&in_flight), false, false, 1_800_000_000_000);
         let version = &trees.remote().get(&report).unwrap().version_id;
         assert!(!version.is_empty(), "{variant}");
         let edited = IntentId::legacy_content(&report.to_string(), version);

@@ -281,8 +281,9 @@ pub struct TreesState {
     /// S takes the node again, when L's content changes or L no longer holds the node, and when R
     /// holds the node again.
     pub lost_shapes: BTreeMap<NodeId, Shape>,
-    /// The nodes this device's user deleted that S forgot after a server loss or a history change
-    /// while R lacked them, each with the shape S held, so the delete was never sent. When R holds
+    /// The nodes whose delete by this device's user the journal holds as a status row, and that S
+    /// forgot after a server loss or a history change while R lacked them, each with the shape S
+    /// held, so the delete was never sent. When R holds
     /// such a node live with that shape again, S takes it once S holds its folder, and the delete
     /// is sent; until then the record waits and the node is not downloaded. The record ends when S
     /// takes the node, when R holds it with another shape or in the trash, when L holds it again,

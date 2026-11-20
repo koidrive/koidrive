@@ -247,7 +247,13 @@ impl Trees {
     /// Fills the journal of a store from an earlier release out of its legacy tables, in the order of RFC 0029 §7.1;
     /// a later step never replaces a row an earlier one wrote. `in_flight` is the commit in flight, `lost` whether
     /// the store records a loss, and `now_ms` the time the intents it mints carry.
-    pub fn backfill(&mut self, in_flight: Option<&InFlight>, lost: bool, now_ms: u64) {
+    pub fn backfill(
+        &mut self,
+        in_flight: Option<&InFlight>,
+        lost: bool,
+        store_behind_disk: bool,
+        now_ms: u64,
+    ) {
         self.journal.set_clock(now_ms);
         let row = |intent, author, base, value, state, replay| Row {
             intent,
@@ -334,7 +340,7 @@ impl Trees {
                 continue;
             };
             if self.l.get(&id).is_none() {
-                if !self.asked.contains(&id) {
+                if !store_behind_disk && !self.asked.contains(&id) {
                     self.delete_acknowledged(&id);
                 }
                 continue;
@@ -1011,6 +1017,17 @@ impl Trees {
     /// unless the rules leave it out or an open question holds it, since the device then saw no delete of the user;
     /// the rows of any other node end, since no server ever held it.
     pub fn remove_local_by_user(&mut self, id: &NodeId) {
+        self.remove_local_gone(id, true);
+    }
+
+    /// Takes a node out of L that a recovery from a store older than the disk finds missing, where the disk may lack
+    /// it because of an effect the store forgot. The rows of a node no server ever held end, as in
+    /// [`Trees::remove_local_by_user`], and no status row is written.
+    pub fn remove_local_unproven(&mut self, id: &NodeId) {
+        self.remove_local_gone(id, false);
+    }
+
+    fn remove_local_gone(&mut self, id: &NodeId, by_user: bool) {
         if self.l.get(id).is_some() && !self.local_kept_record(id) {
             let sent = Field::ALL.into_iter().any(|field| {
                 (self.journal_row(id, field))
@@ -1020,7 +1037,7 @@ impl Trees {
                 for field in Field::ALL {
                     self.journal.end(id, field);
                 }
-            } else if !self.asked.contains(id) {
+            } else if by_user && !self.asked.contains(id) {
                 let seen_list = self.seen_list(id);
                 let base = (self.r.live(id).and(self.r.get(id)))
                     .and_then(|remote| remote_intent_of(remote, Field::Status))
