@@ -4269,6 +4269,21 @@ fn a_new_folder_left_out_on_the_server_once_its_last_synced_entry_leaves_it_is_u
 }
 
 #[test]
+fn a_new_folder_the_server_left_out_is_observed_at_the_listing_after_it_knows_an_entry_again() {
+    let mut trees = a_new_folder_around_a_synced_file_under_a_folder_the_server_renamed();
+    let f = NodeId::from("f");
+    trees.remove_remote(&f);
+    trees.set_synced(f.clone(), None);
+    trees.settle(&Default::default());
+    let new = NodeId::from("new");
+    assert!(trees.unobserved(&new));
+    trees.set_remote(f, remote(file(ROOT, "f", 1)));
+    trees.settle(&Default::default());
+    list_relisted(&mut trees, Pending::default());
+    assert!(!trees.unobserved(&new));
+}
+
+#[test]
 fn a_new_folder_left_out_on_the_server_once_the_server_forgets_its_last_entry_is_unobserved() {
     let mut trees = a_new_folder_around_a_synced_file_under_a_folder_the_server_renamed();
     let f = NodeId::from("f");
@@ -4315,6 +4330,36 @@ fn a_parked_child_does_not_mark_its_displaced_parent_unobserved() {
     trees.settle(&Default::default());
     assert!(!trees.unobserved(&d));
     assert_eq!(trees.check(), Ok(()));
+}
+
+fn renamed(rev: u64, name: &str) -> RemoteNode {
+    RemoteNode {
+        meta_rev: rev,
+        meta_edit_rev: rev,
+        ..remote(dir(ROOT, name))
+    }
+}
+
+fn a_folder_the_server_renamed_into_an_excluded_path() -> Trees {
+    let mut trees = trees(&[synced("d", dir(ROOT, "d")), synced("g", file("d", "g", 1))]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/blocked/\n"));
+    trees.settle(&Default::default());
+    trees.set_remote("d".into(), renamed(8, "blocked"));
+    trees.settle(&Default::default());
+    let d = NodeId::from("d");
+    assert!(trees.excluded(&d) && trees.unobserved(&d));
+    trees
+}
+
+fn list_relisted(trees: &mut Trees, pending: Pending) {
+    let folders = trees.take_relist();
+    trees.listed(&folders, pending);
+}
+
+fn sends_delete_of_d(mut trees: Trees) -> bool {
+    trees.remove_local(&"g".into());
+    trees.remove_local(&"d".into());
+    ops(&mut trees).iter().any(|op| *op == delete("d"))
 }
 
 #[test]
@@ -4633,66 +4678,81 @@ fn a_parked_file_goes_home_when_an_excluded_folder_shares_its_server_name_key_wi
 #[test]
 fn a_delete_after_a_server_rename_ends_the_exclusion_is_sent_and_one_made_while_excluded_is_not() {
     for deleted_while_excluded in [false, true] {
-        let mut trees = trees(&[synced("d", dir(ROOT, "d")), synced("g", file("d", "g", 1))]);
-        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/blocked/\n"));
-        trees.settle(&Default::default());
+        let mut trees = a_folder_the_server_renamed_into_an_excluded_path();
         let d = NodeId::from("d");
-        trees.set_remote(
-            d.clone(),
-            RemoteNode {
-                meta_rev: 8,
-                meta_edit_rev: 8,
-                ..remote(dir(ROOT, "blocked"))
-            },
-        );
-        trees.settle(&Default::default());
-        assert!(trees.excluded(&d) && trees.unobserved(&d));
         if deleted_while_excluded {
             trees.remove_local(&"g".into());
             trees.remove_local(&d);
             trees.settle(&Default::default());
         }
-        trees.set_remote(
-            d.clone(),
-            RemoteNode {
-                meta_rev: 9,
-                meta_edit_rev: 9,
-                ..remote(dir(ROOT, "d"))
-            },
-        );
+        trees.set_remote(d.clone(), renamed(9, "d"));
         trees.settle(&Default::default());
         assert!(!trees.excluded(&d), "{deleted_while_excluded}");
-        if !deleted_while_excluded {
-            assert!(!trees.unobserved(&d));
-            trees.remove_local(&"g".into());
-            trees.remove_local(&d);
-        }
+        list_relisted(&mut trees, Pending::default());
         let sent = ops(&mut trees);
-        assert_eq!(
-            sent.iter().any(|op| *op == delete("d")),
-            !deleted_while_excluded,
+        assert!(
+            !sent.iter().any(|op| *op == delete("d")),
             "{deleted_while_excluded}: {sent:?}"
         );
+        if !deleted_while_excluded {
+            assert!(!trees.unobserved(&d));
+            assert!(sends_delete_of_d(trees));
+        }
     }
+}
+
+#[test]
+fn a_node_the_server_lets_back_in_stays_unobserved_until_a_listing_answers() {
+    let mut trees = a_folder_the_server_renamed_into_an_excluded_path();
+    let d = NodeId::from("d");
+    trees.set_remote(d.clone(), renamed(9, "d"));
+    trees.settle(&Default::default());
+    assert!(!trees.take_relist().is_empty());
+    trees.settle(&Default::default());
+    assert!(trees.take_relist().is_empty());
+    assert!(trees.unobserved(&d));
+    assert!(!sends_delete_of_d(trees));
+}
+
+#[test]
+fn a_node_the_server_lets_back_in_below_a_pending_path_is_relisted_once_the_path_settles() {
+    for pending_first in [true, false] {
+        let mut trees = a_folder_the_server_renamed_into_an_excluded_path();
+        let d = NodeId::from("d");
+        if pending_first {
+            trees.listed(&[], Pending::new([["d"]]));
+        }
+        trees.set_remote(d.clone(), renamed(9, "d"));
+        trees.settle(&Default::default());
+        list_relisted(&mut trees, Pending::new([["d"]]));
+        trees.settle(&Default::default());
+        assert!(trees.take_relist().is_empty(), "{pending_first}");
+        assert!(trees.unobserved(&d), "{pending_first}");
+        trees.listed(&[], Pending::default());
+        trees.settle(&Default::default());
+        list_relisted(&mut trees, Pending::default());
+        assert!(!trees.unobserved(&d), "{pending_first}");
+        assert!(sends_delete_of_d(trees), "{pending_first}");
+    }
+}
+
+#[test]
+fn an_ignore_event_ends_what_a_server_rename_left_out_of_the_scans_view() {
+    let mut trees = a_folder_the_server_renamed_into_an_excluded_path();
+    trees.ignore_local(&"d".into());
+    trees.settle(&Default::default());
+    assert!(trees.state().left_out_by_server.is_empty());
 }
 
 #[test]
 fn a_copy_the_rules_leave_out_around_a_server_rename_waits_for_a_scan_once_they_let_it_in() {
     for renamed_back_first in [false, true] {
-        let mut trees = trees(&[synced("d", dir(ROOT, "d")), synced("g", file("d", "g", 1))]);
-        trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/blocked/\n"));
-        trees.settle(&Default::default());
+        let mut trees = a_folder_the_server_renamed_into_an_excluded_path();
         let d = NodeId::from("d");
-        let renamed = |rev, name| RemoteNode {
-            meta_rev: rev,
-            meta_edit_rev: rev,
-            ..remote(dir(ROOT, name))
-        };
-        trees.set_remote(d.clone(), renamed(8, "blocked"));
-        trees.settle(&Default::default());
         if renamed_back_first {
             trees.set_remote(d.clone(), renamed(9, "d"));
             trees.settle(&Default::default());
+            list_relisted(&mut trees, Pending::default());
             assert!(!trees.unobserved(&d));
         }
         trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/blocked/\n/d/\n"));
@@ -4702,14 +4762,9 @@ fn a_copy_the_rules_leave_out_around_a_server_rename_waits_for_a_scan_once_they_
             trees.set_remote(d.clone(), renamed(9, "d"));
         }
         trees.settle(&Default::default());
+        list_relisted(&mut trees, Pending::default());
         assert!(!trees.excluded(&d), "{renamed_back_first}");
         assert!(trees.unobserved(&d), "{renamed_back_first}");
-        trees.remove_local(&"g".into());
-        trees.remove_local(&d);
-        let sent = ops(&mut trees);
-        assert!(
-            !sent.iter().any(|op| *op == delete("d")),
-            "{renamed_back_first}: {sent:?}"
-        );
+        assert!(!sends_delete_of_d(trees), "{renamed_back_first}");
     }
 }

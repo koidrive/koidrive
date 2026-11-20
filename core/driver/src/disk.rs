@@ -695,7 +695,15 @@ impl Disk {
         if pending.is_some() {
             hook(Cut::AfterPlan);
         }
+        self.request_relist(engine);
         Ok(pending)
+    }
+
+    fn request_relist(&self, engine: &mut Engine) {
+        let relist = engine.relist();
+        if !relist.is_empty() {
+            self.sections.request(engine.resets(relist));
+        }
     }
 
     /// The effect section, which has no await. It checks that `staged` is the batch in flight and that the root is
@@ -986,10 +994,7 @@ impl Disk {
         } else {
             engine.read(&read, &observation.unreadable);
         }
-        let relist = engine.relist();
-        if !relist.is_empty() {
-            self.sections.request(engine.resets(relist));
-        }
+        self.request_relist(engine);
         if !dropped.is_empty() {
             tracing::debug!(
                 space_id = self.space_id.as_str(),

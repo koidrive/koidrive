@@ -17,7 +17,6 @@ fn a_store_from_before_names_left_out_were_recorded_opens_with_none_recorded() {
     assert_eq!(applied(&path), all_migrations());
     let after = before.clone();
     before.trees.names_left_out.clear();
-    before.trees.left_out_by_server.clear();
     assert!(after.trees.names_left_out[&"n".into()].is_some());
     assert_eq!(store.transaction(|tx| tx.engine_state()).unwrap(), before);
     store

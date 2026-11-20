@@ -630,6 +630,7 @@ pub struct Trees {
     left_out_by_server: TrackedSet<NodeId>,
     rules_changed: BTreeSet<Vec<String>>,
     relist: BTreeSet<NodeId>,
+    relist_asked: BTreeSet<NodeId>,
     left_folders: BTreeSet<NodeId>,
     released: Vec<NodeId>,
     cycles_may_end: bool,
@@ -771,6 +772,7 @@ impl Trees {
             left_out_by_server: TrackedSet::default(),
             rules_changed: BTreeSet::new(),
             relist: BTreeSet::new(),
+            relist_asked: BTreeSet::new(),
             left_folders: BTreeSet::new(),
             released: Vec::new(),
             cycles_may_end: false,
@@ -3916,6 +3918,9 @@ impl Trees {
         if self.pending.take(pending) {
             self.release_due = true;
         }
+        self.relist_asked.retain(|id| {
+            !(self.l.get(id)).is_some_and(|node| folders.contains(&node.shape.parent))
+        });
         if self.unobserved.is_empty() {
             return;
         }
@@ -4177,8 +4182,6 @@ impl Trees {
         let mut seen = HashSet::new();
         let mut below: Vec<&NodeId> = tops.iter().collect();
         let mut marked = Vec::new();
-        let mut observed = Vec::new();
-        let mut hidden = Vec::new();
         while let Some(node) = below.pop() {
             if !seen.insert(node) {
                 continue;
@@ -4192,17 +4195,8 @@ impl Trees {
             if self.l.get(node).is_none() {
                 continue;
             }
-            let unobserved = self.unobserved.contains(node);
-            if !unobserved && self.left_out(node, &self.ignore, &mut scopes) {
+            if !self.unobserved.contains(node) && self.left_out(node, &self.ignore, &mut scopes) {
                 marked.push((node.to_owned(), self.copy_watched(node, &mut scopes)));
-            } else if unobserved && self.rules_known && self.left_out_by_server.contains(node) {
-                match self.copy_watched(node, &mut scopes) {
-                    false => hidden.push(node.to_owned()),
-                    true if self.observed_again(node, &mut scopes) => {
-                        observed.push(node.to_owned())
-                    }
-                    true => {}
-                }
             }
         }
         let mut above = BTreeSet::new();
@@ -4229,19 +4223,44 @@ impl Trees {
             }
         }
         self.left_folders.clear();
-        for node in observed {
-            self.clear_unobserved(&node);
-        }
-        for node in hidden {
-            self.left_out_by_server.remove(&node);
-        }
         for (node, watched) in marked {
             if watched {
                 self.left_out_by_server.insert(node.clone());
             }
             self.set_unobserved(node);
         }
+        self.relist_once_let_in();
         Some(())
+    }
+
+    fn relist_once_let_in(&mut self) {
+        let asked = std::mem::take(&mut self.relist_asked);
+        self.relist_asked = (asked.into_iter())
+            .filter(|id| self.left_out_by_server.contains(id))
+            .collect();
+        if !self.rules_known {
+            return;
+        }
+        let mut scopes = HashMap::new();
+        let mut unwatched = Vec::new();
+        let mut let_in = Vec::new();
+        for id in self.left_out_by_server.iter() {
+            let Some(node) = self.l.get(id) else {
+                continue;
+            };
+            if !self.copy_watched(id, &mut scopes) {
+                unwatched.push(id.clone());
+            } else if !self.relist_asked.contains(id) && self.listing_observes(id, &mut scopes) {
+                let_in.push((id.clone(), node.shape.parent.clone()));
+            }
+        }
+        for id in unwatched {
+            self.left_out_by_server.remove(&id);
+        }
+        for (id, parent) in let_in {
+            self.relist.insert(parent);
+            self.relist_asked.insert(id);
+        }
     }
 
     fn copy_watched<'m>(
@@ -4252,16 +4271,12 @@ impl Trees {
         !self.recorded_local(id) && self.placed_included(id, scopes)
     }
 
-    fn observed_again<'m>(
+    fn listing_observes<'m>(
         &'m self,
         id: &NodeId,
         scopes: &mut HashMap<NodeId, Option<Scope<'m, Key>>>,
     ) -> bool {
-        !self.below_unknown_rules(id)
-            && !self.awaits_scan(id)
-            && !self.pending.holds(path(&self.l, id))
-            && (self.l.get(id)).is_some_and(|node| !self.awaits_relisting(&node.shape.parent))
-            && !self.left_out(id, &self.ignore, scopes)
+        !self.pending.holds(path(&self.l, id)) && !self.left_out(id, &self.ignore, scopes)
     }
 
     fn below_rules(&self, dir: &[String]) -> BTreeSet<NodeId> {
@@ -7800,6 +7815,7 @@ impl Trees {
             left_out_by_server,
             rules_changed: _,
             relist: _,
+            relist_asked: _,
             left_folders: _,
             released: _,
             cycles_may_end: _,

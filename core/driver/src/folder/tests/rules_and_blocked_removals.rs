@@ -3082,3 +3082,39 @@ fn a_copy_a_rule_added_here_excludes_stays_when_the_server_trashes_it_before_its
         (Some(b"keep".to_vec()), Vec::<Vec<u8>>::new()),
     );
 }
+
+#[test]
+fn a_delete_after_another_device_renames_a_folder_back_out_of_a_path_the_rules_exclude_is_sent() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    fs::create_dir(site_a.root.join("d")).unwrap();
+    a.create(&mut remote, &site_a.root.join("d/g.txt"), b"synced");
+    let folder = NodeId::from(live_id(&server_nodes(&remote), "d"));
+    let (site, b) = linked(&mut remote, "b");
+    drop(b);
+    let sync = SyncRules {
+        include: Vec::new(),
+        exclude: vec!["blocked/".into()],
+        ..SyncRules::default()
+    };
+    let mut b = site.start_with(&sync);
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    assert_eq!(fs::read(site.root.join("d/g.txt")).unwrap(), b"synced");
+    for (from, to) in [("d", "blocked"), ("blocked", "d")] {
+        fs::rename(site_a.root.join(from), site_a.root.join(to)).unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        a.run(&mut remote);
+        b.pull(&remote);
+        b.run(&mut remote);
+        assert!(b.folder.engine.trees.unobserved(&folder), "{to}");
+        assert!(b.folder.engine.trees.take_relist().is_empty(), "{to}");
+    }
+    b.scan_until(|b| !b.folder.engine.trees.unobserved(&folder));
+    fs::remove_dir_all(site.root.join("d")).unwrap();
+    b.scan_until(|b| !b.work.is_empty());
+    b.run(&mut remote);
+    assert!(remote.names().is_empty(), "{:?}", remote.names());
+}
