@@ -2013,6 +2013,7 @@ fn run_ignoring_answering_after(
     let mut sent_since: BTreeSet<NodeId> = BTreeSet::new();
     note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
     let mut merged_into: BTreeMap<NodeId, NodeId> = BTreeMap::new();
+    let mut failed_on_ignored: BTreeMap<NodeId, Effect> = BTreeMap::new();
     let mut revived_once: BTreeSet<NodeId> = BTreeSet::new();
     let mut freed: BTreeSet<NodeId> = BTreeSet::new();
     let mut sent_nodes: BTreeSet<NodeId> = BTreeSet::new();
@@ -2255,6 +2256,27 @@ fn run_ignoring_answering_after(
                     }
                     continue;
                 }
+            }
+            let placed_at = match &record.effect {
+                Effect::CreateDir {
+                    at: Location::At { .. },
+                }
+                | Effect::WriteFile {
+                    at: Location::At { .. },
+                    ..
+                }
+                | Effect::Move {
+                    to: Location::At { .. },
+                    ..
+                } => record.after.as_ref(),
+                _ => None,
+            };
+            if placed_at.is_some_and(|at| device.disk_name_taken(&at.parent, &[], &at.name)) {
+                effects
+                    .failed(&mut device.trees, &record.effect_id)
+                    .unwrap();
+                failed_on_ignored.insert(record.node.clone(), record.effect.clone());
+                continue;
             }
             let identity = device.identity();
             effects
@@ -2586,12 +2608,16 @@ fn run_ignoring_answering_after(
             .then(|| id.clone())
         })
         .collect();
+    let blocked_by_ignored = |id: &NodeId| {
+        (effects.blocked().get(id)).is_some_and(|effect| failed_on_ignored.get(id) == Some(effect))
+    };
     let mut waiting = refused_merges.clone();
     loop {
         let more: Vec<NodeId> = (unsettled.iter())
             .filter(|id| {
                 !waiting.contains(*id)
-                    && (waits_on_excluded(&device.trees, id, &waiting)
+                    && (blocked_by_ignored(id)
+                        || waits_on_excluded(&device.trees, id, &waiting)
                         || waits_on_synced(&device.trees, id, &waiting))
             })
             .cloned()
@@ -2607,10 +2633,7 @@ fn run_ignoring_answering_after(
     prop_assert_eq!(unsettled, Vec::<&NodeId>::new());
     prop_assert!(commits.problems().is_empty(), "{:?}", commits.problems());
     prop_assert!(
-        effects
-            .blocked()
-            .keys()
-            .all(|id| refused_merges.contains(id)),
+        (effects.blocked().keys()).all(|id| refused_merges.contains(id) || blocked_by_ignored(id)),
         "{:?}",
         effects.blocked()
     );
