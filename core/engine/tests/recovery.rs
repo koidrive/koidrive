@@ -6120,3 +6120,67 @@ fn an_answer_commits_when_a_carried_move_goes_into_a_folder_that_moves_into_a_ne
         assert!(sent.contains(&(op.0, op.1.into())), "{sent:?}");
     }
 }
+
+#[test]
+fn an_answer_commits_when_an_earlier_carried_move_takes_another_moved_node_out_of_the_trashed_folder()
+ {
+    let mut trees = trees(
+        &[
+            ("a", dir(ROOT, "b")),
+            ("n", dir("a", "n")),
+            ("b", dir("n", "b")),
+            ("c", dir("a", "c")),
+            ("d", dir("c", "d")),
+            ("f", file("d", "f", 1)),
+        ],
+        &[
+            ("a", dir(ROOT, "a")),
+            ("b", dir(ROOT, "b")),
+            ("c", dir("a", "c")),
+            ("d", dir("c", "d")),
+            ("f", file("d", "f", 1)),
+        ],
+        &[
+            Remote("a", dir(ROOT, "a"), true, 1),
+            Remote("b", dir(ROOT, "b"), false, 1),
+            Remote("c", dir("a", "c"), true, 1),
+            Remote("d", dir("c", "d"), true, 1),
+            Remote("f", file("d", "f", 1), true, 1),
+        ],
+    );
+    let (mut commits, mut ids) = recovered(&mut trees, 0);
+    for question in commits.questions().to_vec() {
+        assert!(commits.decide(&question.id, Answer::Publish));
+    }
+    for (id, shape) in [("d", dir("b", "d")), ("f", file("n", "f", 1))] {
+        let mut moved = trees.local().get(&id.into()).unwrap().clone();
+        moved.shape = shape;
+        trees.set_local(id.into(), moved);
+    }
+    trees.settle(&Default::default());
+    for seq in 2..6 {
+        let sent = ops(&mut commits, &mut trees, &mut ids);
+        if sent.is_empty() {
+            break;
+        }
+        let nodes: Vec<(&str, Shape, bool)> = (sent.iter())
+            .map(|(op, id)| {
+                let id = id.as_str();
+                let local = trees.local().get(&id.into()).map(|local| &local.shape);
+                let shape = local.or_else(|| trees.synced().live(&id.into())).unwrap();
+                (id, shape.clone(), *op == "delete")
+            })
+            .collect();
+        applied(&mut commits, &mut trees, seq, &nodes);
+    }
+    assert_eq!(commits.questions(), []);
+    for id in ["a", "n", "b", "d", "f"] {
+        let remote = trees.remote().get(&id.into()).unwrap();
+        assert_eq!(
+            (&remote.shape, remote.trashed),
+            (&trees.local().get(&id.into()).unwrap().shape, false),
+            "{id}"
+        );
+    }
+    assert!(trees.remote().get(&"c".into()).unwrap().trashed);
+}

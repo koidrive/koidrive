@@ -6470,17 +6470,13 @@ impl<'a> Scratch<'a> {
             {
                 continue;
             }
-            let leaving: Vec<usize> = (wants.iter().enumerate())
-                .filter(|(at, slot)| {
-                    matches!(slot, Some(moved @ Want::Move { id: moved_id, .. })
-                        if moved_id != id
-                            && (!answers.contains(moved_id) || self.fit(moved, moving) != Fit::Valid)
-                            && !carried.iter().any(|(done, _)| done == at)
-                            && scratch.inside(moved_id, top))
-                })
-                .map(|(at, _)| at)
-                .collect();
-            for at in leaving {
+            while let Some(at) = (wants.iter().enumerate()).position(|(at, slot)| {
+                matches!(slot, Some(moved @ Want::Move { id: moved_id, .. })
+                    if moved_id != id
+                        && (!answers.contains(moved_id) || self.fit(moved, moving) != Fit::Valid)
+                        && !carried.iter().any(|(done, _)| *done == at)
+                        && scratch.inside(moved_id, top))
+            }) {
                 let mut chain = vec![at];
                 while let Some(&at) = chain.last() {
                     if carried.iter().any(|(done, _)| *done == at) {
