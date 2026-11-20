@@ -1,6 +1,124 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #[test]
+fn a_parked_child_of_a_folder_renamed_in_an_earlier_commit_is_not_brought_back_from_the_trash() {
+    let seed = [act(0, 0, 0, 0, 0), act(0, 0, 1, 5, 0)];
+    let (mut space, mut other) = seeded(&seed);
+    let root = space.space_id().to_owned();
+    let history = space.history_id().to_owned();
+    let nodes: Vec<_> = space
+        .nodes()
+        .into_iter()
+        .filter(|n| n.node_id != root)
+        .collect();
+    let parent = nodes.iter().position(|n| n.name == "a").unwrap();
+    let child = nodes.iter().position(|n| n.name == "ß").unwrap();
+    let id = NodeId::from(&nodes[child].node_id);
+    let ancestor = NodeId::from(&nodes[parent].node_id);
+    let mut device = Device::new(Trees::new(root));
+    for state in &nodes {
+        let (id, node) = RemoteNode::from_state(state).unwrap();
+        device
+            .trees
+            .set_synced(id.clone(), Some(node.shape.clone()));
+        let held = LocalNode {
+            shape: node.shape.clone(),
+            identity: device.identity(),
+            parked: false,
+            chunks: Box::default(),
+            left_out_when_placed: false,
+            content_from_server: false,
+        };
+        device.trees.set_local(id.clone(), held);
+        device.trees.set_remote(id, node);
+    }
+    let seq = space.head_seq();
+    device.act(&act(3, parent, 0, 2, 0));
+    assert!(device.acted.contains(&ancestor));
+    let session = session("me");
+    let mut commits = Commits::default();
+    device.trees.settle(commits.aliases());
+    let renamed = commits
+        .build(
+            &mut device.trees,
+            &mut device.ids,
+            NOW as u64,
+            &history,
+            "me",
+            seq,
+        )
+        .cloned()
+        .unwrap();
+    assert_eq!(renamed.ops.len(), 1);
+    assert!(
+        matches!(&renamed.ops[0].op, Some(op::Op::Move(m)) if m.node_id == ancestor && m.new_name == "b")
+    );
+    let answer = space.commit(&session, NOW, &renamed).unwrap().result;
+    device.receive(&answer.changes, true);
+    let seq = answer.seq;
+    commits.received(answer).unwrap();
+    assert!(commits.acknowledge(&mut device.trees, seq));
+    device.trees.settle(commits.aliases());
+    assert_eq!(
+        device.trees.synced().live(&ancestor),
+        device.trees.remote().live(&ancestor)
+    );
+    assert!(!device.relocated.contains_key(&ancestor));
+    let mut local = device.trees.local().get(&id).unwrap().clone();
+    local.parked = true;
+    device.trees.set_local(id.clone(), local);
+    let current: Vec<_> = space
+        .nodes()
+        .into_iter()
+        .filter(|n| n.node_id != space.space_id())
+        .collect();
+    let child = current.iter().position(|n| n.node_id == id).unwrap();
+    let parent = 1 + current
+        .iter()
+        .filter(|n| n.kind == 1)
+        .position(|n| n.node_id == ancestor)
+        .unwrap();
+    remote_action(&mut space, &mut other, 2, &act(4, child, 0, 0, 0));
+    remote_action(&mut space, &mut other, 2, &act(0, 0, parent, 6, 0));
+    let backlog = space
+        .resume(&Resume {
+            since_seq: seq,
+            history_id: history.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    for record in backlog {
+        device.receive(&record.changes, false);
+    }
+    device.trees.set_synced(id.clone(), None);
+    let holder = space.nodes().into_iter().find(|n| n.name == "ss").unwrap();
+    let holder_id = NodeId::from(&holder.node_id);
+    let mut held = device.trees.local().get(&id).unwrap().clone();
+    held.parked = false;
+    held.shape.name = "ss".into();
+    held.identity = device.identity();
+    device.trees.set_local(holder_id.clone(), held.clone());
+    device.trees.set_synced(holder_id, Some(held.shape));
+    device.trees.settle(commits.aliases());
+    assert_eq!(device.trees.check(), Ok(()));
+    assert!(device.trees.remote().get(&id).unwrap().trashed);
+    assert!(device.trees.remote().live(&ancestor).is_some());
+    let alone = BTreeSet::from([id.clone()]);
+    assert!(revive_check(&device, &alone, &id).is_err());
+    let result = commits
+        .build(
+            &mut device.trees,
+            &mut device.ids,
+            NOW as u64,
+            &history,
+            "me",
+            space.head_seq(),
+        )
+        .cloned();
+    assert!(result.is_none());
+}
+
+#[test]
 fn two_reverted_files_that_swap_names_converge() {
     let act = |kind, target, name, text| Action {
         kind,

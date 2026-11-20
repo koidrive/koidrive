@@ -1844,7 +1844,11 @@ fn sent_move_check(
     Ok(())
 }
 
-fn revive_check(device: &Device, id: &NodeId) -> Result<(), TestCaseError> {
+fn revive_check(
+    device: &Device,
+    moved: &BTreeSet<NodeId>,
+    id: &NodeId,
+) -> Result<(), TestCaseError> {
     let trees = &device.trees;
     let changed = |node: &NodeId| device.acted.contains(node) || device.touched.contains(node);
     let parent = |node: &NodeId| match trees.local().get(node) {
@@ -1863,10 +1867,10 @@ fn revive_check(device: &Device, id: &NodeId) -> Result<(), TestCaseError> {
     };
     let below = (trees.local().iter())
         .any(|(node, _)| changed(node) && !trees.excluded(node) && path(node).contains(id));
-    let above = path(id).iter().skip(1).any(changed);
+    let above = path(id).iter().skip(1).any(|node| moved.contains(node));
     prop_assert!(
         below || above,
-        "{} is brought back from the server's trash with no change its user made in or above it",
+        "{} is brought back from the server's trash with no change its user made in or below it and no move above it in the same commit",
         id
     );
     Ok(())
@@ -2594,6 +2598,12 @@ fn run_ignoring_answering_after(
             }
             continue;
         };
+        let moved: BTreeSet<NodeId> = (commit.ops.iter())
+            .filter_map(|op| match &op.op {
+                Some(op::Op::Move(moved)) => Some(NodeId::from(&moved.node_id)),
+                _ => None,
+            })
+            .collect();
         let mut sending = Vec::new();
         let mut positioned = Vec::new();
         for op in &commit.ops {
@@ -2625,7 +2635,7 @@ fn run_ignoring_answering_after(
             if let Some(op::Op::Move(_)) = &op.op
                 && (device.trees.remote().get(id)).is_some_and(|node| node.trashed)
             {
-                revive_check(&device, id)?;
+                revive_check(&device, &moved, id)?;
             }
             if let Some(op::Op::Move(moved)) = &op.op
                 && let Some(local) = device.trees.local().get(id).filter(|node| !node.parked)
