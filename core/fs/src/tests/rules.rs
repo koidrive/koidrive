@@ -379,3 +379,70 @@ fn a_search_opens_each_folder_of_a_wide_folder_past_the_open_folder_cap_once() {
     assert_eq!(opened.values().sum::<usize>(), folders);
     assert_eq!(looked, entries);
 }
+
+#[test]
+fn a_search_starts_over_when_a_folder_is_replaced_between_its_stat_and_its_open() {
+    for (moved, recreated, every) in [
+        (true, false, false),
+        (true, true, false),
+        (false, true, true),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("space");
+        fs::create_dir_all(root.join("ig/a")).unwrap();
+        fs::write(root.join(".koiignore"), "ig\n").unwrap();
+        fs::write(root.join("f.txt"), "f").unwrap();
+        let mut rules = Rules::new(Box::new(Lines::default()));
+        let mut snapshot = Snapshot::scan_with_rules(&root, &mut rules).unwrap();
+        let id = snapshot.entries[Path::new("f.txt")].id;
+        match moved {
+            true => fs::rename(root.join("f.txt"), root.join("ig/a/f.txt")).unwrap(),
+            false => fs::remove_file(root.join("f.txt")).unwrap(),
+        }
+        let mut swaps = 0;
+        let rescan = snapshot
+            .rescan_under(
+                &root,
+                [PathBuf::new()],
+                &BTreeSet::new(),
+                None,
+                Some(&mut rules),
+                &|| false,
+                &|_| {},
+                Keep::Unplaced,
+                &mut |cut| {
+                    if matches!(cut, Cut::OpeningDir(path) if path == Path::new("ig/a"))
+                        && (every || swaps == 0)
+                    {
+                        fs::rename(root.join("ig/a"), root.join(format!("ig/{swaps}"))).unwrap();
+                        if recreated {
+                            fs::create_dir(root.join("ig/a")).unwrap();
+                        }
+                        swaps += 1;
+                    }
+                },
+                &MarkLog::default(),
+            )
+            .unwrap();
+        let path = PathBuf::from("f.txt");
+        let kind = EntryKind::File;
+        let expected = match moved {
+            true => Change::Ignored {
+                from: path,
+                to: "ig/0/f.txt".into(),
+                kind,
+                id,
+            },
+            false if cfg!(target_os = "macos") => Change::Removed { path, kind },
+            false => Change::Missing { path, kind, id },
+        };
+        assert_eq!(
+            rescan.changes,
+            [expected],
+            "recreated {recreated} every {every}"
+        );
+        if every {
+            assert_eq!(rules.coverage().replaced, BTreeSet::from(["ig/a".into()]));
+        }
+    }
+}
