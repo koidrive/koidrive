@@ -37,14 +37,49 @@ pub(crate) fn read_entries(count: usize) {
 }
 
 #[cfg(test)]
-pub(crate) type Counting<I> = std::iter::Inspect<I, fn(&<I as Iterator>::Item)>;
+#[derive(Clone)]
+pub struct Counting<I>(I);
+
+#[cfg(test)]
+impl<I: Iterator> Iterator for Counting<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<I::Item> {
+        let entry = self.0.next();
+        if entry.is_some() {
+            read_entries(1);
+        }
+        entry
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+}
+
+#[cfg(test)]
+impl<I: DoubleEndedIterator> DoubleEndedIterator for Counting<I> {
+    fn next_back(&mut self) -> Option<I::Item> {
+        let entry = self.0.next_back();
+        if entry.is_some() {
+            read_entries(1);
+        }
+        entry
+    }
+}
+
+#[cfg(test)]
+impl<I: ExactSizeIterator> ExactSizeIterator for Counting<I> {}
+
+#[cfg(test)]
+impl<I: std::iter::FusedIterator> std::iter::FusedIterator for Counting<I> {}
 
 #[cfg(not(test))]
 pub(crate) type Counting<I> = I;
 
 #[cfg(test)]
 pub(crate) fn counted<I: Iterator>(entries: I) -> Counting<I> {
-    entries.inspect(|_| read_entries(1))
+    Counting(entries)
 }
 
 #[cfg(not(test))]
