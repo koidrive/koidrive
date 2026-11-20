@@ -1325,6 +1325,28 @@ fn a_parked_folder_another_device_renamed_and_trashed_goes_to_the_local_trash() 
 }
 
 #[test]
+fn a_parked_file_another_device_trashed_with_its_bytes_is_not_sent_again() {
+    let mut trees = trees(&[(
+        "f",
+        Some(file(ROOT, "f", 1)),
+        Some(file(ROOT, "f", 1)),
+        Some(trashed(file(ROOT, "f", 1))),
+    )]);
+    trees.set_synced("f".into(), None);
+    trees.set_local(
+        "f".into(),
+        LocalNode {
+            parked: true,
+            ..local(file(ROOT, "f", 1), 1)
+        },
+    );
+    trees.settle(&Default::default());
+    assert!(!trees.unsent_edits().contains(&NodeId::from("f")));
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+}
+
+#[test]
 fn a_node_its_user_moves_back_to_a_place_the_server_held_it_at_before_is_brought_back() {
     let mut trees = trees(&[(
         "f",
@@ -1372,4 +1394,194 @@ fn a_parked_folder_its_user_moved_before_parking_is_brought_back_when_another_de
         .map(|commit| ops(&commit))
         .unwrap_or_default();
     assert!(sent.contains(&mv("p", ROOT, "moved")), "{sent:?}");
+}
+
+#[test]
+fn an_unchanged_file_another_device_trashed_where_this_device_holds_it_goes_to_the_local_trash() {
+    let mut trees = trees(&[(
+        "f",
+        Some(file(ROOT, "f", 1)),
+        None,
+        Some(trashed(file(ROOT, "f", 1))),
+    )]);
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    let effects = effects_for(&mut trees, &mut ids, "f");
+    assert!(
+        matches!(&effects[..], [Effect::RemoveFile { .. }]),
+        "{effects:?}"
+    );
+}
+
+#[test]
+fn an_unchanged_file_does_not_bring_back_a_folder_another_device_trashed_where_this_device_holds_it()
+ {
+    let (trees, sent, effects) = trashed_where_held(&[(
+        "c",
+        Some(file("p", "c", 1)),
+        None,
+        Some(trashed(file("p", "c", 1))),
+    )]);
+    assert_eq!(sent, None);
+    assert!(!trees.unsent_edits().contains(&NodeId::from("c")));
+    assert!(
+        matches!(&effects[..], [Effect::RemoveDir { .. }]),
+        "{effects:?}"
+    );
+}
+
+#[test]
+fn a_file_a_server_loss_made_s_forget_that_another_device_renamed_and_trashed_goes_to_the_local_trash()
+ {
+    let mut trees = trees(&[(
+        "f",
+        Some(file(ROOT, "old", 1)),
+        None,
+        Some(trashed(file(ROOT, "new", 1))),
+    )]);
+    with_state(&mut trees, |state| {
+        state
+            .forgotten_shapes
+            .insert("f".into(), file(ROOT, "old", 1));
+        let old = koidrive_engine::state::SyncedPosition {
+            parent: ROOT.into(),
+            name: "old".into(),
+        };
+        state.synced_positions.insert("f".into(), vec![old]);
+    });
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    let effects = effects_for(&mut trees, &mut ids, "f");
+    assert!(
+        matches!(&effects[..], [Effect::RemoveFile { .. }]),
+        "{effects:?}"
+    );
+}
+
+#[test]
+fn a_file_a_server_loss_made_s_forget_goes_to_the_local_trash_when_another_device_trashes_it() {
+    let mut trees = trees(&[
+        synced("p", dir(ROOT, "p")),
+        synced("f", file("p", "old", 1)),
+    ]);
+    let id = NodeId::from("f");
+    let synced = trees.taken_from_others(|seq| seq == 1);
+    let records = trees.remote_records(|seq| seq == 1);
+    trees.remove_remote(&NodeId::from("p"));
+    trees.set_listed_remote(id.clone(), remote_at(file(ROOT, "new", 1), 3));
+    trees.forget_lost(
+        Vec::new(),
+        Vec::new(),
+        synced,
+        Vec::new(),
+        Vec::new(),
+        records,
+        &Default::default(),
+        0,
+        0,
+    );
+    trees.settle(&Default::default());
+    assert!(trees.synced().get(&id).is_none());
+    trees.set_remote(id.clone(), trashed_at(file(ROOT, "new", 1), 4));
+    trees.settle(&Default::default());
+    assert!(!trees.unsent_edits().contains(&id));
+    let mut ids = IdGen::new(1);
+    let effects = effects_for(&mut trees, &mut ids, "f");
+    let sent = (build(&mut Commits::default(), &mut trees, &mut ids).as_ref())
+        .map(ops)
+        .unwrap_or_default();
+    assert!(
+        !sent.iter().any(
+            |op| matches!(op, op::Op::Move(moved) if moved.node_id == "f")
+                || matches!(op, op::Op::UpdateContent(update) if update.node_id == "f")
+        ),
+        "{sent:?}"
+    );
+    assert!(
+        matches!(&effects[..], [Effect::RemoveFile { .. }]),
+        "{effects:?}"
+    );
+}
+
+#[test]
+fn a_file_a_server_loss_made_s_forget_goes_to_the_local_trash_when_another_device_edits_and_trashes_it()
+ {
+    let mut trees = trees(&[
+        synced("p", dir(ROOT, "p")),
+        synced("f", file("p", "old", 1)),
+    ]);
+    let id = NodeId::from("f");
+    let synced = trees.taken_from_others(|seq| seq == 1);
+    let records = trees.remote_records(|seq| seq == 1);
+    trees.remove_remote(&NodeId::from("p"));
+    trees.set_listed_remote(id.clone(), remote_at(file(ROOT, "new", 1), 3));
+    trees.forget_lost(
+        Vec::new(),
+        Vec::new(),
+        synced,
+        Vec::new(),
+        Vec::new(),
+        records,
+        &Default::default(),
+        0,
+        0,
+    );
+    trees.settle(&Default::default());
+    assert!(trees.synced().get(&id).is_none());
+    trees.set_remote(id.clone(), trashed_at(file(ROOT, "new", 2), 4));
+    trees.settle(&Default::default());
+    assert!(!trees.unsent_edits().contains(&id));
+    let mut ids = IdGen::new(1);
+    let effects = effects_for(&mut trees, &mut ids, "f");
+    let sent = (build(&mut Commits::default(), &mut trees, &mut ids).as_ref())
+        .map(ops)
+        .unwrap_or_default();
+    assert!(
+        !sent.iter().any(
+            |op| matches!(op, op::Op::Move(moved) if moved.node_id == "f")
+                || matches!(op, op::Op::UpdateContent(update) if update.node_id == "f")
+        ),
+        "{sent:?}"
+    );
+    assert!(
+        matches!(&effects[..], [Effect::RemoveFile { .. }]),
+        "{effects:?}"
+    );
+}
+
+#[test]
+fn a_file_with_bytes_s_held_before_a_server_loss_does_not_bring_back_a_folder_another_device_trashed()
+ {
+    let mut trees = trees(&[
+        (
+            "p",
+            Some(dir(ROOT, "p")),
+            None,
+            Some(trashed(dir(ROOT, "p"))),
+        ),
+        (
+            "c",
+            Some(file("p", "new", 1)),
+            None,
+            Some(trashed(file("p", "new", 2))),
+        ),
+    ]);
+    with_state(&mut trees, |state| {
+        state
+            .forgotten_shapes
+            .insert("c".into(), file("p", "old", 1));
+        let old = koidrive_engine::state::SyncedPosition {
+            parent: "p".into(),
+            name: "old".into(),
+        };
+        state.synced_positions.insert("c".into(), vec![old]);
+        state.unsent_edits.remove(&NodeId::from("c"));
+    });
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    assert_eq!(build(&mut commits, &mut trees, &mut ids), None);
+    let effects = effects_for(&mut trees, &mut ids, "p");
+    assert!(
+        matches!(&effects[..], [Effect::RemoveDir { .. }]),
+        "{effects:?}"
+    );
 }
