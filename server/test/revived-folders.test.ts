@@ -5,7 +5,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { type Op, OpSchema } from "../src/gen/koidrive/v1/commit_pb";
 import { type ChangeRecord, CommitRecordSchema, IntentSchema, type NodeState, NodeStatus } from "../src/gen/koidrive/v1/model_pb";
-import { fromHex, uuidv7 } from "../src/ids";
+import { fromHex, toHex, uuidv7 } from "../src/ids";
 import type { SpaceDO } from "../src/space-do";
 import { getNode, nodeState } from "../src/space/store";
 import { client, content, freezeClock, newSpace, op, type TestClient } from "./helpers";
@@ -117,5 +117,24 @@ describe("RFC 0029 section 3.4: a folder a commit revived only as an ancestor of
     expect(after.held).toHaveLength(2);
     expect(statesOf(result.changes, x)).toEqual([after.state]);
     expect((await laptop.tree()).get(d)?.parentId).toBe(space.spaceId);
+  });
+
+  it("keeps the held another op of the commit merged into its group and takes the meta revision the merge gave the group", async () => {
+    const space = await newSpace();
+    const [laptop, desk] = [await client(space, "Laptop"), await client(space, "Desk")];
+    const [x, d, f] = [uuidv7(), uuidv7(), uuidv7()];
+    await laptop.commit([op.mkdir(x, space.spaceId, "x"), op.mkdir(d, x, "d"), op.mkdir(f, space.spaceId, "f")]);
+    desk.baseSeq = laptop.baseSeq;
+    const first = intentId();
+    await desk.commit([deleteHolding(x, desk.session.deviceId, [first])]);
+    const before = await storedRow(space, x);
+    const second = intentId();
+    const result = await laptop.commit([op.move(f, x, "f"), deleteHolding(d, laptop.session.deviceId, [second]), op.move(f, space.spaceId, "f")]);
+    const after = await storedRow(space, x);
+    expect(after.node).toEqual({ ...before.node, meta_rev: Number(result.seq), meta_dev: laptop.session.deviceId });
+    expect(after.intents).toEqual(before.intents);
+    expect(after.held.map((row) => row.intent_id)).toEqual([first, second].map(toHex).sort());
+    expect((await storedRow(space, d)).node).toMatchObject({ trash_group: before.node.trash_group, meta_rev: Number(result.seq) });
+    expect(statesOf(result.changes, x)).toEqual([after.state]);
   });
 });
