@@ -2366,9 +2366,6 @@ impl Trees {
         self.drop_local(id);
     }
 
-    /// The folder R holds a taken-along folder's member in, when L holds the member anywhere
-    /// inside that folder outside a held folder of the same first link, so its removal counts
-    /// against the folder's entries at the Discard wherever it sat inside it (section 6.4).
     fn member_removed_inside(&self, id: &NodeId) -> Option<&NodeId> {
         let taken = self.discard_members.get(id)?;
         let mut at = &self.l.get(id)?.shape.parent;
