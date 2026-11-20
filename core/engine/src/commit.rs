@@ -51,7 +51,7 @@ pub const MAX_COMMIT_BYTES: usize = 512 * 1024;
 /// and framing.
 const RECORD_BYTES: usize = 256;
 const MAX_CHUNK_REF_BYTES: usize = 48;
-const MAX_CONFLICT_ATTEMPTS: u32 = 100;
+pub const MAX_CONFLICT_ATTEMPTS: u32 = 100;
 
 const MAX_ANCESTRY_BYTES: usize = CONTENT_ANCESTRY_LIMIT * (1 + 1 + 36);
 

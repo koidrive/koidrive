@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_engine::classify::{Pending, Trees};
 
-use koidrive_engine::commit::{Commits, Failure, Halt, MAX_OPS, Reconnect};
+use koidrive_engine::commit::{Commits, Failure, Halt, MAX_CONFLICT_ATTEMPTS, MAX_OPS, Reconnect};
 
 use koidrive_engine::effects::{Base, BatchLimit, Effect, EffectRecord, Effects, Location};
 
@@ -14,7 +14,7 @@ use koidrive_engine::ids::IdGen;
 
 use koidrive_engine::ignore::{LocalRules, RuleFile, Source};
 
-use koidrive_engine::names::name_key;
+use koidrive_engine::names::{conflict_name, name_key};
 
 use koidrive_engine::question::{Answer, Question, QuestionKind};
 
@@ -1506,10 +1506,13 @@ fn waits_on_left_out(device: &Device, id: &NodeId) -> bool {
     let Some(remote) = device.trees.remote().live(id) else {
         return false;
     };
-    let conflict_name = koidrive_engine::names::conflict_name(&remote.name, "me", NOW, 1);
     remote.parent == device.trees.remote().root
         && device.left_out_root_holds(&remote.name)
-        && (remote.kind == Kind::Dir || device.trees.ignores(&[conflict_name], remote.kind))
+        && (remote.kind == Kind::Dir
+            || (1..=MAX_CONFLICT_ATTEMPTS).all(|attempt| {
+                let name = conflict_name(&remote.name, "", NOW, attempt);
+                device.trees.ignores(&[name], remote.kind)
+            }))
 }
 
 /// Whether S cannot take `id` at its R position because the S entry of a node that waits still

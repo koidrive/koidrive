@@ -900,6 +900,43 @@ fn a_folder_deleted_around_only_a_moved_away_entry_leaves_nothing_on_disk() {
 }
 
 #[test]
+fn a_left_out_folder_does_not_keep_a_file_waiting_if_a_numbered_conflict_name_is_included() {
+    let mut device = Device::new(Trees::new("root"));
+    let id = NodeId::from("file");
+    let (content, chunks) = split(Some(content(1, 0)));
+    device.trees.set_remote(
+        id.clone(),
+        RemoteNode {
+            made_over: Vec::new(),
+            shape: Shape {
+                parent: "root".into(),
+                name: "ss".into(),
+                kind: Kind::File,
+                content,
+            },
+            trashed: false,
+            content_rev: 1,
+            meta_rev: 1,
+            meta_edit_rev: 1,
+            trash_group: String::new(),
+            version_id: String::new(),
+            edit_rev: 1,
+            pending_for: None,
+            pending_by: None,
+            chunks,
+        },
+    );
+    device.left_out_folders.insert("ss".into());
+    device.rule(&Ruling::File(vec!["ss/", "* (conflict *-??-??)"]));
+    assert!(!waits_on_left_out(&device, &id), "suffix 2 is included");
+    device.rule(&Ruling::File(vec![
+        "ss/",
+        "* (conflict from unknown device *",
+    ]));
+    assert!(waits_on_left_out(&device, &id), "all suffixes are excluded");
+}
+
+#[test]
 fn a_file_another_device_renames_to_a_folder_the_rules_leave_out_here_takes_a_conflict_name() {
     let parked = vec![(false, vec![act(0, 0, 0, 0, 0)])];
     for during in [vec![], parked] {

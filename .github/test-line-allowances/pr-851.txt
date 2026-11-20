@@ -1,4 +1,4 @@
-581
+621
 # Harness: the engine_sync device keeps folders the user makes at a name the rules leave out on its disk unseen, refuses each effect that would put an entry at such a name, retries blocked effects once the run goes quiet as the driver's retry timer does, and accepts a node that stays blocked only where no conflict name is allowed. Before this, engine_sync never refused an effect, so it could not reach the shape this PR fixes.
 # Harness: the sent-move check accepts an unmarked Move only when the device holds a record that its disk refused R's name for the node and the Move is made over the live place R holds. A unit test pins each direction: with the record it passes, and without the record, with R trashed, with R elsewhere, or without from it is flagged. The existing sent-move tests cover only moves the disk already shows and pending marks.
 # Generator: a property test moves a node onto a folder the rules leave out with random changes around it, so the record-keyed exemption runs on generated cases. It found the parked-file case this PR also fixes.
@@ -14,3 +14,4 @@
 # Commit: a parked file whose synced placement waits still gets one conflict rename if the disk refused its server name. The same state without a refusal record must stay waiting.
 # Commit: changing a parked file at the same logical name as R cannot end its refusal. The same update after the file lands must still clear it.
 # Devices: a held parent can give a conflict candidate different local and server paths. The test excludes the first candidate at each path in turn and checks that the next one lands.
+# Harness: a refused file must still be checked for convergence when a numbered conflict name is included. The test distinguishes excluding the first candidate from excluding every candidate for the simulated device.
