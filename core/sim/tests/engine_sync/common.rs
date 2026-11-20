@@ -638,6 +638,7 @@ impl Device {
             };
             let node = NodeId::from(&state.node_id);
             let Some(remote) = self.trees.remote().live(&node).cloned() else {
+                self.removed_from.remove(&node);
                 continue;
             };
             let Some(moved) = self.relocated.get_mut(&node) else {
@@ -1450,7 +1451,7 @@ fn removed_by_user_from(device: &Device, id: &NodeId) -> bool {
                 .is_some_and(|from| from == id)
                 || device.removed_from.contains_key(child)
                     && acknowledged_shape(trees, child).is_some_and(|agreed| agreed.parent == *id))
-            && acknowledged_shape(trees, child).is_some()
+            && (acknowledged_shape(trees, child).is_some() || trees.excluded(child))
             && !kept_by_r7(device, child)
     })
 }
@@ -2087,8 +2088,14 @@ fn run_ignoring_answering_after(
         let held = held_by(commits.questions());
         let revived = revive(&device, &discarded, &kept_with, &held);
         revived_once.extend(revived.iter().cloned());
-        freed.extend(revived.iter().filter(|id| !held.contains(*id)).cloned());
         release_taken_along(&device.trees, &mut kept_with, &freed);
+        let mut taken_along_now = kept_with.clone();
+        let users = revived
+            .iter()
+            .filter(|id| !held.contains(*id))
+            .cloned()
+            .collect();
+        release_taken_along(&device.trees, &mut taken_along_now, &users);
         let reverted = device.trees.reverted();
         parked_reverted = parked_reverted.max(
             device
@@ -2139,7 +2146,7 @@ fn run_ignoring_answering_after(
             placement_check(
                 &device,
                 &record,
-                &kept_with,
+                &taken_along_now,
                 &placed,
                 &revived,
                 &merged_into,
@@ -2306,12 +2313,9 @@ fn run_ignoring_answering_after(
             kept_with.append(&mut taken);
             discarded.extend(shown);
         }
-        let revived = revive(
-            &device,
-            &discarded,
-            &kept_with,
-            &held_by(commits.questions()),
-        );
+        let held = held_by(commits.questions());
+        let revived = revive(&device, &discarded, &kept_with, &held);
+        freed.extend(revived.iter().filter(|id| !held.contains(*id)).cloned());
         revived_once.extend(revived);
         let guarded = (commits.questions().iter())
             .find(|question| !matches!(question.kind, QuestionKind::Conflict { .. }))
