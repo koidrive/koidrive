@@ -762,14 +762,15 @@ fn a_server_folder_holding_a_file_another_device_purged_since_is_still_a_server_
 
 #[test]
 fn a_removal_counts_against_a_folder_only_when_the_server_holds_the_entry_inside_it() {
-    for (r_parent_of_p, r_parent_of_s, counts) in [("s", "root", true), ("root", "p", false)] {
+    for (p_in, s_in, counts) in [("s", "root", true), ("root", "p", false)] {
         let mut device = Device::new(Trees::new("root"));
-        place_dir(&mut device, "s", Some(("root", "s")), Some((r_parent_of_s, "s")));
-        place_dir(&mut device, "p", None, Some((r_parent_of_p, "p")));
-        let shape = device.trees.remote().get(&"p".into()).unwrap().shape.clone();
-        device.trees.set_synced("p".into(), Some(shape));
+        place_dir(&mut device, "s", Some(("root", "s")), Some((s_in, "s")));
+        place_dir(&mut device, "p", None, Some((p_in, "p")));
+        let shape = device.trees.remote().live(&"p".into()).cloned();
+        device.trees.set_synced("p".into(), shape);
         device.removed_from.insert("p".into(), "s".into());
-        assert_eq!(removed_by_user_from(&device, &"s".into()), counts, "{r_parent_of_p}");
+        let removed = removed_by_user_from(&device, &"s".into());
+        assert_eq!(removed, counts, "{p_in}");
     }
 }
 
