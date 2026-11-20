@@ -742,6 +742,56 @@ fn an_edit_that_left_l_outside_any_excluded_folder_is_a_lost_write() {
 }
 
 #[test]
+fn a_write_in_a_parked_folder_is_kept_even_if_its_old_parent_is_now_inside_it() {
+    let mut device = Device::new(Trees::new("root"));
+    for (ino, id, parent, name, kind, parked) in [
+        (1, "parked", "inner", "c.txt", Kind::Dir, true),
+        (2, "inner", "parked", "a", Kind::Dir, false),
+        (3, "write", "inner", "a", Kind::File, false),
+    ] {
+        let (content, chunks) = split((kind == Kind::File).then(|| content(1, 0)));
+        device.trees.set_local(
+            id.into(),
+            LocalNode {
+                shape: Shape {
+                    parent: parent.into(),
+                    name: name.into(),
+                    kind,
+                    content,
+                },
+                identity: identity(ino),
+                parked,
+                left_out_when_placed: false,
+                content_from_server: false,
+                chunks,
+            },
+        );
+        if kind == Kind::Dir {
+            let (id, node) = RemoteNode::from_state(&NodeState {
+                node_id: id.into(),
+                parent_id: if parked { "root" } else { parent }.into(),
+                name: name.into(),
+                kind: koidrive_proto::v1::NodeKind::Dir as i32,
+                status: koidrive_proto::v1::NodeStatus::Live as i32,
+                ..Default::default()
+            })
+            .unwrap();
+            let shape = node.shape.clone();
+            device.trees.set_synced(id.clone(), Some(shape));
+            device.trees.set_remote(id, node);
+        }
+    }
+    device.rule(&Ruling::Include(vec!["a"]));
+    let id = "write".into();
+    assert_eq!(device.trees.check(), Ok(()));
+    assert!(device.trees.ignored(&id) && !visible(&device.trees, &id));
+    let writes = written([Some(key(&content(1, 0)))].into_iter(), 1);
+    local_writes_check(&device, &[], &BTreeSet::new(), &writes).unwrap();
+    device.off_disk.insert(id);
+    assert!(local_writes_check(&device, &[], &BTreeSet::new(), &writes).is_err());
+}
+
+#[test]
 fn an_edit_moved_into_a_folder_the_rules_let_in_counts_only_once_a_scan_finds_it() {
     let mut device = an_edit_moved_into_b(false, true);
     device.trees.remove_local(&"c".into());
