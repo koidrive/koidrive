@@ -2150,14 +2150,19 @@ impl Staging {
     }
 
     pub fn take_history(&mut self) -> Option<Log> {
-        self.history.take().map(|(_, history)| history)
+        let (through, log) = self.history.take()?;
+        (through >= self.last.seq).then_some(log)
     }
 
-    pub fn remember_result(&mut self, at: &Base, changes: &[ChangeRecord]) {
+    pub fn replay_result(&mut self, at: Base, changes: &[ChangeRecord]) -> Result<(), Stop> {
         let next = (self.history.as_ref()).is_some_and(|(through, _)| at.seq == *through + 1);
         if next && at.committed_at_ms != 0 {
-            self.remember(at, changes);
+            self.remember(&at, changes);
         }
+        if at.seq == self.last.seq + 1 {
+            self.replay_commit(at, changes)?;
+        }
+        Ok(())
     }
 
     pub fn remember(&mut self, at: &Base, changes: &[ChangeRecord]) {
@@ -2219,11 +2224,10 @@ impl Staging {
     }
 
     /// True once the tree may replace R: the replay has reached the highest `head_seq` of any page and the head
-    /// of the last `CaughtUp`, and the log a recovery reads has reached the replay.
+    /// of the last `CaughtUp`.
     pub fn ready(&self) -> bool {
         self.last.seq >= self.highest_page_seq
             && self.caught_up.is_some_and(|head| self.last.seq >= head)
-            && (self.history.as_ref()).is_none_or(|(through, _)| *through >= self.last.seq)
     }
 }
 
@@ -2326,7 +2330,7 @@ mod tests {
         use koidrive_engine::first_link::History;
         let mut staging = listed(3, Vec::new());
         staging.read_history_since(Base::from(0), Log::SinceCursor(History::new()));
-        staging.remember_result(&Base::from(3), &[]);
+        staging.replay_result(Base::from(3), &[]).unwrap();
         for seq in 1..=3 {
             staging.remember(&Base::from(seq), &[]);
         }
@@ -2334,47 +2338,40 @@ mod tests {
     }
 
     #[test]
-    fn a_commit_result_after_the_listing_waits_for_the_backlog_to_reach_it() {
-        use koidrive_engine::commit::Base;
-        use koidrive_engine::first_link::History;
-        let mut staging = listed(3, Vec::new());
-        staging.read_history_since(Base::from(0), Log::SinceCursor(History::new()));
-        let result = Base {
+    fn a_commit_result_is_the_log_record_of_its_seq() {
+        let mut staging = backlog_through(3);
+        let result = koidrive_engine::commit::Base {
             seq: 4,
             committed_at_ms: 40,
-            ..Base::default()
+            ..Default::default()
         };
-        staging.remember_result(&result, &[]);
-        staging.replay_commit(result, &[]).unwrap();
-        staging.caught_up(4);
-        assert!(!staging.ready());
-        let backlog: Vec<CommitRecord> = (1..=4).map(|seq| record(seq, Vec::new())).collect();
-        staging.replay(&backlog).unwrap();
-        assert!(staging.ready());
+        staging.replay_result(result, &[]).unwrap();
         assert!(staging.take_history().is_some());
     }
 
     #[test]
-    fn a_commit_result_without_a_time_leaves_the_commit_time_to_the_backlog() {
-        use koidrive_engine::commit::Base;
-        let mut staging = listed(0, Vec::new());
-        let log = Log::SinceFloor {
-            floor_seq: 0,
-            candidates: BTreeSet::new(),
-            first_ms: None,
-            created_ms: BTreeMap::new(),
-        };
-        staging.read_history_since(Base::from(0), log);
-        staging.remember_result(&Base::from(1), &[]);
-        let backlog = CommitRecord {
-            committed_at_ms: 40,
-            ..record(1, Vec::new())
-        };
-        staging.replay(&[backlog]).unwrap();
-        let Some(Log::SinceFloor { first_ms, .. }) = staging.take_history() else {
-            panic!("the log is kept");
-        };
-        assert_eq!(first_ms, Some(40));
+    fn a_commit_result_without_a_time_leaves_no_log_to_read() {
+        let mut staging = backlog_through(3);
+        let result = koidrive_engine::commit::Base::from(4);
+        staging.replay_result(result, &[]).unwrap();
+        assert!(staging.take_history().is_none());
+    }
+
+    #[test]
+    fn a_log_short_of_the_replay_is_not_read() {
+        let mut staging = backlog_through(3);
+        let record = record(4, Vec::new());
+        staging.replay_commit(record_base(&record), &[]).unwrap();
+        assert!(staging.take_history().is_none());
+    }
+
+    fn backlog_through(seq: u64) -> Staging {
+        let mut staging = listed(3, Vec::new());
+        let since = koidrive_engine::commit::Base::from(0);
+        staging.read_history_since(since, Log::SinceCursor(Default::default()));
+        let backlog: Vec<CommitRecord> = (1..=seq).map(|seq| record(seq, Vec::new())).collect();
+        staging.replay(&backlog).unwrap();
+        staging
     }
 
     /// A bootstrap's tree of `nodes` that the log has caught up at `seq`.
