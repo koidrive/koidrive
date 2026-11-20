@@ -4064,7 +4064,6 @@ fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
                 continue;
             }
             if local.kind == Kind::File {
-                trees.give_up(&id);
                 rekey(trees, &id, &NodeId::from(ids.uuid_v7(now_ms)));
                 continue;
             }
@@ -4072,10 +4071,6 @@ fn settle_kept_folders(trees: &mut Trees, ids: &mut IdGen, now_ms: u64) {
                 .filter(|child| trees.left_rules_file(child))
                 .cloned()
                 .collect();
-            for child in &rules {
-                trees.give_up(child);
-            }
-            trees.give_up(&id);
             let taken = twin(trees, &local, true);
             if taken.is_some() {
                 trees.take_kept_entries(&id);
