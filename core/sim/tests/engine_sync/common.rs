@@ -609,16 +609,18 @@ impl Device {
     }
 
     fn note_taken_along<'a>(&mut self, folders: impl IntoIterator<Item = &'a NodeId>) {
-        let on_server: BTreeMap<NodeId, NodeId> =
-            (self.on_server()).map(|(id, parent)| (id.clone(), parent.clone())).collect();
+        let on_server: BTreeMap<NodeId, NodeId> = (self.on_server())
+            .map(|(id, parent)| (id.clone(), parent.clone()))
+            .collect();
         for folder in folders {
             (self.on_server_when_taken_along).insert(folder.clone(), on_server.clone());
         }
     }
 
     fn note_arrivals(&mut self) {
-        let on_server: Vec<(NodeId, NodeId)> =
-            (self.on_server()).map(|(id, parent)| (id.clone(), parent.clone())).collect();
+        let on_server: Vec<(NodeId, NodeId)> = (self.on_server())
+            .map(|(id, parent)| (id.clone(), parent.clone()))
+            .collect();
         for baseline in self.on_server_when_taken_along.values_mut() {
             for (id, parent) in &on_server {
                 baseline.entry(id.clone()).or_insert_with(|| parent.clone());
