@@ -212,8 +212,8 @@ mod tests {
     use std::collections::BTreeSet;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
 
     use super::*;
 
@@ -222,9 +222,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("run/daemon.sock");
         let stop = Arc::new(AtomicBool::new(false));
+        let sightings = Arc::new(AtomicUsize::new(0));
         let watcher = std::thread::spawn({
             let run = dir.path().join("run");
-            let stop = stop.clone();
+            let (stop, sightings) = (stop.clone(), sightings.clone());
             move || {
                 let (mut at_socket, mut anywhere) = (BTreeSet::new(), BTreeSet::new());
                 while !stop.load(Ordering::Relaxed) {
@@ -233,6 +234,7 @@ mod tests {
                             let mode = metadata.permissions().mode() & 0o777;
                             if entry.file_name() == "daemon.sock" {
                                 at_socket.insert(mode);
+                                sightings.fetch_add(1, Ordering::Relaxed);
                             }
                             anywhere.insert(mode);
                         }
@@ -241,8 +243,16 @@ mod tests {
                 (at_socket, anywhere)
             }
         });
-        for _ in 0..200 {
+        let started = Instant::now();
+        let mut binds = 0;
+        while binds < 200 || sightings.load(Ordering::Relaxed) < 20 {
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "the watcher saw the socket {} times in {binds} binds",
+                sightings.load(Ordering::Relaxed)
+            );
             drop(bind(&socket).unwrap());
+            binds += 1;
         }
         stop.store(true, Ordering::Relaxed);
         let (at_socket, anywhere) = watcher.join().unwrap();
