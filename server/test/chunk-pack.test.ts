@@ -49,12 +49,13 @@ describe("chunk packs (RFC 0032 sections 1 and 8)", () => {
 
 describe("chunk packs: format bounds (RFC 0032 section 1 rule 3)", () => {
   const MiB = 1 << 20;
-  const hash = (n: number) => Uint8Array.of(n, ...new Uint8Array(31));
+  const hash = (n: number) => Uint8Array.of(n & 255, n >> 8, ...new Uint8Array(30));
   const member = (n: number, size: number) => ({ hash: hash(n), data: new Uint8Array(size) });
   const invalid = [
     ["chunk over 1 MiB", [member(1, MiB + 1)]],
     ["body over 4 MiB", [1, 2, 3, 4, 5].map((n) => member(n, MiB))],
     ["chunk listed twice", [member(1, 1), member(1, 1)]],
+    ["pack of more than 4,096 chunks", Array.from({ length: 4097 }, (_, n) => member(n, 1))],
   ] as const;
   const unchecked = (packed: readonly { hash: Uint8Array; data: Uint8Array }[]) => {
     const body = packed.reduce((n, member) => n + member.data.length, 0);

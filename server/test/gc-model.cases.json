@@ -1,3 +1,3 @@
 [
-  [{"t":"prepare","chunks":[0]},{"t":"race","outer":{"t":"put","plan":0,"outcome":"ok"},"at":"head","inner":[{"t":"pack","plans":[0],"outcome":"ok"},{"t":"prepare","chunks":[0]}]},{"t":"race","outer":{"t":"commit","file":0,"receipts":[0],"extra":[],"dup":true},"at":"head","inner":[{"t":"clock","ms":60000}]},{"t":"compact","phase":"start","pack":0},{"t":"prepare","chunks":[0]}]
+  [{"t":"prepare","chunks":[0]},{"t":"race","outer":{"t":"put","plan":0,"outcome":"ok"},"at":"head","inner":[{"t":"pack","plans":[0],"outcome":"ok"},{"t":"prepare","chunks":[0]}]},{"t":"race","outer":{"t":"commit","file":0,"receipts":[0],"extra":[],"dup":true},"at":"head","inner":[{"t":"clock","ms":60000}]},{"t":"compact","outcome":"ok"},{"t":"prepare","chunks":[0]}]
 ]

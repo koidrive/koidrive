@@ -8,9 +8,8 @@ import { beforeAll, expect, inject, it, vi } from "vitest";
 import { ClaimRequestSchema, type DeviceCredentials, DeviceCredentialsSchema } from "../src/gen/koidrive/v1/auth_pb";
 import { type UploadReceipt, UploadReceiptSchema } from "../src/gen/koidrive/v1/commit_pb";
 import { ChunkBundleResultSchema, ChunkBundleSchema, ChunkPlan_Action, Error_Code } from "../src/gen/koidrive/v1/rpc_pb";
-import { encodePack } from "../src/chunk-pack";
 import { sha256 } from "../src/crypto";
-import { fromHex, toHex, uuidv7 } from "../src/ids";
+import { fromHex, toHex, uuidv7, uuidv7Ms } from "../src/ids";
 import { HOLD_MS, type Session, SpaceDO } from "../src/space-do";
 import { ChunkState, PackState } from "../src/space/schema";
 import { chunkKey, packKey, versionChunks, type VersionRow } from "../src/space/store";
@@ -32,7 +31,7 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const MODELLED_KEY = /^spaces\/[^/]+\/(chunks|packs)\//;
-const TEXTS = ["alpha", "bravo", "charlie"];
+const TEXTS = ["alpha", "bravo", "charlie ".repeat(25)];
 const FILES = 2;
 const LIST_PAGE = 2;
 const SYNC_ROUNDS = 3;
@@ -40,7 +39,7 @@ const SYNC_ROUNDS = 3;
 type Outcome = "ok" | "lostApplied" | "lostInflight";
 type Retirement = "ok" | "refused" | "lostBefore" | "lostAfter" | "oldCode";
 
-type Pause = "head" | "put" | "list" | "retire" | "retirePacks" | "delete";
+type Pause = "head" | "get" | "put" | "written" | "list" | "retire" | "retirePacks" | "delete";
 
 type Simple =
   | { t: "prepare"; chunks: number[] }
@@ -60,7 +59,7 @@ type Simple =
   | { t: "download"; target: number }
   | { t: "clock"; ms: number }
   | { t: "until"; mark: "grace" | "hold"; chunk: number; offsetMs: number }
-  | { t: "compact"; phase: "start" | "swap"; pack: number };
+  | { t: "compact"; outcome: Outcome };
 
 type Step = Simple | { t: "race"; outer: Simple; at: Pause; inner: Simple[]; innerAt?: Pause };
 
@@ -108,7 +107,15 @@ interface World {
   drops: number[];
   history: { atMs: number; keys: string[]; lastUsedMs: Map<string, number> }[];
   lastUsedMs: Map<string, number>;
-  compaction?: { source: string; output: string; moves: { hex: string; from: number; to: number }[] };
+  compaction?: Compaction;
+}
+
+interface Compaction {
+  settled: Promise<void>;
+  done: boolean;
+  error?: unknown;
+  gate: Gate;
+  next: "read" | "write" | "swap";
 }
 
 let owner: DeviceCredentials;
@@ -167,6 +174,7 @@ function installModelR2(): void {
     const onlyIfAbsent = (options?.onlyIf as R2Conditional | undefined)?.etagDoesNotMatch === "*";
     if (onlyIfAbsent && r2.objects.has(key)) return null;
     settle({ put: key, bytes, onlyIfAbsent }, r2.put);
+    await pause("written");
     return described(key);
   }) as never);
   vi.spyOn(bucket, "head").mockImplementation((async (key: string) => {
@@ -177,6 +185,7 @@ function installModelR2(): void {
   }) as never);
   vi.spyOn(bucket, "get").mockImplementation((async (key: string, options?: R2GetOptions) => {
     if (!MODELLED_KEY.test(key)) return real.get(key, options);
+    await pause("get");
     const found = described(key);
     const stored = r2.objects.get(key)?.bytes;
     const range = options?.range as { offset: number; length: number } | undefined;
@@ -478,7 +487,7 @@ async function act(world: World, step: Step): Promise<boolean> {
       return true;
     }
     case "compact":
-      return step.phase === "start" ? startCompaction(world, step.pack) : swapCompaction(world);
+      return stepCompaction(world, step.outcome);
     case "race": {
       const outerGate: Gate = { reached: false, released: false };
       pauses.set(step.at, outerGate);
@@ -512,91 +521,56 @@ function interrupted(error: unknown): false {
   throw error;
 }
 
-type Owner = { compacting: Set<string>; settings(): { chunk_grace_days: number } };
+const COMPACTION_PAUSES = { start: "get", read: "put", write: "written", swap: undefined } as const;
+const COMPACTION_NEXT = { start: "read", read: "write", write: "swap" } as const;
 
-async function startCompaction(world: World, index: number): Promise<boolean> {
-  if (world.compaction) return false;
-  const planned = await runInDurableObject(space(world.spaceId), (_instance, state) => {
-    const sql = state.storage.sql;
-    const sources = sql.exec("SELECT pack_id FROM packs WHERE state = ? AND live_count > 0 ORDER BY pack_id", PackState.LIVE).toArray().map((row) => String(row.pack_id));
-    const source = pick(sources, index);
-    if (!source) return undefined;
-    const rows = sql
-      .exec("SELECT hash, pack_offset FROM chunks WHERE pack_id = ? AND state IN (?, ?) ORDER BY pack_offset", source, ChunkState.PENDING, ChunkState.LIVE)
-      .toArray()
-      .map((row) => ({ hex: toHex(new Uint8Array(row.hash as ArrayBuffer)), from: Number(row.pack_offset) }));
-    return { source, rows };
-  });
-  if (!planned) return false;
-  const members = planned.rows.map(({ hex }) => chunks.find((chunk) => chunk.hex === hex)!);
-  const bytes = encodePack(members.map((member) => ({ hash: fromHex(member.hex)!, data: member.bytes })));
-  const output = uuidv7();
-  let to = 0;
-  const moves = planned.rows.map(({ hex, from }, i) => {
-    const move = { hex, from, to };
-    to += members[i]!.bytes.length;
-    return move;
-  });
-  await runInDurableObject(space(world.spaceId), (instance, state) => {
-    state.storage.sql.exec("INSERT INTO packs (pack_id, size, state, live_count, live_bytes, hold_until_ms) VALUES (?, ?, ?, 0, 0, 0)", output, bytes.length, PackState.WRITING);
-    (instance as unknown as Owner).compacting.add(output);
-  });
-  world.compaction = { source: planned.source, output, moves };
-  return env.BUCKET.put(packKey(world.spaceId, output), bytes, { onlyIf: { etagDoesNotMatch: "*" } }).then(
-    () => true,
-    () => false,
-  );
+async function stepCompaction(world: World, outcome: Outcome): Promise<boolean> {
+  const phase = world.compaction?.next ?? "start";
+  const at = COMPACTION_PAUSES[phase];
+  const gate: Gate = { reached: false, released: false };
+  if (at) pauses.set(at, gate);
+  let pass = world.compaction;
+  if (pass) {
+    if (phase === "write") r2.put = outcome;
+    pass.gate.released = true;
+  } else {
+    const started: Compaction = { settled: Promise.resolve(), done: false, gate, next: "read" };
+    started.settled = runInDurableObject(space(world.spaceId), (instance) => instance.collectGarbage(Date.now()))
+      .then(
+        () => undefined,
+        (error) => void (started.error = error),
+      )
+      .finally(() => (started.done = true));
+    pass = started;
+  }
+  const running = pass;
+  await until(() => gate.reached || running.done);
+  if (at) pauses.delete(at);
+  r2.put = "ok";
+  if (phase === "swap" || !gate.reached) {
+    world.compaction = undefined;
+    await running.settled;
+    expected(running.error);
+    return phase === "swap" ? running.error === undefined : phase === "write" && outcome !== "ok" && running.error !== undefined;
+  }
+  running.gate = gate;
+  running.next = COMPACTION_NEXT[phase];
+  world.compaction = running;
+  return true;
 }
 
-async function swapCompaction(world: World): Promise<boolean> {
-  const planned = world.compaction;
-  if (!planned) return false;
+async function finishCompaction(world: World): Promise<void> {
+  const running = world.compaction;
+  if (!running) return;
   world.compaction = undefined;
-  return runInDurableObject(space(world.spaceId), (instance, state) => {
-    const owner = instance as unknown as Owner;
-    if (!owner.compacting.delete(planned.output)) return false;
-    const sql = state.storage.sql;
-    return state.storage.transactionSync(() => {
-      const output = sql.exec("SELECT state FROM packs WHERE pack_id = ?", planned.output).toArray()[0];
-      const onSource = sql.exec("SELECT hash, pack_offset FROM chunks WHERE pack_id = ? AND state IN (?, ?)", planned.source, ChunkState.PENDING, ChunkState.LIVE).toArray();
-      const inPlan = onSource.every((row) => planned.moves.some((move) => move.hex === toHex(new Uint8Array(row.hash as ArrayBuffer)) && move.from === Number(row.pack_offset)));
-      if (output?.state !== PackState.WRITING || !inPlan) {
-        sql.exec("UPDATE packs SET state = ? WHERE pack_id = ? AND state = ?", PackState.DELETING, planned.output, PackState.WRITING);
-        return false;
-      }
-      for (const { hex, from, to } of planned.moves) {
-        sql.exec(
-          "UPDATE chunks SET pack_id = ?, pack_offset = ? WHERE hash = ? AND pack_id = ? AND pack_offset = ? AND state IN (?, ?)",
-          planned.output,
-          to,
-          fromHex(hex)!,
-          planned.source,
-          from,
-          ChunkState.PENDING,
-          ChunkState.LIVE,
-        );
-      }
-      sql.exec(
-        `UPDATE packs SET state = ?,
-           live_count = (SELECT COUNT(*) FROM chunks WHERE chunks.pack_id = packs.pack_id AND chunks.state IN (?, ?)),
-           live_bytes = (SELECT COALESCE(SUM(size), 0) FROM chunks WHERE chunks.pack_id = packs.pack_id AND chunks.state IN (?, ?))
-         WHERE pack_id = ?`,
-        PackState.LIVE,
-        ChunkState.PENDING,
-        ChunkState.LIVE,
-        ChunkState.PENDING,
-        ChunkState.LIVE,
-        planned.output,
-      );
-      sql.exec(
-        "UPDATE packs SET state = ?, live_count = 0, live_bytes = 0, hold_until_ms = ? WHERE pack_id = ?",
-        PackState.DRAINED,
-        Date.now() + owner.settings().chunk_grace_days * DAY,
-        planned.source,
-      );
-      return true;
-    });
-  });
+  running.gate.released = true;
+  await running.settled;
+  expected(running.error);
+}
+
+function expected(error: unknown): void {
+  if (error === undefined || (error instanceof Error && (error.message.startsWith("restarting") || error.message === "R2 did not answer"))) return;
+  r2.violations.push(`a compacting GC pass failed: ${error instanceof Error ? error.message : String(error)}`);
 }
 
 async function commitFile(world: World, file: number, used: number[], receipts: UploadReceipt[], dup = false) {
@@ -642,6 +616,7 @@ interface ChunkRow {
 
 interface PackRow {
   packId: string;
+  size: number;
   state: number;
   liveCount: number;
   liveBytes: number;
@@ -665,9 +640,9 @@ async function chunkRows(world: World): Promise<{ rows: ChunkRow[]; packs: PackR
         packOffset: Number(row.pack_offset),
       }));
     const packs = sql
-      .exec("SELECT pack_id, state, live_count, live_bytes FROM packs")
+      .exec("SELECT pack_id, size, state, live_count, live_bytes FROM packs")
       .toArray()
-      .map((row) => ({ packId: String(row.pack_id), state: Number(row.state), liveCount: Number(row.live_count), liveBytes: Number(row.live_bytes) }));
+      .map((row) => ({ packId: String(row.pack_id), size: Number(row.size), state: Number(row.state), liveCount: Number(row.live_count), liveBytes: Number(row.live_bytes) }));
     const references = new Map<string, number>();
     for (const version of sql.exec("SELECT * FROM versions").toArray() as unknown as VersionRow[]) {
       for (const hex of new Set(versionChunks(sql, version).map((chunk) => toHex(chunk.hash)))) references.set(hex, (references.get(hex) ?? 0) + 1);
@@ -731,7 +706,7 @@ async function check(world: World): Promise<void> {
 
 async function quiesce(world: World): Promise<void> {
   for (const flight of r2.flights.splice(0)) land(flight);
-  await swapCompaction(world);
+  await finishCompaction(world);
   for (let pass = 0; pass < 3; pass++) {
     await act(world, { t: "clock", ms: 31 * DAY });
     for (let runs = 0; ; runs++) {
@@ -746,7 +721,10 @@ async function quiesce(world: World): Promise<void> {
   const rowless = packs.filter((pack) => !rows.some((row) => row.packId === pack.packId)).map((pack) => `${pack.packId} in state ${pack.state}`);
   const keys = new Set(rows.map((row) => (row.packId !== null ? packKey(world.spaceId, row.packId) : row.incarnation === null ? "" : chunkKey(world.spaceId, row.hex, row.incarnation))));
   const garbage = [...r2.objects.keys()].filter((key) => key.startsWith(`spaces/${world.spaceId}/`) && !keys.has(key));
-  expect({ left, rowless, garbage }).toEqual({ left: [], rowless: [], garbage: [] });
+  const sparse = packs
+    .filter((pack) => pack.state === PackState.LIVE && uuidv7Ms(pack.packId) < Date.now() - 7 * DAY && pack.size > (pack.liveBytes + pack.liveCount * 36 + 16) * 2)
+    .map((pack) => `${pack.packId} of ${pack.size} bytes holds ${pack.liveCount} live chunks of ${pack.liveBytes} bytes`);
+  expect({ left, rowless, garbage, sparse }).toEqual({ left: [], rowless: [], garbage: [], sparse: [] });
 }
 
 const index = fc.oneof({ weight: 3, arbitrary: fc.constant(0) }, fc.nat({ max: 15 }));
@@ -763,12 +741,12 @@ const commit = fc.record({
   dup: fc.oneof({ weight: 3, arbitrary: fc.constant(false) }, fc.constant(true)),
 });
 const collect = fc.record({ t: fc.constant("gc" as const), retire: fc.constantFrom<Retirement>("ok", "ok", "refused", "lostBefore", "lostAfter", "oldCode"), del: outcome });
-const compact = fc.record({ t: fc.constant("compact" as const), phase: fc.constantFrom("start" as const, "swap" as const), pack: index });
+const compact = fc.record({ t: fc.constant("compact" as const), outcome });
 const drop = fc.record({ t: fc.constant("drop" as const), version: index });
 const crash = fc.constant({ t: "crash" as const });
 const rewind = fc.record({ t: fc.constant("rewind" as const), point: index, from: fc.constantFrom("newest" as const, "oldest" as const, "drop" as const) });
 const clock = fc.record({ t: fc.constant("clock" as const), ms: fc.constantFrom(MINUTE, MINUTE, MINUTE, 30 * MINUTE, 2 * HOUR, DAY, 7 * DAY, 31 * DAY) });
-const pausePoint = fc.constantFrom<Pause>("head", "put", "list", "retire", "retirePacks", "delete");
+const pausePoint = fc.constantFrom<Pause>("head", "get", "put", "written", "list", "retire", "retirePacks", "delete");
 const simple: fc.Arbitrary<Simple> = fc.oneof(
   { weight: 3, arbitrary: prepare },
   { weight: 6, arbitrary: put },
@@ -833,6 +811,14 @@ const minute: Step = { t: "clock", ms: MINUTE };
 const day: Step = { t: "clock", ms: DAY };
 const week: Step = { t: "clock", ms: 7 * DAY };
 const gc: Step = { t: "gc", retire: "ok", del: "ok" };
+const compaction: Step = { t: "compact", outcome: "ok" };
+const sparsePack: Step[] = [
+  minute,
+  { t: "prepare", chunks: [0, 1, 2] },
+  { t: "pack", plans: [0, 1, 2], outcome: "ok" },
+  { t: "commit", file: 0, receipts: [0], extra: [] },
+  { t: "clock", ms: 8 * DAY },
+];
 const uploadBothThenA: Step[] = [{ t: "prepare", chunks: [0, 1] }, { t: "put", plan: 0, outcome: "ok" }, { t: "put", plan: 1, outcome: "ok" }];
 const checkAThenRefuse: Step[] = [
   minute,
@@ -1052,22 +1038,43 @@ const scenarios: Step[][] = [
     { t: "race", outer: { t: "commit", file: 0, receipts: [], extra: [0] }, at: "head", inner: [{ t: "commit", file: 1, receipts: [0], extra: [1], refused: true }] },
   ],
   [
-    minute,
-    { t: "prepare", chunks: [0] },
-    { t: "pack", plans: [0], outcome: "ok" },
-    { t: "commit", file: 0, receipts: [0], extra: [] },
-    { t: "compact", phase: "start", pack: 0 },
+    ...sparsePack,
+    compaction,
     minute,
     { t: "commit", file: 1, receipts: [], extra: [0] },
+    compaction,
+    compaction,
     { t: "clock", ms: 30 * MINUTE },
-    { t: "compact", phase: "swap", pack: 0 },
+    compaction,
     { t: "clock", ms: HOUR },
-    { t: "rewind", point: 2 },
+    { t: "rewind", point: 4 },
     gc,
     { t: "clock", ms: HOUR },
     { t: "rewind", point: 3 },
     gc,
   ],
+  sparsePack,
+  [...sparsePack, compaction, { t: "targets", chunk: 0 }, compaction, compaction, compaction, gc, { t: "download", target: 0 }],
+  [
+    minute,
+    { t: "prepare", chunks: [0, 1, 2] },
+    { t: "pack", plans: [0, 1, 2], outcome: "ok" },
+    { t: "commit", file: 0, receipts: [0, 1], extra: [] },
+    { t: "commit", file: 0, receipts: [], extra: [0] },
+    { t: "drop", version: 0 },
+    { t: "clock", ms: 8 * DAY },
+    compaction,
+    { t: "clock", ms: 23 * DAY },
+    gc,
+    { t: "prepare", chunks: [1] },
+    { t: "pack", plans: [0], outcome: "ok" },
+    { t: "commit", file: 1, receipts: [0], extra: [] },
+    compaction,
+    compaction,
+    compaction,
+  ],
+  [minute, { t: "prepare", chunks: [0, 1] }, { t: "pack", plans: [0, 1], outcome: "ok" }, { t: "commit", file: 0, receipts: [0, 1], extra: [] }, { t: "clock", ms: 8 * DAY }, gc],
+  [...sparsePack, compaction, compaction, { t: "compact", outcome: "lostInflight" }, gc, { t: "land", flight: 0 }],
   [
     minute,
     { t: "prepare", chunks: [0, 1] },
@@ -1161,13 +1168,19 @@ const settings = { numRuns: cases, examples: (saved as Step[][]).map((sequence):
 
 async function run(sequence: Step[], directed = false): Promise<World> {
   const world = await newWorld();
-  for (const [i, next] of sequence.entries()) {
-    vi.setSystemTime(Date.now() + 1000);
-    const took = await act(world, next);
-    await snapshot(world);
-    await check(world);
-    if (!took && directed) throw new Error(`directed step ${i}, ${JSON.stringify(next)}, did not take effect`);
+  try {
+    for (const [i, next] of sequence.entries()) {
+      vi.setSystemTime(Date.now() + 1000);
+      const took = await act(world, next);
+      await snapshot(world);
+      await check(world);
+      if (!took && directed) throw new Error(`directed step ${i}, ${JSON.stringify(next)}, did not take effect`);
+    }
+  } finally {
+    await finishCompaction(world);
   }
+  await snapshot(world);
+  await check(world);
   return world;
 }
 

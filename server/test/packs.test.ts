@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { type UploadReceipt, UploadReceiptSchema } from "../src/gen/koidrive/v1/commit_pb";
 import type { RpcResponse } from "../src/gen/koidrive/v1/messages_pb";
 import { ChunkPlan_Action, Error_Code } from "../src/gen/koidrive/v1/rpc_pb";
+import { encodePack, readPackIndex } from "../src/chunk-pack";
+import { sha256 } from "../src/crypto";
 import { toHex, uuidv7 } from "../src/ids";
 import { HOLD_MS, SpaceDO } from "../src/space-do";
 import { GC_BATCH, R2_DELETE_BATCH, R2_DELETE_ROUNDS } from "../src/space/limits";
@@ -455,6 +457,251 @@ describe("chunk packs: pack GC (RFC 0032 section 6)", () => {
     expect((await gc(space, Date.now())).deletedPacks).toBe(1);
     expect(await packsOf(space)).toMatchObject([{ pack_id: owned, state: PackState.WRITING }]);
   });
+});
+
+describe("chunk packs: compaction (RFC 0032 section 7)", () => {
+  async function sparseSource(space: Space, live: string[], dead: string[]) {
+    vi.setSystemTime(Date.now() + 1000);
+    const file = await space.prepare(...live);
+    const unused = await space.prepare(...dead);
+    const pack = await storedPack(space, [...file.chunks, ...unused.chunks]);
+    expect(outcome(await space.commit(file, pack.receipts.slice(0, file.chunks.length)))).toBe("commit");
+    return { pack, chunks: file.chunks, unused: unused.chunks };
+  }
+
+  function holdGet(key: string) {
+    const get = env.BUCKET.get.bind(env.BUCKET);
+    const gate = { reached: false, released: false };
+    vi.spyOn(env.BUCKET, "get").mockImplementation((async (asked: string, options?: R2GetOptions) => {
+      if (asked === key && !gate.reached) {
+        gate.reached = true;
+        await until(() => gate.released);
+      }
+      return get(asked, options);
+    }) as never);
+    return gate;
+  }
+
+  async function download(space: Space, chunk: Planned): Promise<Uint8Array> {
+    const result = await space.device.call({ case: "getDownloadTargets", value: { hashes: [chunk.hash] } });
+    if (result.case !== "downloadTargets") throw new Error("getDownloadTargets failed");
+    const response = await exports.default.fetch(result.value.targets[0]!.target!.url);
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  const dead = (name: string) => `${name}-`.repeat(40);
+
+  it("rewrites a pack under half live into a smaller output and never picks a fully live pack of 1-byte chunks", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const space = await packedSpace();
+    const full = await sparseSource(space, ["a", "b", "c"], []);
+    const sparse = await sparseSource(space, ["threshold-kept"], [dead("threshold-dead")]);
+    vi.setSystemTime(Date.now() + 8 * DAY);
+    const nowMs = Date.now();
+    await gc(space, nowMs);
+    const packs = await packsOf(space);
+    const output = packs.find((pack) => pack.pack_id !== full.pack.packId && pack.pack_id !== sparse.pack.packId)!;
+    expect(packs.find((pack) => pack.pack_id === full.pack.packId)).toMatchObject({ state: PackState.LIVE, live_count: 3 });
+    expect(packs.find((pack) => pack.pack_id === sparse.pack.packId)).toMatchObject({ state: PackState.DRAINED, live_count: 0, live_bytes: 0, hold_until_ms: nowMs + 30 * DAY });
+    expect(output).toMatchObject({ state: PackState.LIVE, live_count: 1, live_bytes: sparse.chunks[0]!.bytes.length });
+    expect(Number(output.size)).toBeLessThan(sparse.pack.bytes.length);
+    expect(await rowsOf(space, sparse.chunks)).toMatchObject([{ packId: output.pack_id, packOffset: 0 }]);
+    expect(await download(space, sparse.chunks[0]!)).toEqual(sparse.chunks[0]!.bytes);
+  });
+
+  it("moves nothing when its output was freed while the pass waited on R2", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const space = await packedSpace();
+    const sparse = await sparseSource(space, ["freed-kept"], [dead("freed-dead")]);
+    vi.setSystemTime(Date.now() + 8 * DAY);
+    const gate = holdGet(sparse.pack.key);
+    const pass = gc(space, Date.now());
+    await until(() => gate.reached);
+    await runInDurableObject(space.stub, (instance) => {
+      const owners = (instance as unknown as { compacting: Set<string> }).compacting;
+      owners.clear();
+      owners.add("another pass");
+    });
+    await gc(space, Date.now());
+    gate.released = true;
+    await pass;
+    expect(await rowsOf(space, sparse.chunks)).toMatchObject([{ packId: sparse.pack.packId }]);
+    expect(await packsOf(space)).toMatchObject([{ pack_id: sparse.pack.packId, state: PackState.LIVE, live_count: 1 }]);
+  });
+
+  it("frees its output and leaves the source alone when a row lands on the source after the plan", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const space = await packedSpace();
+    const sparse = await sparseSource(space, ["landed-kept"], [dead("landed-late")]);
+    vi.setSystemTime(Date.now() + 8 * DAY);
+    const gate = holdGet(sparse.pack.key);
+    const pass = gc(space, Date.now());
+    await until(() => gate.reached);
+    const [late] = sparse.unused as [Planned];
+    const offset = sparse.chunks[0]!.bytes.length;
+    await runInDurableObject(space.stub, (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO chunks (hash, size, state, refcount, hold_until_ms, incarnation, head_checked, pack_id, pack_offset) VALUES (?, ?, ?, 0, ?, ?, 0, ?, ?) ON CONFLICT (hash) DO UPDATE SET state = excluded.state, hold_until_ms = excluded.hold_until_ms, incarnation = excluded.incarnation, pack_id = excluded.pack_id, pack_offset = excluded.pack_offset",
+        late.hash,
+        late.bytes.length,
+        ChunkState.PENDING,
+        Date.now() + DAY,
+        late.incarnation,
+        sparse.pack.packId,
+        offset,
+      );
+      state.storage.sql.exec("UPDATE packs SET live_count = live_count + 1, live_bytes = live_bytes + ? WHERE pack_id = ?", late.bytes.length, sparse.pack.packId);
+    });
+    gate.released = true;
+    await pass;
+    expect(await rowsOf(space, [...sparse.chunks, late])).toMatchObject([{ packId: sparse.pack.packId }, { packId: sparse.pack.packId, packOffset: offset }]);
+    const packs = await packsOf(space);
+    expect(packs.find((pack) => pack.pack_id === sparse.pack.packId)).toMatchObject({ state: PackState.LIVE, live_count: 2 });
+    expect(packs.filter((pack) => pack.pack_id !== sparse.pack.packId)).toMatchObject([{ state: PackState.DELETING, live_count: 0 }]);
+  });
+
+  it("leaves out and logs a source that is missing or whose planned bytes do not match their hash", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const space = await packedSpace();
+    const corrupt = await sparseSource(space, ["corrupt-kept"], [dead("corrupt-dead")]);
+    const missing = await sparseSource(space, ["missing-kept"], [dead("missing-dead")]);
+    const intact = await sparseSource(space, ["intact-kept"], [dead("intact-dead")]);
+    const flipped = corrupt.pack.bytes.slice();
+    flipped[0]! ^= 1;
+    await env.BUCKET.put(corrupt.pack.key, flipped);
+    await env.BUCKET.delete(missing.pack.key);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.setSystemTime(Date.now() + 8 * DAY);
+    await gc(space, Date.now());
+    const packs = await packsOf(space);
+    const state = (packId: string) => packs.find((pack) => pack.pack_id === packId)?.state;
+    expect([state(corrupt.pack.packId), state(missing.pack.packId), state(intact.pack.packId)]).toEqual([PackState.LIVE, PackState.LIVE, PackState.DRAINED]);
+    const output = packs.find((pack) => ![corrupt, missing, intact].some((source) => source.pack.packId === pack.pack_id))!;
+    const index = await readPackIndex(env.BUCKET as never, packKey(space.spaceId, String(output.pack_id)));
+    expect(index.map((entry) => toHex(entry.hash))).toEqual([toHex(intact.chunks[0]!.hash)]);
+    expect(errors.mock.calls.map((call) => call.slice(1))).toEqual(
+      expect.arrayContaining([
+        [space.spaceId, corrupt.pack.packId, toHex(corrupt.chunks[0]!.hash)],
+        [space.spaceId, missing.pack.packId],
+      ]),
+    );
+  });
+
+  it.each([
+    ["throws", async () => Promise.reject(new Error("R2 did not answer"))],
+    ["is refused by its precondition", async () => null],
+  ])("frees the output and keeps every row on its source when the output write %s", async (_, answer) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const space = await packedSpace();
+    const sparse = await sparseSource(space, ["failed-kept"], [dead("failed-dead")]);
+    const put = env.BUCKET.put.bind(env.BUCKET);
+    vi.spyOn(env.BUCKET, "put").mockImplementation((async (key: string, value: never, options?: R2PutOptions) => (key.includes("/packs/") ? answer() : put(key, value, options))) as never);
+    vi.setSystemTime(Date.now() + 8 * DAY);
+    await gc(space, Date.now()).catch(() => undefined);
+    expect(await rowsOf(space, sparse.chunks)).toMatchObject([{ packId: sparse.pack.packId }]);
+    const packs = await packsOf(space);
+    expect(packs.find((pack) => pack.pack_id === sparse.pack.packId)).toMatchObject({ state: PackState.LIVE, live_count: 1 });
+    expect(packs.filter((pack) => pack.pack_id !== sparse.pack.packId)).toMatchObject([{ state: PackState.DELETING }]);
+  });
+
+  it("leaves an output write that lands after its output was freed to the pack sweep", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const space = await packedSpace();
+    await sparseSource(space, ["late-kept"], [dead("late-dead")]);
+    const put = env.BUCKET.put.bind(env.BUCKET);
+    let held: { key: string; land: () => Promise<unknown> } | undefined;
+    vi.spyOn(env.BUCKET, "put").mockImplementation((async (key: string, value: never, options?: R2PutOptions) => {
+      if (held || !key.includes("/packs/")) return put(key, value, options);
+      held = { key, land: () => put(key, value, options) };
+      throw new Error("R2 did not answer");
+    }) as never);
+    vi.setSystemTime(Date.now() + 8 * DAY);
+    await expect(gc(space, Date.now())).rejects.toThrow("R2 did not answer");
+    await gc(space, Date.now());
+    await held!.land();
+    expect((await packsOf(space)).map((pack) => pack.pack_id)).not.toContain(held!.key.split("/").at(-1));
+    vi.setSystemTime(Date.now() + 31 * DAY);
+    await runInDurableObject(space.stub, (_instance, state) => state.storage.sql.exec("DELETE FROM meta WHERE key = 'pack_sweep_due_ms'"));
+    await gc(space, Date.now());
+    expect(await env.BUCKET.head(held!.key)).toBeNull();
+  });
+
+  it("reads at most 16 sources and writes at most 8 outputs per pass, and reports more work when it used 16", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const space = await packedSpace();
+    const sourceIds: string[] = [];
+    for (let source = 0; source < 17; source++) {
+      const chunks = await Promise.all(
+        [0, 1, 2, 3].map(async (i) => {
+          const data = new Uint8Array(i < 2 ? (1 << 20) - 64 : 1 << 20);
+          new DataView(data.buffer).setUint32(0, source * 4 + i);
+          return { hash: await sha256(data), data };
+        }),
+      );
+      const packId = uuidv7(Date.now() - 8 * DAY + source);
+      const bytes = encodePack(chunks);
+      await env.BUCKET.put(packKey(space.spaceId, packId), bytes);
+      await runInDurableObject(space.stub, (_instance, state) => {
+        const live = chunks.slice(0, 2);
+        state.storage.sql.exec("INSERT INTO packs (pack_id, size, state, live_count, live_bytes, hold_until_ms) VALUES (?, ?, ?, 2, ?, 0)", packId, bytes.length, PackState.LIVE, live.reduce((sum, chunk) => sum + chunk.data.length, 0));
+        let offset = 0;
+        for (const { hash, data } of live) {
+          state.storage.sql.exec(
+            "INSERT INTO chunks (hash, size, state, refcount, hold_until_ms, incarnation, pack_id, pack_offset) VALUES (?, ?, ?, 1, 0, '1.1', ?, ?)",
+            hash,
+            data.length,
+            ChunkState.LIVE,
+            packId,
+            offset,
+          );
+          offset += data.length;
+        }
+      });
+      sourceIds.push(packId);
+    }
+    const gets = vi.spyOn(env.BUCKET, "get");
+    const puts = vi.spyOn(env.BUCKET, "put");
+    const packCalls = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.filter(([key]) => String(key).includes("/packs/")).length;
+    const first = await gc(space, Date.now());
+    expect({ gets: packCalls(gets), puts: packCalls(puts), more: first.more }).toEqual({ gets: 16, puts: 8, more: true });
+    const second = await gc(space, Date.now());
+    expect({ gets: packCalls(gets), puts: packCalls(puts), more: second.more }).toEqual({ gets: 17, puts: 9, more: false });
+    const packs = await packsOf(space);
+    expect(packs.filter((pack) => sourceIds.includes(String(pack.pack_id))).every((pack) => pack.state === PackState.DRAINED)).toBe(true);
+    expect(packs.filter((pack) => !sourceIds.includes(String(pack.pack_id))).map((pack) => `${pack.state}:${pack.live_count}`).sort()).toEqual([`${PackState.LIVE}:2`, ...Array(8).fill(`${PackState.LIVE}:4`)]);
+  }, 120_000);
+
+  it("puts at most 4,096 chunks in one output", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const space = await packedSpace();
+    const sourceIds: string[] = [];
+    for (let source = 0; source < 2; source++) {
+      const live = await Promise.all(
+        Array.from({ length: 2049 }, async (_, i) => {
+          const data = Uint8Array.of(source, i >> 8, i & 255);
+          return { hash: await sha256(data), data };
+        }),
+      );
+      const unused = new Uint8Array(1 << 18).fill(source + 1);
+      const bytes = encodePack([...live, { hash: await sha256(unused), data: unused }]);
+      const packId = uuidv7(Date.now() - 8 * DAY + source);
+      await env.BUCKET.put(packKey(space.spaceId, packId), bytes);
+      await runInDurableObject(space.stub, (_instance, state) => {
+        state.storage.sql.exec("INSERT INTO packs (pack_id, size, state, live_count, live_bytes, hold_until_ms) VALUES (?, ?, ?, ?, ?, 0)", packId, bytes.length, PackState.LIVE, live.length, live.length * 3);
+        for (const [i, { hash }] of live.entries()) {
+          state.storage.sql.exec("INSERT INTO chunks (hash, size, state, refcount, hold_until_ms, incarnation, pack_id, pack_offset) VALUES (?, 3, ?, 1, 0, '1.1', ?, ?)", hash, ChunkState.LIVE, packId, i * 3);
+        }
+      });
+      sourceIds.push(packId);
+    }
+    const { more } = await gc(space, Date.now());
+    const packs = await packsOf(space);
+    expect({
+      more,
+      sources: packs.filter((pack) => sourceIds.includes(String(pack.pack_id))).map((pack) => pack.state),
+      outputs: packs.filter((pack) => !sourceIds.includes(String(pack.pack_id))).map((pack) => `${pack.state}:${pack.live_count}`),
+    }).toEqual({ more: false, sources: [PackState.DRAINED, PackState.DRAINED], outputs: [`${PackState.LIVE}:2049`, `${PackState.LIVE}:2049`] });
+  }, 120_000);
 });
 
 describe("chunk packs: rewind completion (RFC 0032 section 6 rule 5)", () => {
