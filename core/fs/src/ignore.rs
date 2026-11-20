@@ -143,6 +143,11 @@ impl Seeded {
 struct Listing {
     dir: PathBuf,
     names: Vec<OsString>,
+    chain: Option<Vec<FileId>>,
+}
+
+fn same_chain(before: &[FileId], after: &[FileId]) -> bool {
+    before.len() == after.len() && before.iter().zip(after).all(|(a, b)| a.same(b))
 }
 
 struct Walk {
@@ -166,6 +171,7 @@ struct Seen {
     stamp: (i128, i128),
     racy: bool,
     listing: u64,
+    needs_walk: bool,
 }
 
 impl Seen {
@@ -191,6 +197,7 @@ impl Seen {
             stamp,
             racy: second(stamp.0.max(stamp.1)) >= second(at),
             listing: listing.finish(),
+            needs_walk: false,
         };
         Some((seen, names.into_iter().map(|(name, _)| name).collect()))
     }
@@ -239,6 +246,7 @@ impl Walk {
                 .map(|(dir, names)| Listing {
                     dir: dir.clone(),
                     names: names.iter().rev().cloned().collect(),
+                    chain: None,
                 })
                 .rev()
                 .collect(),
@@ -309,63 +317,69 @@ impl Walk {
         dir: PathBuf,
         cut: &mut dyn FnMut(Cut<'_>),
     ) -> usize {
-        let Some(seen) = self.passed.get(&dir) else {
+        let (Some(seen), Some(parent), Some(name)) =
+            (self.passed.get_mut(&dir), dir.parent(), dir.file_name())
+        else {
             return 1;
         };
+        let cost = dir.components().count();
         cut(Cut::Confirming(&dir));
-        let same = match stat_at(root, dir.as_os_str()) {
-            Ok(stat) => stat
-                .id
-                .same(&seen.id)
-                .then_some((stat.mtime_ns, stat.ctime_ns)),
-            Err(err) if is_gone(&err) => {
-                self.passed.remove(&dir);
-                self.changed = true;
-                return 1;
+        let attached = open_attached(root, parent, &mut |_| {}).and_then(|above| {
+            let Some((fd, chain)) = above else {
+                return Ok(None);
+            };
+            match stat_at(fd.as_fd(), name) {
+                Ok(stat) => Ok(Some((fd, chain, stat))),
+                Err(err) if is_gone(&err) => Ok(None),
+                Err(err) => Err(err),
+            }
+        });
+        let (above, chain, stat) = match attached {
+            Ok(Some(attached)) => attached,
+            Ok(None) => {
+                self.changed |= !std::mem::replace(&mut seen.needs_walk, true);
+                return cost;
             }
             Err(_) => {
                 self.unopened.insert(dir);
-                return 1;
+                return cost;
             }
         };
-        if same.is_some_and(|stamp| stamp == seen.stamp && !seen.racy) {
-            return 1;
-        }
-        let relisted = match same {
-            Some(_) => {
-                cut(Cut::OpeningDir(&dir));
-                match open_dir_at(root, dir.as_os_str()) {
-                    Ok(fd) => Seen::of(fd.as_fd(), &dir, &mut self.unopened),
-                    Err(err) => {
-                        if !is_gone(&err) {
-                            self.unopened.insert(dir.clone());
-                        }
-                        None
+        let mut cost = cost;
+        if !seen.needs_walk && stat.id.same(&seen.id) {
+            if (stat.mtime_ns, stat.ctime_ns) == seen.stamp && !seen.racy {
+                return cost;
+            }
+            cut(Cut::OpeningDir(&dir));
+            cost += 1;
+            match open_dir_at(above.as_fd(), name) {
+                Ok(fd) => {
+                    let Some((now, _)) = Seen::of(fd.as_fd(), &dir, &mut self.unopened) else {
+                        return cost;
+                    };
+                    if now.id.same(&seen.id) && now.listing == seen.listing {
+                        *seen = now;
+                        return cost;
                     }
                 }
+                Err(err) if is_gone(&err) => {
+                    self.changed |= !std::mem::replace(&mut seen.needs_walk, true);
+                    return cost;
+                }
+                Err(_) => {
+                    self.unopened.insert(dir);
+                    return cost;
+                }
             }
-            None => None,
-        };
-        let Some((now, names)) = relisted.filter(|(now, _)| now.id.same(&seen.id)) else {
-            self.passed.remove(&dir);
-            if let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) {
-                self.listings.push(Listing {
-                    dir: parent.to_path_buf(),
-                    names: vec![name.to_os_string()],
-                });
-            }
-            self.changed = true;
-            return 2;
-        };
-        if now.listing != seen.listing {
-            self.changed = true;
-            self.listings.push(Listing {
-                dir: dir.clone(),
-                names: names.into_iter().rev().collect(),
-            });
         }
-        self.passed.insert(dir, now);
-        2
+        seen.needs_walk = true;
+        self.changed = true;
+        self.listings.push(Listing {
+            dir: parent.to_path_buf(),
+            names: vec![name.to_os_string()],
+            chain: Some(chain),
+        });
+        cost
     }
 }
 
@@ -706,6 +720,7 @@ impl<'r> Pending<'r> {
                     walk.push(Listing {
                         dir: folder.clone(),
                         names: added,
+                        chain: None,
                     });
                 }
             }
@@ -930,12 +945,7 @@ impl<'r> Pending<'r> {
                             left = left.saturating_sub(dir.components().count());
                             looked = true;
                             match open_attached(root, &dir, cut) {
-                                Ok(Some((_, now)))
-                                    if now.len() == chain.len()
-                                        && now
-                                            .iter()
-                                            .zip(&chain)
-                                            .all(|(now, was)| now.same(was)) => {}
+                                Ok(Some((_, now))) if same_chain(&chain, &now) => {}
                                 Err(_) => {
                                     walk.unopened.insert(dir);
                                 }
@@ -948,16 +958,30 @@ impl<'r> Pending<'r> {
                             continue 'walk;
                         };
                         let dir = listing.dir.clone();
-                        if walk.base.as_ref().is_none_or(|(at, _)| *at != dir) {
+                        let expected = listing.chain.as_deref();
+                        if expected.is_some() || walk.base.as_ref().is_none_or(|(at, _)| *at != dir)
+                        {
                             left = left.saturating_sub(dir.components().count());
-                            match open_attached(root, &dir, cut) {
-                                Ok(Some((fd, chain))) => {
+                            let opened = if expected.is_some() {
+                                cut(Cut::Confirming(&dir));
+                                open_attached(root, &dir, &mut |_| {})
+                            } else {
+                                open_attached(root, &dir, cut)
+                            };
+                            match opened {
+                                Ok(Some((fd, chain)))
+                                    if expected.is_none_or(|before| same_chain(before, &chain)) =>
+                                {
                                     if !chain.is_empty()
                                         && !walk.bases.iter().any(|(at, _)| *at == dir)
                                     {
                                         walk.bases.push((dir.clone(), chain));
                                     }
                                     walk.base = Some((dir, fd));
+                                }
+                                Ok(_) if expected.is_some() => {
+                                    walk.listings.pop();
+                                    break 'step Replaced::Path(dir);
                                 }
                                 gone => {
                                     if gone.is_err() {
@@ -1012,7 +1036,9 @@ impl<'r> Pending<'r> {
                 if entry.kind != EntryKind::Dir {
                     continue 'walk;
                 }
-                if (walk.passed.get(&path)).is_some_and(|seen| seen.id.same(&entry.id)) {
+                if (walk.passed.get(&path))
+                    .is_some_and(|seen| !seen.needs_walk && seen.id.same(&entry.id))
+                {
                     continue 'walk;
                 }
                 left = left.saturating_sub(1);
@@ -1305,4 +1331,94 @@ fn holds(root: BorrowedFd<'_>, path: &Path, key: Key) -> bool {
     (stat_at(dir.as_fd(), name).ok())
         .and_then(|stat| stat.entry())
         .is_some_and(|entry| entry.id.same(&key.0) && entry.kind == key.1)
+}
+
+#[cfg(test)]
+mod rechecks {
+    use super::*;
+    use std::fs;
+
+    struct IgnoredFolder;
+
+    impl Ignore for IgnoredFolder {
+        fn set_rules(&mut self, _: &Path, _: Source, _: Option<&[u8]>) {}
+
+        fn status(&self, path: &Path, _: EntryKind) -> Ignored {
+            if path.starts_with("ig") {
+                Ignored::Rule
+            } else {
+                Ignored::No
+            }
+        }
+
+        fn key(&self, name: &OsStr) -> OsString {
+            name.to_os_string()
+        }
+    }
+
+    fn replace_before_replay(replace: &str, restarts: usize) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("ig/a")).unwrap();
+        fs::write(root.join("ig/a/old"), "old").unwrap();
+        fs::write(root.join("want"), "want").unwrap();
+        let fd = crate::open_root(root).unwrap();
+        let id = stat_at(fd.as_fd(), OsStr::new("want")).unwrap().id;
+        let key = (id, EntryKind::File);
+        let mut rules = Rules::new(Box::new(IgnoredFolder)).with_search_budget(1);
+        rules
+            .ignored
+            .insert(PathBuf::new(), BTreeSet::from(["ig".into()]));
+        let mut walk = Walk::new(&rules.ignored, restarts);
+        walk.listings.clear();
+        walk.rounds = CHECKS;
+        walk.check.push("ig/a".into());
+        let (child, _) = open_attached(fd.as_fd(), Path::new("ig/a"), &mut |_| {})
+            .unwrap()
+            .unwrap();
+        let (seen, _) = Seen::of(child.as_fd(), Path::new("ig/a"), &mut walk.unopened).unwrap();
+        walk.passed.insert("ig/a".into(), seen);
+        rules.search.walk = Some(walk);
+        rules.search.walks = 1;
+        rules.search.pending.insert(key, 1);
+        fs::write(root.join("ig/a/new"), "new").unwrap();
+        let mut wanted = HashMap::from([(key, None)]);
+        let mut search = Pending::new(&mut rules, root);
+        assert_eq!(
+            search.search(fd.as_fd(), &mut wanted, &HashSet::new(), true, &mut |_| {}),
+            HashSet::from([key])
+        );
+        if !replace.is_empty() {
+            fs::rename(root.join(replace), root.join("parked")).unwrap();
+            fs::create_dir_all(root.join("ig/a")).unwrap();
+        }
+        fs::rename(root.join("want"), root.join("ig/a/want")).unwrap();
+        assert!(
+            search
+                .search(fd.as_fd(), &mut wanted, &HashSet::new(), false, &mut |_| {})
+                .is_empty()
+        );
+        if replace == "ig" && restarts == RESTARTS {
+            assert!(search.unproven(key));
+            assert_eq!(wanted[&key], None);
+        } else {
+            assert_eq!(
+                wanted[&key],
+                Some("ig/a/want".into()),
+                "replace {replace:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_search_uses_the_listing_of_the_folder_it_opens_after_a_recheck() {
+        replace_before_replay("ig/a", RESTARTS);
+        replace_before_replay("", RESTARTS);
+    }
+
+    #[test]
+    fn a_search_checks_the_identity_of_the_parent_before_replaying_a_folder() {
+        replace_before_replay("ig", RESTARTS);
+        replace_before_replay("ig", 0);
+    }
 }

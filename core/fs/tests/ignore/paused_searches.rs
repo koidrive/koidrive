@@ -295,6 +295,117 @@ fn a_folder_replaced_above_the_open_folders_of_a_paused_search_keeps_the_move() 
 }
 
 #[test]
+fn a_search_checks_passed_folders_past_the_open_folder_cap() {
+    let deep = (0..20).fold("ig/a".to_string(), |path, i| format!("{path}/c{i}"));
+    for (to, move_at) in [(&deep[..], 1), (&deep[..], 2), ("ig/a", 1), (&deep[..], 0)] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, KOIIGNORE, "ig/\n");
+        write(root, "f.txt", "f");
+        write(root, &format!("{to}/keep"), "k");
+        for i in 0..20 {
+            write(root, &format!("ig/m{i:02}/x"), "x");
+        }
+        write(root, "ig/z/box/keep", "k");
+        let mut rules = rules().with_search_budget(50);
+        let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
+        let id = snapshot.entries[Path::new("f.txt")].id;
+        let mut paths = whole().to_vec();
+        fs::rename(root.join("f.txt"), root.join("ig/z/box/f.txt")).unwrap();
+        let changes = (1..400)
+            .find_map(|rescan| {
+                let result = snapshot
+                    .rescan_with_rules(root, std::mem::take(&mut paths), &mut rules)
+                    .unwrap();
+                paths = result.unsettled;
+                if !result.changes.is_empty() {
+                    return Some(result.changes);
+                }
+                if rescan == move_at {
+                    fs::rename(root.join("ig/z/box"), root.join(to).join("box")).unwrap();
+                }
+                None
+            })
+            .expect("the search ends");
+        let to = if move_at == 0 { "ig/z" } else { to };
+        assert_eq!(
+            changes,
+            [Change::Ignored {
+                from: "f.txt".into(),
+                to: PathBuf::from(format!("{to}/box/f.txt")),
+                kind: File,
+                id,
+            }],
+            "move after rescan {move_at}"
+        );
+    }
+}
+
+#[test]
+fn a_search_finds_a_renamed_ignored_folder_after_churn_settles() {
+    for (budget, rebuild, rename) in [
+        (1, true, true),
+        (2, true, true),
+        (3, true, true),
+        (2, false, true),
+        (2, true, false),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, KOIIGNORE, "dist/\nold/\n");
+        write(root, "f.txt", "f");
+        let build = || {
+            for i in 0..20 {
+                write(root, &format!("dist/assets/chunk{i:02}.js"), "x");
+            }
+        };
+        build();
+        for i in 0..40 {
+            write(root, &format!("old/inbox/a{i:02}"), "x");
+        }
+        let mut rules = rules().with_search_budget(budget);
+        let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
+        let id = snapshot.entries[Path::new("f.txt")].id;
+        let mut paths = whole().to_vec();
+        fs::rename(root.join("f.txt"), root.join("old/inbox/f.txt")).unwrap();
+        let changes = (1..1000)
+            .find_map(|rescan| {
+                let result = snapshot
+                    .rescan_with_rules(root, std::mem::take(&mut paths), &mut rules)
+                    .unwrap();
+                paths = result.unsettled;
+                if !result.changes.is_empty() {
+                    return Some(result.changes);
+                }
+                if rebuild && rescan < 10 {
+                    fs::remove_dir_all(root.join("dist")).unwrap();
+                    build();
+                }
+                if rename && rescan == 10 {
+                    fs::rename(root.join("old/inbox"), root.join("old/inbox-2026")).unwrap();
+                }
+                None
+            })
+            .expect("the search ends");
+        let to = if rename {
+            "old/inbox-2026"
+        } else {
+            "old/inbox"
+        };
+        assert_eq!(
+            changes,
+            [Change::Ignored {
+                from: "f.txt".into(),
+                to: PathBuf::from(format!("{to}/f.txt")),
+                kind: File,
+                id,
+            }],
+            "budget {budget}, rebuild {rebuild}, rename {rename}"
+        );
+    }
+}
+
+#[test]
 fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
     fn mv(root: &Path, from: &str, to: &str) {
         fs::rename(root.join(from), root.join(to)).unwrap();

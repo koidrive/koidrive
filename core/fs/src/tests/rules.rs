@@ -381,6 +381,84 @@ fn a_search_opens_each_folder_of_a_wide_folder_past_the_open_folder_cap_at_most_
 }
 
 #[test]
+fn a_search_looks_again_when_a_passed_folder_comes_back() {
+    for away in [Some("ig/a"), Some("ig/a/child"), None] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("space");
+        for path in [
+            "ig/a/child/keep",
+            "ig/m/x",
+            "ig/z/keep",
+            ".koiignore",
+            "f.txt",
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                &path,
+                if path.ends_with(".koiignore") {
+                    "ig\n"
+                } else {
+                    "f"
+                },
+            )
+            .unwrap();
+        }
+        let mut rules = Rules::new(Box::new(Lines::default())).with_search_budget(usize::MAX);
+        let mut snapshot = Snapshot::scan_with_rules(&root, &mut rules).unwrap();
+        let id = snapshot.entries[Path::new("f.txt")].id;
+        let to = "ig/a/child/f.txt";
+        fs::rename(root.join("f.txt"), root.join("ig/z/f.txt")).unwrap();
+        let mut moved = false;
+        let mut parked = false;
+        let mut back = false;
+        let scan = snapshot
+            .rescan_under(
+                &root,
+                [PathBuf::new()],
+                &BTreeSet::new(),
+                None,
+                Some(&mut rules),
+                &|| false,
+                &|_| {},
+                Keep::Unplaced,
+                &mut |cut| match cut {
+                    Cut::Searching(path) if !moved && path == Path::new("ig/m/x") => {
+                        fs::rename(root.join("ig/z/f.txt"), root.join(to)).unwrap();
+                        moved = true;
+                    }
+                    Cut::Confirming(path) if moved && !back => {
+                        let Some(away) = away.map(Path::new) else {
+                            return;
+                        };
+                        if !parked && path == Path::new("ig/a/child") {
+                            fs::rename(root.join(away), root.join("ig/parked")).unwrap();
+                            parked = true;
+                        } else if parked {
+                            fs::rename(root.join("ig/parked"), root.join(away)).unwrap();
+                            back = true;
+                        }
+                    }
+                    _ => {}
+                },
+                &MarkLog::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            scan.changes,
+            [Change::Ignored {
+                from: "f.txt".into(),
+                to: to.into(),
+                kind: EntryKind::File,
+                id,
+            }],
+            "temporary removal of {away:?}"
+        );
+        assert!(away.is_none() || back);
+    }
+}
+
+#[test]
 fn a_search_starts_over_when_a_folder_is_replaced_between_its_stat_and_its_open() {
     for (moved, recreated, every) in [
         (true, false, false),
