@@ -180,6 +180,21 @@ fn trashed_remote_nodes_count_as_absent() {
 }
 
 #[test]
+fn trees_built_alike_print_alike() {
+    let build = || {
+        let mut trees = Trees::new(ROOT);
+        for i in 0..32 {
+            let id = format!("n{i}");
+            let shape = file(ROOT, &id, 0);
+            trees.set_synced(NodeId::from(&id), Some(shape.clone()));
+            trees.set_local(NodeId::from(&id), local(shape, i));
+        }
+        trees
+    };
+    assert_eq!(format!("{:?}", build()), format!("{:?}", build()));
+}
+
+#[test]
 fn reads_node_states_and_refuses_kinds_this_version_does_not_sync() {
     let state = NodeState {
         node_id: "n".into(),
@@ -1232,12 +1247,12 @@ proptest! {
             for (id, shape) in trees.synced().iter() {
                 everything.set_synced(id.clone(), Some(shape.clone()));
             }
-            let mut state = everything.state();
-            state.unobserved = (trees.state().unobserved.into_iter())
-                .filter(|id| trees.local().get(id).is_some() || trees.synced().get(id).is_some())
-                .collect();
-            state.removed_from = trees.state().removed_from;
-            state.synced_positions = trees.state().synced_positions;
+            let mut state = trees.state();
+            state.dirty = everything.state().dirty;
+            state.unsearched = everything.state().unsearched;
+            state
+                .unobserved
+                .retain(|id| trees.local().get(id).is_some() || trees.synced().get(id).is_some());
             everything.restore(state).unwrap();
             everything.rules_scanned();
             trees.settle(&Default::default());

@@ -1039,11 +1039,11 @@ mod holders_against_a_rebuild {
         }
         let root_identities = trees.l.iter().filter(|(id, _)| *id == "root").count();
         assert!(
-            trees.l_identities.len() <= live + root_identities,
+            trees.l_identities.0.len() <= live + root_identities,
             "stale identities: {:?}",
             trees.l_identities
         );
-        for holders in trees.l_identities.values() {
+        for holders in trees.l_identities.0.values() {
             if let Holders::Many(set) = holders {
                 assert!(set.len() >= 2);
             }
