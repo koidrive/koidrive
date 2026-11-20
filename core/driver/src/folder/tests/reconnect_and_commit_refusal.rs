@@ -302,3 +302,33 @@ fn a_commit_resent_after_a_restart_uploads_again_only_once_its_receipts_no_longe
         assert_eq!(a.state(), FolderState::UpToDate, "{case}");
     }
 }
+
+#[test]
+fn a_commit_resent_once_its_receipts_expired_uploads_only_the_chunks_no_head_check_confirmed() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    for n in 0..60 {
+        fs::write(site.root.join(format!("{n}.txt")), format!("file {n}")).unwrap();
+    }
+    a.rescan();
+    a.scan_until(|a| !a.work.is_empty());
+    let upload = a.work.pop_front().unwrap();
+    a.perform(upload, &mut remote).unwrap();
+    let Some(Work::Send(commit)) = a.work.pop_front() else {
+        panic!("the commit is sent after its upload");
+    };
+    assert_eq!(commit.receipts.len(), 60);
+    drop(a);
+
+    remote.now_ms += 3_600_001;
+    let before = remote.puts;
+    let mut a = site.start();
+    a.connect(&remote);
+    a.scan_until(|a| a.folder.scanned);
+    a.run(&mut remote);
+    a.rest(&mut remote);
+    assert_eq!(remote.puts - before, 10);
+    assert_eq!(remote.space.head_seq(), 1);
+    assert_eq!(remote.names().len(), 60);
+    assert_eq!(a.state(), FolderState::UpToDate);
+}

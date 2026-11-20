@@ -1484,6 +1484,45 @@ fn a_commit_whose_log_row_is_too_large_is_refused_whole() {
 }
 
 #[test]
+fn prepare_answers_present_for_a_pending_chunk_a_head_check_or_a_receipt_confirmed() {
+    let mut s = Space::new();
+    let root = s.root();
+    let a = s.client("A");
+    let contents = ["receipted", "checked", "absent"].map(Space::content);
+    let receipts = s.upload(&a, &contents[0]);
+    s.upload(&a, &contents[1]);
+    let chunks: Vec<ChunkRef> = contents.iter().map(|c| c.chunks[0].clone()).collect();
+    s.space
+        .prepare_upload(
+            &a.session,
+            NOW,
+            &PrepareUpload {
+                chunks: chunks.clone(),
+            },
+        )
+        .unwrap();
+    let ops = (contents.iter().zip(["r", "c", "a"]))
+        .map(|(content, name)| create_file(&s.id(), &root, name, content.clone()))
+        .collect();
+    let refused = s.commit_raw(&a, ops, 0, receipts, None).unwrap_err();
+    assert_eq!(refused.missing_chunks, [chunks[2].hash.clone()]);
+
+    let plan = s
+        .space
+        .prepare_upload(&a.session, NOW + 3_600_001, &PrepareUpload { chunks })
+        .unwrap();
+    let actions: Vec<i32> = plan.chunks.iter().map(|plan| plan.action).collect();
+    assert_eq!(
+        actions,
+        [
+            chunk_plan::Action::Present as i32,
+            chunk_plan::Action::Present as i32,
+            chunk_plan::Action::Upload as i32
+        ]
+    );
+}
+
+#[test]
 fn a_receipt_holds_only_for_its_space_and_size_and_a_stored_object_outlasts_it() {
     let mut s = Space::new();
     let root = s.root();
