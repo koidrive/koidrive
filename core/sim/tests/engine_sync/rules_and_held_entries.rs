@@ -617,7 +617,7 @@ fn a_server_file_deleted_with_a_deep_chain_of_new_folders_is_acted_below_the_fol
     };
     place(&mut device, "f", file, &chunks);
     let server = koidrive_engine::tree::Shape {
-        parent: "root".into(),
+        parent: "k".into(),
         name: "f".into(),
         kind: Kind::File,
         content: held,
@@ -689,6 +689,68 @@ fn a_change_inside_a_discarded_held_folder_is_not_acted_below_the_server_folder_
         &BTreeMap::new(),
         &discarded
     ));
+}
+
+#[test]
+fn a_first_link_discard_judges_a_taken_along_folder_against_what_it_held_at_the_discard() {
+    let seed = [
+        act(1, 0, 0, 3, 0),
+        act(1, 0, 0, 3, 0),
+        act(0, 0, 0, 2, 0),
+        act(0, 0, 2735742931768910670, 1, 0),
+    ];
+    let local = [
+        act(0, 0, 0, 3, 0),
+        act(1, 0, 11875311943370024282, 5, 0),
+        act(0, 0, 3047016019247648468, 0, 0),
+        act(1, 0, 6661243561629110612, 2, 0),
+        act(0, 0, 5628054386509540524, 2, 0),
+    ];
+    let (during, rulings) = the_server_drops_part_of_a_discarded_folder(
+        vec![(
+            true,
+            vec![
+                act(0, 0, 6560548476402552503, 0, 0),
+                act(3, 12522830786365722604, 11093942931774494242, 0, 0),
+            ],
+        )],
+        act(8, 0, 0, 0, 0),
+        vec![(
+            true,
+            vec![act(3, 12633224309107184393, 13808278524712180971, 0, 0)],
+        )],
+        act(7, 3415821465429094374, 0, 0, 0),
+        act(9, 0, 0, 0, 2),
+        vec!["a"],
+    );
+    let ran = run_ignoring_answering_after(
+        &seed,
+        &local,
+        &[],
+        MAX_OPS,
+        false,
+        &during,
+        Cut::None,
+        &rulings,
+        Answer::Discard,
+        Some(PriorSync::Shown),
+        0,
+    )
+    .unwrap();
+    let root = ran.space.space_id().to_owned();
+    let live = koidrive_proto::v1::NodeStatus::Live as i32;
+    let nodes: BTreeMap<String, _> = (ran.space.nodes().into_iter())
+        .map(|node| (node.node_id.clone(), node))
+        .collect();
+    let taken = &nodes["01a1c2c0-39a0-796f-a8a3-82c9a31d6efe"];
+    assert_eq!(
+        (taken.status, taken.parent_id == root, taken.name.as_str()),
+        (live, true, "b")
+    );
+    assert!(!nodes.contains_key("01a1c2c0-39a0-7768-bfda-be86cbbeaa11"));
+    assert!(!nodes.contains_key("01a1c2c0-39a0-78c3-b5d8-1f333a1fb9e9"));
+    assert_ne!(nodes["01a1c2c0-39a0-7c9f-92dd-37ded7172a70"].status, live);
+    assert_eq!(ran.deletes, 1);
 }
 
 fn an_edit_moved_into_b(b_is_a_node: bool, moved: bool) -> Device {
