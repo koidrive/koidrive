@@ -1847,10 +1847,14 @@ fn sent_move_check(
 fn revive_check(device: &Device, id: &NodeId) -> Result<(), TestCaseError> {
     let trees = &device.trees;
     let changed = |node: &NodeId| device.acted.contains(node) || device.touched.contains(node);
+    let parent = |node: &NodeId| match trees.local().get(node) {
+        Some(local) => Some(local.shape.parent.clone()),
+        None => trees.remote().get(node).map(|remote| remote.shape.parent.clone()),
+    };
     let path = |node: &NodeId| {
         let mut path = vec![node.clone()];
-        while let Some(local) = trees.local().get(path.last().unwrap()) {
-            path.push(local.shape.parent.clone());
+        while let Some(next) = parent(path.last().unwrap()).filter(|next| !path.contains(next)) {
+            path.push(next);
         }
         path
     };
