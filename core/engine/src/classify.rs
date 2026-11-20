@@ -1902,7 +1902,7 @@ impl Trees {
         let changed = |node: &NodeId| {
             (self.l.get(node)).is_some_and(|local| {
                 !self.excluded(node)
-                    && (self.s.live(node)).is_none_or(|synced| !synced.same(&local.shape))
+                    && (self.given_shapes(node).into_iter()).all(|given| !given.same(&local.shape))
             })
         };
         (self.subtree(id).iter()).any(|node| edited(node) || (node != id && changed(node)))
@@ -6400,11 +6400,24 @@ impl Trees {
     }
 
     fn local_content_differs(&self, id: &NodeId) -> bool {
-        let local = self.l.live(id).and_then(|shape| shape.content.as_ref());
-        let synced = self.s.live(id).and_then(|shape| shape.content.as_ref());
-        match (local, synced) {
-            (Some(local), Some(synced)) => !same_content(local, synced),
-            (local, _) => local.is_some(),
+        let Some(local) = self.l.live(id).and_then(|shape| shape.content.as_ref()) else {
+            return false;
+        };
+        (self.given_shapes(id).into_iter())
+            .filter_map(|given| given.content.as_ref())
+            .all(|given| !same_content(local, given))
+    }
+
+    fn given_shapes(&self, id: &NodeId) -> Vec<&Shape> {
+        match self.s.live(id) {
+            Some(synced) => vec![synced],
+            None => [
+                self.r.get(id).map(|remote| &remote.shape),
+                self.forgotten_shapes.get(id),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
         }
     }
 

@@ -87,7 +87,8 @@ fn a_create_refused_for_a_node_another_device_created_edited_and_deleted_follows
 }
 
 #[test]
-fn a_create_refused_for_a_node_another_device_deleted_sends_an_edit_made_since_to_its_bytes() {
+fn a_create_refused_for_a_node_another_device_deleted_holding_the_bytes_of_an_edit_made_since_follows_the_delete()
+ {
     let mut trees = trees(&[("n", Some(file(ROOT, "a", 1)), None, None)]);
     let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
     build(&mut commits, &mut trees, &mut ids).unwrap();
@@ -99,8 +100,12 @@ fn a_create_refused_for_a_node_another_device_deleted_sends_an_edit_made_since_t
     };
     acknowledge(&mut commits, &mut trees, vec![exists]);
     trees.settle(commits.aliases());
-    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
-    assert_eq!(ops(&commit), [update("n", 2)]);
+    assert!(build(&mut commits, &mut trees, &mut ids).is_none());
+    let effects = effects_for(&mut trees, &mut ids, "n");
+    assert!(
+        matches!(&effects[..], [Effect::RemoveFile { .. }]),
+        "{effects:?}"
+    );
 }
 
 fn resent_where_another_device_renamed_it(edit: Option<u8>) -> (Trees, Commits, IdGen) {

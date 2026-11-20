@@ -192,7 +192,7 @@ A row in state `held`, own or carried, stays until one of these, because a later
 - `CONFLICT_COPY`: the content row moves to the copy node, which L's file now is (design §2.7), and becomes `held` there. The original node's rows for this device stay.
 - `MERGED_INTO`: the node's place and status rows end, since the target's stand for them. Its content row and the rows of its children move to the target. No row names the merged node afterwards, so no loss creates it again.
 - `APPLIED_RENAMED`: the place row becomes `held` with the reported intent, and L takes the server's name.
-- `ID_EXISTS` on a create: each of the create's rows is sent again on the existing node as a `Move`, `UpdateContent` or `Delete`, with its own intent. A status row whose value is live sends nothing and ends: the node is live, or it is trashed and §3.4 would supersede the row.
+- `ID_EXISTS` on a create: each of the create's rows is sent again on the existing node as a `Move`, `UpdateContent` or `Delete`, with its own intent. A status row whose value is live sends nothing and ends: the node is live, or it is trashed and §3.4 would supersede the row. A content row whose content the existing node holds, live or trashed, sends nothing and becomes `held` with the node's content intent as `held_as`.
 - A result without intents, such as a stored result of a commit an old server applied, gives `held_as` as the §7.2 id of the result's `NodeState`.
 - An owner's finishing move (§6.1) sends the intent of the place row that set the mark, with `over` set to it.
 

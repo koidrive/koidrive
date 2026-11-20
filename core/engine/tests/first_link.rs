@@ -7953,3 +7953,28 @@ fn a_taken_along_server_folder_stays_in_a_discarded_folder_the_user_changes_whil
         assert!(!undone || sent.iter().all(|(_, id)| id != "h"), "{sent:?}");
     }
 }
+
+#[test]
+fn an_adopted_file_another_device_trashes_with_its_bytes_goes_to_the_local_trash() {
+    let mut trees = trees(
+        &[("l-a", file(ROOT, "a", 1))],
+        &[("r-a", file(ROOT, "a", 1))],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Fresh);
+    trees.settle(commits.aliases());
+    let mut node = trees.remote().get(&"r-a".into()).unwrap().clone();
+    node.trashed = true;
+    node.meta_rev = 2;
+    node.meta_edit_rev = 2;
+    trees.set_remote("r-a".into(), node);
+    trees.settle(commits.aliases());
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+    let planned = Effects::default()
+        .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+        .to_vec();
+    assert!(
+        matches!(&planned[..], [record] if record.node == "r-a" && matches!(record.effect, Effect::RemoveFile { .. })),
+        "{planned:?}"
+    );
+}

@@ -6715,3 +6715,29 @@ fn a_move_carried_into_a_folder_another_question_holds_lands_at_its_server_place
     sent.extend(replayed(&mut commits, &mut trees, &mut ids));
     settled(&commits, &trees, &sent);
 }
+
+#[test]
+fn a_file_s_lacks_that_the_server_holds_in_the_trash_with_its_bytes_goes_to_the_local_trash() {
+    for cause in [
+        rewind(),
+        RecoveryCause::of(RecoveryTrigger::StoreRolledBack),
+    ] {
+        let mut trees = trees(
+            &[("n", file(ROOT, "a", 1))],
+            &[],
+            &[Remote("n", file(ROOT, "a", 1), true, 1)],
+        );
+        let (mut commits, mut ids) = recovered_after(&mut trees, 0, cause);
+        assert!(
+            commits.questions().is_empty(),
+            "{cause:?}: {:?}",
+            commits.questions()
+        );
+        let done = effects(&mut trees, &mut ids);
+        assert!(
+            matches!(&done[..], [(node, Effect::RemoveFile { .. })] if node == "n"),
+            "{cause:?}: {done:?}"
+        );
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), [], "{cause:?}");
+    }
+}
