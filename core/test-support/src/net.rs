@@ -17,12 +17,14 @@ pub fn reset_tcp_address() -> SocketAddr {
             .spawn(move || {
                 for stream in listener.incoming() {
                     let mut stream = stream.unwrap();
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(5)))
-                        .unwrap();
-                    let _ = stream.read(&mut [0]);
-                    let socket = Socket::from(stream);
-                    socket.set_linger(Some(Duration::ZERO)).unwrap();
+                    std::thread::spawn(move || {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        let _ = stream.read(&mut [0]);
+                        let socket = Socket::from(stream);
+                        socket.set_linger(Some(Duration::ZERO)).unwrap();
+                    });
                 }
             })
             .unwrap();
@@ -62,5 +64,20 @@ mod tests {
         for thread in threads {
             thread.join().unwrap();
         }
+    }
+
+    #[test]
+    fn a_silent_connection_does_not_hold_back_the_reset_of_another() {
+        let address = reset_tcp_address();
+        let _silent = TcpStream::connect_timeout(&address, Duration::from_secs(5)).unwrap();
+        let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream.write_all(b"x").unwrap();
+        assert_eq!(
+            stream.read(&mut [0]).unwrap_err().kind(),
+            io::ErrorKind::ConnectionReset
+        );
     }
 }
