@@ -742,6 +742,18 @@ fn a_server_entry_counts_for_a_taken_along_folder_only_if_the_folder_held_it_at_
 }
 
 #[test]
+fn a_server_folder_holding_a_file_another_device_purged_since_is_still_a_server_copy() {
+    let (mut device, _, _) = a_file_in_a_taken_along_server_folder();
+    let (s, f): (NodeId, NodeId) = ("s".into(), "f".into());
+    let server = device.trees.remote().get(&f).unwrap().shape.clone();
+    device.trees.set_synced(f.clone(), Some(server));
+    device.trees.remove_remote(&f);
+    let (shown, mut kept) = (BTreeMap::new(), BTreeMap::new());
+    assert!(server_copy(&device, &s, &shown, &BTreeSet::new(), &BTreeMap::new(), &mut kept));
+    assert!(kept.contains_key(&f));
+}
+
+#[test]
 fn renaming_away_from_a_conflict_name_the_device_applied_is_acted_below_the_folder() {
     let (mut device, mut kept_with, discarded) = a_file_in_a_taken_along_server_folder();
     let f: NodeId = "f".into();
