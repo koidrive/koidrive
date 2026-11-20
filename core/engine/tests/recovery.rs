@@ -6163,17 +6163,36 @@ fn an_answer_commits_when_an_earlier_carried_move_takes_another_moved_node_out_o
     }
     trees.settle(&Default::default());
     for seq in 2..6 {
-        let sent = ops(&mut commits, &mut trees, &mut ids);
-        if sent.is_empty() {
+        if ops(&mut commits, &mut trees, &mut ids).is_empty() {
             break;
         }
-        let nodes: Vec<(&str, Shape, bool)> = (sent.iter())
-            .map(|(op, id)| {
-                let id = id.as_str();
-                let local = trees.local().get(&id.into()).map(|local| &local.shape);
-                let shape = local.or_else(|| trees.synced().live(&id.into())).unwrap();
-                (id, shape.clone(), *op == "delete")
+        let sent = commits.in_flight().unwrap().commit.ops.clone();
+        let nodes: Vec<(String, Shape, bool)> = (sent.iter())
+            .map(|op| match &op.op {
+                Some(op::Op::Move(moved)) => {
+                    let id = NodeId::from(moved.node_id.as_str());
+                    let shape = Shape {
+                        parent: moved.new_parent_id.as_str().into(),
+                        name: moved.new_name.clone(),
+                        ..trees.remote().get(&id).unwrap().shape.clone()
+                    };
+                    (moved.node_id.clone(), shape, false)
+                }
+                Some(op::Op::CreateDir(create)) => (
+                    create.node_id.clone(),
+                    dir(&create.parent_id, &create.name),
+                    false,
+                ),
+                Some(op::Op::Delete(delete)) => {
+                    let id = NodeId::from(delete.node_id.as_str());
+                    let shape = trees.remote().get(&id).unwrap().shape.clone();
+                    (delete.node_id.clone(), shape, true)
+                }
+                other => panic!("unexpected op {other:?}"),
             })
+            .collect();
+        let nodes: Vec<(&str, Shape, bool)> = (nodes.iter())
+            .map(|(id, shape, trashed)| (id.as_str(), shape.clone(), *trashed))
             .collect();
         applied(&mut commits, &mut trees, seq, &nodes);
     }
