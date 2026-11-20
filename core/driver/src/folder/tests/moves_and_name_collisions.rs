@@ -1256,3 +1256,53 @@ fn an_owed_delete_leaves_the_server_wherever_its_folder_went() {
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
+
+#[test]
+fn an_owed_delete_under_a_folder_a_scan_missed_waits_until_the_folder_is_found_or_answered() {
+    let mut wrong = Vec::new();
+    for end in [
+        "found with the file",
+        "found without the file",
+        "answered delete",
+    ] {
+        let mut remote = Remote::new();
+        let (site, mut a, before) = report_removed_while_sending(&mut remote, "docs");
+        fs::create_dir(site.root.join("ignored")).unwrap();
+        fs::write(site.root.join(".koiignore"), b"report.txt\nignored/\n").unwrap();
+        a.scan_until(|_| local_holds(&site, ".koiignore"));
+        fs::rename(site.root.join("docs"), site.root.join("ignored/docs")).unwrap();
+        let missed = Observed::Missing {
+            path: "docs".into(),
+            kind: EntryKind::Dir,
+        };
+        observe(&mut a, vec![missed]);
+        for _ in 0..2 {
+            a.run(&mut remote);
+            a.settle();
+        }
+        let waited =
+            server_nodes(&remote).contains(&("report.txt".to_owned(), before.clone(), true));
+        if end == "answered delete" {
+            fs::remove_dir_all(site.root.join("ignored/docs")).unwrap();
+            while a.folder.view().questions > 0 {
+                answer(&site, Answer::Delete);
+                let step = a.folder.requested();
+                a.take(step).unwrap();
+                a.rest(&mut remote);
+            }
+        } else {
+            fs::rename(site.root.join("ignored/docs"), site.root.join("papers")).unwrap();
+            if end == "found with the file" {
+                fs::write(site.root.join("papers/report.txt"), b"version one").unwrap();
+            }
+            a.rescan();
+        }
+        a.rest(&mut remote);
+        let nodes = server_nodes(&remote);
+        let kept = end == "found with the file";
+        if !waited || !nodes.contains(&("report.txt".to_owned(), before, kept)) {
+            wrong.push(format!("{end}: waited {waited}: {nodes:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}

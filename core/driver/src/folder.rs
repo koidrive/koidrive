@@ -1196,28 +1196,38 @@ impl Folder {
             work.push(Work::ResendAfter(BUILD_AGAIN));
             return Ok(());
         };
-        let disk = &self.disk;
-        let owed = self
-            .engine
-            .owed_deletes(|trees, synced| disk.owed_name_absent(trees, synced));
-        let built = self.step(|engine, tx| {
-            let deferred = engine.deferred_deletes(now_ms);
-            let cursor = engine.cursor.as_ref().expect("R follows the log");
-            let built = engine.commits.build_deferring(
-                &mut engine.trees,
-                &mut engine.ids,
-                now_ms,
-                &cursor.history_id,
-                &device_id,
-                cursor.base(),
-                &deferred,
-                &owed,
-            );
-            if built.is_some() {
-                tx.commit_root_token(token)?;
+        let mut tried: Option<BTreeSet<NodeId>> = None;
+        let built = loop {
+            let disk = &self.disk;
+            let owed = self
+                .engine
+                .owed_deletes(|trees, synced| disk.owed_name_absent(trees, synced));
+            if tried.as_ref().is_some_and(|tried| owed.is_subset(tried)) {
+                break None;
             }
-            Ok(built.cloned())
-        })?;
+            let built = self.step(|engine, tx| {
+                let deferred = engine.deferred_deletes(now_ms);
+                let cursor = engine.cursor.as_ref().expect("R follows the log");
+                let built = engine.commits.build_deferring(
+                    &mut engine.trees,
+                    &mut engine.ids,
+                    now_ms,
+                    &cursor.history_id,
+                    &device_id,
+                    cursor.base(),
+                    &deferred,
+                    &owed,
+                );
+                if built.is_some() {
+                    tx.commit_root_token(token)?;
+                }
+                Ok(built.cloned())
+            })?;
+            if built.is_some() {
+                break built;
+            }
+            tried = Some(owed);
+        };
         if let Some(due) = self.engine.deletes_due() {
             let wait = Duration::from_millis(due.saturating_sub(now_ms));
             let at = clock::instant() + wait;
