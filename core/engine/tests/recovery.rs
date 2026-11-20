@@ -6186,6 +6186,7 @@ fn replayed(
             }
             false
         };
+        let mut codes = Vec::new();
         for op in &commits.in_flight().unwrap().commit.ops {
             let (id, place): (NodeId, Option<(NodeId, String)>) = match &op.op {
                 Some(op::Op::Move(moved)) => {
@@ -6203,6 +6204,23 @@ fn replayed(
                 Some(op::Op::Delete(delete)) => (NodeId::from(delete.node_id.as_str()), None),
                 other => panic!("unexpected op {other:?}"),
             };
+            if let Some(op::Op::Move(moved)) = &op.op
+                && let Some(from) = &moved.from
+            {
+                let node = &server[&id];
+                let into = moved.new_parent_id == ROOT
+                    || (server.get(&moved.new_parent_id.as_str().into()))
+                        .is_some_and(|parent| !parent.trashed);
+                let at = (node.shape.parent.clone(), node.shape.name.as_str());
+                if node.trashed
+                    || at != (from.parent_id.as_str().into(), from.name.as_str())
+                    || !into
+                {
+                    codes.push(op_result::Code::Superseded);
+                    continue;
+                }
+            }
+            codes.push(op_result::Code::Applied);
             let Some((parent, name)) = place else {
                 let group = format!("{seq}-{id}");
                 let below: Vec<NodeId> = (server.keys())
@@ -6245,6 +6263,10 @@ fn replayed(
                 None,
                 "{parent}/{name} in {built:?}"
             );
+            assert!(
+                !inside(&server, &parent, &id),
+                "{id} into itself in {built:?}"
+            );
             let shape = (trees.local().get(&id).map(|local| local.shape.clone()))
                 .unwrap_or_else(|| server[&id].shape.clone());
             let node = server.entry(id).or_insert_with(|| RemoteNode {
@@ -6272,13 +6294,12 @@ fn replayed(
             );
             trees.set_remote(id.clone(), node.clone());
         }
-        let results = vec![
-            OpResult {
-                code: op_result::Code::Applied as i32,
+        let results = (codes.into_iter())
+            .map(|code| OpResult {
+                code: code as i32,
                 ..Default::default()
-            };
-            built.len()
-        ];
+            })
+            .collect();
         commits
             .received(CommitResult {
                 seq,
@@ -6295,6 +6316,12 @@ fn replayed(
 
 fn settled(commits: &Commits, trees: &Trees, sent: &[Vec<(&str, String)>]) {
     assert_eq!(commits.questions(), [], "{sent:?}");
+    for (id, _) in trees.local().iter() {
+        assert!(
+            trees.remote().get(id).is_some(),
+            "{id} never reached the server in {sent:?}"
+        );
+    }
     for (id, remote) in trees.remote().iter() {
         let place = |shape: &Shape| (shape.parent.clone(), shape.name.clone());
         let local = trees.local().get(id).map(|local| place(&local.shape));
@@ -6597,6 +6624,7 @@ fn carried_moves_go_after_the_moves_they_need_and_leave_no_revived_trash_behind(
         },
     ];
     cases.retain(|case| std::env::var("CASE").map_or(true, |name| case.name.contains(&name)));
+    assert!(!cases.is_empty(), "no case matches CASE");
     for case in cases {
         let mut trees = trees(&case.local, &case.synced, &case.remote);
         for (id, group) in &case.groups {
