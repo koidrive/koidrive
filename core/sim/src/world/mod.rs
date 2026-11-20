@@ -1365,8 +1365,10 @@ impl World {
         );
         let engine = &self.devices[d].engine;
         let welcome = self.space.welcome(&self.devices[d].session);
-        let (cause, from) = match trigger {
-            RecoveryTrigger::SpaceRewound => (
+        let rewound =
+            trigger == RecoveryTrigger::SpaceRewound || engine.history != welcome.history_id;
+        let (cause, from) = match rewound {
+            true => (
                 RecoveryCause::rewind(welcome.restore_seq, welcome.restore_point_ms),
                 Resume {
                     history_id: welcome.history_id,
@@ -1374,7 +1376,7 @@ impl World {
                     ..Resume::default()
                 },
             ),
-            _ => (
+            false => (
                 RecoveryCause::of(trigger),
                 Resume {
                     history_id: engine.history.clone(),

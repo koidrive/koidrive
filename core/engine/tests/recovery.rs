@@ -5815,6 +5815,28 @@ fn discarding_a_never_sent_folder_keeps_it_around_an_unobserved_file_the_rules_e
     }
 }
 
+#[test]
+fn a_file_renamed_back_after_an_earlier_recovery_is_asked_about_when_the_log_creates_it_again() {
+    let synced_ms = NOW - 10;
+    let mut trees = synced_at(synced_ms);
+    let back = trees.local().get(&"n".into()).unwrap().clone();
+    let mut renamed = back.clone();
+    renamed.shape = file(ROOT, "b", 2);
+    trees.set_local("n".into(), renamed);
+    trees.settle(&Default::default());
+    let mut commits = recovered_from_log(&mut trees, None);
+    assert_eq!(groups(&commits), [RecoveryGroup::ChangedOnThisDevice]);
+    trees.set_local("n".into(), back);
+    trees.settle(commits.aliases());
+    let cause = rewind();
+    let log = logged(&trees, 0, &[(9, synced_ms + 1, 9, 9)]);
+    let read = LogRead::new(&trees, &cause, Some(log));
+    commits.enter_recovery(cause);
+    let (marks, mut ids) = (Marks::new(), IdGen::new(8));
+    commits.recover(&mut trees, 0, false, &cause, &read, &marks, &mut ids, NOW);
+    assert_eq!(groups(&commits), [RecoveryGroup::CreatedAfterRestorePoint]);
+}
+
 fn recovered_from_log(trees: &mut Trees, log: Option<Log>) -> Commits {
     let cause = rewind();
     let read = LogRead::new(trees, &cause, log);

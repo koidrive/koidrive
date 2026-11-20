@@ -3119,6 +3119,38 @@ fn a_store_older_than_the_disk_asks_its_questions_with_that_cause() {
     assert_eq!(causes, [RecoveryTrigger::StoreOlderThanDisk]);
 }
 
+#[test]
+fn a_store_older_than_the_disk_after_a_rewind_asks_with_the_rewind_cause() {
+    let mut world = synced(2, &[vec![(0, Step::Backup), (0, file("a"))]]);
+    world
+        .run(1, &[(1, Step::CopyStore), (0, rename(0, "b"))])
+        .unwrap();
+    world.run(1, &commit(0)).unwrap();
+    world
+        .run(
+            1,
+            &[
+                (1, DELIVER),
+                (1, EFFECT),
+                (1, EFFECT),
+                (1, overwrite(0)),
+                (0, Step::Rewind),
+                (1, Step::RollBack),
+                (1, Step::Connect),
+                (1, Step::Connect),
+                (1, DELIVER),
+                (1, DELIVER),
+            ],
+        )
+        .unwrap();
+    assert!(recovering(&world, 1).contains("root marker"));
+    let causes: Vec<RecoveryTrigger> = (world.devices[1].engine.commits.questions().iter())
+        .filter_map(|question| question.cause())
+        .map(|cause| cause.trigger)
+        .collect();
+    assert_eq!(causes, [RecoveryTrigger::SpaceRewound]);
+}
+
 fn act(kind: u8, target: usize, parent: usize, name: usize) -> Step {
     Step::User(Action {
         kind,

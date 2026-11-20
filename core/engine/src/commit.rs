@@ -865,7 +865,7 @@ impl Commits {
             .flat_map(|(group, question)| question.holds().map(move |id| (id.clone(), group)))
             .collect();
         for id in &log.recreated {
-            (held.entry(id.clone())).or_insert(RecoveryGroup::CreatedAfterRestorePoint);
+            held.insert(id.clone(), RecoveryGroup::CreatedAfterRestorePoint);
         }
         (self.questions.get_mut())
             .retain(|question| matches!(question.kind, QuestionKind::RemoteMassDelete { .. }));
