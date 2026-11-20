@@ -1079,6 +1079,74 @@ fn a_waiting_folder_removal_from_a_store_older_than_the_disk_records_no_delete()
 }
 
 #[test]
+fn a_restore_left_waiting_from_a_store_older_than_the_disk_records_no_delete() {
+    let folder = dir(ROOT, "b");
+    let rows = [(NODE, folder.clone()), ("c", file(NODE, "c", 1))];
+    let mut trees = trees(&rows, &rows, &[]);
+    let mut trashed = server_version(folder.clone(), "", &[], 5);
+    trashed.trashed = true;
+    trashed.trash_group = "folder-group".into();
+    trees.set_remote(NODE.into(), trashed);
+    trees.set_remote("c".into(), server_version(file(ROOT, "c", 1), "", &[], 4));
+    trees.rules_scanned();
+    trees.settle(&Default::default());
+    let mut state = trees.state();
+    state.removed_here.insert(NODE.into(), 5);
+    trees.restore(state).unwrap();
+    trees.rules_scanned();
+    let mut commits = Commits::default();
+    let mut ids = IdGen::new(7);
+    let intent = RestoreIntent::from_trash(NODE.into(), None, None).unwrap();
+    assert!(commits.restore("restore".into(), intent));
+    let restore = commits
+        .build(&mut trees, &mut ids, NOW, OLD, "me", 5)
+        .unwrap();
+    assert!(
+        matches!(&restore.ops[..], [op] if matches!(&op.op, Some(op::Op::Restore(r)) if r.node_id == NODE))
+    );
+    trees.remove_local(&"c".into());
+    trees.remove_local(&NODE.into());
+    trees.set_remote(NODE.into(), server_version(folder.clone(), "", &[], 6));
+    commits
+        .received(CommitResult {
+            seq: 6,
+            results: vec![OpResult {
+                code: op_result::Code::Applied as i32,
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(commits.acknowledge(&mut trees, 6));
+    let waiting = trees.waiting().get(&NODE.into()).expect("blocked Restore");
+    assert_eq!(waiting.origin, Origin::Commit(1));
+    assert_eq!(waiting.shape, None);
+    trees.remove_remote(&NODE.into());
+    trees.set_remote("c".into(), server_version(file(ROOT, "c", 1), "", &[], 1));
+    let cause = RecoveryCause::of(RecoveryTrigger::StoreOlderThanDisk);
+    commits.enter_recovery(cause);
+    commits.recover(
+        &mut trees,
+        0,
+        false,
+        &cause,
+        &LogRead::default(),
+        &Marks::new(),
+        &mut ids,
+        NOW,
+    );
+    trees.settle(commits.aliases());
+    let child = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["c"]);
+    assert!(commits.decide(&mut trees, &child.id, Answer::Restore));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    assert!(trees.synced().get(&NODE.into()).is_none());
+    trees.set_remote(NODE.into(), server_version(folder, "", &[], 2));
+    trees.settle(commits.aliases());
+    assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+}
+
+#[test]
 fn a_file_the_rewind_removed_that_the_server_holds_at_its_place_under_another_id_is_linked() {
     let mut written = file(ROOT, "new", 2);
     written.content.as_mut().expect("a file").mtime_ns = 1_794_268_740_123_456_789;

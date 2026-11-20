@@ -879,9 +879,6 @@ impl Commits {
                 ..
             })
         );
-        if store_behind_disk {
-            trees.unprove_waiting_removals();
-        }
         self.halted.set(match *self.halted {
             Some(Halt::Recovery {
                 policy: Some(code), ..
@@ -902,6 +899,9 @@ impl Commits {
         self.given_up_nodes.clear();
         self.answer_moves.clear();
         trees.rewound();
+        if store_behind_disk {
+            trees.unprove_waiting_removals();
+        }
         let mut held: BTreeMap<NodeId, RecoveryGroup> = (self.questions.iter())
             .filter_map(|question| match question.kind {
                 QuestionKind::Recovery { group, .. } => Some((group, question)),

@@ -1,4 +1,4 @@
-530
+600
 # A delete made offline around a server loss must stay deleted when another device's Keep or resend brings the node back,
 # whether R learns of it from the log, a listing or a restart, and must give way where that device moved the node, changed
 # its content, or the user answered Restore. Where another device renamed the deleted folder, the file's record waits for
@@ -18,3 +18,5 @@
 # removal a release without provenance left waiting opens as unproven; each has a unit test with a mutant that fails it.
 # A removal already waiting when a recovery finds the store older than the disk becomes unproven, and one waiting through a
 # rewind recovery does not; the unit test fails without the conversion.
+# A Restore acknowledged while S's removal of its folder waited for a child is not a Delete: the engine test lets the engine
+# create that wait and fails when the conversion runs before the recovery forgets which commit made it.
