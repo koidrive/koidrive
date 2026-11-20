@@ -71,6 +71,20 @@ pub(super) fn excluded_op(trees: &Trees, ops: &[Op]) -> Vec<String> {
                     shape.kind,
                 )
             }),
+            Some(op::Op::Restore(restore)) if !restore.target_parent_id.is_empty() => {
+                (trees.remote().get(&NodeId::from(&restore.node_id))).map(|node| {
+                    let name = match restore.name.as_str() {
+                        "" => node.shape.name.as_str(),
+                        name => name,
+                    };
+                    (
+                        &restore.node_id,
+                        &restore.target_parent_id,
+                        name,
+                        node.shape.kind,
+                    )
+                })
+            }
             _ => None,
         };
         if let Some((id, parent, name, kind)) = placed {

@@ -3804,6 +3804,58 @@ mod tests {
     }
 
     #[test]
+    fn a_create_below_a_folder_its_commit_restores_elsewhere_is_judged_where_the_restore_puts_it() {
+        let mut trees = Trees::new("root");
+        let folder = |parent: &str, name: &str, trashed: bool| RemoteNode {
+            made_over: Vec::new(),
+            shape: Shape {
+                parent: parent.into(),
+                name: name.into(),
+                kind: Kind::Dir,
+                content: None,
+            },
+            trashed,
+            content_rev: 1,
+            edit_rev: 1,
+            meta_rev: 1,
+            meta_edit_rev: 1,
+            trash_group: String::new(),
+            version_id: String::new(),
+            pending_for: None,
+            pending_by: None,
+            chunks: Box::default(),
+        };
+        trees.set_remote("b".into(), folder("root", "blocked", false));
+        trees.set_remote("p".into(), folder("root", "p", false));
+        trees.set_remote("x".into(), folder("b", "x", true));
+        trees.set_rules(
+            &[] as &[&str],
+            koidrive_engine::ignore::Source::Koiignore,
+            Some(koidrive_engine::ignore::RuleFile::parse(b"/blocked/\n")),
+        );
+        let op = |op| koidrive_proto::v1::Op {
+            op: Some(op),
+            ..Default::default()
+        };
+        let restore = op(op::Op::Restore(koidrive_proto::v1::Restore {
+            node_id: "x".into(),
+            target_parent_id: "p".into(),
+            ..Default::default()
+        }));
+        let create = op(op::Op::CreateFile(koidrive_proto::v1::CreateFile {
+            node_id: "c".into(),
+            parent_id: "x".into(),
+            name: "c".into(),
+            ..Default::default()
+        }));
+        assert_eq!(
+            excluded_op(&trees, &[restore, create.clone()]),
+            Vec::<String>::new()
+        );
+        assert_eq!(excluded_op(&trees, &[create]).len(), 1);
+    }
+
+    #[test]
     fn ancestry_truncation_copies_when_expansion_pushes_the_authorizing_id_to_65() {
         let mut world = World::new(2);
         world.phase(0, &[(0, ancestry_user(1, 0))]).unwrap();
