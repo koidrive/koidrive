@@ -1018,7 +1018,11 @@ impl Disk {
         else {
             return None;
         };
-        self.space.name_absent(&dirs, &name).ok()
+        let kind = match synced.kind {
+            Kind::File => EntryKind::File,
+            Kind::Dir => EntryKind::Dir,
+        };
+        Some(self.space.kind_at(&dirs, &name).ok()? != Some(kind))
     }
 
     /// True while an effect or a failed upload waits for a scan of its paths. Until then the engine holds what L, S or R

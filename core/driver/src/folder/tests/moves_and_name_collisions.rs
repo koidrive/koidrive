@@ -1102,6 +1102,10 @@ fn report_folder_after(site: &Site, place: &str) -> std::path::PathBuf {
             fs::rename(site.root.join("docs"), site.root.join("drafts")).unwrap();
             site.root.join("drafts")
         }
+        "docs with a folder at its name" => {
+            fs::create_dir(site.root.join("docs/report.txt")).unwrap();
+            site.root.join("docs")
+        }
         "deleted" | "rule docs/ then deleted" => {
             fs::remove_dir(site.root.join("docs")).unwrap();
             site.root.join("docs")
@@ -1238,6 +1242,7 @@ fn an_owed_delete_leaves_the_server_wherever_its_folder_went() {
         "box/docs",
         "rule docs/",
         "rule docs/ then drafts",
+        "docs with a folder at its name",
         "deleted",
         "rule docs/ then deleted",
     ] {

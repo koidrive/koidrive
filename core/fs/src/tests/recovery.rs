@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #[test]
-fn an_absent_name_in_a_replacement_folder_does_not_prove_absence_in_the_original() {
+fn a_name_missing_from_a_replacement_folder_is_not_checked_in_the_original() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     fs::create_dir(root.join("docs")).unwrap();
@@ -13,15 +13,15 @@ fn an_absent_name_in_a_replacement_folder_does_not_prove_absence_in_the_original
         id,
     }];
     let report = std::ffi::OsStr::new("report.txt");
-    assert!(!space.name_absent(&docs, report).unwrap());
+    assert_eq!(space.kind_at(&docs, report).unwrap(), Some(EntryKind::File));
     fs::rename(root.join("docs"), root.join("papers")).unwrap();
     assert!(matches!(
-        space.name_absent(&docs, report),
+        space.kind_at(&docs, report),
         Err(Unresolved::Missing(_))
     ));
     fs::create_dir(root.join("docs")).unwrap();
     assert!(matches!(
-        space.name_absent(&docs, report),
+        space.kind_at(&docs, report),
         Err(Unresolved::Replaced { .. })
     ));
     fs::remove_file(root.join("papers/report.txt")).unwrap();
@@ -29,7 +29,12 @@ fn an_absent_name_in_a_replacement_folder_does_not_prove_absence_in_the_original
         name: "papers".into(),
         id,
     }];
-    assert!(space.name_absent(&papers, report).unwrap());
+    assert_eq!(space.kind_at(&papers, report).unwrap(), None);
+    fs::create_dir(root.join("papers/report.txt")).unwrap();
+    assert_eq!(
+        space.kind_at(&papers, report).unwrap(),
+        Some(EntryKind::Dir)
+    );
 }
 
 #[test]
