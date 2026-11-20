@@ -4788,18 +4788,15 @@ fn plan(
                 let left_out = || {
                     let mut names = vec![shape.name.as_str()];
                     let mut at = &shape.parent;
-                    for _ in 0..=places.len() + trees.local().len() {
-                        let above = (!places.contains_key(at))
-                            .then(|| match *at == trees.local().root {
-                                true => Some(Vec::new()),
-                                false => path(trees.remote(), at).map(|(names, _)| names),
-                            })
-                            .flatten();
-                        if let Some(above) = above {
+                    for _ in 0..=places.len() + trees.local().len() + trees.remote().len() {
+                        if *at == trees.local().root {
                             names.reverse();
-                            return trees.ignores(&[above, names].concat(), shape.kind);
+                            return trees.ignores(&names, shape.kind);
                         }
                         let place = places.get(at).copied().or_else(|| {
+                            if let Some(remote) = trees.remote().live(at) {
+                                return Some((&remote.parent, remote.name.as_str()));
+                            }
                             let local = &trees.local().get(at)?.shape;
                             Some(
                                 trees

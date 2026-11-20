@@ -1780,6 +1780,18 @@ fn a_resend_is_judged_at_the_path_the_commit_gives_the_folders_above_it() {
             vec![("q", dir(ROOT, "r"))],
             vec![("f", "q", "f")],
         ),
+        (
+            "grandparent renamed here in the same commit",
+            vec![
+                synced("a", dir(ROOT, "a")),
+                synced("q", dir("a", "q")),
+                synced("f", file("q", "f", 1)),
+            ],
+            vec![("f", file("q", "x", 1))],
+            &b"/r/q/x\n"[..],
+            vec![("a", dir(ROOT, "r"))],
+            vec![("f", "q", "f")],
+        ),
     ];
     for (case, nodes, moved, rules, here, expected) in cases {
         let mut trees = trees(&nodes);
