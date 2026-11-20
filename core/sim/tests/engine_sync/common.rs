@@ -577,7 +577,7 @@ struct Device {
     touched: BTreeSet<NodeId>,
     acted: BTreeSet<NodeId>,
     removed_from: BTreeMap<NodeId, NodeId>,
-    on_server_since_discard: BTreeMap<NodeId, NodeId>,
+    on_server_when_taken_along: BTreeMap<NodeId, BTreeMap<NodeId, NodeId>>,
     kept_back: BTreeSet<NodeId>,
     relocated: BTreeMap<NodeId, Relocation>,
     left_out_folders: BTreeSet<String>,
@@ -602,11 +602,26 @@ struct Relocation {
 }
 
 impl Device {
-    fn note_on_server(&mut self) {
-        for (id, remote) in self.trees.remote().iter() {
-            if !remote.trashed {
-                (self.on_server_since_discard.entry(id.clone()))
-                    .or_insert_with(|| remote.shape.parent.clone());
+    fn on_server(&self) -> impl Iterator<Item = (&NodeId, &NodeId)> {
+        (self.trees.remote().iter())
+            .filter(|(_, remote)| !remote.trashed)
+            .map(|(id, remote)| (id, &remote.shape.parent))
+    }
+
+    fn note_taken_along<'a>(&mut self, folders: impl IntoIterator<Item = &'a NodeId>) {
+        let on_server: BTreeMap<NodeId, NodeId> =
+            (self.on_server()).map(|(id, parent)| (id.clone(), parent.clone())).collect();
+        for folder in folders {
+            (self.on_server_when_taken_along).insert(folder.clone(), on_server.clone());
+        }
+    }
+
+    fn note_arrivals(&mut self) {
+        let on_server: Vec<(NodeId, NodeId)> =
+            (self.on_server()).map(|(id, parent)| (id.clone(), parent.clone())).collect();
+        for baseline in self.on_server_when_taken_along.values_mut() {
+            for (id, parent) in &on_server {
+                baseline.entry(id.clone()).or_insert_with(|| parent.clone());
             }
         }
     }
@@ -621,7 +636,7 @@ impl Device {
             touched: BTreeSet::new(),
             acted: BTreeSet::new(),
             removed_from: BTreeMap::new(),
-            on_server_since_discard: BTreeMap::new(),
+            on_server_when_taken_along: BTreeMap::new(),
             kept_back: BTreeSet::new(),
             relocated: BTreeMap::new(),
             left_out_folders: BTreeSet::new(),
@@ -1928,7 +1943,11 @@ fn acted_below(
     let at_discard = |at: &NodeId| {
         (kept_with.get(at).or_else(|| discarded.get(at)))
             .map(|shape| shape.parent.clone())
-            .or_else(|| device.on_server_since_discard.get(at).cloned())
+            .or_else(|| {
+                (device.on_server_when_taken_along.get(id))
+                    .and_then(|baseline| baseline.get(at))
+                    .cloned()
+            })
     };
     let belongs_here = |entry: &NodeId| !kept_with.contains_key(id) || reaches(entry, &at_discard);
     let as_agreed = |entry: &NodeId| {
@@ -2233,9 +2252,7 @@ fn run_ignoring_answering_after(
         prop_assert!(steps <= STEPS, "no convergence within {} steps", STEPS);
         device.trees.settle(commits.aliases());
         prop_assert_eq!(device.trees.check(), Ok(()));
-        if !discarded.is_empty() {
-            device.note_on_server();
-        }
+        device.note_arrivals();
         device.follow_rekeys();
         note_agreements(&device, &mut sent_since, &mut agreed, &mut from_server);
         if (due || steps % 2 == 0)
@@ -2553,9 +2570,9 @@ fn run_ignoring_answering_after(
             }
             std::mem::swap(&mut device.trees, &mut before.0);
             device.acted.retain(|id| !taken.contains_key(id));
+            device.note_taken_along(taken.keys());
             kept_with.append(&mut taken);
             discarded.extend(shown);
-            device.note_on_server();
         }
         let held = held_by(commits.questions());
         let revived = revive(&device, &discarded, &kept_with, &held);

@@ -714,19 +714,28 @@ fn a_server_file_deleted_from_a_taken_along_folder_is_judged_by_where_it_was_at_
 }
 
 #[test]
-fn a_server_entry_moved_in_between_two_discards_and_deleted_is_not_the_folders_change() {
-    let (mut device, kept_with, discarded) = a_file_in_a_taken_along_server_folder();
-    let (g, s): (NodeId, NodeId) = ("g".into(), "s".into());
-    let mut remote = device.trees.remote().get(&"f".into()).unwrap().clone();
-    remote.shape.name = "g".into();
-    device.trees.set_remote(g.clone(), remote.clone());
-    device.note_on_server();
-    remote.shape.parent = s.clone();
-    device.trees.set_remote(g.clone(), remote);
-    device.note_on_server();
-    device.acted.insert(g.clone());
-    device.removed_from.insert(g, s.clone());
-    assert!(!acted_below(&device, &s, &kept_with, &discarded));
+fn a_server_entry_deleted_in_a_taken_along_folder_is_judged_by_the_discard_that_took_it_along() {
+    for (taken_first, changes_the_folder) in [(true, false), (false, true)] {
+        let (mut device, kept_with, discarded) = a_file_in_a_taken_along_server_folder();
+        let (g, s): (NodeId, NodeId) = ("g".into(), "s".into());
+        let mut remote = device.trees.remote().get(&"f".into()).unwrap().clone();
+        remote.shape.name = "g".into();
+        device.trees.set_remote(g.clone(), remote.clone());
+        let taken = [s.clone()];
+        device.note_taken_along(&taken[..usize::from(taken_first)]);
+        device.note_arrivals();
+        remote.shape.parent = s.clone();
+        device.trees.set_remote(g.clone(), remote);
+        device.note_arrivals();
+        device.note_taken_along(&taken[usize::from(taken_first)..]);
+        device.acted.insert(g.clone());
+        device.removed_from.insert(g, s.clone());
+        assert_eq!(
+            acted_below(&device, &s, &kept_with, &discarded),
+            changes_the_folder,
+            "{taken_first}"
+        );
+    }
 }
 
 #[test]
@@ -826,17 +835,17 @@ fn a_removal_is_judged_through_a_server_chain_longer_than_the_local_tree() {
     place_dir(&mut device, "k", Some(("root", "k")), Some(("root", "k")));
     place_dir(&mut device, "e", None, Some(("root", "e")));
     device.removed_from.insert("e".into(), "k".into());
+    let mut baseline = BTreeMap::new();
     let mut below = "e".to_string();
     for depth in (1..=8).rev() {
         let folder = format!("s{depth}");
-        device
-            .on_server_since_discard
-            .insert(below.into(), (&folder).into());
+        baseline.insert(below.into(), (&folder).into());
         below = folder;
     }
+    baseline.insert(below.into(), "k".into());
     device
-        .on_server_since_discard
-        .insert(below.into(), "k".into());
+        .on_server_when_taken_along
+        .insert("k".into(), baseline);
     device.acted.insert("e".into());
     let kept_with = BTreeMap::from([(
         "k".into(),
