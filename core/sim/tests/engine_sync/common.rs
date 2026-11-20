@@ -2599,7 +2599,10 @@ fn run_ignoring_answering_after(
     prop_assert_eq!(unsettled, Vec::<&NodeId>::new());
     prop_assert!(commits.problems().is_empty(), "{:?}", commits.problems());
     prop_assert!(
-        effects.blocked().keys().all(|id| refused_merges.contains(id)),
+        effects
+            .blocked()
+            .keys()
+            .all(|id| refused_merges.contains(id)),
         "{:?}",
         effects.blocked()
     );
