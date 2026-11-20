@@ -1,0 +1,10 @@
+class = "E"
+issue = "GUN-984"
+tests = ["a_first_link_discard_takes_along_only_the_server_entries_the_user_leaves_alone"]
+message = '''assertion failed: `\(left == right\)` left: `\("<id>", "c\.txt"\)`, right: `\("<id>", "c\.txt"\)`: <id> is sent to a place the disk does not hold it at at \S+\.rs:<line>\.'''
+examples = [
+  "assertion failed: `(left == right)` \n  left: `(\"01a1c2c0-39a0-7001-b241-9db23951df99\", \"c.txt\")`, \n right: `(\"01a1c2c0-39a0-780a-953a-eb70673e29cb\", \"c.txt\")`: 01a1c2c0-39a0-7353-a331-565b5a0660d9 is sent to a place the disk does not hold it at at core/sim/tests/engine_sync/common.rs:1376.",
+]
+cases = [
+  "f662e3e45e7a",
+]
