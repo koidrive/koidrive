@@ -7320,6 +7320,10 @@ fn a_held_folder_whose_question_is_open_stays_in_the_server_folder_moved_into_an
     let open = question(&commits);
     assert_eq!((open.id, open.answer), (asked.id, None));
     assert_eq!(
+        trees.local().get(&"s".into()).unwrap().shape,
+        dir("h", "c.txt")
+    );
+    assert_eq!(
         trees.local().get(&"hc".into()).unwrap().shape,
         dir("s", "C.TXT")
     );
@@ -7395,10 +7399,7 @@ fn a_held_folder_in_a_server_folder_moved_in_view_keeps_the_server_file_the_user
     let before = [("sf", file("hc", "c.txt", 5))];
     let (sent, trees, _) =
         discarded_after_a_server_folder_moved_in(&before, &[], Some(&[]), false, false, true);
-    assert_eq!(
-        sent[..2],
-        [("create dir", "h".into()), ("move", "s".into())]
-    );
+    assert_eq!(sent, [("create dir", "h".into()), ("move", "s".into())]);
     assert_eq!(
         trees.local().get(&"s".into()).unwrap().shape,
         dir("h", "c.txt")
