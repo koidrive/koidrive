@@ -1912,6 +1912,12 @@ fn acted_below(
     };
     let in_local = |at: &NodeId| trees.local().get(at).map(|node| node.shape.parent.clone());
     let removed_from = |at: &NodeId| in_local(at).or_else(|| device.removed_from.get(at).cloned());
+    let in_remote = |at: &NodeId| trees.remote().live(at).map(|shape| shape.parent.clone());
+    let belongs_here = |entry: &NodeId| {
+        trees.local().get(entry).is_some()
+            || trees.remote().live(entry).is_none()
+            || reaches(entry, &in_remote)
+    };
     let as_agreed = |entry: &NodeId| {
         let Some(local) = trees.local().get(entry) else {
             return trees.remote().live(entry).is_none();
@@ -1934,7 +1940,9 @@ fn acted_below(
     };
     (device.acted.iter())
         .filter(|entry| !as_agreed(entry) && !kept_by_r7(device, entry) && !kept_back(entry))
-        .any(|entry| reaches(entry, &in_local) || reaches(entry, &removed_from))
+        .any(|entry| {
+            reaches(entry, &in_local) || (belongs_here(entry) && reaches(entry, &removed_from))
+        })
 }
 
 fn kept_by_r7(device: &Device, entry: &NodeId) -> bool {
