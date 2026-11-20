@@ -3919,7 +3919,8 @@ impl Trees {
             self.release_due = true;
         }
         self.relist_asked.retain(|id| {
-            !(self.l.get(id)).is_some_and(|node| folders.contains(&Self::listed_at(id, node)))
+            !(self.l.get(id))
+                .is_some_and(|node| folders.contains(id) || folders.contains(&node.shape.parent))
         });
         if self.unobserved.is_empty() {
             return;
@@ -4251,29 +4252,18 @@ impl Trees {
             if !self.copy_watched(id, &mut scopes) {
                 unwatched.push(id.clone());
             } else if !self.relist_asked.contains(id) && self.listing_observes(id, &mut scopes) {
-                let_in.push((
-                    id.clone(),
-                    Self::listed_at(id, node),
-                    node.shape.parent.clone(),
-                ));
+                let_in.push((id.clone(), node.shape.parent.clone()));
             }
         }
         for id in unwatched {
             self.left_out_by_server.remove(&id);
         }
-        let asked: BTreeSet<NodeId> = let_in.iter().map(|(id, _, _)| id.clone()).collect();
-        for (id, folder, parent) in let_in {
+        let asked: BTreeSet<NodeId> = let_in.iter().map(|(id, _)| id.clone()).collect();
+        for (id, parent) in let_in {
             if !self.local_chain(&parent).any(|above| asked.contains(above)) {
-                self.relist.insert(folder);
+                self.relist.insert(id.clone());
             }
             self.relist_asked.insert(id);
-        }
-    }
-
-    fn listed_at(id: &NodeId, node: &LocalNode) -> NodeId {
-        match node.shape.kind {
-            Kind::Dir => id.clone(),
-            _ => node.shape.parent.clone(),
         }
     }
 

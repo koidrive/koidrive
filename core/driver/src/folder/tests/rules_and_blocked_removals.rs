@@ -3084,6 +3084,61 @@ fn a_copy_a_rule_added_here_excludes_stays_when_the_server_trashes_it_before_its
 }
 
 #[test]
+fn a_top_level_file_renamed_back_rereads_only_itself_and_its_delete_is_sent() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    a.create(&mut remote, &site_a.root.join("f.txt"), b"synced");
+    fs::create_dir(site_a.root.join("other")).unwrap();
+    a.create(&mut remote, &site_a.root.join("other/h.txt"), b"other");
+    let file = NodeId::from(live_id(&server_nodes(&remote), "f.txt"));
+    let (site, b) = linked(&mut remote, "b");
+    drop(b);
+    let sync = SyncRules {
+        include: Vec::new(),
+        exclude: vec!["blocked.txt".into()],
+        ..SyncRules::default()
+    };
+    let mut b = site.start_with(&sync);
+    b.connect(&remote);
+    b.scan_until(|b| b.folder.scanned);
+    b.run(&mut remote);
+    b.settle();
+    for (from, to) in [("f.txt", "blocked.txt"), ("blocked.txt", "f.txt")] {
+        fs::rename(site_a.root.join(from), site_a.root.join(to)).unwrap();
+        a.scan_until(|a| !a.work.is_empty());
+        a.run(&mut remote);
+        b.pull(&remote);
+        b.run(&mut remote);
+        assert!(b.folder.engine.trees.unobserved(&file), "{to}");
+    }
+    let sections = b.folder.disk.sections();
+    let batch = sections
+        .observe(&mut b.observer, std::time::Duration::ZERO)
+        .unwrap()
+        .unwrap();
+    let read: Vec<_> = (batch.observation.changes.iter())
+        .filter_map(|change| match change {
+            Observed::Modified {
+                path,
+                content: Some(_),
+                ..
+            } => Some(path.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(read, [PathBuf::from("f.txt")]);
+    b.folder
+        .disk
+        .observed(batch, &mut b.folder.engine, &mut b.folder.store)
+        .unwrap();
+    assert!(!b.folder.engine.trees.unobserved(&file));
+    fs::remove_file(site.root.join("f.txt")).unwrap();
+    b.scan_until(|b| !b.work.is_empty());
+    b.run(&mut remote);
+    assert_eq!(remote.names(), ["h.txt", "other"]);
+}
+
+#[test]
 fn a_folder_removed_while_a_server_rename_leaves_it_out_downloads_again() {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");
