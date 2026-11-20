@@ -5929,22 +5929,23 @@ mod a_server_file_moved_into_an_asked_folder {
                 [NodeId::from("e"), NodeId::from("f")]
             );
             let applied = |c: &mut Commits, t: &mut Trees| {
+                let seq = c.in_flight().unwrap().commit.base_seq + 1;
                 let mut node = t.remote().get(&"sc".into()).unwrap().clone();
                 node.trashed = true;
-                node.trash_group = "1:0".into();
-                (node.meta_rev, node.meta_edit_rev) = (1, 1);
+                node.trash_group = format!("{seq}:0");
+                (node.meta_rev, node.meta_edit_rev) = (seq, seq);
                 t.set_remote("sc".into(), node);
                 let results = vec![OpResult {
                     code: op_result::Code::Applied as i32,
                     ..Default::default()
                 }];
                 (c.received(CommitResult {
-                    seq: 1,
+                    seq,
                     results,
                     ..Default::default()
                 }))
                 .unwrap();
-                assert!(c.acknowledge(t, 1));
+                assert!(c.acknowledge(t, seq));
             };
             if !answered_before_the_ack {
                 applied(&mut c, &mut t);
