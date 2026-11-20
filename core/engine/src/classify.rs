@@ -145,21 +145,21 @@ fn excluded(matcher: &Matcher, path: &[&str], kinds: &[Kind]) -> bool {
     })
 }
 
-fn placed_keys<N: Node>(tree: &Tree<N>, id: &NodeId) -> Option<Vec<String>> {
+fn placed_names<'a, N: Node>(tree: &'a Tree<N>, id: &NodeId) -> Option<Vec<&'a str>> {
     let held = |id: &NodeId| {
         (tree.get(id))
             .filter(|node| node.is_live() && node.is_placed())
             .map(|node| node.shape())
     };
-    let mut keys = Vec::new();
+    let mut names = Vec::new();
     let mut current = id;
     for _ in 0..=tree.len() {
         if *current == tree.root {
-            keys.reverse();
-            return Some(keys);
+            names.reverse();
+            return Some(names);
         }
         let shape = held(current)?;
-        keys.push(name_key(&shape.name));
+        names.push(shape.name.as_str());
         current = &shape.parent;
     }
     None
@@ -2496,13 +2496,18 @@ impl Trees {
     fn awaits_scan(&self, id: &NodeId) -> bool {
         !self.awaiting_scan.is_empty()
             && [
-                placed_keys(&self.l, id),
-                placed_keys(&self.s, id),
-                placed_keys(&self.r, id),
+                placed_names(&self.l, id),
+                placed_names(&self.s, id),
+                placed_names(&self.r, id),
             ]
             .into_iter()
             .flatten()
-            .any(|keys| (self.awaiting_scan.iter()).any(|held| keys.starts_with(held)))
+            .any(|names| {
+                (self.awaiting_scan.iter()).any(|held| {
+                    held.len() <= names.len()
+                        && (held.iter().zip(&names)).all(|(key, name)| *key == name_key(name))
+                })
+            })
     }
 
     fn below_unknown_rules(&self, id: &NodeId) -> bool {

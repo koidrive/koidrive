@@ -913,7 +913,10 @@ fn planning_goes_on_after_a_folder_move_once_a_scan_that_found_nothing_is_report
 
     a.create(&mut remote, &site_a.root.join("new/later.txt"), b"later");
     b.pull(&remote);
-    assert!(b.work.is_empty(), "nothing is planned in the moved folder before the scan");
+    assert!(
+        b.work.is_empty(),
+        "nothing is planned in the moved folder before the scan"
+    );
 
     let sections = b.folder.sections();
     let batch = (sections
