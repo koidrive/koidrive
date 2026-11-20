@@ -3253,7 +3253,7 @@ fn run_ignoring_answering_after(
         );
     }
     let trees = &device.trees;
-    let owned = |id: &str, node: &LocalNode| {
+    let owned = |id: &NodeId, node: &LocalNode| {
         let Some(content) = node.shape.content.as_ref() else {
             return true;
         };

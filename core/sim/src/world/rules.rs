@@ -25,7 +25,7 @@ impl Unsynced {
     }
 }
 
-pub(super) fn owned(trees: &Trees, id: &str, node: &LocalNode) -> bool {
+pub(super) fn owned(trees: &Trees, id: &NodeId, node: &LocalNode) -> bool {
     let Some(content) = node.shape.content.as_ref() else {
         return true;
     };

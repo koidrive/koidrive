@@ -1795,24 +1795,26 @@ fn a_discarded_folder_on_a_parked_cycle_is_judged_by_each_entry_whatever_their_o
 
 #[test]
 fn a_missed_node_stays_in_l_without_a_name_until_a_scan_places_it_or_its_question_releases_it() {
-    let mut trees = Trees::new("root");
-    trees.set_remote("f".into(), remote(dir("root", "f")));
-    trees.set_synced("f".into(), Some(dir("root", "f")));
-    trees.set_local("f".into(), kept_local("root", "f", Kind::Dir, 2));
-    let identity = trees.local().get("f").unwrap().identity;
+    let root = NodeId::from("root");
+    let f = NodeId::from("f");
+    let mut trees = Trees::new(root.clone());
+    trees.set_remote(f.clone(), remote(dir(&root, "f")));
+    trees.set_synced(f.clone(), Some(dir(&root, "f")));
+    trees.set_local(f.clone(), kept_local(&root, "f", Kind::Dir, 2));
+    let identity = trees.local().get(&f).unwrap().identity;
     for found in [true, false] {
-        trees.miss_local("f");
-        trees.miss_local("f");
-        assert!(trees.local().get("f").is_none() && trees.local_entry("f").is_some());
-        assert_eq!(trees.local_child("root", "f"), None);
-        assert_eq!(trees.local_with_identity(&identity), Some(&"f".to_owned()));
-        assert!(trees.missing().contains("f") && trees.excluded("f"));
+        trees.miss_local(&f);
+        trees.miss_local(&f);
+        assert!(trees.local().get(&f).is_none() && trees.local_entry(&f).is_some());
+        assert_eq!(trees.local_child(&root, "f"), None);
+        assert_eq!(trees.local_with_identity(&identity), Some(&f));
+        assert!(trees.missing().contains(&f) && trees.excluded(&f));
         match found {
-            true => trees.set_local("f".into(), kept_local("root", "f", Kind::Dir, 2)),
-            false => trees.release_missing("f"),
+            true => trees.set_local(f.clone(), kept_local(&root, "f", Kind::Dir, 2)),
+            false => trees.release_missing(&f),
         }
         assert!(trees.missing().is_empty() && trees.displaced_local().is_empty());
-        assert_eq!(trees.local_child("root", "f").is_some(), found);
+        assert_eq!(trees.local_child(&root, "f").is_some(), found);
     }
-    assert!(trees.local().get("f").is_none());
+    assert!(trees.local().get(&f).is_none());
 }

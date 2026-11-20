@@ -2279,6 +2279,7 @@ fn renaming_an_entry_the_user_moved_in_from_a_folder_another_device_then_brings_
 #[test]
 fn a_write_held_by_a_node_displaced_during_an_action_stays_counted() {
     let mut trees = Trees::new("root");
+    let file = NodeId::from("f");
     let written = content(1, 1);
     let shape = koidrive_engine::tree::Shape {
         parent: "root".into(),
@@ -2292,7 +2293,7 @@ fn a_write_held_by_a_node_displaced_during_an_action_stays_counted() {
         handle: None,
     };
     trees.set_local(
-        "f".into(),
+        file.clone(),
         LocalNode {
             left_out_when_placed: false,
             content_from_server: false,
@@ -2302,9 +2303,9 @@ fn a_write_held_by_a_node_displaced_during_an_action_stays_counted() {
             chunks: written.chunks.clone().into(),
         },
     );
-    trees.set_synced("f".into(), Some(shape.clone()));
+    trees.set_synced(file.clone(), Some(shape.clone()));
     trees.set_remote(
-        "f".into(),
+        file.clone(),
         RemoteNode {
             made_over: Vec::new(),
             chunks: written.chunks.clone().into(),
@@ -2320,12 +2321,12 @@ fn a_write_held_by_a_node_displaced_during_an_action_stays_counted() {
             pending_by: None,
         },
     );
-    trees.ignore_local("f");
+    trees.ignore_local(&file);
     let mut local_writes = BTreeSet::from([written.manifest_digest.clone()]);
     let mut remote_writes = BTreeSet::new();
     let before = held(&trees);
-    trees.displace_local("f");
-    assert!(trees.local().get("f").is_none());
+    trees.displace_local(&file);
+    assert!(trees.local().get(&file).is_none());
     let after = held(&trees);
     rewritten(
         &before,

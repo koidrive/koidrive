@@ -3682,10 +3682,9 @@ impl Trees {
         false
     }
 
-    /// Keeps the node in L without a name because another entry took its name, and records that its local copy is in
-    /// an ignored folder: L cannot hold two entries at one name, and the copy is still there. The node stays excluded
-    /// ([`Trees::excluded`]) until an observation places it again or R holds it trashed, which takes it out of L. The
-    /// caller passes only a node [`Trees::recorded_local`] holds for.
+    /// Moves a node from L to the displaced map when another entry takes its name and its copy stays in an ignored
+    /// folder. The node stays excluded until an observation places it again or R holds it trashed. The caller passes
+    /// a node [`Trees::recorded_local`] holds for.
     pub fn displace_local(&mut self, id: &NodeId) {
         if !self.l.get(id).is_some_and(|node| node.is_placed()) {
             return;
@@ -3699,7 +3698,7 @@ impl Trees {
         self.move_out_of_l(id);
     }
 
-    fn move_out_of_l(&mut self, id: &str) {
+    fn move_out_of_l(&mut self, id: &NodeId) {
         let Some(node) = self.l.remove(id) else {
             return;
         };
@@ -3726,10 +3725,9 @@ impl Trees {
         }
     }
 
-    /// Leaves the node in L without a name because a scan missed its local copy after a search of the ignored folders
-    /// that did not look everywhere (section 5.10). The copy may still be in an ignored folder, so a node R holds live
-    /// stays in L with its identity, as [`Trees::displace_local`] keeps it, and excluded. The commit planner holds it
-    /// under a question until the person answers, an observation places it again, or R no longer holds it live.
+    /// Records a node whose local copy a scan missed after an incomplete search of ignored folders (section 5.10).
+    /// If R holds it live, the displaced map keeps its entry, and the commit planner holds it under a question until
+    /// the person answers, an observation places it again, or R no longer holds it live.
     pub fn miss_local(&mut self, id: &NodeId) {
         let Some(node) = self.l.get(id) else {
             return;
@@ -3746,7 +3744,7 @@ impl Trees {
         self.missing.insert(id.to_owned());
     }
 
-    /// The nodes [`Trees::miss_local`] holds in L without a name.
+    /// The nodes [`Trees::miss_local`] records.
     pub fn missing(&self) -> &TrackedSet<NodeId> {
         &self.missing
     }
@@ -3818,7 +3816,7 @@ impl Trees {
         self.end_names_no_longer_left_out();
     }
 
-    pub(crate) fn displace_recorded_at(&mut self, id: &str, shape: &Shape) {
+    pub(crate) fn displace_recorded_at(&mut self, id: &NodeId, shape: &Shape) {
         let holders: Vec<NodeId> = (self.local_holders(&shape.parent, &shape.name))
             .filter(|holder| *holder != id && self.outside.contains(*holder))
             .cloned()
@@ -3836,7 +3834,7 @@ impl Trees {
         }
     }
 
-    /// The nodes [`Trees::displace_local`] left without a name in L, each with the identity L holds for it.
+    /// The displaced nodes and their last observed identities.
     pub fn displaced_local(&self) -> &TrackedMap<NodeId, FileIdentity> {
         &self.displaced
     }

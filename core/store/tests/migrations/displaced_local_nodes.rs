@@ -68,12 +68,14 @@ fn a_displaced_node_a_release_took_out_of_l_comes_back_into_l_where_s_or_r_holds
     )
     .unwrap();
     drop(conn);
+    let (folder, file) = (folder.into(), file.into());
 
     let mut store = Store::open(&path).unwrap();
     store
         .transaction(|tx| {
             let local = tx.local_nodes()?;
-            let held = |node: &str| local.iter().find(|held| held.node_id == node).unwrap();
+            let held = |node: &koidrive_engine::tree::NodeId|
+                local.iter().find(|held| held.node_id == *node).unwrap();
             let synced = tx.synced_nodes()?;
             let folder_synced = synced.iter().find(|node| node.node_id == folder).unwrap();
             assert_eq!(held(&folder).shape, folder_synced.shape);
