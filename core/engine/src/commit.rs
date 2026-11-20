@@ -879,6 +879,9 @@ impl Commits {
                 ..
             })
         );
+        if store_behind_disk {
+            trees.unprove_waiting_removals();
+        }
         self.halted.set(match *self.halted {
             Some(Halt::Recovery {
                 policy: Some(code), ..
@@ -6962,6 +6965,29 @@ mod unproven_removal_tests {
                 Some(Origin::Unproven),
                 "{answer:?}"
             );
+        }
+    }
+
+    #[test]
+    fn a_recovery_from_a_store_older_than_the_disk_makes_a_waiting_removal_unproven() {
+        for (trigger, origin) in [
+            (RecoveryTrigger::StoreOlderThanDisk, Origin::Unproven),
+            (RecoveryTrigger::SpaceRewound, Origin::Other),
+        ] {
+            let mut trees = Trees::new("root");
+            trees.set_synced("b".into(), Some(shape("root", "b", Kind::Dir)));
+            trees.set_synced("c".into(), Some(shape("b", "c", Kind::Dir)));
+            trees.set_remote("c".into(), remote(shape("root", "c", Kind::Dir)));
+            trees.wait("b".into(), None, Origin::Other);
+            trees.wait("c".into(), Some(shape("b", "c", Kind::Dir)), Origin::Other);
+            let mut commits = Commits::default();
+            let cause = RecoveryCause::of(trigger);
+            commits.enter_recovery(cause);
+            let (log, marks) = (LogRead::default(), Marks::new());
+            let mut ids = IdGen::new(1);
+            commits.recover(&mut trees, 0, false, &cause, &log, &marks, &mut ids, 1);
+            let waiting = trees.waiting().get(&"b".into()).map(|w| w.origin);
+            assert_eq!(waiting, Some(origin), "{trigger:?}");
         }
     }
 }

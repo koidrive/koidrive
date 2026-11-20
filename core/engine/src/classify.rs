@@ -5289,6 +5289,16 @@ impl Trees {
         self.waiting.take_all()
     }
 
+    pub(crate) fn unprove_waiting_removals(&mut self) {
+        let removals: Vec<NodeId> = (self.waiting.iter())
+            .filter(|(_, waiting)| waiting.shape.is_none() && waiting.origin == Origin::Other)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in removals {
+            self.wait(id, None, Origin::Unproven);
+        }
+    }
+
     pub(crate) fn requeued_origin(&self, id: &NodeId) -> Origin {
         match self.waiting.get(id).map(|waiting| waiting.origin) {
             Some(Origin::Unproven) => Origin::Unproven,

@@ -1,4 +1,4 @@
-507
+530
 # A delete made offline around a server loss must stay deleted when another device's Keep or resend brings the node back,
 # whether R learns of it from the log, a listing or a restart, and must give way where that device moved the node, changed
 # its content, or the user answered Restore. Where another device renamed the deleted folder, the file's record waits for
@@ -16,3 +16,5 @@
 # also after a bootstrap forgets the folder meanwhile; the store tests cover the waiting origin before and after the migration.
 # The mass-deletion question's Delete and Restore answers keep an unproven removal's origin when they requeue it, and a
 # removal a release without provenance left waiting opens as unproven; each has a unit test with a mutant that fails it.
+# A removal already waiting when a recovery finds the store older than the disk becomes unproven, and one waiting through a
+# rewind recovery does not; the unit test fails without the conversion.
