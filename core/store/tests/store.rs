@@ -3756,3 +3756,37 @@ fn opening_a_store_again_keeps_another_connections_write_lock() {
     drop(Store::open_existing(&path));
     locked("after a second open");
 }
+
+#[test]
+fn a_purged_mark_on_an_absent_node_survives_an_update_and_a_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let mut before = engine_state();
+    before.trees.journal = journal_state();
+    let mut after = before.clone();
+    after.trees.journal.absent.insert(
+        "b".into(),
+        Absent {
+            since_ms: 1_700,
+            purged: true,
+        },
+    );
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.set_engine_state(&before))
+        .unwrap();
+    Store::open(&path)
+        .unwrap()
+        .transaction(|tx| tx.update_engine_state(&before, &after))
+        .unwrap();
+    let mut store = Store::open(&path).unwrap();
+    let loaded = store.transaction(|tx| tx.engine_state()).unwrap();
+    assert_eq!(loaded.trees.journal.absent, after.trees.journal.absent);
+    store
+        .transaction(|tx| tx.update_engine_state(&after, &before))
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    let loaded = store.transaction(|tx| tx.engine_state()).unwrap();
+    assert_eq!(loaded.trees.journal.absent, before.trees.journal.absent);
+}
