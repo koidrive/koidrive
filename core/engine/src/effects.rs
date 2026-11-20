@@ -1101,7 +1101,10 @@ fn candidate(trees: &Trees, id: &NodeId) -> bool {
         || trees.left_behind(id);
     changed
         && !forgets
-        && (!trees.excluded(id) || trees.trashed_while_parked(id) || trees.left_behind(id))
+        && (!trees.excluded(id)
+            || trees.trashed_while_parked(id)
+            || trees.retrying_kept_removal(id)
+            || trees.left_behind(id))
         && !trees.reclaimed(id)
 }
 
@@ -1693,7 +1696,7 @@ impl<'a> View<'a> {
 
     fn remove(&self, id: &NodeId, local: &LocalNode) -> Step {
         if self.trees.carried(id)
-            || self.trees.kept_folders().contains(id)
+            || self.trees.kept_folders().contains(id) && !self.trees.retrying_kept_removal(id)
             || self
                 .merge_residue
                 .is_some_and(|residue| residue.0.contains_key(id))

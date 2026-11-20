@@ -4576,10 +4576,10 @@ impl Trees {
     pub fn ignored(&self, id: &NodeId) -> bool {
         self.discard_state(id) == Some(Discard::Kept)
             || self.ignored_in_place(id)
-            || self.kept_folder(id)
+            || self.holds_kept_folder(id)
             || self.under_kept_entry(id)
             || (self.l.get(id)).is_some_and(|node| {
-                self.left_rules_file(id) && self.kept_folder(&node.shape.parent)
+                self.left_rules_file(id) && self.holds_kept_folder(&node.shape.parent)
             })
     }
 
@@ -4624,6 +4624,10 @@ impl Trees {
     /// Whether `id` is a folder this device keeps on disk after another device deleted it, for entries it leaves out
     /// (section 5.10).
     pub fn kept_folder(&self, id: &NodeId) -> bool {
+        self.acknowledged(id).is_none() && self.holds_kept_folder(id)
+    }
+
+    pub(crate) fn holds_kept_folder(&self, id: &NodeId) -> bool {
         if !self.kept_folders.contains(id) || self.r.live(id).is_some() {
             return false;
         }
@@ -4647,15 +4651,32 @@ impl Trees {
     /// the names a listing found in it beside them, are counted: L holds nothing below it but rules files it kept unedited
     /// since the delete, and each name in `left` is one of those.
     pub fn emptied_kept_folder(&self, id: &NodeId, left: &[&str]) -> bool {
+        if self.acknowledged(id).is_some() || !self.holds_only_unedited_rules_files(id) {
+            return false;
+        }
         let taken_along: Vec<&str> = (self.local_children_placed_or_parked(id))
             .filter_map(|child| Some(self.l.get(child)?.shape.name.as_str()))
             .collect();
-        self.holds_only_unedited_rules_files(id)
-            && left.iter().all(|name| taken_along.contains(name))
+        left.iter().all(|name| taken_along.contains(name))
+    }
+
+    pub(crate) fn retrying_kept_removal(&self, id: &NodeId) -> bool {
+        self.acknowledged(id).is_some() && self.holds_only_unedited_rules_files(id)
+    }
+
+    fn give_up_kept_removal(&mut self, id: &NodeId) {
+        let mut at = id.clone();
+        while self.kept_folders.contains(&at) {
+            self.give_up(&at);
+            let Some(node) = self.l.get(&at) else {
+                break;
+            };
+            at = node.shape.parent.clone();
+        }
     }
 
     fn holds_only_unedited_rules_files(&self, id: &NodeId) -> bool {
-        self.kept_folder(id)
+        self.holds_kept_folder(id)
             && (self.local_children_placed_or_parked(id))
                 .all(|child| self.unedited_kept_rules_file(child))
     }
@@ -4689,7 +4710,7 @@ impl Trees {
     /// files where L has them, so the delete R holds sends the folder to the local trash and takes the rules files along.
     /// Each kept folder above it that holds nothing else is taken up with it.
     pub fn recheck_kept_folder(&mut self, id: &NodeId) {
-        if !self.holds_only_unedited_rules_files(id) {
+        if self.acknowledged(id).is_some() || !self.holds_only_unedited_rules_files(id) {
             return;
         }
         let mut chain = vec![id.clone()];
@@ -4719,7 +4740,6 @@ impl Trees {
                 if self.holds_remote_content(&id) {
                     self.unsent_edits.remove(&id);
                 }
-                self.end_kept_folder(&id);
                 self.set_synced(id, shape);
             }
         }
@@ -4732,10 +4752,16 @@ impl Trees {
             .collect();
         for child in carried {
             self.give_up(&child);
-            self.kept_folders.insert(child.clone());
-            self.mark(&child);
+            self.keep_local_only(&child);
         }
         self.give_up(id);
+        self.keep_local_only(id);
+    }
+
+    fn keep_local_only(&mut self, id: &NodeId) {
+        for field in crate::journal::Field::ALL {
+            self.journal.end(id, field);
+        }
         self.kept_folders.insert(id.to_owned());
         self.mark(id);
     }
