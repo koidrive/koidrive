@@ -2360,10 +2360,30 @@ impl Trees {
         let removed =
             (self.l.get(id)).filter(|_| self.r.live(id).is_some() && !left_out && !unobserved);
         if let Some(local) = removed {
-            let folder = local.shape.parent.clone();
-            self.removed_from.insert(id.to_owned(), folder);
+            let folder = (self.member_removed_inside(id)).unwrap_or(&local.shape.parent);
+            self.removed_from.insert(id.to_owned(), folder.clone());
         }
         self.drop_local(id);
+    }
+
+    /// The folder R holds a taken-along folder's member in, when L holds the member anywhere
+    /// inside that folder outside a held folder of the same first link, so its removal counts
+    /// against the folder's entries at the Discard wherever it sat inside it (section 6.4).
+    fn member_removed_inside(&self, id: &NodeId) -> Option<&NodeId> {
+        let taken = self.discard_members.get(id)?;
+        let mut at = &self.l.get(id)?.shape.parent;
+        for _ in 0..self.l.len() {
+            if at == taken {
+                return Some(&self.r.live(id)?.parent);
+            }
+            if self.r.get(at).is_none()
+                && (self.discarded.contains_key(at) || self.asked.contains(at))
+            {
+                return None;
+            }
+            at = &self.l.get(at)?.shape.parent;
+        }
+        None
     }
 
     fn left_out_by_new_rules(&self, id: &NodeId) -> bool {

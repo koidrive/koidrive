@@ -8045,3 +8045,178 @@ fn a_folder_moved_out_of_a_vanished_folder_sends_the_users_removals_below_it_onc
         assert!(planned.is_empty(), "{removed:?}: {planned:?}");
     }
 }
+
+#[test]
+fn a_server_folder_is_the_users_once_the_user_deletes_one_of_its_entries_inside_a_new_folder() {
+    for restart in [false, true] {
+        for (left_in, kept) in [("x", false), ("z", false), (ROOT, false), (ROOT, true)] {
+            let mut trees = trees(
+                &[
+                    ("f", dir(ROOT, "new")),
+                    ("x", dir(ROOT, "server")),
+                    ("e", file("x", "kept", 5)),
+                    ("z", dir(ROOT, "other")),
+                    ("k", file("z", "keep", 6)),
+                ],
+                &[
+                    ("x", dir(ROOT, "server")),
+                    ("e", file("x", "kept", 5)),
+                    ("z", dir(ROOT, "other")),
+                    ("k", file("z", "keep", 6)),
+                ],
+            );
+            let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+            commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+            let asked = question(&commits);
+            trees.set_rules(
+                &[] as &[&str],
+                Source::Koiignore,
+                Some(RuleFile::parse(b"ignored*\n")),
+            );
+            trees.settle(commits.aliases());
+            for (id, name) in [("x", "ignored"), ("z", "ignored2")] {
+                let mut moved = trees.local().get(&id.into()).unwrap().clone();
+                moved.shape.parent = "f".into();
+                moved.shape.name = name.into();
+                trees.set_local_changed(id.into(), moved);
+            }
+            trees.settle(commits.aliases());
+            assert!(commits.decide(&mut trees, &asked.id, Answer::Discard));
+            assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+            trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+            trees.set_local_changed("y".into(), local_node(dir("x", "made"), 40));
+            let mut moved = trees.local().get(&"e".into()).unwrap().clone();
+            moved.shape.parent = "y".into();
+            trees.set_local_changed("e".into(), moved);
+            trees.remove_local(&"e".into());
+            let mut moved = trees.local().get(&"y".into()).unwrap().clone();
+            moved.shape.parent = left_in.into();
+            trees.set_local_changed("y".into(), moved);
+            if !kept {
+                trees.remove_local(&"y".into());
+            }
+            if restart {
+                trees = restarted(&trees);
+            }
+            let mut sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+            sent.sort();
+            let made = kept.then(|| ("create dir", "y".to_owned()));
+            let expected: Vec<(&str, String)> = [
+                ("create dir", "f".to_owned()),
+                ("delete", "e".to_owned()),
+                ("move", "x".to_owned()),
+                ("move", "z".to_owned()),
+            ]
+            .into_iter()
+            .chain(made)
+            .collect();
+            let mut expected = expected;
+            expected.sort();
+            assert_eq!(sent, expected, "{restart} {left_in} {kept}");
+            assert!(
+                local(&trees).contains(&("x".into(), "f".into(), "ignored".into())),
+                "{restart} {left_in} {kept}: {:?}",
+                local(&trees)
+            );
+        }
+    }
+}
+
+#[test]
+fn a_server_folder_is_the_users_only_when_the_user_deletes_one_of_its_entries_while_it_is_inside() {
+    for (case, nested, y_in) in [("nested", true, "x"), ("outside", false, ROOT)] {
+        let mut trees = trees(
+            &[
+                ("f", dir(ROOT, "new")),
+                ("x", dir(ROOT, "server")),
+                ("w", dir("x", "inner")),
+                ("e", file(if nested { "w" } else { "x" }, "kept", 5)),
+            ],
+            &[
+                ("x", dir(ROOT, "server")),
+                ("w", dir("x", "inner")),
+                ("e", file(if nested { "w" } else { "x" }, "kept", 5)),
+            ],
+        );
+        let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+        commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+        let asked = question(&commits);
+        trees.set_rules(
+            &[] as &[&str],
+            Source::Koiignore,
+            Some(RuleFile::parse(b"ignored*\n")),
+        );
+        trees.settle(commits.aliases());
+        let mut moved = trees.local().get(&"x".into()).unwrap().clone();
+        moved.shape.parent = "f".into();
+        moved.shape.name = "ignored".into();
+        trees.set_local_changed("x".into(), moved);
+        trees.settle(commits.aliases());
+        assert!(commits.decide(&mut trees, &asked.id, Answer::Discard));
+        assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+        trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+        trees.set_local_changed("y".into(), local_node(dir(y_in, "made"), 40));
+        let mut moved = trees.local().get(&"e".into()).unwrap().clone();
+        moved.shape.parent = "y".into();
+        trees.set_local_changed("e".into(), moved);
+        trees.remove_local(&"e".into());
+        trees.remove_local(&"y".into());
+        let mut sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+        sent.sort();
+        let x_in = if nested { "f" } else { ROOT };
+        let expected: Vec<(&str, String)> = match nested {
+            true => vec![
+                ("create dir", "f".into()),
+                ("delete", "e".into()),
+                ("move", "x".into()),
+            ],
+            false => vec![("delete", "e".into())],
+        };
+        assert_eq!(sent, expected, "{case}");
+        let x = trees.local().get(&"x".into()).unwrap();
+        assert_eq!(
+            x.shape.parent,
+            NodeId::from(x_in),
+            "{case}: {:?}",
+            local(&trees)
+        );
+    }
+}
+
+#[test]
+fn a_server_folder_stays_discarded_when_the_user_deletes_one_of_its_entries_inside_a_held_folder_in_it()
+ {
+    let mut trees = trees(
+        &[
+            ("f", dir(ROOT, "new")),
+            ("x", dir(ROOT, "server")),
+            ("e", file("x", "kept", 5)),
+            ("h", dir("x", "ignored-held")),
+        ],
+        &[("x", dir(ROOT, "server")), ("e", file("x", "kept", 5))],
+    );
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(7));
+    commits.first_link(&mut trees, &mut ids, NOW, PriorSync::Shown);
+    let asked = question(&commits);
+    trees.set_rules(
+        &[] as &[&str],
+        Source::Koiignore,
+        Some(RuleFile::parse(b"ignored*\n")),
+    );
+    trees.settle(commits.aliases());
+    let mut moved = trees.local().get(&"x".into()).unwrap().clone();
+    moved.shape.parent = "f".into();
+    moved.shape.name = "ignored".into();
+    trees.set_local_changed("x".into(), moved);
+    trees.settle(commits.aliases());
+    assert!(commits.decide(&mut trees, &asked.id, Answer::Discard));
+    assert!(ops(&mut commits, &mut trees, &mut ids).is_empty());
+    trees.set_rules(&[] as &[&str], Source::Koiignore, None);
+    let mut moved = trees.local().get(&"e".into()).unwrap().clone();
+    moved.shape.parent = "h".into();
+    trees.set_local_changed("e".into(), moved);
+    trees.remove_local(&"e".into());
+    let sent = drive_until_quiet(&mut commits, &mut trees, &mut ids);
+    assert_eq!(sent, [("delete", "e".to_owned())]);
+    assert_eq!(local(&trees), [("x".into(), ROOT.into(), "server".into())]);
+}
