@@ -496,6 +496,17 @@ impl Intents {
                 *until = Some(clock + 1);
             }
         }
+        let moved: Vec<(u128, NodeId)> = (self.nodes[d].iter())
+            .flat_map(|(ino, nodes)| nodes.iter().map(move |node| (*ino, node)))
+            .filter(|(ino, node)| {
+                inos.get(ino) != Some(*node)
+                    && inos.iter().any(|(other, at)| at == *node && other != ino)
+            })
+            .map(|(ino, node)| (ino, node.clone()))
+            .collect();
+        for (ino, node) in moved {
+            self.detach(d, ino, &node, clock + 1);
+        }
         let shown: BTreeMap<&NodeId, Shown> = (disk.entries().iter())
             .filter_map(|(ino, entry)| {
                 let parent = match &entry.place {
@@ -1057,6 +1068,40 @@ impl Intents {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_delete_covers_only_the_nodes_its_ino_held_when_it_was_made() {
+        let mut intents = Intents::new(1);
+        let disk = Disk::new(super::super::disk::Precision::Fine);
+        let root = NodeId::from("root");
+        let (moved, stayed, copy) = (NodeId::from("m"), NodeId::from("s"), NodeId::from("c"));
+        let inos = |at: &[(u128, &NodeId)]| -> BTreeMap<u128, NodeId> {
+            at.iter()
+                .map(|(ino, node)| (*ino, (*node).clone()))
+                .collect()
+        };
+        intents.observe(0, 1, &disk, &inos(&[(2, &moved), (3, &stayed)]), &root);
+        intents.observe(
+            0,
+            2,
+            &disk,
+            &inos(&[(2, &copy), (6, &moved), (3, &stayed)]),
+            &root,
+        );
+        let trashed = |ino| Value::Trashed {
+            subtree: vec![ino],
+            under: BTreeMap::new(),
+            replaced_by: None,
+        };
+        intents.record(0, 4, 2, "delete", trashed(2));
+        intents.record(0, 4, 3, "delete", trashed(3));
+        assert!(intents.deleted(0, &copy));
+        assert!(!intents.deleted(0, &moved));
+        assert!(intents.deleted(0, &stayed));
+        intents.give_up(&Server::of("root", vec![]), 0, &[moved.clone()].into());
+        assert!(intents.deleted(0, &copy));
+        assert!(intents.deleted(0, &stayed));
+    }
 
     #[test]
     fn a_name_the_server_gives_while_the_name_is_taken_is_the_name() {
