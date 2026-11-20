@@ -1,5 +1,6 @@
-324
+421
 # The tests hold a file in place while it waits on a folder the scan may not read: across moves, renames, removals, restarts, a source folder that turns unreadable for one scan, and a file that takes the folder's place, and they check that a scan stopped while it looks for such files publishes nothing.
 # They check that a narrow scan that can't find such a folder (renamed, replaced by a file, behind an unreadable parent, moved out of the tree) holds the file instead of reporting it removed.
 # They also check that a delete made while stopped reaches the server next to a folder that stays unreadable, after a restart and after an upgrade from a store without these records.
 # Each case reproduced a server delete, a hold that never ends or a stop that is ignored on Linux, which no earlier test caught; the store tests cover the record and its upgrade.
+# They check that a stationary hard link or a folder that was readable for one listing is never taken as proof that a waiting file moved, and that the file is still released once its folder is read.

@@ -2111,6 +2111,8 @@ fn waiting_folder_out_of_reach(case: &str) -> Option<String> {
     };
     fs::create_dir_all(root.join(&folder)).unwrap();
     fs::create_dir(root.join("src")).unwrap();
+    fs::create_dir(root.join("other")).unwrap();
+    fs::write(root.join("other/notes.txt"), b"before").unwrap();
     fs::write(root.join("src/report.docx"), b"report").unwrap();
     let mode =
         |path: &Path, mode| fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
@@ -2142,6 +2144,7 @@ fn waiting_folder_out_of_reach(case: &str) -> Option<String> {
         }
         "moved out of the tree" => {
             fs::rename(root.join(&folder), dir.path().join("box")).unwrap();
+            fs::write(root.join("other/notes.txt"), b"after moving box").unwrap();
             None
         }
         _ => {
@@ -2171,7 +2174,11 @@ fn waiting_folder_out_of_reach(case: &str) -> Option<String> {
                 && (read.iter())
                     .any(|change| matches!(change, Change::Renamed { to, .. } if to == place))
         }
-        None => removed(&narrow) || removed(&read),
+        None => {
+            narrow.contains(&Change::Modified {
+                path: PathBuf::from("other/notes.txt"),
+            }) && (removed(&narrow) || removed(&read))
+        }
     };
     let settled = snapshot == Snapshot::scan(&root).unwrap();
     (removed(&held) || !placed || !settled)
@@ -2222,4 +2229,92 @@ fn a_file_moved_out_of_a_folder_readable_again_waits_on_the_unreadable_folder_it
         read,
         vec![renamed("src/report.docx", "box/report.docx", File)]
     );
+}
+
+#[test]
+fn a_move_into_a_temporarily_readable_folder_survives_a_scan_elsewhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join("box")).unwrap();
+    fs::write(root.join("report.docx"), b"report").unwrap();
+    fs::write(root.join("notes.txt"), b"notes").unwrap();
+    let lock =
+        |mode| fs::set_permissions(root.join("box"), fs::Permissions::from_mode(mode)).unwrap();
+    lock(0o000);
+    let blocked = blocks_reads("temporarily readable box", fs::read_dir(root.join("box")));
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    lock(0o755);
+    if !blocked {
+        return;
+    }
+    fs::rename(root.join("report.docx"), root.join("box/report.docx")).unwrap();
+    let elsewhere = snapshot
+        .rescan(root, [PathBuf::from("notes.txt")])
+        .unwrap()
+        .changes;
+    lock(0o000);
+    std::thread::sleep(Duration::from_millis(50));
+    let source = snapshot
+        .rescan(root, [PathBuf::from("report.docx")])
+        .unwrap()
+        .changes;
+    lock(0o755);
+    let destination = snapshot
+        .rescan(root, [PathBuf::from("box")])
+        .unwrap()
+        .changes;
+    let changes: Vec<_> = elsewhere
+        .into_iter()
+        .chain(source)
+        .chain(destination)
+        .collect();
+    assert!(
+        !changes.contains(&removed("report.docx", File)),
+        "{changes:?}"
+    );
+    assert!(
+        changes.contains(&renamed("report.docx", "box/report.docx", File)),
+        "{changes:?}"
+    );
+}
+
+#[test]
+fn a_stationary_hard_link_does_not_resolve_a_move_into_an_unreadable_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir(root.join("box")).unwrap();
+    fs::write(root.join("report.docx"), b"report").unwrap();
+    fs::hard_link(root.join("report.docx"), root.join("other.docx")).unwrap();
+    fs::write(root.join("notes.txt"), b"notes").unwrap();
+    let lock =
+        |mode| fs::set_permissions(root.join("box"), fs::Permissions::from_mode(mode)).unwrap();
+    lock(0o000);
+    let blocked = blocks_reads("box with a moved hard link", fs::read_dir(root.join("box")));
+    let mut snapshot = Snapshot::scan(root).unwrap();
+    lock(0o755);
+    if !blocked {
+        return;
+    }
+    fs::rename(root.join("report.docx"), root.join("box/report.docx")).unwrap();
+    lock(0o000);
+    std::thread::sleep(Duration::from_millis(50));
+    let elsewhere = snapshot
+        .rescan(root, [PathBuf::from("notes.txt")])
+        .unwrap()
+        .changes;
+    let source = snapshot.rescan(root, [PathBuf::new()]).unwrap().changes;
+    lock(0o755);
+    let changes: Vec<_> = elsewhere.into_iter().chain(source).collect();
+    assert!(
+        !changes.contains(&removed("report.docx", File)),
+        "{changes:?}"
+    );
+    let released = snapshot.rescan(root, [PathBuf::from("box")]).unwrap();
+    assert!(
+        released
+            .changes
+            .contains(&renamed("report.docx", "box/report.docx", File)),
+        "{released:?}"
+    );
+    assert_eq!(snapshot, Snapshot::scan(root).unwrap());
 }

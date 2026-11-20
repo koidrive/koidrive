@@ -40,6 +40,7 @@ upgrade_case!(schema_forget_sync_state, |store| {
     copy.transaction(|tx| {
         tx.set_root_tokens(&tokens)?;
         tx.set_volume_mounts(&mounts)?;
+        tx.set_unread_folders(&std::collections::BTreeMap::from([("Private".into(), 42)]))?;
         tx.set_id_generator(&7u64.to_le_bytes())
     })
     .unwrap();
@@ -50,6 +51,7 @@ upgrade_case!(schema_forget_sync_state, |store| {
         assert_eq!(tx.volume_mounts()?, mounts);
         assert_eq!(tx.id_generator()?, Some(7u64.to_le_bytes().to_vec()));
         assert_eq!(tx.cursor()?, None);
+        assert_eq!(tx.unread_folders()?, None);
         assert_eq!(tx.engine_state()?, koidrive_store::EngineState::default());
         Ok::<_, koidrive_store::Error>(())
     })
