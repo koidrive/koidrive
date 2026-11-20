@@ -838,7 +838,14 @@ impl Device {
                 Some(op::Op::UpdateContent(update)) => &update.node_id,
                 _ => continue,
             };
-            if outcome.code == op_result::Code::Applied as i32 {
+            use op_result::Code;
+            let taken = [
+                Code::Applied,
+                Code::AppliedRenamed,
+                Code::ConflictCopy,
+                Code::MergedInto,
+            ];
+            if taken.iter().any(|code| outcome.code == *code as i32) {
                 self.acked.insert(NodeId::from(id));
             }
         }
