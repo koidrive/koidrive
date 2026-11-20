@@ -749,7 +749,14 @@ fn a_server_folder_holding_a_file_another_device_purged_since_is_still_a_server_
     device.trees.set_synced(f.clone(), Some(server));
     device.trees.remove_remote(&f);
     let (shown, mut kept) = (BTreeMap::new(), BTreeMap::new());
-    assert!(server_copy(&device, &s, &shown, &BTreeSet::new(), &BTreeMap::new(), &mut kept));
+    assert!(server_copy(
+        &device,
+        &s,
+        &shown,
+        &BTreeSet::new(),
+        &BTreeMap::new(),
+        &mut kept
+    ));
     assert!(kept.contains_key(&f));
 }
 
