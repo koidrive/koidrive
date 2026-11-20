@@ -1695,6 +1695,10 @@ impl<'a> View<'a> {
         }
         let merged_beside = |other: &NodeId| {
             remote.kind == Kind::Dir
+                && (self.trees.local().get(id)).is_some_and(|node| {
+                    node.shape.parent == remote.parent
+                        && name_key(&node.shape.name) == name_key(&remote.name)
+                })
                 && self
                     .merge_residue
                     .is_some_and(|residue| residue.0.contains_key(other))

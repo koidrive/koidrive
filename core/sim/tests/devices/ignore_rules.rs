@@ -600,6 +600,62 @@ fn one_takes_over(world: &mut World, merged: &[NodeId; 2], live: &NodeId, made: 
     1 - loser
 }
 
+fn made_again_around_the_commit_build(
+    live: &str,
+    merged: &[&str],
+    settle_first: bool,
+) -> (World, Vec<NodeId>, NodeId) {
+    let mut made = vec![
+        (0, folder("c.txt")),
+        (0, user(1, 0, 2, "c.txt")),
+        (0, rename(1, 0, merged[0])),
+    ];
+    if let [_, second] = merged {
+        made.extend([
+            (0, folder("b")),
+            (0, user(1, 0, 3, "c.txt")),
+            (0, rename(3, 0, second)),
+        ]);
+    }
+    let phases = [vec![(0, folder(live))], made];
+    let mut world = converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+    let ids = (merged.iter())
+        .map(|name| held_at(&world, 0, &[name]).unwrap())
+        .collect();
+    let removed = target(&world, 1, &[live]);
+    let mut steps = vec![(1, delete(removed)), (1, folder(live))];
+    steps.extend(commit(1));
+    steps.extend([(0, DELIVER); 8]);
+    if settle_first {
+        steps.push((0, COMMIT));
+    }
+    steps.extend([(0, EFFECT); 4]);
+    world.phase(2, &steps).unwrap();
+    let live = NodeId::from(&live_node_at(&world, &[live]).unwrap());
+    (world, ids, live)
+}
+
+#[test]
+fn a_live_folder_made_again_takes_a_merged_folder_over_whether_effects_run_before_or_after_the_commit_build()
+ {
+    for settle_first in [false, true] {
+        let (mut world, _, live) = made_again_around_the_commit_build("a", &["A"], settle_first);
+        assert!(world.reported_problems(0).is_empty());
+        assert_eq!(held_at(&world, 0, &["a"]), Some(live));
+        assert!(world.devices[0].disk.child(&Place::Root, "A").is_none());
+        ino_at(&world, 0, &["a", "c.txt"]);
+        sends_nothing_more(&mut world, 3);
+        let (mut world, ids, live) =
+            made_again_around_the_commit_build("\u{e9}", &["\u{c9}", "E\u{301}"], settle_first);
+        one_takes_over(
+            &mut world,
+            &[ids[0].clone(), ids[1].clone()],
+            &live,
+            "\u{e9}",
+        );
+    }
+}
+
 #[test]
 fn of_two_merge_folders_of_one_key_the_one_named_like_the_live_folder_made_again_takes_it_over() {
     for merged in [["\u{c9}", "E\u{301}"], ["E\u{301}", "\u{c9}"]] {
