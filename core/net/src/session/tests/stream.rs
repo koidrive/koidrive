@@ -408,6 +408,41 @@ async fn a_welcome_with_a_protocol_not_offered_stops_before_anything_is_sent() {
 }
 
 #[tokio::test]
+async fn a_welcome_without_a_required_feature_asks_for_a_server_update_and_retries() {
+    let (listener, auth) = listen().await;
+    let (_session, mut events) = Session::start(auth, config()).unwrap();
+    let server = tokio::spawn(async move {
+        let outdated = Welcome {
+            server_version: "0.0.9".into(),
+            features: vec![CHUNK_BUNDLES.into()],
+            ..welcome("h", 0)
+        };
+        let mut ws = accept(&listener, outdated).await;
+        let after = tokio::time::timeout(Duration::from_secs(1), ws.next()).await;
+        assert!(
+            !matches!(after, Ok(Some(Ok(WsMessage::Binary(_))))),
+            "no Resume or RPC after a Welcome without a required feature: {after:?}"
+        );
+        accept(&listener, welcome("h", 0)).await
+    });
+    match next(&mut events).await {
+        Event::Disconnected {
+            reason: DisconnectReason::ServerOutdated(why),
+            ..
+        } => assert_eq!(
+            why,
+            "server 0.0.9 lacks commit_tokens, which this client needs; update the server with koi server upgrade"
+        ),
+        other => panic!("no Connected for a Welcome without commit_tokens, got {other:?}"),
+    }
+    match next(&mut events).await {
+        Event::Connected(welcome) => assert!(welcome.features.iter().any(|f| f == COMMIT_TOKENS)),
+        other => panic!("expected Connected once the server lists commit_tokens, got {other:?}"),
+    }
+    drop(server.await.unwrap());
+}
+
+#[tokio::test]
 async fn a_withheld_upgrade_times_out_and_close_does_not_wait_for_it() {
     let (listener, auth) = listen().await;
     let mut config = config();

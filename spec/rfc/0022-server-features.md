@@ -23,6 +23,7 @@ A feature name is 1 to 64 characters of `a` to `z`, `0` to `9` and `_`, starting
 | `human_auth` | RFC 0021 | Passkeys and browser sessions |
 | `device_authorization` | RFC 0021 | The device authorization routes |
 | `hosted_auth` | RFC 0021 | Sign-in through an external identity provider |
+| `commit_tokens` | RFC 0013 | Commit tokens. A required feature (RFC 0034): always on, and a client does not sync without it |
 | `chunk_bundles` | RFC 0027 | Several chunk uploads in one request to `POST /v1/spaces/{space_id}/chunks` |
 | `field_intents` | RFC 0029 | Clients send and read the intents of user changes, and recover from a server loss by comparing them |
 | `git_tracked` | RFC 0033 | Devices mark the files git tracks, so a file a `.gitignore` file matches syncs to every device |
@@ -31,7 +32,7 @@ The namespace is shared with the `Hello.features` that RFC 0006 §5 uses for cha
 
 ## 3. Server rules
 
-1. **Configured.** Each release fixes which features are on by default. A deployment can change that only through the Worker variable `KOIDRIVE_FEATURES`, a comma-separated list where `name` turns a feature on and `-name` turns it off. A feature name the server does not know is ignored. The result is the configured list.
+1. **Configured.** Each release fixes which features are on by default. A deployment can change that only through the Worker variable `KOIDRIVE_FEATURES`, a comma-separated list where `name` turns a feature on and `-name` turns it off. A feature name the server does not know is ignored, and so is `-name` for a required feature (RFC 0034), which is always configured. The result is the configured list.
 2. **Effective.** The Account DO and each Space DO can run an older release than the Worker for up to 300 seconds after a deploy (`code_update_strategy` in `server/wrangler.jsonc`). A configured feature is effective once the Account DO answers that it runs code that implements the feature, as `ServerInfo.setup_attempts` does today. `ServerInfo.features` lists every effective feature, in any order, without duplicates. `Welcome.features` lists the configured features that the sending Space DO's own code implements, so it can lag `ServerInfo.features` for the same 300 seconds.
 3. **Not ready.** A route of a configured feature answers `RETRY_LATER` and changes nothing when the Account DO, or the Space DO of the space it names, still runs code without the feature. Each Space DO answers for its own space: the call the route makes fails on the older code, and the route turns that failure into `RETRY_LATER`. Every object runs the new code within 300 seconds, so the answer clears by itself, and a client with a stale list gets the same answer as a client with a current one. A route that writes and also calls a Space DO makes that call before its first write, so a `RETRY_LATER` leaves nothing stored.
 4. **Off.** A feature that is not configured is off. Every route it enables answers 404, as an unknown path does today, except the routes of rule 6. An RPC or a WebSocket message of an off feature is answered as a request kind the server does not know (`INVALID_ARGUMENT`, `server/src/space/space.ts`). No message, record or reply of the feature is sent. Data that the feature wrote while it was on stays in storage.
@@ -47,6 +48,7 @@ The namespace is shared with the `Hello.features` that RFC 0006 §5 uses for cha
 3. A client reads `ServerInfo.features` when it sets up or adds a device, each time the app starts, and when `Welcome.server_version` or `Welcome.features` differs from what it stored, at most once per connection.
 4. A 404 or `RETRY_LATER` from a route of a feature the client believes is effective means its list may be stale. The client reads `ServerInfo` again before it reports anything, and a 404 alone never tells it that an item is gone.
 5. A client ignores names it does not know.
+6. A client refuses to sync with a server whose `Welcome` lacks a required feature, as RFC 0034 §2 says.
 
 A 0.1 server sends no `features` field, which a client reads as an empty list.
 

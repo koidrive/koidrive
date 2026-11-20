@@ -54,6 +54,8 @@ pub enum DisconnectReason {
     Closed { code: Option<u16>, reason: String },
     /// The server broke the protocol, for example with a message larger than 1 MiB.
     ProtocolViolation(String),
+    /// The server lacks a feature this client needs (RFC 0034), and says which and how to update the server.
+    ServerOutdated(String),
     /// The connection, its upgrade or its `Welcome` took too long, or nothing arrived for two ping intervals.
     Timeout,
 }
@@ -73,6 +75,7 @@ impl DisconnectReason {
             } => format!("closed: {code}"),
             DisconnectReason::Closed { code: None, .. } => "closed".into(),
             DisconnectReason::ProtocolViolation(_) => "protocol".into(),
+            DisconnectReason::ServerOutdated(_) => "outdated server".into(),
             DisconnectReason::Timeout => "timeout".into(),
         }
     }
@@ -83,7 +86,9 @@ impl DisconnectReason {
         match self {
             DisconnectReason::Transport(transport) => &transport.detail,
             DisconnectReason::Closed { reason, .. } => reason,
-            DisconnectReason::ProtocolViolation(what) | DisconnectReason::Rejected(what) => what,
+            DisconnectReason::ProtocolViolation(what)
+            | DisconnectReason::Rejected(what)
+            | DisconnectReason::ServerOutdated(what) => what,
             DisconnectReason::Refused { .. } | DisconnectReason::Timeout => "",
         }
     }
@@ -121,6 +126,7 @@ impl fmt::Display for DisconnectReason {
             DisconnectReason::ProtocolViolation(what) => {
                 write!(f, "the server broke the protocol: {what}")
             }
+            DisconnectReason::ServerOutdated(what) => f.write_str(what),
             DisconnectReason::Timeout => f.write_str("the server did not answer in time"),
         }
     }

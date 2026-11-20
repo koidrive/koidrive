@@ -109,6 +109,7 @@ pub(crate) fn welcome(history_id: &str, device_seq: u64) -> Welcome {
         proto: 1,
         history_id: history_id.into(),
         device_seq,
+        features: REQUIRED_FEATURES.iter().map(|&name| name.into()).collect(),
         ..Default::default()
     }
 }

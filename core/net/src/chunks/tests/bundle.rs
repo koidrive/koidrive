@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 fn offering() -> Welcome {
-    Welcome {
-        features: vec![CHUNK_BUNDLES.into()],
-        ..welcome("h", 0)
-    }
+    let mut welcome = welcome("h", 0);
+    welcome.features.push(CHUNK_BUNDLES.into());
+    welcome
 }
 
 fn bundle_plan(relay: SocketAddr, chunk: &ChunkRef, ticket: &str) -> ChunkPlan {

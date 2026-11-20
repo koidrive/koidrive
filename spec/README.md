@@ -42,3 +42,4 @@ Spec v0 was drafted outside this repository, and the schema here is its current 
 | [0031](rfc/0031-one-trash-group-per-deletion.md) | Every `Delete` of a deletion that takes several ops trashes into one group, so a restore brings back the whole folder | RFC 0012 §1; RFC 0006 §8; sync-engine design §2.4 |
 | [0032](rfc/0032-chunk-packs.md) | The chunks of one bundle are stored as one R2 object and read with ranged reads | RFC 0003 §5 and §7, RFC 0004 §5 and RFC 0027 §2 and §6 (not folded into them); RFC 0022 |
 | [0033](rfc/0033-git-tracked-files.md) | A file git tracks syncs to every device even when a `.gitignore` file matches it | RFC 0004 §5, RFC 0006 §1 and §8, RFC 0022 §2 (not folded into them); sync-engine design §5.10 |
+| [0034](rfc/0034-required-server-features.md) | A client refuses to sync with a server that lacks a feature it needs, and says to update the server | RFC 0022 §2, §3 rule 1 and §4; RFC 0013 §6 |

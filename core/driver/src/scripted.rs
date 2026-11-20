@@ -217,7 +217,11 @@ async fn scripted_session(
         let welcome = Welcome {
             proto: 1,
             history_id: "h".into(),
-            features,
+            features: (koidrive_net::REQUIRED_FEATURES
+                .iter()
+                .map(|&name| name.into()))
+            .chain(features)
+            .collect(),
             ..Default::default()
         };
         let mut welcomed = false;

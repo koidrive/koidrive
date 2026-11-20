@@ -55,6 +55,10 @@ pub const MAX_SERVER_MESSAGE: usize = 1 << 20;
 pub const MAX_CLIENT_MESSAGE: usize = 8 << 20;
 /// The `Welcome.features` name of chunk bundles (RFC 0027).
 pub const CHUNK_BUNDLES: &str = "chunk_bundles";
+/// The `Welcome.features` name of commit tokens (RFC 0013).
+pub const COMMIT_TOKENS: &str = "commit_tokens";
+/// The features a server must list in `Welcome.features` before this client syncs with it (RFC 0034).
+pub const REQUIRED_FEATURES: &[&str] = &[COMMIT_TOKENS];
 
 const BUNDLES_OFF: u64 = 0;
 const BUNDLES_OFFERED: u64 = 1;
@@ -1002,13 +1006,26 @@ impl Task {
 
     fn negotiated(&self, welcome: Welcome) -> Result<Welcome, Exit> {
         let hello = &self.config.hello;
-        if (hello.proto_min..=hello.proto_max).contains(&welcome.proto) {
+        if !(hello.proto_min..=hello.proto_max).contains(&welcome.proto) {
+            return Err(Exit::Stop(StopReason::UnsupportedVersion(format!(
+                "the server chose protocol 1.{}, but this client offered 1.{} to 1.{}",
+                welcome.proto, hello.proto_min, hello.proto_max
+            ))));
+        }
+        let missing: Vec<&str> = (REQUIRED_FEATURES.iter().copied())
+            .filter(|required| !welcome.features.iter().any(|feature| feature == required))
+            .collect();
+        if missing.is_empty() {
             return Ok(welcome);
         }
-        Err(Exit::Stop(StopReason::UnsupportedVersion(format!(
-            "the server chose protocol 1.{}, but this client offered 1.{} to 1.{}",
-            welcome.proto, hello.proto_min, hello.proto_max
-        ))))
+        Err(Exit::Reconnect {
+            reason: DisconnectReason::ServerOutdated(format!(
+                "server {} lacks {}, which this client needs; update the server with koi server upgrade",
+                welcome.server_version,
+                missing.join(", ")
+            )),
+            now: false,
+        })
     }
 
     fn reauth_at(&self, token: &AccessToken) -> Instant {

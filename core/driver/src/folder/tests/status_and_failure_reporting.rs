@@ -642,6 +642,12 @@ fn a_connection_the_server_refused_or_closed_is_not_offline_and_says_what_happen
             DisconnectReason::Rejected("CODE_HISTORY_MISMATCH: restored outside a rewind".into()),
             "the server refused the connection: CODE_HISTORY_MISMATCH: restored outside a rewind; trying again at ",
         ),
+        (
+            DisconnectReason::ServerOutdated(
+                "server 0.0.9 lacks commit_tokens, which this client needs; update the server with koi server upgrade".into(),
+            ),
+            "server 0.0.9 lacks commit_tokens, which this client needs; update the server with koi server upgrade; trying again at ",
+        ),
     ] {
         let mut remote = Remote::new();
         let (_site, mut a) = linked(&mut remote, "a");
