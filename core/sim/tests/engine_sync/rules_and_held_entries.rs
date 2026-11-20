@@ -714,8 +714,10 @@ fn a_server_file_deleted_from_a_taken_along_folder_is_judged_by_where_it_was_at_
 }
 
 #[test]
-fn a_server_entry_deleted_in_a_taken_along_folder_counts_only_if_the_folder_held_it_at_the_discard() {
-    for (at_discard, changes_the_folder) in [(Some("root"), false), (None, false), (Some("s"), true)] {
+fn a_server_entry_counts_for_a_taken_along_folder_only_if_the_folder_held_it_at_the_discard() {
+    for (at_discard, changes_the_folder) in
+        [(Some("root"), false), (None, false), (Some("s"), true)]
+    {
         let (mut device, kept_with, discarded) = a_file_in_a_taken_along_server_folder();
         let (g, s): (NodeId, NodeId) = ("g".into(), "s".into());
         let mut remote = device.trees.remote().get(&"f".into()).unwrap().clone();
