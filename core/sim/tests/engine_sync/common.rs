@@ -1923,6 +1923,13 @@ fn acted_below(
             return trees.remote().live(entry).is_none();
         };
         let holds = |shape: &Shape| {
+            let unrenamed = (1..=3)
+                .any(|attempt| shape.name == conflict_name(&local.shape.name, "me", NOW, attempt))
+                .then(|| Shape {
+                    name: local.shape.name.clone(),
+                    ..shape.clone()
+                });
+            let shape = unrenamed.as_ref().unwrap_or(shape);
             let taken_along = kept_with.get(entry).map(|kept| Shape {
                 parent: kept.parent.clone(),
                 name: kept.name.clone(),
@@ -1930,7 +1937,10 @@ fn acted_below(
             });
             local.shape.same(shape) || taken_along.is_some_and(|kept| local.shape.same(&kept))
         };
-        trees.remote().live(entry).is_some_and(holds)
+        trees
+            .remote()
+            .get(entry)
+            .is_some_and(|remote| holds(&remote.shape))
             || acknowledged_shape(trees, entry).is_some_and(holds)
     };
     let kept_back = |entry: &NodeId| {
