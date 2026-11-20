@@ -302,7 +302,9 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
     type Fill = fn(usize) -> String;
     type Churn = dyn Fn(&Path, usize);
     type Moved = Option<(&'static str, &'static str)>;
-    let cases: [(Fill, Moved, &Churn); 4] = [
+    type Budgets = &'static [usize];
+    const EVERY: Budgets = &[3, 4, 5, 6, 7, 10, 20];
+    let cases: [(Fill, Moved, &Churn, Budgets); 5] = [
         (
             |i| format!("ig/p/box/a{i:02}"),
             Some(("ig/p/box/f.txt", "ig/a/box/f.txt")),
@@ -311,6 +313,7 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
                     mv(root, "ig/p/box", "ig/a/box");
                 }
             },
+            EVERY,
         ),
         (
             |i| format!("ig/inbox/a{i:02}"),
@@ -320,6 +323,7 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
                 2 => mv(root, "ig/inbox-1", "ig/inbox-2"),
                 _ => {}
             },
+            EVERY,
         ),
         (
             |i| format!("ig/m/k{i:02}/x"),
@@ -330,15 +334,26 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
                     write(root, &format!("ig/m/k{i:02}/x"), "x");
                 }
             },
+            EVERY,
         ),
         (
             |i| format!("ig/lib/p{:02}/f{}", i / 4, i % 4),
             None,
             &|root, rescan| write(root, &format!("ig/a/w{rescan}"), "x"),
+            EVERY,
+        ),
+        (
+            |i| format!("ig/lib/p{:02}/f{}", i / 4, i % 4),
+            None,
+            &|root, _| {
+                fs::remove_dir_all(root.join("ig/a")).unwrap();
+                write(root, "ig/a/keep", "k");
+            },
+            &[13, 17, 20],
         ),
     ];
-    for (fill, moved, churn) in cases {
-        for budget in (3..=7).chain([10, 20]) {
+    for (fill, moved, churn, budgets) in cases {
+        for &budget in budgets {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path();
             write(root, KOIIGNORE, "ig/\n");

@@ -95,8 +95,9 @@ pub struct Coverage {
     pub ended_early: bool,
     /// The left-out folders and entries the search could not open or stat.
     pub unopened: BTreeSet<PathBuf>,
-    /// The left-out folders and entries that were replaced or moved while the search walked them, after it
-    /// had started over and looked again as often as it allows in one search. The search went on without them.
+    /// The left-out folders and entries that kept being replaced or moved while the search walked them, after it
+    /// had started over as often as it allows in one search. The search went on without them and did not walk them
+    /// to the end later.
     pub replaced: BTreeSet<PathBuf>,
 }
 
@@ -155,8 +156,7 @@ struct Walk {
     passed: BTreeMap<PathBuf, Seen>,
     check: Vec<PathBuf>,
     rounds: usize,
-    changing: BTreeSet<PathBuf>,
-    grew: bool,
+    changed: bool,
     unopened: BTreeSet<PathBuf>,
     replaced: BTreeSet<PathBuf>,
 }
@@ -251,8 +251,7 @@ impl Walk {
             passed: BTreeMap::new(),
             check: Vec::new(),
             rounds: 0,
-            changing: BTreeSet::new(),
-            grew: false,
+            changed: false,
             unopened: BTreeSet::new(),
             replaced: BTreeSet::new(),
         }
@@ -321,6 +320,7 @@ impl Walk {
                 .then_some((stat.mtime_ns, stat.ctime_ns)),
             Err(err) if is_gone(&err) => {
                 self.passed.remove(&dir);
+                self.changed = true;
                 return 1;
             }
             Err(_) => {
@@ -354,11 +354,11 @@ impl Walk {
                     names: vec![name.to_os_string()],
                 });
             }
-            self.changing.insert(dir);
+            self.changed = true;
             return 2;
         };
         if now.listing != seen.listing {
-            self.grew = true;
+            self.changed = true;
             self.listings.push(Listing {
                 dir: dir.clone(),
                 names: names.into_iter().rev().collect(),
@@ -844,8 +844,9 @@ impl<'r> Pending<'r> {
                 if walk.folders.last().is_some_and(|folder| {
                     folder.next == folder.names.len()
                         && (folder.fd.is_some() || walk.folders.len() == 1)
-                }) {
-                    walk.folders.pop();
+                }) && let Some(done) = walk.folders.pop()
+                {
+                    walk.replaced.remove(&done.dir);
                     continue 'walk;
                 }
                 if let Some(top) = walk.folders.len().checked_sub(1)
@@ -882,7 +883,9 @@ impl<'r> Pending<'r> {
                 let name = match walk.folders.last_mut() {
                     Some(folder) => {
                         let Some(name) = folder.names.get(folder.next).cloned() else {
-                            walk.folders.pop();
+                            if let Some(done) = walk.folders.pop() {
+                                walk.replaced.remove(&done.dir);
+                            }
                             continue 'walk;
                         };
                         folder.next += 1;
@@ -896,17 +899,12 @@ impl<'r> Pending<'r> {
                                     left = left.saturating_sub(walk.recheck(root, dir, cut));
                                     continue 'walk;
                                 }
-                                if walk.rounds == 0
-                                    || ((walk.grew || !walk.changing.is_empty())
-                                        && walk.rounds < CHECKS)
-                                {
+                                if walk.rounds == 0 || (walk.changed && walk.rounds < CHECKS) {
                                     walk.rounds += 1;
-                                    walk.grew = false;
-                                    walk.changing.clear();
+                                    walk.changed = false;
                                     walk.check = walk.passed.keys().rev().cloned().collect();
                                     continue 'walk;
                                 }
-                                walk.replaced.append(&mut walk.changing);
                                 *coverage = Coverage {
                                     ended_early: false,
                                     unopened: std::mem::take(&mut walk.unopened),
