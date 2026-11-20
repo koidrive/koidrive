@@ -415,7 +415,7 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
     type Moved = Option<(&'static str, &'static str)>;
     type Budgets = &'static [usize];
     const EVERY: Budgets = &[3, 4, 5, 6, 7, 10, 20];
-    let cases: [(Fill, Moved, &Churn, Budgets, Budgets); 5] = [
+    let cases: [(Fill, Moved, &Churn, Budgets); 5] = [
         (
             |i| format!("ig/p/box/a{i:02}"),
             Some(("ig/p/box/f.txt", "ig/a/box/f.txt")),
@@ -425,7 +425,6 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
                 }
             },
             EVERY,
-            &[],
         ),
         (
             |i| format!("ig/inbox/a{i:02}"),
@@ -436,7 +435,6 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
                 _ => {}
             },
             EVERY,
-            &[],
         ),
         (
             |i| format!("ig/m/k{i:02}/x"),
@@ -448,14 +446,12 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
                 }
             },
             EVERY,
-            &[],
         ),
         (
             |i| format!("ig/lib/p{:02}/f{}", i / 4, i % 4),
             None,
             &|root, rescan| write(root, &format!("ig/a/w{rescan}"), "x"),
             EVERY,
-            &[],
         ),
         (
             |i| format!("ig/lib/p{:02}/f{}", i / 4, i % 4),
@@ -464,14 +460,11 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
                 fs::remove_dir_all(root.join("ig/a")).unwrap();
                 write(root, "ig/a/keep", "k");
             },
-            &[200],
-            &[13, 17, 20],
+            &[13, 17, 20, 200],
         ),
     ];
-    for (fill, moved, churn, strict, safe) in cases {
-        let budgets = (strict.iter().map(|&budget| (budget, true)))
-            .chain(safe.iter().map(|&budget| (budget, false)));
-        for (budget, strict) in budgets {
+    for (fill, moved, churn, budgets) in cases {
+        for &budget in budgets {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path();
             write(root, KOIIGNORE, "ig/\n");
@@ -507,16 +500,54 @@ fn a_search_keeps_a_move_while_ignored_folders_move_or_keep_being_replaced() {
                 },
                 None => removed("f.txt", File),
             };
-            let missed = !strict
-                && matches!(&changes[..], [Change::Missing { path, kind: File, id: lost }] if path == Path::new("f.txt") && *lost == id);
-            if !missed {
-                assert_eq!(changes, [expected], "{moved:?} budget {budget}");
-            }
+            assert_eq!(changes, [expected], "{moved:?} budget {budget}");
             assert!(
-                moved.is_some() || missed != rules.coverage().everywhere(),
+                moved.is_some() || rules.coverage().everywhere(),
                 "budget {budget}: {:?}",
                 rules.coverage()
             );
         }
+    }
+}
+
+#[test]
+fn a_search_leaves_a_miss_unproven_when_a_folder_rebuilt_before_every_rescan_outgrows_the_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, KOIIGNORE, "ig/\n");
+    write(root, "f.txt", "f");
+    write(root, "ig/a/keep", "k");
+    for i in 0..40 {
+        write(root, &format!("ig/lib/p{:02}/f{}", i / 4, i % 4), "x");
+    }
+    let mut rules = rules().with_search_budget(16);
+    let mut snapshot = Snapshot::scan_with_rules(root, &mut rules).unwrap();
+    fs::remove_file(root.join("f.txt")).unwrap();
+    let mut paths = whole().to_vec();
+    let changes = (1..2000)
+        .find_map(|_| {
+            let result = snapshot
+                .rescan_with_rules(root, paths.clone(), &mut rules)
+                .unwrap();
+            fs::remove_dir_all(root.join("ig/a")).unwrap();
+            for i in 0..12 {
+                write(root, &format!("ig/a/w{i:02}"), "x");
+            }
+            paths = result.unsettled;
+            Some(result.changes).filter(|changes| !changes.is_empty())
+        })
+        .expect("the search never ended");
+    let coverage = rules.coverage();
+    assert!(
+        coverage.replaced.contains(Path::new("ig/a")),
+        "{coverage:?}"
+    );
+    if cfg!(target_os = "macos") {
+        assert_eq!(changes, [removed("f.txt", File)]);
+    } else {
+        assert!(
+            matches!(changes.as_slice(), [Change::Missing { path, kind: File, .. }] if path == Path::new("f.txt")),
+            "{changes:?}"
+        );
     }
 }

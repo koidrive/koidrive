@@ -474,6 +474,60 @@ fn a_search_looks_again_when_a_passed_folder_comes_back() {
 }
 
 #[test]
+fn a_search_stops_checking_a_folder_that_a_file_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("space");
+    for (path, text) in [
+        ("ig/x/keep", "k"),
+        ("ig/z/keep", "k"),
+        (".koiignore", "ig\n"),
+        ("f.txt", "f"),
+    ] {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, text).unwrap();
+    }
+    let mut rules = Rules::new(Box::new(Lines::default())).with_search_budget(usize::MAX);
+    let mut snapshot = Snapshot::scan_with_rules(&root, &mut rules).unwrap();
+    fs::remove_file(root.join("f.txt")).unwrap();
+    let mut gone = false;
+    let mut checks = 0;
+    let scan = snapshot
+        .rescan_under(
+            &root,
+            [PathBuf::new()],
+            &BTreeSet::new(),
+            None,
+            Some(&mut rules),
+            &|| false,
+            &|_| {},
+            Keep::Unplaced,
+            &mut |cut| match cut {
+                Cut::Searching(path) if !gone && path == Path::new("ig/x") => {
+                    fs::remove_dir_all(root.join("ig/x")).unwrap();
+                    gone = true;
+                }
+                Cut::Searching(path) if path == Path::new("ig/z") => {
+                    fs::write(root.join("ig/x"), "x").unwrap();
+                }
+                Cut::Confirming(path) if path == Path::new("ig/z") => checks += 1,
+                _ => {}
+            },
+            &MarkLog::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        scan.changes,
+        [Change::Removed {
+            path: "f.txt".into(),
+            kind: EntryKind::File,
+        }]
+    );
+    assert!(rules.coverage().everywhere(), "{:?}", rules.coverage());
+    assert_eq!(checks, 2);
+}
+
+#[test]
 fn a_search_notices_a_parent_replaced_around_the_checks_of_its_children() {
     let parent_away: &[(&str, &str)] = &[("ig/p", "ig/q"), ("ig/new", "ig/p")];
     let children_too: &[(&str, &str)] = &[

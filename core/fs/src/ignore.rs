@@ -98,7 +98,8 @@ pub struct Coverage {
     /// The left-out folders and entries that kept being replaced or moved while the search walked them, after it
     /// had started over as often as it allows in one search. The search went on without them and did not walk them
     /// to the end later. Also the folders the last round of checks found replaced or gone, which the search had no
-    /// round left to walk again.
+    /// round left to walk again and could not list again in place, because the old folder may still exist or a
+    /// folder the round had checked changed.
     pub replaced: BTreeSet<PathBuf>,
 }
 
@@ -197,18 +198,34 @@ impl Seen {
         let stamp = (stat.mtime_ns, stat.ctime_ns);
         let second = |ns: i128| ns.div_euclid(1_000_000_000);
         let names = listed(fd, dir, unopened)?;
-        let mut listing = DefaultHasher::new();
-        names.hash(&mut listing);
         let seen = Self {
             id: Some(stat.id),
             stamp,
             racy: second(stamp.0.max(stamp.1)) >= second(at),
-            listing: listing.finish(),
+            listing: digest(names.iter().map(|(name, ino)| (name.as_os_str(), *ino))),
             needs_walk: false,
             done: false,
         };
         Some((seen, names.into_iter().map(|(name, _)| name).collect()))
     }
+}
+
+fn digest<'a>(names: impl IntoIterator<Item = (&'a OsStr, u64)>) -> u64 {
+    names.into_iter().fold(0, |sum, (name, ino)| {
+        let mut entry = DefaultHasher::new();
+        (name, ino).hash(&mut entry);
+        sum.wrapping_add(entry.finish())
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn gone(root: BorrowedFd<'_>, folder: &Folder) -> bool {
+    matches!(path_of(root, folder.id.ino), Ok(None))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn gone(_: BorrowedFd<'_>, folder: &Folder) -> bool {
+    (folder.fd.as_ref()).is_some_and(|fd| stat_fd(fd.as_fd()).is_ok_and(|stat| stat.nlink == 0))
 }
 
 struct Folder {
@@ -288,6 +305,12 @@ impl Walk {
         }
     }
 
+    fn complete(&self) -> bool {
+        self.folders.last().is_some_and(|folder| {
+            folder.next == folder.names.len() && (folder.fd.is_some() || self.folders.len() == 1)
+        })
+    }
+
     fn finish(&mut self) {
         let Some(done) = self.folders.pop() else {
             return;
@@ -296,6 +319,68 @@ impl Walk {
         if let Some(seen) = self.passed.get_mut(&done.dir) {
             seen.done = true;
         }
+    }
+
+    fn quiet(&mut self, root: BorrowedFd<'_>, at: usize, cost: &mut usize) -> bool {
+        let replaced = self.folders[at].dir.clone();
+        let old = u64::try_from(self.folders[at].id.ino).unwrap_or_default();
+        let (Some(up), Some(child)) = (replaced.parent(), replaced.file_name()) else {
+            return false;
+        };
+        let checked: Vec<PathBuf> = (self.passed.keys())
+            .take_while(|dir| self.check.last().is_none_or(|next| *dir < next))
+            .filter(|dir| !dir.starts_with(&replaced))
+            .cloned()
+            .collect();
+        let mut above = Ancestors::default();
+        for dir in checked {
+            let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
+                return false;
+            };
+            *cost += 1;
+            let mut stale = None;
+            let opened = above.open(root, parent, &self.passed, cost, &mut stale);
+            let Some(seen) = self.passed.get_mut(&dir) else {
+                return false;
+            };
+            let stat = match opened {
+                Ok(true) if stale.is_none() => stat_at(above.top(root), name),
+                Ok(false) if stale.is_none() => Err(io::ErrorKind::NotFound.into()),
+                _ => return false,
+            };
+            match stat {
+                Err(err) if is_gone(&err) && seen.needs_walk => continue,
+                Ok(stat) if !seen.needs_walk && seen.is(&stat.id) => {
+                    if (stat.mtime_ns, stat.ctime_ns) == seen.stamp && !seen.racy {
+                        continue;
+                    }
+                }
+                _ => return false,
+            }
+            *cost += 1;
+            let Ok(fd) = open_dir_at(above.top(root), name) else {
+                return false;
+            };
+            let Some((now, _)) = Seen::of(fd.as_fd(), &dir, &mut BTreeSet::new()) else {
+                return false;
+            };
+            let mut expected = seen.listing;
+            if dir.as_path() == up {
+                expected = expected.wrapping_sub(digest([(child, old)]));
+                if let Ok(stat) = stat_at(fd.as_fd(), child) {
+                    let ino = u64::try_from(stat.id.ino).unwrap_or_default();
+                    expected = expected.wrapping_add(digest([(child, ino)]));
+                }
+            }
+            if !now.id.is_some_and(|id| seen.is(&id)) || now.listing != expected {
+                return false;
+            }
+            *seen = Seen {
+                done: seen.done,
+                ..now
+            };
+        }
+        above.pop_to(root, 0, cost).is_none()
     }
 
     fn leave(&mut self, replaced: Replaced) {
@@ -1016,7 +1101,9 @@ impl<'r> Pending<'r> {
         let mut looked = false;
         let mut checked = false;
         let mut ancestors = Ancestors::default();
-        'walk: while (left > 0 || !looked) && !pending.is_empty() {
+        'walk: while (left > 0 || !looked || walking.as_ref().is_some_and(Walk::complete))
+            && !pending.is_empty()
+        {
             let walk = walking.get_or_insert_with(|| {
                 *walks += 1;
                 Walk::new(ignored, 0)
@@ -1039,15 +1126,37 @@ impl<'r> Pending<'r> {
                             .and_then(|stat| stat.entry())
                             .is_some_and(|entry| entry.id.same(&folder.id));
                         if !still {
-                            break 'step Replaced::Folder(at, None);
+                            let fired = walk.restarts < RESTARTS && gone(root, folder);
+                            let mut cost = 0;
+                            let fresh =
+                                fired && (walk.rounds < CHECKS || walk.quiet(root, at, &mut cost));
+                            left = left.saturating_sub(cost);
+                            if !fresh {
+                                break 'step Replaced::Folder(at, None);
+                            }
+                            let dir = walk.folders[at].dir.clone();
+                            walk.restarts += 1;
+                            walk.changed = true;
+                            walk.folders.truncate(at);
+                            walk.reach = None;
+                            walk.passed.retain(|path, _| !path.starts_with(&dir));
+                            match (
+                                walk.folders.last_mut(),
+                                walk.listings.last_mut(),
+                                dir.file_name(),
+                            ) {
+                                (Some(parent), _, _) => parent.next -= 1,
+                                (None, Some(listing), Some(name)) => {
+                                    listing.names.push(name.to_os_string())
+                                }
+                                _ => {}
+                            }
+                            break;
                         }
                     }
                     continue 'walk;
                 }
-                if walk.folders.last().is_some_and(|folder| {
-                    folder.next == folder.names.len()
-                        && (folder.fd.is_some() || walk.folders.len() == 1)
-                }) {
+                if walk.complete() {
                     walk.finish();
                     continue 'walk;
                 }
@@ -1680,5 +1789,64 @@ mod rechecks {
         fs::rename(root.join("ig/new"), root.join("ig/p")).unwrap();
         search.search(fd.as_fd(), &mut wanted, &HashSet::new(), false, &mut |_| {});
         assert_eq!(wanted[&key], Some("ig/p/c/zz".into()));
+    }
+
+    #[test]
+    fn a_search_lists_a_recreated_folder_in_place_only_when_nothing_it_held_can_be_elsewhere() {
+        for (moved, found) in [
+            ("ig/a/moved", Some("ig/a/moved/zz")),
+            ("ig/a/b/c/moved", Some("ig/a/b/c/moved/zz")),
+            ("ig/z/moved", Some("ig/z/moved/zz")),
+            ("outside", None),
+            ("deleted", None),
+            ("drained", Some("ig/a/zz")),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let away = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            for path in ["ig/a/b/c/keep", "ig/p/x1", "ig/p/x2", "ig/z/keep", "want"] {
+                fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+                fs::write(root.join(path), "x").unwrap();
+            }
+            let fd = crate::open_root(root).unwrap();
+            let id = stat_at(fd.as_fd(), OsStr::new("want")).unwrap().id;
+            let key = (id, EntryKind::File);
+            let mut rules = Rules::new(Box::new(IgnoredFolder)).with_search_budget(1);
+            rules
+                .ignored
+                .insert(PathBuf::new(), BTreeSet::from(["ig".into()]));
+            rules.search.walk = Some(Walk::new(&rules.ignored, RESTARTS - 1));
+            rules.search.walks = 1;
+            rules.search.pending.insert(key, 1);
+            let mut wanted = HashMap::from([(key, None)]);
+            let mut search = Pending::new(&mut rules, root);
+            while search.rules.search.walk.as_ref().unwrap().rounds == 0 {
+                search.search(fd.as_fd(), &mut wanted, &HashSet::new(), true, &mut |_| {});
+            }
+            search.rules.search.walk.as_mut().unwrap().rounds = CHECKS;
+            fs::rename(root.join("want"), root.join("ig/p/zz")).unwrap();
+            let inside = |search: &Pending<'_>| {
+                let top = search.rules.search.walk.as_ref().unwrap().folders.last();
+                top.is_some_and(|top| top.dir == Path::new("ig/p") && top.next == 1)
+            };
+            while !inside(&search) {
+                search.search(fd.as_fd(), &mut wanted, &HashSet::new(), true, &mut |_| {});
+            }
+            match moved {
+                "deleted" => fs::remove_dir_all(root.join("ig/p")).unwrap(),
+                "outside" => fs::rename(root.join("ig/p"), away.path().join("p")).unwrap(),
+                "drained" => {
+                    fs::rename(root.join("ig/p/zz"), root.join("ig/a/zz")).unwrap();
+                    fs::remove_file(root.join("ig/p/x1")).unwrap();
+                    fs::remove_file(root.join("ig/p/x2")).unwrap();
+                    fs::remove_dir(root.join("ig/p")).unwrap();
+                }
+                to => fs::rename(root.join("ig/p"), root.join(to)).unwrap(),
+            }
+            fs::create_dir(root.join("ig/p")).unwrap();
+            search.search(fd.as_fd(), &mut wanted, &HashSet::new(), false, &mut |_| {});
+            assert_eq!(wanted[&key], found.map(PathBuf::from), "{moved}");
+            assert!(!search.unproven(key), "{moved}");
+        }
     }
 }

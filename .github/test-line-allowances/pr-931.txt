@@ -1,2 +1,3 @@
-70
+213
 # Ignored-folder search: a miss must not be decided on a folder the search left unfinished, on an ancestor replaced after its own check, on a parent replaced or a folder gone in the last round of checks, or on a name gone at its stat that comes back. Each row stages one of these races at an exact step of the walk. The existing search rows never change a folder after the search passed it.
+# A folder rebuilt in place counts as searched only when the old folder was deleted and nothing it held was moved into a folder the round already checked. The attack row stages each place a held entry can go (inside the new folder, deeper, beside it, outside the root, deleted, drained into a checked folder), one row pins the bound for a rebuilt folder too big for one rescan, and one row pins that a folder replaced by a file stops being checked.

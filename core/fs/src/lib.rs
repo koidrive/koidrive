@@ -100,7 +100,8 @@
 //! miss of a search that ended before it looked everywhere
 //! ([`Rules::end_search`]), or that could not open a left-out folder or
 //! left behind one that kept being replaced, or whose last round of checks
-//! found a folder replaced or gone ([`Rules::coverage`]), is
+//! found a folder replaced or gone and could not list it again in place
+//! ([`Rules::coverage`]), is
 //! reported as [`Change::Missing`], which design §5.10 holds for a question
 //! to the user. The search does not look in [`PRIVATE_DIR`] or in the
 //! built-in platform files.
