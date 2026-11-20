@@ -1114,9 +1114,20 @@ fn a_delete_answered_after_a_rewind_to_an_older_version_deletes_it() {
     assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
     let question = asked(&commits, RecoveryGroup::DeletedOnThisDevice, &["n"]);
     assert!(commits.decide(&mut trees, &question.id, Answer::Delete));
-    assert_eq!(
-        ops(&mut commits, &mut trees, &mut ids),
-        [("delete", "n".to_owned())]
+    commits.connected(&Welcome {
+        features: vec!["field_intents".into()],
+        ..Default::default()
+    });
+    let commit = commits
+        .build(&mut trees, &mut ids, NOW, NEW, "me", 1)
+        .unwrap();
+    assert!(commit.require_head);
+    assert!(
+        matches!(&commit.ops[..], [op] if matches!(&op.op,
+            Some(op::Op::Delete(delete)) if delete.node_id == "n" && delete.unseen.is_empty()
+        )),
+        "{:?}",
+        commit.ops
     );
     assert_eq!(effects(&mut trees, &mut ids), []);
 }
@@ -1125,6 +1136,10 @@ fn a_delete_answered_after_a_rewind_to_an_older_version_deletes_it() {
 fn a_delete_answered_after_a_rewind_keeps_another_devices_edit_of_either_version() {
     for over in ["v1", "v2"] {
         let (mut trees, mut commits, mut ids) = deleted_after_a_rewind_to_an_older_version();
+        commits.connected(&Welcome {
+            features: vec!["field_intents".into()],
+            ..Default::default()
+        });
         trees.set_remote(
             "n".into(),
             server_version(file(ROOT, "a", 3), "v3", &[over], 3),
