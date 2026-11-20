@@ -742,6 +742,37 @@ fn a_server_entry_counts_for_a_taken_along_folder_only_if_the_folder_held_it_at_
 }
 
 #[test]
+fn renaming_an_entry_another_device_brought_into_a_taken_along_folder_changes_that_entry_alone() {
+    for (at_discard, brought, changes_the_folder) in
+        [(false, true, false), (true, true, true), (false, false, true)]
+    {
+        let (mut device, kept_with, discarded) = a_file_in_a_taken_along_server_folder();
+        let (g, s): (NodeId, NodeId) = ("g".into(), "s".into());
+        let mut remote = device.trees.remote().get(&"f".into()).unwrap().clone();
+        remote.shape.parent = s.clone();
+        remote.shape.name = "g".into();
+        if at_discard {
+            device.trees.set_remote(g.clone(), remote.clone());
+        }
+        device.note_taken_along([&s]);
+        device.trees.set_remote(g.clone(), remote.clone());
+        let mut local = device.trees.local().get(&"f".into()).unwrap().clone();
+        local.shape = remote.shape.clone();
+        local.shape.name = "g2".into();
+        device.trees.set_local(g.clone(), local);
+        if brought {
+            device.brought_by_others.insert(g.clone());
+        }
+        device.acted.insert(g);
+        assert_eq!(
+            acted_below(&device, &s, &kept_with, &discarded),
+            changes_the_folder,
+            "{at_discard} {brought}"
+        );
+    }
+}
+
+#[test]
 fn a_server_folder_holding_a_file_another_device_purged_since_is_still_a_server_copy() {
     let (mut device, _, _) = a_file_in_a_taken_along_server_folder();
     let (s, f): (NodeId, NodeId) = ("s".into(), "f".into());

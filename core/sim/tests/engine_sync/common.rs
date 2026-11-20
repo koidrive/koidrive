@@ -578,6 +578,7 @@ struct Device {
     acted: BTreeSet<NodeId>,
     acked: BTreeSet<NodeId>,
     removed_from: BTreeMap<NodeId, NodeId>,
+    brought_by_others: BTreeSet<NodeId>,
     on_server_when_taken_along: BTreeMap<NodeId, BTreeMap<NodeId, NodeId>>,
     kept_back: BTreeSet<NodeId>,
     relocated: BTreeMap<NodeId, Relocation>,
@@ -624,6 +625,7 @@ impl Device {
             acted: BTreeSet::new(),
             acked: BTreeSet::new(),
             removed_from: BTreeMap::new(),
+            brought_by_others: BTreeSet::new(),
             on_server_when_taken_along: BTreeMap::new(),
             kept_back: BTreeSet::new(),
             relocated: BTreeMap::new(),
@@ -664,6 +666,9 @@ impl Device {
                 self.removed_from.remove(&node);
                 continue;
             };
+            if !answered {
+                self.brought_by_others.insert(node.clone());
+            }
             let Some(moved) = self.relocated.get_mut(&node) else {
                 continue;
             };
@@ -2010,15 +2015,24 @@ fn acted_below(
     let in_local = |at: &NodeId| trees.local().get(at).map(|node| node.shape.parent.clone());
     let removed_from = |at: &NodeId| in_local(at).or_else(|| device.removed_from.get(at).cloned());
     let at_discard = |at: &NodeId| {
-        (kept_with.get(at).or_else(|| discarded.get(at)))
-            .map(|shape| shape.parent.clone())
-            .or_else(|| {
-                (device.on_server_when_taken_along.get(id))
-                    .and_then(|baseline| baseline.get(at))
-                    .cloned()
-            })
+        (device.on_server_when_taken_along.get(id))
+            .and_then(|baseline| baseline.get(at))
+            .cloned()
+            .or_else(|| (kept_with.get(at).or_else(|| discarded.get(at))).map(|shape| shape.parent.clone()))
     };
     let belongs_here = |entry: &NodeId| !kept_with.contains_key(id) || reaches(entry, &at_discard);
+    let in_remote = |at: &NodeId| trees.remote().live(at).map(|remote| remote.parent.clone());
+    let arrived = |entry: &NodeId| {
+        let mut seen = BTreeSet::new();
+        let mut current = Some(entry.to_owned());
+        while let Some(at) = current.filter(|at| at != id && seen.insert(at.clone())) {
+            if device.brought_by_others.contains(&at) && !belongs_here(&at) && reaches(&at, &in_remote) {
+                return true;
+            }
+            current = in_local(&at);
+        }
+        false
+    };
     let as_agreed = |entry: &NodeId| {
         let Some(local) = trees.local().get(entry) else {
             return trees.remote().live(entry).is_none();
@@ -2065,7 +2079,8 @@ fn acted_below(
     (device.acted.iter())
         .filter(|entry| !as_agreed(entry) && !kept_by_r7(device, entry) && !kept_back(entry))
         .any(|entry| {
-            reaches(entry, &in_local) || (belongs_here(entry) && reaches(entry, &removed_from))
+            (reaches(entry, &in_local) && !arrived(entry))
+                || (belongs_here(entry) && reaches(entry, &removed_from))
         })
 }
 
