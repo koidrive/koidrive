@@ -6577,6 +6577,7 @@ impl<'a> Scratch<'a> {
                 && !restored.contains(node)
         });
         if answered.is_some() && left_behind {
+            eprintln!("GATEFIRE\t{id}");
             return None;
         }
         Some((carried, bundle))
