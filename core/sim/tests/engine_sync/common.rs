@@ -1869,7 +1869,11 @@ fn run_ignoring_answering_after(
         revived_once.extend(revived.iter().cloned());
         release_taken_along(&device.trees, &mut kept_with, &freed);
         let mut taken_along_now = kept_with.clone();
-        let users = revived.iter().filter(|id| !held.contains(*id)).cloned().collect();
+        let users = revived
+            .iter()
+            .filter(|id| !held.contains(*id))
+            .cloned()
+            .collect();
         release_taken_along(&device.trees, &mut taken_along_now, &users);
         let reverted = device.trees.reverted();
         parked_reverted = parked_reverted.max(
