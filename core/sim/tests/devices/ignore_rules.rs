@@ -1782,3 +1782,156 @@ fn a_parked_file_goes_home_past_an_excluded_folder_when_its_exact_server_name_is
         world.reported_problems(0)
     );
 }
+
+fn moved_out_below_a_merged_folder(offline: Vec<(usize, Step)>) -> (World, NodeId, u128) {
+    let phases = [vec![
+        (0, folder("b")),
+        (0, user(0, 0, 1, "ß")),
+        (0, user(1, 0, 2, "ß")),
+    ]];
+    let mut world = converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+    let live = held_at(&world, 0, &["b", "ß"]).unwrap();
+    let file = ino_at(&world, 0, &["b", "ß", "ß"]);
+    let b = target(&world, 0, &["b"]);
+    let moved = target(&world, 1, &["b", "ß"]);
+    let mut steps = vec![
+        (0, Step::Drop),
+        (0, folder("ss")),
+        (0, user(1, 0, 3, "c.txt")),
+        (0, rename(b, 3, "b")),
+    ];
+    steps.extend(offline);
+    steps.push((1, rename(moved, 0, "ss")));
+    steps.extend(commit(1));
+    world.run(2, &steps).unwrap();
+    (world, live, file)
+}
+
+fn live_children(world: &World, path: &[&str]) -> Vec<String> {
+    let Some(parent) = live_node_at(world, path) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = (world.space().nodes().into_iter())
+        .filter(|node| node.status == NodeStatus::Live as i32 && node.parent_id == parent)
+        .map(|node| node.name)
+        .collect();
+    names.sort();
+    names
+}
+
+fn taken_over(world: &mut World, live: &NodeId, file: u128) {
+    assert_eq!(held_at(world, 0, &["ss"]).as_ref(), Some(live));
+    assert_eq!(ino_at(world, 0, &["ss", "ß"]), file);
+    ino_at(world, 0, &["ss", "c.txt"]);
+    let b = ino_at(world, 0, &["ss", "b"]);
+    assert_eq!(world.devices[0].disk.child(&Place::In(b), "ß"), None);
+    assert_eq!(live_node_at(world, &["ss"]), Some(live.to_string()));
+    assert_eq!(live_children(world, &["ss"]), ["b", "ß"]);
+    assert!(live_children(world, &["ss", "b"]).is_empty());
+    sends_nothing_more(world, 9);
+}
+
+#[test]
+fn a_merged_folder_takes_over_a_live_folder_another_device_moved_out_from_below_it() {
+    let (mut world, live, file) = moved_out_below_a_merged_folder(vec![]);
+    world.phase(3, &[(0, Step::Connect)]).unwrap();
+    assert!(world.reported_problems(0).is_empty());
+    assert!(world.folder_effects[0].iter().any(|record| {
+        matches!(record.effect, Effect::RemoveDir { .. }) && record.node != live
+    }));
+    taken_over(&mut world, &live, file);
+}
+
+#[test]
+fn a_file_made_in_the_nested_copy_before_the_takeover_keeps_it_there_and_uploads_it_under_a_new_id()
+{
+    let (mut world, live, file) = moved_out_below_a_merged_folder(vec![]);
+    world.run(3, &[(0, Step::Connect)]).unwrap();
+    for _ in 0..200 {
+        if !world.devices[0].engine.commits.aliases().is_empty() {
+            break;
+        }
+        world.run(3, &[(0, Step::Work(0))]).unwrap();
+    }
+    assert!(!world.devices[0].engine.commits.aliases().is_empty());
+    let nested = folder_number(&world, 0, &["ss", "b", "ß"]);
+    world.phase(4, &[(0, user(1, 0, nested, "a"))]).unwrap();
+    assert_eq!(held_at(&world, 0, &["ss"]), Some(live.clone()));
+    assert_eq!(ino_at(&world, 0, &["ss", "ß"]), file);
+    let copy = live_node_at(&world, &["ss", "b", "ß"]).unwrap();
+    assert_ne!(copy, live.to_string());
+    assert_eq!(live_children(&world, &["ss", "b", "ß"]), ["a"]);
+    assert_eq!(live_children(&world, &["ss", "b"]), ["ß"]);
+    assert_eq!(live_children(&world, &["ss"]), ["b", "ß"]);
+    sends_nothing_more(&mut world, 9);
+}
+
+#[test]
+fn a_nested_copy_that_holds_a_left_out_entry_stays_with_it_after_a_takeover() {
+    let (mut world, live, file) =
+        moved_out_below_a_merged_folder(vec![(0, user(1, 0, 2, "c.txt"))]);
+    world.phase(3, &[(0, Step::Connect)]).unwrap();
+    assert_eq!(held_at(&world, 0, &["ss"]), Some(live.clone()));
+    assert_eq!(ino_at(&world, 0, &["ss", "ß"]), file);
+    ino_at(&world, 0, &["ss", "b", "ß", "c.txt"]);
+    ino_at(&world, 0, &["ss", "c.txt"]);
+    assert_eq!(live_children(&world, &["ss"]), ["b", "ß"]);
+    assert!(live_children(&world, &["ss", "b"]).is_empty());
+}
+
+#[test]
+fn a_file_made_in_the_merged_folder_at_the_name_of_a_moved_up_entry_is_kept_as_a_conflict_copy() {
+    let (mut world, live, file) = moved_out_below_a_merged_folder(vec![(0, user(1, 0, 3, "ß"))]);
+    world.phase(3, &[(0, Step::Connect)]).unwrap();
+    assert_eq!(held_at(&world, 0, &["ss"]), Some(live.clone()));
+    assert_eq!(ino_at(&world, 0, &["ss", "ß"]), file);
+    assert_eq!(
+        live_children(&world, &["ss"]),
+        ["b", "ß", "ß (conflict from device-0 2026-11-09)"]
+    );
+}
+
+#[test]
+fn a_file_written_into_the_nested_copy_before_its_removal_applies_keeps_it_and_uploads() {
+    let (mut world, live, file) = moved_out_below_a_merged_folder(vec![]);
+    world.run(3, &[(0, Step::Connect)]).unwrap();
+    let removes = |world: &World| {
+        (world.devices[0].engine.effects.in_flight().iter())
+            .any(|record| matches!(record.effect, Effect::RemoveDir { .. }))
+    };
+    for _ in 0..200 {
+        if removes(&world) {
+            break;
+        }
+        world.run(3, &[(0, Step::Work(0))]).unwrap();
+    }
+    assert!(removes(&world));
+    let nested = folder_number(&world, 0, &["ss", "b", "ß"]);
+    world.phase(4, &[(0, user(1, 0, nested, "a"))]).unwrap();
+    assert_eq!(held_at(&world, 0, &["ss"]), Some(live.clone()));
+    assert_eq!(ino_at(&world, 0, &["ss", "ß"]), file);
+    ino_at(&world, 0, &["ss", "b", "ß", "a"]);
+    let copy = live_node_at(&world, &["ss", "b", "ß"]).unwrap();
+    assert_ne!(copy, live.to_string());
+    assert_eq!(live_children(&world, &["ss", "b", "ß"]), ["a"]);
+    assert_eq!(live_children(&world, &["ss", "b"]), ["ß"]);
+    assert_eq!(live_children(&world, &["ss"]), ["b", "ß"]);
+    sends_nothing_more(&mut world, 9);
+}
+
+#[test]
+fn a_takeover_of_a_live_folder_below_a_merged_folder_converges_after_a_crash_at_any_step() {
+    for k in 0..40 {
+        let (mut world, live, file) = moved_out_below_a_merged_folder(vec![]);
+        world.run(3, &[(0, Step::Connect)]).unwrap();
+        world.run(3, &vec![(0, Step::Work(0)); k]).unwrap();
+        let crash = match world.devices[0].engine.effects.in_flight().is_empty() {
+            true => Step::Crash,
+            false => CRASH,
+        };
+        world
+            .phase(4, &[(0, crash), (0, Step::Connect)])
+            .unwrap_or_else(|failure| panic!("crash after {k} steps: {failure:?}"));
+        taken_over(&mut world, &live, file);
+    }
+}

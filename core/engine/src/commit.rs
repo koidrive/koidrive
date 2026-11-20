@@ -710,8 +710,34 @@ impl Commits {
                                     && (at_key.iter())
                                         .all(|(other, _)| residue.0.contains_key(*other))
                             };
+                            let below_merged = |node: &LocalNode| {
+                                let mut parent = &node.shape.parent;
+                                for _ in 0..trees.local().len() {
+                                    if parent == id {
+                                        return true;
+                                    }
+                                    match trees.local().get(parent) {
+                                        Some(above) if !above.parked => {
+                                            parent = &above.shape.parent
+                                        }
+                                        _ => return false,
+                                    }
+                                }
+                                false
+                            };
                             match trees.local().get(holder) {
                                 None if synced.is_none() && takes_over() => Some(holder.clone()),
+                                Some(node)
+                                    if !node.parked
+                                        && synced.is_some_and(|synced| {
+                                            synced.parent == node.shape.parent
+                                                && synced.name == node.shape.name
+                                        })
+                                        && below_merged(node)
+                                        && takes_over() =>
+                                {
+                                    Some(holder.clone())
+                                }
                                 Some(node)
                                     if !node.parked
                                         && synced.is_some_and(|synced| {
@@ -736,8 +762,31 @@ impl Commits {
             self.aliases.remove(&id);
             match to {
                 Some(holder) => {
+                    let mut synced = vec![(holder.clone(), Some(shape))];
+                    if trees.local().get(&holder).is_some() {
+                        let copy = NodeId::from(ids.uuid_v7(now_ms));
+                        synced.push((copy.clone(), trees.synced().get(&holder).cloned()));
+                        rekey(trees, &holder, &copy);
+                        synced.extend((trees.local_children(&copy)).filter_map(|child| {
+                            let shape = (trees.synced().get(child))
+                                .filter(|synced| synced.parent == holder)?;
+                            let shape = Shape {
+                                parent: copy.clone(),
+                                ..shape.clone()
+                            };
+                            Some((child.clone(), Some(shape)))
+                        }));
+                    }
                     rekey(trees, &id, &holder);
-                    trees.set_synced_if_valid(holder, Some(shape));
+                    match trees.fits_synced_together(&synced) {
+                        true => synced
+                            .into_iter()
+                            .for_each(|(id, shape)| trees.set_synced(id, shape)),
+                        false => {
+                            let (holder, shape) = synced.swap_remove(0);
+                            trees.set_synced_if_valid(holder, shape);
+                        }
+                    }
                 }
                 None => rekey(trees, &id, &NodeId::from(ids.uuid_v7(now_ms))),
             }
