@@ -229,9 +229,16 @@ impl Answers {
 }
 
 fn within(scopes: &[PathBuf], of: &[PathBuf]) -> Vec<PathBuf> {
-    (scopes.iter())
-        .filter(|scope| of.iter().any(|at| scope.starts_with(at)))
-        .cloned()
+    (of.iter())
+        .flat_map(
+            |at| match scopes.iter().any(|scope| at.starts_with(scope)) {
+                true => vec![at.clone()],
+                false => (scopes.iter())
+                    .filter(|scope| scope.starts_with(at))
+                    .cloned()
+                    .collect(),
+            },
+        )
         .collect()
 }
 
@@ -982,7 +989,7 @@ impl Disk {
     /// an upload that found the disk changed (design §5.10). A wait ends with the batch that answers the reset the
     /// effect requested ([`Batch::answered`]), and a batch older than the sections remembered moves every scan wait to
     /// the reset of the whole folder that replaces it. A rules folder stays held whole while a scope of its request that the
-    /// scans have not settled overlaps it, and the other holds shrink to those scopes.
+    /// scans have not settled overlaps it, and the other holds shrink to those scopes, or stay whole while such a scope is at or above them.
     pub fn awaits_scan(&self) -> bool {
         !self.awaited_rules.is_empty() || !self.awaited_scans.is_empty()
     }

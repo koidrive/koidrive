@@ -324,3 +324,48 @@ fn a_dropped_batch_keeps_a_changed_upload_waiting_for_the_scan_that_replaces_it(
     });
     assert!(kept, "the last edit reaches the server");
 }
+
+#[test]
+fn a_changed_upload_stays_held_while_a_scan_leaves_its_folder_unanswered() {
+    let mut remote = Remote::new();
+    let (site, mut b) = busy_logs(&mut remote, &SyncRules::default());
+    changed_while_uploaded(&site, &mut b);
+    let sections = b.folder.sections();
+    let (_, requests) = sections.take_resets();
+    let partial = Batch {
+        stamp: sections.stamp(),
+        unread: (0, 0),
+        answered: crate::disk::Answers {
+            through: requests,
+            open: vec![(requests, vec![PathBuf::from("logs")])],
+        },
+        observation: crate::observe::Observation {
+            changes: Vec::new(),
+            root: Ok(()),
+            unreadable: Vec::new(),
+            scanned: b.observer.scanned(),
+            busy: Vec::new(),
+            pending: Vec::new(),
+            waiting: Default::default(),
+            rules: Vec::new(),
+            read: Vec::new(),
+            all_rules: false,
+            tracked: Vec::new(),
+            mounts: BTreeMap::new(),
+            detached: BTreeMap::new(),
+            ctimes: BTreeMap::new(),
+        },
+    };
+    let step = b.folder.observed(partial, 1);
+    b.take(step).unwrap();
+    let local = b.folder.engine.trees.local();
+    let logs = (local.iter())
+        .find(|(_, node)| node.shape.name == "logs")
+        .map(|(id, _)| id.clone())
+        .unwrap();
+    let app = (b.folder.engine.trees.local_child(&logs, "app.log").cloned()).unwrap();
+    assert!(
+        b.folder.engine.trees.held(&app),
+        "app.log stays held while the scan leaves logs unanswered"
+    );
+}
