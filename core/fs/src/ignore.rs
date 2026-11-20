@@ -97,8 +97,8 @@ pub struct Coverage {
     pub unopened: BTreeSet<PathBuf>,
     /// The left-out folders and entries that kept being replaced or moved while the search walked them, after it
     /// had started over as often as it allows in one search. The search went on without them and did not walk them
-    /// to the end later. Also each folder queued by a last-round check that no walk finished, since such a folder
-    /// owes coverage until a walk finishes it.
+    /// to the end later. Also each path that a last-round check queued after any stat showed a folder there, and that
+    /// no walk finished, since such a folder owes coverage until a walk finishes it.
     pub replaced: BTreeSet<PathBuf>,
 }
 
@@ -504,7 +504,7 @@ impl Walk {
             }
         }
         seen.needs_walk = true;
-        if seen.id.is_some() {
+        if seen.id.is_some() || stat.file_type == FileType::Directory {
             self.owed.insert(dir.clone());
         }
         self.changed = true;

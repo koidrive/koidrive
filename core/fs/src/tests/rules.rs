@@ -697,7 +697,7 @@ fn a_search_starts_over_when_a_folder_is_replaced_between_its_stat_and_its_open(
 #[test]
 fn a_search_leaves_a_miss_unproven_when_a_folder_queued_in_the_last_round_is_lost_before_its_walk()
 {
-    for file_in_its_place in [false, true] {
+    for (file_in_its_place, missed_first) in [(false, false), (true, false), (false, true)] {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("space");
         for (path, text) in [
@@ -714,6 +714,7 @@ fn a_search_leaves_a_miss_unproven_when_a_folder_queued_in_the_last_round_is_los
         let mut rules = Rules::new(Box::new(Lines::default())).with_search_budget(usize::MAX);
         let mut snapshot = Snapshot::scan_with_rules(&root, &mut rules).unwrap();
         let away = dir.path().join("f.txt");
+        let hidden = dir.path().join("z");
         fs::rename(root.join("f.txt"), &away).unwrap();
         let (mut writes, mut checks, mut lost) = (0, 0, false);
         let scan = snapshot
@@ -734,8 +735,16 @@ fn a_search_leaves_a_miss_unproven_when_a_folder_queued_in_the_last_round_is_los
                     Cut::Confirming(path) if path == Path::new("ig/z") => {
                         checks += 1;
                         if checks == 4 {
+                            if missed_first {
+                                fs::rename(&hidden, root.join("ig/z")).unwrap();
+                            }
                             fs::rename(&away, root.join("ig/z/f.txt")).unwrap();
                         }
+                    }
+                    Cut::Searching(path)
+                        if missed_first && checks == 0 && path == Path::new("ig/z") =>
+                    {
+                        fs::rename(root.join("ig/z"), &hidden).unwrap();
                     }
                     Cut::Searching(path) if checks == 4 && !lost && path == Path::new("ig/z") => {
                         lost = true;
@@ -752,7 +761,7 @@ fn a_search_leaves_a_miss_unproven_when_a_folder_queued_in_the_last_round_is_los
         assert!(lost && root.join("ig/a/z/f.txt").exists());
         assert!(
             matches!(scan.changes.as_slice(), [Change::Missing { path, .. }] if path == Path::new("f.txt")),
-            "a file in its place: {file_in_its_place}: {:?}",
+            "a file in its place: {file_in_its_place}, missed first: {missed_first}: {:?}",
             scan.changes
         );
         assert!(rules.coverage().replaced.contains(Path::new("ig/z")));
