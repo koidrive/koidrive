@@ -604,8 +604,10 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
             .stderr(Stdio::null())
             .spawn()
             .expect("run koi");
+        let store = Store::new(&home.path().join("state/koidrive"));
+        let unsent = || store.peek().map_or(true, |batch| !batch.events.is_empty());
         let deadline = Instant::now() + Duration::from_secs(120);
-        while old_queue.exists() && Instant::now() < deadline {
+        while (old_queue.exists() || unsent()) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
         }
         Command::new("kill")
@@ -617,6 +619,7 @@ fn every_record_an_earlier_release_queued_arrives_once_through_a_failed_send_and
             !old_queue.exists(),
             "the earlier release's queue is still there"
         );
+        assert!(!unsent(), "the store's queue still holds events");
         let requests = requests.try_iter().collect::<Vec<_>>();
         for (_, body) in &requests {
             let text = body.to_string().to_lowercase();
