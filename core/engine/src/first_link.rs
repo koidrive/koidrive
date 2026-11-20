@@ -74,12 +74,13 @@ impl Log {
                 ..
             } => {
                 first_ms.get_or_insert(committed_ms);
-                for state in states.filter(|state| {
-                    state.content_rev == seq
-                        && state.meta_rev == seq
-                        && candidates.contains(&state.node_id)
-                }) {
-                    created_ms.insert(state.node_id.clone(), committed_ms);
+                for state in
+                    states.filter(|state| state.content_rev == seq && state.meta_rev == seq)
+                {
+                    let id = NodeId::from(&state.node_id);
+                    if candidates.contains(&id) {
+                        created_ms.insert(id, committed_ms);
+                    }
                 }
             }
         }

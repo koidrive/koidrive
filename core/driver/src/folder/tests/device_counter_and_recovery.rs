@@ -259,7 +259,8 @@ fn a_device_back_after_another_devices_keep_is_asked_about_its_own_write() {
         answer(&site_a, Answer::Keep);
         let mut a = restarted(&site_a, &mut remote);
         a.rest(&mut remote);
-        assert_eq!(server_bytes(&remote, &node_named(&a, "c.txt")), b"one");
+        let kept = node_named(&a, "c.txt").to_string();
+        assert_eq!(server_bytes(&remote, &kept), b"one");
         if rewound_again {
             let kept = remote.space.clone();
             remote.space.rewind(&kept, NOW);
@@ -1539,7 +1540,7 @@ fn a_file_an_alpha_6_store_synced_is_asked_about_only_when_the_log_creates_it_ag
         rewound.shape.content.as_mut().unwrap().size += 1;
         trees.set_remote(id.clone(), rewound);
         let create = koidrive_proto::v1::NodeState {
-            node_id: id.clone(),
+            node_id: (&id).into(),
             content_rev: 9,
             meta_rev: 9,
             ..Default::default()
