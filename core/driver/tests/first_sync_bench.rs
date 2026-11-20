@@ -240,6 +240,7 @@ fn seconds(name: &str, default: u64) -> Duration {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs the Worker under wrangler dev and a few GB of disk"]
 async fn a_first_sync_of_two_million_entries_keeps_moving() {
+    eprintln!("INOTIFY {:?}", std::fs::read_to_string("/proc/sys/fs/inotify/max_user_watches"));
     let window = seconds("KOIDRIVE_SCALE_SECONDS", 600);
     let longest_allowed = seconds("KOIDRIVE_SCALE_MAX_STALL", 5);
     let mut moved: Option<Instant> = None;

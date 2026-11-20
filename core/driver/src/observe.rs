@@ -795,8 +795,14 @@ impl Observer for FsObserver {
         };
         let racy = self.racy_reads();
         self.watcher.revisit(racy);
-        let poll = match self.watcher.poll(timeout) {
+        let polled = std::time::Instant::now();
+        let poll = self.watcher.poll(timeout);
+        if polled.elapsed() >= Duration::from_secs(2) {
+            eprintln!("POLL took={}ms native={} read={:?}", polled.elapsed().as_millis(), self.native, poll.as_ref().map(|poll| (poll.read.len(), poll.changes.len())).ok());
+        }
+        let poll = match poll {
             Err(FsError::Watch(error)) if self.native => {
+                eprintln!("WATCHER failed: {error}");
                 tracing::warn!(%error, "the platform watcher failed; rescanning periodically");
                 let snapshot = self.watcher.snapshot().clone();
                 let rules = scan_rules(&self.matcher);

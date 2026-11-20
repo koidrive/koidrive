@@ -1223,7 +1223,20 @@ impl Folder {
     }
 
     fn drive(&mut self, work: &mut Vec<Work>) -> Result<(), Stop> {
+        let begun = std::time::Instant::now();
+        let mut laps: Vec<(&str, u128)> = Vec::new();
+        let out = self.drive_timed(work, &mut laps, begun);
+        let took = begun.elapsed().as_millis();
+        if took >= 300 {
+            eprintln!("DRIVE took={took} {laps:?}");
+        }
+        out
+    }
+
+    fn drive_timed(&mut self, work: &mut Vec<Work>, laps: &mut Vec<(&'static str, u128)>, begun: std::time::Instant) -> Result<(), Stop> {
+        let mut mark = |name: &'static str| laps.push((name, begun.elapsed().as_millis()));
         self.publish_remote()?;
+        mark("publish_remote");
         let staging = !self.engine.effects.in_flight().is_empty();
         let held = !self.scanned || staging;
         if held || !matches!(self.stream, Stream::Following { .. }) {
@@ -1233,7 +1246,9 @@ impl Folder {
         if commits.in_flight().is_some() && commits.halted().is_none() {
             return Ok(());
         }
-        if self.plan_effect(work)? {
+        let planned = self.plan_effect(work)?;
+        mark("plan_effect");
+        if planned {
             return Ok(());
         }
         let may_build = matches!(self.flight, Flight::Idle)
@@ -1244,12 +1259,15 @@ impl Folder {
                 .engine
                 .commits
                 .due(&self.engine.trees, &self.link.device_id);
+        mark("due");
         if !may_build {
             return Ok(());
         }
         let now_ms = crate::clock::unix_ms();
         let device_id = self.link.device_id.clone();
-        let Some(token) = self.disk.rotate_before_build(&mut self.store)? else {
+        let rotated = self.disk.rotate_before_build(&mut self.store)?;
+        mark("rotate");
+        let Some(token) = rotated else {
             self.flight = Flight::Waiting(Next::Build);
             work.push(Work::ResendAfter(BUILD_AGAIN));
             return Ok(());
@@ -1260,6 +1278,7 @@ impl Folder {
             let owed = self
                 .engine
                 .owed_deletes(|trees, synced| disk.owed_name_absent(trees, synced));
+            mark("owed");
             if tried.as_ref().is_some_and(|tried| owed.is_subset(tried)) {
                 break None;
             }
@@ -1281,6 +1300,7 @@ impl Folder {
                 }
                 Ok(built.cloned())
             })?;
+            mark("build");
             if built.is_some() {
                 break built;
             }
@@ -1297,10 +1317,12 @@ impl Folder {
         match built {
             Some(commit) => {
                 self.disk.built(token);
-                self.start(commit, work)
+                self.start(commit, work);
+                mark("start");
             }
             None => {
                 self.plan_effect(work)?;
+                mark("plan_effect2");
             }
         }
         Ok(())
