@@ -4927,7 +4927,8 @@ impl Trees {
     /// bootstrap ([`Trees::untaken_changes`]). A node L held as S did while R held it in the trash,
     /// or did not hold it, was deleted by another device, so L holds nothing the server lacks. It
     /// keeps S whatever the new R holds, so the trash, R lacking the node, or the content a restore
-    /// brought back is a remote change, and the delete is not undone.
+    /// brought back is a remote change, and the delete is not undone. A lost move of this device
+    /// out of the trash is not sent again for such a node either, since that delete came after it.
     ///
     /// The other changes are files whose content L and S held alike while R held other content
     /// live, each with whether a lost commit of this device set R's position of it and the shape R
@@ -4981,12 +4982,18 @@ impl Trees {
             (self.past_positions.get(id).into_iter().flatten())
                 .any(|past| same_record(past, remote))
         };
+        let trashed_again: BTreeSet<&NodeId> = (untaken.iter())
+            .filter(|(_, change)| *change == Untaken::Delete)
+            .map(|(id, _)| id)
+            .collect();
         let before = |id: &NodeId, moved: &MovedHere| {
-            (self.r.get(id)).is_some_and(|remote| {
-                remote.meta_rev <= held_through
-                    || (moved.upgraded && remote.meta_rev < moved.seq)
-                    || seen(id, remote)
-            })
+            (self.r.get(id))
+                .filter(|remote| !remote.trashed || !trashed_again.contains(id))
+                .is_some_and(|remote| {
+                    remote.meta_rev <= held_through
+                        || (moved.upgraded && remote.meta_rev < moved.seq)
+                        || seen(id, remote)
+                })
         };
         let edited: Vec<(NodeId, u64)> = (edited.into_iter())
             .chain(

@@ -854,3 +854,125 @@ fn a_rename_back_after_the_recovery_of_a_lost_rename_out_of_the_trash_is_sent() 
     assert_eq!(effects, []);
     assert_eq!(commit, Some(vec![mv("f", "p", "a")]));
 }
+
+#[test]
+fn a_lost_rename_out_of_the_trash_yields_to_a_later_trash_this_device_had_not_taken() {
+    let mut trees = trees(&[
+        (
+            "p",
+            Some(dir(ROOT, "p")),
+            Some(dir(ROOT, "p")),
+            Some(remote(dir(ROOT, "p"))),
+        ),
+        ("t", None, None, Some(trashed(dir(ROOT, "t")))),
+        (
+            "f",
+            Some(file("p", "a", 1)),
+            Some(file("p", "a", 1)),
+            Some(trashed(file("t", "c", 1))),
+        ),
+    ]);
+    trees.set_local_changed("f".into(), local(file("p", "b", 1), 2));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [mv("f", "p", "b")]);
+    acknowledge_made_here(
+        &mut trees,
+        &mut commits,
+        5,
+        &[("f", remote_at(file("p", "b", 1), 5))],
+    );
+    trees.set_remote("f".into(), trashed_at(file("p", "b", 1), 6));
+    trees.settle(commits.aliases());
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    let (deleted, edited, moved) = (
+        trees.trashed_here(),
+        trees.edited_here(),
+        trees.moved_here(),
+    );
+    let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
+    let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
+    assert_eq!(untaken, [("f".into(), Untaken::Delete)]);
+    trees.set_listed_remote("f".into(), trashed(file("t", "c", 1)));
+    trees.forget_lost(
+        deleted,
+        edited,
+        synced,
+        moved,
+        untaken,
+        Default::default(),
+        &Default::default(),
+        commits.held_through(),
+        commits.accepted(),
+    );
+    trees.settle(commits.aliases());
+    let effects = effects_for(&mut trees, &mut ids, "f");
+    let commit = build(&mut commits, &mut trees, &mut ids).map(|c| ops(&c));
+    assert_eq!(commit, None);
+    assert!(matches!(&effects[..], [Effect::RemoveFile { .. }]), "{effects:?}");
+}
+
+
+#[test]
+fn a_lost_rename_out_of_the_trash_yields_to_a_later_trash_of_its_folder_this_device_had_not_taken() {
+    let mut trees = trees(&[
+        (
+            "p",
+            Some(dir(ROOT, "p")),
+            Some(dir(ROOT, "p")),
+            Some(remote(dir(ROOT, "p"))),
+        ),
+        ("t", None, None, Some(trashed(dir(ROOT, "t")))),
+        (
+            "f",
+            Some(file("p", "a", 1)),
+            Some(file("p", "a", 1)),
+            Some(trashed(file("t", "c", 1))),
+        ),
+    ]);
+    trees.set_local_changed("f".into(), local(file("p", "b", 1), 2));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let commit = build(&mut commits, &mut trees, &mut ids).unwrap();
+    assert_eq!(ops(&commit), [mv("f", "p", "b")]);
+    acknowledge_made_here(
+        &mut trees,
+        &mut commits,
+        5,
+        &[("f", remote_at(file("p", "b", 1), 5))],
+    );
+    trees.set_remote("p".into(), trashed_at(dir(ROOT, "p"), 6));
+    trees.set_remote("f".into(), trashed_at(file("p", "b", 1), 6));
+    trees.settle(commits.aliases());
+    assert_eq!(commits.connected(&welcome(0)), Reconnect::AheadOfServer);
+    let (deleted, edited, moved) = (
+        trees.trashed_here(),
+        trees.edited_here(),
+        trees.moved_here(),
+    );
+    let synced = trees.taken_from_others(|seq| commits.lost_here(seq));
+    let untaken = trees.untaken_changes(|seq| commits.lost_here(seq));
+    assert_eq!(
+        untaken,
+        [("f".into(), Untaken::Delete), ("p".into(), Untaken::Delete)]
+    );
+    trees.set_listed_remote("p".into(), remote(dir(ROOT, "p")));
+    trees.set_listed_remote("f".into(), trashed(file("t", "c", 1)));
+    trees.forget_lost(
+        deleted,
+        edited,
+        synced,
+        moved,
+        untaken,
+        Default::default(),
+        &Default::default(),
+        commits.held_through(),
+        commits.accepted(),
+    );
+    trees.settle(commits.aliases());
+    assert_eq!(
+        build(&mut commits, &mut trees, &mut ids).map(|c| ops(&c)),
+        None
+    );
+}
