@@ -4174,6 +4174,7 @@ pub(crate) fn finishes<'a>(
 pub(crate) fn changed_locally(trees: &Trees, id: &NodeId) -> bool {
     let Some(Waiting {
         shape: Some(waiting),
+        origin,
         ..
     }) = trees.waiting().get(id)
     else {
@@ -4189,8 +4190,9 @@ pub(crate) fn changed_locally(trees: &Trees, id: &NodeId) -> bool {
             (a, b) => a.is_some() != b.is_some(),
         };
     let moved = !local.same_position(waiting)
-        && (trees.remote().get(id))
-            .is_some_and(|remote| remote.trashed || remote.shape.same_position(waiting));
+        && (*origin == Origin::Released
+            || (trees.remote().get(id))
+                .is_some_and(|remote| remote.trashed || remote.shape.same_position(waiting)));
     edited || moved
 }
 

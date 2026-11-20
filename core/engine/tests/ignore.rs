@@ -2735,6 +2735,21 @@ fn a_file_removed_in_the_batch_before_the_rules_give_up_its_folder_is_deleted_on
 }
 
 #[test]
+fn a_file_given_up_with_its_folder_and_moved_out_here_is_created_again_after_a_server_purge() {
+    let mut trees = given_up_beside(&[synced("z", file("x", "g", 1))]);
+    assert_eq!(trees.synced().live(&"z".into()), None);
+    let mut moved = trees.local().get(&"z".into()).unwrap().clone();
+    moved.shape.parent = ROOT.into();
+    moved.shape.name = "zz".into();
+    trees.set_local_changed("z".into(), moved);
+    trees.remove_remote(&"z".into());
+    let planned = effects(&mut trees);
+    assert!(!planned.iter().any(|(id, _)| id == "z"), "{planned:?}");
+    assert_eq!(trees.local().live(&"z".into()), Some(&file(ROOT, "zz", 1)));
+    assert!(matches!(&ops(&mut trees)[..], [op::Op::CreateFile(create)] if create.node_id == "z"));
+}
+
+#[test]
 fn a_folder_given_up_with_more_unchanged_files_than_one_search_takes_loads_after_a_restart() {
     const FILES: [&str; 12] = [
         "c00", "c01", "c02", "c03", "c04", "c05", "c06", "c07", "c08", "c09", "c10", "c11",
@@ -3366,4 +3381,42 @@ fn a_parked_child_does_not_mark_its_displaced_parent_unobserved() {
     trees.settle(&Default::default());
     assert!(!trees.unobserved(&d));
     assert_eq!(trees.check(), Ok(()));
+}
+
+#[test]
+fn a_file_moved_out_of_a_vanished_folder_keeps_its_acknowledged_shape_as_its_base() {
+    let mut trees = trees(&[
+        synced("d", dir(ROOT, "d")),
+        (
+            "z",
+            Some(file(ROOT, "zz", 9)),
+            Some(file("d", "z", 1)),
+            Some(file("d", "z", 9)),
+        ),
+    ]);
+    let mut state = trees.state();
+    let acknowledged = Waiting {
+        shape: Some(file("d", "z", 9)),
+        origin: Origin::Other,
+    };
+    state.waiting.insert("z".into(), acknowledged);
+    assert_eq!(trees.restore(state), Ok(()));
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("/d/\n"));
+    trees.rules_scanned();
+    trees.settle(&Default::default());
+    trees.remove_local(&"d".into());
+    trees.settle(&Default::default());
+    trees.set_rules(&AT_ROOT, Source::Koiignore, None);
+    trees.listed(&[ROOT.into()], Pending::default());
+    trees.settle(&Default::default());
+    let mut edited = trees.local().get(&"z".into()).unwrap().clone();
+    edited.shape.content = Some(content(7));
+    trees.set_local_changed("z".into(), edited);
+    effects(&mut trees);
+    let sent = ops(&mut trees);
+    assert!(
+        matches!(&sent[..], [op::Op::Move(moved), op::Op::UpdateContent(update)]
+            if moved.node_id == "z" && update.node_id == "z"),
+        "{sent:?}"
+    );
 }
