@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use koidrive_engine::classify::{Origin, Pending, Trees, Waiting};
-use koidrive_engine::commit::Commits;
+use koidrive_engine::commit::{Commits, InFlight};
 use koidrive_engine::effects::{self, Base, BatchLimit, Effect, Effects, Location, Stuck};
 use koidrive_engine::first_link::{History, Marks};
 use koidrive_engine::ids::IdGen;
@@ -121,11 +121,15 @@ fn ops(trees: &mut Trees) -> Vec<op::Op> {
 }
 
 fn effects(trees: &mut Trees) -> Vec<(String, Effect)> {
+    effects_with(trees, None)
+}
+
+fn effects_with(trees: &mut Trees, in_flight: Option<&InFlight>) -> Vec<(String, Effect)> {
     let (mut effects, mut ids, mut done) = (Effects::default(), IdGen::new(2), Vec::new());
     loop {
         trees.settle(&Default::default());
         let Some(record) = effects
-            .plan(trees, None, &mut ids, NOW, BatchLimit::ONE)
+            .plan(trees, in_flight, &mut ids, NOW, BatchLimit::ONE)
             .first()
             .cloned()
         else {
@@ -133,7 +137,7 @@ fn effects(trees: &mut Trees) -> Vec<(String, Effect)> {
         };
         let made = identity(100 + done.len() as u128);
         effects
-            .done(trees, None, &record.effect_id, Some(made))
+            .done(trees, in_flight, &record.effect_id, Some(made))
             .unwrap();
         done.push((record.node.into(), record.effect));
     }
@@ -382,7 +386,7 @@ fn a_node_whose_name_another_entry_took_stays_excluded_until_it_returns_or_is_tr
             .all(|id| trees.recorded_local(&NodeId::from(*id)))
     );
     for id in ["d", "a", "b"] {
-        trees.displace_local(&NodeId::from(id));
+        trees.displace_local(&NodeId::from(id), false);
         assert!(
             trees.local().get(&NodeId::from(id)).is_none() && trees.excluded(&NodeId::from(id))
         );
@@ -434,8 +438,8 @@ fn a_displaced_node_r_does_not_hold_live_is_not_recorded() {
     let mut trees = trees(&[synced("a", file(ROOT, "a.txt", 1))]);
     trees.ignore_local(&"a".into());
     trash(&mut trees, "a");
-    trees.displace_local(&"a".into());
-    assert!(trees.local().get(&"a".into()).is_none() && trees.displaced_local().is_empty());
+    trees.displace_local(&NodeId::from("a"), false);
+    assert!(trees.local().get(&NodeId::from("a")).is_none() && trees.displaced_local().is_empty());
 }
 
 #[test]
@@ -2756,4 +2760,252 @@ fn a_given_up_file_removed_while_a_commit_watches_its_position_downloads_once_in
     assert_eq!(ops(&mut trees), []);
     effects(&mut trees);
     assert_eq!(trees.local().live(&"z".into()), Some(&file("x", "g", 1)));
+}
+
+fn moved_out_with_an_unsent_edit(rename: bool) -> Trees {
+    let mut trees = trees(&[
+        synced("F", dir(ROOT, "F")),
+        synced("c", file("F", "c.txt", 1)),
+    ]);
+    let mut edited = trees.local().get(&NodeId::from("c")).unwrap().clone();
+    edited.shape.content = Some(content(2));
+    if rename {
+        edited.shape.name = "d.txt".into();
+    }
+    trees.set_local("c".into(), edited);
+    trash(&mut trees, "c");
+    trees.settle(&Default::default());
+    trees.ignore_local(&NodeId::from("c"));
+    trees
+}
+
+fn assert_removed_around_the_edit(mut trees: Trees) {
+    assert!(trees.unsent_edits().is_empty());
+    trash(&mut trees, "F");
+    let done = effects(&mut trees);
+    assert!(nodes(&done).contains(&"F"), "{done:?}");
+    assert!(trees.local().get(&NodeId::from("c")).is_none() && trees.displaced_local().is_empty());
+    assert_eq!(ops(&mut trees), [], "the edit is not sent");
+}
+
+#[test]
+fn a_folder_deleted_elsewhere_goes_around_a_copy_moved_out_with_an_edit_its_rules_now_exclude() {
+    let mut trees = moved_out_with_an_unsent_edit(true);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    assert_removed_around_the_edit(trees);
+}
+
+#[test]
+fn a_folder_deleted_elsewhere_goes_around_a_copy_moved_out_with_an_edit_the_server_dropped() {
+    let mut trees = moved_out_with_an_unsent_edit(false);
+    trees.set_synced("c".into(), Some(file("F", "c.txt", 2)));
+    trees.remove_remote(&NodeId::from("c"));
+    assert_removed_around_the_edit(trees);
+}
+
+#[test]
+fn a_copy_moved_out_before_the_server_trashes_its_edited_node_holds_no_unsent_edit() {
+    let mut trees = trees(&[
+        synced("F", dir(ROOT, "F")),
+        synced("c", file("F", "c.txt", 1)),
+    ]);
+    let mut edited = trees.local().get(&NodeId::from("c")).unwrap().clone();
+    edited.shape.content = Some(content(2));
+    trees.set_local("c".into(), edited);
+    trees.ignore_local(&NodeId::from("c"));
+    trash(&mut trees, "c");
+    trees.settle(&Default::default());
+    assert_removed_around_the_edit(trees);
+}
+
+fn removed_around_a_file_never_sent(in_flight: Option<&InFlight>) -> Trees {
+    let mut trees = trees(&[
+        synced("F", dir(ROOT, "F")),
+        ("n", Some(file("F", "n.txt", 1)), None, None),
+    ]);
+    trees.ignore_local(&NodeId::from("n"));
+    trash(&mut trees, "F");
+    let done = effects_with(&mut trees, in_flight);
+    assert!(nodes(&done).contains(&"F"), "{done:?}");
+    assert!(trees.local().get(&NodeId::from("n")).is_none());
+    trees
+}
+
+#[test]
+fn a_moved_out_file_the_server_never_held_leaves_with_its_folder_and_no_record() {
+    let trees = removed_around_a_file_never_sent(None);
+    assert!(trees.displaced_local().is_empty());
+}
+
+#[test]
+fn a_moved_out_file_whose_create_is_in_flight_keeps_its_record_until_the_result_comes_without_it() {
+    let create = op::Op::CreateFile(proto::CreateFile {
+        node_id: "n".into(),
+        ..Default::default()
+    });
+    let flight = InFlight {
+        commit: proto::Commit {
+            ops: vec![proto::Op {
+                op: Some(create),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        deletes: BTreeMap::new(),
+        restores: BTreeMap::new(),
+        owners: BTreeMap::new(),
+        result: None,
+    };
+    let mut trees = removed_around_a_file_never_sent(Some(&flight));
+    assert!(
+        trees.displaced_local().contains_key(&NodeId::from("n"))
+            && trees.excluded(&NodeId::from("n"))
+    );
+    assert_eq!(ops(&mut trees), []);
+    assert!(trees.displaced_local().is_empty());
+}
+
+#[test]
+fn a_moved_out_copy_trashed_before_its_create_answer_leaves_no_displaced_record() {
+    let shape = file(ROOT, "n.txt", 1);
+    let node = NodeId::from("n");
+    let mut trees = trees(&[("n", Some(shape.clone()), None, None)]);
+    let mut commits = Commits::default();
+    commits
+        .build(&mut trees, &mut IdGen::new(1), NOW, HISTORY, "me", 7)
+        .unwrap();
+    trees.set_remote(node.clone(), remote(shape));
+    trash(&mut trees, "n");
+    trees.ignore_local(&node);
+    let creating = commits.in_flight().unwrap().creates(&node);
+    assert!(creating);
+    trees.displace_local(&node, creating);
+
+    trees.restore(trees.state()).unwrap();
+    assert!(trees.displaced_local().is_empty());
+}
+
+#[test]
+fn a_folder_the_server_merges_into_a_live_folder_of_its_name_key_is_taken_over_under_the_live_name()
+{
+    let mut trees = trees(&[
+        ("a", Some(dir(ROOT, "A")), None, None),
+        ("c", Some(file("a", "c.txt", 1)), None, None),
+    ]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    trees.settle(&Default::default());
+    let (mut commits, mut ids) = (Commits::default(), IdGen::new(1));
+    let sent = commits
+        .build(&mut trees, &mut ids, NOW, HISTORY, "me", 7)
+        .cloned()
+        .unwrap();
+    let sent: Vec<op::Op> = sent.ops.into_iter().map(|op| op.op.unwrap()).collect();
+    assert!(
+        matches!(&sent[..], [op::Op::CreateDir(create)] if create.name == "A"),
+        "{sent:?}"
+    );
+    trees.set_remote("b".into(), remote(dir(ROOT, "a")));
+    let merged = proto::OpResult {
+        code: proto::op_result::Code::MergedInto as i32,
+        node_id: "b".into(),
+        ..Default::default()
+    };
+    let result = proto::CommitResult {
+        seq: 1,
+        results: vec![merged],
+        ..Default::default()
+    };
+    commits.received(result).unwrap();
+    assert!(commits.acknowledge(&mut trees, 1));
+    trees.settle(commits.aliases());
+    trees.set_remote("r".into(), remote(file("b", "r", 2)));
+    let mut effects = Effects::default();
+    let mut done = Vec::new();
+    for _ in 0..8 {
+        trees.settle(commits.aliases());
+        if let Some(commit) = commits.build(&mut trees, &mut ids, NOW, HISTORY, "me", 7) {
+            panic!("{:?}", commit.ops);
+        }
+        let planned = effects.plan(&trees, commits.in_flight(), &mut ids, NOW, BatchLimit::ONE);
+        let Some(record) = planned.first().cloned() else {
+            continue;
+        };
+        let made = identity(100 + done.len() as u128);
+        effects
+            .done(
+                &mut trees,
+                commits.in_flight(),
+                &record.effect_id,
+                Some(made),
+            )
+            .unwrap();
+        done.push(record.effect);
+    }
+    assert!(
+        !done
+            .iter()
+            .any(|effect| matches!(effect, Effect::CreateDir { .. } | Effect::RemoveDir { .. })),
+        "{done:?}"
+    );
+    let shape = |id: &str| {
+        trees
+            .local()
+            .get(&NodeId::from(id))
+            .map(|node| node.shape.clone())
+    };
+    assert_eq!(shape("b"), Some(dir(ROOT, "a")));
+    assert_eq!(shape("a"), None);
+    assert_eq!(shape("c"), Some(file("b", "c.txt", 1)));
+    assert_eq!(
+        trees.local().get(&NodeId::from("c")).unwrap().identity.ino,
+        2
+    );
+    assert_eq!(shape("r"), Some(file("b", "r", 2)));
+    assert_eq!(
+        trees
+            .local()
+            .iter()
+            .filter(|(_, node)| node.shape.kind == Kind::Dir)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_purged_folder_kept_for_an_excluded_file_sends_nothing_after_rename_or_restart() {
+    let mut trees = trees(&[synced("d", dir(ROOT, "d"))]);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    trash(&mut trees, "d");
+    trees.remove_remote(&"d".into());
+    trees.settle(&Default::default());
+    let (mut pending, mut ids) = (Effects::default(), IdGen::new(2));
+    let planned = pending.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE);
+    let [record] = planned else {
+        panic!("{planned:?}")
+    };
+    assert!(matches!(record.effect, Effect::RemoveDir { .. }) && record.node == "d");
+    let id = record.effect_id.clone();
+    pending
+        .kept(
+            &mut trees,
+            None,
+            &Default::default(),
+            &id,
+            &[("c.txt", Some(Kind::File))],
+        )
+        .unwrap();
+
+    let mut restarted = Trees::new(ROOT);
+    restarted.set_local("d".into(), trees.local().get(&"d".into()).unwrap().clone());
+    restarted.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    restarted.restore(trees.state()).unwrap();
+    place(&mut trees, "d", ROOT, "e");
+    for (mut current, name) in [(trees, "e"), (restarted, "d")] {
+        assert_eq!(ops(&mut current), []);
+        assert_eq!(effects(&mut current), []);
+        assert_eq!(
+            current.local().get(&"d".into()).unwrap().shape,
+            dir(ROOT, name)
+        );
+    }
 }

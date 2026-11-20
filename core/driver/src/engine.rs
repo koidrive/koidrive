@@ -1689,7 +1689,11 @@ impl Engine {
         }
         for id in doomed.into_iter().rev() {
             match (displaced.contains(&id), missing) {
-                (true, _) => self.trees.displace_local(&id),
+                (true, _) => {
+                    let created =
+                        (self.commits.in_flight()).is_some_and(|flight| flight.creates(&id));
+                    self.trees.displace_local(&id, created)
+                }
                 (false, true) => self.trees.miss_local(&id),
                 (false, false) => self.trees.remove_local(&id),
             }

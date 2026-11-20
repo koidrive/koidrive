@@ -2226,19 +2226,27 @@ fn run_ignoring_answering_after(
                 from_server.insert(record.node.clone());
             }
             if let Effect::RemoveDir { along, .. } = &record.effect {
-                let held: Vec<(String, Option<Kind>)> = (device.trees.local_children(&record.node))
-                    .filter_map(|child| device.trees.local().get(child))
-                    .filter(|node| !along.iter().any(|file| file.identity.same(&node.identity)))
-                    .map(|node| (node.shape.name.clone(), Some(node.shape.kind)))
-                    .collect();
+                let held = held_on_disk(&device, &record.node, along);
                 if !held.is_empty() {
                     let held: Vec<(&str, Option<Kind>)> = held
                         .iter()
                         .map(|(name, kind)| (name.as_str(), *kind))
                         .collect();
-                    if effects.keeps(&device.trees, &record.effect_id, &held) {
+                    if effects.keeps(
+                        &device.trees,
+                        commits.in_flight(),
+                        commits.aliases(),
+                        &record.effect_id,
+                        &held,
+                    ) {
                         effects
-                            .kept(&mut device.trees, &record.effect_id, &held)
+                            .kept(
+                                &mut device.trees,
+                                commits.in_flight(),
+                                commits.aliases(),
+                                &record.effect_id,
+                                &held,
+                            )
                             .unwrap();
                     } else {
                         effects
@@ -2559,7 +2567,26 @@ fn run_ignoring_answering_after(
         .map(|(id, _)| id)
         .filter(|id| !outside(id))
         .collect();
-    let mut waiting: BTreeSet<NodeId> = BTreeSet::new();
+    let refused_merges: BTreeSet<NodeId> = (effects.blocked().iter())
+        .filter_map(|(id, effect)| {
+            let Effect::RemoveDir { along, .. } = effect else {
+                return None;
+            };
+            if !commits.aliases().contains_key(id) || !device.on_disk(id) {
+                return None;
+            }
+            let held = held_on_disk(&device, id, along);
+            let folder = local_path(&device.trees, id);
+            (!held.is_empty()
+                && held.iter().all(|(name, kind)| {
+                    let mut entry = folder.clone();
+                    entry.push(name.clone());
+                    kind.is_none_or(|kind| device.trees.ignores(&entry, kind))
+                }))
+            .then(|| id.clone())
+        })
+        .collect();
+    let mut waiting = refused_merges.clone();
     loop {
         let more: Vec<NodeId> = (unsettled.iter())
             .filter(|id| {
@@ -2579,7 +2606,14 @@ fn run_ignoring_answering_after(
         .collect();
     prop_assert_eq!(unsettled, Vec::<&NodeId>::new());
     prop_assert!(commits.problems().is_empty(), "{:?}", commits.problems());
-    prop_assert!(effects.blocked().is_empty(), "{:?}", effects.blocked());
+    prop_assert!(
+        effects
+            .blocked()
+            .keys()
+            .all(|id| refused_merges.contains(id)),
+        "{:?}",
+        effects.blocked()
+    );
     let renaming = commits.renaming(&device.trees, NOW as u64);
     let reported =
         koidrive_engine::effects::stuck(&device.trees, &effects, commits.in_flight(), &renaming);
@@ -2702,6 +2736,28 @@ const CUTS: [Cut; 5] = [
     Cut::Answered,
     Cut::Effect,
 ];
+
+fn held_on_disk(
+    device: &Device,
+    folder: &NodeId,
+    along: &[koidrive_engine::effects::Displaced],
+) -> Vec<(String, Option<Kind>)> {
+    let in_l = (device.trees.local_children(folder))
+        .filter(|child| device.on_disk(child))
+        .filter_map(|child| device.trees.local().get(child))
+        .filter(|node| !along.iter().any(|file| file.identity.same(&node.identity)))
+        .map(|node| (node.shape.name.clone(), Some(node.shape.kind)));
+    let ignored: BTreeMap<String, Kind> = (device.ignored.iter())
+        .filter(|((holder, _), _)| holder == folder)
+        .filter_map(|((_, below), entry)| match below.as_slice() {
+            [name] => Some((name.clone(), entry.kind)),
+            [name, ..] => Some((name.clone(), Kind::Dir)),
+            [] => None,
+        })
+        .collect();
+    in_l.chain(ignored.into_iter().map(|(name, kind)| (name, Some(kind))))
+        .collect()
+}
 
 fn local_writes_check(
     device: &Device,

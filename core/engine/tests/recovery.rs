@@ -5737,3 +5737,62 @@ fn a_folder_answered_delete_with_an_excluded_file_in_it_stays_deleted() {
         assert_eq!(effects(&mut trees, &mut ids), []);
     }
 }
+
+#[test]
+fn discarding_a_never_sent_folder_keeps_it_around_an_unobserved_file_the_rules_exclude() {
+    let folder = ("new", dir(ROOT, "new"));
+    let rule_file = ("rules", file("new", ".koiignore", 1));
+    for own_rules in [false, true] {
+        let mut made = vec![folder.clone()];
+        if own_rules {
+            made.push(rule_file.clone());
+        }
+        let mut trees = trees(&made, &[], &[]);
+        let at: &[&str] = if own_rules { &["new"] } else { &[] };
+        trees.set_rules(at, Source::Koiignore, Some(RuleFile::parse(b"*.txt\n")));
+        let (mut commits, mut ids) = recovered(&mut trees, 0);
+        let shown: Vec<_> = made.iter().map(|(id, _)| *id).collect();
+        let question = asked(&commits, RecoveryGroup::CreatedOnThisDevice, &shown);
+        assert!(commits.decide(&mut trees, &question.id, Answer::Discard));
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+        trees.settle(commits.aliases());
+
+        let mut effects = Effects::default();
+        let planned = effects.plan(&trees, None, &mut ids, NOW, BatchLimit::ONE);
+        let [record] = planned else {
+            panic!("{planned:?}");
+        };
+        assert!(
+            matches!(&record.effect, Effect::RemoveDir { along, .. } if along.len() == usize::from(own_rules))
+                && record.node == "new",
+            "{record:?}"
+        );
+        let id = record.effect_id.clone();
+        let held = [("x.txt", Some(Kind::File))];
+        let mut sending = Commits::default();
+        let mut unsent = self::trees(std::slice::from_ref(&folder), &[], &[]);
+        assert_eq!(
+            ops(&mut sending, &mut unsent, &mut ids),
+            [("create dir", "new".into())],
+        );
+        assert!(!effects.keeps(&trees, sending.in_flight(), commits.aliases(), &id, &held));
+        effects
+            .kept(&mut trees, None, commits.aliases(), &id, &held)
+            .unwrap();
+
+        trees.settle(commits.aliases());
+        assert!(
+            effects
+                .plan(&trees, None, &mut ids, NOW, BatchLimit::ONE)
+                .is_empty()
+        );
+        assert_eq!(ops(&mut commits, &mut trees, &mut ids), []);
+        assert!(trees.ignores(&["new", "x.txt"], Kind::File));
+        for (id, shape) in made {
+            assert_eq!(
+                trees.local().get(&id.into()).map(|node| &node.shape),
+                Some(&shape)
+            );
+        }
+    }
+}

@@ -676,6 +676,15 @@ fn an_edit_moved_into_b(b_is_a_node: bool, moved: bool) -> Device {
 }
 
 #[test]
+fn a_folder_holds_on_disk_the_ignored_folder_the_user_moved_a_copy_into_and_not_the_copy_that_left()
+{
+    let device = an_edit_moved_into_b(false, true);
+    let b = ("b".to_owned(), Some(Kind::Dir));
+    assert_eq!(held_on_disk(&device, &"p".into(), &[]), [b]);
+    assert_eq!(held_on_disk(&device, &"a".into(), &[]), []);
+}
+
+#[test]
 fn a_node_moved_into_an_ignored_folder_that_is_a_node_is_placed_there() {
     let device = an_edit_moved_into_b(true, true);
     let c = "c".into();

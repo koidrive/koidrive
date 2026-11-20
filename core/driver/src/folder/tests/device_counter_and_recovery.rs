@@ -1364,3 +1364,69 @@ fn a_rewind_on_a_read_only_device_keeps_it_read_only_once_recovered() {
         assert_eq!(remote.names(), ["kept.txt"], "restart: {restart}");
     }
 }
+
+#[test]
+fn discarding_a_never_sent_folder_trashes_its_rules_when_the_last_excluded_file_goes() {
+    let mut remote = Remote::new();
+    let (site, mut a) = linked(&mut remote, "a");
+    a.create(
+        &mut remote,
+        &site.root.join("note.txt"),
+        b"before the rewind",
+    );
+    let backup = remote.space.clone();
+    let folder = site.root.join("local");
+    fs::create_dir(&folder).unwrap();
+    let rules = b"*.log\n";
+    fs::write(folder.join(".koiignore"), rules).unwrap();
+    let excluded = folder.join("build.log");
+    fs::write(&excluded, b"left out").unwrap();
+    a.settle();
+    a.sent.clear();
+    remote.space.rewind(&backup, NOW);
+    a.event(Event::ResyncRequired(ResyncRequired {
+        reason: Reason::HistoryChanged as i32,
+        ..ResyncRequired::default()
+    }))
+    .unwrap();
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    let question = answer(&site, Answer::Discard);
+    assert!(matches!(
+        question.kind,
+        crate::QuestionKind::Recovery {
+            group: crate::RecoveryGroup::CreatedOnThisDevice,
+            cause: Some(_),
+            ..
+        }
+    ));
+    let step = a.folder.requested();
+    a.take(step).unwrap();
+    a.run(&mut remote);
+    a.settle();
+    a.run(&mut remote);
+    assert_eq!(fs::read(&excluded).unwrap(), b"left out");
+    assert_eq!(fs::read(folder.join(".koiignore")).unwrap(), rules);
+    assert!(trashed(&site.root).is_empty());
+
+    fs::remove_file(excluded).unwrap();
+    a.settle();
+    a.run(&mut remote);
+    assert!(
+        !folder.exists(),
+        "the folder still holds only its rules file"
+    );
+    let trash = trashed(&site.root);
+    let [name] = trash.as_slice() else {
+        panic!("{trash:?}")
+    };
+    let kept = site
+        .root
+        .join(koidrive_fs::PRIVATE_DIR)
+        .join("trash")
+        .join(name);
+    assert_eq!(fs::read(kept.join(".koiignore")).unwrap(), rules);
+    assert!(a.sent.is_empty());
+    assert_eq!(remote.names(), ["note.txt"]);
+}

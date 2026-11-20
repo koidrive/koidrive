@@ -103,6 +103,12 @@ impl InFlight {
         (self.commit.ops.iter()).any(|op| op.op.as_ref().and_then(positioned).as_ref() == Some(id))
     }
 
+    pub fn creates(&self, id: &NodeId) -> bool {
+        (self.commit.ops.iter()).any(|op| {
+            matches!(&op.op, Some(op @ (op::Op::CreateDir(_) | op::Op::CreateFile(_))) if op_node(op) == *id)
+        })
+    }
+
     /// Whether the commit deletes `id`, by a `Delete` of it or of a folder above it.
     pub fn deletes_node(&self, id: &NodeId) -> bool {
         (self.deletes.iter()).any(|(top, members)| top == id || members.iter().any(|m| m == id))
@@ -1517,6 +1523,7 @@ impl Commits {
         if self.in_flight.is_some() {
             return None;
         }
+        trees.end_unheld_displacements();
         if self.halted.is_none() {
             trees.resend_folders_of_changes();
         }

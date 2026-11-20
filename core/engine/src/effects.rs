@@ -621,6 +621,10 @@ impl Effects {
                 }
             });
         for id in below.iter().rev() {
+            if trees.recorded_local(id) {
+                trees.displace_local(id, in_flight.is_some_and(|flight| flight.creates(id)));
+                continue;
+            }
             trees.give_up(id);
             trees.drop_local(id);
         }
@@ -729,11 +733,20 @@ impl Effects {
         Ok(())
     }
 
-    /// Whether the effect in flight removes a folder that R holds trashed and this device syncs no entry of `held`,
+    /// Whether the effect in flight removes a folder that R holds trashed, purged or never held, that the commit in
+    /// flight does not create, and whose create the server did not merge into a folder of `merged`, and this device
+    /// syncs no entry of `held`,
     /// the names and kinds of what the folder holds beside the files it takes along: the rules in force exclude each
     /// file or folder, or L holds it as a node this device leaves out, such as a kept entry, and an entry of no kind,
     /// such as a symlink, is never synced. [`Effects::kept`] then keeps it.
-    pub fn keeps(&self, trees: &Trees, effect_id: &str, held: &[(&str, Option<Kind>)]) -> bool {
+    pub fn keeps(
+        &self,
+        trees: &Trees,
+        in_flight: Option<&InFlight>,
+        merged: &TrackedMap<NodeId, NodeId>,
+        effect_id: &str,
+        held: &[(&str, Option<Kind>)],
+    ) -> bool {
         let Some(record) = self.flight(effect_id) else {
             return false;
         };
@@ -741,7 +754,9 @@ impl Effects {
             return false;
         };
         matches!(record.effect, Effect::RemoveDir { .. })
-            && (trees.remote().get(&record.node)).is_some_and(|node| node.trashed)
+            && trees.remote().live(&record.node).is_none()
+            && !in_flight.is_some_and(|flight| flight.creates(&record.node))
+            && !merged.contains_key(&record.node)
             && held.iter().all(|(name, kind)| {
                 let mut entry = folder.clone();
                 entry.push(name);
@@ -757,10 +772,12 @@ impl Effects {
     pub fn kept(
         &mut self,
         trees: &mut Trees,
+        in_flight: Option<&InFlight>,
+        merged: &TrackedMap<NodeId, NodeId>,
         effect_id: &str,
         held: &[(&str, Option<Kind>)],
     ) -> Result<(), EffectError> {
-        if !self.keeps(trees, effect_id, held) {
+        if !self.keeps(trees, in_flight, merged, effect_id, held) {
             return Err(EffectError::NotKept(effect_id.to_owned()));
         }
         let record = self.take(effect_id)?;
@@ -1267,7 +1284,7 @@ impl<'a> View<'a> {
                 _ => &[],
             };
             return self.trees.local_children(&record.node).all(|child| {
-                self.trees.under_kept_entry(child)
+                self.left_out(&record.node, child)
                     || (self.trees.local().get(child)).is_some_and(|node| {
                         along.iter().any(|file| file.identity.same(&node.identity))
                     })
@@ -1321,6 +1338,21 @@ impl<'a> View<'a> {
             })
     }
 
+    fn left_out(&self, folder: &NodeId, id: &NodeId) -> bool {
+        let trashed =
+            |id: &NodeId| (self.trees.remote().get(id)).is_some_and(|remote| remote.trashed);
+        let owed = (self.trees.local().get(id).zip(self.trees.synced().live(id)))
+            .is_some_and(|(local, synced)| local.shape.same_position(synced))
+            && trashed(id);
+        if self.trees.under_kept_entry(id) || self.trees.recorded_local(id) {
+            return true;
+        }
+        trashed(folder)
+            && !owed
+            && crate::classify::path(self.trees.local(), id)
+                .is_some_and(|(names, kind)| self.trees.ignores(&names, kind))
+    }
+
     fn goes_home(&self, id: &NodeId, remote: &Shape) -> bool {
         self.trees.edited(id) && self.trees.ignored_in_remote(id)
             || self.held_by_excluded(id, remote)
@@ -1370,9 +1402,7 @@ impl<'a> View<'a> {
             return Step::Skip;
         }
         let children: Vec<&NodeId> = self.trees.local_children(id).collect();
-        if (children.iter())
-            .any(|child| !self.trees.carried(child) && !self.trees.under_kept_entry(child))
-        {
+        if (children.iter()).any(|child| !self.trees.carried(child) && !self.left_out(id, child)) {
             return Step::Blocked(None);
         }
         let Some(at) = self.location(id) else {

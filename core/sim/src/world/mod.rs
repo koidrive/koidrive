@@ -630,6 +630,8 @@ pub struct World {
     /// For each device, the writes its user overwrote or deleted on its disk.
     removed: Vec<BTreeSet<i64>>,
     kept_for_left_out: Vec<BTreeSet<NodeId>>,
+    /// For each device, the folder creates and removals its effects ran, in order.
+    pub folder_effects: Vec<Vec<EffectRecord>>,
     left_out: Vec<LeftOutOnDisk>,
     rules_files: BTreeMap<Vec<u8>, Vec<&'static str>>,
     rule_texts: Vec<Vec<&'static str>>,
@@ -718,6 +720,7 @@ impl World {
             space,
             removed: vec![BTreeSet::new(); count],
             kept_for_left_out: vec![BTreeSet::new(); count],
+            folder_effects: vec![Vec::new(); count],
             left_out: vec![BTreeMap::new(); count],
             rules_files: BTreeMap::new(),
             rule_texts: Vec::new(),
@@ -1809,6 +1812,17 @@ impl World {
             Outcome::Crash(_) => batch.len() - 1,
             _ => (self.clock.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize % batch.len(),
         };
+        (self.folder_effects[d]).extend(
+            batch
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record.effect,
+                        Effect::CreateDir { .. } | Effect::RemoveDir { .. }
+                    )
+                })
+                .cloned(),
+        );
         let mut ends = Vec::new();
         let mut recorded = false;
         for (index, record) in batch.iter().enumerate() {
@@ -1927,14 +1941,26 @@ impl World {
                 Some(Err(Refused::Overtaken)) => effects.overtaken(trees, &record.effect_id),
                 Some(Err(Refused::NotEmpty))
                     if applies
-                        && effects.keeps(trees, &record.effect_id, &names_and_kinds(&held)) =>
+                        && effects.keeps(
+                            trees,
+                            commits.in_flight(),
+                            commits.aliases(),
+                            &record.effect_id,
+                            &names_and_kinds(&held),
+                        ) =>
                 {
                     note(
                         &mut self.seen,
                         "a folder to remove that holds only excluded entries stays",
                     );
                     self.kept_for_left_out[d].insert(record.node.clone());
-                    effects.kept(trees, &record.effect_id, &names_and_kinds(&held))
+                    effects.kept(
+                        trees,
+                        commits.in_flight(),
+                        commits.aliases(),
+                        &record.effect_id,
+                        &names_and_kinds(&held),
+                    )
                 }
                 _ => effects.failed(trees, &record.effect_id).map(|()| {
                     if !applies {

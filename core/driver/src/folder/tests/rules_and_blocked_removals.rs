@@ -31,6 +31,49 @@ fn the_device_list_narrows_what_is_downloaded_and_what_is_uploaded() {
 }
 
 #[test]
+fn removing_a_folder_a_copy_left_waits_for_the_scan_and_preserves_the_copy() {
+    let mut remote = Remote::new();
+    let (site_a, mut a) = linked(&mut remote, "a");
+    let source = site_a.root.join("source");
+    fs::create_dir(&source).unwrap();
+    a.create(&mut remote, &source.join("file.txt"), b"synced");
+    a.create(&mut remote, &site_a.root.join(".koiignore"), b"ignored/\n");
+    let nodes = server_nodes(&remote);
+    let folder = NodeId::from(live_id(&nodes, "source"));
+    let file = NodeId::from(live_id(&nodes, "file.txt"));
+    let (site_b, mut b) = linked(&mut remote, "b");
+    b.settle();
+    b.run(&mut remote);
+
+    let old = site_b.root.join("source");
+    let ignored = site_b.root.join("ignored");
+    fs::create_dir(&ignored).unwrap();
+    let copy = ignored.join("file.txt");
+    fs::write(old.join("file.txt"), b"edited here").unwrap();
+    fs::rename(old.join("file.txt"), &copy).unwrap();
+    b.scan_until(|b| b.folder.engine.trees.recorded_local(&file));
+    assert!(b.work.is_empty());
+
+    fs::remove_dir_all(source).unwrap();
+    a.scan_until(|a| !a.work.is_empty());
+    a.run(&mut remote);
+    b.pull(&remote);
+    assert_eq!(b.run(&mut remote), ["stage"]);
+    assert!(!old.exists());
+    assert!(b.folder.disk.awaits_scan());
+    assert!(!b.folder.engine.trees.lost_local().contains(&folder));
+    assert_eq!(fs::read(&copy).unwrap(), b"edited here");
+    assert!(b.work.is_empty() && b.sent.is_empty());
+
+    b.scan_until(|b| !b.folder.disk.awaits_scan());
+    assert!(b.run(&mut remote).is_empty());
+    assert_eq!(b.state(), FolderState::UpToDate);
+    assert!(b.folder.engine.trees.lost_local().contains(&folder));
+    assert_eq!(fs::read(copy).unwrap(), b"edited here");
+    assert_eq!(remote.names(), [".koiignore"]);
+}
+
+#[test]
 fn a_downloaded_rules_file_is_in_force_before_anything_else_is_planned() {
     let mut remote = Remote::new();
     let (site_a, mut a) = linked(&mut remote, "a");

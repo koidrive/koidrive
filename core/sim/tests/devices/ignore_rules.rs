@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use koidrive_engine::effects::Effect;
+
 use super::*;
 
 #[test]
@@ -162,19 +164,26 @@ fn a_folder_the_server_refuses_waits_to_be_removed_around_the_files_its_rules_ex
             (0, rename(1, 0, "A")),
         ],
     ];
-    converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap();
+    removes_only_the_refused_folder(
+        &converge_excluding(&[vec!["*.txt"], vec![]], &phases).unwrap(),
+        1,
+    );
+}
+
+fn removes_only_the_refused_folder(world: &World, attempts: usize) {
+    let refused = NodeId::from("01a1c2c0-39a0-7cdc-8389-c4663807ce68");
+    let ran = &world.folder_effects[0];
+    assert!(
+        ran.len() == attempts
+            && ran.iter().all(|record| {
+                record.node == refused && matches!(record.effect, Effect::RemoveDir { .. })
+            }),
+        "{ran:?}"
+    );
 }
 
 #[test]
 fn a_folder_another_device_deletes_stays_parked_around_a_file_its_rules_came_to_exclude() {
-    let _red = expect_red(
-        Check::RemoveLeftOut,
-        "device 1 is quiet, but it keeps the folders of [\"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\"] parked, which hold entries its rules leave out",
-    );
-    let _waits = expect_red(
-        Check::NameLeftOut,
-        "device 1 is quiet, but nodes [\"01a1c2c0-39a0-7c94-ad9a-de661683ef13\"] wait for names that entries its rules leave out hold",
-    );
     let phases = [
         vec![
             (0, folder("a")),
@@ -203,10 +212,6 @@ fn a_folder_another_device_deletes_stays_parked_around_a_file_its_rules_came_to_
 
 #[test]
 fn a_folder_another_device_deletes_waits_around_a_new_file_moved_to_where_its_rules_exclude() {
-    let _red = expect_red(
-        Check::RemoveLeftOut,
-        "device 1 is quiet, but it waits to settle the folders of [\"01a1c2c0-39a0-7510-83bc-38d6c6b89fe4\"], which hold only nodes its rules leave out",
-    );
     let phases = [
         vec![(0, folder("\u{c9}"))],
         vec![
@@ -345,4 +350,131 @@ fn a_folder_kept_for_excluded_entries_goes_at_the_restart_after_they_go() {
     let kept =
         (trees.local().iter()).any(|(id, node)| node.shape.name == "a" && trees.kept_folder(id));
     assert!(!kept);
+}
+
+fn refused_beside_a(last: (usize, Step)) -> Result<World, Failure> {
+    let _red = expect_red(
+        Check::RemoveLeftOut,
+        "device 0 is quiet, but it waits to remove the folders of [\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"], which hold entries its rules leave out",
+    );
+    let phases = [
+        vec![(0, folder("a"))],
+        vec![
+            (0, folder("c.txt")),
+            (0, user(1, 0, 2, "c.txt")),
+            (0, rename(1, 0, "A")),
+        ],
+        vec![last],
+    ];
+    converge_excluding(&[vec!["*.txt"], vec![]], &phases)
+}
+
+#[test]
+fn a_folder_deleted_beside_a_refused_folder_of_its_name_in_another_case_is_deleted_everywhere() {
+    removes_only_the_refused_folder(&refused_beside_a((0, delete(0))).unwrap(), 2);
+}
+
+#[test]
+fn a_folder_renamed_elsewhere_to_the_case_of_a_refused_folder_beside_it_is_renamed_here() {
+    let _parked = expect_red(
+        Check::RemoveLeftOut,
+        "device 0 is quiet, but it keeps the folders of [\"01a1c2c0-39a0-7cdc-8389-c4663807ce68\"] parked, which hold entries its rules leave out",
+    );
+    removes_only_the_refused_folder(&refused_beside_a((1, rename(0, 0, "A"))).unwrap(), 2);
+}
+
+fn deleted_while_its_rules_leave_a_file_out(during: Vec<(usize, Step)>) -> Result<World, Failure> {
+    let mut deleting = vec![(1, Step::CopyStore), (0, delete(0))];
+    deleting.extend(during);
+    let phases = [
+        vec![
+            (0, folder("a")),
+            (0, user(1, 0, 1, "c.txt")),
+            (0, user(1, 0, 1, "b")),
+        ],
+        deleting,
+        vec![],
+    ];
+    let rulings = [
+        (1, 1, Ruling::Exclude(vec!["*.txt"])),
+        (2, 1, Ruling::Exclude(vec![])),
+    ];
+    converge_ruled(&[vec![], vec![]], &rulings, &phases)
+}
+
+#[test]
+fn a_folder_another_device_deletes_goes_once_its_rules_let_the_file_they_left_out_back_in() {
+    let world = deleted_while_its_rules_leave_a_file_out(Vec::new()).unwrap();
+    assert_eq!(live_node_at(&world, &["a"]), None);
+    assert!(files_on(&world, 1).is_empty());
+}
+
+#[test]
+fn a_folder_deleted_while_its_rules_leave_a_file_out_goes_through_crashes_and_rollbacks() {
+    for n in 0..16 {
+        for tail in [
+            None,
+            Some(Step::Crash),
+            Some(Step::Effect(Outcome::Crash(Cut::Quarantined))),
+            Some(Step::RollBack),
+        ] {
+            let mut during: Vec<(usize, Step)> =
+                std::iter::repeat_n((1, Step::Work(0)), n).collect();
+            during.extend(tail.map(|step| (1, step)));
+            deleted_while_its_rules_leave_a_file_out(during).unwrap();
+        }
+    }
+}
+
+fn edited_then_moved_into_an_ignored_folder(moves_a_folder: bool) {
+    let (made, moved) = if moves_a_folder {
+        (
+            vec![
+                (0, folder("a")),
+                (0, user(0, 0, 1, "ss")),
+                (0, user(1, 0, 2, "c.txt")),
+            ],
+            vec![
+                (0, folder("b")),
+                (0, overwrite(2)),
+                (0, SCAN),
+                (0, rename(1, 3, "ss")),
+                (0, SCAN),
+                (1, delete(0)),
+            ],
+        )
+    } else {
+        (
+            vec![(0, folder("a")), (0, user(1, 0, 1, "c.txt"))],
+            vec![
+                (0, folder("b")),
+                (0, overwrite(1)),
+                (0, SCAN),
+                (0, rename(1, 2, "c.txt")),
+                (0, SCAN),
+                (1, delete(0)),
+            ],
+        )
+    };
+    let world = converge_excluding(&[vec!["b/"], vec![]], &[made, moved]).unwrap();
+    assert_eq!(live_node_at(&world, &["a"]), None);
+    let nodes = world.space().nodes();
+    let held = (nodes.iter()).find(|node| node.name == "c.txt").unwrap();
+    assert_ne!(held.status, NodeStatus::Live as i32);
+    let old = (held.current.as_ref()).and_then(|version| version.content.clone());
+    let edited = c_txt(&world, 0);
+    assert!(
+        old.is_some_and(|old| old != edited),
+        "the server keeps the version it has"
+    );
+}
+
+#[test]
+fn a_file_edited_then_moved_into_an_ignored_folder_keeps_its_edit_there_when_its_old_folder_goes() {
+    edited_then_moved_into_an_ignored_folder(false);
+}
+
+#[test]
+fn a_folder_moved_into_an_ignored_folder_with_an_edit_keeps_it_there_when_its_old_folder_goes() {
+    edited_then_moved_into_an_ignored_folder(true);
 }
