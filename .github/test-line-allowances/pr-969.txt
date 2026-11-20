@@ -1,5 +1,7 @@
-22
+157
 # Engine: a node S lacks that L holds where R holds it in the trash, in each case the spec names: an unchanged folder goes to the local trash, a folder with a new included file comes back with it, a file with other content is uploaded and comes back, a folder holding only excluded entries is kept, and a node a question holds waits for the answer. No earlier test sets up L at R's trashed place with S empty outside a parked folder.
 # Engine: a parked folder another device trashed sends nothing unless it holds something the rules keep, including the casefolded holder of its name.
 # Sim: the shrunk first-link discard case where a folder another device trashed stays parked, alone and with a server folder inside it. The saved cases never reached this state with a server folder inside.
 # Sim: the revive check rejects a revive whose only change is an ancestor rename an earlier commit sent. The check had no test of its own, and every saved case passes with the old check.
+# Engine: a parked folder another device renamed and then trashed, and a file a server loss made S forget that another device renamed and then trashed, both go to the local trash; a node its user moves back to an older place the server held is still sent. These are the places the server gave this device besides R's trashed place, and no earlier test covers them.
+# Sim: the revive check counts only user changes no acknowledged commit carried yet. It needs an acked set in the harness and a test of a trashed folder whose own rename was acknowledged before another device trashed it.
