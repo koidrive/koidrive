@@ -3008,3 +3008,31 @@ fn a_purged_folder_kept_for_an_excluded_file_sends_nothing_after_rename_or_resta
         );
     }
 }
+
+#[test]
+fn a_new_folder_whose_synced_child_is_parked_is_not_held_back_by_its_server_path() {
+    let mut trees = trees(&[
+        (
+            "a",
+            Some(dir(ROOT, "a")),
+            Some(dir(ROOT, "a")),
+            Some(dir(ROOT, "c.txt")),
+        ),
+        ("f", Some(dir("a", "f")), None, None),
+        ("b", None, Some(file("a", "b", 1)), Some(file("a", "b", 1))),
+    ]);
+    let parked = LocalNode {
+        parked: true,
+        ..local(file("f", "b", 1), 7)
+    };
+    trees.set_local("b".into(), parked);
+    trees.set_rules(&AT_ROOT, Source::Koiignore, rules("*.txt\n"));
+    assert!(!trees.excluded(&"f".into()));
+    let made = op::Op::CreateDir(proto::CreateDir {
+        node_id: "f".into(),
+        parent_id: "a".into(),
+        name: "f".into(),
+        pending_for: String::new(),
+    });
+    assert_eq!(ops(&mut trees), [made]);
+}

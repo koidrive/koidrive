@@ -1008,3 +1008,52 @@ fn a_parked_file_is_reported_when_the_rules_leave_out_every_conflict_name() {
         ["ß"]
     );
 }
+
+#[test]
+fn a_synced_file_moved_into_a_new_folder_below_a_folder_renamed_out_on_the_server_is_sent_there() {
+    let stories = [
+        (
+            vec![act(1, 0, 0, 0, 0), act(0, 0, 0, 0, 0)],
+            vec![
+                act(0, 0, 1439376498786130879, 0, 0),
+                act(3, 1308106868217568845, 2757625929174465250, 0, 0),
+            ],
+            vec![
+                act(3, 4302441764208420541, 5351028208616332562, 3, 0),
+                act(0, 0, 0, 0, 0),
+            ],
+            vec![],
+            vec![Ruling::Exclude(vec!["*.txt"])],
+        ),
+        (
+            vec![act(0, 0, 0, 0, 0), act(1, 0, 3483375612010044288, 2, 0)],
+            vec![act(0, 0, 449491083869513341, 0, 0)],
+            vec![
+                act(3, 753191141100480576, 419888708880354854, 2, 0),
+                act(0, 0, 0, 0, 0),
+                act(0, 0, 0, 2, 0),
+            ],
+            vec![(
+                true,
+                vec![act(3, 6273641293410837740, 14114747275198639883, 0, 0)],
+            )],
+            vec![Ruling::Include(vec!["a"])],
+        ),
+    ];
+    for (seed, local, remote, during, rulings) in stories {
+        let ran = run_ignoring(
+            &seed,
+            &local,
+            &remote,
+            MAX_OPS,
+            true,
+            &during,
+            Cut::None,
+            &rulings,
+            Answer::Delete,
+            None,
+        )
+        .unwrap();
+        assert_eq!((ran.deletes, ran.removals, ran.trashed), (0, 0, 0));
+    }
+}

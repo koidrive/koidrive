@@ -41,48 +41,117 @@ fn path_in<'a>(
     Some(names)
 }
 
-pub(super) fn excluded_op(trees: &Trees, op: &Op) -> Option<String> {
+pub(super) fn excluded_op(trees: &Trees, ops: &[Op]) -> Option<String> {
+    let mut sent = BTreeMap::new();
+    for op in ops {
+        if let Some(placed) = excluded_at(trees, &sent, op) {
+            return Some(placed);
+        }
+        let server = |id: &NodeId| {
+            sent.get(id)
+                .or_else(|| trees.remote().get(id).map(|node| &node.shape))
+        };
+        let placed = match op.op.as_ref() {
+            Some(op::Op::CreateFile(create)) => {
+                Some((&create.node_id, &create.parent_id, &create.name, Kind::File))
+            }
+            Some(op::Op::CreateDir(create)) => {
+                Some((&create.node_id, &create.parent_id, &create.name, Kind::Dir))
+            }
+            Some(op::Op::Move(moved)) => server(&NodeId::from(&moved.node_id)).map(|shape| {
+                (
+                    &moved.node_id,
+                    &moved.new_parent_id,
+                    &moved.new_name,
+                    shape.kind,
+                )
+            }),
+            _ => None,
+        };
+        if let Some((id, parent, name, kind)) = placed {
+            let shape = Shape {
+                parent: NodeId::from(parent),
+                name: name.clone(),
+                kind,
+                content: None,
+            };
+            sent.insert(NodeId::from(id), shape);
+        }
+    }
+    None
+}
+
+fn excluded_at(trees: &Trees, sent: &BTreeMap<NodeId, Shape>, op: &Op) -> Option<String> {
     let local = |id: &NodeId| trees.local().get(id).map(|node| &node.shape);
-    let remote = |id: &NodeId| trees.remote().live(id);
+    let server = |created: bool| {
+        move |id: &NodeId| match created {
+            true => (sent.get(id)).or_else(|| trees.remote().get(id).map(|node| &node.shape)),
+            false => (sent.get(id)).or_else(|| trees.remote().live(id)),
+        }
+    };
     let root = &trees.local().root;
-    let at = |parent: &NodeId, name: &str, kind: Kind| {
-        [path_in(local, root, parent), path_in(remote, root, parent)]
-            .into_iter()
-            .flatten()
-            .map(|mut path| {
-                path.push(name.to_owned());
-                path
-            })
-            .find(|path| trees.ignores(path, kind))
+    let at = |parent: &NodeId, name: &str, kind: Kind, created: bool| {
+        [
+            path_in(local, root, parent),
+            path_in(server(created), root, parent),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|mut path| {
+            path.push(name.to_owned());
+            path
+        })
+        .find(|path| trees.ignores(path, kind))
+    };
+    let named = |name: &'_ str, pending_for: &'_ str| -> String {
+        match pending_for {
+            "" => name.to_owned(),
+            owed => owed.to_owned(),
+        }
     };
     let (id, path) = match op.op.as_ref()? {
         op::Op::CreateFile(create) => (
             &create.node_id,
-            at(&NodeId::from(&create.parent_id), &create.name, Kind::File),
+            at(
+                &NodeId::from(&create.parent_id),
+                &named(&create.name, &create.pending_for),
+                Kind::File,
+                true,
+            ),
         ),
         op::Op::CreateDir(create) => (
             &create.node_id,
-            at(&NodeId::from(&create.parent_id), &create.name, Kind::Dir),
+            at(
+                &NodeId::from(&create.parent_id),
+                &named(&create.name, &create.pending_for),
+                Kind::Dir,
+                true,
+            ),
         ),
         op::Op::Move(moved) => {
             let node = NodeId::from(&moved.node_id);
-            let shape = local(&node).or_else(|| remote(&node));
+            let shape = local(&node).or_else(|| server(true)(&node));
             let kind = shape.map_or(Kind::File, |shape| shape.kind);
             (
                 &moved.node_id,
-                at(&NodeId::from(&moved.new_parent_id), &moved.new_name, kind),
+                at(
+                    &NodeId::from(&moved.new_parent_id),
+                    &named(&moved.new_name, &moved.pending_for),
+                    kind,
+                    false,
+                ),
             )
         }
-        op::Op::UpdateContent(update) => (
-            &update.node_id,
-            [
-                local(&NodeId::from(&update.node_id)),
-                remote(&NodeId::from(&update.node_id)),
-            ]
-            .into_iter()
-            .flatten()
-            .find_map(|shape| at(&shape.parent, &shape.name, Kind::File)),
-        ),
+        op::Op::UpdateContent(update) => {
+            let node = NodeId::from(&update.node_id);
+            (
+                &update.node_id,
+                [local(&node), server(false)(&node)]
+                    .into_iter()
+                    .flatten()
+                    .find_map(|shape| at(&shape.parent, &shape.name, Kind::File, false)),
+            )
+        }
         _ => return None,
     };
     path.map(|path| format!("node {id} at {path:?}"))

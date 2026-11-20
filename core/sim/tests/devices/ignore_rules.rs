@@ -120,17 +120,16 @@ fn a_file_made_at_the_name_of_a_folder_its_rules_exclude_downloads_under_a_confl
 }
 
 #[test]
-fn a_folder_made_in_a_folder_another_device_renamed_to_a_name_its_rules_exclude_is_sent() {
-    let _red = expect_red(
-        Check::SentLeftOut,
-        "a commit of device 1 places node 01a1c2c0-39a0-796a-8df8-fb6da7904e2f at [\"c.txt\", \"b\"], which the rules of device 1 leave out",
-    );
+fn a_folder_made_in_a_folder_another_device_renamed_to_a_name_its_rules_exclude_stays_on_its_device()
+ {
     let phases = [
         vec![(0, folder("a"))],
         vec![(0, rename(0, 0, "c.txt"))],
         vec![(1, user(0, 0, 1, "b"))],
     ];
-    converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
+    let world = converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
+    assert_eq!(live_node_at(&world, &["c.txt", "b"]), None);
+    ino_at(&world, 1, &["a", "b"]);
 }
 
 #[test]
@@ -329,11 +328,7 @@ fn a_synced_file_its_rules_come_to_leave_out_keeps_its_bytes_when_another_device
 }
 
 #[test]
-fn a_folder_its_include_list_takes_under_a_pending_name_is_sent() {
-    let _red = expect_red(
-        Check::SentLeftOut,
-        "a commit of device 1 places node 01a1c2c0-39a0-7504-af4d-4d6a531020af at [\"ss (pending)\"], which the rules of device 1 leave out",
-    );
+fn a_folder_its_include_list_takes_syncs_through_a_pending_name_outside_that_list() {
     let work = (1, Step::Work(0));
     let mut phase = vec![(1, folder("\u{df}")), work, (1, folder("ss")), work];
     phase.push((1, rename(0, 0, "a")));
@@ -802,4 +797,143 @@ fn a_file_whose_conflict_rename_is_in_flight_when_the_rules_let_its_name_in_foll
         assert_eq!(paths_on(&world, 0), paths_on(&world, 1), "{lift}");
         assert_eq!(conflict_copies(&world, 1).len(), 1, "{lift}");
     }
+}
+
+fn held_where_the_server_renamed_its_folder() -> (World, String) {
+    let phases = [
+        vec![(0, folder("a"))],
+        vec![(0, rename(0, 0, "c.txt"))],
+        vec![(1, user(1, 0, 1, "b"))],
+    ];
+    let world = converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
+    assert_eq!(live_node_at(&world, &["a"]), None);
+    assert_eq!(live_node_at(&world, &["c.txt", "b"]), None);
+    let folder = live_node_at(&world, &["c.txt"]).unwrap();
+    (world, folder)
+}
+
+#[test]
+fn an_entry_held_in_a_folder_its_rules_exclude_on_the_server_syncs_in_a_new_folder_once_another_device_deletes_it()
+ {
+    for later in [vec![], vec![(1, user(1, 0, 1, "ss"))]] {
+        let (mut world, folder) = held_where_the_server_renamed_its_folder();
+        world.phase(3, &[(0, delete(0))]).unwrap();
+        world.phase(4, &later).unwrap();
+        assert_eq!(live_node_at(&world, &["c.txt"]), None);
+        assert_eq!(live_node_at(&world, &["c.txt", "b"]), None);
+        assert_ne!(live_node_at(&world, &["a"]), Some(folder));
+        assert!(live_node_at(&world, &["a", "b"]).is_some());
+        assert_eq!(
+            live_node_at(&world, &["a", "ss"]).is_some(),
+            !later.is_empty()
+        );
+    }
+}
+
+#[test]
+fn a_folder_held_by_its_server_path_syncs_in_new_folders_once_another_device_deletes_a_folder_above_it()
+ {
+    let phases = [
+        vec![(0, folder("a")), (0, user(0, 0, 1, "b"))],
+        vec![(0, rename(1, 1, "c.txt"))],
+        vec![(1, user(1, 0, 2, "ss"))],
+    ];
+    let mut world = converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
+    assert_eq!(live_node_at(&world, &["a", "c.txt", "ss"]), None);
+    let folder = live_node_at(&world, &["a"]);
+    world.phase(3, &[(0, delete(0))]).unwrap();
+    assert_ne!(live_node_at(&world, &["a"]), folder);
+    assert!(live_node_at(&world, &["a", "b", "ss"]).is_some());
+    assert_eq!(live_node_at(&world, &["a", "c.txt"]), None);
+}
+
+#[test]
+fn a_restored_or_purged_server_folder_leaves_the_new_folder_its_held_entry_syncs_in() {
+    let (mut world, folder) = held_where_the_server_renamed_its_folder();
+    world.phase(3, &[(0, delete(0))]).unwrap();
+    world.restored_from_trash(0, &folder);
+    let engine = &mut world.devices[0].engine;
+    let request = engine.ids.uuid_v7(1_700_000_000_000);
+    let intent = RestoreIntent::from_trash((&folder).into(), None, None).unwrap();
+    assert!(engine.commits.restore(request, intent));
+    world.phase(4, &commit(0)).unwrap();
+    assert_eq!(live_node_at(&world, &["c.txt"]), Some(folder.clone()));
+    assert_eq!(live_node_at(&world, &["c.txt", "b"]), None);
+    assert!(live_node_at(&world, &["a", "b"]).is_some());
+    ino_at(&world, 0, &["c.txt"]);
+    for unseen in [false, true] {
+        let (mut world, folder) = held_where_the_server_renamed_its_folder();
+        let mut deleting = vec![(0, delete(0))];
+        deleting.extend(commit(0));
+        match unseen {
+            true => world.run(3, &deleting).unwrap(),
+            false => world.phase(3, &deleting).unwrap(),
+        }
+        assert!(world.space_mut().purge(&folder, 0));
+        world.phase(4, &[]).unwrap();
+        assert!(live_node_at(&world, &["a", "b"]).is_some());
+        assert_eq!(live_node_at(&world, &["c.txt"]), None);
+    }
+}
+
+#[test]
+fn an_entry_held_by_its_server_path_joins_a_folder_another_device_makes_at_its_place() {
+    let (mut world, deleted) = held_where_the_server_renamed_its_folder();
+    world.phase(3, &[(0, delete(0)), (0, folder("a"))]).unwrap();
+    let made = live_node_at(&world, &["a"]).unwrap();
+    assert_ne!(made, deleted);
+    assert!(live_node_at(&world, &["a", "b"]).is_some());
+    assert_eq!(
+        world
+            .space()
+            .nodes()
+            .iter()
+            .filter(|node| node.name == "a")
+            .count(),
+        1
+    );
+}
+
+fn synced_where_the_server_renamed_its_folder(made: Step) -> (World, String) {
+    let phases = [
+        vec![(0, folder("a")), (0, made)],
+        vec![(0, rename(0, 0, "c.txt"))],
+    ];
+    let world = converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
+    assert!(live_node_at(&world, &["c.txt", "b"]).is_some());
+    let folder = live_node_at(&world, &["c.txt"]).unwrap();
+    (world, folder)
+}
+
+#[test]
+fn synced_entries_of_a_folder_held_by_its_server_path_follow_another_devices_delete() {
+    for made in [user(1, 0, 1, "b"), user(0, 0, 1, "b")] {
+        for new in [vec![], vec![(1, user(1, 0, 1, "ss"))]] {
+            let (mut world, folder) = synced_where_the_server_renamed_its_folder(made);
+            world.phase(2, &new).unwrap();
+            world.phase(3, &[(0, delete(0))]).unwrap();
+            assert_eq!(live_node_at(&world, &["c.txt"]), None);
+            assert_eq!(live_node_at(&world, &["a", "b"]), None);
+            assert_eq!(
+                live_node_at(&world, &["a", "ss"]).is_some(),
+                !new.is_empty()
+            );
+            assert_ne!(live_node_at(&world, &["a"]), Some(folder));
+        }
+    }
+}
+
+#[test]
+fn a_new_folder_holding_a_synced_file_moved_into_a_folder_another_device_renamed_to_a_name_its_rules_exclude_is_sent()
+ {
+    let _red = expect_red(
+        Check::SentLeftOut,
+        "a commit of device 1 places node 01a1c2c0-39a0-7504-af4d-4d6a531020af at [\"c.txt\", \"ss\"], which the rules of device 1 leave out",
+    );
+    let phases = [
+        vec![(0, folder("a")), (0, user(1, 0, 1, "b"))],
+        vec![(0, rename(0, 0, "c.txt"))],
+        vec![(1, user(0, 0, 1, "ss")), (1, rename(1, 2, "b"))],
+    ];
+    converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
 }

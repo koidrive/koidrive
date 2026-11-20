@@ -4159,7 +4159,7 @@ impl Trees {
     }
 
     /// Whether the node is excluded on this device (section 5.10): its position in R, S or L
-    /// matches the rules, or so does its place in L below its R parent, or a folder R holds it under is excluded, or its local copy, or a folder L holds it under, was moved into an
+    /// matches the rules, or so does its place in L below its R parent, or a folder R holds it under is excluded, or, for a node the server never held (a create this device sent counts as held), when L holds no node below it that the server held, the path a commit would give it on the server is (its local name under the nearest folder R holds, live or trashed, read at that folder's place in R unless this device moved or kept that folder), or its local copy, or a folder L holds it under, was moved into an
     /// ignored folder, or it is a discarded folder L still holds unchanged with an excluded entry in it. Nothing is planned for an excluded node, in either direction. Its S entry
     /// stays the merge base it was: S takes only what L and R both hold, and gives up a position
     /// neither holds any more, so that the entry never keeps another node out of S. A node that L holds at an included position
@@ -4396,7 +4396,7 @@ impl Trees {
     pub(crate) fn keep_folders_of_kept_folders(&mut self) {
         loop {
             let folders: BTreeSet<NodeId> = (self.kept_folders.iter())
-                .filter(|id| self.kept_folder(id))
+                .filter(|id| self.kept_folder_record(id))
                 .filter_map(|id| self.l.get(id).map(|node| node.shape.parent.clone()))
                 .filter(|id| self.left_with_kept_folders(id))
                 .collect();
@@ -4416,7 +4416,13 @@ impl Trees {
             && self.l.get(id).is_some_and(|node| !node.parked)
             && !self.held(id)
             && (self.local_children_placed_or_parked(id))
-                .all(|child| self.kept_folder(child) || self.carried(child))
+                .all(|child| self.kept_folder_record(child) || self.carried(child))
+    }
+
+    fn kept_folder_record(&self, id: &NodeId) -> bool {
+        self.kept_folders.contains(id)
+            && self.r.live(id).is_none()
+            && (self.l.get(id)).is_some_and(|node| node.shape.kind == Kind::Dir)
     }
 
     pub(crate) fn kept_folders(&self) -> &TrackedSet<NodeId> {
@@ -4874,6 +4880,75 @@ impl Trees {
         None
     }
 
+    fn sent(&self, id: &NodeId) -> Option<(Vec<&str>, Kind)> {
+        let local = self.l.get(id)?;
+        let mut names = vec![local.shape.name.as_str()];
+        let mut current = &local.shape.parent;
+        for _ in 0..=self.l.len() {
+            if *current == self.l.root {
+                names.reverse();
+                return Some((names, local.shape.kind));
+            }
+            let folder = &self.l.get(current)?.shape;
+            let placed = self.acknowledged(current).or_else(|| self.s.live(current));
+            let moved = placed.is_some_and(|synced| !folder.same_position(synced));
+            let unlinked = self.kept_folders.contains(current);
+            if !moved
+                && !unlinked
+                && let Some((above, _)) = self.held_in_r(current)
+            {
+                names.extend(above.into_iter().rev());
+                names.reverse();
+                return Some((names, local.shape.kind));
+            }
+            names.push(&folder.name);
+            current = &folder.parent;
+        }
+        None
+    }
+
+    pub(crate) fn left_out_on_the_server(&self, id: &NodeId) -> bool {
+        let ignored = |path: Option<(Vec<&str>, Kind)>| {
+            path.is_some_and(|(names, kind)| self.ignores(&names, kind))
+        };
+        (self.l.get(id)).is_some_and(|node| {
+            (self.r.get(&node.shape.parent)).is_some_and(|folder| folder.trashed)
+        }) && ignored(self.sent(id))
+            && !ignored(path(&self.l, id))
+            && self.never_held_by_the_server(id)
+    }
+
+    fn never_held_by_the_server(&self, id: &NodeId) -> bool {
+        let mut below = vec![id];
+        let mut seen = BTreeSet::new();
+        while let Some(current) = below.pop() {
+            if !seen.insert(current) {
+                continue;
+            }
+            if self.s.get(current).is_some() || self.waiting.contains_key(current) {
+                return false;
+            }
+            below.extend(self.local_children_placed_or_parked(current));
+        }
+        true
+    }
+
+    fn held_in_r(&self, id: &NodeId) -> Option<(Vec<&str>, Kind)> {
+        let shape = &self.r.get(id)?.shape;
+        let mut names = vec![shape.name.as_str()];
+        let mut current = &shape.parent;
+        for _ in 0..=self.r.len() {
+            if *current == self.r.root {
+                names.reverse();
+                return Some((names, shape.kind));
+            }
+            let parent = &self.r.get(current)?.shape;
+            names.push(&parent.name);
+            current = &parent.parent;
+        }
+        None
+    }
+
     fn ignored_by_paths(&self, id: &NodeId) -> Option<bool> {
         if self.recorded_local(id) || self.displaced.contains_key(id) {
             return Some(true);
@@ -4889,6 +4964,9 @@ impl Trees {
             (Some(local), Some(synced)) => !local.shape.same_position(synced),
             _ => false,
         };
+        if ignored(self.sent(id)) == Some(true) && self.never_held_by_the_server(id) {
+            return Some(true);
+        }
         if local == Some(false) && moved {
             return Some(false);
         }
