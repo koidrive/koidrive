@@ -937,3 +937,12 @@ fn a_new_folder_holding_a_synced_file_moved_into_a_folder_another_device_renamed
     ];
     converge_excluding(&[vec![], vec!["*.txt"]], &phases).unwrap();
 }
+
+#[test]
+fn a_file_made_in_a_folder_its_include_list_takes_syncs_through_the_folders_pending_name() {
+    let work = (1, Step::Work(0));
+    let mut phase = vec![(1, folder("\u{df}")), work, (1, folder("ss"))];
+    phase.extend([(1, user(1, 0, 2, "b")), work, (1, rename(0, 0, "a"))]);
+    let rulings = [(0, 1, Ruling::Include(vec!["ss/"]))];
+    converge_ruled(&[vec![], vec![]], &rulings, &[phase]).unwrap();
+}

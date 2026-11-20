@@ -52,17 +52,23 @@ pub(super) fn excluded_op(trees: &Trees, ops: &[Op]) -> Option<String> {
                 .or_else(|| trees.remote().get(id).map(|node| &node.shape))
         };
         let placed = match op.op.as_ref() {
-            Some(op::Op::CreateFile(create)) => {
-                Some((&create.node_id, &create.parent_id, &create.name, Kind::File))
-            }
-            Some(op::Op::CreateDir(create)) => {
-                Some((&create.node_id, &create.parent_id, &create.name, Kind::Dir))
-            }
+            Some(op::Op::CreateFile(create)) => Some((
+                &create.node_id,
+                &create.parent_id,
+                named(&create.name, &create.pending_for),
+                Kind::File,
+            )),
+            Some(op::Op::CreateDir(create)) => Some((
+                &create.node_id,
+                &create.parent_id,
+                named(&create.name, &create.pending_for),
+                Kind::Dir,
+            )),
             Some(op::Op::Move(moved)) => server(&NodeId::from(&moved.node_id)).map(|shape| {
                 (
                     &moved.node_id,
                     &moved.new_parent_id,
-                    &moved.new_name,
+                    named(&moved.new_name, &moved.pending_for),
                     shape.kind,
                 )
             }),
@@ -71,7 +77,7 @@ pub(super) fn excluded_op(trees: &Trees, ops: &[Op]) -> Option<String> {
         if let Some((id, parent, name, kind)) = placed {
             let shape = Shape {
                 parent: NodeId::from(parent),
-                name: name.clone(),
+                name: name.to_owned(),
                 kind,
                 content: None,
             };
@@ -79,6 +85,13 @@ pub(super) fn excluded_op(trees: &Trees, ops: &[Op]) -> Option<String> {
         }
     }
     None
+}
+
+fn named<'a>(name: &'a str, pending_for: &'a str) -> &'a str {
+    match pending_for {
+        "" => name,
+        owed => owed,
+    }
 }
 
 fn excluded_at(trees: &Trees, sent: &BTreeMap<NodeId, Shape>, op: &Op) -> Option<String> {
@@ -103,18 +116,12 @@ fn excluded_at(trees: &Trees, sent: &BTreeMap<NodeId, Shape>, op: &Op) -> Option
         })
         .find(|path| trees.ignores(path, kind))
     };
-    let named = |name: &'_ str, pending_for: &'_ str| -> String {
-        match pending_for {
-            "" => name.to_owned(),
-            owed => owed.to_owned(),
-        }
-    };
     let (id, path) = match op.op.as_ref()? {
         op::Op::CreateFile(create) => (
             &create.node_id,
             at(
                 &NodeId::from(&create.parent_id),
-                &named(&create.name, &create.pending_for),
+                named(&create.name, &create.pending_for),
                 Kind::File,
                 true,
             ),
@@ -123,7 +130,7 @@ fn excluded_at(trees: &Trees, sent: &BTreeMap<NodeId, Shape>, op: &Op) -> Option
             &create.node_id,
             at(
                 &NodeId::from(&create.parent_id),
-                &named(&create.name, &create.pending_for),
+                named(&create.name, &create.pending_for),
                 Kind::Dir,
                 true,
             ),
@@ -136,7 +143,7 @@ fn excluded_at(trees: &Trees, sent: &BTreeMap<NodeId, Shape>, op: &Op) -> Option
                 &moved.node_id,
                 at(
                     &NodeId::from(&moved.new_parent_id),
-                    &named(&moved.new_name, &moved.pending_for),
+                    named(&moved.new_name, &moved.pending_for),
                     kind,
                     false,
                 ),
