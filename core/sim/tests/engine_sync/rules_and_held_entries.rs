@@ -761,6 +761,31 @@ fn a_server_folder_holding_a_file_another_device_purged_since_is_still_a_server_
 }
 
 #[test]
+fn a_post_purge_edit_below_a_purged_moved_in_folder_reclaims_the_discarded_parent() {
+    let (mut device, kept_with, discarded) = a_file_in_a_taken_along_server_folder();
+    let (h, s, f): (NodeId, NodeId, NodeId) = ("h".into(), "s".into(), "f".into());
+    let mut server_file = device.trees.remote().get(&f).unwrap().clone();
+    server_file.shape.parent = s.clone();
+    device.trees.set_remote(f.clone(), server_file.clone());
+    let server_dir = device.trees.remote().get(&s).unwrap().shape.clone();
+    device.trees.set_synced(s.clone(), Some(server_dir));
+    device.trees.set_synced(f.clone(), Some(server_file.shape));
+    for id in [&f, &s] {
+        let purged = koidrive_proto::v1::NodePurged {
+            node_id: id.to_string(),
+            ..Default::default()
+        };
+        let change = Some(change_record::Change::Purged(purged));
+        device.receive(&[ChangeRecord { change }], false);
+    }
+    let asked = BTreeSet::new();
+    assert!(!revive(&device, &discarded, &kept_with, &asked).contains(&h));
+    device.act(&act(2, 0, 0, 0, 99));
+    assert!(acted_below(&device, &s, &kept_with, &discarded));
+    assert!(revive(&device, &discarded, &kept_with, &asked).contains(&h));
+}
+
+#[test]
 fn a_removal_counts_against_a_folder_only_when_the_server_holds_the_entry_inside_it() {
     for (p_in, s_in, counts) in [("s", "root", true), ("root", "p", false)] {
         let mut device = Device::new(Trees::new("root"));

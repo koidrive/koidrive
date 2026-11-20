@@ -1721,6 +1721,11 @@ fn only_server_copies_below(
     })
 }
 
+fn acted_at_or_below(device: &Device, id: &NodeId) -> bool {
+    device.acted.contains(id)
+        || (device.trees.local_children(id)).any(|child| acted_at_or_below(device, child))
+}
+
 fn revive(
     device: &Device,
     discarded: &BTreeMap<NodeId, koidrive_engine::tree::Shape>,
@@ -1743,7 +1748,7 @@ fn revive(
             || (trees.local_children(id)).any(|child| {
                 !trees.excluded(child)
                     && !asked.contains(child)
-                    && (trees.remote().get(child).is_some() || device.acted.contains(child))
+                    && (trees.remote().get(child).is_some() || acted_at_or_below(device, child))
                     && (!kept_with.contains_key(child)
                         || acted_below(device, child, kept_with, discarded))
                     && discarded
